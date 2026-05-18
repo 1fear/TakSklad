@@ -5,6 +5,7 @@ pending_saves.json
 print_settings.json
 product_catalog.json
 import_history.json
+yandex_geocoder_key.txt
 
 scan_backups/
 reports/

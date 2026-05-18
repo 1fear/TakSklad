@@ -36,6 +36,8 @@ PENDING_SAVES_FILE = os.path.join(APP_DIR, "pending_saves.json")
 PRINT_SETTINGS_FILE = os.path.join(APP_DIR, "print_settings.json")
 PRODUCT_CATALOG_FILE = os.path.join(APP_DIR, "product_catalog.json")
 IMPORT_HISTORY_FILE = os.path.join(APP_DIR, "import_history.json")
+YANDEX_GEOCODER_KEY_FILE = os.path.join(APP_DIR, "yandex_geocoder_key.txt")
+YANDEX_GEOCODER_API_KEY = "7c455cc8-0cda-46da-ac5c-e32297c2fec0"
 
 logging.basicConfig(
     filename=LOG_FILE,
@@ -241,6 +243,108 @@ def make_hash(payload):
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
+def load_yandex_geocoder_key():
+    env_key = normalize_text(os.environ.get("YANDEX_GEOCODER_API_KEY"))
+    if env_key:
+        return env_key
+    try:
+        if os.path.exists(YANDEX_GEOCODER_KEY_FILE):
+            with open(YANDEX_GEOCODER_KEY_FILE, "r", encoding="utf-8") as key_file:
+                file_key = normalize_text(key_file.read())
+            if file_key:
+                return file_key
+    except Exception:
+        logging.exception("Не удалось прочитать ключ Яндекс Геокодера")
+    return normalize_text(YANDEX_GEOCODER_API_KEY)
+
+def normalize_coordinates(value):
+    text = normalize_text(value)
+    if not text:
+        return ""
+
+    numbers = re.findall(r"-?\d+(?:[.,]\d+)?", text)
+    if len(numbers) < 2:
+        return ""
+
+    try:
+        first = float(numbers[0].replace(",", "."))
+        second = float(numbers[1].replace(",", "."))
+    except ValueError:
+        return ""
+
+    if abs(first) <= 90 and abs(second) <= 180:
+        lat, lon = first, second
+    elif abs(second) <= 90 and abs(first) <= 180:
+        lat, lon = second, first
+    else:
+        return ""
+
+    return f"{lat:.8f},{lon:.8f}".rstrip("0").rstrip(".")
+
+def reverse_geocode_yandex(coords, cache=None):
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    normalized_coords = normalize_coordinates(coords)
+    if not normalized_coords:
+        return None, "некорректные координаты"
+
+    if cache is not None and normalized_coords in cache:
+        return cache[normalized_coords]
+
+    api_key = load_yandex_geocoder_key()
+    if not api_key:
+        result = (None, "не указан ключ Яндекс Геокодера")
+        if cache is not None:
+            cache[normalized_coords] = result
+        return result
+
+    params = {
+        "apikey": api_key,
+        "geocode": normalized_coords,
+        "format": "json",
+        "lang": "ru_RU",
+        "sco": "latlong",
+        "results": "1",
+        "kind": "house",
+    }
+    url = "https://geocode-maps.yandex.ru/v1/?" + urllib.parse.urlencode(params)
+
+    try:
+        with urllib.request.urlopen(url, timeout=15) as response:
+            data = json.load(response)
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace")[:300]
+        result = (None, f"HTTP {exc.code}: {body}")
+        if cache is not None:
+            cache[normalized_coords] = result
+        return result
+    except Exception as exc:
+        result = (None, str(exc))
+        if cache is not None:
+            cache[normalized_coords] = result
+        return result
+
+    members = data.get("response", {}).get("GeoObjectCollection", {}).get("featureMember", [])
+    if not members:
+        result = (None, "адрес не найден")
+        if cache is not None:
+            cache[normalized_coords] = result
+        return result
+
+    obj = members[0].get("GeoObject", {})
+    meta = obj.get("metaDataProperty", {}).get("GeocoderMetaData", {})
+    address = normalize_text(meta.get("text") or obj.get("name"))
+    if not address:
+        result = (None, "пустой адрес в ответе Яндекса")
+    else:
+        result = (address, "")
+
+    if cache is not None:
+        cache[normalized_coords] = result
+    return result
+
 def load_product_catalog():
     catalog = load_json_file(PRODUCT_CATALOG_FILE, {})
     return catalog if isinstance(catalog, dict) else {}
@@ -400,6 +504,9 @@ def parse_excel_order_files(file_paths):
     errors = []
     warnings = []
     source_rows_count = 0
+    geocoded_count = 0
+    geocode_failed_count = 0
+    geocode_cache = {}
 
     for file_path in file_paths:
         file_name = os.path.basename(file_path)
@@ -453,7 +560,14 @@ def parse_excel_order_files(file_paths):
             address = get_source_cell(row, columns.get("address"))
             coords = get_source_cell(row, columns.get("coords"))
             if not address and coords:
-                address = f"Координаты: {coords}"
+                geocoded_address, geocode_error = reverse_geocode_yandex(coords, cache=geocode_cache)
+                if geocoded_address:
+                    address = geocoded_address
+                    geocoded_count += 1
+                else:
+                    geocode_failed_count += 1
+                    address = f"Координаты: {coords}"
+                    warnings.append(f"{file_name}, строка {row_number}: адрес по координатам не получен ({geocode_error})")
             if not address:
                 warnings.append(f"{file_name}, строка {row_number}: адрес пустой")
                 address = "Адрес не указан"
@@ -534,6 +648,8 @@ def parse_excel_order_files(file_paths):
         "warnings": warnings,
         "source_rows_count": source_rows_count,
         "files_count": len(file_paths),
+        "geocoded_count": geocoded_count,
+        "geocode_failed_count": geocode_failed_count,
     }
 
 def prepare_excel_import(file_paths):
@@ -1830,6 +1946,8 @@ class ScanningApp(tk.Tk):
                 details = [
                     f"Файлов проверено: {preview.get('files_count', 0)}",
                     f"Строк в файлах: {preview.get('source_rows_count', 0)}",
+                    f"Адресов получено из координат: {preview.get('geocoded_count', 0)}",
+                    f"Координат без адреса: {preview.get('geocode_failed_count', 0)}",
                     f"Дублей найдено: {len(duplicate_records)}",
                 ]
                 if errors:
@@ -1849,6 +1967,8 @@ class ScanningApp(tk.Tk):
                 f"Товаров: {preview.get('products_count', 0)}",
                 f"ШТ всего: {preview.get('quantity_count', 0)}",
                 f"Блоков к сканированию: {preview.get('blocks_count', 0)}",
+                f"Адресов получено из координат: {preview.get('geocoded_count', 0)}",
+                f"Координат без адреса: {preview.get('geocode_failed_count', 0)}",
                 f"Повторных позиций пропущено: {len(duplicate_records)}",
             ]
             if errors:
