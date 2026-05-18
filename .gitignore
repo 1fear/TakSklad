@@ -1,6 +1,10 @@
 credentials.json
 pKIS.log
 pending_prints.json
+pending_saves.json
+print_settings.json
+product_catalog.json
+import_history.json
 
 scan_backups/
 reports/
