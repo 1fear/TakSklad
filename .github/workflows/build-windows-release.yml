@@ -1,0 +1,66 @@
+name: Build Windows Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to upload assets to
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Resolve release tag
+        id: release
+        shell: pwsh
+        run: |
+          $tag = "${{ github.event.release.tag_name }}"
+          if (-not $tag) {
+            $tag = "${{ inputs.tag }}"
+          }
+          if (-not $tag) {
+            throw "Release tag is required"
+          }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build exe
+        shell: pwsh
+        run: |
+          pyinstaller --clean --onefile --windowed --name pKIS main.py
+
+      - name: Compute SHA256
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash dist\pKIS.exe -Algorithm SHA256).Hash.ToLower()
+          $hash | Out-File -FilePath dist\pKIS.exe.sha256.txt -Encoding ascii -NoNewline
+          "PKIS_EXE_SHA256=$hash" >> $env:GITHUB_ENV
+
+      - name: Upload release assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ steps.release.outputs.tag }}" dist\pKIS.exe dist\pKIS.exe.sha256.txt --clobber

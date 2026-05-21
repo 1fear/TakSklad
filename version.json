@@ -1,0 +1,8 @@
+{
+  "latest_version": "1.1.1",
+  "min_supported_version": "1.1.1",
+  "mandatory": true,
+  "download_url": "https://github.com/1fear/pKIS/releases/latest/download/pKIS.exe",
+  "sha256": "",
+  "message": "Печать сводного листа теперь отправляется напрямую на принтер без открытия браузера."
+}

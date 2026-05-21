@@ -1,0 +1,10 @@
+{
+  "enabled": false,
+  "bot_token": "",
+  "chat_id": "",
+  "chat_ids": [],
+  "send_reports": true,
+  "send_scan_backups": false,
+  "send_pending_files": false,
+  "send_error_log": true
+}

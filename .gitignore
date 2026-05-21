@@ -2,7 +2,10 @@ credentials.json
 pKIS.log
 pending_prints.json
 pending_saves.json
+pending_telegram.json
+telegram_state.json
 print_settings.json
+telegram_settings.json
 product_catalog.json
 import_history.json
 yandex_geocoder_key.txt
