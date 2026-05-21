@@ -32,6 +32,7 @@ def get_app_dir():
 
 APP_DIR = get_app_dir()
 CREDENTIALS_FILE = os.path.join(APP_DIR, "credentials.json")
+TAKSKLAD_DATA_FILE = os.path.join(APP_DIR, "TakSklad_data.json")
 LOG_FILE = os.path.join(APP_DIR, "TakSklad.log")
 BACKUP_DIR = os.path.join(APP_DIR, "scan_backups")
 REPORTS_DIR = os.path.join(APP_DIR, "reports")
@@ -45,7 +46,7 @@ IMPORT_HISTORY_FILE = os.path.join(APP_DIR, "import_history.json")
 TELEGRAM_SETTINGS_FILE = os.path.join(APP_DIR, "telegram_settings.json")
 YANDEX_GEOCODER_KEY_FILE = os.path.join(APP_DIR, "yandex_geocoder_key.txt")
 YANDEX_GEOCODER_API_KEY = "7c455cc8-0cda-46da-ac5c-e32297c2fec0"
-APP_VERSION = "1.1.3"
+APP_VERSION = "1.1.4"
 UPDATE_INFO_URL = os.environ.get(
     "PKIS_UPDATE_INFO_URL",
     "https://raw.githubusercontent.com/1fear/pKIS/main/version.json",
@@ -311,7 +312,11 @@ sys.excepthook = global_exception_handler
 
 def get_google_client():
     scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-    creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, scope)
+    credentials = load_credentials_data()
+    if isinstance(credentials, dict) and credentials.get("client_email"):
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(credentials, scope)
+    else:
+        creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, scope)
     return gspread.authorize(creds)
 
 def clean_date_value(date_value):
@@ -425,6 +430,105 @@ def save_json_file(path, data):
     except Exception:
         logging.exception("Не удалось сохранить JSON-файл: %s", path)
         return False
+
+APP_DATA_DEFAULTS = {
+    "credentials": {},
+    "telegram_settings": {},
+    "pending_saves": [],
+    "pending_prints": [],
+    "pending_telegram": [],
+    "telegram_state": {},
+    "product_catalog": {},
+    "import_history": [],
+    "print_settings": {},
+}
+
+LEGACY_JSON_SECTIONS = {
+    "credentials": CREDENTIALS_FILE,
+    "telegram_settings": TELEGRAM_SETTINGS_FILE,
+    "pending_saves": PENDING_SAVES_FILE,
+    "pending_prints": PENDING_PRINTS_FILE,
+    "pending_telegram": PENDING_TELEGRAM_FILE,
+    "telegram_state": TELEGRAM_STATE_FILE,
+    "product_catalog": PRODUCT_CATALOG_FILE,
+    "import_history": IMPORT_HISTORY_FILE,
+    "print_settings": PRINT_SETTINGS_FILE,
+}
+
+def default_app_data():
+    return {
+        section: json.loads(json.dumps(default_value, ensure_ascii=False))
+        for section, default_value in APP_DATA_DEFAULTS.items()
+    }
+
+def load_app_data():
+    data = load_json_file(TAKSKLAD_DATA_FILE, {})
+    if not isinstance(data, dict):
+        data = {}
+    merged = default_app_data()
+    for key, value in data.items():
+        merged[key] = value
+    return merged
+
+def save_app_data(data):
+    try:
+        normalized = default_app_data()
+        if isinstance(data, dict):
+            normalized.update(data)
+        normalized["_updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        os.makedirs(os.path.dirname(TAKSKLAD_DATA_FILE), exist_ok=True)
+        temp_path = TAKSKLAD_DATA_FILE + ".tmp"
+        with open(temp_path, "w", encoding="utf-8") as json_file:
+            json.dump(normalized, json_file, ensure_ascii=False, indent=2)
+        os.replace(temp_path, TAKSKLAD_DATA_FILE)
+        return True
+    except Exception:
+        logging.exception("Не удалось сохранить общий файл данных: %s", TAKSKLAD_DATA_FILE)
+        return False
+
+def load_data_section(section, default=None):
+    default = APP_DATA_DEFAULTS.get(section, default)
+    value = load_app_data().get(section, default)
+    return value if value is not None else default
+
+def save_data_section(section, value):
+    data = load_app_data()
+    data[section] = value
+    return save_app_data(data)
+
+def should_migrate_section(current_value, default_value):
+    return current_value in (None, "", [], {}) or current_value == default_value
+
+def migrate_legacy_json_files_to_app_data():
+    data = load_app_data()
+    changed = False
+
+    for section, path in LEGACY_JSON_SECTIONS.items():
+        if not os.path.exists(path):
+            continue
+        legacy_value = load_json_file(path, None)
+        if legacy_value is None:
+            continue
+        default_value = APP_DATA_DEFAULTS.get(section)
+        if should_migrate_section(data.get(section), default_value):
+            data[section] = legacy_value
+            changed = True
+
+    if changed or not os.path.exists(TAKSKLAD_DATA_FILE):
+        save_app_data(data)
+        logging.info("Данные JSON объединены в %s", TAKSKLAD_DATA_FILE)
+    return data
+
+def load_credentials_data():
+    credentials = load_data_section("credentials", {})
+    if isinstance(credentials, dict) and credentials.get("client_email"):
+        return credentials
+    return load_json_file(CREDENTIALS_FILE, {})
+
+def credentials_available():
+    credentials = load_credentials_data()
+    return isinstance(credentials, dict) and bool(credentials.get("client_email") and credentials.get("private_key"))
 
 def normalize_lookup_text(value):
     text = normalize_text(value).lower().replace("ё", "е")
@@ -547,11 +651,11 @@ def reverse_geocode_yandex(coords, cache=None):
     return result
 
 def load_product_catalog():
-    catalog = load_json_file(PRODUCT_CATALOG_FILE, {})
+    catalog = load_data_section("product_catalog", {})
     return catalog if isinstance(catalog, dict) else {}
 
 def save_product_catalog(catalog):
-    return save_json_file(PRODUCT_CATALOG_FILE, catalog)
+    return save_data_section("product_catalog", catalog)
 
 def product_catalog_key(product_name):
     return normalize_lookup_text(product_name)
@@ -1033,7 +1137,7 @@ def find_successful_import_by_file_hash(file_hash):
     if not normalized_target:
         return None
 
-    history = load_json_file(IMPORT_HISTORY_FILE, [])
+    history = load_data_section("import_history", [])
     if not isinstance(history, list):
         return None
 
@@ -1083,7 +1187,7 @@ def append_import_records(records):
             "values": rows_to_append,
         }], value_input_option="USER_ENTERED")
 
-    history = load_json_file(IMPORT_HISTORY_FILE, [])
+    history = load_data_section("import_history", [])
     if not isinstance(history, list):
         history = []
     history.append({
@@ -1093,7 +1197,7 @@ def append_import_records(records):
         "sources": sorted({record.get("Источник файла", "") for record in records}),
         "source_file_hashes_sha256": sorted(extract_record_file_hashes(appended_records)),
     })
-    save_json_file(IMPORT_HISTORY_FILE, history[-200:])
+    save_data_section("import_history", history[-200:])
 
     return {"imported": len(rows_to_append), "duplicates": duplicates}
 
@@ -2022,26 +2126,11 @@ def write_scan_backup(action, order, code=None, codes=None):
         return False
 
 def load_pending_prints():
-    try:
-        if not os.path.exists(PENDING_PRINTS_FILE):
-            return []
-        with open(PENDING_PRINTS_FILE, "r", encoding="utf-8") as pending_file:
-            data = json.load(pending_file)
-        if isinstance(data, list):
-            return data
-        return []
-    except Exception:
-        logging.exception("Не удалось загрузить очередь печати")
-        return []
+    data = load_data_section("pending_prints", [])
+    return data if isinstance(data, list) else []
 
 def save_pending_prints(items):
-    try:
-        with open(PENDING_PRINTS_FILE, "w", encoding="utf-8") as pending_file:
-            json.dump(items, pending_file, ensure_ascii=False, indent=2)
-        return True
-    except Exception:
-        logging.exception("Не удалось сохранить очередь печати")
-        return False
+    return save_data_section("pending_prints", items)
 
 def make_pending_print_id(address, products):
     payload = {
@@ -2082,11 +2171,11 @@ def remove_pending_print(pending_id):
         save_pending_prints(new_pending)
 
 def load_pending_saves():
-    data = load_json_file(PENDING_SAVES_FILE, [])
+    data = load_data_section("pending_saves", [])
     return data if isinstance(data, list) else []
 
 def save_pending_saves(items):
-    return save_json_file(PENDING_SAVES_FILE, items)
+    return save_data_section("pending_saves", items)
 
 def make_pending_save_id(order, scanned_codes):
     return make_hash({
@@ -2277,13 +2366,13 @@ def load_print_settings():
         "dpi": LABEL_DPI,
         "scale": "100%",
     }
-    settings = load_json_file(PRINT_SETTINGS_FILE, {})
+    settings = load_data_section("print_settings", {})
     if isinstance(settings, dict):
         defaults.update({key: value for key, value in settings.items() if value not in (None, "")})
     return defaults
 
 def save_print_settings(settings):
-    return save_json_file(PRINT_SETTINGS_FILE, settings)
+    return save_data_section("print_settings", settings)
 
 def load_telegram_settings():
     defaults = {
@@ -2296,7 +2385,7 @@ def load_telegram_settings():
         "send_pending_files": False,
         "send_error_log": True,
     }
-    settings = load_json_file(TELEGRAM_SETTINGS_FILE, {})
+    settings = load_data_section("telegram_settings", {})
     if isinstance(settings, dict):
         defaults.update({key: value for key, value in settings.items() if value is not None})
     return defaults
@@ -2336,6 +2425,7 @@ def safe_telegram_document_path(path):
     blocked = {
         os.path.abspath(CREDENTIALS_FILE),
         os.path.abspath(TELEGRAM_SETTINGS_FILE),
+        os.path.abspath(TAKSKLAD_DATA_FILE),
         os.path.abspath(YANDEX_GEOCODER_KEY_FILE),
     }
     return os.path.exists(normalized_path) and normalized_path not in blocked
@@ -2346,11 +2436,11 @@ TELEGRAM_CALLBACK_DOCUMENTS = "documents"
 TELEGRAM_CALLBACK_DOCUMENT_PREFIX = "doc:"
 
 def load_telegram_state():
-    state = load_json_file(TELEGRAM_STATE_FILE, {})
+    state = load_data_section("telegram_state", {})
     return state if isinstance(state, dict) else {}
 
 def save_telegram_state(state):
-    return save_json_file(TELEGRAM_STATE_FILE, state)
+    return save_data_section("telegram_state", state)
 
 def telegram_reports_keyboard():
     return {
@@ -2589,11 +2679,11 @@ def send_telegram_document(file_path, caption=""):
     return True, f"Отправлено получателям: {sent}"
 
 def load_pending_telegram():
-    data = load_json_file(PENDING_TELEGRAM_FILE, [])
+    data = load_data_section("pending_telegram", [])
     return data if isinstance(data, list) else []
 
 def save_pending_telegram(items):
-    return save_json_file(PENDING_TELEGRAM_FILE, items)
+    return save_data_section("pending_telegram", items)
 
 def make_pending_telegram_id(file_path, caption):
     payload = {
@@ -4904,10 +4994,12 @@ if __name__ == "__main__":
     if maybe_rename_windows_executable():
         sys.exit(0)
 
-    if not os.path.exists(CREDENTIALS_FILE):
+    migrate_legacy_json_files_to_app_data()
+
+    if not credentials_available():
         messagebox.showerror("Ошибка",
-            f"Файл {CREDENTIALS_FILE} не найден!\n\n"
-            f"Положите файл с учётными данными Google Sheets в папку с программой")
+            f"Не найдены учётные данные Google Sheets.\n\n"
+            f"Положите credentials.json рядом с программой или перенесите его в {TAKSKLAD_DATA_FILE}")
     else:
         app = ScanningApp()
         app.mainloop()
