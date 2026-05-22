@@ -15,46 +15,55 @@ from datetime import datetime, timedelta
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
-
 from PIL import Image, ImageDraw, ImageFont
 
-SPREADSHEET_ID = "1soHrN7Iqd3jk9iLGdUGK9APxVfRBwWXHxoI8x2Hsh1o"
-SHEET_NAME = "data"
-APP_NAME = "TakSklad"
-APP_EXECUTABLE_NAME = "TakSklad.exe"
-
-def get_app_dir():
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__))
-
-APP_DIR = get_app_dir()
-CREDENTIALS_FILE = os.path.join(APP_DIR, "credentials.json")
-TAKSKLAD_DATA_FILE = os.path.join(APP_DIR, "TakSklad_data.json")
-LOG_FILE = os.path.join(APP_DIR, "TakSklad.log")
-BACKUP_DIR = os.path.join(APP_DIR, "scan_backups")
-REPORTS_DIR = os.path.join(APP_DIR, "reports")
-PENDING_PRINTS_FILE = os.path.join(APP_DIR, "pending_prints.json")
-PENDING_SAVES_FILE = os.path.join(APP_DIR, "pending_saves.json")
-PENDING_TELEGRAM_FILE = os.path.join(APP_DIR, "pending_telegram.json")
-TELEGRAM_STATE_FILE = os.path.join(APP_DIR, "telegram_state.json")
-PRINT_SETTINGS_FILE = os.path.join(APP_DIR, "print_settings.json")
-PRODUCT_CATALOG_FILE = os.path.join(APP_DIR, "product_catalog.json")
-IMPORT_HISTORY_FILE = os.path.join(APP_DIR, "import_history.json")
-TELEGRAM_SETTINGS_FILE = os.path.join(APP_DIR, "telegram_settings.json")
-YANDEX_GEOCODER_KEY_FILE = os.path.join(APP_DIR, "yandex_geocoder_key.txt")
-YANDEX_GEOCODER_API_KEY = "7c455cc8-0cda-46da-ac5c-e32297c2fec0"
-APP_VERSION = "1.1.4"
-UPDATE_INFO_URL = os.environ.get(
-    "PKIS_UPDATE_INFO_URL",
-    "https://raw.githubusercontent.com/1fear/pKIS/main/version.json",
-).strip()
-UPDATE_CHECK_TIMEOUT_SECONDS = 8
-UPDATE_DOWNLOAD_TIMEOUT_SECONDS = 120
-TELEGRAM_FILE_DOWNLOAD_TIMEOUT_SECONDS = 120
-EXCEL_IMPORT_EXTENSIONS = {".xlsx", ".xlsm"}
+from catalog import (
+    get_product_rule,
+    load_product_catalog,
+    product_catalog_key,
+    save_product_catalog,
+)
+from config import *
+from excel_import import (
+    append_import_records,
+    find_successful_import_by_file_hash,
+    prepare_excel_import,
+)
+from orders import (
+    get_order_date_header_index,
+    get_order_date_value,
+    get_order_status,
+    get_plan_blocks,
+    order_group_key,
+)
+from sheets import (
+    ensure_import_sheet_layout,
+    find_code_details_in_sheet,
+    get_all_existing_codes,
+    get_google_client,
+    get_today_orders,
+    update_scanned_codes_to_gsheet,
+    validate_sheet_header,
+)
+from storage import (
+    credentials_available,
+    load_data_section,
+    migrate_legacy_json_files_to_app_data,
+    save_data_section,
+)
+from utils import (
+    clean_file_name,
+    file_sha256,
+    get_cell,
+    is_supported_excel_file_name,
+    make_hash,
+    normalize_lookup_text,
+    normalize_payment_type,
+    normalize_text,
+    parse_date_to_standard,
+    parse_int_value,
+    split_codes,
+)
 
 logging.basicConfig(
     filename=LOG_FILE,
@@ -62,71 +71,6 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     encoding="utf-8"
 )
-
-REQUIRED_COLUMNS = [
-    "Дата получения заказа",
-    "Тип оплаты",
-    "Клиент",
-    "Адрес",
-    "Торговый представитель",
-    "Товары",
-    "Кол-во ШТ",
-    "Кол-во блок",
-    "Отсканированные коды",
-]
-
-STATUS_COLUMN = "Статус"
-STATUS_NOT_COMPLETED = "Не выполнено"
-STATUS_COMPLETED = "Выполнено"
-
-WORKING_COLUMNS = REQUIRED_COLUMNS + [STATUS_COLUMN]
-
-SERVICE_COLUMNS = [
-    "ID заказа",
-    "ID импорта",
-    "Источник файла",
-    "Строка файла",
-    "Дата импорта",
-]
-
-SERVICE_COLUMN_START_INDEX = 26  # AA, zero-based
-
-SOURCE_REQUIRED_ALIASES = {
-    "client": ["ФИО или Наименование торговой точки", "Клиент", "Юр. лицо", "Юр лицо", "Наименование"],
-    "payment": ["Тип оплаты", "Оплата"],
-    "product": ["Наименование Товара", "Товары", "Товар", "Номенклатура"],
-    "quantity": ["Кол-во", "Количество", "Кол-во ШТ", "Количество ШТ"],
-}
-
-SOURCE_OPTIONAL_ALIASES = {
-    "date": ["Дата доставки", "Дата получения заказа", "Дата заказа", "Дата"],
-    "address": ["Адрес доставки", "Адрес"],
-    "coords": ["Координаты", "Координаты доставки"],
-    "representative": ["Торговый представитель", "ТП", "Менеджер", "Номер телефона"],
-}
-
-DEFAULT_PIECES_PER_BLOCK = 10
-
-LABEL_WIDTH_MM = 100
-LABEL_HEIGHT_MM = 100
-LABEL_DPI = 203
-KIZ_MIN_LENGTH = 20
-KIZ_MAX_LENGTH = 120
-
-BG_MAIN = "#f5f7fa"
-BG_CARD = "#ffffff"
-FG_TEXT = "#1a1f2e"
-FG_MUTED = "#6b7280"
-ACCENT = "#4f46e5"
-SUCCESS = "#10b981"
-INFO = "#3b82f6"
-WARNING = "#f59e0b"
-DANGER = "#ef4444"
-ERROR_BG = "#fee2e2"
-ERROR_FG = "#dc2626"
-BORDER = "#e5e7eb"
-DISABLED_BG = "#e5e7eb"
-DISABLED_FG = "#94a3b8"
 
 def darken_hex(color, factor=0.9):
     color = color.lstrip("#")
@@ -310,952 +254,6 @@ def global_exception_handler(exc_type, exc_value, exc_traceback):
 
 sys.excepthook = global_exception_handler
 
-def get_google_client():
-    scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-    credentials = load_credentials_data()
-    if isinstance(credentials, dict) and credentials.get("client_email"):
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(credentials, scope)
-    else:
-        creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, scope)
-    return gspread.authorize(creds)
-
-def clean_date_value(date_value):
-    if date_value is None:
-        return None
-    date_str = str(date_value).strip()
-    date_str = re.sub(r'^[\'"]+|[\'"]+$', '', date_str)
-    if ' ' in date_str:
-        date_str = date_str.split()[0]
-    return date_str
-
-def parse_date_to_standard(date_value):
-    cleaned = clean_date_value(date_value)
-    if not cleaned:
-        return None
-    formats = ["%d.%m.%Y", "%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d.%m.%y", "%Y.%m.%d"]
-    for fmt in formats:
-        try:
-            parsed = datetime.strptime(cleaned, fmt)
-            return parsed.strftime("%d.%m.%Y")
-        except:
-            continue
-    return cleaned
-
-def normalize_text(value):
-    return str(value or "").strip()
-
-def clean_file_name(file_name, fallback="file"):
-    text = normalize_text(file_name).replace("\\", "/")
-    name = os.path.basename(text).strip()
-    return name or fallback
-
-def is_supported_excel_file_name(file_name):
-    extension = os.path.splitext(clean_file_name(file_name))[1].lower()
-    return extension in EXCEL_IMPORT_EXTENSIONS
-
-def normalize_header_name(value):
-    return normalize_text(value).replace("\ufeff", "")
-
-def get_header_index(header):
-    return {normalize_header_name(col): idx for idx, col in enumerate(header) if normalize_header_name(col)}
-
-def get_header_indices(header, column_name):
-    normalized_column = normalize_header_name(column_name)
-    return [
-        idx
-        for idx, col in enumerate(header)
-        if normalize_header_name(col) == normalized_column
-    ]
-
-def column_index_to_letter(index):
-    index += 1
-    letters = ""
-    while index:
-        index, remainder = divmod(index - 1, 26)
-        letters = chr(65 + remainder) + letters
-    return letters
-
-def get_cell(row, idx):
-    if idx is None or idx >= len(row):
-        return ""
-    return normalize_text(row[idx])
-
-def split_codes(codes_str):
-    if not codes_str:
-        return []
-    codes = []
-    for line in str(codes_str).splitlines():
-        code = line.strip()
-        if code:
-            codes.append(code)
-    return codes
-
-def normalize_payment_type(value):
-    payment = normalize_text(value).lower().replace("ё", "е")
-    if "терминал" in payment:
-        return "terminal"
-    if "перечис" in payment or "безнал" in payment:
-        return "transfer"
-    return "unknown"
-
-def parse_int_value(value):
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
-    value_str = normalize_text(value).replace(" ", "").replace(",", ".")
-    if not value_str:
-        return 0
-    try:
-        return int(float(value_str))
-    except ValueError:
-        return 0
-
-def load_json_file(path, default):
-    try:
-        if not os.path.exists(path):
-            return default
-        with open(path, "r", encoding="utf-8") as json_file:
-            data = json.load(json_file)
-        return data if data is not None else default
-    except Exception:
-        logging.exception("Не удалось загрузить JSON-файл: %s", path)
-        return default
-
-def save_json_file(path, data):
-    try:
-        with open(path, "w", encoding="utf-8") as json_file:
-            json.dump(data, json_file, ensure_ascii=False, indent=2)
-        return True
-    except Exception:
-        logging.exception("Не удалось сохранить JSON-файл: %s", path)
-        return False
-
-APP_DATA_DEFAULTS = {
-    "credentials": {},
-    "telegram_settings": {},
-    "pending_saves": [],
-    "pending_prints": [],
-    "pending_telegram": [],
-    "telegram_state": {},
-    "product_catalog": {},
-    "import_history": [],
-    "print_settings": {},
-}
-
-LEGACY_JSON_SECTIONS = {
-    "credentials": CREDENTIALS_FILE,
-    "telegram_settings": TELEGRAM_SETTINGS_FILE,
-    "pending_saves": PENDING_SAVES_FILE,
-    "pending_prints": PENDING_PRINTS_FILE,
-    "pending_telegram": PENDING_TELEGRAM_FILE,
-    "telegram_state": TELEGRAM_STATE_FILE,
-    "product_catalog": PRODUCT_CATALOG_FILE,
-    "import_history": IMPORT_HISTORY_FILE,
-    "print_settings": PRINT_SETTINGS_FILE,
-}
-
-def default_app_data():
-    return {
-        section: json.loads(json.dumps(default_value, ensure_ascii=False))
-        for section, default_value in APP_DATA_DEFAULTS.items()
-    }
-
-def load_app_data():
-    data = load_json_file(TAKSKLAD_DATA_FILE, {})
-    if not isinstance(data, dict):
-        data = {}
-    merged = default_app_data()
-    for key, value in data.items():
-        merged[key] = value
-    return merged
-
-def save_app_data(data):
-    try:
-        normalized = default_app_data()
-        if isinstance(data, dict):
-            normalized.update(data)
-        normalized["_updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        os.makedirs(os.path.dirname(TAKSKLAD_DATA_FILE), exist_ok=True)
-        temp_path = TAKSKLAD_DATA_FILE + ".tmp"
-        with open(temp_path, "w", encoding="utf-8") as json_file:
-            json.dump(normalized, json_file, ensure_ascii=False, indent=2)
-        os.replace(temp_path, TAKSKLAD_DATA_FILE)
-        return True
-    except Exception:
-        logging.exception("Не удалось сохранить общий файл данных: %s", TAKSKLAD_DATA_FILE)
-        return False
-
-def load_data_section(section, default=None):
-    default = APP_DATA_DEFAULTS.get(section, default)
-    value = load_app_data().get(section, default)
-    return value if value is not None else default
-
-def save_data_section(section, value):
-    data = load_app_data()
-    data[section] = value
-    return save_app_data(data)
-
-def should_migrate_section(current_value, default_value):
-    return current_value in (None, "", [], {}) or current_value == default_value
-
-def migrate_legacy_json_files_to_app_data():
-    data = load_app_data()
-    changed = False
-
-    for section, path in LEGACY_JSON_SECTIONS.items():
-        if not os.path.exists(path):
-            continue
-        legacy_value = load_json_file(path, None)
-        if legacy_value is None:
-            continue
-        default_value = APP_DATA_DEFAULTS.get(section)
-        if should_migrate_section(data.get(section), default_value):
-            data[section] = legacy_value
-            changed = True
-
-    if changed or not os.path.exists(TAKSKLAD_DATA_FILE):
-        save_app_data(data)
-        logging.info("Данные JSON объединены в %s", TAKSKLAD_DATA_FILE)
-    return data
-
-def load_credentials_data():
-    credentials = load_data_section("credentials", {})
-    if isinstance(credentials, dict) and credentials.get("client_email"):
-        return credentials
-    return load_json_file(CREDENTIALS_FILE, {})
-
-def credentials_available():
-    credentials = load_credentials_data()
-    return isinstance(credentials, dict) and bool(credentials.get("client_email") and credentials.get("private_key"))
-
-def normalize_lookup_text(value):
-    text = normalize_text(value).lower().replace("ё", "е")
-    text = text.replace("\ufeff", "")
-    text = re.sub(r"[*:]+", "", text)
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
-
-def file_sha1(path):
-    sha1 = hashlib.sha1()
-    with open(path, "rb") as file_obj:
-        for chunk in iter(lambda: file_obj.read(1024 * 1024), b""):
-            sha1.update(chunk)
-    return sha1.hexdigest()
-
-def make_hash(payload):
-    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
-
-def load_yandex_geocoder_key():
-    env_key = normalize_text(os.environ.get("YANDEX_GEOCODER_API_KEY"))
-    if env_key:
-        return env_key
-    try:
-        if os.path.exists(YANDEX_GEOCODER_KEY_FILE):
-            with open(YANDEX_GEOCODER_KEY_FILE, "r", encoding="utf-8") as key_file:
-                file_key = normalize_text(key_file.read())
-            if file_key:
-                return file_key
-    except Exception:
-        logging.exception("Не удалось прочитать ключ Яндекс Геокодера")
-    return normalize_text(YANDEX_GEOCODER_API_KEY)
-
-def normalize_coordinates(value):
-    text = normalize_text(value)
-    if not text:
-        return ""
-
-    numbers = re.findall(r"-?\d+(?:[.,]\d+)?", text)
-    if len(numbers) < 2:
-        return ""
-
-    try:
-        first = float(numbers[0].replace(",", "."))
-        second = float(numbers[1].replace(",", "."))
-    except ValueError:
-        return ""
-
-    if abs(first) <= 90 and abs(second) <= 180:
-        lat, lon = first, second
-    elif abs(second) <= 90 and abs(first) <= 180:
-        lat, lon = second, first
-    else:
-        return ""
-
-    return f"{lat:.8f},{lon:.8f}".rstrip("0").rstrip(".")
-
-def reverse_geocode_yandex(coords, cache=None):
-    import urllib.error
-    import urllib.parse
-    import urllib.request
-
-    normalized_coords = normalize_coordinates(coords)
-    if not normalized_coords:
-        return None, "некорректные координаты"
-
-    if cache is not None and normalized_coords in cache:
-        return cache[normalized_coords]
-
-    api_key = load_yandex_geocoder_key()
-    if not api_key:
-        result = (None, "не указан ключ Яндекс Геокодера")
-        if cache is not None:
-            cache[normalized_coords] = result
-        return result
-
-    params = {
-        "apikey": api_key,
-        "geocode": normalized_coords,
-        "format": "json",
-        "lang": "ru_RU",
-        "sco": "latlong",
-        "results": "1",
-        "kind": "house",
-    }
-    url = "https://geocode-maps.yandex.ru/v1/?" + urllib.parse.urlencode(params)
-
-    try:
-        with urllib.request.urlopen(url, timeout=15) as response:
-            data = json.load(response)
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", "replace")[:300]
-        result = (None, f"HTTP {exc.code}: {body}")
-        if cache is not None:
-            cache[normalized_coords] = result
-        return result
-    except Exception as exc:
-        result = (None, str(exc))
-        if cache is not None:
-            cache[normalized_coords] = result
-        return result
-
-    members = data.get("response", {}).get("GeoObjectCollection", {}).get("featureMember", [])
-    if not members:
-        result = (None, "адрес не найден")
-        if cache is not None:
-            cache[normalized_coords] = result
-        return result
-
-    obj = members[0].get("GeoObject", {})
-    meta = obj.get("metaDataProperty", {}).get("GeocoderMetaData", {})
-    address = normalize_text(meta.get("text") or obj.get("name"))
-    if not address:
-        result = (None, "пустой адрес в ответе Яндекса")
-    else:
-        result = (address, "")
-
-    if cache is not None:
-        cache[normalized_coords] = result
-    return result
-
-def load_product_catalog():
-    catalog = load_data_section("product_catalog", {})
-    return catalog if isinstance(catalog, dict) else {}
-
-def save_product_catalog(catalog):
-    return save_data_section("product_catalog", catalog)
-
-def product_catalog_key(product_name):
-    return normalize_lookup_text(product_name)
-
-def get_product_rule(product_name, catalog=None, create=False):
-    catalog = catalog if catalog is not None else load_product_catalog()
-    key = product_catalog_key(product_name)
-    if not key:
-        return {
-            "name": "",
-            "pieces_per_block": DEFAULT_PIECES_PER_BLOCK,
-            "requires_kiz": True,
-        }
-    if key not in catalog and create:
-        catalog[key] = {
-            "name": normalize_text(product_name),
-            "pieces_per_block": DEFAULT_PIECES_PER_BLOCK,
-            "requires_kiz": True,
-        }
-    rule = catalog.get(key, {})
-    pieces = parse_int_value(rule.get("pieces_per_block")) or DEFAULT_PIECES_PER_BLOCK
-    return {
-        "name": rule.get("name") or normalize_text(product_name),
-        "pieces_per_block": max(1, pieces),
-        "requires_kiz": bool(rule.get("requires_kiz", True)),
-    }
-
-def calculate_blocks(quantity, product_name, catalog, warnings=None):
-    qty = parse_int_value(quantity)
-    rule = get_product_rule(product_name, catalog=catalog, create=True)
-    pieces_per_block = rule["pieces_per_block"]
-    blocks = (qty + pieces_per_block - 1) // pieces_per_block if qty > 0 else 0
-    if warnings is not None and qty > 0 and qty % pieces_per_block != 0:
-        warnings.append(
-            f"'{product_name}': количество {qty} не делится на {pieces_per_block}, "
-            f"план округлён до {blocks} блок."
-        )
-    return blocks, pieces_per_block
-
-def get_source_header_index(header):
-    return {normalize_lookup_text(col): idx for idx, col in enumerate(header) if normalize_lookup_text(col)}
-
-def find_source_column(header_idx, aliases):
-    for alias in aliases:
-        key = normalize_lookup_text(alias)
-        if key in header_idx:
-            return header_idx[key]
-    return None
-
-def get_source_cell(row, idx):
-    if idx is None or idx >= len(row):
-        return ""
-    value = row[idx]
-    if value is None:
-        return ""
-    if isinstance(value, datetime):
-        return value.strftime("%d.%m.%Y")
-    return normalize_text(value)
-
-def make_order_id(record):
-    return make_hash({
-        "date": parse_date_to_standard(record.get("Дата получения заказа")),
-        "payment": normalize_lookup_text(record.get("Тип оплаты")),
-        "client": normalize_lookup_text(record.get("Клиент")),
-        "address": normalize_lookup_text(record.get("Адрес")),
-        "representative": normalize_lookup_text(record.get("Торговый представитель")),
-        "product": normalize_lookup_text(record.get("Товары")),
-        "quantity": parse_int_value(record.get("Кол-во ШТ")),
-        "blocks": parse_int_value(record.get("Кол-во блок")),
-    })
-
-def get_plan_blocks(order):
-    plan_blocks = parse_int_value(order.get("Кол-во блок", 0))
-    if plan_blocks == 0:
-        plan_blocks = parse_int_value(order.get("Кол-во блоков", 0))
-    return plan_blocks
-
-def is_order_completed(order):
-    plan_blocks = get_plan_blocks(order)
-    scanned_count = len(split_codes(order.get("Отсканированные коды")))
-    return plan_blocks > 0 and scanned_count >= plan_blocks
-
-def is_completed_status(value):
-    status = normalize_lookup_text(value)
-    if not status:
-        return False
-    not_completed_markers = [
-        "не выполн",
-        "невыполн",
-        "не готов",
-        "неготов",
-        "нет",
-        "false",
-        "0",
-    ]
-    if any(marker in status for marker in not_completed_markers):
-        return False
-    completed_markers = [
-        "выполн",
-        "готов",
-        "done",
-        "complete",
-        "completed",
-        "yes",
-        "true",
-        "1",
-    ]
-    return any(marker in status for marker in completed_markers)
-
-def get_order_status(order):
-    return STATUS_COMPLETED if is_order_completed(order) else STATUS_NOT_COMPLETED
-
-def is_order_active(order):
-    status = normalize_text(order.get(STATUS_COLUMN))
-    if status:
-        return not is_completed_status(status)
-    return not is_order_completed(order)
-
-def order_group_key(order):
-    client = normalize_text(order.get("Клиент")) or "Клиент не указан"
-    payment_type = normalize_text(order.get("Тип оплаты")) or "Оплата не указана"
-    address = normalize_text(order.get("Адрес")) or "Адрес не указан"
-    return (
-        client,
-        payment_type,
-        address,
-    )
-
-def row_matches_order(row, header_idx, order):
-    order_id = normalize_text(order.get("ID заказа"))
-    order_id_idx = header_idx.get("ID заказа")
-    if order_id and order_id_idx is not None and get_cell(row, order_id_idx) == order_id:
-        return True
-
-    checks = [
-        ("Дата получения заказа", parse_date_to_standard(get_cell(row, header_idx.get("Дата получения заказа"))) == parse_date_to_standard(order.get("Дата получения заказа"))),
-        ("Тип оплаты", get_cell(row, header_idx.get("Тип оплаты")) == normalize_text(order.get("Тип оплаты"))),
-        ("Клиент", get_cell(row, header_idx.get("Клиент")) == normalize_text(order.get("Клиент"))),
-        ("Адрес", get_cell(row, header_idx.get("Адрес")) == normalize_text(order.get("Адрес"))),
-        ("Товары", get_cell(row, header_idx.get("Товары")) == normalize_text(order.get("Товары"))),
-    ]
-    return all(result for _, result in checks)
-
-def validate_sheet_header(header):
-    header_idx = get_header_index(header)
-    missing = [col for col in REQUIRED_COLUMNS if col not in header_idx]
-    return header_idx, missing
-
-def ensure_sheet_columns(sheet, columns):
-    all_rows = sheet.get_all_values()
-    if not all_rows:
-        header = list(columns)
-        sheet.append_row(header, value_input_option="USER_ENTERED")
-        return header
-
-    header = [normalize_header_name(col) for col in all_rows[0]]
-    header_idx = get_header_index(header)
-    for column in columns:
-        if column not in header_idx:
-            header.append(column)
-            sheet.update_cell(1, len(header), column)
-            header_idx[column] = len(header) - 1
-    return header
-
-def build_import_sheet_header():
-    header = [""] * (SERVICE_COLUMN_START_INDEX + len(SERVICE_COLUMNS))
-    for idx, column in enumerate(WORKING_COLUMNS):
-        header[idx] = column
-    for offset, column in enumerate(SERVICE_COLUMNS):
-        header[SERVICE_COLUMN_START_INDEX + offset] = column
-    return header
-
-def get_import_column_targets():
-    targets = []
-    targets.extend((idx, column) for idx, column in enumerate(WORKING_COLUMNS))
-    targets.extend(
-        (SERVICE_COLUMN_START_INDEX + offset, column)
-        for offset, column in enumerate(SERVICE_COLUMNS)
-    )
-    return targets
-
-def ensure_import_sheet_columns(sheet):
-    all_rows = sheet.get_all_values()
-    required_len = SERVICE_COLUMN_START_INDEX + len(SERVICE_COLUMNS)
-    if not all_rows:
-        header = build_import_sheet_header()
-        sheet.append_row(header, value_input_option="USER_ENTERED")
-        return header
-
-    header = [normalize_header_name(col) for col in all_rows[0]]
-    if len(header) < required_len:
-        header.extend([""] * (required_len - len(header)))
-
-    # The import sheet has a fixed layout for warehouse work:
-    # A:J are operational fields, AA:AE are technical import fields.
-    # If row 1 is empty or incomplete, rewrite only the headers in those slots.
-    for target_idx, column in get_import_column_targets():
-        header[target_idx] = column
-
-    last_col = column_index_to_letter(len(header) - 1)
-    sheet.batch_update([{
-        "range": f"A1:{last_col}1",
-        "values": [header],
-    }], value_input_option="USER_ENTERED")
-
-    return header
-
-def migrate_legacy_service_columns(sheet):
-    all_rows = sheet.get_all_values()
-    if len(all_rows) <= 1:
-        return
-
-    header = [normalize_header_name(col) for col in all_rows[0]]
-    updates = []
-    clear_ranges = []
-
-    for offset, column in enumerate(SERVICE_COLUMNS):
-        target_idx = SERVICE_COLUMN_START_INDEX + offset
-        target_has_data = any(get_cell(row, target_idx) for row in all_rows[1:])
-        if target_has_data:
-            continue
-
-        for source_idx in get_header_indices(header, column):
-            if source_idx == target_idx:
-                continue
-            source_has_data = any(get_cell(row, source_idx) for row in all_rows[1:])
-            if not source_has_data:
-                continue
-
-            target_col = column_index_to_letter(target_idx)
-            source_col = column_index_to_letter(source_idx)
-            updates.append({
-                "range": f"{target_col}2:{target_col}{len(all_rows)}",
-                "values": [[get_cell(row, source_idx)] for row in all_rows[1:]],
-            })
-            clear_ranges.append(f"{source_col}2:{source_col}{len(all_rows)}")
-            break
-
-    if updates:
-        sheet.batch_update(updates, value_input_option="USER_ENTERED")
-    if clear_ranges:
-        sheet.batch_clear(clear_ranges)
-
-def build_import_record_row(record):
-    row = [""] * (SERVICE_COLUMN_START_INDEX + len(SERVICE_COLUMNS))
-    for idx, column in enumerate(WORKING_COLUMNS):
-        row[idx] = record.get(column, "")
-    for offset, column in enumerate(SERVICE_COLUMNS):
-        row[SERVICE_COLUMN_START_INDEX + offset] = record.get(column, "")
-    return row
-
-def ensure_import_sheet_layout(sheet):
-    header = ensure_import_sheet_columns(sheet)
-    migrate_legacy_service_columns(sheet)
-    return header
-
-def get_existing_import_keys(all_rows):
-    if not all_rows:
-        return set(), set()
-
-    import_indices = get_header_indices(all_rows[0], "ID импорта")
-    order_indices = get_header_indices(all_rows[0], "ID заказа")
-    import_ids = set()
-    order_ids = set()
-
-    for row in all_rows[1:]:
-        for import_idx in import_indices:
-            import_id = get_cell(row, import_idx)
-            if import_id:
-                import_ids.add(import_id)
-        for order_idx in order_indices:
-            order_id = get_cell(row, order_idx)
-            if order_id:
-                order_ids.add(order_id)
-
-    return import_ids, order_ids
-
-def parse_excel_order_files(file_paths, source_names=None):
-    import openpyxl
-
-    catalog = load_product_catalog()
-    raw_rows = []
-    errors = []
-    warnings = []
-    source_rows_count = 0
-    geocoded_count = 0
-    geocode_failed_count = 0
-    geocode_cache = {}
-    source_names = source_names or {}
-    source_names_by_path = {
-        os.path.abspath(path): clean_file_name(name, os.path.basename(path))
-        for path, name in source_names.items()
-    }
-
-    for file_path in file_paths:
-        file_name = source_names_by_path.get(os.path.abspath(file_path)) or clean_file_name(os.path.basename(file_path))
-        try:
-            workbook = openpyxl.load_workbook(file_path, data_only=True, read_only=True)
-        except Exception as exc:
-            errors.append(f"{file_name}: не удалось открыть файл ({exc})")
-            continue
-
-        sheet_name = "Заявки" if "Заявки" in workbook.sheetnames else workbook.sheetnames[0]
-        worksheet = workbook[sheet_name]
-        rows_iter = worksheet.iter_rows(values_only=True)
-        try:
-            header = next(rows_iter)
-        except StopIteration:
-            errors.append(f"{file_name}: лист пустой")
-            continue
-
-        header_idx = get_source_header_index(header)
-        columns = {}
-        missing = []
-        for key, aliases in SOURCE_REQUIRED_ALIASES.items():
-            idx = find_source_column(header_idx, aliases)
-            if idx is None:
-                missing.append(aliases[0])
-            columns[key] = idx
-
-        for key, aliases in SOURCE_OPTIONAL_ALIASES.items():
-            columns[key] = find_source_column(header_idx, aliases)
-
-        if missing:
-            errors.append(f"{file_name}: нет обязательных колонок: {', '.join(missing)}")
-            continue
-
-        source_file_hash = file_sha1(file_path)
-        source_file_sha256 = file_sha256(file_path)
-        for row_number, row in enumerate(rows_iter, start=2):
-            if not row or not any(normalize_text(cell) for cell in row if cell is not None):
-                continue
-
-            source_rows_count += 1
-            client = get_source_cell(row, columns["client"])
-            payment = get_source_cell(row, columns["payment"])
-            product = get_source_cell(row, columns["product"])
-            quantity = parse_int_value(get_source_cell(row, columns["quantity"]))
-
-            if not client or not payment or not product or quantity <= 0:
-                warnings.append(f"{file_name}, строка {row_number}: пропущена, не заполнены клиент/оплата/товар/количество")
-                continue
-
-            date_value = parse_date_to_standard(get_source_cell(row, columns.get("date"))) or datetime.now().strftime("%d.%m.%Y")
-            address = get_source_cell(row, columns.get("address"))
-            coords = get_source_cell(row, columns.get("coords"))
-            if not address and coords:
-                geocoded_address, geocode_error = reverse_geocode_yandex(coords, cache=geocode_cache)
-                if geocoded_address:
-                    address = geocoded_address
-                    geocoded_count += 1
-                else:
-                    geocode_failed_count += 1
-                    address = f"Координаты: {coords}"
-                    warnings.append(f"{file_name}, строка {row_number}: адрес по координатам не получен ({geocode_error})")
-            if not address:
-                warnings.append(f"{file_name}, строка {row_number}: адрес пустой")
-                address = "Адрес не указан"
-
-            representative = get_source_cell(row, columns.get("representative"))
-            source_id = make_hash({
-                "file_hash": source_file_hash,
-                "sheet": sheet_name,
-                "row": row_number,
-            })
-
-            raw_rows.append({
-                "date": date_value,
-                "payment": payment,
-                "client": client,
-                "address": address,
-                "representative": representative,
-                "product": product,
-                "quantity": quantity,
-                "source_id": source_id,
-                "source_file": file_name,
-                "source_file_sha256": source_file_sha256,
-                "source_row": row_number,
-            })
-
-    grouped = {}
-    for row in raw_rows:
-        key = (
-            row["date"],
-            normalize_lookup_text(row["payment"]),
-            normalize_lookup_text(row["client"]),
-            normalize_lookup_text(row["address"]),
-            normalize_lookup_text(row["representative"]),
-            normalize_lookup_text(row["product"]),
-        )
-        if key not in grouped:
-            grouped[key] = row.copy()
-            grouped[key]["source_ids"] = []
-            grouped[key]["source_rows"] = []
-            grouped[key]["source_files"] = set()
-            grouped[key]["source_file_sha256"] = set()
-        else:
-            grouped[key]["quantity"] += row["quantity"]
-        grouped[key]["source_ids"].append(row["source_id"])
-        grouped[key]["source_rows"].append(str(row["source_row"]))
-        grouped[key]["source_files"].add(row["source_file"])
-        grouped[key]["source_file_sha256"].add(row["source_file_sha256"])
-
-    records = []
-    for item in grouped.values():
-        blocks, pieces_per_block = calculate_blocks(item["quantity"], item["product"], catalog, warnings)
-        record = {
-            "Дата получения заказа": item["date"],
-            "Тип оплаты": item["payment"],
-            "Клиент": item["client"],
-            "Адрес": item["address"],
-            "Торговый представитель": item["representative"],
-            "Товары": item["product"],
-            "Кол-во ШТ": item["quantity"],
-            "Кол-во блок": blocks,
-            "Отсканированные коды": "",
-            STATUS_COLUMN: STATUS_NOT_COMPLETED,
-            "ID импорта": make_hash(sorted(item["source_ids"])),
-            "Источник файла": ", ".join(sorted(item["source_files"])),
-            "Строка файла": ", ".join(item["source_rows"]),
-            "Дата импорта": datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
-        }
-        record["ID заказа"] = make_order_id(record)
-        record["_pieces_per_block"] = pieces_per_block
-        record["_source_file_sha256"] = sorted(item["source_file_sha256"])
-        records.append(record)
-
-    save_product_catalog(catalog)
-
-    return {
-        "records": records,
-        "errors": errors,
-        "warnings": warnings,
-        "source_rows_count": source_rows_count,
-        "files_count": len(file_paths),
-        "geocoded_count": geocoded_count,
-        "geocode_failed_count": geocode_failed_count,
-    }
-
-def prepare_excel_import(file_paths, source_names=None):
-    parsed = parse_excel_order_files(file_paths, source_names=source_names)
-    client = get_google_client()
-    sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
-    ensure_import_sheet_layout(sheet)
-    all_rows = sheet.get_all_values()
-
-    existing_import_ids, existing_order_ids = get_existing_import_keys(all_rows)
-    new_records = []
-    duplicate_records = []
-
-    for record in parsed["records"]:
-        if record.get("ID импорта") in existing_import_ids or record.get("ID заказа") in existing_order_ids:
-            duplicate_records.append(record)
-        else:
-            new_records.append(record)
-
-    parsed["new_records"] = new_records
-    parsed["duplicate_records"] = duplicate_records
-    parsed["clients_count"] = len({record.get("Клиент") for record in new_records})
-    parsed["products_count"] = len({record.get("Товары") for record in new_records})
-    parsed["blocks_count"] = sum(parse_int_value(record.get("Кол-во блок")) for record in new_records)
-    parsed["quantity_count"] = sum(parse_int_value(record.get("Кол-во ШТ")) for record in new_records)
-    return parsed
-
-def extract_record_file_hashes(records):
-    hashes = set()
-    for record in records:
-        raw_hashes = record.get("_source_file_sha256", [])
-        if isinstance(raw_hashes, str):
-            raw_hashes = [raw_hashes]
-        for file_hash in raw_hashes:
-            normalized_hash = normalize_text(file_hash).lower()
-            if normalized_hash:
-                hashes.add(normalized_hash)
-    return hashes
-
-def find_successful_import_by_file_hash(file_hash):
-    normalized_target = normalize_text(file_hash).lower()
-    if not normalized_target:
-        return None
-
-    history = load_data_section("import_history", [])
-    if not isinstance(history, list):
-        return None
-
-    for item in reversed(history):
-        if not isinstance(item, dict) or parse_int_value(item.get("imported")) <= 0:
-            continue
-        entry_hashes = set()
-        for key in ("source_file_hashes_sha256", "file_hashes_sha256", "file_sha256"):
-            raw_hashes = item.get(key, [])
-            if isinstance(raw_hashes, str):
-                raw_hashes = [raw_hashes]
-            for value in raw_hashes:
-                normalized_hash = normalize_text(value).lower()
-                if normalized_hash:
-                    entry_hashes.add(normalized_hash)
-        if normalized_target in entry_hashes:
-            return item
-    return None
-
-def append_import_records(records):
-    if not records:
-        return {"imported": 0, "duplicates": 0}
-
-    client = get_google_client()
-    sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
-    ensure_import_sheet_layout(sheet)
-    all_rows = sheet.get_all_values()
-    existing_import_ids, existing_order_ids = get_existing_import_keys(all_rows)
-
-    rows_to_append = []
-    appended_records = []
-    duplicates = 0
-    for record in records:
-        if record.get("ID импорта") in existing_import_ids or record.get("ID заказа") in existing_order_ids:
-            duplicates += 1
-            continue
-        rows_to_append.append(build_import_record_row(record))
-        appended_records.append(record)
-        existing_import_ids.add(record.get("ID импорта"))
-        existing_order_ids.add(record.get("ID заказа"))
-
-    if rows_to_append:
-        start_row = len(all_rows) + 1
-        end_row = start_row + len(rows_to_append) - 1
-        sheet.batch_update([{
-            "range": f"A{start_row}:AE{end_row}",
-            "values": rows_to_append,
-        }], value_input_option="USER_ENTERED")
-
-    history = load_data_section("import_history", [])
-    if not isinstance(history, list):
-        history = []
-    history.append({
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "imported": len(rows_to_append),
-        "duplicates": duplicates,
-        "sources": sorted({record.get("Источник файла", "") for record in records}),
-        "source_file_hashes_sha256": sorted(extract_record_file_hashes(appended_records)),
-    })
-    save_data_section("import_history", history[-200:])
-
-    return {"imported": len(rows_to_append), "duplicates": duplicates}
-
-def get_all_existing_codes(sheet):
-    try:
-        all_rows = sheet.get_all_values()
-        if not all_rows:
-            return set()
-        header_idx = get_header_index(all_rows[0])
-        codes_idx = header_idx.get("Отсканированные коды")
-        if codes_idx is None:
-            logging.warning("Колонка 'Отсканированные коды' не найдена")
-            return set()
-
-        all_codes = set()
-        for row in all_rows[1:]:
-            for code in split_codes(get_cell(row, codes_idx)):
-                all_codes.add(code)
-        return all_codes
-    except Exception as e:
-        logging.exception("Не удалось загрузить существующие коды")
-        return set()
-
-def find_code_details_in_rows(all_rows, code):
-    if not all_rows:
-        return []
-
-    header_idx, missing = validate_sheet_header(all_rows[0])
-    if missing:
-        raise ValueError("В таблице не найдены обязательные колонки: " + ", ".join(missing))
-
-    codes_idx = header_idx.get("Отсканированные коды")
-    details = []
-    for row_number, row in enumerate(all_rows[1:], start=2):
-        row_codes = split_codes(get_cell(row, codes_idx))
-        if code not in row_codes:
-            continue
-
-        details.append({
-            "row_number": row_number,
-            "date": get_cell(row, header_idx.get("Дата получения заказа")),
-            "payment": get_cell(row, header_idx.get("Тип оплаты")),
-            "client": get_cell(row, header_idx.get("Клиент")),
-            "address": get_cell(row, header_idx.get("Адрес")),
-            "representative": get_cell(row, header_idx.get("Торговый представитель")),
-            "product": get_cell(row, header_idx.get("Товары")),
-            "quantity": get_cell(row, header_idx.get("Кол-во ШТ")),
-            "blocks": get_cell(row, header_idx.get("Кол-во блок")),
-            "status": get_cell(row, header_idx.get(STATUS_COLUMN)),
-            "codes_count": len(row_codes),
-        })
-    return details
-
-def find_code_details_in_sheet(sheet, code):
-    if not sheet:
-        return []
-    return find_code_details_in_rows(sheet.get_all_values(), code)
-
 def find_code_details_in_pending_saves(code):
     details = []
     for item in load_pending_saves():
@@ -1265,7 +263,7 @@ def find_code_details_in_pending_saves(code):
         order = item.get("order", {})
         details.append({
             "row_number": order.get("_row_number") or "локальная очередь",
-            "date": order.get("Дата получения заказа", ""),
+            "date": get_order_date_value(order) or "",
             "payment": order.get("Тип оплаты", ""),
             "client": order.get("Клиент", ""),
             "address": order.get("Адрес", ""),
@@ -1322,138 +320,11 @@ def format_duplicate_code_details(code, details, current_order=None):
         lines.append(f"Еще совпадений: {len(details) - 10}")
     return "\n".join(lines).strip()
 
-def get_today_orders():
-    try:
-        client = get_google_client()
-        sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
-        ensure_import_sheet_layout(sheet)
-        all_rows = sheet.get_all_values()
-        if not all_rows:
-            raise ValueError("Лист Google Sheets пустой")
-
-        header = [normalize_header_name(col) for col in all_rows[0]]
-        header_idx, missing = validate_sheet_header(header)
-        if missing:
-            raise ValueError("В таблице не найдены обязательные колонки: " + ", ".join(missing))
-
-        today_orders = []
-        status_idx = header_idx.get(STATUS_COLUMN)
-        status_updates = []
-
-        for row_number, row in enumerate(all_rows[1:], start=2):
-            if not any(normalize_text(cell) for cell in row):
-                continue
-
-            record = {}
-            for col_name, idx in header_idx.items():
-                record[col_name] = get_cell(row, idx)
-
-            normalized_date = parse_date_to_standard(record.get("Дата получения заказа"))
-            scanned_codes = split_codes(record.get("Отсканированные коды"))
-            current_status = normalize_text(record.get(STATUS_COLUMN))
-            calculated_status = get_order_status(record)
-            if status_idx is not None and (
-                not current_status
-                or (calculated_status == STATUS_COMPLETED and not is_completed_status(current_status))
-            ):
-                status_updates.append({
-                    "range": f"{column_index_to_letter(status_idx)}{row_number}",
-                    "values": [[calculated_status]],
-                })
-                record[STATUS_COLUMN] = calculated_status
-
-            if is_order_active(record):
-                record["_row_number"] = row_number
-                record["_normalized_date"] = normalized_date
-                record["_existing_scanned_codes"] = scanned_codes
-                today_orders.append(record)
-
-        if status_updates:
-            sheet.batch_update(status_updates, value_input_option="USER_ENTERED")
-
-        return today_orders, sheet
-
-    except Exception as e:
-        logging.exception("Не удалось загрузить данные из Google Sheets")
-        raise
-
 def fetch_sheet_data():
     today_orders, sheet = get_today_orders()
     all_existing_codes = get_all_existing_codes(sheet) if sheet else set()
     all_existing_codes.update(get_pending_codes())
     return today_orders, sheet, all_existing_codes
-
-def update_scanned_codes_to_gsheet(sheet, order, scanned_codes):
-    try:
-        if not scanned_codes:
-            return False, "Нет отсканированных кодов для записи"
-
-        if len(scanned_codes) != len(set(scanned_codes)):
-            return False, "В текущей позиции есть повторяющиеся коды"
-
-        ensure_import_sheet_layout(sheet)
-        all_rows = sheet.get_all_values()
-        if not all_rows:
-            return False, "Лист Google Sheets пустой"
-
-        header_idx, missing = validate_sheet_header(all_rows[0])
-        if missing:
-            return False, "В таблице не найдены обязательные колонки: " + ", ".join(missing)
-
-        codes_idx = header_idx["Отсканированные коды"]
-        target_row_number = parse_int_value(order.get("_row_number"))
-
-        target_row = None
-        if 2 <= target_row_number <= len(all_rows):
-            candidate = all_rows[target_row_number - 1]
-            if row_matches_order(candidate, header_idx, order):
-                target_row = target_row_number
-
-        if target_row is None:
-            for row_number, row in enumerate(all_rows[1:], start=2):
-                if row_matches_order(row, header_idx, order):
-                    target_row = row_number
-                    break
-
-        if target_row is None:
-            return False, "Не найдена строка заказа для записи кодов"
-
-        existing_codes = split_codes(get_cell(all_rows[target_row - 1], codes_idx))
-        if existing_codes:
-            existing_set = set(existing_codes)
-            scanned_set = set(scanned_codes)
-            if not existing_set.issubset(scanned_set):
-                return False, "В строке заказа уже есть другие отсканированные коды"
-
-        duplicate_codes = []
-        scanned_set = set(scanned_codes)
-        for row_number, row in enumerate(all_rows[1:], start=2):
-            if row_number == target_row:
-                continue
-            row_codes = set(split_codes(get_cell(row, codes_idx)))
-            duplicates = scanned_set.intersection(row_codes)
-            duplicate_codes.extend(sorted(duplicates))
-
-        if duplicate_codes:
-            return False, "Коды уже есть в другой строке Google Sheets: " + ", ".join(duplicate_codes[:3])
-
-        status_idx = header_idx.get(STATUS_COLUMN)
-        updated_order = dict(order)
-        updated_order["Отсканированные коды"] = "\n".join(scanned_codes)
-        updates = [{
-            "range": f"{column_index_to_letter(codes_idx)}{target_row}",
-            "values": [["\n".join(scanned_codes)]],
-        }]
-        if status_idx is not None:
-            updates.append({
-                "range": f"{column_index_to_letter(status_idx)}{target_row}",
-                "values": [[get_order_status(updated_order)]],
-            })
-        sheet.batch_update(updates, value_input_option="USER_ENTERED")
-        return True, "Коды записаны в Google Sheets"
-    except Exception as e:
-        logging.exception("Не удалось записать коды в Google Sheets")
-        return False, str(e)
 
 def build_day_report_rows_from_gsheet(sheet):
     all_rows = sheet.get_all_values()
@@ -1468,7 +339,7 @@ def build_day_report_rows_from_gsheet(sheet):
     report_rows = {"terminal": [], "transfer": [], "unknown": []}
 
     for row in all_rows[1:]:
-        if parse_date_to_standard(get_cell(row, header_idx.get("Дата получения заказа"))) != today_str:
+        if parse_date_to_standard(get_cell(row, get_order_date_header_index(header_idx))) != today_str:
             continue
 
         codes = split_codes(get_cell(row, header_idx.get("Отсканированные коды")))
@@ -1506,7 +377,7 @@ def add_pending_saves_to_report_rows(report_rows):
 
     for item in load_pending_saves():
         order = item.get("order", {})
-        if parse_date_to_standard(order.get("Дата получения заказа")) != today_str:
+        if parse_date_to_standard(get_order_date_value(order)) != today_str:
             continue
 
         payment_type = order.get("Тип оплаты", "")
@@ -1719,7 +590,7 @@ def create_document_report_excel(sheet, document_key):
             "Дата импорта": item["import_at"],
             "Строка Google Sheets": item["row_number"],
             "Строка файла": order.get("Строка файла", ""),
-            "Дата заказа": order.get("Дата получения заказа", ""),
+            "Дата заказа": get_order_date_value(order) or "",
             "Клиент": order.get("Клиент", ""),
             "Тип оплаты": order.get("Тип оплаты", ""),
             "Адрес": order.get("Адрес", ""),
@@ -2110,7 +981,7 @@ def write_scan_backup(action, order, code=None, codes=None):
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "action": action,
             "row_number": order.get("_row_number"),
-            "date": order.get("Дата получения заказа", ""),
+            "date": get_order_date_value(order) or "",
             "client": order.get("Клиент", ""),
             "address": order.get("Адрес", ""),
             "product": order.get("Товары", ""),
@@ -2181,7 +1052,7 @@ def make_pending_save_id(order, scanned_codes):
     return make_hash({
         "order_id": order.get("ID заказа", ""),
         "row_number": order.get("_row_number", ""),
-        "date": order.get("Дата получения заказа", ""),
+        "date": get_order_date_value(order) or "",
         "client": order.get("Клиент", ""),
         "address": order.get("Адрес", ""),
         "product": order.get("Товары", ""),
@@ -2315,7 +1186,7 @@ def build_control_panel_stats_from_gsheet(sheet):
     scanned_blocks = 0
 
     for row in all_rows[1:]:
-        if parse_date_to_standard(get_cell(row, header_idx.get("Дата получения заказа"))) != today_str:
+        if parse_date_to_standard(get_cell(row, get_order_date_header_index(header_idx))) != today_str:
             continue
 
         positions += 1
@@ -2818,13 +1689,6 @@ def fetch_update_info():
         raise ValueError("Файл обновления должен быть JSON-объектом")
     return update_info
 
-def file_sha256(path):
-    digest = hashlib.sha256()
-    with open(path, "rb") as file_obj:
-        for chunk in iter(lambda: file_obj.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
 def download_update_file(update_info):
     download_url = normalize_text(update_info.get("download_url"))
     if not download_url:
@@ -2877,6 +1741,7 @@ chcp 65001 >nul
 set "APP={current_exe}"
 set "NEW={new_exe_path}"
 set "LOG={log_path}"
+set "PYINSTALLER_RESET_ENVIRONMENT=1"
 timeout /t 2 /nobreak >nul
 for /l %%i in (1,1,60) do (
   copy /Y "%NEW%" "%APP%" >nul 2>nul
@@ -2916,6 +1781,7 @@ chcp 65001 >nul
 set "OLD={current_exe}"
 set "NEW={target_exe}"
 set "LOG={log_path}"
+set "PYINSTALLER_RESET_ENVIRONMENT=1"
 timeout /t 1 /nobreak >nul
 copy /Y "%OLD%" "%NEW%" >nul 2>nul
 if errorlevel 1 (
