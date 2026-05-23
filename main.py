@@ -7,11 +7,13 @@ import logging
 import subprocess
 import hashlib
 import threading
+import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta
 
+import certifi
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
@@ -253,6 +255,21 @@ def global_exception_handler(exc_type, exc_value, exc_traceback):
         pass
 
 sys.excepthook = global_exception_handler
+
+HTTPS_CONTEXT = None
+
+def get_https_context():
+    global HTTPS_CONTEXT
+    if HTTPS_CONTEXT is None:
+        HTTPS_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+    return HTTPS_CONTEXT
+
+def open_https_url(request, timeout):
+    url = request.full_url if isinstance(request, urllib.request.Request) else normalize_text(request)
+    kwargs = {"timeout": timeout}
+    if urllib.parse.urlparse(url).scheme.lower() == "https":
+        kwargs["context"] = get_https_context()
+    return urllib.request.urlopen(request, **kwargs)
 
 def find_code_details_in_pending_saves(code):
     details = []
@@ -1345,7 +1362,7 @@ def telegram_api_request(token, method_name, payload=None, timeout=30):
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    with open_https_url(request, timeout=timeout) as response:
         result = json.load(response)
     if result.get("ok"):
         return result.get("result")
@@ -1424,7 +1441,7 @@ def download_telegram_file(token, file_path, destination_path):
         f"https://api.telegram.org/file/bot{token}/{quoted_path}",
         headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"},
     )
-    with urllib.request.urlopen(request, timeout=TELEGRAM_FILE_DOWNLOAD_TIMEOUT_SECONDS) as response:
+    with open_https_url(request, timeout=TELEGRAM_FILE_DOWNLOAD_TIMEOUT_SECONDS) as response:
         with open(destination_path, "wb") as output_file:
             while True:
                 chunk = response.read(1024 * 1024)
@@ -1518,7 +1535,7 @@ def send_telegram_document_to_chat(file_path, chat_id, caption, token):
         },
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=30) as response:
+    with open_https_url(request, timeout=30) as response:
         result = json.load(response)
     if result.get("ok"):
         return True, "Отправлено в Telegram"
@@ -1682,7 +1699,7 @@ def fetch_update_info():
             "User-Agent": f"{APP_NAME}/{APP_VERSION}",
         },
     )
-    with urllib.request.urlopen(request, timeout=UPDATE_CHECK_TIMEOUT_SECONDS) as response:
+    with open_https_url(request, timeout=UPDATE_CHECK_TIMEOUT_SECONDS) as response:
         update_info = json.load(response)
 
     if not isinstance(update_info, dict):
@@ -1705,7 +1722,7 @@ def download_update_file(update_info):
         headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=UPDATE_DOWNLOAD_TIMEOUT_SECONDS) as response:
+        with open_https_url(request, timeout=UPDATE_DOWNLOAD_TIMEOUT_SECONDS) as response:
             with open(temp_path, "wb") as file_obj:
                 while True:
                     chunk = response.read(1024 * 1024)
@@ -2236,6 +2253,7 @@ class ScanningApp(tk.Tk):
             warnings = preview.get("warnings", [])
             new_records = preview.get("new_records", [])
             duplicate_records = preview.get("duplicate_records", [])
+            source_duplicate_rows = preview.get("source_duplicate_rows_count", 0)
 
             if not new_records:
                 lines = [
@@ -2243,7 +2261,8 @@ class ScanningApp(tk.Tk):
                     "",
                     f"Файл: {file_name}",
                     f"Строк в файле: {preview.get('source_rows_count', 0)}",
-                    f"Повторных позиций: {len(duplicate_records)}",
+                    f"Повторных строк в Excel: {source_duplicate_rows}",
+                    f"Повторных позиций в таблице: {len(duplicate_records)}",
                     f"Адресов получено из координат: {preview.get('geocoded_count', 0)}",
                     f"Координат без адреса: {preview.get('geocode_failed_count', 0)}",
                 ]
@@ -2939,6 +2958,7 @@ class ScanningApp(tk.Tk):
             warnings = preview.get("warnings", [])
             new_records = preview.get("new_records", [])
             duplicate_records = preview.get("duplicate_records", [])
+            source_duplicate_rows = preview.get("source_duplicate_rows_count", 0)
 
             if not new_records:
                 details = [
@@ -2946,7 +2966,8 @@ class ScanningApp(tk.Tk):
                     f"Строк в файлах: {preview.get('source_rows_count', 0)}",
                     f"Адресов получено из координат: {preview.get('geocoded_count', 0)}",
                     f"Координат без адреса: {preview.get('geocode_failed_count', 0)}",
-                    f"Дублей найдено: {len(duplicate_records)}",
+                    f"Повторных строк в Excel: {source_duplicate_rows}",
+                    f"Дублей в таблице найдено: {len(duplicate_records)}",
                 ]
                 if errors:
                     details.append("\nОшибки:\n" + "\n".join(errors[:6]))
@@ -2960,14 +2981,15 @@ class ScanningApp(tk.Tk):
                 "",
                 f"Файлов: {preview.get('files_count', 0)}",
                 f"Строк в файлах: {preview.get('source_rows_count', 0)}",
-                f"Новых позиций после объединения: {len(new_records)}",
+                f"Новых позиций после проверки: {len(new_records)}",
                 f"Клиентов: {preview.get('clients_count', 0)}",
                 f"Товаров: {preview.get('products_count', 0)}",
                 f"ШТ всего: {preview.get('quantity_count', 0)}",
                 f"Блоков к сканированию: {preview.get('blocks_count', 0)}",
                 f"Адресов получено из координат: {preview.get('geocoded_count', 0)}",
                 f"Координат без адреса: {preview.get('geocode_failed_count', 0)}",
-                f"Повторных позиций пропущено: {len(duplicate_records)}",
+                f"Повторных строк в Excel пропущено: {source_duplicate_rows}",
+                f"Повторных позиций в таблице пропущено: {len(duplicate_records)}",
             ]
             if errors:
                 message_lines.extend(["", "Ошибки в отдельных файлах:", "\n".join(errors[:5])])

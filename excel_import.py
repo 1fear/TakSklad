@@ -13,12 +13,13 @@ from config import (
     STATUS_NOT_COMPLETED,
 )
 from geocoding import reverse_geocode_yandex
-from orders import make_order_id
+from orders import make_order_duplicate_key, make_order_id
 from sheets import (
     append_chapman_data_records,
     build_import_record_row,
     ensure_import_sheet_layout,
     get_existing_import_keys,
+    get_existing_order_duplicate_keys,
     get_google_client,
 )
 from storage import load_data_section, save_data_section
@@ -55,6 +56,22 @@ def get_source_cell(row, idx):
     if isinstance(value, datetime):
         return value.strftime("%d.%m.%Y")
     return normalize_text(value)
+
+
+def make_source_row_duplicate_key(row):
+    return make_hash({
+        "date": row["date"],
+        "payment": normalize_lookup_text(row["payment"]),
+        "client": normalize_lookup_text(row["client"]),
+        "address": normalize_lookup_text(row["address"]),
+        "representative": normalize_lookup_text(row["representative"]),
+        "inn": normalize_lookup_text(row["inn"]),
+        "product": normalize_lookup_text(row["product"]),
+        "quantity": parse_int_value(row["quantity"]),
+        "coords": normalize_lookup_text(row["coords"]),
+        "source_address": normalize_lookup_text(row["source_address"]),
+        "lead_status": normalize_lookup_text(row["lead_status"]),
+    })
 
 
 def parse_excel_order_files(file_paths, source_names=None):
@@ -167,35 +184,19 @@ def parse_excel_order_files(file_paths, source_names=None):
                 "source_row": row_number,
             })
 
-    grouped = {}
+    unique_raw_rows = []
+    duplicate_source_rows = []
+    source_duplicate_keys = set()
     for row in raw_rows:
-        key = (
-            row["date"],
-            normalize_lookup_text(row["payment"]),
-            normalize_lookup_text(row["client"]),
-            normalize_lookup_text(row["address"]),
-            normalize_lookup_text(row["representative"]),
-            normalize_lookup_text(row["inn"]),
-            normalize_lookup_text(row["product"]),
-            normalize_lookup_text(row["coords"]),
-            normalize_lookup_text(row["source_address"]),
-            normalize_lookup_text(row["lead_status"]),
-        )
-        if key not in grouped:
-            grouped[key] = row.copy()
-            grouped[key]["source_ids"] = []
-            grouped[key]["source_rows"] = []
-            grouped[key]["source_files"] = set()
-            grouped[key]["source_file_sha256"] = set()
-        else:
-            grouped[key]["quantity"] += row["quantity"]
-        grouped[key]["source_ids"].append(row["source_id"])
-        grouped[key]["source_rows"].append(str(row["source_row"]))
-        grouped[key]["source_files"].add(row["source_file"])
-        grouped[key]["source_file_sha256"].add(row["source_file_sha256"])
+        duplicate_key = make_source_row_duplicate_key(row)
+        if duplicate_key in source_duplicate_keys:
+            duplicate_source_rows.append(row)
+            continue
+        source_duplicate_keys.add(duplicate_key)
+        unique_raw_rows.append(row)
 
     records = []
-    for item in grouped.values():
+    for item in unique_raw_rows:
         blocks, pieces_per_block = calculate_blocks(item["quantity"], item["product"], catalog, warnings)
         record = {
             ORDER_DATE_COLUMN: item["date"],
@@ -208,14 +209,14 @@ def parse_excel_order_files(file_paths, source_names=None):
             "Кол-во блок": blocks,
             "Отсканированные коды": "",
             STATUS_COLUMN: STATUS_NOT_COMPLETED,
-            "ID импорта": make_hash(sorted(item["source_ids"])),
-            "Источник файла": ", ".join(sorted(item["source_files"])),
-            "Строка файла": ", ".join(item["source_rows"]),
+            "ID импорта": make_hash([item["source_id"]]),
+            "Источник файла": item["source_file"],
+            "Строка файла": str(item["source_row"]),
             "Дата импорта": datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
         }
         record["ID заказа"] = make_order_id(record)
         record["_pieces_per_block"] = pieces_per_block
-        record["_source_file_sha256"] = sorted(item["source_file_sha256"])
+        record["_source_file_sha256"] = [item["source_file_sha256"]]
         record["_chapman_data"] = {
             "delivery_date": item["date"],
             "inn": item["inn"],
@@ -232,6 +233,7 @@ def parse_excel_order_files(file_paths, source_names=None):
         "errors": errors,
         "warnings": warnings,
         "source_rows_count": source_rows_count,
+        "source_duplicate_rows_count": len(duplicate_source_rows),
         "files_count": len(file_paths),
         "geocoded_count": geocoded_count,
         "geocode_failed_count": geocode_failed_count,
@@ -247,14 +249,26 @@ def prepare_excel_import(file_paths, source_names=None):
     all_rows = sheet.get_all_values()
 
     existing_import_ids, existing_order_ids = get_existing_import_keys(all_rows)
+    existing_duplicate_keys = get_existing_order_duplicate_keys(all_rows)
     new_records = []
     duplicate_records = []
 
     for record in parsed["records"]:
-        if record.get("ID импорта") in existing_import_ids or record.get("ID заказа") in existing_order_ids:
+        duplicate_key = make_order_duplicate_key(record)
+        if (
+            record.get("ID импорта") in existing_import_ids
+            or record.get("ID заказа") in existing_order_ids
+            or (duplicate_key and duplicate_key in existing_duplicate_keys)
+        ):
             duplicate_records.append(record)
         else:
             new_records.append(record)
+            if record.get("ID импорта"):
+                existing_import_ids.add(record["ID импорта"])
+            if record.get("ID заказа"):
+                existing_order_ids.add(record["ID заказа"])
+            if duplicate_key:
+                existing_duplicate_keys.add(duplicate_key)
 
     parsed["new_records"] = new_records
     parsed["duplicate_records"] = duplicate_records
@@ -314,18 +328,26 @@ def append_import_records(records):
     ensure_import_sheet_layout(sheet)
     all_rows = sheet.get_all_values()
     existing_import_ids, existing_order_ids = get_existing_import_keys(all_rows)
+    existing_duplicate_keys = get_existing_order_duplicate_keys(all_rows)
 
     rows_to_append = []
     appended_records = []
     duplicates = 0
     for record in records:
-        if record.get("ID импорта") in existing_import_ids or record.get("ID заказа") in existing_order_ids:
+        duplicate_key = make_order_duplicate_key(record)
+        if (
+            record.get("ID импорта") in existing_import_ids
+            or record.get("ID заказа") in existing_order_ids
+            or (duplicate_key and duplicate_key in existing_duplicate_keys)
+        ):
             duplicates += 1
             continue
         rows_to_append.append(build_import_record_row(record))
         appended_records.append(record)
         existing_import_ids.add(record.get("ID импорта"))
         existing_order_ids.add(record.get("ID заказа"))
+        if duplicate_key:
+            existing_duplicate_keys.add(duplicate_key)
 
     if rows_to_append:
         chapman_data_sheet = spreadsheet.worksheet(CHAPMAN_DATA_SHEET_NAME)
@@ -337,7 +359,7 @@ def append_import_records(records):
             "values": rows_to_append,
         }], value_input_option="USER_ENTERED")
     else:
-        chapman_result = {"appended": 0, "start_row": None, "end_row": None}
+        chapman_result = {"appended": 0, "duplicates": 0, "start_row": None, "end_row": None}
 
     history = load_data_section("import_history", [])
     if not isinstance(history, list):
@@ -355,4 +377,5 @@ def append_import_records(records):
         "imported": len(rows_to_append),
         "duplicates": duplicates,
         "chapman_data_rows": chapman_result["appended"],
+        "chapman_data_duplicates": chapman_result["duplicates"],
     }

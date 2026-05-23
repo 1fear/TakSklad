@@ -26,6 +26,7 @@ from orders import (
     get_order_status,
     is_completed_status,
     is_order_active,
+    make_order_duplicate_key,
     row_matches_order,
 )
 from storage import load_credentials_data
@@ -34,6 +35,8 @@ from utils import (
     get_cell,
     get_header_index,
     get_header_indices,
+    make_hash,
+    normalize_lookup_text,
     normalize_header_name,
     normalize_text,
     parse_date_to_standard,
@@ -190,6 +193,40 @@ def build_chapman_data_row(record, received_date=None):
     return row
 
 
+def make_chapman_data_duplicate_key(row):
+    payload = {
+        # The first Data date is the import day; the delivery date identifies
+        # the order and must keep same orders from different dates separate.
+        "delivery_date": parse_date_to_standard(get_cell(row, 1)),
+        "representative": normalize_lookup_text(get_cell(row, 2)),
+        "client": normalize_lookup_text(get_cell(row, 3)),
+        "inn": normalize_lookup_text(get_cell(row, 4)),
+        "address": normalize_lookup_text(get_cell(row, 5)),
+        "coords": normalize_lookup_text(get_cell(row, 6)),
+        "product": normalize_lookup_text(get_cell(row, 7)),
+        "payment": normalize_lookup_text(get_cell(row, 8)),
+        "lead_status": normalize_lookup_text(get_cell(row, 9)),
+        "quantity": parse_int_value(get_cell(row, 10)),
+    }
+    if (
+        not payload["delivery_date"]
+        or not payload["client"]
+        or not payload["product"]
+        or not payload["payment"]
+        or payload["quantity"] <= 0
+    ):
+        return ""
+    return make_hash(payload)
+
+
+def get_existing_chapman_data_duplicate_keys(all_rows):
+    return {
+        duplicate_key
+        for duplicate_key in (make_chapman_data_duplicate_key(row) for row in all_rows[1:])
+        if duplicate_key
+    }
+
+
 def copy_chapman_data_row_format(sheet, source_row, start_row, row_count):
     if row_count <= 0 or source_row < 2:
         return
@@ -218,12 +255,27 @@ def copy_chapman_data_row_format(sheet, source_row, start_row, row_count):
 
 def append_chapman_data_records(sheet, records):
     if not records:
-        return {"appended": 0, "start_row": None, "end_row": None}
+        return {"appended": 0, "duplicates": 0, "start_row": None, "end_row": None}
 
     all_rows = sheet.get_all_values()
+    existing_duplicate_keys = get_existing_chapman_data_duplicate_keys(all_rows)
+    rows = []
+    duplicates = 0
+    for record in records:
+        row = build_chapman_data_row(record)
+        duplicate_key = make_chapman_data_duplicate_key(row)
+        if duplicate_key and duplicate_key in existing_duplicate_keys:
+            duplicates += 1
+            continue
+        rows.append(row)
+        if duplicate_key:
+            existing_duplicate_keys.add(duplicate_key)
+
+    if not rows:
+        return {"appended": 0, "duplicates": duplicates, "start_row": None, "end_row": None}
+
     start_row = max(2, len(all_rows) + 1)
-    end_row = start_row + len(records) - 1
-    rows = [build_chapman_data_row(record) for record in records]
+    end_row = start_row + len(rows) - 1
 
     existing_row_count = getattr(sheet, "row_count", end_row)
     if end_row > existing_row_count and hasattr(sheet, "add_rows"):
@@ -236,7 +288,7 @@ def append_chapman_data_records(sheet, records):
         "range": f"A{start_row}:X{end_row}",
         "values": rows,
     }], value_input_option="USER_ENTERED")
-    return {"appended": len(rows), "start_row": start_row, "end_row": end_row}
+    return {"appended": len(rows), "duplicates": duplicates, "start_row": start_row, "end_row": end_row}
 
 
 def ensure_import_sheet_layout(sheet):
@@ -265,6 +317,32 @@ def get_existing_import_keys(all_rows):
                 order_ids.add(order_id)
 
     return import_ids, order_ids
+
+
+def get_existing_order_duplicate_keys(all_rows):
+    if not all_rows:
+        return set()
+
+    header = [normalize_header_name(col) for col in all_rows[0]]
+    header_idx = get_header_index(header)
+    date_idx = get_order_date_header_index(header_idx)
+    duplicate_keys = set()
+
+    for row in all_rows[1:]:
+        record = {
+            ORDER_DATE_COLUMN: get_cell(row, date_idx),
+            "Тип оплаты": get_cell(row, header_idx.get("Тип оплаты")),
+            "Клиент": get_cell(row, header_idx.get("Клиент")),
+            "Адрес": get_cell(row, header_idx.get("Адрес")),
+            "Торговый представитель": get_cell(row, header_idx.get("Торговый представитель")),
+            "Товары": get_cell(row, header_idx.get("Товары")),
+            "Кол-во ШТ": get_cell(row, header_idx.get("Кол-во ШТ")),
+        }
+        duplicate_key = make_order_duplicate_key(record)
+        if duplicate_key:
+            duplicate_keys.add(duplicate_key)
+
+    return duplicate_keys
 
 
 def get_all_existing_codes(sheet):

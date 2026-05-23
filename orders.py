@@ -24,6 +24,27 @@ def get_order_date_header_index(header_idx):
     return header_idx.get(ORDER_DATE_COLUMN, header_idx.get(LEGACY_ORDER_DATE_COLUMN))
 
 
+def make_order_duplicate_key(record):
+    payload = {
+        "date": parse_date_to_standard(get_order_date_value(record)),
+        "payment": normalize_lookup_text(record.get("Тип оплаты")),
+        "client": normalize_lookup_text(record.get("Клиент")),
+        "address": normalize_lookup_text(record.get("Адрес")),
+        "representative": normalize_lookup_text(record.get("Торговый представитель")),
+        "product": normalize_lookup_text(record.get("Товары")),
+        "quantity": parse_int_value(record.get("Кол-во ШТ")),
+    }
+    if (
+        not payload["date"]
+        or not payload["payment"]
+        or not payload["client"]
+        or not payload["product"]
+        or payload["quantity"] <= 0
+    ):
+        return ""
+    return make_hash(payload)
+
+
 def make_order_id(record):
     return make_hash({
         "date": parse_date_to_standard(get_order_date_value(record)),
