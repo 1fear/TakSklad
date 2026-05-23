@@ -32,7 +32,7 @@ TELEGRAM_SETTINGS_FILE = os.path.join(APP_DIR, "telegram_settings.json")
 YANDEX_GEOCODER_KEY_FILE = os.path.join(APP_DIR, "yandex_geocoder_key.txt")
 YANDEX_GEOCODER_API_KEY = "7c455cc8-0cda-46da-ac5c-e32297c2fec0"
 
-APP_VERSION = "1.1.7"
+APP_VERSION = "1.1.8"
 UPDATE_INFO_URL = os.environ.get(
     "PKIS_UPDATE_INFO_URL",
     "https://raw.githubusercontent.com/1fear/pKIS/main/version.json",

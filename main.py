@@ -2717,23 +2717,15 @@ class ScanningApp(tk.Tk):
         self.update_required = True
         self.apply_required_update_lock()
 
-        if package_update_required and not update_available and not below_min_version:
-            reason = "Приложение переводится на новую папочную установку."
-        else:
-            reason = "Вышла новая версия приложения."
-
-        lines = [
-            reason,
-            "Программа скачает обновление, перезапустится и продолжит работу уже в новой версии.",
-            "",
-            f"Текущая версия: {APP_VERSION}",
-            f"Новая версия: {latest_version or 'не указана'}",
-        ]
-        if message:
-            lines.extend(["", message])
         self.status_var.set("⏳ Найдено обновление, начинаю установку...")
-        logging.info("Запущено автообновление: %s -> %s", APP_VERSION, latest_version)
-        messagebox.showinfo("Обновление приложения", "\n".join(lines))
+        logging.info(
+            "Запущено автообновление: current=%s latest=%s below_min=%s package_transition=%s message=%s",
+            APP_VERSION,
+            latest_version,
+            below_min_version,
+            package_update_required,
+            message,
+        )
         self.start_auto_update(update_info)
 
     def center_window(self):
