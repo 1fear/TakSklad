@@ -1,12 +1,12 @@
 {
-  "latest_version": "1.1.7",
-  "min_supported_version": "1.1.7",
+  "latest_version": "1.1.8",
+  "min_supported_version": "1.1.8",
   "mandatory": true,
   "package_type": "onedir_zip",
   "entrypoint": "TakSklad.exe",
-  "download_url": "https://github.com/1fear/pKIS/releases/download/v1.1.7/TakSklad.exe",
-  "sha256": "30b50e8e4e292d5e8ef64feb13b77901fbc6c0a166dcc8d0881433360107c9c9",
-  "download_url_onedir": "https://github.com/1fear/pKIS/releases/download/v1.1.7/TakSklad-windows-x64.zip",
-  "sha256_onedir": "4bbe4daec0b8002210a1bee4355a9177de4bb0c7bc87ded6012af8b9ee0c80fb",
-  "message": "Переход на папочную сборку TakSklad: приложение будет обновляться через ZIP-пакет, сохранять локальные данные и создавать ярлык на рабочем столе."
+  "download_url": "https://github.com/1fear/pKIS/releases/download/v1.1.8/TakSklad.exe",
+  "sha256": "6649f9b225aa7c3a54b58edf089642ab4065899ddd7325c8e0010c0c030d7bef",
+  "download_url_onedir": "https://github.com/1fear/pKIS/releases/download/v1.1.8/TakSklad-windows-x64.zip",
+  "sha256_onedir": "93f2fafa63fb6f6c2e5cbf74f7fbe1e2a04be645cf2aa8c67131730fa1def061",
+  "message": "Переход на папочную сборку TakSklad и автообновление без подтверждающего окна."
 }
