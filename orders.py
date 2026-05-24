@@ -1,6 +1,7 @@
 from config import (
     LEGACY_ORDER_DATE_COLUMN,
     ORDER_DATE_COLUMN,
+    SKLADBOT_REQUEST_NUMBER_COLUMN,
     STATUS_COLUMN,
     STATUS_COMPLETED,
     STATUS_NOT_COMPLETED,
@@ -111,10 +112,12 @@ def is_order_active(order):
 
 
 def order_group_key(order):
+    request_number = normalize_text(order.get(SKLADBOT_REQUEST_NUMBER_COLUMN))
     client = normalize_text(order.get("Клиент")) or "Клиент не указан"
     payment_type = normalize_text(order.get("Тип оплаты")) or "Оплата не указана"
     address = normalize_text(order.get("Адрес")) or "Адрес не указан"
     return (
+        request_number,
         client,
         payment_type,
         address,

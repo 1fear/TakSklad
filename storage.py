@@ -50,6 +50,8 @@ APP_DATA_DEFAULTS = {
     "product_catalog": {},
     "import_history": [],
     "print_settings": {},
+    "skladbot_settings": {},
+    "daily_report_state": {},
 }
 
 LEGACY_JSON_SECTIONS = {

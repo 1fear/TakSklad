@@ -1,4 +1,5 @@
 import logging
+import os
 from datetime import datetime
 
 import gspread
@@ -15,6 +16,7 @@ from config import (
     SERVICE_COLUMNS,
     SERVICE_COLUMN_START_INDEX,
     SHEET_NAME,
+    SKLADBOT_REQUEST_NUMBER_COLUMN,
     SPREADSHEET_ID,
     STATUS_COLUMN,
     STATUS_COMPLETED,
@@ -29,7 +31,7 @@ from orders import (
     make_order_duplicate_key,
     row_matches_order,
 )
-from storage import load_credentials_data
+from storage import load_credentials_data, load_data_section
 from utils import (
     column_index_to_letter,
     get_cell,
@@ -53,6 +55,19 @@ def get_google_client():
     else:
         creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, scope)
     return gspread.authorize(creds)
+
+
+def skladbot_visibility_filter_enabled():
+    settings = load_data_section("skladbot_settings", {})
+    if not isinstance(settings, dict):
+        settings = {}
+    token = normalize_text(
+        os.environ.get("SKLADBOT_API_TOKEN")
+        or settings.get("api_token")
+        or settings.get("token")
+        or settings.get("bearer_token")
+    )
+    return bool(settings.get("enabled", True) and token)
 
 
 def validate_sheet_header(header):
@@ -111,7 +126,7 @@ def ensure_import_sheet_columns(sheet):
     if len(header) < required_len:
         header.extend([""] * (required_len - len(header)))
 
-    # A:J are warehouse fields and AA:AE are import metadata.
+    # A:J are warehouse fields and AA:AI are import/SkladBot metadata.
     for target_idx, column in get_import_column_targets():
         header[target_idx] = column
 
@@ -418,6 +433,7 @@ def get_today_orders():
             raise ValueError("В таблице не найдены обязательные колонки: " + ", ".join(missing))
 
         today_orders = []
+        require_skladbot_number = skladbot_visibility_filter_enabled()
         status_idx = header_idx.get(STATUS_COLUMN)
         status_updates = []
 
@@ -444,6 +460,8 @@ def get_today_orders():
                 record[STATUS_COLUMN] = calculated_status
 
             if is_order_active(record):
+                if require_skladbot_number and not normalize_text(record.get(SKLADBOT_REQUEST_NUMBER_COLUMN)):
+                    continue
                 record["_row_number"] = row_number
                 record["_normalized_date"] = normalized_date
                 record["_existing_scanned_codes"] = scanned_codes

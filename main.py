@@ -48,6 +48,7 @@ from sheets import (
     update_scanned_codes_to_gsheet,
     validate_sheet_header,
 )
+from skladbot_sync import sync_skladbot_request_numbers
 from storage import (
     credentials_available,
     load_data_section,
@@ -344,20 +345,97 @@ def fetch_sheet_data():
     all_existing_codes.update(get_pending_codes())
     return today_orders, sheet, all_existing_codes
 
-def build_day_report_rows_from_gsheet(sheet):
+def empty_day_report_rows():
+    return {"terminal": [], "transfer": [], "unknown": []}
+
+def add_day_report_code(report_rows, code_row, seen_codes):
+    code = normalize_text(code_row.get("Код") or code_row.get("КИЗ"))
+    if not code or code in seen_codes:
+        return
+    payment_group = normalize_payment_type(code_row.get("Тип оплаты"))
+    if payment_group not in report_rows:
+        payment_group = "unknown"
+    code_row["Код"] = code
+    report_rows[payment_group].append(code_row)
+    seen_codes.add(code)
+
+def build_day_report_rows_from_scan_backup(report_date=None):
+    report_rows = empty_day_report_rows()
+    report_date = parse_report_date(report_date)
+    backup_path = scan_backup_path_for_date(report_date)
+    if not os.path.exists(backup_path):
+        return report_rows
+
+    seen_codes = set()
+    rows_by_code = {}
+    try:
+        with open(backup_path, "r", encoding="utf-8") as backup_file:
+            for line in backup_file:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    logging.warning("Некорректная строка backup сканов: %s", line[:200])
+                    continue
+
+                action = normalize_text(item.get("action"))
+                timestamp = normalize_text(item.get("timestamp"))
+                product_name = item.get("product", "")
+                pieces_per_block = get_product_rule(product_name)["pieces_per_block"]
+                base_row = {
+                    "Дата/время скана": timestamp,
+                    "Дата отгрузки": item.get("date", ""),
+                    "Клиент": item.get("client", ""),
+                    "Торговый представитель": item.get("representative", ""),
+                    "Адрес": item.get("address", ""),
+                    "Товар": product_name,
+                    "Тип оплаты": item.get("payment_type", ""),
+                    "Номер заявки SkladBot": item.get("skladbot_request_number", ""),
+                    "Кол-во ШТ в блоке": pieces_per_block,
+                    "Кол-во блок": 1,
+                    "Итого ШТ": pieces_per_block,
+                    "Источник": action,
+                }
+
+                if action == "undo_scan":
+                    code = normalize_text(item.get("code"))
+                    if code:
+                        rows_by_code.pop(code, None)
+                    continue
+
+                codes = []
+                if action == "scan":
+                    codes = [normalize_text(item.get("code"))]
+                elif action in ("position_saved", "position_queued", "pending_save_synced", "address_finished"):
+                    codes = [normalize_text(code) for code in item.get("codes", [])]
+
+                for code in codes:
+                    if code:
+                        rows_by_code.setdefault(code, dict(base_row, Код=code))
+    except Exception:
+        logging.exception("Не удалось прочитать backup сканов для дневного отчета")
+        return report_rows
+
+    for row in rows_by_code.values():
+        add_day_report_code(report_rows, row, seen_codes)
+    return report_rows
+
+def build_day_report_rows_from_gsheet(sheet, report_date=None):
     all_rows = sheet.get_all_values()
     if not all_rows:
-        return {"terminal": [], "transfer": [], "unknown": []}
+        return empty_day_report_rows()
 
     header_idx, missing = validate_sheet_header(all_rows[0])
     if missing:
         raise ValueError("В таблице не найдены обязательные колонки: " + ", ".join(missing))
 
-    today_str = datetime.now().strftime("%d.%m.%Y")
-    report_rows = {"terminal": [], "transfer": [], "unknown": []}
+    report_date_str = report_date_display(report_date)
+    report_rows = empty_day_report_rows()
 
     for row in all_rows[1:]:
-        if parse_date_to_standard(get_cell(row, get_order_date_header_index(header_idx))) != today_str:
+        if parse_date_to_standard(get_cell(row, get_order_date_header_index(header_idx))) != report_date_str:
             continue
 
         codes = split_codes(get_cell(row, header_idx.get("Отсканированные коды")))
@@ -371,21 +449,25 @@ def build_day_report_rows_from_gsheet(sheet):
         for code in codes:
             pieces_per_block = get_product_rule(get_cell(row, header_idx.get("Товары")))["pieces_per_block"]
             rows.append({
+                "Дата/время скана": "",
+                "Дата отгрузки": get_cell(row, get_order_date_header_index(header_idx)),
                 "Клиент": get_cell(row, header_idx.get("Клиент")),
                 "Торговый представитель": get_cell(row, header_idx.get("Торговый представитель")),
                 "Адрес": get_cell(row, header_idx.get("Адрес")),
                 "Товар": get_cell(row, header_idx.get("Товары")),
                 "Тип оплаты": payment_type,
+                "Номер заявки SkladBot": get_cell(row, header_idx.get(SKLADBOT_REQUEST_NUMBER_COLUMN)),
                 "Кол-во ШТ в блоке": pieces_per_block,
                 "Кол-во блок": 1,
                 "Итого ШТ": pieces_per_block,
-                "Код": code
+                "Код": code,
+                "Источник": "google_sheets",
             })
 
     return report_rows
 
-def add_pending_saves_to_report_rows(report_rows):
-    today_str = datetime.now().strftime("%d.%m.%Y")
+def add_pending_saves_to_report_rows(report_rows, report_date=None):
+    report_date_str = report_date_key(report_date)
     existing_codes = {
         row.get("Код")
         for rows in report_rows.values()
@@ -395,7 +477,8 @@ def add_pending_saves_to_report_rows(report_rows):
 
     for item in load_pending_saves():
         order = item.get("order", {})
-        if parse_date_to_standard(get_order_date_value(order)) != today_str:
+        created_at = normalize_text(item.get("created_at") or item.get("updated_at"))
+        if created_at and report_date_key(created_at) != report_date_str:
             continue
 
         payment_type = order.get("Тип оплаты", "")
@@ -407,15 +490,19 @@ def add_pending_saves_to_report_rows(report_rows):
             if not code or code in existing_codes:
                 continue
             rows.append({
+                "Дата/время скана": item.get("created_at", ""),
+                "Дата отгрузки": get_order_date_value(order),
                 "Клиент": order.get("Клиент", ""),
                 "Торговый представитель": order.get("Торговый представитель", ""),
                 "Адрес": order.get("Адрес", ""),
                 "Товар": order.get("Товары", ""),
                 "Тип оплаты": payment_type,
+                "Номер заявки SkladBot": order.get(SKLADBOT_REQUEST_NUMBER_COLUMN, ""),
                 "Кол-во ШТ в блоке": pieces_per_block,
                 "Кол-во блок": 1,
                 "Итого ШТ": pieces_per_block,
                 "Код": code,
+                "Источник": "pending_saves",
             })
             existing_codes.add(code)
 
@@ -435,6 +522,60 @@ def parse_datetime_for_sort(value):
         except ValueError:
             continue
     return datetime.min
+
+def parse_report_date(value=None):
+    if value is None:
+        return datetime.now().date()
+    if hasattr(value, "date") and hasattr(value, "hour"):
+        return value.date()
+    if hasattr(value, "strftime") and not isinstance(value, str):
+        return value
+    text = normalize_text(value)
+    if not text:
+        return datetime.now().date()
+    for fmt in ("%d.%m.%Y", "%Y-%m-%d", "%d/%m/%Y", "%d.%m.%y"):
+        try:
+            return datetime.strptime(text.split()[0], fmt).date()
+        except ValueError:
+            continue
+    parsed = parse_date_to_standard(text)
+    if parsed:
+        try:
+            return datetime.strptime(parsed, "%d.%m.%Y").date()
+        except ValueError:
+            pass
+    return datetime.now().date()
+
+def report_date_key(report_date=None):
+    return parse_report_date(report_date).strftime("%Y-%m-%d")
+
+def report_date_display(report_date=None):
+    return parse_report_date(report_date).strftime("%d.%m.%Y")
+
+def scan_backup_path_for_date(report_date=None):
+    return os.path.join(BACKUP_DIR, f"scan_backup_{report_date_display(report_date)}.jsonl")
+
+def skladbot_number_sort_key(value):
+    text = normalize_text(value)
+    match = re.search(r"(\d+)$", text)
+    return parse_int_value(match.group(1)) if match else 0
+
+def unpack_order_group_key(group_key):
+    if len(group_key) == 4:
+        return group_key
+    client, payment_type, address = group_key
+    return "", client, payment_type, address
+
+def order_group_display_sort_key(group_key):
+    request_number, client, payment_type, address = unpack_order_group_key(group_key)
+    return (
+        0 if request_number else 1,
+        skladbot_number_sort_key(request_number),
+        normalize_lookup_text(request_number),
+        normalize_lookup_text(client),
+        normalize_lookup_text(payment_type),
+        normalize_lookup_text(address),
+    )
 
 def split_source_files(value):
     text = normalize_text(value)
@@ -692,12 +833,17 @@ def create_document_report_excel(sheet, document_key):
         "completion_percent": completion_percent,
     }
 
-def create_day_report_excel(sheet, filename=None, include_pending=True):
+def create_day_report_excel(sheet=None, filename=None, include_pending=True, report_date=None):
     import pandas as pd
 
-    report_rows = build_day_report_rows_from_gsheet(sheet)
+    report_date = parse_report_date(report_date)
+    report_rows = build_day_report_rows_from_scan_backup(report_date)
+    report_source = "scan_backup"
+    if not any(report_rows.values()) and sheet:
+        report_rows = build_day_report_rows_from_gsheet(sheet, report_date)
+        report_source = "google_sheets"
     if include_pending:
-        report_rows = add_pending_saves_to_report_rows(report_rows)
+        report_rows = add_pending_saves_to_report_rows(report_rows, report_date)
     terminal_rows = report_rows["terminal"]
     transfer_rows = report_rows["transfer"]
     unknown_rows = report_rows["unknown"]
@@ -710,13 +856,19 @@ def create_day_report_excel(sheet, filename=None, include_pending=True):
         "terminal_count": len(terminal_rows),
         "transfer_count": len(transfer_rows),
         "unknown_count": len(unknown_rows),
+        "report_date": report_date_key(report_date),
+        "report_date_display": report_date_display(report_date),
+        "source": report_source,
     }
     if total_report_rows == 0:
         return result
 
     os.makedirs(REPORTS_DIR, exist_ok=True)
     if not filename:
-        filename = os.path.join(REPORTS_DIR, f"scan_report_{datetime.now().strftime('%d.%m.%Y_%H%M%S')}.xlsx")
+        filename = os.path.join(
+            REPORTS_DIR,
+            f"scan_report_{report_date_display(report_date)}_{datetime.now().strftime('%H%M%S')}.xlsx",
+        )
         result["filename"] = filename
 
     with pd.ExcelWriter(filename, engine="openpyxl") as writer:
@@ -746,11 +898,9 @@ def build_summary_products_from_gsheet(sheet, group_key):
 
     products = []
     for row in all_rows[1:]:
-        row_group = (
-            get_cell(row, header_idx.get("Клиент")) or "Клиент не указан",
-            get_cell(row, header_idx.get("Тип оплаты")) or "Оплата не указана",
-            get_cell(row, header_idx.get("Адрес")) or "Адрес не указан",
-        )
+        row_record = {column: get_cell(row, idx) for column, idx in header_idx.items() if column}
+        row_record[ORDER_DATE_COLUMN] = get_cell(row, get_order_date_header_index(header_idx))
+        row_group = order_group_key(row_record)
         if row_group != group_key:
             continue
 
@@ -1001,9 +1151,11 @@ def write_scan_backup(action, order, code=None, codes=None):
             "row_number": order.get("_row_number"),
             "date": get_order_date_value(order) or "",
             "client": order.get("Клиент", ""),
+            "representative": order.get("Торговый представитель", ""),
             "address": order.get("Адрес", ""),
             "product": order.get("Товары", ""),
             "payment_type": order.get("Тип оплаты", ""),
+            "skladbot_request_number": order.get(SKLADBOT_REQUEST_NUMBER_COLUMN, ""),
             "code": code,
             "codes": codes or [],
         }
@@ -1177,10 +1329,12 @@ def sync_pending_saves(sheet=None):
 def fetch_sheet_data_with_sync():
     today_orders, sheet = get_today_orders()
     sync_result = sync_pending_saves(sheet)
-    if sync_result.get("synced"):
+    skladbot_result = sync_skladbot_request_numbers(sheet)
+    if sync_result.get("synced") or skladbot_result.get("updated"):
         today_orders, sheet = get_today_orders()
     all_existing_codes = get_all_existing_codes(sheet) if sheet else set()
     all_existing_codes.update(get_pending_codes())
+    sync_result["skladbot"] = skladbot_result
     return today_orders, sheet, all_existing_codes, sync_result
 
 def build_control_panel_stats_from_gsheet(sheet):
@@ -1641,7 +1795,101 @@ def sync_pending_telegram():
     return {"sent": sent, "failed": failed, "remaining": len(remaining)}
 
 def today_scan_backup_path():
-    return os.path.join(BACKUP_DIR, f"scan_backup_{datetime.now().strftime('%d.%m.%Y')}.jsonl")
+    return scan_backup_path_for_date()
+
+def load_daily_report_state():
+    state = load_data_section("daily_report_state", {})
+    return state if isinstance(state, dict) else {}
+
+def save_daily_report_state(state):
+    return save_data_section("daily_report_state", state)
+
+def daily_report_state_entry(report_date=None):
+    return load_daily_report_state().get(report_date_key(report_date), {})
+
+def daily_report_already_handled(report_date=None):
+    entry = daily_report_state_entry(report_date)
+    return normalize_text(entry.get("status")) in {"sent", "queued", "empty"}
+
+def mark_daily_report_status(report_date, status, filename="", message="", total_rows=0):
+    state = load_daily_report_state()
+    key = report_date_key(report_date)
+    state[key] = {
+        "date": key,
+        "display_date": report_date_display(report_date),
+        "status": normalize_text(status),
+        "filename": os.path.abspath(filename) if filename else "",
+        "message": normalize_text(message),
+        "total_rows": total_rows,
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    save_daily_report_state(state)
+    return state[key]
+
+def scan_backup_report_dates():
+    dates = []
+    if not os.path.isdir(BACKUP_DIR):
+        return dates
+    pattern = re.compile(r"^scan_backup_(\d{2}\.\d{2}\.\d{4})\.jsonl$")
+    for file_name in os.listdir(BACKUP_DIR):
+        match = pattern.match(file_name)
+        if not match:
+            continue
+        path = os.path.join(BACKUP_DIR, file_name)
+        if not os.path.isfile(path) or os.path.getsize(path) <= 0:
+            continue
+        dates.append(parse_report_date(match.group(1)))
+    return sorted(set(dates))
+
+def should_send_today_daily_report(now=None):
+    now = now or datetime.now()
+    send_at = now.replace(
+        hour=DAILY_REPORT_AUTO_SEND_HOUR,
+        minute=DAILY_REPORT_AUTO_SEND_MINUTE,
+        second=0,
+        microsecond=0,
+    )
+    return now >= send_at
+
+def due_daily_report_dates(now=None):
+    now = now or datetime.now()
+    today = now.date()
+    dates = [date for date in scan_backup_report_dates() if date < today]
+    if should_send_today_daily_report(now) and os.path.exists(scan_backup_path_for_date(today)):
+        dates.append(today)
+    return [date for date in sorted(set(dates)) if not daily_report_already_handled(date)]
+
+def daily_report_caption(result, reason=""):
+    lines = [
+        f"{APP_NAME}: дневной отчёт за {result.get('report_date_display')}",
+        f"Всего КИЗов: {result.get('total_report_rows', 0)}",
+        f"Терминал: {result.get('terminal_count', 0)}",
+        f"Перечисление: {result.get('transfer_count', 0)}",
+        f"Не распознано: {result.get('unknown_count', 0)}",
+    ]
+    if reason:
+        lines.extend(["", reason])
+    return "\n".join(lines)
+
+def send_daily_report_result_to_telegram(result, reason=""):
+    filename = result.get("filename")
+    if not filename:
+        return False, "Файл отчёта не создан", "failed"
+    ok, message = send_or_queue_telegram_document(filename, daily_report_caption(result, reason=reason))
+    if ok:
+        status = "sent"
+    elif telegram_is_configured():
+        status = "queued"
+    else:
+        status = "failed"
+    mark_daily_report_status(
+        result.get("report_date"),
+        status,
+        filename=filename,
+        message=message,
+        total_rows=result.get("total_report_rows", 0),
+    )
+    return ok, message, status
 
 def collect_operational_documents(
     include_report=None,
@@ -2067,6 +2315,7 @@ class ScanningApp(tk.Tk):
         self.update_required = False
         self.update_info = None
         self.telegram_poll_running = False
+        self.daily_report_check_running = False
         self.last_sync_result = {"synced": 0, "failed": 0, "remaining": 0}
         self.product_catalog = load_product_catalog()
         os.makedirs(BACKUP_DIR, exist_ok=True)
@@ -2080,6 +2329,8 @@ class ScanningApp(tk.Tk):
         self.after(1200, self.check_for_updates)
         self.after(2500, self.sync_pending_telegram_async)
         self.after(4000, self.poll_telegram_bot_async)
+        self.after(12000, self.check_daily_reports_async)
+        self.after(15000, self.run_skladbot_periodic_refresh)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def load_data(self, show_empty_warning=True):
@@ -2238,6 +2489,80 @@ class ScanningApp(tk.Tk):
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def check_daily_reports_async(self):
+        if self.daily_report_check_running:
+            return
+
+        self.daily_report_check_running = True
+        sheet = self.sheet
+
+        def worker():
+            results = []
+            for report_date in due_daily_report_dates():
+                try:
+                    result = create_day_report_excel(sheet, report_date=report_date)
+                    if result.get("empty"):
+                        mark_daily_report_status(
+                            report_date,
+                            "empty",
+                            message="Нет отсканированных КИЗов для отчёта",
+                        )
+                        results.append({
+                            "date": report_date_display(report_date),
+                            "status": "empty",
+                            "message": "Нет данных",
+                        })
+                        continue
+
+                    ok, message, status = send_daily_report_result_to_telegram(
+                        result,
+                        reason="Автоматическая отправка дневного отчёта",
+                    )
+                    results.append({
+                        "date": result.get("report_date_display"),
+                        "status": status,
+                        "message": message,
+                        "ok": ok,
+                    })
+                except Exception as exc:
+                    logging.exception("Не удалось автоматически отправить дневной отчёт")
+                    mark_daily_report_status(report_date, "failed", message=str(exc))
+                    results.append({
+                        "date": report_date_display(report_date),
+                        "status": "failed",
+                        "message": str(exc),
+                    })
+            return results
+
+        def finish(results):
+            self.daily_report_check_running = False
+            for result in results:
+                logging.info(
+                    "Дневной отчёт %s: %s (%s)",
+                    result.get("date"),
+                    result.get("status"),
+                    result.get("message"),
+                )
+            try:
+                self.after(DAILY_REPORT_CHECK_INTERVAL_MS, self.check_daily_reports_async)
+            except tk.TclError:
+                pass
+
+        def fail(exc):
+            logging.error("Ошибка фоновой проверки дневного отчёта: %s", exc)
+            self.daily_report_check_running = False
+            try:
+                self.after(DAILY_REPORT_CHECK_INTERVAL_MS, self.check_daily_reports_async)
+            except tk.TclError:
+                pass
+
+        self.run_background(
+            "Не удалось проверить дневные отчёты",
+            worker,
+            on_success=finish,
+            on_error=fail,
+        )
+
     def send_telegram_alert_async(self, message, with_keyboard=True):
         if not telegram_is_configured():
             return
@@ -2289,8 +2614,11 @@ class ScanningApp(tk.Tk):
         return sheet
 
     def send_today_scan_report_to_chat(self, chat_id, token):
-        sheet = self.get_sheet_for_telegram()
-        result = create_day_report_excel(sheet)
+        sheet = self.sheet
+        result = create_day_report_excel(sheet, report_date=datetime.now().date())
+        if result.get("empty") and not sheet:
+            sheet = self.get_sheet_for_telegram()
+            result = create_day_report_excel(sheet, report_date=datetime.now().date())
         if result.get("empty"):
             send_telegram_message_to_chat(
                 chat_id,
@@ -2301,7 +2629,7 @@ class ScanningApp(tk.Tk):
             return
 
         caption = (
-            f"{APP_NAME}: сканы за сегодня на текущий момент\n"
+            f"{APP_NAME}: сканы за {result.get('report_date_display')} на текущий момент\n"
             f"Всего КИЗов: {result['total_report_rows']}\n"
             f"Терминал: {result['terminal_count']}; "
             f"Перечисление: {result['transfer_count']}; "
@@ -3065,11 +3393,13 @@ class ScanningApp(tk.Tk):
 
         for order in self.today_orders:
             key = order_group_key(order)
-            client, payment_type, address = key
+            request_number, client, payment_type, address = unpack_order_group_key(key)
+            display_request_number = request_number or "Без номера SkladBot"
             client = client or "Клиент не указан"
             payment_type = payment_type or "Оплата не указана"
             address = address or "Адрес не указан"
             search_area = " ".join([
+                display_request_number,
                 client,
                 payment_type,
                 address,
@@ -3078,13 +3408,14 @@ class ScanningApp(tk.Tk):
             ]).lower()
             if search_text and search_text not in search_area:
                 continue
-            grouped_orders.setdefault((client, payment_type, address), []).append(order)
+            grouped_orders.setdefault((request_number, client, payment_type, address), []).append(order)
 
-        for key in sorted(grouped_orders.keys(), key=lambda item: (item[0].lower(), item[1].lower(), item[2].lower())):
-            client, payment_type, address = key
+        for key in sorted(grouped_orders.keys(), key=order_group_display_sort_key):
+            request_number, client, payment_type, address = unpack_order_group_key(key)
+            display_request_number = request_number or "Без номера SkladBot"
             count = len(grouped_orders[key])
             self.visible_order_groups.append(key)
-            self.legal_listbox.insert(tk.END, f"{client} | {payment_type} | {count} поз. | {address}")
+            self.legal_listbox.insert(tk.END, f"{display_request_number} | {client} | {payment_type} | {count} поз. | {address}")
         self.update_stats_display()
 
     def reset_current_selection(self):
@@ -3103,6 +3434,20 @@ class ScanningApp(tk.Tk):
         self.finish_btn.config(state="disabled")
         self.undo_btn.config(state="disabled")
         self.last_code_label.config(text="")
+
+    def run_skladbot_periodic_refresh(self):
+        try:
+            if (
+                not self.update_required
+                and not self.operation_in_progress
+                and not self.current_order
+            ):
+                self.refresh_from_sheet(initial=False)
+        finally:
+            try:
+                self.after(SKLADBOT_SYNC_INTERVAL_MS, self.run_skladbot_periodic_refresh)
+            except tk.TclError:
+                pass
 
     def refresh_from_sheet(self, initial=False):
         if not self.ensure_update_allowed():
@@ -3128,10 +3473,19 @@ class ScanningApp(tk.Tk):
             self.reset_current_selection()
             self.refresh_legal_list()
             sync_result = self.last_sync_result or {}
+            skladbot_result = sync_result.get("skladbot", {}) if isinstance(sync_result, dict) else {}
             if sync_result.get("synced"):
-                self.status_var.set(f"✅ Список обновлён, отправлено из очереди: {sync_result['synced']}")
+                status_text = f"✅ Список обновлён, отправлено из очереди: {sync_result['synced']}"
+            elif skladbot_result.get("enabled"):
+                status_text = (
+                    "✅ Список обновлён, SkladBot: "
+                    f"найдено {skladbot_result.get('matched', 0)}, "
+                    f"не найдено {skladbot_result.get('not_found', 0)}, "
+                    f"дублей {skladbot_result.get('multiple', 0)}"
+                )
             else:
-                self.status_var.set("✅ Список заказов обновлён")
+                status_text = "✅ Список заказов обновлён"
+            self.status_var.set(status_text)
             self.status_label.config(bg=BG_MAIN, fg=FG_MUTED)
 
         def on_error(exc):
@@ -3532,7 +3886,8 @@ class ScanningApp(tk.Tk):
             return
 
         selected_group = self.visible_order_groups[selection[0]]
-        legal_entity, payment_type, address = selected_group
+        request_number, legal_entity, payment_type, address = unpack_order_group_key(selected_group)
+        display_request_number = request_number or "Без номера SkladBot"
 
         self.current_legal_entity = legal_entity
         self.current_group_key = selected_group
@@ -3547,7 +3902,7 @@ class ScanningApp(tk.Tk):
 
         self.load_current_product()
 
-        self.status_var.set(f"✅ Выбран заказ: {legal_entity} | {payment_type} | {address}")
+        self.status_var.set(f"✅ Выбран заказ: {display_request_number} | {legal_entity} | {payment_type} | {address}")
         self.scan_entry.focus_set()
 
     def load_current_product(self):
@@ -3559,7 +3914,8 @@ class ScanningApp(tk.Tk):
         plan_blocks = get_plan_blocks(self.current_order)
         pieces_per_block = get_product_rule(self.current_order.get("Товары", ""), self.product_catalog)["pieces_per_block"]
 
-        info_text = f"""🏢 Юр.лицо: {self.current_order.get('Клиент', '')}
+        info_text = f"""№ SkladBot: {self.current_order.get(SKLADBOT_REQUEST_NUMBER_COLUMN, '')}
+🏢 Юр.лицо: {self.current_order.get('Клиент', '')}
 👤 Торг.пред: {self.current_order.get('Торговый представитель', '')}
 📍 Адрес: {self.current_order.get('Адрес', 'Адрес не указан')}
 📦 Товар: {self.current_order.get('Товары', '')}
@@ -4037,29 +4393,40 @@ class ScanningApp(tk.Tk):
             if not messagebox.askyesno("Внимание", "У вас есть незавершённый заказ!\n\nЗавершить день без сохранения текущего заказа?"):
                 return
 
-        self.set_busy("⏳ Формирую Excel-отчёт за день...")
+        self.set_busy("⏳ Формирую и отправляю Excel-отчёт за день...")
         self.report_btn.config(state="disabled")
 
         def work():
             sheet = self.sheet
-            if not sheet:
+            result = create_day_report_excel(sheet, report_date=datetime.now().date())
+            if result.get("empty") and not sheet:
                 client = get_google_client()
                 sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
+                result = create_day_report_excel(sheet, report_date=datetime.now().date())
 
-            result = create_day_report_excel(sheet)
             result["sheet"] = sheet
+            if not result.get("empty"):
+                ok, message, status = send_daily_report_result_to_telegram(
+                    result,
+                    reason="Отправлено при ручном завершении дня",
+                )
+                result["telegram_ok"] = ok
+                result["telegram_message"] = message
+                result["telegram_status"] = status
             return result
 
         def on_success(result):
             self.sheet = result.get("sheet") or self.sheet
             if result.get("empty"):
-                messagebox.showwarning("Нет данных", "За сегодня в Google Sheets нет отсканированных КИЗов для отчёта")
+                messagebox.showwarning("Нет данных", "За сегодня нет отсканированных КИЗов для отчёта")
                 return
 
             total_report_rows = result["total_report_rows"]
-            self.send_telegram_documents_async(
-                collect_operational_documents(include_report=result.get("filename"))
-            )
+            telegram_status = {
+                "sent": "отправлен",
+                "queued": "поставлен в очередь отправки",
+                "failed": "не отправлен",
+            }.get(result.get("telegram_status"), "не отправлен")
             messagebox.showinfo("Отчёт сохранён",
                 f"📊 Отчёт сохранён: {result['filename']}\n\n"
                 f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -4069,7 +4436,9 @@ class ScanningApp(tk.Tk):
                 f"├─ Терминал: {result['terminal_count']} кодов\n"
                 f"├─ Перечисление: {result['transfer_count']} кодов\n"
                 f"└─ Не распознано: {result['unknown_count']} кодов\n"
-                f"━━━━━━━━━━━━━━━━━━━━")
+                f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"Telegram: отчёт {telegram_status}\n"
+                f"{result.get('telegram_message', '')}")
 
             self.on_close()
 

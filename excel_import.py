@@ -6,12 +6,11 @@ from config import (
     CHAPMAN_DATA_SHEET_NAME,
     ORDER_DATE_COLUMN,
     SHEET_NAME,
-    SOURCE_OPTIONAL_ALIASES,
-    SOURCE_REQUIRED_ALIASES,
     SPREADSHEET_ID,
     STATUS_COLUMN,
     STATUS_NOT_COMPLETED,
 )
+from excel_normalizer import detect_excel_source, get_source_cell, is_summary_row
 from geocoding import reverse_geocode_yandex
 from orders import make_order_duplicate_key, make_order_id
 from sheets import (
@@ -25,6 +24,7 @@ from sheets import (
 from storage import load_data_section, save_data_section
 from utils import (
     clean_file_name,
+    column_index_to_letter,
     file_sha1,
     file_sha256,
     make_hash,
@@ -33,29 +33,6 @@ from utils import (
     parse_date_to_standard,
     parse_int_value,
 )
-
-
-def get_source_header_index(header):
-    return {normalize_lookup_text(col): idx for idx, col in enumerate(header) if normalize_lookup_text(col)}
-
-
-def find_source_column(header_idx, aliases):
-    for alias in aliases:
-        key = normalize_lookup_text(alias)
-        if key in header_idx:
-            return header_idx[key]
-    return None
-
-
-def get_source_cell(row, idx):
-    if idx is None or idx >= len(row):
-        return ""
-    value = row[idx]
-    if value is None:
-        return ""
-    if isinstance(value, datetime):
-        return value.strftime("%d.%m.%Y")
-    return normalize_text(value)
 
 
 def make_source_row_duplicate_key(row):
@@ -99,35 +76,23 @@ def parse_excel_order_files(file_paths, source_names=None):
             errors.append(f"{file_name}: не удалось открыть файл ({exc})")
             continue
 
-        sheet_name = "Заявки" if "Заявки" in workbook.sheetnames else workbook.sheetnames[0]
+        source = detect_excel_source(workbook, file_name)
+        if not source:
+            errors.append(f"{file_name}: не найден шаблон с обязательными колонками")
+            continue
+
+        sheet_name = source["sheet_name"]
         worksheet = workbook[sheet_name]
-        rows_iter = worksheet.iter_rows(values_only=True)
-        try:
-            header = next(rows_iter)
-        except StopIteration:
-            errors.append(f"{file_name}: лист пустой")
-            continue
-
-        header_idx = get_source_header_index(header)
-        columns = {}
-        missing = []
-        for key, aliases in SOURCE_REQUIRED_ALIASES.items():
-            idx = find_source_column(header_idx, aliases)
-            if idx is None:
-                missing.append(aliases[0])
-            columns[key] = idx
-
-        for key, aliases in SOURCE_OPTIONAL_ALIASES.items():
-            columns[key] = find_source_column(header_idx, aliases)
-
-        if missing:
-            errors.append(f"{file_name}: нет обязательных колонок: {', '.join(missing)}")
-            continue
+        columns = source["columns"]
+        default_date = source.get("default_date") or ""
 
         source_file_hash = file_sha1(file_path)
         source_file_sha256 = file_sha256(file_path)
-        for row_number, row in enumerate(rows_iter, start=2):
+        rows_iter = worksheet.iter_rows(min_row=source["first_data_row"], values_only=True)
+        for row_number, row in enumerate(rows_iter, start=source["first_data_row"]):
             if not row or not any(normalize_text(cell) for cell in row if cell is not None):
+                continue
+            if is_summary_row(row, columns):
                 continue
 
             source_rows_count += 1
@@ -140,7 +105,11 @@ def parse_excel_order_files(file_paths, source_names=None):
                 warnings.append(f"{file_name}, строка {row_number}: пропущена, не заполнены клиент/оплата/товар/количество")
                 continue
 
-            date_value = parse_date_to_standard(get_source_cell(row, columns.get("date"))) or datetime.now().strftime("%d.%m.%Y")
+            date_value = (
+                parse_date_to_standard(get_source_cell(row, columns.get("date")))
+                or default_date
+                or datetime.now().strftime("%d.%m.%Y")
+            )
             source_address = get_source_cell(row, columns.get("address"))
             address = source_address
             coords = get_source_cell(row, columns.get("coords"))
@@ -354,8 +323,9 @@ def append_import_records(records):
         chapman_result = append_chapman_data_records(chapman_data_sheet, appended_records)
         start_row = len(all_rows) + 1
         end_row = start_row + len(rows_to_append) - 1
+        end_col = column_index_to_letter(len(rows_to_append[0]) - 1)
         sheet.batch_update([{
-            "range": f"A{start_row}:AE{end_row}",
+            "range": f"A{start_row}:{end_col}{end_row}",
             "values": rows_to_append,
         }], value_input_option="USER_ENTERED")
     else:
