@@ -115,6 +115,14 @@ def should_migrate_section(current_value, default_value):
     return current_value in (None, "", [], {}) or current_value == default_value
 
 
+def credentials_look_valid(credentials):
+    return (
+        isinstance(credentials, dict)
+        and bool(credentials.get("client_email"))
+        and bool(credentials.get("private_key"))
+    )
+
+
 def migrate_legacy_json_files_to_app_data():
     data = load_app_data()
     changed = False
@@ -137,12 +145,17 @@ def migrate_legacy_json_files_to_app_data():
 
 
 def load_credentials_data():
-    credentials = load_data_section("credentials", {})
-    if isinstance(credentials, dict) and credentials.get("client_email"):
-        return credentials
-    return load_json_file(CREDENTIALS_FILE, {})
+    file_credentials = load_json_file(CREDENTIALS_FILE, {})
+    if credentials_look_valid(file_credentials):
+        return file_credentials
+
+    stored_credentials = load_data_section("credentials", {})
+    if credentials_look_valid(stored_credentials):
+        return stored_credentials
+
+    return file_credentials if isinstance(file_credentials, dict) else {}
 
 
 def credentials_available():
     credentials = load_credentials_data()
-    return isinstance(credentials, dict) and bool(credentials.get("client_email") and credentials.get("private_key"))
+    return credentials_look_valid(credentials)
