@@ -63,7 +63,19 @@ jobs:
         run: |
           pyinstaller --clean --onedir --windowed --name TakSklad --icon assets\TakSklad.ico --distpath dist\onedir main.py
           Copy-Item README.txt dist\onedir\TakSklad\README.txt -Force
-          Copy-Item version.json dist\onedir\TakSklad\version.json -Force
+          $configText = Get-Content config.py -Raw
+          if ($configText -notmatch 'APP_VERSION\s*=\s*"([^"]+)"') {
+            throw "APP_VERSION not found in config.py"
+          }
+          $appVersion = $Matches[1]
+          $manifest = [ordered]@{
+            app_version = $appVersion
+            release_tag = "${{ steps.release.outputs.tag }}"
+            update_info_url = "https://raw.githubusercontent.com/1fear/pKIS/main/version.json"
+            release_url = "https://github.com/1fear/pKIS/releases/tag/${{ steps.release.outputs.tag }}"
+            package_type = "onedir_zip"
+          }
+          $manifest | ConvertTo-Json | Out-File dist\onedir\TakSklad\version.json -Encoding utf8
 
       - name: Package onedir app
         shell: pwsh
