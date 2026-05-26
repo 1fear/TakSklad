@@ -4,6 +4,34 @@
 
 ## 2026-05-26
 
+### Telegram-бот слушает только один компьютер через временный lock
+
+**Файлы:** `config.py`, `main.py`, `sheets.py`, `tests/test_telegram_lock.py`.
+
+**Что было:**
+
+Если два компьютера запускали TakSklad с одним Telegram bot token, оба вызывали `getUpdates`, и Telegram возвращал `HTTP Error 409: Conflict`.
+
+**Что стало:**
+
+- добавлен временный lock в Google Sheets на листе `_TakSklad_System`;
+- компьютер, который получил lock `telegram_poll`, опрашивает Telegram;
+- второй компьютер пропускает Telegram polling и раз в 15 секунд пробует получить lock снова;
+- lock обновляется раз в 20 секунд и считается устаревшим через 60 секунд;
+- проверка lock выполняется в Telegram worker, не в UI-потоке, поэтому сканирование не ждёт Google Sheets;
+- при закрытии приложения текущий владелец пытается освободить lock.
+
+**Как быстро отключить:** в `telegram_settings` можно добавить `"single_listener_lock": false`; также есть общий флаг `TELEGRAM_SINGLE_LISTENER_LOCK_ENABLED` в `config.py`.
+
+**Зачем:** убрать конфликт Telegram на двух компьютерах без большой архитектурной переделки. Это временный изолированный механизм, который потом можно быстро заменить или удалить.
+
+**Тесты (`tests/test_telegram_lock.py`):**
+
+- `test_acquire_creates_lock_sheet_and_writes_owner`;
+- `test_active_other_owner_blocks_lock`;
+- `test_stale_other_owner_can_be_replaced`;
+- `test_release_clears_only_own_lock`.
+
 ### Release-архивы теперь включают локальный `version.json`
 
 **Файл:** `.github/workflows/build-windows-release.yml`, шаг `Build onedir app`.

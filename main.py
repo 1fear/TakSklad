@@ -8,10 +8,12 @@ import subprocess
 import hashlib
 import threading
 import time
+import socket
 import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 import zipfile
 from datetime import datetime, timedelta
 
@@ -41,11 +43,13 @@ from orders import (
     order_group_key,
 )
 from sheets import (
+    acquire_telegram_poll_lock,
     ensure_import_sheet_layout,
     find_code_details_in_sheet,
     get_all_existing_codes,
     get_google_client,
     get_today_orders,
+    release_telegram_poll_lock,
     update_scanned_codes_to_gsheet,
     validate_sheet_header,
 )
@@ -1597,6 +1601,15 @@ def fetch_telegram_updates(token, offset=None):
 def telegram_chat_is_authorized(chat_id, settings=None):
     return normalize_text(chat_id) in set(get_telegram_chat_ids(settings))
 
+def telegram_single_listener_lock_enabled(settings=None):
+    if not TELEGRAM_SINGLE_LISTENER_LOCK_ENABLED:
+        return False
+    settings = settings or load_telegram_settings()
+    value = settings.get("single_listener_lock", True) if isinstance(settings, dict) else True
+    if isinstance(value, str):
+        return value.strip().lower() not in ("0", "false", "off", "no", "нет")
+    return bool(value)
+
 def telegram_document_file_name(document):
     return clean_file_name(document.get("file_name"), "telegram_import")
 
@@ -2339,6 +2352,11 @@ class ScanningApp(tk.Tk):
         self.update_required = False
         self.update_info = None
         self.telegram_poll_running = False
+        self.telegram_lock_owner_id = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
+        self.telegram_lock_owner_label = f"{socket.gethostname()} pid {os.getpid()}"
+        self.telegram_lock_checked_at = 0
+        self.telegram_lock_owned_until = 0
+        self.telegram_lock_skip_logged_at = 0
         self.daily_report_check_running = False
         self.skladbot_sync_running = False
         self.last_sync_result = {"synced": 0, "failed": 0, "remaining": 0}
@@ -3038,6 +3056,44 @@ class ScanningApp(tk.Tk):
             state["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             save_telegram_state(state)
 
+    def ensure_telegram_poll_lock(self, settings):
+        if not telegram_single_listener_lock_enabled(settings):
+            return True
+
+        now_ts = time.time()
+        if (
+            self.telegram_lock_owned_until > now_ts
+            and now_ts - self.telegram_lock_checked_at < TELEGRAM_LOCK_REFRESH_SECONDS
+        ):
+            return True
+
+        try:
+            result = acquire_telegram_poll_lock(
+                self.telegram_lock_owner_id,
+                self.telegram_lock_owner_label,
+                now_ts=now_ts,
+            )
+        except Exception as exc:
+            self.telegram_lock_owned_until = 0
+            logging.info("Telegram: lock не получен, опрос пропущен: %s", exc)
+            return False
+
+        self.telegram_lock_checked_at = now_ts
+        if result.get("acquired"):
+            if self.telegram_lock_owned_until <= now_ts:
+                logging.info("Telegram: lock получен этим компьютером: %s", self.telegram_lock_owner_label)
+            self.telegram_lock_owned_until = now_ts + TELEGRAM_LOCK_TTL_SECONDS
+            return True
+
+        self.telegram_lock_owned_until = 0
+        if now_ts - self.telegram_lock_skip_logged_at > 60:
+            logging.info(
+                "Telegram: опрос выполняет другой компьютер: %s",
+                result.get("owner_label") or result.get("owner_id") or "неизвестно",
+            )
+            self.telegram_lock_skip_logged_at = now_ts
+        return False
+
     def poll_telegram_bot_async(self):
         settings = load_telegram_settings()
         delay_ms = 5000 if telegram_is_configured(settings) else 15000
@@ -3051,12 +3107,16 @@ class ScanningApp(tk.Tk):
         self.telegram_poll_running = True
 
         def worker():
+            next_delay_ms = delay_ms
             try:
+                if not self.ensure_telegram_poll_lock(settings):
+                    next_delay_ms = TELEGRAM_LOCK_RETRY_SECONDS * 1000
+                    return
                 self.process_telegram_updates(settings)
             except Exception:
                 logging.exception("Telegram: не удалось проверить команды бота")
             finally:
-                def finish():
+                def finish(delay_ms=next_delay_ms):
                     self.telegram_poll_running = False
                     self.after(delay_ms, self.poll_telegram_bot_async)
 
@@ -4580,6 +4640,11 @@ class ScanningApp(tk.Tk):
                 "Есть несохранённые сканы по текущей позиции.\n\nЗакрыть программу без завершения позиции?"
             ):
                 return
+        if telegram_single_listener_lock_enabled():
+            try:
+                release_telegram_poll_lock(self.telegram_lock_owner_id)
+            except Exception:
+                logging.info("Telegram: lock не освобождён при закрытии", exc_info=True)
         self.destroy()
 
 if __name__ == "__main__":

@@ -1,7 +1,10 @@
 import logging
 import os
+import time
+from datetime import datetime
 
 import gspread
+from gspread.exceptions import WorksheetNotFound
 from gspread.http_client import HTTPClient
 from oauth2client.service_account import ServiceAccountCredentials
 
@@ -18,6 +21,9 @@ from config import (
     SPREADSHEET_ID,
     STATUS_COLUMN,
     STATUS_COMPLETED,
+    TELEGRAM_LOCK_KEY,
+    TELEGRAM_LOCK_SHEET_NAME,
+    TELEGRAM_LOCK_TTL_SECONDS,
     WORKING_COLUMNS,
 )
 from orders import (
@@ -79,6 +85,106 @@ def format_google_sheets_error(exc):
             "актуальный credentials.json рядом с приложением."
         )
     return message
+
+
+TELEGRAM_LOCK_HEADER = ["key", "owner_id", "owner_label", "updated_at", "updated_ts"]
+
+
+def parse_lock_timestamp(value):
+    try:
+        return float(normalize_text(value).replace(",", "."))
+    except ValueError:
+        return 0.0
+
+
+def telegram_lock_is_stale(updated_ts, now_ts=None):
+    now_ts = time.time() if now_ts is None else float(now_ts)
+    updated_ts = parse_lock_timestamp(updated_ts)
+    return not updated_ts or now_ts - updated_ts > TELEGRAM_LOCK_TTL_SECONDS
+
+
+def get_or_create_telegram_lock_sheet(client):
+    spreadsheet = client.open_by_key(SPREADSHEET_ID)
+    try:
+        sheet = spreadsheet.worksheet(TELEGRAM_LOCK_SHEET_NAME)
+    except WorksheetNotFound:
+        sheet = spreadsheet.add_worksheet(
+            title=TELEGRAM_LOCK_SHEET_NAME,
+            rows=10,
+            cols=len(TELEGRAM_LOCK_HEADER),
+        )
+    rows = sheet.get_all_values()
+    header = rows[0] if rows else []
+    if header[:len(TELEGRAM_LOCK_HEADER)] != TELEGRAM_LOCK_HEADER:
+        sheet.batch_update(
+            [{"range": f"A1:E1", "values": [TELEGRAM_LOCK_HEADER]}],
+            value_input_option="USER_ENTERED",
+        )
+    return sheet
+
+
+def write_telegram_lock_row(sheet, owner_id, owner_label, now_ts):
+    values = [
+        TELEGRAM_LOCK_KEY,
+        normalize_text(owner_id),
+        normalize_text(owner_label),
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        str(int(now_ts)),
+    ]
+    sheet.batch_update(
+        [{"range": "A2:E2", "values": [values]}],
+        value_input_option="USER_ENTERED",
+    )
+    return values
+
+
+def acquire_telegram_poll_lock(owner_id, owner_label, now_ts=None):
+    now_ts = time.time() if now_ts is None else float(now_ts)
+    owner_id = normalize_text(owner_id)
+    owner_label = normalize_text(owner_label)
+    sheet = get_or_create_telegram_lock_sheet(get_google_client())
+    rows = sheet.get_all_values()
+    current = rows[1] if len(rows) > 1 else []
+    current_key = get_cell(current, 0)
+    current_owner_id = get_cell(current, 1)
+    current_owner_label = get_cell(current, 2)
+    current_updated_ts = get_cell(current, 4)
+
+    lock_is_free = (
+        current_key != TELEGRAM_LOCK_KEY
+        or not current_owner_id
+        or current_owner_id == owner_id
+        or telegram_lock_is_stale(current_updated_ts, now_ts=now_ts)
+    )
+    if not lock_is_free:
+        return {
+            "acquired": False,
+            "owner_id": current_owner_id,
+            "owner_label": current_owner_label,
+            "updated_ts": parse_lock_timestamp(current_updated_ts),
+        }
+
+    write_telegram_lock_row(sheet, owner_id, owner_label, now_ts)
+    verify_rows = sheet.get_all_values()
+    verify = verify_rows[1] if len(verify_rows) > 1 else []
+    acquired = get_cell(verify, 1) == owner_id
+    return {
+        "acquired": acquired,
+        "owner_id": get_cell(verify, 1),
+        "owner_label": get_cell(verify, 2),
+        "updated_ts": parse_lock_timestamp(get_cell(verify, 4)),
+    }
+
+
+def release_telegram_poll_lock(owner_id):
+    owner_id = normalize_text(owner_id)
+    sheet = get_or_create_telegram_lock_sheet(get_google_client())
+    rows = sheet.get_all_values()
+    current = rows[1] if len(rows) > 1 else []
+    if get_cell(current, 0) != TELEGRAM_LOCK_KEY or get_cell(current, 1) != owner_id:
+        return False
+    write_telegram_lock_row(sheet, "", "", time.time())
+    return True
 
 
 def skladbot_visibility_filter_enabled():
