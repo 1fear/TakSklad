@@ -1,12 +1,12 @@
 {
-  "latest_version": "1.1.11",
-  "min_supported_version": "1.1.11",
+  "latest_version": "1.1.12",
+  "min_supported_version": "1.1.12",
   "mandatory": true,
   "package_type": "onedir_zip",
   "entrypoint": "TakSklad.exe",
-  "download_url": "https://github.com/1fear/pKIS/releases/download/v1.1.11/TakSklad.exe",
-  "sha256": "c8f1748551743249b92e5b653cb2fd6dd7dd029e3391783d58899bf8d9b97712",
-  "download_url_onedir": "https://github.com/1fear/pKIS/releases/download/v1.1.11/TakSklad-windows-x64.zip",
-  "sha256_onedir": "393c8890fb4f4a082e8e9c8db6a7a0a6609991cd41e05ebf46c1d00970aec3c0",
-  "message": "TakSklad 1.1.11: новая рабочая Google-таблица, импорт только в data, SkladBot fallback без блокировки списка заказов."
+  "download_url": "https://github.com/1fear/pKIS/releases/download/v1.1.12/TakSklad.exe",
+  "sha256": "0fe9f30f5babe88d9f9437b1287746344cce784401adbb2fa2df713c7d53ffa9",
+  "download_url_onedir": "https://github.com/1fear/pKIS/releases/download/v1.1.12/TakSklad-windows-x64.zip",
+  "sha256_onedir": "0e5bb5bf1c5115f327d314e202ab387cd5c965b49fe97f3a9c46de9e6b28fcaa",
+  "message": "TakSklad 1.1.12: единый TakSklad_data.json теперь главный источник Google-ключа, credentials.json используется только как fallback."
 }
