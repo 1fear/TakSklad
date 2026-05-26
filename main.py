@@ -1332,7 +1332,7 @@ def fetch_sheet_data_with_sync():
     sync_result = sync_pending_saves(sheet)
     skladbot_result = sync_skladbot_request_numbers(sheet)
     if skladbot_result.get("enabled") and not skladbot_result.get("errors"):
-        today_orders, sheet = get_today_orders(apply_skladbot_filter=True)
+        today_orders, sheet = get_today_orders(apply_skladbot_filter=False)
     elif sync_result.get("synced"):
         today_orders, sheet = get_today_orders(apply_skladbot_filter=False)
     elif skladbot_result.get("errors"):
