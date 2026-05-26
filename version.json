@@ -1,12 +1,12 @@
 {
-  "latest_version": "1.1.16",
-  "min_supported_version": "1.1.16",
+  "latest_version": "1.1.17",
+  "min_supported_version": "1.1.17",
   "mandatory": true,
   "package_type": "onedir_zip",
   "entrypoint": "TakSklad.exe",
-  "download_url": "https://github.com/1fear/pKIS/releases/download/v1.1.16/TakSklad.exe",
-  "sha256": "7631d0f48f4d6454d7501530708e510283a859c708c25cb4bc361182df91b01e",
-  "download_url_onedir": "https://github.com/1fear/pKIS/releases/download/v1.1.16/TakSklad-windows-x64.zip",
-  "sha256_onedir": "2323650b24d927f4a85b4ddd6446f7037f9f5ad02295b15696278cbe9f595684",
-  "message": "TakSklad 1.1.16: исправлено зависание состояния занято, сохранение TakSklad_data.json повторяется при краткой блокировке, ошибки Google-ключа стали понятнее."
+  "download_url": "https://github.com/1fear/pKIS/releases/download/v1.1.17/TakSklad.exe",
+  "sha256": "dd603cdf48d49a45defefae765ce595d4367ad7914101ee521c7838012c51f70",
+  "download_url_onedir": "https://github.com/1fear/pKIS/releases/download/v1.1.17/TakSklad-windows-x64.zip",
+  "sha256_onedir": "4c1bc0eb7f61c2e0e7cb61a9a8241006c87f58c4b2436e627c42bbf191f23592",
+  "message": "TakSklad 1.1.17: Telegram теперь слушает только один компьютер через временный lock в Google Sheets, чтобы не было HTTP 409 Conflict."
 }
