@@ -1,12 +1,12 @@
 {
-  "latest_version": "1.1.15",
-  "min_supported_version": "1.1.15",
+  "latest_version": "1.1.16",
+  "min_supported_version": "1.1.16",
   "mandatory": true,
   "package_type": "onedir_zip",
   "entrypoint": "TakSklad.exe",
-  "download_url": "https://github.com/1fear/pKIS/releases/download/v1.1.15/TakSklad.exe",
-  "sha256": "851916c7c1bea9ae327146862b2c1162bad4871f072720dd1c1ae6e60a683eb2",
-  "download_url_onedir": "https://github.com/1fear/pKIS/releases/download/v1.1.15/TakSklad-windows-x64.zip",
-  "sha256_onedir": "bb152dd3a503862145d672bf476b225cc20bb59ec2458f46f7abdae5529a1a2a",
-  "message": "TakSklad 1.1.15: обновление списка больше не ждёт SkladBot, а номера заявок сопоставляются строже по дате выгрузки и клиенту."
+  "download_url": "https://github.com/1fear/pKIS/releases/download/v1.1.16/TakSklad.exe",
+  "sha256": "7631d0f48f4d6454d7501530708e510283a859c708c25cb4bc361182df91b01e",
+  "download_url_onedir": "https://github.com/1fear/pKIS/releases/download/v1.1.16/TakSklad-windows-x64.zip",
+  "sha256_onedir": "2323650b24d927f4a85b4ddd6446f7037f9f5ad02295b15696278cbe9f595684",
+  "message": "TakSklad 1.1.16: исправлено зависание состояния занято, сохранение TakSklad_data.json повторяется при краткой блокировке, ошибки Google-ключа стали понятнее."
 }
