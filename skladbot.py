@@ -391,10 +391,22 @@ def address_matches(order_address, request_address):
 
 
 def request_matches_order_group(group, request):
-    if parse_date_to_standard(group.get("date")) != parse_date_to_standard(request.get("unloading_date")):
+    # Строгое сравнение даты: «Дата отгрузки» в листе data должна один-в-один
+    # совпадать с «Дата выгрузки» (unloading_date) в SkladBot. Обе даты
+    # обязательны — если хотя бы одна пустая, привязку делать нельзя, иначе
+    # под одну запись могут «схлопнуться» заявки из разных дней.
+    group_date = parse_date_to_standard(group.get("date"))
+    request_date = parse_date_to_standard(request.get("unloading_date"))
+    if not group_date or not request_date or group_date != request_date:
         return False
 
-    if not text_tokens_match(group.get("client"), request.get("recipient"), NOISE_COMPANY_TOKENS):
+    # Строгое сравнение клиента: «Название компании/Имя человека» в SkladBot
+    # должно один-в-один совпадать с «Клиент» в листе data (с учётом регистра,
+    # ё→е и нормализации пробелов). Любое расхождение — это другая компания,
+    # сопоставлять нельзя, иначе номер заявки сползёт к соседнему клиенту.
+    group_client = normalize_lookup_text(group.get("client"))
+    request_recipient = normalize_lookup_text(request.get("recipient"))
+    if not group_client or not request_recipient or group_client != request_recipient:
         return False
 
     if normalize_payment_type(group.get("payment")) != normalize_payment_type(request.get("comment")):

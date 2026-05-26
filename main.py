@@ -1326,12 +1326,23 @@ def sync_pending_saves(sheet=None):
     save_pending_saves(remaining)
     return {"synced": synced, "failed": failed, "remaining": len(remaining)}
 
-def fetch_sheet_data_with_sync():
+def fetch_sheet_data_with_sync(sync_skladbot=True):
     fallback_orders, sheet = get_today_orders(apply_skladbot_filter=False)
     today_orders = fallback_orders
     sync_result = sync_pending_saves(sheet)
-    skladbot_result = sync_skladbot_request_numbers(sheet)
-    if skladbot_result.get("enabled") and not skladbot_result.get("errors"):
+    if sync_skladbot:
+        skladbot_result = sync_skladbot_request_numbers(sheet)
+    else:
+        skladbot_result = {
+            "enabled": False,
+            "updated": 0,
+            "matched": 0,
+            "not_found": 0,
+            "multiple": 0,
+            "errors": 0,
+            "message": "SkladBot синхронизируется отдельно",
+        }
+    if sync_skladbot and skladbot_result.get("enabled") and not skladbot_result.get("errors"):
         today_orders, sheet = get_today_orders(apply_skladbot_filter=False)
     elif sync_result.get("synced"):
         today_orders, sheet = get_today_orders(apply_skladbot_filter=False)
@@ -2326,6 +2337,7 @@ class ScanningApp(tk.Tk):
         self.update_info = None
         self.telegram_poll_running = False
         self.daily_report_check_running = False
+        self.skladbot_sync_running = False
         self.last_sync_result = {"synced": 0, "failed": 0, "remaining": 0}
         self.product_catalog = load_product_catalog()
         os.makedirs(BACKUP_DIR, exist_ok=True)
@@ -2855,7 +2867,7 @@ class ScanningApp(tk.Tk):
             loaded = None
             refresh_note = ""
             try:
-                loaded = fetch_sheet_data_with_sync()
+                loaded = fetch_sheet_data_with_sync(sync_skladbot=False)
             except Exception:
                 logging.exception("Telegram: Excel импортирован, но список заказов не обновился")
                 refresh_note = f"Список в окне {APP_NAME} не обновился автоматически. Нажмите «Обновить»."
@@ -3452,12 +3464,55 @@ class ScanningApp(tk.Tk):
                 and not self.operation_in_progress
                 and not self.current_order
             ):
-                self.refresh_from_sheet(initial=False)
+                self.sync_skladbot_async()
         finally:
             try:
                 self.after(SKLADBOT_SYNC_INTERVAL_MS, self.run_skladbot_periodic_refresh)
             except tk.TclError:
                 pass
+
+    def sync_skladbot_async(self):
+        if self.skladbot_sync_running or not self.sheet:
+            return
+
+        self.skladbot_sync_running = True
+
+        def work():
+            skladbot_result = sync_skladbot_request_numbers(self.sheet)
+            loaded = None
+            if skladbot_result.get("updated"):
+                loaded = fetch_sheet_data()
+            return skladbot_result, loaded
+
+        def on_success(result):
+            skladbot_result, loaded = result
+            if loaded and not self.operation_in_progress and not self.current_order:
+                self.apply_loaded_data(loaded, show_empty_warning=False)
+                self.refresh_legal_list()
+            if isinstance(self.last_sync_result, dict):
+                self.last_sync_result["skladbot"] = skladbot_result
+            if loaded and not self.operation_in_progress and not self.current_order:
+                self.status_var.set(
+                    "✅ SkladBot обновлён в фоне, список заказов актуализирован"
+                )
+                self.status_label.config(bg=BG_MAIN, fg=FG_MUTED)
+
+        def on_error(exc):
+            logging.error(
+                "SkladBot: фоновая синхронизация не выполнена",
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+
+        def on_finally():
+            self.skladbot_sync_running = False
+
+        self.run_background(
+            "SkladBot: фоновая синхронизация не выполнена",
+            work,
+            on_success=on_success,
+            on_error=on_error,
+            on_finally=on_finally,
+        )
 
     def refresh_from_sheet(self, initial=False):
         if not self.ensure_update_allowed():
@@ -3509,10 +3564,14 @@ class ScanningApp(tk.Tk):
             self.refresh_btn.config(state="normal")
             self.import_btn.config(state="normal")
             self.clear_busy()
+            try:
+                self.after(100, self.sync_skladbot_async)
+            except tk.TclError:
+                pass
 
         self.run_background(
             "Не удалось обновить список заказов",
-            fetch_sheet_data_with_sync,
+            lambda: fetch_sheet_data_with_sync(sync_skladbot=False),
             on_success=on_success,
             on_error=on_error,
             on_finally=on_finally
@@ -3620,7 +3679,7 @@ class ScanningApp(tk.Tk):
 
         def work():
             result = append_import_records(records)
-            loaded = fetch_sheet_data_with_sync()
+            loaded = fetch_sheet_data_with_sync(sync_skladbot=False)
             return result, loaded
 
         def on_success(result):

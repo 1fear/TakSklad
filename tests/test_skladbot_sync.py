@@ -152,6 +152,72 @@ class SkladBotSyncTests(unittest.TestCase):
         self.assertEqual(sheet.rows[1][10], "")
         self.assertEqual(sheet.rows[1][12], SKLADBOT_STATUS_MULTIPLE)
 
+    def test_does_not_match_request_with_different_unloading_date(self):
+        # Регрессия: дата отгрузки в data и дата выгрузки в SkladBot
+        # должны строго совпадать. Заявка того же клиента, но за другой день
+        # не должна попадать в матчинг.
+        wrong_day_request = request("WH-R-189337", 189337)
+        wrong_day_request["unloading_date"] = "24.05.2026"
+
+        sheet = FakeSheet([
+            header(),
+            order_row("Chapman Brown OP 20", 10, 1),
+            order_row("Chapman Gold SSL 20", 20, 2),
+        ])
+
+        result = sync_skladbot_request_numbers(sheet, candidate_requests=[wrong_day_request])
+
+        self.assertEqual(result["matched"], 0)
+        self.assertEqual(result["not_found"], 1)
+        self.assertEqual(sheet.rows[1][10], "")
+        self.assertEqual(sheet.rows[1][12], SKLADBOT_STATUS_NOT_FOUND)
+
+    def test_does_not_match_request_when_unloading_date_is_missing(self):
+        # Регрессия: если дата выгрузки в SkladBot пуста (или пуста дата в data),
+        # привязка делаться не должна, даже если всё остальное совпадает.
+        no_date_request = request("WH-R-189337", 189337)
+        no_date_request["unloading_date"] = ""
+
+        sheet = FakeSheet([
+            header(),
+            order_row("Chapman Brown OP 20", 10, 1),
+            order_row("Chapman Gold SSL 20", 20, 2),
+        ])
+
+        result = sync_skladbot_request_numbers(sheet, candidate_requests=[no_date_request])
+
+        self.assertEqual(result["matched"], 0)
+        self.assertEqual(result["not_found"], 1)
+        self.assertEqual(sheet.rows[1][10], "")
+
+    def test_does_not_match_request_from_different_client(self):
+        # Регрессия на баг "номер заявки сползает к соседнему клиенту":
+        # у двух клиентов на 26.05 совпали адрес, оплата и количество товара.
+        # Раньше fuzzy токен-матч клиента ошибочно привязывал заявку соседа.
+        # Сейчас сравнение клиента строгое — чужая заявка матчиться не должна.
+        foreign_request = request("WH-R-189871", 189871)
+        foreign_request["recipient"] = '"DAILY MART GROUP" MCHJ'
+        foreign_request["products"] = [
+            {
+                "name": "Chapman Brown OP 20 UZ - KingSize",
+                "vendor_code": "CHPMBrownOP20UZ",
+                "barcode": "4006396053978",
+                "amount": 1,
+            },
+        ]
+
+        sheet = FakeSheet([
+            header(),
+            order_row("Chapman Brown OP 20", 10, 1),
+        ])
+
+        result = sync_skladbot_request_numbers(sheet, candidate_requests=[foreign_request])
+
+        self.assertEqual(result["matched"], 0)
+        self.assertEqual(result["not_found"], 1)
+        self.assertEqual(sheet.rows[1][10], "")
+        self.assertEqual(sheet.rows[1][12], SKLADBOT_STATUS_NOT_FOUND)
+
     def test_api_failure_does_not_overwrite_sheet_statuses(self):
         sheet = FakeSheet([
             header(),
