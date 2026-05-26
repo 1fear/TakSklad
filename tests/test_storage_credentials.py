@@ -15,7 +15,7 @@ def credentials(email, private_key):
 
 
 class StorageCredentialsTests(unittest.TestCase):
-    def test_credentials_json_takes_priority_over_stored_credentials(self):
+    def test_stored_credentials_take_priority_over_credentials_json(self):
         original_credentials_file = storage.CREDENTIALS_FILE
         original_data_file = storage.TAKSKLAD_DATA_FILE
         try:
@@ -36,7 +36,7 @@ class StorageCredentialsTests(unittest.TestCase):
                     encoding="utf-8",
                 )
 
-                self.assertEqual(storage.load_credentials_data(), file_credentials)
+                self.assertEqual(storage.load_credentials_data(), stored_credentials)
                 self.assertTrue(storage.credentials_available())
         finally:
             storage.CREDENTIALS_FILE = original_credentials_file

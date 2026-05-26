@@ -145,13 +145,13 @@ def migrate_legacy_json_files_to_app_data():
 
 
 def load_credentials_data():
-    file_credentials = load_json_file(CREDENTIALS_FILE, {})
-    if credentials_look_valid(file_credentials):
-        return file_credentials
-
     stored_credentials = load_data_section("credentials", {})
     if credentials_look_valid(stored_credentials):
         return stored_credentials
+
+    file_credentials = load_json_file(CREDENTIALS_FILE, {})
+    if credentials_look_valid(file_credentials):
+        return file_credentials
 
     return file_credentials if isinstance(file_credentials, dict) else {}
 
