@@ -63,6 +63,7 @@ jobs:
         run: |
           pyinstaller --clean --onedir --windowed --name TakSklad --icon assets\TakSklad.ico --distpath dist\onedir main.py
           Copy-Item README.txt dist\onedir\TakSklad\README.txt -Force
+          Copy-Item version.json dist\onedir\TakSklad\version.json -Force
 
       - name: Package onedir app
         shell: pwsh
