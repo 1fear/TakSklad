@@ -3,7 +3,6 @@ from datetime import datetime
 
 from catalog import calculate_blocks, load_product_catalog, save_product_catalog
 from config import (
-    CHAPMAN_DATA_SHEET_NAME,
     ORDER_DATE_COLUMN,
     SHEET_NAME,
     SPREADSHEET_ID,
@@ -14,7 +13,6 @@ from excel_normalizer import detect_excel_source, get_source_cell, is_summary_ro
 from geocoding import reverse_geocode_yandex
 from orders import make_order_duplicate_key, make_order_id
 from sheets import (
-    append_chapman_data_records,
     build_import_record_row,
     ensure_import_sheet_layout,
     get_existing_import_keys,
@@ -186,13 +184,6 @@ def parse_excel_order_files(file_paths, source_names=None):
         record["ID заказа"] = make_order_id(record)
         record["_pieces_per_block"] = pieces_per_block
         record["_source_file_sha256"] = [item["source_file_sha256"]]
-        record["_chapman_data"] = {
-            "delivery_date": item["date"],
-            "inn": item["inn"],
-            "coords": item["coords"],
-            "address": item["source_address"],
-            "lead_status": item["lead_status"],
-        }
         records.append(record)
 
     save_product_catalog(catalog)
@@ -319,8 +310,6 @@ def append_import_records(records):
             existing_duplicate_keys.add(duplicate_key)
 
     if rows_to_append:
-        chapman_data_sheet = spreadsheet.worksheet(CHAPMAN_DATA_SHEET_NAME)
-        chapman_result = append_chapman_data_records(chapman_data_sheet, appended_records)
         start_row = len(all_rows) + 1
         end_row = start_row + len(rows_to_append) - 1
         end_col = column_index_to_letter(len(rows_to_append[0]) - 1)
@@ -328,9 +317,6 @@ def append_import_records(records):
             "range": f"A{start_row}:{end_col}{end_row}",
             "values": rows_to_append,
         }], value_input_option="USER_ENTERED")
-    else:
-        chapman_result = {"appended": 0, "duplicates": 0, "start_row": None, "end_row": None}
-
     history = load_data_section("import_history", [])
     if not isinstance(history, list):
         history = []
@@ -346,6 +332,4 @@ def append_import_records(records):
     return {
         "imported": len(rows_to_append),
         "duplicates": duplicates,
-        "chapman_data_rows": chapman_result["appended"],
-        "chapman_data_duplicates": chapman_result["duplicates"],
     }

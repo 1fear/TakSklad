@@ -79,15 +79,23 @@ def load_skladbot_settings():
     settings["enabled"] = bool(settings.get("enabled") and settings["api_token"])
     settings["customer_id"] = parse_int_value(settings.get("customer_id")) or SKLADBOT_CUSTOMER_ID
     settings["shipment_type_id"] = parse_int_value(settings.get("shipment_type_id")) or SKLADBOT_SHIPMENT_TYPE_ID
-    settings["requests_limit"] = parse_int_value(settings.get("requests_limit")) or SKLADBOT_REQUESTS_LIMIT
-    settings["completed_detail_limit"] = (
-        parse_int_value(settings.get("completed_detail_limit"))
-        or SKLADBOT_COMPLETED_DETAIL_LIMIT
+    settings["requests_limit"] = max(
+        parse_int_value(settings.get("requests_limit")),
+        SKLADBOT_REQUESTS_LIMIT,
+    )
+    settings["completed_detail_limit"] = max(
+        parse_int_value(settings.get("completed_detail_limit")),
+        SKLADBOT_COMPLETED_DETAIL_LIMIT,
     )
     settings["completed_lookback_days"] = (
         parse_int_value(settings.get("completed_lookback_days"))
         or SKLADBOT_COMPLETED_LOOKBACK_DAYS
     )
+    try:
+        request_delay = float(str(settings.get("request_delay_seconds", "")).replace(",", "."))
+    except ValueError:
+        request_delay = SKLADBOT_REQUEST_DELAY_SECONDS
+    settings["request_delay_seconds"] = max(0.0, min(request_delay, SKLADBOT_REQUEST_DELAY_SECONDS))
     return settings
 
 

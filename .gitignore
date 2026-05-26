@@ -1,5 +1,8 @@
 credentials.json
 TakSklad_data.json
+credentials_*.json
+TakSklad_data_*.json
+google_sheet_backup_*.json
 pKIS.log
 TakSklad.log
 pending_prints.json
@@ -14,6 +17,7 @@ yandex_geocoder_key.txt
 
 scan_backups/
 reports/
+exports/
 
 .venv/
 venv/

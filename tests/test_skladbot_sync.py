@@ -12,6 +12,7 @@ from config import (
     STATUS_COLUMN,
     STATUS_NOT_COMPLETED,
 )
+import skladbot_sync
 from skladbot_sync import sync_skladbot_request_numbers
 from utils import column_index_to_letter
 
@@ -150,6 +151,29 @@ class SkladBotSyncTests(unittest.TestCase):
         self.assertEqual(result["multiple"], 1)
         self.assertEqual(sheet.rows[1][10], "")
         self.assertEqual(sheet.rows[1][12], SKLADBOT_STATUS_MULTIPLE)
+
+    def test_api_failure_does_not_overwrite_sheet_statuses(self):
+        sheet = FakeSheet([
+            header(),
+            order_row("Chapman Brown OP 20", 10, 1),
+        ])
+        original_fetch = skladbot_sync.fetch_candidate_requests
+        try:
+            def fail_fetch(settings=None):
+                raise RuntimeError("temporary skladbot failure")
+
+            skladbot_sync.fetch_candidate_requests = fail_fetch
+            result = sync_skladbot_request_numbers(
+                sheet,
+                settings={"enabled": True, "api_token": "token"},
+            )
+
+            self.assertEqual(result["updated"], 0)
+            self.assertEqual(result["errors"], 1)
+            self.assertEqual(sheet.updates, [])
+            self.assertEqual(sheet.rows[1][12], "")
+        finally:
+            skladbot_sync.fetch_candidate_requests = original_fetch
 
 
 if __name__ == "__main__":

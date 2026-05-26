@@ -19,7 +19,6 @@ def import_excel_import():
 
     fake_sheets = types.ModuleType("sheets")
     for name in [
-        "append_chapman_data_records",
         "build_import_record_row",
         "ensure_import_sheet_layout",
         "get_existing_import_keys",

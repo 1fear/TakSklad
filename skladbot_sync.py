@@ -10,7 +10,6 @@ from config import (
     SKLADBOT_STATUS_FOUND,
     SKLADBOT_STATUS_MULTIPLE,
     SKLADBOT_STATUS_NOT_FOUND,
-    SKLADBOT_STATUS_SYNC_ERROR,
 )
 from orders import get_order_date_header_index, get_order_date_value, get_plan_blocks, is_order_active
 from skladbot import (
@@ -177,17 +176,9 @@ def sync_skladbot_request_numbers(sheet, candidate_requests=None, settings=None,
         requests = candidate_requests if candidate_requests is not None else fetch_candidate_requests(settings=settings)
     except Exception as exc:
         logging.exception("SkladBot: не удалось получить заявки")
-        updates = []
-        for group in groups:
-            updates.extend(build_row_updates(group["row_numbers"], columns, {
-                SKLADBOT_STATUS_COLUMN: SKLADBOT_STATUS_SYNC_ERROR,
-                SKLADBOT_CHECKED_AT_COLUMN: checked_at,
-            }))
-        if updates:
-            sheet.batch_update(updates, value_input_option="USER_ENTERED")
         return {
             "enabled": True,
-            "updated": len(updates),
+            "updated": 0,
             "matched": 0,
             "not_found": 0,
             "multiple": 0,

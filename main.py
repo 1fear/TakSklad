@@ -340,7 +340,7 @@ def format_duplicate_code_details(code, details, current_order=None):
     return "\n".join(lines).strip()
 
 def fetch_sheet_data():
-    today_orders, sheet = get_today_orders()
+    today_orders, sheet = get_today_orders(apply_skladbot_filter=False)
     all_existing_codes = get_all_existing_codes(sheet) if sheet else set()
     all_existing_codes.update(get_pending_codes())
     return today_orders, sheet, all_existing_codes
@@ -1327,10 +1327,20 @@ def sync_pending_saves(sheet=None):
     return {"synced": synced, "failed": failed, "remaining": len(remaining)}
 
 def fetch_sheet_data_with_sync():
-    today_orders, sheet = get_today_orders()
+    fallback_orders, sheet = get_today_orders(apply_skladbot_filter=False)
+    today_orders = fallback_orders
     sync_result = sync_pending_saves(sheet)
     skladbot_result = sync_skladbot_request_numbers(sheet)
-    if sync_result.get("synced") or skladbot_result.get("updated"):
+    if skladbot_result.get("enabled") and not skladbot_result.get("errors"):
+        today_orders, sheet = get_today_orders(apply_skladbot_filter=True)
+    elif sync_result.get("synced"):
+        today_orders, sheet = get_today_orders(apply_skladbot_filter=False)
+    elif skladbot_result.get("errors"):
+        logging.warning(
+            "SkladBot недоступен, показываем активные Google-заказы без фильтра SkladBot: %s",
+            skladbot_result.get("message", ""),
+        )
+    elif sync_result.get("synced") or skladbot_result.get("updated"):
         today_orders, sheet = get_today_orders()
     all_existing_codes = get_all_existing_codes(sheet) if sheet else set()
     all_existing_codes.update(get_pending_codes())
@@ -3476,6 +3486,10 @@ class ScanningApp(tk.Tk):
             skladbot_result = sync_result.get("skladbot", {}) if isinstance(sync_result, dict) else {}
             if sync_result.get("synced"):
                 status_text = f"✅ Список обновлён, отправлено из очереди: {sync_result['synced']}"
+            elif skladbot_result.get("errors"):
+                status_text = (
+                    "⚠️ Список загружен из Google, SkladBot временно недоступен"
+                )
             elif skladbot_result.get("enabled"):
                 status_text = (
                     "✅ Список обновлён, SkladBot: "

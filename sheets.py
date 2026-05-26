@@ -1,14 +1,10 @@
 import logging
 import os
-from datetime import datetime
 
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 from config import (
-    CHAPMAN_DATA_FORMAT_COLUMN_COUNT,
-    CHAPMAN_DATA_LEAD_STATUS,
-    CHAPMAN_DATA_VISIBLE_COLUMN_COUNT,
     CREDENTIALS_FILE,
     LEGACY_ORDER_DATE_COLUMN,
     ORDER_DATE_COLUMN,
@@ -37,8 +33,6 @@ from utils import (
     get_cell,
     get_header_index,
     get_header_indices,
-    make_hash,
-    normalize_lookup_text,
     normalize_header_name,
     normalize_text,
     parse_date_to_standard,
@@ -185,127 +179,6 @@ def build_import_record_row(record):
     return row
 
 
-def build_chapman_data_row(record, received_date=None):
-    source = record.get("_chapman_data", {})
-    received_date = received_date or datetime.now().strftime("%d.%m.%Y")
-    delivery_date = source.get("delivery_date") or get_order_date_value(record)
-    lead_status = source.get("lead_status") or CHAPMAN_DATA_LEAD_STATUS
-    row = [
-        received_date,
-        delivery_date,
-        record.get("Торговый представитель", ""),
-        record.get("Клиент", ""),
-        source.get("inn", ""),
-        source.get("address", record.get("Адрес", "")),
-        source.get("coords", ""),
-        record.get("Товары", ""),
-        record.get("Тип оплаты", ""),
-        lead_status,
-        record.get("Кол-во ШТ", ""),
-        record.get("Кол-во блок", ""),
-    ]
-    row.extend([""] * (CHAPMAN_DATA_VISIBLE_COLUMN_COUNT - len(row)))
-    return row
-
-
-def make_chapman_data_duplicate_key(row):
-    payload = {
-        # The first Data date is the import day; the delivery date identifies
-        # the order and must keep same orders from different dates separate.
-        "delivery_date": parse_date_to_standard(get_cell(row, 1)),
-        "representative": normalize_lookup_text(get_cell(row, 2)),
-        "client": normalize_lookup_text(get_cell(row, 3)),
-        "inn": normalize_lookup_text(get_cell(row, 4)),
-        "address": normalize_lookup_text(get_cell(row, 5)),
-        "coords": normalize_lookup_text(get_cell(row, 6)),
-        "product": normalize_lookup_text(get_cell(row, 7)),
-        "payment": normalize_lookup_text(get_cell(row, 8)),
-        "lead_status": normalize_lookup_text(get_cell(row, 9)),
-        "quantity": parse_int_value(get_cell(row, 10)),
-    }
-    if (
-        not payload["delivery_date"]
-        or not payload["client"]
-        or not payload["product"]
-        or not payload["payment"]
-        or payload["quantity"] <= 0
-    ):
-        return ""
-    return make_hash(payload)
-
-
-def get_existing_chapman_data_duplicate_keys(all_rows):
-    return {
-        duplicate_key
-        for duplicate_key in (make_chapman_data_duplicate_key(row) for row in all_rows[1:])
-        if duplicate_key
-    }
-
-
-def copy_chapman_data_row_format(sheet, source_row, start_row, row_count):
-    if row_count <= 0 or source_row < 2:
-        return
-    sheet.spreadsheet.batch_update({
-        "requests": [{
-            "copyPaste": {
-                "source": {
-                    "sheetId": sheet.id,
-                    "startRowIndex": source_row - 1,
-                    "endRowIndex": source_row,
-                    "startColumnIndex": 0,
-                    "endColumnIndex": CHAPMAN_DATA_FORMAT_COLUMN_COUNT,
-                },
-                "destination": {
-                    "sheetId": sheet.id,
-                    "startRowIndex": start_row - 1,
-                    "endRowIndex": start_row - 1 + row_count,
-                    "startColumnIndex": 0,
-                    "endColumnIndex": CHAPMAN_DATA_FORMAT_COLUMN_COUNT,
-                },
-                "pasteType": "PASTE_FORMAT",
-            }
-        }]
-    })
-
-
-def append_chapman_data_records(sheet, records):
-    if not records:
-        return {"appended": 0, "duplicates": 0, "start_row": None, "end_row": None}
-
-    all_rows = sheet.get_all_values()
-    existing_duplicate_keys = get_existing_chapman_data_duplicate_keys(all_rows)
-    rows = []
-    duplicates = 0
-    for record in records:
-        row = build_chapman_data_row(record)
-        duplicate_key = make_chapman_data_duplicate_key(row)
-        if duplicate_key and duplicate_key in existing_duplicate_keys:
-            duplicates += 1
-            continue
-        rows.append(row)
-        if duplicate_key:
-            existing_duplicate_keys.add(duplicate_key)
-
-    if not rows:
-        return {"appended": 0, "duplicates": duplicates, "start_row": None, "end_row": None}
-
-    start_row = max(2, len(all_rows) + 1)
-    end_row = start_row + len(rows) - 1
-
-    existing_row_count = getattr(sheet, "row_count", end_row)
-    if end_row > existing_row_count and hasattr(sheet, "add_rows"):
-        sheet.add_rows(end_row - existing_row_count)
-
-    # Copy the visual template first, then write values so Data keeps its
-    # font, fills, borders, alignments and number formats on new rows.
-    copy_chapman_data_row_format(sheet, start_row - 1, start_row, len(rows))
-    sheet.batch_update([{
-        "range": f"A{start_row}:X{end_row}",
-        "values": rows,
-    }], value_input_option="USER_ENTERED")
-    return {"appended": len(rows), "duplicates": duplicates, "start_row": start_row, "end_row": end_row}
-
-
 def ensure_import_sheet_layout(sheet):
     header = ensure_import_sheet_columns(sheet)
     migrate_legacy_service_columns(sheet)
@@ -418,7 +291,7 @@ def find_code_details_in_sheet(sheet, code):
     return find_code_details_in_rows(sheet.get_all_values(), code)
 
 
-def get_today_orders():
+def get_today_orders(apply_skladbot_filter=None):
     try:
         client = get_google_client()
         sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
@@ -433,7 +306,11 @@ def get_today_orders():
             raise ValueError("В таблице не найдены обязательные колонки: " + ", ".join(missing))
 
         today_orders = []
-        require_skladbot_number = skladbot_visibility_filter_enabled()
+        require_skladbot_number = (
+            skladbot_visibility_filter_enabled()
+            if apply_skladbot_filter is None
+            else bool(apply_skladbot_filter)
+        )
         status_idx = header_idx.get(STATUS_COLUMN)
         status_updates = []
 

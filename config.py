@@ -1,9 +1,8 @@
 import os
 import sys
 
-SPREADSHEET_ID = "1soHrN7Iqd3jk9iLGdUGK9APxVfRBwWXHxoI8x2Hsh1o"
+SPREADSHEET_ID = "1hisRZ667qEhsRTfoPzv4r78naYhc9kdzhkmUKvZEUr8"
 SHEET_NAME = "data"
-CHAPMAN_DATA_SHEET_NAME = "Данные"
 APP_NAME = "TakSklad"
 APP_EXECUTABLE_NAME = "TakSklad.exe"
 APP_RELEASE_ZIP_NAME = "TakSklad-windows-x64.zip"
@@ -32,7 +31,7 @@ TELEGRAM_SETTINGS_FILE = os.path.join(APP_DIR, "telegram_settings.json")
 YANDEX_GEOCODER_KEY_FILE = os.path.join(APP_DIR, "yandex_geocoder_key.txt")
 YANDEX_GEOCODER_API_KEY = "7c455cc8-0cda-46da-ac5c-e32297c2fec0"
 
-APP_VERSION = "1.1.10"
+APP_VERSION = "1.1.11"
 UPDATE_INFO_URL = os.environ.get(
     "PKIS_UPDATE_INFO_URL",
     "https://raw.githubusercontent.com/1fear/pKIS/main/version.json",
@@ -77,9 +76,9 @@ SKLADBOT_CUSTOMER_NAME = "ООО Bastion Import Chapman MCHJ"
 SKLADBOT_SHIPMENT_TYPE_ID = 3389
 SKLADBOT_SHIPMENT_TYPE_NAME = "Отгрузка 3PL"
 SKLADBOT_COMPLETED_LOOKBACK_DAYS = 2
-SKLADBOT_REQUESTS_LIMIT = 100
-SKLADBOT_COMPLETED_DETAIL_LIMIT = 25
-SKLADBOT_REQUEST_DELAY_SECONDS = 0.5
+SKLADBOT_REQUESTS_LIMIT = 500
+SKLADBOT_COMPLETED_DETAIL_LIMIT = 500
+SKLADBOT_REQUEST_DELAY_SECONDS = 0.05
 SKLADBOT_SYNC_INTERVAL_MS = 10 * 60 * 1000
 DAILY_REPORT_AUTO_SEND_HOUR = 23
 DAILY_REPORT_AUTO_SEND_MINUTE = 55
@@ -114,10 +113,6 @@ SOURCE_OPTIONAL_ALIASES = {
     "inn": ["ИНН клиента", "ИНН Клиента", "ИНН", "ИНН контрагента"],
     "lead_status": ["Статус заказа(Тип лида)", "Статус заказа (Тип лида)", "Тип лида"],
 }
-
-CHAPMAN_DATA_LEAD_STATUS = "Отгрузка клиенту"
-CHAPMAN_DATA_VISIBLE_COLUMN_COUNT = 24
-CHAPMAN_DATA_FORMAT_COLUMN_COUNT = 34
 
 DEFAULT_PIECES_PER_BLOCK = 10
 
