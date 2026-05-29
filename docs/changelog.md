@@ -22,6 +22,7 @@
 - `.venv/bin/python -m unittest discover -s tests` - 51 тест пройден.
 - `.venv/bin/python -m py_compile main.py sitecustomize.py taksklad/__init__.py src/taksklad/*.py tests/*.py backend/app/*.py` - успешно.
 - Локальный Docker/Postgres smoke прошёл полный сценарий: активный заказ, ранний отказ закрытия, два скана, дубль КИЗ, успешное закрытие заказа.
+- Staging VDS обновлен и проверен через внешний HTTPS API тем же сценарием; временные smoke-данные удалены.
 
 ### Добавлен воспроизводимый Traefik-шаблон и зафиксирован VDS smoke-deploy
 

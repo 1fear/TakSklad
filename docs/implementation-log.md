@@ -40,6 +40,8 @@
 - `.venv/bin/python -m unittest tests/test_backend_api_persistence.py` - 3 теста пройдены.
 - `.venv/bin/python -m unittest discover -s tests` - 51 тест пройден.
 - `.venv/bin/python -m py_compile main.py sitecustomize.py taksklad/__init__.py src/taksklad/*.py tests/*.py backend/app/*.py` - успешно.
+- `docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml config` - успешно.
+- `docker compose --env-file deploy/traefik/.env.example -f deploy/traefik/docker-compose.yml config` - успешно.
 - Локальный Docker/Postgres smoke:
   - `GET /api/v1/orders/active` - `200`;
   - раннее `POST /api/v1/orders/{id}/complete` - `409`;
@@ -49,6 +51,24 @@
   - закрытие заказа после всех сканов - `200`;
   - активный список после закрытия - `[]`.
 - Тестовый Docker-стек остановлен через `docker compose down -v`.
+- Staging VDS обновлен: `backend-api` пересобран и перезапущен без изменения `version.json`.
+- Внешняя проверка staging:
+  - `GET /health` - `200`;
+  - `GET /api/v1/orders/active` без токена - `401`;
+  - `GET /api/v1/orders/active` с токеном - `200`, пустой список.
+- VDS smoke с временным заказом через внешний HTTPS API:
+  - активный список - `200`;
+  - раннее завершение - `409`;
+  - первый скан - `201`;
+  - дубль КИЗ - `409`;
+  - второй скан - `201`;
+  - завершение после сканов - `200`;
+  - временные smoke-заказы удалены, остаток `0`.
+
+**Ошибки во время проверки:**
+
+- Первый VDS smoke-запуск сорвался на локальном shell с `command not found: curl` после sourcing env-файлов. API и сервер при этом не падали.
+- Решение: повторная проверка выполнена через явный `/usr/bin/curl`; оставшийся тестовый `vds-smoke` заказ найден и удалён из staging БД.
 
 ### Выполнен первичный VDS-deploy backend smoke
 
