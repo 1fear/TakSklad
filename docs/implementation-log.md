@@ -4,6 +4,45 @@
 
 ## 2026-05-30
 
+### Настроена локальная среда разработки на ноутбуке
+
+**Цель:** поставить на ноут всё необходимое для текущего проекта: desktop-разработка, backend-разработка, Docker/Compose для локальной проверки VDS-стека и GitHub-доступ.
+
+**Сделано:**
+
+- Проверено, что локальная `.venv` использует Python `3.12.13`.
+- Установлены/проверены зависимости из `requirements.txt` и `backend/requirements.txt`.
+- Проверен GitHub CLI: авторизация под аккаунтом `1fear`.
+- Через Homebrew установлены:
+  - `docker`
+  - `docker-compose`
+  - `docker-buildx`
+  - `colima`
+- Добавлен Docker config `~/.docker/config.json`, чтобы Docker видел Homebrew Compose/Buildx plugins.
+- Colima запущен как локальный Docker engine и добавлен в Homebrew services.
+- Создан локальный `deploy/vds/.env` из `deploy/vds/.env.example`; файл игнорируется Git.
+- Создана локальная Docker network `traefik` для compose-smoke.
+- Локально собран и поднят VDS-smoke стек `postgres + backend-api`.
+- После проверки тестовый стек остановлен через `docker compose down -v`, чтобы не оставлять контейнеры и placeholder-том.
+- Добавлена инструкция `docs/local-development-setup.md`.
+
+**Проверки:**
+
+- `.venv/bin/python -m unittest discover -s tests` - 47 тестов пройдены.
+- `.venv/bin/python -m py_compile main.py sitecustomize.py taksklad/__init__.py src/taksklad/*.py tests/*.py backend/app/*.py` - успешно.
+- `docker run --rm hello-world` - успешно.
+- `docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml config` - успешно.
+- `docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml up -d --build postgres backend-api` - успешно.
+- В контейнере `backend-api` endpoint `/health` вернул `{"status":"ok"}`.
+- Без Bearer-токена `GET /api/v1/orders/active` вернул `401`; с placeholder-токеном вернул ожидаемый `501`.
+- В Postgres созданы таблицы: `users`, `orders`, `order_items`, `scan_codes`, `imports`, `import_files`, `pending_events`, `audit_log`.
+
+**Что не сделано:**
+
+- Реальные VDS-секреты и домены не заполнялись.
+- Docker Compose на VDS не запускался; проверка была только локальная на Colima.
+- Desktop-приложение к backend не подключалось.
+
 ### Начат VDS/backend MVP-каркас
 
 **Цель:** начать серверную линию без релиза Windows и без push-уведомлений рабочим компьютерам. Первый шаг - зафиксировать минимальный backend API, PostgreSQL-схему и Docker Compose под уже подготовленную VDS-инфраструктуру.

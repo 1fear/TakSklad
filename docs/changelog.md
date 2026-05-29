@@ -4,6 +4,23 @@
 
 ## 2026-05-30
 
+### Зафиксирована локальная среда разработки ноутбука
+
+**Файлы:** `docs/local-development-setup.md`, `docs/implementation-log.md`.
+
+**Что стало:**
+
+- Описана локальная настройка ноутбука для TakSklad: `.venv`, Python-зависимости, Docker CLI, Compose, Buildx, Colima, GitHub CLI.
+- Зафиксированы команды для проверки тестов, backend compose config, локального запуска `postgres + backend-api` и остановки тестового стека.
+- Уточнено, что рабочий `deploy/vds/.env` создаётся из `.env.example`, хранится локально и не попадает в Git.
+
+**Проверки:**
+
+- `.venv/bin/python -m unittest discover -s tests` - 47 тестов пройдены.
+- `.venv/bin/python -m py_compile main.py sitecustomize.py taksklad/__init__.py src/taksklad/*.py tests/*.py backend/app/*.py` - успешно.
+- Docker smoke `hello-world` - успешно.
+- Локальный VDS compose smoke: `postgres + backend-api` собраны и подняты, `/health` отвечает, стартовые таблицы Postgres созданы.
+
 ### Добавлен VDS/backend MVP-каркас без Windows-релиза
 
 **Файлы:** `.gitignore`, `backend/*`, `deploy/vds/*`, `tests/test_backend_skeleton.py`, `docs/*`.
