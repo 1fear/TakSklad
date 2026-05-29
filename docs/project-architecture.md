@@ -284,7 +284,7 @@ main ◄ почти все модули
 ### Phase 3: Introduce Extension Points (Backend on existing infra)
 
 - **Goal:** построить backend как контейнер в существующем Docker/Traefik-стеке и начать dual-write в Postgres параллельно Sheets.
-- **Status 2026-05-30:** начат backend MVP-каркас: FastAPI shell, `/health`, контрактные endpoint'ы с `501`, SQLAlchemy-модели, init SQL-схема, Dockerfile, VDS compose, `.env.example`, тесты структуры. Это ещё не production backend.
+- **Status 2026-05-30:** начат backend MVP-каркас: FastAPI shell, `/health`, SQLAlchemy-модели, init SQL-схема, Dockerfile, VDS compose, `.env.example`, тесты структуры. Реализованы первые endpoint'ы Postgres-логики: активные заказы, скан КИЗ и завершение заказа. Импорты, отчеты, SkladBot worker и desktop-подключение ещё не production-ready.
 - **Tasks:** реализовать реальные endpoint'ы `GET /orders/active`, `POST /scans`, `POST /orders/{id}/complete`, `POST /imports`, `GET /reports/day`; добавить миграции Alembic или утверждённую миграционную процедуру; поднять compose на VDS через Traefik; desktop за репозиторием шлёт копию событий в backend, продолжая писать в Sheets; feature-флаги.
 - **Affected Areas:** новый `backend-api` (compose-сервис), `repositories/` (реализация backend) на desktop, `config.py` (адрес backend/флаги), `compose.yml`/Traefik-метки.
 - **Result:** сервер принимает события; данные копятся в Postgres без отказа от Sheets.

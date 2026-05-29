@@ -4,6 +4,52 @@
 
 ## 2026-05-30
 
+### Реализован первый слой backend-бизнес-логики заказов и КИЗ
+
+**Цель:** заменить часть MVP-заглушек реальной Postgres-логикой, не подключая пока desktop-приложение и не делая Windows-релиз.
+
+**Сделано:**
+
+- Реализован `GET /api/v1/orders/active`: отдаёт заказы, которые не находятся в статусах `completed`, `done`, `closed`, вместе с позициями.
+- Реализован `POST /api/v1/scans`:
+  - принимает `order_item_id` и КИЗ;
+  - чистит пробелы вокруг кода;
+  - пишет код в `scan_codes`;
+  - увеличивает `scanned_blocks` у позиции;
+  - переводит позицию в `completed`, когда отсканировано нужное число блоков;
+  - возвращает `409`, если код уже был отсканирован;
+  - пишет событие в `audit_log`.
+- Реализован `POST /api/v1/orders/{order_id}/complete`:
+  - проверяет, что обязательные КИЗ-позиции досканированы;
+  - возвращает `409` со списком недосканированных позиций, если закрывать рано;
+  - переводит заказ и позиции в `completed`;
+  - пишет событие в `audit_log`.
+- SQLAlchemy-модели переведены на переносимые типы `Uuid`/`JSON` с Postgres-вариантом `JSONB`, чтобы backend-логику можно было тестировать без Docker через SQLite.
+- Добавлены FastAPI/SQLite тесты backend-персистентности.
+- В backend-зависимости добавлен `httpx`, который требуется `FastAPI TestClient`.
+
+**Что не сделано:**
+
+- `POST /imports`, `GET /imports`, `GET /reports/day` пока остаются заглушками `501`.
+- Desktop-приложение пока не отправляет сканы в backend.
+- Миграционный механизм Alembic еще не добавлен.
+- Синхронизация Google Sheets/SkladBot в Postgres еще не реализована.
+
+**Проверки:**
+
+- `.venv/bin/python -m unittest tests/test_backend_api_persistence.py` - 3 теста пройдены.
+- `.venv/bin/python -m unittest discover -s tests` - 51 тест пройден.
+- `.venv/bin/python -m py_compile main.py sitecustomize.py taksklad/__init__.py src/taksklad/*.py tests/*.py backend/app/*.py` - успешно.
+- Локальный Docker/Postgres smoke:
+  - `GET /api/v1/orders/active` - `200`;
+  - раннее `POST /api/v1/orders/{id}/complete` - `409`;
+  - первый `POST /api/v1/scans` - `201`;
+  - повторный дубль того же КИЗ - `409`;
+  - второй `POST /api/v1/scans` - `201`;
+  - закрытие заказа после всех сканов - `200`;
+  - активный список после закрытия - `[]`.
+- Тестовый Docker-стек остановлен через `docker compose down -v`.
+
 ### Выполнен первичный VDS-deploy backend smoke
 
 **Цель:** подготовить сервер Ubuntu 24.04 под VDS-линию TakSklad и проверить, что минимальный backend-каркас реально поднимается за HTTPS без выкладки Windows-релиза.

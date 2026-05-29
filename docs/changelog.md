@@ -4,6 +4,25 @@
 
 ## 2026-05-30
 
+### Реализованы backend endpoint'ы активных заказов, сканов и завершения заказа
+
+**Файлы:** `backend/app/main.py`, `backend/app/orders_service.py`, `backend/app/models.py`, `backend/app/schemas.py`, `backend/requirements.txt`, `tests/test_backend_api_persistence.py`, `docs/*`.
+
+**Что стало:**
+
+- `GET /api/v1/orders/active` теперь возвращает реальные невыполненные заказы из БД с позициями.
+- `POST /api/v1/scans` теперь пишет КИЗ в `scan_codes`, обновляет `scanned_blocks`, закрывает позицию при достижении плана и защищает от дублей.
+- `POST /api/v1/orders/{order_id}/complete` теперь проверяет недосканированные обязательные позиции, закрывает заказ и пишет аудит.
+- SQLAlchemy-модели можно поднимать в SQLite для быстрых тестов, при этом Postgres остаётся основной БД.
+- Добавлена зависимость `httpx` для `FastAPI TestClient`.
+
+**Проверки:**
+
+- `.venv/bin/python -m unittest tests/test_backend_api_persistence.py` - 3 теста пройдены.
+- `.venv/bin/python -m unittest discover -s tests` - 51 тест пройден.
+- `.venv/bin/python -m py_compile main.py sitecustomize.py taksklad/__init__.py src/taksklad/*.py tests/*.py backend/app/*.py` - успешно.
+- Локальный Docker/Postgres smoke прошёл полный сценарий: активный заказ, ранний отказ закрытия, два скана, дубль КИЗ, успешное закрытие заказа.
+
 ### Добавлен воспроизводимый Traefik-шаблон и зафиксирован VDS smoke-deploy
 
 **Файлы:** `deploy/traefik/*`, `docs/implementation-log.md`.

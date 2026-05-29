@@ -34,14 +34,14 @@ The compose file does not publish PostgreSQL or the backend API directly to the 
 Implemented now:
 
 - `GET /health`
-
-Contract placeholders:
-
 - `GET /api/v1/orders/active`
 - `POST /api/v1/scans`
 - `POST /api/v1/orders/{order_id}/complete`
+
+Contract placeholders:
+
 - `POST /api/v1/imports`
 - `GET /api/v1/imports`
 - `GET /api/v1/reports/day`
 
-The placeholders return `501 Not Implemented` until persistence and migration logic are added.
+The remaining placeholders return `501 Not Implemented` until import and report persistence logic is added.

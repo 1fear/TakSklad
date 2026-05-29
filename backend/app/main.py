@@ -1,6 +1,10 @@
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, status
 
-from .schemas import HealthResponse, ImportCreate, ScanCreate
+from .db import get_db
+from .orders_service import ApiError, complete_order as complete_order_in_db
+from .orders_service import create_scan as create_scan_in_db
+from .orders_service import list_active_orders as list_active_orders_in_db
+from .schemas import HealthResponse, ImportCreate, OrderRead, ScanCreate, ScanRead
 from .settings import APP_VERSION, load_settings
 
 
@@ -46,18 +50,24 @@ def not_implemented(feature):
 
 
 @api.get("/orders/active")
-def list_active_orders():
-    not_implemented("Active orders")
+def list_active_orders(db=Depends(get_db)) -> list[OrderRead]:
+    return list_active_orders_in_db(db)
 
 
-@api.post("/scans")
-def create_scan(payload: ScanCreate):
-    not_implemented("Scan ingestion")
+@api.post("/scans", response_model=ScanRead, status_code=status.HTTP_201_CREATED)
+def create_scan(payload: ScanCreate, db=Depends(get_db)):
+    try:
+        return create_scan_in_db(db, payload)
+    except ApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
-@api.post("/orders/{order_id}/complete")
-def complete_order(order_id: str):
-    not_implemented("Order completion")
+@api.post("/orders/{order_id}/complete", response_model=OrderRead)
+def complete_order(order_id: str, db=Depends(get_db)):
+    try:
+        return complete_order_in_db(db, order_id)
+    except ApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 @api.post("/imports")

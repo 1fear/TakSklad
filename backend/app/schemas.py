@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class HealthResponse(BaseModel):
@@ -38,6 +38,23 @@ class ScanCreate(BaseModel):
     scanned_by: str | None = None
     scanned_at: datetime | None = None
     raw_payload: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("code")
+    @classmethod
+    def normalize_code(cls, value):
+        code = value.strip()
+        if not code:
+            raise ValueError("Code must not be empty")
+        return code
+
+
+class ScanRead(BaseModel):
+    id: str
+    order_item_id: str
+    code: str
+    scanned_blocks: int
+    item_status: str
+    scanned_at: datetime
 
 
 class ImportCreate(BaseModel):
