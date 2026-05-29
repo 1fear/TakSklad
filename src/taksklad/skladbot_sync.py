@@ -14,6 +14,7 @@ from .config import (
 from .orders import get_order_date_header_index, get_order_date_value, get_plan_blocks, is_order_active
 from .skladbot import (
     fetch_candidate_requests,
+    format_skladbot_error,
     load_skladbot_settings,
     request_matches_order_group,
     skladbot_is_configured,
@@ -149,7 +150,19 @@ def sync_skladbot_request_numbers(sheet, candidate_requests=None, settings=None,
             "message": "SkladBot API не настроен",
         }
 
-    all_rows = sheet.get_all_values()
+    try:
+        all_rows = sheet.get_all_values()
+    except Exception as exc:
+        logging.exception("SkladBot: не удалось прочитать data перед синхронизацией")
+        return {
+            "enabled": configured,
+            "updated": 0,
+            "matched": 0,
+            "not_found": 0,
+            "multiple": 0,
+            "errors": 1,
+            "message": "Не удалось прочитать Google Sheets перед SkladBot-синхронизацией.",
+        }
     if not all_rows:
         return {"enabled": configured, "updated": 0, "matched": 0, "not_found": 0, "multiple": 0, "errors": 0}
 
@@ -183,7 +196,7 @@ def sync_skladbot_request_numbers(sheet, candidate_requests=None, settings=None,
             "not_found": 0,
             "multiple": 0,
             "errors": len(groups),
-            "message": str(exc),
+            "message": format_skladbot_error(exc),
         }
 
     updates = []
@@ -232,7 +245,19 @@ def sync_skladbot_request_numbers(sheet, candidate_requests=None, settings=None,
         updates.extend(build_row_updates(group["row_numbers"], columns, row_values))
 
     if updates and not dry_run:
-        sheet.batch_update(updates, value_input_option="USER_ENTERED")
+        try:
+            sheet.batch_update(updates, value_input_option="USER_ENTERED")
+        except Exception as exc:
+            logging.exception("SkladBot: не удалось записать результат синхронизации в Google Sheets")
+            return {
+                "enabled": True,
+                "updated": 0,
+                "matched": result["matched"],
+                "not_found": result["not_found"],
+                "multiple": result["multiple"],
+                "errors": len(groups),
+                "message": "SkladBot сопоставил заявки, но Google Sheets временно не принял запись.",
+            }
     result["updated"] = 0 if dry_run else len(updates)
     result["would_update"] = len(updates) if dry_run else 0
 

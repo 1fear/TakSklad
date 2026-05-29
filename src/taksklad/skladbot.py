@@ -121,6 +121,30 @@ class SkladBotError(RuntimeError):
     pass
 
 
+def format_skladbot_error(exc):
+    message = normalize_text(exc)
+    lower_message = message.lower()
+    if not message:
+        return "SkladBot вернул ошибку без подробностей. Повторите синхронизацию позже."
+    if "http 401" in lower_message or "http 403" in lower_message or "unauthorized" in lower_message:
+        return "SkladBot отклонил API-токен. Проверьте токен в настройках SkladBot."
+    if "http 429" in lower_message or "rate limit" in lower_message or "quota" in lower_message:
+        return "SkladBot временно ограничил запросы. Номера заявок подтянутся при следующей фоновой синхронизации."
+    if (
+        "timed out" in lower_message
+        or "timeout" in lower_message
+        or "getaddrinfo failed" in lower_message
+        or "failed to resolve" in lower_message
+        or "connection" in lower_message
+        or "ssl" in lower_message
+        or "unreachable" in lower_message
+    ):
+        return "SkladBot временно недоступен. Список заказов остаётся доступен, номера заявок подтянутся позже."
+    if "некорректный json" in lower_message or "invalid json" in lower_message:
+        return "SkladBot вернул некорректный ответ. Повторите синхронизацию позже."
+    return message
+
+
 class SkladBotClient:
     def __init__(self, token, base_url=SKLADBOT_API_BASE_URL, timeout=SKLADBOT_API_TIMEOUT_SECONDS, request_delay_seconds=SKLADBOT_REQUEST_DELAY_SECONDS):
         self.token = normalize_text(token)

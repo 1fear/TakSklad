@@ -13,7 +13,7 @@ from taksklad.config import (
     STATUS_COLUMN,
     STATUS_NOT_COMPLETED,
 )
-from taksklad.skladbot import fetch_candidate_requests, load_skladbot_settings
+from taksklad.skladbot import fetch_candidate_requests, format_skladbot_error, load_skladbot_settings
 from taksklad import skladbot_sync
 from taksklad.skladbot_sync import sync_skladbot_request_numbers
 from taksklad.utils import column_index_to_letter
@@ -41,6 +41,16 @@ class FakeSheet:
             while len(self.rows[row_number - 1]) <= col_idx:
                 self.rows[row_number - 1].append("")
             self.rows[row_number - 1][col_idx] = value
+
+
+class FailingReadSheet:
+    def get_all_values(self):
+        raise RuntimeError("Google timeout")
+
+
+class FailingWriteSheet(FakeSheet):
+    def batch_update(self, updates, value_input_option=None):
+        raise RuntimeError("Google write timeout")
 
 
 def header():
@@ -144,6 +154,36 @@ class SkladBotSyncTests(unittest.TestCase):
         self.assertGreater(result["would_update"], 0)
         self.assertEqual(sheet.updates, [])
         self.assertEqual(sheet.rows[1][10], "")
+
+    def test_skladbot_timeout_gets_actionable_message(self):
+        message = format_skladbot_error(RuntimeError("timed out"))
+
+        self.assertIn("SkladBot временно недоступен", message)
+        self.assertIn("номера заявок подтянутся позже", message)
+
+    def test_skladbot_auth_error_gets_actionable_message(self):
+        message = format_skladbot_error(RuntimeError("SkladBot HTTP 401: unauthorized"))
+
+        self.assertIn("API-токен", message)
+
+    def test_read_failure_does_not_raise(self):
+        result = sync_skladbot_request_numbers(FailingReadSheet(), candidate_requests=[request()])
+
+        self.assertEqual(result["errors"], 1)
+        self.assertIn("Google Sheets", result["message"])
+
+    def test_write_failure_does_not_raise_or_block_orders(self):
+        sheet = FailingWriteSheet([
+            header(),
+            order_row("Chapman Brown OP 20", 10, 1),
+            order_row("Chapman Gold SSL 20", 20, 2),
+        ])
+
+        result = sync_skladbot_request_numbers(sheet, candidate_requests=[request()])
+
+        self.assertGreater(result["errors"], 0)
+        self.assertEqual(result["updated"], 0)
+        self.assertIn("Google Sheets временно не принял запись", result["message"])
 
     def test_marks_not_found_without_guessing(self):
         sheet = FakeSheet([

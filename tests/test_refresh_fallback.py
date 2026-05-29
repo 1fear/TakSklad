@@ -167,6 +167,15 @@ class RefreshFallbackTests(unittest.TestCase):
             main.get_all_existing_codes = original_get_all_existing_codes
             main.get_pending_codes = original_get_pending_codes
 
+    def test_refresh_error_message_keeps_cached_orders(self):
+        message = main.format_refresh_error_message(
+            RuntimeError("Google Sheets временно ограничил запросы"),
+            has_cached_orders=True,
+        )
+
+        self.assertIn("последним загруженным списком", message)
+        self.assertIn("повторите обновление позже", message)
+
 
 if __name__ == "__main__":
     unittest.main()

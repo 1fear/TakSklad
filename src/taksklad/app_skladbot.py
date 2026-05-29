@@ -58,6 +58,11 @@ class SkladBotActionsMixin:
                 "SkladBot: фоновая синхронизация не выполнена",
                 exc_info=(type(exc), exc, exc.__traceback__),
             )
+            if not self.operation_in_progress and not self.refresh_in_progress and not self.current_order:
+                self.status_var.set(
+                    "⚠️ SkladBot не обновился в фоне, список заказов оставлен без изменений"
+                )
+                self.safe_config(self.status_label, bg=BG_MAIN, fg=FG_MUTED)
 
         def on_finally():
             self.skladbot_sync_running = False

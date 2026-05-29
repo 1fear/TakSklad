@@ -92,6 +92,20 @@ def show_exception_message(title, exc):
     except Exception:
         pass
 
+
+def format_refresh_error_message(exc, has_cached_orders=False):
+    reason = normalize_text(exc) or "ошибка без подробностей"
+    if has_cached_orders:
+        return (
+            f"Список заказов не обновился: {reason}. "
+            "Работаем с последним загруженным списком; повторите обновление позже."
+        )
+    return (
+        f"Список заказов пока не загружен: {reason}. "
+        "Проверьте связь с Google Sheets и повторите обновление."
+    )
+
+
 def global_exception_handler(exc_type, exc_value, exc_traceback):
     if issubclass(exc_type, KeyboardInterrupt):
         sys.__excepthook__(exc_type, exc_value, exc_traceback)
@@ -187,6 +201,7 @@ class ScanningApp(
         self.refresh_in_progress = False
         self.refresh_started_at = None
         self.refresh_message = ""
+        self.refresh_notice_token = 0
         self.update_required = False
         self.update_info = None
         self.telegram_poll_running = False
@@ -311,9 +326,15 @@ class ScanningApp(
         self.refresh_in_progress = True
         self.refresh_started_at = time.monotonic()
         self.refresh_message = normalize_text(message)
+        self.refresh_notice_token += 1
+        notice_token = self.refresh_notice_token
         logging.info("Фоновое обновление начато: %s", self.refresh_message)
         self.status_var.set(message)
         self.safe_config(self.status_label, bg=BG_MAIN, fg=FG_MUTED)
+        try:
+            self.after(15000, lambda token=notice_token: self.show_refresh_long_running_notice(token))
+        except tk.TclError:
+            pass
 
     def clear_refresh_in_progress(self):
         if self.refresh_in_progress:
@@ -327,6 +348,7 @@ class ScanningApp(
         self.refresh_in_progress = False
         self.refresh_started_at = None
         self.refresh_message = ""
+        self.refresh_notice_token += 1
 
     def safe_config(self, widget, **kwargs):
         try:
@@ -343,6 +365,30 @@ class ScanningApp(
                 elapsed = int(time.monotonic() - self.operation_started_at)
                 message += f" ({elapsed} сек.)"
         self.show_error(message)
+
+    def show_refresh_busy_error(self):
+        message = "Обновление списка уже идёт в фоне"
+        if self.refresh_started_at is not None:
+            elapsed = int(time.monotonic() - self.refresh_started_at)
+            message += f" ({elapsed} сек.)"
+        message += ". Можно продолжать работу с уже загруженным списком."
+        self.show_error(message)
+
+    def show_refresh_long_running_notice(self, notice_token=None):
+        if not self.refresh_in_progress or notice_token != self.refresh_notice_token:
+            return
+        elapsed = 0
+        if self.refresh_started_at is not None:
+            elapsed = int(time.monotonic() - self.refresh_started_at)
+        self.status_var.set(
+            f"⏳ Обновление списка всё ещё идёт ({elapsed} сек.). "
+            "Можно продолжать работу с уже загруженным списком."
+        )
+        self.safe_config(self.status_label, bg=BG_MAIN, fg=FG_MUTED)
+        try:
+            self.after(15000, lambda token=notice_token: self.show_refresh_long_running_notice(token))
+        except tk.TclError:
+            pass
 
     def center_window(self):
         self.update_idletasks()
@@ -737,7 +783,7 @@ class ScanningApp(
             return
 
         if self.refresh_in_progress:
-            self.show_error("Обновление списка уже идёт в фоне")
+            self.show_refresh_busy_error()
             return
 
         refresh_started_with_selection = bool(self.current_order) and not initial
@@ -777,7 +823,14 @@ class ScanningApp(
             self.status_label.config(bg=BG_MAIN, fg=FG_MUTED)
 
         def on_error(exc):
-            self.show_critical_error("Не удалось обновить список заказов", exc)
+            logging.error(
+                "Не удалось обновить список заказов",
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+            self.show_error(
+                format_refresh_error_message(exc, has_cached_orders=bool(self.today_orders)),
+                popup=True,
+            )
 
         def on_finally():
             self.clear_refresh_in_progress()

@@ -148,11 +148,35 @@ def format_google_sheets_error(exc):
             "Нет доступа к Google-таблице. Проверьте, что таблица открыта для "
             "service account из TakSklad_data.json или credentials.json рядом с приложением."
         )
+    if not message:
+        return (
+            "Google Sheets вернул ошибку без подробностей. Проверьте доступ к таблице "
+            "и попробуйте обновить список ещё раз."
+        )
     if "invalid jwt signature" in lower_message or "invalid_grant" in lower_message:
         return (
             "Google-ключ повреждён или устарел: Invalid JWT Signature. "
             "Запустите новую папку TakSklad с рабочим TakSklad_data.json или положите "
             "актуальный credentials.json рядом с приложением."
+        )
+    if "429" in lower_message or "quota" in lower_message or "rate limit" in lower_message:
+        return (
+            "Google Sheets временно ограничил запросы. Подождите минуту и повторите "
+            "обновление; сканирование можно продолжать по уже загруженному списку."
+        )
+    if (
+        "getaddrinfo failed" in lower_message
+        or "failed to resolve" in lower_message
+        or "name resolution" in lower_message
+        or "connection" in lower_message
+        or "timed out" in lower_message
+        or "timeout" in lower_message
+        or "ssl" in lower_message
+        or "remote host" in lower_message
+    ):
+        return (
+            "Нет стабильной связи с Google Sheets. Проверьте интернет/VPN и повторите "
+            "обновление; уже загруженный список остаётся доступен."
         )
     return message
 
