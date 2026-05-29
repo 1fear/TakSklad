@@ -341,3 +341,31 @@
 **Что не получилось проверить здесь:**
 
 - Ручной Windows-smoke не выполнен в macOS-среде разработки. Его нужно пройти на рабочем Windows-компьютере или Windows runner перед выпуском архива.
+
+### Переименование GitHub-репозитория и повторные проверки
+
+**Дата:** 2026-05-30.
+
+**Цель:** привести внешний GitHub-репозиторий к официальному имени TakSklad, чтобы будущая линия автообновления смотрела в корректный URL.
+
+**Сделано:**
+
+- GitHub-репозиторий переименован со старого исторического имени на `1fear/TakSklad`.
+- Локальный `origin` переключен на `https://github.com/1fear/TakSklad.git`.
+- Проверено, что `gh repo view 1fear/TakSklad` открывает новый репозиторий, default branch остается `main`.
+- Проверено, что `git ls-remote --heads origin main` возвращает текущий `main`.
+- Старый GitHub URL пока редиректится на новый репозиторий; это штатное поведение GitHub после rename.
+
+**Локальные проверки 2026-05-30:**
+
+- `.venv/bin/python -m py_compile main.py sitecustomize.py taksklad/__init__.py src/taksklad/*.py tests/*.py` - успешно.
+- `.venv/bin/python -m unittest discover -s tests` - 35 тестов пройдены.
+- `python3 -m json.tool version.json` - manifest валидный JSON.
+- `git diff --check -- . ':!archive/**'` - успешно.
+- Поиск старого имени проекта по рабочему дереву без `.git`, `.venv`, `archive` - совпадений нет.
+
+**Автообновление:**
+
+- `version.json` не повышался и остается закрепленным на `1.1.7`.
+- Release/tag/workflow-сборка не запускались.
+- Push-уведомление на рабочие компьютеры не готовилось.
