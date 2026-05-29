@@ -1,6 +1,6 @@
 import unittest
 
-import sheets
+from taksklad import sheets
 
 
 class FakeWorksheet:
@@ -99,6 +99,68 @@ class TelegramLockTests(unittest.TestCase):
         self.assertTrue(sheets.release_telegram_poll_lock("pc-1"))
         self.assertEqual(sheet.rows[1][1], "")
         self.assertFalse(sheets.release_telegram_poll_lock("pc-2"))
+
+
+class SharedTelegramStateTests(unittest.TestCase):
+    def setUp(self):
+        self.original_get_google_client = sheets.get_google_client
+
+    def tearDown(self):
+        sheets.get_google_client = self.original_get_google_client
+
+    def use_spreadsheet(self, spreadsheet):
+        sheets.get_google_client = lambda: FakeClient(spreadsheet)
+
+    def test_read_returns_zero_when_state_row_missing(self):
+        sheet = FakeWorksheet([sheets.TELEGRAM_LOCK_HEADER])
+        self.use_spreadsheet(FakeSpreadsheet(sheet))
+
+        state = sheets.read_shared_telegram_state()
+
+        self.assertEqual(state["last_update_id"], 0)
+
+    def test_write_creates_state_row_with_last_update_id(self):
+        sheet = FakeWorksheet([sheets.TELEGRAM_LOCK_HEADER])
+        self.use_spreadsheet(FakeSpreadsheet(sheet))
+
+        written = sheets.write_shared_telegram_state(123456, "PC 1", now_ts=2000)
+
+        self.assertTrue(written)
+        state = sheets.read_shared_telegram_state()
+        self.assertEqual(state["last_update_id"], 123456)
+        self.assertEqual(state["owner_label"], "PC 1")
+
+    def test_write_refuses_to_go_backwards(self):
+        # Регрессия на сценарий с двумя компами: если кто-то уже записал
+        # больший update_id, второй не должен затирать его меньшим.
+        sheet = FakeWorksheet([
+            sheets.TELEGRAM_LOCK_HEADER,
+            [],
+            [sheets.TELEGRAM_STATE_KEY, "999", "PC A", "2026-05-26 10:00:00", "2000"],
+        ])
+        self.use_spreadsheet(FakeSpreadsheet(sheet))
+
+        written = sheets.write_shared_telegram_state(500, "PC B", now_ts=2010)
+
+        self.assertFalse(written)
+        state = sheets.read_shared_telegram_state()
+        self.assertEqual(state["last_update_id"], 999)
+        self.assertEqual(state["owner_label"], "PC A")
+
+    def test_write_updates_when_new_value_is_greater(self):
+        sheet = FakeWorksheet([
+            sheets.TELEGRAM_LOCK_HEADER,
+            [],
+            [sheets.TELEGRAM_STATE_KEY, "999", "PC A", "2026-05-26 10:00:00", "2000"],
+        ])
+        self.use_spreadsheet(FakeSpreadsheet(sheet))
+
+        written = sheets.write_shared_telegram_state(1500, "PC B", now_ts=2010)
+
+        self.assertTrue(written)
+        state = sheets.read_shared_telegram_state()
+        self.assertEqual(state["last_update_id"], 1500)
+        self.assertEqual(state["owner_label"], "PC B")
 
 
 if __name__ == "__main__":

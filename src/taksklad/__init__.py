@@ -1,0 +1,2 @@
+"""TakSklad application package."""
+

@@ -6,7 +6,7 @@ import tempfile
 import time
 from datetime import datetime
 
-from config import (
+from .config import (
     CREDENTIALS_FILE,
     IMPORT_HISTORY_FILE,
     PENDING_PRINTS_FILE,

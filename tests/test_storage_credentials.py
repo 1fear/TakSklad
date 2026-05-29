@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import storage
+from taksklad import storage
 
 
 def credentials(email, private_key):

@@ -5,8 +5,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from config import YANDEX_GEOCODER_API_KEY, YANDEX_GEOCODER_KEY_FILE
-from utils import normalize_coordinates, normalize_text
+from .config import YANDEX_GEOCODER_API_KEY, YANDEX_GEOCODER_KEY_FILE
+from .utils import normalize_coordinates, normalize_text
 
 
 def load_yandex_geocoder_key():

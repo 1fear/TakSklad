@@ -1,6 +1,6 @@
-from config import DEFAULT_PIECES_PER_BLOCK
-from storage import load_data_section, save_data_section
-from utils import normalize_lookup_text, normalize_text, parse_int_value
+from .config import DEFAULT_PIECES_PER_BLOCK
+from .storage import load_data_section, save_data_section
+from .utils import normalize_lookup_text, normalize_text, parse_int_value
 
 
 def load_product_catalog():

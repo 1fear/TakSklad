@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime
 
-from config import (
+from .config import (
     ORDER_DATE_COLUMN,
     SKLADBOT_CHECKED_AT_COLUMN,
     SKLADBOT_REQUEST_ID_COLUMN,
@@ -11,14 +11,14 @@ from config import (
     SKLADBOT_STATUS_MULTIPLE,
     SKLADBOT_STATUS_NOT_FOUND,
 )
-from orders import get_order_date_header_index, get_order_date_value, get_plan_blocks, is_order_active
-from skladbot import (
+from .orders import get_order_date_header_index, get_order_date_value, get_plan_blocks, is_order_active
+from .skladbot import (
     fetch_candidate_requests,
     load_skladbot_settings,
     request_matches_order_group,
     skladbot_is_configured,
 )
-from utils import (
+from .utils import (
     column_index_to_letter,
     get_cell,
     get_header_index,
@@ -135,7 +135,7 @@ def match_group_to_requests(group, requests):
     ]
 
 
-def sync_skladbot_request_numbers(sheet, candidate_requests=None, settings=None, now=None):
+def sync_skladbot_request_numbers(sheet, candidate_requests=None, settings=None, now=None, dry_run=False):
     settings = settings or load_skladbot_settings()
     configured = skladbot_is_configured(settings)
     if candidate_requests is None and not configured:
@@ -196,6 +196,7 @@ def sync_skladbot_request_numbers(sheet, candidate_requests=None, settings=None,
         "errors": 0,
     }
 
+    not_found_examples = []
     for group in groups:
         matches = match_group_to_requests(group, requests)
         if len(matches) == 1:
@@ -223,10 +224,34 @@ def sync_skladbot_request_numbers(sheet, candidate_requests=None, settings=None,
                 SKLADBOT_CHECKED_AT_COLUMN: checked_at,
             }
             result["not_found"] += 1
+            if len(not_found_examples) < 5:
+                not_found_examples.append(
+                    f"{group.get('date')} | {group.get('client')[:40]} | {len(group.get('products', []))} тов."
+                )
 
         updates.extend(build_row_updates(group["row_numbers"], columns, row_values))
 
-    if updates:
+    if updates and not dry_run:
         sheet.batch_update(updates, value_input_option="USER_ENTERED")
-    result["updated"] = len(updates)
+    result["updated"] = 0 if dry_run else len(updates)
+    result["would_update"] = len(updates) if dry_run else 0
+
+    # Диагностический итог. Без него нельзя понять из лога, что синк отработал:
+    # запрос заявок логируется, а результат сопоставления — нет.
+    logging.info(
+        "SkladBot sync: dry_run=%s, групп=%s, заявок-кандидатов=%s, matched=%s, not_found=%s, multiple=%s, ячеек обновлено=%s, ячеек к обновлению=%s",
+        dry_run,
+        len(groups),
+        len(requests),
+        result["matched"],
+        result["not_found"],
+        result["multiple"],
+        result["updated"],
+        result["would_update"],
+    )
+    if not_found_examples:
+        logging.info(
+            "SkladBot sync: примеры not_found (до 5): %s",
+            " || ".join(not_found_examples),
+        )
     return result

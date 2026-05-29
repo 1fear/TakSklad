@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 import ssl
@@ -10,8 +11,9 @@ from datetime import datetime, timedelta
 
 import certifi
 
-from config import (
+from .config import (
     SKLADBOT_API_BASE_URL,
+    SKLADBOT_API_TIMEOUT_SECONDS,
     SKLADBOT_COMPLETED_DETAIL_LIMIT,
     SKLADBOT_COMPLETED_LOOKBACK_DAYS,
     SKLADBOT_CUSTOMER_ID,
@@ -20,9 +22,10 @@ from config import (
     SKLADBOT_REQUESTS_LIMIT,
     SKLADBOT_SHIPMENT_TYPE_ID,
     SKLADBOT_SHIPMENT_TYPE_NAME,
+    SKLADBOT_SYNC_LOOKBACK_DAYS,
 )
-from storage import load_data_section
-from utils import normalize_lookup_text, normalize_payment_type, normalize_text, parse_date_to_standard, parse_int_value
+from .storage import load_data_section
+from .utils import normalize_lookup_text, normalize_payment_type, normalize_text, parse_date_to_standard, parse_int_value
 
 
 NOISE_PRODUCT_TOKENS = {
@@ -56,7 +59,9 @@ def load_skladbot_settings():
         "customer_name": SKLADBOT_CUSTOMER_NAME,
         "shipment_type_id": SKLADBOT_SHIPMENT_TYPE_ID,
         "shipment_type_name": SKLADBOT_SHIPMENT_TYPE_NAME,
+        "api_timeout_seconds": SKLADBOT_API_TIMEOUT_SECONDS,
         "completed_lookback_days": SKLADBOT_COMPLETED_LOOKBACK_DAYS,
+        "sync_lookback_days": SKLADBOT_SYNC_LOOKBACK_DAYS,
         "requests_limit": SKLADBOT_REQUESTS_LIMIT,
         "completed_detail_limit": SKLADBOT_COMPLETED_DETAIL_LIMIT,
         "request_delay_seconds": SKLADBOT_REQUEST_DELAY_SECONDS,
@@ -79,17 +84,25 @@ def load_skladbot_settings():
     settings["enabled"] = bool(settings.get("enabled") and settings["api_token"])
     settings["customer_id"] = parse_int_value(settings.get("customer_id")) or SKLADBOT_CUSTOMER_ID
     settings["shipment_type_id"] = parse_int_value(settings.get("shipment_type_id")) or SKLADBOT_SHIPMENT_TYPE_ID
+    settings["api_timeout_seconds"] = max(
+        3,
+        parse_int_value(settings.get("api_timeout_seconds")) or SKLADBOT_API_TIMEOUT_SECONDS,
+    )
     settings["requests_limit"] = max(
         parse_int_value(settings.get("requests_limit")),
         SKLADBOT_REQUESTS_LIMIT,
     )
-    settings["completed_detail_limit"] = max(
-        parse_int_value(settings.get("completed_detail_limit")),
-        SKLADBOT_COMPLETED_DETAIL_LIMIT,
+    settings["completed_detail_limit"] = (
+        parse_int_value(settings.get("completed_detail_limit"))
+        or SKLADBOT_COMPLETED_DETAIL_LIMIT
     )
     settings["completed_lookback_days"] = (
         parse_int_value(settings.get("completed_lookback_days"))
         or SKLADBOT_COMPLETED_LOOKBACK_DAYS
+    )
+    settings["sync_lookback_days"] = max(
+        0,
+        parse_int_value(settings.get("sync_lookback_days")) or SKLADBOT_SYNC_LOOKBACK_DAYS,
     )
     try:
         request_delay = float(str(settings.get("request_delay_seconds", "")).replace(",", "."))
@@ -109,7 +122,7 @@ class SkladBotError(RuntimeError):
 
 
 class SkladBotClient:
-    def __init__(self, token, base_url=SKLADBOT_API_BASE_URL, timeout=20, request_delay_seconds=SKLADBOT_REQUEST_DELAY_SECONDS):
+    def __init__(self, token, base_url=SKLADBOT_API_BASE_URL, timeout=SKLADBOT_API_TIMEOUT_SECONDS, request_delay_seconds=SKLADBOT_REQUEST_DELAY_SECONDS):
         self.token = normalize_text(token)
         self.base_url = normalize_text(base_url).rstrip("/")
         self.timeout = timeout
@@ -208,6 +221,41 @@ def parse_date_obj(value):
         return datetime.strptime(parsed, "%d.%m.%Y").date()
     except ValueError:
         return None
+
+
+def sync_date_window(today=None, lookback_days=SKLADBOT_SYNC_LOOKBACK_DAYS):
+    today = today or datetime.now().date()
+    lookback_days = max(0, parse_int_value(lookback_days))
+    return today - timedelta(days=lookback_days), today
+
+
+def date_in_sync_window(value, today=None, lookback_days=SKLADBOT_SYNC_LOOKBACK_DAYS):
+    request_date = parse_date_obj(value)
+    if not request_date:
+        return False
+    start_date, end_date = sync_date_window(today=today, lookback_days=lookback_days)
+    return start_date <= request_date <= end_date
+
+
+def list_item_in_sync_window(item, today=None, lookback_days=SKLADBOT_SYNC_LOOKBACK_DAYS):
+    return date_in_sync_window(
+        request_list_value(item, "created_at", "createdAt", "date"),
+        today=today,
+        lookback_days=lookback_days,
+    )
+
+
+def request_in_sync_window(request, today=None, lookback_days=SKLADBOT_SYNC_LOOKBACK_DAYS):
+    # Для уже подтянутого детали заявки фильтруем по дате отгрузки, а не по
+    # дате создания: нам нужны заявки, которые отгружаются в нашем окне,
+    # независимо от того, когда они были созданы в SkladBot. Если детали
+    # нет unloading_date, откатываемся на created_at как раньше.
+    candidate_date = request.get("unloading_date") or request.get("created_at")
+    return date_in_sync_window(
+        candidate_date,
+        today=today,
+        lookback_days=lookback_days,
+    )
 
 
 def field_map(detail):
@@ -351,6 +399,28 @@ def list_item_is_active(item):
     return not parse_bool(request_list_value(item, "is_completed")) and not parse_bool(request_list_value(item, "archived"))
 
 
+def normalize_company_name(value):
+    """Нормализация названия контрагента для строгого, но терпимого сравнения.
+
+    Убираем все небуквенно-цифровые символы (кавычки любых видов "'«»“”„, дефисы,
+    точки, запятые, скобки и т.п.), приводим к нижнему регистру, ё→е, схлопываем
+    пробелы. Слова и цифры сохраняются и должны совпадать один-в-один.
+
+    Примеры:
+        '"MARKET AL-KABIR" MChJ'   → 'market al kabir mchj'
+        '«MARKET AL-KABIR» MChJ'    → 'market al kabir mchj'
+        'MARKET AL-KABIR MChJ'      → 'market al kabir mchj'
+        'ООО "Аэропорт"'            → 'ооо аэропорт'
+    """
+    text = normalize_lookup_text(value)
+    if not text:
+        return ""
+    # Любой неалфавитно-цифровой символ заменяем на пробел, затем схлопываем.
+    text = re.sub(r"[^0-9a-zа-я]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
 def simplify_tokens(value, noise_tokens=None):
     noise_tokens = noise_tokens or set()
     text = normalize_lookup_text(value)
@@ -401,11 +471,12 @@ def request_matches_order_group(group, request):
         return False
 
     # Строгое сравнение клиента: «Название компании/Имя человека» в SkladBot
-    # должно один-в-один совпадать с «Клиент» в листе data (с учётом регистра,
-    # ё→е и нормализации пробелов). Любое расхождение — это другая компания,
-    # сопоставлять нельзя, иначе номер заявки сползёт к соседнему клиенту.
-    group_client = normalize_lookup_text(group.get("client"))
-    request_recipient = normalize_lookup_text(request.get("recipient"))
+    # должно совпадать с «Клиент» в листе data. Семантика строгая (нужен тот
+    # же контрагент), но техническая нормализация терпимая: убираем кавычки
+    # любых видов, дефисы, точки, запятые, скобки — только это меняется
+    # между источниками. Слова, цифры, ё/е и пробелы сравниваются строго.
+    group_client = normalize_company_name(group.get("client"))
+    request_recipient = normalize_company_name(request.get("recipient"))
     if not group_client or not request_recipient or group_client != request_recipient:
         return False
 
@@ -439,9 +510,11 @@ def fetch_candidate_requests(settings=None, client=None, today=None):
     if not skladbot_is_configured(settings):
         return []
 
+    sync_lookback_days = settings.get("sync_lookback_days", SKLADBOT_SYNC_LOOKBACK_DAYS)
     client = client or SkladBotClient(
         settings["api_token"],
         settings.get("base_url"),
+        timeout=settings.get("api_timeout_seconds", SKLADBOT_API_TIMEOUT_SECONDS),
         request_delay_seconds=settings.get("request_delay_seconds", SKLADBOT_REQUEST_DELAY_SECONDS),
     )
     items = client.list_requests(
@@ -453,15 +526,35 @@ def fetch_candidate_requests(settings=None, client=None, today=None):
     filtered_items = [
         item
         for item in items
-        if list_item_active_or_recent(
+        if list_item_in_sync_window(
             item,
             today=today,
-            lookback_days=settings.get("completed_lookback_days", SKLADBOT_COMPLETED_LOOKBACK_DAYS),
+            lookback_days=sync_lookback_days,
         )
     ]
     active_items = [item for item in filtered_items if list_item_is_active(item)]
     completed_items = [item for item in filtered_items if not list_item_is_active(item)]
-    completed_items = completed_items[:settings.get("completed_detail_limit", SKLADBOT_COMPLETED_DETAIL_LIMIT)]
+    # Диагностика: показываем фактический разброс created_at у всех 500 заявок,
+    # чтобы было видно, не отрезает ли первичный фильтр полезные строки.
+    item_dates = sorted(
+        d for d in (
+            parse_date_obj(request_list_value(item, "created_at", "createdAt", "date"))
+            for item in items
+        ) if d
+    )
+    sample_dates = (
+        f"{item_dates[0].strftime('%d.%m.%Y')}..{item_dates[-1].strftime('%d.%m.%Y')}"
+        if item_dates else "—"
+    )
+    logging.info(
+        "SkladBot: список=%s (created_at %s), окно=%s дн., к проверке=%s, активных=%s, завершённых/архивных=%s",
+        len(items),
+        sample_dates,
+        sync_lookback_days,
+        len(filtered_items),
+        len(active_items),
+        len(completed_items),
+    )
 
     for item in active_items + completed_items:
         request_id = parse_int_value(request_list_value(item, "id"))
@@ -478,10 +571,10 @@ def fetch_candidate_requests(settings=None, client=None, today=None):
             continue
         if request.get("type") and normalize_lookup_text(request.get("type")) != normalize_lookup_text(settings.get("shipment_type_name")):
             continue
-        if not is_active_or_recent_request(
+        if not request_in_sync_window(
             request,
             today=today,
-            lookback_days=settings.get("completed_lookback_days", SKLADBOT_COMPLETED_LOOKBACK_DAYS),
+            lookback_days=sync_lookback_days,
         ):
             continue
         requests.append(request)

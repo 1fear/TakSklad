@@ -1,6 +1,6 @@
 import unittest
 
-import main
+from taksklad import main
 
 
 class RefreshFallbackTests(unittest.TestCase):
@@ -13,12 +13,14 @@ class RefreshFallbackTests(unittest.TestCase):
             sheet = object()
             google_orders = [{"Клиент": "Test Client"}]
 
-            def fake_get_today_orders(apply_skladbot_filter=None):
+            def fake_get_today_orders(apply_skladbot_filter=None, include_rows=False):
                 calls.append(apply_skladbot_filter)
+                if include_rows:
+                    return google_orders, sheet, []
                 return google_orders, sheet
 
             main.get_today_orders = fake_get_today_orders
-            main.get_all_existing_codes = lambda sheet: set()
+            main.get_all_existing_codes = lambda sheet, all_rows=None: set()
             main.get_pending_codes = lambda: set()
 
             orders, _, _ = main.fetch_sheet_data()
@@ -41,10 +43,14 @@ class RefreshFallbackTests(unittest.TestCase):
             sheet = object()
             fallback_orders = [{"Клиент": "Test Client"}]
 
-            def fake_get_today_orders(apply_skladbot_filter=None):
+            def fake_get_today_orders(apply_skladbot_filter=None, include_rows=False):
                 calls.append(apply_skladbot_filter)
                 if apply_skladbot_filter is False:
+                    if include_rows:
+                        return fallback_orders, sheet, []
                     return fallback_orders, sheet
+                if include_rows:
+                    return [], sheet, []
                 return [], sheet
 
             main.get_today_orders = fake_get_today_orders
@@ -58,7 +64,7 @@ class RefreshFallbackTests(unittest.TestCase):
                 "errors": 1,
                 "message": "timeout",
             }
-            main.get_all_existing_codes = lambda sheet: set()
+            main.get_all_existing_codes = lambda sheet, all_rows=None: set()
             main.get_pending_codes = lambda: set()
 
             orders, _, _, sync_result = main.fetch_sheet_data_with_sync()
@@ -87,10 +93,14 @@ class RefreshFallbackTests(unittest.TestCase):
                 {"Клиент": "Not matched", "Номер заявки SkladBot": ""},
             ]
 
-            def fake_get_today_orders(apply_skladbot_filter=None):
+            def fake_get_today_orders(apply_skladbot_filter=None, include_rows=False):
                 calls.append(apply_skladbot_filter)
                 if apply_skladbot_filter is True:
+                    if include_rows:
+                        return [google_orders[0]], sheet, []
                     return [google_orders[0]], sheet
+                if include_rows:
+                    return google_orders, sheet, []
                 return google_orders, sheet
 
             main.get_today_orders = fake_get_today_orders
@@ -104,7 +114,7 @@ class RefreshFallbackTests(unittest.TestCase):
                 "errors": 0,
                 "message": "",
             }
-            main.get_all_existing_codes = lambda sheet: set()
+            main.get_all_existing_codes = lambda sheet, all_rows=None: set()
             main.get_pending_codes = lambda: set()
 
             orders, _, _, sync_result = main.fetch_sheet_data_with_sync()
@@ -133,14 +143,16 @@ class RefreshFallbackTests(unittest.TestCase):
             def fail_skladbot_sync(sheet):
                 raise AssertionError("SkladBot sync should not run during fast refresh")
 
-            def fake_get_today_orders(apply_skladbot_filter=None):
+            def fake_get_today_orders(apply_skladbot_filter=None, include_rows=False):
                 calls.append(apply_skladbot_filter)
+                if include_rows:
+                    return google_orders, sheet, []
                 return google_orders, sheet
 
             main.get_today_orders = fake_get_today_orders
             main.sync_pending_saves = lambda sheet=None: {"synced": 0, "failed": 0, "remaining": 0}
             main.sync_skladbot_request_numbers = fail_skladbot_sync
-            main.get_all_existing_codes = lambda sheet: set()
+            main.get_all_existing_codes = lambda sheet, all_rows=None: set()
             main.get_pending_codes = lambda: set()
 
             orders, _, _, sync_result = main.fetch_sheet_data_with_sync(sync_skladbot=False)

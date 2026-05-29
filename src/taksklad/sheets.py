@@ -8,9 +8,11 @@ from gspread.exceptions import WorksheetNotFound
 from gspread.http_client import HTTPClient
 from oauth2client.service_account import ServiceAccountCredentials
 
-from config import (
+from .config import (
     CREDENTIALS_FILE,
     GOOGLE_API_TIMEOUT_SECONDS,
+    GOOGLE_BACKOFF_LOG_INTERVAL_SECONDS,
+    GOOGLE_RETRY_COOLDOWN_SECONDS,
     LEGACY_ORDER_DATE_COLUMN,
     ORDER_DATE_COLUMN,
     REQUIRED_COLUMNS,
@@ -26,7 +28,7 @@ from config import (
     TELEGRAM_LOCK_TTL_SECONDS,
     WORKING_COLUMNS,
 )
-from orders import (
+from .orders import (
     get_order_date_header_index,
     get_order_date_value,
     get_order_status,
@@ -35,8 +37,8 @@ from orders import (
     make_order_duplicate_key,
     row_matches_order,
 )
-from storage import load_credentials_data, load_data_section
-from utils import (
+from .storage import load_credentials_data, load_data_section
+from .utils import (
     column_index_to_letter,
     get_cell,
     get_header_index,
@@ -53,6 +55,74 @@ class GoogleTimeoutHTTPClient(HTTPClient):
     def __init__(self, auth, session=None):
         super().__init__(auth, session=session)
         self.timeout = GOOGLE_API_TIMEOUT_SECONDS
+
+
+GOOGLE_BACKOFF_UNTIL_TS = 0.0
+GOOGLE_BACKOFF_LAST_LOG_TS = 0.0
+
+
+def is_google_transient_error(exc):
+    message = normalize_text(exc).lower()
+    retryable_markers = (
+        "429",
+        "quota",
+        "rate limit",
+        "read timed out",
+        "timed out",
+        "timeout",
+        "temporarily unavailable",
+        "service unavailable",
+        "internal error",
+        "backend error",
+        "http error 500",
+        "http error 502",
+        "http error 503",
+        "apierror: [500]",
+        "apierror: [502]",
+        "apierror: [503]",
+    )
+    return any(marker in message for marker in retryable_markers)
+
+
+def note_google_transient_error(exc, now_ts=None):
+    global GOOGLE_BACKOFF_UNTIL_TS, GOOGLE_BACKOFF_LAST_LOG_TS
+    if not is_google_transient_error(exc):
+        return False
+
+    now_ts = time.time() if now_ts is None else float(now_ts)
+    GOOGLE_BACKOFF_UNTIL_TS = max(
+        GOOGLE_BACKOFF_UNTIL_TS,
+        now_ts + GOOGLE_RETRY_COOLDOWN_SECONDS,
+    )
+    if now_ts - GOOGLE_BACKOFF_LAST_LOG_TS >= GOOGLE_BACKOFF_LOG_INTERVAL_SECONDS:
+        logging.warning(
+            "Google Sheets временно перегружен, фоновые обращения на паузе %s сек.: %s",
+            GOOGLE_RETRY_COOLDOWN_SECONDS,
+            normalize_text(exc),
+        )
+        GOOGLE_BACKOFF_LAST_LOG_TS = now_ts
+    return True
+
+
+def google_backoff_remaining(now_ts=None):
+    now_ts = time.time() if now_ts is None else float(now_ts)
+    return max(0, int(GOOGLE_BACKOFF_UNTIL_TS - now_ts))
+
+
+def ensure_google_background_allowed(operation_name, now_ts=None):
+    remaining = google_backoff_remaining(now_ts=now_ts)
+    if remaining <= 0:
+        return
+    raise RuntimeError(
+        f"Google Sheets временно на паузе после 429/timeout "
+        f"({operation_name}, осталось {remaining} сек.)"
+    )
+
+
+def reset_google_backoff_for_tests():
+    global GOOGLE_BACKOFF_UNTIL_TS, GOOGLE_BACKOFF_LAST_LOG_TS
+    GOOGLE_BACKOFF_UNTIL_TS = 0.0
+    GOOGLE_BACKOFF_LAST_LOG_TS = 0.0
 
 
 def get_google_client():
@@ -142,8 +212,13 @@ def acquire_telegram_poll_lock(owner_id, owner_label, now_ts=None):
     now_ts = time.time() if now_ts is None else float(now_ts)
     owner_id = normalize_text(owner_id)
     owner_label = normalize_text(owner_label)
-    sheet = get_or_create_telegram_lock_sheet(get_google_client())
-    rows = sheet.get_all_values()
+    ensure_google_background_allowed("Telegram lock", now_ts=now_ts)
+    try:
+        sheet = get_or_create_telegram_lock_sheet(get_google_client())
+        rows = sheet.get_all_values()
+    except Exception as exc:
+        note_google_transient_error(exc, now_ts=now_ts)
+        raise
     current = rows[1] if len(rows) > 1 else []
     current_key = get_cell(current, 0)
     current_owner_id = get_cell(current, 1)
@@ -164,8 +239,12 @@ def acquire_telegram_poll_lock(owner_id, owner_label, now_ts=None):
             "updated_ts": parse_lock_timestamp(current_updated_ts),
         }
 
-    write_telegram_lock_row(sheet, owner_id, owner_label, now_ts)
-    verify_rows = sheet.get_all_values()
+    try:
+        write_telegram_lock_row(sheet, owner_id, owner_label, now_ts)
+        verify_rows = sheet.get_all_values()
+    except Exception as exc:
+        note_google_transient_error(exc, now_ts=now_ts)
+        raise
     verify = verify_rows[1] if len(verify_rows) > 1 else []
     acquired = get_cell(verify, 1) == owner_id
     return {
@@ -178,12 +257,110 @@ def acquire_telegram_poll_lock(owner_id, owner_label, now_ts=None):
 
 def release_telegram_poll_lock(owner_id):
     owner_id = normalize_text(owner_id)
-    sheet = get_or_create_telegram_lock_sheet(get_google_client())
-    rows = sheet.get_all_values()
+    ensure_google_background_allowed("Telegram lock release")
+    try:
+        sheet = get_or_create_telegram_lock_sheet(get_google_client())
+        rows = sheet.get_all_values()
+    except Exception as exc:
+        note_google_transient_error(exc)
+        raise
     current = rows[1] if len(rows) > 1 else []
     if get_cell(current, 0) != TELEGRAM_LOCK_KEY or get_cell(current, 1) != owner_id:
         return False
-    write_telegram_lock_row(sheet, "", "", time.time())
+    try:
+        write_telegram_lock_row(sheet, "", "", time.time())
+    except Exception as exc:
+        note_google_transient_error(exc)
+        raise
+    return True
+
+
+# --- Общий telegram-state (shared last_update_id для двух+ компьютеров) ---
+#
+# Чтобы два запущенных TakSklad не обработали один и тот же update_id, общий
+# счётчик прочитанных Telegram-апдейтов держится в листе _TakSklad_System,
+# строка 3 (после header в 1 и lock в 2). Схема та же: key/owner_id/owner_label/
+# updated_at/updated_ts. В owner_id пишется last_update_id строкой, чтобы не
+# плодить колонки. Локальный telegram_state в TakSklad_data.json остаётся как
+# fallback на случай, когда Google Sheets временно недоступен.
+
+TELEGRAM_STATE_KEY = "telegram_state"
+TELEGRAM_STATE_ROW = 3
+
+
+def _read_telegram_state_row(sheet):
+    rows = sheet.get_all_values()
+    if len(rows) < TELEGRAM_STATE_ROW:
+        return []
+    return rows[TELEGRAM_STATE_ROW - 1]
+
+
+def _write_telegram_state_row(sheet, last_update_id, owner_label, now_ts):
+    values = [
+        TELEGRAM_STATE_KEY,
+        str(parse_int_value(last_update_id)),
+        normalize_text(owner_label),
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        str(int(now_ts)),
+    ]
+    sheet.batch_update(
+        [{"range": f"A{TELEGRAM_STATE_ROW}:E{TELEGRAM_STATE_ROW}", "values": [values]}],
+        value_input_option="USER_ENTERED",
+    )
+    return values
+
+
+def read_shared_telegram_state():
+    """Прочитать общий last_update_id из листа _TakSklad_System.
+
+    Возвращает dict {"last_update_id": int, "updated_ts": float, "owner_label": str}.
+    Если строки нет, last_update_id = 0.
+    Бросает исключение, если Google Sheets недоступен — вызывающий должен
+    откатиться на локальный кэш.
+    """
+    ensure_google_background_allowed("Telegram state read")
+    try:
+        sheet = get_or_create_telegram_lock_sheet(get_google_client())
+        row = _read_telegram_state_row(sheet)
+    except Exception as exc:
+        note_google_transient_error(exc)
+        raise
+    if get_cell(row, 0) != TELEGRAM_STATE_KEY:
+        return {"last_update_id": 0, "updated_ts": 0.0, "owner_label": ""}
+    return {
+        "last_update_id": parse_int_value(get_cell(row, 1)),
+        "updated_ts": parse_lock_timestamp(get_cell(row, 4)),
+        "owner_label": get_cell(row, 2),
+    }
+
+
+def write_shared_telegram_state(last_update_id, owner_label, now_ts=None):
+    """Записать общий last_update_id, только если он строго больше текущего.
+
+    Защита от двух параллельных писателей: если в момент между нашим read и
+    write кто-то уже записал большее значение — не откатываем его назад.
+    Возвращает True, если запись произошла, иначе False.
+    """
+    now_ts = time.time() if now_ts is None else float(now_ts)
+    new_value = parse_int_value(last_update_id)
+    if new_value <= 0:
+        return False
+    ensure_google_background_allowed("Telegram state write", now_ts=now_ts)
+    try:
+        sheet = get_or_create_telegram_lock_sheet(get_google_client())
+        row = _read_telegram_state_row(sheet)
+    except Exception as exc:
+        note_google_transient_error(exc, now_ts=now_ts)
+        raise
+    current_key = get_cell(row, 0)
+    current_value = parse_int_value(get_cell(row, 1)) if current_key == TELEGRAM_STATE_KEY else 0
+    if new_value <= current_value:
+        return False
+    try:
+        _write_telegram_state_row(sheet, new_value, owner_label, now_ts)
+    except Exception as exc:
+        note_google_transient_error(exc, now_ts=now_ts)
+        raise
     return True
 
 
@@ -369,22 +546,27 @@ def get_existing_order_duplicate_keys(all_rows):
     return duplicate_keys
 
 
-def get_all_existing_codes(sheet):
-    try:
-        all_rows = sheet.get_all_values()
-        if not all_rows:
-            return set()
-        header_idx = get_header_index(all_rows[0])
-        codes_idx = header_idx.get("Отсканированные коды")
-        if codes_idx is None:
-            logging.warning("Колонка 'Отсканированные коды' не найдена")
-            return set()
+def get_all_existing_codes_from_rows(all_rows):
+    if not all_rows:
+        return set()
+    header_idx = get_header_index(all_rows[0])
+    codes_idx = header_idx.get("Отсканированные коды")
+    if codes_idx is None:
+        logging.warning("Колонка 'Отсканированные коды' не найдена")
+        return set()
 
-        all_codes = set()
-        for row in all_rows[1:]:
-            for code in split_codes(get_cell(row, codes_idx)):
-                all_codes.add(code)
-        return all_codes
+    all_codes = set()
+    for row in all_rows[1:]:
+        for code in split_codes(get_cell(row, codes_idx)):
+            all_codes.add(code)
+    return all_codes
+
+
+def get_all_existing_codes(sheet, all_rows=None):
+    try:
+        if all_rows is None:
+            all_rows = sheet.get_all_values()
+        return get_all_existing_codes_from_rows(all_rows)
     except Exception:
         logging.exception("Не удалось загрузить существующие коды")
         return set()
@@ -427,7 +609,7 @@ def find_code_details_in_sheet(sheet, code):
     return find_code_details_in_rows(sheet.get_all_values(), code)
 
 
-def get_today_orders(apply_skladbot_filter=None):
+def get_today_orders(apply_skladbot_filter=None, include_rows=False):
     try:
         client = get_google_client()
         sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
@@ -483,8 +665,11 @@ def get_today_orders(apply_skladbot_filter=None):
         if status_updates:
             sheet.batch_update(status_updates, value_input_option="USER_ENTERED")
 
+        if include_rows:
+            return today_orders, sheet, all_rows
         return today_orders, sheet
     except Exception as exc:
+        note_google_transient_error(exc)
         logging.exception("Не удалось загрузить данные из Google Sheets")
         friendly_message = format_google_sheets_error(exc)
         if friendly_message and friendly_message != str(exc):
@@ -561,5 +746,6 @@ def update_scanned_codes_to_gsheet(sheet, order, scanned_codes):
         sheet.batch_update(updates, value_input_option="USER_ENTERED")
         return True, "Коды записаны в Google Sheets"
     except Exception as exc:
+        note_google_transient_error(exc)
         logging.exception("Не удалось записать коды в Google Sheets")
         return False, format_google_sheets_error(exc) or str(exc)

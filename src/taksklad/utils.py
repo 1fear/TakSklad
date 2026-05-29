@@ -4,7 +4,7 @@ import os
 import re
 from datetime import datetime
 
-from config import EXCEL_IMPORT_EXTENSIONS
+from .config import EXCEL_IMPORT_EXTENSIONS
 
 
 def clean_date_value(date_value):

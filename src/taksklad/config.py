@@ -11,13 +11,18 @@ APP_RELEASE_ZIP_NAME = "TakSklad-windows-x64.zip"
 def get_app_dir():
     if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__))
+    return os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir))
 
 
 APP_DIR = get_app_dir()
 CREDENTIALS_FILE = os.path.join(APP_DIR, "credentials.json")
 TAKSKLAD_DATA_FILE = os.path.join(APP_DIR, "TakSklad_data.json")
-LOG_FILE = os.path.join(APP_DIR, "TakSklad.log")
+# Логи приложения держим в подпапке docs/ рядом с changelog'ом и проектной
+# документацией — единое место для всего, что относится к диагностике и
+# истории проекта. Файлы .log .gitignored, .md остаются в git.
+LOG_DIR = os.path.join(APP_DIR, "docs")
+LOG_FILE = os.path.join(LOG_DIR, "TakSklad.log")
+UPDATE_LOG_FILE = os.path.join(LOG_DIR, "TakSklad_update.log")
 BACKUP_DIR = os.path.join(APP_DIR, "scan_backups")
 REPORTS_DIR = os.path.join(APP_DIR, "reports")
 PENDING_PRINTS_FILE = os.path.join(APP_DIR, "pending_prints.json")
@@ -33,12 +38,18 @@ YANDEX_GEOCODER_API_KEY = "7c455cc8-0cda-46da-ac5c-e32297c2fec0"
 
 APP_VERSION = "1.1.17"
 UPDATE_INFO_URL = os.environ.get(
-    "PKIS_UPDATE_INFO_URL",
-    "https://raw.githubusercontent.com/1fear/pKIS/main/version.json",
+    "TAKSKLAD_UPDATE_INFO_URL",
+    "https://raw.githubusercontent.com/1fear/TakSklad/main/version.json",
 ).strip()
 UPDATE_CHECK_TIMEOUT_SECONDS = 8
 UPDATE_DOWNLOAD_TIMEOUT_SECONDS = 120
+# Если установка обновления упала или пользователь отказался — не дёргать
+# апдейтер для той же версии чаще одного раза в час. Иначе получаем цикл
+# «упало → старый exe → снова проверка → снова упало».
+UPDATE_RETRY_COOLDOWN_SECONDS = 60 * 60
 GOOGLE_API_TIMEOUT_SECONDS = 30
+GOOGLE_RETRY_COOLDOWN_SECONDS = 60
+GOOGLE_BACKOFF_LOG_INTERVAL_SECONDS = 30
 TELEGRAM_FILE_DOWNLOAD_TIMEOUT_SECONDS = 120
 EXCEL_IMPORT_EXTENSIONS = {".xlsx", ".xlsm"}
 TELEGRAM_SINGLE_LISTENER_LOCK_ENABLED = True
@@ -70,6 +81,7 @@ STATUS_COMPLETED = "Выполнено"
 WORKING_COLUMNS = REQUIRED_COLUMNS + [STATUS_COLUMN]
 
 SKLADBOT_API_BASE_URL = os.environ.get("SKLADBOT_API_BASE_URL", "https://api.skladbot.ru/v1").strip()
+SKLADBOT_API_TIMEOUT_SECONDS = 8
 SKLADBOT_REQUEST_NUMBER_COLUMN = "Номер заявки SkladBot"
 SKLADBOT_REQUEST_ID_COLUMN = "ID заявки SkladBot"
 SKLADBOT_STATUS_COLUMN = "Статус SkladBot"
@@ -83,6 +95,7 @@ SKLADBOT_CUSTOMER_NAME = "ООО Bastion Import Chapman MCHJ"
 SKLADBOT_SHIPMENT_TYPE_ID = 3389
 SKLADBOT_SHIPMENT_TYPE_NAME = "Отгрузка 3PL"
 SKLADBOT_COMPLETED_LOOKBACK_DAYS = 2
+SKLADBOT_SYNC_LOOKBACK_DAYS = 14
 SKLADBOT_REQUESTS_LIMIT = 500
 SKLADBOT_COMPLETED_DETAIL_LIMIT = 500
 SKLADBOT_REQUEST_DELAY_SECONDS = 0.05

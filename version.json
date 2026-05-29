@@ -1,12 +1,12 @@
 {
-  "latest_version": "1.1.17",
-  "min_supported_version": "1.1.17",
-  "mandatory": true,
-  "package_type": "onedir_zip",
+  "latest_version": "1.1.7",
+  "min_supported_version": "1.1.7",
+  "mandatory": false,
+  "package_type": "onefile_exe",
   "entrypoint": "TakSklad.exe",
-  "download_url": "https://github.com/1fear/pKIS/releases/download/v1.1.17/TakSklad.exe",
-  "sha256": "dd603cdf48d49a45defefae765ce595d4367ad7914101ee521c7838012c51f70",
-  "download_url_onedir": "https://github.com/1fear/pKIS/releases/download/v1.1.17/TakSklad-windows-x64.zip",
-  "sha256_onedir": "4c1bc0eb7f61c2e0e7cb61a9a8241006c87f58c4b2436e627c42bbf191f23592",
-  "message": "TakSklad 1.1.17: Telegram теперь слушает только один компьютер через временный lock в Google Sheets, чтобы не было HTTP 409 Conflict."
+  "download_url": "",
+  "sha256": "",
+  "download_url_onedir": "",
+  "sha256_onedir": "",
+  "message": "Рабочая стабильная линия закреплена на TakSklad 1.1.7. Новая стабилизация готовится отдельно и не выкатывается автоматически."
 }

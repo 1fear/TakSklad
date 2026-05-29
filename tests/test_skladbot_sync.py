@@ -1,6 +1,7 @@
 import unittest
+from datetime import date
 
-from config import (
+from taksklad.config import (
     ORDER_DATE_COLUMN,
     SKLADBOT_CHECKED_AT_COLUMN,
     SKLADBOT_REQUEST_ID_COLUMN,
@@ -12,9 +13,10 @@ from config import (
     STATUS_COLUMN,
     STATUS_NOT_COMPLETED,
 )
-import skladbot_sync
-from skladbot_sync import sync_skladbot_request_numbers
-from utils import column_index_to_letter
+from taksklad.skladbot import fetch_candidate_requests, load_skladbot_settings
+from taksklad import skladbot_sync
+from taksklad.skladbot_sync import sync_skladbot_request_numbers
+from taksklad.utils import column_index_to_letter
 
 
 class FakeSheet:
@@ -124,6 +126,25 @@ class SkladBotSyncTests(unittest.TestCase):
         self.assertEqual(sheet.rows[2][10], "WH-R-189337")
         self.assertEqual(sheet.rows[1][12], SKLADBOT_STATUS_FOUND)
 
+    def test_dry_run_does_not_write_request_number(self):
+        sheet = FakeSheet([
+            header(),
+            order_row("Chapman Brown OP 20", 10, 1),
+            order_row("Chapman Gold SSL 20", 20, 2),
+        ])
+
+        result = sync_skladbot_request_numbers(
+            sheet,
+            candidate_requests=[request()],
+            dry_run=True,
+        )
+
+        self.assertEqual(result["matched"], 1)
+        self.assertEqual(result["updated"], 0)
+        self.assertGreater(result["would_update"], 0)
+        self.assertEqual(sheet.updates, [])
+        self.assertEqual(sheet.rows[1][10], "")
+
     def test_marks_not_found_without_guessing(self):
         sheet = FakeSheet([
             header(),
@@ -190,6 +211,45 @@ class SkladBotSyncTests(unittest.TestCase):
         self.assertEqual(result["not_found"], 1)
         self.assertEqual(sheet.rows[1][10], "")
 
+    def test_matches_request_when_client_quotes_differ(self):
+        # Регрессия: после введения строгого сравнения клиента появилась
+        # обратная проблема — заявки переставали матчиться, потому что
+        # в Excel клиент с кавычками '"MARKET AL-KABIR" MChJ', а SkladBot
+        # отдаёт без кавычек или с типографскими «»“”. normalize_company_name
+        # должен снимать различия по пунктуации, но сохранять различия по
+        # словам и цифрам.
+        from taksklad.skladbot import normalize_company_name
+        self.assertEqual(
+            normalize_company_name('"MARKET AL-KABIR" MChJ'),
+            normalize_company_name('MARKET AL-KABIR MChJ'),
+        )
+        self.assertEqual(
+            normalize_company_name('«MARKET AL-KABIR» MChJ'),
+            normalize_company_name('"MARKET AL-KABIR" MChJ'),
+        )
+        # Разные слова — разные результаты:
+        self.assertNotEqual(
+            normalize_company_name('"MARKET AL-KABIR" MChJ'),
+            normalize_company_name('"MARKET AL-KEBIR" MChJ'),
+        )
+
+        # Полная регрессия: заявка с тем же клиентом, но без кавычек,
+        # теперь матчится с группой, где клиент с кавычками.
+        no_quotes_request = request("WH-R-189337", 189337)
+        no_quotes_request["recipient"] = "MARKET AL-KABIR MChJ"
+
+        sheet = FakeSheet([
+            header(),
+            order_row("Chapman Brown OP 20", 10, 1),
+            order_row("Chapman Gold SSL 20", 20, 2),
+        ])
+
+        result = sync_skladbot_request_numbers(sheet, candidate_requests=[no_quotes_request])
+
+        self.assertEqual(result["matched"], 1)
+        self.assertEqual(sheet.rows[1][10], "WH-R-189337")
+        self.assertEqual(sheet.rows[2][10], "WH-R-189337")
+
     def test_does_not_match_request_from_different_client(self):
         # Регрессия на баг "номер заявки сползает к соседнему клиенту":
         # у двух клиентов на 26.05 совпали адрес, оплата и количество товара.
@@ -240,6 +300,98 @@ class SkladBotSyncTests(unittest.TestCase):
             self.assertEqual(sheet.rows[1][12], "")
         finally:
             skladbot_sync.fetch_candidate_requests = original_fetch
+
+    def test_fetches_details_only_for_today_and_yesterday_requests(self):
+        class FakeClient:
+            def __init__(self):
+                self.detail_ids = []
+
+            def list_requests(self, customer_id, type_id, limit=500):
+                return [
+                    {
+                        "id": 1,
+                        "delivery_number": "WH-R-1",
+                        "created_at": "2026-05-27",
+                        "customer": "ООО Bastion Import Chapman MCHJ",
+                        "type": "Отгрузка 3PL",
+                        "is_completed": 0,
+                        "archived": 0,
+                    },
+                    {
+                        "id": 2,
+                        "delivery_number": "WH-R-2",
+                        "created_at": "2026-05-26",
+                        "customer": "ООО Bastion Import Chapman MCHJ",
+                        "type": "Отгрузка 3PL",
+                        "is_completed": 1,
+                        "archived": 1,
+                    },
+                    {
+                        "id": 3,
+                        "delivery_number": "WH-R-3",
+                        "created_at": "2026-05-25",
+                        "customer": "ООО Bastion Import Chapman MCHJ",
+                        "type": "Отгрузка 3PL",
+                        "is_completed": 0,
+                        "archived": 0,
+                    },
+                ]
+
+            def get_request_detail(self, request_id):
+                self.detail_ids.append(request_id)
+                unloading_date = "2026-05-27" if request_id == 1 else "2026-05-26"
+                return {
+                    "id": request_id,
+                    "delivery_number": f"WH-R-{request_id}",
+                    "customer": {"name": "ООО Bastion Import Chapman MCHJ"},
+                    "type": "Отгрузка 3PL",
+                    "createdAt": unloading_date,
+                    "fields": [
+                        {"field": "unloading_date", "value": unloading_date},
+                    ],
+                }
+
+        client = FakeClient()
+        result = fetch_candidate_requests(
+            settings={
+                "enabled": True,
+                "api_token": "token",
+                "customer_id": 6211,
+                "customer_name": "ООО Bastion Import Chapman MCHJ",
+                "shipment_type_id": 3389,
+                "shipment_type_name": "Отгрузка 3PL",
+                "requests_limit": 500,
+                "completed_detail_limit": 500,
+                "sync_lookback_days": 1,
+                "request_delay_seconds": 0,
+            },
+            client=client,
+            today=date(2026, 5, 27),
+        )
+
+        self.assertEqual(client.detail_ids, [1, 2])
+        self.assertEqual([item["id"] for item in result], [1, 2])
+
+    def test_load_settings_keeps_minimum_skladbot_request_limit(self):
+        original_load_data_section = load_skladbot_settings.__globals__["load_data_section"]
+        try:
+            def fake_load_data_section(section, default=None):
+                if section == "skladbot_settings":
+                    return {
+                        "enabled": True,
+                        "api_token": "token",
+                        "requests_limit": 100,
+                        "completed_detail_limit": 25,
+                    }
+                return default
+
+            load_skladbot_settings.__globals__["load_data_section"] = fake_load_data_section
+            settings = load_skladbot_settings()
+
+            self.assertEqual(settings["requests_limit"], 500)
+            self.assertEqual(settings["completed_detail_limit"], 25)
+        finally:
+            load_skladbot_settings.__globals__["load_data_section"] = original_load_data_section
 
 
 if __name__ == "__main__":

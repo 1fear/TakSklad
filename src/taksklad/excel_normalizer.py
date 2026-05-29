@@ -2,8 +2,8 @@ import os
 import re
 from datetime import date, datetime
 
-from config import SOURCE_OPTIONAL_ALIASES, SOURCE_REQUIRED_ALIASES
-from utils import clean_file_name, normalize_lookup_text, normalize_text, parse_date_to_standard
+from .config import SOURCE_OPTIONAL_ALIASES, SOURCE_REQUIRED_ALIASES
+from .utils import clean_file_name, normalize_lookup_text, normalize_text, parse_date_to_standard
 
 
 MAX_HEADER_SCAN_ROWS = 40

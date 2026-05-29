@@ -3,8 +3,8 @@ TakSklad_data.json
 credentials_*.json
 TakSklad_data_*.json
 google_sheet_backup_*.json
-pKIS.log
 TakSklad.log
+docs/*.log
 pending_prints.json
 pending_saves.json
 pending_telegram.json
@@ -14,6 +14,8 @@ telegram_settings.json
 product_catalog.json
 import_history.json
 yandex_geocoder_key.txt
+
+archive/
 
 scan_backups/
 reports/
@@ -27,5 +29,8 @@ __pycache__/
 build/
 dist/
 *.spec
+*.tmp
+*.bak
+*.backup
 
 .DS_Store

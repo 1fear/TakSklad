@@ -1,4 +1,4 @@
-from config import (
+from .config import (
     LEGACY_ORDER_DATE_COLUMN,
     ORDER_DATE_COLUMN,
     SKLADBOT_REQUEST_NUMBER_COLUMN,
@@ -6,7 +6,7 @@ from config import (
     STATUS_COMPLETED,
     STATUS_NOT_COMPLETED,
 )
-from utils import (
+from .utils import (
     get_cell,
     make_hash,
     normalize_lookup_text,

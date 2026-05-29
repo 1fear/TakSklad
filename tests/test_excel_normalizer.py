@@ -7,17 +7,17 @@ from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
 
-from excel_normalizer import detect_excel_source, is_summary_row
+from taksklad.excel_normalizer import detect_excel_source, is_summary_row
 
 
 def import_excel_import():
     try:
-        return importlib.import_module("excel_import")
+        return importlib.import_module("taksklad.excel_import")
     except ModuleNotFoundError as exc:
         if exc.name != "gspread":
             raise
 
-    fake_sheets = types.ModuleType("sheets")
+    fake_sheets = types.ModuleType("taksklad.sheets")
     for name in [
         "build_import_record_row",
         "ensure_import_sheet_layout",
@@ -26,8 +26,8 @@ def import_excel_import():
         "get_google_client",
     ]:
         setattr(fake_sheets, name, lambda *args, **kwargs: None)
-    sys.modules["sheets"] = fake_sheets
-    return importlib.import_module("excel_import")
+    sys.modules["taksklad.sheets"] = fake_sheets
+    return importlib.import_module("taksklad.excel_import")
 
 
 class ExcelNormalizerTests(unittest.TestCase):

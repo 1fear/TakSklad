@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import main
+from taksklad import main, reports
 
 
 class DailyReportTests(unittest.TestCase):
@@ -11,12 +11,18 @@ class DailyReportTests(unittest.TestCase):
         original_backup_dir = main.BACKUP_DIR
         original_reports_dir = main.REPORTS_DIR
         original_load_pending_saves = main.load_pending_saves
+        original_reports_backup_dir = reports.BACKUP_DIR
+        original_reports_reports_dir = reports.REPORTS_DIR
+        original_reports_load_pending_saves = reports.load_pending_saves
         try:
             with tempfile.TemporaryDirectory() as tmp_dir:
                 tmp_path = Path(tmp_dir)
                 main.BACKUP_DIR = str(tmp_path / "scan_backups")
                 main.REPORTS_DIR = str(tmp_path / "reports")
                 main.load_pending_saves = lambda: []
+                reports.BACKUP_DIR = main.BACKUP_DIR
+                reports.REPORTS_DIR = main.REPORTS_DIR
+                reports.load_pending_saves = main.load_pending_saves
                 Path(main.BACKUP_DIR).mkdir()
 
                 backup_path = Path(main.BACKUP_DIR) / "scan_backup_24.05.2026.jsonl"
@@ -77,6 +83,9 @@ class DailyReportTests(unittest.TestCase):
             main.BACKUP_DIR = original_backup_dir
             main.REPORTS_DIR = original_reports_dir
             main.load_pending_saves = original_load_pending_saves
+            reports.BACKUP_DIR = original_reports_backup_dir
+            reports.REPORTS_DIR = original_reports_reports_dir
+            reports.load_pending_saves = original_reports_load_pending_saves
 
 
 if __name__ == "__main__":

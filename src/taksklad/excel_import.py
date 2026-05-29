@@ -1,26 +1,26 @@
 import os
 from datetime import datetime
 
-from catalog import calculate_blocks, load_product_catalog, save_product_catalog
-from config import (
+from .catalog import calculate_blocks, load_product_catalog, save_product_catalog
+from .config import (
     ORDER_DATE_COLUMN,
     SHEET_NAME,
     SPREADSHEET_ID,
     STATUS_COLUMN,
     STATUS_NOT_COMPLETED,
 )
-from excel_normalizer import detect_excel_source, get_source_cell, is_summary_row
-from geocoding import reverse_geocode_yandex
-from orders import make_order_duplicate_key, make_order_id
-from sheets import (
+from .excel_normalizer import detect_excel_source, get_source_cell, is_summary_row
+from .geocoding import reverse_geocode_yandex
+from .orders import make_order_duplicate_key, make_order_id
+from .sheets import (
     build_import_record_row,
     ensure_import_sheet_layout,
     get_existing_import_keys,
     get_existing_order_duplicate_keys,
     get_google_client,
 )
-from storage import load_data_section, save_data_section
-from utils import (
+from .storage import load_data_section, save_data_section
+from .utils import (
     clean_file_name,
     column_index_to_letter,
     file_sha1,

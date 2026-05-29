@@ -1,7 +1,7 @@
 import unittest
 
-import excel_import
-from config import SHEET_NAME
+from taksklad import excel_import
+from taksklad.config import SHEET_NAME
 
 
 class FakeSheet:
