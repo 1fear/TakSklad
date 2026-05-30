@@ -1423,3 +1423,26 @@ cd /opt/taksklad/app
 - `bash -n deploy/vds/*.sh` - OK.
 - `.venv/bin/python -m unittest discover -s tests` - 79 тестов OK.
 - `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK.
+
+### Усиление Автотестов Desktop Backend Bridge
+
+**Дата:** 2026-05-31.
+
+**Зачем:**
+
+Физическая Windows-приёмка всё ещё нужна, но часть риска можно проверить автоматикой: локальная очередь backend-событий должна защищать склад от дублей и временной недоступности backend.
+
+**Что добавлено в `tests/test_backend_bridge.py`:**
+
+- pending scan дедуплицируется;
+- pending scan code попадает в список занятых КИЗов;
+- отмена последнего КИЗа удаляет pending scan;
+- pending `order_complete` отправляется в backend;
+- неизвестное событие не держит очередь.
+
+**Проверки:**
+
+- `.venv/bin/python -m unittest tests.test_backend_bridge` - 7 тестов OK.
+- `.venv/bin/python -m unittest discover -s tests` - 83 теста OK.
+- `.venv/bin/python -m py_compile src/taksklad/*.py tests/*.py backend/app/*.py` - OK.
+- `git diff --check` - OK.

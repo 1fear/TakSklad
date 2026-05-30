@@ -186,7 +186,26 @@ Remove-Item Env:\TAKSKLAD_BACKEND_TIMEOUT_SECONDS -ErrorAction SilentlyContinue
 - нет потери КИЗов при offline/timeout;
 - `version.json` всё ещё не менялся до финального решения о rollout.
 
-## 6. Что Остаётся После Приёмки
+## 6. Что Уже Покрыто Автотестами
+
+Автотесты не заменяют физическую Windows-приёмку, но закрывают часть логики desktop/backend bridge:
+
+- backend-заказы преобразуются в desktop-строки с существующими КИЗами;
+- pending backend scan не дублируется;
+- pending backend code попадает в общий набор занятых КИЗов и блокирует повторный ввод;
+- отмена последнего КИЗа убирает pending backend scan;
+- retryable backend failure оставляет событие в очереди;
+- backend duplicate scan `409 Code already scanned` считается уже синхронизированным;
+- pending `order_complete` отправляется в backend;
+- неизвестное событие не держит очередь.
+
+Текущая команда:
+
+```bash
+.venv/bin/python -m unittest tests.test_backend_bridge
+```
+
+## 7. Что Остаётся После Приёмки
 
 - Собрать Windows archive.
 - Проверить archive на чистой Windows-машине.

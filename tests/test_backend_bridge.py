@@ -101,6 +101,107 @@ class BackendBridgeTests(unittest.TestCase):
         self.assertEqual(saved[0][0]["attempts"], 1)
         self.assertEqual(saved[0][0]["last_error"], "timeout")
 
+    def test_backend_queue_scan_deduplicates_and_exposes_pending_code(self):
+        pending = []
+        saved = []
+
+        def fake_load():
+            return list(pending)
+
+        def fake_save(value):
+            saved.append(value)
+            pending[:] = value
+
+        order = {"_backend_order_item_id": "item-1"}
+        with (
+            mock.patch.object(backend_events, "backend_configured", return_value=True),
+            mock.patch.object(backend_events, "load_pending_backend_events", side_effect=fake_load),
+            mock.patch.object(backend_events, "save_pending_backend_events", side_effect=fake_save),
+        ):
+            first_id = backend_events.queue_backend_scan(order, "01000000000000000001", scanned_at="2026-05-31T10:00:00+05:00")
+            second_id = backend_events.queue_backend_scan(order, "01000000000000000001", scanned_at="2026-05-31T10:01:00+05:00")
+            codes = backend_events.get_pending_backend_codes()
+
+        self.assertEqual(first_id, second_id)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["type"], "scan")
+        self.assertEqual(pending[0]["payload"]["order_item_id"], "item-1")
+        self.assertEqual(pending[0]["payload"]["code"], "01000000000000000001")
+        self.assertEqual(codes, {"01000000000000000001"})
+        self.assertEqual(len(saved), 1)
+
+    def test_backend_queue_remove_pending_scan_on_undo(self):
+        event_id = backend_events.make_backend_event_id(
+            "scan",
+            {"order_item_id": "item-1", "code": "01000000000000000001"},
+        )
+        pending = [{
+            "id": event_id,
+            "type": "scan",
+            "payload": {
+                "order_item_id": "item-1",
+                "code": "01000000000000000001",
+            },
+        }]
+        saved = []
+
+        with (
+            mock.patch.object(backend_events, "load_pending_backend_events", return_value=pending),
+            mock.patch.object(backend_events, "save_pending_backend_events", side_effect=lambda value: saved.append(value)),
+        ):
+            removed = backend_events.remove_pending_backend_scan(
+                {"_backend_order_item_id": "item-1"},
+                "01000000000000000001",
+            )
+
+        self.assertTrue(removed)
+        self.assertEqual(saved, [[]])
+
+    def test_backend_queue_syncs_order_complete(self):
+        pending = [{
+            "id": "event-1",
+            "type": "order_complete",
+            "payload": {
+                "order_id": "order-1",
+            },
+        }]
+        saved = []
+        completed = []
+
+        with (
+            mock.patch.object(backend_events, "backend_configured", return_value=True),
+            mock.patch.object(backend_events, "load_pending_backend_events", return_value=pending),
+            mock.patch.object(backend_events, "save_pending_backend_events", side_effect=lambda value: saved.append(value)),
+            mock.patch.object(backend_events, "complete_order", side_effect=lambda order_id: completed.append(order_id)),
+        ):
+            result = backend_events.sync_pending_backend_events()
+
+        self.assertEqual(completed, ["order-1"])
+        self.assertEqual(result["synced"], 1)
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(result["remaining"], 0)
+        self.assertEqual(saved, [[]])
+
+    def test_backend_queue_unknown_event_does_not_block_queue(self):
+        pending = [{
+            "id": "event-1",
+            "type": "unknown",
+            "payload": {},
+        }]
+        saved = []
+
+        with (
+            mock.patch.object(backend_events, "backend_configured", return_value=True),
+            mock.patch.object(backend_events, "load_pending_backend_events", return_value=pending),
+            mock.patch.object(backend_events, "save_pending_backend_events", side_effect=lambda value: saved.append(value)),
+        ):
+            result = backend_events.sync_pending_backend_events()
+
+        self.assertEqual(result["synced"], 1)
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(result["remaining"], 0)
+        self.assertEqual(saved, [[]])
+
 
 if __name__ == "__main__":
     unittest.main()
