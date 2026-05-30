@@ -1503,3 +1503,31 @@ cd /opt/taksklad/app
 - `.venv/bin/python -m unittest tests.test_acceptance_excel_generator` - OK.
 - `.venv/bin/python -m unittest discover -s tests` - 84 теста OK.
 - `.venv/bin/python -m py_compile tools/*.py src/taksklad/*.py tests/*.py backend/app/*.py` - OK.
+
+### Windows Backend Acceptance Helper
+
+**Дата:** 2026-05-31.
+
+**Сделано:**
+
+- Добавлен `tools/windows_backend_acceptance.ps1`.
+- Helper проверяет VDS backend перед запуском Windows-приложения:
+  - `GET /health`;
+  - `GET /api/v1/orders/active` с service token.
+- Helper включает backend flags только для текущего PowerShell-процесса и дочернего запуска `TakSklad.exe` или `main.py`.
+- Token не сохраняется в git, файл, реестр или документацию.
+- Добавлен `-CheckOnly` для проверки VDS без запуска приложения.
+- Добавлен `-Clear` для быстрого удаления backend env из текущего PowerShell-процесса.
+
+**Зачем:**
+
+Физическая Windows-приёмка всё ещё нужна, но теперь запуск тестовой копии будет повторяемым: меньше ручных env-команд, меньше риск забыть флаг или случайно оставить backend token в открытом терминале.
+
+**Проверки:**
+
+- Добавлен тест `tests/test_windows_acceptance_helper.py`.
+- `tests.test_windows_acceptance_helper` - 2 теста OK.
+- `.venv/bin/python -m unittest discover -s tests` - 86 тестов OK.
+- `.venv/bin/python -m py_compile tools/*.py src/taksklad/*.py tests/*.py backend/app/*.py` - OK.
+- `git diff --check` - OK.
+- PowerShell runtime `pwsh` в текущей macOS-среде не установлен, поэтому сам `.ps1` не исполнялся локально. Финальная проверка helper должна пройти на Windows.

@@ -19,6 +19,28 @@
 
 Включать только на тестовой Windows-копии, не на рабочих ПК склада.
 
+Рекомендуемый способ - использовать helper:
+
+```powershell
+.\tools\windows_backend_acceptance.ps1 -CheckOnly -Token "<service-token>"
+.\tools\windows_backend_acceptance.ps1 -Token "<service-token>" -AppPath ".\TakSklad.exe"
+```
+
+Если запуск идёт из исходников:
+
+```powershell
+.\tools\windows_backend_acceptance.ps1 -Token "<service-token>" -AppPath ".\main.py"
+```
+
+Что делает helper:
+
+- проверяет `GET /health`;
+- проверяет `GET /api/v1/orders/active` с service token;
+- включает backend flags только для текущего PowerShell-процесса и дочернего запуска приложения;
+- не сохраняет token в файл, реестр или git.
+
+Ручной вариант, если helper недоступен:
+
 ```powershell
 $env:TAKSKLAD_BACKEND_ENABLED = "1"
 $env:TAKSKLAD_BACKEND_READ_ORDERS_ENABLED = "1"
@@ -38,6 +60,12 @@ $env:TAKSKLAD_BACKEND_BASE_URL = "https://api.taksklad.uz"
 ## 3. Быстрый Rollback
 
 Если в тесте появляется блокирующая ошибка, закрыть приложение и запустить без backend flags:
+
+```powershell
+.\tools\windows_backend_acceptance.ps1 -Clear
+```
+
+Ручной вариант:
 
 ```powershell
 Remove-Item Env:\TAKSKLAD_BACKEND_ENABLED -ErrorAction SilentlyContinue

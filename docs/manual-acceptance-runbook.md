@@ -142,7 +142,25 @@ SMOKE_MARKER=SMOKE_MVP_CHAPMAN_manual_20260531 \
 
 ### Минимальный Набор Проверок
 
-1. Запустить тестовую копию TakSklad на Windows.
+Перед запуском проверить связь с VDS:
+
+```powershell
+.\tools\windows_backend_acceptance.ps1 -CheckOnly -Token "<service-token>"
+```
+
+Запустить тестовую копию:
+
+```powershell
+.\tools\windows_backend_acceptance.ps1 -Token "<service-token>" -AppPath ".\TakSklad.exe"
+```
+
+Если проверка идёт из исходников:
+
+```powershell
+.\tools\windows_backend_acceptance.ps1 -Token "<service-token>" -AppPath ".\main.py"
+```
+
+1. Запустить тестовую копию TakSklad на Windows через helper выше.
 2. Убедиться, что приложение открылось без обновления `version.json`.
 3. Обновить список заказов.
 4. Найти заказ `ACCEPTANCE TELEGRAM 20260531`.
@@ -196,6 +214,12 @@ cd /opt/taksklad/app
 - Не запускать Windows release workflow.
 - Не отправлять push-уведомления рабочим ПК.
 - Не проверять на реальных заказах без отдельного подтверждения.
+
+Для быстрого отката тестового запуска:
+
+```powershell
+.\tools\windows_backend_acceptance.ps1 -Clear
+```
 
 ## 5. Критерий Закрытия Goal
 
