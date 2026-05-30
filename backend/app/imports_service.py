@@ -14,11 +14,17 @@ ORDER_DATE_FIELDS = ("Дата отгрузки", "Дата получения �
 PAYMENT_FIELDS = ("Тип оплаты", "payment_type", "payment")
 CLIENT_FIELDS = ("Клиент", "client")
 ADDRESS_FIELDS = ("Адрес", "address")
+COORDINATES_FIELDS = ("Координаты", "coordinates")
 REPRESENTATIVE_FIELDS = ("Торговый представитель", "representative")
 PRODUCT_FIELDS = ("Товары", "product")
 QUANTITY_PIECES_FIELDS = ("Кол-во ШТ", "quantity_pieces", "quantity")
 QUANTITY_BLOCKS_FIELDS = ("Кол-во блок", "Кол-во блоков", "quantity_blocks", "blocks")
 PIECES_PER_BLOCK_FIELDS = ("_pieces_per_block", "pieces_per_block")
+BLOCK_PRICE_FIELDS = ("Цена за блок", "block_price")
+IMPORTED_UNIT_PRICE_FIELDS = ("Цена из файла", "unit_price")
+IMPORTED_LINE_TOTAL_FIELDS = ("Сумма из файла", "imported_line_total")
+LINE_TOTAL_FIELDS = ("Сумма позиции", "line_total")
+CALCULATED_LINE_TOTAL_FIELDS = ("Сумма рассчитанная", "calculated_line_total")
 STATUS_FIELDS = ("Статус", "status")
 ORDER_ID_FIELDS = ("ID заказа", "order_id", "external_id")
 IMPORT_ID_FIELDS = ("ID импорта", "import_id")
@@ -97,6 +103,7 @@ def create_import(db: Session, payload: ImportCreate):
                     "order_key": row["order_key"],
                     "skladbot_request_number": row["skladbot_request_number"],
                     "skladbot_request_id": row["skladbot_request_id"],
+                    "coordinates": row["coordinates"],
                     "source": import_job.source,
                 },
             )
@@ -120,6 +127,11 @@ def create_import(db: Session, payload: ImportCreate):
                 "source_import_id": row["source_import_id"],
                 "source_file": row["source_file"],
                 "source_row": row["source_row"],
+                "block_price": row["block_price"],
+                "imported_unit_price": row["imported_unit_price"],
+                "imported_line_total": row["imported_line_total"],
+                "line_total": row["line_total"],
+                "calculated_line_total": row["calculated_line_total"],
                 "raw_row": raw_row,
             },
         ))
@@ -200,11 +212,19 @@ def normalize_import_row(raw_row):
     payment_type = first_value(raw_row, PAYMENT_FIELDS)
     client = first_value(raw_row, CLIENT_FIELDS)
     address = first_value(raw_row, ADDRESS_FIELDS) or "Адрес не указан"
+    coordinates = first_value(raw_row, COORDINATES_FIELDS)
     representative = first_value(raw_row, REPRESENTATIVE_FIELDS) or None
     product = first_value(raw_row, PRODUCT_FIELDS)
     quantity_pieces = parse_int(first_value(raw_row, QUANTITY_PIECES_FIELDS))
     quantity_blocks = parse_int(first_value(raw_row, QUANTITY_BLOCKS_FIELDS))
-    pieces_per_block = parse_int(first_value(raw_row, PIECES_PER_BLOCK_FIELDS)) or None
+    pieces_per_block = parse_int(first_value(raw_row, PIECES_PER_BLOCK_FIELDS)) or 10
+    if quantity_blocks <= 0 and quantity_pieces > 0:
+        quantity_blocks = (quantity_pieces + pieces_per_block - 1) // pieces_per_block
+    block_price = parse_money(first_value(raw_row, BLOCK_PRICE_FIELDS)) or default_block_price()
+    imported_unit_price = parse_money(first_value(raw_row, IMPORTED_UNIT_PRICE_FIELDS))
+    imported_line_total = parse_money(first_value(raw_row, IMPORTED_LINE_TOTAL_FIELDS))
+    calculated_line_total = parse_money(first_value(raw_row, CALCULATED_LINE_TOTAL_FIELDS)) or quantity_blocks * block_price
+    line_total = parse_money(first_value(raw_row, LINE_TOTAL_FIELDS)) or imported_line_total or calculated_line_total
     status = normalize_status(first_value(raw_row, STATUS_FIELDS))
     source_order_id = first_value(raw_row, ORDER_ID_FIELDS)
     source_import_id = first_value(raw_row, IMPORT_ID_FIELDS)
@@ -229,6 +249,7 @@ def normalize_import_row(raw_row):
         "payment_type": payment_type,
         "client": client,
         "address": address,
+        "coordinates": coordinates,
         "representative": representative,
         "skladbot_request_number": skladbot_request_number,
         "skladbot_request_id": skladbot_request_id,
@@ -248,11 +269,17 @@ def normalize_import_row(raw_row):
         "payment_type": normalize_text(payment_type),
         "client": normalize_text(client),
         "address": normalize_text(address),
+        "coordinates": normalize_text(coordinates),
         "representative": normalize_text(representative) or None,
         "product": normalize_text(product),
         "quantity_pieces": quantity_pieces,
         "quantity_blocks": quantity_blocks,
         "pieces_per_block": pieces_per_block,
+        "block_price": block_price,
+        "imported_unit_price": imported_unit_price,
+        "imported_line_total": imported_line_total,
+        "line_total": line_total,
+        "calculated_line_total": calculated_line_total,
         "status": status,
         "source_order_id": normalize_text(source_order_id),
         "source_import_id": normalize_text(source_import_id),
@@ -286,6 +313,25 @@ def parse_int(value):
         return int(float(text))
     except ValueError:
         return 0
+
+
+def parse_money(value):
+    if isinstance(value, (int, float)):
+        return int(value)
+    text = normalize_text(value).replace("\xa0", " ").strip()
+    if not text:
+        return 0
+    if text.replace(" ", "").replace(",", ".").replace(".", "", 1).isdigit():
+        try:
+            return int(float(text.replace(" ", "").replace(",", ".")))
+        except ValueError:
+            pass
+    digits = "".join(char for char in text if char.isdigit())
+    return int(digits) if digits else 0
+
+
+def default_block_price():
+    return 240000
 
 
 def parse_date_value(value):

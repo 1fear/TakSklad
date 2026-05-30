@@ -34,6 +34,7 @@ def build_day_report(db: Session, report_date: str | None = None):
         "scanned_today": 0,
         "remaining_blocks": 0,
         "scan_codes": 0,
+        "total_price": 0,
     }
 
     for order in orders:
@@ -48,6 +49,7 @@ def build_day_report(db: Session, report_date: str | None = None):
             payment_group=payment_group(order.payment_type),
             client=order.client,
             address=order.address,
+            coordinates=(order.raw_payload or {}).get("coordinates") or "",
             representative=order.representative,
             status=order.status,
             skladbot_request_number=(order.raw_payload or {}).get("skladbot_request_number") or "",
@@ -71,6 +73,7 @@ def build_day_report(db: Session, report_date: str | None = None):
                 scanned_today=values["scanned_today"],
                 remaining_blocks=values["remaining_blocks"],
                 scan_codes=values["scan_codes"],
+                total_price=values["total_price"],
             )
             for group, values in sorted(payment_totals.items())
         ],
@@ -115,6 +118,7 @@ def summarize_order(order: Order, report_date: date):
         "scanned_today": scanned_today,
         "remaining_blocks": max(0, planned_blocks - scanned_blocks),
         "scan_codes": sum(len(item.scan_codes) for item in items),
+        "total_price": sum(parse_int((item.raw_payload or {}).get("line_total")) for item in items),
     }
 
 
@@ -132,6 +136,7 @@ def add_totals(totals, order_totals, order_status):
         "scanned_today",
         "remaining_blocks",
         "scan_codes",
+        "total_price",
     ):
         totals[key] += order_totals[key]
 
@@ -146,9 +151,10 @@ def add_payment_totals(payment_totals, payment_type, order_totals):
         "scanned_today": 0,
         "remaining_blocks": 0,
         "scan_codes": 0,
+        "total_price": 0,
     })
     values["orders"] += 1
-    for key in ("planned_blocks", "scanned_blocks", "scanned_today", "remaining_blocks", "scan_codes"):
+    for key in ("planned_blocks", "scanned_blocks", "scanned_today", "remaining_blocks", "scan_codes", "total_price"):
         values[key] += order_totals[key]
 
 
@@ -169,3 +175,10 @@ def scan_date(value):
     if isinstance(value, date):
         return value
     return None
+
+
+def parse_int(value):
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0

@@ -163,6 +163,7 @@ def order_to_read(order: Order):
         payment_type=order.payment_type,
         client=order.client,
         address=order.address,
+        coordinates=raw_payload.get("coordinates") or "",
         representative=order.representative,
         status=order.status,
         skladbot_request_number=raw_payload.get("skladbot_request_number") or "",
@@ -175,15 +176,25 @@ def order_to_read(order: Order):
 
 
 def item_to_read(item: OrderItem):
+    raw_payload = item.raw_payload or {}
     return OrderItemRead(
         id=str(item.id),
         product=item.product,
         quantity_pieces=item.quantity_pieces,
         quantity_blocks=item.quantity_blocks,
         scanned_blocks=item.scanned_blocks,
+        block_price=parse_int(raw_payload.get("block_price")),
+        line_total=parse_int(raw_payload.get("line_total")),
         status=item.status,
         scan_codes=[
             scan.code
             for scan in sorted(item.scan_codes, key=lambda value: (str(value.scanned_at or ""), str(value.id)))
         ],
     )
+
+
+def parse_int(value):
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0

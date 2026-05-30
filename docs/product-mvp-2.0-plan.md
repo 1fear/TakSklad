@@ -211,16 +211,18 @@ Done:
 - SkladBot worker добавлен как VDS-сервис.
 - Telegram worker добавлен как VDS-сервис.
 - VDS staging пересобран с `backend-api`, `skladbot-worker`, `telegram-worker`.
+- Telegram worker теперь принимает `.xlsx/.xlsm` из Telegram, собирает backend import payload и отправляет его в `POST /api/v1/imports`.
+- Добавлен чеклист Windows-приёмки с backend flags.
 
 Блокеры перед релизом:
 
 1. DNS `api.taksklad.uz` не резолвится; нужна A-запись `api -> 135.181.245.84`.
-2. Telegram worker пока не выполняет полный авто-импорт Excel-вложений.
+2. Нужен реальный Telegram upload test на копии рабочего Excel-файла.
 3. Нужна ручная Windows-приёмка с backend flags.
 4. Windows archive и `version.json` не менять до приёмки.
 
 Следующий шаг:
 
 1. Настроить DNS.
-2. Прогнать реальную интеграционную проверку SkladBot/Telegram на живых заказах.
+2. Прогнать реальную интеграционную проверку SkladBot/Telegram на копии живых заказов.
 3. Перейти к Windows acceptance для desktop backend bridge.

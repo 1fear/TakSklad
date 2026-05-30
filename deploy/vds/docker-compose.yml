@@ -29,6 +29,7 @@ services:
       TAKSKLAD_ENV: ${TAKSKLAD_ENV}
       TAKSKLAD_SERVICE_NAME: ${TAKSKLAD_SERVICE_NAME}
       TAKSKLAD_API_TOKEN: ${TAKSKLAD_API_TOKEN}
+      TAKSKLAD_CORS_ORIGINS: ${TAKSKLAD_CORS_ORIGINS:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -39,6 +40,32 @@ services:
       - traefik.http.routers.taksklad-backend.tls.certresolver=letsencrypt
       - traefik.http.services.taksklad-backend.loadbalancer.server.port=8000
       - traefik.docker.network=${TRAEFIK_NETWORK:-traefik}
+    networks:
+      - taksklad-internal
+      - traefik
+
+  frontend:
+    build:
+      context: ../../frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_TAKSKLAD_API_URL: ${TAKSKLAD_PUBLIC_API_URL:-}
+    restart: unless-stopped
+    environment:
+      TAKSKLAD_BACKEND_INTERNAL_URL: http://backend-api:8000
+      TAKSKLAD_API_TOKEN: ${TAKSKLAD_API_TOKEN}
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.taksklad-frontend.rule=Host(`${TAKSKLAD_FRONTEND_HOST}`)
+      - traefik.http.routers.taksklad-frontend.entrypoints=websecure
+      - traefik.http.routers.taksklad-frontend.tls.certresolver=letsencrypt
+      - traefik.http.routers.taksklad-frontend.middlewares=taksklad-frontend-auth
+      - traefik.http.middlewares.taksklad-frontend-auth.basicauth.users=${TAKSKLAD_FRONTEND_BASIC_AUTH}
+      - traefik.http.services.taksklad-frontend.loadbalancer.server.port=80
+      - traefik.docker.network=${TRAEFIK_NETWORK:-traefik}
+    depends_on:
+      backend-api:
+        condition: service_started
     networks:
       - taksklad-internal
       - traefik
@@ -56,6 +83,8 @@ services:
       SKLADBOT_API_TOKEN: ${SKLADBOT_API_TOKEN:-}
       SKLADBOT_API_BASE_URL: ${SKLADBOT_API_BASE_URL:-https://api.skladbot.ru/v1}
       SKLADBOT_API_TIMEOUT_SECONDS: ${SKLADBOT_API_TIMEOUT_SECONDS:-8}
+      SKLADBOT_API_MAX_RETRIES: ${SKLADBOT_API_MAX_RETRIES:-2}
+      SKLADBOT_REQUEST_DELAY_SECONDS: ${SKLADBOT_REQUEST_DELAY_SECONDS:-0.25}
       SKLADBOT_CUSTOMER_ID: ${SKLADBOT_CUSTOMER_ID:-6211}
       SKLADBOT_SHIPMENT_TYPE_ID: ${SKLADBOT_SHIPMENT_TYPE_ID:-3389}
       SKLADBOT_SYNC_LOOKBACK_DAYS: ${SKLADBOT_SYNC_LOOKBACK_DAYS:-1}
@@ -80,6 +109,11 @@ services:
       TAKSKLAD_BACKEND_INTERNAL_URL: http://backend-api:8000
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_ALLOWED_CHAT_IDS: ${TELEGRAM_ALLOWED_CHAT_IDS:-}
+      TELEGRAM_WORKER_TIMEOUT_SECONDS: ${TELEGRAM_WORKER_TIMEOUT_SECONDS:-20}
+      TELEGRAM_WORKER_POLL_TIMEOUT_SECONDS: ${TELEGRAM_WORKER_POLL_TIMEOUT_SECONDS:-15}
+      TELEGRAM_WORKER_FILE_TIMEOUT_SECONDS: ${TELEGRAM_WORKER_FILE_TIMEOUT_SECONDS:-120}
+      TELEGRAM_WORKER_MAX_FILE_BYTES: ${TELEGRAM_WORKER_MAX_FILE_BYTES:-20971520}
+      TAKSKLAD_DEFAULT_PIECES_PER_BLOCK: ${TAKSKLAD_DEFAULT_PIECES_PER_BLOCK:-10}
     depends_on:
       backend-api:
         condition: service_started

@@ -4,6 +4,166 @@
 
 ## 2026-05-30
 
+### Telegram нижнее меню и очередь Excel-файлов
+
+**Цель:** сделать управление Telegram-ботом через нижнюю панель кнопок и разрешить отправлять несколько Excel-файлов подряд без ручного ожидания между файлами.
+
+**Сделано:**
+
+- В серверном `telegram-worker` добавлена постоянная нижняя клавиатура Telegram.
+- Кнопки перенесены в reply keyboard:
+  - `Дневной отчёт`;
+  - `Статус backend`;
+  - `История импортов`;
+  - `Помощь`.
+- Добавлена системная кнопка меню команд Telegram через `setMyCommands` и `setChatMenuButton`.
+- Кнопка меню команд открывает те же действия: `/report`, `/health`, `/imports`, `/help`.
+- `/start` и `/help` теперь показывают подсказку по нижнему меню, а не inline-кнопки.
+- Текстовые команды `/report`, `/health`, `/imports`, `/help` оставлены как запасной вариант.
+- Excel-документы `.xlsx/.xlsm` больше не импортируются прямо внутри обработки update.
+- Каждый Excel-файл ставится в очередь `pending_events` с типом `telegram_excel_import`.
+- Worker после обработки update забирает файлы из очереди и импортирует их по порядку.
+- Если пользователь отправит или перешлёт 5 Excel-файлов подряд, все 5 будут поставлены в очередь.
+- Для неподдержанных файлов возвращается понятное сообщение без падения worker.
+
+**Проверки:**
+
+- `.venv/bin/python -m unittest tests.test_backend_telegram_import` - 7 тестов пройдены.
+- `.venv/bin/python -m py_compile backend/app/*.py tests/*.py` - успешно.
+- `.venv/bin/python -m unittest discover -s tests` - 66 тестов пройдены.
+- VDS `backend-api` и `telegram-worker` пересобраны и перезапущены.
+- `https://api.135.181.245.84.sslip.io/health` вернул `200`.
+- На VDS `backend-api` и `telegram-worker` находятся в статусе `Up`.
+- Внутри контейнера `telegram-worker` выполнен `py_compile` для `telegram_worker.py` и `excel_importer.py`.
+- Внутри VDS проверено через Telegram API: `getMyCommands` вернул `report`, `health`, `imports`, `help`.
+- `getChatMenuButton` вернул `type=commands`.
+
+**Ограничения:**
+
+- Изменение сделано в серверной VDS-линии `backend/app/telegram_worker.py`.
+- Старый desktop Telegram polling остаётся legacy/fallback и отдельно не переделывался под нижнее меню.
+- Реальный боевой Telegram upload test нужно провести отдельным ручным шагом.
+
+### Пользовательская инструкция по бизнес-процессу
+
+**Цель:** зафиксировать TakSklad понятным языком для менеджеров, склада, руководителей и администратора, без технической перегрузки.
+
+**Сделано:**
+
+- Добавлен документ [user-business-process-guide.md](/Users/anton/Documents/work/TakSklad/docs/user-business-process-guide.md).
+- Описаны роли: заказчик, менеджер, сотрудник склада, руководитель, администратор.
+- Описаны процессы: Excel из Smartup/другого источника, Telegram import, desktop import, SkladBot-сопоставление, сканирование КИЗов, завершение заказа, печать, завершение дня.
+- Добавлены Mermaid-диаграммы общего процесса, процесса по ролям и состояний заказа.
+- В [project-overview.md](/Users/anton/Documents/work/TakSklad/docs/project-overview.md) добавлена ссылка на новую инструкцию.
+
+**Ограничения:**
+
+- Документ описывает текущую рабочую логику и отдельно помечает, что Smartup API, автоматическое создание SkladBot-заявок и production web frontend пока не готовы.
+
+### Telegram Excel import через backend и подготовка Windows-приёмки
+
+**Цель:** закрыть серверный импорт Excel-файлов из Telegram и подготовить безопасную Windows-приёмку desktop backend bridge без релиза и без push-уведомлений.
+
+**Сделано:**
+
+- Добавлен backend parser `backend/app/excel_importer.py` для `.xlsx/.xlsm`.
+- Parser ищет лист `Заявки`, либо первый лист с обязательными колонками.
+- Поддержаны алиасы колонок клиента, оплаты, товара, количества, даты, адреса, торгового представителя, количества блоков и номеров SkladBot.
+- Дата берётся из колонки, имени файла, строк над заголовком или текущей даты как fallback.
+- Если `Кол-во блок` нет, количество блоков считается через `TAKSKLAD_DEFAULT_PIECES_PER_BLOCK`.
+- Excel workbook закрывается явно после чтения, чтобы Windows не держал файл залоченным.
+- Telegram worker теперь:
+  - принимает Excel-документ из разрешённого Telegram chat_id;
+  - скачивает файл через Telegram file API;
+  - ограничивает размер через `TELEGRAM_WORKER_MAX_FILE_BYTES`;
+  - преобразует Excel в payload backend import;
+  - отправляет строки в `POST /api/v1/imports`;
+  - отвечает в Telegram итогом импорта.
+- Ошибки Telegram download скрывают полный URL с bot token.
+- Ответы Telegram worker отправляются обычным текстом без `parse_mode=HTML`, чтобы спецсимволы в имени файла или ошибке не ломали Telegram-ответ.
+- В VDS compose добавлены настройки:
+  - `TELEGRAM_WORKER_FILE_TIMEOUT_SECONDS`;
+  - `TELEGRAM_WORKER_MAX_FILE_BYTES`;
+  - `TAKSKLAD_DEFAULT_PIECES_PER_BLOCK`.
+- Backend image пересобран на VDS, потому что добавлена зависимость `openpyxl`.
+- `backend-api` и `telegram-worker` пересобраны и перезапущены на VDS.
+- Добавлен документ Windows-приёмки: [windows-backend-acceptance.md](/Users/anton/Documents/work/TakSklad/docs/windows-backend-acceptance.md).
+
+**Проверки:**
+
+- `.venv/bin/python -m unittest tests.test_backend_telegram_import` - 2 теста пройдены.
+- `.venv/bin/python -m unittest discover -s tests` - 61 тест пройден.
+- `.venv/bin/python -m py_compile main.py sitecustomize.py taksklad/__init__.py src/taksklad/*.py tests/*.py backend/app/*.py` - успешно.
+- `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - успешно.
+- `docker compose --env-file deploy/traefik/.env.example -f deploy/traefik/docker-compose.yml config` - успешно.
+- VDS `/health` на временном домене `sslip.io` - `200`.
+- На VDS `backend-api` и `telegram-worker` запущены после rebuild.
+- Внутри контейнера `telegram-worker` выполнен smoke: создан тестовый `.xlsx`, parser вернул одну строку Telegram import payload.
+
+**Что не проверено:**
+
+- Реальная отправка Excel-файла в боевой Telegram-чат не выполнялась в этом шаге.
+- Ручная Windows-приёмка с backend flags не выполнена в macOS/VDS-среде.
+- Windows archive, `version.json`, GitHub Release и push-уведомления не трогались.
+
+**Решение:**
+
+- Telegram Excel import можно считать технически реализованным на staging.
+- Перед релизом 2.0 нужен реальный Telegram upload test и Windows acceptance по чеклисту.
+
+### Черновой frontend для VDS-линии
+
+**Цель:** быстро получить рабочий web draft, чтобы можно было смотреть будущий TakSklad не только через desktop-приложение.
+
+**Сделано:**
+
+- Добавлена папка `frontend/` с React + Vite + TypeScript.
+- Собран первый web-интерфейс TakSklad:
+  - список активных заказов;
+  - поиск по клиенту, адресу, оплате и номеру SkladBot;
+  - карточка выбранного заказа;
+  - выбор позиции;
+  - ввод КИЗ и отправка скана в backend;
+  - завершение заказа;
+  - дневной отчёт;
+  - история импортов.
+- Frontend не содержит backend service token в JS-сборке.
+- API-запросы frontend идут через same-origin `/api`.
+- Nginx внутри frontend-контейнера проксирует `/api` во внутренний `backend-api` и сам добавляет `Authorization`.
+- Публичный frontend закрыт Traefik basic-auth.
+- Пароль basic-auth сохранён локально в `~/.taksklad/frontend-basic-auth.env`, в git и документацию не внесён.
+- Добавлен Dockerfile frontend и nginx-template для отдачи статической сборки и API-proxy.
+- VDS compose расширен сервисом `frontend`.
+- Frontend поднят на VDS через Traefik:
+  - `https://app.135.181.245.84.sslip.io`.
+- Backend API получил CORS middleware для разрешённых frontend-origin.
+- На VDS добавлен CORS origin для временного frontend-домена и будущего `app.taksklad.uz`.
+
+**Проверки:**
+
+- `npm run build` в `frontend/` - успешно.
+- `python -m unittest tests.test_backend_skeleton` - успешно.
+- `curl https://app.135.181.245.84.sslip.io/` без basic-auth - `401`.
+- `curl https://app.135.181.245.84.sslip.io/` с basic-auth - `200`, отдаёт HTML frontend.
+- `curl https://api.135.181.245.84.sslip.io/health` - `200`.
+- CORS preflight с origin `https://app.135.181.245.84.sslip.io` - `200`, header `access-control-allow-origin` корректный.
+- `GET https://app.135.181.245.84.sslip.io/api/v1/orders/active` через frontend-proxy с basic-auth - `200`.
+- Headless Chrome screenshot публичного frontend - интерфейс отрисован.
+
+**Что не готово:**
+
+- Это web draft, не production-кабинет.
+- Нет полноценной авторизации пользователей и ролей.
+- Нет загрузки Excel через web-форму.
+- Нет websocket/live-обновлений.
+- Домен `taksklad.uz` ещё ожидает активацию/делегацию, поэтому используется временный `sslip.io`.
+
+**Решение:**
+
+- Frontend можно использовать как основу для будущего кабинета 2.0.
+- До нормальной auth-модели доступ к web draft ограничивается Traefik basic-auth.
+- После активации домена нужно переключить frontend на `app.taksklad.uz`, backend на `api.taksklad.uz` и обновить CORS origins.
+
 ### Product MVP 2.0: foundation, desktop bridge и VDS workers
 
 **Дата:** 2026-05-30.
@@ -853,3 +1013,232 @@
 - временный staging URL `https://api.135.181.245.84.sslip.io/health` работает;
 - `api.taksklad.uz` нельзя включить, пока домен `taksklad.uz` не зарегистрирован у `.uz`-регистратора;
 - после регистрации нужна A-запись `api -> 135.181.245.84`, затем на VDS: `./deploy/vds/switch_backend_host.sh api.taksklad.uz`.
+
+### Регистрация taksklad.uz И DNS-Ожидание
+
+**Дата:** 2026-05-30.
+
+**Сделано:**
+
+- домен `taksklad.uz` зарегистрирован/оплачен через Hostmaster;
+- включен DNS manager для домена;
+- добавлена A-запись `api.taksklad.uz -> 135.181.245.84`;
+- авторитетный DNS Hostmaster (`ns1.hostmaster.uz`) уже возвращает `135.181.245.84` для `api.taksklad.uz`;
+- `WHOIS taksklad.uz` показывает статус `ACTIVE` и NS `ns1.hostmaster.uz` / `revers.hostmaster.uz`.
+
+**Текущий блокер:**
+
+- публичная зона `.uz` пока не делегирует `taksklad.uz`: `dig +trace api.taksklad.uz A` доходит до `.uz` и получает отрицательный ответ;
+- публичные DNS (`1.1.1.1`, `8.8.8.8`) пока не возвращают A-запись `api.taksklad.uz`;
+- из-за этого пока нельзя выпускать Let’s Encrypt сертификат и переключать VDS на `api.taksklad.uz`.
+- запрос на активацию домена отправлен в Hostmaster, но активация выполняется по рабочему графику Hostmaster: понедельник-пятница, 09:00-18:00.
+
+**Следующее действие:**
+
+1. Дождаться появления делегации в публичной зоне `.uz`.
+2. Проверить `dig @1.1.1.1 api.taksklad.uz A +short`.
+3. После появления `135.181.245.84` выполнить на VDS:
+
+```bash
+cd /opt/taksklad/app
+./deploy/vds/switch_backend_host.sh api.taksklad.uz
+```
+
+4. Проверить `https://api.taksklad.uz/health`.
+
+### Черновой Web-Frontend На VDS
+
+**Дата:** 2026-05-30.
+
+**Сделано:**
+
+- создан черновой React/Vite frontend в папке `frontend/`;
+- добавлены рабочие экраны: активные заказы, карточка выбранного заказа, сканирование КИЗ, завершение заказа, дневной отчет, история импортов;
+- frontend собирается отдельным Docker-контейнером через nginx;
+- frontend больше не требует ручного ввода backend service token в браузере;
+- запросы браузера идут на same-origin `/api`, а nginx внутри frontend-контейнера добавляет backend Bearer token на серверной стороне;
+- публичный frontend закрыт Traefik basic-auth;
+- пароль basic-auth сохранён локально в `~/.taksklad/frontend-basic-auth.env`;
+- VDS compose расширен сервисом `frontend`;
+- временный frontend поднят по адресу `https://app.135.181.245.84.sslip.io`;
+- backend CORS настроен через `TAKSKLAD_CORS_ORIGINS` для прямых проверок API с frontend-origin;
+- на VDS добавлен origin `https://app.135.181.245.84.sslip.io`;
+- `frontend/node_modules`, `frontend/dist` и `frontend/tsconfig.tsbuildinfo` исключены из git/Docker context.
+
+**Проверки:**
+
+- `npm run build` в `frontend` - успешно;
+- `.venv/bin/python -m unittest discover -s tests` - 59 тестов OK;
+- `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - успешно;
+- VDS `backend-api` и `frontend` пересобраны и запущены;
+- `https://app.135.181.245.84.sslip.io` без basic-auth возвращает `401`;
+- `https://app.135.181.245.84.sslip.io` с basic-auth возвращает frontend HTML;
+- CORS preflight с origin frontend на `https://api.135.181.245.84.sslip.io/api/v1/orders/active` возвращает `200` и `access-control-allow-origin`;
+- `https://app.135.181.245.84.sslip.io/api/v1/orders/active` с basic-auth возвращает `200` через frontend-proxy без ручного service token в браузере.
+
+**Ограничения:**
+
+- это черновой frontend, не production UI;
+- полноценной пользовательской auth-модели пока нет, стоит временный basic-auth;
+- домен `taksklad.uz` еще ожидает финальную публичную делегацию Hostmaster, поэтому frontend/API временно работают на `sslip.io`;
+- `version.json` не менялся, desktop push-уведомления не отправлялись.
+
+### Telegram Import, Логистика, SkladBot Matching И КИЗ По Файлам
+
+**Дата:** 2026-05-31.
+
+**Контекст:**
+
+- SmartUp/Excel не обязан содержать отдельный файл или поле даты отгрузки; это закрывается тем, что менеджер задаёт дату вручную в Telegram.
+- Менеджер задаёт актуальную дату отгрузки в Telegram перед отправкой Excel-файлов или указывает дату в подписи к файлу.
+- SkladBot работает в блоках, а Excel может приходить в штуках/пачках; сравнение со SkladBot делается только по блокам.
+- Название товара в SkladBot может быть длиннее, поэтому товар нормализуется до цвета и формата.
+- Адрес не является жёстким критерием SkladBot-сопоставления.
+- Для логистики нужен файл именно с координатами, а не просто адресом.
+
+**Сделано:**
+
+- Добавлена точка восстановления перед доработками: `restore-2026-05-31_before_mvp_updates_003050`.
+- Telegram worker получил нижнее меню: `Дата отгрузки`, `Отчёт логистики`, `КИЗ по файлам`.
+- Telegram import ставит Excel-файлы в очередь и применяет дату отгрузки из состояния чата или подписи к файлу.
+- Excel importer поддерживает координаты, цену, сумму строки и пересчёт в блоки.
+- Если сумма в файле не указана, считается `Кол-во блок * 240000`.
+- Backend сохраняет координаты заказа и сумму/цену позиции в Postgres.
+- Добавлен `GET /api/v1/logistics/dates` для выбора доступной даты отгрузки.
+- Добавлен `GET /api/v1/logistics/report` для одного логистического Excel-файла по выбранной дате.
+- Логистический отчёт заполняет координаты в отдельные поля и в широту/долготу.
+- SkladBot matching сужен до заявок типа `3PL отгрузка`; `Возврат 3PL` не должен матчиться как отгрузка.
+- SkladBot matching сравнивает дату выгрузки, клиента, оплату, нормализованный товар и количество блоков.
+- Адрес больше не является жёстким блокером SkladBot-сопоставления.
+- Добавлен `GET /api/v1/reports/kiz/source-files`: список исходных Excel-файлов, где все позиции завершены.
+- Добавлен `GET /api/v1/reports/kiz/source-file`: Excel с КИЗами по выбранному завершённому исходному файлу.
+
+**Проверки:**
+
+- `py_compile` для новых backend-модулей прошёл.
+- `python -m unittest tests.test_backend_telegram_import tests.test_backend_api_persistence tests.test_backend_skladbot_worker` - 22 теста OK.
+- `python -m unittest discover -s tests` - 74 теста OK.
+
+**Что не сделано в этом шаге:**
+
+- Реальный Telegram smoke и реальный SkladBot match были проверены позднее отдельным шагом, см. блок ниже.
+- Автоматическое создание заявок в SkladBot не реализовывалось.
+- Windows-архив и desktop-релиз не собирались.
+- `version.json` не повышался, push-уведомления не отправлялись.
+
+### VDS Smoke После Telegram/Logistics/SkladBot Доработок
+
+**Дата:** 2026-05-31.
+
+**Сделано:**
+
+- На VDS создана точка восстановления перед обновлением:
+  - `/opt/taksklad/restore_points/server_20260530T194938Z/app-files.tar.gz`;
+  - `/opt/taksklad/backups/postgres/taksklad-postgres-20260530T194941Z.sql.gz`.
+- На VDS выложен обновлённый backend-код.
+- Пересобраны Docker images `backend-api`, `telegram-worker`, `skladbot-worker`.
+- Во время выкладки `telegram-worker` и `skladbot-worker` были остановлены, потом запущены обратно.
+
+**Проверки:**
+
+- `https://api.135.181.245.84.sslip.io/health` вернул `200`.
+- Внутри backend-контейнера выполнен smoke:
+  - создан тестовый импорт `SMOKE_MVP_20260531_0052.xlsx`;
+  - заказ отсканирован двумя тестовыми КИЗами;
+  - заказ завершён;
+  - логистический Excel сформирован;
+  - Excel `КИЗ по файлам` сформирован;
+  - тестовые строки очищены из Postgres.
+- Проверка очистки подтвердила `orders=0` и `imports=0` для smoke-маркеров.
+- Внешний protected endpoint `/api/v1/logistics/dates` с server-side токеном вернул `200`.
+- Telegram token проверен через `getMe`; бот: `SkladKis_bot`.
+- Telegram menu установлен командами `date`, `logistics`, `kiz_files`.
+- SkladBot one-shot worker получил ответ `200` от SkladBot API. На VDS не было активных backend-заказов, поэтому результат: `requests=0 orders=0 matched=0 not_found=0 multiple=0`.
+
+**Ограничения:**
+
+- Полный входящий Telegram import от пользовательского аккаунта не проверен. Через Bot API бот не может сам создать себе входящее пользовательское сообщение.
+- SkladBot matching на реальной заявке проверен позднее отдельным безопасным smoke без создания новой заявки в WMS, см. блок ниже.
+- `version.json` не менялся, desktop push-уведомления не отправлялись.
+
+### Дополнительный VDS Smoke: Telegram Файл И Реальный SkladBot Match
+
+**Дата:** 2026-05-31.
+
+**Что уточнено по Telegram:**
+
+- Найдена причина ошибок `getUpdates`: long polling был дольше HTTP timeout клиента.
+- Добавлен отдельный короткий timeout для polling: `TELEGRAM_WORKER_POLL_TIMEOUT_SECONDS=15`.
+- Ошибки Telegram worker теперь не раскрывают bot token в тексте.
+- После перезапуска worker повторяющиеся ошибки `getUpdates` не появились.
+
+**Telegram file smoke:**
+
+- Создан тестовый Excel-файл `/tmp/taksklad_telegram_smoke_20260531.xlsx`.
+- Файл загружен в Telegram через Bot API, получен реальный `file_id`.
+- Основной `telegram-worker` был временно остановлен, чтобы не было гонки.
+- One-shot worker скачал файл из Telegram API по `file_id`, поставил импорт в очередь и обработал его.
+- Дата отгрузки применена как `2026-05-31`.
+- Импорт создал тестовый заказ, затем тестовые данные были полностью удалены.
+- Проверка очистки: `tg_smoke_orders=0`, `tg_smoke_imports=0`, `telegram_pending=0`.
+
+**Что уточнено по SkladBot:**
+
+- Worker больше не обращается к SkladBot API, если в backend нет активных заказов для сопоставления.
+- Добавлена обработка `429 Too Many Requests`: задержка, повтор и пропуск проблемной детали без падения worker.
+- Исправлена логика фильтра даты: для отбора используется `unloading_date` заявки SkladBot, а не только `created_at`.
+- Это важно, потому что заявка может быть создана раньше, но отгрузка стоит на сегодня/вчера.
+
+**SkladBot real-match smoke:**
+
+- В SkladBot использована уже существующая реальная заявка без создания новой заявки:
+  - `request_id=190961`;
+  - `request_number=WH-R-190960`;
+  - тип: `Отгрузка 3PL`;
+  - дата выгрузки: `2026-05-29`;
+  - клиент: `NICE SHOP`;
+  - оплата: `Терминал`;
+  - товар: `Chapman Brown OP 20`;
+  - количество: `1` блок.
+- В backend временно создан тестовый заказ с совпадающими полями.
+- One-shot `skladbot-worker` нашёл совпадение:
+  - `requests=1`;
+  - `orders=1`;
+  - `matched=1`;
+  - `not_found=0`;
+  - `multiple=0`.
+- В заказ записались `skladbot_request_number=WH-R-190960` и `skladbot_request_id=190961`.
+- Тестовые данные были удалены, основной `skladbot-worker` запущен обратно.
+- Проверка очистки: `orders_total=0`, `smoke_skladbot_orders=0`, `smoke_skladbot_imports=0`, `telegram_pending=0`.
+
+**Ограничения:**
+
+- Новая заявка в SkladBot не создавалась специально, чтобы не менять WMS/остатки.
+- Windows desktop UI физически не проверялся в этой среде.
+
+### Контрольный Прогон После Уточнения Рисков
+
+**Дата:** 2026-05-31.
+
+**Что зафиксировано:**
+
+- Smartup/Excel без даты отгрузки не считается блокером: дату задаёт менеджер в Telegram.
+- Для SkladBot все количества сравниваются только в блоках.
+- Длинные названия товаров SkladBot нормализуются до цвета и формата.
+- Адрес остаётся мягким критерием и не блокирует совпадение.
+- Логистический отчёт должен опираться на координаты.
+
+**Проверки текущего состояния:**
+
+- `.venv/bin/python -m unittest discover -s tests` - 74 теста OK.
+- `.venv/bin/python -m py_compile backend/app/*.py tests/*.py` - OK.
+- `git diff --check` - OK.
+- `npm run build` в `frontend/` - OK.
+- `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK.
+- Быстрый поиск секретов по рабочим файлам не нашёл реальных токенов/паролей, только placeholder/env-названия.
+
+**Что остаётся вне автоматической проверки:**
+
+- входящее Telegram-сообщение от реального пользовательского аккаунта;
+- физическая Windows-приёмка desktop UI;
+- сборка и проверка Windows-архива.

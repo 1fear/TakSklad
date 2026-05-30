@@ -16,13 +16,22 @@ from .orders_service import COMPLETED_STATUSES
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-NOISE_COMPANY_TOKENS = {"ooo", "ооо", "mchj", "мчж", "ip", "ип", "sp", "сп"}
+NOISE_COMPANY_TOKENS = {"ooo", "ооо", "mchj", "мчж", "ip", "ип", "sp", "сп", "склад", "склади"}
 NOISE_PRODUCT_TOKENS = {"uz", "kingsize", "king", "size", "superslim", "super", "slim"}
+PRODUCT_COLORS = ("brown", "red", "gold")
+PRODUCT_FORMATS = ("op", "ssl")
 
 
 def env_int(name, default):
     try:
         return int(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+
+
+def env_float(name, default):
+    try:
+        return float(os.environ.get(name, "") or default)
     except ValueError:
         return default
 
@@ -50,6 +59,43 @@ def text_tokens_match(left, right, noise_tokens=None, min_overlap=0.75):
         return False
     shorter, longer = (left_tokens, right_tokens) if len(left_tokens) <= len(right_tokens) else (right_tokens, left_tokens)
     return len(shorter.intersection(longer)) / max(1, len(shorter)) >= min_overlap
+
+
+def normalized_token_set(value, noise_tokens=None):
+    return set(simplify_tokens(value, noise_tokens or set()))
+
+
+def client_matches(left, right):
+    left_tokens = normalized_token_set(left, NOISE_COMPANY_TOKENS)
+    right_tokens = normalized_token_set(right, NOISE_COMPANY_TOKENS)
+    if not left_tokens or not right_tokens:
+        return False
+    return left_tokens == right_tokens
+
+
+def product_sku_key(value):
+    text = normalize_lookup_text(value)
+    color = next((item for item in PRODUCT_COLORS if item in text.split()), "")
+    product_format = next((item for item in PRODUCT_FORMATS if item in text.split()), "")
+    if color and product_format:
+        return f"{color}:{product_format}"
+    return ""
+
+
+def product_matches(left, right):
+    left_key = product_sku_key(left)
+    right_key = product_sku_key(right)
+    if left_key and right_key:
+        return left_key == right_key
+    return text_tokens_match(left, right, NOISE_PRODUCT_TOKENS, min_overlap=0.8)
+
+
+def request_type_matches(value):
+    expected = normalize_lookup_text(os.environ.get("SKLADBOT_REQUEST_TYPE_NAME") or "3PL отгрузка")
+    actual = normalize_lookup_text(value)
+    if expected and expected == actual:
+        return True
+    return "3pl" in actual and "отгруз" in actual
 
 
 def normalize_payment_type(value):
@@ -157,6 +203,8 @@ class SkladBotClient:
         self.customer_id = env_int("SKLADBOT_CUSTOMER_ID", 6211)
         self.shipment_type_id = env_int("SKLADBOT_SHIPMENT_TYPE_ID", 3389)
         self.limit = env_int("SKLADBOT_REQUESTS_LIMIT", 500)
+        self.request_delay = max(0.0, env_float("SKLADBOT_REQUEST_DELAY_SECONDS", 0.25))
+        self.max_retries = max(0, env_int("SKLADBOT_API_MAX_RETRIES", 2))
 
     @property
     def configured(self):
@@ -165,14 +213,22 @@ class SkladBotClient:
     def get(self, path, params=None):
         if not self.token:
             raise RuntimeError("SKLADBOT_API_TOKEN is not configured")
+        url = f"{self.base_url}/{path.lstrip('/')}"
         with httpx.Client(timeout=self.timeout) as client:
-            response = client.get(
-                f"{self.base_url}/{path.lstrip('/')}",
-                params=params or {},
-                headers={"Authorization": f"Bearer {self.token}", "Accept": "application/json"},
-            )
-            response.raise_for_status()
-            return response.json()
+            for attempt in range(self.max_retries + 1):
+                response = client.get(
+                    url,
+                    params=params or {},
+                    headers={"Authorization": f"Bearer {self.token}", "Accept": "application/json"},
+                )
+                if response.status_code == 429 and attempt < self.max_retries:
+                    retry_after = parse_int(response.headers.get("Retry-After"))
+                    sleep_for = retry_after if retry_after > 0 else max(1.0, self.request_delay * 4 * (attempt + 1))
+                    logging.warning("SkladBot API 429, retry %s/%s after %.1fs", attempt + 1, self.max_retries, sleep_for)
+                    time.sleep(sleep_for)
+                    continue
+                response.raise_for_status()
+                return response.json()
 
     def list_requests(self):
         return extract_list_items(self.get("/requests", {
@@ -229,13 +285,28 @@ def fetch_candidate_requests(today=None):
     lookback_days = env_int("SKLADBOT_SYNC_LOOKBACK_DAYS", 1)
     result = []
     for item in client.list_requests():
-        if not date_in_window(request_list_value(item, "created_at", "createdAt", "date"), today=today, lookback_days=lookback_days):
+        if not request_type_matches(request_list_value(item, "type")):
             continue
         request_id = parse_int(request_list_value(item, "id"))
         if request_id <= 0:
             continue
-        detail = client.get_request_detail(request_id)
+        try:
+            detail = client.get_request_detail(request_id)
+        except httpx.HTTPStatusError as exc:
+            logging.warning(
+                "SkladBot worker: skip request_id=%s after HTTP %s",
+                request_id,
+                exc.response.status_code if exc.response is not None else "unknown",
+            )
+            continue
+        except Exception:
+            logging.warning("SkladBot worker: skip request_id=%s after detail fetch error", request_id, exc_info=True)
+            continue
+        if client.request_delay:
+            time.sleep(client.request_delay)
         request = normalize_request_payload(item, detail)
+        if not request_type_matches(request.get("type")):
+            continue
         if not date_in_window(request.get("unloading_date") or request.get("created_at"), today=today, lookback_days=lookback_days):
             continue
         result.append(request)
@@ -260,11 +331,9 @@ def request_matches_order(order, request):
     request_date = parse_date(request.get("unloading_date"))
     if not order.order_date or not request_date or order.order_date != request_date:
         return False
-    if normalize_lookup_text(group["client"]) != normalize_lookup_text(request.get("recipient")):
+    if not client_matches(group["client"], request.get("recipient")):
         return False
     if normalize_payment_type(group["payment"]) != normalize_payment_type(request.get("comment")):
-        return False
-    if not text_tokens_match(group["address"], request.get("address"), min_overlap=0.55):
         return False
 
     request_products = list(request.get("products") or [])
@@ -277,7 +346,7 @@ def request_matches_order(order, request):
             if request_product.get("amount") != order_product.get("blocks"):
                 continue
             if any(
-                text_tokens_match(order_product["name"], candidate, NOISE_PRODUCT_TOKENS, min_overlap=0.8)
+                product_matches(order_product["name"], candidate)
                 for candidate in (request_product.get("name"), request_product.get("vendor_code"), request_product.get("barcode"))
                 if candidate
             ):
@@ -290,7 +359,6 @@ def request_matches_order(order, request):
 
 
 def update_orders_from_skladbot():
-    requests = fetch_candidate_requests()
     checked_at = datetime.now(timezone.utc).isoformat()
     updated = 0
     matched = 0
@@ -303,6 +371,11 @@ def update_orders_from_skladbot():
             .options(selectinload(Order.items))
             .where(~Order.status.in_(COMPLETED_STATUSES))
         ).scalars().all()
+        if not orders:
+            logging.info("SkladBot worker: no active backend orders, skip SkladBot API")
+            return {"requests": 0, "updated": 0, "matched": 0, "not_found": 0, "multiple": 0}
+
+        requests = fetch_candidate_requests()
 
         for order in orders:
             matches = [request for request in requests if request_matches_order(order, request)]
