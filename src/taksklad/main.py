@@ -25,6 +25,18 @@ from .app_printing import PrintingActionsMixin
 from .app_skladbot import SkladBotActionsMixin
 from .app_telegram import TelegramActionsMixin
 from .app_updates import UpdateMixin
+from .backend_client import (
+    backend_enabled,
+    backend_read_orders_enabled,
+    fetch_backend_sheet_data,
+)
+from .backend_events import (
+    get_pending_backend_codes,
+    remove_pending_backend_scan,
+    queue_backend_order_complete,
+    queue_backend_scan,
+    sync_pending_backend_events,
+)
 from .orders import (
     get_order_status,
     get_plan_blocks,
@@ -125,15 +137,43 @@ def global_exception_handler(exc_type, exc_value, exc_traceback):
 sys.excepthook = global_exception_handler
 
 def fetch_sheet_data():
+    if backend_read_orders_enabled():
+        today_orders, sheet, all_existing_codes = fetch_backend_sheet_data()
+        all_existing_codes.update(get_pending_backend_codes())
+        return today_orders, sheet, all_existing_codes
+
     today_orders, sheet, all_rows = get_today_orders(apply_skladbot_filter=False, include_rows=True)
     all_existing_codes = get_all_existing_codes(sheet, all_rows=all_rows) if sheet else set()
     all_existing_codes.update(get_pending_codes())
+    all_existing_codes.update(get_pending_backend_codes())
     return today_orders, sheet, all_existing_codes
 
 def fetch_sheet_data_with_sync(sync_skladbot=True):
+    if backend_read_orders_enabled():
+        backend_result = sync_pending_backend_events()
+        today_orders, sheet, all_existing_codes = fetch_backend_sheet_data()
+        all_existing_codes.update(get_pending_backend_codes())
+        sync_result = {
+            "synced": 0,
+            "failed": 0,
+            "remaining": 0,
+            "backend": backend_result,
+            "skladbot": {
+                "enabled": False,
+                "updated": 0,
+                "matched": 0,
+                "not_found": 0,
+                "multiple": 0,
+                "errors": 0,
+                "message": "Заказы загружены из backend",
+            },
+        }
+        return today_orders, sheet, all_existing_codes, sync_result
+
     fallback_orders, sheet, all_rows = get_today_orders(apply_skladbot_filter=False, include_rows=True)
     today_orders = fallback_orders
     sync_result = sync_pending_saves(sheet)
+    backend_result = sync_pending_backend_events() if backend_enabled() else {"enabled": False}
     sheet_rows_changed = bool(sync_result.get("synced"))
     if sync_skladbot:
         skladbot_result = sync_skladbot_request_numbers(sheet)
@@ -161,7 +201,9 @@ def fetch_sheet_data_with_sync(sync_skladbot=True):
         today_orders, sheet, all_rows = get_today_orders(apply_skladbot_filter=False, include_rows=True)
     all_existing_codes = get_all_existing_codes(sheet, all_rows=all_rows) if sheet else set()
     all_existing_codes.update(get_pending_codes())
+    all_existing_codes.update(get_pending_backend_codes())
     sync_result["skladbot"] = skladbot_result
+    sync_result["backend"] = backend_result
     return today_orders, sheet, all_existing_codes, sync_result
 
 class ScanningApp(
@@ -212,6 +254,7 @@ class ScanningApp(
         self.telegram_lock_skip_logged_at = 0
         self.daily_report_check_running = False
         self.skladbot_sync_running = False
+        self.backend_sync_running = False
         self.last_sync_result = {"synced": 0, "failed": 0, "remaining": 0}
         self.product_catalog = load_product_catalog()
         os.makedirs(BACKUP_DIR, exist_ok=True)
@@ -226,6 +269,7 @@ class ScanningApp(
         self.after(2500, self.sync_pending_telegram_async)
         self.after(4000, self.poll_telegram_bot_async)
         self.after(12000, self.check_daily_reports_async)
+        self.after(13000, self.sync_backend_events_async)
         self.after(15000, self.run_skladbot_periodic_refresh)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -244,6 +288,43 @@ class ScanningApp(
 
     def fetch_sheet_data_after_skladbot_sync(self):
         return fetch_sheet_data()
+
+    def sync_backend_events_async(self):
+        if not backend_enabled() or self.backend_sync_running:
+            try:
+                self.after(15000, self.sync_backend_events_async)
+            except tk.TclError:
+                pass
+            return
+
+        self.backend_sync_running = True
+
+        def work():
+            return sync_pending_backend_events()
+
+        def on_success(result):
+            remaining = result.get("remaining", 0) if isinstance(result, dict) else 0
+            if remaining:
+                logging.info("Backend queue: осталось событий в очереди: %s", remaining)
+            self.update_stats_display()
+
+        def on_error(exc):
+            logging.info("Backend queue: синхронизация отложена: %s", exc)
+
+        def on_finally():
+            self.backend_sync_running = False
+            try:
+                self.after(15000, self.sync_backend_events_async)
+            except tk.TclError:
+                pass
+
+        self.run_background(
+            "Не удалось синхронизировать backend-очередь",
+            work,
+            on_success=on_success,
+            on_error=on_error,
+            on_finally=on_finally,
+        )
 
     def apply_loaded_data(self, result, show_empty_warning):
         if len(result) == 4:
@@ -498,6 +579,7 @@ class ScanningApp(
 
         removed_code = self.scanned_codes.pop()
         self.all_existing_codes.discard(removed_code)
+        remove_pending_backend_scan(self.current_order, removed_code)
         write_scan_backup("undo_scan", self.current_order, code=removed_code, codes=self.scanned_codes.copy())
 
         plan_blocks = get_plan_blocks(self.current_order)
@@ -802,7 +884,13 @@ class ScanningApp(
             self.refresh_legal_list()
             sync_result = self.last_sync_result or {}
             skladbot_result = sync_result.get("skladbot", {}) if isinstance(sync_result, dict) else {}
-            if sync_result.get("synced"):
+            backend_result = sync_result.get("backend", {}) if isinstance(sync_result, dict) else {}
+            if backend_result.get("enabled") and backend_read_orders_enabled():
+                if backend_result.get("remaining"):
+                    status_text = f"⚠️ Список из backend обновлён, очередь backend: {backend_result.get('remaining')}"
+                else:
+                    status_text = "✅ Список заказов обновлён из backend"
+            elif sync_result.get("synced"):
                 status_text = f"✅ Список обновлён, отправлено из очереди: {sync_result['synced']}"
             elif skladbot_result.get("errors"):
                 status_text = (
@@ -989,6 +1077,7 @@ class ScanningApp(
 
         self.scanned_codes.append(code)
         self.all_existing_codes.add(code)
+        queue_backend_scan(self.current_order, code)
         scanned_count = len(self.scanned_codes)
 
         self.progress_label.config(text=f"{scanned_count} / {plan_blocks}")
@@ -1121,6 +1210,11 @@ class ScanningApp(
 
         group_key = self.current_group_key
         current_products = [product.copy() for product in self.current_legal_entity_products]
+        backend_order_ids = sorted({
+            normalize_text(order.get("_backend_order_id"))
+            for order in self.current_legal_entity_orders
+            if normalize_text(order.get("_backend_order_id"))
+        })
         self.set_busy("⏳ Готовлю и печатаю сводный лист...")
         self.safe_config(self.finish_btn, state="disabled")
         self.safe_config(self.next_product_btn, state="disabled")
@@ -1155,6 +1249,9 @@ class ScanningApp(
             ):
                 raise RuntimeError("Сводка напечатана, но backup завершения заказа не создан")
 
+            for backend_order_id in backend_order_ids:
+                queue_backend_order_complete(backend_order_id)
+
             return {
                 "first_product": first_product,
                 "summary_products": summary_products,
@@ -1171,6 +1268,7 @@ class ScanningApp(
             self.reset_current_selection()
             self.status_var.set("✅ Заказ завершён! Сводка отправлена на печать")
             self.status_label.config(bg=BG_MAIN, fg=FG_MUTED)
+            self.sync_backend_events_async()
 
             if self.legal_listbox.size() > 0:
                 self.legal_listbox.selection_set(0)
@@ -1211,7 +1309,7 @@ def run_app():
     ensure_windows_desktop_shortcut()
     migrate_legacy_json_files_to_app_data()
 
-    if not credentials_available():
+    if not credentials_available() and not backend_read_orders_enabled():
         messagebox.showerror("Ошибка",
             f"Не найдены учётные данные Google Sheets.\n\n"
             f"Положите credentials.json рядом с программой или перенесите его в {TAKSKLAD_DATA_FILE}")

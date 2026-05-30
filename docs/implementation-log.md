@@ -4,6 +4,61 @@
 
 ## 2026-05-30
 
+### Product MVP 2.0: foundation, desktop bridge и VDS workers
+
+**Дата:** 2026-05-30.
+
+**Цель:** пройти план 2.0 максимально далеко без Windows-приёмки и без изменения `version.json`.
+
+**Сделано:**
+
+- Добавлен [deploy-rollback-runbook.md](/Users/anton/Documents/work/TakSklad/docs/deploy-rollback-runbook.md).
+- Добавлен `deploy/vds/apply_schema.sh` для безопасного применения текущей SQL-схемы.
+- Добавлен `deploy/vds/restore_drill.sh`; restore-drill на VDS выполнен в отдельную временную БД.
+- Desktop получил backend feature flags:
+  - `TAKSKLAD_BACKEND_ENABLED`;
+  - `TAKSKLAD_BACKEND_READ_ORDERS_ENABLED`;
+  - `TAKSKLAD_BACKEND_BASE_URL`;
+  - `TAKSKLAD_BACKEND_API_TOKEN`.
+- Добавлен desktop backend API client.
+- Добавлена offline-очередь `pending_backend_events` для backend scan/complete событий.
+- Скан КИЗ по-прежнему сначала пишется в локальный backup, затем ставится в backend-очередь.
+- При ошибке backend сканирование не блокируется.
+- Desktop умеет читать активные заказы из backend при включённом отдельном флаге чтения.
+- Desktop Excel-импорт умеет отправлять строки в backend при включённом backend flag.
+- `GET /api/v1/orders/active` теперь отдаёт `scan_codes` и номера SkladBot из Postgres.
+- Добавлен `skladbot-worker` как отдельный VDS-контейнер.
+- SkladBot worker проверяет окно сегодня + вчера и пишет результат матчинга в `orders.raw_payload`.
+- Добавлен `telegram-worker` как отдельный VDS-контейнер.
+- Telegram worker хранит offset в Postgres и снимает будущий конфликт двух desktop `getUpdates`.
+- VDS compose расширен сервисами `skladbot-worker` и `telegram-worker`.
+- VDS staging пересобран и поднят с тремя backend-процессами: API, SkladBot worker, Telegram worker.
+
+**Проверки 2026-05-30:**
+
+- `.venv/bin/python -m py_compile main.py sitecustomize.py taksklad/__init__.py src/taksklad/*.py tests/*.py backend/app/*.py` - успешно.
+- `.venv/bin/python -m unittest discover -s tests` - 58 тестов пройдены.
+- `bash -n deploy/vds/*.sh` - успешно.
+- `docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml config` - успешно.
+- VDS `/health` на временном домене `sslip.io` - `200`.
+- VDS `GET /api/v1/orders/active` с токеном - `200`, активных заказов `0`.
+- VDS restore-drill - `restore_drill_ok`, таблицы читаются.
+- VDS smoke: import `201`, duplicate scan `409`, complete `200`, report source `postgres`, cleanup smoke-данных выполнен.
+
+**Что не получилось / внешние блокеры:**
+
+- `api.taksklad.uz` пока не резолвится: нужна A-запись `api -> 135.181.245.84` у DNS-провайдера.
+- На VDS не настроены реальные `SKLADBOT_API_TOKEN` и `TELEGRAM_BOT_TOKEN`, поэтому workers стартуют, но SkladBot работает в disabled-режиме, Telegram ждёт токен.
+- Windows-приёмку, сборку Windows archive и staged rollout нельзя честно завершить с macOS/VDS без рабочего Windows-компьютера.
+- `version.json` специально не менялся, push-уведомления об обновлении не отправлялись.
+- Telegram worker пока не делает полноценный авто-импорт Excel-вложений; до приёмки 2.0 использовать desktop/backend импорт.
+
+**Решения:**
+
+- DNS и Windows release вынесены в обязательные ручные acceptance-шаги.
+- Backend bridge сделан за feature flags, чтобы текущая desktop-линия не изменила поведение без явного включения.
+- VDS workers добавлены, но не ломают staging при отсутствии токенов.
+
 ### Backend API MVP: дневной отчёт и автоматический backup
 
 **Дата:** 2026-05-30.

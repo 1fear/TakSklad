@@ -18,6 +18,7 @@ class OrderItemRead(BaseModel):
     quantity_blocks: int
     scanned_blocks: int
     status: str
+    scan_codes: list[str] = Field(default_factory=list)
 
 
 class OrderRead(BaseModel):
@@ -28,6 +29,8 @@ class OrderRead(BaseModel):
     address: str
     representative: str | None = None
     status: str
+    skladbot_request_number: str = ""
+    skladbot_request_id: str = ""
     items: list[OrderItemRead] = Field(default_factory=list)
 
 

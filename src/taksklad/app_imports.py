@@ -1,8 +1,9 @@
 from tkinter import filedialog, messagebox
 
+from .backend_client import backend_enabled, import_orders
 from .catalog import load_product_catalog
 from .config import APP_NAME, BG_MAIN, FG_MUTED
-from .excel_import import append_import_records, prepare_excel_import
+from .excel_import import append_import_records, parse_excel_order_files, prepare_excel_import
 from .utils import parse_int_value
 
 
@@ -30,6 +31,17 @@ class ImportActionsMixin:
         self.safe_config(self.refresh_btn, state="disabled")
 
         def work():
+            if backend_enabled():
+                parsed = parse_excel_order_files(list(file_paths))
+                records = parsed.get("records", [])
+                parsed["new_records"] = records
+                parsed["duplicate_records"] = []
+                parsed["clients_count"] = len({record.get("Клиент") for record in records})
+                parsed["products_count"] = len({record.get("Товары") for record in records})
+                parsed["blocks_count"] = sum(parse_int_value(record.get("Кол-во блок")) for record in records)
+                parsed["quantity_count"] = sum(parse_int_value(record.get("Кол-во ШТ")) for record in records)
+                parsed["backend_import"] = True
+                return parsed
             return prepare_excel_import(list(file_paths))
 
         def on_success(preview):
@@ -78,7 +90,8 @@ class ImportActionsMixin:
                 message_lines.extend(["", "Ошибки в отдельных файлах:", "\n".join(errors[:5])])
             if warnings:
                 message_lines.extend(["", "Предупреждения:", "\n".join(warnings[:5])])
-            message_lines.extend(["", "Загрузить новые позиции в Google Sheets?"])
+            target_name = "backend" if preview.get("backend_import") else "Google Sheets"
+            message_lines.extend(["", f"Загрузить новые позиции в {target_name}?"])
 
             if not messagebox.askyesno("Подтверждение импорта", "\n".join(message_lines)):
                 self.status_var.set("Импорт отменён")
@@ -103,12 +116,22 @@ class ImportActionsMixin:
         )
 
     def commit_excel_import(self, records):
-        self.set_busy("⏳ Загружаю заказы в Google Sheets...")
+        target_name = "backend" if backend_enabled() else "Google Sheets"
+        self.set_busy(f"⏳ Загружаю заказы в {target_name}...")
         self.safe_config(self.import_btn, state="disabled")
         self.safe_config(self.refresh_btn, state="disabled")
 
         def work():
-            result = append_import_records(records)
+            if backend_enabled():
+                imported_sources = sorted({record.get("Источник файла", "") for record in records if record.get("Источник файла")})
+                result = import_orders(records, filename=", ".join(imported_sources[:5]))
+                result = {
+                    "imported": result.get("rows_imported", 0),
+                    "duplicates": result.get("duplicate_rows", 0),
+                    "backend": result,
+                }
+            else:
+                result = append_import_records(records)
             loaded = self.fetch_sheet_data_after_import()
             return result, loaded
 

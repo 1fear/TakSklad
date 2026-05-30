@@ -31,7 +31,7 @@ def parse_uuid(value, field_name="id"):
 def list_active_orders(db: Session):
     stmt = (
         select(Order)
-        .options(selectinload(Order.items))
+        .options(selectinload(Order.items).selectinload(OrderItem.scan_codes))
         .where(~Order.status.in_(COMPLETED_STATUSES))
         .order_by(Order.order_date.asc(), Order.created_at.asc())
     )
@@ -113,7 +113,7 @@ def complete_order(db: Session, order_id):
     parsed_order_id = parse_uuid(order_id, "order_id")
     order = db.execute(
         select(Order)
-        .options(selectinload(Order.items))
+        .options(selectinload(Order.items).selectinload(OrderItem.scan_codes))
         .where(Order.id == parsed_order_id)
         .with_for_update()
     ).scalar_one_or_none()
@@ -156,6 +156,7 @@ def complete_order(db: Session, order_id):
 
 
 def order_to_read(order: Order):
+    raw_payload = order.raw_payload or {}
     return OrderRead(
         id=str(order.id),
         order_date=order.order_date,
@@ -164,6 +165,8 @@ def order_to_read(order: Order):
         address=order.address,
         representative=order.representative,
         status=order.status,
+        skladbot_request_number=raw_payload.get("skladbot_request_number") or "",
+        skladbot_request_id=raw_payload.get("skladbot_request_id") or "",
         items=[
             item_to_read(item)
             for item in sorted(order.items, key=lambda value: (str(value.created_at or ""), str(value.id)))
@@ -179,4 +182,8 @@ def item_to_read(item: OrderItem):
         quantity_blocks=item.quantity_blocks,
         scanned_blocks=item.scanned_blocks,
         status=item.status,
+        scan_codes=[
+            scan.code
+            for scan in sorted(item.scan_codes, key=lambda value: (str(value.scanned_at or ""), str(value.id)))
+        ],
     )

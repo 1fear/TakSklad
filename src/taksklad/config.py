@@ -28,6 +28,7 @@ REPORTS_DIR = os.path.join(APP_DIR, "reports")
 PENDING_PRINTS_FILE = os.path.join(APP_DIR, "pending_prints.json")
 PENDING_SAVES_FILE = os.path.join(APP_DIR, "pending_saves.json")
 PENDING_TELEGRAM_FILE = os.path.join(APP_DIR, "pending_telegram.json")
+PENDING_BACKEND_EVENTS_FILE = os.path.join(APP_DIR, "pending_backend_events.json")
 TELEGRAM_STATE_FILE = os.path.join(APP_DIR, "telegram_state.json")
 PRINT_SETTINGS_FILE = os.path.join(APP_DIR, "print_settings.json")
 PRODUCT_CATALOG_FILE = os.path.join(APP_DIR, "product_catalog.json")
@@ -58,6 +59,27 @@ TELEGRAM_LOCK_KEY = "telegram_poll"
 TELEGRAM_LOCK_TTL_SECONDS = 60
 TELEGRAM_LOCK_REFRESH_SECONDS = 20
 TELEGRAM_LOCK_RETRY_SECONDS = 15
+
+TAKSKLAD_BACKEND_ENABLED = os.environ.get("TAKSKLAD_BACKEND_ENABLED", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+    "да",
+}
+TAKSKLAD_BACKEND_READ_ORDERS_ENABLED = os.environ.get(
+    "TAKSKLAD_BACKEND_READ_ORDERS_ENABLED",
+    "",
+).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+    "да",
+}
+TAKSKLAD_BACKEND_BASE_URL = os.environ.get("TAKSKLAD_BACKEND_BASE_URL", "").strip().rstrip("/")
+TAKSKLAD_BACKEND_API_TOKEN = os.environ.get("TAKSKLAD_BACKEND_API_TOKEN", "").strip()
+TAKSKLAD_BACKEND_TIMEOUT_SECONDS = int(os.environ.get("TAKSKLAD_BACKEND_TIMEOUT_SECONDS", "8") or "8")
 
 ORDER_DATE_COLUMN = "Дата отгрузки"
 LEGACY_ORDER_DATE_COLUMN = "Дата получения заказа"

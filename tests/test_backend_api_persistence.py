@@ -172,6 +172,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(len(active_payload), 1)
         self.assertEqual(active_payload[0]["client"], "Import Client")
         self.assertEqual(len(active_payload[0]["items"]), 2)
+        self.assertEqual(active_payload[0]["items"][0]["scan_codes"], [])
 
         history = self.client.get("/api/v1/imports")
         self.assertEqual(history.status_code, 200)
@@ -253,6 +254,11 @@ class BackendApiPersistenceTests(unittest.TestCase):
                 },
             )
             self.assertEqual(response.status_code, 201)
+
+        active_after_scans = self.client.get("/api/v1/orders/active")
+        self.assertEqual(active_after_scans.status_code, 200)
+        active_item = active_after_scans.json()[0]["items"][0]
+        self.assertTrue(active_item["scan_codes"])
 
         completed = self.client.post(f"/api/v1/orders/{order_id}/complete")
         self.assertEqual(completed.status_code, 200)

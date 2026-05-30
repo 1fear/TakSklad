@@ -3,6 +3,7 @@ import tkinter as tk
 from tkinter import messagebox
 
 from .config import SHEET_NAME, SPREADSHEET_ID
+from .backend_events import load_pending_backend_events
 from .orders import order_group_key
 from .pending_store import load_pending_saves
 from .reports import create_day_report_excel
@@ -20,8 +21,12 @@ class DayEndActionsMixin:
         self.total_blocks_label.config(text=f"Блоков: {total_blocks}")
         active_groups = len({order_group_key(order) for order in self.today_orders})
         pending_saves = len(load_pending_saves())
+        pending_backend = len(load_pending_backend_events())
         self.active_orders_label.config(text=f"Активных заказов: {active_groups}")
-        self.pending_saves_label.config(text=f"Очередь записи: {pending_saves}")
+        if pending_backend:
+            self.pending_saves_label.config(text=f"Очередь записи: {pending_saves}, backend: {pending_backend}")
+        else:
+            self.pending_saves_label.config(text=f"Очередь записи: {pending_saves}")
 
     def end_day(self):
         if not self.ensure_update_allowed():

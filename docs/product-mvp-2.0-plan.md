@@ -203,11 +203,26 @@ Done:
 - Traefik/HTTPS работают на временном домене.
 - Backup timer включен.
 - VDS staging smoke пройден.
+- Restore-drill выполнен на отдельной временной БД.
+- Deploy/rollback runbook добавлен.
+- Desktop backend bridge добавлен за feature flags.
+- Backend offline queue для desktop scan/complete событий добавлена.
+- Desktop может читать активные заказы из backend при отдельном флаге.
+- SkladBot worker добавлен как VDS-сервис.
+- Telegram worker добавлен как VDS-сервис.
+- VDS staging пересобран с `backend-api`, `skladbot-worker`, `telegram-worker`.
+
+Блокеры перед релизом:
+
+1. DNS `api.taksklad.uz` не резолвится; нужна A-запись `api -> 135.181.245.84`.
+2. На VDS нужно добавить реальные `SKLADBOT_API_TOKEN` и `TELEGRAM_BOT_TOKEN`.
+3. Telegram worker пока не выполняет полный авто-импорт Excel-вложений.
+4. Нужна ручная Windows-приёмка с backend flags.
+5. Windows archive и `version.json` не менять до приёмки.
 
 Следующий шаг:
 
-1. DNS `api.taksklad.uz`.
-2. Restore-drill.
-3. Deploy/rollback runbook.
-
-После этих трёх пунктов можно переходить к desktop backend bridge.
+1. Настроить DNS.
+2. Добавить worker-токены на VDS.
+3. Прогнать реальную интеграционную проверку SkladBot/Telegram.
+4. Перейти к Windows acceptance для desktop backend bridge.
