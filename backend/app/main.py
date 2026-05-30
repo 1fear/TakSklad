@@ -1,8 +1,13 @@
-from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, status
+from urllib.parse import quote
+
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Response, status
+from fastapi.middleware.cors import CORSMiddleware
 
 from .db import get_db
 from .imports_service import create_import as create_import_in_db
 from .imports_service import list_imports as list_imports_in_db
+from .kiz_reports_service import build_kiz_source_file_report_xlsx, list_completed_kiz_source_files
+from .logistics_service import build_logistics_report_xlsx, list_logistics_dates
 from .orders_service import ApiError, complete_order as complete_order_in_db
 from .orders_service import create_scan as create_scan_in_db
 from .orders_service import list_active_orders as list_active_orders_in_db
@@ -28,6 +33,22 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
 )
+
+
+def configure_cors(app_instance: FastAPI, app_settings) -> None:
+    if not app_settings.cors_origins:
+        return
+
+    app_instance.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(app_settings.cors_origins),
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
+
+
+configure_cors(app, settings)
 
 
 def require_service_token(authorization: str | None = Header(default=None)):
@@ -91,6 +112,48 @@ def day_report(report_date: str | None = None, db=Depends(get_db)):
         return build_day_report(db, report_date)
     except ApiError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@api.get("/reports/kiz/source-files")
+def kiz_source_files(db=Depends(get_db)) -> list[dict]:
+    return list_completed_kiz_source_files(db)
+
+
+@api.get("/reports/kiz/source-file")
+def kiz_source_file_report(source_file: str, db=Depends(get_db)):
+    try:
+        content, filename = build_kiz_source_file_report_xlsx(db, source_file)
+    except ApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+            "X-TakSklad-Filename": quote(filename),
+        },
+    )
+
+
+@api.get("/logistics/dates")
+def logistics_dates(db=Depends(get_db)) -> list[str]:
+    return list_logistics_dates(db)
+
+
+@api.get("/logistics/report")
+def logistics_report(shipment_date: str, db=Depends(get_db)):
+    try:
+        content, filename = build_logistics_report_xlsx(db, shipment_date)
+    except ApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+            "X-TakSklad-Filename": quote(filename),
+        },
+    )
 
 
 app.include_router(api)

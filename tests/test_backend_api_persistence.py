@@ -1,7 +1,9 @@
 import unittest
 import uuid
+from io import BytesIO
 from datetime import date
 
+import openpyxl
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
@@ -179,6 +181,33 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(len(history.json()), 1)
         self.assertEqual(history.json()[0]["rows_imported"], 2)
 
+    def test_import_stores_coordinates_blocks_and_prices(self):
+        rows = [
+            {
+                "Дата отгрузки": "30.05.2026",
+                "Тип оплаты": "Терминал",
+                "Клиент": "Price Client",
+                "Адрес": "Tashkent Address",
+                "Координаты": "41.31, 69.27",
+                "Товары": "Chapman Brown OP 20",
+                "Кол-во ШТ": "200",
+                "Сумма позиции": "4800000",
+                "ID заказа": "price-source-order",
+            },
+        ]
+
+        response = self.client.post("/api/v1/imports", json={"source": "excel", "filename": "orders.xlsx", "rows": rows})
+
+        self.assertEqual(response.status_code, 201)
+        active = self.client.get("/api/v1/orders/active")
+        self.assertEqual(active.status_code, 200)
+        order = active.json()[0]
+        self.assertEqual(order["coordinates"], "41.31, 69.27")
+        self.assertEqual(order["items"][0]["quantity_pieces"], 200)
+        self.assertEqual(order["items"][0]["quantity_blocks"], 20)
+        self.assertEqual(order["items"][0]["block_price"], 240000)
+        self.assertEqual(order["items"][0]["line_total"], 4_800_000)
+
     def test_import_skips_duplicate_items_and_reports_invalid_rows(self):
         valid_row = {
             "Дата отгрузки": "2026-05-30",
@@ -282,6 +311,152 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(payload["payment_groups"][0]["payment_group"], "terminal")
         self.assertEqual(payload["payment_groups"][0]["orders"], 1)
         self.assertEqual(payload["orders"][0]["skladbot_request_number"], "WR-100")
+
+    def test_logistics_report_uses_shipment_date_coordinates_and_prices(self):
+        rows = [
+            {
+                "Дата отгрузки": "2026-05-30",
+                "Тип оплаты": "Терминал",
+                "Клиент": "Logistics Client",
+                "Адрес": "Tashkent Address",
+                "Координаты": "41.31, 69.27",
+                "Торговый представитель": "Rep One",
+                "Товары": "Chapman Brown OP 20",
+                "Кол-во ШТ": "200",
+                "Кол-во блок": "20",
+                "Сумма позиции": "4800000",
+                "ID заказа": "logistics-source-order",
+            },
+        ]
+        imported = self.client.post("/api/v1/imports", json={"source": "excel", "filename": "orders.xlsx", "rows": rows})
+        self.assertEqual(imported.status_code, 201)
+
+        dates = self.client.get("/api/v1/logistics/dates")
+        self.assertEqual(dates.status_code, 200)
+        self.assertEqual(dates.json(), ["2026-05-30"])
+
+        report = self.client.get("/api/v1/logistics/report?shipment_date=2026-05-30")
+        self.assertEqual(report.status_code, 200)
+        workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
+        sheet = workbook["Заявки"]
+
+        self.assertEqual(sheet["C2"].value, "Logistics Client")
+        self.assertEqual(sheet["G2"].value, "41.31,69.27")
+        self.assertEqual(sheet["J2"].value, "30.05.2026")
+        self.assertEqual(sheet["R2"].value, "Chapman Brown OP 20")
+        self.assertEqual(sheet["S2"].value, 200)
+        self.assertEqual(sheet["V2"].value, 24000)
+        self.assertEqual(sheet["W2"].value, 4_800_000)
+        self.assertEqual(sheet["AE2"].value, "41.31,69.27")
+        self.assertEqual(sheet["AF2"].value, "41.31")
+        self.assertEqual(sheet["AG2"].value, "69.27")
+        workbook.close()
+
+    def test_logistics_report_requires_coordinates(self):
+        rows = [
+            {
+                "Дата отгрузки": "2026-05-30",
+                "Тип оплаты": "Терминал",
+                "Клиент": "No Coordinates Client",
+                "Адрес": "Tashkent Address",
+                "Товары": "Chapman Brown OP 20",
+                "Кол-во ШТ": "20",
+                "Кол-во блок": "2",
+                "ID заказа": "no-coordinates-order",
+            },
+        ]
+        imported = self.client.post("/api/v1/imports", json={"source": "excel", "filename": "orders.xlsx", "rows": rows})
+        self.assertEqual(imported.status_code, 201)
+
+        report = self.client.get("/api/v1/logistics/report?shipment_date=2026-05-30")
+
+        self.assertEqual(report.status_code, 409)
+        self.assertIn("Missing coordinates", report.json()["detail"])
+
+    def test_logistics_report_normalizes_three_part_coordinates(self):
+        rows = [
+            {
+                "Дата отгрузки": "2026-05-30",
+                "Тип оплаты": "Терминал",
+                "Клиент": "Coordinates Client",
+                "Адрес": "Tashkent Address",
+                "Координаты": "41.214609,69.223027,15",
+                "Товары": "Chapman Brown OP 20",
+                "Кол-во ШТ": "10",
+                "Кол-во блок": "1",
+                "ID заказа": "coordinates-order",
+            },
+        ]
+        imported = self.client.post("/api/v1/imports", json={"source": "excel", "filename": "orders.xlsx", "rows": rows})
+        self.assertEqual(imported.status_code, 201)
+
+        report = self.client.get("/api/v1/logistics/report?shipment_date=2026-05-30")
+        self.assertEqual(report.status_code, 200)
+        workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
+        sheet = workbook["Заявки"]
+
+        self.assertEqual(sheet["AE2"].value, "41.214609,69.223027")
+        self.assertEqual(sheet["AF2"].value, "41.214609")
+        self.assertEqual(sheet["AG2"].value, "69.223027")
+        workbook.close()
+
+    def test_kiz_source_file_report_lists_only_completed_source_files(self):
+        rows = [
+            {
+                "Дата отгрузки": "2026-05-30",
+                "Тип оплаты": "Терминал",
+                "Клиент": "KIZ Client",
+                "Адрес": "KIZ Address",
+                "Координаты": "41.31, 69.27",
+                "Товары": "Chapman Brown OP 20",
+                "Кол-во ШТ": "20",
+                "Кол-во блок": "2",
+                "Сумма позиции": "480000",
+                "Источник файла": "source-a.xlsx",
+                "ID заказа": "kiz-source-order",
+            },
+            {
+                "Дата отгрузки": "2026-05-30",
+                "Тип оплаты": "Перечисление",
+                "Клиент": "Open Client",
+                "Адрес": "Open Address",
+                "Товары": "Chapman Gold SSL 20",
+                "Кол-во ШТ": "10",
+                "Кол-во блок": "1",
+                "Источник файла": "source-b.xlsx",
+                "ID заказа": "open-source-order",
+            },
+        ]
+        imported = self.client.post("/api/v1/imports", json={"source": "excel", "filename": "orders.xlsx", "rows": rows})
+        self.assertEqual(imported.status_code, 201)
+
+        active = self.client.get("/api/v1/orders/active").json()
+        kiz_order = next(order for order in active if order["client"] == "KIZ Client")
+        item_id = kiz_order["items"][0]["id"]
+        for code in ("010000000301", "010000000302"):
+            response = self.client.post("/api/v1/scans", json={"order_item_id": item_id, "code": code})
+            self.assertEqual(response.status_code, 201)
+
+        source_files = self.client.get("/api/v1/reports/kiz/source-files")
+        self.assertEqual(source_files.status_code, 200)
+        self.assertEqual([item["source_file"] for item in source_files.json()], ["source-a.xlsx"])
+
+        report = self.client.get("/api/v1/reports/kiz/source-file", params={"source_file": "source-a.xlsx"})
+        self.assertEqual(report.status_code, 200)
+        workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
+        summary = workbook["Сводка"]
+        self.assertEqual(summary["C2"].value, "KIZ Client")
+        self.assertEqual(summary["G2"].value, 2)
+        self.assertEqual(summary["H2"].value, 2)
+        self.assertEqual(summary["I2"].value, 480000)
+        sheet = workbook["Терминал"]
+        self.assertEqual(sheet["C2"].value, "KIZ Client")
+        self.assertEqual(sheet["G2"].value, "Chapman Brown OP 20")
+        self.assertEqual(sheet["H2"].value, 2)
+        self.assertEqual(sheet["I2"].value, "010000000301")
+        self.assertEqual(sheet["I3"].value, "010000000302")
+        self.assertEqual(sheet["K2"].value, "source-a.xlsx")
+        workbook.close()
 
     def test_day_report_rejects_invalid_report_date(self):
         response = self.client.get("/api/v1/reports/day?report_date=not-a-date")

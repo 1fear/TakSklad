@@ -25,14 +25,16 @@
 - Добавлен systemd timer для ежедневного Postgres backup.
 - SkladBot worker перенесён на VDS, работает по API-ключу из server-side `.env`.
 - Telegram worker перенесён на VDS, использует server-side токен и не требует запуска Telegram polling на рабочих ПК.
+- Telegram worker принимает Excel-вложения `.xlsx/.xlsm`, преобразует их в backend import payload и отправляет в `POST /api/v1/imports`.
+- Telegram worker показывает кнопки в нижнем меню Telegram и обрабатывает Excel-файлы через очередь `pending_events`.
 - VDS staging smoke с импортом, сканами, завершением заказа, backup и cleanup пройден.
 - Restore-drill из последнего backup-файла пройден на отдельной временной БД.
 
 Не готово для production:
 
-- Desktop-приложение ещё не подключено к backend.
+- Desktop-приложение ещё не подключено к backend на рабочих Windows-ПК.
 - Нет Alembic-миграций; текущая схема рассчитана на стартовый deploy.
-- DNS `api.taksklad.uz` ещё не настроен: домен `taksklad.uz` нужно сначала зарегистрировать у `.uz`-регистратора.
+- DNS `api.taksklad.uz` ещё не настроен: домен `taksklad.uz` ожидает финальную активацию/делегацию у регистратора.
 - Не проведена ручная приемка на реальных заказах склада.
 
 ## Backend API
@@ -73,6 +75,52 @@
 - невалидные строки попадают в `errors`;
 - результат пишется в `imports`;
 - действие пишется в `audit_log`.
+
+### Telegram Excel Import
+
+Telegram worker на VDS принимает Excel-документы из разрешённых `TELEGRAM_ALLOWED_CHAT_IDS`.
+
+Управление в Telegram:
+
+- кнопки находятся в нижней панели Telegram через reply keyboard;
+- доступны кнопки `Дневной отчёт`, `Статус backend`, `История импортов`, `Помощь`;
+- системная кнопка меню команд Telegram настроена через `setMyCommands` и `setChatMenuButton`;
+- старые команды `/report`, `/health`, `/imports`, `/help` сохранены как fallback;
+- Excel-файлы можно просто отправлять или пересылать в чат.
+
+Поддерживается:
+
+- `.xlsx`;
+- `.xlsm`;
+- лист `Заявки` как приоритетный;
+- fallback на первый лист с обязательными колонками;
+- алиасы колонок клиента, оплаты, товара, количества, даты, адреса, торгового представителя и SkladBot номера;
+- ограничение размера через `TELEGRAM_WORKER_MAX_FILE_BYTES`;
+- timeout скачивания через `TELEGRAM_WORKER_FILE_TIMEOUT_SECONDS`;
+- расчёт блоков через `TAKSKLAD_DEFAULT_PIECES_PER_BLOCK`, если в Excel нет колонки блоков.
+
+Очередь:
+
+- каждый Excel-файл становится событием `telegram_excel_import` в `pending_events`;
+- несколько файлов подряд обрабатываются последовательно;
+- после постановки в очередь файл не теряется при перезапуске worker;
+- итог каждого импорта возвращается сообщением в Telegram.
+
+Проверено на staging:
+
+- container rebuild с `openpyxl`;
+- smoke внутри `telegram-worker`: тестовый `.xlsx` разобран в одну строку import payload;
+- backend `/health` после rebuild отвечает `200`.
+- локально покрыто тестами нижнее меню, кнопка отчёта, постановка файла в очередь и последовательная обработка нескольких queued imports.
+- после обновления нижнего меню `backend-api` и `telegram-worker` пересобраны и запущены на VDS;
+- внутри VDS `telegram-worker` выполнен compile-check обновлённых файлов.
+- Telegram API `getMyCommands` возвращает `report`, `health`, `imports`, `help`;
+- Telegram API `getChatMenuButton` возвращает `type=commands`.
+
+Не проверено:
+
+- реальный upload файла в боевой Telegram-чат;
+- ручная сверка строк из реального Excel на Windows.
 
 ### История Импортов
 
@@ -207,12 +255,40 @@ VDS staging smoke:
 - ручной backup создал backup-файл;
 - временные smoke-данные удалены из staging БД.
 
+Дополнительный результат 2026-05-30 по Telegram Excel import:
+
+- `backend-api` и `telegram-worker` пересобраны и перезапущены на VDS;
+- `telegram-worker` успешно импортирует `openpyxl`;
+- тестовый `.xlsx` внутри контейнера разобран в payload с `source=telegram`;
+- реальные Telegram-файлы в этом шаге не отправлялись.
+
+## Windows Приёмка С Backend Flags
+
+Подробный чеклист: [windows-backend-acceptance.md](/Users/anton/Documents/work/TakSklad/docs/windows-backend-acceptance.md).
+
+Минимальные flags для тестовой Windows-копии:
+
+```powershell
+$env:TAKSKLAD_BACKEND_ENABLED = "1"
+$env:TAKSKLAD_BACKEND_READ_ORDERS_ENABLED = "1"
+$env:TAKSKLAD_BACKEND_BASE_URL = "https://api.135.181.245.84.sslip.io"
+$env:TAKSKLAD_BACKEND_API_TOKEN = "<service-token-from-local-secret-storage>"
+$env:TAKSKLAD_BACKEND_TIMEOUT_SECONDS = "8"
+```
+
+Важно:
+
+- токен не писать в документацию, чат, скриншоты и Git;
+- включать flags сначала только на тестовой копии;
+- при проблеме отключить flags и вернуться к desktop fallback;
+- Windows archive и `version.json` не менять до прохождения приёмки.
+
 ## Следующий Шаг После Этого Этапа
 
 Следующий релизный блок:
 
 1. Зарегистрировать `taksklad.uz` и настроить DNS `api.taksklad.uz`.
 2. Переключить VDS с временного `sslip.io` host на `api.taksklad.uz`.
-3. Подключить desktop к backend за feature flag.
-4. Включить dual-write сканов: локально + backend.
-5. Провести ручную приемку на копии реальных заказов.
+3. Провести реальный Telegram upload test с копией Excel.
+4. Провести ручную Windows-приёмку на копии реальных заказов.
+5. После успешной приёмки готовить Windows archive.

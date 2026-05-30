@@ -484,6 +484,14 @@ def address_matches(order_address, request_address):
     return text_tokens_match(order_address, request_address, min_overlap=0.55)
 
 
+def request_type_matches(value, expected=None):
+    actual = normalize_lookup_text(value)
+    expected = normalize_lookup_text(expected or SKLADBOT_SHIPMENT_TYPE_NAME)
+    if expected and actual == expected:
+        return True
+    return "3pl" in actual and "отгруз" in actual
+
+
 def request_matches_order_group(group, request):
     # Строгое сравнение даты: «Дата отгрузки» в листе data должна один-в-один
     # совпадать с «Дата выгрузки» (unloading_date) в SkladBot. Обе даты
@@ -505,9 +513,6 @@ def request_matches_order_group(group, request):
         return False
 
     if normalize_payment_type(group.get("payment")) != normalize_payment_type(request.get("comment")):
-        return False
-
-    if not address_matches(group.get("address"), request.get("address")):
         return False
 
     request_products = list(request.get("products") or [])
@@ -593,7 +598,7 @@ def fetch_candidate_requests(settings=None, client=None, today=None):
             min_overlap=0.8,
         ):
             continue
-        if request.get("type") and normalize_lookup_text(request.get("type")) != normalize_lookup_text(settings.get("shipment_type_name")):
+        if request.get("type") and not request_type_matches(request.get("type"), settings.get("shipment_type_name")):
             continue
         if not request_in_sync_window(
             request,

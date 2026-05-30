@@ -7,6 +7,7 @@ from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
 
+from taksklad.geocoding import clean_geocoded_address
 from taksklad.excel_normalizer import detect_excel_source, is_summary_row
 
 
@@ -31,6 +32,12 @@ def import_excel_import():
 
 
 class ExcelNormalizerTests(unittest.TestCase):
+    def test_clean_geocoded_address_removes_country_prefix(self):
+        self.assertEqual(
+            clean_geocoded_address("Узбекистан, Ташкент, улица Укчи, 3"),
+            "Ташкент, улица Укчи, 3",
+        )
+
     def save_constructor_report(self, path):
         workbook = Workbook()
         worksheet = workbook.active

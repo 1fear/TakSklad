@@ -17,6 +17,8 @@ class OrderItemRead(BaseModel):
     quantity_pieces: int
     quantity_blocks: int
     scanned_blocks: int
+    block_price: int = 0
+    line_total: int = 0
     status: str
     scan_codes: list[str] = Field(default_factory=list)
 
@@ -27,6 +29,7 @@ class OrderRead(BaseModel):
     payment_type: str
     client: str
     address: str
+    coordinates: str = ""
     representative: str | None = None
     status: str
     skladbot_request_number: str = ""
@@ -101,6 +104,7 @@ class DayReportTotals(BaseModel):
     scanned_today: int
     remaining_blocks: int
     scan_codes: int
+    total_price: int = 0
 
 
 class DayReportPaymentGroup(BaseModel):
@@ -112,6 +116,7 @@ class DayReportPaymentGroup(BaseModel):
     scanned_today: int
     remaining_blocks: int
     scan_codes: int
+    total_price: int = 0
 
 
 class DayReportOrder(BaseModel):
@@ -121,6 +126,7 @@ class DayReportOrder(BaseModel):
     payment_group: str
     client: str
     address: str
+    coordinates: str = ""
     representative: str | None = None
     status: str
     skladbot_request_number: str = ""
@@ -131,6 +137,7 @@ class DayReportOrder(BaseModel):
     scanned_today: int
     remaining_blocks: int
     scan_codes: int
+    total_price: int = 0
 
 
 class DayReportRead(BaseModel):

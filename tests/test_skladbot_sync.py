@@ -318,6 +318,37 @@ class SkladBotSyncTests(unittest.TestCase):
         self.assertEqual(sheet.rows[1][10], "")
         self.assertEqual(sheet.rows[1][12], SKLADBOT_STATUS_NOT_FOUND)
 
+    def test_matches_request_when_address_differs(self):
+        different_address_request = request("WH-R-189337", 189337)
+        different_address_request["address"] = "Совсем другой адрес из SkladBot"
+
+        sheet = FakeSheet([
+            header(),
+            order_row("Chapman Brown OP 20", 10, 1),
+            order_row("Chapman Gold SSL 20", 20, 2),
+        ])
+
+        result = sync_skladbot_request_numbers(sheet, candidate_requests=[different_address_request])
+
+        self.assertEqual(result["matched"], 1)
+        self.assertEqual(sheet.rows[1][10], "WH-R-189337")
+        self.assertEqual(sheet.rows[1][12], SKLADBOT_STATUS_FOUND)
+
+    def test_matches_request_type_when_words_are_reordered(self):
+        reordered_type_request = request("WH-R-189337", 189337)
+        reordered_type_request["type"] = "3PL отгрузка"
+
+        sheet = FakeSheet([
+            header(),
+            order_row("Chapman Brown OP 20", 10, 1),
+            order_row("Chapman Gold SSL 20", 20, 2),
+        ])
+
+        result = sync_skladbot_request_numbers(sheet, candidate_requests=[reordered_type_request])
+
+        self.assertEqual(result["matched"], 1)
+        self.assertEqual(sheet.rows[1][10], "WH-R-189337")
+
     def test_api_failure_does_not_overwrite_sheet_statuses(self):
         sheet = FakeSheet([
             header(),

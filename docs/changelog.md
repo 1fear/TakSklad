@@ -4,6 +4,55 @@
 
 ## 2026-05-30
 
+### Перенесены Telegram-кнопки в нижнее меню и добавлена очередь Excel-файлов
+
+**Файлы:** `backend/app/telegram_worker.py`, `tests/test_backend_telegram_import.py`, `docs/*`.
+
+**Что стало:**
+
+- Telegram worker отправляет reply keyboard, то есть кнопки отображаются в нижней панели Telegram вместо inline-кнопок под `/start`.
+- В нижнем меню есть кнопки: `Дневной отчёт`, `Статус backend`, `История импортов`, `Помощь`.
+- Дополнительно настраивается системная кнопка меню команд Telegram через `setMyCommands` и `setChatMenuButton`.
+- Команды `/report`, `/health`, `/imports`, `/help` сохранены как fallback.
+- Excel-файлы `.xlsx/.xlsm`, отправленные или пересланные в Telegram-чат, ставятся в очередь `pending_events`.
+- Если отправить 5 Excel-файлов подряд, worker поставит все 5 в очередь и обработает их последовательно.
+- Очередь хранится в Postgres, поэтому файл не теряется при перезапуске worker после постановки в очередь.
+
+**Проверки:**
+
+- `.venv/bin/python -m unittest tests.test_backend_telegram_import` - 7 тестов пройдены.
+- `.venv/bin/python -m unittest discover -s tests` - 66 тестов пройдены.
+- `.venv/bin/python -m py_compile backend/app/*.py tests/*.py` - успешно.
+- VDS `backend-api` и `telegram-worker` пересобраны и запущены.
+- VDS `/health` на временном `sslip.io`-домене вернул `200`.
+- Внутри VDS `telegram-worker` выполнен compile-check обновлённых файлов.
+- VDS `getMyCommands` вернул команды `report`, `health`, `imports`, `help`.
+- VDS `getChatMenuButton` вернул `type=commands`.
+
+### Реализован Telegram Excel import через backend
+
+**Файлы:** `backend/app/excel_importer.py`, `backend/app/telegram_worker.py`, `backend/requirements.txt`, `deploy/vds/docker-compose.yml`, `deploy/vds/.env.example`, `tests/test_backend_telegram_import.py`, `docs/*`.
+
+**Что стало:**
+
+- Telegram worker принимает Excel-документы `.xlsx/.xlsm` из разрешённых чатов.
+- Файл скачивается во временный файл, разбирается через `openpyxl`, затем отправляется в `POST /api/v1/imports`.
+- Parser поддерживает лист `Заявки`, алиасы колонок и fallback-даты.
+- Если в Excel нет `Кол-во блок`, блоки считаются через `TAKSKLAD_DEFAULT_PIECES_PER_BLOCK`.
+- Размер файла ограничивается через `TELEGRAM_WORKER_MAX_FILE_BYTES`.
+- Ошибки скачивания Telegram не раскрывают полный URL с bot token.
+- Ответы Telegram worker отправляются обычным текстом без `parse_mode=HTML`, чтобы имя Excel-файла или ошибка с символами `<`/`&` не ломали отправку.
+- Excel workbook закрывается явно после чтения, чтобы Windows не держал файл залоченным.
+- Добавлен чеклист Windows-приёмки backend bridge.
+
+**Проверки:**
+
+- `.venv/bin/python -m unittest tests.test_backend_telegram_import` - 2 теста пройдены.
+- `.venv/bin/python -m unittest discover -s tests` - 61 тест пройден.
+- `.venv/bin/python -m py_compile main.py sitecustomize.py taksklad/__init__.py src/taksklad/*.py tests/*.py backend/app/*.py` - успешно.
+- VDS `backend-api` и `telegram-worker` пересобраны и запущены.
+- VDS parser smoke внутри `telegram-worker` прошёл на тестовом `.xlsx`.
+
 ### Добавлен импорт заказов в Postgres, история импортов и backup-скрипты
 
 **Файлы:** `backend/app/imports_service.py`, `backend/app/main.py`, `backend/app/schemas.py`, `tests/test_backend_api_persistence.py`, `deploy/vds/backup_postgres.sh`, `deploy/vds/restore_postgres.sh`, `docs/vds-release-readiness.md`, `docs/*`.
@@ -758,6 +807,33 @@ if not group_client or not request_recipient or group_client != request_recipien
 - Windows-архив не собирался.
 - GitHub Release/tag не создавался.
 - Push-уведомление рабочим компьютерам не отправлялось.
+
+## 2026-05-31 - Telegram Import, Logistics Coordinates, SkladBot Blocks, KIZ By Source File
+
+- Добавлена локальная точка восстановления перед MVP-доработками.
+- Telegram-бот переведён на нижнее меню: дата отгрузки, отчёт логистики, КИЗ по файлам.
+- Excel import теперь принимает дату отгрузки от менеджера, координаты, суммы и цены.
+- Количество для SkladBot приводится к блокам; штуки/пачки остаются для отчётов.
+- Если цена/сумма не пришла в Excel, сумма считается по `240000` сум за блок.
+- Логистический отчёт выгружается отдельным Excel по выбранной дате и содержит координаты как основное поле для логистики.
+- SkladBot matching проверяет только `3PL отгрузка`, дату, клиента, оплату, нормализованный товар и блоки.
+- Адрес SkladBot больше не блокирует совпадение.
+- Добавлены backend-эндпоинты КИЗ по исходным файлам: список завершённых файлов и Excel-выгрузка по файлу.
+- Исправлен Telegram polling timeout для `getUpdates`.
+- SkladBot worker теперь пропускает API-вызов без активных backend-заказов, обрабатывает `429` и сверяет заявки по `unloading_date`.
+- На существующей заявке SkladBot `WH-R-190960` проверен реальный match без создания новой заявки в WMS.
+- Тесты: `python -m unittest discover -s tests` - 74 OK.
+
+### Уточнение После Финального Брифа Chapman
+
+- Desktop SkladBot больше не отсекает совпадение из-за отличающегося адреса.
+- Desktop SkladBot принимает оба названия типа заявки: `Отгрузка 3PL` и `3PL отгрузка`.
+- Яндекс Геокодер в desktop убирает страну из адреса: `Узбекистан, Ташкент...` превращается в `Ташкент...`.
+- Логистический backend-отчёт теперь требует координаты; если координат нет, отдаёт ошибку `409` вместо пустого файла.
+- Координаты с третьим компонентом, например `41.214609,69.223027,15`, нормализуются до `41.214609,69.223027`.
+- КИЗ-отчёт по исходному файлу получил лист `Сводка` с общей суммой заказа, планом и фактическим количеством блоков.
+- Реальные Excel-шаблоны из Telegram проверены parser'ом: 5 файлов, координаты найдены во всех строках, предупреждений нет.
+- Тесты: `python -m unittest discover -s tests` - 79 OK.
 
 ### Backend API MVP закрыт дневным отчётом и автоматическим backup
 

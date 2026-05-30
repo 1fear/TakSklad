@@ -150,3 +150,23 @@ docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml up -d
 - удалять desktop fallback на Google/local режим.
 
 Для включения backend в desktop используются feature flags, а не принудительный переход.
+
+## 8. Acceptance Cleanup
+
+Тестовые acceptance-данные удалять только по явному маркеру.
+
+Dry-run:
+
+```bash
+cd /opt/taksklad/app
+./deploy/vds/cleanup_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531"
+```
+
+Удаление:
+
+```bash
+cd /opt/taksklad/app
+./deploy/vds/cleanup_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --apply
+```
+
+Защита скрипта: marker должен содержать `ACCEPTANCE`, `WEB_UI_SMOKE` или `SMOKE_MVP`.

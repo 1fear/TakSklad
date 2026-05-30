@@ -21,6 +21,8 @@ TakSklad - Python/Tkinter-приложение для склада, которо
 
 ## Основной Бизнес-Процесс
 
+Подробная пользовательская инструкция по ролям, шагам, ошибкам и диаграммам вынесена в [user-business-process-guide.md](/Users/anton/Documents/work/TakSklad/docs/user-business-process-guide.md).
+
 Основной складской процесс:
 
 1. Импорт Excel-документа через приложение или Telegram-бот.

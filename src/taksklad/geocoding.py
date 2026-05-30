@@ -9,6 +9,9 @@ from .config import YANDEX_GEOCODER_API_KEY, YANDEX_GEOCODER_KEY_FILE
 from .utils import normalize_coordinates, normalize_text
 
 
+COUNTRY_PREFIXES = ("узбекистан", "uzbekistan", "o'zbekiston", "oʻzbekiston")
+
+
 def load_yandex_geocoder_key():
     env_key = normalize_text(os.environ.get("YANDEX_GEOCODER_API_KEY"))
     if env_key:
@@ -74,7 +77,7 @@ def reverse_geocode_yandex(coords, cache=None):
 
     obj = members[0].get("GeoObject", {})
     meta = obj.get("metaDataProperty", {}).get("GeocoderMetaData", {})
-    address = normalize_text(meta.get("text") or obj.get("name"))
+    address = clean_geocoded_address(meta.get("text") or obj.get("name"))
     if not address:
         result = (None, "пустой адрес в ответе Яндекса")
     else:
@@ -83,3 +86,14 @@ def reverse_geocode_yandex(coords, cache=None):
     if cache is not None:
         cache[normalized_coords] = result
     return result
+
+
+def clean_geocoded_address(value):
+    text = normalize_text(value)
+    lowered = text.lower()
+    for prefix in COUNTRY_PREFIXES:
+        if lowered == prefix:
+            return ""
+        if lowered.startswith(prefix + ","):
+            return text[len(prefix):].lstrip(" ,")
+    return text
