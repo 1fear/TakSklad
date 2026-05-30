@@ -1253,3 +1253,38 @@ cd /opt/taksklad/app
 - Открыт draft PR без релиза: `https://github.com/1fear/TakSklad/pull/1`.
 - GitHub checks для ветки пустые, потому что push не запускает Windows release workflow.
 - VDS логи workers после простоя проверены: SkladBot worker корректно пропускает API без активных заказов, новых падений Telegram worker в проверенном окне не видно.
+
+### Web Frontend UI Smoke На VDS
+
+**Дата:** 2026-05-31.
+
+**Цель:** проверить не только backend API, но и реальный web-интерфейс VDS: выбор заказа, сканирование КИЗов и завершение заказа.
+
+**Проверка:**
+
+- Через backend API создан временный заказ `WEB_UI_SMOKE_20260531_0118`.
+- В заказе 2 позиции и 3 блока:
+  - `Chapman Brown OP 20` - 2 блока;
+  - `Chapman Gold SSL 20` - 1 блок.
+- Через web-frontend `https://app.135.181.245.84.sslip.io/` выполнено:
+  - вход через basic-auth;
+  - поиск заказа;
+  - выбор первой позиции;
+  - запись 2 КИЗов;
+  - выбор второй позиции;
+  - запись 1 КИЗа;
+  - завершение заказа;
+  - проверка, что заказ исчез из активного списка.
+- Перед очисткой БД подтвердила:
+  - order status `completed`;
+  - обе позиции status `completed`;
+  - scanned/planned: `2/2` и `1/1`.
+- После проверки smoke-данные удалены:
+  - `orders=0`;
+  - `imports=0`;
+  - `import_files=0`;
+  - `pending_events=0`.
+
+**Ограничение:**
+
+- Это проверка web-frontend на VDS, а не Windows desktop UI.
