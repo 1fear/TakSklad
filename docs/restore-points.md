@@ -20,3 +20,11 @@
 - `untracked-files.txt` - список untracked-файлов.
 
 Важно: локальный снимок может содержать локальные конфиги и credentials, поэтому его нельзя отправлять в GitHub или Telegram.
+
+## 2026-05-31 MVP Telegram/Logistics/SkladBot Checkpoint
+
+- Git tag: `checkpoint-2026-05-31_mvp-telegram-logistics-skladbot`
+- Checkpoint commit: commit, на который указывает этот tag.
+- Назначение: локальная точка текущего результата после MVP-доработок Telegram import, логистического отчёта, SkladBot matching, КИЗ по файлам и чернового frontend.
+- Это не production release и не версия для автообновления рабочих ПК.
+- `version.json`, GitHub Release и Windows-архив не менялись.
