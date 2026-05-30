@@ -253,6 +253,9 @@ print(json.dumps({
 }, ensure_ascii=False, sort_keys=True))
 PY
 
+echo "Verify marker before cleanup..."
+"$SCRIPT_DIR/verify_acceptance_marker.sh" "$MARKER" --expect-orders 1 --expect-scans 3 --expect-completed
+
 echo "Cleanup apply for $MARKER..."
 "$SCRIPT_DIR/cleanup_acceptance_marker.sh" "$MARKER" --apply
 CLEANUP_DONE="1"

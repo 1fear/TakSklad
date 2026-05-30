@@ -1446,3 +1446,33 @@ cd /opt/taksklad/app
 - `.venv/bin/python -m unittest discover -s tests` - 83 теста OK.
 - `.venv/bin/python -m py_compile src/taksklad/*.py tests/*.py backend/app/*.py` - OK.
 - `git diff --check` - OK.
+
+### Read-Only Acceptance Verifier
+
+**Дата:** 2026-05-31.
+
+**Сделано:**
+
+- Добавлен `deploy/vds/verify_acceptance_marker.sh`.
+- Скрипт ничего не удаляет и ничего не меняет в базе.
+- По безопасному маркеру показывает `orders`, `items`, `planned_blocks`, `scanned_blocks`, `scan_codes`, `imports`, `pending_events`, `source_files`, `order_dates`, `missing_coordinates`, `incomplete_items`.
+- Поддерживает проверки:
+  - `--expect-orders N`;
+  - `--expect-scans N`;
+  - `--expect-completed`.
+- Встроен в `deploy/vds/smoke_mvp_chapman.sh` перед cleanup.
+
+**Проверки на VDS:**
+
+- `verify_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531"` вернул `status=ok` и нули по текущему пустому acceptance-маркеру.
+- Smoke `SMOKE_MVP_CHAPMAN_20260530T211424Z` перед cleanup показал:
+  - `orders=1`;
+  - `imports=1`;
+  - `items=2`;
+  - `planned_blocks=3`;
+  - `scanned_blocks=3`;
+  - `scan_codes=3`;
+  - `completed_orders=1`;
+  - `active_orders=0`;
+  - `status=ok`.
+- Cleanup после smoke удалил тестовые строки, остаток `0`.

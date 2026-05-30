@@ -52,6 +52,24 @@
 
 После обработки в backend должен появиться активный заказ `ACCEPTANCE TELEGRAM 20260531`.
 
+### Проверка На VDS
+
+После ответа бота проверить backend по маркеру:
+
+```bash
+cd /opt/taksklad/app
+./deploy/vds/verify_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --expect-orders 1
+```
+
+Ожидаемо:
+
+- `status`: `ok`;
+- `orders`: `1`;
+- `items`: `2`;
+- `planned_blocks`: `3`;
+- `imports`: минимум `1`;
+- `pending_events`: `0`.
+
 ### Очистка После Проверки
 
 После ручной проверки тестовые данные нужно удалить по маркеру:
@@ -141,6 +159,28 @@ SMOKE_MARKER=SMOKE_MVP_CHAPMAN_manual_20260531 \
 - печать появляется после завершения заказа;
 - завершение смены формирует ожидаемый отчёт;
 - тестовые данные можно удалить по маркеру.
+
+### Проверка После Windows-Сканов
+
+После сканирования 3 КИЗов и завершения заказа проверить VDS:
+
+```bash
+cd /opt/taksklad/app
+./deploy/vds/verify_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" \
+  --expect-orders 1 \
+  --expect-scans 3 \
+  --expect-completed
+```
+
+Ожидаемо:
+
+- `status`: `ok`;
+- `completed_orders`: `1`;
+- `active_orders`: `0`;
+- `planned_blocks`: `3`;
+- `scanned_blocks`: `3`;
+- `scan_codes`: `3`;
+- `incomplete_items`: `[]`.
 
 ## 4. Что Не Делать Во Время Acceptance
 

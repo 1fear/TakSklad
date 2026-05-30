@@ -33,9 +33,10 @@
 | Создание новой заявки в SkladBot | Не делалось намеренно | Чтобы не менять WMS/остатки и не создать боевую мусорную заявку |
 | Отпикивание в приложении | Частично доказано | Web-frontend VDS smoke: 3 КИЗа, 2 позиции, заказ completed |
 | Windows desktop отпикивание | Не доказано | Нужна физическая Windows-приёмка |
-| Тесты проекта | Готово | 74 unit tests OK, py_compile OK, frontend build OK, compose config OK |
+| Тесты проекта | Готово | 83 unit tests OK, py_compile OK, frontend build OK, compose config OK |
 | Отчёт о работе | Готово | `отчеты/2026-05-31.md`, `docs/implementation-log.md`, PR body/comments |
 | Безопасность релиза | Готово | `version.json` не менялся, Windows release не создавался, push-уведомления не отправлялись |
+| Read-only acceptance verifier | Готово | `deploy/vds/verify_acceptance_marker.sh`, проверен на пустом acceptance-маркере и smoke-маркере |
 
 ## Что Доказано
 
@@ -77,7 +78,7 @@
 
 Автоматические и smoke-проверки:
 
-- `.venv/bin/python -m unittest discover -s tests` - 74 теста OK;
+- `.venv/bin/python -m unittest discover -s tests` - 83 теста OK;
 - `.venv/bin/python -m py_compile backend/app/*.py tests/*.py` - OK;
 - `git diff --check` - OK;
 - `npm run build` в `frontend/` - OK;
@@ -88,6 +89,9 @@
 - Telegram file smoke через реальный `file_id` - OK;
 - SkladBot real-match smoke на существующей заявке `WH-R-190960` - OK;
 - web-frontend smoke: заказ найден, 3 КИЗа записаны, заказ завершён, smoke-данные очищены.
+- повторяемый `deploy/vds/smoke_mvp_chapman.sh` - OK;
+- `deploy/vds/verify_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531"` - OK, текущий маркер пустой;
+- `verify_acceptance_marker.sh` на smoke-маркере до cleanup - OK: `orders=1`, `planned_blocks=3`, `scan_codes=3`, `completed_orders=1`.
 
 ## Что Не Доказано
 
@@ -102,6 +106,13 @@
 `/Users/anton/Documents/work/TakSklad/outputs/taksklad_acceptance/TakSklad_Telegram_Acceptance_2026-05-31.xlsx`
 
 Runbook: `docs/manual-acceptance-runbook.md`.
+
+Проверка результата на VDS:
+
+```bash
+cd /opt/taksklad/app
+./deploy/vds/verify_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --expect-orders 1
+```
 
 ### Windows Desktop UI
 
@@ -121,6 +132,13 @@ Runbook: `docs/manual-acceptance-runbook.md`.
 Чеклист: `docs/windows-backend-acceptance.md`.
 
 Короткий ручной сценарий также вынесен в `docs/manual-acceptance-runbook.md`.
+
+Проверка результата на VDS после Windows-сканов:
+
+```bash
+cd /opt/taksklad/app
+./deploy/vds/verify_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --expect-orders 1 --expect-scans 3 --expect-completed
+```
 
 ### Создание Новой Заявки SkladBot
 
