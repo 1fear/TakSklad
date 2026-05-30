@@ -18,7 +18,7 @@
 - План блоков: `3`
 - Сумма: `720000`
 - Координаты: `41.311081, 69.240562`
-- SHA-256 Excel: `49d44b9d03f9b7f339bff45b88dd08a77b67502981ad1642c2d80ecbcb95e13e`
+- SHA-256 Excel: `4e7bc8540e45e9ce7c3465e138c063aa4168362e25f3c29c626e7c8ba9de8b4c`
 
 ## Telegram Проверка
 
@@ -31,6 +31,13 @@
 ```bash
 cd /opt/taksklad/app
 ./deploy/vds/verify_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --expect-orders 1
+```
+
+Или дождаться результата автоматически:
+
+```bash
+cd /opt/taksklad/app
+./deploy/vds/wait_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --expect-orders 1 --timeout 300 --interval 10
 ```
 
 ## Windows Проверка
@@ -64,6 +71,13 @@ cd /opt/taksklad/app
 ```bash
 cd /opt/taksklad/app
 ./deploy/vds/verify_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --expect-orders 1 --expect-scans 3 --expect-completed
+```
+
+Или дождаться результата автоматически:
+
+```bash
+cd /opt/taksklad/app
+./deploy/vds/wait_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --expect-orders 1 --expect-scans 3 --expect-completed --timeout 300 --interval 10
 ```
 
 ## Очистка Тестовых Данных

@@ -42,6 +42,9 @@ class AcceptanceExcelGeneratorTests(unittest.TestCase):
         self.assertIn("SHA-256 Excel", readme_text)
         self.assertIn("WIN-KIZ-ACCEPT-001", readme_text)
         self.assertIn("windows_backend_acceptance.ps1", readme_text)
+        self.assertIn("wait_acceptance_marker.sh", readme_text)
+        self.assertIn('"telegram_wait"', manifest_text)
+        self.assertIn('"windows_wait"', manifest_text)
 
         forbidden_fragments = [
             "TELEGRAM_BOT_TOKEN=",

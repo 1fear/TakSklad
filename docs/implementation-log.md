@@ -1550,7 +1550,28 @@ cd /opt/taksklad/app
 **Проверки:**
 
 - `.venv/bin/python tools/prepare_acceptance_kit.py` - OK.
-- Повторная генерация дала тот же SHA-256 Excel: `49d44b9d03f9b7f339bff45b88dd08a77b67502981ad1642c2d80ecbcb95e13e`.
+- Повторная генерация дала тот же SHA-256 Excel: `4e7bc8540e45e9ce7c3465e138c063aa4168362e25f3c29c626e7c8ba9de8b4c`.
 - `tests.test_acceptance_excel_generator` - 3 теста OK.
 - `.venv/bin/python -m unittest discover -s tests` - 88 тестов OK.
 - `.venv/bin/python -m py_compile tools/*.py src/taksklad/*.py tests/*.py backend/app/*.py` - OK.
+
+### Wait Acceptance Verifier
+
+**Дата:** 2026-05-31.
+
+**Сделано:**
+
+- Добавлен `deploy/vds/wait_acceptance_marker.sh`.
+- Скрипт в цикле запускает read-only `verify_acceptance_marker.sh`.
+- Используется для двух оставшихся ручных гейтов:
+  - дождаться появления заказа после Telegram import;
+  - дождаться 3 сканов и completed-статуса после Windows acceptance.
+- Скрипт не пишет в БД и не удаляет тестовые данные.
+- Команды ожидания добавлены в `outputs/taksklad_acceptance/README.md` и `acceptance_manifest.json`.
+
+**Проверки:**
+
+- `bash -n deploy/vds/*.sh` - OK.
+- `deploy/vds/wait_acceptance_marker.sh --help` - OK.
+- Небезопасный marker `BAD_MARKER` отклонён сразу, без ожидания timeout.
+- `tests.test_acceptance_excel_generator` проверяет наличие `telegram_wait` и `windows_wait` в manifest.

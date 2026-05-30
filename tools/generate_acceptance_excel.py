@@ -111,10 +111,10 @@ def normalize_xlsx_archive(path):
     with zipfile.ZipFile(path, "r") as source:
         with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_DEFLATED) as target:
             for name in source.namelist():
-                source_info = source.getinfo(name)
                 target_info = zipfile.ZipInfo(name, date_time=FIXED_XLSX_TIMESTAMP)
                 target_info.compress_type = zipfile.ZIP_DEFLATED
-                target_info.external_attr = source_info.external_attr
+                target_info.create_system = 0
+                target_info.external_attr = 0
                 target.writestr(target_info, source.read(name))
     os.replace(temp_path, path)
 

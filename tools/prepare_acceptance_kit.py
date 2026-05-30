@@ -54,10 +54,12 @@ def build_manifest(output_dir=DEFAULT_OUTPUT_DIR, marker=DEFAULT_MARKER, shipmen
         "commands": {
             "regenerate": ".venv/bin/python tools/prepare_acceptance_kit.py",
             "telegram_verify": './deploy/vds/verify_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --expect-orders 1',
+            "telegram_wait": './deploy/vds/wait_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --expect-orders 1 --timeout 300 --interval 10',
             "windows_check_only": '.\\tools\\windows_backend_acceptance.ps1 -CheckOnly -Token "<service-token>"',
             "windows_launch_exe": '.\\tools\\windows_backend_acceptance.ps1 -Token "<service-token>" -AppPath ".\\TakSklad.exe"',
             "windows_launch_source": '.\\tools\\windows_backend_acceptance.ps1 -Token "<service-token>" -AppPath ".\\main.py"',
             "windows_verify": './deploy/vds/verify_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --expect-orders 1 --expect-scans 3 --expect-completed',
+            "windows_wait": './deploy/vds/wait_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --expect-orders 1 --expect-scans 3 --expect-completed --timeout 300 --interval 10',
             "cleanup_dry_run": './deploy/vds/cleanup_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531"',
             "cleanup_apply": './deploy/vds/cleanup_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --apply',
         },
@@ -109,6 +111,13 @@ cd /opt/taksklad/app
 {manifest["commands"]["telegram_verify"]}
 ```
 
+Или дождаться результата автоматически:
+
+```bash
+cd /opt/taksklad/app
+{manifest["commands"]["telegram_wait"]}
+```
+
 ## Windows Проверка
 
 Проверить связь с VDS:
@@ -138,6 +147,13 @@ cd /opt/taksklad/app
 ```bash
 cd /opt/taksklad/app
 {manifest["commands"]["windows_verify"]}
+```
+
+Или дождаться результата автоматически:
+
+```bash
+cd /opt/taksklad/app
+{manifest["commands"]["windows_wait"]}
 ```
 
 ## Очистка Тестовых Данных

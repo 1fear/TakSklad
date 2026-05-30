@@ -75,6 +75,13 @@ cd /opt/taksklad/app
 ./deploy/vds/verify_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --expect-orders 1
 ```
 
+Или дождаться появления заказа автоматически:
+
+```bash
+cd /opt/taksklad/app
+./deploy/vds/wait_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --expect-orders 1 --timeout 300 --interval 10
+```
+
 Ожидаемо:
 
 - `status`: `ok`;
@@ -202,6 +209,18 @@ cd /opt/taksklad/app
   --expect-orders 1 \
   --expect-scans 3 \
   --expect-completed
+```
+
+Или дождаться результата автоматически:
+
+```bash
+cd /opt/taksklad/app
+./deploy/vds/wait_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" \
+  --expect-orders 1 \
+  --expect-scans 3 \
+  --expect-completed \
+  --timeout 300 \
+  --interval 10
 ```
 
 Ожидаемо:

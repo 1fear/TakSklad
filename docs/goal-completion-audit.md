@@ -37,6 +37,7 @@
 | Отчёт о работе | Готово | `отчеты/2026-05-31.md`, `docs/implementation-log.md`, PR body/comments |
 | Безопасность релиза | Готово | `version.json` не менялся, Windows release не создавался, push-уведомления не отправлялись |
 | Read-only acceptance verifier | Готово | `deploy/vds/verify_acceptance_marker.sh`, проверен на пустом acceptance-маркере и smoke-маркере |
+| Wait acceptance verifier | Готово | `deploy/vds/wait_acceptance_marker.sh`, syntax check OK, включён в acceptance kit |
 | Acceptance Excel generator | Готово | `tools/generate_acceptance_excel.py`, тест `tests/test_acceptance_excel_generator.py` |
 | Acceptance kit для ручной проверки | Готово | `outputs/taksklad_acceptance/README.md`, `acceptance_manifest.json`, стабильный SHA-256 Excel |
 
@@ -96,6 +97,7 @@
 - `verify_acceptance_marker.sh` на smoke-маркере до cleanup - OK: `orders=1`, `planned_blocks=3`, `scan_codes=3`, `completed_orders=1`.
 - `tools/generate_acceptance_excel.py` пересобрал acceptance Excel, backend parser прочитал `2` строки, `3` блока, сумму `720000`, warnings `[]`.
 - `tools/prepare_acceptance_kit.py` пересобрал acceptance kit, manifest и README; SHA-256 Excel стабилен между повторными генерациями.
+- `deploy/vds/wait_acceptance_marker.sh` добавлен для ожидания ручного Telegram/Windows результата без изменений в базе.
 
 ## Что Не Доказано
 
