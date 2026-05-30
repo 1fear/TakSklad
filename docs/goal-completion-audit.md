@@ -33,11 +33,12 @@
 | Создание новой заявки в SkladBot | Не делалось намеренно | Чтобы не менять WMS/остатки и не создать боевую мусорную заявку |
 | Отпикивание в приложении | Частично доказано | Web-frontend VDS smoke: 3 КИЗа, 2 позиции, заказ completed |
 | Windows desktop отпикивание | Не доказано | Нужна физическая Windows-приёмка |
-| Тесты проекта | Готово | 83 unit tests OK, py_compile OK, frontend build OK, compose config OK |
+| Тесты проекта | Готово | 88 unit tests OK, py_compile OK, frontend build OK, compose config OK |
 | Отчёт о работе | Готово | `отчеты/2026-05-31.md`, `docs/implementation-log.md`, PR body/comments |
 | Безопасность релиза | Готово | `version.json` не менялся, Windows release не создавался, push-уведомления не отправлялись |
 | Read-only acceptance verifier | Готово | `deploy/vds/verify_acceptance_marker.sh`, проверен на пустом acceptance-маркере и smoke-маркере |
 | Acceptance Excel generator | Готово | `tools/generate_acceptance_excel.py`, тест `tests/test_acceptance_excel_generator.py` |
+| Acceptance kit для ручной проверки | Готово | `outputs/taksklad_acceptance/README.md`, `acceptance_manifest.json`, стабильный SHA-256 Excel |
 
 ## Что Доказано
 
@@ -79,7 +80,7 @@
 
 Автоматические и smoke-проверки:
 
-- `.venv/bin/python -m unittest discover -s tests` - 83 теста OK;
+- `.venv/bin/python -m unittest discover -s tests` - 88 тестов OK;
 - `.venv/bin/python -m py_compile backend/app/*.py tests/*.py` - OK;
 - `git diff --check` - OK;
 - `npm run build` в `frontend/` - OK;
@@ -94,6 +95,7 @@
 - `deploy/vds/verify_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531"` - OK, текущий маркер пустой;
 - `verify_acceptance_marker.sh` на smoke-маркере до cleanup - OK: `orders=1`, `planned_blocks=3`, `scan_codes=3`, `completed_orders=1`.
 - `tools/generate_acceptance_excel.py` пересобрал acceptance Excel, backend parser прочитал `2` строки, `3` блока, сумму `720000`, warnings `[]`.
+- `tools/prepare_acceptance_kit.py` пересобрал acceptance kit, manifest и README; SHA-256 Excel стабилен между повторными генерациями.
 
 ## Что Не Доказано
 
@@ -107,11 +109,16 @@
 
 `/Users/anton/Documents/work/TakSklad/outputs/taksklad_acceptance/TakSklad_Telegram_Acceptance_2026-05-31.xlsx`
 
+Вся ручная проверка собрана в acceptance kit:
+
+- `/Users/anton/Documents/work/TakSklad/outputs/taksklad_acceptance/README.md`;
+- `/Users/anton/Documents/work/TakSklad/outputs/taksklad_acceptance/acceptance_manifest.json`.
+
 Файл можно пересобрать командой:
 
 ```bash
 cd /Users/anton/Documents/work/TakSklad
-.venv/bin/python tools/generate_acceptance_excel.py
+.venv/bin/python tools/prepare_acceptance_kit.py
 ```
 
 Runbook: `docs/manual-acceptance-runbook.md`.

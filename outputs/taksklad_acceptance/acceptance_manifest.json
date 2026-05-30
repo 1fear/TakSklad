@@ -1,0 +1,42 @@
+{
+  "kit": "taksklad_acceptance",
+  "marker": "ACCEPTANCE TELEGRAM 20260531",
+  "shipment_date": "31.05.2026",
+  "excel_file": "TakSklad_Telegram_Acceptance_2026-05-31.xlsx",
+  "excel_sha256": "49d44b9d03f9b7f339bff45b88dd08a77b67502981ad1642c2d80ecbcb95e13e",
+  "excel_bytes": 5690,
+  "expected": {
+    "orders": 1,
+    "rows": 2,
+    "items": 2,
+    "planned_blocks": 3,
+    "scan_codes": 3,
+    "total_sum": 720000,
+    "coordinates": [
+      "41.311081, 69.240562"
+    ]
+  },
+  "test_kiz_codes": [
+    "WIN-KIZ-ACCEPT-001",
+    "WIN-KIZ-ACCEPT-002",
+    "WIN-KIZ-ACCEPT-003"
+  ],
+  "commands": {
+    "regenerate": ".venv/bin/python tools/prepare_acceptance_kit.py",
+    "telegram_verify": "./deploy/vds/verify_acceptance_marker.sh \"ACCEPTANCE TELEGRAM 20260531\" --expect-orders 1",
+    "windows_check_only": ".\\tools\\windows_backend_acceptance.ps1 -CheckOnly -Token \"<service-token>\"",
+    "windows_launch_exe": ".\\tools\\windows_backend_acceptance.ps1 -Token \"<service-token>\" -AppPath \".\\TakSklad.exe\"",
+    "windows_launch_source": ".\\tools\\windows_backend_acceptance.ps1 -Token \"<service-token>\" -AppPath \".\\main.py\"",
+    "windows_verify": "./deploy/vds/verify_acceptance_marker.sh \"ACCEPTANCE TELEGRAM 20260531\" --expect-orders 1 --expect-scans 3 --expect-completed",
+    "cleanup_dry_run": "./deploy/vds/cleanup_acceptance_marker.sh \"ACCEPTANCE TELEGRAM 20260531\"",
+    "cleanup_apply": "./deploy/vds/cleanup_acceptance_marker.sh \"ACCEPTANCE TELEGRAM 20260531\" --apply"
+  },
+  "safety": {
+    "no_version_json_change": true,
+    "no_windows_release_archive": true,
+    "no_github_release": true,
+    "no_push_notifications": true,
+    "no_real_skladbot_request_creation": true,
+    "contains_secrets": false
+  }
+}

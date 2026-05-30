@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 import argparse
+import os
+import zipfile
+from datetime import datetime
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -10,6 +13,7 @@ from openpyxl.utils import get_column_letter
 DEFAULT_MARKER = "ACCEPTANCE TELEGRAM 20260531"
 DEFAULT_SHIPMENT_DATE = "31.05.2026"
 DEFAULT_OUTPUT = Path("outputs/taksklad_acceptance/TakSklad_Telegram_Acceptance_2026-05-31.xlsx")
+FIXED_XLSX_TIMESTAMP = (2026, 5, 31, 0, 0, 0)
 
 HEADERS = [
     "Дата отгрузки",
@@ -59,6 +63,10 @@ def acceptance_rows(marker=DEFAULT_MARKER, shipment_date=DEFAULT_SHIPMENT_DATE):
 
 def build_workbook(marker=DEFAULT_MARKER, shipment_date=DEFAULT_SHIPMENT_DATE):
     workbook = Workbook()
+    workbook.properties.creator = "TakSklad"
+    workbook.properties.lastModifiedBy = "TakSklad"
+    workbook.properties.created = datetime(2026, 5, 31, 0, 0, 0)
+    workbook.properties.modified = datetime(2026, 5, 31, 0, 0, 0)
     sheet = workbook.active
     sheet.title = "Заявки"
     sheet.append(HEADERS)
@@ -97,12 +105,27 @@ def build_workbook(marker=DEFAULT_MARKER, shipment_date=DEFAULT_SHIPMENT_DATE):
     return workbook
 
 
+def normalize_xlsx_archive(path):
+    path = Path(path)
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    with zipfile.ZipFile(path, "r") as source:
+        with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_DEFLATED) as target:
+            for name in source.namelist():
+                source_info = source.getinfo(name)
+                target_info = zipfile.ZipInfo(name, date_time=FIXED_XLSX_TIMESTAMP)
+                target_info.compress_type = zipfile.ZIP_DEFLATED
+                target_info.external_attr = source_info.external_attr
+                target.writestr(target_info, source.read(name))
+    os.replace(temp_path, path)
+
+
 def save_acceptance_excel(output_path=DEFAULT_OUTPUT, marker=DEFAULT_MARKER, shipment_date=DEFAULT_SHIPMENT_DATE):
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     workbook = build_workbook(marker=marker, shipment_date=shipment_date)
     workbook.save(output_path)
     workbook.close()
+    normalize_xlsx_archive(output_path)
     return output_path
 
 

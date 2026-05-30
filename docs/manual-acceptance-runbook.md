@@ -12,15 +12,21 @@
 
 ### Файл Для Проверки
 
-Готовый файл:
+Готовый acceptance kit:
+
+`/Users/anton/Documents/work/TakSklad/outputs/taksklad_acceptance/README.md`
+
+Внутри лежат:
 
 `/Users/anton/Documents/work/TakSklad/outputs/taksklad_acceptance/TakSklad_Telegram_Acceptance_2026-05-31.xlsx`
 
-Если файл нужно пересобрать:
+`/Users/anton/Documents/work/TakSklad/outputs/taksklad_acceptance/acceptance_manifest.json`
+
+Если kit нужно пересобрать:
 
 ```bash
 cd /Users/anton/Documents/work/TakSklad
-.venv/bin/python tools/generate_acceptance_excel.py
+.venv/bin/python tools/prepare_acceptance_kit.py
 ```
 
 Содержимое:
@@ -31,6 +37,7 @@ cd /Users/anton/Documents/work/TakSklad
 - 3 блока всего;
 - координаты: `41.311081, 69.240562`;
 - цена блока: `240000`.
+- SHA-256 Excel зафиксирован в `acceptance_manifest.json` и `README.md`.
 
 Файл проверен локальным backend parser:
 

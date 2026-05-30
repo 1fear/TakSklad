@@ -1531,3 +1531,26 @@ cd /opt/taksklad/app
 - `.venv/bin/python -m py_compile tools/*.py src/taksklad/*.py tests/*.py backend/app/*.py` - OK.
 - `git diff --check` - OK.
 - PowerShell runtime `pwsh` в текущей macOS-среде не установлен, поэтому сам `.ps1` не исполнялся локально. Финальная проверка helper должна пройти на Windows.
+
+### Acceptance Kit Для Telegram И Windows Проверки
+
+**Дата:** 2026-05-31.
+
+**Сделано:**
+
+- Добавлен `tools/prepare_acceptance_kit.py`.
+- Acceptance kit лежит в `outputs/taksklad_acceptance/`:
+  - `TakSklad_Telegram_Acceptance_2026-05-31.xlsx`;
+  - `acceptance_manifest.json`;
+  - `README.md`.
+- Manifest содержит marker, дату отгрузки, ожидаемые заказы/строки/позиции/блоки/сумму, test-КИЗы, SHA-256 Excel и команды Telegram/Windows/VDS verification.
+- Safety-флаги в manifest фиксируют: без `version.json`, без release archive, без GitHub Release, без push-уведомлений и без создания реальной заявки SkladBot.
+- Acceptance Excel теперь нормализуется как `.xlsx` ZIP-архив, чтобы SHA-256 был стабильным между повторными генерациями.
+
+**Проверки:**
+
+- `.venv/bin/python tools/prepare_acceptance_kit.py` - OK.
+- Повторная генерация дала тот же SHA-256 Excel: `49d44b9d03f9b7f339bff45b88dd08a77b67502981ad1642c2d80ecbcb95e13e`.
+- `tests.test_acceptance_excel_generator` - 3 теста OK.
+- `.venv/bin/python -m unittest discover -s tests` - 88 тестов OK.
+- `.venv/bin/python -m py_compile tools/*.py src/taksklad/*.py tests/*.py backend/app/*.py` - OK.
