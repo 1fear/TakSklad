@@ -21,10 +21,30 @@ value: 135.181.245.84
 ttl: 300
 ```
 
+Текущий статус на 2026-05-30:
+
+- в PowerVPS есть только VDS, DNS-зона `taksklad.uz` там не управляется;
+- WHOIS `.uz` отвечает, что `taksklad.uz` не найден в базе;
+- значит, сначала нужно зарегистрировать домен у `.uz`-регистратора, а уже потом добавить A-запись.
+
 После обновления DNS на VDS в `deploy/vds/.env` должно быть:
 
 ```text
 TAKSKLAD_BACKEND_HOST=api.taksklad.uz
+```
+
+Для переключения после готового DNS на VDS:
+
+```bash
+cd /opt/taksklad/app
+./deploy/vds/switch_backend_host.sh api.taksklad.uz
+```
+
+Если нужно открыть Adminer через отдельный домен:
+
+```bash
+cd /opt/taksklad/app
+./deploy/vds/switch_backend_host.sh api.taksklad.uz adminer.taksklad.uz
 ```
 
 Проверка:

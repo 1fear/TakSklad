@@ -49,7 +49,7 @@
 **Что не получилось / внешние блокеры:**
 
 - `api.taksklad.uz` пока не резолвится: нужна A-запись `api -> 135.181.245.84` у DNS-провайдера.
-- На VDS не настроены реальные `SKLADBOT_API_TOKEN` и `TELEGRAM_BOT_TOKEN`, поэтому workers стартуют, но SkladBot работает в disabled-режиме, Telegram ждёт токен.
+- На момент первого MVP-прогона реальные `SKLADBOT_API_TOKEN` и `TELEGRAM_BOT_TOKEN` ещё не были загружены; позже этот блокер снят, см. дополнение по ключам ниже.
 - Windows-приёмку, сборку Windows archive и staged rollout нельзя честно завершить с macOS/VDS без рабочего Windows-компьютера.
 - `version.json` специально не менялся, push-уведомления об обновлении не отправлялись.
 - Telegram worker пока не делает полноценный авто-импорт Excel-вложений; до приёмки 2.0 использовать desktop/backend импорт.
@@ -58,7 +58,7 @@
 
 - DNS и Windows release вынесены в обязательные ручные acceptance-шаги.
 - Backend bridge сделан за feature flags, чтобы текущая desktop-линия не изменила поведение без явного включения.
-- VDS workers добавлены, но не ломают staging при отсутствии токенов.
+- VDS workers добавлены так, чтобы staging не ломался даже при временном отсутствии токенов.
 
 **Дополнение по ключам:**
 
@@ -832,3 +832,24 @@
 - Desktop еще не подключен к backend через feature flag.
 - SkladBot worker еще не перенесен на сервер.
 - Restore-drill еще не проводился.
+
+### PowerVPS, Worker-Ключи И DNS-Блокер
+
+**Дата:** 2026-05-30.
+
+**Сделано:**
+
+- на VDS загружены server-side ключи Telegram и SkladBot без вывода секретов в логи;
+- `skladbot-worker` и `telegram-worker` пересобраны/перезапущены на VDS;
+- SkladBot API отвечает `200`;
+- Telegram worker запущен с allowlist chat_id;
+- в Telegram worker отключены `httpx/httpcore` INFO-логи, чтобы transport-слой не писал полный URL с токеном;
+- проверена панель PowerVPS: там управляется только VDS, DNS-зоны `taksklad.uz` нет;
+- повторно проверен `WHOIS taksklad.uz`: домен не найден в базе `.uz`;
+- добавлен [switch_backend_host.sh](/Users/anton/Documents/work/TakSklad/deploy/vds/switch_backend_host.sh) для быстрого переключения VDS на `api.taksklad.uz` после регистрации домена.
+
+**Итог:**
+
+- временный staging URL `https://api.135.181.245.84.sslip.io/health` работает;
+- `api.taksklad.uz` нельзя включить, пока домен `taksklad.uz` не зарегистрирован у `.uz`-регистратора;
+- после регистрации нужна A-запись `api -> 135.181.245.84`, затем на VDS: `./deploy/vds/switch_backend_host.sh api.taksklad.uz`.

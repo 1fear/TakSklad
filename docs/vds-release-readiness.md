@@ -23,15 +23,16 @@
   - `GET /api/v1/reports/day`.
 - Добавлены backup/restore-скрипты Postgres.
 - Добавлен systemd timer для ежедневного Postgres backup.
+- SkladBot worker перенесён на VDS, работает по API-ключу из server-side `.env`.
+- Telegram worker перенесён на VDS, использует server-side токен и не требует запуска Telegram polling на рабочих ПК.
 - VDS staging smoke с импортом, сканами, завершением заказа, backup и cleanup пройден.
+- Restore-drill из последнего backup-файла пройден на отдельной временной БД.
 
 Не готово для production:
 
 - Desktop-приложение ещё не подключено к backend.
-- SkladBot worker ещё не перенесён на сервер.
 - Нет Alembic-миграций; текущая схема рассчитана на стартовый deploy.
-- DNS `api.taksklad.uz` ещё не настроен.
-- Не проведён restore-drill из backup-файла.
+- DNS `api.taksklad.uz` ещё не настроен: домен `taksklad.uz` нужно сначала зарегистрировать у `.uz`-регистратора.
 - Не проведена ручная приемка на реальных заказах склада.
 
 ## Backend API
@@ -210,9 +211,8 @@ VDS staging smoke:
 
 Следующий релизный блок:
 
-1. Настроить DNS `api.taksklad.uz`.
-2. Добавить server-side SkladBot worker: сегодня/вчера, матчинг заявок, запись номера заявки в Postgres.
+1. Зарегистрировать `taksklad.uz` и настроить DNS `api.taksklad.uz`.
+2. Переключить VDS с временного `sslip.io` host на `api.taksklad.uz`.
 3. Подключить desktop к backend за feature flag.
 4. Включить dual-write сканов: локально + backend.
-5. Провести restore-drill на отдельной временной БД.
-6. Провести ручную приемку на копии реальных заказов.
+5. Провести ручную приемку на копии реальных заказов.
