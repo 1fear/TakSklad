@@ -1250,3 +1250,6 @@ cd /opt/taksklad/app
 - Postgres backup `taksklad-postgres-20260530T194941Z.sql.gz` на месте.
 - `https://api.135.181.245.84.sslip.io/health` вернул `200`.
 - `https://app.135.181.245.84.sslip.io/` без basic-auth вернул `401`, доступ закрыт.
+- Открыт draft PR без релиза: `https://github.com/1fear/TakSklad/pull/1`.
+- GitHub checks для ветки пустые, потому что push не запускает Windows release workflow.
+- VDS логи workers после простоя проверены: SkladBot worker корректно пропускает API без активных заказов, новых падений Telegram worker в проверенном окне не видно.

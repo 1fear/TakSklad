@@ -27,6 +27,7 @@
 - Checkpoint commit: commit, на который указывает этот tag.
 - GitHub branch: `feature/mvp-telegram-logistics-skladbot`
 - GitHub tags pushed: `restore-2026-05-31_before_mvp_updates_003050`, `checkpoint-2026-05-31_mvp-telegram-logistics-skladbot`
+- Draft PR: `https://github.com/1fear/TakSklad/pull/1`
 - Назначение: локальная точка текущего результата после MVP-доработок Telegram import, логистического отчёта, SkladBot matching, КИЗ по файлам и чернового frontend.
 - Это не production release и не версия для автообновления рабочих ПК.
 - `version.json`, GitHub Release и Windows-архив не менялись.
