@@ -16,6 +16,13 @@
 
 `/Users/anton/Documents/work/TakSklad/outputs/taksklad_acceptance/TakSklad_Telegram_Acceptance_2026-05-31.xlsx`
 
+Если файл нужно пересобрать:
+
+```bash
+cd /Users/anton/Documents/work/TakSklad
+.venv/bin/python tools/generate_acceptance_excel.py
+```
+
 Содержимое:
 
 - клиент: `ACCEPTANCE TELEGRAM 20260531`;

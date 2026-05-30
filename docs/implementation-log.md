@@ -1476,3 +1476,30 @@ cd /opt/taksklad/app
   - `active_orders=0`;
   - `status=ok`.
 - Cleanup после smoke удалил тестовые строки, остаток `0`.
+
+### Генератор Acceptance Excel
+
+**Дата:** 2026-05-31.
+
+**Сделано:**
+
+- Добавлен `tools/generate_acceptance_excel.py`.
+- Добавлен тест `tests/test_acceptance_excel_generator.py`.
+- Тестовый файл `outputs/taksklad_acceptance/TakSklad_Telegram_Acceptance_2026-05-31.xlsx` пересобран этим генератором.
+
+**Что генерируется:**
+
+- клиент `ACCEPTANCE TELEGRAM 20260531`;
+- дата отгрузки `31.05.2026`;
+- 2 позиции;
+- 3 блока;
+- координаты `41.311081, 69.240562`;
+- сумма `720000`.
+
+**Проверки:**
+
+- Генератор создал временный `.xlsx`.
+- Backend parser прочитал `2` строки, `3` блока, сумму `720000`, warnings `[]`.
+- `.venv/bin/python -m unittest tests.test_acceptance_excel_generator` - OK.
+- `.venv/bin/python -m unittest discover -s tests` - 84 теста OK.
+- `.venv/bin/python -m py_compile tools/*.py src/taksklad/*.py tests/*.py backend/app/*.py` - OK.

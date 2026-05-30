@@ -37,6 +37,7 @@
 | Отчёт о работе | Готово | `отчеты/2026-05-31.md`, `docs/implementation-log.md`, PR body/comments |
 | Безопасность релиза | Готово | `version.json` не менялся, Windows release не создавался, push-уведомления не отправлялись |
 | Read-only acceptance verifier | Готово | `deploy/vds/verify_acceptance_marker.sh`, проверен на пустом acceptance-маркере и smoke-маркере |
+| Acceptance Excel generator | Готово | `tools/generate_acceptance_excel.py`, тест `tests/test_acceptance_excel_generator.py` |
 
 ## Что Доказано
 
@@ -92,6 +93,7 @@
 - повторяемый `deploy/vds/smoke_mvp_chapman.sh` - OK;
 - `deploy/vds/verify_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531"` - OK, текущий маркер пустой;
 - `verify_acceptance_marker.sh` на smoke-маркере до cleanup - OK: `orders=1`, `planned_blocks=3`, `scan_codes=3`, `completed_orders=1`.
+- `tools/generate_acceptance_excel.py` пересобрал acceptance Excel, backend parser прочитал `2` строки, `3` блока, сумму `720000`, warnings `[]`.
 
 ## Что Не Доказано
 
@@ -104,6 +106,13 @@
 Для этой проверки подготовлен файл:
 
 `/Users/anton/Documents/work/TakSklad/outputs/taksklad_acceptance/TakSklad_Telegram_Acceptance_2026-05-31.xlsx`
+
+Файл можно пересобрать командой:
+
+```bash
+cd /Users/anton/Documents/work/TakSklad
+.venv/bin/python tools/generate_acceptance_excel.py
+```
 
 Runbook: `docs/manual-acceptance-runbook.md`.
 
