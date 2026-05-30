@@ -1242,3 +1242,11 @@ cd /opt/taksklad/app
 - входящее Telegram-сообщение от реального пользовательского аккаунта;
 - физическая Windows-приёмка desktop UI;
 - сборка и проверка Windows-архива.
+
+**Текущее состояние VDS после checkpoint:**
+
+- `backend-api`, `frontend`, `postgres`, `telegram-worker`, `skladbot-worker` работают.
+- Server restore `/opt/taksklad/restore_points/server_20260530T194938Z` на месте.
+- Postgres backup `taksklad-postgres-20260530T194941Z.sql.gz` на месте.
+- `https://api.135.181.245.84.sslip.io/health` вернул `200`.
+- `https://app.135.181.245.84.sslip.io/` без basic-auth вернул `401`, доступ закрыт.
