@@ -31,3 +31,4 @@
 - Назначение: локальная точка текущего результата после MVP-доработок Telegram import, логистического отчёта, SkladBot matching, КИЗ по файлам и чернового frontend.
 - Это не production release и не версия для автообновления рабочих ПК.
 - `version.json`, GitHub Release и Windows-архив не менялись.
+- Completion audit: [goal-completion-audit.md](/Users/anton/Documents/work/TakSklad/docs/goal-completion-audit.md).
