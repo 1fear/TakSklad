@@ -38,6 +38,10 @@ NOISE_PRODUCT_TOKENS = {
     "slim",
 }
 
+PRODUCT_COLORS = ("brown", "red", "gold")
+PRODUCT_FORMATS = ("op", "ssl")
+RETURN_REQUEST_TOKENS = {"возврат", "возврата", "return", "returned"}
+
 NOISE_COMPANY_TOKENS = {
     "ooo",
     "мчж",
@@ -465,12 +469,32 @@ def text_tokens_match(left, right, noise_tokens=None, min_overlap=0.75):
     return overlap >= min_overlap
 
 
+def product_sku_key(value):
+    text = normalize_lookup_text(value)
+    tokens = simplify_tokens(text)
+    compact = "".join(tokens)
+    color = next((item for item in PRODUCT_COLORS if item in tokens or item in compact), "")
+    product_format = next((
+        item
+        for item in PRODUCT_FORMATS
+        if item in tokens or (color and f"{color}{item}" in compact)
+    ), "")
+    if color and product_format:
+        return f"{color}:{product_format}"
+    return ""
+
+
 def product_names_match(order_name, request_product):
+    order_key = product_sku_key(order_name)
     candidates = [
         request_product.get("name", ""),
         request_product.get("vendor_code", ""),
         request_product.get("barcode", ""),
     ]
+    candidate_keys = [product_sku_key(candidate) for candidate in candidates if candidate]
+    candidate_keys = [key for key in candidate_keys if key]
+    if order_key and candidate_keys:
+        return order_key in candidate_keys
     return any(
         text_tokens_match(order_name, candidate, NOISE_PRODUCT_TOKENS, min_overlap=0.8)
         for candidate in candidates
@@ -487,6 +511,8 @@ def address_matches(order_address, request_address):
 def request_type_matches(value, expected=None):
     actual = normalize_lookup_text(value)
     expected = normalize_lookup_text(expected or SKLADBOT_SHIPMENT_TYPE_NAME)
+    if set(actual.split()).intersection(RETURN_REQUEST_TOKENS):
+        return False
     if expected and actual == expected:
         return True
     return "3pl" in actual and "отгруз" in actual
@@ -517,7 +543,10 @@ def request_matches_order_group(group, request):
 
     request_products = list(request.get("products") or [])
     used_indexes = set()
-    for order_product in group.get("products", []):
+    order_products = list(group.get("products") or [])
+    if not order_products:
+        return False
+    for order_product in order_products:
         matched_index = None
         for idx, request_product in enumerate(request_products):
             if idx in used_indexes:
@@ -531,7 +560,7 @@ def request_matches_order_group(group, request):
             return False
         used_indexes.add(matched_index)
 
-    return len(used_indexes) == len(request_products)
+    return True
 
 
 def fetch_candidate_requests(settings=None, client=None, today=None):

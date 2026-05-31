@@ -16,6 +16,8 @@ DEFAULT_OUTPUT_DIR = Path("outputs/taksklad_acceptance")
 EXCEL_NAME = "TakSklad_Telegram_Acceptance_2026-05-31.xlsx"
 MANIFEST_NAME = "acceptance_manifest.json"
 README_NAME = "README.md"
+RESULT_TEMPLATE_NAME = "ACCEPTANCE_RESULTS_TEMPLATE.md"
+RESULT_FILE_NAME = "ACCEPTANCE_RESULTS.md"
 TEST_KIZ_CODES = [
     "WIN-KIZ-ACCEPT-001",
     "WIN-KIZ-ACCEPT-002",
@@ -39,6 +41,8 @@ def build_manifest(output_dir=DEFAULT_OUTPUT_DIR, marker=DEFAULT_MARKER, shipmen
         "marker": marker,
         "shipment_date": shipment_date,
         "excel_file": EXCEL_NAME,
+        "result_template": RESULT_TEMPLATE_NAME,
+        "result_file": RESULT_FILE_NAME,
         "excel_sha256": sha256_file(excel_path),
         "excel_bytes": excel_path.stat().st_size,
         "expected": {
@@ -53,13 +57,16 @@ def build_manifest(output_dir=DEFAULT_OUTPUT_DIR, marker=DEFAULT_MARKER, shipmen
         "test_kiz_codes": TEST_KIZ_CODES,
         "commands": {
             "regenerate": ".venv/bin/python tools/prepare_acceptance_kit.py",
+            "local_preflight": ".venv/bin/python tools/release_preflight.py",
             "vds_status": './deploy/vds/acceptance_status.sh',
             "telegram_verify": './deploy/vds/verify_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --expect-orders 1',
             "telegram_wait": './deploy/vds/wait_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --expect-orders 1 --timeout 300 --interval 10',
             "telegram_status": './deploy/vds/acceptance_status.sh --expect-orders 1',
+            "windows_build_test_archive": '.\\tools\\build_windows_test_archive.ps1 -InstallDependencies',
             "windows_check_only": '.\\tools\\windows_backend_acceptance.ps1 -CheckOnly -Token "<service-token>"',
-            "windows_launch_exe": '.\\tools\\windows_backend_acceptance.ps1 -Token "<service-token>" -AppPath ".\\TakSklad.exe"',
+            "windows_launch_exe": '.\\tools\\windows_backend_acceptance.ps1 -Token "<service-token>" -AppPath ".\\TakSklad\\TakSklad.exe"',
             "windows_launch_source": '.\\tools\\windows_backend_acceptance.ps1 -Token "<service-token>" -AppPath ".\\main.py"',
+            "windows_launch_source_auto": '.\\tools\\windows_backend_acceptance.ps1 -Token "<service-token>" -UsePython',
             "windows_verify": './deploy/vds/verify_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --expect-orders 1 --expect-scans 3 --expect-completed',
             "windows_wait": './deploy/vds/wait_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --expect-orders 1 --expect-scans 3 --expect-completed --timeout 300 --interval 10',
             "windows_status": './deploy/vds/acceptance_status.sh --expect-orders 1 --expect-scans 3 --expect-completed',
@@ -87,6 +94,8 @@ def build_readme(manifest):
 
 - `{manifest["excel_file"]}` - Excel для отправки в Telegram-бот.
 - `{MANIFEST_NAME}` - контрольные значения, checksum и команды проверки.
+- `{RESULT_FILE_NAME}` - фактический статус приёмки; обновлять по результатам проверок.
+- `{RESULT_TEMPLATE_NAME}` - шаблон фиксации результата ручной приёмки.
 - `{README_NAME}` - короткая инструкция.
 
 ## Контрольные Значения
@@ -103,12 +112,32 @@ def build_readme(manifest):
 
 ## Telegram Проверка
 
+Перед ручными проверками локально запустить preflight:
+
+```bash
+cd /Users/anton/Documents/work/TakSklad
+{manifest["commands"]["local_preflight"]}
+```
+
+Он проверяет публичный backend health, `version.json`, acceptance kit и отсутствие tracked runtime/secret-файлов.
+
 Перед ручной проверкой можно посмотреть общий VDS status:
 
 ```bash
 cd /opt/taksklad/app
 {manifest["commands"]["vds_status"]}
 ```
+
+Обычный `acceptance_status.sh` проверяет здоровье VDS и показывает блок `release_go_no_go`.
+До ручной приёмки в нём должен быть `status=no_go`.
+Для релизного gate использовать строгий режим:
+
+```bash
+cd /opt/taksklad/app
+./deploy/vds/acceptance_status.sh --require-go
+```
+
+Он должен падать до тех пор, пока `ACCEPTANCE_RESULTS.md` не заполнен как `GO`.
 
 1. В Telegram открыть `SkladKis_bot` от разрешённого пользовательского аккаунта.
 2. Нажать `Дата отгрузки`.
@@ -137,6 +166,14 @@ cd /opt/taksklad/app
 
 ## Windows Проверка
 
+На Windows собрать свежий test archive:
+
+```powershell
+{manifest["commands"]["windows_build_test_archive"]}
+```
+
+Распаковать архив из `outputs\\windows_test_build`. Следующие PowerShell-команды выполнять уже из корня распакованного test archive.
+
 Проверить связь с VDS:
 
 ```powershell
@@ -154,6 +191,14 @@ cd /opt/taksklad/app
 ```powershell
 {manifest["commands"]["windows_launch_source"]}
 ```
+
+Если в папке рядом есть exe, но нужно принудительно запустить исходники:
+
+```powershell
+{manifest["commands"]["windows_launch_source_auto"]}
+```
+
+Helper использует `https://api.taksklad.uz`, проверяет, что `APP_VERSION` не ниже `2.0.0` и `APP_BUILD_LABEL = MVP 2.0`, и предпочитает `.venv\\Scripts\\python.exe`. Для exe helper требует `build_manifest.json` из свежего test archive и сверяет `app_version` + `app_build_label`; старый ярлык `1.1.7` без manifest будет остановлен до запуска.
 
 Сканировать тестовые КИЗы:
 
@@ -206,6 +251,293 @@ cd /opt/taksklad/app
 """
 
 
+def build_initial_result_file(manifest):
+    kiz_codes = "\n".join(f"- [ ] `{code}`" for code in manifest["test_kiz_codes"])
+    return f"""# TakSklad 2.0 Acceptance Results
+
+Дата проверки:
+
+Проверяющий:
+
+Среда:
+
+- VDS: `https://api.taksklad.uz`
+- Desktop source/build:
+- Windows ПК:
+- Сканер:
+- Принтер:
+
+Маркер проверки: `{manifest["marker"]}`
+
+Файл Telegram import: `{manifest["excel_file"]}`
+
+SHA-256 Excel: `{manifest["excel_sha256"]}`
+
+## 1. Preflight
+
+- [ ] `.venv/bin/python tools/release_preflight.py` вернул `status=ok`.
+- [ ] `version.json` не менялся и остался на `1.1.7`.
+- [ ] В Git нет tracked runtime/secret-файлов.
+
+## 2. Telegram Import
+
+- [ ] В Telegram нажата кнопка `Дата отгрузки`.
+- [ ] Отправлена дата `{manifest["shipment_date"]}`.
+- [ ] Отправлен Excel-файл как документ.
+- [ ] Бот ответил без ошибки.
+- [ ] `verify_acceptance_marker.sh` вернул `orders=1`.
+- [ ] Логистический отчёт по дате выгружается.
+- [ ] КИЗ по файлам не показывает незавершённые файлы.
+
+## 3. SkladBot Matching
+
+- [ ] Менеджер создал живую заявку `3PL отгрузка`.
+- [ ] Диагностика нашла ровно одно совпадение.
+- [ ] Дата отгрузки/выгрузки совпала.
+- [ ] Клиент совпал после нормализации.
+- [ ] Тип оплаты совпал.
+- [ ] Товары совпали по цвету/формату.
+- [ ] Количество совпало в блоках.
+- [ ] Адрес использован только как мягкий признак.
+
+## 4. Windows Desktop Acceptance
+
+- [ ] Собран свежий test archive через `tools\\build_windows_test_archive.ps1`.
+- [ ] Запуск выполнен из test archive, не из старого ярлыка `1.1.7`.
+- [ ] `windows_backend_acceptance.ps1 -CheckOnly` прошёл.
+- [ ] Desktop открылся без зависания.
+- [ ] Список заказов обновился из backend.
+- [ ] На экране статистики видно `Backend: online, список из VDS`.
+- [ ] Найден заказ `{manifest["marker"]}`.
+- [ ] Во время сканирования обновление списка не блокирует ввод.
+- [ ] Отсканированы тестовые КИЗы:
+
+{kiz_codes}
+
+- [ ] Дубль КИЗа не принят.
+- [ ] Завершение недосканированного заказа запрещено.
+- [ ] Завершение досканированного заказа прошло.
+- [ ] После завершения заказа появилось окно печати.
+- [ ] Печать не открывает браузер.
+- [ ] Размеры этикеток доступны: `100x100`, `100x150`, `75x50`, `58x40`.
+- [ ] `Enter` подтверждает печать, `Esc` отменяет.
+- [ ] Завершение смены сформировало КИЗ-отчёт.
+- [ ] Окно `Возвраты` открывается.
+- [ ] По ШК/номеру завершённой заявки находится архивный заказ.
+- [ ] `Принять возврат` переводит заказ в возврат и обновляет список `Последние возвраты`.
+- [ ] Повторное принятие той же заявки запрещено.
+
+## 5. Cleanup
+
+- [ ] Dry-run cleanup показал только тестовые данные.
+- [ ] Cleanup с `--apply` выполнен.
+- [ ] Повторная проверка маркера не показывает активные тестовые заказы.
+
+## 6. Defects / Known Issues
+
+| ID | Сценарий | Симптом | Severity | Решение | Статус |
+| --- | --- | --- | --- | --- | --- |
+| | | | | | |
+
+## 7. Go / No-Go
+
+- [ ] Telegram import принят.
+- [ ] SkladBot matching принят.
+- [ ] Windows desktop acceptance принят.
+- [x] Критичных дефектов нет.
+- [x] Rollback понятен.
+- [x] `version.json` всё ещё не менялся.
+
+Итог:
+
+- [ ] GO к подготовке release 2.0.
+- [x] NO-GO, релиз откладывается.
+
+Комментарий:
+
+```text
+Файл создан автоматически как стартовый NO-GO. Заполнять по факту ручных проверок.
+```
+"""
+
+
+def build_result_template(manifest):
+    kiz_codes = "\n".join(f"- [ ] `{code}`" for code in manifest["test_kiz_codes"])
+    return f"""# TakSklad 2.0 Acceptance Results
+
+Дата проверки:
+
+Проверяющий:
+
+Среда:
+
+- VDS: `https://api.taksklad.uz`
+- Desktop source/build:
+- Windows ПК:
+- Сканер:
+- Принтер:
+
+Маркер проверки: `{manifest["marker"]}`
+
+Файл Telegram import: `{manifest["excel_file"]}`
+
+SHA-256 Excel: `{manifest["excel_sha256"]}`
+
+## 1. Preflight
+
+- [ ] `.venv/bin/python tools/release_preflight.py` вернул `status=ok`.
+- [ ] `version.json` не менялся и остался на `1.1.7`.
+- [ ] В Git нет tracked runtime/secret-файлов.
+
+Заметки:
+
+```text
+
+```
+
+## 2. Telegram Import
+
+- [ ] В Telegram нажата кнопка `Дата отгрузки`.
+- [ ] Отправлена дата `{manifest["shipment_date"]}`.
+- [ ] Отправлен Excel-файл как документ.
+- [ ] Бот ответил без ошибки.
+- [ ] `verify_acceptance_marker.sh` вернул `orders=1`.
+- [ ] Логистический отчёт по дате выгружается.
+- [ ] КИЗ по файлам не показывает незавершённые файлы.
+
+Команда проверки:
+
+```bash
+cd /opt/taksklad/app
+{manifest["commands"]["telegram_verify"]}
+```
+
+Фактический результат:
+
+```text
+
+```
+
+## 3. SkladBot Matching
+
+- [ ] Менеджер создал живую заявку `3PL отгрузка`.
+- [ ] Диагностика нашла ровно одно совпадение.
+- [ ] Дата отгрузки/выгрузки совпала.
+- [ ] Клиент совпал после нормализации.
+- [ ] Тип оплаты совпал.
+- [ ] Товары совпали по цвету/формату.
+- [ ] Количество совпало в блоках.
+- [ ] Адрес использован только как мягкий признак.
+
+Команда диагностики:
+
+```bash
+cd /opt/taksklad/app
+./deploy/vds/diagnose_skladbot_match.sh --marker "{manifest["marker"]}" --limit 5 --request-limit 20
+```
+
+Фактический результат:
+
+```text
+
+```
+
+## 4. Windows Desktop Acceptance
+
+- [ ] Собран свежий test archive через `tools\\build_windows_test_archive.ps1`.
+- [ ] Запуск выполнен из test archive, не из старого ярлыка `1.1.7`.
+- [ ] `windows_backend_acceptance.ps1 -CheckOnly` прошёл.
+- [ ] Desktop открылся без зависания.
+- [ ] Список заказов обновился из backend.
+- [ ] На экране статистики видно `Backend: online, список из VDS`.
+- [ ] Найден заказ `{manifest["marker"]}`.
+- [ ] Во время сканирования обновление списка не блокирует ввод.
+- [ ] Отсканированы тестовые КИЗы:
+
+{kiz_codes}
+
+- [ ] Дубль КИЗа не принят.
+- [ ] Завершение недосканированного заказа запрещено.
+- [ ] Завершение досканированного заказа прошло.
+- [ ] После завершения заказа появилось окно печати.
+- [ ] Печать не открывает браузер.
+- [ ] Размеры этикеток доступны: `100x100`, `100x150`, `75x50`, `58x40`.
+- [ ] `Enter` подтверждает печать, `Esc` отменяет.
+- [ ] Завершение смены сформировало КИЗ-отчёт.
+- [ ] Окно `Возвраты` открывается.
+- [ ] По ШК/номеру завершённой заявки находится архивный заказ.
+- [ ] `Принять возврат` переводит заказ в возврат и обновляет список `Последние возвраты`.
+- [ ] Повторное принятие той же заявки запрещено.
+
+Команда проверки backend после Windows:
+
+```bash
+cd /opt/taksklad/app
+{manifest["commands"]["windows_verify"]}
+```
+
+Фактический результат:
+
+```text
+
+```
+
+## 5. Cleanup
+
+- [ ] Dry-run cleanup показал только тестовые данные.
+- [ ] Cleanup с `--apply` выполнен.
+- [ ] Повторная проверка маркера не показывает активные тестовые заказы.
+
+Команды:
+
+```bash
+cd /opt/taksklad/app
+{manifest["commands"]["cleanup_dry_run"]}
+{manifest["commands"]["cleanup_apply"]}
+```
+
+Фактический результат:
+
+```text
+
+```
+
+## 6. Defects / Known Issues
+
+| ID | Сценарий | Симптом | Severity | Решение | Статус |
+| --- | --- | --- | --- | --- | --- |
+| | | | | | |
+
+## 7. Go / No-Go
+
+- [ ] Telegram import принят.
+- [ ] SkladBot matching принят.
+- [ ] Windows desktop acceptance принят.
+- [ ] Критичных дефектов нет.
+- [ ] Rollback понятен.
+- [ ] `version.json` всё ещё не менялся.
+
+Итог:
+
+- [ ] GO к подготовке release 2.0.
+- [ ] NO-GO, релиз откладывается.
+
+Комментарий:
+
+```text
+
+```
+
+Машинная проверка заполненного результата:
+
+```bash
+cd /Users/anton/Documents/work/TakSklad
+# Заполнить существующий ACCEPTANCE_RESULTS.md фактическими результатами.
+.venv/bin/python tools/release_go_no_go.py --results outputs/taksklad_acceptance/ACCEPTANCE_RESULTS.md
+```
+"""
+
+
 def prepare_acceptance_kit(output_dir=DEFAULT_OUTPUT_DIR, marker=DEFAULT_MARKER, shipment_date=DEFAULT_SHIPMENT_DATE):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -217,6 +549,10 @@ def prepare_acceptance_kit(output_dir=DEFAULT_OUTPUT_DIR, marker=DEFAULT_MARKER,
         encoding="utf-8",
     )
     (output_dir / README_NAME).write_text(build_readme(manifest), encoding="utf-8")
+    (output_dir / RESULT_TEMPLATE_NAME).write_text(build_result_template(manifest), encoding="utf-8")
+    result_file_path = output_dir / RESULT_FILE_NAME
+    if not result_file_path.exists():
+        result_file_path.write_text(build_initial_result_file(manifest), encoding="utf-8")
     return output_dir
 
 

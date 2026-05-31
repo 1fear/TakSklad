@@ -34,6 +34,9 @@ class OrderRead(BaseModel):
     status: str
     skladbot_request_number: str = ""
     skladbot_request_id: str = ""
+    return_status: str = ""
+    returned_at: str = ""
+    return_reference: str = ""
     items: list[OrderItemRead] = Field(default_factory=list)
 
 

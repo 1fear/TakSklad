@@ -521,8 +521,6 @@ def create_document_report_excel(sheet, document_key):
     }
 
 def create_day_report_excel(sheet=None, filename=None, include_pending=True, report_date=None):
-    import pandas as pd
-
     report_date = parse_report_date(report_date)
     report_rows = build_day_report_rows_from_scan_backup(report_date)
     report_source = "scan_backup"
@@ -558,6 +556,100 @@ def create_day_report_excel(sheet=None, filename=None, include_pending=True, rep
         )
         result["filename"] = filename
 
+    write_day_report_workbook(filename, terminal_rows, transfer_rows, unknown_rows)
+    return result
+
+
+def create_shift_report_excels_by_order_date(sheet=None, include_pending=True, scan_date=None):
+    scan_date = parse_report_date(scan_date)
+    report_rows = build_day_report_rows_from_scan_backup(scan_date)
+    report_source = "scan_backup"
+    if not any(report_rows.values()) and sheet:
+        report_rows = build_day_report_rows_from_gsheet(sheet, scan_date)
+        report_source = "google_sheets"
+    if include_pending:
+        report_rows = add_pending_saves_to_report_rows(report_rows, scan_date)
+
+    total_report_rows = sum(len(rows) for rows in report_rows.values())
+    result = {
+        "empty": total_report_rows == 0,
+        "filename": None,
+        "total_report_rows": total_report_rows,
+        "terminal_count": len(report_rows["terminal"]),
+        "transfer_count": len(report_rows["transfer"]),
+        "unknown_count": len(report_rows["unknown"]),
+        "report_date": report_date_key(scan_date),
+        "report_date_display": report_date_display(scan_date),
+        "source": report_source,
+        "reports": [],
+    }
+    if total_report_rows == 0:
+        return result
+
+    registry = load_shift_report_registry()
+    registry_changed = False
+    shipment_dates = sorted({
+        normalize_text(row.get("Дата отгрузки")) or report_date_display(scan_date)
+        for rows in report_rows.values()
+        for row in rows
+    }, key=date_sort_for_display)
+
+    for shipment_date in shipment_dates:
+        grouped = filter_report_rows_by_shipment_date(report_rows, shipment_date)
+        terminal_rows = grouped["terminal"]
+        transfer_rows = grouped["transfer"]
+        unknown_rows = grouped["unknown"]
+        file_total = len(terminal_rows) + len(transfer_rows) + len(unknown_rows)
+        if file_total == 0:
+            continue
+        content_hash = shift_report_content_hash(grouped)
+        existing_report = find_shift_report_registry_entry(registry, shipment_date, content_hash)
+        if existing_report:
+            filename = existing_report["filename"]
+            part_number = existing_report["part_number"]
+            already_exists = True
+        else:
+            filename, part_number = next_shift_report_filename(shipment_date)
+            write_day_report_workbook(filename, terminal_rows, transfer_rows, unknown_rows)
+            registry.append({
+                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "report_date": report_date_key(scan_date),
+                "report_date_display": report_date_display(scan_date),
+                "shipment_date": parse_date_to_standard(shipment_date) or shipment_date,
+                "shipment_date_display": parse_date_to_standard(shipment_date) or shipment_date,
+                "part_number": part_number,
+                "filename": filename,
+                "content_hash": content_hash,
+                "total_report_rows": file_total,
+            })
+            registry_changed = True
+            already_exists = False
+        result["reports"].append({
+            "empty": False,
+            "filename": filename,
+            "total_report_rows": file_total,
+            "terminal_count": len(terminal_rows),
+            "transfer_count": len(transfer_rows),
+            "unknown_count": len(unknown_rows),
+            "report_date": report_date_key(scan_date),
+            "report_date_display": report_date_display(scan_date),
+            "shipment_date": parse_date_to_standard(shipment_date) or shipment_date,
+            "shipment_date_display": parse_date_to_standard(shipment_date) or shipment_date,
+            "part_number": part_number,
+            "already_exists": already_exists,
+            "content_hash": content_hash,
+            "source": report_source,
+        })
+
+    if registry_changed:
+        save_shift_report_registry(registry)
+
+    return result
+
+
+def write_day_report_workbook(filename, terminal_rows, transfer_rows, unknown_rows):
+    import pandas as pd
+
     with pd.ExcelWriter(filename, engine="openpyxl") as writer:
         if terminal_rows:
             pd.DataFrame(terminal_rows).to_excel(writer, sheet_name="Терминал", index=False)
@@ -572,7 +664,118 @@ def create_day_report_excel(sheet=None, filename=None, include_pending=True, rep
         if unknown_rows:
             pd.DataFrame(unknown_rows).to_excel(writer, sheet_name="Не распознано", index=False)
 
+
+def filter_report_rows_by_shipment_date(report_rows, shipment_date):
+    result = empty_day_report_rows()
+    target = parse_date_to_standard(shipment_date) or shipment_date
+    for group, rows in report_rows.items():
+        for row in rows:
+            row_date = parse_date_to_standard(row.get("Дата отгрузки")) or row.get("Дата отгрузки")
+            if row_date == target:
+                result[group].append(row)
     return result
+
+
+def date_sort_for_display(value):
+    text = parse_date_to_standard(value) or normalize_text(value)
+    try:
+        return datetime.strptime(text, "%d.%m.%Y")
+    except ValueError:
+        return datetime.max
+
+
+def next_shift_report_filename(shipment_date):
+    os.makedirs(REPORTS_DIR, exist_ok=True)
+    display = parse_date_to_standard(shipment_date) or normalize_text(shipment_date) or "без_даты"
+    safe_date = display.replace(".", "_")
+    existing = [
+        name
+        for name in os.listdir(REPORTS_DIR)
+        if name.startswith(f"scan_report_{safe_date}_ч") and name.endswith(".xlsx")
+    ]
+    part_number = len(existing) + 1
+    filename = os.path.join(REPORTS_DIR, f"scan_report_{safe_date}_ч{part_number}.xlsx")
+    return filename, part_number
+
+
+def shift_report_registry_path():
+    return os.path.join(REPORTS_DIR, "shift_report_registry.json")
+
+
+def load_shift_report_registry():
+    path = shift_report_registry_path()
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as file_obj:
+            data = json.load(file_obj)
+    except Exception:
+        logging.exception("Не удалось прочитать реестр КИЗ-отчётов смены")
+        return []
+    return data if isinstance(data, list) else []
+
+
+def save_shift_report_registry(registry):
+    os.makedirs(REPORTS_DIR, exist_ok=True)
+    path = shift_report_registry_path()
+    tmp_path = path + ".tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as file_obj:
+            json.dump(registry, file_obj, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, path)
+    except Exception:
+        logging.exception("Не удалось сохранить реестр КИЗ-отчётов смены")
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except OSError:
+            pass
+
+
+def shift_report_content_hash(report_rows):
+    payload = []
+    for group, rows in sorted(report_rows.items()):
+        for row in rows:
+            payload.append({
+                "group": group,
+                "code": normalize_text(row.get("Код")),
+                "date": parse_date_to_standard(row.get("Дата отгрузки")) or normalize_text(row.get("Дата отгрузки")),
+                "client": normalize_lookup_text(row.get("Клиент")),
+                "address": normalize_lookup_text(row.get("Адрес")),
+                "product": normalize_lookup_text(row.get("Товар")),
+                "payment_type": normalize_payment_type(row.get("Тип оплаты")),
+                "skladbot_request_number": normalize_text(row.get("Номер заявки SkladBot")),
+            })
+    payload.sort(key=lambda item: (
+        item["group"],
+        item["date"],
+        item["skladbot_request_number"],
+        item["client"],
+        item["address"],
+        item["product"],
+        item["code"],
+    ))
+    return make_hash(payload)
+
+
+def find_shift_report_registry_entry(registry, shipment_date, content_hash):
+    target_date = parse_date_to_standard(shipment_date) or normalize_text(shipment_date)
+    for entry in reversed(registry):
+        entry_date = parse_date_to_standard(entry.get("shipment_date_display") or entry.get("shipment_date"))
+        if not entry_date:
+            entry_date = normalize_text(entry.get("shipment_date_display") or entry.get("shipment_date"))
+        filename = normalize_text(entry.get("filename"))
+        if (
+            entry_date == target_date
+            and normalize_text(entry.get("content_hash")) == content_hash
+            and filename
+            and os.path.exists(filename)
+        ):
+            return {
+                "filename": filename,
+                "part_number": parse_int_value(entry.get("part_number")) or 1,
+            }
+    return None
 
 def build_summary_products_from_gsheet(sheet, group_key):
     all_rows = sheet.get_all_values()
@@ -596,6 +799,7 @@ def build_summary_products_from_gsheet(sheet, group_key):
             continue
 
         products.append({
+            "Дата отгрузки": get_order_date_value(row_record),
             "Клиент": get_cell(row, header_idx.get("Клиент")),
             "Адрес": get_cell(row, header_idx.get("Адрес")),
             "Торговый представитель": get_cell(row, header_idx.get("Торговый представитель")),
@@ -604,6 +808,8 @@ def build_summary_products_from_gsheet(sheet, group_key):
             "Кол-во ШТ в блоке": get_product_rule(get_cell(row, header_idx.get("Товары")))["pieces_per_block"],
             "План": parse_int_value(get_cell(row, header_idx.get("Кол-во блок"))),
             "Отсканировано": len(codes),
+            "Сумма позиции": parse_int_value(get_cell(row, header_idx.get("Сумма позиции"))),
+            "Цена заказа": parse_int_value(get_cell(row, header_idx.get("Сумма позиции"))),
             "Коды": codes,
         })
 

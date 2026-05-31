@@ -2,9 +2,11 @@ import hashlib
 import json
 import os
 import re
+import urllib.parse
 from datetime import date, datetime
 from pathlib import Path
 
+import httpx
 import openpyxl
 
 
@@ -12,6 +14,9 @@ MAX_HEADER_SCAN_ROWS = 40
 SUPPORTED_EXCEL_EXTENSIONS = {".xlsx", ".xlsm"}
 SUMMARY_MARKERS = {"итого", "total", "grand total", "всего"}
 DATE_PATTERN = re.compile(r"(?<!\d)(\d{1,2})[._/-](\d{1,2})[._/-](\d{2,4})(?!\d)")
+COUNTRY_PREFIXES = ("узбекистан", "uzbekistan", "o'zbekiston", "oʻzbekiston")
+YANDEX_GEOCODER_ENV_VAR = "YANDEX_GEOCODER_API_KEY"
+YANDEX_GEOCODER_URL = "https://geocode-maps.yandex.ru/v1/"
 
 REQUIRED_ALIASES = {
     "client": [
@@ -327,7 +332,74 @@ def detect_excel_source(workbook, file_name):
 
 def clean_address_for_display(value):
     text = normalize_text(value)
-    return re.sub(r"^\s*узбекистан\s*,\s*", "", text, flags=re.IGNORECASE)
+    lowered = text.casefold()
+    for prefix in COUNTRY_PREFIXES:
+        if lowered == prefix:
+            return ""
+        if lowered.startswith(prefix + ","):
+            return text[len(prefix):].lstrip(" ,")
+    return text
+
+
+def normalize_coordinates(value):
+    text = normalize_text(value)
+    if not text:
+        return ""
+    numbers = re.findall(r"-?\d+(?:[.,]\d+)?", text)
+    if len(numbers) < 2:
+        return ""
+    first = numbers[0].replace(",", ".")
+    second = numbers[1].replace(",", ".")
+    return f"{first}, {second}"
+
+
+def yandex_key():
+    return normalize_text(os.environ.get(YANDEX_GEOCODER_ENV_VAR))
+
+
+def geocode_address_yandex(address, cache=None):
+    address = clean_address_for_display(address)
+    if not address or address == "Адрес не указан":
+        return "", "адрес не указан"
+    if cache is not None and address in cache:
+        return cache[address]
+
+    api_key = yandex_key()
+    if not api_key:
+        result = ("", "не указан ключ Яндекс Геокодера")
+        if cache is not None:
+            cache[address] = result
+        return result
+
+    params = {
+        "apikey": api_key,
+        "geocode": address,
+        "format": "json",
+        "lang": "ru_RU",
+        "results": "1",
+    }
+    url = YANDEX_GEOCODER_URL + "?" + urllib.parse.urlencode(params)
+    try:
+        response = httpx.get(url, timeout=10)
+        response.raise_for_status()
+        payload = response.json()
+        members = payload.get("response", {}).get("GeoObjectCollection", {}).get("featureMember", [])
+        if not members:
+            result = ("", "координаты не найдены")
+        else:
+            point = members[0].get("GeoObject", {}).get("Point", {}).get("pos") or ""
+            parts = [part for part in point.replace(",", ".").split() if part]
+            if len(parts) < 2:
+                result = ("", "Яндекс не вернул координаты")
+            else:
+                longitude, latitude = parts[0], parts[1]
+                result = (f"{latitude}, {longitude}", "")
+    except Exception as exc:
+        result = ("", f"{exc.__class__.__name__}: {exc}")
+
+    if cache is not None:
+        cache[address] = result
+    return result
 
 
 def excel_file_to_import_payload(file_path, file_name=None, source="telegram", shipment_date=None):
@@ -349,8 +421,11 @@ def excel_file_to_import_payload(file_path, file_name=None, source="telegram", s
         sha256 = file_sha256(file_path)
         default_pieces_per_block = max(1, int(os.environ.get("TAKSKLAD_DEFAULT_PIECES_PER_BLOCK", "10") or "10"))
         default_block_price = max(0, int(os.environ.get("TAKSKLAD_DEFAULT_BLOCK_PRICE", "240000") or "240000"))
+        geocode_cache = {}
         rows = []
         warnings = []
+        geocoded_count = 0
+        geocode_failed_count = 0
         source_rows_count = 0
 
         for row_number, row in enumerate(
@@ -374,8 +449,18 @@ def excel_file_to_import_payload(file_path, file_name=None, source="telegram", s
                 blocks = (quantity + default_pieces_per_block - 1) // default_pieces_per_block
 
             date_value = shipment_date or parse_date_text(get_cell(row, columns.get("date"))) or default_date
-            coordinates = get_cell(row, columns.get("coordinates"))
             address = clean_address_for_display(get_cell(row, columns.get("address"))) or "Адрес не указан"
+            coordinates = normalize_coordinates(get_cell(row, columns.get("coordinates")))
+            if not coordinates:
+                geocoded_coordinates, geocode_error = geocode_address_yandex(address, cache=geocode_cache)
+                if geocoded_coordinates:
+                    coordinates = geocoded_coordinates
+                    geocoded_count += 1
+                else:
+                    geocode_failed_count += 1
+                    warnings.append(
+                        f"{file_name}, строка {row_number}: координаты по адресу не получены ({geocode_error})"
+                    )
             representative = get_cell(row, columns.get("representative"))
             imported_unit_price = parse_money(get_cell(row, columns.get("unit_price")))
             imported_line_total = parse_money(get_cell(row, columns.get("line_total")))
@@ -428,6 +513,8 @@ def excel_file_to_import_payload(file_path, file_name=None, source="telegram", s
             "sheet_name": sheet_name,
             "source_rows_count": source_rows_count,
             "shipment_date": shipment_date or default_date,
+            "geocoded_count": geocoded_count,
+            "geocode_failed_count": geocode_failed_count,
             "warnings": warnings,
         },
     }

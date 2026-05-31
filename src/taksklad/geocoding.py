@@ -5,7 +5,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from .config import YANDEX_GEOCODER_API_KEY, YANDEX_GEOCODER_KEY_FILE
+from .config import YANDEX_GEOCODER_ENV_VAR, YANDEX_GEOCODER_KEY_FILE
 from .utils import normalize_coordinates, normalize_text
 
 
@@ -13,7 +13,7 @@ COUNTRY_PREFIXES = ("узбекистан", "uzbekistan", "o'zbekiston", "oʻzbe
 
 
 def load_yandex_geocoder_key():
-    env_key = normalize_text(os.environ.get("YANDEX_GEOCODER_API_KEY"))
+    env_key = normalize_text(os.environ.get(YANDEX_GEOCODER_ENV_VAR))
     if env_key:
         return env_key
     try:
@@ -24,7 +24,7 @@ def load_yandex_geocoder_key():
                 return file_key
     except Exception:
         logging.exception("Не удалось прочитать ключ Яндекс Геокодера")
-    return normalize_text(YANDEX_GEOCODER_API_KEY)
+    return ""
 
 
 def reverse_geocode_yandex(coords, cache=None):

@@ -1,6 +1,6 @@
 # Архитектура проекта TakSklad
 
-Актуально на 29.05.2026. Версия приложения: `APP_VERSION = 1.1.17`. Документ не содержит секретов (токены, ключи, реальные chat_id, пароли VPS).
+Актуально на 31.05.2026. Версия приложения: `APP_VERSION = 2.0.0`. Документ не содержит секретов (токены, ключи, реальные chat_id, пароли VPS).
 
 Соглашение: факты взяты из `docs/` и кода репозитория. Архитектурные выводы помечены **`(Inference)`**. Инфраструктурные факты, которые есть только в чек-листе пользователя, помечены **`(infra context)`**. Недостающее — в разделе 15.
 
@@ -94,11 +94,11 @@ Telegram работает только при открытом desktop (нет 2
 
 ### Technical Debt
 
-`main.py` — всё ещё крупный модуль (~1172 строк): основной UI, сканирование, выбор/сохранение позиций и завершение заказа смешаны **(Inference)**. Часть логики уже вынесена в `http_client`, `update_service`, `printing`, `pending_store`, `reports`, `ui_widgets`, `telegram_service`, `app_telegram`, `app_updates`, `app_imports`, `app_catalog`, `app_control_panel`, `app_skladbot`, `app_printing`, `app_day_end`, `duplicate_codes`. Google Sheets перегружен ролями (БД + lock + Telegram-state). **Зашитый ключ Яндекс Геокодера в `config.py`, попадающий в git** — нарушает правила безопасности **(Inference — из кода)**. Нет ротации логов. Широкая эвристика retryable-ошибок. Нечёткий `address_matches` (~55%). `match_group_to_requests` требует полного совпадения товаров → ломается после второго импорта. Манифест `version.json` временно на `onefile_exe` (переходное состояние).
+`main.py` — всё ещё крупный модуль (~1172 строк): основной UI, сканирование, выбор/сохранение позиций и завершение заказа смешаны **(Inference)**. Часть логики уже вынесена в `http_client`, `update_service`, `printing`, `pending_store`, `reports`, `ui_widgets`, `telegram_service`, `app_telegram`, `app_updates`, `app_imports`, `app_catalog`, `app_control_panel`, `app_skladbot`, `app_printing`, `app_day_end`, `duplicate_codes`, `startup_check`, `desktop_diagnostics`. Google Sheets перегружен ролями (БД + lock + Telegram-state). Ключ Яндекс Геокодера вынесен из `config.py`: приложение читает его из env `YANDEX_GEOCODER_API_KEY` или локального `yandex_geocoder_key.txt`, который не попадает в Git. Desktop-лог ротируется через `RotatingFileHandler`, startup self-check пишет безопасный fingerprint конфигурации, refresh diagnostic summary пишет счётчики загрузки заказов. Широкая эвристика retryable-ошибок. Нечёткий `address_matches` (~55%). SkladBot product matching допускает безопасный partial-match: все товары TakSklad-группы должны совпасть по SKU и блокам, лишние товары в SkladBot-заявке не блокируют номер, но неоднозначность остаётся `Несколько совпадений`. Манифест `version.json` временно на `onefile_exe` (переходное состояние).
 
 ### Risks
 
-`429` Google quota (два ПК, локи, частые чтения); конфликты двух ПК при разных `SPREADSHEET_ID`/`credentials`; зависание busy-state; хрупкость автообновления на старых exe; утечка зашитого ключа; при будущем backend — зависимость от сети без offline-fallback. Подробно — раздел 13.
+`429` Google quota (два ПК, локи, частые чтения); конфликты двух ПК при разных `SPREADSHEET_ID`/`credentials`; зависание busy-state; хрупкость автообновления на старых exe; отсутствие ротации старого ключа геокодера; при будущем backend — зависимость от сети без offline-fallback. Подробно — раздел 13.
 
 ---
 
@@ -238,7 +238,7 @@ main ◄ почти все модули
 | **Google Sheets** | Заказы/сканы/статусы; сейчас ещё lock/state | Чтение+запись | Критична сейчас | `429`, `403`, `invalid_grant`, таймауты | Backoff/cache, вынести lock/state в Postgres, понизить до экспорта на backend |
 | **Telegram Bot API** | Отчёты, лог, импорт, уведомления | Polling + отправка | Средняя (не блокирует склад) | `409` на двух ПК, гонки lock | Сейчас lock+общий `update_id`; цель — единственный Telegram-воркер |
 | **SkladBot API** | Номера заявок; далее остатки/сверки | Только чтение | Низкая для скана, средняя для обогащения | `429`, форматы дат, неполные данные, нет write API | Лимиты/паузы/кэш, окно 14 дн.+`unloading_date`, отдельный воркер; write не предполагать |
-| **Яндекс Геокодер** | Адрес по координатам | Только чтение | Низкая (есть fallback) | Лимиты, зашитый ключ | Кэш в импорте; вынести ключ в env; `GeocoderClient` |
+| **Яндекс Геокодер** | Адрес по координатам | Только чтение | Низкая (есть fallback) | Лимиты, локальная настройка ключа | Кэш в импорте; env/local secret file; `GeocoderClient` |
 | **GitHub Releases/`version.json`** | Автообновление desktop | Чтение+скачивание | Средняя (риск циклов) | SSL, занятый файл, неверный манифест | SHA256, подтверждение, cooldown, не запускать старый exe; вернуть `onedir_zip` |
 | **Backend API** *(planned)* | Desktop/воркеры ↔ Postgres | Двунаправленно | Будет критичной | Точка отказа | Версионируемый контракт, сервисный токен, offline-fallback desktop |
 | **PostgreSQL** *(planned как primary)* | Источник истины | Чтение+запись | Будет критичной | Потеря данных без backup | Только через backend; backup/restore; роли БД |
@@ -268,7 +268,7 @@ main ◄ почти все модули
 ### Phase 1: Stabilize Existing Foundation
 
 - **Goal:** убрать текущие боли без архитектурной переделки; склад работает без остановок; зафиксировать инфраструктурные assumptions.
-- **Tasks:** partial-match SkladBot + диагностика `not_found`; backoff/cache Google против `429`; ротация логов + дневной diagnostic summary; health-check на старте (версия, доступ к таблице, service account, lock owner); стабильный билд 1.1.18+ и возврат манифеста на `onedir_zip`/`mandatory:true`; **вынести ключ Яндекс Геокодера из `config.py`** в env *(Inference)*; синхронизировать `taksklad-full-functionality.md` с changelog.
+- **Tasks:** partial-match SkladBot + диагностика `not_found`; backoff/cache Google против `429`; расширить health-check на старте реальной проверкой доступа к таблице и lock owner; стабильный билд 1.1.18+ и возврат манифеста на `onedir_zip`/`mandatory:true`; ротировать ключ Яндекс Геокодера после вынесения из `config.py`; синхронизировать `taksklad-full-functionality.md` с changelog.
 - **Affected Areas:** `skladbot.py`, `skladbot_sync.py`, `sheets.py`, `config.py`, `main.py`, `geocoding.py`, `version.json`, `tests/`, `docs/`.
 - **Result:** меньше блокировок/`429`/`не найдено`; безопасное обновление; нет утечки ключа.
 - **Done Criteria:** в логе виден итог матчинга и причины `not_found`; `429` обрабатывается backoff без потери lock; логи ротируются; релиз на обоих ПК; ключ не в git; тесты зелёные.
@@ -321,15 +321,15 @@ main ◄ почти все модули
 - **Status:** Accepted
 - **Context:** нечёткие токены привязывали номера к соседним клиентам.
 - **Decision:** клиент строго через `normalize_company_name`; дата обязана быть непустой и равной `unloading_date`; при множестве — `Несколько совпадений`.
-- **Consequences:** меньше ложных привязок; часть остаётся `Не найдено` (нужен partial-match).
+- **Consequences:** меньше ложных привязок и меньше ложных `Не найдено`; безопасный partial-match допускает лишние товары в SkladBot-заявке, но при нескольких кандидатах сохраняет `Несколько совпадений`.
 - **Related Docs:** changelog 26.05/28.05, knowledge-base §7.
 
-### ADR-003: Окно SkladBot 14 дней, фильтр детали по `unloading_date`
+### ADR-003: Разные окна SkladBot для VDS worker и desktop fallback
 - **Status:** Accepted
-- **Context:** окно 1 день по `created_at` давало 0 заявок (создаются за 2–4 дня до отгрузки).
-- **Decision:** `SKLADBOT_SYNC_LOOKBACK_DAYS=14`; точный фильтр по `unloading_date`.
-- **Consequences:** заявки находятся; +N запросов деталей (допустимо для фона).
-- **Related Docs:** changelog 28.05, `config.py`.
+- **Context:** для VDS нужен быстрый worker, который не перебирает сотни старых заявок; для старой desktop fallback-линии нужно не потерять заявки, созданные заранее.
+- **Decision:** VDS worker использует `SKLADBOT_SYNC_LOOKBACK_DAYS=1` и фильтры `customer_id=6211`, `type_id=3389`; desktop fallback оставлен с `SKLADBOT_SYNC_LOOKBACK_DAYS=14`; точное совпадение всегда проверяется по `unloading_date`.
+- **Consequences:** серверный MVP 2.0 работает быстро и узко, а локальная fallback-линия остаётся более терпимой к старым заявкам.
+- **Related Docs:** changelog 28.05, knowledge-base §7, `config.py`, `deploy/vds/docker-compose.yml`.
 
 ### ADR-004: Координация двух ПК через Google Sheets (временно)
 - **Status:** Accepted (временное)
@@ -381,10 +381,10 @@ main ◄ почти все модули
 - **Related Docs:** §6/§10; вывод из кода.
 
 ### ADR-011: Вынести секреты из репозитория (ключ Яндекс Геокодера) *(Inference)*
-- **Status:** Needs Review
-- **Context:** `YANDEX_GEOCODER_API_KEY` зашит в `config.py` (в git).
-- **Decision:** перенести в env/secret, ротировать ключ, по возможности вычистить из истории.
-- **Consequences:** устраняет утечку; обновление конфигурации на ПК и в сборке.
+- **Status:** Accepted
+- **Context:** ключ Яндекс Геокодера не должен жить в исходном коде или релизном архиве как константа.
+- **Decision:** читать ключ из env `YANDEX_GEOCODER_API_KEY`, затем из локального `yandex_geocoder_key.txt`; зашитого fallback-значения нет.
+- **Consequences:** новый релиз требует настроенный env или локальный файл рядом с приложением; старый ключ нужно ротировать отдельно.
 - **Related Docs:** `config.py`; knowledge-base §16, full-functionality §26.
 
 ### ADR-012: Бизнес-ключи Chapman для импорта, SkladBot и логистики
@@ -402,7 +402,7 @@ main ◄ почти все модули
 |---|---|---|---|
 | `429` Google quota | Высокий (лок не освобождается, срыв синков) | Высокая | Backoff/cache, реже lock, одна копия; стратегически Postgres |
 | Конфликт двух ПК (разные `SPREADSHEET_ID`/credentials) | Высокий (запись в чужую таблицу, дубли) | Средняя | Единая конфигурация, health-check, общий `update_id`; backend |
-| Утечка зашитого ключа геокодера | Высокий | Высокая (уже в коде) | Вынести в env, ротировать (ADR-011) |
+| Утечка ключа геокодера | Высокий | Средняя | Ключ только в env/локальном файле; ротировать старый ключ (ADR-011) |
 | Цикл автообновления (старый exe) | Высокий | Низкая после фиксов | Подтверждение, cooldown, без рестарта старого; стабильный билд |
 | SkladBot не находит номера | Средний (ручная правка) | Средняя | Окно 14 дн., строгий клиент, блоки, нормализованный SKU, адрес как мягкий признак, диагностика, partial-match |
 | Логистический отчёт без координат | Высокий (маршрут строится неверно) | Средняя | Координаты - обязательное поле логистического отчёта; адрес только справочно |
@@ -460,9 +460,9 @@ main ◄ почти все модули
 
 1. Реализовать partial-match SkladBot и диагностику `not_found` по полям.
 2. Добавить backoff/cache Google против `429`; снизить частоту lock и обращений к `_TakSklad_System`.
-3. Включить ротацию `docs/TakSklad.log` и дневной diagnostic summary.
-4. Health-check на старте (версия, доступ к таблице, service account, lock owner).
-5. Вынести ключ Яндекс Геокодера из `config.py` в env и ротировать (ADR-011).
+3. Расширить diagnostic summary дневным агрегатом ошибок; refresh summary уже включён.
+4. Расширить startup self-check реальной проверкой доступа к таблице и lock owner.
+5. Ротировать старый ключ Яндекс Геокодера и проверить настройку env/локального файла на Windows (ADR-011).
 6. Собрать стабильный билд 1.1.18+ и вернуть манифест на `onedir_zip`/`mandatory:true`.
 7. Зафиксировать инфраструктурный baseline в `docs/` (сделано в roadmap) и описать env/volumes/backup/restore/rollback по сервисам.
 8. Принять решения по разделу 15 (минимум: аутентификация backend, домены/доступ за Traefik, backup-политика) — это разблокирует Phase 3.

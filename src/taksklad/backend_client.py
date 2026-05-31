@@ -1,6 +1,7 @@
 import json
 import logging
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime
 
@@ -143,6 +144,27 @@ def complete_order(order_id):
     return backend_request("POST", f"/api/v1/orders/{order_id}/complete")
 
 
+def lookup_return_order(lookup_value):
+    quoted = urllib.parse.urlencode({"lookup": lookup_value})
+    return backend_request("GET", f"/api/v1/returns/lookup?{quoted}")
+
+
+def fetch_returned_orders(limit=50):
+    quoted = urllib.parse.urlencode({"limit": int(limit or 50)})
+    return backend_request("GET", f"/api/v1/returns?{quoted}")
+
+
+def mark_order_returned(order_id, return_reference="", returned_by="desktop"):
+    return backend_request(
+        "POST",
+        f"/api/v1/returns/{order_id}",
+        {
+            "return_reference": return_reference,
+            "returned_by": returned_by,
+        },
+    )
+
+
 def fetch_backend_sheet_data():
     orders = fetch_active_orders()
     rows = backend_orders_to_rows(orders)
@@ -179,6 +201,8 @@ def backend_order_to_rows(order):
             "Товары": item.get("product") or "",
             "Кол-во ШТ": item.get("quantity_pieces") or 0,
             "Кол-во блок": item.get("quantity_blocks") or 0,
+            "Цена за блок": item.get("block_price") or 0,
+            "Сумма позиции": item.get("line_total") or 0,
             "Отсканированные коды": "\n".join(codes),
             STATUS_COLUMN: desktop_status(item.get("status")) if item.get("status") else status,
             SKLADBOT_REQUEST_NUMBER_COLUMN: request_number,

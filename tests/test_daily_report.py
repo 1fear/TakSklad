@@ -87,6 +87,84 @@ class DailyReportTests(unittest.TestCase):
             reports.REPORTS_DIR = original_reports_reports_dir
             reports.load_pending_saves = original_reports_load_pending_saves
 
+    def test_shift_report_splits_kiz_files_by_shipment_date_with_part_number(self):
+        original_backup_dir = reports.BACKUP_DIR
+        original_reports_dir = reports.REPORTS_DIR
+        original_load_pending_saves = reports.load_pending_saves
+        try:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                tmp_path = Path(tmp_dir)
+                reports.BACKUP_DIR = str(tmp_path / "scan_backups")
+                reports.REPORTS_DIR = str(tmp_path / "reports")
+                reports.load_pending_saves = lambda: []
+                Path(reports.BACKUP_DIR).mkdir()
+                Path(reports.REPORTS_DIR).mkdir()
+
+                backup_path = Path(reports.BACKUP_DIR) / "scan_backup_31.05.2026.jsonl"
+                rows = [
+                    {
+                        "timestamp": "2026-05-31 10:00:00",
+                        "action": "scan",
+                        "date": "02.06.2026",
+                        "client": "Client A",
+                        "product": "Chapman Brown OP 20",
+                        "payment_type": "Терминал",
+                        "code": "CODE-A",
+                    },
+                    {
+                        "timestamp": "2026-05-31 10:01:00",
+                        "action": "scan",
+                        "date": "03.06.2026",
+                        "client": "Client B",
+                        "product": "Chapman Red SSL 20",
+                        "payment_type": "Перечисление",
+                        "code": "CODE-B",
+                    },
+                ]
+                with backup_path.open("w", encoding="utf-8") as backup_file:
+                    for row in rows:
+                        backup_file.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+                result = reports.create_shift_report_excels_by_order_date(scan_date="31.05.2026")
+
+                self.assertFalse(result["empty"])
+                self.assertEqual(result["total_report_rows"], 2)
+                self.assertEqual(len(result["reports"]), 2)
+                self.assertEqual([item["shipment_date_display"] for item in result["reports"]], ["02.06.2026", "03.06.2026"])
+                self.assertEqual([item["part_number"] for item in result["reports"]], [1, 1])
+                self.assertTrue(Path(result["reports"][0]["filename"]).name.endswith("_ч1.xlsx"))
+                self.assertTrue(Path(result["reports"][0]["filename"]).exists())
+                self.assertTrue(Path(result["reports"][1]["filename"]).exists())
+
+                second = reports.create_shift_report_excels_by_order_date(scan_date="31.05.2026")
+
+                self.assertEqual([item["part_number"] for item in second["reports"]], [1, 1])
+                self.assertEqual([item["already_exists"] for item in second["reports"]], [True, True])
+
+                next_day_backup_path = Path(reports.BACKUP_DIR) / "scan_backup_01.06.2026.jsonl"
+                with next_day_backup_path.open("w", encoding="utf-8") as backup_file:
+                    backup_file.write(json.dumps({
+                        "timestamp": "2026-06-01 09:00:00",
+                        "action": "scan",
+                        "date": "02.06.2026",
+                        "client": "Client A",
+                        "product": "Chapman Brown OP 20",
+                        "payment_type": "Терминал",
+                        "code": "CODE-C",
+                    }, ensure_ascii=False) + "\n")
+
+                next_day_result = reports.create_shift_report_excels_by_order_date(scan_date="01.06.2026")
+
+                self.assertEqual(len(next_day_result["reports"]), 1)
+                self.assertEqual(next_day_result["reports"][0]["shipment_date_display"], "02.06.2026")
+                self.assertEqual(next_day_result["reports"][0]["part_number"], 2)
+                self.assertFalse(next_day_result["reports"][0]["already_exists"])
+                self.assertTrue(Path(next_day_result["reports"][0]["filename"]).name.endswith("_ч2.xlsx"))
+        finally:
+            reports.BACKUP_DIR = original_backup_dir
+            reports.REPORTS_DIR = original_reports_dir
+            reports.load_pending_saves = original_load_pending_saves
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -30,9 +30,11 @@ TakSklad 2.0 должен стать рабочей VDS-backed версией с
 - Telegram worker на VDS работает как единственный слушатель Telegram.
 - Импорт Excel идёт через backend.
 - Менеджер задаёт дату отгрузки при Telegram-импорте, если источник не содержит надёжную дату.
+- VDS SkladBot worker работает узко: `SKLADBOT_SYNC_LOOKBACK_DAYS=1`, `SKLADBOT_CUSTOMER_ID=6211`, `SKLADBOT_SHIPMENT_TYPE_ID=3389`, интервал 60 секунд.
 - SkladBot matching сравнивает количество только в блоках, товар - по нормализованному цвету и формату, адрес - только как мягкий признак.
+- SkladBot matching поддерживает безопасный partial-match: лишние товары в заявке не блокируют совпадение, но несколько подходящих заявок остаются `multiple`.
 - Логистический отчёт формируется по выбранной дате отгрузки и содержит координаты доставки.
-- Дневной отчёт формируется из backend/Postgres.
+- КИЗ-отчёт смены формируется при закрытии смены, делится по датам отгрузки и отправляется в Telegram.
 - Проведена ручная приёмка на Windows и на копии реальных заказов.
 - `version.json` обновляется только после приёмки.
 
@@ -124,7 +126,7 @@ Done:
 - добавить `telegram-worker`;
 - хранить Telegram state/offset/lock в Postgres;
 - принимать Excel и отправлять его в backend import;
-- отправлять дневной отчёт из backend;
+- отправлять логистический отчёт по выбранной дате и КИЗ по завершённым исходным файлам;
 - убрать конфликт двух desktop по `getUpdates`;
 - ограничить доступ по разрешённым chat_id.
 
@@ -215,17 +217,42 @@ Done:
 - Telegram worker добавлен как VDS-сервис.
 - VDS staging пересобран с `backend-api`, `skladbot-worker`, `telegram-worker`.
 - Telegram worker теперь принимает `.xlsx/.xlsm` из Telegram, собирает backend import payload и отправляет его в `POST /api/v1/imports`.
+- Telegram worker показывает только нижнее меню `Дата отгрузки`, `Отчёт логистики`, `КИЗ по файлам`.
+- Telegram worker изолирует обработку каждого update: ошибка на одной кнопке/отчёте не мешает поставить следующие Excel-файлы в очередь.
+- Скрытая Telegram-команда `/logs` выгружает backend diagnostic-файл без добавления новой пользовательской кнопки.
+- Логистический отчёт выгружается одним Excel-файлом по выбранной дате отгрузки.
+- Backend import очищает страну из адреса перед сохранением: в логистику уходит город/адрес без `Узбекистан`/`Uzbekistan`/`O'zbekiston`.
+- Backend Telegram import получает координаты по адресу через `YANDEX_GEOCODER_API_KEY`, если Excel не содержит координаты.
+- КИЗ-отчёт смены в desktop делится по датам отгрузки и получает номера частей; повторное закрытие без новых КИЗов не создаёт ложную следующую часть.
+- Desktop UI обновлён под складской экран: заказы для КИЗов, возвраты, список последних возвратов, закрытие смены, печать только после завершения заказа.
+- Desktop UX последней позиции исправлен: после полного скана последней позиции активируется `ЗАВЕРШИТЬ ЗАКАЗ`, а не лишний переход через `Следующая позиция`.
+- Backend scan API теперь различает безопасный повтор того же КИЗа в той же позиции и настоящий дубль в другой позиции; desktop queue не скрывает конфликт дубля между двумя ПК.
+- На desktop-экране склада добавлен явный статус backend: выключен, не настроен, ожидает проверки, online, очередь или ошибка.
+- Desktop показывает маркер `MVP 2.0` рядом с версией, чтобы не спутать свежую тестовую ветку со старым ярлыком `1.1.7`.
+- Добавлен desktop UI contract test: он не даёт вернуть на главный складской экран старые кнопки `Импорт Excel`, `Товары`, `Контроль` и фиксирует палитру/округлённые кнопки.
+- Окно печати сводного листа поддерживает выбор принтера и размеры этикеток `100x100`, `100x150`, `75x50`, `58x40`; браузер для печати не открывается.
+- SkladBot worker проверяет свежие заявки по дате создания/обновления, а `Дата выгрузки` используется для строгого совпадения с датой отгрузки заказа.
+- SkladBot worker не берёт в автоматический матчинг заявки без `created_at` и `updated_at`, чтобы не привязать старый номер заявки.
+- SkladBot worker на VDS синхронизирован с safe partial-match логикой; после точечного redeploy `skladbot-worker` acceptance status остался `ok`.
+- SkladBot matching дополнительно отсекает возвратные типы заявок даже если в названии есть `3PL` и `отгрузка`; диагностический вывод показывает `address_soft_match`, но адрес не блокирует совпадение.
+- `api.taksklad.uz` указывает на VDS и `https://api.taksklad.uz/health` возвращает `200`.
+- Ключ Яндекс Геокодера вынесен из исходного кода: используется env `YANDEX_GEOCODER_API_KEY` или локальный `yandex_geocoder_key.txt`.
 - Добавлен чеклист Windows-приёмки с backend flags.
+- Добавлен Windows test archive helper `tools/build_windows_test_archive.ps1`: собирает тестовый PyInstaller `--onedir` archive для приёмки без GitHub Release, без изменения `version.json` и без push-уведомлений.
+- Windows acceptance helper теперь проверяет `TakSklad.exe` по `build_manifest.json` из test archive, требует `app_version` не ниже `1.1.17` и не запускает старый exe без manifest.
+- Добавлен локальный `tools/release_preflight.py`: перед ручной приёмкой проверяет `api.taksklad.uz/health`, закреплённый `version.json`, acceptance kit и tracked secret-файлы.
+- В acceptance kit добавлен `ACCEPTANCE_RESULTS_TEMPLATE.md` для фиксации фактических результатов Telegram/SkladBot/Windows и решения `GO/NO-GO`.
+- `tools/release_go_no_go.py` теперь требует не только финальный `GO`, но и заполненные разделы preflight, Telegram import, SkladBot matching, Windows desktop acceptance и cleanup.
 
 Блокеры перед релизом:
 
-1. DNS `api.taksklad.uz` не резолвится; нужна A-запись `api -> 135.181.245.84`.
-2. Нужен реальный Telegram upload test на копии рабочего Excel-файла.
+1. Нужен реальный Telegram upload test на копии рабочего Excel-файла.
+2. Нужно проверить SkladBot matching на живой активной заявке после создания менеджером.
 3. Нужна ручная Windows-приёмка с backend flags.
 4. Windows archive и `version.json` не менять до приёмки.
 
 Следующий шаг:
 
-1. Настроить DNS.
-2. Прогнать реальную интеграционную проверку SkladBot/Telegram на копии живых заказов.
+1. Прогнать реальный Telegram upload test.
+2. Прогнать SkladBot match на живой заявке `3PL отгрузка`.
 3. Перейти к Windows acceptance для desktop backend bridge.

@@ -35,6 +35,7 @@ class AppButton(tk.Frame):
         cursor="hand2",
         disabled_bg=DISABLED_BG,
         disabled_fg=DISABLED_FG,
+        radius=10,
         **kwargs
     ):
         frame_kwargs = {
@@ -56,21 +57,22 @@ class AppButton(tk.Frame):
         self._command = command
         self._state = state
         self._cursor = cursor
+        self._font = font
+        self._padx = padx
+        self._pady = pady
+        self._radius = radius
 
-        self.label = tk.Label(
+        self.canvas = tk.Canvas(
             self,
-            text=text,
-            bg=bg,
-            fg=fg,
-            font=font,
+            bg=parent.cget("bg") if hasattr(parent, "cget") else bg,
+            highlightthickness=0,
             bd=0,
-            padx=padx,
-            pady=pady,
-            anchor="center"
+            height=max(34, pady * 2 + 18),
         )
-        self.label.pack(fill="both", expand=True)
+        self.canvas.pack(fill="both", expand=True)
+        self.canvas.bind("<Configure>", lambda _event: self._refresh_style())
 
-        for widget in (self, self.label):
+        for widget in (self, self.canvas):
             widget.bind("<Button-1>", self._on_click)
             widget.bind("<Enter>", self._on_enter)
             widget.bind("<Leave>", self._on_leave)
@@ -93,17 +95,46 @@ class AppButton(tk.Frame):
 
     def _paint(self, bg, fg):
         tk.Frame.configure(self, bg=bg)
-        self.label.configure(bg=bg, fg=fg)
+        self.canvas.delete("all")
+        width = max(1, self.canvas.winfo_width())
+        height = max(1, self.canvas.winfo_height())
+        self._rounded_rect(1, 1, width - 1, height - 1, self._radius, fill=bg, outline=bg)
+        self.canvas.create_text(
+            width // 2,
+            height // 2,
+            text=self._text,
+            fill=fg,
+            font=self._font,
+            anchor="center",
+        )
+
+    def _rounded_rect(self, x1, y1, x2, y2, radius, **kwargs):
+        radius = max(0, min(radius, int((x2 - x1) / 2), int((y2 - y1) / 2)))
+        points = [
+            x1 + radius, y1,
+            x2 - radius, y1,
+            x2, y1,
+            x2, y1 + radius,
+            x2, y2 - radius,
+            x2, y2,
+            x2 - radius, y2,
+            x1 + radius, y2,
+            x1, y2,
+            x1, y2 - radius,
+            x1, y1 + radius,
+            x1, y1,
+        ]
+        return self.canvas.create_polygon(points, smooth=True, **kwargs)
 
     def _refresh_style(self):
         if self._state == "normal":
             self._paint(self._normal_bg, self._normal_fg)
             tk.Frame.configure(self, cursor=self._cursor)
-            self.label.configure(cursor=self._cursor)
+            self.canvas.configure(cursor=self._cursor)
         else:
             self._paint(self._disabled_bg, self._disabled_fg)
             tk.Frame.configure(self, cursor="")
-            self.label.configure(cursor="")
+            self.canvas.configure(cursor="")
 
     def configure(self, cnf=None, **kwargs):
         options = {}
@@ -115,7 +146,6 @@ class AppButton(tk.Frame):
             self._state = options.pop("state")
         if "text" in options:
             self._text = options.pop("text")
-            self.label.configure(text=self._text)
         if "command" in options:
             self._command = options.pop("command")
         if "bg" in options:
@@ -129,9 +159,14 @@ class AppButton(tk.Frame):
         if "foreground" in options:
             self._normal_fg = options.pop("foreground")
         if "font" in options:
-            self.label.configure(font=options.pop("font"))
+            self._font = options.pop("font")
         if "cursor" in options:
             self._cursor = options.pop("cursor")
+        if "pady" in options:
+            self._pady = options.pop("pady")
+            self.canvas.configure(height=max(34, self._pady * 2 + 18))
+        if "padx" in options:
+            self._padx = options.pop("padx")
 
         ignored = {
             "relief", "activebackground", "activeforeground",

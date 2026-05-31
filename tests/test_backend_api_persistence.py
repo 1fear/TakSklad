@@ -11,7 +11,7 @@ from sqlalchemy.pool import StaticPool
 
 from backend.app.db import get_db
 from backend.app.main import app, require_service_token
-from backend.app.models import AuditLog, Base, Order, OrderItem, ScanCode
+from backend.app.models import AuditLog, Base, ImportJob, Order, OrderItem, PendingEvent, ScanCode
 
 
 class BackendApiPersistenceTests(unittest.TestCase):
@@ -78,8 +78,9 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(payload[0]["status"], "not_completed")
         self.assertEqual(payload[0]["items"][0]["product"], "Test Product")
 
-    def test_scan_creates_code_increments_item_and_rejects_duplicate(self):
+    def test_scan_create_is_idempotent_for_same_item_and_rejects_cross_order_duplicate(self):
         _, item_id = self.seed_order()
+        _, other_item_id = self.seed_order()
 
         response = self.client.post(
             "/api/v1/scans",
@@ -92,17 +93,30 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(payload["scanned_blocks"], 1)
         self.assertEqual(payload["item_status"], "not_completed")
 
-        duplicate = self.client.post(
+        same_item_duplicate = self.client.post(
             "/api/v1/scans",
             json={"order_item_id": item_id, "code": "010123456789", "workstation_id": "pc-2"},
         )
-        self.assertEqual(duplicate.status_code, 409)
-        self.assertEqual(duplicate.json()["detail"], "Code already scanned")
+        self.assertEqual(same_item_duplicate.status_code, 201)
+        self.assertEqual(same_item_duplicate.json()["order_item_id"], item_id)
+        self.assertEqual(same_item_duplicate.json()["scanned_blocks"], 1)
+
+        other_item_duplicate = self.client.post(
+            "/api/v1/scans",
+            json={"order_item_id": other_item_id, "code": "010123456789", "workstation_id": "pc-2"},
+        )
+        self.assertEqual(other_item_duplicate.status_code, 409)
+        self.assertEqual(
+            other_item_duplicate.json()["detail"]["message"],
+            "Code already scanned in another order item",
+        )
 
         with self.SessionLocal() as db:
             self.assertEqual(len(db.execute(select(ScanCode)).scalars().all()), 1)
             item = db.get(OrderItem, uuid.UUID(item_id))
             self.assertEqual(item.scanned_blocks, 1)
+            other_item = db.get(OrderItem, uuid.UUID(other_item_id))
+            self.assertEqual(other_item.scanned_blocks, 0)
 
     def test_complete_order_requires_required_blocks_and_closes_order(self):
         order_id, item_id = self.seed_order()
@@ -130,6 +144,62 @@ class BackendApiPersistenceTests(unittest.TestCase):
             actions = [row.action for row in db.execute(select(AuditLog)).scalars().all()]
             self.assertEqual(actions.count("scan_code_created"), 2)
             self.assertIn("order_completed", actions)
+
+    def test_return_lookup_and_mark_returned_excludes_order_from_active_list(self):
+        order_id, _ = self.seed_order(status="completed", scanned_blocks=2, item_status="completed")
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            order.raw_payload = {
+                "skladbot_request_number": "WR-RETURN-100",
+                "skladbot_request_id": "100500",
+            }
+            db.commit()
+
+        lookup = self.client.get("/api/v1/returns/lookup", params={"lookup": " WR-RETURN-100 "})
+
+        self.assertEqual(lookup.status_code, 200)
+        self.assertEqual(lookup.json()["id"], order_id)
+        self.assertEqual(lookup.json()["skladbot_request_number"], "WR-RETURN-100")
+
+        returned = self.client.post(
+            f"/api/v1/returns/{order_id}",
+            json={"return_reference": "WR-RETURN-100", "returned_by": "test"},
+        )
+
+        self.assertEqual(returned.status_code, 200)
+        self.assertEqual(returned.json()["status"], "returned")
+        self.assertEqual(returned.json()["return_status"], "returned")
+        self.assertEqual(returned.json()["return_reference"], "WR-RETURN-100")
+        self.assertTrue(returned.json()["returned_at"])
+
+        returns = self.client.get("/api/v1/returns")
+        self.assertEqual(returns.status_code, 200)
+        self.assertEqual(len(returns.json()), 1)
+        self.assertEqual(returns.json()[0]["id"], order_id)
+        self.assertEqual(returns.json()[0]["return_reference"], "WR-RETURN-100")
+
+        duplicate_return = self.client.post(
+            f"/api/v1/returns/{order_id}",
+            json={"return_reference": "WR-RETURN-100", "returned_by": "test"},
+        )
+        self.assertEqual(duplicate_return.status_code, 409)
+        self.assertEqual(duplicate_return.json()["detail"], "Order is already returned")
+
+        lookup_after_return = self.client.get("/api/v1/returns/lookup", params={"lookup": "100500"})
+        self.assertEqual(lookup_after_return.status_code, 200)
+        self.assertEqual(lookup_after_return.json()["status"], "returned")
+        self.assertEqual(lookup_after_return.json()["return_reference"], "WR-RETURN-100")
+
+        active = self.client.get("/api/v1/orders/active")
+        self.assertEqual(active.status_code, 200)
+        self.assertEqual(active.json(), [])
+
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            self.assertEqual(order.raw_payload["return_status"], "returned")
+            self.assertEqual(order.raw_payload["return_reference"], "WR-RETURN-100")
+            actions = [row.action for row in db.execute(select(AuditLog)).scalars().all()]
+            self.assertIn("order_returned", actions)
 
     def test_import_creates_grouped_order_items_and_history(self):
         rows = [
@@ -344,8 +414,8 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(sheet["G2"].value, "41.31,69.27")
         self.assertEqual(sheet["J2"].value, "30.05.2026")
         self.assertEqual(sheet["R2"].value, "Chapman Brown OP 20")
-        self.assertEqual(sheet["S2"].value, 200)
-        self.assertEqual(sheet["V2"].value, 24000)
+        self.assertEqual(sheet["S2"].value, 20)
+        self.assertEqual(sheet["V2"].value, 240000)
         self.assertEqual(sheet["W2"].value, 4_800_000)
         self.assertEqual(sheet["AE2"].value, "41.31,69.27")
         self.assertEqual(sheet["AF2"].value, "41.31")
@@ -463,6 +533,55 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 422)
         self.assertIn("Invalid report_date", response.json()["detail"])
+
+    def test_diagnostics_logs_include_failed_events_import_errors_and_redact_secrets(self):
+        with self.SessionLocal() as db:
+            db.add(PendingEvent(
+                event_type="telegram_excel_import",
+                status="failed",
+                attempts=2,
+                payload={},
+                last_error="Bearer secret-service-token failed",
+            ))
+            db.add(ImportJob(
+                source="telegram",
+                status="failed",
+                rows_total=2,
+                rows_imported=0,
+                raw_payload={
+                    "filename": "broken.xlsx",
+                    "errors": ["row 1: missing client"],
+                    "invalid_rows": 1,
+                    "duplicate_rows": 0,
+                },
+            ))
+            db.add(AuditLog(
+                action="skladbot_worker_sync",
+                entity_type="skladbot",
+                entity_id="worker",
+                payload={"matched": 0, "not_found": 1, "token": "should-hide"},
+            ))
+            db.add(AuditLog(
+                action="scan_code_created",
+                entity_type="scan_code",
+                entity_id="scan",
+                payload={"code": "010-secret-code"},
+            ))
+            db.commit()
+
+        response = self.client.get("/api/v1/diagnostics/logs")
+
+        self.assertEqual(response.status_code, 200)
+        text = response.content.decode("utf-8")
+        self.assertIn("Failed/Pending Events", text)
+        self.assertIn("telegram_excel_import", text)
+        self.assertIn("broken.xlsx", text)
+        self.assertIn("row 1: missing client", text)
+        self.assertIn("skladbot_worker_sync", text)
+        self.assertIn("Bearer ***", text)
+        self.assertIn('"token": "***"', text)
+        self.assertNotIn("secret-service-token", text)
+        self.assertNotIn("010-secret-code", text)
 
 
 if __name__ == "__main__":

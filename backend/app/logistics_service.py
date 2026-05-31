@@ -55,6 +55,8 @@ LOGISTICS_HEADERS = [
     "Теги заявок",
 ]
 
+DEFAULT_BLOCK_PRICE = 240000
+
 
 def list_logistics_dates(db: Session):
     rows = db.execute(
@@ -95,9 +97,11 @@ def build_logistics_report_xlsx(db: Session, shipment_date: str):
         coordinates = normalize_coordinates((order.raw_payload or {}).get("coordinates"))
         latitude, longitude = split_coordinates(coordinates)
         for item in sorted(order.items, key=lambda value: (value.product, str(value.id))):
-            quantity_pieces = item.quantity_pieces or ((item.quantity_blocks or 0) * (item.pieces_per_block or 10))
+            quantity_blocks = item_quantity_blocks(item)
             line_total = parse_int((item.raw_payload or {}).get("line_total"))
-            unit_price = int(line_total / quantity_pieces) if line_total and quantity_pieces else 0
+            block_price = item_block_price(item, line_total, quantity_blocks)
+            if not line_total and quantity_blocks:
+                line_total = quantity_blocks * block_price
             row = [""] * len(LOGISTICS_HEADERS)
             set_cell(row, 1, "Доставка")
             set_cell(row, 3, order.client)
@@ -108,8 +112,8 @@ def build_logistics_report_xlsx(db: Session, shipment_date: str):
             set_cell(row, 11, "10:00")
             set_cell(row, 12, "18:00")
             set_cell(row, 18, item.product)
-            set_cell(row, 19, quantity_pieces)
-            set_cell(row, 22, unit_price)
+            set_cell(row, 19, quantity_blocks)
+            set_cell(row, 22, block_price)
             set_cell(row, 23, line_total)
             set_cell(row, 31, coordinates)
             set_cell(row, 32, latitude)
@@ -148,6 +152,26 @@ def split_coordinates(value):
     if len(parts) < 2:
         return "", ""
     return parts[0], parts[1]
+
+
+def item_quantity_blocks(item):
+    if item.quantity_blocks and item.quantity_blocks > 0:
+        return item.quantity_blocks
+    pieces = item.quantity_pieces or 0
+    pieces_per_block = item.pieces_per_block or 10
+    if pieces <= 0:
+        return 0
+    return (pieces + pieces_per_block - 1) // pieces_per_block
+
+
+def item_block_price(item, line_total=0, quantity_blocks=0):
+    raw_payload = item.raw_payload or {}
+    explicit = parse_int(raw_payload.get("block_price"))
+    if explicit:
+        return explicit
+    if line_total and quantity_blocks:
+        return int(line_total / quantity_blocks)
+    return DEFAULT_BLOCK_PRICE
 
 
 def parse_int(value):

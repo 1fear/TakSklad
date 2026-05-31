@@ -83,9 +83,11 @@ Telegram worker на VDS принимает Excel-документы из раз
 Управление в Telegram:
 
 - кнопки находятся в нижней панели Telegram через reply keyboard;
-- доступны кнопки `Дневной отчёт`, `Статус backend`, `История импортов`, `Помощь`;
+- доступны кнопки `Дата отгрузки`, `Отчёт логистики`, `КИЗ по файлам`;
 - системная кнопка меню команд Telegram настроена через `setMyCommands` и `setChatMenuButton`;
-- старые команды `/report`, `/health`, `/imports`, `/help` сохранены как fallback;
+- команды меню: `/date`, `/logistics`, `/kiz_files`;
+- админские текстовые команды `/health`, `/imports` и `/logs` сохранены как скрытый fallback;
+- если задан `TELEGRAM_ADMIN_CHAT_IDS`, скрытые админские команды доступны только указанным chat_id;
 - Excel-файлы можно просто отправлять или пересылать в чат.
 
 Поддерживается:
@@ -111,10 +113,10 @@ Telegram worker на VDS принимает Excel-документы из раз
 - container rebuild с `openpyxl`;
 - smoke внутри `telegram-worker`: тестовый `.xlsx` разобран в одну строку import payload;
 - backend `/health` после rebuild отвечает `200`.
-- локально покрыто тестами нижнее меню, кнопка отчёта, постановка файла в очередь и последовательная обработка нескольких queued imports.
+- локально покрыто тестами нижнее меню, логистический отчёт, КИЗ по файлам, постановка файла в очередь и последовательная обработка нескольких queued imports.
 - после обновления нижнего меню `backend-api` и `telegram-worker` пересобраны и запущены на VDS;
 - внутри VDS `telegram-worker` выполнен compile-check обновлённых файлов.
-- Telegram API `getMyCommands` возвращает `report`, `health`, `imports`, `help`;
+- Telegram API `getMyCommands` возвращает `date`, `logistics`, `kiz_files`;
 - Telegram API `getChatMenuButton` возвращает `type=commands`.
 
 Не проверено:
@@ -266,12 +268,20 @@ VDS staging smoke:
 
 Подробный чеклист: [windows-backend-acceptance.md](/Users/anton/Documents/work/TakSklad/docs/windows-backend-acceptance.md).
 
+Перед приёмкой на Windows собрать test archive:
+
+```powershell
+.\tools\build_windows_test_archive.ps1 -InstallDependencies
+```
+
+Этот helper собирает только тестовый архив в `outputs\windows_test_build`; GitHub Release, рабочий `version.json` и автообновление не трогает.
+
 Минимальные flags для тестовой Windows-копии:
 
 ```powershell
 $env:TAKSKLAD_BACKEND_ENABLED = "1"
 $env:TAKSKLAD_BACKEND_READ_ORDERS_ENABLED = "1"
-$env:TAKSKLAD_BACKEND_BASE_URL = "https://api.135.181.245.84.sslip.io"
+$env:TAKSKLAD_BACKEND_BASE_URL = "https://api.taksklad.uz"
 $env:TAKSKLAD_BACKEND_API_TOKEN = "<service-token-from-local-secret-storage>"
 $env:TAKSKLAD_BACKEND_TIMEOUT_SECONDS = "8"
 ```
@@ -285,10 +295,36 @@ $env:TAKSKLAD_BACKEND_TIMEOUT_SECONDS = "8"
 
 ## Следующий Шаг После Этого Этапа
 
+Перед ручными acceptance-шагами локально запустить:
+
+```bash
+.venv/bin/python tools/release_preflight.py
+```
+
+Preflight проверяет публичный backend health, закреплённый `version.json`, acceptance kit и отсутствие tracked runtime/secret-файлов.
+
+Фактические результаты ручной приёмки фиксировать в:
+
+`outputs/taksklad_acceptance/ACCEPTANCE_RESULTS.md`
+
+Строгая серверная проверка релизной готовности:
+
+```bash
+cd /opt/taksklad/app
+./deploy/vds/acceptance_status.sh --require-go
+```
+
+До ручной приёмки команда должна падать, потому что `release_go_no_go.status=no_go`.
+
 Следующий релизный блок:
 
-1. Зарегистрировать `taksklad.uz` и настроить DNS `api.taksklad.uz`.
-2. Переключить VDS с временного `sslip.io` host на `api.taksklad.uz`.
-3. Провести реальный Telegram upload test с копией Excel.
-4. Провести ручную Windows-приёмку на копии реальных заказов.
-5. После успешной приёмки готовить Windows archive.
+1. Провести реальный Telegram upload test с копией Excel.
+2. Проверить SkladBot match на живой заявке `3PL отгрузка` командой:
+
+```bash
+cd /opt/taksklad/app
+./deploy/vds/diagnose_skladbot_match.sh --marker "ACCEPTANCE TELEGRAM 20260531" --limit 5 --request-limit 20
+```
+
+3. Провести ручную Windows-приёмку на копии реальных заказов.
+4. После успешной приёмки готовить Windows archive.

@@ -18,6 +18,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 
 NOISE_COMPANY_TOKENS = {"ooo", "ооо", "mchj", "мчж", "ip", "ип", "sp", "сп", "склад", "склади"}
 NOISE_PRODUCT_TOKENS = {"uz", "kingsize", "king", "size", "superslim", "super", "slim"}
+RETURN_REQUEST_TOKENS = {"возврат", "возврата", "return", "returned"}
 PRODUCT_COLORS = ("brown", "red", "gold")
 PRODUCT_FORMATS = ("op", "ssl")
 
@@ -75,8 +76,14 @@ def client_matches(left, right):
 
 def product_sku_key(value):
     text = normalize_lookup_text(value)
-    color = next((item for item in PRODUCT_COLORS if item in text.split()), "")
-    product_format = next((item for item in PRODUCT_FORMATS if item in text.split()), "")
+    tokens = text.split()
+    compact = "".join(tokens)
+    color = next((item for item in PRODUCT_COLORS if item in tokens or item in compact), "")
+    product_format = next((
+        item
+        for item in PRODUCT_FORMATS
+        if item in tokens or (color and f"{color}{item}" in compact)
+    ), "")
     if color and product_format:
         return f"{color}:{product_format}"
     return ""
@@ -93,9 +100,17 @@ def product_matches(left, right):
 def request_type_matches(value):
     expected = normalize_lookup_text(os.environ.get("SKLADBOT_REQUEST_TYPE_NAME") or "3PL отгрузка")
     actual = normalize_lookup_text(value)
+    if normalized_token_set(actual).intersection(RETURN_REQUEST_TOKENS):
+        return False
     if expected and expected == actual:
         return True
     return "3pl" in actual and "отгруз" in actual
+
+
+def address_soft_match(left, right):
+    if not normalize_text(left) or not normalize_text(right):
+        return False
+    return text_tokens_match(left, right, min_overlap=0.55)
 
 
 def normalize_payment_type(value):
@@ -147,6 +162,17 @@ def date_in_window(value, today=None, lookback_days=1):
     if not parsed:
         return False
     return today - timedelta(days=lookback_days) <= parsed <= today
+
+
+def request_created_recently(request, today=None, lookback_days=1):
+    dated_values = [
+        value
+        for value in (request.get("created_at"), request.get("updated_at"))
+        if parse_date(value)
+    ]
+    if not dated_values:
+        return False
+    return any(date_in_window(value, today=today, lookback_days=lookback_days) for value in dated_values)
 
 
 def extract_list_items(payload):
@@ -258,6 +284,7 @@ def normalize_request_payload(list_item, detail):
         "is_completed": parse_bool(detail.get("isCompleted") or detail.get("is_completed") or request_list_value(list_item, "is_completed")),
         "archived": parse_bool(detail.get("archived") or request_list_value(list_item, "archived")),
         "created_at": normalize_text(detail.get("createdAt") or request_list_value(list_item, "created_at")),
+        "updated_at": normalize_text(detail.get("updatedAt") or request_list_value(list_item, "updated_at")),
         "unloading_date": normalize_text(get_field(fields, "unloading_date", "Дата выгрузки")),
         "recipient": normalize_text(get_field(fields, "company_name", "Название компании/Имя человека") or detail.get("company_name")),
         "address": normalize_text(get_field(fields, "address", "Адрес") or detail.get("address") or logistic.get("address")),
@@ -285,7 +312,8 @@ def fetch_candidate_requests(today=None):
     lookback_days = env_int("SKLADBOT_SYNC_LOOKBACK_DAYS", 1)
     result = []
     for item in client.list_requests():
-        if not request_type_matches(request_list_value(item, "type")):
+        list_type = normalize_text(request_list_value(item, "type"))
+        if list_type and not request_type_matches(list_type):
             continue
         request_id = parse_int(request_list_value(item, "id"))
         if request_id <= 0:
@@ -307,7 +335,7 @@ def fetch_candidate_requests(today=None):
         request = normalize_request_payload(item, detail)
         if not request_type_matches(request.get("type")):
             continue
-        if not date_in_window(request.get("unloading_date") or request.get("created_at"), today=today, lookback_days=lookback_days):
+        if not request_created_recently(request, today=today, lookback_days=lookback_days):
             continue
         result.append(request)
     return result
@@ -327,19 +355,23 @@ def order_group_payload(order):
 
 
 def request_matches_order(order, request):
+    return request_match_diagnostics(order, request)["matched"]
+
+
+def request_match_diagnostics(order, request):
     group = order_group_payload(order)
     request_date = parse_date(request.get("unloading_date"))
-    if not order.order_date or not request_date or order.order_date != request_date:
-        return False
-    if not client_matches(group["client"], request.get("recipient")):
-        return False
-    if normalize_payment_type(group["payment"]) != normalize_payment_type(request.get("comment")):
-        return False
+    date_ok = bool(order.order_date and request_date and order.order_date == request_date)
+    client_ok = client_matches(group["client"], request.get("recipient"))
+    payment_ok = normalize_payment_type(group["payment"]) == normalize_payment_type(request.get("comment"))
+    address_soft_ok = address_soft_match(group["address"], request.get("address"))
 
     request_products = list(request.get("products") or [])
     used_indexes = set()
+    product_results = []
     for order_product in group["products"]:
         matched_index = None
+        matched_request_product = None
         for index, request_product in enumerate(request_products):
             if index in used_indexes:
                 continue
@@ -351,11 +383,33 @@ def request_matches_order(order, request):
                 if candidate
             ):
                 matched_index = index
+                matched_request_product = request_product
                 break
-        if matched_index is None:
-            return False
-        used_indexes.add(matched_index)
-    return len(used_indexes) == len(request_products)
+        if matched_index is not None:
+            used_indexes.add(matched_index)
+        product_results.append({
+            "order_product": order_product.get("name"),
+            "order_blocks": order_product.get("blocks"),
+            "matched": matched_index is not None,
+            "request_product": (matched_request_product or {}).get("name") or "",
+            "request_blocks": (matched_request_product or {}).get("amount") or 0,
+        })
+    products_ok = bool(product_results) and all(item["matched"] for item in product_results)
+    checks = {
+        "date": date_ok,
+        "client": client_ok,
+        "payment": payment_ok,
+        "products": products_ok,
+    }
+    score = sum(1 for ok in checks.values() if ok)
+    return {
+        "matched": all(checks.values()),
+        "score": score,
+        "checks": checks,
+        "address_soft_match": address_soft_ok,
+        "products": product_results,
+        "extra_request_products": max(0, len(request_products) - len(used_indexes)),
+    }
 
 
 def update_orders_from_skladbot():
@@ -428,7 +482,7 @@ def update_orders_from_skladbot():
 
 
 def main():
-    interval = env_int("SKLADBOT_WORKER_INTERVAL_SECONDS", 600)
+    interval = worker_interval_seconds()
     once = normalize_lookup_text(os.environ.get("SKLADBOT_WORKER_ONCE")) in {"1", "true", "yes", "да"}
     while True:
         try:
@@ -438,6 +492,10 @@ def main():
         if once:
             return
         time.sleep(max(60, interval))
+
+
+def worker_interval_seconds():
+    return max(60, env_int("SKLADBOT_WORKER_INTERVAL_SECONDS", 60))
 
 
 if __name__ == "__main__":

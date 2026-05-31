@@ -8,11 +8,13 @@ COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
 MANIFEST_FILE="$APP_DIR/outputs/taksklad_acceptance/acceptance_manifest.json"
 VERSION_FILE="$APP_DIR/version.json"
 VERIFY_SCRIPT="$SCRIPT_DIR/verify_acceptance_marker.sh"
+RESULTS_FILE="$APP_DIR/outputs/taksklad_acceptance/ACCEPTANCE_RESULTS.md"
+GO_NO_GO_SCRIPT="$APP_DIR/tools/release_go_no_go.py"
 
 usage() {
   cat >&2 <<'EOF'
 Usage:
-  acceptance_status.sh [--marker MARKER] [--expect-orders N] [--expect-scans N] [--expect-completed]
+  acceptance_status.sh [--marker MARKER] [--expect-orders N] [--expect-scans N] [--expect-completed] [--require-go]
 
 Read-only status check for TakSklad acceptance.
 EOF
@@ -20,6 +22,7 @@ EOF
 
 MARKER=""
 VERIFY_ARGS=()
+REQUIRE_GO=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -51,6 +54,10 @@ while [[ $# -gt 0 ]]; do
       VERIFY_ARGS+=("--expect-completed")
       shift
       ;;
+    --require-go)
+      REQUIRE_GO=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -74,8 +81,13 @@ if [[ ! -f "$ENV_FILE" ]]; then
   echo "Env file not found: $ENV_FILE" >&2
   exit 1
 fi
+ENV_FILE="$(cd "$(dirname "$ENV_FILE")" && pwd)/$(basename "$ENV_FILE")"
 if [[ ! -x "$VERIFY_SCRIPT" ]]; then
   echo "Verifier is not executable: $VERIFY_SCRIPT" >&2
+  exit 1
+fi
+if [[ ! -f "$GO_NO_GO_SCRIPT" ]]; then
+  echo "GO/NO-GO script not found: $GO_NO_GO_SCRIPT" >&2
   exit 1
 fi
 
@@ -91,7 +103,10 @@ print(json.dumps({
     "marker": marker,
     "excel_file": manifest["excel_file"],
     "excel_sha256": manifest["excel_sha256"],
+    "result_template": manifest.get("result_template"),
+    "result_file": manifest.get("result_file") or "ACCEPTANCE_RESULTS.md",
     "expected": manifest["expected"],
+    "safety": manifest.get("safety") or {},
 }, ensure_ascii=False, sort_keys=True))
 PY
 )"
@@ -99,10 +114,22 @@ PY
 MARKER="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["marker"])' "$MANIFEST_INFO")"
 EXCEL_FILE="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["excel_file"])' "$MANIFEST_INFO")"
 EXPECTED_SHA="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["excel_sha256"])' "$MANIFEST_INFO")"
+RESULT_TEMPLATE="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("result_template") or "")' "$MANIFEST_INFO")"
+RESULT_FILE="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("result_file") or "ACCEPTANCE_RESULTS.md")' "$MANIFEST_INFO")"
 EXCEL_PATH="$APP_DIR/outputs/taksklad_acceptance/$EXCEL_FILE"
+RESULT_TEMPLATE_PATH="$APP_DIR/outputs/taksklad_acceptance/$RESULT_TEMPLATE"
+RESULTS_FILE="$APP_DIR/outputs/taksklad_acceptance/$RESULT_FILE"
 
 if [[ ! -f "$EXCEL_PATH" ]]; then
   echo "Acceptance Excel not found: $EXCEL_PATH" >&2
+  exit 1
+fi
+if [[ -z "$RESULT_TEMPLATE" || ! -f "$RESULT_TEMPLATE_PATH" ]]; then
+  echo "Acceptance result template not found: $RESULT_TEMPLATE_PATH" >&2
+  exit 1
+fi
+if [[ -z "$RESULT_FILE" || ! -f "$RESULTS_FILE" ]]; then
+  echo "Acceptance result file not found: $RESULTS_FILE" >&2
   exit 1
 fi
 
@@ -141,11 +168,17 @@ PY
 HEALTH_STATUS="$?"
 COMPOSE_OUTPUT="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps --format json 2>&1)"
 COMPOSE_STATUS="$?"
-VERIFY_OUTPUT="$("$VERIFY_SCRIPT" "$MARKER" "${VERIFY_ARGS[@]}" 2>&1)"
+if ((${#VERIFY_ARGS[@]})); then
+  VERIFY_OUTPUT="$("$VERIFY_SCRIPT" "$MARKER" "${VERIFY_ARGS[@]}" 2>&1)"
+else
+  VERIFY_OUTPUT="$("$VERIFY_SCRIPT" "$MARKER" 2>&1)"
+fi
 VERIFY_STATUS="$?"
+GO_NO_GO_OUTPUT="$(python3 "$GO_NO_GO_SCRIPT" --results "$RESULTS_FILE" 2>&1)"
+GO_NO_GO_STATUS="$?"
 set -e
 
-python3 - "$MANIFEST_INFO" "$VERSION_INFO" "$SHA_STATUS" "$ACTUAL_SHA" "$EXPECTED_SHA" "$HEALTH_STATUS" "$HEALTH_OUTPUT" "$COMPOSE_STATUS" "$COMPOSE_OUTPUT" "$VERIFY_STATUS" "$VERIFY_OUTPUT" <<'PY'
+python3 - "$MANIFEST_INFO" "$VERSION_INFO" "$SHA_STATUS" "$ACTUAL_SHA" "$EXPECTED_SHA" "$HEALTH_STATUS" "$HEALTH_OUTPUT" "$COMPOSE_STATUS" "$COMPOSE_OUTPUT" "$VERIFY_STATUS" "$VERIFY_OUTPUT" "$GO_NO_GO_STATUS" "$GO_NO_GO_OUTPUT" "$REQUIRE_GO" <<'PY'
 import json
 import sys
 
@@ -160,6 +193,9 @@ compose_status = int(sys.argv[8])
 compose_output = sys.argv[9].strip()
 verify_status = int(sys.argv[10])
 verify_output = sys.argv[11].strip()
+go_no_go_status = int(sys.argv[12])
+go_no_go_output = sys.argv[13].strip()
+require_go = sys.argv[14] == "1"
 
 try:
     health = json.loads(health_output)
@@ -185,15 +221,37 @@ try:
 except Exception:
     verifier = {"raw": verify_output}
 
+try:
+    release_gate = json.loads(go_no_go_output.splitlines()[-1])
+except Exception:
+    release_gate = {"status": "no_go", "raw": go_no_go_output}
+
 errors = []
 if sha_status != "ok":
     errors.append("acceptance Excel SHA mismatch")
+if version_info.get("latest_version") != "1.1.7":
+    errors.append("version.json latest_version is not pinned to 1.1.7")
+if version_info.get("min_supported_version") != "1.1.7":
+    errors.append("version.json min_supported_version is not pinned to 1.1.7")
+if version_info.get("mandatory") not in (False, None):
+    errors.append("version.json mandatory must be false before rollout")
+if version_info.get("download_url_set") or version_info.get("download_url_onedir_set"):
+    errors.append("version.json download URLs must stay empty before rollout")
+safety = manifest_info.get("safety") or {}
+for key in ("no_version_json_change", "no_github_release", "no_push_notifications"):
+    if safety.get(key) is not True:
+        errors.append(f"manifest safety.{key} must be true")
+if safety.get("contains_secrets") is not False:
+    errors.append("manifest safety.contains_secrets must be false")
 if health_status != 0:
     errors.append(f"backend health failed with exit {health_status}")
 if compose_status != 0:
     errors.append(f"docker compose ps failed with exit {compose_status}")
 if verify_status != 0:
     errors.append(f"acceptance verifier failed with exit {verify_status}")
+release_status = release_gate.get("status")
+if require_go and release_status != "go":
+    errors.append(f"release GO/NO-GO is not go: {release_status or 'unknown'}")
 
 summary = {
     "status": "failed" if errors else "ok",
@@ -216,6 +274,11 @@ summary = {
     "acceptance_verifier": {
         "exit_code": verify_status,
         "response": verifier,
+    },
+    "release_go_no_go": {
+        "exit_code": go_no_go_status,
+        "response": release_gate,
+        "required": require_go,
     },
 }
 

@@ -27,10 +27,6 @@ TELEGRAM_BUTTON_LOGISTICS_REPORT = "Отчёт логистики"
 TELEGRAM_BUTTON_KIZ_BY_FILES = "КИЗ по файлам"
 TELEGRAM_LOGISTICS_DATE_PREFIX = "Логистика "
 TELEGRAM_KIZ_FILE_PREFIX = "КИЗ файл "
-TELEGRAM_BUTTON_REPORT = "Дневной отчёт"
-TELEGRAM_BUTTON_HEALTH = "Статус backend"
-TELEGRAM_BUTTON_IMPORTS = "История импортов"
-TELEGRAM_BUTTON_HELP = "Помощь"
 TELEGRAM_EXCEL_IMPORT_EVENT_TYPE = "telegram_excel_import"
 TELEGRAM_EXCEL_IMPORT_ACTIVE_STATUSES = ("pending", "processing")
 TELEGRAM_CHAT_STATE_EVENT_PREFIX = "telegram_chat_state:"
@@ -110,6 +106,32 @@ def iso_date_from_display(value):
         return ""
 
 
+def display_date(value):
+    text = normalize_text(value)
+    if not text:
+        return ""
+    try:
+        return datetime.strptime(text, "%Y-%m-%d").strftime("%d.%m.%Y")
+    except ValueError:
+        pass
+    parsed = parse_date_from_text(text)
+    return parsed or text
+
+
+def backend_http_error_detail(exc):
+    response = getattr(exc, "response", None)
+    if response is None:
+        return normalize_text(exc)
+    try:
+        payload = response.json()
+    except Exception:
+        payload = {}
+    if isinstance(payload, dict) and normalize_text(payload.get("detail")):
+        return normalize_text(payload.get("detail"))
+    text = normalize_text(getattr(response, "text", ""))
+    return text[:300] or f"HTTP {getattr(response, 'status_code', '')}".strip()
+
+
 def json_dumps(value):
     return json.dumps(value, ensure_ascii=False)
 
@@ -118,6 +140,7 @@ class TelegramWorker:
     def __init__(self):
         self.token = normalize_text(os.environ.get("TELEGRAM_BOT_TOKEN"))
         self.allowed_chat_ids = parse_chat_ids(os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS"))
+        self.admin_chat_ids = parse_chat_ids(os.environ.get("TELEGRAM_ADMIN_CHAT_IDS"))
         self.backend_url = normalize_text(os.environ.get("TAKSKLAD_BACKEND_INTERNAL_URL")) or "http://backend-api:8000"
         self.backend_token = normalize_text(os.environ.get("TAKSKLAD_API_TOKEN"))
         self.timeout = int(os.environ.get("TELEGRAM_WORKER_TIMEOUT_SECONDS", "20") or "20")
@@ -222,6 +245,17 @@ class TelegramWorker:
     def chat_state_event_type(self, chat_id):
         return f"{TELEGRAM_CHAT_STATE_EVENT_PREFIX}{chat_id}"
 
+    def is_admin_chat(self, chat_id):
+        admin_chat_ids = getattr(self, "admin_chat_ids", set())
+        return not admin_chat_ids or str(chat_id) in admin_chat_ids
+
+    def ensure_admin_chat(self, chat_id):
+        if self.is_admin_chat(chat_id):
+            return True
+        self.send_message(chat_id, "Команда доступна только администратору.")
+        logging.warning("Telegram worker denied admin command for chat_id=%s", chat_id)
+        return False
+
     def get_chat_state(self, chat_id):
         with SessionLocal() as db:
             state = db.execute(
@@ -250,7 +284,7 @@ class TelegramWorker:
         self.save_chat_state(chat_id, state)
 
     def logistics_date_keyboard(self, dates):
-        rows = [[{"text": f"{TELEGRAM_LOGISTICS_DATE_PREFIX}{date_value}"}] for date_value in dates]
+        rows = [[{"text": f"{TELEGRAM_LOGISTICS_DATE_PREFIX}{display_date(date_value)}"}] for date_value in dates]
         rows.append([{"text": TELEGRAM_BUTTON_SHIPMENT_DATE}, {"text": TELEGRAM_BUTTON_KIZ_BY_FILES}])
         return {"keyboard": rows, "resize_keyboard": True, "is_persistent": True}
 
@@ -264,13 +298,27 @@ class TelegramWorker:
         if not iso_date:
             self.safe_send_message(chat_id, "Не понял дату. Используйте формат 29.05.2026.")
             return False
-        content, headers = self.backend_get_bytes("/api/v1/logistics/report", params={"shipment_date": iso_date})
-        filename = f"TakSklad_логистика_{datetime.strptime(iso_date, '%Y-%m-%d').strftime('%d.%m.%Y')}.xlsx"
+        report_date = datetime.strptime(iso_date, "%Y-%m-%d").strftime("%d.%m.%Y")
+        try:
+            content, headers = self.backend_get_bytes("/api/v1/logistics/report", params={"shipment_date": iso_date})
+        except httpx.HTTPStatusError as exc:
+            self.safe_send_message(
+                chat_id,
+                f"Не удалось выгрузить отчёт логистики за {report_date}: {backend_http_error_detail(exc)}",
+            )
+            return False
+        except httpx.HTTPError as exc:
+            self.safe_send_message(
+                chat_id,
+                f"Не удалось выгрузить отчёт логистики за {report_date}: backend временно недоступен ({exc.__class__.__name__})",
+            )
+            return False
+        filename = f"TakSklad_логистика_{report_date}.xlsx"
         self.safe_send_document(
             chat_id,
             content,
             filename,
-            caption=f"Отчёт логистики за {datetime.strptime(iso_date, '%Y-%m-%d').strftime('%d.%m.%Y')}",
+            caption=f"Отчёт логистики за {report_date}",
         )
         return True
 
@@ -303,7 +351,7 @@ class TelegramWorker:
         self.save_chat_state(chat_id, state)
         lines = ["Выберите исходный файл для выгрузки КИЗов:"]
         for index, item in enumerate(files, start=1):
-            dates = ", ".join(item.get("dates") or []) or "без даты"
+            dates = ", ".join(display_date(value) for value in item.get("dates") or []) or "без даты"
             lines.append(
                 f"{index}. {item.get('source_file')} - {dates}, "
                 f"{item.get('scanned_blocks', 0)}/{item.get('planned_blocks', 0)} блоков"
@@ -335,6 +383,18 @@ class TelegramWorker:
             self.safe_send_message(chat_id, "Не нашёл выбранный файл. Нажмите «КИЗ по файлам» ещё раз.")
             return False
         return self.send_kiz_source_file_report(chat_id, selected.get("source_file") or "")
+
+    def send_backend_diagnostics_log(self, chat_id):
+        content, headers = self.backend_get_bytes("/api/v1/diagnostics/logs", params={"limit": 100})
+        filename_header = urllib.parse.unquote(headers.get("X-TakSklad-Filename") or "")
+        filename = filename_header or "TakSklad_backend_diagnostics.txt"
+        self.safe_send_document(
+            chat_id,
+            content,
+            filename,
+            caption="TakSklad: критичные backend-события и ошибки очередей",
+        )
+        return True
 
     def telegram_file_info(self, file_id):
         file_id = normalize_text(file_id)
@@ -519,10 +579,36 @@ class TelegramWorker:
         }, timeout=poll_timeout + 5) or []
         for update in updates:
             self.offset = max(self.offset, int(update.get("update_id") or 0))
-            self.handle_update(update)
+            try:
+                self.handle_update(update)
+            except Exception as exc:
+                logging.exception("Telegram worker: update handling failed")
+                self.notify_update_error(update, exc)
         if updates:
             self.save_offset()
         self.process_queued_telegram_imports()
+
+    def notify_update_error(self, update, exc):
+        message = update.get("message") or {}
+        chat = message.get("chat") or {}
+        chat_id = str(chat.get("id") or "")
+        if not chat_id:
+            return
+        if self.allowed_chat_ids and chat_id not in self.allowed_chat_ids:
+            return
+        reason = normalize_text(exc)
+        if len(reason) > 500:
+            reason = reason[:500] + "..."
+        self.safe_send_message(
+            chat_id,
+            "\n".join([
+                "Не удалось выполнить действие Telegram.",
+                "",
+                f"Причина: {reason or exc.__class__.__name__}",
+                "",
+                "Попробуйте повторить действие. Если ошибка повторится, скачайте диагностику командой /logs.",
+            ]),
+        )
 
     def handle_update(self, update):
         message = update.get("message") or {}
@@ -533,7 +619,7 @@ class TelegramWorker:
             return
 
         text = normalize_text(message.get("text"))
-        if text_matches(text, "/start", "/help", TELEGRAM_BUTTON_HELP):
+        if text_matches(text, "/start", "/help"):
             self.send_message(
                 chat_id,
                 "\n".join([
@@ -577,28 +663,15 @@ class TelegramWorker:
         if text.startswith(TELEGRAM_KIZ_FILE_PREFIX):
             self.send_kiz_source_file_by_index(chat_id, text)
             return
-        if text_matches(text, "/health", TELEGRAM_BUTTON_HEALTH):
+        if text_matches(text, "/health"):
+            if not self.ensure_admin_chat(chat_id):
+                return
             payload = self.backend_get("/health")
             self.send_message(chat_id, f"Backend: {payload.get('status')} / {payload.get('version')}")
             return
-        if text_matches(text, "/report", TELEGRAM_BUTTON_REPORT):
-            payload = self.backend_get("/api/v1/reports/day")
-            totals = payload.get("totals") or {}
-            report_date = payload.get("report_date") or datetime.now().strftime("%Y-%m-%d")
-            self.send_message(
-                chat_id,
-                "\n".join([
-                    f"Отчёт TakSklad за {report_date}",
-                    f"Заказов: {totals.get('orders', 0)}",
-                    f"Выполнено заказов: {totals.get('completed_orders', 0)}",
-                    f"Активных заказов: {totals.get('active_orders', 0)}",
-                    f"План блоков: {totals.get('planned_blocks', 0)}",
-                    f"Отсканировано: {totals.get('scanned_blocks', 0)}",
-                    f"Осталось: {totals.get('remaining_blocks', 0)}",
-                ]),
-            )
-            return
-        if text_matches(text, "/imports", TELEGRAM_BUTTON_IMPORTS):
+        if text_matches(text, "/imports"):
+            if not self.ensure_admin_chat(chat_id):
+                return
             payload = self.backend_get("/api/v1/imports")
             imports = payload if isinstance(payload, list) else []
             if not imports:
@@ -613,6 +686,11 @@ class TelegramWorker:
                     f"{item.get('rows_imported', 0)}/{item.get('rows_total', 0)}"
                 )
             self.send_message(chat_id, "\n".join(lines))
+            return
+        if text_matches(text, "/logs"):
+            if not self.ensure_admin_chat(chat_id):
+                return
+            self.send_backend_diagnostics_log(chat_id)
             return
 
         document = message.get("document") or {}

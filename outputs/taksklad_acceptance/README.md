@@ -6,6 +6,8 @@
 
 - `TakSklad_Telegram_Acceptance_2026-05-31.xlsx` - Excel для отправки в Telegram-бот.
 - `acceptance_manifest.json` - контрольные значения, checksum и команды проверки.
+- `ACCEPTANCE_RESULTS.md` - фактический статус приёмки; обновлять по результатам проверок.
+- `ACCEPTANCE_RESULTS_TEMPLATE.md` - шаблон фиксации результата ручной приёмки.
 - `README.md` - короткая инструкция.
 
 ## Контрольные Значения
@@ -18,9 +20,18 @@
 - План блоков: `3`
 - Сумма: `720000`
 - Координаты: `41.311081, 69.240562`
-- SHA-256 Excel: `a5abc62efebcd2d87e26e92dfbb990d22fbf72e86ae74914b0dbf9b6f8de285e`
+- SHA-256 Excel: `204b932a704b39294b513a95964844db1ed74d028e3daff13beef3ab09ec98fd`
 
 ## Telegram Проверка
+
+Перед ручными проверками локально запустить preflight:
+
+```bash
+cd /Users/anton/Documents/work/TakSklad
+.venv/bin/python tools/release_preflight.py
+```
+
+Он проверяет публичный backend health, `version.json`, acceptance kit и отсутствие tracked runtime/secret-файлов.
 
 Перед ручной проверкой можно посмотреть общий VDS status:
 
@@ -28,6 +39,17 @@
 cd /opt/taksklad/app
 ./deploy/vds/acceptance_status.sh
 ```
+
+Обычный `acceptance_status.sh` проверяет здоровье VDS и показывает блок `release_go_no_go`.
+До ручной приёмки в нём должен быть `status=no_go`.
+Для релизного gate использовать строгий режим:
+
+```bash
+cd /opt/taksklad/app
+./deploy/vds/acceptance_status.sh --require-go
+```
+
+Он должен падать до тех пор, пока `ACCEPTANCE_RESULTS.md` не заполнен как `GO`.
 
 1. В Telegram открыть `SkladKis_bot` от разрешённого пользовательского аккаунта.
 2. Нажать `Дата отгрузки`.
@@ -56,6 +78,14 @@ cd /opt/taksklad/app
 
 ## Windows Проверка
 
+На Windows собрать свежий test archive:
+
+```powershell
+.\tools\build_windows_test_archive.ps1 -InstallDependencies
+```
+
+Распаковать архив из `outputs\windows_test_build`. Следующие PowerShell-команды выполнять уже из корня распакованного test archive.
+
 Проверить связь с VDS:
 
 ```powershell
@@ -65,7 +95,7 @@ cd /opt/taksklad/app
 Запустить тестовую копию:
 
 ```powershell
-.\tools\windows_backend_acceptance.ps1 -Token "<service-token>" -AppPath ".\TakSklad.exe"
+.\tools\windows_backend_acceptance.ps1 -Token "<service-token>" -AppPath ".\TakSklad\TakSklad.exe"
 ```
 
 Если запуск из исходников:
@@ -73,6 +103,14 @@ cd /opt/taksklad/app
 ```powershell
 .\tools\windows_backend_acceptance.ps1 -Token "<service-token>" -AppPath ".\main.py"
 ```
+
+Если в папке рядом есть exe, но нужно принудительно запустить исходники:
+
+```powershell
+.\tools\windows_backend_acceptance.ps1 -Token "<service-token>" -UsePython
+```
+
+Helper использует `https://api.taksklad.uz`, проверяет, что `APP_VERSION` не ниже `1.1.17` и `APP_BUILD_LABEL = MVP 2.0`, и предпочитает `.venv\Scripts\python.exe`. Для exe helper требует `build_manifest.json` из свежего test archive и сверяет `app_version` + `app_build_label`; старый ярлык `1.1.7` без manifest будет остановлен до запуска.
 
 Сканировать тестовые КИЗы:
 

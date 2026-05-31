@@ -11,7 +11,8 @@ from .schemas import OrderItemRead, OrderRead, ScanCreate, ScanRead
 
 STATUS_COMPLETED = "completed"
 STATUS_NOT_COMPLETED = "not_completed"
-COMPLETED_STATUSES = (STATUS_COMPLETED, "done", "closed")
+STATUS_RETURNED = "returned"
+COMPLETED_STATUSES = (STATUS_COMPLETED, "done", "closed", STATUS_RETURNED)
 
 
 class ApiError(Exception):
@@ -38,6 +39,17 @@ def list_active_orders(db: Session):
     return [order_to_read(order) for order in db.execute(stmt).scalars().all()]
 
 
+def list_returned_orders(db: Session, limit=50):
+    stmt = (
+        select(Order)
+        .options(selectinload(Order.items).selectinload(OrderItem.scan_codes))
+        .where(Order.status == STATUS_RETURNED)
+        .order_by(Order.updated_at.desc(), Order.order_date.desc(), Order.created_at.desc())
+        .limit(max(1, min(int(limit or 50), 200)))
+    )
+    return [order_to_read(order) for order in db.execute(stmt).scalars().all()]
+
+
 def create_scan(db: Session, payload: ScanCreate):
     order_item_id = parse_uuid(payload.order_item_id, "order_item_id")
     code = payload.code.strip()
@@ -59,7 +71,7 @@ def create_scan(db: Session, payload: ScanCreate):
 
     existing_scan = db.execute(select(ScanCode).where(ScanCode.code == code)).scalar_one_or_none()
     if existing_scan is not None:
-        raise ApiError(409, "Code already scanned")
+        return existing_scan_response_or_error(existing_scan, item)
 
     scan_id = uuid.uuid4()
     scan = ScanCode(
@@ -95,10 +107,28 @@ def create_scan(db: Session, payload: ScanCreate):
         db.commit()
     except IntegrityError as exc:
         db.rollback()
+        existing_scan = db.execute(select(ScanCode).where(ScanCode.code == code)).scalar_one_or_none()
+        item = db.execute(select(OrderItem).where(OrderItem.id == order_item_id)).scalar_one_or_none()
+        if existing_scan is not None and item is not None:
+            return existing_scan_response_or_error(existing_scan, item)
         raise ApiError(409, "Code already scanned") from exc
 
     db.refresh(scan)
     db.refresh(item)
+    return scan_to_read(scan, item)
+
+
+def existing_scan_response_or_error(existing_scan, item):
+    if existing_scan.order_item_id == item.id:
+        return scan_to_read(existing_scan, item)
+    raise ApiError(409, {
+        "message": "Code already scanned in another order item",
+        "existing_order_item_id": str(existing_scan.order_item_id),
+        "order_item_id": str(item.id),
+    })
+
+
+def scan_to_read(scan, item):
     return ScanRead(
         id=str(scan.id),
         order_item_id=str(item.id),
@@ -155,6 +185,91 @@ def complete_order(db: Session, order_id):
     return order_to_read(order)
 
 
+def lookup_return_order(db: Session, lookup_value):
+    lookup = normalize_text(lookup_value)
+    if not lookup:
+        raise ApiError(422, "Return lookup value is required")
+
+    orders = db.execute(
+        select(Order)
+        .options(selectinload(Order.items).selectinload(OrderItem.scan_codes))
+        .where(Order.status.in_(COMPLETED_STATUSES))
+        .order_by(Order.order_date.desc(), Order.created_at.desc())
+    ).scalars().all()
+
+    matches = [
+        order
+        for order in orders
+        if return_lookup_matches(order, lookup)
+    ]
+    if not matches:
+        raise ApiError(404, "Completed order was not found in archive")
+    if len(matches) > 1:
+        raise ApiError(409, {
+            "message": "Multiple completed orders found for return lookup",
+            "orders": [
+                {
+                    "id": str(order.id),
+                    "order_date": order.order_date.isoformat() if order.order_date else "",
+                    "client": order.client,
+                    "skladbot_request_number": (order.raw_payload or {}).get("skladbot_request_number") or "",
+                    "skladbot_request_id": (order.raw_payload or {}).get("skladbot_request_id") or "",
+                }
+                for order in matches[:10]
+            ],
+        })
+    return order_to_read(matches[0])
+
+
+def mark_order_returned(db: Session, order_id, return_reference="", returned_by="desktop"):
+    parsed_order_id = parse_uuid(order_id, "order_id")
+    order = db.execute(
+        select(Order)
+        .options(selectinload(Order.items).selectinload(OrderItem.scan_codes))
+        .where(Order.id == parsed_order_id)
+        .with_for_update()
+    ).scalar_one_or_none()
+    if order is None:
+        raise ApiError(404, "Order not found")
+    raw_payload = dict(order.raw_payload or {})
+    if order.status == STATUS_RETURNED or raw_payload.get("return_status") == "returned":
+        raise ApiError(409, "Order is already returned")
+    if order.status not in COMPLETED_STATUSES:
+        raise ApiError(409, "Only completed archived orders can be returned")
+
+    returned_at = datetime.now(timezone.utc)
+    raw_payload["return_status"] = "returned"
+    raw_payload["returned_at"] = returned_at.isoformat()
+    raw_payload["return_reference"] = normalize_text(return_reference)
+    raw_payload["returned_by"] = normalize_text(returned_by) or "desktop"
+    order.raw_payload = raw_payload
+    order.status = STATUS_RETURNED
+
+    db.add(AuditLog(
+        action="order_returned",
+        entity_type="order",
+        entity_id=str(order.id),
+        payload={
+            "return_reference": raw_payload["return_reference"],
+            "returned_by": raw_payload["returned_by"],
+            "returned_at": raw_payload["returned_at"],
+        },
+    ))
+    db.commit()
+    db.refresh(order)
+    return order_to_read(order)
+
+
+def return_lookup_matches(order, lookup):
+    raw_payload = order.raw_payload or {}
+    candidates = [
+        raw_payload.get("skladbot_request_number"),
+        raw_payload.get("skladbot_request_id"),
+        order.external_id,
+    ]
+    return normalize_lookup(lookup) in {normalize_lookup(value) for value in candidates if normalize_text(value)}
+
+
 def order_to_read(order: Order):
     raw_payload = order.raw_payload or {}
     return OrderRead(
@@ -168,6 +283,9 @@ def order_to_read(order: Order):
         status=order.status,
         skladbot_request_number=raw_payload.get("skladbot_request_number") or "",
         skladbot_request_id=raw_payload.get("skladbot_request_id") or "",
+        return_status=raw_payload.get("return_status") or "",
+        returned_at=raw_payload.get("returned_at") or "",
+        return_reference=raw_payload.get("return_reference") or "",
         items=[
             item_to_read(item)
             for item in sorted(order.items, key=lambda value: (str(value.created_at or ""), str(value.id)))
@@ -198,3 +316,11 @@ def parse_int(value):
         return int(value or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def normalize_text(value):
+    return str(value or "").strip()
+
+
+def normalize_lookup(value):
+    return "".join(char.casefold() for char in normalize_text(value) if char.isalnum())

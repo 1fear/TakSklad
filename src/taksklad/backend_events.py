@@ -103,7 +103,7 @@ def is_duplicate_scan_ack(exc):
     if not isinstance(exc, BackendApiError) or exc.status_code != 409:
         return False
     detail = str(exc.detail or exc).lower()
-    return "already scanned" in detail or "уже" in detail
+    return "already scanned for this order item" in detail
 
 
 def sync_pending_backend_events():

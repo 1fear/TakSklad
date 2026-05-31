@@ -14,6 +14,13 @@ def get_app_dir():
     return os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir))
 
 
+def _int_env(name, default):
+    try:
+        return int(os.environ.get(name, str(default)) or default)
+    except (TypeError, ValueError):
+        return default
+
+
 APP_DIR = get_app_dir()
 CREDENTIALS_FILE = os.path.join(APP_DIR, "credentials.json")
 TAKSKLAD_DATA_FILE = os.path.join(APP_DIR, "TakSklad_data.json")
@@ -23,6 +30,8 @@ TAKSKLAD_DATA_FILE = os.path.join(APP_DIR, "TakSklad_data.json")
 LOG_DIR = os.path.join(APP_DIR, "docs")
 LOG_FILE = os.path.join(LOG_DIR, "TakSklad.log")
 UPDATE_LOG_FILE = os.path.join(LOG_DIR, "TakSklad_update.log")
+LOG_MAX_BYTES = _int_env("TAKSKLAD_LOG_MAX_BYTES", 5 * 1024 * 1024)
+LOG_BACKUP_COUNT = _int_env("TAKSKLAD_LOG_BACKUP_COUNT", 5)
 BACKUP_DIR = os.path.join(APP_DIR, "scan_backups")
 REPORTS_DIR = os.path.join(APP_DIR, "reports")
 PENDING_PRINTS_FILE = os.path.join(APP_DIR, "pending_prints.json")
@@ -35,9 +44,10 @@ PRODUCT_CATALOG_FILE = os.path.join(APP_DIR, "product_catalog.json")
 IMPORT_HISTORY_FILE = os.path.join(APP_DIR, "import_history.json")
 TELEGRAM_SETTINGS_FILE = os.path.join(APP_DIR, "telegram_settings.json")
 YANDEX_GEOCODER_KEY_FILE = os.path.join(APP_DIR, "yandex_geocoder_key.txt")
-YANDEX_GEOCODER_API_KEY = "7c455cc8-0cda-46da-ac5c-e32297c2fec0"
+YANDEX_GEOCODER_ENV_VAR = "YANDEX_GEOCODER_API_KEY"
 
-APP_VERSION = "1.1.17"
+APP_VERSION = "2.0.0"
+APP_BUILD_LABEL = os.environ.get("TAKSKLAD_BUILD_LABEL", "MVP 2.0").strip()
 UPDATE_INFO_URL = os.environ.get(
     "TAKSKLAD_UPDATE_INFO_URL",
     "https://raw.githubusercontent.com/1fear/TakSklad/main/version.json",
@@ -121,7 +131,7 @@ SKLADBOT_SYNC_LOOKBACK_DAYS = 14
 SKLADBOT_REQUESTS_LIMIT = 500
 SKLADBOT_COMPLETED_DETAIL_LIMIT = 500
 SKLADBOT_REQUEST_DELAY_SECONDS = 0.05
-SKLADBOT_SYNC_INTERVAL_MS = 10 * 60 * 1000
+SKLADBOT_SYNC_INTERVAL_MS = 60 * 1000
 DAILY_REPORT_AUTO_SEND_HOUR = 23
 DAILY_REPORT_AUTO_SEND_MINUTE = 55
 DAILY_REPORT_CHECK_INTERVAL_MS = 5 * 60 * 1000
@@ -164,19 +174,19 @@ LABEL_DPI = 203
 KIZ_MIN_LENGTH = 20
 KIZ_MAX_LENGTH = 120
 
-BG_MAIN = "#f5f7fa"
+BG_MAIN = "#f7f5df"
 BG_CARD = "#ffffff"
-FG_TEXT = "#1a1f2e"
-FG_MUTED = "#6b7280"
-ACCENT = "#4f46e5"
-SUCCESS = "#10b981"
-INFO = "#3b82f6"
-WARNING = "#f59e0b"
-DANGER = "#ef4444"
+FG_TEXT = "#111111"
+FG_MUTED = "#5f5f5f"
+ACCENT = "#111111"
+SUCCESS = "#111111"
+INFO = "#111111"
+WARNING = "#F0E68C"
+DANGER = "#8b1e1e"
 ERROR_BG = "#fee2e2"
 ERROR_FG = "#dc2626"
-BORDER = "#e5e7eb"
-DISABLED_BG = "#e5e7eb"
-DISABLED_FG = "#94a3b8"
+BORDER = "#d8d1a1"
+DISABLED_BG = "#d9d6bf"
+DISABLED_FG = "#8a8774"
 
 __all__ = [name for name in globals() if name.isupper()] + ["get_app_dir"]

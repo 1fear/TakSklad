@@ -496,8 +496,11 @@ def due_daily_report_dates(now=None):
     return [date for date in sorted(set(dates)) if not daily_report_already_handled(date)]
 
 def daily_report_caption(result, reason=""):
+    date_label = result.get("shipment_date_display") or result.get("report_date_display")
+    part_number = result.get("part_number")
+    part_text = f", часть {part_number}" if part_number else ""
     lines = [
-        f"{APP_NAME}: дневной отчёт за {result.get('report_date_display')}",
+        f"{APP_NAME}: КИЗ-отчёт за {date_label}{part_text}",
         f"Всего КИЗов: {result.get('total_report_rows', 0)}",
         f"Терминал: {result.get('terminal_count', 0)}",
         f"Перечисление: {result.get('transfer_count', 0)}",

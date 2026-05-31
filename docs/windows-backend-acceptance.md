@@ -15,7 +15,42 @@
 - Telegram Excel import на VDS отправляет строки в тот же backend import.
 - Два ПК не конфликтуют по Telegram polling, потому что Telegram слушает серверный worker.
 
-## 2. Backend Flags Для Теста
+## 2. Тестовая Windows-Сборка
+
+Для приёмки нужна свежая тестовая сборка, а не рабочий ярлык `1.1.7`.
+
+На Windows из корня репозитория:
+
+```powershell
+.\tools\build_windows_test_archive.ps1 -InstallDependencies
+```
+
+Если зависимости уже установлены:
+
+```powershell
+.\tools\build_windows_test_archive.ps1
+```
+
+Что делает helper:
+
+- проверяет, что `APP_VERSION` не ниже `2.0.0`;
+- проверяет, что `APP_BUILD_LABEL = MVP 2.0`;
+- проверяет, что публичный `version.json` не изменён и закреплён на стабильной `1.1.7`;
+- запускает автотесты, если не передан `-SkipTests`;
+- собирает PyInstaller `--onedir`;
+- добавляет acceptance helper и acceptance kit;
+- создаёт ZIP и SHA256 в `outputs\windows_test_build`;
+- не создаёт GitHub Release;
+- не меняет `version.json`;
+- не отправляет push-уведомления.
+
+После сборки запускать приложение из распакованного архива через:
+
+```powershell
+.\tools\windows_backend_acceptance.ps1 -Token "<service-token>" -AppPath ".\TakSklad\TakSklad.exe"
+```
+
+## 3. Backend Flags Для Теста
 
 Включать только на тестовой Windows-копии, не на рабочих ПК склада.
 
@@ -23,7 +58,7 @@
 
 ```powershell
 .\tools\windows_backend_acceptance.ps1 -CheckOnly -Token "<service-token>"
-.\tools\windows_backend_acceptance.ps1 -Token "<service-token>" -AppPath ".\TakSklad.exe"
+.\tools\windows_backend_acceptance.ps1 -Token "<service-token>" -AppPath ".\TakSklad\TakSklad.exe"
 ```
 
 Если запуск идёт из исходников:
@@ -32,32 +67,38 @@
 .\tools\windows_backend_acceptance.ps1 -Token "<service-token>" -AppPath ".\main.py"
 ```
 
+Короткий вариант для исходников, если команда запускается из корня проекта:
+
+```powershell
+.\tools\windows_backend_acceptance.ps1 -Token "<service-token>" -UsePython
+```
+
 Что делает helper:
 
 - проверяет `GET /health`;
 - проверяет `GET /api/v1/orders/active` с service token;
 - включает backend flags только для текущего PowerShell-процесса и дочернего запуска приложения;
+- при запуске из исходников проверяет, что `APP_VERSION` не ниже `2.0.0`, чтобы случайно не тестировать старую рабочую линию;
+- при запуске из исходников дополнительно сверяет `APP_BUILD_LABEL = MVP 2.0`;
+- при запуске `.exe` требует `build_manifest.json` из тестового архива и сверяет, что `app_version` не ниже `2.0.0`, а `app_build_label` равен `MVP 2.0`;
+- предпочитает проектный `.venv\Scripts\python.exe`, если он есть;
 - не сохраняет token в файл, реестр или git.
+
+Важно: если передать старый `TakSklad.exe` без `build_manifest.json` или архив без `app_build_label = MVP 2.0`, helper остановит запуск. Для Windows-приёмки использовать только свежий test archive или запуск из текущих исходников через `main.py`.
 
 Ручной вариант, если helper недоступен:
 
 ```powershell
 $env:TAKSKLAD_BACKEND_ENABLED = "1"
 $env:TAKSKLAD_BACKEND_READ_ORDERS_ENABLED = "1"
-$env:TAKSKLAD_BACKEND_BASE_URL = "https://api.135.181.245.84.sslip.io"
+$env:TAKSKLAD_BACKEND_BASE_URL = "https://api.taksklad.uz"
 $env:TAKSKLAD_BACKEND_API_TOKEN = "<service-token-from-local-secret-storage>"
 $env:TAKSKLAD_BACKEND_TIMEOUT_SECONDS = "8"
 ```
 
-После перехода DNS заменить временный URL на:
-
-```powershell
-$env:TAKSKLAD_BACKEND_BASE_URL = "https://api.taksklad.uz"
-```
-
 Сервисный токен не хранить в документации, чате, скриншотах и Git.
 
-## 3. Быстрый Rollback
+## 4. Быстрый Rollback
 
 Если в тесте появляется блокирующая ошибка, закрыть приложение и запустить без backend flags:
 
@@ -77,9 +118,9 @@ Remove-Item Env:\TAKSKLAD_BACKEND_TIMEOUT_SECONDS -ErrorAction SilentlyContinue
 
 Критерий rollback: приложение снова работает как текущая стабильная desktop-линия.
 
-## 4. Сценарии Приёмки
+## 5. Сценарии Приёмки
 
-### 4.1 Запуск
+### 5.1 Запуск
 
 Шаги:
 
@@ -94,7 +135,7 @@ Remove-Item Env:\TAKSKLAD_BACKEND_TIMEOUT_SECONDS -ErrorAction SilentlyContinue
 - нет зависания на старте;
 - в логах нет traceback по backend config.
 
-### 4.2 Desktop Excel Import
+### 5.2 Desktop Excel Import
 
 Шаги:
 
@@ -109,7 +150,7 @@ Remove-Item Env:\TAKSKLAD_BACKEND_TIMEOUT_SECONDS -ErrorAction SilentlyContinue
 - позиции, клиент, адрес, оплата, количество и номера SkladBot не ломаются;
 - невалидные строки попадают в ошибки импорта, но не валят весь файл.
 
-### 4.3 Telegram Excel Import
+### 5.3 Telegram Excel Import
 
 Шаги:
 
@@ -125,23 +166,26 @@ Remove-Item Env:\TAKSKLAD_BACKEND_TIMEOUT_SECONDS -ErrorAction SilentlyContinue
 - повторная отправка того же файла не создает дубль позиций;
 - Telegram token не появляется в логах.
 
-### 4.4 Сканирование С Backend
+### 5.4 Сканирование С Backend
 
 Шаги:
 
-1. Выбрать заказ.
-2. Отсканировать валидный КИЗ.
-3. Проверить локальный backup скана.
-4. Проверить `POST /api/v1/scans` эффект через backend active orders.
+1. После обновления списка проверить статус `Backend: online, список из VDS` в блоке статистики.
+2. Выбрать заказ.
+3. Отсканировать валидный КИЗ.
+4. Проверить локальный backup скана.
+5. Проверить `POST /api/v1/scans` эффект через backend active orders.
 
 Ожидаемый результат:
 
+- backend status виден оператору без служебных окон;
 - КИЗ принят без задержки, мешающей оператору;
 - локальный backup создан до внешней отправки;
 - backend получил скан;
-- повтор того же КИЗ возвращает понятный дубль, а не ломает приложение.
+- повтор того же КИЗа в той же позиции не увеличивает счётчик второй раз;
+- дубль того же КИЗа в другой позиции остаётся конфликтом backend queue, а не исчезает.
 
-### 4.5 Обновление Во Время Сканирования
+### 5.5 Обновление Во Время Сканирования
 
 Шаги:
 
@@ -155,7 +199,7 @@ Remove-Item Env:\TAKSKLAD_BACKEND_TIMEOUT_SECONDS -ErrorAction SilentlyContinue
 - сканирование не блокируется долгим обновлением;
 - текущая позиция не сбрасывается.
 
-### 4.6 Два ПК
+### 5.6 Два ПК
 
 Шаги:
 
@@ -171,7 +215,7 @@ Remove-Item Env:\TAKSKLAD_BACKEND_TIMEOUT_SECONDS -ErrorAction SilentlyContinue
 - дубль одного КИЗ не проходит;
 - Telegram `HTTP 409 Conflict` не появляется из desktop, потому что Telegram polling не должен запускаться на ПК.
 
-### 4.7 Backend Недоступен
+### 5.7 Backend Недоступен
 
 Шаги:
 
@@ -187,7 +231,7 @@ Remove-Item Env:\TAKSKLAD_BACKEND_TIMEOUT_SECONDS -ErrorAction SilentlyContinue
 - событие появляется в локальной очереди;
 - после восстановления backend событие синхронизируется.
 
-### 4.8 Завершение Заказа, Печать, День
+### 5.8 Завершение Заказа, Печать, День
 
 Шаги:
 
@@ -204,7 +248,7 @@ Remove-Item Env:\TAKSKLAD_BACKEND_TIMEOUT_SECONDS -ErrorAction SilentlyContinue
 - печать не зависит от backend;
 - дневной отчёт совпадает с фактическими сканами.
 
-## 5. Критерий Готовности К Релизу
+## 6. Критерий Готовности К Релизу
 
 Релиз 2.0 можно готовить только если:
 
@@ -214,7 +258,7 @@ Remove-Item Env:\TAKSKLAD_BACKEND_TIMEOUT_SECONDS -ErrorAction SilentlyContinue
 - нет потери КИЗов при offline/timeout;
 - `version.json` всё ещё не менялся до финального решения о rollout.
 
-## 6. Что Уже Покрыто Автотестами
+## 7. Что Уже Покрыто Автотестами
 
 Автотесты не заменяют физическую Windows-приёмку, но закрывают часть логики desktop/backend bridge:
 
@@ -223,7 +267,8 @@ Remove-Item Env:\TAKSKLAD_BACKEND_TIMEOUT_SECONDS -ErrorAction SilentlyContinue
 - pending backend code попадает в общий набор занятых КИЗов и блокирует повторный ввод;
 - отмена последнего КИЗа убирает pending backend scan;
 - retryable backend failure оставляет событие в очереди;
-- backend duplicate scan `409 Code already scanned` считается уже синхронизированным;
+- повтор того же КИЗа в той же backend-позиции идемпотентен;
+- дубль КИЗа в другой backend-позиции остаётся конфликтом в очереди, а не исчезает как успешная синхронизация;
 - pending `order_complete` отправляется в backend;
 - неизвестное событие не держит очередь.
 
@@ -233,7 +278,7 @@ Remove-Item Env:\TAKSKLAD_BACKEND_TIMEOUT_SECONDS -ErrorAction SilentlyContinue
 .venv/bin/python -m unittest tests.test_backend_bridge
 ```
 
-## 7. Что Остаётся После Приёмки
+## 8. Что Остаётся После Приёмки
 
 - Собрать Windows archive.
 - Проверить archive на чистой Windows-машине.

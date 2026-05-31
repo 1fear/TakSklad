@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from .db import get_db
+from .diagnostics_service import build_backend_diagnostics_log
 from .imports_service import create_import as create_import_in_db
 from .imports_service import list_imports as list_imports_in_db
 from .kiz_reports_service import build_kiz_source_file_report_xlsx, list_completed_kiz_source_files
@@ -11,6 +12,9 @@ from .logistics_service import build_logistics_report_xlsx, list_logistics_dates
 from .orders_service import ApiError, complete_order as complete_order_in_db
 from .orders_service import create_scan as create_scan_in_db
 from .orders_service import list_active_orders as list_active_orders_in_db
+from .orders_service import list_returned_orders as list_returned_orders_in_db
+from .orders_service import lookup_return_order as lookup_return_order_in_db
+from .orders_service import mark_order_returned as mark_order_returned_in_db
 from .reports_service import build_day_report
 from .schemas import (
     DayReportRead,
@@ -80,6 +84,11 @@ def list_active_orders(db=Depends(get_db)) -> list[OrderRead]:
     return list_active_orders_in_db(db)
 
 
+@api.get("/returns", response_model=list[OrderRead])
+def list_returns(limit: int = 50, db=Depends(get_db)):
+    return list_returned_orders_in_db(db, limit=limit)
+
+
 @api.post("/scans", response_model=ScanRead, status_code=status.HTTP_201_CREATED)
 def create_scan(payload: ScanCreate, db=Depends(get_db)):
     try:
@@ -92,6 +101,28 @@ def create_scan(payload: ScanCreate, db=Depends(get_db)):
 def complete_order(order_id: str, db=Depends(get_db)):
     try:
         return complete_order_in_db(db, order_id)
+    except ApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@api.get("/returns/lookup", response_model=OrderRead)
+def lookup_return(lookup: str, db=Depends(get_db)):
+    try:
+        return lookup_return_order_in_db(db, lookup)
+    except ApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@api.post("/returns/{order_id}", response_model=OrderRead)
+def mark_return(order_id: str, payload: dict | None = None, db=Depends(get_db)):
+    payload = payload or {}
+    try:
+        return mark_order_returned_in_db(
+            db,
+            order_id,
+            return_reference=payload.get("return_reference") or "",
+            returned_by=payload.get("returned_by") or "desktop",
+        )
     except ApiError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
@@ -149,6 +180,19 @@ def logistics_report(shipment_date: str, db=Depends(get_db)):
     return Response(
         content=content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+            "X-TakSklad-Filename": quote(filename),
+        },
+    )
+
+
+@api.get("/diagnostics/logs")
+def diagnostics_logs(limit: int = 100, db=Depends(get_db)):
+    content, filename = build_backend_diagnostics_log(db, limit=limit)
+    return Response(
+        content=content,
+        media_type="text/plain; charset=utf-8",
         headers={
             "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
             "X-TakSklad-Filename": quote(filename),

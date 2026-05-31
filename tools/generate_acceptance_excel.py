@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import os
+import re
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +15,7 @@ DEFAULT_MARKER = "ACCEPTANCE TELEGRAM 20260531"
 DEFAULT_SHIPMENT_DATE = "31.05.2026"
 DEFAULT_OUTPUT = Path("outputs/taksklad_acceptance/TakSklad_Telegram_Acceptance_2026-05-31.xlsx")
 FIXED_XLSX_TIMESTAMP = (2026, 5, 31, 0, 0, 0)
+FIXED_XLSX_MODIFIED = "2026-05-31T00:00:00Z"
 
 HEADERS = [
     "Дата отгрузки",
@@ -115,7 +117,14 @@ def normalize_xlsx_archive(path):
                 target_info.compress_type = zipfile.ZIP_DEFLATED
                 target_info.create_system = 0
                 target_info.external_attr = 0
-                target.writestr(target_info, source.read(name))
+                content = source.read(name)
+                if name == "docProps/core.xml":
+                    content = re.sub(
+                        rb"(<dcterms:modified[^>]*>)[^<]+(</dcterms:modified>)",
+                        rf"\g<1>{FIXED_XLSX_MODIFIED}\g<2>".encode("ascii"),
+                        content,
+                    )
+                target.writestr(target_info, content)
     os.replace(temp_path, path)
 
 

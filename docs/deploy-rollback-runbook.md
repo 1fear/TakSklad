@@ -75,13 +75,13 @@ rsync -az --exclude '.env' deploy/vds/ root@135.181.245.84:/opt/taksklad/app/dep
 cd /opt/taksklad/app
 ./deploy/vds/apply_schema.sh
 docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml up -d --build backend-api
-curl -fsS https://api.135.181.245.84.sslip.io/health
+curl -fsS https://api.taksklad.uz/health
 ```
 
-Если DNS уже переключен:
+Если DNS временно недоступен, fallback-проверка:
 
 ```bash
-curl -fsS https://api.taksklad.uz/health
+curl -fsS https://api.135.181.245.84.sslip.io/health
 ```
 
 ## 3. Backup
@@ -124,7 +124,7 @@ CONFIRM_RESTORE=YES ./deploy/vds/restore_postgres.sh /opt/taksklad/backups/postg
 После restore:
 
 ```bash
-curl -fsS https://api.135.181.245.84.sslip.io/health
+curl -fsS https://api.taksklad.uz/health
 ```
 
 ## 6. Rollback Backend Code

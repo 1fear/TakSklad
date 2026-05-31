@@ -39,7 +39,7 @@ class BackendBridgeTests(unittest.TestCase):
         self.assertEqual(rows[0]["Отсканированные коды"], "01000000000000000001\n01000000000000000002")
         self.assertEqual(rows[0]["Статус"], STATUS_COMPLETED)
 
-    def test_backend_queue_treats_duplicate_scan_as_already_synced(self):
+    def test_backend_queue_keeps_ambiguous_duplicate_scan_conflict(self):
         pending = [{
             "id": "event-1",
             "type": "scan",
@@ -59,18 +59,19 @@ class BackendBridgeTests(unittest.TestCase):
                 backend_events,
                 "create_scan",
                 side_effect=backend_client.BackendApiError(
-                    "Backend HTTP 409: Code already scanned",
+                    "Backend HTTP 409: Code already scanned in another order item",
                     status_code=409,
-                    detail="Code already scanned",
+                    detail={"message": "Code already scanned in another order item"},
                 ),
             ),
         ):
             result = backend_events.sync_pending_backend_events()
 
-        self.assertEqual(result["synced"], 1)
-        self.assertEqual(result["failed"], 0)
-        self.assertEqual(result["remaining"], 0)
-        self.assertEqual(saved, [[]])
+        self.assertEqual(result["synced"], 0)
+        self.assertEqual(result["failed"], 1)
+        self.assertEqual(result["remaining"], 1)
+        self.assertEqual(saved[0][0]["attempts"], 1)
+        self.assertIn("another order item", saved[0][0]["last_error"])
 
     def test_backend_queue_keeps_retryable_failures(self):
         pending = [{

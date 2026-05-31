@@ -1641,3 +1641,1045 @@ cd /opt/taksklad/app
 - Acceptance marker пока пустой: `orders=0`, `imports=0`, `scan_codes=0`, `pending_events=0`.
 - VDS `version.json`: `latest_version=1.1.7`, `mandatory=false`, download URL пустой.
 - Был один временный SSH timeout сразу после `rsync`; повторная SSH-проверка прошла успешно, backend по HTTPS всё время отвечал `ok`.
+
+### TakSklad 2.0 Workflow/UI Alignment
+
+**Дата:** 2026-05-31.
+
+**Сделано:**
+
+- Desktop UI приведён ближе к утверждённому рабочему экрану склада:
+  - список переименован в `Заказы для КИЗов`;
+  - заказы визуально разделяются по датам отгрузки;
+  - убраны видимые кнопки `Импорт Excel`, `Товары`, `Контроль` с основного складского экрана;
+  - добавлена отдельная кнопка `Возвраты`;
+  - кнопка финального отчёта переименована в `Закрыть смену`;
+  - кнопки переведены на округлённый canvas-вид и палитру TakSklad (`#F0E68C` + чёрный).
+- Печать осталась только в сценарии завершения заказа: отдельной кнопки печати на рабочем экране склада нет.
+- Возвраты добавлены в backend/Desktop MVP:
+  - поиск закрытой заявки по номеру/ID SkladBot или external id;
+  - фиксация статуса `returned`;
+  - запись даты возврата и audit log;
+  - returned-заказы исключаются из активного списка.
+- `Закрыть смену` теперь формирует КИЗ-отчёты по датам отгрузки:
+  - если за смену закрыты разные даты, формируется несколько файлов;
+  - повторное закрытие по той же дате получает `ч1`, `ч2` и так далее;
+  - каждый файл отправляется в Telegram.
+- Старый автоматический таймер дневного отчёта в desktop больше не запускается. Отчёт КИЗов уходит при закрытии смены.
+- Telegram worker оставлен только с пользовательским нижним меню:
+  - `Дата отгрузки`;
+  - `Отчёт логистики`;
+  - `КИЗ по файлам`.
+- Старый Telegram `/report` убран из пользовательского workflow. `/health` и `/imports` оставлены как скрытый админский fallback.
+- SkladBot matching исправлен:
+  - окно `сегодня/вчера` применяется к дате создания/обновления заявки;
+  - `Дата выгрузки` больше не используется как фильтр свежести и остаётся строгим полем совпадения с датой отгрузки заказа;
+  - если в list response нет поля `type`, заявка не отбрасывается до загрузки detail, потому что `type_id` уже сужает выборку.
+- Интервал SkladBot worker выставлен на 60 секунд для более быстрого подтягивания номеров заявок.
+- Проверены реальные Excel-шаблоны из Telegram:
+  - `заказы 29.05 3 часть.xlsx`;
+  - `заказы 29.05. 2 часть.xlsx`;
+  - `Шаблон_отправки_заказов_на_склад_26_05_2026_1ч.xlsx`;
+  - `Шаблон_отправки_заказов_на_склад_26_05_2026_1ч_терминал.xlsx`;
+  - `Шаблон_отправки_заказов_на_склад_26_05_2026_2ч.xlsx`.
+- `api.taksklad.uz` переключён на VDS:
+  - DNS резолвится в `135.181.245.84`;
+  - `https://api.taksklad.uz/health` возвращает `ok`;
+  - VDS `.env` обновлён через `switch_backend_host.sh`;
+  - `version.json` не менялся.
+- На VDS загружены backend/deploy-изменения и пересобраны:
+  - `backend-api`;
+  - `telegram-worker`;
+  - `skladbot-worker`.
+- Добавлена read-only диагностика SkladBot matching:
+  - `backend/app/skladbot_diagnostic.py`;
+  - `deploy/vds/diagnose_skladbot_match.sh`;
+  - показывает ближайшие SkladBot-заявки и причины несовпадения `date/client/payment/products`.
+
+**Проверки:**
+
+- Локально:
+  - `tests.test_backend_skladbot_worker`;
+  - `tests.test_backend_telegram_import`;
+  - `tests.test_daily_report`;
+  - `tests.test_backend_api_persistence`;
+  - всего 29 тестов OK в targeted run.
+- Реальные шаблоны Excel разобраны: строки, даты, блоки, суммы и типы оплаты определяются.
+- VDS:
+  - `curl https://api.taksklad.uz/health` - OK;
+  - `acceptance_status.sh` - `status=ok`;
+  - Telegram API `getMyCommands` вернул только `date`, `logistics`, `kiz_files`;
+  - `diagnose_skladbot_match.sh --help` - OK;
+  - `smoke_mvp_chapman.sh` - OK: import 2 rows, 3 scans, duplicate rejected, order completed, logistics rows 2, KIZ summary total 720000, cleanup выполнен.
+
+**Что ещё не закрыто до релиза 2.0:**
+
+- Реальный Telegram upload test через боевой чат на копии рабочего Excel.
+- Проверка SkladBot matching на живой активной заявке `3PL отгрузка`.
+- Ручная Windows-приёмка desktop с backend flags, печатью и сканером.
+- Сборка Windows archive и обновление `version.json` только после приёмки.
+
+### SkladBot Diagnostic Limit
+
+- Read-only диагностика SkladBot matching дополнительно ограничена:
+  - если по маркеру нет активных backend-заказов, она не обращается к SkladBot API;
+  - добавлен параметр `--request-limit`, чтобы acceptance-проверка не проходила по большому списку заявок;
+  - команда в runbook обновлена до `--limit 5 --request-limit 20`.
+- Правка загружена на VDS и проверена:
+  - `https://api.taksklad.uz/health` - OK;
+  - `acceptance_status.sh` - `status=ok`;
+  - `diagnose_skladbot_match.sh --marker "ACCEPTANCE TELEGRAM 20260531" --limit 5 --request-limit 20` вернул `active_orders=0`, `candidate_requests=0`;
+  - зависших процессов диагностики на VDS не осталось.
+
+### Desktop Print Window Sizes
+
+- Окно печати сводного листа обновлено:
+  - показывает доступные системные принтеры, если ОС отдаёт список;
+  - поддерживает размеры этикеток `100x100`, `100x150`, `75x50`, `58x40`;
+  - сохраняет выбранный принтер и размер;
+  - `Enter` подтверждает печать, `Esc` отменяет.
+- Печать остаётся прямой через ОС: браузер для сводного листа не открывается.
+- Добавлен тест `tests.test_printing`: проверяет парсер размеров и фактический размер PNG для выбранной этикетки.
+
+### Backend Diagnostics Logs
+
+- Добавлен endpoint `GET /api/v1/diagnostics/logs`.
+- Endpoint формирует текстовый diagnostic-файл:
+  - failed/error события очередей;
+  - импорты со статусами `failed` и `completed_with_errors`;
+  - последние служебные audit-события `orders_imported`, `skladbot_worker_sync`, `order_returned`.
+- Обычные события сканирования КИЗов не попадают в файл, чтобы не засорять его складскими дублями и кодами.
+- Очевидные токены/секреты в тексте маскируются.
+- В Telegram добавлена скрытая команда `/logs`, которая отправляет этот файл. Нижнее пользовательское меню не изменилось.
+- Покрыто тестами:
+  - `test_diagnostics_logs_include_failed_events_import_errors_and_redact_secrets`;
+  - `test_telegram_worker_handles_hidden_logs_command`.
+- Проверено:
+  - локально `97` тестов OK;
+  - `py_compile` OK;
+  - `bash -n deploy/vds/*.sh` и `git diff --check` OK;
+  - VDS пересобран с `backend-api`, `telegram-worker`, `skladbot-worker`;
+  - `https://api.taksklad.uz/health` - OK;
+  - `acceptance_status.sh` - `status=ok`;
+  - `/api/v1/diagnostics/logs` на VDS вернул `200` и файл `TakSklad_backend_diagnostics_*.txt`.
+
+### Yandex Geocoder Secret Cleanup
+
+- Ключ Яндекс Геокодера удалён из `src/taksklad/config.py`.
+- `src/taksklad/geocoding.py` теперь читает ключ только из:
+  - env `YANDEX_GEOCODER_API_KEY`;
+  - локального `yandex_geocoder_key.txt`.
+- Если ключ не настроен, импорт не падает: строка получает предупреждение `не указан ключ Яндекс Геокодера`, как и раньше при недоступном геокодинге.
+- `yandex_geocoder_key.txt` уже находится в `.gitignore`.
+- Добавлены регрессионные тесты `tests/test_geocoding.py` на env/file/missing-key.
+- Проверено:
+  - `tests.test_geocoding` - 3 теста OK;
+  - полный `unittest discover -s tests` - 100 тестов OK;
+  - `py_compile` для изменённых модулей - OK;
+  - `bash -n deploy/vds/*.sh` и `git diff --check` - OK.
+- Старый ключ нужно ротировать отдельно перед боевым релизом.
+
+### Desktop Log Rotation
+
+- Desktop logging вынесен в `src/taksklad/logging_setup.py`.
+- `docs/TakSklad.log` теперь пишется через `RotatingFileHandler`.
+- Дефолтная политика:
+  - основной файл до `5 MB`;
+  - до `5` архивных файлов.
+- Добавлены env-настройки:
+  - `TAKSKLAD_LOG_MAX_BYTES`;
+  - `TAKSKLAD_LOG_BACKUP_COUNT`.
+- Добавлены тесты `tests/test_logging_setup.py`:
+  - повторная настройка не добавляет второй handler на тот же файл;
+  - большой лог реально ротируется.
+- Проверено:
+  - `tests.test_logging_setup tests.test_geocoding` - 5 тестов OK;
+  - полный `unittest discover -s tests` - 102 теста OK;
+  - `py_compile` - OK;
+  - `bash -n deploy/vds/*.sh` и `git diff --check` - OK.
+
+### Desktop Startup Self-Check
+
+- Добавлен `src/taksklad/startup_check.py`.
+- При запуске desktop пишет в лог строку `Startup self-check`.
+- В self-check попадают:
+  - версия;
+  - frozen/dev режим;
+  - hash `SPREADSHEET_ID`;
+  - `SHEET_NAME`;
+  - источник credentials: `stored`, `file`, `missing`;
+  - наличие `TakSklad_data.json`;
+  - Telegram enabled/token/chat count;
+  - backend flags, backend origin и наличие backend token;
+  - наличие ключа Яндекс Геокодера;
+  - размеры локальных очередей.
+- Секреты, chat_id, token, private key, КИЗы и сам spreadsheet id в лог не выводятся.
+- Добавлены тесты `tests/test_startup_check.py` на redaction и fallback credentials из файла.
+- Проверено:
+  - `tests.test_startup_check tests.test_logging_setup tests.test_geocoding` - 7 тестов OK;
+  - полный `unittest discover -s tests` - 104 теста OK;
+  - `py_compile` - OK;
+  - `bash -n deploy/vds/*.sh` и `git diff --check` - OK.
+
+### Desktop Refresh Diagnostic Summary
+
+- Добавлен `src/taksklad/desktop_diagnostics.py`.
+- После успешной загрузки списка заказов desktop пишет `Refresh diagnostic summary`.
+- Summary включает только счётчики:
+  - источник списка `google/backend`;
+  - строки, группы, даты отгрузки;
+  - известные КИЗы;
+  - очереди `pending_saves`, `pending_prints`, `pending_backend_events`, `pending_telegram`;
+  - итоги `sync_pending_saves`;
+  - итоги backend queue;
+  - итоги SkladBot matching.
+- Клиенты, адреса, товары, КИЗы и payload очередей в summary не выводятся.
+- Добавлен тест `tests/test_desktop_diagnostics.py` на счётчики и redaction.
+- Проверено:
+  - `tests.test_desktop_diagnostics tests.test_startup_check tests.test_logging_setup tests.test_geocoding` - 8 тестов OK;
+  - полный `unittest discover -s tests` - 105 тестов OK;
+  - `py_compile` - OK;
+  - `bash -n deploy/vds/*.sh` и `git diff --check` - OK.
+
+### Windows Acceptance Helper DNS/Version Guard
+
+- Обновлён `tools/windows_backend_acceptance.ps1`.
+- Основной backend URL теперь `https://api.taksklad.uz`, а не временный `sslip.io`.
+- Добавлен запуск исходников через `-UsePython`, чтобы при наличии рядом `TakSklad.exe` можно было принудительно открыть текущий код.
+- При запуске `main.py` helper проверяет `APP_VERSION` не ниже `1.1.17`.
+- Для исходников helper предпочитает `.venv\Scripts\python.exe`, если виртуальное окружение есть.
+- Для exe добавлено предупреждение: версию внутри exe helper надёжно не проверяет, поэтому нельзя брать старый ярлык `1.1.7`.
+- Обновлены:
+  - `docs/windows-backend-acceptance.md`;
+  - `docs/manual-acceptance-runbook.md`;
+  - `docs/deploy-rollback-runbook.md`;
+  - `tools/prepare_acceptance_kit.py`;
+  - acceptance kit README/manifest.
+- Проверено:
+  - `tests.test_windows_acceptance_helper tests.test_acceptance_excel_generator` - 5 тестов OK;
+  - полный `unittest discover -s tests` - 105 тестов OK;
+  - `py_compile` для `main.py`, `src/taksklad/*.py`, `backend/app/*.py`, `tools/*.py` - OK;
+  - `bash -n deploy/vds/*.sh` и `git diff --check` - OK;
+  - `version.json` валиден и не изменён.
+- Ограничение: PowerShell parser локально не проверен, потому что `pwsh` на macOS не установлен. Синтаксис нужно дополнительно проверить на Windows или в среде с PowerShell.
+
+### Windows Test Archive Helper
+
+- Добавлен `tools/build_windows_test_archive.ps1`.
+- Назначение: собрать свежую тестовую Windows-сборку для приёмки 2.0 без GitHub Release, без изменения публичного `version.json` и без push-уведомлений.
+- Helper:
+  - проверяет `APP_VERSION` и минимальную версию `1.1.17`;
+  - проверяет, что `version.json` не имеет локальных изменений;
+  - по умолчанию требует, чтобы `version.json` был закреплён на стабильной `1.1.7`;
+  - опционально устанавливает зависимости через `-InstallDependencies`;
+  - запускает тесты, если не передан `-SkipTests`;
+  - собирает PyInstaller `--onedir`;
+  - добавляет в пакет `windows_backend_acceptance.ps1` и acceptance kit;
+  - копирует содержимое PyInstaller-папки в `TakSklad\` и проверяет наличие `TakSklad.exe`;
+  - проверяет, что в test package не попали локальные runtime/secret-файлы: `TakSklad_data.json`, `credentials.json`, `telegram_settings.json`, `yandex_geocoder_key.txt`, `pending_*.json`;
+  - пишет `build_manifest.json`, `README_TEST_BUILD.md`, ZIP и SHA256.
+- Обновлены:
+  - `docs/windows-backend-acceptance.md`;
+  - `docs/manual-acceptance-runbook.md`;
+  - `docs/product-mvp-2.0-plan.md`;
+  - `docs/vds-release-readiness.md`;
+  - `tools/prepare_acceptance_kit.py`;
+  - acceptance kit README/manifest.
+- Проверено:
+  - `tests.test_windows_test_build_helper tests.test_acceptance_excel_generator tests.test_windows_acceptance_helper` - 7 тестов OK;
+  - полный `unittest discover -s tests` - 107 тестов OK;
+  - `py_compile` для `main.py`, `src/taksklad/*.py`, `backend/app/*.py`, `tools/*.py` - OK;
+  - `bash -n deploy/vds/*.sh` и `git diff --check` - OK;
+  - `version.json` не изменён.
+- Ограничение: сам Windows archive локально не собран, потому что текущая среда macOS. Helper нужно запускать на Windows.
+
+### Local Release Preflight
+
+- Добавлен `tools/release_preflight.py`.
+- Назначение: перед ручной приёмкой одной локальной командой проверить, что проект находится в безопасном состоянии для acceptance.
+- Проверяет:
+  - обязательные helper/runbook-файлы;
+  - `version.json`: закреплён на `1.1.7`, `mandatory=false`, download URL пустые, git diff отсутствует;
+  - acceptance kit: manifest, Excel, SHA256, marker `ACCEPTANCE`, safety-флаги;
+  - tracked runtime/secret-файлы в Git;
+  - публичный backend health `https://api.taksklad.uz/health`.
+- Поддерживает `--skip-network` для локального теста без сетевого запроса.
+- Добавлены тесты `tests/test_release_preflight.py`.
+- Проверено:
+  - `tests.test_release_preflight tests.test_acceptance_excel_generator` - 7 тестов OK;
+  - `.venv/bin/python tools/release_preflight.py` - `status=ok`, публичный `api.taksklad.uz/health` ответил `status=ok`;
+  - `py_compile` для `tools/release_preflight.py` - OK.
+  - полный `unittest discover -s tests` - 111 тестов OK;
+  - `py_compile` для `main.py`, `src/taksklad/*.py`, `backend/app/*.py`, `tools/*.py` - OK;
+  - `bash -n deploy/vds/*.sh` и `git diff --check` - OK;
+  - `version.json` не изменён.
+- Обновлены:
+  - `tools/prepare_acceptance_kit.py`;
+  - `outputs/taksklad_acceptance/README.md`;
+  - `outputs/taksklad_acceptance/acceptance_manifest.json`;
+  - `docs/manual-acceptance-runbook.md`;
+  - `docs/vds-release-readiness.md`;
+  - `docs/product-mvp-2.0-plan.md`.
+
+### Acceptance Result Template
+
+- В acceptance kit добавлен `ACCEPTANCE_RESULTS_TEMPLATE.md`.
+- Шаблон фиксирует:
+  - preflight;
+  - Telegram import;
+  - SkladBot matching;
+  - Windows desktop acceptance;
+  - cleanup;
+  - defects/known issues;
+  - итоговое решение `GO/NO-GO`.
+- `tools/release_preflight.py` теперь проверяет наличие result template.
+- Обновлены `docs/manual-acceptance-runbook.md`, `docs/vds-release-readiness.md`, `docs/product-mvp-2.0-plan.md`.
+- Проверено после добавления шаблона:
+  - `tests.test_release_preflight tests.test_acceptance_excel_generator` - 8 тестов OK;
+  - `.venv/bin/python tools/release_preflight.py --skip-network` - `status=ok`;
+  - `.venv/bin/python tools/release_preflight.py` - `status=ok`, публичный `https://api.taksklad.uz/health` ответил `status=ok`;
+  - полный `unittest discover -s tests` - 112 тестов OK;
+  - `py_compile` для `main.py`, `src/taksklad/*.py`, `backend/app/*.py`, `tools/*.py` - OK;
+  - `bash -n deploy/vds/*.sh` и `git diff --check` - OK;
+  - `version.json` не изменён и остаётся закреплён на стабильной `1.1.7`.
+
+### Logistics Report Blocks And Prices
+
+- Проверен реальный шаблон логистики `Список_заказов_на_доставку_Чапамана_на_29_05_2026.xlsx`.
+- Зафиксирован риск: колонка `Кол-во` в логистическом файле должна отражать блоки, а не пачки/штуки.
+- Исправлен `backend/app/logistics_service.py`:
+  - `Кол-во` теперь заполняется из `quantity_blocks`;
+  - `Цена` теперь заполняется ценой за блок;
+  - если цена за блок не пришла из импорта, используется `240000`;
+  - `Цена заказа` остаётся общей суммой позиции.
+- Это закрывает кейс Smartup: `200` пачек в импорте превращаются в `20` блоков в логистике, цена становится `240000`, сумма `4800000`.
+- Проверено:
+  - `tests.test_backend_api_persistence.BackendApiPersistenceTests.test_logistics_report_uses_shipment_date_coordinates_and_prices` - OK;
+  - `tests.test_backend_api_persistence.BackendApiPersistenceTests.test_logistics_report_requires_coordinates` - OK;
+  - `tests.test_backend_api_persistence.BackendApiPersistenceTests.test_logistics_report_normalizes_three_part_coordinates` - OK;
+  - полный `unittest discover -s tests` - 112 тестов OK;
+  - `py_compile` для `main.py`, `src/taksklad/*.py`, `backend/app/*.py`, `tools/*.py` - OK;
+  - `.venv/bin/python tools/release_preflight.py` - `status=ok`;
+  - `bash -n deploy/vds/*.sh` и `git diff --check` - OK;
+  - `version.json` не изменён.
+
+### Returns List In Backend And Desktop
+
+- Закрыт локальный разрыв по возвратам: после отметки возврата не было отдельного списка уже принятых возвратов.
+- Добавлен backend endpoint `GET /api/v1/returns`.
+- В `OrderRead` добавлены безопасные поля возврата:
+  - `return_status`;
+  - `returned_at`;
+  - `return_reference`.
+- Окно `Возвраты` в desktop теперь показывает блок `Последние возвраты`.
+- После успешного `Принять возврат` список обновляется сразу.
+- Возврат по-прежнему ищется только среди закрытых/архивных заказов по номеру или ID заявки SkladBot.
+- Проверено:
+  - `tests.test_backend_api_persistence.BackendApiPersistenceTests.test_return_lookup_and_mark_returned_excludes_order_from_active_list` - OK;
+  - полный `unittest discover -s tests` - 112 тестов OK;
+  - `py_compile` для `main.py`, `src/taksklad/*.py`, `backend/app/*.py`, `tools/*.py` - OK;
+  - `.venv/bin/python tools/release_preflight.py` - `status=ok`;
+  - `bash -n deploy/vds/*.sh` и `git diff --check` - OK;
+  - `version.json` не изменён.
+
+### Return Duplicate Guard And Acceptance Checklist
+
+- Закрыт риск повторного принятия одного и того же возврата.
+- Backend `POST /api/v1/returns/{order_id}` теперь возвращает `409`, если заказ уже в статусе `returned` или `return_status=returned`.
+- Desktop при поиске уже возвращённой заявки показывает, что возврат уже принят, и блокирует кнопку `Принять возврат`.
+- Acceptance result template дополнен проверками возвратов:
+  - открыть окно `Возвраты`;
+  - найти завершённую заявку по ШК/номеру;
+  - принять возврат;
+  - увидеть его в `Последние возвраты`;
+  - убедиться, что повторное принятие запрещено.
+- Acceptance kit пересобран через `tools/prepare_acceptance_kit.py`.
+- Проверено:
+  - `tests.test_backend_api_persistence.BackendApiPersistenceTests.test_return_lookup_and_mark_returned_excludes_order_from_active_list` - OK;
+  - `tests.test_acceptance_excel_generator` - OK;
+  - полный `unittest discover -s tests` - 112 тестов OK;
+  - `py_compile` для `main.py`, `src/taksklad/*.py`, `backend/app/*.py`, `tools/*.py` - OK;
+  - `.venv/bin/python tools/release_preflight.py` - `status=ok`, acceptance kit SHA обновлён и совпадает с manifest;
+  - `bash -n deploy/vds/*.sh` и `git diff --check` - OK;
+  - `version.json` не изменён.
+
+### SkladBot Vendor Code Product Matching
+
+- Закрыт риск SkladBot matching по товарам, если SkladBot отдаёт товар как vendor code без пробелов, например `CHPMBrownOP20UZ`.
+- Backend worker и desktop fallback теперь извлекают Chapman SKU не только из токенов, но и из compact-строки:
+  - цвет `brown`, `red`, `gold`;
+  - формат `OP`, `SSL`.
+- Это сохраняет строгую бизнес-логику: совпадение всё равно идёт по цвету, формату и блокам, но не ломается из-за отсутствия пробелов/тире в коде.
+- Добавлены регрессионные проверки:
+  - `Chapman Brown OP 20` совпадает с `CHPMBrownOP20UZ`;
+  - `Chapman Gold SSL 100\`20` совпадает с `CHPMGoldSSL20UZ`;
+  - `Brown OP` не совпадает с `Red OP`.
+- Проверено:
+  - `tests.test_backend_skladbot_worker` - OK;
+  - `tests.test_skladbot_sync.SkladBotSyncTests.test_product_match_accepts_concatenated_vendor_code` - OK;
+  - полный `unittest discover -s tests` - 114 тестов OK;
+  - `py_compile` для `main.py`, `src/taksklad/*.py`, `backend/app/*.py`, `tools/*.py` - OK;
+  - `.venv/bin/python tools/release_preflight.py` - `status=ok`;
+  - `bash -n deploy/vds/*.sh` и `git diff --check` - OK;
+  - `version.json` не изменён.
+
+### Desktop UI Contract Guard
+
+- После проверки локального запуска зафиксирован риск: можно случайно запускать старую рабочую линию `1.1.7` и принять её за текущий dev-интерфейс.
+- Добавлен тест `tests/test_desktop_ui_contract.py`, который защищает основной складской экран 2.0:
+  - на главном экране должны быть `Заказы для КИЗов`, `Возвраты`, `Текущая позиция`, `Сканирование кода`, `Завершить заказ`, `Закрыть смену`;
+  - старые складские кнопки `Импорт Excel`, `Товары`, `Контроль` не должны возвращаться на главный экран;
+  - палитра TakSklad закреплена вокруг `#F0E68C` и чёрного;
+  - `AppButton` должен оставаться округлённым.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_desktop_ui_contract` - 3 теста OK.
+  - `.venv/bin/python -m unittest discover -s tests` - 117 тестов OK.
+  - `git diff --check` - OK.
+  - `version.json` не изменён.
+
+### Windows Acceptance Old Exe Guard
+
+- Усилен Windows acceptance helper, чтобы не повторить ситуацию, когда вместо текущей тестовой линии запускается старый рабочий `TakSklad.exe` `1.1.7`.
+- `tools/windows_backend_acceptance.ps1` теперь:
+  - при запуске из исходников по-прежнему проверяет `APP_VERSION` не ниже `1.1.17`;
+  - при запуске `.exe` ищет `build_manifest.json` рядом с test archive;
+  - сверяет `app_version` из manifest с ожидаемой версией;
+  - останавливает запуск exe без manifest, если явно не передан `-SkipAppVersionCheck`.
+- `tools/build_windows_test_archive.ps1` теперь кладёт в test archive `ACCEPTANCE_RESULTS_TEMPLATE.md`, чтобы результаты Windows/Telegram/SkladBot приёмки можно было заполнить прямо из комплекта.
+- Обновлены инструкции:
+  - `docs/windows-backend-acceptance.md`;
+  - `docs/manual-acceptance-runbook.md`.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_windows_acceptance_helper tests.test_windows_test_build_helper` - 4 теста OK.
+  - `.venv/bin/python -m unittest discover -s tests` - 117 тестов OK.
+  - `.venv/bin/python tools/release_preflight.py` - `status=ok`.
+  - `bash -n deploy/vds/*.sh` и `git diff --check` - OK.
+  - `version.json` не изменён.
+
+### Release Preflight Windows Acceptance Guard
+
+- `tools/release_preflight.py` расширен проверкой `windows_acceptance_flow`.
+- Preflight теперь перед ручной приёмкой проверяет не только `version.json`, backend health и acceptance kit, но и то, что:
+  - `windows_backend_acceptance.ps1` содержит guard по `build_manifest.json`;
+  - helper умеет остановить exe без проверяемого manifest;
+  - `build_windows_test_archive.ps1` кладёт `ACCEPTANCE_RESULTS_TEMPLATE.md`;
+  - test archive build по-прежнему проверяет, что `version.json` закреплён на стабильной `1.1.7`;
+  - package не должен содержать runtime/secret-файлы.
+- Acceptance kit пересобран через `tools/prepare_acceptance_kit.py`; README теперь описывает проверку exe через `build_manifest.json`.
+- Исправлена повторяемость acceptance Excel: `tools/generate_acceptance_excel.py` теперь фиксирует `docProps/core.xml` modified timestamp, поэтому повторная генерация `.xlsx` даёт одинаковые байты и SHA.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_release_preflight tests.test_acceptance_excel_generator` - 11 тестов OK.
+  - текущий SHA-256 acceptance Excel: `204b932a704b39294b513a95964844db1ed74d028e3daff13beef3ab09ec98fd`.
+  - `.venv/bin/python -m unittest discover -s tests` - 120 тестов OK.
+  - `.venv/bin/python tools/release_preflight.py` - `status=ok`, включая `windows_acceptance_flow`.
+  - `bash -n deploy/vds/*.sh` и `git diff --check` - OK.
+  - `version.json` не изменён.
+
+### VDS Acceptance Status Rollout Guard
+
+- Усилен `deploy/vds/acceptance_status.sh`, чтобы серверная read-only проверка была такой же строгой, как локальный preflight.
+- Теперь VDS status дополнительно:
+  - проверяет наличие `result_template` из acceptance manifest;
+  - падает, если `version.json` уже не закреплён на `1.1.7`;
+  - падает, если `mandatory=true` или заполнены download URL до приёмки;
+  - проверяет safety-флаги manifest: без изменения `version.json`, без GitHub Release, без push-уведомлений и без секретов.
+- Добавлен тест `tests/test_vds_acceptance_scripts.py`:
+  - защищает rollout guards в `acceptance_status.sh`;
+  - проверяет, что verifier/cleanup scripts по-прежнему отказываются работать с небезопасным marker.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_vds_acceptance_scripts` - 2 теста OK.
+  - `.venv/bin/python -m unittest discover -s tests` - 122 теста OK.
+  - `.venv/bin/python tools/release_preflight.py` - `status=ok`.
+  - `bash -n deploy/vds/*.sh` и `git diff --check` - OK.
+  - `version.json` не изменён.
+
+### VDS Acceptance Kit Sync After Rollout Guard
+
+- На VDS синхронизированы только read-only acceptance/preflight файлы, без rebuild и без рестарта контейнеров:
+  - `deploy/vds/acceptance_status.sh`;
+  - `deploy/vds/verify_acceptance_marker.sh`;
+  - `deploy/vds/wait_acceptance_marker.sh`;
+  - `deploy/vds/cleanup_acceptance_marker.sh`;
+  - `outputs/taksklad_acceptance/README.md`;
+  - `outputs/taksklad_acceptance/acceptance_manifest.json`;
+  - `outputs/taksklad_acceptance/ACCEPTANCE_RESULTS_TEMPLATE.md`;
+  - `outputs/taksklad_acceptance/TakSklad_Telegram_Acceptance_2026-05-31.xlsx`.
+- На VDS выполнен read-only `./deploy/vds/acceptance_status.sh`.
+- Результат VDS status:
+  - `status=ok`;
+  - backend health: `status=ok`;
+  - контейнеры `backend-api`, `frontend`, `postgres`, `skladbot-worker`, `telegram-worker` running;
+  - acceptance Excel SHA совпал: `204b932a704b39294b513a95964844db1ed74d028e3daff13beef3ab09ec98fd`;
+  - acceptance marker пока пустой: `orders=0`, `scan_codes=0`, `pending_events=0`;
+  - VDS `version.json`: `latest_version=1.1.7`, `min_supported_version=1.1.7`, `mandatory=false`, download URL пустые.
+- Что не делалось:
+  - `.env` не менялся;
+  - БД не менялась;
+  - контейнеры не перезапускались;
+  - `version.json` не менялся;
+  - release/archive/push-уведомления не запускались.
+
+### Windows Acceptance Minimum Version Guard
+
+- Уточнена проверка версии в `tools/windows_backend_acceptance.ps1`.
+- Раньше helper был привязан к точной тестовой версии `1.1.17`; это могло заблокировать будущую сборку `2.0.0`, хотя она новее и подходит для приёмки.
+- Теперь по умолчанию проверяется минимальная версия `MinAppVersion = 1.1.17`.
+- Если нужно проверить строго конкретную сборку, можно явно передать `-ExpectedAppVersion`.
+- Для `.exe` правило осталось строгим по безопасности: запуск разрешён только из fresh test archive с `build_manifest.json`, либо через явный `-SkipAppVersionCheck`.
+- Обновлены:
+  - `tools/release_preflight.py`;
+  - `tools/prepare_acceptance_kit.py`;
+  - `docs/windows-backend-acceptance.md`;
+  - `docs/manual-acceptance-runbook.md`;
+  - связанные unit tests.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_windows_acceptance_helper tests.test_release_preflight tests.test_windows_test_build_helper` - 11 тестов OK.
+  - `version.json` не изменён.
+
+### Acceptance Kit Regeneration And VDS Status After Minimum Guard
+
+- Acceptance kit пересобран после перехода Windows helper на минимальную версию.
+- Локально проверено:
+  - `.venv/bin/python -m unittest discover -s tests` - 122 теста OK;
+  - `.venv/bin/python tools/release_preflight.py` - `status=ok`;
+  - `git diff --check` - OK;
+  - `bash -n deploy/vds/*.sh` - OK;
+  - `version.json` без git diff.
+- На VDS повторно синхронизированы только read-only acceptance-файлы:
+  - acceptance scripts;
+  - acceptance manifest/README/result template;
+  - acceptance Excel.
+- На VDS выполнен `./deploy/vds/acceptance_status.sh`.
+- Результат:
+  - `status=ok`;
+  - backend health OK;
+  - контейнеры `backend-api`, `frontend`, `postgres`, `skladbot-worker`, `telegram-worker` running;
+  - acceptance Excel SHA совпал: `204b932a704b39294b513a95964844db1ed74d028e3daff13beef3ab09ec98fd`;
+  - marker пока пустой: `orders=0`, `scan_codes=0`, `pending_events=0`;
+  - VDS `version.json`: `latest_version=1.1.7`, `min_supported_version=1.1.7`, `mandatory=false`, download URL пустые.
+- Не делалось:
+  - релизный Windows archive не собирался;
+  - GitHub Release не создавался;
+  - push-уведомления и автообновление не запускались;
+  - контейнеры не перезапускались.
+
+### Telegram Update Isolation Guard
+
+- Закрыт риск Telegram worker: одна ошибка при обработке кнопки или отчёта могла уронить весь `poll_once`.
+- Это было опасно для согласованного сценария, где менеджер отправляет несколько Excel-файлов подряд: сбой на одном update мог помешать обработке следующих сообщений из той же пачки.
+- Теперь каждый Telegram update обрабатывается отдельно:
+  - ошибка логируется;
+  - пользователю отправляется понятное сообщение с причиной;
+  - следующий update продолжает обрабатываться;
+  - offset сохраняется после пачки updates.
+- Добавлен регрессионный тест:
+  - первый update с кнопкой `Отчёт логистики` падает из-за временной backend-ошибки;
+  - второй update с Excel-файлом всё равно ставится в очередь импорта;
+  - offset сохраняется на последнем update.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_backend_telegram_import` - 11 тестов OK.
+  - `.venv/bin/python -m unittest discover -s tests` - 123 теста OK.
+  - `.venv/bin/python tools/release_preflight.py` - `status=ok`.
+  - `git diff --check` - OK.
+  - `version.json` не изменён.
+
+### Import Address Country Prefix Cleanup
+
+- Закрыт мелкий риск по адресам из Excel/Smartup/геокодера.
+- По утверждённому ТЗ адреса для логистики должны храниться без страны: город и адрес, но не `Узбекистан`.
+- Backend Excel importer уже чистил русское `Узбекистан`, но не чистил латинские варианты.
+- Теперь при импорте адресов удаляются префиксы:
+  - `Узбекистан, ...`;
+  - `Uzbekistan, ...`;
+  - `O'zbekiston, ...`;
+  - `Oʻzbekiston, ...`.
+- Добавлен регрессионный тест на импорт Excel с адресами `Uzbekistan, Tashkent...` и `O'zbekiston, Toshkent...`.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_backend_telegram_import` - 12 тестов OK.
+  - `.venv/bin/python -m unittest discover -s tests` - 124 теста OK.
+  - `.venv/bin/python tools/release_preflight.py` - `status=ok`.
+  - `git diff --check` - OK.
+  - `bash -n deploy/vds/*.sh` - OK.
+  - `version.json` не изменён.
+
+### Backend Address Geocoding For Telegram Import
+
+- Закрыт пробел по ТЗ логистики: backend Telegram import теперь может получить координаты по адресу, если Excel-файл не содержит колонку координат.
+- В `backend/app/excel_importer.py` добавлено:
+  - чтение ключа из env `YANDEX_GEOCODER_API_KEY`;
+  - запрос к Яндекс Геокодеру по адресу;
+  - преобразование ответа Яндекса из `longitude latitude` в формат `latitude, longitude`;
+  - cache на один импорт, чтобы одинаковые адреса не били API повторно;
+  - предупреждение в meta, если координаты получить не удалось.
+- В VDS compose проброшены:
+  - `YANDEX_GEOCODER_API_KEY` в `backend-api` и `telegram-worker`;
+  - `TAKSKLAD_DEFAULT_BLOCK_PRICE` в `telegram-worker`.
+- `.env.example` обновлён без секретов.
+- Добавлены регрессионные тесты:
+  - импорт Excel без координат вызывает geocoder и сохраняет координаты;
+  - VDS compose содержит env для геокодера и цены блока.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_backend_telegram_import tests.test_vds_acceptance_scripts` - 16 тестов OK.
+  - `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK.
+  - `.venv/bin/python -m unittest discover -s tests` - 126 тестов OK.
+  - `.venv/bin/python tools/release_preflight.py` - `status=ok`.
+  - `git diff --check` - OK.
+  - `bash -n deploy/vds/*.sh` - OK.
+  - `version.json` не изменён.
+
+### VDS Backend Refresh After Geocoding Update
+
+- На VDS доставлены актуальные файлы backend/import/VDS без секретов:
+  - `backend/`;
+  - `deploy/vds/`;
+  - `outputs/taksklad_acceptance/`.
+- В `deploy/vds/.env` проверены безопасные runtime-переменные:
+  - `TAKSKLAD_DEFAULT_BLOCK_PRICE=240000` есть;
+  - `YANDEX_GEOCODER_API_KEY` пока пустой, поэтому реальный геокодинг на VDS включится только после добавления ключа.
+- Пересобраны и перезапущены только сервисы приложения:
+  - `backend-api`;
+  - `telegram-worker`;
+  - `skladbot-worker`.
+- Postgres data, frontend, `version.json`, GitHub Release и Windows release archive не трогались.
+- VDS status после перезапуска:
+  - `./deploy/vds/acceptance_status.sh` - `status=ok`;
+  - публичный `https://api.taksklad.uz/health` - `200`, `status=ok`;
+  - `backend-api`, `frontend`, `postgres`, `skladbot-worker`, `telegram-worker` - running;
+  - acceptance Excel SHA совпал: `204b932a704b39294b513a95964844db1ed74d028e3daff13beef3ab09ec98fd`;
+  - VDS `version.json`: `latest_version=1.1.7`, `min_supported_version=1.1.7`, `mandatory=false`, download URL пустые.
+- Локальные проверки после доставки:
+  - `.venv/bin/python -m unittest discover -s tests` - 126 тестов OK;
+  - `.venv/bin/python tools/release_preflight.py` - `status=ok`;
+  - `git diff --check` - OK;
+  - `bash -n deploy/vds/*.sh` - OK;
+  - `version.json` не изменён.
+
+### Local Desktop 2.0 Source Launcher
+
+- Добавлен `tools/run_desktop_local.sh`.
+- Назначение: открыть текущую desktop-ветку из исходников, чтобы не запускать старый Windows-ярлык/старый exe `1.1.7`.
+- Скрипт:
+  - запускается из корня проекта;
+  - использует `.venv/bin/python`, если virtualenv есть;
+  - выставляет `PYTHONPATH=src`;
+  - запускает `python -m taksklad.main`.
+- Это не релизная сборка, не GitHub Release и не автообновление.
+- В `docs/manual-acceptance-runbook.md` добавлена команда локального запуска:
+  - `./tools/run_desktop_local.sh`.
+
+### Telegram Hidden Admin Commands Guard
+
+- Закрыт риск лишнего пользовательского шума и случайного доступа к служебным командам.
+- Нижнее меню Telegram не изменилось:
+  - `Дата отгрузки`;
+  - `Отчёт логистики`;
+  - `КИЗ по файлам`.
+- Системное меню команд Telegram по-прежнему содержит только:
+  - `/date`;
+  - `/logistics`;
+  - `/kiz_files`.
+- Скрытые команды `/health`, `/imports`, `/logs` не попадают в `setMyCommands`.
+- Добавлен env `TELEGRAM_ADMIN_CHAT_IDS`.
+- Если `TELEGRAM_ADMIN_CHAT_IDS` задан, скрытые команды доступны только указанным chat_id; остальные разрешённые пользователи получают сообщение `Команда доступна только администратору`.
+- Если `TELEGRAM_ADMIN_CHAT_IDS` пустой, сохраняется прежнее поведение для разрешённых chat_id, чтобы не потерять аварийную диагностику до настройки админов.
+- На VDS доставлены:
+  - `backend/app/telegram_worker.py`;
+  - `deploy/vds/docker-compose.yml`;
+  - `deploy/vds/.env.example`.
+- В серверный `.env` добавлена пустая строка `TELEGRAM_ADMIN_CHAT_IDS=`, без секретов.
+- Пересобраны `telegram-worker` и зависимый `backend-api`; Postgres data, frontend, `version.json`, Windows archive и GitHub Release не трогались.
+- VDS status после перезапуска:
+  - `./deploy/vds/acceptance_status.sh` - `status=ok`;
+  - `https://api.taksklad.uz/health` - `200`, `status=ok`;
+  - контейнеры running.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_backend_telegram_import tests.test_vds_acceptance_scripts` - 17 тестов OK;
+  - `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK;
+  - `git diff --check` - OK;
+  - `bash -n deploy/vds/*.sh tools/run_desktop_local.sh` - OK.
+
+### VDS Runtime Guard For Telegram Admins And SkladBot Interval
+
+- Проверены VDS runtime-настройки без вывода секретов:
+  - `TELEGRAM_ALLOWED_CHAT_IDS` задан;
+  - `TELEGRAM_ADMIN_CHAT_IDS` был пустой;
+  - `SKLADBOT_WORKER_INTERVAL_SECONDS` был `600`;
+  - `YANDEX_GEOCODER_API_KEY` пока пустой.
+- На VDS обновлены безопасные runtime-настройки:
+  - `TELEGRAM_ADMIN_CHAT_IDS` зафиксирован равным текущим разрешённым chat_id, чтобы скрытые команды не оставались открытым fallback для будущих новых пользователей;
+  - `SKLADBOT_WORKER_INTERVAL_SECONDS=60`, чтобы новые заявки SkladBot подтягивались быстрее.
+- В коде `skladbot-worker` дефолтный интервал также снижен до 60 секунд, но ниже 60 секунд не опускается.
+- В `deploy/vds/.env.example` `SKLADBOT_WORKER_INTERVAL_SECONDS` изменён с `600` на `60`.
+- В `deploy/vds/docker-compose.yml` `env_file` сделан переключаемым через `TAKSKLAD_ENV_FILE`:
+  - на VDS по умолчанию остаётся `.env`;
+  - для локальных проверок можно использовать `.env.example`, не подмешивая локальные секреты.
+- Проверка clean compose config с `.env.example` больше не подтягивает локальный `.env`; `SKLADBOT_WORKER_INTERVAL_SECONDS` в config равен `60`.
+- На VDS синхронизированы `backend/app/skladbot_worker.py`, `backend/app/telegram_worker.py`, `deploy/vds/docker-compose.yml`, `deploy/vds/.env.example`.
+- Перезапущены/подтверждены running:
+  - `backend-api`;
+  - `skladbot-worker`;
+  - `telegram-worker`.
+- Не трогались:
+  - Postgres data;
+  - frontend;
+  - `version.json`;
+  - Windows release archive;
+  - GitHub Release;
+  - push-уведомления.
+- VDS status:
+  - `TELEGRAM_ALLOWED_CHAT_IDS`: задано 2 chat_id;
+  - `TELEGRAM_ADMIN_CHAT_IDS`: задано 2 chat_id;
+  - `SKLADBOT_WORKER_INTERVAL_SECONDS=60`;
+  - `YANDEX_GEOCODER_API_KEY_SET=False`;
+  - `./deploy/vds/acceptance_status.sh` - `status=ok`;
+  - `https://api.taksklad.uz/health` - `200`, `status=ok`.
+
+### Release GO/NO-GO Machine Gate
+
+- Добавлен `tools/release_go_no_go.py`.
+- Назначение: не позволить назвать 2.0 готовым только по ощущениям или частичным тестам.
+- Скрипт читает заполненный файл `outputs/taksklad_acceptance/ACCEPTANCE_RESULTS.md`.
+- Для `GO` обязательны:
+  - принят Telegram import;
+  - принят SkladBot matching;
+  - принята Windows desktop acceptance;
+  - нет критичных дефектов;
+  - rollback понятен;
+  - `version.json` всё ещё не менялся;
+  - строка `GO к подготовке release 2.0` отмечена;
+  - строка `NO-GO, релиз откладывается` не отмечена.
+- Раздел дефектов проверяется отдельно: незакрытый `critical`/`blocker`/`p0`/`p1` переводит результат в `no_go`.
+- `tools/release_preflight.py` теперь требует наличие `tools/release_go_no_go.py`.
+- `tools/build_windows_test_archive.ps1` кладёт `release_go_no_go.py` в test archive.
+- `tools/prepare_acceptance_kit.py` добавляет в шаблон приёмки команду:
+  - скопировать `ACCEPTANCE_RESULTS_TEMPLATE.md` в `ACCEPTANCE_RESULTS.md`;
+  - заполнить фактические результаты;
+  - запустить `release_go_no_go.py`.
+- На VDS синхронизированы GO/NO-GO gate и acceptance kit.
+- Проверено:
+  - `.venv/bin/python -m unittest discover -s tests` - 138 тестов OK;
+  - `.venv/bin/python tools/release_preflight.py` - `status=ok`;
+  - `tools/release_go_no_go.py` на незаполненном шаблоне возвращает `status=no_go`, как и должен до ручной приёмки;
+  - VDS `acceptance_status.sh` - `status=ok`;
+  - `version.json` не изменён.
+
+### Desktop Final Position Finish Flow
+
+- Закрыт UX-разрыв в складском интерфейсе 2.0.
+- Было: после полного скана последней позиции приложение всё ещё просило нажать `Следующая позиция`, а уже после этого открывало завершение заказа.
+- Стало: если сотрудник досканировал последнюю позицию заказа, активируется `ЗАВЕРШИТЬ ЗАКАЗ`; печать сводного листа открывается после этой кнопки.
+- Для непоследней позиции логика не менялась: после выполнения позиции активна `Следующая позиция`.
+- Если позиция уже была полностью отсканирована при загрузке заказа, кнопки выставляются по той же логике.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_desktop_ui_contract tests.test_printing tests.test_daily_report` - 8 тестов OK;
+  - `version.json` не изменён;
+  - Windows release archive и push-уведомления не запускались.
+
+### Telegram Bottom Keyboard Regression Guard
+
+- Усилен тестовый контракт Telegram-интерфейса.
+- Теперь `tests/test_backend_telegram_import.py` проверяет:
+  - все три пользовательские кнопки нижней панели: `Дата отгрузки`, `Отчёт логистики`, `КИЗ по файлам`;
+  - `resize_keyboard=True`;
+  - `is_persistent=True`;
+  - клавиатура остаётся в `reply_markup` при отправке пользователю Excel-документа.
+- Это защищает согласованное ТЗ: менеджер работает через нижнюю панель Telegram, а не через видимые админские команды.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_backend_telegram_import` - 16 тестов OK;
+  - `version.json` не изменён.
+
+### Release GO/NO-GO Section Gate
+
+- Усилен `tools/release_go_no_go.py`.
+- Был риск: можно было вручную отметить финальные галочки `GO`, но оставить пустыми реальные разделы приёмки.
+- Теперь gate требует:
+  - наличие разделов `1. Preflight`, `2. Telegram Import`, `3. SkladBot Matching`, `4. Windows Desktop Acceptance`, `5. Cleanup`, `6. Defects / Known Issues`, `7. Go / No-Go`;
+  - все чекбоксы в разделах `1-5` должны быть отмечены;
+  - финальные GO-чекбоксы должны быть отмечены;
+  - `NO-GO` должен быть не отмечен;
+  - незакрытые критичные дефекты по-прежнему переводят результат в `no_go`.
+- Это делает acceptance gate ближе к реальному релизному решению: нельзя перейти к release 2.0 без preflight, Telegram, SkladBot, Windows и cleanup.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_release_go_no_go tests.test_acceptance_excel_generator tests.test_release_preflight` - 18 тестов OK;
+  - `version.json` не изменён.
+
+### SkladBot Safe Partial Product Match
+
+- Закрыт риск ложного `Не найдено`, когда TakSklad-группа содержит часть товаров, а SkladBot-заявка уже содержит полный набор.
+- Новое правило: все товары и блоки из TakSklad должны совпасть; лишние товары в SkladBot-заявке допускаются.
+- Если несколько SkladBot-заявок подходят по partial-match, номер не пишется и статус остаётся `multiple` / `Несколько совпадений`.
+- Пустая группа товаров не матчится.
+- Изменены backend worker и desktop fallback:
+  - `backend/app/skladbot_worker.py`;
+  - `src/taksklad/skladbot.py`.
+- Добавлены регрессии для backend и desktop:
+  - SkladBot-заявка с лишним товаром матчится;
+  - пустая группа товаров не матчится;
+  - две подходящие partial-match заявки дают `multiple`.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_backend_skladbot_worker tests.test_skladbot_sync` - 30 тестов OK;
+  - `.venv/bin/python -m unittest discover -s tests` - 142 теста OK;
+  - `.venv/bin/python tools/release_preflight.py` - `status=ok`;
+  - `git diff --check` - OK;
+  - `tools/release_go_no_go.py` на незаполненном acceptance template вернул `status=no_go` и exit code `3`, как и должен до ручной приёмки;
+  - `version.json` не изменён.
+
+### VDS SkladBot Worker Sync After Partial Match
+
+- На VDS обнаружено расхождение `backend/app/skladbot_worker.py` с локальной веткой после partial-match фикса.
+- Синхронизирован только файл `backend/app/skladbot_worker.py` на `/opt/taksklad/app`.
+- Пересобран и перезапущен только сервис `skladbot-worker`.
+- Не трогались:
+  - Postgres data volume;
+  - `backend-api`;
+  - `telegram-worker`;
+  - frontend;
+  - `version.json`;
+  - Windows archive;
+  - GitHub Release/push-обновления.
+- Проверено на VDS:
+  - SHA256 `backend/app/skladbot_worker.py` совпадает с локальным: `63445d4a84fcb92126e7a14448002b628c1d809541bab2d1c669d5cad46ae78c`;
+  - `deploy/vds/acceptance_status.sh` вернул `status=ok`;
+  - `skladbot-worker` running;
+  - worker log: `no active backend orders, skip SkladBot API`;
+  - acceptance marker пустой: `orders=0`, `scan_codes=0`, `pending_events=0`;
+  - VDS `version.json` остался `1.1.7`, без download URL.
+
+### Desktop MVP 2.0 Version Marker
+
+- Добавлен визуальный маркер ветки в desktop: нижняя строка теперь показывает `Версия: 1.1.17 · MVP 2.0`.
+- Зачем: чтобы сразу отличать свежий локальный/test запуск от старого рабочего ярлыка `1.1.7`.
+- Публичный `version.json` не менялся, auto-update не включался.
+- Добавлено в startup self-check поле `build_label=MVP 2.0`, без секретов.
+- Изменены:
+  - `src/taksklad/config.py`;
+  - `src/taksklad/startup_check.py`;
+  - `src/taksklad/main.py`;
+  - `tests/test_startup_check.py`;
+  - `tests/test_desktop_ui_contract.py`.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_startup_check tests.test_desktop_ui_contract` - 7 тестов OK.
+  - `.venv/bin/python -m unittest discover -s tests` - 143 теста OK.
+  - `.venv/bin/python tools/release_preflight.py` - `status=ok`.
+  - `git diff --check` - OK.
+
+### Windows Acceptance Build Label Guard
+
+- Усилена защита от запуска старой или неправильной Windows-сборки во время приёмки 2.0.
+- `tools/build_windows_test_archive.ps1` теперь:
+  - читает `APP_BUILD_LABEL` из `src/taksklad/config.py`;
+  - по умолчанию требует `MVP 2.0`;
+  - записывает `app_build_label` в `build_manifest.json`;
+  - показывает build label в `README_TEST_BUILD.md`.
+- `tools/windows_backend_acceptance.ps1` теперь:
+  - при запуске из исходников проверяет `APP_BUILD_LABEL = MVP 2.0`;
+  - при запуске `TakSklad.exe` требует `build_manifest.json` со свежим `app_build_label`;
+  - останавливает старый `1.1.7` exe или архив без маркера 2.0 до запуска приложения.
+- Обновлены acceptance README/runbook и release preflight, чтобы этот guard был обязательным.
+- Зачем: пользователь уже столкнулся с запуском локальной `1.1.7`; теперь Windows-приёмка не даст принять старый интерфейс за MVP 2.0.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_windows_test_build_helper tests.test_windows_acceptance_helper tests.test_release_preflight tests.test_startup_check tests.test_desktop_ui_contract` - 18 тестов OK.
+  - `version.json` не менялся, push-обновления не включались.
+
+### Desktop Party Summary UI
+
+- В рабочий экран склада добавлена общая статистика выбранной партии.
+- После выбора заказа сотрудник видит:
+  - количество позиций;
+  - общий план в блоках;
+  - общую сумму заказа/партии;
+  - дату отгрузки;
+  - номер заявки SkladBot или пометку `без номера SkladBot`.
+- При сбросе выбора текст возвращается в `Партия не выбрана`.
+- Исправлена читаемость жёлтой кнопки `СЛЕДУЮЩАЯ ПОЗИЦИЯ`: текст теперь чёрный, под утверждённую палитру `#F0E68C + чёрный`.
+- Зачем: склад должен видеть не только текущую позицию, но и общий контекст партии, без лишних админских кнопок и без открытия дополнительных окон.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_desktop_ui_contract tests.test_startup_check` - 8 тестов OK;
+  - `.venv/bin/python -m py_compile src/taksklad/main.py` - OK.
+
+### Telegram Date Display Polish
+
+- Улучшено отображение дат в Telegram worker.
+- Backend по-прежнему хранит и отдаёт даты в ISO-формате `YYYY-MM-DD`, но пользователю в Telegram теперь показывается `DD.MM.YYYY`.
+- Обновлены:
+  - кнопки выбора даты логистического отчёта: `Логистика 29.05.2026`;
+  - список файлов в `КИЗ по файлам`: даты отображаются как `29.05.2026`, а не `2026-05-29`.
+- API-контракты не менялись.
+- Зачем: менеджер работает из Telegram, поэтому даты в кнопках должны быть человеческими, без технического ISO-формата.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_backend_telegram_import` - 18 тестов OK;
+  - `.venv/bin/python -m py_compile backend/app/telegram_worker.py` - OK.
+
+### VDS Telegram Worker Date Display Sync
+
+- Локальная Telegram-правка с пользовательским форматом дат доставлена на VDS.
+- Синхронизирован файл:
+  - `backend/app/telegram_worker.py`.
+- Пересобран и перезапущен `telegram-worker`.
+- Docker Compose также пересоздал `backend-api` как зависимость сборки, но Postgres volume и данные не трогались.
+- Не трогались:
+  - Postgres data volume;
+  - frontend;
+  - `skladbot-worker`;
+  - Windows archive;
+  - `version.json`;
+  - GitHub Release/push-обновления.
+- Проверено на VDS:
+  - SHA256 `backend/app/telegram_worker.py` совпадает с локальным: `16835844a4e37c7e59b39aefa07e721bc9846ab6bf3d571d6386ccbd5964b756`;
+  - `https://api.taksklad.uz/health` вернул `status=ok`;
+  - `deploy/vds/acceptance_status.sh` вернул `status=ok`;
+  - `telegram-worker` running;
+  - VDS `version.json` остался `1.1.7`, без download URL.
+
+### SkladBot Window Documentation Clarified
+
+- Проверены runtime-настройки `skladbot-worker` на VDS:
+  - `SKLADBOT_CUSTOMER_ID=6211`;
+  - `SKLADBOT_SHIPMENT_TYPE_ID=3389`;
+  - `SKLADBOT_SYNC_LOOKBACK_DAYS=1`;
+  - `SKLADBOT_REQUESTS_LIMIT=100`;
+  - `SKLADBOT_WORKER_INTERVAL_SECONDS=60`;
+  - `SKLADBOT_API_TIMEOUT_SECONDS=8`;
+  - `SKLADBOT_API_MAX_RETRIES=2`.
+- Документация уточнена: VDS worker работает узко и быстро по вчера/сегодня, а 14-дневное окно относится только к desktop fallback.
+- Зачем: в docs был старый общий текст про 14 дней, который противоречил согласованной серверной оптимизации.
+
+### Backend Duplicate KIZ Conflict Guard
+
+- Закрыт риск параллельной работы двух ПК по одному backend.
+- Раньше любой ответ backend `409 Code already scanned` desktop-очередь считала уже синхронизированным событием.
+- Это было удобно для повторной отправки после сетевого сбоя, но опасно для настоящего дубля: если другой ПК уже записал этот КИЗ в другую позицию, локальное событие могло исчезнуть из очереди.
+- Теперь backend:
+  - повтор того же кода в той же позиции возвращает успешный `ScanRead` без повторного увеличения счётчика;
+  - тот же код в другой позиции возвращает `409` с причиной `Code already scanned in another order item`.
+- Desktop backend queue больше не удаляет такой конфликт как успешно синхронизированный.
+- Зачем: при ручной Windows-приёмке и работе двух ПК дубли КИЗов не должны тихо исчезать из очереди.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_backend_api_persistence.BackendApiPersistenceTests.test_scan_create_is_idempotent_for_same_item_and_rejects_cross_order_duplicate tests.test_backend_bridge.BackendBridgeTests.test_backend_queue_keeps_ambiguous_duplicate_scan_conflict` - OK;
+  - `.venv/bin/python -m py_compile backend/app/orders_service.py src/taksklad/backend_events.py tests/test_backend_api_persistence.py tests/test_backend_bridge.py` - OK;
+  - `.venv/bin/python -m unittest discover -s tests` - 150 тестов OK;
+  - `.venv/bin/python tools/release_preflight.py` - `status=ok`.
+- Доставлено на VDS и применено через rebuild только `backend-api`.
+- Проверено на VDS:
+  - `https://api.taksklad.uz/health` - `status=ok`;
+  - `./deploy/vds/acceptance_status.sh` - `status=ok`, `version_json=1.1.7`, `release_go_no_go.status=no_go`.
+
+### Desktop Backend Status Indicator
+
+- На складской desktop-экран добавлен отдельный статус backend в блок статистики.
+- Возможные состояния:
+  - `Backend: выключен`;
+  - `Backend: не настроен`;
+  - `Backend: ожидает проверки`;
+  - `Backend: online, список из VDS`;
+  - `Backend: online, запись включена`;
+  - `Backend: очередь N`;
+  - `Backend: ошибка, очередь N`.
+- Статус обновляется после загрузки списка, фоновой синхронизации backend queue и ошибок backend queue.
+- Зачем: в плане 2.0 был отдельный пункт про понятный backend online/offline/sync pending. На Windows-приёмке оператор должен видеть, что тестовая копия работает через VDS, без открытия служебных окон.
+- Обновлены Windows acceptance checklist и acceptance kit: добавлена проверка `Backend: online, список из VDS`.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_desktop_ui_contract tests.test_backend_bridge` - 15 тестов OK;
+  - `.venv/bin/python -m py_compile src/taksklad/main.py src/taksklad/app_day_end.py tests/test_desktop_ui_contract.py` - OK;
+  - `.venv/bin/python -m unittest discover -s tests` - 152 теста OK;
+  - `.venv/bin/python tools/release_preflight.py` - `status=ok`;
+  - `.venv/bin/python tools/release_go_no_go.py --results outputs/taksklad_acceptance/ACCEPTANCE_RESULTS.md` - ожидаемо `status=no_go`.
+
+### Release GO/NO-GO Template Coverage Guard
+
+- Усилен `tools/release_go_no_go.py`: gate теперь сверяет `ACCEPTANCE_RESULTS.md` с соседним `ACCEPTANCE_RESULTS_TEMPLATE.md`.
+- Если обязательный чекбокс из шаблона удалили из файла результата, релиз остаётся `no_go` с явной причиной `required acceptance checkbox is missing`.
+- Если чекбокс есть, но не отмечен, релиз остаётся `no_go` с причиной `required acceptance checkbox is not checked`.
+- Зачем: нельзя случайно или вручную "пройти" приёмку 2.0, удалив неудобный пункт из `ACCEPTANCE_RESULTS.md`.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_release_go_no_go tests.test_vds_acceptance_scripts tests.test_acceptance_excel_generator` - 16 тестов OK;
+  - `.venv/bin/python -m unittest discover -s tests` - 153 теста OK;
+  - `.venv/bin/python tools/release_preflight.py` - `status=ok`;
+  - `.venv/bin/python tools/release_go_no_go.py --results outputs/taksklad_acceptance/ACCEPTANCE_RESULTS.md` - ожидаемо `status=no_go`, ручная Telegram/SkladBot/Windows-приёмка ещё не закрыта;
+  - `git diff -- version.json` - без изменений;
+  - `git diff --check` - OK.
+- Доставлено на VDS:
+  - `tools/release_go_no_go.py`;
+  - `tests/test_release_go_no_go.py`;
+  - связанные docs/отчёт;
+  - `ACCEPTANCE_RESULTS.md` и `ACCEPTANCE_RESULTS_TEMPLATE.md`.
+- Проверено на VDS:
+  - `python3 -m unittest tests.test_release_go_no_go` - 8 тестов OK;
+  - `./deploy/vds/acceptance_status.sh` - `status=ok`;
+  - `./deploy/vds/acceptance_status.sh --require-go` - ожидаемо exit `3`, причина `release GO/NO-GO is not go: no_go`;
+  - контейнеры running, `version_json=1.1.7`, download URL не задан.
+
+### Telegram Logistics Report Error Message
+
+- Улучшена обработка ошибки кнопки `Отчёт логистики` в Telegram.
+- Если backend не может собрать отчёт, например из-за отсутствующих координат, worker больше не уходит только в общий fallback `Не удалось выполнить действие Telegram`.
+- Теперь менеджер получает конкретное сообщение: `Не удалось выгрузить отчёт логистики за <дата>: <причина backend>`.
+- Зачем: логистический отчёт должен быть рабочим управленческим действием менеджера, поэтому ошибки по координатам/датам должны быть понятны без чтения логов.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_backend_telegram_import tests.test_backend_api_persistence` - 33 теста OK;
+  - `.venv/bin/python -m py_compile backend/app/telegram_worker.py tests/test_backend_telegram_import.py` - OK;
+  - `.venv/bin/python -m unittest discover -s tests` - 154 теста OK;
+  - `.venv/bin/python tools/release_preflight.py` - `status=ok`;
+  - `.venv/bin/python tools/release_go_no_go.py --results outputs/taksklad_acceptance/ACCEPTANCE_RESULTS.md` - ожидаемо `status=no_go`;
+  - `git diff -- version.json` - без изменений;
+  - `git diff --check` - OK.
+- Доставлено на VDS:
+  - `backend/app/telegram_worker.py`;
+  - `tests/test_backend_telegram_import.py`;
+  - docs/отчёт.
+- Пересобран `telegram-worker`; Docker Compose также пересоздал `backend-api` как зависимость образа.
+- Не трогались:
+  - Postgres volume;
+  - frontend;
+  - `skladbot-worker`;
+  - `version.json`;
+  - Windows archive;
+  - GitHub Release/push-обновления.
+- Проверено на VDS:
+  - `docker compose exec telegram-worker python -m py_compile /app/app/telegram_worker.py` - OK;
+  - `https://api.taksklad.uz/health` - `status=ok`;
+  - `./deploy/vds/acceptance_status.sh` - `status=ok`;
+  - `backend-api`, `telegram-worker`, `skladbot-worker`, `frontend`, `postgres` running;
+  - `version_json=1.1.7`, download URL не задан.
+- Прямой запуск `python3 -m unittest tests.test_backend_telegram_import` на VDS-хосте не используется как доказательство: системный Python сервера без `openpyxl`, runtime проверен внутри контейнера.
+
+### SkladBot Request Type And Address Diagnostic Guard
+
+- Ужесточён фильтр типа заявки SkladBot.
+- Теперь заявки с возвратными словами (`возврат`, `return`, `returned`) не проходят matching даже если в названии есть `3PL` и `отгрузка`.
+- Поддержка рабочих вариантов `3PL отгрузка` и `Отгрузка 3PL` сохранена.
+- В read-only диагностике SkladBot добавлено поле `address_soft_match`.
+- Адрес остаётся мягким признаком: он виден в диагностике, но не блокирует совпадение, если дата, клиент, оплата, товар и блоки совпали.
+- Зачем: финальное ТЗ требует матчить только отгрузочные 3PL-заявки и не делать адрес жёстким условием.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_backend_skladbot_worker tests.test_skladbot_sync` - 33 теста OK;
+  - `.venv/bin/python -m py_compile backend/app/skladbot_worker.py backend/app/skladbot_diagnostic.py src/taksklad/skladbot.py tests/test_backend_skladbot_worker.py tests/test_skladbot_sync.py` - OK;
+  - `.venv/bin/python -m unittest discover -s tests` - 156 тестов OK;
+  - `.venv/bin/python tools/release_preflight.py` - `status=ok`;
+  - `git diff -- version.json` - без изменений;
+  - `git diff --check` - OK.
+
+### TakSklad 2.0.0 Release Version Alignment
+
+- Поднята версия desktop-приложения до `2.0.0`.
+- Поднята версия backend API до `2.0.0`, чтобы `/health` больше не показывал техническую `0.1.0`.
+- Поднята версия frontend package до `2.0.0`.
+- Windows acceptance helpers теперь требуют минимум `2.0.0`, а не промежуточную `1.1.17`.
+- На VDS восстановлены рабочие env-значения после неудачной синхронизации:
+  - домен backend возвращён на `api.taksklad.uz`;
+  - frontend временно размещён на том же домене `https://api.taksklad.uz/`, потому что DNS `app.taksklad.uz` пока не существует;
+  - backend route ограничен путями `/api` и `/health`, frontend занимает корень домена;
+  - placeholder-секреты заменены на новые значения вне git, локальная копия сохранена в ignored-файл `.env.taksklad-vds-2.0.generated.json`;
+  - пароль пользователя Postgres синхронизирован с новым `DATABASE_URL`.
+- Публичный `version.json` пока не менялся на этом шаге: сначала нужна GitHub Release-сборка и SHA256 артефактов.
+- Проверено:
+  - `.venv/bin/python -m unittest discover -s tests` - 156 тестов OK;
+  - `npm run build` в `frontend/` - OK;
+  - `.venv/bin/python tools/release_preflight.py` - `status=ok`;
+  - `git diff --check` - OK.
+- Проверено на VDS:
+  - `https://api.taksklad.uz/health` - `status=ok`, `version=2.0.0`;
+  - internal `GET /api/v1/orders/active` с service token - HTTP 200;
+  - `https://api.taksklad.uz/` без BasicAuth - HTTP 401;
+  - `https://api.taksklad.uz/` с BasicAuth - HTML frontend;
+  - `./deploy/vds/acceptance_status.sh` - `status=ok`, GO/NO-GO ожидаемо `no_go` до ручной приёмки.

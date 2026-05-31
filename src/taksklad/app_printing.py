@@ -15,6 +15,7 @@ from .config import (
 )
 from .pending_store import load_pending_prints, remove_pending_print
 from .printing import load_print_settings, print_summary, save_print_settings
+from .printing import LABEL_SIZE_OPTIONS, label_size_to_text, list_available_printers, parse_label_size_text
 from .ui_widgets import AppButton
 from .utils import normalize_text
 
@@ -42,29 +43,42 @@ class PrintingActionsMixin:
         ).pack(anchor="w", pady=(0, 12))
 
         printer_var = tk.StringVar(value=settings.get("printer_name", "Термопринтер"))
+        size_var = tk.StringVar(value=label_size_to_text(
+            settings.get("label_width_mm", LABEL_WIDTH_MM),
+            settings.get("label_height_mm", LABEL_HEIGHT_MM),
+        ))
         save_var = tk.BooleanVar(value=True)
+        available_printers = list_available_printers()
 
         printer_row = tk.Frame(container, bg=BG_CARD)
         printer_row.pack(fill="x", pady=3)
         tk.Label(printer_row, text="Принтер:", bg=BG_CARD, fg=FG_MUTED, font=("Segoe UI", 10), width=18, anchor="w").pack(side="left")
-        tk.Entry(
-            printer_row,
-            textvariable=printer_var,
-            bg=BG_MAIN,
-            fg=FG_TEXT,
-            relief="flat",
-            bd=0,
-            font=("Segoe UI", 10),
-            highlightbackground=BORDER,
-            highlightcolor=ACCENT,
-            highlightthickness=1,
-            insertbackground=FG_TEXT,
-        ).pack(side="left", fill="x", expand=True)
+        if available_printers:
+            if normalize_text(printer_var.get()) not in available_printers:
+                printer_var.set(available_printers[0])
+            tk.OptionMenu(printer_row, printer_var, *available_printers).pack(side="left", fill="x", expand=True)
+        else:
+            tk.Entry(
+                printer_row,
+                textvariable=printer_var,
+                bg=BG_MAIN,
+                fg=FG_TEXT,
+                relief="flat",
+                bd=0,
+                font=("Segoe UI", 10),
+                highlightbackground=BORDER,
+                highlightcolor=ACCENT,
+                highlightthickness=1,
+                insertbackground=FG_TEXT,
+            ).pack(side="left", fill="x", expand=True)
+
+        size_row = tk.Frame(container, bg=BG_CARD)
+        size_row.pack(fill="x", pady=3)
+        tk.Label(size_row, text="Размер этикетки:", bg=BG_CARD, fg=FG_MUTED, font=("Segoe UI", 10), width=18, anchor="w").pack(side="left")
+        tk.OptionMenu(size_row, size_var, *[label_size_to_text(width, height) for width, height in LABEL_SIZE_OPTIONS]).pack(side="left", fill="x", expand=True)
 
         rows = [
-            ("Размер листа", f"{LABEL_WIDTH_MM} x {LABEL_HEIGHT_MM} мм"),
             ("Масштаб", settings.get("scale", "100%")),
-            ("Ориентация", "Квадратная этикетка"),
             ("Разрешение макета", f"{LABEL_DPI} DPI"),
         ]
 
@@ -89,11 +103,12 @@ class PrintingActionsMixin:
 
         def confirm():
             result["print"] = True
+            label_width, label_height = parse_label_size_text(size_var.get())
             if save_var.get():
                 save_print_settings({
                     "printer_name": normalize_text(printer_var.get()) or "Термопринтер",
-                    "label_width_mm": LABEL_WIDTH_MM,
-                    "label_height_mm": LABEL_HEIGHT_MM,
+                    "label_width_mm": label_width,
+                    "label_height_mm": label_height,
                     "dpi": LABEL_DPI,
                     "scale": "100%",
                 })
@@ -129,6 +144,8 @@ class PrintingActionsMixin:
         ).pack(side="right")
 
         dialog.protocol("WM_DELETE_WINDOW", cancel)
+        dialog.bind("<Return>", lambda _event: confirm())
+        dialog.bind("<Escape>", lambda _event: cancel())
         self.update_idletasks()
         dialog.update_idletasks()
         x = self.winfo_x() + (self.winfo_width() - dialog.winfo_width()) // 2

@@ -6,7 +6,7 @@ import threading
 import time
 import socket
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import tkinter as tk
 from tkinter import messagebox
@@ -29,15 +29,21 @@ from .backend_client import (
     backend_enabled,
     backend_read_orders_enabled,
     fetch_backend_sheet_data,
+    fetch_returned_orders,
+    lookup_return_order,
+    mark_order_returned,
 )
 from .backend_events import (
     get_pending_backend_codes,
+    load_pending_backend_events,
     remove_pending_backend_scan,
     queue_backend_order_complete,
     queue_backend_scan,
     sync_pending_backend_events,
 )
+from .desktop_diagnostics import log_refresh_diagnostic_summary
 from .orders import (
+    get_order_date_value,
     get_order_status,
     get_plan_blocks,
     order_group_key,
@@ -71,24 +77,19 @@ from .storage import (
     credentials_available,
     migrate_legacy_json_files_to_app_data,
 )
+from .startup_check import format_app_version_label, log_startup_self_check
 from .telegram_service import (
     collect_operational_documents,
 )
 from .ui_widgets import AppButton
+from .logging_setup import configure_app_logging
 from .utils import (
     normalize_text,
+    parse_date_to_standard,
     parse_int_value,
 )
 
-# Гарантируем существование папки docs/ до того, как logging откроет файл —
-# иначе FileNotFoundError при первом запуске после клона/установки.
-os.makedirs(LOG_DIR, exist_ok=True)
-logging.basicConfig(
-    filename=LOG_FILE,
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    encoding="utf-8"
-)
+configure_app_logging(LOG_FILE, LOG_MAX_BYTES, LOG_BACKUP_COUNT)
 
 def format_exception_message(title, exc):
     return (
@@ -103,6 +104,48 @@ def show_exception_message(title, exc):
         messagebox.showerror("Ошибка", format_exception_message(title, exc))
     except Exception:
         pass
+
+
+def date_sort_key(value):
+    text = normalize_text(value)
+    for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return datetime.max
+
+
+def format_order_date_header(value):
+    text = parse_date_to_standard(value) or normalize_text(value) or "Без даты отгрузки"
+    parsed = None
+    try:
+        parsed = datetime.strptime(text, "%d.%m.%Y").date()
+    except ValueError:
+        return text
+
+    today = datetime.now().date()
+    if parsed == today:
+        prefix = "Сегодня"
+    elif parsed == today + timedelta(days=1):
+        prefix = "Завтра"
+    elif parsed == today - timedelta(days=1):
+        prefix = "Вчера"
+    else:
+        prefix = ""
+    display = parsed.strftime("%d.%m.%Y")
+    return f"{prefix}, {display}" if prefix else display
+
+
+def format_money(value):
+    amount = parse_int_value(value)
+    if amount <= 0:
+        return "сумма не указана"
+    return f"{amount:,} сум".replace(",", " ")
+
+
+def is_date_separator(value):
+    return isinstance(value, tuple) and len(value) == 2 and value[0] == "__date__"
 
 
 def format_refresh_error_message(exc, has_cached_orders=False):
@@ -234,6 +277,7 @@ class ScanningApp(
         self.saved_codes_count = 0
         self.completed_orders = []
         self.current_legal_entity_products = []
+        self.last_completed_summary = None
         self.error_timer = None
         self.visible_order_groups = []
         self.current_group_key = None
@@ -255,6 +299,7 @@ class ScanningApp(
         self.daily_report_check_running = False
         self.skladbot_sync_running = False
         self.backend_sync_running = False
+        self.return_lookup_result = None
         self.last_sync_result = {"synced": 0, "failed": 0, "remaining": 0}
         self.product_catalog = load_product_catalog()
         os.makedirs(BACKUP_DIR, exist_ok=True)
@@ -268,7 +313,6 @@ class ScanningApp(
         self.after(1200, self.check_for_updates)
         self.after(2500, self.sync_pending_telegram_async)
         self.after(4000, self.poll_telegram_bot_async)
-        self.after(12000, self.check_daily_reports_async)
         self.after(13000, self.sync_backend_events_async)
         self.after(15000, self.run_skladbot_periodic_refresh)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -303,6 +347,8 @@ class ScanningApp(
             return sync_pending_backend_events()
 
         def on_success(result):
+            if isinstance(result, dict):
+                self.last_sync_result["backend"] = result
             remaining = result.get("remaining", 0) if isinstance(result, dict) else 0
             if remaining:
                 logging.info("Backend queue: осталось событий в очереди: %s", remaining)
@@ -310,6 +356,12 @@ class ScanningApp(
 
         def on_error(exc):
             logging.info("Backend queue: синхронизация отложена: %s", exc)
+            self.last_sync_result["backend"] = {
+                "enabled": True,
+                "failed": 1,
+                "remaining": len(load_pending_backend_events()),
+            }
+            self.update_stats_display()
 
         def on_finally():
             self.backend_sync_running = False
@@ -343,6 +395,12 @@ class ScanningApp(
                 f"3. Колонка 'Отсканированные коды' пустая или заполнена не полностью у активных заказов"
             )
         self.update_stats_display()
+        log_refresh_diagnostic_summary(
+            self.today_orders,
+            self.all_existing_codes,
+            sync_result=self.last_sync_result,
+            source="backend" if backend_read_orders_enabled() else "google",
+        )
 
     def run_background(self, title, work, on_success=None, on_error=None, on_finally=None):
         def worker():
@@ -619,7 +677,7 @@ class ScanningApp(
         list_header = tk.Frame(list_card, bg=BG_CARD)
         list_header.pack(fill="x", padx=20, pady=(15, 10))
 
-        tk.Label(list_header, text="🏢 Заказы на сегодня",
+        tk.Label(list_header, text="🏢 Заказы для КИЗов",
                 bg=BG_CARD, fg=FG_TEXT, font=("Segoe UI", 14, "bold")).pack(side="left")
 
         self.refresh_btn = AppButton(list_header, text="🔄 ОБНОВИТЬ",
@@ -635,44 +693,9 @@ class ScanningApp(
                                      highlightthickness=1, insertbackground=FG_TEXT)
         self.search_entry.pack(fill="x", padx=15, pady=(0, 10))
 
-        tools_frame = tk.Frame(list_card, bg=BG_CARD)
-        tools_frame.pack(fill="x", padx=15, pady=(0, 10))
-
-        self.import_btn = AppButton(
-            tools_frame,
-            text="📥 ИМПОРТ EXCEL",
-            bg=SUCCESS,
-            fg="white",
-            font=("Segoe UI", 9, "bold"),
-            command=self.import_excel_orders,
-            relief="flat",
-            cursor="hand2"
-        )
-        self.import_btn.pack(side="left", fill="x", expand=True, padx=(0, 6))
-
-        self.catalog_btn = AppButton(
-            tools_frame,
-            text="📦 ТОВАРЫ",
-            bg=WARNING,
-            fg="white",
-            font=("Segoe UI", 9, "bold"),
-            command=self.show_product_catalog,
-            relief="flat",
-            cursor="hand2"
-        )
-        self.catalog_btn.pack(side="left", fill="x", expand=True, padx=(0, 6))
-
-        self.control_btn = AppButton(
-            tools_frame,
-            text="📊 КОНТРОЛЬ",
-            bg=INFO,
-            fg="white",
-            font=("Segoe UI", 9, "bold"),
-            command=self.show_control_panel,
-            relief="flat",
-            cursor="hand2"
-        )
-        self.control_btn.pack(side="left", fill="x", expand=True)
+        self.import_btn = None
+        self.catalog_btn = None
+        self.control_btn = None
 
         list_container = tk.Frame(list_card, bg=BG_CARD)
         list_container.pack(fill="both", expand=True, padx=15, pady=(0, 15))
@@ -694,6 +717,12 @@ class ScanningApp(
                                    cursor="hand2")
         self.select_btn.pack(pady=(15, 0), fill="x")
 
+        self.returns_btn = AppButton(left_panel, text="↩ ВОЗВРАТЫ",
+                                     bg=WARNING, fg=FG_TEXT, font=("Segoe UI", 12, "bold"),
+                                     command=self.show_returns_window, relief="flat", pady=12,
+                                     cursor="hand2")
+        self.returns_btn.pack(pady=(10, 0), fill="x")
+
         right_panel = tk.Frame(content, bg=BG_MAIN)
         right_panel.pack(side="right", fill="both", expand=True, padx=(15, 0))
 
@@ -708,10 +737,21 @@ class ScanningApp(
                                     wraplength=400, justify="left")
         self.current_info.pack(anchor="w", padx=20, pady=(0, 10))
 
+        self.party_summary_label = tk.Label(
+            info_card,
+            text="Партия не выбрана",
+            bg=BG_CARD,
+            fg=FG_MUTED,
+            font=("Segoe UI", 10, "bold"),
+            wraplength=420,
+            justify="left",
+        )
+        self.party_summary_label.pack(anchor="w", padx=20, pady=(0, 10))
+
         positions_frame = tk.Frame(info_card, bg=BG_CARD)
         positions_frame.pack(fill="x", padx=20, pady=(0, 10))
 
-        self.position_label = tk.Label(positions_frame, text="", bg=BG_CARD, fg=WARNING, font=("Segoe UI", 11, "bold"))
+        self.position_label = tk.Label(positions_frame, text="", bg=BG_CARD, fg=FG_TEXT, font=("Segoe UI", 11, "bold"))
         self.position_label.pack(side="left")
 
         progress_frame = tk.Frame(info_card, bg=BG_CARD)
@@ -747,7 +787,7 @@ class ScanningApp(
         self.undo_btn.pack(side="left", fill="x", expand=True, padx=(0, 10), pady=5)
 
         self.next_product_btn = AppButton(actions_frame, text="➡️ СЛЕДУЮЩАЯ ПОЗИЦИЯ",
-                                         bg=WARNING, fg="white", font=("Segoe UI", 11, "bold"),
+                                         bg=WARNING, fg=FG_TEXT, font=("Segoe UI", 11, "bold"),
                                          command=self.next_product, relief="flat", state="disabled",
                                          cursor="hand2")
         self.next_product_btn.pack(side="left", fill="x", expand=True, padx=(0, 10), pady=5)
@@ -782,7 +822,19 @@ class ScanningApp(
         self.pending_saves_label = tk.Label(stats_frame_2, text="Очередь записи: 0", bg=BG_CARD, fg=FG_TEXT, font=("Segoe UI", 10))
         self.pending_saves_label.pack(side="left")
 
-        self.report_btn = AppButton(right_panel, text="📊 ЗАВЕРШИТЬ ДЕНЬ (ОТЧЁТ)",
+        stats_frame_3 = tk.Frame(stats_card, bg=BG_CARD)
+        stats_frame_3.pack(fill="x", padx=20, pady=(0, 15))
+
+        self.backend_status_label = tk.Label(
+            stats_frame_3,
+            text="Backend: ожидает проверки",
+            bg=BG_CARD,
+            fg=FG_MUTED,
+            font=("Segoe UI", 10, "bold"),
+        )
+        self.backend_status_label.pack(side="left")
+
+        self.report_btn = AppButton(right_panel, text="📊 ЗАКРЫТЬ СМЕНУ",
                                    bg=INFO, fg="white", font=("Segoe UI", 11, "bold"),
                                    command=self.end_day, relief="flat", pady=10,
                                    cursor="hand2")
@@ -800,7 +852,7 @@ class ScanningApp(
         version_frame.pack(fill="x", pady=(6, 0))
         tk.Label(
             version_frame,
-            text=f"Версия: {APP_VERSION}",
+            text=format_app_version_label(),
             bg=BG_MAIN,
             fg=FG_MUTED,
             font=("Segoe UI", 9),
@@ -810,6 +862,7 @@ class ScanningApp(
         self.legal_listbox.delete(0, tk.END)
         self.visible_order_groups = []
         grouped_orders = {}
+        group_dates = {}
         search_text = normalize_text(self.search_var.get()).lower() if hasattr(self, "search_var") else ""
 
         for order in self.today_orders:
@@ -830,14 +883,309 @@ class ScanningApp(
             if search_text and search_text not in search_area:
                 continue
             grouped_orders.setdefault((request_number, client, payment_type, address), []).append(order)
+            group_dates.setdefault(
+                (request_number, client, payment_type, address),
+                parse_date_to_standard(get_order_date_value(order)) or "Без даты",
+            )
 
-        for key in sorted(grouped_orders.keys(), key=order_group_display_sort_key):
-            request_number, client, payment_type, address = unpack_order_group_key(key)
-            display_request_number = request_number or "Без номера SkladBot"
-            count = len(grouped_orders[key])
-            self.visible_order_groups.append(key)
-            self.legal_listbox.insert(tk.END, f"{display_request_number} | {client} | {payment_type} | {count} поз. | {address}")
+        date_groups = {}
+        for key in grouped_orders:
+            date_groups.setdefault(group_dates.get(key, "Без даты"), []).append(key)
+
+        for date_value in sorted(date_groups.keys(), key=date_sort_key):
+            header_index = self.legal_listbox.size()
+            self.visible_order_groups.append(("__date__", date_value))
+            self.legal_listbox.insert(tk.END, f"  {format_order_date_header(date_value).upper()}")
+            try:
+                self.legal_listbox.itemconfig(header_index, fg=FG_MUTED, bg=BG_MAIN, selectbackground=BG_MAIN)
+            except tk.TclError:
+                pass
+
+            for key in sorted(date_groups[date_value], key=order_group_display_sort_key):
+                request_number, client, payment_type, address = unpack_order_group_key(key)
+                display_request_number = request_number or "Без номера SkladBot"
+                count = len(grouped_orders[key])
+                self.visible_order_groups.append(key)
+                self.legal_listbox.insert(
+                    tk.END,
+                    f"  {display_request_number} | {client} | {payment_type} | {count} поз. | {address}",
+                )
         self.update_stats_display()
+
+    def _select_first_real_order(self):
+        for index, group in enumerate(self.visible_order_groups):
+            if not is_date_separator(group):
+                self.legal_listbox.selection_clear(0, tk.END)
+                self.legal_listbox.selection_set(index)
+                self.legal_listbox.activate(index)
+                return True
+        return False
+
+    def _selected_order_group(self):
+        selection = self.legal_listbox.curselection()
+        if not selection:
+            return None
+        selected_index = selection[0]
+        if selected_index >= len(self.visible_order_groups):
+            return None
+        selected_group = self.visible_order_groups[selected_index]
+        if is_date_separator(selected_group):
+            self.show_error("Выберите заказ под датой, а не заголовок даты", popup=False)
+            return None
+        return selected_group
+
+    def show_returns_window(self):
+        if not backend_read_orders_enabled():
+            messagebox.showwarning(
+                "Возвраты",
+                "Возвраты в TakSklad 2.0 работают через backend.\n\n"
+                "Включите backend flags, чтобы искать закрытые заявки SkladBot в архиве.",
+            )
+            return
+
+        dialog = tk.Toplevel(self)
+        dialog.title("Возвраты TakSklad")
+        dialog.geometry("640x560")
+        dialog.configure(bg=BG_MAIN)
+        dialog.transient(self)
+
+        container = tk.Frame(dialog, bg=BG_CARD, padx=20, pady=18)
+        container.pack(fill="both", expand=True, padx=18, pady=18)
+
+        tk.Label(
+            container,
+            text="ВОЗВРАТЫ",
+            bg=BG_CARD,
+            fg=ACCENT,
+            font=("Segoe UI", 16, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            container,
+            text="Сканируйте ШК накладной или введите номер/ID заявки SkladBot.",
+            bg=BG_CARD,
+            fg=FG_MUTED,
+            font=("Segoe UI", 10),
+        ).pack(anchor="w", pady=(4, 14))
+
+        lookup_var = tk.StringVar()
+        lookup_row = tk.Frame(container, bg=BG_CARD)
+        lookup_row.pack(fill="x", pady=(0, 12))
+
+        lookup_entry = tk.Entry(
+            lookup_row,
+            textvariable=lookup_var,
+            bg=BG_MAIN,
+            fg=FG_TEXT,
+            font=("Segoe UI", 14),
+            relief="flat",
+            bd=0,
+            highlightbackground=BORDER,
+            highlightcolor=ACCENT,
+            highlightthickness=1,
+            insertbackground=FG_TEXT,
+        )
+        lookup_entry.pack(side="left", fill="x", expand=True)
+
+        lookup_btn = AppButton(
+            lookup_row,
+            text="НАЙТИ",
+            bg=ACCENT,
+            fg="white",
+            font=("Segoe UI", 10, "bold"),
+        )
+        lookup_btn.pack(side="right", padx=(8, 0))
+
+        result_var = tk.StringVar(value="Заказ не выбран")
+        result_label = tk.Label(
+            container,
+            textvariable=result_var,
+            bg=BG_CARD,
+            fg=FG_TEXT,
+            justify="left",
+            anchor="nw",
+            wraplength=500,
+            font=("Segoe UI", 10),
+        )
+        result_label.pack(fill="both", expand=True, pady=(0, 12))
+
+        tk.Label(
+            container,
+            text="ПОСЛЕДНИЕ ВОЗВРАТЫ",
+            bg=BG_CARD,
+            fg=ACCENT,
+            font=("Segoe UI", 11, "bold"),
+        ).pack(anchor="w", pady=(0, 6))
+
+        returns_list = tk.Listbox(
+            container,
+            height=6,
+            bg=BG_MAIN,
+            fg=FG_TEXT,
+            selectbackground=ACCENT,
+            selectforeground="white",
+            relief="flat",
+            bd=0,
+            highlightbackground=BORDER,
+            highlightthickness=1,
+            font=("Segoe UI", 9),
+        )
+        returns_list.pack(fill="x", pady=(0, 12))
+
+        actions = tk.Frame(container, bg=BG_CARD)
+        actions.pack(fill="x")
+
+        return_btn = AppButton(
+            actions,
+            text="ПРИНЯТЬ ВОЗВРАТ",
+            bg=ACCENT,
+            fg="white",
+            font=("Segoe UI", 10, "bold"),
+            state="disabled",
+        )
+        return_btn.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        def show_order(order):
+            self.return_lookup_result = order
+            total_blocks = sum(parse_int_value(item.get("quantity_blocks")) for item in order.get("items") or [])
+            total_price = sum(parse_int_value(item.get("line_total")) for item in order.get("items") or [])
+            already_returned = (
+                normalize_text(order.get("status")).lower() == "returned"
+                or normalize_text(order.get("return_status")).lower() == "returned"
+            )
+            returned_at = normalize_text(order.get("returned_at"))
+            return_reference = normalize_text(order.get("return_reference"))
+            lines = [
+                f"Заявка: {order.get('skladbot_request_number') or order.get('skladbot_request_id') or 'без номера'}",
+                f"Дата отгрузки: {order.get('order_date') or ''}",
+                f"Клиент: {order.get('client') or ''}",
+                f"Оплата: {order.get('payment_type') or ''}",
+                f"Адрес: {order.get('address') or ''}",
+                f"Позиций: {len(order.get('items') or [])}",
+                f"Блоков: {total_blocks}",
+                f"Сумма заказа: {total_price:,} сум".replace(",", " "),
+            ]
+            if already_returned:
+                lines.extend([
+                    "",
+                    "Этот возврат уже принят.",
+                    f"Дата возврата: {returned_at[:19] if returned_at else 'не указана'}",
+                    f"Основание: {return_reference or 'не указано'}",
+                ])
+            result_var.set(
+                "\n".join(lines),
+            )
+            return_btn.config(state="disabled" if already_returned else "normal")
+
+        def return_list_line(order):
+            returned_at = normalize_text(order.get("returned_at"))
+            returned_date = returned_at[:10] if returned_at else ""
+            request_number = order.get("skladbot_request_number") or order.get("skladbot_request_id") or "без номера"
+            total_blocks = sum(parse_int_value(item.get("quantity_blocks")) for item in order.get("items") or [])
+            return " | ".join([
+                returned_date or "без даты",
+                request_number,
+                order.get("client") or "клиент не указан",
+                f"{total_blocks} блок.",
+            ])
+
+        def refresh_returns_list():
+            returns_list.delete(0, tk.END)
+            returns_list.insert(tk.END, "Загружаю возвраты...")
+
+            def on_success(orders):
+                returns_list.delete(0, tk.END)
+                orders = orders if isinstance(orders, list) else []
+                if not orders:
+                    returns_list.insert(tk.END, "Возвратов пока нет")
+                    return
+                for order in orders[:50]:
+                    returns_list.insert(tk.END, return_list_line(order))
+
+            def on_error(exc):
+                returns_list.delete(0, tk.END)
+                returns_list.insert(tk.END, f"Не удалось загрузить возвраты: {exc}")
+
+            self.run_background(
+                "Не удалось загрузить список возвратов",
+                lambda: fetch_returned_orders(limit=50),
+                on_success=on_success,
+                on_error=on_error,
+            )
+
+        def do_lookup(_event=None):
+            lookup = normalize_text(lookup_var.get())
+            if not lookup:
+                result_var.set("Введите или отсканируйте номер заявки.")
+                return
+            return_btn.config(state="disabled")
+            result_var.set("Ищу закрытую заявку в архиве...")
+
+            def on_success(order):
+                show_order(order)
+
+            def on_error(exc):
+                self.return_lookup_result = None
+                result_var.set(f"Не найдено: {exc}")
+
+            self.run_background(
+                "Не удалось найти заявку для возврата",
+                lambda: lookup_return_order(lookup),
+                on_success=on_success,
+                on_error=on_error,
+            )
+
+        lookup_btn.config(command=do_lookup)
+
+        def do_return():
+            order = self.return_lookup_result
+            if not order:
+                result_var.set("Сначала найдите заявку.")
+                return
+            if not messagebox.askyesno(
+                "Подтвердить возврат",
+                f"Поставить возврат по заявке {order.get('skladbot_request_number') or order.get('id')}?",
+            ):
+                return
+            return_btn.config(state="disabled")
+            result_var.set("Фиксирую возврат...")
+
+            def on_success(updated_order):
+                result_var.set(
+                    "Возврат принят.\n\n"
+                    f"Заявка: {updated_order.get('skladbot_request_number') or updated_order.get('id')}\n"
+                    "Статус сохранён в backend."
+                )
+                refresh_returns_list()
+                self.refresh_from_sheet()
+
+            def on_error(exc):
+                result_var.set(f"Возврат не сохранён: {exc}")
+                return_btn.config(state="normal")
+
+            self.run_background(
+                "Не удалось принять возврат",
+                lambda: mark_order_returned(
+                    order.get("id"),
+                    return_reference=normalize_text(lookup_var.get()),
+                    returned_by=self.telegram_lock_owner_label,
+                ),
+                on_success=on_success,
+                on_error=on_error,
+            )
+
+        return_btn.config(command=do_return)
+        AppButton(
+            actions,
+            text="ЗАКРЫТЬ",
+            bg=FG_MUTED,
+            fg="white",
+            font=("Segoe UI", 10, "bold"),
+            command=dialog.destroy,
+        ).pack(side="right", fill="x", expand=True)
+
+        lookup_entry.bind("<Return>", do_lookup)
+        lookup_entry.focus_set()
+        refresh_returns_list()
 
     def reset_current_selection(self):
         self.current_legal_entity = None
@@ -849,6 +1197,7 @@ class ScanningApp(
         self.saved_codes_count = 0
         self.current_legal_entity_products = []
         self.current_info.config(text="Не выбрано")
+        self.party_summary_label.config(text="Партия не выбрана")
         self.position_label.config(text="")
         self.progress_label.config(text="0 / 0")
         self.next_product_btn.config(state="disabled")
@@ -950,16 +1299,10 @@ class ScanningApp(
             messagebox.showwarning("Ошибка", "Нет доступных юридических лиц!")
             return
 
-        selection = self.legal_listbox.curselection()
-        if not selection:
+        selected_group = self._selected_order_group()
+        if not selected_group:
             messagebox.showwarning("Ошибка", "Выберите заказ из списка")
             return
-
-        if selection[0] >= len(self.visible_order_groups):
-            messagebox.showwarning("Ошибка", "Выбранный заказ не найден в списке")
-            return
-
-        selected_group = self.visible_order_groups[selection[0]]
         request_number, legal_entity, payment_type, address = unpack_order_group_key(selected_group)
         display_request_number = request_number or "Без номера SkladBot"
 
@@ -973,11 +1316,43 @@ class ScanningApp(
         self.current_product_idx = 0
         self.scanned_codes = []
         self.current_legal_entity_products = []
+        self.update_party_summary_display()
 
         self.load_current_product()
 
         self.status_var.set(f"✅ Выбран заказ: {display_request_number} | {legal_entity} | {payment_type} | {address}")
         self.scan_entry.focus_set()
+
+    def update_party_summary_display(self):
+        if not self.current_legal_entity_orders:
+            self.party_summary_label.config(text="Партия не выбрана")
+            return
+
+        total_positions = len(self.current_legal_entity_orders)
+        total_blocks = sum(get_plan_blocks(order) for order in self.current_legal_entity_orders)
+        total_sum = sum(parse_int_value(order.get("Сумма позиции")) for order in self.current_legal_entity_orders)
+        request_numbers = sorted({
+            normalize_text(order.get(SKLADBOT_REQUEST_NUMBER_COLUMN))
+            for order in self.current_legal_entity_orders
+            if normalize_text(order.get(SKLADBOT_REQUEST_NUMBER_COLUMN))
+        })
+        shipment_dates = sorted({
+            parse_date_to_standard(get_order_date_value(order)) or normalize_text(get_order_date_value(order))
+            for order in self.current_legal_entity_orders
+            if normalize_text(get_order_date_value(order))
+        }, key=date_sort_key)
+
+        request_text = ", ".join(request_numbers[:2]) if request_numbers else "без номера SkladBot"
+        if len(request_numbers) > 2:
+            request_text += f" +{len(request_numbers) - 2}"
+        date_text = ", ".join(format_order_date_header(value) for value in shipment_dates) if shipment_dates else "дата не указана"
+
+        self.party_summary_label.config(
+            text=(
+                f"Партия: {total_positions} поз. · {total_blocks} блок. · {format_money(total_sum)}\n"
+                f"Дата отгрузки: {date_text} · Заявка: {request_text}"
+            )
+        )
 
     def load_current_product(self):
         if self.current_product_idx >= len(self.current_legal_entity_orders):
@@ -987,13 +1362,17 @@ class ScanningApp(
 
         plan_blocks = get_plan_blocks(self.current_order)
         pieces_per_block = get_product_rule(self.current_order.get("Товары", ""), self.product_catalog)["pieces_per_block"]
+        order_sum = parse_int_value(self.current_order.get("Сумма позиции"))
+        order_sum_text = f"{order_sum:,} сум".replace(",", " ") if order_sum else "не указана"
 
         info_text = f"""№ SkladBot: {self.current_order.get(SKLADBOT_REQUEST_NUMBER_COLUMN, '')}
+📅 Дата отгрузки: {get_order_date_value(self.current_order) or 'не указана'}
 🏢 Юр.лицо: {self.current_order.get('Клиент', '')}
 👤 Торг.пред: {self.current_order.get('Торговый представитель', '')}
 📍 Адрес: {self.current_order.get('Адрес', 'Адрес не указан')}
 📦 Товар: {self.current_order.get('Товары', '')}
 💳 Тип оплаты: {self.current_order.get('Тип оплаты', '')}
+💰 Сумма: {order_sum_text}
 📦 План: {plan_blocks} блоков (1 блок = {pieces_per_block} ШТ)"""
 
         self.current_info.config(text=info_text)
@@ -1006,7 +1385,7 @@ class ScanningApp(
         self.saved_codes_count = len(existing_codes)
         self.progress_label.config(text=f"{len(self.scanned_codes)} / {plan_blocks}")
         self.next_product_btn.config(state="disabled")
-        self.finish_btn.config(state="normal")
+        self.finish_btn.config(state="disabled")
         self.undo_btn.config(state="normal")
         self.scan_entry.delete(0, tk.END)
         if existing_codes:
@@ -1014,8 +1393,12 @@ class ScanningApp(
         else:
             self.last_code_label.config(text="")
         if plan_blocks > 0 and len(self.scanned_codes) >= plan_blocks:
-            self.next_product_btn.config(state="normal")
-            self.finish_btn.config(state="disabled")
+            if self.current_product_idx >= len(self.current_legal_entity_orders) - 1:
+                self.next_product_btn.config(state="disabled")
+                self.finish_btn.config(state="normal")
+            else:
+                self.next_product_btn.config(state="normal")
+                self.finish_btn.config(state="disabled")
         self.scan_entry.focus_set()
 
     def on_scan(self, event=None):
@@ -1087,9 +1470,14 @@ class ScanningApp(
         self.scan_entry.delete(0, tk.END)
 
         if scanned_count >= plan_blocks:
-            self.status_var.set(f"🎯 Позиция выполнена! Нажмите 'Следующая позиция'")
-            self.next_product_btn.config(state="normal")
-            self.finish_btn.config(state="disabled")
+            if self.current_product_idx >= len(self.current_legal_entity_orders) - 1:
+                self.status_var.set("🎯 Заказ выполнен! Нажмите 'ЗАВЕРШИТЬ ЗАКАЗ'")
+                self.next_product_btn.config(state="disabled")
+                self.finish_btn.config(state="normal")
+            else:
+                self.status_var.set("🎯 Позиция выполнена! Нажмите 'Следующая позиция'")
+                self.next_product_btn.config(state="normal")
+                self.finish_btn.config(state="disabled")
 
         self.scan_entry.focus_set()
 
@@ -1139,6 +1527,7 @@ class ScanningApp(
 
         def on_success(result):
             product_result = {
+                "Дата отгрузки": get_order_date_value(order),
                 "Клиент": order.get('Клиент', ''),
                 "Адрес": order.get('Адрес', ''),
                 "Торговый представитель": order.get('Торговый представитель', ''),
@@ -1147,6 +1536,8 @@ class ScanningApp(
                 "Кол-во ШТ в блоке": pieces_per_block,
                 "План": plan_blocks,
                 "Отсканировано": scanned_count,
+                "Сумма позиции": parse_int_value(order.get("Сумма позиции")),
+                "Цена заказа": parse_int_value(order.get("Сумма позиции")),
                 "Коды": scanned_codes.copy()
             }
             self.current_legal_entity_products.append(product_result)
@@ -1196,6 +1587,14 @@ class ScanningApp(
             return
 
         if self.current_product_idx < len(self.current_legal_entity_orders):
+            if (
+                not from_next_product
+                and self.current_order
+                and self.current_product_idx == len(self.current_legal_entity_orders) - 1
+                and len(self.scanned_codes) == get_plan_blocks(self.current_order)
+            ):
+                self.next_product()
+                return
             self.show_error("Сначала завершите все позиции по заказу!")
             return
 
@@ -1270,8 +1669,7 @@ class ScanningApp(
             self.status_label.config(bg=BG_MAIN, fg=FG_MUTED)
             self.sync_backend_events_async()
 
-            if self.legal_listbox.size() > 0:
-                self.legal_listbox.selection_set(0)
+            self._select_first_real_order()
 
         def on_error(exc):
             self.show_critical_error("Не удалось завершить заказ", exc)
@@ -1308,6 +1706,7 @@ def run_app():
 
     ensure_windows_desktop_shortcut()
     migrate_legacy_json_files_to_app_data()
+    log_startup_self_check()
 
     if not credentials_available() and not backend_read_orders_enabled():
         messagebox.showerror("Ошибка",

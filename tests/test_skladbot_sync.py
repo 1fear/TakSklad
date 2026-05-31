@@ -13,7 +13,13 @@ from taksklad.config import (
     STATUS_COLUMN,
     STATUS_NOT_COMPLETED,
 )
-from taksklad.skladbot import fetch_candidate_requests, format_skladbot_error, load_skladbot_settings
+from taksklad.skladbot import (
+    fetch_candidate_requests,
+    format_skladbot_error,
+    load_skladbot_settings,
+    product_names_match,
+    request_type_matches,
+)
 from taksklad import skladbot_sync
 from taksklad.skladbot_sync import sync_skladbot_request_numbers
 from taksklad.utils import column_index_to_letter
@@ -122,6 +128,11 @@ def request(number="WH-R-189337", request_id=189337):
 
 
 class SkladBotSyncTests(unittest.TestCase):
+    def test_product_match_accepts_concatenated_vendor_code(self):
+        self.assertTrue(product_names_match("Chapman Brown OP 20", {"vendor_code": "CHPMBrownOP20UZ"}))
+        self.assertTrue(product_names_match("Chapman Gold SSL 100`20", {"vendor_code": "CHPMGoldSSL20UZ"}))
+        self.assertFalse(product_names_match("Chapman Brown OP 20", {"vendor_code": "CHPMRedOP20UZ"}))
+
     def test_writes_request_number_when_one_exact_match_exists(self):
         sheet = FakeSheet([
             header(),
@@ -135,6 +146,47 @@ class SkladBotSyncTests(unittest.TestCase):
         self.assertEqual(sheet.rows[1][10], "WH-R-189337")
         self.assertEqual(sheet.rows[2][10], "WH-R-189337")
         self.assertEqual(sheet.rows[1][12], SKLADBOT_STATUS_FOUND)
+
+    def test_matches_when_skladbot_request_contains_extra_products(self):
+        sheet = FakeSheet([
+            header(),
+            order_row("Chapman Brown OP 20", 10, 1),
+        ])
+
+        result = sync_skladbot_request_numbers(sheet, candidate_requests=[request()])
+
+        self.assertEqual(result["matched"], 1)
+        self.assertEqual(sheet.rows[1][10], "WH-R-189337")
+        self.assertEqual(sheet.rows[1][12], SKLADBOT_STATUS_FOUND)
+
+    def test_marks_multiple_when_partial_match_is_ambiguous(self):
+        sheet = FakeSheet([
+            header(),
+            order_row("Chapman Brown OP 20", 10, 1),
+        ])
+
+        first = request("WH-R-189337", 189337)
+        second = request("WH-R-189338", 189338)
+        second["products"] = [
+            {
+                "name": "Chapman Brown OP 20 UZ - KingSize",
+                "vendor_code": "CHPMBrownOP20UZ",
+                "barcode": "4006396053978",
+                "amount": 1,
+            },
+            {
+                "name": "Chapman Red SSL 20 UZ - SuperSlim",
+                "vendor_code": "CHPMRedSSL20UZ",
+                "barcode": "4006396054006",
+                "amount": 4,
+            },
+        ]
+
+        result = sync_skladbot_request_numbers(sheet, candidate_requests=[first, second])
+
+        self.assertEqual(result["multiple"], 1)
+        self.assertEqual(sheet.rows[1][10], "")
+        self.assertEqual(sheet.rows[1][12], SKLADBOT_STATUS_MULTIPLE)
 
     def test_dry_run_does_not_write_request_number(self):
         sheet = FakeSheet([
@@ -348,6 +400,9 @@ class SkladBotSyncTests(unittest.TestCase):
 
         self.assertEqual(result["matched"], 1)
         self.assertEqual(sheet.rows[1][10], "WH-R-189337")
+
+    def test_rejects_return_request_type_even_if_it_mentions_shipment(self):
+        self.assertFalse(request_type_matches("Возврат 3PL отгрузка"))
 
     def test_api_failure_does_not_overwrite_sheet_statuses(self):
         sheet = FakeSheet([

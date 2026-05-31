@@ -16,6 +16,66 @@ from .config import (
 from .storage import load_data_section, save_data_section
 from .utils import normalize_text, parse_int_value
 
+LABEL_SIZE_OPTIONS = (
+    (100, 100),
+    (100, 150),
+    (75, 50),
+    (58, 40),
+)
+
+
+def normalize_label_size(width, height):
+    width = parse_int_value(width)
+    height = parse_int_value(height)
+    if (width, height) in LABEL_SIZE_OPTIONS:
+        return width, height
+    return LABEL_WIDTH_MM, LABEL_HEIGHT_MM
+
+
+def label_size_to_text(width, height):
+    width, height = normalize_label_size(width, height)
+    return f"{width}x{height}"
+
+
+def parse_label_size_text(value):
+    text = normalize_text(value).lower().replace("х", "x").replace(" ", "")
+    if "x" not in text:
+        return LABEL_WIDTH_MM, LABEL_HEIGHT_MM
+    width, height = text.split("x", 1)
+    return normalize_label_size(width, height)
+
+
+def list_available_printers():
+    commands = []
+    if os.name == "nt":
+        commands.append([
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            "Get-Printer | Select-Object -ExpandProperty Name",
+        ])
+        commands.append(["wmic", "printer", "get", "name"])
+    else:
+        commands.append(["lpstat", "-e"])
+
+    for command in commands:
+        try:
+            completed = subprocess.run(command, capture_output=True, text=True, timeout=5, check=False)
+        except Exception:
+            continue
+        if completed.returncode != 0:
+            continue
+        printers = []
+        for line in completed.stdout.splitlines():
+            name = normalize_text(line)
+            if not name or name.lower() == "name":
+                continue
+            printers.append(name)
+        if printers:
+            return sorted(dict.fromkeys(printers))
+    return []
+
+
 def load_print_settings():
     defaults = {
         "printer_name": "Термопринтер",
@@ -60,17 +120,29 @@ def wrap_text(text, max_chars):
         lines.append(current_line)
     return lines
 
-def mm_to_px(mm_value):
-    return int(mm_value / 25.4 * LABEL_DPI)
+def format_money(value):
+    amount = parse_int_value(value)
+    return f"{amount:,}".replace(",", " ") if amount else "0"
+
+def product_total_price(product):
+    explicit = parse_int_value(product.get("Сумма позиции")) or parse_int_value(product.get("Цена заказа"))
+    if explicit:
+        return explicit
+    return parse_int_value(product.get("Отсканировано")) * 240000
+
+def mm_to_px(mm_value, dpi=LABEL_DPI):
+    return int(mm_value / 25.4 * dpi)
 
 def powershell_quote(value):
     return "'" + str(value).replace("'", "''") + "'"
 
-def send_image_to_windows_printer(file_path, printer_name=""):
+def send_image_to_windows_printer(file_path, printer_name="", label_width_mm=None, label_height_mm=None):
     image_path = os.path.abspath(file_path)
     printer_name = normalize_text(printer_name)
-    paper_width = int(round(LABEL_WIDTH_MM / 25.4 * 100))
-    paper_height = int(round(LABEL_HEIGHT_MM / 25.4 * 100))
+    label_width_mm, label_height_mm = normalize_label_size(label_width_mm, label_height_mm)
+    paper_width = int(round(label_width_mm / 25.4 * 100))
+    paper_height = int(round(label_height_mm / 25.4 * 100))
+    paper_name = f"Label{label_width_mm}x{label_height_mm}"
     printer_line = ""
     if printer_name and printer_name != "Термопринтер":
         printer_line = f"$printDocument.PrinterSettings.PrinterName = {powershell_quote(printer_name)}"
@@ -82,7 +154,7 @@ $image = [System.Drawing.Image]::FromFile($imagePath)
 $printDocument = New-Object System.Drawing.Printing.PrintDocument
 {printer_line}
 $printDocument.DocumentName = "{APP_NAME} summary"
-$printDocument.DefaultPageSettings.PaperSize = New-Object System.Drawing.Printing.PaperSize("Label100x100", {paper_width}, {paper_height})
+$printDocument.DefaultPageSettings.PaperSize = New-Object System.Drawing.Printing.PaperSize("{paper_name}", {paper_width}, {paper_height})
 $printDocument.DefaultPageSettings.Margins = New-Object System.Drawing.Printing.Margins(0, 0, 0, 0)
 $printDocument.OriginAtMargins = $false
 $printDocument.add_PrintPage({{
@@ -122,12 +194,18 @@ try {{
         except OSError:
             pass
 
-def send_image_to_printer(file_path, printer_name=""):
+def send_image_to_printer(file_path, printer_name="", label_width_mm=None, label_height_mm=None):
     try:
+        label_width_mm, label_height_mm = normalize_label_size(label_width_mm, label_height_mm)
         if os.name == 'nt':
-            return send_image_to_windows_printer(file_path, printer_name=printer_name)
+            return send_image_to_windows_printer(
+                file_path,
+                printer_name=printer_name,
+                label_width_mm=label_width_mm,
+                label_height_mm=label_height_mm,
+            )
 
-        command = ["lp", "-o", f"media=Custom.{LABEL_WIDTH_MM}x{LABEL_HEIGHT_MM}mm", file_path]
+        command = ["lp", "-o", f"media=Custom.{label_width_mm}x{label_height_mm}mm", file_path]
         if normalize_text(printer_name) and printer_name != "Термопринтер":
             command[1:1] = ["-d", printer_name]
         subprocess.run(command, check=True, timeout=30)
@@ -141,20 +219,31 @@ def print_summary(address, all_products):
         if not all_products:
             return None
 
-        width_px = mm_to_px(LABEL_WIDTH_MM)
-        height_px = mm_to_px(LABEL_HEIGHT_MM)
-        scale = LABEL_DPI / 96
+        print_settings = load_print_settings()
+        label_width_mm, label_height_mm = normalize_label_size(
+            print_settings.get("label_width_mm"),
+            print_settings.get("label_height_mm"),
+        )
+        dpi = parse_int_value(print_settings.get("dpi")) or LABEL_DPI
+        printer_name = normalize_text(print_settings.get("printer_name"))
+
+        width_px = mm_to_px(label_width_mm, dpi=dpi)
+        height_px = mm_to_px(label_height_mm, dpi=dpi)
+        scale = dpi / 96
 
         def s(value):
             return int(value * scale)
 
-        products_per_page = 3
+        if label_height_mm >= 140:
+            products_per_page = 5
+        elif label_height_mm <= 50:
+            products_per_page = 1
+        else:
+            products_per_page = 3
         pages = []
         for i in range(0, len(all_products), products_per_page):
             pages.append(all_products[i:i + products_per_page])
 
-        print_settings = load_print_settings()
-        printer_name = normalize_text(print_settings.get("printer_name"))
         printed_files = []
 
         for page_idx, page_products in enumerate(pages):
@@ -195,16 +284,26 @@ def print_summary(address, all_products):
                 draw.text((x, y), f"Торг.пред: {rep[:35]}", fill="black", font=font_text)
                 y += line_height + s(5)
 
+            total_order_price = sum(product_total_price(product) for product in all_products)
+            if total_order_price:
+                draw.text((x, y), f"Сумма заказа: {format_money(total_order_price)} сум", fill="black", font=font_bold)
+                y += line_height + s(4)
+
             draw.line([(x, y), (x + inner_width - s(16), y)], fill="#cccccc", width=max(1, s(1)))
             y += s(10)
 
             page_text = f"Стр. {page_idx + 1} из {len(pages)}"
-            draw.text((width_px - margin - s(60), margin + s(8)), page_text, fill="gray", font=font_small)
+            draw.text((max(x, width_px - margin - s(60)), margin + s(8)), page_text, fill="gray", font=font_small)
 
+            col_no = x
+            col_product = x + max(s(22), int(inner_width * 0.08))
+            col_blocks = x + int(inner_width * 0.62)
+            col_pieces = x + int(inner_width * 0.80)
+            product_chars = max(10, int((col_blocks - col_product) / max(1, s(6))))
             draw.text((x, y), "№", fill="black", font=font_bold)
-            draw.text((x + s(25), y), "Товар", fill="black", font=font_bold)
-            draw.text((x + s(200), y), "Блоков", fill="black", font=font_bold)
-            draw.text((x + s(260), y), "ШТ", fill="black", font=font_bold)
+            draw.text((col_product, y), "Товар", fill="black", font=font_bold)
+            draw.text((col_blocks, y), "Блоков", fill="black", font=font_bold)
+            draw.text((col_pieces, y), "ШТ", fill="black", font=font_bold)
             y += line_height + s(3)
             draw.line([(x, y - s(5)), (x + inner_width - s(16), y - s(5))], fill="#000000", width=max(1, s(1)))
 
@@ -212,17 +311,17 @@ def print_summary(address, all_products):
             total_shields = 0
 
             for idx, product in enumerate(page_products):
-                product_name = product.get('Товары', '')[:22]
+                product_name = product.get('Товары', '')[:product_chars]
                 blocks = product.get('Отсканировано', 0)
                 pieces_per_block = parse_int_value(product.get("Кол-во ШТ в блоке")) or DEFAULT_PIECES_PER_BLOCK
                 shields = blocks * pieces_per_block
                 total_blocks += blocks
                 total_shields += shields
 
-                draw.text((x, y), f"{idx + 1 + (page_idx * products_per_page)}", fill="black", font=font_text)
-                draw.text((x + s(25), y), product_name, fill="black", font=font_text)
-                draw.text((x + s(205), y), str(blocks), fill="black", font=font_text)
-                draw.text((x + s(265), y), str(shields), fill="black", font=font_text)
+                draw.text((col_no, y), f"{idx + 1 + (page_idx * products_per_page)}", fill="black", font=font_text)
+                draw.text((col_product, y), product_name, fill="black", font=font_text)
+                draw.text((col_blocks, y), str(blocks), fill="black", font=font_text)
+                draw.text((col_pieces, y), str(shields), fill="black", font=font_text)
                 y += line_height
 
                 if y > height_px - s(60) and idx < len(page_products) - 1:
@@ -233,21 +332,25 @@ def print_summary(address, all_products):
             y += s(8)
 
             draw.text((x, y), f"ИТОГО:", fill="black", font=font_bold)
-            draw.text((x + s(205), y), str(total_blocks), fill="black", font=font_bold)
-            draw.text((x + s(265), y), str(total_shields), fill="black", font=font_bold)
+            draw.text((col_blocks, y), str(total_blocks), fill="black", font=font_bold)
+            draw.text((col_pieces, y), str(total_shields), fill="black", font=font_bold)
 
             draw.text((x, height_px - margin - s(12)), datetime.now().strftime("%d.%m.%Y %H:%M"), fill="gray", font=font_small)
 
             temp_file = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-            img.save(temp_file.name, dpi=(LABEL_DPI, LABEL_DPI))
+            img.save(temp_file.name, dpi=(dpi, dpi))
             temp_file.close()
             printed_files.append(temp_file.name)
 
-            if not send_image_to_printer(temp_file.name, printer_name=printer_name):
+            if not send_image_to_printer(
+                temp_file.name,
+                printer_name=printer_name,
+                label_width_mm=label_width_mm,
+                label_height_mm=label_height_mm,
+            ):
                 return None
 
         return printed_files
     except Exception as e:
         logging.exception("Ошибка печати сводного листа")
         return None
-
