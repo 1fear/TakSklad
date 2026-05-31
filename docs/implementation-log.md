@@ -1550,7 +1550,7 @@ cd /opt/taksklad/app
 **Проверки:**
 
 - `.venv/bin/python tools/prepare_acceptance_kit.py` - OK.
-- Повторная генерация дала тот же SHA-256 Excel: `4e7bc8540e45e9ce7c3465e138c063aa4168362e25f3c29c626e7c8ba9de8b4c`.
+- Повторная генерация дала тот же SHA-256 Excel: `a5abc62efebcd2d87e26e92dfbb990d22fbf72e86ae74914b0dbf9b6f8de285e`.
 - `tests.test_acceptance_excel_generator` - 3 теста OK.
 - `.venv/bin/python -m unittest discover -s tests` - 88 тестов OK.
 - `.venv/bin/python -m py_compile tools/*.py src/taksklad/*.py tests/*.py backend/app/*.py` - OK.
@@ -1600,6 +1600,44 @@ cd /opt/taksklad/app
 - Небезопасный marker `BAD_MARKER` отклонён с exit `2`.
 - `wait_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --timeout 5 --interval 1` - OK, текущий marker пустой и read-only verifier вернул `status=ok`.
 - `verify_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531"` - OK, текущие `orders/imports/scan_codes/pending_events` равны `0`.
-- Excel SHA-256 на VDS: `4e7bc8540e45e9ce7c3465e138c063aa4168362e25f3c29c626e7c8ba9de8b4c`.
+- Excel SHA-256 на VDS: `a5abc62efebcd2d87e26e92dfbb990d22fbf72e86ae74914b0dbf9b6f8de285e`.
 - Backend health: `{"status":"ok","service":"taksklad-backend","version":"0.1.0","environment":"staging"}`.
 - VDS `version.json` остался на стабильной линии `1.1.7`, без release/update rollout.
+
+### Acceptance Status Check
+
+**Дата:** 2026-05-31.
+
+**Сделано:**
+
+- Добавлен `deploy/vds/acceptance_status.sh`.
+- Скрипт read-only, ничего не пишет в БД и не меняет файлы.
+- Проверяет одним запуском:
+  - валидность `acceptance_manifest.json`;
+  - SHA-256 acceptance Excel;
+  - `version.json`;
+  - Docker Compose services;
+  - backend health;
+  - состояние acceptance marker через `verify_acceptance_marker.sh`.
+- Команды добавлены в acceptance kit:
+  - `vds_status`;
+  - `telegram_status`;
+  - `windows_status`.
+
+**Проверки:**
+
+- `bash -n deploy/vds/*.sh` - OK.
+- `deploy/vds/acceptance_status.sh --help` - OK.
+- `tests.test_acceptance_excel_generator` проверяет наличие status-команд в manifest.
+
+**Проверки на VDS после загрузки:**
+
+- `bash -n deploy/vds/*.sh` - OK.
+- `acceptance_status.sh --help` - OK.
+- Acceptance Excel SHA-256 совпал с manifest: `a5abc62efebcd2d87e26e92dfbb990d22fbf72e86ae74914b0dbf9b6f8de285e`.
+- `acceptance_status.sh` вернул `status=ok`.
+- Сервисы `backend-api`, `frontend`, `postgres`, `skladbot-worker`, `telegram-worker` в состоянии `running`.
+- Backend health вернул `status=ok`.
+- Acceptance marker пока пустой: `orders=0`, `imports=0`, `scan_codes=0`, `pending_events=0`.
+- VDS `version.json`: `latest_version=1.1.7`, `mandatory=false`, download URL пустой.
+- Был один временный SSH timeout сразу после `rsync`; повторная SSH-проверка прошла успешно, backend по HTTPS всё время отвечал `ok`.

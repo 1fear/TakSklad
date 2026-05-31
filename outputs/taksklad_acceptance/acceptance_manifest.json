@@ -3,7 +3,7 @@
   "marker": "ACCEPTANCE TELEGRAM 20260531",
   "shipment_date": "31.05.2026",
   "excel_file": "TakSklad_Telegram_Acceptance_2026-05-31.xlsx",
-  "excel_sha256": "4e7bc8540e45e9ce7c3465e138c063aa4168362e25f3c29c626e7c8ba9de8b4c",
+  "excel_sha256": "a5abc62efebcd2d87e26e92dfbb990d22fbf72e86ae74914b0dbf9b6f8de285e",
   "excel_bytes": 5690,
   "expected": {
     "orders": 1,
@@ -23,13 +23,16 @@
   ],
   "commands": {
     "regenerate": ".venv/bin/python tools/prepare_acceptance_kit.py",
+    "vds_status": "./deploy/vds/acceptance_status.sh",
     "telegram_verify": "./deploy/vds/verify_acceptance_marker.sh \"ACCEPTANCE TELEGRAM 20260531\" --expect-orders 1",
     "telegram_wait": "./deploy/vds/wait_acceptance_marker.sh \"ACCEPTANCE TELEGRAM 20260531\" --expect-orders 1 --timeout 300 --interval 10",
+    "telegram_status": "./deploy/vds/acceptance_status.sh --expect-orders 1",
     "windows_check_only": ".\\tools\\windows_backend_acceptance.ps1 -CheckOnly -Token \"<service-token>\"",
     "windows_launch_exe": ".\\tools\\windows_backend_acceptance.ps1 -Token \"<service-token>\" -AppPath \".\\TakSklad.exe\"",
     "windows_launch_source": ".\\tools\\windows_backend_acceptance.ps1 -Token \"<service-token>\" -AppPath \".\\main.py\"",
     "windows_verify": "./deploy/vds/verify_acceptance_marker.sh \"ACCEPTANCE TELEGRAM 20260531\" --expect-orders 1 --expect-scans 3 --expect-completed",
     "windows_wait": "./deploy/vds/wait_acceptance_marker.sh \"ACCEPTANCE TELEGRAM 20260531\" --expect-orders 1 --expect-scans 3 --expect-completed --timeout 300 --interval 10",
+    "windows_status": "./deploy/vds/acceptance_status.sh --expect-orders 1 --expect-scans 3 --expect-completed",
     "cleanup_dry_run": "./deploy/vds/cleanup_acceptance_marker.sh \"ACCEPTANCE TELEGRAM 20260531\"",
     "cleanup_apply": "./deploy/vds/cleanup_acceptance_marker.sh \"ACCEPTANCE TELEGRAM 20260531\" --apply"
   },

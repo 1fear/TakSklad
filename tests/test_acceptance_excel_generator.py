@@ -45,6 +45,10 @@ class AcceptanceExcelGeneratorTests(unittest.TestCase):
         self.assertIn("wait_acceptance_marker.sh", readme_text)
         self.assertIn('"telegram_wait"', manifest_text)
         self.assertIn('"windows_wait"', manifest_text)
+        self.assertIn("acceptance_status.sh", readme_text)
+        self.assertIn('"vds_status"', manifest_text)
+        self.assertIn('"telegram_status"', manifest_text)
+        self.assertIn('"windows_status"', manifest_text)
 
         forbidden_fragments = [
             "TELEGRAM_BOT_TOKEN=",

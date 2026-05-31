@@ -18,9 +18,16 @@
 - План блоков: `3`
 - Сумма: `720000`
 - Координаты: `41.311081, 69.240562`
-- SHA-256 Excel: `4e7bc8540e45e9ce7c3465e138c063aa4168362e25f3c29c626e7c8ba9de8b4c`
+- SHA-256 Excel: `a5abc62efebcd2d87e26e92dfbb990d22fbf72e86ae74914b0dbf9b6f8de285e`
 
 ## Telegram Проверка
+
+Перед ручной проверкой можно посмотреть общий VDS status:
+
+```bash
+cd /opt/taksklad/app
+./deploy/vds/acceptance_status.sh
+```
 
 1. В Telegram открыть `SkladKis_bot` от разрешённого пользовательского аккаунта.
 2. Нажать `Дата отгрузки`.
@@ -38,6 +45,13 @@ cd /opt/taksklad/app
 ```bash
 cd /opt/taksklad/app
 ./deploy/vds/wait_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --expect-orders 1 --timeout 300 --interval 10
+```
+
+Проверить общий статус VDS:
+
+```bash
+cd /opt/taksklad/app
+./deploy/vds/acceptance_status.sh --expect-orders 1
 ```
 
 ## Windows Проверка
@@ -78,6 +92,13 @@ cd /opt/taksklad/app
 ```bash
 cd /opt/taksklad/app
 ./deploy/vds/wait_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --expect-orders 1 --expect-scans 3 --expect-completed --timeout 300 --interval 10
+```
+
+Проверить общий статус VDS:
+
+```bash
+cd /opt/taksklad/app
+./deploy/vds/acceptance_status.sh --expect-orders 1 --expect-scans 3 --expect-completed
 ```
 
 ## Очистка Тестовых Данных

@@ -53,13 +53,16 @@ def build_manifest(output_dir=DEFAULT_OUTPUT_DIR, marker=DEFAULT_MARKER, shipmen
         "test_kiz_codes": TEST_KIZ_CODES,
         "commands": {
             "regenerate": ".venv/bin/python tools/prepare_acceptance_kit.py",
+            "vds_status": './deploy/vds/acceptance_status.sh',
             "telegram_verify": './deploy/vds/verify_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --expect-orders 1',
             "telegram_wait": './deploy/vds/wait_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --expect-orders 1 --timeout 300 --interval 10',
+            "telegram_status": './deploy/vds/acceptance_status.sh --expect-orders 1',
             "windows_check_only": '.\\tools\\windows_backend_acceptance.ps1 -CheckOnly -Token "<service-token>"',
             "windows_launch_exe": '.\\tools\\windows_backend_acceptance.ps1 -Token "<service-token>" -AppPath ".\\TakSklad.exe"',
             "windows_launch_source": '.\\tools\\windows_backend_acceptance.ps1 -Token "<service-token>" -AppPath ".\\main.py"',
             "windows_verify": './deploy/vds/verify_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --expect-orders 1 --expect-scans 3 --expect-completed',
             "windows_wait": './deploy/vds/wait_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --expect-orders 1 --expect-scans 3 --expect-completed --timeout 300 --interval 10',
+            "windows_status": './deploy/vds/acceptance_status.sh --expect-orders 1 --expect-scans 3 --expect-completed',
             "cleanup_dry_run": './deploy/vds/cleanup_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531"',
             "cleanup_apply": './deploy/vds/cleanup_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --apply',
         },
@@ -100,6 +103,13 @@ def build_readme(manifest):
 
 ## Telegram Проверка
 
+Перед ручной проверкой можно посмотреть общий VDS status:
+
+```bash
+cd /opt/taksklad/app
+{manifest["commands"]["vds_status"]}
+```
+
 1. В Telegram открыть `SkladKis_bot` от разрешённого пользовательского аккаунта.
 2. Нажать `Дата отгрузки`.
 3. Отправить `{manifest["shipment_date"]}`.
@@ -116,6 +126,13 @@ cd /opt/taksklad/app
 ```bash
 cd /opt/taksklad/app
 {manifest["commands"]["telegram_wait"]}
+```
+
+Проверить общий статус VDS:
+
+```bash
+cd /opt/taksklad/app
+{manifest["commands"]["telegram_status"]}
 ```
 
 ## Windows Проверка
@@ -154,6 +171,13 @@ cd /opt/taksklad/app
 ```bash
 cd /opt/taksklad/app
 {manifest["commands"]["windows_wait"]}
+```
+
+Проверить общий статус VDS:
+
+```bash
+cd /opt/taksklad/app
+{manifest["commands"]["windows_status"]}
 ```
 
 ## Очистка Тестовых Данных

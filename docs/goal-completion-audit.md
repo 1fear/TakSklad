@@ -38,6 +38,7 @@
 | Безопасность релиза | Готово | `version.json` не менялся, Windows release не создавался, push-уведомления не отправлялись |
 | Read-only acceptance verifier | Готово | `deploy/vds/verify_acceptance_marker.sh`, проверен на пустом acceptance-маркере и smoke-маркере |
 | Wait acceptance verifier | Готово | `deploy/vds/wait_acceptance_marker.sh`, syntax check OK, включён в acceptance kit |
+| Acceptance status check | Готово | `deploy/vds/acceptance_status.sh`, VDS status вернул `ok` |
 | Acceptance Excel generator | Готово | `tools/generate_acceptance_excel.py`, тест `tests/test_acceptance_excel_generator.py` |
 | Acceptance kit для ручной проверки | Готово | `outputs/taksklad_acceptance/README.md`, `acceptance_manifest.json`, стабильный SHA-256 Excel |
 | Acceptance kit на VDS | Готово | файлы загружены в `/opt/taksklad/app`, VDS verifier/wait/help/safety проверены |
@@ -99,7 +100,8 @@
 - `tools/generate_acceptance_excel.py` пересобрал acceptance Excel, backend parser прочитал `2` строки, `3` блока, сумму `720000`, warnings `[]`.
 - `tools/prepare_acceptance_kit.py` пересобрал acceptance kit, manifest и README; SHA-256 Excel стабилен между повторными генерациями.
 - `deploy/vds/wait_acceptance_marker.sh` добавлен для ожидания ручного Telegram/Windows результата без изменений в базе.
-- Acceptance kit и wait-verifier загружены на VDS; `version.json` на VDS остался на `1.1.7`, контейнеры и БД не менялись.
+- `deploy/vds/acceptance_status.sh` добавлен для единой read-only проверки manifest, SHA, `version.json`, Docker services, backend health и acceptance marker.
+- Acceptance kit, wait-verifier и status-check загружены на VDS; `acceptance_status.sh` вернул `status=ok`; `version.json` на VDS остался на `1.1.7`, контейнеры и БД не менялись.
 
 ## Что Не Доказано
 
