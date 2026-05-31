@@ -2683,3 +2683,23 @@ cd /opt/taksklad/app
   - `https://api.taksklad.uz/` без BasicAuth - HTTP 401;
   - `https://api.taksklad.uz/` с BasicAuth - HTML frontend;
   - `./deploy/vds/acceptance_status.sh` - `status=ok`, GO/NO-GO ожидаемо `no_go` до ручной приёмки.
+
+### GitHub Release 2.0.0 And Public Update Manifest
+
+- Создан GitHub Release `v2.0.0`.
+- GitHub Actions `Build Windows Release` успешно собрал и загрузил:
+  - `TakSklad.exe`;
+  - `TakSklad-windows-x64.zip`;
+  - SHA256-файлы для обоих артефактов.
+- Публичный `version.json` переключён на `latest_version = 2.0.0`.
+- Режим обновления выбран staged:
+  - `package_type = onefile_exe`;
+  - `mandatory = false`;
+  - `min_supported_version = 1.1.7`;
+  - `download_url_onedir` и `sha256_onedir` сохранены в manifest для ручной/следующей onedir-переходной стадии.
+- Зачем: рабочие ПК на `1.1.7` получат безопасный onefile update до 2.0 без принудительной блокировки смены; onedir ZIP уже доступен в релизе.
+- Проверено:
+  - GitHub Actions run `26712547457` - success;
+  - `python3 -m json.tool version.json` - OK;
+  - SHA256 скачанного `TakSklad.exe` совпадает с manifest;
+  - SHA256 скачанного `TakSklad-windows-x64.zip` совпадает с manifest.
