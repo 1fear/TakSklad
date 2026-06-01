@@ -3365,3 +3365,20 @@ cd /opt/taksklad/app
   - `./.venv/bin/python -m unittest tests.test_backend_skladbot_worker tests.test_backend_google_sheets_exporter tests.test_google_sheets_desktop_read tests.test_google_sheets_sync_worker` - 35 тестов OK;
   - VDS read-only проверка Google Sheets показала: `rows=21`, `numbered_rows=21`;
   - VDS `diagnose_skladbot_match.sh` работает и показывает ближайшие несовпадения по `date`, `client`, `payment`, `products`.
+
+### Release Manifest And Update Notifications Unblocked
+
+- Причина: Антон снял старое ограничение "без `version.json` и без push-уведомлений"; текущий релизный процесс должен работать без этого искусственного стопора.
+- Фактическое состояние:
+  - публичный `version.json` уже указывает на `latest_version=2.0.0`;
+  - GitHub Release assets `TakSklad.exe` и `TakSklad-windows-x64.zip` опубликованы;
+  - acceptance manifest содержит `push_notifications_allowed=true`;
+  - runtime-флага `no_push_notifications` в preflight/acceptance больше нет.
+- Важно:
+  - `mandatory=false` оставлен осознанно: это не запрет на обновления, а защита от принудительной блокировки рабочих ПК;
+  - принудительное обновление `mandatory=true` включается отдельным решением, когда нужно именно заставить все складские ПК обновиться перед работой.
+- Проверено:
+  - `./.venv/bin/python tools/release_preflight.py --skip-network` - `status=ok`;
+  - `./.venv/bin/python tools/release_preflight.py --verify-downloads --timeout 120` - `status=ok`, SHA обоих GitHub assets совпали с `version.json`;
+  - `https://api.taksklad.uz/health` - `status=ok`, `version=2.0.0`;
+  - VDS `./deploy/vds/acceptance_status.sh` - общий `status=ok`, `telegram_menu.status=ok`, `push_notifications_allowed=true`.
