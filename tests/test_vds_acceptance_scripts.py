@@ -14,7 +14,7 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
             "result_file",
             "Acceptance result template not found",
             "Acceptance result file not found",
-            "version.json latest_version must be 2.0.0",
+            "version.json latest_version must be 2.0.1",
             "version.json min_supported_version must stay 1.1.7 for non-forced rollout",
             "version.json mandatory must be false during staged rollout",
             "version.json onefile download_url and sha256 must be set",

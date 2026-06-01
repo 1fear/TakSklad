@@ -3560,3 +3560,14 @@ cd /opt/taksklad/app
 - Результат для склада:
   - запуск остаётся обычным: `TakSklad.exe`;
   - PowerShell-скрипты для склада не нужны.
+- Релиз:
+  - опубликован GitHub Release `v2.0.1`;
+  - публичный `version.json` переключён на `latest_version = 2.0.1`;
+  - пересобран складской архив `outputs/windows_ready/TakSklad-2.0.1-win-ready.zip`;
+  - в архиве нет `.ps1`, есть `TakSklad.exe` и рабочие JSON рядом с ним.
+- Проверено:
+  - GitHub Actions `Build Windows Release` - success;
+  - smoke `TakSklad.exe --smoke-import` прошёл для onefile и onedir;
+  - SHA GitHub assets сверены локально;
+  - `unzip -t outputs/windows_ready/TakSklad-2.0.1-win-ready.zip` - OK;
+  - `shasum -a 256 -c outputs/windows_ready/TakSklad-2.0.1-win-ready.zip.sha256.txt` - OK.

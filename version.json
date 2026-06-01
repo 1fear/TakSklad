@@ -1,12 +1,12 @@
 {
-  "latest_version": "2.0.0",
+  "latest_version": "2.0.1",
   "min_supported_version": "1.1.7",
   "mandatory": false,
   "package_type": "onefile_exe",
   "entrypoint": "TakSklad.exe",
-  "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.0/TakSklad.exe",
-  "sha256": "473910481b55ec5e7ebff386b0549879e754fef70d626e13a614fe5b6e304206",
-  "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.0/TakSklad-windows-x64.zip",
-  "sha256_onedir": "0ce088d7c7b9f0d4c3a5dea5965a770da35782a5c65a98969f42eb72ce9dcf4e",
-  "message": "TakSklad 2.0.0 MVP: Telegram Excel import, логистический отчёт по дате, SkladBot matching, Выгрузка КИЗов, возвраты, VDS backend и обновлённый складской экран."
+  "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.1/TakSklad.exe",
+  "sha256": "e0faa6c8ad10f81a21090c2ccaee56458f34019f4d7413aa771b4466794cf357",
+  "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.1/TakSklad-windows-x64.zip",
+  "sha256_onedir": "25ad0ce41ee9614d052c1d7c8abf69a99dca0fa964a3ffd7536fd936a1be7149",
+  "message": "TakSklad 2.0.1: исправлен запуск Windows exe, приложение запускается напрямую через TakSklad.exe."
 }
