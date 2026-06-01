@@ -10,6 +10,7 @@ VERSION_FILE="$APP_DIR/version.json"
 VERIFY_SCRIPT="$SCRIPT_DIR/verify_acceptance_marker.sh"
 TELEGRAM_MENU_SCRIPT="$SCRIPT_DIR/verify_telegram_menu.sh"
 GOOGLE_SYNC_SCRIPT="$SCRIPT_DIR/verify_google_backend_sync.sh"
+SKLADBOT_COVERAGE_SCRIPT="$SCRIPT_DIR/verify_skladbot_coverage.sh"
 RESULTS_FILE="$APP_DIR/outputs/taksklad_acceptance/ACCEPTANCE_RESULTS.md"
 GO_NO_GO_SCRIPT="$APP_DIR/tools/release_go_no_go.py"
 HEALTH_ATTEMPTS="${ACCEPTANCE_HEALTH_ATTEMPTS:-6}"
@@ -96,6 +97,10 @@ if [[ ! -x "$TELEGRAM_MENU_SCRIPT" ]]; then
 fi
 if [[ ! -x "$GOOGLE_SYNC_SCRIPT" ]]; then
   echo "Google/backend sync verifier is not executable: $GOOGLE_SYNC_SCRIPT" >&2
+  exit 1
+fi
+if [[ ! -x "$SKLADBOT_COVERAGE_SCRIPT" ]]; then
+  echo "SkladBot coverage verifier is not executable: $SKLADBOT_COVERAGE_SCRIPT" >&2
   exit 1
 fi
 if [[ ! -f "$GO_NO_GO_SCRIPT" ]]; then
@@ -202,11 +207,13 @@ TELEGRAM_MENU_OUTPUT="$("$TELEGRAM_MENU_SCRIPT" 2>&1)"
 TELEGRAM_MENU_STATUS="$?"
 GOOGLE_SYNC_OUTPUT="$("$GOOGLE_SYNC_SCRIPT" 2>&1)"
 GOOGLE_SYNC_STATUS="$?"
+SKLADBOT_COVERAGE_OUTPUT="$("$SKLADBOT_COVERAGE_SCRIPT" 2>&1)"
+SKLADBOT_COVERAGE_STATUS="$?"
 GO_NO_GO_OUTPUT="$(python3 "$GO_NO_GO_SCRIPT" --results "$RESULTS_FILE" 2>&1)"
 GO_NO_GO_STATUS="$?"
 set -e
 
-python3 - "$MANIFEST_INFO" "$VERSION_INFO" "$SHA_STATUS" "$ACTUAL_SHA" "$EXPECTED_SHA" "$HEALTH_STATUS" "$HEALTH_OUTPUT" "$COMPOSE_STATUS" "$COMPOSE_OUTPUT" "$VERIFY_STATUS" "$VERIFY_OUTPUT" "$TELEGRAM_MENU_STATUS" "$TELEGRAM_MENU_OUTPUT" "$GOOGLE_SYNC_STATUS" "$GOOGLE_SYNC_OUTPUT" "$GO_NO_GO_STATUS" "$GO_NO_GO_OUTPUT" "$REQUIRE_GO" <<'PY'
+python3 - "$MANIFEST_INFO" "$VERSION_INFO" "$SHA_STATUS" "$ACTUAL_SHA" "$EXPECTED_SHA" "$HEALTH_STATUS" "$HEALTH_OUTPUT" "$COMPOSE_STATUS" "$COMPOSE_OUTPUT" "$VERIFY_STATUS" "$VERIFY_OUTPUT" "$TELEGRAM_MENU_STATUS" "$TELEGRAM_MENU_OUTPUT" "$GOOGLE_SYNC_STATUS" "$GOOGLE_SYNC_OUTPUT" "$SKLADBOT_COVERAGE_STATUS" "$SKLADBOT_COVERAGE_OUTPUT" "$GO_NO_GO_STATUS" "$GO_NO_GO_OUTPUT" "$REQUIRE_GO" <<'PY'
 import json
 import sys
 
@@ -225,9 +232,11 @@ telegram_menu_status = int(sys.argv[12])
 telegram_menu_output = sys.argv[13].strip()
 google_sync_status = int(sys.argv[14])
 google_sync_output = sys.argv[15].strip()
-go_no_go_status = int(sys.argv[16])
-go_no_go_output = sys.argv[17].strip()
-require_go = sys.argv[18] == "1"
+skladbot_coverage_status = int(sys.argv[16])
+skladbot_coverage_output = sys.argv[17].strip()
+go_no_go_status = int(sys.argv[18])
+go_no_go_output = sys.argv[19].strip()
+require_go = sys.argv[20] == "1"
 
 try:
     health = json.loads(health_output)
@@ -262,6 +271,11 @@ try:
     google_sync = json.loads(google_sync_output.splitlines()[-1])
 except Exception:
     google_sync = {"status": "failed", "raw": google_sync_output}
+
+try:
+    skladbot_coverage = json.loads(skladbot_coverage_output.splitlines()[-1])
+except Exception:
+    skladbot_coverage = {"status": "failed", "raw": skladbot_coverage_output}
 
 try:
     release_gate = json.loads(go_no_go_output.splitlines()[-1])
@@ -299,6 +313,8 @@ if telegram_menu_status != 0 or telegram_menu.get("status") != "ok":
     errors.append(f"telegram menu verifier failed with exit {telegram_menu_status}")
 if google_sync_status != 0 or google_sync.get("status") != "ok":
     errors.append(f"google/backend sync verifier failed with exit {google_sync_status}")
+if skladbot_coverage_status != 0 or skladbot_coverage.get("status") != "ok":
+    errors.append(f"skladbot coverage verifier failed with exit {skladbot_coverage_status}")
 release_status = release_gate.get("status")
 if require_go and release_status != "go":
     errors.append(f"release GO/NO-GO is not go: {release_status or 'unknown'}")
@@ -332,6 +348,10 @@ summary = {
     "google_backend_sync": {
         "exit_code": google_sync_status,
         "response": google_sync,
+    },
+    "skladbot_coverage": {
+        "exit_code": skladbot_coverage_status,
+        "response": skladbot_coverage,
     },
     "release_go_no_go": {
         "exit_code": go_no_go_status,

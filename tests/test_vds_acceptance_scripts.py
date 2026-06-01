@@ -29,6 +29,9 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
             "verify_google_backend_sync.sh",
             "google/backend sync verifier failed",
             '"google_backend_sync"',
+            "verify_skladbot_coverage.sh",
+            "skladbot coverage verifier failed",
+            '"skladbot_coverage"',
             "ACCEPTANCE_HEALTH_ATTEMPTS",
             "ACCEPTANCE_HEALTH_RETRY_DELAY_SECONDS",
             "health_attempt",
@@ -55,6 +58,9 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         google_sync_script = (PROJECT_ROOT / "deploy" / "vds" / "verify_google_backend_sync.sh").read_text(
             encoding="utf-8"
         )
+        skladbot_coverage_script = (PROJECT_ROOT / "deploy" / "vds" / "verify_skladbot_coverage.sh").read_text(
+            encoding="utf-8"
+        )
 
         for script in (verify_script, cleanup_script):
             self.assertIn("*ACCEPTANCE*|*WEB_UI_SMOKE*|*SMOKE_MVP*", script)
@@ -71,6 +77,10 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         self.assertIn("GOOGLE_BACKEND_SYNC_RETRY_DELAY_SECONDS", google_sync_script)
         self.assertIn("Quota exceeded", google_sync_script)
         self.assertIn("APIError: [429]", google_sync_script)
+
+        self.assertIn("app.skladbot_coverage_diagnostic", skladbot_coverage_script)
+        self.assertIn("--marker", skladbot_coverage_script)
+        self.assertIn("--detail-limit", skladbot_coverage_script)
 
     def test_vds_compose_passes_geocoder_and_block_price_to_import_worker(self):
         compose = (PROJECT_ROOT / "deploy" / "vds" / "docker-compose.yml").read_text(encoding="utf-8")

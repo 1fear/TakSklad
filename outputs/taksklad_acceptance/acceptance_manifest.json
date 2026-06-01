@@ -28,6 +28,7 @@
     "local_preflight": ".venv/bin/python tools/release_preflight.py",
     "vds_status": "./deploy/vds/acceptance_status.sh",
     "google_backend_sync": "./deploy/vds/verify_google_backend_sync.sh",
+    "skladbot_coverage": "./deploy/vds/verify_skladbot_coverage.sh",
     "telegram_verify": "./deploy/vds/verify_acceptance_marker.sh \"ACCEPTANCE TELEGRAM 20260531\" --expect-orders 1",
     "telegram_wait": "./deploy/vds/wait_acceptance_marker.sh \"ACCEPTANCE TELEGRAM 20260531\" --expect-orders 1 --timeout 300 --interval 10",
     "telegram_status": "./deploy/vds/acceptance_status.sh --expect-orders 1",

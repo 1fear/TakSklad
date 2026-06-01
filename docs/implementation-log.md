@@ -3418,3 +3418,17 @@ cd /opt/taksklad/app
   - локально `bash -n deploy/vds/acceptance_status.sh` - OK;
   - локально `./.venv/bin/python -m unittest tests.test_vds_acceptance_scripts` - 3 теста OK;
   - VDS `./deploy/vds/acceptance_status.sh` - общий `status=ok`, backend health `status=ok`, `google_backend_sync.status=ok`.
+
+### SkladBot Coverage Acceptance Gate
+
+- Причина: для рабочего склада важно, чтобы активные заказы, которые уже видны в backend/desktop, имели номер заявки SkladBot. Раньше это проверялось только вручную через диагностику, но не было отдельного release gate.
+- Решение:
+  - добавлен read-only verifier `backend/app/skladbot_coverage_diagnostic.py`;
+  - добавлен VDS-скрипт `deploy/vds/verify_skladbot_coverage.sh`;
+  - `deploy/vds/acceptance_status.sh` теперь включает блок `skladbot_coverage` и падает, если активный видимый заказ не имеет `Номер заявки SkladBot` или `ID заявки SkladBot`;
+  - verifier игнорирует позиции, скрытые как `removed_from_google_sheet`, чтобы не считать удалённые из Google строки активным складским долгом.
+- Проверено:
+  - локально `bash -n deploy/vds/verify_skladbot_coverage.sh deploy/vds/acceptance_status.sh` - OK;
+  - локально `./.venv/bin/python -m unittest tests.test_skladbot_coverage_diagnostic tests.test_vds_acceptance_scripts tests.test_release_preflight tests.test_acceptance_excel_generator` - 22 теста OK;
+  - VDS `./deploy/vds/verify_skladbot_coverage.sh` - `status=ok`, `active_orders=7`, `numbered_orders=7`, `missing_orders=0`;
+  - VDS `./deploy/vds/acceptance_status.sh` - общий `status=ok`, `skladbot_coverage.status=ok`.
