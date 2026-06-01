@@ -21,6 +21,7 @@ from .google_sheets_exporter import (
 )
 from .models import AuditLog, Order, OrderItem, ScanCode
 from .orders_service import COMPLETED_STATUSES, STATUS_REMOVED_FROM_GOOGLE, STATUS_RETURNED
+from .google_sheets_pending import process_pending_google_sheets_exports
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -548,9 +549,12 @@ def main():
     while True:
         try:
             with SessionLocal() as db:
+                pending_result = process_pending_google_sheets_exports(db)
                 result = sync_google_sheet_to_backend(db)
             logging.info(
-                "Google Sheets sync: rows=%s matched=%s missing=%s orders_updated=%s items_updated=%s conflicts=%s archived=%s removed=%s",
+                "Google Sheets sync: pending_synced=%s pending_failed=%s rows=%s matched=%s missing=%s orders_updated=%s items_updated=%s conflicts=%s archived=%s removed=%s",
+                pending_result["synced"],
+                pending_result["failed"],
                 result["rows"],
                 result["matched"],
                 result["missing"],

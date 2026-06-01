@@ -11,6 +11,11 @@ from .google_sheets_exporter import (
     mark_backend_order_returned_in_google_sheets,
     sync_backend_order_item_to_google_sheets,
 )
+from .google_sheets_pending import (
+    mark_google_sheets_export_synced,
+    queue_google_sheets_export,
+    should_queue_google_sheets_export,
+)
 from .models import AuditLog, Order, OrderItem, ScanCode
 from .schemas import OrderItemRead, OrderRead, ScanCreate, ScanRead
 
@@ -347,6 +352,13 @@ def record_google_sheets_export_result(db: Session, action, entity_type, entity_
         result = {"status": "error", "error": str(exc)}
 
     try:
+        if should_queue_google_sheets_export(result):
+            event = queue_google_sheets_export(db, action, entity_type, entity_id, result=result)
+            result = {**result, "queued": True, "pending_event_id": str(event.id) if event else ""}
+        else:
+            completed_events = mark_google_sheets_export_synced(db, action, entity_id, result=result)
+            if completed_events:
+                result = {**result, "completed_pending_events": completed_events}
         db.add(AuditLog(
             action=action,
             entity_type=entity_type,

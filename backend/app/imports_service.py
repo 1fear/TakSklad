@@ -7,6 +7,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from .google_sheets_exporter import append_import_records_to_google_sheets, make_sheet_record
+from .google_sheets_pending import (
+    mark_google_sheets_export_synced,
+    queue_google_sheets_export,
+    should_queue_google_sheets_export,
+)
 from .models import AuditLog, ImportFile, ImportJob, Order, OrderItem
 from .orders_service import STATUS_COMPLETED, STATUS_NOT_COMPLETED
 from .schemas import ImportCreate, ImportRead, ImportResult
@@ -183,7 +188,11 @@ def create_import(db: Session, payload: ImportCreate):
     ))
     db.commit()
     db.refresh(import_job)
-    google_sheets_result = export_import_records_to_google_sheets(google_sheets_records)
+    google_sheets_result = export_import_records_to_google_sheets(
+        db,
+        google_sheets_records,
+        import_job_id=str(import_job.id),
+    )
     import_job.raw_payload = {
         **(import_job.raw_payload or {}),
         "google_sheets": google_sheets_result,
@@ -210,18 +219,38 @@ def create_import(db: Session, payload: ImportCreate):
     )
 
 
-def export_import_records_to_google_sheets(records):
+def export_import_records_to_google_sheets(db: Session, records, import_job_id=""):
     try:
-        return append_import_records_to_google_sheets(records)
+        result = append_import_records_to_google_sheets(records)
     except Exception as exc:
         logger.exception("Google Sheets export failed after backend import")
-        return {
+        result = {
             "status": "error",
             "imported": 0,
             "duplicates": 0,
             "updated": 0,
             "error": str(exc),
         }
+    if should_queue_google_sheets_export(result):
+        event = queue_google_sheets_export(
+            db,
+            "google_sheets_import_export",
+            "import",
+            import_job_id,
+            result=result,
+            payload={"records": records},
+        )
+        return {**result, "queued": True, "pending_event_id": str(event.id) if event else ""}
+
+    completed_events = mark_google_sheets_export_synced(
+        db,
+        "google_sheets_import_export",
+        import_job_id,
+        result=result,
+    )
+    if completed_events:
+        return {**result, "completed_pending_events": completed_events}
+    return result
 
 
 def list_imports(db: Session):

@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .db import get_db
 from .diagnostics_service import build_backend_diagnostics_log
 from .google_sheets_sync_worker import sync_google_sheet_to_backend
+from .google_sheets_pending import process_pending_google_sheets_exports
 from .imports_service import create_import as create_import_in_db
 from .imports_service import list_imports as list_imports_in_db
 from .kiz_reports_service import build_kiz_source_file_report_xlsx, list_completed_kiz_source_files
@@ -101,6 +102,13 @@ def sync_sources(skladbot: bool = True, wait_skladbot: bool = False, db=Depends(
     errors = []
     try:
         try:
+            pending_google_result = process_pending_google_sheets_exports(db)
+            pending_google_result = {"status": "completed", **pending_google_result}
+        except Exception as exc:
+            pending_google_result = {"status": "error", "error": str(exc)}
+            errors.append("google_sheets_pending")
+
+        try:
             google_sheets_result = sync_google_sheet_to_backend(db)
             google_sheets_result = {"status": "completed", **google_sheets_result}
         except Exception as exc:
@@ -122,6 +130,7 @@ def sync_sources(skladbot: bool = True, wait_skladbot: bool = False, db=Depends(
         return {
             "status": "completed_with_errors" if errors else "completed",
             "errors": errors,
+            "google_sheets_pending": pending_google_result,
             "google_sheets": google_sheets_result,
             "skladbot": skladbot_result,
         }

@@ -203,6 +203,78 @@ class BackendApiPersistenceTests(unittest.TestCase):
             actions = [row.action for row in db.execute(select(AuditLog)).scalars().all()]
             self.assertIn("google_sheets_scan_export", actions)
 
+    def test_scan_create_queues_google_sheets_export_when_google_is_down(self):
+        _, item_id = self.seed_order()
+
+        with mock.patch(
+            "backend.app.orders_service.sync_backend_order_item_to_google_sheets",
+            side_effect=RuntimeError("Google timeout"),
+        ):
+            response = self.client.post(
+                "/api/v1/scans",
+                json={"order_item_id": item_id, "code": "010000000901"},
+            )
+
+        self.assertEqual(response.status_code, 201)
+        with self.SessionLocal() as db:
+            event = db.execute(
+                select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")
+            ).scalar_one()
+            self.assertEqual(event.status, "pending")
+            self.assertEqual(event.payload["action"], "google_sheets_scan_export")
+            self.assertEqual(event.payload["entity_id"], item_id)
+            self.assertIn("Google timeout", event.last_error)
+            audit = db.execute(
+                select(AuditLog).where(AuditLog.action == "google_sheets_scan_export")
+            ).scalar_one()
+            self.assertTrue(audit.payload["queued"])
+
+    def test_sync_sources_flushes_pending_google_exports_before_google_refresh(self):
+        _, item_id = self.seed_order()
+        call_order = []
+        with self.SessionLocal() as db:
+            db.add(PendingEvent(
+                event_type="google_sheets_export",
+                status="pending",
+                attempts=0,
+                payload={
+                    "action": "google_sheets_scan_export",
+                    "entity_type": "order_item",
+                    "entity_id": item_id,
+                    "last_result": {"status": "error", "error": "Google timeout"},
+                },
+                last_error="Google timeout",
+            ))
+            db.commit()
+
+        def fake_export(_item):
+            call_order.append("pending_google_export")
+            return {"status": "completed", "updated": 1}
+
+        def fake_google_sync(_db):
+            call_order.append("google_sheet_to_backend")
+            return {"rows": 1, "matched": 1, "orders_updated": 0, "items_updated": 0, "conflicts": 0}
+
+        with mock.patch(
+            "backend.app.google_sheets_pending.sync_backend_order_item_to_google_sheets",
+            side_effect=fake_export,
+        ), mock.patch(
+            "backend.app.main.sync_google_sheet_to_backend",
+            side_effect=fake_google_sync,
+        ):
+            response = self.client.post("/api/v1/sync/sources?skladbot=0")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["google_sheets_pending"]["synced"], 1)
+        self.assertEqual(call_order, ["pending_google_export", "google_sheet_to_backend"])
+        with self.SessionLocal() as db:
+            event = db.execute(
+                select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")
+            ).scalar_one()
+            self.assertEqual(event.status, "completed")
+            self.assertEqual(event.last_error, "")
+
     def test_complete_order_requires_required_blocks_and_closes_order(self):
         order_id, item_id = self.seed_order()
 
@@ -436,6 +508,13 @@ class BackendApiPersistenceTests(unittest.TestCase):
         active = self.client.get("/api/v1/orders/active")
         self.assertEqual(active.status_code, 200)
         self.assertEqual(active.json()[0]["client"], "Google Fail Client")
+        with self.SessionLocal() as db:
+            event = db.execute(
+                select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")
+            ).scalar_one()
+            self.assertEqual(event.status, "pending")
+            self.assertEqual(event.payload["action"], "google_sheets_import_export")
+            self.assertEqual(len(event.payload["records"]), 1)
 
     def test_duplicate_backend_import_still_can_backfill_google_sheets(self):
         row = {

@@ -3467,3 +3467,31 @@ cd /opt/taksklad/app
   - `taksklad.uz A 135.181.245.84`;
   - `www.taksklad.uz A 135.181.245.84` или CNAME на `taksklad.uz`;
   - `adminer.taksklad.uz A 135.181.245.84`, если нужен доступ к Adminer.
+
+### Google Sheets Write-through Queue
+
+- Цель: оставить Google Sheets `data` главным рабочим источником для склада, а PostgreSQL использовать как кэш, backup, audit, защиту от дублей КИЗ и очередь при временной недоступности Google.
+- Что изменено:
+  - добавлен модуль `backend/app/google_sheets_pending.py` для очереди повторной записи в Google Sheets;
+  - сканы КИЗ, завершение заказа, возвраты и Telegram/Excel import теперь не теряются, если Google Sheets временно недоступен;
+  - при ошибке Google операция сохраняется в `pending_events` как `google_sheets_export`;
+  - `/api/v1/sync/sources` сначала дожимает pending-записи в Google, затем читает Google Sheets `data` обратно в backend;
+  - `google-sheets-sync-worker` делает то же самое в фоне перед каждым чтением таблицы.
+- Что это даёт пользователю:
+  - кнопка `Обновить` и фоновая синхронизация сначала подтягивают актуальную Google-таблицу;
+  - если приложение успело принять скан/завершение, но Google дал timeout, запись не пропадает и будет повторена;
+  - после восстановления Google backend сам дописывает отложенные изменения.
+- Что уже было и остаётся:
+  - завершение заказа переносит строки `data -> Архив`;
+  - возвраты идут через `Архив -> Возвраты`;
+  - если строка удалена из Google и по ней нет сканов, backend скрывает её из активного списка;
+  - если строка удалена/изменена, но уже есть сканы, создаётся audit-конфликт, а данные не скрываются молча.
+- Проверено:
+  - локально `./.venv/bin/python -m unittest tests.test_backend_api_persistence tests.test_google_sheets_sync_worker tests.test_backend_google_sheets_exporter tests.test_refresh_fallback` - 50 тестов OK;
+  - локально `./.venv/bin/python -m compileall -q backend/app/google_sheets_pending.py backend/app/orders_service.py backend/app/imports_service.py backend/app/main.py backend/app/google_sheets_sync_worker.py tests/test_backend_api_persistence.py` - OK;
+  - VDS backend-сервисы пересобраны и перезапущены;
+  - VDS `./deploy/vds/acceptance_status.sh` - `status=ok`, `google_backend_sync.status=ok`, `field_mismatch_count=0`, `skladbot_coverage.status=ok`, `telegram_menu.status=ok`.
+- Отдельно исправлено текущее состояние данных:
+  - acceptance нашёл старый рассинхрон по одной позиции: backend видел 2 отсканированных блока, Google Sheets видел 1;
+  - чтобы не потерять КИЗ, позиция была один раз принудительно дописана backend -> Google;
+  - после этого Google и backend снова совпали.
