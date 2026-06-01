@@ -21,13 +21,13 @@ SHA-256 Excel: `204b932a704b39294b513a95964844db1ed74d028e3daff13beef3ab09ec98fd
 ## 1. Preflight
 
 - [x] `.venv/bin/python tools/release_preflight.py` вернул `status=ok`.
-- [x] `version.json` не менялся и остался на `1.1.7`.
+- [x] `version.json` указывает на `2.0.0`, `mandatory=false`, ссылки и SHA заполнены.
 - [x] В Git нет tracked runtime/secret-файлов.
 
 Заметки:
 
 ```text
-Локально проверено 2026-05-31. Public backend health отвечает status=ok.
+Локально проверено 2026-06-01. Public backend health отвечает status=ok, version=2.0.0.
 ```
 
 ## 2. Telegram Import
@@ -38,7 +38,7 @@ SHA-256 Excel: `204b932a704b39294b513a95964844db1ed74d028e3daff13beef3ab09ec98fd
 - [ ] Бот ответил без ошибки.
 - [ ] `verify_acceptance_marker.sh` вернул `orders=1`.
 - [ ] Логистический отчёт по дате выгружается.
-- [ ] КИЗ по файлам не показывает незавершённые файлы.
+- [ ] `Выгрузка КИЗов` не показывает незавершённые файлы.
 
 Команда проверки:
 
@@ -153,7 +153,7 @@ cd /opt/taksklad/app
 - [ ] Windows desktop acceptance принят.
 - [x] Критичных дефектов нет.
 - [x] Rollback понятен.
-- [x] `version.json` всё ещё не менялся.
+- [x] `version.json` проверен и `mandatory=false`.
 
 Итог:
 

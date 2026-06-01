@@ -30,13 +30,13 @@ TakSklad 2.0 должен стать рабочей VDS-backed версией с
 - Telegram worker на VDS работает как единственный слушатель Telegram.
 - Импорт Excel идёт через backend.
 - Менеджер задаёт дату отгрузки при Telegram-импорте, если источник не содержит надёжную дату.
-- VDS SkladBot worker работает узко: `SKLADBOT_SYNC_LOOKBACK_DAYS=1`, `SKLADBOT_CUSTOMER_ID=6211`, `SKLADBOT_SHIPMENT_TYPE_ID=3389`, интервал 60 секунд.
+- VDS SkladBot worker работает узко и динамически: базовое окно `SKLADBOT_SYNC_LOOKBACK_DAYS=1`, потолок `SKLADBOT_SYNC_MAX_LOOKBACK_DAYS=7`, запас на заранее созданные заявки `SKLADBOT_ORDER_CREATE_LEAD_DAYS=3`, лимит детальных заявок `SKLADBOT_DETAIL_LIMIT=30`, `SKLADBOT_CUSTOMER_ID=6211`, `SKLADBOT_SHIPMENT_TYPE_ID=3389`, интервал 60 секунд.
 - SkladBot matching сравнивает количество только в блоках, товар - по нормализованному цвету и формату, адрес - только как мягкий признак.
 - SkladBot matching поддерживает безопасный partial-match: лишние товары в заявке не блокируют совпадение, но несколько подходящих заявок остаются `multiple`.
 - Логистический отчёт формируется по выбранной дате отгрузки и содержит координаты доставки.
 - КИЗ-отчёт смены формируется при закрытии смены, делится по датам отгрузки и отправляется в Telegram.
 - Проведена ручная приёмка на Windows и на копии реальных заказов.
-- `version.json` обновляется только после приёмки.
+- `version.json` находится в staged rollout: `2.0.0`, `mandatory=false`; обязательное обновление не включается до приёмки.
 
 ### Не Входит В 2.0
 
@@ -175,7 +175,7 @@ Done:
 - собрать Windows archive;
 - проверить archive на чистой Windows-машине;
 - подготовить release notes;
-- обновить `version.json` только после ручной приёмки;
+- держать `version.json` в staged rollout и не включать `mandatory=true` до ручной приёмки;
 - развернуть сначала на одном рабочем ПК;
 - после смены без критичных ошибок включить второй ПК;
 - оставить rollback-путь на 1.1.7/последнюю стабильную desktop-линию.
@@ -217,7 +217,8 @@ Done:
 - Telegram worker добавлен как VDS-сервис.
 - VDS staging пересобран с `backend-api`, `skladbot-worker`, `telegram-worker`.
 - Telegram worker теперь принимает `.xlsx/.xlsm` из Telegram, собирает backend import payload и отправляет его в `POST /api/v1/imports`.
-- Telegram worker показывает только нижнее меню `Дата отгрузки`, `Отчёт логистики`, `КИЗ по файлам`.
+- Telegram worker показывает пользовательские действия через системное меню команд Telegram: `Дата отгрузки`, `Отчёт логистики`, `Выгрузка КИЗов`, `Статус`.
+- Для выбора даты логистики и исходного файла КИЗ используются inline-кнопки под сообщением, без навязчивой reply-клавиатуры после `/start`.
 - Telegram worker изолирует обработку каждого update: ошибка на одной кнопке/отчёте не мешает поставить следующие Excel-файлы в очередь.
 - Скрытая Telegram-команда `/logs` выгружает backend diagnostic-файл без добавления новой пользовательской кнопки.
 - Логистический отчёт выгружается одним Excel-файлом по выбранной дате отгрузки.
@@ -233,14 +234,15 @@ Done:
 - Окно печати сводного листа поддерживает выбор принтера и размеры этикеток `100x100`, `100x150`, `75x50`, `58x40`; браузер для печати не открывается.
 - SkladBot worker проверяет свежие заявки по дате создания/обновления, а `Дата выгрузки` используется для строгого совпадения с датой отгрузки заказа.
 - SkladBot worker не берёт в автоматический матчинг заявки без `created_at` и `updated_at`, чтобы не привязать старый номер заявки.
-- SkladBot worker на VDS синхронизирован с safe partial-match логикой; после точечного redeploy `skladbot-worker` acceptance status остался `ok`.
+- Backend-отчёты и SkladBot worker считают `сегодня/вчера` по `TAKSKLAD_TIMEZONE=Asia/Tashkent`, а не по UTC VDS.
+- SkladBot worker на VDS синхронизирован с safe partial-match и dynamic lookback логикой; после точечного redeploy `backend-api`/`skladbot-worker` acceptance status остался `ok`.
 - SkladBot matching дополнительно отсекает возвратные типы заявок даже если в названии есть `3PL` и `отгрузка`; диагностический вывод показывает `address_soft_match`, но адрес не блокирует совпадение.
 - `api.taksklad.uz` указывает на VDS и `https://api.taksklad.uz/health` возвращает `200`.
 - Ключ Яндекс Геокодера вынесен из исходного кода: используется env `YANDEX_GEOCODER_API_KEY` или локальный `yandex_geocoder_key.txt`.
 - Добавлен чеклист Windows-приёмки с backend flags.
-- Добавлен Windows test archive helper `tools/build_windows_test_archive.ps1`: собирает тестовый PyInstaller `--onedir` archive для приёмки без GitHub Release, без изменения `version.json` и без push-уведомлений.
-- Windows acceptance helper теперь проверяет `TakSklad.exe` по `build_manifest.json` из test archive, требует `app_version` не ниже `1.1.17` и не запускает старый exe без manifest.
-- Добавлен локальный `tools/release_preflight.py`: перед ручной приёмкой проверяет `api.taksklad.uz/health`, закреплённый `version.json`, acceptance kit и tracked secret-файлы.
+- Добавлен Windows test archive helper `tools/build_windows_test_archive.ps1`: собирает тестовый PyInstaller `--onedir` archive для приёмки без GitHub Release, без ручного изменения `version.json` и без push-уведомлений.
+- Windows acceptance helper теперь проверяет `TakSklad.exe` по `build_manifest.json` из test archive, требует `app_version` не ниже `2.0.0` и не запускает старый exe без manifest.
+- Добавлен локальный `tools/release_preflight.py`: перед ручной приёмкой проверяет `api.taksklad.uz/health`, staged rollout `version.json`, acceptance kit и tracked secret-файлы.
 - В acceptance kit добавлен `ACCEPTANCE_RESULTS_TEMPLATE.md` для фиксации фактических результатов Telegram/SkladBot/Windows и решения `GO/NO-GO`.
 - `tools/release_go_no_go.py` теперь требует не только финальный `GO`, но и заполненные разделы preflight, Telegram import, SkladBot matching, Windows desktop acceptance и cleanup.
 
@@ -249,7 +251,7 @@ Done:
 1. Нужен реальный Telegram upload test на копии рабочего Excel-файла.
 2. Нужно проверить SkladBot matching на живой активной заявке после создания менеджером.
 3. Нужна ручная Windows-приёмка с backend flags.
-4. Windows archive и `version.json` не менять до приёмки.
+4. Не включать `mandatory=true` и не считать rollout принятым до ручной приёмки.
 
 Следующий шаг:
 

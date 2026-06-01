@@ -24,7 +24,8 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 TELEGRAM_BUTTON_SHIPMENT_DATE = "Дата отгрузки"
 TELEGRAM_BUTTON_LOGISTICS_REPORT = "Отчёт логистики"
-TELEGRAM_BUTTON_KIZ_BY_FILES = "КИЗ по файлам"
+TELEGRAM_BUTTON_KIZ_BY_FILES = "Выгрузка КИЗов"
+TELEGRAM_BUTTON_STATUS = "Статус"
 TELEGRAM_LOGISTICS_DATE_PREFIX = "Логистика "
 TELEGRAM_KIZ_FILE_PREFIX = "КИЗ файл "
 TELEGRAM_EXCEL_IMPORT_EVENT_TYPE = "telegram_excel_import"
@@ -46,23 +47,17 @@ def parse_chat_ids(value):
     return result
 
 
-def telegram_main_keyboard():
-    return {
-        "keyboard": [
-            [{"text": TELEGRAM_BUTTON_SHIPMENT_DATE}, {"text": TELEGRAM_BUTTON_LOGISTICS_REPORT}],
-            [{"text": TELEGRAM_BUTTON_KIZ_BY_FILES}],
-        ],
-        "resize_keyboard": True,
-        "is_persistent": True,
-    }
-
-
 def telegram_bot_commands():
     return [
         {"command": "date", "description": TELEGRAM_BUTTON_SHIPMENT_DATE},
         {"command": "logistics", "description": TELEGRAM_BUTTON_LOGISTICS_REPORT},
         {"command": "kiz_files", "description": TELEGRAM_BUTTON_KIZ_BY_FILES},
+        {"command": "status", "description": TELEGRAM_BUTTON_STATUS},
     ]
+
+
+def telegram_inline_keyboard(button_rows):
+    return {"inline_keyboard": button_rows}
 
 
 def text_matches(value, *variants):
@@ -93,6 +88,10 @@ def parse_int(value):
         return int(float(text))
     except ValueError:
         return 0
+
+
+def format_money(value):
+    return f"{parse_int(value):,}".replace(",", " ")
 
 
 def iso_date_from_display(value):
@@ -210,14 +209,15 @@ class TelegramWorker:
         payload = {
             "chat_id": chat_id,
             "text": text[:3900],
-            "reply_markup": reply_markup if reply_markup is not None else telegram_main_keyboard(),
         }
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
         return self.telegram_request("sendMessage", payload)
 
     def send_document(self, chat_id, content, filename, caption=""):
         with httpx.Client(timeout=self.file_timeout) as client:
             files = {"document": (filename, content)}
-            data = {"chat_id": chat_id, "caption": caption[:1000], "reply_markup": json_dumps(telegram_main_keyboard())}
+            data = {"chat_id": chat_id, "caption": caption[:1000]}
             response = client.post(f"https://api.telegram.org/bot{self.token}/sendDocument", data=data, files=files)
             response.raise_for_status()
             payload = response.json()
@@ -241,6 +241,15 @@ class TelegramWorker:
         except Exception:
             logging.warning("Telegram worker: failed to send message", exc_info=True)
             return None
+
+    def answer_callback_query(self, callback_query_id, text=""):
+        callback_query_id = normalize_text(callback_query_id)
+        if not callback_query_id:
+            return None
+        payload = {"callback_query_id": callback_query_id}
+        if normalize_text(text):
+            payload["text"] = normalize_text(text)[:200]
+        return self.telegram_request("answerCallbackQuery", payload)
 
     def chat_state_event_type(self, chat_id):
         return f"{TELEGRAM_CHAT_STATE_EVENT_PREFIX}{chat_id}"
@@ -284,14 +293,27 @@ class TelegramWorker:
         self.save_chat_state(chat_id, state)
 
     def logistics_date_keyboard(self, dates):
-        rows = [[{"text": f"{TELEGRAM_LOGISTICS_DATE_PREFIX}{display_date(date_value)}"}] for date_value in dates]
-        rows.append([{"text": TELEGRAM_BUTTON_SHIPMENT_DATE}, {"text": TELEGRAM_BUTTON_KIZ_BY_FILES}])
-        return {"keyboard": rows, "resize_keyboard": True, "is_persistent": True}
+        rows = []
+        for date_value in dates:
+            iso_date = iso_date_from_display(date_value)
+            if not iso_date:
+                continue
+            rows.append([{
+                "text": display_date(date_value),
+                "callback_data": f"logistics:{iso_date}",
+            }])
+        return telegram_inline_keyboard(rows)
 
     def kiz_files_keyboard(self, files):
-        rows = [[{"text": f"{TELEGRAM_KIZ_FILE_PREFIX}{index}"}] for index, _ in enumerate(files, start=1)]
-        rows.append([{"text": TELEGRAM_BUTTON_SHIPMENT_DATE}, {"text": TELEGRAM_BUTTON_LOGISTICS_REPORT}])
-        return {"keyboard": rows, "resize_keyboard": True, "is_persistent": True}
+        rows = []
+        for index, item in enumerate(files, start=1):
+            source_file = normalize_text(item.get("source_file")) or f"Файл {index}"
+            text = source_file if len(source_file) <= 40 else source_file[:37] + "..."
+            rows.append([{
+                "text": f"{index}. {text}",
+                "callback_data": f"kiz_file:{index}",
+            }])
+        return telegram_inline_keyboard(rows)
 
     def send_logistics_report(self, chat_id, shipment_date):
         iso_date = iso_date_from_display(shipment_date)
@@ -340,12 +362,16 @@ class TelegramWorker:
             self.safe_send_message(chat_id, "Нет полностью завершённых исходных файлов для выгрузки КИЗов.")
             return
         if len(files) == 1:
-            self.send_kiz_source_file_report(chat_id, files[0].get("source_file") or "")
+            self.send_kiz_source_file_report(chat_id, files[0].get("source_file") or "", files[0].get("source_key") or "")
             return
 
         state = self.get_chat_state(chat_id)
         state["kiz_files"] = [
-            {"index": index, "source_file": item.get("source_file") or ""}
+            {
+                "index": index,
+                "source_file": item.get("source_file") or "",
+                "source_key": item.get("source_key") or "",
+            }
             for index, item in enumerate(files, start=1)
         ]
         self.save_chat_state(chat_id, state)
@@ -358,12 +384,16 @@ class TelegramWorker:
             )
         self.safe_send_message(chat_id, "\n".join(lines), reply_markup=self.kiz_files_keyboard(files))
 
-    def send_kiz_source_file_report(self, chat_id, source_file):
+    def send_kiz_source_file_report(self, chat_id, source_file, source_key=""):
         source_file = normalize_text(source_file)
+        source_key = normalize_text(source_key)
         if not source_file:
             self.safe_send_message(chat_id, "Не выбран исходный файл для выгрузки КИЗов.")
             return False
-        content, headers = self.backend_get_bytes("/api/v1/reports/kiz/source-file", params={"source_file": source_file})
+        params = {"source_file": source_file}
+        if source_key:
+            params["source_key"] = source_key
+        content, headers = self.backend_get_bytes("/api/v1/reports/kiz/source-file", params=params)
         filename_header = urllib.parse.unquote(headers.get("X-TakSklad-Filename") or "")
         filename = filename_header or f"TakSklad_КИЗ_{source_file}.xlsx"
         self.safe_send_document(
@@ -374,15 +404,37 @@ class TelegramWorker:
         )
         return True
 
+    def send_status_report(self, chat_id):
+        payload = self.backend_get("/api/v1/reports/day")
+        totals = payload.get("totals") or {}
+        report_date = display_date(payload.get("report_date")) or "сегодня"
+        lines = [
+            f"Статус TakSklad за {report_date}",
+            "",
+            f"Заказов: {totals.get('orders', 0)}",
+            f"Выполнено заказов: {totals.get('completed_orders', 0)}",
+            f"Активных заказов: {totals.get('active_orders', 0)}",
+            f"Блоков: {totals.get('scanned_blocks', 0)} / {totals.get('planned_blocks', 0)}",
+            f"Осталось блоков: {totals.get('remaining_blocks', 0)}",
+            f"КИЗов: {totals.get('scan_codes', 0)}",
+            f"Сумма: {format_money(totals.get('total_price', 0))} сум",
+        ]
+        self.safe_send_message(chat_id, "\n".join(lines))
+        return True
+
     def send_kiz_source_file_by_index(self, chat_id, text):
         index = parse_int(text.replace(TELEGRAM_KIZ_FILE_PREFIX, "", 1))
         state = self.get_chat_state(chat_id)
         files = state.get("kiz_files") or []
         selected = next((item for item in files if parse_int(item.get("index")) == index), None)
         if not selected:
-            self.safe_send_message(chat_id, "Не нашёл выбранный файл. Нажмите «КИЗ по файлам» ещё раз.")
+            self.safe_send_message(chat_id, f"Не нашёл выбранный файл. Нажмите «{TELEGRAM_BUTTON_KIZ_BY_FILES}» ещё раз.")
             return False
-        return self.send_kiz_source_file_report(chat_id, selected.get("source_file") or "")
+        return self.send_kiz_source_file_report(
+            chat_id,
+            selected.get("source_file") or "",
+            selected.get("source_key") or "",
+        )
 
     def send_backend_diagnostics_log(self, chat_id):
         content, headers = self.backend_get_bytes("/api/v1/diagnostics/logs", params={"limit": 100})
@@ -458,10 +510,25 @@ class TelegramWorker:
                 f"Дата отгрузки: {meta.get('shipment_date') or shipment_date or 'не задана'}",
                 f"Позиции добавлены: {result.get('items_created', 0)}",
                 f"Заказы добавлены: {result.get('orders_created', 0)}",
+                f"Адреса в backend обновлены: {result.get('backend_address_updates', 0)}",
                 f"Повторы пропущены: {result.get('duplicate_rows', 0)}",
                 f"Ошибочные строки: {result.get('invalid_rows', 0)}",
                 f"Статус: {result.get('status', '')}",
             ]
+            google_sheets_status = normalize_text(result.get("google_sheets_status"))
+            if google_sheets_status == "completed":
+                lines.append(
+                    f"Google Sheets: записано {result.get('google_sheets_imported', 0)}, "
+                    f"повторы {result.get('google_sheets_duplicates', 0)}, "
+                    f"адреса обновлены {result.get('google_sheets_updated', 0)}"
+                )
+            elif google_sheets_status == "skipped":
+                lines.append("Google Sheets: новых строк нет")
+            elif google_sheets_status == "disabled":
+                lines.append("Google Sheets: экспорт отключён на backend")
+            elif google_sheets_status == "error":
+                error_text = normalize_text(result.get("google_sheets_error")) or "подробности в логе backend"
+                lines.append(f"Google Sheets: ошибка, строки не записаны ({error_text})")
             errors = result.get("errors") or []
             if warnings:
                 lines.extend(["", "Предупреждения:", "\n".join(warnings[:5])])
@@ -575,7 +642,7 @@ class TelegramWorker:
         updates = self.telegram_request("getUpdates", {
             "offset": self.offset + 1 if self.offset else None,
             "timeout": poll_timeout,
-            "allowed_updates": ["message"],
+            "allowed_updates": ["message", "callback_query"],
         }, timeout=poll_timeout + 5) or []
         for update in updates:
             self.offset = max(self.offset, int(update.get("update_id") or 0))
@@ -589,7 +656,8 @@ class TelegramWorker:
         self.process_queued_telegram_imports()
 
     def notify_update_error(self, update, exc):
-        message = update.get("message") or {}
+        callback_query = update.get("callback_query") or {}
+        message = update.get("message") or callback_query.get("message") or {}
         chat = message.get("chat") or {}
         chat_id = str(chat.get("id") or "")
         if not chat_id:
@@ -611,6 +679,11 @@ class TelegramWorker:
         )
 
     def handle_update(self, update):
+        callback_query = update.get("callback_query") or {}
+        if callback_query:
+            self.handle_callback_query(callback_query)
+            return
+
         message = update.get("message") or {}
         chat = message.get("chat") or {}
         chat_id = str(chat.get("id") or "")
@@ -629,6 +702,7 @@ class TelegramWorker:
                     f"- {TELEGRAM_BUTTON_SHIPMENT_DATE} - задать дату отгрузки для следующих Excel-файлов;",
                     f"- {TELEGRAM_BUTTON_LOGISTICS_REPORT} - выгрузить общий файл для логистики по выбранной дате;",
                     f"- {TELEGRAM_BUTTON_KIZ_BY_FILES} - выгрузить КИЗы по завершённым исходным файлам;",
+                    f"- {TELEGRAM_BUTTON_STATUS} - показать общий статус по заказам и КИЗам;",
                     "",
                     "Excel-файлы можно просто отправлять или пересылать в этот чат. Если отправить несколько файлов подряд, они попадут в очередь и обработаются по порядку.",
                     "Дату можно отправить отдельным сообщением в формате 29.05.2026 или указать в подписи к Excel-файлу.",
@@ -662,6 +736,9 @@ class TelegramWorker:
             return
         if text.startswith(TELEGRAM_KIZ_FILE_PREFIX):
             self.send_kiz_source_file_by_index(chat_id, text)
+            return
+        if text_matches(text, "/status", TELEGRAM_BUTTON_STATUS):
+            self.send_status_report(chat_id)
             return
         if text_matches(text, "/health"):
             if not self.ensure_admin_chat(chat_id):
@@ -701,6 +778,26 @@ class TelegramWorker:
             return
 
         self.send_message(chat_id, "Команда не распознана. Используйте нижнее меню Telegram или отправьте Excel-файл.")
+
+    def handle_callback_query(self, callback_query):
+        callback_id = normalize_text(callback_query.get("id"))
+        message = callback_query.get("message") or {}
+        chat = message.get("chat") or {}
+        chat_id = str(chat.get("id") or "")
+        if self.allowed_chat_ids and chat_id not in self.allowed_chat_ids:
+            logging.warning("Telegram worker denied callback chat_id=%s", chat_id)
+            self.answer_callback_query(callback_id, "Нет доступа")
+            return
+
+        data = normalize_text(callback_query.get("data"))
+        self.answer_callback_query(callback_id)
+        if data.startswith("logistics:"):
+            self.send_logistics_report(chat_id, data.split(":", 1)[1])
+            return
+        if data.startswith("kiz_file:"):
+            self.send_kiz_source_file_by_index(chat_id, data.split(":", 1)[1])
+            return
+        self.safe_send_message(chat_id, "Кнопка устарела. Откройте меню Telegram и повторите действие.")
 
     def load_offset(self):
         try:

@@ -8,6 +8,7 @@ COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
 MANIFEST_FILE="$APP_DIR/outputs/taksklad_acceptance/acceptance_manifest.json"
 VERSION_FILE="$APP_DIR/version.json"
 VERIFY_SCRIPT="$SCRIPT_DIR/verify_acceptance_marker.sh"
+TELEGRAM_MENU_SCRIPT="$SCRIPT_DIR/verify_telegram_menu.sh"
 RESULTS_FILE="$APP_DIR/outputs/taksklad_acceptance/ACCEPTANCE_RESULTS.md"
 GO_NO_GO_SCRIPT="$APP_DIR/tools/release_go_no_go.py"
 
@@ -86,6 +87,10 @@ if [[ ! -x "$VERIFY_SCRIPT" ]]; then
   echo "Verifier is not executable: $VERIFY_SCRIPT" >&2
   exit 1
 fi
+if [[ ! -x "$TELEGRAM_MENU_SCRIPT" ]]; then
+  echo "Telegram menu verifier is not executable: $TELEGRAM_MENU_SCRIPT" >&2
+  exit 1
+fi
 if [[ ! -f "$GO_NO_GO_SCRIPT" ]]; then
   echo "GO/NO-GO script not found: $GO_NO_GO_SCRIPT" >&2
   exit 1
@@ -152,7 +157,9 @@ print(json.dumps({
     "mandatory": version.get("mandatory"),
     "package_type": version.get("package_type"),
     "download_url_set": bool(version.get("download_url")),
+    "sha256_set": bool(version.get("sha256")),
     "download_url_onedir_set": bool(version.get("download_url_onedir")),
+    "sha256_onedir_set": bool(version.get("sha256_onedir")),
 }, ensure_ascii=False, sort_keys=True))
 PY
 )"
@@ -174,11 +181,13 @@ else
   VERIFY_OUTPUT="$("$VERIFY_SCRIPT" "$MARKER" 2>&1)"
 fi
 VERIFY_STATUS="$?"
+TELEGRAM_MENU_OUTPUT="$("$TELEGRAM_MENU_SCRIPT" 2>&1)"
+TELEGRAM_MENU_STATUS="$?"
 GO_NO_GO_OUTPUT="$(python3 "$GO_NO_GO_SCRIPT" --results "$RESULTS_FILE" 2>&1)"
 GO_NO_GO_STATUS="$?"
 set -e
 
-python3 - "$MANIFEST_INFO" "$VERSION_INFO" "$SHA_STATUS" "$ACTUAL_SHA" "$EXPECTED_SHA" "$HEALTH_STATUS" "$HEALTH_OUTPUT" "$COMPOSE_STATUS" "$COMPOSE_OUTPUT" "$VERIFY_STATUS" "$VERIFY_OUTPUT" "$GO_NO_GO_STATUS" "$GO_NO_GO_OUTPUT" "$REQUIRE_GO" <<'PY'
+python3 - "$MANIFEST_INFO" "$VERSION_INFO" "$SHA_STATUS" "$ACTUAL_SHA" "$EXPECTED_SHA" "$HEALTH_STATUS" "$HEALTH_OUTPUT" "$COMPOSE_STATUS" "$COMPOSE_OUTPUT" "$VERIFY_STATUS" "$VERIFY_OUTPUT" "$TELEGRAM_MENU_STATUS" "$TELEGRAM_MENU_OUTPUT" "$GO_NO_GO_STATUS" "$GO_NO_GO_OUTPUT" "$REQUIRE_GO" <<'PY'
 import json
 import sys
 
@@ -193,9 +202,11 @@ compose_status = int(sys.argv[8])
 compose_output = sys.argv[9].strip()
 verify_status = int(sys.argv[10])
 verify_output = sys.argv[11].strip()
-go_no_go_status = int(sys.argv[12])
-go_no_go_output = sys.argv[13].strip()
-require_go = sys.argv[14] == "1"
+telegram_menu_status = int(sys.argv[12])
+telegram_menu_output = sys.argv[13].strip()
+go_no_go_status = int(sys.argv[14])
+go_no_go_output = sys.argv[15].strip()
+require_go = sys.argv[16] == "1"
 
 try:
     health = json.loads(health_output)
@@ -222,6 +233,11 @@ except Exception:
     verifier = {"raw": verify_output}
 
 try:
+    telegram_menu = json.loads(telegram_menu_output.splitlines()[-1])
+except Exception:
+    telegram_menu = {"status": "failed", "raw": telegram_menu_output}
+
+try:
     release_gate = json.loads(go_no_go_output.splitlines()[-1])
 except Exception:
     release_gate = {"status": "no_go", "raw": go_no_go_output}
@@ -229,16 +245,20 @@ except Exception:
 errors = []
 if sha_status != "ok":
     errors.append("acceptance Excel SHA mismatch")
-if version_info.get("latest_version") != "1.1.7":
-    errors.append("version.json latest_version is not pinned to 1.1.7")
+if version_info.get("latest_version") != "2.0.0":
+    errors.append("version.json latest_version must be 2.0.0")
 if version_info.get("min_supported_version") != "1.1.7":
-    errors.append("version.json min_supported_version is not pinned to 1.1.7")
+    errors.append("version.json min_supported_version must stay 1.1.7 for non-forced rollout")
 if version_info.get("mandatory") not in (False, None):
-    errors.append("version.json mandatory must be false before rollout")
-if version_info.get("download_url_set") or version_info.get("download_url_onedir_set"):
-    errors.append("version.json download URLs must stay empty before rollout")
+    errors.append("version.json mandatory must be false during staged rollout")
+if version_info.get("package_type") != "onefile_exe":
+    errors.append("version.json package_type must be onefile_exe")
+if not version_info.get("download_url_set") or not version_info.get("sha256_set"):
+    errors.append("version.json onefile download_url and sha256 must be set")
+if not version_info.get("download_url_onedir_set") or not version_info.get("sha256_onedir_set"):
+    errors.append("version.json onedir download_url_onedir and sha256_onedir must be set")
 safety = manifest_info.get("safety") or {}
-for key in ("no_version_json_change", "no_github_release", "no_push_notifications"):
+for key in ("version_json_staged_rollout", "github_release_published", "push_notifications_allowed", "mandatory_update_disabled"):
     if safety.get(key) is not True:
         errors.append(f"manifest safety.{key} must be true")
 if safety.get("contains_secrets") is not False:
@@ -249,6 +269,8 @@ if compose_status != 0:
     errors.append(f"docker compose ps failed with exit {compose_status}")
 if verify_status != 0:
     errors.append(f"acceptance verifier failed with exit {verify_status}")
+if telegram_menu_status != 0 or telegram_menu.get("status") != "ok":
+    errors.append(f"telegram menu verifier failed with exit {telegram_menu_status}")
 release_status = release_gate.get("status")
 if require_go and release_status != "go":
     errors.append(f"release GO/NO-GO is not go: {release_status or 'unknown'}")
@@ -274,6 +296,10 @@ summary = {
     "acceptance_verifier": {
         "exit_code": verify_status,
         "response": verifier,
+    },
+    "telegram_menu": {
+        "exit_code": telegram_menu_status,
+        "response": telegram_menu,
     },
     "release_go_no_go": {
         "exit_code": go_no_go_status,

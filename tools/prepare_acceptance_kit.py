@@ -74,10 +74,10 @@ def build_manifest(output_dir=DEFAULT_OUTPUT_DIR, marker=DEFAULT_MARKER, shipmen
             "cleanup_apply": './deploy/vds/cleanup_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --apply',
         },
         "safety": {
-            "no_version_json_change": True,
-            "no_windows_release_archive": True,
-            "no_github_release": True,
-            "no_push_notifications": True,
+            "version_json_staged_rollout": True,
+            "github_release_published": True,
+            "push_notifications_allowed": True,
+            "mandatory_update_disabled": True,
             "no_real_skladbot_request_creation": True,
             "contains_secrets": False,
         },
@@ -88,7 +88,7 @@ def build_readme(manifest):
     kiz_codes = "\n".join(f"- `{code}`" for code in manifest["test_kiz_codes"])
     return f"""# TakSklad Acceptance Kit
 
-Назначение: ручная проверка Telegram import и Windows desktop acceptance без релиза, без изменения `version.json` и без push-уведомлений рабочим ПК.
+Назначение: ручная проверка Telegram import и Windows desktop acceptance после публикации 2.0.0 manifest. Обновления через `version.json` разрешены, но принудительное обновление `mandatory=true` не включается до ручного GO.
 
 ## Состав
 
@@ -243,10 +243,8 @@ cd /opt/taksklad/app
 
 ## Чего Не Делать
 
-- Не менять `version.json`.
-- Не создавать Windows release archive.
-- Не создавать GitHub Release.
-- Не отправлять push-уведомления.
+- Не включать `mandatory=true` до ручного GO.
+- Не публиковать новый Windows release поверх 2.0.0 без повторной проверки.
 - Не создавать реальную заявку SkladBot без отдельного подтверждения.
 """
 
@@ -276,7 +274,7 @@ SHA-256 Excel: `{manifest["excel_sha256"]}`
 ## 1. Preflight
 
 - [ ] `.venv/bin/python tools/release_preflight.py` вернул `status=ok`.
-- [ ] `version.json` не менялся и остался на `1.1.7`.
+- [ ] `version.json` указывает на `2.0.0`, `mandatory=false`, ссылки и SHA заполнены.
 - [ ] В Git нет tracked runtime/secret-файлов.
 
 ## 2. Telegram Import
@@ -287,7 +285,7 @@ SHA-256 Excel: `{manifest["excel_sha256"]}`
 - [ ] Бот ответил без ошибки.
 - [ ] `verify_acceptance_marker.sh` вернул `orders=1`.
 - [ ] Логистический отчёт по дате выгружается.
-- [ ] КИЗ по файлам не показывает незавершённые файлы.
+- [ ] `Выгрузка КИЗов` не показывает незавершённые файлы.
 
 ## 3. SkladBot Matching
 
@@ -346,7 +344,7 @@ SHA-256 Excel: `{manifest["excel_sha256"]}`
 - [ ] Windows desktop acceptance принят.
 - [x] Критичных дефектов нет.
 - [x] Rollback понятен.
-- [x] `version.json` всё ещё не менялся.
+- [x] `version.json` проверен и `mandatory=false`.
 
 Итог:
 
@@ -386,7 +384,7 @@ SHA-256 Excel: `{manifest["excel_sha256"]}`
 ## 1. Preflight
 
 - [ ] `.venv/bin/python tools/release_preflight.py` вернул `status=ok`.
-- [ ] `version.json` не менялся и остался на `1.1.7`.
+- [ ] `version.json` указывает на `2.0.0`, `mandatory=false`, ссылки и SHA заполнены.
 - [ ] В Git нет tracked runtime/secret-файлов.
 
 Заметки:
@@ -403,7 +401,7 @@ SHA-256 Excel: `{manifest["excel_sha256"]}`
 - [ ] Бот ответил без ошибки.
 - [ ] `verify_acceptance_marker.sh` вернул `orders=1`.
 - [ ] Логистический отчёт по дате выгружается.
-- [ ] КИЗ по файлам не показывает незавершённые файлы.
+- [ ] `Выгрузка КИЗов` не показывает незавершённые файлы.
 
 Команда проверки:
 
@@ -515,7 +513,7 @@ cd /opt/taksklad/app
 - [ ] Windows desktop acceptance принят.
 - [ ] Критичных дефектов нет.
 - [ ] Rollback понятен.
-- [ ] `version.json` всё ещё не менялся.
+- [ ] `version.json` проверен и `mandatory=false`.
 
 Итог:
 

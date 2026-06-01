@@ -21,7 +21,7 @@ SHA-256 Excel: `204b932a704b39294b513a95964844db1ed74d028e3daff13beef3ab09ec98fd
 ## 1. Preflight
 
 - [ ] `.venv/bin/python tools/release_preflight.py` вернул `status=ok`.
-- [ ] `version.json` не менялся и остался на `1.1.7`.
+- [ ] `version.json` указывает на `2.0.0`, `mandatory=false`, ссылки и SHA заполнены.
 - [ ] В Git нет tracked runtime/secret-файлов.
 
 Заметки:
@@ -38,7 +38,7 @@ SHA-256 Excel: `204b932a704b39294b513a95964844db1ed74d028e3daff13beef3ab09ec98fd
 - [ ] Бот ответил без ошибки.
 - [ ] `verify_acceptance_marker.sh` вернул `orders=1`.
 - [ ] Логистический отчёт по дате выгружается.
-- [ ] КИЗ по файлам не показывает незавершённые файлы.
+- [ ] `Выгрузка КИЗов` не показывает незавершённые файлы.
 
 Команда проверки:
 
@@ -152,7 +152,7 @@ cd /opt/taksklad/app
 - [ ] Windows desktop acceptance принят.
 - [ ] Критичных дефектов нет.
 - [ ] Rollback понятен.
-- [ ] `version.json` всё ещё не менялся.
+- [ ] `version.json` проверен и `mandatory=false`.
 
 Итог:
 

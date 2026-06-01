@@ -1,6 +1,6 @@
 # TakSklad Acceptance Kit
 
-Назначение: ручная проверка Telegram import и Windows desktop acceptance без релиза, без изменения `version.json` и без push-уведомлений рабочим ПК.
+Назначение: ручная проверка Telegram import и Windows desktop acceptance после публикации 2.0.0 manifest. Обновления через `version.json` разрешены, но принудительное обновление `mandatory=true` не включается до ручного GO.
 
 ## Состав
 
@@ -110,7 +110,7 @@ cd /opt/taksklad/app
 .\tools\windows_backend_acceptance.ps1 -Token "<service-token>" -UsePython
 ```
 
-Helper использует `https://api.taksklad.uz`, проверяет, что `APP_VERSION` не ниже `1.1.17` и `APP_BUILD_LABEL = MVP 2.0`, и предпочитает `.venv\Scripts\python.exe`. Для exe helper требует `build_manifest.json` из свежего test archive и сверяет `app_version` + `app_build_label`; старый ярлык `1.1.7` без manifest будет остановлен до запуска.
+Helper использует `https://api.taksklad.uz`, проверяет, что `APP_VERSION` не ниже `2.0.0` и `APP_BUILD_LABEL = MVP 2.0`, и предпочитает `.venv\Scripts\python.exe`. Для exe helper требует `build_manifest.json` из свежего test archive и сверяет `app_version` + `app_build_label`; старый ярлык `1.1.7` без manifest будет остановлен до запуска.
 
 Сканировать тестовые КИЗы:
 
@@ -157,8 +157,6 @@ cd /opt/taksklad/app
 
 ## Чего Не Делать
 
-- Не менять `version.json`.
-- Не создавать Windows release archive.
-- Не создавать GitHub Release.
-- Не отправлять push-уведомления.
+- Не включать `mandatory=true` до ручного GO.
+- Не публиковать новый Windows release поверх 2.0.0 без повторной проверки.
 - Не создавать реальную заявку SkladBot без отдельного подтверждения.

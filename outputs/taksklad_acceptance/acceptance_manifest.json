@@ -42,10 +42,10 @@
     "cleanup_apply": "./deploy/vds/cleanup_acceptance_marker.sh \"ACCEPTANCE TELEGRAM 20260531\" --apply"
   },
   "safety": {
-    "no_version_json_change": true,
-    "no_windows_release_archive": true,
-    "no_github_release": true,
-    "no_push_notifications": true,
+    "version_json_staged_rollout": true,
+    "github_release_published": true,
+    "push_notifications_allowed": true,
+    "mandatory_update_disabled": true,
     "no_real_skladbot_request_creation": true,
     "contains_secrets": false
   }

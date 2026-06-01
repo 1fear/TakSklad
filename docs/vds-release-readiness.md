@@ -82,10 +82,10 @@ Telegram worker на VDS принимает Excel-документы из раз
 
 Управление в Telegram:
 
-- кнопки находятся в нижней панели Telegram через reply keyboard;
-- доступны кнопки `Дата отгрузки`, `Отчёт логистики`, `КИЗ по файлам`;
+- кнопки находятся в системном меню команд Telegram рядом с полем ввода, без навязчивой reply-клавиатуры;
+- доступны кнопки `Дата отгрузки`, `Отчёт логистики`, `Выгрузка КИЗов`, `Статус`;
 - системная кнопка меню команд Telegram настроена через `setMyCommands` и `setChatMenuButton`;
-- команды меню: `/date`, `/logistics`, `/kiz_files`;
+- команды меню: `/date`, `/logistics`, `/kiz_files`, `/status`;
 - админские текстовые команды `/health`, `/imports` и `/logs` сохранены как скрытый fallback;
 - если задан `TELEGRAM_ADMIN_CHAT_IDS`, скрытые админские команды доступны только указанным chat_id;
 - Excel-файлы можно просто отправлять или пересылать в чат.
@@ -113,10 +113,11 @@ Telegram worker на VDS принимает Excel-документы из раз
 - container rebuild с `openpyxl`;
 - smoke внутри `telegram-worker`: тестовый `.xlsx` разобран в одну строку import payload;
 - backend `/health` после rebuild отвечает `200`.
-- локально покрыто тестами нижнее меню, логистический отчёт, КИЗ по файлам, постановка файла в очередь и последовательная обработка нескольких queued imports.
+- локально покрыто тестами меню команд, логистический отчёт, `Выгрузка КИЗов`, кнопку `Статус`, постановка файла в очередь и последовательная обработка нескольких queued imports.
 - после обновления нижнего меню `backend-api` и `telegram-worker` пересобраны и запущены на VDS;
 - внутри VDS `telegram-worker` выполнен compile-check обновлённых файлов.
-- Telegram API `getMyCommands` возвращает `date`, `logistics`, `kiz_files`;
+- Telegram API `getMyCommands` возвращает `date`, `logistics`, `kiz_files`, `status`;
+- `deploy/vds/verify_telegram_menu.sh` проверяет live-меню Telegram через Bot API и входит в `acceptance_status.sh`;
 - Telegram API `getChatMenuButton` возвращает `type=commands`.
 
 Не проверено:
@@ -291,7 +292,7 @@ $env:TAKSKLAD_BACKEND_TIMEOUT_SECONDS = "8"
 - токен не писать в документацию, чат, скриншоты и Git;
 - включать flags сначала только на тестовой копии;
 - при проблеме отключить flags и вернуться к desktop fallback;
-- Windows archive и `version.json` не менять до прохождения приёмки.
+- Windows archive не выкатывать как обязательное обновление до прохождения приёмки; `version.json` держать в staged rollout: `2.0.0`, `mandatory=false`.
 
 ## Следующий Шаг После Этого Этапа
 
@@ -301,7 +302,7 @@ $env:TAKSKLAD_BACKEND_TIMEOUT_SECONDS = "8"
 .venv/bin/python tools/release_preflight.py
 ```
 
-Preflight проверяет публичный backend health, закреплённый `version.json`, acceptance kit и отсутствие tracked runtime/secret-файлов.
+Preflight проверяет публичный backend health, staged rollout `version.json`, acceptance kit и отсутствие tracked runtime/secret-файлов.
 
 Фактические результаты ручной приёмки фиксировать в:
 

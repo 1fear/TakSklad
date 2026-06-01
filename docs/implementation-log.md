@@ -2703,3 +2703,635 @@ cd /opt/taksklad/app
   - `python3 -m json.tool version.json` - OK;
   - SHA256 скачанного `TakSklad.exe` совпадает с manifest;
   - SHA256 скачанного `TakSklad-windows-x64.zip` совпадает с manifest.
+
+### Backend Import Export To Google Sheets Data
+
+- Причина: Telegram import успешно писал Excel в backend/Postgres, но не дописывал строки в Google Sheets `data`, поэтому менеджер видел `completed`, а лист оставался пустым.
+- Добавлен backend-экспорт импортированных строк в Google Sheets после `/api/v1/imports`.
+- Формат записи совпадает с desktop-логикой:
+  - рабочие колонки `Дата отгрузки`, `Тип оплаты`, `Клиент`, `Адрес`, `Торговый представитель`, `Товары`, `Кол-во ШТ`, `Кол-во блок`, `Отсканированные коды`, `Статус`;
+  - служебные колонки начинаются с `AA`: `ID заказа`, `ID импорта`, `Источник файла`, `Строка файла`, `Дата импорта`, SkladBot-поля.
+- Дубликаты фильтруются по `ID импорта`, `ID заказа` и бизнес-ключу строки, чтобы повторная отправка файла не плодила строки в `data`.
+- Важное поведение для восстановления: если файл уже есть в backend, но раньше не попал в Google Sheets, повторный import всё равно отдаёт валидные строки в Google Sheets export. Postgres-дубли не создаются, а Sheets дописывает только отсутствующие строки.
+- Если Google Sheets недоступен, backend import не откатывается: Postgres остаётся источником истины, а результат `google_sheets.status=error` сохраняется в истории импорта.
+- Telegram-ответ после импорта теперь показывает отдельную строку `Google Sheets: ...`, чтобы сразу было видно, дошли ли строки до листа `data`.
+- Для VDS добавлены env-настройки:
+  - `TAKSKLAD_GOOGLE_SPREADSHEET_ID`;
+  - `TAKSKLAD_GOOGLE_SHEET_NAME`;
+  - `TAKSKLAD_GOOGLE_CREDENTIALS_JSON_BASE64`.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_backend_api_persistence tests.test_backend_telegram_import` - 35 тестов OK;
+  - `.venv/bin/python -m unittest discover -s tests` - 158 тестов OK;
+  - `.venv/bin/python -m py_compile backend/app/imports_service.py backend/app/schemas.py backend/app/telegram_worker.py backend/app/google_sheets_exporter.py` - OK.
+- Доставлено на VDS:
+  - обновлены `backend-api` и `telegram-worker`;
+  - добавлен `gspread` в backend image;
+  - в серверный `.env` добавлены Google Sheets env-параметры без вывода секретов в лог.
+- Проверено на VDS:
+  - `https://api.taksklad.uz/health` - `status=ok`, `version=2.0.0`;
+  - контейнер `backend-api` видит `gspread`, Google credentials и spreadsheet id;
+  - повторный import файла `Шаблон_отправки_заказов_на_склад_26_05_2026_2ч.xlsx` вернул `duplicate_rows=21`, `items_created=0`, `google_sheets.status=completed`, `google_sheets.imported=21`;
+  - лист Google Sheets `data`: было 0 строк данных, стало 21;
+  - свежие логи `backend-api`/`telegram-worker` без ошибок Google Sheets export.
+
+### Reverse Geocode Empty Import Addresses
+
+- Причина: в шаблоне `Шаблон_отправки_заказов_на_склад_26_05_2026_2ч.xlsx` колонка `Адрес доставки*` пустая, но заполнена колонка `Координаты`; из-за этого после backend export в Google Sheets `data` попадал текст `Адрес не указан`.
+- Решение:
+  - если адрес в Excel пустой, но координаты есть, backend делает reverse geocode через Яндекс Геокодер;
+  - полученный адрес очищается от страны в начале строки (`Узбекистан`, `Uzbekistan`, `O'zbekiston`, `Oʻzbekiston`);
+  - очищенный адрес пишется в поле `Адрес`;
+  - если reverse geocode временно не сработал, вместо пустого адреса сохраняется `Координаты: ...`, чтобы оператор видел полезный ориентир.
+- Для повторного импорта уже загруженного файла добавлена защита:
+  - backend не создаёт дубль позиции, если изменился адрес, но `ID импорта` тот же;
+  - Google Sheets export умеет обновлять существующую строку по `ID импорта`/`ID заказа`, если старый адрес был пустой или `Адрес не указан`, а новый адрес получен из координат.
+- Telegram-ответ по import теперь показывает не только записанные строки и повторы, но и `адреса обновлены N`.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_backend_api_persistence tests.test_backend_telegram_import` - 38 тестов OK;
+  - `.venv/bin/python -m unittest discover -s tests` - 161 тест OK;
+  - `.venv/bin/python -m py_compile backend/app/excel_importer.py backend/app/google_sheets_exporter.py backend/app/imports_service.py backend/app/schemas.py backend/app/telegram_worker.py` - OK.
+- Доставлено на VDS:
+  - обновлены `backend-api` и `telegram-worker`;
+  - `https://api.taksklad.uz/health` - `status=ok`.
+- Блокер для фактического reverse geocode на VDS:
+  - в контейнере `backend-api` переменная `YANDEX_GEOCODER_API_KEY` пустая;
+  - без ключа Яндекс не вернёт адрес по координатам;
+  - после добавления ключа в серверный `.env` нужно пересоздать `backend-api` и повторить import/backfill.
+- Блокер снят:
+  - старый ключ Яндекс Геокодера найден в локальном restore point старой версии `config.py`;
+  - ключ перенесён в локальный `deploy/vds/.env` и серверный `/opt/taksklad/app/deploy/vds/.env` без вывода секрета в лог;
+  - `backend-api` и `telegram-worker` пересозданы;
+  - проверка в контейнере `telegram-worker`: ключ виден, reverse geocode возвращает адрес, страна `Узбекистан` удалена из начала строки.
+- Backfill текущего файла:
+  - повторно прогнан `Шаблон_отправки_заказов_на_склад_26_05_2026_2ч.xlsx`;
+  - `duplicate_rows=21`, `items_created=0`, то есть дубли в Postgres не созданы;
+  - `meta_geocoded_count=21`, `meta_geocode_failed_count=0`;
+  - `google_sheets.imported=0`, `google_sheets.duplicates=21`, `google_sheets.updated=21`;
+  - в Google Sheets `data`: было 21 строка с `Адрес не указан`, стало 0; все 21 строки получили адреса.
+
+### Backend Address Backfill For Existing Imports
+
+- Причина: Google Sheets уже получил адреса через Яндекс Геокодер, но desktop-приложение читает список заказов из backend, а не напрямую из Google Sheets.
+- Проблема проявлялась так:
+  - повторный import находил строки как дубликаты по `ID импорта`;
+  - Google Sheets обновлял адреса в `data`;
+  - backend не менял уже созданный `Order.address`, поэтому приложение после `Обновить` продолжало видеть `Адрес не указан`.
+- Решение:
+  - при повторном import backend ищет существующую позицию по `ID импорта`, затем по `item_key`;
+  - если новая строка содержит реальный адрес, а старый `Order.address` пустой или `Адрес не указан`, backend обновляет адрес заказа;
+  - координаты сохраняются в `Order.raw_payload`;
+  - в `Order.raw_payload` фиксируются `address_backfilled_at` и `address_backfill_source`;
+  - дубли заказов и позиций в Postgres не создаются.
+- Telegram-ответ после import теперь показывает отдельную строку `Адреса в backend обновлены: N`.
+- Проверено локально:
+  - `.venv/bin/python -m unittest tests.test_backend_api_persistence tests.test_backend_telegram_import` - 38 тестов OK;
+  - `.venv/bin/python -m py_compile backend/app/imports_service.py backend/app/schemas.py backend/app/telegram_worker.py` - OK.
+- Дополнительная проверка:
+  - `.venv/bin/python -m unittest discover -s tests` - 161 тест OK.
+- Доставлено на VDS:
+  - перед заменой создан restore point `/opt/taksklad/restore_points/pre-backend-address-backfill-20260531T162615Z`;
+  - обновлены `backend-api` и `telegram-worker`;
+  - `https://api.taksklad.uz/health` - `status=ok`, `version=2.0.0`.
+- Боевой backfill:
+  - повторно прогнан файл `Шаблон_отправки_заказов_на_склад_26_05_2026_2ч.xlsx`;
+  - до backfill: активных заказов в backend - 8, с пустым адресом - 8;
+  - результат import: `items_created=0`, `orders_created=0`, `duplicate_rows=21`, `backend_address_updates=8`;
+  - после backfill: активных заказов в backend - 8, с пустым адресом - 0;
+  - значит desktop-приложение после обычного `Обновить` должно подтянуть адреса из backend.
+
+### Google Sheets To Backend Sync Worker
+
+- Причина: после перехода desktop на backend-режим приложение читает активные заказы из Postgres, а не напрямую из Google Sheets.
+- Проблема: если менеджер вручную меняет в листе `data` количество блоков, адрес, дату, клиента или товар, приложение не видит правку, пока backend не синхронизируется с Google Sheets.
+- Решение:
+  - добавлен отдельный backend-worker `app.google_sheets_sync_worker`;
+  - worker читает лист `data`, ищет строки по `ID импорта`, затем fallback по `ID заказа`;
+  - обновляет только активные backend-заказы;
+  - обновляет поля заказа: `Дата отгрузки`, `Тип оплаты`, `Клиент`, `Адрес`, `Торговый представитель`;
+  - обновляет поля позиции: `Товары`, `Кол-во ШТ`, `Кол-во блок`;
+  - переносит SkladBot-поля из Google Sheets в `Order.raw_payload`, если они заполнены;
+  - пишет sync metadata в `raw_payload`: `google_sheet_synced_at`, `google_sheet_row_number`;
+  - пишет общий audit `google_sheets_backend_sync`.
+- Защита от опасных правок:
+  - завершённые заказы не обновляются;
+  - завершённые позиции не обновляются;
+  - если в Google Sheets новое `Кол-во блок` меньше уже отсканированного количества, backend не меняет план и пишет audit `google_sheets_backend_sync_conflict`;
+  - если товар меняют после начала сканирования, backend не меняет товар и пишет conflict.
+- Для VDS добавлен сервис `google-sheets-sync-worker` в `deploy/vds/docker-compose.yml`.
+- Настройка интервала:
+  - `GOOGLE_SHEETS_SYNC_INTERVAL_SECONDS=60`;
+  - минимальный интервал в коде - 30 секунд.
+- Проверено локально:
+  - `.venv/bin/python -m unittest tests.test_google_sheets_sync_worker` - 3 теста OK;
+  - `.venv/bin/python -m unittest tests.test_vds_acceptance_scripts tests.test_google_sheets_sync_worker tests.test_backend_api_persistence` - 24 теста OK;
+  - `.venv/bin/python -m unittest discover -s tests` - 164 теста OK;
+  - `.venv/bin/python -m py_compile backend/app/google_sheets_sync_worker.py backend/app/google_sheets_exporter.py` - OK.
+- Доставлено на VDS:
+  - перед заменой создан restore point `/opt/taksklad/restore_points/pre-google-sheets-sync-worker-20260531T163848Z`;
+  - пересобраны и запущены `backend-api`, `telegram-worker`, `skladbot-worker`, `google-sheets-sync-worker`;
+  - `https://api.taksklad.uz/health` - `status=ok`, `version=2.0.0`;
+  - `google-sheets-sync-worker` запущен отдельным контейнером.
+- Первая VDS-синхронизация:
+  - лог worker: `rows=21 matched=21 missing=0 orders_updated=0 items_updated=1 conflicts=0`;
+  - сверка Google Sheets `data` и backend по активным позициям: 21 строка в Google, 21 позиция в backend, расхождений по `Кол-во ШТ`/`Кол-во блок` нет;
+  - текущие количества блоков в Google и backend совпадают: `1, 2, 3, 5, 10`.
+
+### Desktop Refresh Forces All Backend Sources
+
+- Причина: фоновые worker-ы синхронизируют Google Sheets и SkladBot примерно раз в минуту, но при ручном нажатии `Обновить` оператор ожидает максимально свежий список сразу.
+- Решение на backend:
+  - добавлен endpoint `POST /api/v1/sync/sources`;
+  - endpoint запускает принудительную синхронизацию Google Sheets `data` -> backend;
+  - затем, если параметр `skladbot=1`, запускает SkladBot -> backend sync в фоне, чтобы кнопка `Обновить` не висела несколько минут на SkladBot API/429;
+  - для ручной диагностики оставлен режим `wait_skladbot=1`, который ждёт завершения SkladBot sync в ответе API;
+  - endpoint не падает целиком, если один источник временно недоступен: возвращает `completed_with_errors` и результат по каждому источнику;
+  - добавлен process lock, чтобы два одновременных нажатия `Обновить` с разных ПК не запускали параллельную тяжёлую синхронизацию.
+- Защита SkladBot:
+  - ручной sync из кнопки и постоянный `skladbot-worker` используют общий PostgreSQL advisory lock;
+  - если один SkladBot sync уже идёт, второй не лезет в API SkladBot и сразу пропускается;
+  - это снижает риск 429/долгого зависания, когда склад нажал `Обновить` в момент фоновой синхронизации.
+- Решение на desktop:
+  - в backend-режиме `Обновить` сначала отправляет накопленную локальную очередь КИЗов/завершений;
+  - затем вызывает `POST /api/v1/sync/sources?skladbot=1&wait_skladbot=0`;
+  - затем загружает активные заказы через `GET /api/v1/orders/active`;
+  - статусная строка показывает, сколько правок пришло из Google, и отдельно пишет, что SkladBot обновляется в фоне.
+- Таймаут:
+  - обычные backend-запросы остаются на стандартном таймауте;
+  - для принудительной синхронизации источников desktop использует увеличенный timeout 45 секунд;
+  - SkladBot не блокирует этот timeout, потому что запускается в фоне.
+- Проверено локально:
+  - `.venv/bin/python -m unittest tests.test_backend_api_persistence.BackendApiPersistenceTests.test_sync_sources_runs_google_sheet_sync_then_skladbot_sync tests.test_backend_api_persistence.BackendApiPersistenceTests.test_sync_sources_can_skip_skladbot tests.test_backend_api_persistence.BackendApiPersistenceTests.test_sync_sources_starts_skladbot_in_background_by_default tests.test_refresh_fallback.RefreshFallbackTests.test_backend_refresh_forces_google_and_skladbot_sync_before_loading_orders` - 4 теста OK;
+  - `.venv/bin/python -m unittest tests.test_backend_api_persistence tests.test_refresh_fallback tests.test_google_sheets_sync_worker` - 30 тестов OK;
+  - `.venv/bin/python -m unittest discover -s tests` - 168 тестов OK;
+  - `.venv/bin/python -m py_compile backend/app/skladbot_worker.py backend/app/main.py src/taksklad/backend_client.py src/taksklad/main.py` - OK.
+- Проверено на VDS:
+  - пересобраны `backend-api`, `telegram-worker`, `skladbot-worker`, `google-sheets-sync-worker`;
+  - `GET https://api.taksklad.uz/health` вернул `ok`;
+  - `POST /api/v1/sync/sources?skladbot=1&wait_skladbot=0` вернул `google_sheets.rows=21`, `matched=21`, `conflicts=0`, `skladbot.status=started`;
+  - в логах подтверждено, что при уже идущем `skladbot-worker` ручной backend sync не запускает второй параллельный проход: `SkladBot worker: another sync is already running, skip`.
+
+### Google Sheets Quantity Price Recalculation
+
+- Причина: если менеджер вручную менял в Google Sheets `Кол-во блок`, backend обновлял количество, но мог оставить старую `Сумма позиции` из импортированного заказа.
+- Пример проблемы: в заказе было 15 блоков и сумма `3 600 000`, в Google Sheets поставили 1 блок, приложение показало план 1 блок, но сумма осталась `3 600 000`.
+- Решение:
+  - при Google Sheets -> backend sync сумма позиции пересчитывается как `Кол-во блок * Цена за блок`;
+  - если в строке Google нет цены за блок, используется сохранённая цена позиции, затем стандартная цена `240000`;
+  - старое значение `Сумма позиции` больше не держит backend в неверном состоянии после изменения количества;
+  - если новое количество меньше уже отсканированного, конфликт по количеству по-прежнему блокирует изменение позиции.
+- Проверено:
+  - `.venv/bin/python -m py_compile backend/app/google_sheets_sync_worker.py` - OK;
+  - `.venv/bin/python -m unittest tests.test_google_sheets_sync_worker` - 4 теста OK.
+  - `.venv/bin/python -m unittest tests.test_backend_api_persistence tests.test_refresh_fallback tests.test_google_sheets_sync_worker` - 31 тест OK;
+  - `.venv/bin/python -m unittest discover -s tests` - 169 тестов OK.
+- Проверено на VDS:
+  - пересобраны `backend-api` и `google-sheets-sync-worker`;
+  - `GET https://api.taksklad.uz/health` вернул `ok`;
+  - `POST /api/v1/sync/sources?skladbot=0` вернул `google_sheets.rows=21`, `matched=21`, `conflicts=0`;
+  - активный заказ `"NILUFAR SANOBAR" MChJ`: `Chapman RED OP 20`, `blocks=1`, `block_price=240000`, `line_total=240000`.
+
+### SkladBot Recent Request Prefilter
+
+- Причина: при тестовом создании свежей заявки SkladBot номер не появился сразу, хотя заявка полностью совпадала с заказом.
+- Диагностика:
+  - SkladBot API отвечал;
+  - свежая заявка `WH-R-191794` совпадала с заказом `"NILUFAR SANOBAR" MChJ` по дате, клиенту, оплате, товару и блокам;
+  - старый worker сначала тянул детали до 100 заявок, включая старые, ловил `429`, и только потом фильтровал кандидатов;
+  - из-за этого свежая заявка могла подтянуться сильно позже, а в логах было `requests=0 orders=8 matched=0 not_found=8`.
+- Решение:
+  - до запроса детальной карточки SkladBot добавлен быстрый фильтр по датам из списка заявок: `created_at`/`createdAt`, `updated_at`/`updatedAt`;
+  - старые заявки сразу пропускаются;
+  - детали запрашиваются только по заявкам за окно `SKLADBOT_SYNC_LOOKBACK_DAYS`, сейчас это сегодня и вчера;
+  - если в списке нет дат, код не отбрасывает заявку заранее и проверяет детали как раньше.
+- Эффект:
+  - новая заявка не ждёт перебора старых 100 заявок;
+  - меньше запросов к SkladBot API;
+  - ниже риск `429`;
+  - ручное `Обновить` быстрее доводит номер заявки до backend.
+- Проверено:
+  - `.venv/bin/python -m py_compile backend/app/skladbot_worker.py` - OK;
+  - `.venv/bin/python -m unittest tests.test_backend_skladbot_worker` - 13 тестов OK;
+  - `.venv/bin/python -m unittest tests.test_backend_skladbot_worker tests.test_backend_api_persistence tests.test_refresh_fallback tests.test_google_sheets_sync_worker` - 44 теста OK;
+  - `.venv/bin/python -m unittest discover -s tests` - 170 тестов OK.
+- Проверено на VDS:
+  - пересобраны `backend-api` и `skladbot-worker`;
+  - `GET https://api.taksklad.uz/health` вернул `ok`;
+  - `POST /api/v1/sync/sources?skladbot=1&wait_skladbot=1` вернул `skladbot.requests=1`, `matched=1`, `not_found=7`, `multiple=0`;
+  - активный заказ `"NILUFAR SANOBAR" MChJ` получил `skladbot_request_number=WH-R-191794`, `skladbot_request_id=191794`.
+
+### Mac Close Telegram Lock Import Fix
+
+- Причина: при закрытии desktop-приложения `on_close()` освобождал Telegram poll lock через `telegram_single_listener_lock_enabled()`, но этот helper не был импортирован в `src/taksklad/main.py`.
+- Симптом: окно `Ошибка в интерфейсе` с текстом `name 'telegram_single_listener_lock_enabled' is not defined`.
+- Решение:
+  - в `src/taksklad/main.py` добавлен импорт `telegram_single_listener_lock_enabled` из `telegram_service`;
+  - добавлен тест, который проверяет, что `ScanningApp.on_close` видит этот helper в своих globals;
+  - добавлен стабильный PyInstaller entrypoint для mac-сборки, чтобы приложение собиралось из пакета `src/taksklad`, а не из временного файла.
+- Проверено:
+  - `.venv/bin/python -m py_compile src/taksklad/main.py` - OK;
+  - `.venv/bin/python -m unittest tests.test_refresh_fallback` - 7 тестов OK;
+  - `.venv/bin/python -m unittest discover -s tests` - 171 тест OK;
+  - свежий mac bundle `outputs/mac_ready/TakSklad-2.0.0-mac-ready/TakSklad.app` запускается и держится запущенным без traceback.
+
+### Google Sheets Primary Runtime Sync
+
+- Причина: по утверждённому ТЗ Google Sheets `data` должен быть главным операционным листом, а backend/Postgres - вторичным хранилищем. После ручных правок в `data` приложение должно видеть актуальные данные, а после сканирования/закрытия заказа изменения должны попадать обратно в Google Sheets.
+- Решение:
+  - desktop `Обновить` сначала синхронизирует очередь backend и запускает backend sync источников, но активные заказы читает из Google Sheets `data`;
+  - если Google Sheets недоступен, desktop использует backend как fallback, чтобы склад не вставал полностью;
+  - при завершении юрлица desktop после печати переносит строки заказа из `data` в `Архив` и ставит статус `Выполнено`;
+  - backend Google Sheets sync теперь читает не только активный `data`, но и `Архив`, подтягивает отсканированные КИЗы, статусы и пересчитанные суммы в Postgres;
+  - backend sync больше не игнорирует уже закрытые заказы, потому что архивные строки тоже должны поддерживать базу в актуальном состоянии.
+- Риск:
+  - если сводка уже напечаталась, но Google Sheets в этот момент недоступен, desktop покажет ошибку архивации. Это лучше, чем молча потерять факт закрытия. Повторная обработка должна проверяться по логам и строкам `data`.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_refresh_fallback tests.test_backend_telegram_import tests.test_google_sheets_sync_worker` - 35 тестов OK;
+  - `./.venv/bin/python -m unittest tests.test_backend_api_persistence tests.test_backend_skladbot_worker tests.test_backend_telegram_import tests.test_google_sheets_sync_worker tests.test_refresh_fallback` - 69 тестов OK;
+  - `./.venv/bin/python -m unittest discover -s tests` - 178 тестов OK;
+  - `./.venv/bin/python -m compileall -q src/taksklad backend/app tests` - OK.
+
+### Telegram Menu Cleanup And Status Button
+
+- Причина: Telegram-кнопки прикреплялись к каждому сообщению и документу, поэтому клавиатура появлялась навязчиво. По ТЗ кнопки должны быть снизу, открываться через панель Telegram и не мешать обычной отправке Excel-файлов.
+- Решение:
+  - `sendMessage` и `sendDocument` больше не добавляют клавиатуру автоматически;
+  - нижняя клавиатура отправляется явно на `/start`;
+  - `is_persistent` выключен, поэтому пользователь может скрыть клавиатуру свайпом/кнопкой Telegram;
+  - кнопка `КИЗ по файлам` переименована в `Выгрузка КИЗов`;
+  - добавлена кнопка и команда `Статус`, которая берёт `/api/v1/reports/day` и показывает заказы, активные/выполненные, блоки, КИЗы и сумму.
+- Проверено:
+  - покрыто тестами `tests.test_backend_telegram_import`;
+  - общий прогон смежных backend/Telegram/Google sync тестов - 69 тестов OK;
+  - полный `unittest discover` - 178 тестов OK.
+
+### Google Sheets Primary Returns
+
+- Причина: возвраты в desktop 2.0 сначала работали только через backend. По ТЗ возвраты должны быть видны и управляться через Google Sheets: поиск в `Архив`, отметка строки, копия в `Возвраты`, backend остаётся вторичным зеркалом.
+- Решение:
+  - добавлен поиск закрытой заявки в листе `Архив` по `Номер заявки SkladBot`, `ID заявки SkladBot` и `ID заказа`;
+  - при принятии возврата строки в `Архив` получают `Статус возврата`, `Дата возврата`, `Основание возврата`, `Принял возврат`;
+  - эти же строки копируются в лист `Возвраты`;
+  - окно `Возвраты` в desktop теперь сначала работает с Google Sheets, а backend использует только как fallback, если Google недоступен;
+  - список последних возвратов тоже читается из `Возвраты`.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_google_sheets_returns tests.test_refresh_fallback tests.test_google_sheets_sync_worker` - 16 тестов OK;
+  - `./.venv/bin/python -m unittest discover -s tests` - 178 тестов OK.
+
+### Backend Mirror For Google Sheets Returns
+
+- Причина: после перехода возвратов на Google Sheets primary backend должен оставаться зеркалом. Иначе desktop уже видит возврат в `Архив`/`Возвраты`, а backend продолжает считать заказ просто completed.
+- Решение:
+  - backend Google Sheets sync теперь читает колонки `Статус возврата`, `Дата возврата`, `Основание возврата`, `Принял возврат`;
+  - если в архивной строке стоит `Возврат`, заказ в Postgres получает статус `returned`;
+  - поля возврата сохраняются в `order.raw_payload`: `return_status`, `returned_at`, `return_reference`, `returned_by`;
+  - позиции заказа остаются completed, потому что возврат относится к закрытой заявке целиком.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_google_sheets_sync_worker tests.test_google_sheets_returns` - 9 тестов OK;
+  - `./.venv/bin/python -m unittest discover -s tests` - 179 тестов OK;
+  - `./.venv/bin/python -m compileall -q src/taksklad backend/app tests` - OK;
+  - `git diff --check` - OK.
+
+### Idempotent Google Sheets Archiving
+
+- Причина: после завершения заказа desktop переносит строки из `data` в `Архив`. Если Google Sheets успел добавить строки в `Архив`, но удаление из `data` сорвалось, повторная попытка могла продублировать архивные строки.
+- Решение:
+  - `archive_order_group_to_gsheet()` теперь перед добавлением проверяет `Архив` по `ID заказа`, `ID импорта` и fallback-ключу заказа;
+  - если строка уже есть в `Архиве`, она не добавляется повторно, но исходная строка из `data` всё равно удаляется;
+  - добавлены тесты на перенос нескольких строк юрлица и повторную архивацию уже архивированной строки.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_google_sheets_archive tests.test_google_sheets_returns tests.test_google_sheets_sync_worker` - 11 тестов OK;
+  - `./.venv/bin/python -m unittest discover -s tests` - 181 тест OK;
+  - `./.venv/bin/python -m compileall -q src/taksklad backend/app tests` - OK;
+  - `git diff --check` - OK.
+
+### Google Sheets Price Recalculation On Desktop Refresh
+
+- Причина: при ручной правке `Кол-во блок` в листе `data` desktop видел новое количество, но мог показывать старую `Сумма позиции` из Google Sheets. Это ломало прямую связь `data` -> приложение: количество уже актуальное, сумма ещё старая.
+- Решение:
+  - при чтении строк `data` desktop пересчитывает `Сумма позиции` от текущего `Кол-во блок` и `Цена за блок`;
+  - если `Цена за блок` пустая, используется стандартная цена 240000 сум за блок;
+  - если в листе есть колонки `Цена за блок`, `Сумма позиции`, `Сумма рассчитанная`, desktop при обновлении сразу записывает туда пересчитанные значения.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_google_sheets_desktop_read` - OK;
+  - `./.venv/bin/python -m unittest tests.test_google_sheets_desktop_read tests.test_refresh_fallback tests.test_google_sheets_archive tests.test_google_sheets_returns tests.test_google_sheets_sync_worker` - 20 тестов OK;
+  - `./.venv/bin/python -m unittest discover -s tests` - 182 теста OK;
+  - `./.venv/bin/python -m compileall -q src/taksklad backend/app tests` - OK;
+  - `git diff --check` - OK.
+
+### Telegram Command Menu Without Reply Keyboard
+
+- Причина: по ТЗ Telegram-кнопки должны открываться через системную кнопку меню рядом с полем ввода, а не появляться как навязчивая reply-клавиатура после `/start`.
+- Решение:
+  - `/start` теперь отправляет только инструкцию без `reply_markup`;
+  - пользовательские действия остаются в `setMyCommands`: `/date`, `/logistics`, `/kiz_files`, `/status`;
+  - `setChatMenuButton` оставляет рядом с полем ввода системную кнопку команд Telegram;
+  - выбор даты логистического отчёта переведён на inline-кнопки под сообщением;
+  - выбор исходного файла для `Выгрузка КИЗов` переведён на inline-кнопки под сообщением;
+  - polling теперь принимает `callback_query`, чтобы inline-кнопки обрабатывались без текстового ввода.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_backend_telegram_import` - 24 теста OK;
+  - `./.venv/bin/python -m unittest tests.test_backend_telegram_import tests.test_backend_api_persistence tests.test_refresh_fallback` - 53 теста OK;
+  - `./.venv/bin/python -m unittest discover -s tests` - 184 теста OK;
+  - `./.venv/bin/python -m compileall -q src/taksklad backend/app tests` - OK;
+  - `git diff --check` - OK.
+
+### KIZ Source File Export By Import Instance
+
+- Причина: кнопка `Выгрузка КИЗов` должна выгружать КИЗы по конкретному загруженному Excel-файлу. Если менеджер загрузит файл с таким же названием повторно, отчёт не должен смешивать старый и новый импорт.
+- Решение:
+  - backend endpoint `/api/v1/reports/kiz/source-file` принимает `source_key`;
+  - `source_key` строится от `backend_import_id` и имени исходного файла, которые сохраняются в `raw_payload` каждой позиции при импорте;
+  - Telegram хранит `source_key` в состоянии выбора файла и передаёт его при скачивании отчёта;
+  - если `source_key` нет, остаётся legacy fallback по `source_file`.
+- Проверка:
+  - добавлен тест, где два импорта имеют одинаковое имя файла, но выгрузка доступна только по завершённому конкретному импорту;
+  - добавлены проверки Telegram-передачи `source_key`.
+  - `./.venv/bin/python -m unittest tests.test_backend_api_persistence tests.test_backend_telegram_import` - 48 тестов OK;
+  - `./.venv/bin/python -m unittest discover -s tests` - 187 тестов OK;
+  - `./.venv/bin/python -m compileall -q src/taksklad backend/app tests` - OK;
+  - `git diff --check` - OK.
+
+### Business Timezone For Backend Day Status
+
+- Причина: кнопка Telegram `Статус` и backend дневной отчёт брали дату по UTC. Для склада в Ташкенте это могло показать не тот день после полуночи по местному времени.
+- Решение:
+  - добавлен env `TAKSKLAD_TIMEZONE`, дефолт `Asia/Tashkent`;
+  - `GET /api/v1/reports/day` без `report_date` теперь берёт бизнес-дату в этой timezone;
+  - `scanned_today` считает дату скана по бизнес-timezone;
+  - API сохраняет исходный `scanned_at` в `scan_codes.raw_payload`, чтобы не потерять timezone, если DB-драйвер вернул timestamp без offset.
+- Проверка:
+  - добавлен тест на скан `2026-05-31T20:30:00+00:00`, который должен попасть в отчёт `2026-06-01` по Ташкенту.
+
+### Business Timezone For SkladBot Window
+
+- Причина: SkladBot worker отбирает свежие заявки по окну `сегодня + вчера`. Если сервис на VDS работает в UTC, после полуночи по Ташкенту он мог ещё считать предыдущий день и пропускать свежие заявки текущего бизнес-дня.
+- Решение:
+  - SkladBot worker использует тот же `TAKSKLAD_TIMEZONE`, дефолт `Asia/Tashkent`;
+  - `date_in_window()` без явно переданной даты теперь считает бизнес-сегодня в timezone склада;
+  - `TAKSKLAD_TIMEZONE` проброшен в docker-compose для `skladbot-worker`.
+- Проверка:
+  - добавлен тест, что `2026-05-31T20:30:00+00:00` считается `2026-06-01` в `Asia/Tashkent`;
+  - проверен compose/env контракт для VDS.
+
+### SkladBot Timestamp Dates Converted To Business Date
+
+- Причина: SkladBot может отдавать `created_at`/`updated_at` как ISO timestamp с timezone. Простое отрезание даты до `T` превращало `2026-05-31T20:30:00+00:00` в `31.05`, хотя для Ташкента это уже `01.06`.
+- Решение:
+  - `parse_date()` в SkladBot worker сначала пытается разобрать ISO timestamp;
+  - timestamp с `T`, пробелом, offset или `Z` переводится в `TAKSKLAD_TIMEZONE`;
+  - дополнительно поддержаны распространённые локальные timestamp-форматы `31.05.2026 20:30:00+0000`, `31.05.2026 20:30`;
+  - date-only значения `2026-05-31`, `31.05.2026` продолжают работать как раньше.
+- Проверка:
+  - добавлен тест на `created_at=2026-05-31T20:30:00+00:00`, `created_at=2026-05-31 20:30:00+00:00` и `created_at=31.05.2026 20:30:00+0000`, которые попадают в окно `01.06` при `lookback_days=0`.
+
+### Release Preflight Aligned With Published 2.0.0 Manifest
+
+- Причина: после публикации `version.json` на `2.0.0` старые acceptance/preflight проверки продолжали требовать закреплённый `1.1.7` без download URL. Это давало ложный `failed`, хотя текущая безопасная фаза уже другая: `2.0.0` опубликован, `mandatory=false`, ссылки и SHA заполнены.
+- Решение:
+  - `tools/release_preflight.py` теперь проверяет staged rollout manifest: `latest_version=2.0.0`, `min_supported_version=1.1.7`, `mandatory=false`, `package_type=onefile_exe`, заполненные URL и SHA для onefile/onedir;
+  - `deploy/vds/acceptance_status.sh` использует те же правила для VDS acceptance status;
+  - `tools/build_windows_test_archive.ps1` допускает либо старое безопасное состояние `1.1.7`, либо текущий безопасный non-mandatory rollout `2.0.0`;
+  - acceptance kit и GO/NO-GO gate заменили старый пункт `version.json не менялся` на `version.json проверен и mandatory=false`.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_release_preflight tests.test_vds_acceptance_scripts tests.test_windows_test_build_helper tests.test_release_go_no_go` - 21 тест OK;
+  - `./.venv/bin/python tools/release_preflight.py` - `status=ok`;
+  - `./.venv/bin/python tools/release_go_no_go.py --results outputs/taksklad_acceptance/ACCEPTANCE_RESULTS.md` - ожидаемо `status=no_go`, потому что ручные Telegram/SkladBot/Windows пункты не закрыты.
+
+### VDS Acceptance Kit Synced To 2.0.0 Staged Rollout
+
+- Причина: локальный acceptance/preflight уже был переведён на staged rollout `2.0.0`, а VDS `/opt/taksklad/app` всё ещё держал acceptance kit и локальный `version.json` в старой фазе `1.1.7`. Из-за этого локальная и серверная проверка описывали разные состояния релиза.
+- Перед заменой на VDS создан restore point:
+  - `/opt/taksklad/restore_points/pre-acceptance-status-2.0-sync-20260531T193545Z`.
+- На VDS синхронизированы:
+  - `version.json`;
+  - `deploy/vds/acceptance_status.sh`;
+  - `tools/release_go_no_go.py`;
+  - `outputs/taksklad_acceptance/*`.
+- Проверено на VDS:
+  - SHA256 синхронизированных файлов совпали с локальными;
+  - `./deploy/vds/acceptance_status.sh` - `status=ok`, `version_json.latest_version=2.0.0`, `mandatory=false`, URL/SHA заполнены, контейнеры running, backend health `version=2.0.0`;
+  - `./deploy/vds/acceptance_status.sh --require-go` - ожидаемо `status=failed` с причиной `release GO/NO-GO is not go: no_go`, потому что ручные Telegram/SkladBot/Windows пункты ещё не закрыты.
+
+### Update Manifest Download Verification
+
+- Причина: preflight проверял, что `version.json` содержит URL и SHA, но не проверял формат URL/SHA и не умел доказать, что опубликованные GitHub-артефакты реально скачиваются и совпадают с manifest.
+- Решение:
+  - `tools/release_preflight.py` теперь всегда проверяет, что release URL идут по HTTPS и указывают на тег `v2.0.0`;
+  - SHA должны быть lowercase SHA256 hex digest длиной 64 символа;
+  - добавлен флаг `--verify-downloads`, который скачивает `TakSklad.exe` и `TakSklad-windows-x64.zip` из `version.json` потоково и сверяет SHA256.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_release_preflight` - 11 тестов OK;
+  - `./.venv/bin/python tools/release_preflight.py` - `status=ok`;
+  - `./.venv/bin/python tools/release_preflight.py --verify-downloads --timeout 120` - `status=ok`;
+  - фактические SHA совпали:
+    - onefile `473910481b55ec5e7ebff386b0549879e754fef70d626e13a614fe5b6e304206`;
+    - onedir `0ce088d7c7b9f0d4c3a5dea5965a770da35782a5c65a98969f42eb72ce9dcf4e`.
+- Синхронизировано на VDS:
+  - перед заменой созданы restore points:
+    - `/opt/taksklad/restore_points/pre-release-preflight-download-verify-20260531T194411Z`;
+    - `/opt/taksklad/restore_points/pre-windows-test-helper-2.0-rollout-20260531T194452Z`;
+  - обновлены `tools/release_preflight.py` и `tools/build_windows_test_archive.ps1`;
+  - `python3 tools/release_preflight.py --skip-network` на VDS - `status=ok`;
+  - `python3 tools/release_preflight.py --verify-downloads --skip-network --timeout 120` на VDS - `status=ok`, SHA обоих GitHub-артефактов совпали.
+
+### Backend To Google Sheets Immediate Export
+
+- Причина: по утверждённому ТЗ Google Sheets остаётся главным рабочим листом для контроля `data`, `Архив` и `Возвраты`. Backend/Postgres хранит данные и даёт API, но действия через backend не должны оставлять Google Sheets устаревшим до следующего фонового sync.
+- Решение:
+  - после успешного `POST /api/v1/scans` backend best-effort дописывает КИЗы и статус позиции в строку листа `data`;
+  - после успешного `POST /api/v1/orders/{id}/complete` backend best-effort переносит строки заказа из `data` в `Архив`, пишет `Выполнено` и сохраняет КИЗы;
+  - после успешного `POST /api/v1/returns/{id}` backend best-effort обновляет строку в `Архив` колонками возврата и копирует её в `Возвраты`;
+  - ошибки Google Sheets не откатывают складскую операцию в Postgres, но пишутся в `audit_log` как `google_sheets_scan_export`, `google_sheets_archive_export`, `google_sheets_return_export`.
+- Зачем:
+  - если операция пришла через backend/web/API, менеджер всё равно видит актуальное состояние в Google Sheets;
+  - ручные правки Google Sheets продолжают подтягиваться в backend через существующий `google_sheets_sync_worker`;
+  - связь становится двусторонней: Google Sheets -> backend и backend -> Google Sheets.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_backend_google_sheets_exporter` - 3 теста OK;
+  - `./.venv/bin/python -m unittest tests.test_backend_api_persistence tests.test_backend_google_sheets_exporter tests.test_google_sheets_sync_worker` - 35 тестов OK;
+  - `./.venv/bin/python -m unittest discover -s tests` - 199 тестов OK;
+  - `./.venv/bin/python -m compileall -q backend/app src/taksklad tests tools` - OK;
+  - `git diff --check` - OK.
+- Доставлено на VDS:
+  - перед заменой создан restore point `/opt/taksklad/restore_points/pre-backend-google-sheets-export-20260601T060534Z`;
+  - синхронизированы `backend/app/google_sheets_exporter.py` и `backend/app/orders_service.py`;
+  - пересобран и перезапущен только `backend-api`, без изменения `version.json` и без push-уведомлений;
+  - внутри контейнера `backend-api` выполнен `py_compile` обновлённых файлов;
+  - публичный `https://api.taksklad.uz/health` вернул `status=ok`, `version=2.0.0`;
+  - VDS `./deploy/vds/acceptance_status.sh` вернул `status=ok`;
+  - VDS `python3 tools/release_preflight.py --skip-network` вернул `status=ok`;
+  - VDS `./deploy/vds/acceptance_status.sh --require-go` ожидаемо завершился exit `3`: release GO/NO-GO остаётся `no_go` до ручных Telegram/SkladBot/Windows проверок.
+
+### Backend Google Sheets Export Timeout Guard
+
+- Причина: после добавления немедленной обратной записи `backend -> Google Sheets` операции `/scans`, `/complete` и `/returns` начали вызывать Google Sheets из backend API. Без явного timeout медленный Google мог задержать API-ответ и создать ощущение зависания склада.
+- Решение:
+  - backend Google Sheets exporter теперь использует отдельный `GoogleTimeoutHTTPClient`;
+  - timeout задаётся через `TAKSKLAD_GOOGLE_API_TIMEOUT_SECONDS`;
+  - значение по умолчанию `8` секунд;
+  - некорректное env-значение не ломает импорт модуля, fallback остаётся `8`;
+  - timeout проброшен в VDS compose для `backend-api` и `google-sheets-sync-worker`;
+  - `.env.example` дополнен `TAKSKLAD_GOOGLE_API_TIMEOUT_SECONDS=8`.
+- Зачем:
+  - Google Sheets остаётся рабочим контролируемым листом;
+  - при временной проблеме Google backend-операция быстрее фиксирует ошибку в audit и не висит бесконечно;
+  - складская операция в Postgres остаётся сохранённой.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_backend_google_sheets_exporter tests.test_backend_api_persistence tests.test_google_sheets_sync_worker tests.test_vds_acceptance_scripts` - 39 тестов OK;
+  - `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK;
+  - `./.venv/bin/python -m compileall -q backend/app tests` - OK.
+- Финальная проверка перед доставкой:
+  - `./.venv/bin/python -m unittest discover -s tests` - 200 тестов OK;
+  - `./.venv/bin/python -m compileall -q backend/app src/taksklad tests tools` - OK;
+  - `git diff --check` - OK.
+- Доставлено на VDS:
+  - перед заменой создан restore point `/opt/taksklad/restore_points/pre-backend-google-timeout-20260601T062001Z`;
+  - синхронизированы `backend/app/google_sheets_exporter.py`, `deploy/vds/docker-compose.yml`, `deploy/vds/.env.example`;
+  - пересобраны и перезапущены `backend-api` и `google-sheets-sync-worker`;
+  - внутри контейнера `backend-api` подтверждено: `timeout=8`, client `GoogleTimeoutHTTPClient`;
+  - публичный `https://api.taksklad.uz/health` вернул `status=ok`, `version=2.0.0`;
+  - VDS `./deploy/vds/acceptance_status.sh` вернул `status=ok`;
+  - VDS `python3 tools/release_preflight.py --skip-network` вернул `status=ok`.
+
+### SkladBot Numbers Exported Back To Google Sheets
+
+- Причина: backend SkladBot sync мог найти номер заявки и записать его в Postgres, но desktop после кнопки `Обновить` читает Google Sheets `data` как главный рабочий лист. Из-за этого номер мог быть найден backend-ом, но не появиться в приложении и в листе `data`.
+- Решение:
+  - после SkladBot matching backend best-effort обновляет в Google Sheets `data` служебные колонки:
+    - `Номер заявки SkladBot`;
+    - `ID заявки SkladBot`;
+    - `Статус SkladBot`;
+    - `Последняя проверка SkladBot`;
+  - обновление идёт по `ID импорта` / `ID заказа`, то есть по тем же ключам, по которым backend связывает строки Google Sheets и Postgres;
+  - кнопка desktop `Обновить` теперь вызывает backend `/api/v1/sync/sources` с `wait_skladbot=1`, чтобы сначала дождаться SkladBot sync, затем перечитать Google Sheets;
+  - если совпадения нет или их несколько, в `Order.raw_payload.skladbot_nearest` сохраняются ближайшие кандидаты и причины несовпадения `date/client/payment/products`.
+- Зачем:
+  - связь остаётся двухсторонней: Google Sheets -> backend и backend -> Google Sheets;
+  - менеджер видит номер заявки в листе `data`;
+  - складское приложение после `Обновить` не читает устаревший Google-лист;
+  - при проблеме matching можно понять, какое поле не совпало, без ручного просмотра логов SkladBot.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_backend_skladbot_worker tests.test_backend_google_sheets_exporter tests.test_refresh_fallback tests.test_backend_api_persistence` - 56 тестов OK;
+  - `./.venv/bin/python -m compileall -q backend/app src/taksklad tests/test_backend_skladbot_worker.py tests/test_backend_google_sheets_exporter.py tests/test_refresh_fallback.py` - OK.
+- Финальная локальная проверка:
+  - `./.venv/bin/python -m unittest discover -s tests` - 203 теста OK;
+  - `./.venv/bin/python -m compileall -q backend/app src/taksklad tests tools` - OK;
+  - `git diff --check` - OK.
+- Доставлено на VDS:
+  - перед заменой создан restore point `/opt/taksklad/restore_points/pre-skladbot-google-export-20260601T063838Z`;
+  - синхронизированы backend SkladBot/Google exporter, desktop refresh-клиент и документация;
+  - пересобраны и перезапущены `backend-api`, `skladbot-worker`, `google-sheets-sync-worker`;
+  - при первом live-запуске SkladBot sync найден рассинхрон деплоя: серверный `backend/app/settings.py` был старым и не содержал поля `timezone`;
+  - создан restore point `/opt/taksklad/restore_points/pre-backend-settings-timezone-20260601T064248Z`;
+  - `backend/app/settings.py` синхронизирован на VDS и сервисы пересобраны повторно;
+  - внутри контейнера `backend-api` подтверждено: `load_settings().timezone == Asia/Tashkent`;
+  - live `update_orders_from_skladbot()` отработал без падения: `requests=1`, `orders=7`, `matched=0`, `not_found=7`, `multiple=0`;
+  - `skladbot_google_sheets_export` в audit: `status=completed`, `updated=20`;
+  - публичный `https://api.taksklad.uz/health` вернул `status=ok`, `version=2.0.0`;
+  - VDS `./deploy/vds/acceptance_status.sh` вернул `status=ok`;
+  - VDS `python3 tools/release_preflight.py --skip-network` вернул `status=ok`.
+
+### Dynamic SkladBot Lookback For Active Orders
+
+- Причина: live-проверка показала, что заявки SkladBot могут быть созданы за несколько дней до текущего запуска. При жёстком окне `сегодня/вчера` backend видел только свежую заявку `WH-R-191813`, а активные заказы на 29.05.2026 оставались `без номера SkladBot`.
+- Решение:
+  - окно поиска SkladBot теперь расширяется динамически по датам активных заказов без номера заявки;
+  - базовое окно остаётся `SKLADBOT_SYNC_LOOKBACK_DAYS=1`;
+  - максимальный потолок задаётся `SKLADBOT_SYNC_MAX_LOOKBACK_DAYS`, по умолчанию `7`;
+  - запас на создание заявки до даты отгрузки задаётся `SKLADBOT_ORDER_CREATE_LEAD_DAYS`, по умолчанию `3`;
+  - детальная загрузка заявок ограничена `SKLADBOT_DETAIL_LIMIT`, по умолчанию `30`;
+  - если у всех активных заказов уже есть номер SkladBot, API SkladBot не вызывается;
+  - если все активные заказы уже нашли кандидата, детальная загрузка останавливается раньше лимита.
+- Зачем:
+  - не возвращаться к тяжёлому перебору сотен заявок;
+  - подтягивать номера для старых активных партий после тестов или задержек;
+  - снизить риск `429` от SkladBot;
+  - оставить кнопку desktop `Обновить` быстрой и предсказуемой.
+- Проверено локально:
+  - `./.venv/bin/python -m unittest tests.test_backend_skladbot_worker` - 21 тест OK;
+  - `./.venv/bin/python -m unittest tests.test_backend_skladbot_worker tests.test_backend_google_sheets_exporter tests.test_backend_api_persistence tests.test_refresh_fallback tests.test_google_sheets_sync_worker` - 66 тестов OK;
+  - `./.venv/bin/python -m compileall -q backend/app src/taksklad tests tools` - OK;
+  - `git diff --check` - OK.
+- Live-диагностика до фикса:
+  - окно `1` день: `matched=0`, `not_found=7`;
+  - ручное расширение до `7` дней находило совпадения для 7 активных заказов, но могло упираться в лимиты SkladBot;
+  - поэтому выбран динамический lookback с ранней остановкой, а не постоянный широкий поиск.
+
+### SkladBot Dynamic Lookback Config Contract
+
+- Причина: после перехода на dynamic lookback в коде часть документации и VDS env-пример всё ещё описывали только жёсткое `SKLADBOT_SYNC_LOOKBACK_DAYS=1`. Это создавало риск неправильной настройки при следующем деплое.
+- Решение:
+  - в `deploy/vds/docker-compose.yml` явно добавлены env:
+    - `SKLADBOT_SYNC_MAX_LOOKBACK_DAYS`;
+    - `SKLADBOT_ORDER_CREATE_LEAD_DAYS`;
+    - `SKLADBOT_DETAIL_LIMIT`;
+  - в `deploy/vds/.env.example` добавлены значения по умолчанию `7`, `3`, `30`;
+  - `docs/product-mvp-2.0-plan.md`, `docs/project-knowledge-base.md`, `docs/project-architecture.md` обновлены под динамическое окно SkladBot;
+  - тест VDS compose/env contract теперь проверяет эти переменные.
+- Зачем:
+  - VDS-настройки явно совпадают с runtime-логикой worker-а;
+  - следующий деплой не вернёт старое представление, что worker всегда смотрит только один день;
+  - можно безопасно подстроить потолок окна и лимит деталей без правки кода.
+
+### Telegram Menu Live Command Refresh
+
+- Причина: live-проверка `getMyCommands` на VDS показала, что Telegram всё ещё видел старое меню: `date`, `logistics`, `kiz_files` без команды `status`, а описание `kiz_files` оставалось `КИЗ по файлам`.
+- Решение:
+  - пользовательская команда `kiz_files` переименована в интерфейсе в `Выгрузка КИЗов`;
+  - команда `status` остаётся в пользовательском меню;
+  - документация и acceptance checklist обновлены под новое название кнопки;
+  - `telegram-worker` нужно пересобрать и перезапустить на VDS, чтобы он заново выполнил `setMyCommands`.
+- Зачем:
+  - Telegram-кнопки должны соответствовать утверждённому ТЗ и не показывать старые названия;
+  - пользователь видит нижнее системное меню команд Telegram, а не навязчивую reply-клавиатуру.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_backend_telegram_import tests.test_release_go_no_go tests.test_acceptance_excel_generator` - 39 тестов OK;
+  - `./.venv/bin/python -m compileall -q backend/app/telegram_worker.py tools/prepare_acceptance_kit.py tests/test_backend_telegram_import.py` - OK;
+  - `git diff --check` - OK;
+  - VDS `telegram-worker` пересобран и перезапущен;
+  - Telegram API `getMyCommands` вернул `date`, `logistics`, `kiz_files`, `status`;
+  - описание `kiz_files` теперь `Выгрузка КИЗов`;
+  - `getChatMenuButton` вернул `type=commands`.
+
+### Telegram Menu Acceptance Gate
+
+- Причина: старое Telegram-меню было видно только live-проверкой Bot API, а `acceptance_status.sh` этого не ловил.
+- Решение:
+  - добавлен read-only VDS-скрипт `deploy/vds/verify_telegram_menu.sh`;
+  - скрипт проверяет `getMyCommands` и `getChatMenuButton`;
+  - ожидаемые команды: `/date`, `/logistics`, `/kiz_files`, `/status`;
+  - ожидаемое описание `/kiz_files`: `Выгрузка КИЗов`;
+  - `acceptance_status.sh` теперь запускает этот скрипт и добавляет блок `telegram_menu` в JSON-ответ.
+- Зачем:
+  - если Telegram снова покажет старое меню или потеряет кнопку `Статус`, VDS acceptance сразу станет `failed`;
+  - это закрывает регрессию, которую раньше можно было заметить только вручную в Telegram.
+- Проверено:
+  - на VDS создан restore point `/opt/taksklad/restore_points/pre-telegram-menu-verifier-20260601T075628Z`;
+  - `deploy/vds/verify_telegram_menu.sh` синхронизирован на VDS и вернул `status=ok`;
+  - live `getMyCommands` вернул `/date`, `/logistics`, `/kiz_files`, `/status`;
+  - live описание `/kiz_files` вернуло `Выгрузка КИЗов`;
+  - live `getChatMenuButton` вернул `type=commands`;
+  - VDS `./deploy/vds/acceptance_status.sh` вернул общий `status=ok` и блок `telegram_menu.status=ok`;
+  - `release_go_no_go` внутри acceptance остаётся `no_go`, потому что ручные пункты Telegram import, SkladBot matching и Windows desktop acceptance ещё не отмечены как принятые.
+
+### Release Manifest Safety Wording Update
+
+- Причина: после разрешения обновлять `version.json` и публиковать staged rollout в acceptance kit оставался старый флаг `no_push_notifications`, который больше не соответствует текущей линии 2.0.
+- Решение:
+  - `version.json` оставлен на `latest_version=2.0.0`, `mandatory=false`, с заполненными download URL и SHA;
+  - сообщение `version.json` обновлено с `КИЗ по файлам` на `Выгрузка КИЗов`;
+  - acceptance manifest теперь фиксирует `push_notifications_allowed=true` и `mandatory_update_disabled=true`;
+  - `acceptance_status.sh` проверяет новые safety-флаги вместо старого `no_push_notifications`;
+  - инструкция acceptance kit теперь запрещает только `mandatory=true` до ручного GO и новый Windows release поверх 2.0.0 без повторной проверки.
+- Зачем:
+  - не держать искусственное ограничение на staged обновления;
+  - при этом не включать принудительное обновление рабочих ПК до ручной приёмки.
+- Проверено:
+  - локально `bash -n deploy/vds/verify_telegram_menu.sh deploy/vds/acceptance_status.sh` - OK;
+  - локально `./.venv/bin/python -m unittest tests.test_vds_acceptance_scripts tests.test_backend_telegram_import tests.test_release_go_no_go tests.test_acceptance_excel_generator` - 42 теста OK;
+  - локально `./.venv/bin/python -m compileall -q backend/app tests tools` - OK;
+  - локально `git diff --check` - OK;
+  - VDS `./deploy/vds/verify_telegram_menu.sh` - `status=ok`;
+  - VDS `./deploy/vds/acceptance_status.sh` - общий `status=ok`;
+  - VDS `version.json.message` содержит `Выгрузка КИЗов`;
+  - VDS manifest содержит `push_notifications_allowed=true` и `mandatory_update_disabled=true`.

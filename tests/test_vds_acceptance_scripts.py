@@ -14,14 +14,18 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
             "result_file",
             "Acceptance result template not found",
             "Acceptance result file not found",
-            "version.json latest_version is not pinned to 1.1.7",
-            "version.json min_supported_version is not pinned to 1.1.7",
-            "version.json mandatory must be false before rollout",
-            "version.json download URLs must stay empty before rollout",
-            '"no_version_json_change", "no_github_release", "no_push_notifications"',
+            "version.json latest_version must be 2.0.0",
+            "version.json min_supported_version must stay 1.1.7 for non-forced rollout",
+            "version.json mandatory must be false during staged rollout",
+            "version.json onefile download_url and sha256 must be set",
+            "version.json onedir download_url_onedir and sha256_onedir must be set",
+            '"version_json_staged_rollout", "github_release_published", "push_notifications_allowed", "mandatory_update_disabled"',
             "manifest safety.{key} must be true",
             "manifest safety.contains_secrets must be false",
             "ACCEPTANCE_RESULTS.md",
+            "verify_telegram_menu.sh",
+            "telegram menu verifier failed",
+            '"telegram_menu"',
             "release_go_no_go.py",
             "--require-go",
             '"release_go_no_go"',
@@ -39,10 +43,18 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         cleanup_script = (PROJECT_ROOT / "deploy" / "vds" / "cleanup_acceptance_marker.sh").read_text(
             encoding="utf-8"
         )
+        telegram_menu_script = (PROJECT_ROOT / "deploy" / "vds" / "verify_telegram_menu.sh").read_text(
+            encoding="utf-8"
+        )
 
         for script in (verify_script, cleanup_script):
             self.assertIn("*ACCEPTANCE*|*WEB_UI_SMOKE*|*SMOKE_MVP*", script)
             self.assertIn("Refusing unsafe marker", script)
+
+        self.assertIn("Выгрузка КИЗов", telegram_menu_script)
+        self.assertIn('"status": "failed" if errors else "ok"', telegram_menu_script)
+        self.assertIn("getMyCommands", telegram_menu_script)
+        self.assertIn("getChatMenuButton", telegram_menu_script)
 
     def test_vds_compose_passes_geocoder_and_block_price_to_import_worker(self):
         compose = (PROJECT_ROOT / "deploy" / "vds" / "docker-compose.yml").read_text(encoding="utf-8")
@@ -51,10 +63,19 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         self.assertIn("${TAKSKLAD_ENV_FILE:-.env}", compose)
         self.assertIn("TAKSKLAD_ENV_FILE=.env.example", env_example)
         self.assertIn("YANDEX_GEOCODER_API_KEY: ${YANDEX_GEOCODER_API_KEY:-}", compose)
+        self.assertIn("TAKSKLAD_TIMEZONE: ${TAKSKLAD_TIMEZONE:-Asia/Tashkent}", compose)
         self.assertIn("TAKSKLAD_DEFAULT_BLOCK_PRICE: ${TAKSKLAD_DEFAULT_BLOCK_PRICE:-240000}", compose)
+        self.assertIn("SKLADBOT_WORKER_INTERVAL_SECONDS: ${SKLADBOT_WORKER_INTERVAL_SECONDS:-60}", compose)
+        self.assertIn("SKLADBOT_SYNC_MAX_LOOKBACK_DAYS: ${SKLADBOT_SYNC_MAX_LOOKBACK_DAYS:-7}", compose)
+        self.assertIn("SKLADBOT_ORDER_CREATE_LEAD_DAYS: ${SKLADBOT_ORDER_CREATE_LEAD_DAYS:-3}", compose)
+        self.assertIn("SKLADBOT_DETAIL_LIMIT: ${SKLADBOT_DETAIL_LIMIT:-30}", compose)
         self.assertIn("YANDEX_GEOCODER_API_KEY=", env_example)
+        self.assertIn("TAKSKLAD_TIMEZONE=Asia/Tashkent", env_example)
         self.assertIn("TAKSKLAD_DEFAULT_BLOCK_PRICE=240000", env_example)
         self.assertIn("SKLADBOT_WORKER_INTERVAL_SECONDS=60", env_example)
+        self.assertIn("SKLADBOT_SYNC_MAX_LOOKBACK_DAYS=7", env_example)
+        self.assertIn("SKLADBOT_ORDER_CREATE_LEAD_DAYS=3", env_example)
+        self.assertIn("SKLADBOT_DETAIL_LIMIT=30", env_example)
         self.assertIn("TELEGRAM_ADMIN_CHAT_IDS=", env_example)
 
 
