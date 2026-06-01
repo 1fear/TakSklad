@@ -3548,3 +3548,15 @@ cd /opt/taksklad/app
   - `python -m unittest tests.test_backend_runtime_config tests.test_startup_check tests.test_backend_bridge tests.test_pending_store tests.test_desktop_ui_contract tests.test_refresh_fallback` - 32 теста OK.
 - Важно:
   - чтобы это реально попало в Windows `TakSklad.exe`, нужна новая Windows-сборка через GitHub Actions или Windows-машину.
+
+### Windows Release Import Fix 2.0.1
+
+- Причина: на складском ПК Windows-сборка показала `ModuleNotFoundError: No module named 'taksklad'`. Это ошибка упаковки PyInstaller: exe собрался, но пакет `src/taksklad` не попал в runtime.
+- Что изменено:
+  - desktop-версия поднята до `2.0.1`, чтобы автообновление отличало исправленный exe от уже опубликованного `2.0.0`;
+  - в GitHub Actions Windows build добавлен `--collect-submodules taksklad`;
+  - в Windows build добавлен smoke-запуск `TakSklad.exe --smoke-import` для onefile и onedir сборок;
+  - если пакет `taksklad` снова не попадёт внутрь exe, GitHub Actions теперь упадёт до публикации артефактов.
+- Результат для склада:
+  - запуск остаётся обычным: `TakSklad.exe`;
+  - PowerShell-скрипты для склада не нужны.

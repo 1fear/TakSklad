@@ -11,4 +11,7 @@ from taksklad.main import run_app  # noqa: E402
 
 
 if __name__ == "__main__":
+    if "--smoke-import" in sys.argv:
+        print("TakSklad import OK")
+        raise SystemExit(0)
     run_app()
