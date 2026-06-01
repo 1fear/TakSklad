@@ -245,6 +245,8 @@ Done:
 - Добавлен локальный `tools/release_preflight.py`: перед ручной приёмкой проверяет `api.taksklad.uz/health`, staged rollout `version.json`, acceptance kit и tracked secret-файлы.
 - В acceptance kit добавлен `ACCEPTANCE_RESULTS_TEMPLATE.md` для фиксации фактических результатов Telegram/SkladBot/Windows и решения `GO/NO-GO`.
 - `tools/release_go_no_go.py` теперь требует не только финальный `GO`, но и заполненные разделы preflight, Telegram import, SkladBot matching, Windows desktop acceptance и cleanup.
+- VDS acceptance теперь проверяет Google Sheets `data` против активных backend-позиций: найденные рассинхроны по строкам, количеству, SkladBot-номерам или суммам ломают acceptance.
+- Google Sheets sync worker считает Google `data` первичным источником для активного списка: строка, удалённая из `data` без сканов, скрывается из backend active через статус `removed_from_google_sheet`; строка со сканами не скрывается молча и даёт audit conflict.
 
 Блокеры перед релизом:
 

@@ -26,6 +26,9 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
             "verify_telegram_menu.sh",
             "telegram menu verifier failed",
             '"telegram_menu"',
+            "verify_google_backend_sync.sh",
+            "google/backend sync verifier failed",
+            '"google_backend_sync"',
             "release_go_no_go.py",
             "--require-go",
             '"release_go_no_go"',
@@ -46,6 +49,9 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         telegram_menu_script = (PROJECT_ROOT / "deploy" / "vds" / "verify_telegram_menu.sh").read_text(
             encoding="utf-8"
         )
+        google_sync_script = (PROJECT_ROOT / "deploy" / "vds" / "verify_google_backend_sync.sh").read_text(
+            encoding="utf-8"
+        )
 
         for script in (verify_script, cleanup_script):
             self.assertIn("*ACCEPTANCE*|*WEB_UI_SMOKE*|*SMOKE_MVP*", script)
@@ -55,6 +61,13 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         self.assertIn('"status": "failed" if errors else "ok"', telegram_menu_script)
         self.assertIn("getMyCommands", telegram_menu_script)
         self.assertIn("getChatMenuButton", telegram_menu_script)
+
+        self.assertIn("app.google_backend_sync_diagnostic", google_sync_script)
+        self.assertIn("--detail-limit", google_sync_script)
+        self.assertIn("GOOGLE_BACKEND_SYNC_ATTEMPTS", google_sync_script)
+        self.assertIn("GOOGLE_BACKEND_SYNC_RETRY_DELAY_SECONDS", google_sync_script)
+        self.assertIn("Quota exceeded", google_sync_script)
+        self.assertIn("APIError: [429]", google_sync_script)
 
     def test_vds_compose_passes_geocoder_and_block_price_to_import_worker(self):
         compose = (PROJECT_ROOT / "deploy" / "vds" / "docker-compose.yml").read_text(encoding="utf-8")

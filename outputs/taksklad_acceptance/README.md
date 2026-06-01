@@ -40,8 +40,15 @@ cd /opt/taksklad/app
 ./deploy/vds/acceptance_status.sh
 ```
 
-Обычный `acceptance_status.sh` проверяет здоровье VDS и показывает блок `release_go_no_go`.
+Обычный `acceptance_status.sh` проверяет здоровье VDS, Telegram menu, Google Sheets ↔ backend sync и показывает блок `release_go_no_go`.
 До ручной приёмки в нём должен быть `status=no_go`.
+Отдельно проверить Google Sheets ↔ backend sync можно так:
+
+```bash
+cd /opt/taksklad/app
+./deploy/vds/verify_google_backend_sync.sh
+```
+
 Для релизного gate использовать строгий режим:
 
 ```bash

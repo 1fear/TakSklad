@@ -33,6 +33,7 @@ REQUIRED_FILES = [
     Path("deploy/vds/acceptance_status.sh"),
     Path("deploy/vds/verify_acceptance_marker.sh"),
     Path("deploy/vds/wait_acceptance_marker.sh"),
+    Path("deploy/vds/verify_google_backend_sync.sh"),
     Path("docs/windows-backend-acceptance.md"),
     Path("docs/manual-acceptance-runbook.md"),
 ]

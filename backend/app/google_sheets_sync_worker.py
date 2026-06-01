@@ -10,6 +10,7 @@ from .db import SessionLocal
 from .google_sheets_exporter import (
     SHEET_NAME,
     SPREADSHEET_ID,
+    archive_backend_order_to_google_sheets,
     ensure_import_sheet_layout,
     get_cell,
     get_google_client,
@@ -19,7 +20,7 @@ from .google_sheets_exporter import (
     parse_int_value,
 )
 from .models import AuditLog, Order, OrderItem, ScanCode
-from .orders_service import COMPLETED_STATUSES, STATUS_RETURNED
+from .orders_service import COMPLETED_STATUSES, STATUS_REMOVED_FROM_GOOGLE, STATUS_RETURNED
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -44,25 +45,36 @@ def env_int(name, default):
         return default
 
 
-def sync_google_sheet_to_backend(db: Session, sheet=None, now=None):
+def sync_google_sheet_to_backend(db: Session, sheet=None, now=None, archive_completed_data_rows=None):
     now = now or datetime.now(timezone.utc)
+    if archive_completed_data_rows is None:
+        archive_completed_data_rows = sheet is None
     records = load_google_sheet_records(sheet)
     if not records:
         return build_result(rows=0)
 
     item_index = load_item_index(db)
     result = build_result(rows=len(records))
+    completed_order_ids_to_archive = set()
+    matched_item_ids = set()
     for record in records:
         item = find_item_for_record(record, item_index)
         if item is None:
             result["missing"] += 1
             continue
 
+        matched_item_ids.add(item.id)
         item_result = apply_record_to_item(db, item, record, now)
         result["matched"] += 1
         result["orders_updated"] += 1 if item_result["order_changed"] else 0
         result["items_updated"] += 1 if item_result["item_changed"] else 0
         result["conflicts"] += len(item_result["conflicts"])
+        if (
+            archive_completed_data_rows
+            and record.get("source_sheet") == SHEET_NAME
+            and item.order.status in COMPLETED_STATUSES
+        ):
+            completed_order_ids_to_archive.add(item.order_id)
 
     db.add(AuditLog(
         action="google_sheets_backend_sync",
@@ -70,7 +82,9 @@ def sync_google_sheet_to_backend(db: Session, sheet=None, now=None):
         entity_id=SHEET_NAME,
         payload=result,
     ))
+    mark_backend_items_missing_from_google(db, item_index, matched_item_ids, result, now)
     db.commit()
+    archive_completed_orders_from_data_sheet(db, completed_order_ids_to_archive, result)
     return result
 
 
@@ -82,6 +96,8 @@ def build_result(rows=0):
         "orders_updated": 0,
         "items_updated": 0,
         "conflicts": 0,
+        "archived": 0,
+        "removed": 0,
     }
 
 
@@ -452,6 +468,75 @@ def update_status_from_record(order: Order, item: OrderItem, record):
     return changed
 
 
+def archive_completed_orders_from_data_sheet(db: Session, order_ids, result):
+    order_ids = list(dict.fromkeys(order_ids or []))
+    if not order_ids:
+        return
+
+    for order_id in order_ids:
+        order = db.execute(
+            select(Order)
+            .options(selectinload(Order.items).selectinload(OrderItem.scan_codes))
+            .where(Order.id == order_id)
+        ).scalar_one_or_none()
+        if order is None or order.status not in COMPLETED_STATUSES:
+            continue
+        try:
+            export_result = archive_backend_order_to_google_sheets(order)
+        except Exception as exc:
+            logging.exception("Google Sheets sync: failed to archive completed order %s", order_id)
+            export_result = {"status": "error", "updated": 0, "error": str(exc)}
+
+        result["archived"] += int(export_result.get("updated") or 0)
+        db.add(AuditLog(
+            action="google_sheets_sync_archive_export",
+            entity_type="order",
+            entity_id=str(order.id),
+            payload=export_result,
+        ))
+    db.commit()
+
+
+def mark_backend_items_missing_from_google(db: Session, item_index, matched_item_ids, result, now):
+    seen = set()
+    for source_index in item_index.values():
+        for item in source_index.values():
+            if item.id in seen or item.id in matched_item_ids:
+                continue
+            seen.add(item.id)
+            if item.status in COMPLETED_STATUSES or item.status == STATUS_REMOVED_FROM_GOOGLE:
+                continue
+            if item.scanned_blocks > 0 or item.scan_codes:
+                result["conflicts"] += 1
+                db.add(AuditLog(
+                    action="google_sheets_backend_sync_conflict",
+                    entity_type="order_item",
+                    entity_id=str(item.id),
+                    payload={
+                        "order_id": str(item.order_id),
+                        "reason": "backend item is missing from Google Sheets but already has scans",
+                        "source_import_id": (item.raw_payload or {}).get("source_import_id"),
+                        "source_order_id": (item.raw_payload or {}).get("source_order_id"),
+                    },
+                ))
+                continue
+
+            item.status = STATUS_REMOVED_FROM_GOOGLE
+            raw_payload = dict(item.raw_payload or {})
+            raw_payload["removed_from_google_sheet_at"] = now.isoformat()
+            item.raw_payload = raw_payload
+            result["removed"] += 1
+            db.add(AuditLog(
+                action="google_sheets_backend_item_removed",
+                entity_type="order_item",
+                entity_id=str(item.id),
+                payload={
+                    "order_id": str(item.order_id),
+                    "source_import_id": raw_payload.get("source_import_id"),
+                    "source_order_id": raw_payload.get("source_order_id"),
+                },
+            ))
+
 def is_returned_record(record):
     status = normalize_text(record.get("return_status")).casefold()
     return status in {"возврат", "returned", "return"} or RETURN_STATUS_VALUE.casefold() in status
@@ -465,13 +550,15 @@ def main():
             with SessionLocal() as db:
                 result = sync_google_sheet_to_backend(db)
             logging.info(
-                "Google Sheets sync: rows=%s matched=%s missing=%s orders_updated=%s items_updated=%s conflicts=%s",
+                "Google Sheets sync: rows=%s matched=%s missing=%s orders_updated=%s items_updated=%s conflicts=%s archived=%s removed=%s",
                 result["rows"],
                 result["matched"],
                 result["missing"],
                 result["orders_updated"],
                 result["items_updated"],
                 result["conflicts"],
+                result["archived"],
+                result["removed"],
             )
         except Exception:
             logging.exception("Google Sheets sync worker failed")

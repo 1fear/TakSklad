@@ -9,6 +9,7 @@ MANIFEST_FILE="$APP_DIR/outputs/taksklad_acceptance/acceptance_manifest.json"
 VERSION_FILE="$APP_DIR/version.json"
 VERIFY_SCRIPT="$SCRIPT_DIR/verify_acceptance_marker.sh"
 TELEGRAM_MENU_SCRIPT="$SCRIPT_DIR/verify_telegram_menu.sh"
+GOOGLE_SYNC_SCRIPT="$SCRIPT_DIR/verify_google_backend_sync.sh"
 RESULTS_FILE="$APP_DIR/outputs/taksklad_acceptance/ACCEPTANCE_RESULTS.md"
 GO_NO_GO_SCRIPT="$APP_DIR/tools/release_go_no_go.py"
 
@@ -89,6 +90,10 @@ if [[ ! -x "$VERIFY_SCRIPT" ]]; then
 fi
 if [[ ! -x "$TELEGRAM_MENU_SCRIPT" ]]; then
   echo "Telegram menu verifier is not executable: $TELEGRAM_MENU_SCRIPT" >&2
+  exit 1
+fi
+if [[ ! -x "$GOOGLE_SYNC_SCRIPT" ]]; then
+  echo "Google/backend sync verifier is not executable: $GOOGLE_SYNC_SCRIPT" >&2
   exit 1
 fi
 if [[ ! -f "$GO_NO_GO_SCRIPT" ]]; then
@@ -183,11 +188,13 @@ fi
 VERIFY_STATUS="$?"
 TELEGRAM_MENU_OUTPUT="$("$TELEGRAM_MENU_SCRIPT" 2>&1)"
 TELEGRAM_MENU_STATUS="$?"
+GOOGLE_SYNC_OUTPUT="$("$GOOGLE_SYNC_SCRIPT" 2>&1)"
+GOOGLE_SYNC_STATUS="$?"
 GO_NO_GO_OUTPUT="$(python3 "$GO_NO_GO_SCRIPT" --results "$RESULTS_FILE" 2>&1)"
 GO_NO_GO_STATUS="$?"
 set -e
 
-python3 - "$MANIFEST_INFO" "$VERSION_INFO" "$SHA_STATUS" "$ACTUAL_SHA" "$EXPECTED_SHA" "$HEALTH_STATUS" "$HEALTH_OUTPUT" "$COMPOSE_STATUS" "$COMPOSE_OUTPUT" "$VERIFY_STATUS" "$VERIFY_OUTPUT" "$TELEGRAM_MENU_STATUS" "$TELEGRAM_MENU_OUTPUT" "$GO_NO_GO_STATUS" "$GO_NO_GO_OUTPUT" "$REQUIRE_GO" <<'PY'
+python3 - "$MANIFEST_INFO" "$VERSION_INFO" "$SHA_STATUS" "$ACTUAL_SHA" "$EXPECTED_SHA" "$HEALTH_STATUS" "$HEALTH_OUTPUT" "$COMPOSE_STATUS" "$COMPOSE_OUTPUT" "$VERIFY_STATUS" "$VERIFY_OUTPUT" "$TELEGRAM_MENU_STATUS" "$TELEGRAM_MENU_OUTPUT" "$GOOGLE_SYNC_STATUS" "$GOOGLE_SYNC_OUTPUT" "$GO_NO_GO_STATUS" "$GO_NO_GO_OUTPUT" "$REQUIRE_GO" <<'PY'
 import json
 import sys
 
@@ -204,9 +211,11 @@ verify_status = int(sys.argv[10])
 verify_output = sys.argv[11].strip()
 telegram_menu_status = int(sys.argv[12])
 telegram_menu_output = sys.argv[13].strip()
-go_no_go_status = int(sys.argv[14])
-go_no_go_output = sys.argv[15].strip()
-require_go = sys.argv[16] == "1"
+google_sync_status = int(sys.argv[14])
+google_sync_output = sys.argv[15].strip()
+go_no_go_status = int(sys.argv[16])
+go_no_go_output = sys.argv[17].strip()
+require_go = sys.argv[18] == "1"
 
 try:
     health = json.loads(health_output)
@@ -236,6 +245,11 @@ try:
     telegram_menu = json.loads(telegram_menu_output.splitlines()[-1])
 except Exception:
     telegram_menu = {"status": "failed", "raw": telegram_menu_output}
+
+try:
+    google_sync = json.loads(google_sync_output.splitlines()[-1])
+except Exception:
+    google_sync = {"status": "failed", "raw": google_sync_output}
 
 try:
     release_gate = json.loads(go_no_go_output.splitlines()[-1])
@@ -271,6 +285,8 @@ if verify_status != 0:
     errors.append(f"acceptance verifier failed with exit {verify_status}")
 if telegram_menu_status != 0 or telegram_menu.get("status") != "ok":
     errors.append(f"telegram menu verifier failed with exit {telegram_menu_status}")
+if google_sync_status != 0 or google_sync.get("status") != "ok":
+    errors.append(f"google/backend sync verifier failed with exit {google_sync_status}")
 release_status = release_gate.get("status")
 if require_go and release_status != "go":
     errors.append(f"release GO/NO-GO is not go: {release_status or 'unknown'}")
@@ -300,6 +316,10 @@ summary = {
     "telegram_menu": {
         "exit_code": telegram_menu_status,
         "response": telegram_menu,
+    },
+    "google_backend_sync": {
+        "exit_code": google_sync_status,
+        "response": google_sync,
     },
     "release_go_no_go": {
         "exit_code": go_no_go_status,

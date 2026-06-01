@@ -59,6 +59,7 @@ def build_manifest(output_dir=DEFAULT_OUTPUT_DIR, marker=DEFAULT_MARKER, shipmen
             "regenerate": ".venv/bin/python tools/prepare_acceptance_kit.py",
             "local_preflight": ".venv/bin/python tools/release_preflight.py",
             "vds_status": './deploy/vds/acceptance_status.sh',
+            "google_backend_sync": './deploy/vds/verify_google_backend_sync.sh',
             "telegram_verify": './deploy/vds/verify_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --expect-orders 1',
             "telegram_wait": './deploy/vds/wait_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --expect-orders 1 --timeout 300 --interval 10',
             "telegram_status": './deploy/vds/acceptance_status.sh --expect-orders 1',
@@ -128,8 +129,15 @@ cd /opt/taksklad/app
 {manifest["commands"]["vds_status"]}
 ```
 
-Обычный `acceptance_status.sh` проверяет здоровье VDS и показывает блок `release_go_no_go`.
+Обычный `acceptance_status.sh` проверяет здоровье VDS, Telegram menu, Google Sheets ↔ backend sync и показывает блок `release_go_no_go`.
 До ручной приёмки в нём должен быть `status=no_go`.
+Отдельно проверить Google Sheets ↔ backend sync можно так:
+
+```bash
+cd /opt/taksklad/app
+{manifest["commands"]["google_backend_sync"]}
+```
+
 Для релизного gate использовать строгий режим:
 
 ```bash

@@ -18,7 +18,9 @@ from .schemas import OrderItemRead, OrderRead, ScanCreate, ScanRead
 STATUS_COMPLETED = "completed"
 STATUS_NOT_COMPLETED = "not_completed"
 STATUS_RETURNED = "returned"
+STATUS_REMOVED_FROM_GOOGLE = "removed_from_google_sheet"
 COMPLETED_STATUSES = (STATUS_COMPLETED, "done", "closed", STATUS_RETURNED)
+HIDDEN_ITEM_STATUSES = (STATUS_REMOVED_FROM_GOOGLE,)
 logger = logging.getLogger(__name__)
 
 
@@ -43,7 +45,12 @@ def list_active_orders(db: Session):
         .where(~Order.status.in_(COMPLETED_STATUSES))
         .order_by(Order.order_date.asc(), Order.created_at.asc())
     )
-    return [order_to_read(order) for order in db.execute(stmt).scalars().all()]
+    active_orders = []
+    for order in db.execute(stmt).scalars().all():
+        read_order = order_to_read(order)
+        if read_order.items:
+            active_orders.append(read_order)
+    return active_orders
 
 
 def list_returned_orders(db: Session, limit=50):
@@ -381,6 +388,7 @@ def order_to_read(order: Order):
         items=[
             item_to_read(item)
             for item in sorted(order.items, key=lambda value: (str(value.created_at or ""), str(value.id)))
+            if item.status not in HIDDEN_ITEM_STATUSES
         ],
     )
 

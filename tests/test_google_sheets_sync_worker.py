@@ -1,6 +1,7 @@
 import unittest
 import uuid
 from datetime import date
+from unittest import mock
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
@@ -15,6 +16,7 @@ from backend.app.google_sheets_sync_worker import (
     sync_google_sheet_to_backend,
 )
 from backend.app.models import AuditLog, Base, Order, OrderItem, ScanCode
+from backend.app.orders_service import list_active_orders
 
 
 class FakeSheet:
@@ -130,6 +132,27 @@ class GoogleSheetsSyncWorkerTests(unittest.TestCase):
             row.append(value)
         return FakeSheet([header, row])
 
+    def add_second_item(self, order_id, *, scanned_blocks=0):
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            item = OrderItem(
+                order=order,
+                product="Chapman Gold SSL 100`20",
+                quantity_pieces=20,
+                quantity_blocks=2,
+                pieces_per_block=10,
+                scanned_blocks=scanned_blocks,
+                status="not_completed",
+                raw_payload={
+                    "source_import_id": "import-2",
+                    "source_order_id": "order-1",
+                    "block_price": 240000,
+                },
+            )
+            db.add(item)
+            db.commit()
+            return str(item.id)
+
     def test_sync_updates_active_backend_order_from_google_sheet_by_import_id(self):
         order_id, item_id = self.seed_order()
 
@@ -190,6 +213,41 @@ class GoogleSheetsSyncWorkerTests(unittest.TestCase):
             self.assertEqual(item.raw_payload["block_price"], 240000)
             self.assertEqual(item.raw_payload["line_total"], 240000)
             self.assertEqual(item.raw_payload["calculated_line_total"], 240000)
+
+    def test_sync_hides_backend_item_removed_from_google_sheet_when_unscanned(self):
+        order_id, _ = self.seed_order()
+        removed_item_id = self.add_second_item(order_id)
+
+        with self.SessionLocal() as db:
+            result = sync_google_sheet_to_backend(db, sheet=self.make_sheet())
+
+        self.assertEqual(result["matched"], 1)
+        self.assertEqual(result["removed"], 1)
+        with self.SessionLocal() as db:
+            removed_item = db.get(OrderItem, uuid.UUID(removed_item_id))
+            self.assertEqual(removed_item.status, "removed_from_google_sheet")
+            self.assertTrue(removed_item.raw_payload["removed_from_google_sheet_at"])
+            active_orders = list_active_orders(db)
+            self.assertEqual(len(active_orders), 1)
+            self.assertEqual(len(active_orders[0].items), 1)
+
+    def test_sync_keeps_backend_item_missing_from_google_sheet_when_scanned(self):
+        order_id, _ = self.seed_order()
+        scanned_item_id = self.add_second_item(order_id, scanned_blocks=1)
+
+        with self.SessionLocal() as db:
+            result = sync_google_sheet_to_backend(db, sheet=self.make_sheet())
+
+        self.assertEqual(result["matched"], 1)
+        self.assertEqual(result["removed"], 0)
+        self.assertEqual(result["conflicts"], 1)
+        with self.SessionLocal() as db:
+            scanned_item = db.get(OrderItem, uuid.UUID(scanned_item_id))
+            self.assertEqual(scanned_item.status, "not_completed")
+            audit = db.execute(
+                select(AuditLog).where(AuditLog.action == "google_sheets_backend_sync_conflict")
+            ).scalars().all()
+            self.assertEqual(len(audit), 1)
 
     def test_sync_imports_scanned_codes_and_completes_item_from_google_sheet(self):
         order_id, item_id = self.seed_order(quantity_blocks=2)
@@ -269,6 +327,31 @@ class GoogleSheetsSyncWorkerTests(unittest.TestCase):
             item = db.get(OrderItem, uuid.UUID(item_id))
             self.assertEqual(order.client, "New Client")
             self.assertEqual(item.quantity_blocks, 11)
+
+    def test_sync_archives_completed_backend_order_still_present_in_data_sheet(self):
+        order_id, _ = self.seed_order(order_status="completed", item_status="completed")
+        archived_ids = []
+
+        with mock.patch(
+            "backend.app.google_sheets_sync_worker.archive_backend_order_to_google_sheets",
+            side_effect=lambda order: archived_ids.append(str(order.id)) or {"status": "completed", "updated": 1},
+        ):
+            with self.SessionLocal() as db:
+                result = sync_google_sheet_to_backend(
+                    db,
+                    sheet=self.make_sheet(),
+                    archive_completed_data_rows=True,
+                )
+
+        self.assertEqual(result["matched"], 1)
+        self.assertEqual(result["archived"], 1)
+        self.assertEqual(archived_ids, [order_id])
+        with self.SessionLocal() as db:
+            audit = db.execute(
+                select(AuditLog).where(AuditLog.action == "google_sheets_sync_archive_export")
+            ).scalar_one()
+            self.assertEqual(audit.entity_id, order_id)
+            self.assertEqual(audit.payload["status"], "completed")
 
     def test_sync_marks_order_returned_from_google_archive_return_columns(self):
         order_id, item_id = self.seed_order(order_status="completed", item_status="completed")

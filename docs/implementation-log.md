@@ -3382,3 +3382,27 @@ cd /opt/taksklad/app
   - `./.venv/bin/python tools/release_preflight.py --verify-downloads --timeout 120` - `status=ok`, SHA обоих GitHub assets совпали с `version.json`;
   - `https://api.taksklad.uz/health` - `status=ok`, `version=2.0.0`;
   - VDS `./deploy/vds/acceptance_status.sh` - общий `status=ok`, `telegram_menu.status=ok`, `push_notifications_allowed=true`.
+
+### Google Sheets Backend Sync Acceptance Gate
+
+- Причина: Google Sheets `data` должен оставаться главным видимым источником для менеджера и склада, а backend не должен silently расходиться с таблицей.
+- Решение:
+  - добавлен read-only verifier `backend/app/google_backend_sync_diagnostic.py`;
+  - на VDS добавлен `deploy/vds/verify_google_backend_sync.sh`;
+  - общий `deploy/vds/acceptance_status.sh` теперь проверяет соответствие строк `data` и активных backend-позиций;
+  - verifier сравнивает source keys, дату отгрузки, оплату, клиента, адрес, ТП, товар, количество, SkladBot номер/ID/статус и расчёт суммы;
+  - verifier получил retry/backoff на Google Sheets `429 Quota exceeded`, чтобы acceptance не падал от краткого лимита API.
+- Найденная проблема:
+  - verifier поймал реальный рассинхрон: backend держал активную позицию `MEROS OYBEK / Chapman Brown OP 20`, которой уже не было в Google Sheets `data`;
+  - до исправления такая позиция могла оставаться видимой в приложении, хотя Google-таблица уже была изменена.
+- Исправление:
+  - `google_sheets_sync_worker` теперь помечает backend-позицию как `removed_from_google_sheet`, если она пропала из Google Sheets и по ней ещё нет сканов;
+  - если позиция пропала из Google Sheets, но уже имеет сканы, backend не скрывает её молча и пишет конфликт в audit;
+  - активный API больше не отдаёт позиции со статусом `removed_from_google_sheet`;
+  - завершённые заказы, которые ещё видны в `data`, worker дополнительно отправляет в архивный экспорт.
+- Проверено:
+  - локально `./.venv/bin/python -m unittest tests.test_google_sheets_sync_worker tests.test_google_backend_sync_diagnostic tests.test_backend_api_persistence tests.test_vds_acceptance_scripts` - 44 теста OK;
+  - локально `./.venv/bin/python -m compileall -q backend/app/google_sheets_sync_worker.py backend/app/google_backend_sync_diagnostic.py backend/app/orders_service.py tests/test_google_sheets_sync_worker.py` - OK;
+  - локально `git diff --check` - OK;
+  - VDS `./deploy/vds/verify_google_backend_sync.sh` - `status=ok`, `google_rows=19`, `backend_active_items=19`, `matched_items=19`;
+  - VDS `./deploy/vds/acceptance_status.sh` - общий `status=ok`, блок `google_backend_sync.status=ok`.
