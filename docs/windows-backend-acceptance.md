@@ -41,8 +41,8 @@
 - добавляет acceptance helper и acceptance kit;
 - создаёт ZIP и SHA256 в `outputs\windows_test_build`;
 - не создаёт GitHub Release;
-- не меняет `version.json` вручную;
-- не отправляет push-уведомления.
+- не включает `mandatory=true`;
+- не публикует новый Windows release поверх `v2.0.0`.
 
 После сборки запускать приложение из распакованного архива через:
 

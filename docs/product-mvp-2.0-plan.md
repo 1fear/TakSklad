@@ -190,9 +190,9 @@ Done:
 
 ## 4. Правила До Релиза 2.0
 
-- Не собирать Windows release archive до прохождения этапов 1-4.
-- Не менять `version.json` до этапа 5.
-- Не отправлять push-уведомления об обновлении до ручной приёмки.
+- Не включать `mandatory=true` до ручного GO.
+- Не публиковать новый Windows release поверх `2.0.0` без повторной проверки.
+- Держать `version.json` в staged rollout: `latest_version=2.0.0`, `mandatory=false`, `min_supported_version=1.1.7`.
 - Не добавлять новые функции вне этого плана.
 - Не ломать desktop fallback.
 - Не переносить секреты в Git.
@@ -240,7 +240,7 @@ Done:
 - `api.taksklad.uz` указывает на VDS и `https://api.taksklad.uz/health` возвращает `200`.
 - Ключ Яндекс Геокодера вынесен из исходного кода: используется env `YANDEX_GEOCODER_API_KEY` или локальный `yandex_geocoder_key.txt`.
 - Добавлен чеклист Windows-приёмки с backend flags.
-- Добавлен Windows test archive helper `tools/build_windows_test_archive.ps1`: собирает тестовый PyInstaller `--onedir` archive для приёмки без GitHub Release, без ручного изменения `version.json` и без push-уведомлений.
+- Добавлен Windows test archive helper `tools/build_windows_test_archive.ps1`: собирает тестовый PyInstaller `--onedir` archive для приёмки без GitHub Release и без включения `mandatory=true`.
 - Windows acceptance helper теперь проверяет `TakSklad.exe` по `build_manifest.json` из test archive, требует `app_version` не ниже `2.0.0` и не запускает старый exe без manifest.
 - Добавлен локальный `tools/release_preflight.py`: перед ручной приёмкой проверяет `api.taksklad.uz/health`, staged rollout `version.json`, acceptance kit и tracked secret-файлы.
 - В acceptance kit добавлен `ACCEPTANCE_RESULTS_TEMPLATE.md` для фиксации фактических результатов Telegram/SkladBot/Windows и решения `GO/NO-GO`.
