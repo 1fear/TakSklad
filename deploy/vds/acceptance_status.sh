@@ -12,6 +12,8 @@ TELEGRAM_MENU_SCRIPT="$SCRIPT_DIR/verify_telegram_menu.sh"
 GOOGLE_SYNC_SCRIPT="$SCRIPT_DIR/verify_google_backend_sync.sh"
 RESULTS_FILE="$APP_DIR/outputs/taksklad_acceptance/ACCEPTANCE_RESULTS.md"
 GO_NO_GO_SCRIPT="$APP_DIR/tools/release_go_no_go.py"
+HEALTH_ATTEMPTS="${ACCEPTANCE_HEALTH_ATTEMPTS:-6}"
+HEALTH_RETRY_DELAY_SECONDS="${ACCEPTANCE_HEALTH_RETRY_DELAY_SECONDS:-2}"
 
 usage() {
   cat >&2 <<'EOF'
@@ -170,14 +172,24 @@ PY
 )"
 
 set +e
-HEALTH_OUTPUT="$(
-  docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T backend-api \
-    python - <<'PY' 2>&1
+HEALTH_OUTPUT=""
+HEALTH_STATUS="1"
+for ((health_attempt = 1; health_attempt <= HEALTH_ATTEMPTS; health_attempt++)); do
+  HEALTH_OUTPUT="$(
+    docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T backend-api \
+      python - <<'PY' 2>&1
 from urllib.request import urlopen
 print(urlopen("http://127.0.0.1:8000/health", timeout=5).read().decode())
 PY
-)"
-HEALTH_STATUS="$?"
+  )"
+  HEALTH_STATUS="$?"
+  if [[ "$HEALTH_STATUS" -eq 0 ]]; then
+    break
+  fi
+  if [[ "$health_attempt" -lt "$HEALTH_ATTEMPTS" ]]; then
+    sleep "$HEALTH_RETRY_DELAY_SECONDS"
+  fi
+done
 COMPOSE_OUTPUT="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps --format json 2>&1)"
 COMPOSE_STATUS="$?"
 if ((${#VERIFY_ARGS[@]})); then

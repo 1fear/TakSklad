@@ -3406,3 +3406,15 @@ cd /opt/taksklad/app
   - локально `git diff --check` - OK;
   - VDS `./deploy/vds/verify_google_backend_sync.sh` - `status=ok`, `google_rows=19`, `backend_active_items=19`, `matched_items=19`;
   - VDS `./deploy/vds/acceptance_status.sh` - общий `status=ok`, блок `google_backend_sync.status=ok`.
+
+### VDS Acceptance Health Retry
+
+- Причина: после `docker compose up -d` контейнер `backend-api` уже может быть в состоянии `running`, но HTTP `/health` ещё 1-2 секунды не слушает порт. Из-за этого `acceptance_status.sh` мог ложно возвращать `status=failed` сразу после redeploy.
+- Решение:
+  - `deploy/vds/acceptance_status.sh` делает несколько попыток backend health перед тем, как считать проверку проваленной;
+  - параметры вынесены в env: `ACCEPTANCE_HEALTH_ATTEMPTS`, `ACCEPTANCE_HEALTH_RETRY_DELAY_SECONDS`;
+  - это не скрывает настоящую ошибку backend: если health не поднялся после всех попыток, acceptance остаётся failed.
+- Проверено:
+  - локально `bash -n deploy/vds/acceptance_status.sh` - OK;
+  - локально `./.venv/bin/python -m unittest tests.test_vds_acceptance_scripts` - 3 теста OK;
+  - VDS `./deploy/vds/acceptance_status.sh` - общий `status=ok`, backend health `status=ok`, `google_backend_sync.status=ok`.
