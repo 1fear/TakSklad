@@ -90,7 +90,7 @@ def diagnose_skladbot_matches(marker="", limit=20, request_limit=20):
     if request_limit:
         os.environ["SKLADBOT_REQUESTS_LIMIT"] = str(max(1, request_limit))
     try:
-        requests = fetch_candidate_requests()
+        requests = fetch_candidate_requests(orders=orders)
     finally:
         if original_limit is None:
             os.environ.pop("SKLADBOT_REQUESTS_LIMIT", None)

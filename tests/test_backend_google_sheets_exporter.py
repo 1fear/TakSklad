@@ -140,7 +140,7 @@ class BackendGoogleSheetsExporterTests(unittest.TestCase):
         for row in sheet.rows[1:]:
             self.assertEqual(row[header_idx["Номер заявки SkladBot"]], "WH-R-191794")
             self.assertEqual(row[header_idx["ID заявки SkladBot"]], "191794")
-            self.assertEqual(row[header_idx["Статус SkladBot"]], "found")
+            self.assertEqual(row[header_idx["Статус SkladBot"]], "Найдено")
             self.assertEqual(row[header_idx["Последняя проверка SkladBot"]], "2026-06-01T11:30:00+05:00")
 
     def test_archive_backend_order_rows_moves_rows_to_archive(self):

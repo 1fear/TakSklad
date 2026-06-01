@@ -257,7 +257,7 @@ def update_backend_orders_skladbot_rows(sheet, orders):
         values = {
             "Номер заявки SkladBot": normalize_text(raw_payload.get("skladbot_request_number")),
             "ID заявки SkladBot": normalize_text(raw_payload.get("skladbot_request_id")),
-            "Статус SkladBot": normalize_text(raw_payload.get("skladbot_status")),
+            "Статус SkladBot": format_skladbot_status(raw_payload.get("skladbot_status")),
             "Последняя проверка SkladBot": normalize_text(raw_payload.get("skladbot_checked_at")),
         }
         for item in getattr(order, "items", []) or []:
@@ -275,6 +275,19 @@ def update_backend_orders_skladbot_rows(sheet, orders):
     if updates:
         sheet.batch_update(updates, value_input_option="USER_ENTERED")
     return GoogleSheetsExportResult(status="completed", updated=len(updated_rows)).as_dict()
+
+
+def format_skladbot_status(value):
+    text = normalize_text(value).casefold()
+    if text == "found":
+        return "Найдено"
+    if text == "not_found":
+        return "Не найдено"
+    if text == "multiple":
+        return "Несколько совпадений"
+    if text == "error":
+        return "Ошибка синхронизации"
+    return normalize_text(value)
 
 
 def archive_backend_order_rows(data_sheet, archive_sheet, order):

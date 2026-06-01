@@ -3349,3 +3349,19 @@ cd /opt/taksklad/app
   - `rg no_push_notifications` по preflight/acceptance runtime-файлам не нашёл старых требований;
   - VDS `python3 tools/release_preflight.py --skip-network` - `status=ok`;
   - VDS `./deploy/vds/acceptance_status.sh` - общий `status=ok`, `release_go_no_go.status=no_go` ожидаемо до ручной приёмки.
+
+### SkladBot Google Sheets Re-Export And Diagnostic Window
+
+- Причина: при тестах мог возникнуть рассинхрон, когда backend уже знает номер заявки SkladBot, но Google Sheets ещё не показывает его. В этом случае worker раньше пропускал SkladBot API и не переэкспортировал уже найденные номера обратно в `data`.
+- Решение:
+  - если все активные backend-заказы уже имеют номер/ID SkladBot, worker всё равно делает best-effort экспорт этих номеров в Google Sheets;
+  - `Статус SkladBot` в Google Sheets теперь пишется человекочитаемо: `Найдено`, `Не найдено`, `Несколько совпадений`, `Ошибка синхронизации`;
+  - read-only диагностика SkladBot теперь передаёт активные заказы в `fetch_candidate_requests`, поэтому использует то же динамическое окно дат, что и реальный worker.
+- Зачем:
+  - Google Sheets остаётся главным видимым источником для менеджера и склада;
+  - кнопка `Обновить` и фоновый worker могут восстановить номера в таблице без повторного поиска SkladBot, если backend уже их знает;
+  - диагностика теперь честнее объясняет, почему заявка не подтянулась: раньше она могла искать SkladBot только за базовое окно, а worker реально расширял окно по датам активных заказов.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_backend_skladbot_worker tests.test_backend_google_sheets_exporter tests.test_google_sheets_desktop_read tests.test_google_sheets_sync_worker` - 35 тестов OK;
+  - VDS read-only проверка Google Sheets показала: `rows=21`, `numbered_rows=21`;
+  - VDS `diagnose_skladbot_match.sh` работает и показывает ближайшие несовпадения по `date`, `client`, `payment`, `products`.

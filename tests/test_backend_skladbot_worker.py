@@ -6,6 +6,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from backend.app.skladbot_diagnostic import diagnose_skladbot_matches
 from backend.app.models import AuditLog, Base, Order, OrderItem
 from backend.app.skladbot_worker import (
     address_soft_match,
@@ -279,6 +280,64 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
             Base.metadata.drop_all(engine)
             engine.dispose()
 
+    def test_update_orders_reexports_existing_skladbot_numbers_to_google_sheets(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        try:
+            with SessionLocal() as db:
+                order = Order(
+                    order_date=date(2026, 5, 29),
+                    payment_type="Перечисление",
+                    client='"TABACHNAYA LAVKA" MCHJ',
+                    address="Address",
+                    representative="Rep",
+                    status="not_completed",
+                    raw_payload={
+                        "skladbot_request_number": "WH-R-191794",
+                        "skladbot_request_id": "191794",
+                        "skladbot_status": "found",
+                    },
+                )
+                order.items = [
+                    OrderItem(
+                        product="Chapman Brown OP 20",
+                        quantity_blocks=2,
+                        quantity_pieces=20,
+                        pieces_per_block=10,
+                        scanned_blocks=0,
+                        status="not_completed",
+                        raw_payload={"source_import_id": "import-1", "source_order_id": "order-1"},
+                    )
+                ]
+                db.add(order)
+                db.commit()
+
+            with mock.patch("backend.app.skladbot_worker.SessionLocal", SessionLocal), mock.patch(
+                "backend.app.skladbot_worker.fetch_candidate_requests",
+            ) as fetch_candidates, mock.patch(
+                "backend.app.skladbot_worker.sync_backend_orders_skladbot_to_google_sheets",
+                return_value={"status": "completed", "updated": 1},
+            ) as google_export:
+                result = update_orders_from_skladbot()
+
+            self.assertEqual(result["already_numbered"], 1)
+            self.assertEqual(result["google_sheets_export"]["updated"], 1)
+            fetch_candidates.assert_not_called()
+            google_export.assert_called_once()
+            with SessionLocal() as db:
+                audit = db.execute(
+                    select(AuditLog).where(AuditLog.action == "skladbot_google_sheets_export")
+                ).scalar_one()
+                self.assertEqual(audit.payload["status"], "completed")
+        finally:
+            Base.metadata.drop_all(engine)
+            engine.dispose()
+
     def test_candidate_window_uses_created_date_not_future_unloading_date(self):
         request = {
             "created_at": "2026-05-31 10:00:00",
@@ -432,6 +491,42 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
         self.assertEqual(fake_client.detail_ids, [1])
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["number"], "WH-R-1")
+
+    def test_diagnostic_uses_active_orders_for_candidate_window(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        try:
+            with SessionLocal() as db:
+                order = Order(
+                    order_date=date(2026, 5, 29),
+                    payment_type="Перечисление",
+                    client='"TABACHNAYA LAVKA" MCHJ',
+                    address="Address",
+                    status="not_completed",
+                    raw_payload={},
+                )
+                order.items = [OrderItem(product="Chapman Brown OP 20", quantity_blocks=2)]
+                db.add(order)
+                db.commit()
+
+            with mock.patch("backend.app.skladbot_diagnostic.SessionLocal", SessionLocal), mock.patch(
+                "backend.app.skladbot_diagnostic.fetch_candidate_requests",
+                return_value=[],
+            ) as fetch_candidates:
+                result = diagnose_skladbot_matches(limit=10, request_limit=20)
+
+            self.assertEqual(result["active_orders"], 1)
+            fetch_candidates.assert_called_once()
+            self.assertEqual(len(fetch_candidates.call_args.kwargs["orders"]), 1)
+            self.assertEqual(fetch_candidates.call_args.kwargs["orders"][0].order_date, date(2026, 5, 29))
+        finally:
+            Base.metadata.drop_all(engine)
+            engine.dispose()
 
     def test_fetch_candidates_stops_after_all_active_orders_matched(self):
         class FakeClient:

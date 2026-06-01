@@ -571,6 +571,14 @@ def update_orders_from_skladbot():
             orders_to_check = [order for order in orders if not order_has_skladbot_number(order)]
             if not orders_to_check:
                 logging.info("SkladBot worker: all active orders already have SkladBot numbers, skip SkladBot API")
+                google_sheets_result = export_skladbot_numbers_to_google_sheets(db, orders)
+                db.add(AuditLog(
+                    action="skladbot_google_sheets_export",
+                    entity_type="skladbot",
+                    entity_id="worker",
+                    payload=google_sheets_result,
+                ))
+                db.commit()
                 return {
                     "requests": 0,
                     "updated": 0,
@@ -578,6 +586,7 @@ def update_orders_from_skladbot():
                     "not_found": 0,
                     "multiple": 0,
                     "already_numbered": len(orders),
+                    "google_sheets_export": google_sheets_result,
                 }
 
             requests = fetch_candidate_requests(orders=orders_to_check)
