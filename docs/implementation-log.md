@@ -3446,3 +3446,24 @@ cd /opt/taksklad/app
   - локально `./.venv/bin/python -m unittest tests.test_backend_telegram_import` - 27 тестов OK;
   - локально `./.venv/bin/python -m compileall -q backend/app/telegram_worker.py tests/test_backend_telegram_import.py` - OK;
   - локально `git diff --check` - OK.
+
+### Public Domain Routing Prepared
+
+- Причина: домен `taksklad.uz` активирован, сайт нужно вынести с `api.taksklad.uz` на нормальные публичные host-ы.
+- Решение:
+  - backend оставлен на `api.taksklad.uz`;
+  - frontend переведён на `taksklad.uz` и `www.taksklad.uz`;
+  - VDS `.env` обновлён: `TAKSKLAD_FRONTEND_HOST=taksklad.uz`, `TAKSKLAD_FRONTEND_WWW_HOST=www.taksklad.uz`, `TAKSKLAD_PUBLIC_API_URL=https://api.taksklad.uz`;
+  - `TAKSKLAD_CORS_ORIGINS` расширен на `https://taksklad.uz`, `https://www.taksklad.uz`, `https://api.taksklad.uz`;
+  - Traefik-router frontend теперь принимает два host-а: основной и `www`;
+  - `frontend` и `backend-api` пересозданы на VDS.
+- Проверено:
+  - `https://api.taksklad.uz/health` - `status=ok`, `version=2.0.0`;
+  - прямой routed-test через IP VDS для `taksklad.uz` и `www.taksklad.uz` возвращает frontend-router `401 Basic`, значит серверная маршрутизация готова;
+  - текущий DNS: `api.taksklad.uz -> 135.181.245.84`, но `taksklad.uz` и `www.taksklad.uz` ещё смотрят на `91.213.99.99`.
+- Блокер:
+  - Hostmaster не принял известные пароли от PowerVPS/VMmanager, поэтому DNS A-записи через панель пока не изменены.
+- Что нужно в DNS:
+  - `taksklad.uz A 135.181.245.84`;
+  - `www.taksklad.uz A 135.181.245.84` или CNAME на `taksklad.uz`;
+  - `adminer.taksklad.uz A 135.181.245.84`, если нужен доступ к Adminer.

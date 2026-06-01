@@ -18,8 +18,8 @@ function Show-TakSkladBuildHelp {
     Write-Host "TakSklad Windows test archive builder"
     Write-Host ""
     Write-Host "Purpose:"
-    Write-Host "  Build a local Windows acceptance archive without GitHub Release,"
-    Write-Host "  without changing version.json and without push notifications."
+    Write-Host "  Build a local Windows acceptance archive."
+    Write-Host "  Public version.json and GitHub Release are handled by the release workflow."
     Write-Host ""
     Write-Host "Examples:"
     Write-Host '  .\tools\build_windows_test_archive.ps1'

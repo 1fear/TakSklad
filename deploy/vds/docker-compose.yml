@@ -63,7 +63,7 @@ services:
       TAKSKLAD_API_TOKEN: ${TAKSKLAD_API_TOKEN}
     labels:
       - traefik.enable=true
-      - traefik.http.routers.taksklad-frontend.rule=Host(`${TAKSKLAD_FRONTEND_HOST}`)
+      - traefik.http.routers.taksklad-frontend.rule=Host(`${TAKSKLAD_FRONTEND_HOST}`) || Host(`${TAKSKLAD_FRONTEND_WWW_HOST}`)
       - traefik.http.routers.taksklad-frontend.entrypoints=websecure
       - traefik.http.routers.taksklad-frontend.tls.certresolver=letsencrypt
       - traefik.http.routers.taksklad-frontend.priority=1
