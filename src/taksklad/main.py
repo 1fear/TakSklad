@@ -232,17 +232,35 @@ def fetch_sheet_data_with_sync(sync_skladbot=True):
 
         try:
             today_orders, sheet, all_existing_codes = fetch_google_sheet_data()
+            try:
+                google_queue_result = sync_pending_saves(sheet)
+                if google_queue_result.get("synced"):
+                    today_orders, sheet, all_existing_codes = fetch_google_sheet_data()
+            except Exception as exc:
+                logging.warning("Google pending save sync failed during backend refresh", exc_info=True)
+                google_queue_result = {
+                    "synced": 0,
+                    "failed": 1,
+                    "remaining": len(load_pending_saves()),
+                    "message": str(exc),
+                }
             primary_source = "google_sheets"
         except Exception:
             logging.warning("Google primary refresh failed, fallback to backend orders", exc_info=True)
             today_orders, sheet, all_existing_codes = fetch_backend_sheet_data()
             all_existing_codes.update(get_pending_backend_codes())
+            google_queue_result = {
+                "synced": 0,
+                "failed": 0,
+                "remaining": len(load_pending_saves()),
+            }
             primary_source = "backend_fallback"
 
         sync_result = {
-            "synced": 0,
-            "failed": 0,
-            "remaining": 0,
+            "synced": google_queue_result.get("synced", 0),
+            "failed": google_queue_result.get("failed", 0),
+            "remaining": google_queue_result.get("remaining", 0),
+            "dropped": google_queue_result.get("dropped", 0),
             "backend": backend_result,
             "sources": sources_result,
             "primary_source": primary_source,
@@ -909,7 +927,7 @@ class ScanningApp(
 
         self.backend_status_label = tk.Label(
             stats_frame_3,
-            text="Backend: ожидает проверки",
+            text="",
             bg=BG_CARD,
             fg=FG_MUTED,
             font=("Segoe UI", 10, "bold"),

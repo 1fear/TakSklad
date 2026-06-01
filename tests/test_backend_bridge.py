@@ -102,6 +102,38 @@ class BackendBridgeTests(unittest.TestCase):
         self.assertEqual(saved[0][0]["attempts"], 1)
         self.assertEqual(saved[0][0]["last_error"], "timeout")
 
+    def test_backend_queue_drops_non_retryable_complete_not_found(self):
+        pending = [{
+            "id": "event-1",
+            "type": "order_complete",
+            "payload": {
+                "order_id": "missing-order",
+            },
+        }]
+        saved = []
+
+        with (
+            mock.patch.object(backend_events, "backend_configured", return_value=True),
+            mock.patch.object(backend_events, "load_pending_backend_events", return_value=pending),
+            mock.patch.object(backend_events, "save_pending_backend_events", side_effect=lambda value: saved.append(value)),
+            mock.patch.object(
+                backend_events,
+                "complete_order",
+                side_effect=backend_client.BackendApiError(
+                    "Backend HTTP 404: Order not found",
+                    status_code=404,
+                    detail={"message": "Order not found"},
+                ),
+            ),
+        ):
+            result = backend_events.sync_pending_backend_events()
+
+        self.assertEqual(result["synced"], 0)
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(result["dropped"], 1)
+        self.assertEqual(result["remaining"], 0)
+        self.assertEqual(saved, [[]])
+
     def test_backend_queue_scan_deduplicates_and_exposes_pending_code(self):
         pending = []
         saved = []

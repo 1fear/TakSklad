@@ -106,6 +106,13 @@ def is_duplicate_scan_ack(exc):
     return "already scanned for this order item" in detail
 
 
+def is_stale_backend_event_ack(item, exc):
+    if not isinstance(exc, BackendApiError) or exc.retryable:
+        return False
+    detail = str(exc.detail or exc).lower()
+    return item.get("type") == "order_complete" and exc.status_code == 404 and "order not found" in detail
+
+
 def sync_pending_backend_events():
     if not backend_configured():
         return {"synced": 0, "failed": 0, "remaining": len(load_pending_backend_events()), "enabled": False}
@@ -116,6 +123,7 @@ def sync_pending_backend_events():
 
     synced = 0
     failed = 0
+    dropped = 0
     remaining = []
     for item in pending:
         try:
@@ -137,13 +145,19 @@ def sync_pending_backend_events():
             if item.get("type") == "scan" and is_duplicate_scan_ack(exc):
                 synced += 1
                 continue
+            if is_stale_backend_event_ack(item, exc):
+                dropped += 1
+                logging.warning(
+                    "Backend queue: dropped stale event %s: %s",
+                    item.get("type"),
+                    exc,
+                )
+                continue
             failed += 1
             item["attempts"] = int(item.get("attempts") or 0) + 1
             item["last_error"] = str(exc)
             item["updated_at"] = datetime.now().astimezone().isoformat()
             remaining.append(item)
-            if not exc.retryable:
-                logging.warning("Backend queue: non-retryable event error: %s", exc)
         except Exception as exc:
             failed += 1
             item["attempts"] = int(item.get("attempts") or 0) + 1
@@ -152,4 +166,4 @@ def sync_pending_backend_events():
             remaining.append(item)
 
     save_pending_backend_events(remaining)
-    return {"synced": synced, "failed": failed, "remaining": len(remaining), "enabled": True}
+    return {"synced": synced, "failed": failed, "remaining": len(remaining), "dropped": dropped, "enabled": True}

@@ -2,8 +2,8 @@ from datetime import datetime
 import tkinter as tk
 from tkinter import messagebox
 
-from .config import ACCENT, DANGER, ERROR_FG, FG_MUTED, SHEET_NAME, SPREADSHEET_ID
-from .backend_client import backend_configured, backend_enabled, backend_read_orders_enabled
+from .config import DANGER, ERROR_FG, FG_MUTED, SHEET_NAME, SPREADSHEET_ID
+from .backend_client import backend_configured, backend_enabled
 from .backend_events import load_pending_backend_events
 from .orders import order_group_key
 from .pending_store import load_pending_saves
@@ -14,9 +14,9 @@ from .telegram_service import send_daily_report_result_to_telegram
 
 def build_backend_status(sync_result=None, pending_backend=0):
     if not backend_enabled():
-        return "Backend: выключен", FG_MUTED
+        return "", FG_MUTED
     if not backend_configured():
-        return "Backend: не настроен", ERROR_FG
+        return "Синхронизация: сервер не настроен", ERROR_FG
 
     backend_result = {}
     if isinstance(sync_result, dict) and isinstance(sync_result.get("backend"), dict):
@@ -26,14 +26,12 @@ def build_backend_status(sync_result=None, pending_backend=0):
     remaining = max(parse_count(pending_backend), parse_count(backend_result.get("remaining")))
 
     if failed:
-        return f"Backend: ошибка, очередь {remaining}", ERROR_FG
+        return "Синхронизация: временная ошибка", ERROR_FG
     if remaining:
-        return f"Backend: очередь {remaining}", DANGER
+        return "Синхронизация: ожидает отправки", DANGER
     if backend_result.get("enabled"):
-        if backend_read_orders_enabled():
-            return "Backend: online, список из VDS", ACCENT
-        return "Backend: online, запись включена", ACCENT
-    return "Backend: ожидает проверки", FG_MUTED
+        return "", FG_MUTED
+    return "", FG_MUTED
 
 
 def parse_count(value):
@@ -55,10 +53,11 @@ class DayEndActionsMixin:
         pending_saves = len(load_pending_saves())
         pending_backend = len(load_pending_backend_events())
         self.active_orders_label.config(text=f"Активных заказов: {active_groups}")
-        if pending_backend:
-            self.pending_saves_label.config(text=f"Очередь записи: {pending_saves}, backend: {pending_backend}")
+        pending_total = pending_saves + pending_backend
+        if pending_total:
+            self.pending_saves_label.config(text="Синхронизация: ожидает отправки")
         else:
-            self.pending_saves_label.config(text=f"Очередь записи: {pending_saves}")
+            self.pending_saves_label.config(text="Синхронизация: OK")
         if hasattr(self, "backend_status_label"):
             backend_status_text, backend_status_color = build_backend_status(
                 getattr(self, "last_sync_result", {}),

@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 
@@ -23,7 +24,72 @@ def _int_env(name, default):
         return default
 
 
+def _bool_text(value):
+    return str(value or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+        "да",
+    }
+
+
+def _load_runtime_config(app_dir):
+    path = os.path.join(app_dir, ".env.taksklad-vds-2.0.generated.json")
+    try:
+        if not os.path.exists(path):
+            return {}
+        with open(path, "r", encoding="utf-8") as config_file:
+            data = json.load(config_file)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _runtime_config_value(runtime_config, *names):
+    for name in names:
+        value = runtime_config.get(name)
+        if value not in (None, ""):
+            return str(value).strip()
+    return ""
+
+
+def _string_setting(runtime_config, env_name, *runtime_names, default=""):
+    env_value = os.environ.get(env_name)
+    if env_value is not None:
+        return env_value.strip()
+    runtime_value = _runtime_config_value(runtime_config, *runtime_names)
+    return runtime_value or default
+
+
+def _bool_setting(runtime_config, env_name, *runtime_names, default=False):
+    env_value = os.environ.get(env_name)
+    if env_value is not None:
+        return _bool_text(env_value)
+    runtime_value = _runtime_config_value(runtime_config, *runtime_names)
+    if runtime_value:
+        return _bool_text(runtime_value)
+    return bool(default)
+
+
+def _int_setting(runtime_config, env_name, *runtime_names, default=0):
+    env_value = os.environ.get(env_name)
+    if env_value is not None:
+        try:
+            return int(env_value or default)
+        except (TypeError, ValueError):
+            return default
+    runtime_value = _runtime_config_value(runtime_config, *runtime_names)
+    if runtime_value:
+        try:
+            return int(runtime_value)
+        except (TypeError, ValueError):
+            return default
+    return default
+
+
 APP_DIR = get_app_dir()
+RUNTIME_CONFIG = _load_runtime_config(APP_DIR) if getattr(sys, "frozen", False) else {}
 CREDENTIALS_FILE = os.path.join(APP_DIR, "credentials.json")
 TAKSKLAD_DATA_FILE = os.path.join(APP_DIR, "TakSklad_data.json")
 # Логи приложения держим в подпапке docs/ рядом с changelog'ом и проектной
@@ -72,26 +138,36 @@ TELEGRAM_LOCK_TTL_SECONDS = 60
 TELEGRAM_LOCK_REFRESH_SECONDS = 20
 TELEGRAM_LOCK_RETRY_SECONDS = 15
 
-TAKSKLAD_BACKEND_ENABLED = os.environ.get("TAKSKLAD_BACKEND_ENABLED", "").strip().lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-    "да",
-}
-TAKSKLAD_BACKEND_READ_ORDERS_ENABLED = os.environ.get(
+TAKSKLAD_BACKEND_API_TOKEN = _string_setting(
+    RUNTIME_CONFIG,
+    "TAKSKLAD_BACKEND_API_TOKEN",
+    "TAKSKLAD_BACKEND_API_TOKEN",
+    "TAKSKLAD_API_TOKEN",
+)
+TAKSKLAD_BACKEND_BASE_URL = _string_setting(
+    RUNTIME_CONFIG,
+    "TAKSKLAD_BACKEND_BASE_URL",
+    "TAKSKLAD_BACKEND_BASE_URL",
+    default="https://api.taksklad.uz" if TAKSKLAD_BACKEND_API_TOKEN else "",
+).rstrip("/")
+TAKSKLAD_BACKEND_ENABLED = _bool_setting(
+    RUNTIME_CONFIG,
+    "TAKSKLAD_BACKEND_ENABLED",
+    "TAKSKLAD_BACKEND_ENABLED",
+    default=bool(TAKSKLAD_BACKEND_API_TOKEN),
+)
+TAKSKLAD_BACKEND_READ_ORDERS_ENABLED = _bool_setting(
+    RUNTIME_CONFIG,
     "TAKSKLAD_BACKEND_READ_ORDERS_ENABLED",
-    "",
-).strip().lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-    "да",
-}
-TAKSKLAD_BACKEND_BASE_URL = os.environ.get("TAKSKLAD_BACKEND_BASE_URL", "").strip().rstrip("/")
-TAKSKLAD_BACKEND_API_TOKEN = os.environ.get("TAKSKLAD_BACKEND_API_TOKEN", "").strip()
-TAKSKLAD_BACKEND_TIMEOUT_SECONDS = int(os.environ.get("TAKSKLAD_BACKEND_TIMEOUT_SECONDS", "8") or "8")
+    "TAKSKLAD_BACKEND_READ_ORDERS_ENABLED",
+    default=TAKSKLAD_BACKEND_ENABLED,
+)
+TAKSKLAD_BACKEND_TIMEOUT_SECONDS = _int_setting(
+    RUNTIME_CONFIG,
+    "TAKSKLAD_BACKEND_TIMEOUT_SECONDS",
+    "TAKSKLAD_BACKEND_TIMEOUT_SECONDS",
+    default=8,
+)
 
 ORDER_DATE_COLUMN = "Дата отгрузки"
 LEGACY_ORDER_DATE_COLUMN = "Дата получения заказа"

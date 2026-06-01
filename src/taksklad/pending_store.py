@@ -191,6 +191,7 @@ def sync_pending_saves(sheet=None):
 
     synced = 0
     failed = 0
+    dropped = 0
     remaining = []
     for item in pending:
         order = item.get("order", {})
@@ -201,10 +202,16 @@ def sync_pending_saves(sheet=None):
             write_scan_backup("pending_save_synced", order, codes=codes)
             continue
 
+        if not is_retryable_save_error(message):
+            dropped += 1
+            logging.warning("Очередь Google Sheets: удалена неретрабельная запись: %s", message)
+            write_scan_backup("pending_save_dropped", order, codes=codes)
+            continue
+
         failed += 1
         item["last_error"] = message
         item["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         remaining.append(item)
 
     save_pending_saves(remaining)
-    return {"synced": synced, "failed": failed, "remaining": len(remaining)}
+    return {"synced": synced, "failed": failed, "remaining": len(remaining), "dropped": dropped}

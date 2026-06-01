@@ -91,42 +91,42 @@ class DesktopUiContractTests(unittest.TestCase):
         stats_source = inspect.getsource(app_day_end.DayEndActionsMixin.update_stats_display)
 
         self.assertIn("self.backend_status_label", build_source)
-        self.assertIn("Backend: ожидает проверки", build_source)
+        self.assertNotIn("Backend: ожидает проверки", build_source)
         self.assertIn("build_backend_status", stats_source)
+        self.assertIn("Синхронизация: OK", stats_source)
 
     def test_backend_status_text_covers_disabled_online_pending_and_error(self):
         with mock.patch.object(app_day_end, "backend_enabled", return_value=False):
             text, _ = build_backend_status()
-        self.assertEqual(text, "Backend: выключен")
+        self.assertEqual(text, "")
 
         with (
             mock.patch.object(app_day_end, "backend_enabled", return_value=True),
             mock.patch.object(app_day_end, "backend_configured", return_value=False),
         ):
             text, _ = build_backend_status()
-        self.assertEqual(text, "Backend: не настроен")
+        self.assertEqual(text, "Синхронизация: сервер не настроен")
 
         with (
             mock.patch.object(app_day_end, "backend_enabled", return_value=True),
             mock.patch.object(app_day_end, "backend_configured", return_value=True),
-            mock.patch.object(app_day_end, "backend_read_orders_enabled", return_value=True),
         ):
             text, _ = build_backend_status({"backend": {"enabled": True}})
-        self.assertEqual(text, "Backend: online, список из VDS")
+        self.assertEqual(text, "")
 
         with (
             mock.patch.object(app_day_end, "backend_enabled", return_value=True),
             mock.patch.object(app_day_end, "backend_configured", return_value=True),
         ):
             text, _ = build_backend_status({"backend": {"enabled": True, "remaining": 1}}, pending_backend=2)
-        self.assertEqual(text, "Backend: очередь 2")
+        self.assertEqual(text, "Синхронизация: ожидает отправки")
 
         with (
             mock.patch.object(app_day_end, "backend_enabled", return_value=True),
             mock.patch.object(app_day_end, "backend_configured", return_value=True),
         ):
             text, _ = build_backend_status({"backend": {"enabled": True, "failed": 1, "remaining": 3}})
-        self.assertEqual(text, "Backend: ошибка, очередь 3")
+        self.assertEqual(text, "Синхронизация: временная ошибка")
 
 
 if __name__ == "__main__":

@@ -3495,3 +3495,56 @@ cd /opt/taksklad/app
   - acceptance нашёл старый рассинхрон по одной позиции: backend видел 2 отсканированных блока, Google Sheets видел 1;
   - чтобы не потерять КИЗ, позиция была один раз принудительно дописана backend -> Google;
   - после этого Google и backend снова совпали.
+
+### Windows Ready Archive 2.0.0
+
+- Цель: выдать готовый Windows-архив приложения с рабочими JSON-файлами внутри пакета.
+- Что сделано:
+  - обновлён пакет `outputs/windows_ready/TakSklad-2.0.0-win-ready`;
+  - рядом с `TakSklad.exe` добавлены рабочие runtime JSON: `credentials.json`, `TakSklad_data.json`, `telegram_settings.json`, `version.json`, `.env.taksklad-vds-2.0.generated.json`;
+  - `START_BACKEND.ps1` берёт backend service token из `.env.taksklad-vds-2.0.generated.json`, если файл лежит в архиве;
+  - в README пакета зафиксировано, что первый запуск Windows-сборки сам создаёт ярлык `TakSklad` на рабочем столе;
+  - пересобран архив `outputs/windows_ready/TakSklad-2.0.0-win-ready.zip`;
+  - обновлена внешняя SHA256-сумма `outputs/windows_ready/TakSklad-2.0.0-win-ready.zip.sha256.txt`.
+- Проверено:
+  - `unzip -t outputs/windows_ready/TakSklad-2.0.0-win-ready.zip` - OK;
+  - `shasum -a 256 -c outputs/windows_ready/TakSklad-2.0.0-win-ready.zip.sha256.txt` - OK;
+  - состав архива проверен: exe, запускные PowerShell-скрипты и runtime JSON присутствуют.
+- Важно:
+  - архив содержит рабочие ключи и токены, его нельзя отправлять посторонним.
+
+### Desktop Sync Queue Cleanup
+
+- Причина: на рабочем экране склада появилась техническая строка `Backend: ошибка, очередь 1`. В локальной macOS-сборке лежал старый `order_complete`, который backend уже не мог принять и отвечал `404 Order not found`. Приложение считало это ошибкой и повторяло событие сотни раз.
+- Что исправлено:
+  - backend-очередь больше не держит бесконечно устаревший `order_complete`, если backend вернул `404 Order not found`;
+  - Google-очередь больше не держит бесконечно записи с неретрабельной ошибкой вроде `Не найдена строка заказа для записи кодов`;
+  - при backend-refresh теперь также обрабатывается локальная Google-очередь, чтобы старые отложенные записи не висели в интерфейсе;
+  - рабочий экран склада больше не показывает технические слова `backend` и `очередь записи`, вместо этого выводится `Синхронизация: OK` или понятное сообщение о временной синхронизации.
+- Что очищено:
+  - в текущей macOS-сборке `outputs/mac_ready/TakSklad-2.0.0-mac-ready/TakSklad.app/Contents/MacOS/TakSklad_data.json` удалены 4 старые Google pending-записи и 1 устаревший backend pending-event;
+  - в корневом `TakSklad_data.json` и Windows-ready JSON pending-очереди проверены, сейчас пустые.
+- Проверено:
+  - `python -m unittest tests.test_backend_bridge tests.test_pending_store tests.test_desktop_ui_contract tests.test_refresh_fallback tests.test_desktop_diagnostics` - 27 тестов OK;
+  - `python -m unittest discover -s tests` - 227 тестов OK;
+  - `python -m compileall` по изменённым модулям - OK;
+  - macOS-приложение пересобрано через PyInstaller и обновлено в `outputs/mac_ready/TakSklad-2.0.0-mac-ready`;
+  - `outputs/mac_ready/TakSklad-2.0.0-mac-ready.zip` пересобран и проверен через `unzip -t`;
+  - `outputs/windows_ready/TakSklad-2.0.0-win-ready.zip` пересобран с очищенными JSON и проверен через SHA256.
+
+### Direct EXE Backend Runtime Config
+
+- Причина: складскому ПК не должен быть нужен `START_BACKEND.ps1`. Оператор должен запускать обычный `TakSklad.exe` или ярлык на рабочем столе.
+- Что изменено:
+  - собранная версия приложения теперь читает `.env.taksklad-vds-2.0.generated.json` рядом с `TakSklad.exe`;
+  - если в JSON есть `TAKSKLAD_API_TOKEN`, приложение само включает backend-режим, чтение заказов с VDS и URL `https://api.taksklad.uz`;
+  - переменные окружения остаются выше по приоритету, то есть скрипты и ручной запуск всё ещё могут переопределить настройки;
+  - локальная разработка из исходников не читает этот JSON автоматически, чтобы тесты и VS Code не включали backend случайно.
+- Результат для склада:
+  - рабочий запуск должен быть через `TakSklad.exe`;
+  - `START_BACKEND.ps1` остаётся только как диагностический/приёмочный helper.
+- Проверено:
+  - добавлены тесты `tests/test_backend_runtime_config.py`;
+  - `python -m unittest tests.test_backend_runtime_config tests.test_startup_check tests.test_backend_bridge tests.test_pending_store tests.test_desktop_ui_contract tests.test_refresh_fallback` - 32 теста OK.
+- Важно:
+  - чтобы это реально попало в Windows `TakSklad.exe`, нужна новая Windows-сборка через GitHub Actions или Windows-машину.
