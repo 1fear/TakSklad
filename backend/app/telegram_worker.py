@@ -135,6 +135,33 @@ def json_dumps(value):
     return json.dumps(value, ensure_ascii=False)
 
 
+def summarize_active_orders_by_date(orders):
+    summary = {}
+    for order in orders or []:
+        date_key = normalize_text(order.get("order_date")) or "Без даты"
+        bucket = summary.setdefault(date_key, {
+            "orders": 0,
+            "items": 0,
+            "planned_blocks": 0,
+            "scanned_blocks": 0,
+            "remaining_blocks": 0,
+            "missing_skladbot": 0,
+            "total_price": 0,
+        })
+        bucket["orders"] += 1
+        if not normalize_text(order.get("skladbot_request_number")) and not normalize_text(order.get("skladbot_request_id")):
+            bucket["missing_skladbot"] += 1
+        for item in order.get("items") or []:
+            planned = parse_int(item.get("quantity_blocks"))
+            scanned = parse_int(item.get("scanned_blocks"))
+            bucket["items"] += 1
+            bucket["planned_blocks"] += planned
+            bucket["scanned_blocks"] += scanned
+            bucket["remaining_blocks"] += max(0, planned - scanned)
+            bucket["total_price"] += parse_int(item.get("line_total"))
+    return summary
+
+
 class TelegramWorker:
     def __init__(self):
         self.token = normalize_text(os.environ.get("TELEGRAM_BOT_TOKEN"))
@@ -406,19 +433,54 @@ class TelegramWorker:
 
     def send_status_report(self, chat_id):
         payload = self.backend_get("/api/v1/reports/day")
+        active_orders = self.backend_get("/api/v1/orders/active")
         totals = payload.get("totals") or {}
         report_date = display_date(payload.get("report_date")) or "сегодня"
+        active_summary = summarize_active_orders_by_date(active_orders if isinstance(active_orders, list) else [])
         lines = [
             f"Статус TakSklad за {report_date}",
             "",
-            f"Заказов: {totals.get('orders', 0)}",
-            f"Выполнено заказов: {totals.get('completed_orders', 0)}",
-            f"Активных заказов: {totals.get('active_orders', 0)}",
-            f"Блоков: {totals.get('scanned_blocks', 0)} / {totals.get('planned_blocks', 0)}",
-            f"Осталось блоков: {totals.get('remaining_blocks', 0)}",
-            f"КИЗов: {totals.get('scan_codes', 0)}",
-            f"Сумма: {format_money(totals.get('total_price', 0))} сум",
+            f"Сегодня выполнено заказов: {totals.get('completed_orders', 0)}",
+            f"КИЗов сегодня: {totals.get('scanned_today', 0)}",
+            f"Всего КИЗов в отчёте: {totals.get('scan_codes', 0)}",
         ]
+        if not active_summary:
+            lines.extend(["", "Активных заказов для КИЗов нет."])
+            self.safe_send_message(chat_id, "\n".join(lines))
+            return True
+
+        total_active = {
+            "orders": 0,
+            "items": 0,
+            "planned_blocks": 0,
+            "scanned_blocks": 0,
+            "remaining_blocks": 0,
+            "missing_skladbot": 0,
+            "total_price": 0,
+        }
+        lines.extend(["", "Активные заказы для КИЗов:"])
+        for date_key, values in sorted(active_summary.items()):
+            for key in total_active:
+                total_active[key] += values[key]
+            lines.append(
+                f"- {display_date(date_key) or date_key}: "
+                f"{values['orders']} заказов, "
+                f"{values['scanned_blocks']}/{values['planned_blocks']} блоков, "
+                f"осталось {values['remaining_blocks']}, "
+                f"без SkladBot {values['missing_skladbot']}, "
+                f"{format_money(values['total_price'])} сум"
+            )
+
+        lines.extend([
+            "",
+            "Итого активно:",
+            f"Заказов: {total_active['orders']}",
+            f"Позиций: {total_active['items']}",
+            f"Блоков: {total_active['scanned_blocks']} / {total_active['planned_blocks']}",
+            f"Осталось блоков: {total_active['remaining_blocks']}",
+            f"Без номера SkladBot: {total_active['missing_skladbot']}",
+            f"Сумма активных заказов: {format_money(total_active['total_price'])} сум",
+        ])
         self.safe_send_message(chat_id, "\n".join(lines))
         return True
 

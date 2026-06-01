@@ -3432,3 +3432,17 @@ cd /opt/taksklad/app
   - локально `./.venv/bin/python -m unittest tests.test_skladbot_coverage_diagnostic tests.test_vds_acceptance_scripts tests.test_release_preflight tests.test_acceptance_excel_generator` - 22 теста OK;
   - VDS `./deploy/vds/verify_skladbot_coverage.sh` - `status=ok`, `active_orders=7`, `numbered_orders=7`, `missing_orders=0`;
   - VDS `./deploy/vds/acceptance_status.sh` - общий `status=ok`, `skladbot_coverage.status=ok`.
+
+### Telegram Status Shows Active Shipment Batches
+
+- Причина: кнопка Telegram `Статус` не должна зависеть только от текущей календарной даты. Если склад сегодня собирает заказы на завтра/послезавтра, менеджеру нужен статус именно активной партии по датам отгрузки.
+- Решение:
+  - `Статус` по-прежнему показывает дневные показатели по КИЗам;
+  - дополнительно worker читает `/api/v1/orders/active`;
+  - активные заказы группируются по `Дата отгрузки`;
+  - по каждой дате показываются заказы, прогресс блоков, остаток, сумма и количество заказов без номера SkladBot;
+  - общий итог активной партии показывает количество заказов, позиций, блоков, остаток, сумму и SkladBot-пробелы.
+- Проверено:
+  - локально `./.venv/bin/python -m unittest tests.test_backend_telegram_import` - 27 тестов OK;
+  - локально `./.venv/bin/python -m compileall -q backend/app/telegram_worker.py tests/test_backend_telegram_import.py` - OK;
+  - локально `git diff --check` - OK.

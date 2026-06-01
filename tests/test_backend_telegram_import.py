@@ -17,6 +17,7 @@ from backend.app.telegram_worker import (
     TELEGRAM_KIZ_FILE_PREFIX,
     TelegramWorker,
     display_date,
+    summarize_active_orders_by_date,
     telegram_bot_commands,
 )
 
@@ -272,22 +273,44 @@ class BackendTelegramImportTests(unittest.TestCase):
         worker = TelegramWorker.__new__(TelegramWorker)
         worker.allowed_chat_ids = set()
         messages = []
+        calls = []
 
         def fake_backend_get(path, params=None):
-            self.assertEqual(path, "/api/v1/reports/day")
-            return {
-                "report_date": "2026-05-31",
-                "totals": {
-                    "orders": 8,
-                    "completed_orders": 3,
-                    "active_orders": 5,
-                    "planned_blocks": 20,
-                    "scanned_blocks": 7,
-                    "remaining_blocks": 13,
-                    "scan_codes": 7,
-                    "total_price": 4_800_000,
-                },
-            }
+            calls.append(path)
+            if path == "/api/v1/reports/day":
+                return {
+                    "report_date": "2026-05-31",
+                    "totals": {
+                        "orders": 8,
+                        "completed_orders": 3,
+                        "active_orders": 5,
+                        "planned_blocks": 20,
+                        "scanned_blocks": 7,
+                        "scanned_today": 4,
+                        "remaining_blocks": 13,
+                        "scan_codes": 7,
+                        "total_price": 4_800_000,
+                    },
+                }
+            if path == "/api/v1/orders/active":
+                return [
+                    {
+                        "order_date": "2026-06-02",
+                        "skladbot_request_number": "WH-R-1",
+                        "items": [
+                            {"quantity_blocks": 2, "scanned_blocks": 1, "line_total": 480000},
+                        ],
+                    },
+                    {
+                        "order_date": "2026-06-03",
+                        "skladbot_request_number": "",
+                        "skladbot_request_id": "",
+                        "items": [
+                            {"quantity_blocks": 3, "scanned_blocks": 0, "line_total": 720000},
+                        ],
+                    },
+                ]
+            raise AssertionError(path)
 
         def fake_send(chat_id, text, reply_markup=None):
             messages.append((chat_id, text, reply_markup))
@@ -304,9 +327,40 @@ class BackendTelegramImportTests(unittest.TestCase):
         })
 
         self.assertEqual(messages[0][0], "123")
+        self.assertEqual(calls, ["/api/v1/reports/day", "/api/v1/orders/active"])
         self.assertIn("Статус TakSklad за 31.05.2026", messages[0][1])
-        self.assertIn("Заказов: 8", messages[0][1])
-        self.assertIn("Блоков: 7 / 20", messages[0][1])
+        self.assertIn("КИЗов сегодня: 4", messages[0][1])
+        self.assertIn("02.06.2026: 1 заказов, 1/2 блоков", messages[0][1])
+        self.assertIn("03.06.2026: 1 заказов, 0/3 блоков", messages[0][1])
+        self.assertIn("Без номера SkladBot: 1", messages[0][1])
+
+    def test_status_summary_groups_active_orders_by_shipment_date(self):
+        summary = summarize_active_orders_by_date([
+            {
+                "order_date": "2026-06-02",
+                "skladbot_request_number": "WH-R-1",
+                "items": [
+                    {"quantity_blocks": 2, "scanned_blocks": 1, "line_total": 480000},
+                    {"quantity_blocks": 1, "scanned_blocks": 1, "line_total": 240000},
+                ],
+            },
+            {
+                "order_date": "2026-06-02",
+                "skladbot_request_number": "",
+                "skladbot_request_id": "",
+                "items": [
+                    {"quantity_blocks": 3, "scanned_blocks": 0, "line_total": 720000},
+                ],
+            },
+        ])
+
+        self.assertEqual(summary["2026-06-02"]["orders"], 2)
+        self.assertEqual(summary["2026-06-02"]["items"], 3)
+        self.assertEqual(summary["2026-06-02"]["planned_blocks"], 6)
+        self.assertEqual(summary["2026-06-02"]["scanned_blocks"], 2)
+        self.assertEqual(summary["2026-06-02"]["remaining_blocks"], 4)
+        self.assertEqual(summary["2026-06-02"]["missing_skladbot"], 1)
+        self.assertEqual(summary["2026-06-02"]["total_price"], 1_440_000)
 
     def test_telegram_worker_handles_inline_logistics_callback(self):
         worker = TelegramWorker.__new__(TelegramWorker)
