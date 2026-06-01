@@ -3346,4 +3346,6 @@ cd /opt/taksklad/app
 - Проверено:
   - `./.venv/bin/python -m unittest tests.test_release_preflight tests.test_vds_acceptance_scripts tests.test_acceptance_excel_generator` - 19 тестов OK;
   - `./.venv/bin/python tools/release_preflight.py --skip-network` - `status=ok`;
-  - `rg no_push_notifications` по preflight/acceptance runtime-файлам не нашёл старых требований.
+  - `rg no_push_notifications` по preflight/acceptance runtime-файлам не нашёл старых требований;
+  - VDS `python3 tools/release_preflight.py --skip-network` - `status=ok`;
+  - VDS `./deploy/vds/acceptance_status.sh` - общий `status=ok`, `release_go_no_go.status=no_go` ожидаемо до ручной приёмки.
