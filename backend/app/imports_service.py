@@ -1,14 +1,18 @@
 import hashlib
 import json
+import logging
 from datetime import date, datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from .google_sheets_exporter import append_import_records_to_google_sheets, make_sheet_record
 from .models import AuditLog, ImportFile, ImportJob, Order, OrderItem
 from .orders_service import STATUS_COMPLETED, STATUS_NOT_COMPLETED
 from .schemas import ImportCreate, ImportRead, ImportResult
 
+
+logger = logging.getLogger(__name__)
 
 ORDER_DATE_FIELDS = ("Дата отгрузки", "Дата получения заказа", "order_date", "date")
 PAYMENT_FIELDS = ("Тип оплаты", "payment_type", "payment")
@@ -45,6 +49,8 @@ def create_import(db: Session, payload: ImportCreate):
     invalid_rows = 0
     orders_created = 0
     items_created = 0
+    backend_address_updates = 0
+    google_sheets_records = []
 
     import_job = ImportJob(
         source=normalize_text(payload.source) or "excel",
@@ -75,7 +81,7 @@ def create_import(db: Session, payload: ImportCreate):
                 size_bytes=0,
             ))
 
-    order_by_key, item_keys = load_existing_import_keys(db)
+    order_by_key, item_keys, source_import_ids, existing_items = load_existing_import_keys(db)
     for index, raw_row in enumerate(payload.rows, start=1):
         try:
             row = normalize_import_row(raw_row)
@@ -84,8 +90,19 @@ def create_import(db: Session, payload: ImportCreate):
             errors.append(f"row {index}: {exc}")
             continue
 
-        if row["item_key"] in item_keys:
+        google_sheets_records.append(
+            make_sheet_record(
+                row,
+                item_key=row["item_key"],
+                filename=payload.filename or "",
+            )
+        )
+
+        existing_item = find_existing_item_for_row(row, existing_items)
+        if existing_item is not None:
             duplicate_rows += 1
+            if update_existing_order_address(existing_item.order, row):
+                backend_address_updates += 1
             continue
 
         order = order_by_key.get(row["order_key"])
@@ -127,6 +144,7 @@ def create_import(db: Session, payload: ImportCreate):
                 "source_import_id": row["source_import_id"],
                 "source_file": row["source_file"],
                 "source_row": row["source_row"],
+                "backend_import_id": str(import_job.id),
                 "block_price": row["block_price"],
                 "imported_unit_price": row["imported_unit_price"],
                 "imported_line_total": row["imported_line_total"],
@@ -136,6 +154,8 @@ def create_import(db: Session, payload: ImportCreate):
             },
         ))
         item_keys.add(row["item_key"])
+        if row["source_import_id"]:
+            source_import_ids.add(row["source_import_id"])
         items_created += 1
 
     status = "completed"
@@ -152,6 +172,7 @@ def create_import(db: Session, payload: ImportCreate):
         "items_created": items_created,
         "duplicate_rows": duplicate_rows,
         "invalid_rows": invalid_rows,
+        "backend_address_updates": backend_address_updates,
         "errors": errors,
     }
     db.add(AuditLog(
@@ -160,6 +181,13 @@ def create_import(db: Session, payload: ImportCreate):
         entity_id=str(import_job.id),
         payload=import_job.raw_payload,
     ))
+    db.commit()
+    db.refresh(import_job)
+    google_sheets_result = export_import_records_to_google_sheets(google_sheets_records)
+    import_job.raw_payload = {
+        **(import_job.raw_payload or {}),
+        "google_sheets": google_sheets_result,
+    }
     db.commit()
     db.refresh(import_job)
     return ImportResult(
@@ -173,7 +201,27 @@ def create_import(db: Session, payload: ImportCreate):
         duplicate_rows=duplicate_rows,
         invalid_rows=invalid_rows,
         errors=errors,
+        backend_address_updates=backend_address_updates,
+        google_sheets_status=google_sheets_result.get("status", ""),
+        google_sheets_imported=google_sheets_result.get("imported", 0),
+        google_sheets_duplicates=google_sheets_result.get("duplicates", 0),
+        google_sheets_updated=google_sheets_result.get("updated", 0),
+        google_sheets_error=google_sheets_result.get("error", ""),
     )
+
+
+def export_import_records_to_google_sheets(records):
+    try:
+        return append_import_records_to_google_sheets(records)
+    except Exception as exc:
+        logger.exception("Google Sheets export failed after backend import")
+        return {
+            "status": "error",
+            "imported": 0,
+            "duplicates": 0,
+            "updated": 0,
+            "error": str(exc),
+        }
 
 
 def list_imports(db: Session):
@@ -196,15 +244,55 @@ def load_existing_import_keys(db: Session):
     orders = db.execute(select(Order).options(selectinload(Order.items))).scalars().all()
     order_by_key = {}
     item_keys = set()
+    source_import_ids = set()
+    existing_items = {
+        "item_key": {},
+        "source_import_id": {},
+    }
     for order in orders:
         order_key = (order.raw_payload or {}).get("order_key") or order.external_id
         if order_key:
             order_by_key[order_key] = order
         for item in order.items:
-            item_key = (item.raw_payload or {}).get("item_key")
+            raw_payload = item.raw_payload or {}
+            item_key = raw_payload.get("item_key")
             if item_key:
                 item_keys.add(item_key)
-    return order_by_key, item_keys
+                existing_items["item_key"].setdefault(item_key, item)
+            source_import_id = raw_payload.get("source_import_id")
+            if source_import_id:
+                source_import_ids.add(source_import_id)
+                existing_items["source_import_id"].setdefault(source_import_id, item)
+    return order_by_key, item_keys, source_import_ids, existing_items
+
+
+def find_existing_item_for_row(row, existing_items):
+    source_import_id = row.get("source_import_id")
+    if source_import_id:
+        item = existing_items["source_import_id"].get(source_import_id)
+        if item is not None:
+            return item
+    item_key = row.get("item_key")
+    if item_key:
+        return existing_items["item_key"].get(item_key)
+    return None
+
+
+def update_existing_order_address(order, row):
+    if order is None:
+        return False
+    new_address = normalize_text(row.get("address"))
+    if not is_real_address(new_address) or not is_missing_address(order.address):
+        return False
+
+    order.address = new_address
+    raw_payload = dict(order.raw_payload or {})
+    if row.get("coordinates"):
+        raw_payload["coordinates"] = row["coordinates"]
+    raw_payload["address_backfilled_at"] = datetime.now().isoformat(timespec="seconds")
+    raw_payload["address_backfill_source"] = normalize_text(row.get("source_file")) or "import"
+    order.raw_payload = raw_payload
+    return True
 
 
 def normalize_import_row(raw_row):
@@ -303,6 +391,20 @@ def normalize_text(value):
     if value is None:
         return ""
     return str(value).strip()
+
+
+def normalize_lookup_text(value):
+    return normalize_text(value).casefold().replace("ё", "е")
+
+
+def is_missing_address(value):
+    text = normalize_lookup_text(value)
+    return not text or text == "адрес не указан"
+
+
+def is_real_address(value):
+    text = normalize_lookup_text(value)
+    return bool(text and text != "адрес не указан" and not text.startswith("координаты "))
 
 
 def parse_int(value):

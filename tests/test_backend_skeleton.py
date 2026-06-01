@@ -42,12 +42,14 @@ class BackendSkeletonTests(unittest.TestCase):
             "DATABASE_URL": "postgresql+psycopg://user:secret@localhost:5432/db",
             "TAKSKLAD_API_TOKEN": "token",
             "TAKSKLAD_CORS_ORIGINS": "https://one.example, https://two.example",
+            "TAKSKLAD_TIMEZONE": "Asia/Tashkent",
         })
 
         self.assertEqual(settings.service_name, "test-service")
         self.assertEqual(settings.environment, "test")
         self.assertTrue(settings.api_auth_enabled)
         self.assertEqual(settings.cors_origins, ("https://one.example", "https://two.example"))
+        self.assertEqual(settings.timezone, "Asia/Tashkent")
         self.assertEqual(
             settings_module.mask_secret_url(settings.database_url),
             "postgresql+psycopg://user:***@localhost:5432/db",

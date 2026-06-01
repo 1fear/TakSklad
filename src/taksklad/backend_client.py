@@ -58,7 +58,7 @@ def make_backend_headers():
     return headers
 
 
-def backend_request(method, path, payload=None):
+def backend_request(method, path, payload=None, timeout=None):
     if not TAKSKLAD_BACKEND_BASE_URL:
         raise BackendApiError("Backend URL не настроен")
 
@@ -74,7 +74,7 @@ def backend_request(method, path, payload=None):
         method=method,
     )
     try:
-        with open_https_url(request, timeout=TAKSKLAD_BACKEND_TIMEOUT_SECONDS) as response:
+        with open_https_url(request, timeout=timeout or TAKSKLAD_BACKEND_TIMEOUT_SECONDS) as response:
             raw = response.read().decode("utf-8")
             if not raw:
                 return {}
@@ -115,6 +115,15 @@ def format_backend_error(status_code, detail):
 
 def fetch_active_orders():
     return backend_request("GET", "/api/v1/orders/active")
+
+
+def sync_backend_sources(sync_skladbot=True, wait_skladbot=True):
+    query = urllib.parse.urlencode({
+        "skladbot": "1" if sync_skladbot else "0",
+        "wait_skladbot": "1" if wait_skladbot and sync_skladbot else "0",
+    })
+    timeout = max(TAKSKLAD_BACKEND_TIMEOUT_SECONDS, 45)
+    return backend_request("POST", f"/api/v1/sync/sources?{query}", timeout=timeout)
 
 
 def import_orders(records, filename=None, source="excel"):

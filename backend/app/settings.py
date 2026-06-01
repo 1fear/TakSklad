@@ -13,6 +13,7 @@ class Settings:
     database_url: str
     api_token: str
     cors_origins: tuple[str, ...]
+    timezone: str
 
     @property
     def api_auth_enabled(self):
@@ -45,4 +46,5 @@ def load_settings(environ=None):
         ),
         api_token=environ.get("TAKSKLAD_API_TOKEN", "").strip(),
         cors_origins=parse_csv(environ.get("TAKSKLAD_CORS_ORIGINS", "")),
+        timezone=environ.get("TAKSKLAD_TIMEZONE", "Asia/Tashkent").strip() or "Asia/Tashkent",
     )

@@ -10,6 +10,7 @@ from tools.release_preflight import (
     VERSION_JSON,
     check_acceptance_kit,
     check_required_files,
+    check_update_manifest_downloads,
     check_version_json,
     check_windows_acceptance_flow,
     run_checks,
@@ -36,9 +37,10 @@ class ReleasePreflightTests(unittest.TestCase):
             "excel_sha256": sha256_file(excel_path),
             "expected": {"orders": 1},
             "safety": {
-                "no_version_json_change": True,
-                "no_github_release": True,
-                "no_push_notifications": True,
+                "version_json_staged_rollout": True,
+                "github_release_published": True,
+                "push_notifications_allowed": True,
+                "mandatory_update_disabled": True,
                 "contains_secrets": False,
             },
         }
@@ -56,6 +58,7 @@ class ReleasePreflightTests(unittest.TestCase):
                     "mandatory": False,
                     "download_url": "",
                     "download_url_onedir": "",
+                    "package_type": "",
                 },
                 ensure_ascii=False,
             ),
@@ -87,19 +90,62 @@ class ReleasePreflightTests(unittest.TestCase):
                 "ACCEPTANCE_RESULTS.md\n"
                 "Assert-TestPackageDoesNotContainLocalSecrets\n"
                 "version.json has local changes\n"
-                "stable 1.1.7\n"
+                "safe non-mandatory 2.0.0 rollout manifest\n"
             )
         return "ok"
 
     def test_preflight_passes_without_network_for_valid_fixture(self):
         tmp_dir, root = self.make_root()
         with tmp_dir:
+            (root / VERSION_JSON).write_text(
+                json.dumps(
+                    {
+                        "latest_version": "2.0.0",
+                        "min_supported_version": "1.1.7",
+                        "mandatory": False,
+                        "package_type": "onefile_exe",
+                        "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.0/TakSklad.exe",
+                        "sha256": "a" * 64,
+                        "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.0/TakSklad-windows-x64.zip",
+                        "sha256_onedir": "b" * 64,
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
             summary = run_checks(root, health_url="https://example.invalid/health", timeout_seconds=1, skip_network=True)
 
         self.assertEqual(summary["status"], "ok")
         self.assertTrue(all(check["ok"] for check in summary["checks"]))
 
-    def test_version_json_rejects_rollout_manifest_before_acceptance(self):
+    def test_version_json_rejects_bad_url_and_sha_format(self):
+        tmp_dir, root = self.make_root()
+        with tmp_dir:
+            (root / VERSION_JSON).write_text(
+                json.dumps(
+                    {
+                        "latest_version": "2.0.0",
+                        "min_supported_version": "1.1.7",
+                        "mandatory": False,
+                        "package_type": "onefile_exe",
+                        "download_url": "http://example.com/TakSklad.exe",
+                        "sha256": "A" * 64,
+                        "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v1.1.7/TakSklad.zip",
+                        "sha256_onedir": "short",
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            check = check_version_json(root)
+
+        self.assertFalse(check["ok"])
+        self.assertIn("download_url must be an HTTPS release URL for v2.0.0", check["problems"])
+        self.assertIn("download_url_onedir must be an HTTPS release URL for v2.0.0", check["problems"])
+        self.assertIn("sha256 must be a lowercase SHA256 hex digest", check["problems"])
+        self.assertIn("sha256_onedir must be a lowercase SHA256 hex digest", check["problems"])
+
+    def test_version_json_rejects_forced_or_incomplete_rollout_manifest(self):
         tmp_dir, root = self.make_root()
         with tmp_dir:
             (root / VERSION_JSON).write_text(
@@ -117,8 +163,100 @@ class ReleasePreflightTests(unittest.TestCase):
             check = check_version_json(root)
 
         self.assertFalse(check["ok"])
-        self.assertIn("latest_version is not pinned to 1.1.7", check["problems"])
-        self.assertIn("download_url fields must stay empty before rollout", check["problems"])
+        self.assertIn("min_supported_version must stay 1.1.7 for non-forced rollout", check["problems"])
+        self.assertIn("mandatory must be false during staged rollout", check["problems"])
+        self.assertIn("onefile download_url and sha256 must be set", check["problems"])
+        self.assertIn("onedir download_url_onedir and sha256_onedir must be set", check["problems"])
+
+    def test_verify_downloads_hashes_update_artifacts(self):
+        tmp_dir, root = self.make_root()
+        onefile = b"onefile artifact"
+        onedir = b"onedir artifact"
+        onefile_sha = sha256_file(self.write_bytes(root / "onefile.bin", onefile))
+        onedir_sha = sha256_file(self.write_bytes(root / "onedir.bin", onedir))
+        with tmp_dir:
+            (root / VERSION_JSON).write_text(
+                json.dumps(
+                    {
+                        "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.0/TakSklad.exe",
+                        "sha256": onefile_sha,
+                        "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.0/TakSklad-windows-x64.zip",
+                        "sha256_onedir": onedir_sha,
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            class FakeResponse:
+                def __init__(self, chunks):
+                    self.chunks = list(chunks)
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_args):
+                    return False
+
+                def read(self, _size):
+                    if not self.chunks:
+                        return b""
+                    return self.chunks.pop(0)
+
+            def fake_urlopen(request, timeout):
+                self.assertEqual(timeout, 3)
+                url = request.full_url
+                if url.endswith("TakSklad.exe"):
+                    return FakeResponse([onefile])
+                if url.endswith("TakSklad-windows-x64.zip"):
+                    return FakeResponse([onedir])
+                raise AssertionError(url)
+
+            import unittest.mock
+
+            with unittest.mock.patch("tools.release_preflight.urllib.request.urlopen", side_effect=fake_urlopen):
+                check = check_update_manifest_downloads(root, timeout_seconds=3)
+
+        self.assertTrue(check["ok"], check.get("problems"))
+        self.assertEqual([asset["actual_sha256"] for asset in check["assets"]], [onefile_sha, onedir_sha])
+
+    def test_verify_downloads_reports_sha_mismatch(self):
+        tmp_dir, root = self.make_root()
+        with tmp_dir:
+            (root / VERSION_JSON).write_text(
+                json.dumps(
+                    {
+                        "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.0/TakSklad.exe",
+                        "sha256": "a" * 64,
+                        "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.0/TakSklad-windows-x64.zip",
+                        "sha256_onedir": "b" * 64,
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            class FakeResponse:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_args):
+                    return False
+
+                def read(self, _size):
+                    if getattr(self, "done", False):
+                        return b""
+                    self.done = True
+                    return b"different"
+
+            import unittest.mock
+
+            with unittest.mock.patch("tools.release_preflight.urllib.request.urlopen", return_value=FakeResponse()):
+                check = check_update_manifest_downloads(root, timeout_seconds=3)
+
+        self.assertFalse(check["ok"])
+        self.assertIn("onefile SHA mismatch", check["problems"])
+        self.assertIn("onedir SHA mismatch", check["problems"])
 
     def test_acceptance_kit_rejects_sha_mismatch(self):
         tmp_dir, root = self.make_root()
@@ -178,6 +316,10 @@ class ReleasePreflightTests(unittest.TestCase):
         check = check_windows_acceptance_flow(Path(__file__).resolve().parents[1])
 
         self.assertTrue(check["ok"], check.get("problems"))
+
+    def write_bytes(self, path, content):
+        path.write_bytes(content)
+        return path
 
 
 if __name__ == "__main__":

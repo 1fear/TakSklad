@@ -40,10 +40,18 @@ cd /Users/anton/Documents/work/TakSklad
 .venv/bin/python tools/release_preflight.py
 ```
 
+Перед Windows-приёмкой можно дополнительно проверить опубликованные артефакты:
+
+```bash
+.venv/bin/python tools/release_preflight.py --verify-downloads --timeout 120
+```
+
+Эта команда скачивает `TakSklad.exe` и `TakSklad-windows-x64.zip` из `version.json` и сверяет SHA256. Она дольше обычного preflight.
+
 Он проверяет:
 
 - публичный `https://api.taksklad.uz/health`;
-- что `version.json` всё ещё закреплён на `1.1.7` и без download URL;
+- что `version.json` указывает на `2.0.0`, `mandatory=false`, ссылки и SHA заполнены;
 - checksum acceptance Excel;
 - наличие acceptance/runbook/helper-файлов;
 - отсутствие tracked runtime/secret-файлов.
@@ -197,7 +205,7 @@ SMOKE_MARKER=SMOKE_MVP_CHAPMAN_manual_20260531 \
 
 ### Минимальный Набор Проверок
 
-На Windows сначала собрать свежий test archive, не меняя `version.json`:
+На Windows сначала собрать свежий test archive, не меняя `version.json` вручную:
 
 ```powershell
 .\tools\build_windows_test_archive.ps1 -InstallDependencies
@@ -320,7 +328,7 @@ cd /opt/taksklad/app
 
 ## 4. Что Не Делать Во Время Acceptance
 
-- Не менять `version.json`.
+- Не менять `version.json` вручную и не включать `mandatory=true`.
 - Не создавать GitHub Release.
 - Не запускать Windows release workflow.
 - Не отправлять push-уведомления рабочим ПК.

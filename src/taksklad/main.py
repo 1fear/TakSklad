@@ -32,6 +32,7 @@ from .backend_client import (
     fetch_returned_orders,
     lookup_return_order,
     mark_order_returned,
+    sync_backend_sources,
 )
 from .backend_events import (
     get_pending_backend_codes,
@@ -66,8 +67,12 @@ from .reports import (
     unpack_order_group_key,
 )
 from .sheets import (
+    archive_order_group_to_gsheet,
+    fetch_returned_orders_from_gsheet,
     get_all_existing_codes,
     get_today_orders,
+    lookup_return_order_in_gsheet,
+    mark_return_order_in_gsheet,
     release_telegram_poll_lock,
     update_scanned_codes_to_gsheet,
 )
@@ -80,6 +85,7 @@ from .storage import (
 from .startup_check import format_app_version_label, log_startup_self_check
 from .telegram_service import (
     collect_operational_documents,
+    telegram_single_listener_lock_enabled,
 )
 from .ui_widgets import AppButton
 from .logging_setup import configure_app_logging
@@ -179,37 +185,69 @@ def global_exception_handler(exc_type, exc_value, exc_traceback):
 
 sys.excepthook = global_exception_handler
 
-def fetch_sheet_data():
-    if backend_read_orders_enabled():
-        today_orders, sheet, all_existing_codes = fetch_backend_sheet_data()
-        all_existing_codes.update(get_pending_backend_codes())
-        return today_orders, sheet, all_existing_codes
-
+def fetch_google_sheet_data():
     today_orders, sheet, all_rows = get_today_orders(apply_skladbot_filter=False, include_rows=True)
     all_existing_codes = get_all_existing_codes(sheet, all_rows=all_rows) if sheet else set()
     all_existing_codes.update(get_pending_codes())
     all_existing_codes.update(get_pending_backend_codes())
     return today_orders, sheet, all_existing_codes
 
-def fetch_sheet_data_with_sync(sync_skladbot=True):
-    if backend_read_orders_enabled():
-        backend_result = sync_pending_backend_events()
+
+def fetch_sheet_data():
+    try:
+        return fetch_google_sheet_data()
+    except Exception:
+        if not backend_read_orders_enabled():
+            raise
+        logging.warning("Google Sheets недоступен, загружаем fallback из backend", exc_info=True)
         today_orders, sheet, all_existing_codes = fetch_backend_sheet_data()
         all_existing_codes.update(get_pending_backend_codes())
+        return today_orders, sheet, all_existing_codes
+
+
+def fetch_sheet_data_with_sync(sync_skladbot=True):
+    if backend_read_orders_enabled():
+        try:
+            backend_result = sync_pending_backend_events()
+        except Exception as exc:
+            logging.warning("Backend queue sync failed before refresh", exc_info=True)
+            backend_result = {
+                "enabled": True,
+                "synced": 0,
+                "failed": 1,
+                "remaining": len(load_pending_backend_events()),
+                "message": str(exc),
+            }
+
+        try:
+            sources_result = sync_backend_sources(sync_skladbot=sync_skladbot, wait_skladbot=sync_skladbot)
+        except Exception as exc:
+            logging.warning("Backend sources sync failed before Google primary refresh", exc_info=True)
+            sources_result = {
+                "status": "error",
+                "message": str(exc),
+                "google_sheets": {"status": "unknown", "message": str(exc)},
+                "skladbot": {"status": "unknown", "message": str(exc), "errors": 1},
+            }
+
+        try:
+            today_orders, sheet, all_existing_codes = fetch_google_sheet_data()
+            primary_source = "google_sheets"
+        except Exception:
+            logging.warning("Google primary refresh failed, fallback to backend orders", exc_info=True)
+            today_orders, sheet, all_existing_codes = fetch_backend_sheet_data()
+            all_existing_codes.update(get_pending_backend_codes())
+            primary_source = "backend_fallback"
+
         sync_result = {
             "synced": 0,
             "failed": 0,
             "remaining": 0,
             "backend": backend_result,
-            "skladbot": {
-                "enabled": False,
-                "updated": 0,
-                "matched": 0,
-                "not_found": 0,
-                "multiple": 0,
-                "errors": 0,
-                "message": "Заказы загружены из backend",
-            },
+            "sources": sources_result,
+            "primary_source": primary_source,
+            "google_sheets": sources_result.get("google_sheets", {}) if isinstance(sources_result, dict) else {},
+            "skladbot": backend_skladbot_sync_result(sources_result),
         }
         return today_orders, sheet, all_existing_codes, sync_result
 
@@ -248,6 +286,50 @@ def fetch_sheet_data_with_sync(sync_skladbot=True):
     sync_result["skladbot"] = skladbot_result
     sync_result["backend"] = backend_result
     return today_orders, sheet, all_existing_codes, sync_result
+
+
+def backend_skladbot_sync_result(sources_result):
+    if not isinstance(sources_result, dict):
+        return {
+            "enabled": True,
+            "updated": 0,
+            "matched": 0,
+            "not_found": 0,
+            "multiple": 0,
+            "errors": 1,
+            "message": "Backend sync вернул неизвестный ответ",
+        }
+    skladbot_result = sources_result.get("skladbot", {}) or {}
+    if skladbot_result.get("status") == "skipped":
+        return {
+            "enabled": False,
+            "updated": 0,
+            "matched": 0,
+            "not_found": 0,
+            "multiple": 0,
+            "errors": 0,
+            "message": "SkladBot sync пропущен",
+        }
+    if skladbot_result.get("status") in {"started", "busy"}:
+        return {
+            "enabled": True,
+            "pending": True,
+            "updated": 0,
+            "matched": 0,
+            "not_found": 0,
+            "multiple": 0,
+            "errors": 0,
+            "message": skladbot_result.get("message") or "SkladBot sync запущен",
+        }
+    return {
+        "enabled": True,
+        "updated": int(skladbot_result.get("updated") or 0),
+        "matched": int(skladbot_result.get("matched") or 0),
+        "not_found": int(skladbot_result.get("not_found") or 0),
+        "multiple": int(skladbot_result.get("multiple") or 0),
+        "errors": 1 if skladbot_result.get("status") == "error" else 0,
+        "message": skladbot_result.get("error") or skladbot_result.get("message") or "SkladBot sync через backend",
+    }
 
 class ScanningApp(
     UpdateMixin,
@@ -935,14 +1017,6 @@ class ScanningApp(
         return selected_group
 
     def show_returns_window(self):
-        if not backend_read_orders_enabled():
-            messagebox.showwarning(
-                "Возвраты",
-                "Возвраты в TakSklad 2.0 работают через backend.\n\n"
-                "Включите backend flags, чтобы искать закрытые заявки SkladBot в архиве.",
-            )
-            return
-
         dialog = tk.Toplevel(self)
         dialog.title("Возвраты TakSklad")
         dialog.geometry("640x560")
@@ -1107,7 +1181,7 @@ class ScanningApp(
 
             self.run_background(
                 "Не удалось загрузить список возвратов",
-                lambda: fetch_returned_orders(limit=50),
+                lambda: self.fetch_returns_for_display(limit=50),
                 on_success=on_success,
                 on_error=on_error,
             )
@@ -1129,7 +1203,7 @@ class ScanningApp(
 
             self.run_background(
                 "Не удалось найти заявку для возврата",
-                lambda: lookup_return_order(lookup),
+                lambda: self.lookup_return_for_display(lookup),
                 on_success=on_success,
                 on_error=on_error,
             )
@@ -1150,10 +1224,11 @@ class ScanningApp(
             result_var.set("Фиксирую возврат...")
 
             def on_success(updated_order):
+                storage_name = "Google Sheets" if normalize_text(updated_order.get("source")) == "google_sheets" else "backend"
                 result_var.set(
                     "Возврат принят.\n\n"
                     f"Заявка: {updated_order.get('skladbot_request_number') or updated_order.get('id')}\n"
-                    "Статус сохранён в backend."
+                    f"Статус сохранён в {storage_name}."
                 )
                 refresh_returns_list()
                 self.refresh_from_sheet()
@@ -1164,11 +1239,7 @@ class ScanningApp(
 
             self.run_background(
                 "Не удалось принять возврат",
-                lambda: mark_order_returned(
-                    order.get("id"),
-                    return_reference=normalize_text(lookup_var.get()),
-                    returned_by=self.telegram_lock_owner_label,
-                ),
+                lambda: self.mark_return_for_display(order, normalize_text(lookup_var.get())),
                 on_success=on_success,
                 on_error=on_error,
             )
@@ -1186,6 +1257,49 @@ class ScanningApp(
         lookup_entry.bind("<Return>", do_lookup)
         lookup_entry.focus_set()
         refresh_returns_list()
+
+    def fetch_returns_for_display(self, limit=50):
+        try:
+            return fetch_returned_orders_from_gsheet(limit=limit)
+        except Exception:
+            if not backend_read_orders_enabled():
+                raise
+            logging.warning("Не удалось загрузить возвраты из Google Sheets, используем backend fallback", exc_info=True)
+            return fetch_returned_orders(limit=limit)
+
+    def lookup_return_for_display(self, lookup):
+        try:
+            return lookup_return_order_in_gsheet(lookup)
+        except Exception:
+            if not backend_read_orders_enabled():
+                raise
+            logging.warning("Не удалось найти возврат в Google Sheets, используем backend fallback", exc_info=True)
+            return lookup_return_order(lookup)
+
+    def mark_return_for_display(self, order, return_reference):
+        if normalize_text(order.get("source")) == "google_sheets" or order.get("_row_numbers"):
+            updated_order = mark_return_order_in_gsheet(
+                order,
+                return_reference=return_reference,
+                returned_by=self.telegram_lock_owner_label,
+            )
+            backend_order_id = normalize_text(order.get("_backend_order_id"))
+            if backend_order_id and backend_read_orders_enabled():
+                try:
+                    mark_order_returned(
+                        backend_order_id,
+                        return_reference=return_reference,
+                        returned_by=self.telegram_lock_owner_label,
+                    )
+                except Exception:
+                    logging.warning("Google Sheets возврат принят, backend fallback не обновился", exc_info=True)
+            return updated_order
+
+        return mark_order_returned(
+            order.get("id"),
+            return_reference=return_reference,
+            returned_by=self.telegram_lock_owner_label,
+        )
 
     def reset_current_selection(self):
         self.current_legal_entity = None
@@ -1234,11 +1348,26 @@ class ScanningApp(
             sync_result = self.last_sync_result or {}
             skladbot_result = sync_result.get("skladbot", {}) if isinstance(sync_result, dict) else {}
             backend_result = sync_result.get("backend", {}) if isinstance(sync_result, dict) else {}
+            google_result = sync_result.get("google_sheets", {}) if isinstance(sync_result, dict) else {}
             if backend_result.get("enabled") and backend_read_orders_enabled():
                 if backend_result.get("remaining"):
                     status_text = f"⚠️ Список из backend обновлён, очередь backend: {backend_result.get('remaining')}"
                 else:
-                    status_text = "✅ Список заказов обновлён из backend"
+                    google_updates = int(google_result.get("orders_updated") or 0) + int(google_result.get("items_updated") or 0)
+                    if skladbot_result.get("errors"):
+                        status_text = f"⚠️ Список обновлён из backend, Google правок: {google_updates}, SkladBot недоступен"
+                    elif skladbot_result.get("pending"):
+                        status_text = (
+                            f"✅ Список обновлён из Google/backend, Google правок {google_updates}; "
+                            "SkladBot обновляется в фоне"
+                        )
+                    elif skladbot_result.get("enabled"):
+                        status_text = (
+                            f"✅ Список обновлён из всех источников: Google правок {google_updates}, "
+                            f"SkladBot найдено {skladbot_result.get('matched', 0)}"
+                        )
+                    else:
+                        status_text = f"✅ Список заказов обновлён из backend, Google правок: {google_updates}"
             elif sync_result.get("synced"):
                 status_text = f"✅ Список обновлён, отправлено из очереди: {sync_result['synced']}"
             elif skladbot_result.get("errors"):
@@ -1281,7 +1410,7 @@ class ScanningApp(
 
         self.run_background(
             "Не удалось обновить список заказов",
-            lambda: fetch_sheet_data_with_sync(sync_skladbot=False),
+            lambda: fetch_sheet_data_with_sync(sync_skladbot=True),
             on_success=on_success,
             on_error=on_error,
             on_finally=on_finally
@@ -1608,10 +1737,11 @@ class ScanningApp(
             return
 
         group_key = self.current_group_key
+        current_orders = [order.copy() for order in self.current_legal_entity_orders]
         current_products = [product.copy() for product in self.current_legal_entity_products]
         backend_order_ids = sorted({
             normalize_text(order.get("_backend_order_id"))
-            for order in self.current_legal_entity_orders
+            for order in current_orders
             if normalize_text(order.get("_backend_order_id"))
         })
         self.set_busy("⏳ Готовлю и печатаю сводный лист...")
@@ -1640,6 +1770,14 @@ class ScanningApp(
                 raise RuntimeError("Сводочный лист не создан или не отправлен на печать")
 
             remove_pending_print(pending_print_id)
+
+            if self.sheet:
+                ok, archive_message = archive_order_group_to_gsheet(
+                    self.sheet,
+                    current_orders,
+                )
+                if not ok:
+                    raise RuntimeError(archive_message)
 
             if not write_scan_backup(
                 "address_finished",

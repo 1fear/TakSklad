@@ -35,13 +35,13 @@
 
 - проверяет, что `APP_VERSION` не ниже `2.0.0`;
 - проверяет, что `APP_BUILD_LABEL = MVP 2.0`;
-- проверяет, что публичный `version.json` не изменён и закреплён на стабильной `1.1.7`;
+- проверяет, что публичный `version.json` находится в безопасном состоянии: либо старая стабильная линия `1.1.7`, либо non-mandatory rollout `2.0.0`;
 - запускает автотесты, если не передан `-SkipTests`;
 - собирает PyInstaller `--onedir`;
 - добавляет acceptance helper и acceptance kit;
 - создаёт ZIP и SHA256 в `outputs\windows_test_build`;
 - не создаёт GitHub Release;
-- не меняет `version.json`;
+- не меняет `version.json` вручную;
 - не отправляет push-уведомления.
 
 После сборки запускать приложение из распакованного архива через:
@@ -256,7 +256,7 @@ Remove-Item Env:\TAKSKLAD_BACKEND_TIMEOUT_SECONDS -ErrorAction SilentlyContinue
 - найденные дефекты закрыты или записаны как accepted known issues;
 - rollback без backend flags проверен;
 - нет потери КИЗов при offline/timeout;
-- `version.json` всё ещё не менялся до финального решения о rollout.
+- `version.json` проверен как staged rollout `2.0.0`, `mandatory=false`.
 
 ## 7. Что Уже Покрыто Автотестами
 

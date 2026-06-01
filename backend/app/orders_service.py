@@ -1,10 +1,16 @@
 import uuid
+import logging
 from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
+from .google_sheets_exporter import (
+    archive_backend_order_to_google_sheets,
+    mark_backend_order_returned_in_google_sheets,
+    sync_backend_order_item_to_google_sheets,
+)
 from .models import AuditLog, Order, OrderItem, ScanCode
 from .schemas import OrderItemRead, OrderRead, ScanCreate, ScanRead
 
@@ -13,6 +19,7 @@ STATUS_COMPLETED = "completed"
 STATUS_NOT_COMPLETED = "not_completed"
 STATUS_RETURNED = "returned"
 COMPLETED_STATUSES = (STATUS_COMPLETED, "done", "closed", STATUS_RETURNED)
+logger = logging.getLogger(__name__)
 
 
 class ApiError(Exception):
@@ -74,6 +81,10 @@ def create_scan(db: Session, payload: ScanCreate):
         return existing_scan_response_or_error(existing_scan, item)
 
     scan_id = uuid.uuid4()
+    scan_raw_payload = dict(payload.raw_payload or {})
+    if payload.scanned_at:
+        scan_raw_payload.setdefault("scanned_at", payload.scanned_at.isoformat())
+
     scan = ScanCode(
         id=scan_id,
         order_item_id=item.id,
@@ -81,7 +92,7 @@ def create_scan(db: Session, payload: ScanCreate):
         workstation_id=payload.workstation_id,
         scanned_by=payload.scanned_by,
         scanned_at=payload.scanned_at or datetime.now(timezone.utc),
-        raw_payload=payload.raw_payload,
+        raw_payload=scan_raw_payload,
     )
     db.add(scan)
 
@@ -115,7 +126,9 @@ def create_scan(db: Session, payload: ScanCreate):
 
     db.refresh(scan)
     db.refresh(item)
-    return scan_to_read(scan, item)
+    response = scan_to_read(scan, item)
+    export_order_item_scan_to_google_sheets_best_effort(db, item.id)
+    return response
 
 
 def existing_scan_response_or_error(existing_scan, item):
@@ -150,7 +163,10 @@ def complete_order(db: Session, order_id):
     if order is None:
         raise ApiError(404, "Order not found")
     if order.status in COMPLETED_STATUSES:
-        return order_to_read(order)
+        response = order_to_read(order)
+        if order.status != STATUS_RETURNED:
+            export_order_archive_to_google_sheets_best_effort(db, order.id)
+        return response
 
     incomplete_items = [
         item
@@ -182,7 +198,9 @@ def complete_order(db: Session, order_id):
     ))
     db.commit()
     db.refresh(order)
-    return order_to_read(order)
+    response = order_to_read(order)
+    export_order_archive_to_google_sheets_best_effort(db, order.id)
+    return response
 
 
 def lookup_return_order(db: Session, lookup_value):
@@ -257,7 +275,81 @@ def mark_order_returned(db: Session, order_id, return_reference="", returned_by=
     ))
     db.commit()
     db.refresh(order)
-    return order_to_read(order)
+    response = order_to_read(order)
+    export_order_archive_to_google_sheets_best_effort(db, order.id)
+    export_order_return_to_google_sheets_best_effort(db, order.id)
+    return response
+
+
+def export_order_item_scan_to_google_sheets_best_effort(db: Session, item_id):
+    item = db.execute(
+        select(OrderItem)
+        .options(selectinload(OrderItem.order), selectinload(OrderItem.scan_codes))
+        .where(OrderItem.id == item_id)
+    ).scalar_one_or_none()
+    if item is None:
+        return
+    record_google_sheets_export_result(
+        db,
+        action="google_sheets_scan_export",
+        entity_type="order_item",
+        entity_id=str(item.id),
+        callback=lambda: sync_backend_order_item_to_google_sheets(item),
+    )
+
+
+def export_order_archive_to_google_sheets_best_effort(db: Session, order_id):
+    order = db.execute(
+        select(Order)
+        .options(selectinload(Order.items).selectinload(OrderItem.scan_codes))
+        .where(Order.id == order_id)
+    ).scalar_one_or_none()
+    if order is None:
+        return
+    record_google_sheets_export_result(
+        db,
+        action="google_sheets_archive_export",
+        entity_type="order",
+        entity_id=str(order.id),
+        callback=lambda: archive_backend_order_to_google_sheets(order),
+    )
+
+
+def export_order_return_to_google_sheets_best_effort(db: Session, order_id):
+    order = db.execute(
+        select(Order)
+        .options(selectinload(Order.items).selectinload(OrderItem.scan_codes))
+        .where(Order.id == order_id)
+    ).scalar_one_or_none()
+    if order is None:
+        return
+    record_google_sheets_export_result(
+        db,
+        action="google_sheets_return_export",
+        entity_type="order",
+        entity_id=str(order.id),
+        callback=lambda: mark_backend_order_returned_in_google_sheets(order),
+    )
+
+
+def record_google_sheets_export_result(db: Session, action, entity_type, entity_id, callback):
+    try:
+        result = callback()
+    except Exception as exc:
+        logger.exception("Google Sheets export failed: %s", action)
+        result = {"status": "error", "error": str(exc)}
+
+    try:
+        db.add(AuditLog(
+            action=action,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            payload=result,
+        ))
+        db.commit()
+    except Exception:
+        logger.exception("Failed to store Google Sheets export audit: %s", action)
+        db.rollback()
 
 
 def return_lookup_matches(order, lookup):

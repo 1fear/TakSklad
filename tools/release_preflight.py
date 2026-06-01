@@ -5,6 +5,7 @@ import json
 import shutil
 import subprocess
 import sys
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -55,8 +56,12 @@ WINDOWS_TEST_BUILD_REQUIRED_FRAGMENTS = [
     "ACCEPTANCE_RESULTS.md",
     "Assert-TestPackageDoesNotContainLocalSecrets",
     "version.json has local changes",
-    "stable 1.1.7",
+    "safe non-mandatory 2.0.0 rollout manifest",
 ]
+EXPECTED_RELEASE_VERSION = "2.0.0"
+EXPECTED_MIN_SUPPORTED_VERSION = "1.1.7"
+EXPECTED_PACKAGE_TYPE = "onefile_exe"
+EXPECTED_RELEASE_TAG = f"v{EXPECTED_RELEASE_VERSION}"
 
 
 def sha256_file(path):
@@ -90,14 +95,26 @@ def check_version_json(root):
         return result("version_json", False, error=f"invalid json: {exc}")
 
     problems = []
-    if payload.get("latest_version") != "1.1.7":
-        problems.append("latest_version is not pinned to 1.1.7")
-    if payload.get("min_supported_version") != "1.1.7":
-        problems.append("min_supported_version is not pinned to 1.1.7")
+    if payload.get("latest_version") != EXPECTED_RELEASE_VERSION:
+        problems.append(f"latest_version must be {EXPECTED_RELEASE_VERSION}")
+    if payload.get("min_supported_version") != EXPECTED_MIN_SUPPORTED_VERSION:
+        problems.append(f"min_supported_version must stay {EXPECTED_MIN_SUPPORTED_VERSION} for non-forced rollout")
     if payload.get("mandatory") not in (False, None):
-        problems.append("mandatory must be false before rollout")
-    if payload.get("download_url") or payload.get("download_url_onedir"):
-        problems.append("download_url fields must stay empty before rollout")
+        problems.append("mandatory must be false during staged rollout")
+    if payload.get("package_type") != EXPECTED_PACKAGE_TYPE:
+        problems.append(f"package_type must be {EXPECTED_PACKAGE_TYPE}")
+    if not payload.get("download_url") or not payload.get("sha256"):
+        problems.append("onefile download_url and sha256 must be set")
+    if not payload.get("download_url_onedir") or not payload.get("sha256_onedir"):
+        problems.append("onedir download_url_onedir and sha256_onedir must be set")
+    for field_name in ("download_url", "download_url_onedir"):
+        url = str(payload.get(field_name) or "")
+        if url and not valid_release_download_url(url):
+            problems.append(f"{field_name} must be an HTTPS release URL for {EXPECTED_RELEASE_TAG}")
+    for field_name in ("sha256", "sha256_onedir"):
+        checksum = str(payload.get(field_name) or "")
+        if checksum and not valid_sha256(checksum):
+            problems.append(f"{field_name} must be a lowercase SHA256 hex digest")
 
     git_clean = None
     git = shutil.which("git")
@@ -131,7 +148,84 @@ def check_version_json(root):
         latest_version=payload.get("latest_version"),
         min_supported_version=payload.get("min_supported_version"),
         mandatory=payload.get("mandatory"),
+        package_type=payload.get("package_type"),
+        download_url_set=bool(payload.get("download_url")),
+        download_url_onedir_set=bool(payload.get("download_url_onedir")),
+        sha256_valid=valid_sha256(str(payload.get("sha256") or "")),
+        sha256_onedir_valid=valid_sha256(str(payload.get("sha256_onedir") or "")),
         git_clean=git_clean,
+    )
+
+
+def valid_sha256(value):
+    return len(value) == 64 and all(char in "0123456789abcdef" for char in value)
+
+
+def valid_release_download_url(url):
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or not parsed.netloc:
+        return False
+    if parsed.username or parsed.password:
+        return False
+    return f"/releases/download/{EXPECTED_RELEASE_TAG}/" in parsed.path
+
+
+def sha256_url(url, timeout_seconds):
+    digest = hashlib.sha256()
+    request = urllib.request.Request(url, headers={"User-Agent": "TakSklad-release-preflight/1.0"})
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        while True:
+            chunk = response.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def check_update_manifest_downloads(root, timeout_seconds):
+    path = root / VERSION_JSON
+    try:
+        payload = load_json(path)
+    except Exception as exc:
+        return result("update_manifest_downloads", False, error=f"cannot read version.json: {exc}")
+
+    assets = [
+        {
+            "name": "onefile",
+            "url": str(payload.get("download_url") or ""),
+            "expected_sha256": str(payload.get("sha256") or ""),
+        },
+        {
+            "name": "onedir",
+            "url": str(payload.get("download_url_onedir") or ""),
+            "expected_sha256": str(payload.get("sha256_onedir") or ""),
+        },
+    ]
+    checked = []
+    problems = []
+    for asset in assets:
+        name = asset["name"]
+        url = asset["url"]
+        expected = asset["expected_sha256"]
+        if not url or not expected:
+            problems.append(f"{name} URL/SHA is missing")
+            checked.append({**asset, "actual_sha256": ""})
+            continue
+        try:
+            actual = sha256_url(url, timeout_seconds)
+        except Exception as exc:
+            problems.append(f"{name} download failed: {exc.__class__.__name__}")
+            checked.append({**asset, "actual_sha256": ""})
+            continue
+        checked.append({**asset, "actual_sha256": actual})
+        if actual != expected:
+            problems.append(f"{name} SHA mismatch")
+
+    return result(
+        "update_manifest_downloads",
+        not problems,
+        problems=problems,
+        assets=checked,
     )
 
 
@@ -164,7 +258,13 @@ def check_acceptance_kit(root):
     if "ACCEPTANCE" not in marker:
         problems.append("marker must contain ACCEPTANCE")
     safety = manifest.get("safety") or {}
-    for key in ("no_version_json_change", "no_github_release", "no_push_notifications", "contains_secrets"):
+    required_true_safety = (
+        "version_json_staged_rollout",
+        "github_release_published",
+        "push_notifications_allowed",
+        "mandatory_update_disabled",
+    )
+    for key in (*required_true_safety, "contains_secrets"):
         if key == "contains_secrets":
             if safety.get(key) is not False:
                 problems.append("manifest safety.contains_secrets must be false")
@@ -257,7 +357,7 @@ def check_public_backend_health(url, timeout_seconds):
     )
 
 
-def run_checks(root, health_url, timeout_seconds, skip_network=False):
+def run_checks(root, health_url, timeout_seconds, skip_network=False, verify_downloads=False):
     checks = [
         check_required_files(root),
         check_version_json(root),
@@ -265,6 +365,8 @@ def run_checks(root, health_url, timeout_seconds, skip_network=False):
         check_windows_acceptance_flow(root),
         check_tracked_secrets(root),
     ]
+    if verify_downloads:
+        checks.append(check_update_manifest_downloads(root, timeout_seconds))
     if skip_network:
         checks.append(result("public_backend_health", True, skipped=True))
     else:
@@ -281,6 +383,11 @@ def parse_args():
     parser.add_argument("--health-url", default=DEFAULT_HEALTH_URL, help="Public backend health URL.")
     parser.add_argument("--timeout", type=int, default=8, help="Network timeout seconds.")
     parser.add_argument("--skip-network", action="store_true", help="Do not call public backend health URL.")
+    parser.add_argument(
+        "--verify-downloads",
+        action="store_true",
+        help="Download update artifacts from version.json and verify SHA256. Slow but useful before Windows rollout.",
+    )
     return parser.parse_args()
 
 
@@ -291,6 +398,7 @@ def main():
         health_url=args.health_url,
         timeout_seconds=max(1, args.timeout),
         skip_network=args.skip_network,
+        verify_downloads=args.verify_downloads,
     )
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
     return 0 if summary["status"] == "ok" else 3

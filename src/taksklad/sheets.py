@@ -9,6 +9,7 @@ from gspread.http_client import HTTPClient
 from oauth2client.service_account import ServiceAccountCredentials
 
 from .config import (
+    ARCHIVE_SHEET_NAME,
     CREDENTIALS_FILE,
     GOOGLE_API_TIMEOUT_SECONDS,
     GOOGLE_BACKOFF_LOG_INTERVAL_SECONDS,
@@ -16,6 +17,7 @@ from .config import (
     LEGACY_ORDER_DATE_COLUMN,
     ORDER_DATE_COLUMN,
     REQUIRED_COLUMNS,
+    RETURNS_SHEET_NAME,
     SERVICE_COLUMNS,
     SERVICE_COLUMN_START_INDEX,
     SHEET_NAME,
@@ -59,6 +61,21 @@ class GoogleTimeoutHTTPClient(HTTPClient):
 
 GOOGLE_BACKOFF_UNTIL_TS = 0.0
 GOOGLE_BACKOFF_LAST_LOG_TS = 0.0
+RETURN_STATUS_COLUMN = "Статус возврата"
+RETURN_DATE_COLUMN = "Дата возврата"
+RETURN_REFERENCE_COLUMN = "Основание возврата"
+RETURNED_BY_COLUMN = "Принял возврат"
+RETURN_EXTRA_COLUMNS = [
+    RETURN_STATUS_COLUMN,
+    RETURN_DATE_COLUMN,
+    RETURN_REFERENCE_COLUMN,
+    RETURNED_BY_COLUMN,
+]
+RETURN_STATUS_VALUE = "Возврат"
+DEFAULT_BLOCK_PRICE = 240000
+BLOCK_PRICE_COLUMN = "Цена за блок"
+LINE_TOTAL_COLUMN = "Сумма позиции"
+CALCULATED_LINE_TOTAL_COLUMN = "Сумма рассчитанная"
 
 
 def is_google_transient_error(exc):
@@ -123,6 +140,42 @@ def reset_google_backoff_for_tests():
     global GOOGLE_BACKOFF_UNTIL_TS, GOOGLE_BACKOFF_LAST_LOG_TS
     GOOGLE_BACKOFF_UNTIL_TS = 0.0
     GOOGLE_BACKOFF_LAST_LOG_TS = 0.0
+
+
+def normalize_order_money_fields(record):
+    quantity_blocks = parse_int_value(record.get("Кол-во блок"))
+    block_price = parse_int_value(record.get(BLOCK_PRICE_COLUMN)) or DEFAULT_BLOCK_PRICE
+    calculated_line_total = quantity_blocks * block_price if quantity_blocks > 0 else 0
+
+    if block_price > 0:
+        record[BLOCK_PRICE_COLUMN] = block_price
+    if calculated_line_total > 0:
+        record[CALCULATED_LINE_TOTAL_COLUMN] = calculated_line_total
+        record[LINE_TOTAL_COLUMN] = calculated_line_total
+    elif not parse_int_value(record.get(LINE_TOTAL_COLUMN)):
+        record[LINE_TOTAL_COLUMN] = 0
+    return record
+
+
+def money_field_updates_for_row(record, header_idx, row_number):
+    updates = []
+    fields = (
+        BLOCK_PRICE_COLUMN,
+        CALCULATED_LINE_TOTAL_COLUMN,
+        LINE_TOTAL_COLUMN,
+    )
+    for field in fields:
+        idx = header_idx.get(field)
+        if idx is None:
+            continue
+        value = record.get(field)
+        if value in (None, ""):
+            continue
+        updates.append({
+            "range": f"{column_index_to_letter(idx)}{row_number}",
+            "values": [[value]],
+        })
+    return updates
 
 
 def get_google_client():
@@ -663,6 +716,11 @@ def get_today_orders(apply_skladbot_filter=None, include_rows=False):
             record = {}
             for col_name, idx in header_idx.items():
                 record[col_name] = get_cell(row, idx)
+            original_money = {
+                field: record.get(field)
+                for field in (BLOCK_PRICE_COLUMN, CALCULATED_LINE_TOTAL_COLUMN, LINE_TOTAL_COLUMN)
+            }
+            normalize_order_money_fields(record)
 
             normalized_date = parse_date_to_standard(get_order_date_value(record))
             scanned_codes = split_codes(record.get("Отсканированные коды"))
@@ -677,6 +735,8 @@ def get_today_orders(apply_skladbot_filter=None, include_rows=False):
                     "values": [[calculated_status]],
                 })
                 record[STATUS_COLUMN] = calculated_status
+            if any(normalize_text(original_money.get(field)) != normalize_text(record.get(field)) for field in original_money):
+                status_updates.extend(money_field_updates_for_row(record, header_idx, row_number))
 
             if is_order_active(record):
                 if require_skladbot_number and not normalize_text(record.get(SKLADBOT_REQUEST_NUMBER_COLUMN)):
@@ -773,3 +833,328 @@ def update_scanned_codes_to_gsheet(sheet, order, scanned_codes):
         note_google_transient_error(exc)
         logging.exception("Не удалось записать коды в Google Sheets")
         return False, format_google_sheets_error(exc) or str(exc)
+
+
+def get_or_create_workbook_sheet_like_data(source_sheet, title):
+    spreadsheet = source_sheet.spreadsheet
+    try:
+        target_sheet = spreadsheet.worksheet(title)
+    except WorksheetNotFound:
+        target_sheet = spreadsheet.add_worksheet(
+            title=title,
+            rows=1000,
+            cols=SERVICE_COLUMN_START_INDEX + len(SERVICE_COLUMNS),
+        )
+    ensure_import_sheet_layout(target_sheet)
+    return target_sheet
+
+
+def ensure_return_sheet_layout(sheet):
+    ensure_import_sheet_layout(sheet)
+    return ensure_sheet_columns(sheet, RETURN_EXTRA_COLUMNS)
+
+
+def normalize_return_lookup(value):
+    return "".join(char.casefold() for char in normalize_text(value) if char.isalnum())
+
+
+def row_return_lookup_values(row, header_idx):
+    values = [
+        get_cell(row, header_idx.get(SKLADBOT_REQUEST_NUMBER_COLUMN)),
+        get_cell(row, header_idx.get("ID заявки SkladBot")),
+        get_cell(row, header_idx.get("ID заказа")),
+    ]
+    return {normalize_return_lookup(value) for value in values if normalize_text(value)}
+
+
+def build_return_order(rows_with_numbers, header_idx):
+    first_row_number, first_row = rows_with_numbers[0]
+    request_number = get_cell(first_row, header_idx.get(SKLADBOT_REQUEST_NUMBER_COLUMN))
+    request_id = get_cell(first_row, header_idx.get("ID заявки SkladBot"))
+    return_status = get_cell(first_row, header_idx.get(RETURN_STATUS_COLUMN))
+    returned_at = get_cell(first_row, header_idx.get(RETURN_DATE_COLUMN))
+    return_reference = get_cell(first_row, header_idx.get(RETURN_REFERENCE_COLUMN))
+    items = []
+    for _, row in rows_with_numbers:
+        quantity_blocks = parse_int_value(get_cell(row, header_idx.get("Кол-во блок")))
+        line_total = parse_int_value(get_cell(row, header_idx.get("Сумма позиции")))
+        if not line_total:
+            line_total = quantity_blocks * 240000
+        items.append({
+            "product": get_cell(row, header_idx.get("Товары")),
+            "quantity_blocks": quantity_blocks,
+            "quantity_pieces": parse_int_value(get_cell(row, header_idx.get("Кол-во ШТ"))),
+            "line_total": line_total,
+        })
+    return {
+        "id": f"google:{request_number or request_id or first_row_number}",
+        "source": "google_sheets",
+        "order_date": parse_date_to_standard(get_cell(first_row, get_order_date_header_index(header_idx))) or "",
+        "payment_type": get_cell(first_row, header_idx.get("Тип оплаты")),
+        "client": get_cell(first_row, header_idx.get("Клиент")),
+        "address": get_cell(first_row, header_idx.get("Адрес")),
+        "representative": get_cell(first_row, header_idx.get("Торговый представитель")),
+        "status": "returned" if normalize_return_lookup(return_status) == normalize_return_lookup(RETURN_STATUS_VALUE) else "completed",
+        "skladbot_request_number": request_number,
+        "skladbot_request_id": request_id,
+        "return_status": "returned" if normalize_return_lookup(return_status) == normalize_return_lookup(RETURN_STATUS_VALUE) else "",
+        "returned_at": returned_at,
+        "return_reference": return_reference,
+        "items": items,
+        "_row_numbers": [row_number for row_number, _ in rows_with_numbers],
+    }
+
+
+def get_archive_sheet():
+    client = get_google_client()
+    return client.open_by_key(SPREADSHEET_ID).worksheet(ARCHIVE_SHEET_NAME)
+
+
+def lookup_return_order_in_gsheet(lookup_value):
+    lookup = normalize_return_lookup(lookup_value)
+    if not lookup:
+        raise ValueError("Введите номер или ID заявки SkladBot")
+
+    sheet = get_archive_sheet()
+    ensure_return_sheet_layout(sheet)
+    all_rows = sheet.get_all_values()
+    if not all_rows:
+        raise ValueError("Архив Google Sheets пустой")
+
+    header_idx, missing = validate_sheet_header(all_rows[0])
+    if missing:
+        raise ValueError("В Архиве не найдены обязательные колонки: " + ", ".join(missing))
+
+    matched_rows = [
+        (row_number, row)
+        for row_number, row in enumerate(all_rows[1:], start=2)
+        if lookup in row_return_lookup_values(row, header_idx)
+    ]
+    if not matched_rows:
+        raise ValueError("Закрытая заявка не найдена в Архиве")
+
+    group_keys = {
+        normalize_text(get_cell(row, header_idx.get(SKLADBOT_REQUEST_NUMBER_COLUMN)))
+        or normalize_text(get_cell(row, header_idx.get("ID заявки SkladBot")))
+        or normalize_text(get_cell(row, header_idx.get("ID заказа")))
+        for _, row in matched_rows
+    }
+    if len(group_keys) > 1:
+        raise ValueError("Найдено несколько заявок. Уточните номер/ID SkladBot")
+    return build_return_order(matched_rows, header_idx)
+
+
+def mark_return_order_in_gsheet(order, return_reference="", returned_by="desktop"):
+    row_numbers = [parse_int_value(value) for value in order.get("_row_numbers") or [] if parse_int_value(value)]
+    if not row_numbers:
+        raise ValueError("Нет строк Архива для возврата")
+
+    sheet = get_archive_sheet()
+    ensure_return_sheet_layout(sheet)
+    all_rows = sheet.get_all_values()
+    if not all_rows:
+        raise ValueError("Архив Google Sheets пустой")
+
+    header = [normalize_header_name(col) for col in all_rows[0]]
+    header_idx = get_header_index(header)
+    status_idx = header_idx.get(RETURN_STATUS_COLUMN)
+    date_idx = header_idx.get(RETURN_DATE_COLUMN)
+    reference_idx = header_idx.get(RETURN_REFERENCE_COLUMN)
+    returned_by_idx = header_idx.get(RETURNED_BY_COLUMN)
+    if None in (status_idx, date_idx, reference_idx, returned_by_idx):
+        raise ValueError("В Архиве не найдены колонки возврата")
+
+    rows_to_return = []
+    for row_number in row_numbers:
+        if row_number < 2 or row_number > len(all_rows):
+            continue
+        row = list(all_rows[row_number - 1])
+        if normalize_return_lookup(get_cell(row, status_idx)) == normalize_return_lookup(RETURN_STATUS_VALUE):
+            raise ValueError("Возврат уже принят")
+        rows_to_return.append((row_number, row))
+
+    if not rows_to_return:
+        raise ValueError("Строки возврата не найдены в Архиве")
+
+    returned_at = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+    reference = normalize_text(return_reference) or normalize_text(order.get("skladbot_request_number")) or normalize_text(order.get("skladbot_request_id"))
+    actor = normalize_text(returned_by) or "desktop"
+    updates = []
+    header_len = len(header)
+    rows_for_returns = []
+    for row_number, row in rows_to_return:
+        if len(row) < header_len:
+            row.extend([""] * (header_len - len(row)))
+        row[status_idx] = RETURN_STATUS_VALUE
+        row[date_idx] = returned_at
+        row[reference_idx] = reference
+        row[returned_by_idx] = actor
+        rows_for_returns.append(row[:header_len])
+        updates.extend([
+            {"range": f"{column_index_to_letter(status_idx)}{row_number}", "values": [[RETURN_STATUS_VALUE]]},
+            {"range": f"{column_index_to_letter(date_idx)}{row_number}", "values": [[returned_at]]},
+            {"range": f"{column_index_to_letter(reference_idx)}{row_number}", "values": [[reference]]},
+            {"range": f"{column_index_to_letter(returned_by_idx)}{row_number}", "values": [[actor]]},
+        ])
+
+    sheet.batch_update(updates, value_input_option="USER_ENTERED")
+
+    returns_sheet = get_or_create_workbook_sheet_like_data(sheet, RETURNS_SHEET_NAME)
+    ensure_return_sheet_layout(returns_sheet)
+    returns_rows = returns_sheet.get_all_values()
+    start_row = max(2, len(returns_rows) + 1)
+    end_col = column_index_to_letter(header_len - 1)
+    returns_sheet.batch_update([{
+        "range": f"A{start_row}:{end_col}{start_row + len(rows_for_returns) - 1}",
+        "values": rows_for_returns,
+    }], value_input_option="USER_ENTERED")
+
+    updated = dict(order)
+    updated["status"] = "returned"
+    updated["return_status"] = "returned"
+    updated["returned_at"] = returned_at
+    updated["return_reference"] = reference
+    return updated
+
+
+def fetch_returned_orders_from_gsheet(limit=50):
+    try:
+        client = get_google_client()
+        sheet = client.open_by_key(SPREADSHEET_ID).worksheet(RETURNS_SHEET_NAME)
+    except WorksheetNotFound:
+        return []
+
+    ensure_return_sheet_layout(sheet)
+    all_rows = sheet.get_all_values()
+    if not all_rows:
+        return []
+
+    header_idx, missing = validate_sheet_header(all_rows[0])
+    if missing:
+        raise ValueError("В Возвратах не найдены обязательные колонки: " + ", ".join(missing))
+
+    groups = {}
+    for row_number, row in enumerate(all_rows[1:], start=2):
+        key = (
+            get_cell(row, header_idx.get(RETURN_REFERENCE_COLUMN))
+            or get_cell(row, header_idx.get(SKLADBOT_REQUEST_NUMBER_COLUMN))
+            or get_cell(row, header_idx.get("ID заявки SkladBot"))
+            or get_cell(row, header_idx.get("ID заказа"))
+            or str(row_number)
+        )
+        groups.setdefault(key, []).append((row_number, row))
+
+    orders = [build_return_order(rows, header_idx) for rows in groups.values()]
+    orders.sort(key=lambda item: normalize_text(item.get("returned_at")), reverse=True)
+    return orders[: max(1, int(limit or 50))]
+
+
+def archive_order_group_to_gsheet(sheet, orders):
+    try:
+        if not sheet:
+            return False, "Нет подключения к Google Sheets"
+        if not orders:
+            return False, "Нет строк заказа для архивации"
+
+        ensure_import_sheet_layout(sheet)
+        all_rows = sheet.get_all_values()
+        if not all_rows:
+            return False, "Лист Google Sheets пустой"
+
+        header = [normalize_header_name(col) for col in all_rows[0]]
+        header_idx, missing = validate_sheet_header(header)
+        if missing:
+            return False, "В таблице не найдены обязательные колонки: " + ", ".join(missing)
+
+        target_rows = []
+        used_rows = set()
+        for order in orders:
+            row_number = find_order_row_number(all_rows, header_idx, order)
+            if row_number and row_number not in used_rows:
+                target_rows.append(row_number)
+                used_rows.add(row_number)
+
+        if not target_rows:
+            return False, "Не найдены строки заказа для переноса в Архив"
+
+        archive_sheet = get_or_create_workbook_sheet_like_data(sheet, ARCHIVE_SHEET_NAME)
+        archive_rows = archive_sheet.get_all_values()
+        archive_header_idx = get_header_index(archive_rows[0]) if archive_rows else {}
+        archived_import_ids, archived_order_ids = get_existing_import_keys(archive_rows)
+        archive_start_row = max(2, len(archive_rows) + 1)
+        header_len = max(len(header), SERVICE_COLUMN_START_INDEX + len(SERVICE_COLUMNS))
+        status_idx = header_idx.get(STATUS_COLUMN)
+        rows_to_archive = []
+        for row_number in sorted(target_rows):
+            source_row = list(all_rows[row_number - 1])
+            source_order_id = get_cell(source_row, header_idx.get("ID заказа"))
+            source_import_id = get_cell(source_row, header_idx.get("ID импорта"))
+            if (
+                (source_order_id and source_order_id in archived_order_ids)
+                or (source_import_id and source_import_id in archived_import_ids)
+                or archive_row_already_exists(source_row, header_idx, archive_rows, archive_header_idx)
+            ):
+                continue
+            if len(source_row) < header_len:
+                source_row.extend([""] * (header_len - len(source_row)))
+            if status_idx is not None:
+                source_row[status_idx] = STATUS_COMPLETED
+            rows_to_archive.append(source_row[:header_len])
+
+        if rows_to_archive:
+            end_col = column_index_to_letter(header_len - 1)
+            archive_sheet.batch_update([{
+                "range": f"A{archive_start_row}:{end_col}{archive_start_row + len(rows_to_archive) - 1}",
+                "values": rows_to_archive,
+            }], value_input_option="USER_ENTERED")
+
+        for row_number in sorted(target_rows, reverse=True):
+            sheet.delete_rows(row_number)
+
+        return True, f"Заказ перенесён в Архив: {len(target_rows)} строк"
+    except Exception as exc:
+        note_google_transient_error(exc)
+        logging.exception("Не удалось перенести заказ в Архив")
+        return False, format_google_sheets_error(exc) or str(exc)
+
+
+def find_order_row_number(all_rows, header_idx, order):
+    row_number = parse_int_value(order.get("_row_number"))
+    if 2 <= row_number <= len(all_rows):
+        candidate = all_rows[row_number - 1]
+        if row_matches_order(candidate, header_idx, order):
+            return row_number
+
+    for candidate_row_number, row in enumerate(all_rows[1:], start=2):
+        if row_matches_order(row, header_idx, order):
+            return candidate_row_number
+    return 0
+
+
+def archive_row_already_exists(source_row, source_header_idx, archive_rows, archive_header_idx):
+    if not archive_rows:
+        return False
+    source_record = {
+        ORDER_DATE_COLUMN: get_cell(source_row, get_order_date_header_index(source_header_idx)),
+        "Тип оплаты": get_cell(source_row, source_header_idx.get("Тип оплаты")),
+        "Клиент": get_cell(source_row, source_header_idx.get("Клиент")),
+        "Адрес": get_cell(source_row, source_header_idx.get("Адрес")),
+        "Товары": get_cell(source_row, source_header_idx.get("Товары")),
+        "Кол-во ШТ": get_cell(source_row, source_header_idx.get("Кол-во ШТ")),
+    }
+    source_key = make_order_duplicate_key(source_record)
+    if not source_key:
+        return False
+
+    for archive_row in archive_rows[1:]:
+        archive_record = {
+            ORDER_DATE_COLUMN: get_cell(archive_row, get_order_date_header_index(archive_header_idx)),
+            "Тип оплаты": get_cell(archive_row, archive_header_idx.get("Тип оплаты")),
+            "Клиент": get_cell(archive_row, archive_header_idx.get("Клиент")),
+            "Адрес": get_cell(archive_row, archive_header_idx.get("Адрес")),
+            "Товары": get_cell(archive_row, archive_header_idx.get("Товары")),
+            "Кол-во ШТ": get_cell(archive_row, archive_header_idx.get("Кол-во ШТ")),
+        }
+        if make_order_duplicate_key(archive_record) == source_key:
+            return True
+    return False

@@ -4,14 +4,17 @@ import os
 import re
 import time
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
 
 from .db import SessionLocal
+from .google_sheets_exporter import sync_backend_orders_skladbot_to_google_sheets
 from .models import AuditLog, Order, OrderItem
 from .orders_service import COMPLETED_STATUSES
+from .settings import load_settings
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -21,6 +24,7 @@ NOISE_PRODUCT_TOKENS = {"uz", "kingsize", "king", "size", "superslim", "super", 
 RETURN_REQUEST_TOKENS = {"возврат", "возврата", "return", "returned"}
 PRODUCT_COLORS = ("brown", "red", "gold")
 PRODUCT_FORMATS = ("op", "ssl")
+SKLADBOT_SYNC_LOCK_KEY = 22052631
 
 
 def env_int(name, default):
@@ -144,6 +148,11 @@ def parse_date(value):
     text = normalize_text(value)
     if not text:
         return None
+    parsed_datetime = parse_datetime_value(text)
+    if parsed_datetime is not None:
+        if parsed_datetime.tzinfo is None:
+            parsed_datetime = parsed_datetime.replace(tzinfo=business_timezone())
+        return parsed_datetime.astimezone(business_timezone()).date()
     if "T" in text:
         text = text.split("T", 1)[0]
     if " " in text:
@@ -156,8 +165,53 @@ def parse_date(value):
     return None
 
 
+def parse_datetime_value(value):
+    text = normalize_text(value)
+    if not text:
+        return None
+    has_time = "T" in text or (":" in text and " " in text)
+    if not has_time:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        pass
+    for fmt in (
+        "%d.%m.%Y %H:%M:%S%z",
+        "%d.%m.%Y %H:%M%z",
+        "%d/%m/%Y %H:%M:%S%z",
+        "%d/%m/%Y %H:%M%z",
+        "%d.%m.%Y %H:%M:%S",
+        "%d.%m.%Y %H:%M",
+        "%d/%m/%Y %H:%M:%S",
+        "%d/%m/%Y %H:%M",
+    ):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            pass
+    return None
+
+
+def business_timezone():
+    timezone_name = load_settings().timezone
+    try:
+        return ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError:
+        return ZoneInfo("Asia/Tashkent")
+
+
+def business_today(now=None):
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return now.astimezone(business_timezone()).date()
+
+
 def date_in_window(value, today=None, lookback_days=1):
-    today = today or datetime.now().date()
+    today = today or business_today()
     parsed = parse_date(value)
     if not parsed:
         return False
@@ -173,6 +227,40 @@ def request_created_recently(request, today=None, lookback_days=1):
     if not dated_values:
         return False
     return any(date_in_window(value, today=today, lookback_days=lookback_days) for value in dated_values)
+
+
+def dynamic_skladbot_lookback_days(orders=None, today=None, base_lookback_days=None):
+    today = today or business_today()
+    base_lookback_days = env_int("SKLADBOT_SYNC_LOOKBACK_DAYS", 1) if base_lookback_days is None else int(base_lookback_days or 0)
+    max_lookback_days = max(base_lookback_days, env_int("SKLADBOT_SYNC_MAX_LOOKBACK_DAYS", 7))
+    create_lead_days = max(0, env_int("SKLADBOT_ORDER_CREATE_LEAD_DAYS", 3))
+    order_dates = [
+        order.order_date
+        for order in orders or []
+        if getattr(order, "order_date", None) is not None
+    ]
+    if not order_dates:
+        return max(0, base_lookback_days)
+    oldest_order_date = min(order_dates)
+    days_since_oldest_order = (today - oldest_order_date).days
+    if days_since_oldest_order < 0:
+        return max(0, base_lookback_days)
+    required_lookback = days_since_oldest_order + create_lead_days
+    return min(max(base_lookback_days, required_lookback), max_lookback_days)
+
+
+def order_has_skladbot_number(order):
+    raw_payload = getattr(order, "raw_payload", None) or {}
+    return bool(normalize_text(raw_payload.get("skladbot_request_number")) or normalize_text(raw_payload.get("skladbot_request_id")))
+
+
+def all_orders_have_candidate_match(orders, requests):
+    if not orders:
+        return False
+    for order in orders:
+        if not any(request_matches_order(order, request) for request in requests):
+            return False
+    return True
 
 
 def extract_list_items(payload):
@@ -303,14 +391,16 @@ def normalize_request_payload(list_item, detail):
     }
 
 
-def fetch_candidate_requests(today=None):
-    client = SkladBotClient()
+def fetch_candidate_requests(today=None, orders=None, client=None):
+    client = client or SkladBotClient()
     if not client.configured:
         logging.info("SkladBot worker disabled: SKLADBOT_API_TOKEN is not configured")
         return []
 
-    lookback_days = env_int("SKLADBOT_SYNC_LOOKBACK_DAYS", 1)
+    lookback_days = dynamic_skladbot_lookback_days(orders=orders, today=today)
+    detail_limit = max(1, env_int("SKLADBOT_DETAIL_LIMIT", 30))
     result = []
+    details_checked = 0
     for item in client.list_requests():
         list_type = normalize_text(request_list_value(item, "type"))
         if list_type and not request_type_matches(list_type):
@@ -318,8 +408,21 @@ def fetch_candidate_requests(today=None):
         request_id = parse_int(request_list_value(item, "id"))
         if request_id <= 0:
             continue
+        list_dates = {
+            "created_at": request_list_value(item, "created_at", "createdAt"),
+            "updated_at": request_list_value(item, "updated_at", "updatedAt"),
+        }
+        if any(parse_date(value) for value in list_dates.values()) and not request_created_recently(
+            list_dates,
+            today=today,
+            lookback_days=lookback_days,
+        ):
+            continue
+        if details_checked >= detail_limit:
+            break
         try:
             detail = client.get_request_detail(request_id)
+            details_checked += 1
         except httpx.HTTPStatusError as exc:
             logging.warning(
                 "SkladBot worker: skip request_id=%s after HTTP %s",
@@ -338,6 +441,15 @@ def fetch_candidate_requests(today=None):
         if not request_created_recently(request, today=today, lookback_days=lookback_days):
             continue
         result.append(request)
+        if orders and all_orders_have_candidate_match(orders, result):
+            break
+    logging.info(
+        "SkladBot worker: candidates=%s details_checked=%s lookback_days=%s detail_limit=%s",
+        len(result),
+        details_checked,
+        lookback_days,
+        detail_limit,
+    )
     return result
 
 
@@ -356,6 +468,29 @@ def order_group_payload(order):
 
 def request_matches_order(order, request):
     return request_match_diagnostics(order, request)["matched"]
+
+
+def nearest_request_diagnostics(order, requests, limit=3):
+    diagnostics = []
+    for request in requests:
+        diagnostic = request_match_diagnostics(order, request)
+        checks = diagnostic.get("checks") or {}
+        diagnostics.append((
+            diagnostic.get("score", 0),
+            {
+                "id": request.get("id"),
+                "number": request.get("number") or "",
+                "unloading_date": request.get("unloading_date") or "",
+                "recipient": request.get("recipient") or "",
+                "payment": normalize_payment_type(request.get("comment")),
+                "score": diagnostic.get("score", 0),
+                "matched": diagnostic.get("matched", False),
+                "failed_checks": [name for name, ok in checks.items() if not ok],
+                "products": diagnostic.get("products") or [],
+            },
+        ))
+    diagnostics.sort(key=lambda item: (item[0], item[1].get("matched")), reverse=True)
+    return [payload for _score, payload in diagnostics[:max(1, int(limit or 3))]]
 
 
 def request_match_diagnostics(order, request):
@@ -420,55 +555,84 @@ def update_orders_from_skladbot():
     multiple = 0
 
     with SessionLocal() as db:
-        orders = db.execute(
-            select(Order)
-            .options(selectinload(Order.items))
-            .where(~Order.status.in_(COMPLETED_STATUSES))
-        ).scalars().all()
-        if not orders:
-            logging.info("SkladBot worker: no active backend orders, skip SkladBot API")
-            return {"requests": 0, "updated": 0, "matched": 0, "not_found": 0, "multiple": 0}
+        if not try_acquire_skladbot_sync_lock(db):
+            logging.info("SkladBot worker: another sync is already running, skip")
+            return {"requests": 0, "updated": 0, "matched": 0, "not_found": 0, "multiple": 0, "busy": True}
+        try:
+            orders = db.execute(
+                select(Order)
+                .options(selectinload(Order.items))
+                .where(~Order.status.in_(COMPLETED_STATUSES))
+            ).scalars().all()
+            if not orders:
+                logging.info("SkladBot worker: no active backend orders, skip SkladBot API")
+                return {"requests": 0, "updated": 0, "matched": 0, "not_found": 0, "multiple": 0}
 
-        requests = fetch_candidate_requests()
+            orders_to_check = [order for order in orders if not order_has_skladbot_number(order)]
+            if not orders_to_check:
+                logging.info("SkladBot worker: all active orders already have SkladBot numbers, skip SkladBot API")
+                return {
+                    "requests": 0,
+                    "updated": 0,
+                    "matched": 0,
+                    "not_found": 0,
+                    "multiple": 0,
+                    "already_numbered": len(orders),
+                }
 
-        for order in orders:
-            matches = [request for request in requests if request_matches_order(order, request)]
-            raw_payload = dict(order.raw_payload or {})
-            raw_payload["skladbot_checked_at"] = checked_at
-            if len(matches) == 1:
-                request = matches[0]
-                raw_payload["skladbot_request_number"] = request.get("number") or ""
-                raw_payload["skladbot_request_id"] = str(request.get("id") or "")
-                raw_payload["skladbot_status"] = "found"
-                raw_payload["skladbot_raw"] = request.get("raw") or {}
-                matched += 1
-            elif len(matches) > 1:
-                raw_payload["skladbot_status"] = "multiple"
-                raw_payload["skladbot_candidates"] = [
-                    {"id": request.get("id"), "number": request.get("number")}
-                    for request in matches[:10]
-                ]
-                multiple += 1
-            else:
-                raw_payload["skladbot_status"] = "not_found"
-                not_found += 1
-            order.raw_payload = raw_payload
-            updated += 1
+            requests = fetch_candidate_requests(orders=orders_to_check)
 
-        db.add(AuditLog(
-            action="skladbot_worker_sync",
-            entity_type="skladbot",
-            entity_id="worker",
-            payload={
-                "requests": len(requests),
-                "orders_checked": len(orders),
-                "updated": updated,
-                "matched": matched,
-                "not_found": not_found,
-                "multiple": multiple,
-            },
-        ))
-        db.commit()
+            for order in orders_to_check:
+                matches = [request for request in requests if request_matches_order(order, request)]
+                raw_payload = dict(order.raw_payload or {})
+                raw_payload["skladbot_checked_at"] = checked_at
+                if len(matches) == 1:
+                    request = matches[0]
+                    raw_payload["skladbot_request_number"] = request.get("number") or ""
+                    raw_payload["skladbot_request_id"] = str(request.get("id") or "")
+                    raw_payload["skladbot_status"] = "found"
+                    raw_payload["skladbot_raw"] = request.get("raw") or {}
+                    matched += 1
+                elif len(matches) > 1:
+                    raw_payload["skladbot_status"] = "multiple"
+                    raw_payload["skladbot_candidates"] = [
+                        {"id": request.get("id"), "number": request.get("number")}
+                        for request in matches[:10]
+                    ]
+                    raw_payload["skladbot_nearest"] = nearest_request_diagnostics(order, requests)
+                    multiple += 1
+                else:
+                    raw_payload["skladbot_status"] = "not_found"
+                    raw_payload["skladbot_nearest"] = nearest_request_diagnostics(order, requests)
+                    not_found += 1
+                order.raw_payload = raw_payload
+                updated += 1
+
+            db.add(AuditLog(
+                action="skladbot_worker_sync",
+                entity_type="skladbot",
+                entity_id="worker",
+                payload={
+                    "requests": len(requests),
+                    "orders_checked": len(orders_to_check),
+                    "orders_already_numbered": len(orders) - len(orders_to_check),
+                    "updated": updated,
+                    "matched": matched,
+                    "not_found": not_found,
+                    "multiple": multiple,
+                },
+            ))
+            db.commit()
+            google_sheets_result = export_skladbot_numbers_to_google_sheets(db, orders_to_check)
+            db.add(AuditLog(
+                action="skladbot_google_sheets_export",
+                entity_type="skladbot",
+                entity_id="worker",
+                payload=google_sheets_result,
+            ))
+            db.commit()
+        finally:
+            release_skladbot_sync_lock(db)
 
     logging.info(
         "SkladBot worker: requests=%s orders=%s matched=%s not_found=%s multiple=%s",
@@ -479,6 +643,33 @@ def update_orders_from_skladbot():
         multiple,
     )
     return {"requests": len(requests), "updated": updated, "matched": matched, "not_found": not_found, "multiple": multiple}
+
+
+def export_skladbot_numbers_to_google_sheets(db, orders):
+    try:
+        return sync_backend_orders_skladbot_to_google_sheets(orders)
+    except Exception as exc:
+        logging.exception("SkladBot worker: failed to export request numbers to Google Sheets")
+        db.rollback()
+        return {"status": "error", "error": str(exc)}
+
+
+def try_acquire_skladbot_sync_lock(db):
+    if db.bind.dialect.name != "postgresql":
+        return True
+    return bool(db.execute(
+        text("SELECT pg_try_advisory_lock(:lock_key)"),
+        {"lock_key": SKLADBOT_SYNC_LOCK_KEY},
+    ).scalar())
+
+
+def release_skladbot_sync_lock(db):
+    if db.bind.dialect.name != "postgresql":
+        return
+    db.execute(
+        text("SELECT pg_advisory_unlock(:lock_key)"),
+        {"lock_key": SKLADBOT_SYNC_LOCK_KEY},
+    )
 
 
 def main():

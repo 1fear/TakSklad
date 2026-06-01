@@ -94,6 +94,12 @@ class ImportResult(BaseModel):
     duplicate_rows: int
     invalid_rows: int
     errors: list[str] = Field(default_factory=list)
+    backend_address_updates: int = 0
+    google_sheets_status: str = ""
+    google_sheets_imported: int = 0
+    google_sheets_duplicates: int = 0
+    google_sheets_updated: int = 0
+    google_sheets_error: str = ""
 
 
 class DayReportTotals(BaseModel):

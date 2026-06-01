@@ -2,6 +2,7 @@ import unittest
 import uuid
 from io import BytesIO
 from datetime import date
+from unittest import mock
 
 import openpyxl
 from fastapi.testclient import TestClient
@@ -10,6 +11,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.app.db import get_db
+from backend.app.google_sheets_exporter import update_missing_sheet_addresses
 from backend.app.main import app, require_service_token
 from backend.app.models import AuditLog, Base, ImportJob, Order, OrderItem, PendingEvent, ScanCode
 
@@ -78,6 +80,68 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(payload[0]["status"], "not_completed")
         self.assertEqual(payload[0]["items"][0]["product"], "Test Product")
 
+    def test_sync_sources_runs_google_sheet_sync_then_skladbot_sync(self):
+        with mock.patch("backend.app.main.sync_google_sheet_to_backend") as google_sync, mock.patch(
+            "backend.app.main.update_orders_from_skladbot"
+        ) as skladbot_sync:
+            google_sync.return_value = {
+                "rows": 2,
+                "matched": 2,
+                "orders_updated": 1,
+                "items_updated": 1,
+                "conflicts": 0,
+            }
+            skladbot_sync.return_value = {
+                "requests": 3,
+                "updated": 2,
+                "matched": 1,
+                "not_found": 1,
+                "multiple": 0,
+            }
+
+            response = self.client.post("/api/v1/sync/sources?wait_skladbot=1")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "completed")
+        self.assertEqual(payload["google_sheets"]["status"], "completed")
+        self.assertEqual(payload["google_sheets"]["items_updated"], 1)
+        self.assertEqual(payload["skladbot"]["status"], "completed")
+        self.assertEqual(payload["skladbot"]["matched"], 1)
+        google_sync.assert_called_once()
+        skladbot_sync.assert_called_once()
+
+    def test_sync_sources_can_skip_skladbot(self):
+        with mock.patch("backend.app.main.sync_google_sheet_to_backend") as google_sync, mock.patch(
+            "backend.app.main.update_orders_from_skladbot"
+        ) as skladbot_sync:
+            google_sync.return_value = {"rows": 1, "matched": 1, "orders_updated": 0, "items_updated": 0, "conflicts": 0}
+
+            response = self.client.post("/api/v1/sync/sources?skladbot=0")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "completed")
+        self.assertEqual(payload["skladbot"]["status"], "skipped")
+        google_sync.assert_called_once()
+        skladbot_sync.assert_not_called()
+
+    def test_sync_sources_starts_skladbot_in_background_by_default(self):
+        with mock.patch("backend.app.main.sync_google_sheet_to_backend") as google_sync, mock.patch(
+            "backend.app.main.start_skladbot_sync_background"
+        ) as start_skladbot:
+            google_sync.return_value = {"rows": 1, "matched": 1, "orders_updated": 0, "items_updated": 0, "conflicts": 0}
+            start_skladbot.return_value = {"status": "started", "message": "background"}
+
+            response = self.client.post("/api/v1/sync/sources")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "completed")
+        self.assertEqual(payload["skladbot"]["status"], "started")
+        google_sync.assert_called_once()
+        start_skladbot.assert_called_once()
+
     def test_scan_create_is_idempotent_for_same_item_and_rejects_cross_order_duplicate(self):
         _, item_id = self.seed_order()
         _, other_item_id = self.seed_order()
@@ -118,6 +182,27 @@ class BackendApiPersistenceTests(unittest.TestCase):
             other_item = db.get(OrderItem, uuid.UUID(other_item_id))
             self.assertEqual(other_item.scanned_blocks, 0)
 
+    def test_scan_create_exports_scan_state_to_google_sheets_best_effort(self):
+        _, item_id = self.seed_order()
+        exported_ids = []
+
+        with mock.patch(
+            "backend.app.orders_service.sync_backend_order_item_to_google_sheets",
+            side_effect=lambda item: exported_ids.append(str(item.id)) or {"status": "completed", "updated": 1},
+        ) as google_export:
+            response = self.client.post(
+                "/api/v1/scans",
+                json={"order_item_id": item_id, "code": "010000000001"},
+            )
+
+        self.assertEqual(response.status_code, 201)
+        google_export.assert_called_once()
+        self.assertEqual(exported_ids, [item_id])
+
+        with self.SessionLocal() as db:
+            actions = [row.action for row in db.execute(select(AuditLog)).scalars().all()]
+            self.assertIn("google_sheets_scan_export", actions)
+
     def test_complete_order_requires_required_blocks_and_closes_order(self):
         order_id, item_id = self.seed_order()
 
@@ -144,6 +229,27 @@ class BackendApiPersistenceTests(unittest.TestCase):
             actions = [row.action for row in db.execute(select(AuditLog)).scalars().all()]
             self.assertEqual(actions.count("scan_code_created"), 2)
             self.assertIn("order_completed", actions)
+
+    def test_complete_order_exports_archive_to_google_sheets_best_effort(self):
+        order_id, item_id = self.seed_order()
+        for code in ["010000000001", "010000000002"]:
+            scan = self.client.post("/api/v1/scans", json={"order_item_id": item_id, "code": code})
+            self.assertEqual(scan.status_code, 201)
+
+        exported_ids = []
+        with mock.patch(
+            "backend.app.orders_service.archive_backend_order_to_google_sheets",
+            side_effect=lambda order: exported_ids.append(str(order.id)) or {"status": "completed", "updated": 1},
+        ) as google_archive:
+            completed = self.client.post(f"/api/v1/orders/{order_id}/complete")
+
+        self.assertEqual(completed.status_code, 200)
+        google_archive.assert_called_once()
+        self.assertEqual(exported_ids, [order_id])
+
+        with self.SessionLocal() as db:
+            actions = [row.action for row in db.execute(select(AuditLog)).scalars().all()]
+            self.assertIn("google_sheets_archive_export", actions)
 
     def test_return_lookup_and_mark_returned_excludes_order_from_active_list(self):
         order_id, _ = self.seed_order(status="completed", scanned_blocks=2, item_status="completed")
@@ -201,6 +307,41 @@ class BackendApiPersistenceTests(unittest.TestCase):
             actions = [row.action for row in db.execute(select(AuditLog)).scalars().all()]
             self.assertIn("order_returned", actions)
 
+    def test_mark_return_exports_archive_and_returns_to_google_sheets_best_effort(self):
+        order_id, _ = self.seed_order(status="completed", scanned_blocks=2, item_status="completed")
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            order.raw_payload = {
+                "skladbot_request_number": "WR-RETURN-101",
+                "skladbot_request_id": "100501",
+            }
+            db.commit()
+
+        archived_ids = []
+        returned_ids = []
+        with mock.patch(
+            "backend.app.orders_service.archive_backend_order_to_google_sheets",
+            side_effect=lambda order: archived_ids.append(str(order.id)) or {"status": "completed", "updated": 1},
+        ) as google_archive, mock.patch(
+            "backend.app.orders_service.mark_backend_order_returned_in_google_sheets",
+            side_effect=lambda order: returned_ids.append(str(order.id)) or {"status": "completed", "updated": 1},
+        ) as google_return:
+            returned = self.client.post(
+                f"/api/v1/returns/{order_id}",
+                json={"return_reference": "WR-RETURN-101", "returned_by": "test"},
+            )
+
+        self.assertEqual(returned.status_code, 200)
+        google_archive.assert_called_once()
+        google_return.assert_called_once()
+        self.assertEqual(archived_ids, [order_id])
+        self.assertEqual(returned_ids, [order_id])
+
+        with self.SessionLocal() as db:
+            actions = [row.action for row in db.execute(select(AuditLog)).scalars().all()]
+            self.assertIn("google_sheets_archive_export", actions)
+            self.assertIn("google_sheets_return_export", actions)
+
     def test_import_creates_grouped_order_items_and_history(self):
         rows = [
             {
@@ -229,7 +370,11 @@ class BackendApiPersistenceTests(unittest.TestCase):
             },
         ]
 
-        response = self.client.post("/api/v1/imports", json={"source": "excel", "filename": "orders.xlsx", "rows": rows})
+        with mock.patch(
+            "backend.app.imports_service.append_import_records_to_google_sheets",
+            return_value={"status": "completed", "imported": 2, "duplicates": 0, "error": ""},
+        ) as google_export:
+            response = self.client.post("/api/v1/imports", json={"source": "excel", "filename": "orders.xlsx", "rows": rows})
 
         self.assertEqual(response.status_code, 201)
         payload = response.json()
@@ -237,6 +382,14 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(payload["orders_created"], 1)
         self.assertEqual(payload["items_created"], 2)
         self.assertEqual(payload["duplicate_rows"], 0)
+        self.assertEqual(payload["google_sheets_status"], "completed")
+        self.assertEqual(payload["google_sheets_imported"], 2)
+        google_export.assert_called_once()
+        sheet_records = google_export.call_args.args[0]
+        self.assertEqual(len(sheet_records), 2)
+        self.assertEqual(sheet_records[0]["Дата отгрузки"], "30.05.2026")
+        self.assertEqual(sheet_records[0]["Клиент"], "Import Client")
+        self.assertEqual(sheet_records[0]["ID импорта"], "import-row-1")
 
         active = self.client.get("/api/v1/orders/active")
         self.assertEqual(active.status_code, 200)
@@ -250,6 +403,144 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(history.status_code, 200)
         self.assertEqual(len(history.json()), 1)
         self.assertEqual(history.json()[0]["rows_imported"], 2)
+        self.assertEqual(history.json()[0]["raw_payload"]["google_sheets"]["status"], "completed")
+
+    def test_import_keeps_backend_data_when_google_sheets_export_fails(self):
+        rows = [
+            {
+                "Дата отгрузки": "30.05.2026",
+                "Тип оплаты": "cash",
+                "Клиент": "Google Fail Client",
+                "Адрес": "Import Address",
+                "Товары": "Product One",
+                "Кол-во ШТ": "20",
+                "Кол-во блок": "2",
+                "ID заказа": "google-fail-order",
+                "ID импорта": "google-fail-import",
+            },
+        ]
+
+        with mock.patch(
+            "backend.app.imports_service.append_import_records_to_google_sheets",
+            side_effect=RuntimeError("Google timeout"),
+        ):
+            response = self.client.post("/api/v1/imports", json={"source": "excel", "filename": "orders.xlsx", "rows": rows})
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        self.assertEqual(payload["status"], "completed")
+        self.assertEqual(payload["items_created"], 1)
+        self.assertEqual(payload["google_sheets_status"], "error")
+        self.assertIn("Google timeout", payload["google_sheets_error"])
+
+        active = self.client.get("/api/v1/orders/active")
+        self.assertEqual(active.status_code, 200)
+        self.assertEqual(active.json()[0]["client"], "Google Fail Client")
+
+    def test_duplicate_backend_import_still_can_backfill_google_sheets(self):
+        row = {
+            "Дата отгрузки": "30.05.2026",
+            "Тип оплаты": "cash",
+            "Клиент": "Backfill Client",
+            "Адрес": "Import Address",
+            "Товары": "Product One",
+            "Кол-во ШТ": "20",
+            "Кол-во блок": "2",
+            "ID заказа": "backfill-order",
+            "ID импорта": "backfill-import",
+        }
+
+        with mock.patch(
+            "backend.app.imports_service.append_import_records_to_google_sheets",
+            return_value={"status": "disabled", "imported": 0, "duplicates": 0, "error": "no credentials"},
+        ):
+            first = self.client.post("/api/v1/imports", json={"source": "excel", "filename": "orders.xlsx", "rows": [row]})
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(first.json()["items_created"], 1)
+
+        with mock.patch(
+            "backend.app.imports_service.append_import_records_to_google_sheets",
+            return_value={"status": "completed", "imported": 1, "duplicates": 0, "error": ""},
+        ) as google_export:
+            second = self.client.post("/api/v1/imports", json={"source": "excel", "filename": "orders.xlsx", "rows": [row]})
+
+        self.assertEqual(second.status_code, 201)
+        payload = second.json()
+        self.assertEqual(payload["items_created"], 0)
+        self.assertEqual(payload["duplicate_rows"], 1)
+        self.assertEqual(payload["google_sheets_status"], "completed")
+        self.assertEqual(payload["google_sheets_imported"], 1)
+        google_export.assert_called_once()
+        self.assertEqual(google_export.call_args.args[0][0]["ID импорта"], "backfill-import")
+
+    def test_changed_address_with_same_source_import_id_does_not_create_backend_duplicate(self):
+        first_row = {
+            "Дата отгрузки": "30.05.2026",
+            "Тип оплаты": "cash",
+            "Клиент": "Stable Import Client",
+            "Адрес": "Адрес не указан",
+            "Товары": "Product One",
+            "Кол-во ШТ": "20",
+            "Кол-во блок": "2",
+            "ID заказа": "stable-order",
+            "ID импорта": "stable-import",
+        }
+        second_row = {
+            **first_row,
+            "Адрес": "Ташкент, Чиланзарский район, 10",
+        }
+
+        with mock.patch(
+            "backend.app.imports_service.append_import_records_to_google_sheets",
+            return_value={"status": "completed", "imported": 1, "duplicates": 0, "updated": 0, "error": ""},
+        ):
+            first = self.client.post("/api/v1/imports", json={"source": "excel", "filename": "orders.xlsx", "rows": [first_row]})
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(first.json()["items_created"], 1)
+
+        with mock.patch(
+            "backend.app.imports_service.append_import_records_to_google_sheets",
+            return_value={"status": "completed", "imported": 0, "duplicates": 1, "updated": 1, "error": ""},
+        ):
+            second = self.client.post("/api/v1/imports", json={"source": "excel", "filename": "orders.xlsx", "rows": [second_row]})
+
+        self.assertEqual(second.status_code, 201)
+        self.assertEqual(second.json()["items_created"], 0)
+        self.assertEqual(second.json()["duplicate_rows"], 1)
+        self.assertEqual(second.json()["backend_address_updates"], 1)
+        self.assertEqual(second.json()["google_sheets_updated"], 1)
+        with self.SessionLocal() as db:
+            orders = db.execute(select(Order)).scalars().all()
+            self.assertEqual(len(orders), 1)
+            self.assertEqual(len(db.execute(select(OrderItem)).scalars().all()), 1)
+            self.assertEqual(orders[0].address, "Ташкент, Чиланзарский район, 10")
+            self.assertEqual(orders[0].raw_payload["address_backfill_source"], "import")
+
+    def test_google_sheets_export_updates_missing_address_for_existing_import_id(self):
+        class FakeSheet:
+            def __init__(self):
+                self.updates = []
+
+            def batch_update(self, updates, value_input_option=None):
+                self.updates.extend(updates)
+                self.value_input_option = value_input_option
+
+        rows = [
+            ["Дата отгрузки", "Тип оплаты", "Клиент", "Адрес"] + [""] * 22 + ["ID заказа", "ID импорта"],
+            ["30.05.2026", "cash", "Backfill Client", "Адрес не указан"] + [""] * 22 + ["order-1", "import-1"],
+        ]
+        records = [{
+            "ID заказа": "order-1",
+            "ID импорта": "import-1",
+            "Адрес": "Ташкент, Чиланзарский район, 10",
+        }]
+        sheet = FakeSheet()
+
+        updated = update_missing_sheet_addresses(sheet, rows, records)
+
+        self.assertEqual(updated, 1)
+        self.assertEqual(sheet.updates, [{"range": "D2", "values": [["Ташкент, Чиланзарский район, 10"]]}])
+        self.assertEqual(sheet.value_input_option, "USER_ENTERED")
 
     def test_import_stores_coordinates_blocks_and_prices(self):
         rows = [
@@ -382,6 +673,44 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(payload["payment_groups"][0]["orders"], 1)
         self.assertEqual(payload["orders"][0]["skladbot_request_number"], "WR-100")
 
+    def test_day_report_counts_scan_by_business_timezone(self):
+        rows = [
+            {
+                "Дата отгрузки": "2026-05-31",
+                "Тип оплаты": "Терминал",
+                "Клиент": "Timezone Client",
+                "Адрес": "Tashkent Address",
+                "Товары": "Chapman Brown OP 20",
+                "Кол-во ШТ": "10",
+                "Кол-во блок": "1",
+                "ID заказа": "timezone-source-order",
+            },
+        ]
+        imported = self.client.post("/api/v1/imports", json={"source": "excel", "rows": rows})
+        self.assertEqual(imported.status_code, 201)
+
+        active = self.client.get("/api/v1/orders/active").json()
+        item_id = active[0]["items"][0]["id"]
+        scan = self.client.post(
+            "/api/v1/scans",
+            json={
+                "order_item_id": item_id,
+                "code": "010000000501",
+                "scanned_at": "2026-05-31T20:30:00+00:00",
+            },
+        )
+        self.assertEqual(scan.status_code, 201)
+
+        with mock.patch.dict("os.environ", {"TAKSKLAD_TIMEZONE": "Asia/Tashkent"}):
+            report = self.client.get("/api/v1/reports/day?report_date=2026-06-01")
+
+        self.assertEqual(report.status_code, 200)
+        payload = report.json()
+        self.assertEqual(payload["report_date"], "2026-06-01")
+        self.assertEqual(payload["totals"]["orders"], 1)
+        self.assertEqual(payload["totals"]["scanned_today"], 1)
+        self.assertEqual(payload["orders"][0]["client"], "Timezone Client")
+
     def test_logistics_report_uses_shipment_date_coordinates_and_prices(self):
         rows = [
             {
@@ -509,9 +838,14 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
         source_files = self.client.get("/api/v1/reports/kiz/source-files")
         self.assertEqual(source_files.status_code, 200)
-        self.assertEqual([item["source_file"] for item in source_files.json()], ["source-a.xlsx"])
+        source_payload = source_files.json()
+        self.assertEqual([item["source_file"] for item in source_payload], ["source-a.xlsx"])
+        self.assertTrue(source_payload[0]["source_key"].startswith("import:"))
 
-        report = self.client.get("/api/v1/reports/kiz/source-file", params={"source_file": "source-a.xlsx"})
+        report = self.client.get(
+            "/api/v1/reports/kiz/source-file",
+            params={"source_file": "source-a.xlsx", "source_key": source_payload[0]["source_key"]},
+        )
         self.assertEqual(report.status_code, 200)
         workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
         summary = workbook["Сводка"]
@@ -526,6 +860,76 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(sheet["I2"].value, "010000000301")
         self.assertEqual(sheet["I3"].value, "010000000302")
         self.assertEqual(sheet["K2"].value, "source-a.xlsx")
+        workbook.close()
+
+    def test_kiz_source_file_report_separates_same_filename_by_import(self):
+        first_import = self.client.post(
+            "/api/v1/imports",
+            json={
+                "source": "excel",
+                "filename": "same-name.xlsx",
+                "rows": [
+                    {
+                        "Дата отгрузки": "2026-05-30",
+                        "Тип оплаты": "Терминал",
+                        "Клиент": "Done Client",
+                        "Адрес": "Done Address",
+                        "Товары": "Chapman Brown OP 20",
+                        "Кол-во ШТ": "10",
+                        "Кол-во блок": "1",
+                        "Источник файла": "same-name.xlsx",
+                        "ID заказа": "same-done-order",
+                    },
+                ],
+            },
+        )
+        self.assertEqual(first_import.status_code, 201)
+
+        active = self.client.get("/api/v1/orders/active").json()
+        done_order = next(order for order in active if order["client"] == "Done Client")
+        response = self.client.post(
+            "/api/v1/scans",
+            json={"order_item_id": done_order["items"][0]["id"], "code": "010000000401"},
+        )
+        self.assertEqual(response.status_code, 201)
+
+        second_import = self.client.post(
+            "/api/v1/imports",
+            json={
+                "source": "excel",
+                "filename": "same-name.xlsx",
+                "rows": [
+                    {
+                        "Дата отгрузки": "2026-05-30",
+                        "Тип оплаты": "Перечисление",
+                        "Клиент": "Open Client",
+                        "Адрес": "Open Address",
+                        "Товары": "Chapman Gold SSL 20",
+                        "Кол-во ШТ": "10",
+                        "Кол-во блок": "1",
+                        "Источник файла": "same-name.xlsx",
+                        "ID заказа": "same-open-order",
+                    },
+                ],
+            },
+        )
+        self.assertEqual(second_import.status_code, 201)
+
+        source_files = self.client.get("/api/v1/reports/kiz/source-files")
+        self.assertEqual(source_files.status_code, 200)
+        same_name_files = [item for item in source_files.json() if item["source_file"] == "same-name.xlsx"]
+        self.assertEqual(len(same_name_files), 1)
+        self.assertTrue(same_name_files[0]["source_key"].startswith("import:"))
+
+        report = self.client.get(
+            "/api/v1/reports/kiz/source-file",
+            params={"source_file": "same-name.xlsx", "source_key": same_name_files[0]["source_key"]},
+        )
+        self.assertEqual(report.status_code, 200)
+        workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
+        summary = workbook["Сводка"]
+        self.assertEqual(summary["C2"].value, "Done Client")
+        self.assertIsNone(summary["C3"].value)
         workbook.close()
 
     def test_day_report_rejects_invalid_report_date(self):

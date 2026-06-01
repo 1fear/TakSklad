@@ -402,6 +402,52 @@ def geocode_address_yandex(address, cache=None):
     return result
 
 
+def reverse_geocode_yandex(coordinates, cache=None):
+    coordinates = normalize_coordinates(coordinates)
+    if not coordinates:
+        return "", "некорректные координаты"
+
+    cache_key = f"reverse:{coordinates}"
+    if cache is not None and cache_key in cache:
+        return cache[cache_key]
+
+    api_key = yandex_key()
+    if not api_key:
+        result = ("", "не указан ключ Яндекс Геокодера")
+        if cache is not None:
+            cache[cache_key] = result
+        return result
+
+    params = {
+        "apikey": api_key,
+        "geocode": coordinates,
+        "format": "json",
+        "lang": "ru_RU",
+        "sco": "latlong",
+        "results": "1",
+        "kind": "house",
+    }
+    url = YANDEX_GEOCODER_URL + "?" + urllib.parse.urlencode(params)
+    try:
+        response = httpx.get(url, timeout=10)
+        response.raise_for_status()
+        payload = response.json()
+        members = payload.get("response", {}).get("GeoObjectCollection", {}).get("featureMember", [])
+        if not members:
+            result = ("", "адрес не найден")
+        else:
+            geo_object = members[0].get("GeoObject", {})
+            meta = geo_object.get("metaDataProperty", {}).get("GeocoderMetaData", {})
+            address = clean_address_for_display(meta.get("text") or geo_object.get("name"))
+            result = (address, "") if address else ("", "Яндекс не вернул адрес")
+    except Exception as exc:
+        result = ("", f"{exc.__class__.__name__}: {exc}")
+
+    if cache is not None:
+        cache[cache_key] = result
+    return result
+
+
 def excel_file_to_import_payload(file_path, file_name=None, source="telegram", shipment_date=None):
     file_name = normalize_text(file_name) or Path(file_path).name
     if not is_supported_excel_file_name(file_name):
@@ -449,8 +495,21 @@ def excel_file_to_import_payload(file_path, file_name=None, source="telegram", s
                 blocks = (quantity + default_pieces_per_block - 1) // default_pieces_per_block
 
             date_value = shipment_date or parse_date_text(get_cell(row, columns.get("date"))) or default_date
-            address = clean_address_for_display(get_cell(row, columns.get("address"))) or "Адрес не указан"
+            address = clean_address_for_display(get_cell(row, columns.get("address")))
             coordinates = normalize_coordinates(get_cell(row, columns.get("coordinates")))
+            if not address and coordinates:
+                geocoded_address, geocode_error = reverse_geocode_yandex(coordinates, cache=geocode_cache)
+                if geocoded_address:
+                    address = geocoded_address
+                    geocoded_count += 1
+                else:
+                    geocode_failed_count += 1
+                    address = f"Координаты: {coordinates}"
+                    warnings.append(
+                        f"{file_name}, строка {row_number}: адрес по координатам не получен ({geocode_error})"
+                    )
+            if not address:
+                address = "Адрес не указан"
             if not coordinates:
                 geocoded_coordinates, geocode_error = geocode_address_yandex(address, cache=geocode_cache)
                 if geocoded_coordinates:

@@ -40,9 +40,10 @@ KIZ_SUMMARY_HEADERS = [
 
 
 def list_completed_kiz_source_files(db: Session):
-    groups = group_items_by_source_file(load_items(db))
+    groups = group_items_by_source_document(load_items(db))
     result = []
-    for source_file, items in sorted(groups.items()):
+    for source_key, items in sorted(groups.items(), key=lambda item: source_group_sort_key(item[1])):
+        source_file = source_file_for_items(items)
         if not source_file or not items:
             continue
         planned_blocks = sum(max(0, item.quantity_blocks or 0) for item in items)
@@ -52,6 +53,7 @@ def list_completed_kiz_source_files(db: Session):
             continue
         dates = sorted({item.order.order_date.isoformat() for item in items if item.order and item.order.order_date})
         result.append({
+            "source_key": source_key,
             "source_file": source_file,
             "dates": dates,
             "items": len(items),
@@ -61,15 +63,16 @@ def list_completed_kiz_source_files(db: Session):
     return result
 
 
-def build_kiz_source_file_report_xlsx(db: Session, source_file: str):
+def build_kiz_source_file_report_xlsx(db: Session, source_file: str, source_key: str = ""):
     source_file = str(source_file or "").strip()
+    source_key = str(source_key or "").strip()
     if not source_file:
         raise ApiError(422, "source_file is required")
 
     items = [
         item
         for item in load_items(db)
-        if str((item.raw_payload or {}).get("source_file") or "").strip() == source_file
+        if item_matches_source(item, source_file=source_file, source_key=source_key)
     ]
     if not items:
         raise ApiError(404, f"No rows for source file {source_file}")
@@ -159,12 +162,52 @@ def load_items(db: Session):
     ).scalars().all()
 
 
-def group_items_by_source_file(items):
+def group_items_by_source_document(items):
     groups = {}
     for item in items:
-        source_file = str((item.raw_payload or {}).get("source_file") or "").strip()
-        groups.setdefault(source_file, []).append(item)
+        source_file = source_file_for_item(item)
+        if not source_file:
+            continue
+        groups.setdefault(source_document_key(item), []).append(item)
     return groups
+
+
+def source_document_key(item):
+    raw_payload = item.raw_payload or {}
+    backend_import_id = str(raw_payload.get("backend_import_id") or "").strip()
+    source_file = source_file_for_item(item)
+    if backend_import_id:
+        return f"import:{backend_import_id}:file:{source_file}"
+    return f"file:{source_file}"
+
+
+def source_file_for_item(item):
+    return str((item.raw_payload or {}).get("source_file") or "").strip()
+
+
+def source_file_for_items(items):
+    for item in items:
+        source_file = source_file_for_item(item)
+        if source_file:
+            return source_file
+    return ""
+
+
+def source_group_sort_key(items):
+    first_item = items[0] if items else None
+    order = first_item.order if first_item else None
+    raw_payload = first_item.raw_payload if first_item else {}
+    return (
+        str(order.order_date or "") if order else "",
+        str((raw_payload or {}).get("backend_import_id") or ""),
+        source_file_for_item(first_item) if first_item else "",
+    )
+
+
+def item_matches_source(item, source_file="", source_key=""):
+    if source_key:
+        return source_document_key(item) == source_key
+    return source_file_for_item(item) == source_file
 
 
 def item_is_completed(item):

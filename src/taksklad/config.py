@@ -3,6 +3,8 @@ import sys
 
 SPREADSHEET_ID = "1hisRZ667qEhsRTfoPzv4r78naYhc9kdzhkmUKvZEUr8"
 SHEET_NAME = "data"
+ARCHIVE_SHEET_NAME = "Архив"
+RETURNS_SHEET_NAME = "Возвраты"
 APP_NAME = "TakSklad"
 APP_EXECUTABLE_NAME = "TakSklad.exe"
 APP_RELEASE_ZIP_NAME = "TakSklad-windows-x64.zip"

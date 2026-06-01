@@ -324,11 +324,11 @@ main ◄ почти все модули
 - **Consequences:** меньше ложных привязок и меньше ложных `Не найдено`; безопасный partial-match допускает лишние товары в SkladBot-заявке, но при нескольких кандидатах сохраняет `Несколько совпадений`.
 - **Related Docs:** changelog 26.05/28.05, knowledge-base §7.
 
-### ADR-003: Разные окна SkladBot для VDS worker и desktop fallback
+### ADR-003: Динамическое окно SkladBot для VDS worker и отдельный desktop fallback
 - **Status:** Accepted
 - **Context:** для VDS нужен быстрый worker, который не перебирает сотни старых заявок; для старой desktop fallback-линии нужно не потерять заявки, созданные заранее.
-- **Decision:** VDS worker использует `SKLADBOT_SYNC_LOOKBACK_DAYS=1` и фильтры `customer_id=6211`, `type_id=3389`; desktop fallback оставлен с `SKLADBOT_SYNC_LOOKBACK_DAYS=14`; точное совпадение всегда проверяется по `unloading_date`.
-- **Consequences:** серверный MVP 2.0 работает быстро и узко, а локальная fallback-линия остаётся более терпимой к старым заявкам.
+- **Decision:** VDS worker использует базовое окно `SKLADBOT_SYNC_LOOKBACK_DAYS=1`, но расширяет его по датам активных заказов без номера SkladBot до `SKLADBOT_SYNC_MAX_LOOKBACK_DAYS=7` с запасом `SKLADBOT_ORDER_CREATE_LEAD_DAYS=3`; детальная загрузка ограничена `SKLADBOT_DETAIL_LIMIT=30`, `customer_id=6211`, `type_id=3389`; desktop fallback оставлен шире. Точное совпадение всегда проверяется по `unloading_date`.
+- **Consequences:** серверный MVP 2.0 остаётся быстрым в обычный день, но не теряет активные старые партии и не возвращается к перебору сотен заявок.
 - **Related Docs:** changelog 28.05, knowledge-base §7, `config.py`, `deploy/vds/docker-compose.yml`.
 
 ### ADR-004: Координация двух ПК через Google Sheets (временно)

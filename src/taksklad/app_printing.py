@@ -101,7 +101,23 @@ class PrintingActionsMixin:
         actions = tk.Frame(container, bg=BG_CARD)
         actions.pack(fill="x", pady=(18, 0))
 
+        dialog_closed = {"value": False}
+
+        def close_dialog():
+            if dialog_closed["value"]:
+                return
+            dialog_closed["value"] = True
+            try:
+                dialog.unbind_all("<Return>")
+                dialog.unbind_all("<KP_Enter>")
+                dialog.unbind_all("<Escape>")
+            except tk.TclError:
+                pass
+            dialog.destroy()
+
         def confirm():
+            if dialog_closed["value"]:
+                return
             result["print"] = True
             label_width, label_height = parse_label_size_text(size_var.get())
             if save_var.get():
@@ -112,12 +128,12 @@ class PrintingActionsMixin:
                     "dpi": LABEL_DPI,
                     "scale": "100%",
                 })
-            dialog.destroy()
+            close_dialog()
 
         def cancel():
-            dialog.destroy()
+            close_dialog()
 
-        AppButton(
+        print_button = AppButton(
             actions,
             text="ПЕЧАТАТЬ",
             bg=SUCCESS,
@@ -128,7 +144,8 @@ class PrintingActionsMixin:
             pady=8,
             command=confirm,
             cursor="hand2",
-        ).pack(side="right", padx=(8, 0))
+        )
+        print_button.pack(side="right", padx=(8, 0))
 
         AppButton(
             actions,
@@ -145,12 +162,17 @@ class PrintingActionsMixin:
 
         dialog.protocol("WM_DELETE_WINDOW", cancel)
         dialog.bind("<Return>", lambda _event: confirm())
+        dialog.bind("<KP_Enter>", lambda _event: confirm())
         dialog.bind("<Escape>", lambda _event: cancel())
+        dialog.bind_all("<Return>", lambda _event: confirm())
+        dialog.bind_all("<KP_Enter>", lambda _event: confirm())
+        dialog.bind_all("<Escape>", lambda _event: cancel())
         self.update_idletasks()
         dialog.update_idletasks()
         x = self.winfo_x() + (self.winfo_width() - dialog.winfo_width()) // 2
         y = self.winfo_y() + (self.winfo_height() - dialog.winfo_height()) // 2
         dialog.geometry(f"+{x}+{y}")
+        print_button.focus_set()
         self.wait_window(dialog)
         return result["print"]
 

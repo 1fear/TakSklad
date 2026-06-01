@@ -1,10 +1,12 @@
 from urllib.parse import quote
+from threading import Lock, Thread
 
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from .db import get_db
 from .diagnostics_service import build_backend_diagnostics_log
+from .google_sheets_sync_worker import sync_google_sheet_to_backend
 from .imports_service import create_import as create_import_in_db
 from .imports_service import list_imports as list_imports_in_db
 from .kiz_reports_service import build_kiz_source_file_report_xlsx, list_completed_kiz_source_files
@@ -16,6 +18,7 @@ from .orders_service import list_returned_orders as list_returned_orders_in_db
 from .orders_service import lookup_return_order as lookup_return_order_in_db
 from .orders_service import mark_order_returned as mark_order_returned_in_db
 from .reports_service import build_day_report
+from .skladbot_worker import update_orders_from_skladbot
 from .schemas import (
     DayReportRead,
     HealthResponse,
@@ -30,6 +33,8 @@ from .settings import APP_VERSION, load_settings
 
 
 settings = load_settings()
+sync_sources_lock = Lock()
+skladbot_sync_lock = Lock()
 
 app = FastAPI(
     title="TakSklad Backend API",
@@ -82,6 +87,60 @@ api = APIRouter(prefix="/api/v1", dependencies=[Depends(require_service_token)])
 @api.get("/orders/active")
 def list_active_orders(db=Depends(get_db)) -> list[OrderRead]:
     return list_active_orders_in_db(db)
+
+
+@api.post("/sync/sources")
+def sync_sources(skladbot: bool = True, wait_skladbot: bool = False, db=Depends(get_db)):
+    if not sync_sources_lock.acquire(blocking=False):
+        return {
+            "status": "busy",
+            "google_sheets": {"status": "skipped", "message": "Sync already in progress"},
+            "skladbot": {"status": "skipped", "message": "Sync already in progress"},
+        }
+
+    errors = []
+    try:
+        try:
+            google_sheets_result = sync_google_sheet_to_backend(db)
+            google_sheets_result = {"status": "completed", **google_sheets_result}
+        except Exception as exc:
+            google_sheets_result = {"status": "error", "error": str(exc)}
+            errors.append("google_sheets")
+
+        if skladbot and wait_skladbot:
+            try:
+                skladbot_result = update_orders_from_skladbot()
+                skladbot_result = {"status": "completed", **skladbot_result}
+            except Exception as exc:
+                skladbot_result = {"status": "error", "error": str(exc)}
+                errors.append("skladbot")
+        elif skladbot:
+            skladbot_result = start_skladbot_sync_background()
+        else:
+            skladbot_result = {"status": "skipped"}
+
+        return {
+            "status": "completed_with_errors" if errors else "completed",
+            "errors": errors,
+            "google_sheets": google_sheets_result,
+            "skladbot": skladbot_result,
+        }
+    finally:
+        sync_sources_lock.release()
+
+
+def start_skladbot_sync_background():
+    if not skladbot_sync_lock.acquire(blocking=False):
+        return {"status": "busy", "message": "SkladBot sync already in progress"}
+
+    def worker():
+        try:
+            update_orders_from_skladbot()
+        finally:
+            skladbot_sync_lock.release()
+
+    Thread(target=worker, daemon=True).start()
+    return {"status": "started", "message": "SkladBot sync started in background"}
 
 
 @api.get("/returns", response_model=list[OrderRead])
@@ -151,9 +210,9 @@ def kiz_source_files(db=Depends(get_db)) -> list[dict]:
 
 
 @api.get("/reports/kiz/source-file")
-def kiz_source_file_report(source_file: str, db=Depends(get_db)):
+def kiz_source_file_report(source_file: str, source_key: str | None = None, db=Depends(get_db)):
     try:
-        content, filename = build_kiz_source_file_report_xlsx(db, source_file)
+        content, filename = build_kiz_source_file_report_xlsx(db, source_file, source_key or "")
     except ApiError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     return Response(

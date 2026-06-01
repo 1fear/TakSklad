@@ -3335,3 +3335,15 @@ cd /opt/taksklad/app
   - VDS `./deploy/vds/acceptance_status.sh` - общий `status=ok`;
   - VDS `version.json.message` содержит `Выгрузка КИЗов`;
   - VDS manifest содержит `push_notifications_allowed=true` и `mandatory_update_disabled=true`.
+
+### Release Preflight Safety Flag Alignment
+
+- Причина: `tools/release_preflight.py` всё ещё требовал старый флаг `no_push_notifications`, хотя acceptance manifest уже перешёл на `push_notifications_allowed=true` и `mandatory_update_disabled=true`.
+- Решение:
+  - preflight теперь проверяет новые safety-флаги;
+  - тестовый fixture `tests/test_release_preflight.py` обновлён под ту же модель;
+  - старый `no_push_notifications` больше не участвует в preflight gate.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_release_preflight tests.test_vds_acceptance_scripts tests.test_acceptance_excel_generator` - 19 тестов OK;
+  - `./.venv/bin/python tools/release_preflight.py --skip-network` - `status=ok`;
+  - `rg no_push_notifications` по preflight/acceptance runtime-файлам не нашёл старых требований.

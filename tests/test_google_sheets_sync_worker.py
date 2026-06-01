@@ -1,0 +1,294 @@
+import unittest
+import uuid
+from datetime import date
+
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from backend.app.google_sheets_exporter import build_import_record_row, build_import_sheet_header
+from backend.app.google_sheets_sync_worker import (
+    RETURN_DATE_COLUMN,
+    RETURN_REFERENCE_COLUMN,
+    RETURN_STATUS_COLUMN,
+    RETURNED_BY_COLUMN,
+    sync_google_sheet_to_backend,
+)
+from backend.app.models import AuditLog, Base, Order, OrderItem, ScanCode
+
+
+class FakeSheet:
+    def __init__(self, rows):
+        self.rows = rows
+        self.batch_updates = []
+
+    def get_all_values(self):
+        return self.rows
+
+    def batch_update(self, updates, value_input_option=None):
+        self.batch_updates.extend(updates)
+
+
+class GoogleSheetsSyncWorkerTests(unittest.TestCase):
+    def setUp(self):
+        self.engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(self.engine)
+        self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
+
+    def tearDown(self):
+        Base.metadata.drop_all(self.engine)
+        self.engine.dispose()
+
+    def seed_order(
+        self,
+        *,
+        order_status="not_completed",
+        item_status="not_completed",
+        quantity_blocks=15,
+        scanned_blocks=0,
+    ):
+        with self.SessionLocal() as db:
+            order = Order(
+                payment_type="Перечисление",
+                client="Old Client",
+                address="Old Address",
+                representative="Old Rep",
+                order_date=date(2026, 5, 31),
+                status=order_status,
+                raw_payload={"source": "test"},
+            )
+            item = OrderItem(
+                order=order,
+                product="Chapman Brown OP 20",
+                quantity_pieces=150,
+                quantity_blocks=quantity_blocks,
+                pieces_per_block=10,
+                scanned_blocks=scanned_blocks,
+                status=item_status,
+                raw_payload={
+                    "source_import_id": "import-1",
+                    "source_order_id": "order-1",
+                    "block_price": 240000,
+                },
+            )
+            db.add_all([order, item])
+            db.commit()
+            return str(order.id), str(item.id)
+
+    def make_sheet(self, **overrides):
+        record = {
+            "Дата отгрузки": "01.06.2026",
+            "Тип оплаты": "Терминал",
+            "Клиент": "New Client",
+            "Адрес": "New Address",
+            "Торговый представитель": "New Rep",
+            "Товары": "Chapman Red OP 20",
+            "Кол-во ШТ": 110,
+            "Кол-во блок": 11,
+            "Статус": "Не выполнено",
+            "ID заказа": "order-1",
+            "ID импорта": "import-1",
+            "Источник файла": "orders.xlsx",
+            "Строка файла": "2",
+            "Номер заявки SkladBot": "SB-100",
+            "ID заявки SkladBot": "100",
+            "Статус SkladBot": "found",
+        }
+        record.update(overrides)
+        return FakeSheet([build_import_sheet_header(), build_import_record_row(record)])
+
+    def make_return_sheet(self):
+        header = build_import_sheet_header()
+        row = build_import_record_row({
+            "Дата отгрузки": "01.06.2026",
+            "Тип оплаты": "Перечисление",
+            "Клиент": "Old Client",
+            "Адрес": "Old Address",
+            "Торговый представитель": "Old Rep",
+            "Товары": "Chapman Brown OP 20",
+            "Кол-во ШТ": 150,
+            "Кол-во блок": 15,
+            "Отсканированные коды": "0101\n0102",
+            "Статус": "Выполнено",
+            "ID заказа": "order-1",
+            "ID импорта": "import-1",
+            "Номер заявки SkladBot": "SB-100",
+            "ID заявки SkladBot": "100",
+            "Статус SkladBot": "found",
+        })
+        for column, value in (
+            (RETURN_STATUS_COLUMN, "Возврат"),
+            (RETURN_DATE_COLUMN, "31.05.2026 23:30:00"),
+            (RETURN_REFERENCE_COLUMN, "SB-100"),
+            (RETURNED_BY_COLUMN, "desktop-test"),
+        ):
+            header.append(column)
+            row.append(value)
+        return FakeSheet([header, row])
+
+    def test_sync_updates_active_backend_order_from_google_sheet_by_import_id(self):
+        order_id, item_id = self.seed_order()
+
+        with self.SessionLocal() as db:
+            result = sync_google_sheet_to_backend(db, sheet=self.make_sheet())
+
+        self.assertEqual(result["rows"], 1)
+        self.assertEqual(result["matched"], 1)
+        self.assertEqual(result["orders_updated"], 1)
+        self.assertEqual(result["items_updated"], 1)
+        self.assertEqual(result["conflicts"], 0)
+
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            item = db.get(OrderItem, uuid.UUID(item_id))
+            self.assertEqual(order.order_date, date(2026, 6, 1))
+            self.assertEqual(order.payment_type, "Терминал")
+            self.assertEqual(order.client, "New Client")
+            self.assertEqual(order.address, "New Address")
+            self.assertEqual(order.representative, "New Rep")
+            self.assertEqual(order.raw_payload["skladbot_request_number"], "SB-100")
+            self.assertEqual(order.raw_payload["skladbot_request_id"], "100")
+            self.assertEqual(item.product, "Chapman Red OP 20")
+            self.assertEqual(item.quantity_pieces, 110)
+            self.assertEqual(item.quantity_blocks, 11)
+            self.assertEqual(item.raw_payload["source_file"], "orders.xlsx")
+            self.assertTrue(item.raw_payload["google_sheet_synced_at"])
+
+    def test_sync_recalculates_line_total_when_google_blocks_change(self):
+        _, item_id = self.seed_order()
+
+        with self.SessionLocal() as db:
+            item = db.get(OrderItem, uuid.UUID(item_id))
+            item.raw_payload = {
+                **item.raw_payload,
+                "line_total": 3_600_000,
+                "calculated_line_total": 3_600_000,
+            }
+            db.commit()
+
+        with self.SessionLocal() as db:
+            result = sync_google_sheet_to_backend(
+                db,
+                sheet=self.make_sheet(
+                    **{
+                        "Товары": "Chapman Brown OP 20",
+                        "Кол-во ШТ": 10,
+                        "Кол-во блок": 1,
+                    }
+                ),
+            )
+
+        self.assertEqual(result["matched"], 1)
+        self.assertEqual(result["items_updated"], 1)
+        with self.SessionLocal() as db:
+            item = db.get(OrderItem, uuid.UUID(item_id))
+            self.assertEqual(item.quantity_blocks, 1)
+            self.assertEqual(item.raw_payload["block_price"], 240000)
+            self.assertEqual(item.raw_payload["line_total"], 240000)
+            self.assertEqual(item.raw_payload["calculated_line_total"], 240000)
+
+    def test_sync_imports_scanned_codes_and_completes_item_from_google_sheet(self):
+        order_id, item_id = self.seed_order(quantity_blocks=2)
+
+        with self.SessionLocal() as db:
+            result = sync_google_sheet_to_backend(
+                db,
+                sheet=self.make_sheet(
+                    **{
+                        "Товары": "Chapman Brown OP 20",
+                        "Кол-во ШТ": 20,
+                        "Кол-во блок": 2,
+                        "Отсканированные коды": "0101\n0102",
+                    }
+                ),
+            )
+
+        self.assertEqual(result["matched"], 1)
+        self.assertEqual(result["items_updated"], 1)
+
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            item = db.get(OrderItem, uuid.UUID(item_id))
+            codes = db.execute(select(ScanCode).order_by(ScanCode.code)).scalars().all()
+            self.assertEqual([scan.code for scan in codes], ["0101", "0102"])
+            self.assertEqual(codes[0].source, "google_sheets")
+            self.assertEqual(item.scanned_blocks, 2)
+            self.assertEqual(item.status, "completed")
+            self.assertEqual(order.status, "completed")
+
+    def test_sync_rejects_quantity_lower_than_already_scanned_blocks(self):
+        _, item_id = self.seed_order(scanned_blocks=12)
+
+        with self.SessionLocal() as db:
+            result = sync_google_sheet_to_backend(
+                db,
+                sheet=self.make_sheet(
+                    **{
+                        "Дата отгрузки": "31.05.2026",
+                        "Тип оплаты": "Перечисление",
+                        "Клиент": "Old Client",
+                        "Адрес": "Old Address",
+                        "Торговый представитель": "Old Rep",
+                        "Товары": "Chapman Brown OP 20",
+                        "Кол-во ШТ": 150,
+                        "Кол-во блок": 11,
+                    }
+                ),
+            )
+
+        self.assertEqual(result["matched"], 1)
+        self.assertEqual(result["items_updated"], 0)
+        self.assertEqual(result["conflicts"], 1)
+
+        with self.SessionLocal() as db:
+            item = db.get(OrderItem, uuid.UUID(item_id))
+            self.assertEqual(item.quantity_blocks, 15)
+            conflicts = db.execute(
+                select(AuditLog).where(AuditLog.action == "google_sheets_backend_sync_conflict")
+            ).scalars().all()
+            self.assertEqual(len(conflicts), 1)
+            self.assertEqual(conflicts[0].payload["conflicts"][0]["field"], "quantity_blocks")
+
+    def test_sync_keeps_completed_orders_in_sync_from_google_sheet(self):
+        order_id, item_id = self.seed_order(order_status="completed", item_status="completed")
+
+        with self.SessionLocal() as db:
+            result = sync_google_sheet_to_backend(db, sheet=self.make_sheet())
+
+        self.assertEqual(result["matched"], 1)
+        self.assertEqual(result["missing"], 0)
+        self.assertEqual(result["orders_updated"], 1)
+        self.assertEqual(result["items_updated"], 1)
+
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            item = db.get(OrderItem, uuid.UUID(item_id))
+            self.assertEqual(order.client, "New Client")
+            self.assertEqual(item.quantity_blocks, 11)
+
+    def test_sync_marks_order_returned_from_google_archive_return_columns(self):
+        order_id, item_id = self.seed_order(order_status="completed", item_status="completed")
+
+        with self.SessionLocal() as db:
+            result = sync_google_sheet_to_backend(db, sheet=self.make_return_sheet())
+
+        self.assertEqual(result["matched"], 1)
+        self.assertEqual(result["orders_updated"], 1)
+
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            item = db.get(OrderItem, uuid.UUID(item_id))
+            self.assertEqual(order.status, "returned")
+            self.assertEqual(item.status, "completed")
+            self.assertEqual(order.raw_payload["return_status"], "returned")
+            self.assertEqual(order.raw_payload["returned_at"], "31.05.2026 23:30:00")
+            self.assertEqual(order.raw_payload["return_reference"], "SB-100")
+            self.assertEqual(order.raw_payload["returned_by"], "desktop-test")
+
+
+if __name__ == "__main__":
+    unittest.main()

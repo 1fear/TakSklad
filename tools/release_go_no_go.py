@@ -16,7 +16,7 @@ REQUIRED_GO_CHECKS = [
     "Windows desktop acceptance принят.",
     "Критичных дефектов нет.",
     "Rollback понятен.",
-    "`version.json` всё ещё не менялся.",
+    "`version.json` проверен и `mandatory=false`.",
 ]
 
 GO_LINE = "GO к подготовке release 2.0."

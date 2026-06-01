@@ -1,4 +1,5 @@
 from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
@@ -11,6 +12,7 @@ from .schemas import (
     DayReportRead,
     DayReportTotals,
 )
+from .settings import load_settings
 
 
 def build_day_report(db: Session, report_date: str | None = None):
@@ -61,7 +63,7 @@ def build_day_report(db: Session, report_date: str | None = None):
     return DayReportRead(
         report_date=parsed_date,
         source="postgres",
-        generated_at=datetime.now(timezone.utc),
+        generated_at=datetime.now(report_timezone()),
         totals=DayReportTotals(**totals),
         payment_groups=[
             DayReportPaymentGroup(
@@ -83,7 +85,7 @@ def build_day_report(db: Session, report_date: str | None = None):
 
 def parse_report_date(value: str | None):
     if not value:
-        return datetime.now(timezone.utc).date()
+        return datetime.now(report_timezone()).date()
     text = str(value).strip()
     for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y", "%d.%m.%y"):
         try:
@@ -96,7 +98,7 @@ def parse_report_date(value: str | None):
 def should_include_order(order: Order, report_date: date):
     if order.order_date == report_date:
         return True
-    return any(scan_date(scan.scanned_at) == report_date for item in order.items for scan in item.scan_codes)
+    return any(scan_business_date(scan) == report_date for item in order.items for scan in item.scan_codes)
 
 
 def summarize_order(order: Order, report_date: date):
@@ -107,7 +109,7 @@ def summarize_order(order: Order, report_date: date):
         1
         for item in items
         for scan in item.scan_codes
-        if scan_date(scan.scanned_at) == report_date
+        if scan_business_date(scan) == report_date
     )
     completed_items = sum(1 for item in items if item.status in COMPLETED_STATUSES)
     return {
@@ -171,10 +173,44 @@ def scan_date(value):
     if value is None:
         return None
     if isinstance(value, datetime):
-        return value.date()
+        if value.tzinfo is None:
+            return value.date()
+        return value.astimezone(report_timezone()).date()
     if isinstance(value, date):
         return value
     return None
+
+
+def scan_business_date(scan):
+    raw_payload = scan.raw_payload or {}
+    parsed = parse_datetime_value(raw_payload.get("scanned_at"))
+    if parsed is not None:
+        return scan_date(parsed)
+    return scan_date(scan.scanned_at)
+
+
+def parse_datetime_value(value):
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def report_timezone():
+    timezone_name = load_settings().timezone
+    try:
+        return ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError:
+        return ZoneInfo("Asia/Tashkent")
 
 
 def parse_int(value):

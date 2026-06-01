@@ -16,6 +16,7 @@ SECRET_PATTERNS = [
 DIAGNOSTIC_AUDIT_ACTIONS = {
     "orders_imported",
     "skladbot_worker_sync",
+    "skladbot_google_sheets_export",
     "order_returned",
 }
 
