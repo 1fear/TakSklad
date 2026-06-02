@@ -3807,15 +3807,22 @@ cd /opt/taksklad/app
   - для сборки выставлен `PYTHONPATH=src`;
   - корневой bridge-пакет `taksklad` временно отключается на Windows runner, чтобы PyInstaller брал настоящий пакет из `src/taksklad`;
   - smoke-тест onefile и onedir теперь запускается из чистых временных папок без исходников проекта;
-  - публичный `version.json` переведен на `v2.0.2`.
+  - публичный `version.json` переведен на `v2.0.2`;
+  - macOS bundle пересобран с metadata `2.0.2`.
 - Готовый архив для склада:
   - `outputs/windows_ready/TakSklad-2.0.2-win-ready.zip`.
+- Готовый архив для macOS:
+  - `outputs/mac_ready/TakSklad-2.0.2-mac-ready.zip`.
 - Проверено:
   - GitHub Actions `v2.0.2` прошел clean-dir smoke для onefile и onedir;
   - скачанный `TakSklad-windows-x64.zip` имеет SHA256 `7a1a4afd41b6f2f9adf1c9cc5ac3e075ef68539fea77c490feacaa1c25d1e1ed`;
   - публичный onefile `TakSklad.exe` имеет SHA256 `55b37759e9ce876e393de86eef800885b45a4fcf199046c2ac36081308d5610b`;
   - новый ready zip целый, SHA256 `2c2498e57e628bd37b3cb1ae32a22b332ad44e94b2c29cfd0bd668775e0e28a1`;
   - внутренний `TakSklad/TakSklad.exe` имеет SHA256 `87e1637d527879899aba71b94d486a86e745b36aebdfce038de1a43b8d960849`;
+  - Mac ready zip целый, SHA256 `f8590b8393cd663d478f90211ff9c3e9c012c22ff4c7adea659c55af8ef56f00`;
+  - Mac bundle executable имеет SHA256 `24b84da64e0b28fbffdc83353c593d644b976ddc199d20bf0dd70dfbba18f271`;
+  - `TakSklad.app --smoke-import` - OK;
+  - `CFBundleShortVersionString` и `CFBundleVersion` равны `2.0.2`;
   - внутри `TakSklad.exe` есть `taksklad.main` и `taksklad.excel_normalizer`;
   - ready zip содержит JSON рядом с exe и не содержит `.ps1`;
   - релизные unit-тесты прошли.
