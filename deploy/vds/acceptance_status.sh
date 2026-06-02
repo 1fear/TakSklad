@@ -285,8 +285,8 @@ except Exception:
 errors = []
 if sha_status != "ok":
     errors.append("acceptance Excel SHA mismatch")
-if version_info.get("latest_version") != "2.0.2":
-    errors.append("version.json latest_version must be 2.0.2")
+if version_info.get("latest_version") != "2.0.3":
+    errors.append("version.json latest_version must be 2.0.3")
 if version_info.get("min_supported_version") != "1.1.7":
     errors.append("version.json min_supported_version must stay 1.1.7 for non-forced rollout")
 if version_info.get("mandatory") not in (False, None):

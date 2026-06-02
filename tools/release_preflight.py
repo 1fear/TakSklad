@@ -58,9 +58,9 @@ WINDOWS_TEST_BUILD_REQUIRED_FRAGMENTS = [
     "ACCEPTANCE_RESULTS.md",
     "Assert-TestPackageDoesNotContainLocalSecrets",
     "version.json has local changes",
-    "safe non-mandatory 2.0.2 rollout manifest",
+    "safe non-mandatory 2.0.3 rollout manifest",
 ]
-EXPECTED_RELEASE_VERSION = "2.0.2"
+EXPECTED_RELEASE_VERSION = "2.0.3"
 EXPECTED_MIN_SUPPORTED_VERSION = "1.1.7"
 EXPECTED_PACKAGE_TYPE = "onefile_exe"
 EXPECTED_RELEASE_TAG = f"v{EXPECTED_RELEASE_VERSION}"

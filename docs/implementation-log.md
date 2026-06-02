@@ -3930,5 +3930,15 @@ cd /opt/taksklad/app
   - полный локальный прогон: `./.venv/bin/python -m unittest discover -s tests` - 260 tests OK;
   - VDS backend health OK;
   - контроль Google/backend после перезапуска worker-а: КИЗов по `03.06.2026` нет.
-- Остаточный шаг:
-  - desktop-часть исправления требует нового Windows-релиза/ready zip. До выдачи нового exe складской ПК с версией `2.0.2` не получит эти desktop-правки автоматически.
+- Windows release:
+  - версия desktop поднята до `2.0.3`;
+  - создан release/tag `v2.0.3`;
+  - GitHub Actions `Build Windows Release` прошел onefile и onedir clean-dir smoke-tests;
+  - GitHub onefile SHA256: `1ecc311f01513bc1a234a00a9e9eb4ea94d31b2b88c426a28be7b7394f986430`;
+  - GitHub onedir zip SHA256: `b1ef3fb2428642445935b41d141419f64b616372d51a59582975d8107d95f939`;
+  - публичный `version.json` переведен на `2.0.3`, staged rollout, `mandatory=false`;
+  - готовый складской архив: `outputs/windows_ready/TakSklad-2.0.3-win-ready.zip`;
+  - ready zip SHA256: `95f4aa64ac4a79f8d2da0aea77637b70c38272be62949c43ccbe12771cfa3899`;
+  - `TakSklad.exe` внутри ready zip SHA256: `52387c51a089e166772997044388caf88985a9ddc2bfc452c22c1947353eddd6`;
+  - ready zip содержит JSON рядом с exe и не содержит `.ps1`;
+  - internal `TakSklad/version.json` внутри ready zip указывает `app_version=2.0.3`, `release_tag=v2.0.3`.
