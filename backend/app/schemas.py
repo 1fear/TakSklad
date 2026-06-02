@@ -134,9 +134,11 @@ class ScanCreate(BaseModel):
     @field_validator("code")
     @classmethod
     def normalize_code(cls, value):
-        code = value.strip()
+        code = str(value or "").strip(" \t\r\n")
         if not code:
             raise ValueError("Code must not be empty")
+        if any(char in code for char in (" ", "\t", "\r", "\n", "\v", "\f")):
+            raise ValueError("Code must not contain spaces or line breaks")
         return code
 
 

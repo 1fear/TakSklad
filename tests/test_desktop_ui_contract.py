@@ -128,6 +128,13 @@ class DesktopUiContractTests(unittest.TestCase):
             text, _ = build_backend_status({"backend": {"enabled": True, "failed": 1, "remaining": 3}})
         self.assertEqual(text, "Синхронизация: временная ошибка")
 
+        with (
+            mock.patch.object(app_day_end, "backend_enabled", return_value=True),
+            mock.patch.object(app_day_end, "backend_configured", return_value=True),
+        ):
+            text, _ = build_backend_status({"backend": {"enabled": True, "blocked": 1}})
+        self.assertEqual(text, "Синхронизация: заказ недосканирован")
+
 
 if __name__ == "__main__":
     unittest.main()

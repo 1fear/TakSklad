@@ -15,6 +15,7 @@ def col_to_index(col):
 class FakeSheet:
     def __init__(self, rows):
         self.rows = rows
+        self.batch_update_options = []
 
     def get_all_values(self):
         return self.rows
@@ -33,6 +34,7 @@ class FakeSheet:
         self.rows.append(list(row))
 
     def batch_update(self, updates, value_input_option=None):
+        self.batch_update_options.append(value_input_option)
         for update in updates:
             match = re.match(r"([A-Z]+)(\d+)", update["range"])
             if not match:
@@ -111,6 +113,36 @@ class GoogleSheetsDesktopReadTests(unittest.TestCase):
         self.assertEqual(sheet.rows[1][10], 240000)
         self.assertEqual(sheet.rows[1][11], 240000)
         self.assertEqual(sheet.rows[1][12], 240000)
+
+    def test_get_today_orders_reopens_incomplete_row_with_stale_completed_status(self):
+        sheet = self.make_sheet()
+        status_idx = sheet.rows[0].index("Статус")
+        sheet.rows[1][status_idx] = "Выполнено"
+        spreadsheet = FakeSpreadsheet(sheet)
+        sheets.get_google_client = lambda: FakeClient(spreadsheet)
+
+        orders, _loaded_sheet = sheets.get_today_orders(apply_skladbot_filter=False)
+
+        self.assertEqual(len(orders), 1)
+        self.assertEqual(orders[0]["Статус"], "Не выполнено")
+        self.assertEqual(sheet.rows[1][status_idx], "Не выполнено")
+
+    def test_update_scanned_codes_writes_kiz_cell_as_raw(self):
+        sheet = self.make_sheet()
+        spreadsheet = FakeSpreadsheet(sheet)
+        sheets.get_google_client = lambda: FakeClient(spreadsheet)
+        orders, _ = sheets.get_today_orders(apply_skladbot_filter=False)
+
+        ok, message = sheets.update_scanned_codes_to_gsheet(
+            sheet,
+            orders[0],
+            ["01012345678901234567ABC,DEF"],
+        )
+
+        self.assertTrue(ok, message)
+        self.assertEqual(sheet.batch_update_options[-1], "RAW")
+        codes_idx = sheet.rows[0].index("Отсканированные коды")
+        self.assertEqual(sheet.rows[1][codes_idx], "01012345678901234567ABC,DEF")
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ from backend.app.google_sheets_sync_worker import (
     RETURN_REFERENCE_COLUMN,
     RETURN_STATUS_COLUMN,
     RETURNED_BY_COLUMN,
+    split_codes,
     sync_google_sheet_to_backend,
 )
 from backend.app.models import AuditLog, Base, Order, OrderItem, ScanCode
@@ -277,6 +278,37 @@ class GoogleSheetsSyncWorkerTests(unittest.TestCase):
             self.assertEqual(item.scanned_blocks, 2)
             self.assertEqual(item.status, "completed")
             self.assertEqual(order.status, "completed")
+
+    def test_split_codes_keeps_comma_inside_kiz(self):
+        first = "01012345678901234567ABC,DEF"
+        second = "01012345678901234567XYZ"
+
+        self.assertEqual(split_codes(f"{first}\n{second}"), [first, second])
+
+    def test_sync_does_not_complete_incomplete_item_with_stale_completed_status(self):
+        order_id, item_id = self.seed_order(quantity_blocks=2)
+
+        with self.SessionLocal() as db:
+            result = sync_google_sheet_to_backend(
+                db,
+                sheet=self.make_sheet(
+                    **{
+                        "Товары": "Chapman Brown OP 20",
+                        "Кол-во ШТ": 20,
+                        "Кол-во блок": 2,
+                        "Отсканированные коды": "01012345678901234567ABC",
+                        "Статус": "Выполнено",
+                    }
+                ),
+            )
+
+        self.assertEqual(result["matched"], 1)
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            item = db.get(OrderItem, uuid.UUID(item_id))
+            self.assertEqual(item.scanned_blocks, 1)
+            self.assertEqual(item.status, "not_completed")
+            self.assertEqual(order.status, "not_completed")
 
     def test_sync_rejects_quantity_lower_than_already_scanned_blocks(self):
         _, item_id = self.seed_order(scanned_blocks=12)

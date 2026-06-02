@@ -54,9 +54,11 @@ class PrintingActionsMixin:
         printer_row.pack(fill="x", pady=3)
         tk.Label(printer_row, text="Принтер:", bg=BG_CARD, fg=FG_MUTED, font=("Segoe UI", 10), width=18, anchor="w").pack(side="left")
         if available_printers:
-            if normalize_text(printer_var.get()) not in available_printers:
-                printer_var.set(available_printers[0])
-            tk.OptionMenu(printer_row, printer_var, *available_printers).pack(side="left", fill="x", expand=True)
+            printer_options = list(available_printers)
+            selected_printer = normalize_text(printer_var.get())
+            if selected_printer and selected_printer not in printer_options:
+                printer_options.insert(0, selected_printer)
+            tk.OptionMenu(printer_row, printer_var, *printer_options).pack(side="left", fill="x", expand=True)
         else:
             tk.Entry(
                 printer_row,

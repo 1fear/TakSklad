@@ -134,6 +134,39 @@ class BackendBridgeTests(unittest.TestCase):
         self.assertEqual(result["remaining"], 0)
         self.assertEqual(saved, [[]])
 
+    def test_backend_queue_drops_incomplete_order_complete_conflict(self):
+        pending = [{
+            "id": "event-1",
+            "type": "order_complete",
+            "payload": {
+                "order_id": "order-1",
+            },
+        }]
+        saved = []
+
+        with (
+            mock.patch.object(backend_events, "backend_configured", return_value=True),
+            mock.patch.object(backend_events, "load_pending_backend_events", return_value=pending),
+            mock.patch.object(backend_events, "save_pending_backend_events", side_effect=lambda value: saved.append(value)),
+            mock.patch.object(
+                backend_events,
+                "complete_order",
+                side_effect=backend_client.BackendApiError(
+                    "Backend HTTP 409: Order has incomplete required items",
+                    status_code=409,
+                    detail={"message": "Order has incomplete required items", "items": []},
+                ),
+            ),
+        ):
+            result = backend_events.sync_pending_backend_events()
+
+        self.assertEqual(result["synced"], 0)
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(result["blocked"], 1)
+        self.assertEqual(result["dropped"], 1)
+        self.assertEqual(result["remaining"], 0)
+        self.assertEqual(saved, [[]])
+
     def test_backend_queue_scan_deduplicates_and_exposes_pending_code(self):
         pending = []
         saved = []

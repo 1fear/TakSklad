@@ -1,8 +1,10 @@
 import os
+import inspect
 import unittest
 
 from PIL import Image
 
+from taksklad.app_printing import PrintingActionsMixin
 from taksklad import printing
 
 
@@ -61,6 +63,19 @@ class PrintingTests(unittest.TestCase):
                     os.remove(file_path)
                 except OSError:
                     pass
+
+    def test_windows_printing_checks_printer_validity_and_captures_output(self):
+        source = inspect.getsource(printing.send_image_to_windows_printer)
+
+        self.assertIn("PrinterSettings.IsValid", source)
+        self.assertIn("capture_output=True", source)
+        self.assertIn("TakSklad printer", source)
+
+    def test_print_dialog_does_not_replace_saved_printer_with_first_available(self):
+        source = inspect.getsource(PrintingActionsMixin.confirm_print_settings)
+
+        self.assertNotIn("printer_var.set(available_printers[0])", source)
+        self.assertIn("printer_options.insert(0, selected_printer)", source)
 
 
 if __name__ == "__main__":

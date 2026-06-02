@@ -1,5 +1,4 @@
 import os
-import re
 import sys
 import logging
 import threading
@@ -40,6 +39,7 @@ from .backend_events import (
     remove_pending_backend_scan,
     queue_backend_order_complete,
     queue_backend_scan,
+    queue_backend_scans_for_order,
     sync_pending_backend_events,
 )
 from .desktop_diagnostics import log_refresh_diagnostic_summary
@@ -93,6 +93,7 @@ from .utils import (
     normalize_text,
     parse_date_to_standard,
     parse_int_value,
+    validate_kiz_code,
 )
 
 configure_app_logging(LOG_FILE, LOG_MAX_BYTES, LOG_BACKUP_COUNT)
@@ -699,21 +700,8 @@ class ScanningApp(
         self.error_timer = None
 
     def validate_code(self, code):
-        if not code:
-            return False, "Код пустой"
-        if not code.startswith('01'):
-            return False, "КИЗ должен начинаться с 01"
-        if len(code) < KIZ_MIN_LENGTH:
-            return False, f"Код слишком короткий для КИЗа (минимум {KIZ_MIN_LENGTH} символов)"
-        if len(code) > KIZ_MAX_LENGTH:
-            return False, f"Код слишком длинный для КИЗа (максимум {KIZ_MAX_LENGTH} символов)"
-        if re.search(r'[а-яА-ЯёЁ]', code):
-            return False, "Код содержит русские буквы! Используйте только латиницу"
-        if re.search(r'\s', code):
-            return False, "Код содержит пробелы или переносы"
-        if not re.fullmatch(r'[\x1d\x21-\x7E]+', code):
-            return False, "Код содержит недопустимые символы"
-        return True, ""
+        is_valid, error_msg, _normalized_code = validate_kiz_code(code)
+        return is_valid, error_msg
 
     def undo_last_scan(self):
         if not self.ensure_update_allowed():
@@ -1562,11 +1550,10 @@ class ScanningApp(
             messagebox.showwarning("Ошибка", "Сначала выберите заказ")
             return
 
-        code = self.scan_entry.get().strip()
+        is_valid, error_msg, code = validate_kiz_code(self.scan_entry.get())
         if not code:
             return
 
-        is_valid, error_msg = self.validate_code(code)
         if not is_valid:
             self.show_error(error_msg)
             self.scan_entry.delete(0, tk.END)
@@ -1804,6 +1791,8 @@ class ScanningApp(
             ):
                 raise RuntimeError("Сводка напечатана, но backup завершения заказа не создан")
 
+            for order in current_orders:
+                queue_backend_scans_for_order(order)
             for backend_order_id in backend_order_ids:
                 queue_backend_order_complete(backend_order_id)
 
@@ -1811,13 +1800,26 @@ class ScanningApp(
                 "first_product": first_product,
                 "summary_products": summary_products,
                 "finished_group": group_key or order_group_key(first_product),
+                "finished_row_numbers": [
+                    parse_int_value(order.get("_row_number"))
+                    for order in current_orders
+                    if parse_int_value(order.get("_row_number"))
+                ],
             }
 
         def on_success(result):
             self.update_stats_display()
 
             finished_group = result["finished_group"]
-            self.today_orders = [o for o in self.today_orders if order_group_key(o) != finished_group]
+            finished_row_numbers = set(result.get("finished_row_numbers") or [])
+            if finished_row_numbers:
+                self.today_orders = [
+                    order
+                    for order in self.today_orders
+                    if parse_int_value(order.get("_row_number")) not in finished_row_numbers
+                ]
+            else:
+                self.today_orders = [o for o in self.today_orders if order_group_key(o) != finished_group]
             self.refresh_legal_list()
 
             self.reset_current_selection()

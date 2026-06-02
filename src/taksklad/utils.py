@@ -4,7 +4,7 @@ import os
 import re
 from datetime import datetime
 
-from .config import EXCEL_IMPORT_EXTENSIONS
+from .config import EXCEL_IMPORT_EXTENSIONS, KIZ_MAX_LENGTH, KIZ_MIN_LENGTH
 
 
 def clean_date_value(date_value):
@@ -83,10 +83,33 @@ def split_codes(codes_str):
         return []
     codes = []
     for line in str(codes_str).splitlines():
-        code = line.strip()
+        code = normalize_kiz_code(line)
         if code:
             codes.append(code)
     return codes
+
+
+def normalize_kiz_code(raw_code):
+    return str(raw_code or "").strip(" \t\r\n")
+
+
+def validate_kiz_code(raw_code, min_length=KIZ_MIN_LENGTH, max_length=KIZ_MAX_LENGTH):
+    code = normalize_kiz_code(raw_code)
+    if not code:
+        return False, "Код пустой", code
+    if not code.startswith("01"):
+        return False, "КИЗ должен начинаться с 01", code
+    if len(code) < min_length:
+        return False, f"Код слишком короткий для КИЗа (минимум {min_length} символов)", code
+    if len(code) > max_length:
+        return False, f"Код слишком длинный для КИЗа (максимум {max_length} символов)", code
+    if re.search(r"[а-яА-ЯёЁ]", code):
+        return False, "Код содержит русские буквы! Используйте только латиницу", code
+    if any(char in code for char in (" ", "\t", "\r", "\n", "\v", "\f")):
+        return False, "Код содержит пробелы или переносы", code
+    if not re.fullmatch(r"[\x1d\x21-\x7E]+", code):
+        return False, "Код содержит недопустимые символы", code
+    return True, "", code
 
 
 def normalize_payment_type(value):

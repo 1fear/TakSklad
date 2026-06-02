@@ -157,6 +157,10 @@ $printDocument.DocumentName = "{APP_NAME} summary"
 $printDocument.DefaultPageSettings.PaperSize = New-Object System.Drawing.Printing.PaperSize("{paper_name}", {paper_width}, {paper_height})
 $printDocument.DefaultPageSettings.Margins = New-Object System.Drawing.Printing.Margins(0, 0, 0, 0)
 $printDocument.OriginAtMargins = $false
+if (-not $printDocument.PrinterSettings.IsValid) {{
+    throw "Printer is not valid: $($printDocument.PrinterSettings.PrinterName)"
+}}
+Write-Output "TakSklad printer: $($printDocument.PrinterSettings.PrinterName)"
 $printDocument.add_PrintPage({{
     param($sender, $event)
     $event.Graphics.DrawImage($image, $event.PageBounds)
@@ -174,7 +178,7 @@ try {{
         ps_file.write(script)
         ps_file.close()
         creationflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
-        subprocess.run(
+        completed = subprocess.run(
             [
                 "powershell",
                 "-NoProfile",
@@ -186,6 +190,17 @@ try {{
             check=True,
             timeout=30,
             creationflags=creationflags,
+            capture_output=True,
+            text=True,
+        )
+        logging.info(
+            "Сводка отправлена в Windows-печать: printer=%s, size=%sx%s, file=%s, stdout=%s, stderr=%s",
+            printer_name or "Windows default",
+            label_width_mm,
+            label_height_mm,
+            image_path,
+            normalize_text(completed.stdout),
+            normalize_text(completed.stderr),
         )
         return True
     finally:
@@ -208,8 +223,21 @@ def send_image_to_printer(file_path, printer_name="", label_width_mm=None, label
         command = ["lp", "-o", f"media=Custom.{label_width_mm}x{label_height_mm}mm", file_path]
         if normalize_text(printer_name) and printer_name != "Термопринтер":
             command[1:1] = ["-d", printer_name]
-        subprocess.run(command, check=True, timeout=30)
+        completed = subprocess.run(command, check=True, timeout=30, capture_output=True, text=True)
+        logging.info(
+            "Сводка отправлена на печать: command=%s stdout=%s stderr=%s",
+            command,
+            normalize_text(completed.stdout),
+            normalize_text(completed.stderr),
+        )
         return True
+    except subprocess.CalledProcessError as exc:
+        logging.exception(
+            "Не удалось отправить сводку напрямую на печать: stdout=%s stderr=%s",
+            normalize_text(getattr(exc, "stdout", "")),
+            normalize_text(getattr(exc, "stderr", "")),
+        )
+        return False
     except Exception:
         logging.exception("Не удалось отправить сводку напрямую на печать")
         return False

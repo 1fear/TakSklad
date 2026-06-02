@@ -25,6 +25,7 @@ from .config import (
     SPREADSHEET_ID,
     STATUS_COLUMN,
     STATUS_COMPLETED,
+    STATUS_NOT_COMPLETED,
     TELEGRAM_LOCK_KEY,
     TELEGRAM_LOCK_SHEET_NAME,
     TELEGRAM_LOCK_TTL_SECONDS,
@@ -729,6 +730,7 @@ def get_today_orders(apply_skladbot_filter=None, include_rows=False):
             if status_idx is not None and (
                 not current_status
                 or (calculated_status == STATUS_COMPLETED and not is_completed_status(current_status))
+                or (calculated_status == STATUS_NOT_COMPLETED and is_completed_status(current_status))
             ):
                 status_updates.append({
                     "range": f"{column_index_to_letter(status_idx)}{row_number}",
@@ -765,6 +767,10 @@ def update_scanned_codes_to_gsheet(sheet, order, scanned_codes):
     try:
         if not scanned_codes:
             return False, "Нет отсканированных кодов для записи"
+
+        scanned_codes = split_codes("\n".join(scanned_codes))
+        if not scanned_codes:
+            return False, "Нет корректных отсканированных кодов для записи"
 
         if len(scanned_codes) != len(set(scanned_codes)):
             return False, "В текущей позиции есть повторяющиеся коды"
@@ -827,7 +833,7 @@ def update_scanned_codes_to_gsheet(sheet, order, scanned_codes):
                 "range": f"{column_index_to_letter(status_idx)}{target_row}",
                 "values": [[get_order_status(updated_order)]],
             })
-        sheet.batch_update(updates, value_input_option="USER_ENTERED")
+        sheet.batch_update(updates, value_input_option="RAW")
         return True, "Коды записаны в Google Sheets"
     except Exception as exc:
         note_google_transient_error(exc)

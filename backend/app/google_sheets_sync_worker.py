@@ -399,7 +399,11 @@ def update_item_money_payload(raw_payload, record, quantity_blocks=0):
 
 
 def split_codes(value):
-    return [item.strip() for item in str(value or "").replace("\r", "\n").replace(",", "\n").split("\n") if item.strip()]
+    return [
+        item.strip(" \t\r\n")
+        for item in str(value or "").replace("\r", "\n").split("\n")
+        if item.strip(" \t\r\n")
+    ]
 
 
 def update_item_scans_from_record(db: Session, item: OrderItem, record, conflicts, now):
@@ -448,11 +452,16 @@ def update_item_scans_from_record(db: Session, item: OrderItem, record, conflict
 def update_status_from_record(order: Order, item: OrderItem, record):
     status = normalize_text(record.get("status")).casefold()
     returned = is_returned_record(record)
-    should_complete = (
+    requires_full_scan = bool(item.requires_kiz and item.quantity_blocks > 0)
+    fully_scanned = not requires_full_scan or item.scanned_blocks >= item.quantity_blocks
+    google_requests_completion = (
         record.get("archived")
-        or returned
         or status in {"выполнено", "completed", "done", "closed", "готово"}
-        or (item.quantity_blocks > 0 and item.scanned_blocks >= item.quantity_blocks)
+    )
+    should_complete = (
+        returned
+        or (google_requests_completion and fully_scanned)
+        or (requires_full_scan and fully_scanned)
     )
     if not should_complete:
         return False

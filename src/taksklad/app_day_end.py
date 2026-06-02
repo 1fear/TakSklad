@@ -23,8 +23,11 @@ def build_backend_status(sync_result=None, pending_backend=0):
         backend_result = sync_result["backend"]
 
     failed = parse_count(backend_result.get("failed"))
+    blocked = parse_count(backend_result.get("blocked"))
     remaining = max(parse_count(pending_backend), parse_count(backend_result.get("remaining")))
 
+    if blocked:
+        return "Синхронизация: заказ недосканирован", DANGER
     if failed:
         return "Синхронизация: временная ошибка", ERROR_FG
     if remaining:

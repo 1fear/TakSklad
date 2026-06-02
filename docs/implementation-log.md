@@ -3894,3 +3894,41 @@ cd /opt/taksklad/app
   - `codesign --verify --deep --strict` для `.app` - OK;
   - в zip есть рабочие JSON рядом с `.app`;
   - в zip нет `.DS_Store`, `__MACOSX`, `TakSklad.log`.
+
+### KIZ reset and scan-flow fixes for 03.06.2026 orders
+
+- Причина: на складском ПК появились связанные проблемы:
+  - `Синхронизация: временная ошибка` из-за повторяющегося backend `order_complete` при недосканированном заказе;
+  - заказ мог пропасть из desktop-списка, если одна позиция была выполнена, а у другой в Google оставался stale-статус `Выполнено`;
+  - печать показывала окно, но фактическое задание могло уходить в неправильную/невалидную очередь принтера;
+  - КИЗы могли некорректно обрабатываться из-за GS1-разделителя и разбиения ячейки по запятым.
+- Live reset по просьбе оператора:
+  - целевая дата: `03.06.2026` (по `02.06.2026` КИЗов в Google не было);
+  - Google backup: `outputs/live_backups/2026-06-02-kiz-reset/`;
+  - Postgres full dump: `outputs/live_backups/2026-06-02-kiz-reset/postgres_full_dump.sql`;
+  - Google `data`: сброшено 85 строк на `Не выполнено`, КИЗы очищены;
+  - Google `Архив`: 2 строки за `03.06.2026` возвращены в `data` без КИЗов и удалены из архива;
+  - backend: удалено 39 `scan_codes`, сброшено 87 позиций и 39 заказов на `not_completed`;
+  - после reset: Google `data` по `03.06.2026` - 85 строк, КИЗов 0, выполненных строк 0; backend - КИЗов 0, completed позиций 0, completed заказов 0.
+- Backend deploy:
+  - перед заменой создан restore point на VDS: `/opt/taksklad/restore_points/pre-kiz-reset-fixes-20260602T100141Z`;
+  - на VDS доставлены `backend/app/google_sheets_sync_worker.py`, `backend/app/google_sheets_exporter.py`, `backend/app/schemas.py`, `backend/app/orders_service.py`;
+  - пересобраны и перезапущены `backend-api` и `google-sheets-sync-worker`;
+  - `https://api.taksklad.uz/health` - OK.
+- Исправления в коде:
+  - добавлена единая нормализация/валидация КИЗов: GS1 `\x1d` разрешен, пробелы/таб/переносы запрещены;
+  - desktop и backend больше не режут КИЗ по запятой;
+  - запись КИЗов в Google идет через `RAW`;
+  - `get_today_orders` исправляет stale `Выполнено -> Не выполнено`, если план КИЗов не набран;
+  - desktop после завершения убирает из локального списка только фактически завершенные row numbers, а не всю группу целиком;
+  - перед `order_complete` desktop повторно ставит scan-события всех кодов текущего заказа в backend queue;
+  - backend queue удаляет `order_complete` с `409 Order has incomplete required items` как бизнес-блокировку, а не как вечную временную ошибку;
+  - UI показывает `Синхронизация: заказ недосканирован` для такого случая;
+  - печать больше не подменяет сохраненный принтер первым из списка, Windows-печать проверяет `PrinterSettings.IsValid` и логирует stdout/stderr.
+- Проверено:
+  - целевые тесты: 48 tests OK;
+  - полный локальный прогон: `./.venv/bin/python -m unittest discover -s tests` - 260 tests OK;
+  - VDS backend health OK;
+  - контроль Google/backend после перезапуска worker-а: КИЗов по `03.06.2026` нет.
+- Остаточный шаг:
+  - desktop-часть исправления требует нового Windows-релиза/ready zip. До выдачи нового exe складской ПК с версией `2.0.2` не получит эти desktop-правки автоматически.

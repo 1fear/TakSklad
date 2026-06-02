@@ -778,9 +778,9 @@ def backend_order_return_values(order):
 
 def split_codes(value):
     return [
-        item.strip()
-        for item in str(value or "").replace("\r", "\n").replace(",", "\n").split("\n")
-        if item.strip()
+        item.strip(" \t\r\n")
+        for item in str(value or "").replace("\r", "\n").split("\n")
+        if item.strip(" \t\r\n")
     ]
 
 

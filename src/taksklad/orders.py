@@ -105,6 +105,8 @@ def get_order_status(order):
 
 
 def is_order_active(order):
+    if get_plan_blocks(order) > 0:
+        return not is_order_completed(order)
     status = normalize_text(order.get(STATUS_COLUMN))
     if status:
         return not is_completed_status(status)

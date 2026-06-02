@@ -66,6 +66,12 @@ class FakeSpreadsheet:
 
 
 class BackendGoogleSheetsExporterTests(unittest.TestCase):
+    def test_split_codes_keeps_comma_inside_kiz(self):
+        first = "01012345678901234567ABC,DEF"
+        second = "01012345678901234567XYZ"
+
+        self.assertEqual(exporter.split_codes(f"{first}\n{second}"), [first, second])
+
     def make_scan(self, code, scanned_at="2026-06-01T10:00:00+05:00"):
         return SimpleNamespace(id=code, code=code, scanned_at=scanned_at)
 

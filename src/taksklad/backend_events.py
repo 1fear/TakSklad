@@ -9,7 +9,7 @@ from .backend_client import (
     create_scan,
 )
 from .storage import load_data_section, save_data_section
-from .utils import make_hash, normalize_text
+from .utils import make_hash, normalize_kiz_code, normalize_text, split_codes
 
 
 def load_pending_backend_events():
@@ -25,7 +25,7 @@ def get_pending_backend_codes():
     codes = set()
     for item in load_pending_backend_events():
         if item.get("type") == "scan":
-            code = normalize_text((item.get("payload") or {}).get("code"))
+            code = normalize_kiz_code((item.get("payload") or {}).get("code"))
             if code:
                 codes.add(code)
     return codes
@@ -66,7 +66,8 @@ def add_pending_backend_event(event_type, payload):
 
 def queue_backend_scan(order, code, scanned_at=None):
     order_item_id = normalize_text(order.get("_backend_order_item_id"))
-    if not order_item_id:
+    code = normalize_kiz_code(code)
+    if not order_item_id or not code:
         return ""
     return add_pending_backend_event(
         "scan",
@@ -79,9 +80,20 @@ def queue_backend_scan(order, code, scanned_at=None):
     )
 
 
+def queue_backend_scans_for_order(order):
+    queued = 0
+    for code in split_codes(order.get("Отсканированные коды")):
+        if queue_backend_scan(order, code):
+            queued += 1
+    return queued
+
+
 def remove_pending_backend_scan(order, code):
     order_item_id = normalize_text(order.get("_backend_order_item_id"))
     if not order_item_id:
+        return False
+    code = normalize_kiz_code(code)
+    if not code:
         return False
     event_id = make_backend_event_id("scan", {"order_item_id": order_item_id, "code": code})
     pending = load_pending_backend_events()
@@ -113,6 +125,15 @@ def is_stale_backend_event_ack(item, exc):
     return item.get("type") == "order_complete" and exc.status_code == 404 and "order not found" in detail
 
 
+def is_incomplete_order_complete_ack(item, exc):
+    if not isinstance(exc, BackendApiError) or exc.status_code != 409:
+        return False
+    if item.get("type") != "order_complete":
+        return False
+    detail = str(exc.detail or exc).lower()
+    return "order has incomplete required items" in detail
+
+
 def sync_pending_backend_events():
     if not backend_configured():
         return {"synced": 0, "failed": 0, "remaining": len(load_pending_backend_events()), "enabled": False}
@@ -124,6 +145,7 @@ def sync_pending_backend_events():
     synced = 0
     failed = 0
     dropped = 0
+    blocked = 0
     remaining = []
     for item in pending:
         try:
@@ -153,6 +175,15 @@ def sync_pending_backend_events():
                     exc,
                 )
                 continue
+            if is_incomplete_order_complete_ack(item, exc):
+                dropped += 1
+                blocked += 1
+                logging.warning(
+                    "Backend queue: dropped incomplete order_complete event for order %s: %s",
+                    (item.get("payload") or {}).get("order_id"),
+                    exc,
+                )
+                continue
             failed += 1
             item["attempts"] = int(item.get("attempts") or 0) + 1
             item["last_error"] = str(exc)
@@ -166,4 +197,11 @@ def sync_pending_backend_events():
             remaining.append(item)
 
     save_pending_backend_events(remaining)
-    return {"synced": synced, "failed": failed, "remaining": len(remaining), "dropped": dropped, "enabled": True}
+    return {
+        "synced": synced,
+        "failed": failed,
+        "remaining": len(remaining),
+        "dropped": dropped,
+        "blocked": blocked,
+        "enabled": True,
+    }

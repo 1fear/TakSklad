@@ -74,7 +74,7 @@ def list_returned_orders(db: Session, limit=50):
 
 def create_scan(db: Session, payload: ScanCreate):
     order_item_id = parse_uuid(payload.order_item_id, "order_item_id")
-    code = payload.code.strip()
+    code = str(payload.code or "").strip(" \t\r\n")
     if not code:
         raise ApiError(422, "Code must not be empty")
 
