@@ -3929,7 +3929,8 @@ cd /opt/taksklad/app
   - целевые тесты: 48 tests OK;
   - полный локальный прогон: `./.venv/bin/python -m unittest discover -s tests` - 260 tests OK;
   - VDS backend health OK;
-  - контроль Google/backend после перезапуска worker-а: КИЗов по `03.06.2026` нет.
+  - контроль Google/backend после перезапуска worker-а: КИЗов по `03.06.2026` нет;
+  - финальный контроль после возврата 2 архивных строк в работу: 2 backend-позиции восстановлены из `removed_from_google_sheet` в `not_completed`, `verify_google_backend_sync.sh` вернул `status=ok`, 167 Google rows matched, mismatches 0.
 - Windows release:
   - версия desktop поднята до `2.0.3`;
   - создан release/tag `v2.0.3`;
