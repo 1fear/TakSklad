@@ -70,8 +70,6 @@ services:
     build:
       context: ../../frontend
       dockerfile: Dockerfile
-      args:
-        VITE_TAKSKLAD_API_URL: ${TAKSKLAD_PUBLIC_API_URL:-}
     restart: unless-stopped
     environment:
       TAKSKLAD_BACKEND_INTERNAL_URL: http://backend-api:8000

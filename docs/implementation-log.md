@@ -3943,3 +3943,26 @@ cd /opt/taksklad/app
   - `TakSklad.exe` внутри ready zip SHA256: `52387c51a089e166772997044388caf88985a9ddc2bfc452c22c1947353eddd6`;
   - ready zip содержит JSON рядом с exe и не содержит `.ps1`;
   - internal `TakSklad/version.json` внутри ready zip указывает `app_version=2.0.3`, `release_tag=v2.0.3`.
+
+### Web login and frontend stability fix
+
+- Причина: после пересоздания `backend-api` frontend nginx продолжал проксировать `/api/...` в старый Docker IP backend-контейнера. Поэтому `https://taksklad.uz/api/v1/auth/login` возвращал `502`, а UI ошибочно показывал это как неверный телефон/пароль.
+- Исправлено:
+  - nginx frontend использует Docker DNS resolver `127.0.0.11` и proxy через переменную `$taksklad_backend`, чтобы не держать старый IP backend после рестартов;
+  - web UI различает `401`, `429`, `5xx` и не маскирует server/proxy failure под неправильный пароль;
+  - web-панель закреплена на same-origin `/api`, устаревший `VITE_TAKSKLAD_API_URL` удален из Docker/compose;
+  - login layout выровнен на широком и мобильном экране;
+  - web-таблица получила фиксированные колонки, sticky header и обрезку длинных клиентов/адресов/товаров.
+- Деплой:
+  - перед заменой создан restore point на VDS: `/opt/taksklad/restore_points/pre-web-login-nginx-fix-20260602T105937Z`;
+  - пересобран и пересоздан `frontend`; финальный деплой выполнен с `--no-deps`, без пересоздания backend/Postgres.
+- Проверено:
+  - `https://taksklad.uz/api/v1/auth/session` без cookie - `200 authenticated=false`;
+  - `https://taksklad.uz/api/v1/admin/table` без cookie - `401`;
+  - login через `https://taksklad.uz/api/v1/auth/login` - `200`, cookie ставится;
+  - `admin/table` с cookie - `200`;
+  - logout очищает cookie, `admin/table` снова `401`;
+  - `http://taksklad.uz/` редиректит на HTTPS, `https://taksklad.uz/` отдает HSTS/CSP;
+  - `https://api.taksklad.uz/health` - OK;
+  - локально `npm run build` - OK;
+  - локально `./.venv/bin/python -m unittest discover -s tests` - 260 tests OK.

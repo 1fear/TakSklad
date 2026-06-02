@@ -191,7 +191,8 @@ export async function apiRequest<T>(
     } catch {
       detail = await response.text();
     }
-    throw new Error(detail || "Ошибка запроса");
+    const prefix = `${response.status} ${response.statusText}`.trim();
+    throw new Error(detail ? `${prefix}: ${detail}` : prefix || "Ошибка запроса");
   }
 
   return response.json() as Promise<T>;

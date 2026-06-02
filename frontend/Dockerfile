@@ -6,8 +6,6 @@ COPY package*.json ./
 RUN npm ci
 
 COPY . .
-ARG VITE_TAKSKLAD_API_URL=
-ENV VITE_TAKSKLAD_API_URL=$VITE_TAKSKLAD_API_URL
 RUN npm run build
 
 FROM nginx:1.27-alpine

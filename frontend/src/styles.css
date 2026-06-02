@@ -37,8 +37,12 @@ button {
 
 .login-shell {
   display: grid;
-  grid-template-columns: minmax(280px, 0.82fr) minmax(320px, 1fr);
+  grid-template-columns: minmax(360px, 640px) minmax(360px, 520px);
+  align-items: center;
+  justify-content: center;
+  gap: clamp(42px, 7vw, 120px);
   min-height: 100vh;
+  padding: clamp(28px, 4vw, 58px);
   background:
     linear-gradient(135deg, rgba(37, 37, 34, 0.98), rgba(47, 58, 54, 0.96)),
     #252522;
@@ -65,9 +69,9 @@ button {
 .login-brand {
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
+  justify-content: center;
   gap: 28px;
-  padding: 42px;
+  padding: 0;
   color: #f9faf7;
 }
 
@@ -112,7 +116,8 @@ button {
 }
 
 .login-copy h1 {
-  font-size: 40px;
+  max-width: 560px;
+  font-size: clamp(32px, 3vw, 42px);
   line-height: 1.08;
 }
 
@@ -143,7 +148,7 @@ button {
 .login-panel {
   align-self: center;
   justify-self: center;
-  width: min(430px, calc(100% - 36px));
+  width: min(430px, 100%);
   border: 1px solid #e0e2dc;
   border-radius: 8px;
   padding: 22px;
@@ -814,6 +819,48 @@ button {
 
 .admin-table {
   min-width: 1180px;
+  table-layout: fixed;
+}
+
+.admin-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #ffffff;
+}
+
+.admin-table td {
+  overflow: hidden;
+}
+
+.select-col {
+  width: 44px;
+}
+
+.date-col {
+  width: 104px;
+}
+
+.client-col {
+  width: 292px;
+}
+
+.product-col {
+  width: 230px;
+}
+
+.blocks-col {
+  width: 124px;
+}
+
+.status-col,
+.skladbot-col,
+.google-col {
+  width: 132px;
+}
+
+.money-col {
+  width: 104px;
 }
 
 .selection-cell {
@@ -835,6 +882,22 @@ button {
 .admin-table strong,
 .admin-table span {
   display: block;
+}
+
+.cell-title,
+.cell-sub {
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+}
+
+.cell-title {
+  -webkit-line-clamp: 2;
+}
+
+.cell-sub {
+  -webkit-line-clamp: 1;
 }
 
 .table-muted {
@@ -866,6 +929,8 @@ button {
   font-size: 12px;
   font-weight: 700;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .status-badge {
@@ -971,6 +1036,9 @@ button {
 @media (max-width: 1080px) {
   .login-shell {
     grid-template-columns: 1fr;
+    align-items: start;
+    gap: 0;
+    padding: 0;
   }
 
   .login-brand {
@@ -980,7 +1048,8 @@ button {
 
   .login-panel {
     align-self: start;
-    margin: -42px 0 28px;
+    width: min(430px, calc(100% - 28px));
+    margin: 0 auto 28px;
   }
 
   .app-shell {
@@ -1036,7 +1105,7 @@ button {
   }
 
   .login-status-grid {
-    grid-template-columns: 1fr;
+    display: none;
   }
 
   .workspace {

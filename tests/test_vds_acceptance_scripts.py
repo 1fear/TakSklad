@@ -125,8 +125,14 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         self.assertIn('add_header X-Content-Type-Options "nosniff" always;', nginx)
         self.assertIn('add_header X-Frame-Options "DENY" always;', nginx)
         self.assertIn('add_header Referrer-Policy "same-origin" always;', nginx)
+        self.assertIn("resolver 127.0.0.11 valid=10s ipv6=off;", nginx)
+        self.assertIn('set $taksklad_backend "${TAKSKLAD_BACKEND_INTERNAL_URL}";', nginx)
+        self.assertNotIn("proxy_pass ${TAKSKLAD_BACKEND_INTERNAL_URL}", nginx)
+        self.assertEqual(nginx.count("proxy_pass $taksklad_backend;"), 4)
+        self.assertIn("proxy_pass $taksklad_backend/api/v1/auth/check;", nginx)
         self.assertNotIn("proxy_set_header X-Forwarded-Proto $scheme;", nginx)
         self.assertEqual(nginx.count("proxy_set_header X-Forwarded-Proto https;"), 4)
+        self.assertNotIn("VITE_TAKSKLAD_API_URL", compose)
 
 
 if __name__ == "__main__":

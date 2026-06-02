@@ -57,7 +57,6 @@ type ActionState = {
   pendingGoogleExports: number;
 };
 
-const CONFIG_KEY = "taksklad-web-config";
 const SAME_ORIGIN_API_LABEL = "same-origin /api";
 
 function loadConfig(): ApiConfig {
@@ -201,7 +200,7 @@ function App() {
       await refreshAll(config, false);
     } catch (loginFailure) {
       const message = loginFailure instanceof Error ? loginFailure.message : "";
-      setLoginError(message.includes("503") ? "Вход пока не настроен на сервере" : "Телефон или пароль не подходят");
+      setLoginError(loginFailureMessage(message));
     } finally {
       setLoginLoading(false);
     }
@@ -810,6 +809,17 @@ function AdminRowsTable({
   return (
     <div className="data-table-wrap admin-table-wrap">
       <table className="data-table admin-table">
+        <colgroup>
+          <col className="select-col" />
+          <col className="date-col" />
+          <col className="client-col" />
+          <col className="product-col" />
+          <col className="blocks-col" />
+          <col className="status-col" />
+          <col className="skladbot-col" />
+          <col className="google-col" />
+          <col className="money-col" />
+        </colgroup>
         <thead>
           <tr>
             <th className="selection-cell"></th>
@@ -836,41 +846,41 @@ function AdminRowsTable({
                     aria-label={`Выбрать заказ ${row.client}`}
                   />
                 </td>
-                <td>
-                <strong>{formatDate(row.order_date)}</strong>
-                <span className="table-muted">{row.payment_type}</span>
+                <td className="date-cell">
+                  <strong className="cell-title">{formatDate(row.order_date)}</strong>
+                  <span className="table-muted">{row.payment_type}</span>
                 </td>
-                <td>
-                <strong>{row.client}</strong>
-                <span className="table-muted">{row.address}</span>
-                {row.representative && <span className="table-muted">{row.representative}</span>}
+                <td className="client-cell">
+                  <strong className="cell-title">{row.client}</strong>
+                  <span className="table-muted cell-sub">{row.address}</span>
+                  {row.representative && <span className="table-muted cell-sub">{row.representative}</span>}
                 </td>
-                <td>
-                <strong>{row.product}</strong>
-                <span className="table-muted">{row.source_file || "-"}</span>
+                <td className="product-cell">
+                  <strong className="cell-title">{row.product}</strong>
+                  <span className="table-muted cell-sub">{row.source_file || "-"}</span>
                 </td>
                 <td className="blocks-cell">
-                <strong>{row.scanned_blocks}/{row.quantity_blocks}</strong>
-                <span className="table-muted">осталось {row.remaining_blocks}</span>
-                <div className="progress-track">
-                  <i style={{ width: `${progressPercent(row)}%` }} />
-                </div>
+                  <strong>{row.scanned_blocks}/{row.quantity_blocks}</strong>
+                  <span className="table-muted">осталось {row.remaining_blocks}</span>
+                  <div className="progress-track">
+                    <i style={{ width: `${progressPercent(row)}%` }} />
+                  </div>
                 </td>
                 <td>
-                <span className={`status-badge ${row.status_bucket}`}>{statusBucketLabel(row.status_bucket)}</span>
-                <span className={`activity-badge ${scanState(row)}`}>{scanStateLabel(scanState(row))}</span>
+                  <span className={`status-badge ${row.status_bucket}`}>{statusBucketLabel(row.status_bucket)}</span>
+                  <span className={`activity-badge ${scanState(row)}`}>{scanStateLabel(scanState(row))}</span>
                 </td>
                 <td>
-                <strong>{row.skladbot_request_number || "-"}</strong>
-                <span className="table-muted">{skladbotStatusLabel(row)}</span>
+                  <strong className="cell-title">{row.skladbot_request_number || "-"}</strong>
+                  <span className="table-muted cell-sub">{skladbotStatusLabel(row)}</span>
                 </td>
                 <td>
-                <span className={`status-badge google-${row.google_sheet_status}`}>
-                  {googleStatusLabel(row.google_sheet_status)}
-                </span>
-                {row.pending_google_exports > 0 && (
-                  <span className="table-muted">в очереди {row.pending_google_exports}</span>
-                )}
+                  <span className={`status-badge google-${row.google_sheet_status}`}>
+                    {googleStatusLabel(row.google_sheet_status)}
+                  </span>
+                  {row.pending_google_exports > 0 && (
+                    <span className="table-muted">в очереди {row.pending_google_exports}</span>
+                  )}
                 </td>
                 <td className="numeric-cell">{formatMoney(row.line_total)}</td>
               </tr>
@@ -1034,6 +1044,22 @@ function maskLogin(value: string) {
   const digits = value.replace(/\D/g, "");
   if (digits.length <= 4) return value;
   return `+${digits.slice(0, 3)} ... ${digits.slice(-4)}`;
+}
+
+function loginFailureMessage(message: string) {
+  if (message.includes("401")) {
+    return "Телефон или пароль не подходят";
+  }
+  if (message.includes("429")) {
+    return "Слишком много попыток. Попробуйте позже.";
+  }
+  if (message.includes("503")) {
+    return "Вход пока не настроен на сервере.";
+  }
+  if (message.includes("500") || message.includes("502") || message.includes("504")) {
+    return "Сайт не может подключиться к backend. Обновите страницу или попробуйте позже.";
+  }
+  return "Не удалось выполнить вход. Проверьте связь и попробуйте ещё раз.";
 }
 
 export default App;
