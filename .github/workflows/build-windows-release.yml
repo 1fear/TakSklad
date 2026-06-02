@@ -46,6 +46,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Prepare PyInstaller import path
+        shell: pwsh
+        run: |
+          $srcPath = (Resolve-Path src).Path
+          "PYTHONPATH=$srcPath" >> $env:GITHUB_ENV
+          if (Test-Path taksklad) {
+            Rename-Item taksklad taksklad_bridge_disabled
+          }
+          python -c "import taksklad, taksklad.main; print(taksklad.__file__)"
+
       - name: Build legacy onefile transition app
         shell: pwsh
         run: |
