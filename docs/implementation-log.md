@@ -3862,3 +3862,35 @@ cd /opt/taksklad/app
   - `git diff --check` - OK.
 - Остаточный риск:
   - если Chrome продолжит показывать старый индикатор сразу после исправления, вероятная причина - старая вкладка/cache/HSTS state браузера после смены домена и DNS. Серверная часть уже отдает HTTPS и защитные заголовки.
+
+### Mac ready archive 2.0.2: _struct runtime fix
+
+- Причина: запуск `outputs/mac_ready/TakSklad-2.0.2-mac-ready/START_BACKEND.command` на macOS падал до старта приложения:
+  - `[PYI-...:ERROR] Module object for struct is NULL!`;
+  - `ModuleNotFoundError: No module named '_struct'`.
+- Что найдено:
+  - проблема была в macOS PyInstaller runtime внутри готового `.app`, а не в backend-настройках и не в Google/складской логике;
+  - прямой smoke старого ready-приложения `TakSklad.app/Contents/MacOS/TakSklad --smoke-import` воспроизводил тот же `_struct` crash;
+  - `.venv/bin/pyinstaller` в локальной среде имел старый shebang на `/Users/anton/Documents/work/pKIS/.venv/bin/python`, поэтому пересборка выполнялась только через `./.venv/bin/python -m PyInstaller`.
+- Исправлено:
+  - macOS `.app` пересобрана из `TakSklad.spec` через `./.venv/bin/python -m PyInstaller`;
+  - старая сломанная `.app` заменена в `outputs/mac_ready/TakSklad-2.0.2-mac-ready`;
+  - `START_BACKEND.command` и `START_LOCAL.command` в ready-пакете теперь передают аргументы в приложение, чтобы можно было проверять именно скриптовый путь запуска через `--smoke-import`;
+  - `build_manifest.json` и `README_INSTALL_RU.md` обновлены новым SHA;
+  - `TakSklad-2.0.2-mac-ready.zip` пересобран без `.DS_Store`, `__MACOSX` и runtime-лога `TakSklad.log`;
+  - `.sha256.txt` пересчитан.
+- Готовый архив:
+  - `outputs/mac_ready/TakSklad-2.0.2-mac-ready.zip`;
+  - SHA256 zip: `d407b0d7f1fbb8bee23e8c6c52becbd33ba39ecf7b881ac175e0d3e43cfb8340`;
+  - SHA256 bundle executable: `cff30d8b68638d63751a7792b6b8e6a666123a29e3b1e4fc2622952aba02f36b`.
+- Проверено:
+  - `TakSklad.app/Contents/MacOS/TakSklad --smoke-import` - OK;
+  - `START_BACKEND.command --smoke-import` - OK;
+  - `START_LOCAL.command --smoke-import` - OK;
+  - чистая распаковка zip в `/tmp` и запуск `START_BACKEND.command --smoke-import` - OK;
+  - чистая распаковка zip в `/tmp` и запуск `START_LOCAL.command --smoke-import` - OK;
+  - `unzip -t outputs/mac_ready/TakSklad-2.0.2-mac-ready.zip` - OK;
+  - `cd outputs/mac_ready && shasum -a 256 -c TakSklad-2.0.2-mac-ready.zip.sha256.txt` - OK;
+  - `codesign --verify --deep --strict` для `.app` - OK;
+  - в zip есть рабочие JSON рядом с `.app`;
+  - в zip нет `.DS_Store`, `__MACOSX`, `TakSklad.log`.
