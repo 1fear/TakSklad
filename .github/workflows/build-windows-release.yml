@@ -62,19 +62,6 @@ jobs:
         run: |
           pyinstaller --clean --onefile --windowed --paths src --collect-submodules=taksklad --name TakSklad --icon assets\TakSklad.ico --distpath dist\transition pyinstaller_entry.py
 
-      - name: Verify transition exe contains taksklad package
-        shell: pwsh
-        run: |
-          @"
-          O PYZ.pyz
-          S
-          Q
-          "@ | Out-File -FilePath dist\archive-viewer-commands.txt -Encoding ascii
-          $archive = Get-Content dist\archive-viewer-commands.txt | python -m PyInstaller.utils.cliutils.archive_viewer dist\transition\TakSklad.exe
-          if ($archive -notmatch "taksklad\.main") {
-            throw "TakSklad.exe does not contain taksklad.main in PyInstaller PYZ"
-          }
-
       - name: Smoke test transition exe imports from clean directory
         shell: pwsh
         run: |
@@ -102,15 +89,6 @@ jobs:
         shell: pwsh
         run: |
           pyinstaller --clean --onedir --windowed --paths src --collect-submodules=taksklad --name TakSklad --icon assets\TakSklad.ico --distpath dist\onedir pyinstaller_entry.py
-          @"
-          O PYZ.pyz
-          S
-          Q
-          "@ | Out-File -FilePath dist\archive-viewer-commands.txt -Encoding ascii
-          $archive = Get-Content dist\archive-viewer-commands.txt | python -m PyInstaller.utils.cliutils.archive_viewer dist\onedir\TakSklad\TakSklad.exe
-          if ($archive -notmatch "taksklad\.main") {
-            throw "TakSklad onedir exe does not contain taksklad.main in PyInstaller PYZ"
-          }
           $smokeDir = Join-Path $env:RUNNER_TEMP "taksklad-smoke-onedir"
           if (Test-Path $smokeDir) {
             Remove-Item $smokeDir -Recurse -Force

@@ -17,8 +17,6 @@ class WindowsReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("PYTHONPATH=$srcPath", workflow)
         self.assertIn("Rename-Item taksklad taksklad_bridge_disabled", workflow)
         self.assertIn("import taksklad, taksklad.main", workflow)
-        self.assertIn("Verify transition exe contains taksklad package", workflow)
-        self.assertIn("taksklad\\.main", workflow)
         self.assertIn("Smoke test transition exe imports from clean directory", workflow)
         self.assertIn("RUNNER_TEMP", workflow)
         self.assertIn(".\\TakSklad.exe --smoke-import", workflow)
