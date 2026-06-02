@@ -97,12 +97,29 @@ def get_source_header_index(header):
     return header_idx
 
 
+def get_source_header_positions(header):
+    positions = {}
+    for idx, col in enumerate(header):
+        normalized = normalize_lookup_text(col)
+        if normalized:
+            positions.setdefault(normalized, []).append(idx)
+    return positions
+
+
 def find_source_column(header_idx, aliases):
     for alias in aliases:
         key = normalize_lookup_text(alias)
         if key in header_idx:
             return header_idx[key]
     return None
+
+
+def find_source_columns(header_positions, aliases):
+    result = []
+    for alias in aliases:
+        key = normalize_lookup_text(alias)
+        result.extend(header_positions.get(key, []))
+    return sorted(set(result))
 
 
 def get_source_cell(row, idx):
@@ -124,6 +141,7 @@ def row_has_data(row):
 
 def build_source_columns(header):
     header_idx = get_source_header_index(header)
+    header_positions = get_source_header_positions(header)
     columns = {}
     missing = []
 
@@ -136,6 +154,7 @@ def build_source_columns(header):
     for key, aliases in NORMALIZER_OPTIONAL_ALIASES.items():
         columns[key] = find_source_column(header_idx, aliases)
 
+    columns["coords_candidates"] = find_source_columns(header_positions, NORMALIZER_OPTIONAL_ALIASES["coords"])
     optional_found = sum(1 for key in NORMALIZER_OPTIONAL_ALIASES if columns.get(key) is not None)
     required_found = len(NORMALIZER_REQUIRED_ALIASES) - len(missing)
     score = required_found * 10 + optional_found

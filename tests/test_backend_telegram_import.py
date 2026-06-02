@@ -920,6 +920,172 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertEqual(payload["meta"]["geocoded_count"], 1)
         self.assertEqual(payload["meta"]["geocode_failed_count"], 0)
 
+    def test_excel_file_to_import_payload_reverse_geocodes_when_address_is_not_found_placeholder(self):
+        original_reverse_geocoder = excel_importer.reverse_geocode_yandex
+        calls = []
+        try:
+            def fake_reverse_geocoder(coordinates, cache=None):
+                calls.append(coordinates)
+                return "Ташкент, Яккасарайский район", ""
+
+            excel_importer.reverse_geocode_yandex = fake_reverse_geocoder
+
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                path = Path(tmp_dir) / "coordinates_with_placeholder_address.xlsx"
+                workbook = openpyxl.Workbook()
+                sheet = workbook.active
+                sheet.title = "Заявки"
+                sheet.append([
+                    "Клиент",
+                    "Тип оплаты",
+                    "Товары",
+                    "Кол-во ШТ",
+                    "Адрес",
+                    "Координаты",
+                    "Торговый представитель",
+                ])
+                sheet.append([
+                    "Client One",
+                    "Терминал",
+                    "Chapman Brown OP 20",
+                    20,
+                    "Адрес не найден",
+                    "41.311081,69.240562",
+                    "Rep One",
+                ])
+                workbook.save(path)
+
+                payload = excel_importer.excel_file_to_import_payload(
+                    path,
+                    file_name=path.name,
+                    source="telegram",
+                    shipment_date="29.05.2026",
+                )
+        finally:
+            excel_importer.reverse_geocode_yandex = original_reverse_geocoder
+
+        self.assertEqual(calls, ["41.311081, 69.240562"])
+        self.assertEqual(payload["rows"][0]["Адрес"], "Ташкент, Яккасарайский район")
+        self.assertEqual(payload["rows"][0]["Координаты"], "41.311081, 69.240562")
+        self.assertEqual(payload["meta"]["geocoded_count"], 1)
+        self.assertEqual(payload["meta"]["geocode_failed_count"], 0)
+
+    def test_excel_file_to_import_payload_reads_full_coordinates_from_repeated_smartup_columns(self):
+        original_reverse_geocoder = excel_importer.reverse_geocode_yandex
+        calls = []
+        try:
+            def fake_reverse_geocoder(coordinates, cache=None):
+                calls.append(coordinates)
+                return "Ташкент, Юнусабадский район", ""
+
+            excel_importer.reverse_geocode_yandex = fake_reverse_geocoder
+
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                path = Path(tmp_dir) / "smartup_repeated_coordinates.xlsx"
+                workbook = openpyxl.Workbook()
+                sheet = workbook.active
+                sheet.title = "Конструктор отчетов"
+                sheet.append([
+                    "Торговый представитель",
+                    "Клиент",
+                    "Координаты клиента",
+                    "Координаты клиента",
+                    "Координаты клиента",
+                    "ТМЦ",
+                    "Тип оплаты",
+                    "Статус",
+                    "Количество заказа",
+                    "Сумма с переоценкой",
+                    "Дата отгрузки",
+                ])
+                sheet.append([
+                    "Rep One",
+                    "Client One",
+                    "41.325658539017745",
+                    "69.23166364431383",
+                    "41.325658539017745,69.23166364431383",
+                    "Chapman Brown OP 20",
+                    "Перечисление",
+                    "В обработке",
+                    150,
+                    3_600_000,
+                    "2026-06-03",
+                ])
+                workbook.save(path)
+
+                payload = excel_importer.excel_file_to_import_payload(
+                    path,
+                    file_name=path.name,
+                    source="telegram",
+                    shipment_date="03.06.2026",
+                )
+        finally:
+            excel_importer.reverse_geocode_yandex = original_reverse_geocoder
+
+        self.assertEqual(calls, ["41.325658539017745, 69.23166364431383"])
+        self.assertEqual(payload["rows"][0]["Адрес"], "Ташкент, Юнусабадский район")
+        self.assertEqual(payload["rows"][0]["Координаты"], "41.325658539017745, 69.23166364431383")
+        self.assertEqual(payload["meta"]["geocoded_count"], 1)
+        self.assertEqual(payload["meta"]["geocode_failed_count"], 0)
+
+    def test_excel_file_to_import_payload_combines_split_smartup_coordinates_without_full_column_header(self):
+        original_reverse_geocoder = excel_importer.reverse_geocode_yandex
+        calls = []
+        try:
+            def fake_reverse_geocoder(coordinates, cache=None):
+                calls.append(coordinates)
+                return "Ташкент, Мирзо-Улугбекский район", ""
+
+            excel_importer.reverse_geocode_yandex = fake_reverse_geocoder
+
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                path = Path(tmp_dir) / "smartup_split_coordinates.xlsx"
+                workbook = openpyxl.Workbook()
+                sheet = workbook.active
+                sheet.title = "Конструктор отчетов"
+                sheet.append([
+                    "Торговый представитель",
+                    "Клиент",
+                    "Координаты клиента",
+                    "",
+                    "",
+                    "ТМЦ",
+                    "Тип оплаты",
+                    "Статус",
+                    "Количество заказа",
+                    "Сумма с переоценкой",
+                    "Дата отгрузки",
+                ])
+                sheet.append([
+                    "Rep One",
+                    "Client One",
+                    "41.363127",
+                    "69.287982",
+                    "",
+                    "Chapman Brown OP 20",
+                    "Перечисление",
+                    "В обработке",
+                    40,
+                    960_000,
+                    "2026-06-03",
+                ])
+                workbook.save(path)
+
+                payload = excel_importer.excel_file_to_import_payload(
+                    path,
+                    file_name=path.name,
+                    source="telegram",
+                    shipment_date="03.06.2026",
+                )
+        finally:
+            excel_importer.reverse_geocode_yandex = original_reverse_geocoder
+
+        self.assertEqual(calls, ["41.363127, 69.287982"])
+        self.assertEqual(payload["rows"][0]["Адрес"], "Ташкент, Мирзо-Улугбекский район")
+        self.assertEqual(payload["rows"][0]["Координаты"], "41.363127, 69.287982")
+        self.assertEqual(payload["meta"]["geocoded_count"], 1)
+        self.assertEqual(payload["meta"]["geocode_failed_count"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

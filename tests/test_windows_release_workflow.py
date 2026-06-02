@@ -11,10 +11,22 @@ class WindowsReleaseWorkflowTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("--collect-submodules taksklad", workflow)
-        self.assertIn("Smoke test transition exe imports", workflow)
-        self.assertIn("dist\\transition\\TakSklad.exe --smoke-import", workflow)
-        self.assertIn("dist\\onedir\\TakSklad\\TakSklad.exe --smoke-import", workflow)
+        self.assertIn("--collect-submodules=taksklad", workflow)
+        self.assertIn("pyinstaller_entry.py", workflow)
+        self.assertIn("Verify transition exe contains taksklad package", workflow)
+        self.assertIn("taksklad\\.main", workflow)
+        self.assertIn("Smoke test transition exe imports from clean directory", workflow)
+        self.assertIn("RUNNER_TEMP", workflow)
+        self.assertIn(".\\TakSklad.exe --smoke-import", workflow)
+        self.assertIn(".\\TakSklad\\TakSklad.exe --smoke-import", workflow)
+
+    def test_windows_release_does_not_smoke_test_from_checkout_root(self):
+        workflow = (PROJECT_ROOT / ".github" / "workflows" / "build-windows-release.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotIn("& dist\\transition\\TakSklad.exe --smoke-import", workflow)
+        self.assertNotIn("& dist\\onedir\\TakSklad\\TakSklad.exe --smoke-import", workflow)
 
 
 if __name__ == "__main__":

@@ -20,7 +20,13 @@ from .google_sheets_exporter import (
     parse_int_value,
 )
 from .models import AuditLog, Order, OrderItem, ScanCode
-from .orders_service import COMPLETED_STATUSES, STATUS_REMOVED_FROM_GOOGLE, STATUS_RETURNED
+from .orders_service import (
+    COMPLETED_STATUSES,
+    STATUS_ARCHIVED_NO_KIZ,
+    STATUS_CANCELLED,
+    STATUS_REMOVED_FROM_GOOGLE,
+    STATUS_RETURNED,
+)
 from .google_sheets_pending import process_pending_google_sheets_exports
 
 
@@ -505,7 +511,11 @@ def mark_backend_items_missing_from_google(db: Session, item_index, matched_item
             if item.id in seen or item.id in matched_item_ids:
                 continue
             seen.add(item.id)
-            if item.status in COMPLETED_STATUSES or item.status == STATUS_REMOVED_FROM_GOOGLE:
+            if item.status in COMPLETED_STATUSES or item.status in (
+                STATUS_ARCHIVED_NO_KIZ,
+                STATUS_CANCELLED,
+                STATUS_REMOVED_FROM_GOOGLE,
+            ):
                 continue
             if item.scanned_blocks > 0 or item.scan_codes:
                 result["conflicts"] += 1

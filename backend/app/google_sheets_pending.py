@@ -8,6 +8,8 @@ from sqlalchemy.orm import Session, selectinload
 from .google_sheets_exporter import (
     append_import_records_to_google_sheets,
     archive_backend_order_to_google_sheets,
+    archive_backend_order_without_kiz_to_google_sheets,
+    cancel_backend_order_in_google_sheets,
     mark_backend_order_returned_in_google_sheets,
     sync_backend_order_item_to_google_sheets,
 )
@@ -196,6 +198,30 @@ def run_google_sheets_export_event(db: Session, event: PendingEvent):
         if order is None:
             return {"status": "missing", "error": "order not found"}
         return archive_backend_order_to_google_sheets(order)
+
+    if action == "google_sheets_archive_no_kiz_export":
+        if entity_uuid is None:
+            return {"status": "missing", "error": "invalid order id"}
+        order = db.execute(
+            select(Order)
+            .options(selectinload(Order.items).selectinload(OrderItem.scan_codes))
+            .where(Order.id == entity_uuid)
+        ).scalar_one_or_none()
+        if order is None:
+            return {"status": "missing", "error": "order not found"}
+        return archive_backend_order_without_kiz_to_google_sheets(order)
+
+    if action == "google_sheets_cancel_export":
+        if entity_uuid is None:
+            return {"status": "missing", "error": "invalid order id"}
+        order = db.execute(
+            select(Order)
+            .options(selectinload(Order.items).selectinload(OrderItem.scan_codes))
+            .where(Order.id == entity_uuid)
+        ).scalar_one_or_none()
+        if order is None:
+            return {"status": "missing", "error": "order not found"}
+        return cancel_backend_order_in_google_sheets(order)
 
     if action == "google_sheets_return_export":
         if entity_uuid is None:

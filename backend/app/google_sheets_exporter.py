@@ -29,7 +29,11 @@ LEGACY_ORDER_DATE_COLUMN = "Дата получения заказа"
 STATUS_COLUMN = "Статус"
 STATUS_NOT_COMPLETED = "Не выполнено"
 STATUS_COMPLETED = "Выполнено"
+STATUS_ARCHIVED_NO_KIZ = "Архив без КИЗов"
+STATUS_CANCELLED = "Отменено"
 ARCHIVE_SHEET_NAME = "Архив"
+ARCHIVE_NO_KIZ_SHEET_NAME = "Архив без КИЗов"
+CANCELLED_SHEET_NAME = "Отмененные"
 RETURNS_SHEET_NAME = "Возвраты"
 RETURN_STATUS_COLUMN = "Статус возврата"
 RETURN_DATE_COLUMN = "Дата возврата"
@@ -181,14 +185,34 @@ def sync_backend_orders_skladbot_to_google_sheets(orders):
 
 
 def archive_backend_order_to_google_sheets(order):
+    return move_backend_order_to_google_sheet(order, ARCHIVE_SHEET_NAME)
+
+
+def archive_backend_order_without_kiz_to_google_sheets(order):
+    return move_backend_order_to_google_sheet(
+        order,
+        ARCHIVE_NO_KIZ_SHEET_NAME,
+        sheet_status=STATUS_ARCHIVED_NO_KIZ,
+    )
+
+
+def cancel_backend_order_in_google_sheets(order):
+    return move_backend_order_to_google_sheet(
+        order,
+        CANCELLED_SHEET_NAME,
+        sheet_status=STATUS_CANCELLED,
+    )
+
+
+def move_backend_order_to_google_sheet(order, target_sheet_name, sheet_status=None):
     try:
         spreadsheet = get_google_client().open_by_key(SPREADSHEET_ID)
     except GoogleSheetsExportDisabled as exc:
         return GoogleSheetsExportResult(status="disabled", error=str(exc)).as_dict()
 
     data_sheet = spreadsheet.worksheet(SHEET_NAME)
-    archive_sheet = get_or_create_sheet(spreadsheet, ARCHIVE_SHEET_NAME)
-    return archive_backend_order_rows(data_sheet, archive_sheet, order)
+    target_sheet = get_or_create_sheet(spreadsheet, target_sheet_name)
+    return archive_backend_order_rows(data_sheet, target_sheet, order, sheet_status=sheet_status)
 
 
 def mark_backend_order_returned_in_google_sheets(order):
@@ -290,7 +314,7 @@ def format_skladbot_status(value):
     return normalize_text(value)
 
 
-def archive_backend_order_rows(data_sheet, archive_sheet, order):
+def archive_backend_order_rows(data_sheet, archive_sheet, order, sheet_status=None):
     ensure_import_sheet_layout(data_sheet)
     ensure_import_sheet_layout(archive_sheet)
     data_rows = data_sheet.get_all_values()
@@ -331,7 +355,7 @@ def archive_backend_order_rows(data_sheet, archive_sheet, order):
         ):
             continue
 
-        apply_backend_item_state_to_row(source_row, header_idx, item, completed=True)
+        apply_backend_item_state_to_row(source_row, header_idx, item, completed=True, sheet_status=sheet_status)
         rows_to_archive.append(source_row[:header_len])
 
     if rows_to_archive:
@@ -716,13 +740,13 @@ def backend_item_sheet_status(item):
     return STATUS_NOT_COMPLETED
 
 
-def apply_backend_item_state_to_row(row, header_idx, item, completed=False):
+def apply_backend_item_state_to_row(row, header_idx, item, completed=False, sheet_status=None):
     codes_idx = header_idx.get("Отсканированные коды")
     if codes_idx is not None:
         row[codes_idx] = "\n".join(merge_codes(split_codes(get_cell(row, codes_idx)), backend_item_codes(item)))
     status_idx = header_idx.get(STATUS_COLUMN)
     if status_idx is not None:
-        row[status_idx] = STATUS_COMPLETED if completed else backend_item_sheet_status(item)
+        row[status_idx] = normalize_text(sheet_status) or (STATUS_COMPLETED if completed else backend_item_sheet_status(item))
 
 
 def archive_row_already_exists(source_row, source_header_idx, archive_rows, archive_header_idx):
@@ -844,12 +868,22 @@ def normalize_lookup_text(value):
 
 def is_missing_address(value):
     text = normalize_lookup_text(value)
-    return not text or text == "адрес не указан"
+    return (
+        not text
+        or text in {
+            "адрес не указан",
+            "адрес не найден",
+            "адреса не найдены",
+            "адрес не определен",
+            "адрес отсутствует",
+        }
+        or text.startswith("координаты")
+    )
 
 
 def is_real_address(value):
     text = normalize_lookup_text(value)
-    return bool(text and text != "адрес не указан" and not text.startswith("координаты "))
+    return bool(text and not is_missing_address(text))
 
 
 def column_index_to_letter(index):

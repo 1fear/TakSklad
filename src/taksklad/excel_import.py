@@ -33,6 +33,80 @@ from .utils import (
 )
 
 
+MISSING_ADDRESS_MARKERS = {
+    "адрес не указан",
+    "адрес не найден",
+    "адреса не найдены",
+    "адрес не определен",
+    "адрес отсутствует",
+}
+
+
+def is_missing_address_text(value):
+    text = normalize_lookup_text(value)
+    return not text or text in MISSING_ADDRESS_MARKERS or text.startswith("координаты")
+
+
+def parse_coordinate_component(value):
+    text = normalize_text(value).replace(",", ".")
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def format_coordinate(value):
+    return f"{value:.12f}".rstrip("0").rstrip(".")
+
+
+def normalize_coordinates(value):
+    text = normalize_text(value)
+    if not text:
+        return ""
+    import re
+    numbers = re.findall(r"-?\d+(?:[.,]\d+)?", text)
+    if len(numbers) < 2:
+        return ""
+    return f"{numbers[0].replace(',', '.')}, {numbers[1].replace(',', '.')}"
+
+
+def normalize_split_coordinates(latitude_value, longitude_value):
+    latitude = parse_coordinate_component(latitude_value)
+    longitude = parse_coordinate_component(longitude_value)
+    if latitude is None or longitude is None:
+        return ""
+    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+        return ""
+    return f"{format_coordinate(latitude)}, {format_coordinate(longitude)}"
+
+
+def get_coordinates_from_row(row, columns):
+    candidates = list(columns.get("coords_candidates") or [])
+    primary = columns.get("coords")
+    if primary is not None and primary not in candidates:
+        candidates.insert(0, primary)
+
+    expanded_candidates = []
+    for index in candidates:
+        for offset in (0, 1, 2):
+            expanded = index + offset
+            if expanded < len(row) and expanded not in expanded_candidates:
+                expanded_candidates.append(expanded)
+
+    for index in expanded_candidates:
+        coords = normalize_coordinates(get_source_cell(row, index))
+        if coords:
+            return coords
+
+    for index in candidates:
+        coords = normalize_split_coordinates(get_source_cell(row, index), get_source_cell(row, index + 1))
+        if coords:
+            return coords
+    return ""
+
+
 def make_source_row_duplicate_key(row):
     return make_hash({
         "date": row["date"],
@@ -109,8 +183,8 @@ def parse_excel_order_files(file_paths, source_names=None):
                 or datetime.now().strftime("%d.%m.%Y")
             )
             source_address = get_source_cell(row, columns.get("address"))
-            address = source_address
-            coords = get_source_cell(row, columns.get("coords"))
+            address = "" if is_missing_address_text(source_address) else source_address
+            coords = get_coordinates_from_row(row, columns)
             if not address and coords:
                 geocoded_address, geocode_error = reverse_geocode_yandex(coords, cache=geocode_cache)
                 if geocoded_address:

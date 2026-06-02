@@ -11,6 +11,17 @@ class HealthResponse(BaseModel):
     environment: str
 
 
+class AuthLoginRequest(BaseModel):
+    login: str = Field(min_length=1)
+    password: str = Field(min_length=1)
+
+
+class AuthSessionRead(BaseModel):
+    authenticated: bool
+    login: str = ""
+    expires_at: datetime | None = None
+
+
 class OrderItemRead(BaseModel):
     id: str
     product: str
@@ -38,6 +49,78 @@ class OrderRead(BaseModel):
     returned_at: str = ""
     return_reference: str = ""
     items: list[OrderItemRead] = Field(default_factory=list)
+
+
+class AdminTableTotals(BaseModel):
+    orders: int
+    items: int
+    active_orders: int
+    archived_orders: int
+    returned_orders: int
+    planned_blocks: int
+    scanned_blocks: int
+    remaining_blocks: int
+    total_price: int
+    pending_google_exports: int
+
+
+class AdminTableRow(BaseModel):
+    order_id: str
+    item_id: str
+    order_date: date | None = None
+    payment_type: str
+    client: str
+    address: str
+    coordinates: str = ""
+    representative: str | None = None
+    order_status: str
+    item_status: str
+    status_bucket: str
+    product: str
+    quantity_pieces: int
+    quantity_blocks: int
+    scanned_blocks: int
+    remaining_blocks: int
+    scan_codes_count: int
+    block_price: int = 0
+    line_total: int = 0
+    skladbot_request_number: str = ""
+    skladbot_request_id: str = ""
+    skladbot_status: str = ""
+    source_file: str = ""
+    google_sheet_status: str = ""
+    google_sheet_row_number: int | None = None
+    google_sheet_synced_at: str = ""
+    pending_google_exports: int = 0
+    return_status: str = ""
+    returned_at: str = ""
+    return_reference: str = ""
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class AdminActivityRead(BaseModel):
+    id: str
+    action: str
+    entity_type: str = ""
+    entity_id: str = ""
+    payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime | None = None
+
+
+class AdminTableRead(BaseModel):
+    generated_at: datetime
+    totals: AdminTableTotals
+    rows: list[AdminTableRow] = Field(default_factory=list)
+    recent_activity: list[AdminActivityRead] = Field(default_factory=list)
+
+
+class AdminOrderActionRequest(BaseModel):
+    reason: str = Field(min_length=1)
+    actor: str = "web"
+    idempotency_key: str = ""
+    expected_updated_at: str = ""
+    dry_run: bool = False
 
 
 class ScanCreate(BaseModel):

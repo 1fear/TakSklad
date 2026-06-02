@@ -36,6 +36,14 @@ services:
       TAKSKLAD_GOOGLE_SHEET_NAME: ${TAKSKLAD_GOOGLE_SHEET_NAME:-data}
       TAKSKLAD_GOOGLE_CREDENTIALS_JSON_BASE64: ${TAKSKLAD_GOOGLE_CREDENTIALS_JSON_BASE64:-}
       TAKSKLAD_GOOGLE_API_TIMEOUT_SECONDS: ${TAKSKLAD_GOOGLE_API_TIMEOUT_SECONDS:-8}
+      TAKSKLAD_WEB_LOGIN: ${TAKSKLAD_WEB_LOGIN:-}
+      TAKSKLAD_WEB_PASSWORD_HASH: ${TAKSKLAD_WEB_PASSWORD_HASH:-}
+      TAKSKLAD_WEB_SESSION_SECRET: ${TAKSKLAD_WEB_SESSION_SECRET:-}
+      TAKSKLAD_WEB_SESSION_TTL_SECONDS: ${TAKSKLAD_WEB_SESSION_TTL_SECONDS:-86400}
+      TAKSKLAD_WEB_COOKIE_SECURE: ${TAKSKLAD_WEB_COOKIE_SECURE:-true}
+      TAKSKLAD_WEB_LOGIN_MAX_ATTEMPTS: ${TAKSKLAD_WEB_LOGIN_MAX_ATTEMPTS:-5}
+      TAKSKLAD_WEB_LOGIN_WINDOW_SECONDS: ${TAKSKLAD_WEB_LOGIN_WINDOW_SECONDS:-300}
+      TAKSKLAD_WEB_LOGIN_LOCK_SECONDS: ${TAKSKLAD_WEB_LOGIN_LOCK_SECONDS:-900}
     depends_on:
       postgres:
         condition: service_healthy
@@ -67,8 +75,11 @@ services:
       - traefik.http.routers.taksklad-frontend.entrypoints=websecure
       - traefik.http.routers.taksklad-frontend.tls.certresolver=letsencrypt
       - traefik.http.routers.taksklad-frontend.priority=1
-      - traefik.http.routers.taksklad-frontend.middlewares=taksklad-frontend-auth
-      - traefik.http.middlewares.taksklad-frontend-auth.basicauth.users=${TAKSKLAD_FRONTEND_BASIC_AUTH}
+      - traefik.http.routers.taksklad-frontend-http.rule=Host(`${TAKSKLAD_FRONTEND_HOST}`) || Host(`${TAKSKLAD_FRONTEND_WWW_HOST}`)
+      - traefik.http.routers.taksklad-frontend-http.entrypoints=web
+      - traefik.http.routers.taksklad-frontend-http.middlewares=taksklad-frontend-https-redirect
+      - traefik.http.middlewares.taksklad-frontend-https-redirect.redirectscheme.scheme=https
+      - traefik.http.middlewares.taksklad-frontend-https-redirect.redirectscheme.permanent=true
       - traefik.http.services.taksklad-frontend.loadbalancer.server.port=80
       - traefik.docker.network=${TRAEFIK_NETWORK:-traefik}
     depends_on:

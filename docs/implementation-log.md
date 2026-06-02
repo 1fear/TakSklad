@@ -3571,3 +3571,225 @@ cd /opt/taksklad/app
   - SHA GitHub assets сверены локально;
   - `unzip -t outputs/windows_ready/TakSklad-2.0.1-win-ready.zip` - OK;
   - `shasum -a 256 -c outputs/windows_ready/TakSklad-2.0.1-win-ready.zip.sha256.txt` - OK.
+
+### Hostmaster DNS Root Domain Bind
+
+- Причина: frontend-router на VDS уже готов принимать `taksklad.uz` и `www.taksklad.uz`, но DNS корневого домена всё ещё смотрел на старый IP `91.213.99.99`.
+- Что сделано:
+  - в Hostmaster DNS Manager изменена запись `taksklad.uz. A` на `135.181.245.84`;
+  - `api.taksklad.uz. A` оставлена без изменений, она уже смотрела на `135.181.245.84`;
+  - `www.taksklad.uz. CNAME taksklad.uz` оставлена без изменений, после смены корня она ведёт на VDS;
+  - `adminer.taksklad.uz` не создавался.
+- Проверено:
+  - после перезагрузки страницы Hostmaster значение `taksklad.uz. A 135.181.245.84` сохранилось;
+  - `dig @ns1.hostmaster.uz taksklad.uz A +short` возвращает `135.181.245.84`;
+  - `dig @revers.hostmaster.uz taksklad.uz A +short` ещё возвращает старый `91.213.99.99`, SOA serial вторичного NS отстаёт;
+  - публичные резолверы могут временно отдавать старый IP до синхронизации вторичного NS и истечения DNS cache;
+  - routed-test через VDS IP для `taksklad.uz` и `www.taksklad.uz` возвращает `401 Basic realm="traefik"`, значит frontend-router на сервере принимает оба host-а;
+  - `https://api.taksklad.uz/health` продолжает возвращать `status=ok`.
+- Важно:
+  - HTTPS-сертификат для `taksklad.uz`/`www.taksklad.uz` ещё не выпущен: пока Traefik отдаёт default certificate;
+  - после DNS propagation нужно повторно проверить `dig @1.1.1.1 taksklad.uz A +short`, `curl -I https://taksklad.uz` и сертификат Let's Encrypt для root/www.
+
+### Web Panel Read-Only Table MVP
+
+- Причина: нужна web-панель, из которой можно видеть рабочую таблицу, фильтровать заказы, видеть Google/SkladBot/скан-статусы и активность, но без риска случайно выполнить складское действие из браузера.
+- Решение этапа 1:
+  - добавлен read-only endpoint `GET /api/v1/admin/table`;
+  - endpoint возвращает плоскую таблицу: одна строка = одна позиция заказа;
+  - в строке есть дата, клиент, адрес, ТП, оплата, товар, план/факт/остаток блоков, сумма, SkladBot номер/статус, Google sync status, источник файла, pending Google exports;
+  - в ответ добавлены totals и recent audit activity;
+  - текущий `/api/v1/orders/active` не менялся, чтобы не ломать desktop/Telegram;
+  - frontend переведён в read-only web panel: убраны UI-действия записи КИЗов и завершения заказа из браузера;
+  - добавлены фильтры по дате отгрузки, статусу, сканам, SkladBot, Google и строковый поиск.
+- Что сознательно не добавлено:
+  - нет web-сканирования КИЗов;
+  - нет завершения заказа из web;
+  - нет удаления/архивации/отмены на этапе 1;
+  - безопасные action endpoints (`archive-without-kiz`, `cancel`, `resync-google`) оставлены на этап 2 после отдельной auth/audit/precondition-логики.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_backend_api_persistence` - 29 тестов OK;
+  - `./.venv/bin/python -m unittest discover -s tests` - 232 теста OK;
+  - `npm run build` во `frontend` - OK;
+  - `python -m compileall` по изменённым backend/test файлам - OK;
+  - `git diff --check` - OK;
+  - `frontend/src` проверен на отсутствие старых write-действий `createScan`, `completeOrder`, `POST`, `Записать`, `Завершить`.
+
+### Web Panel Safe Actions MVP
+
+- Причина: web-панели нужна аварийная управляемость без ломки складского сценария. Типовой пример - единоразово закрыть активные заказы без КИЗов, если их нельзя сканировать, но нельзя превращать это в обычное завершение заказа.
+- Что добавлено:
+  - `POST /api/v1/admin/orders/{order_id}/archive-without-kiz`;
+  - `POST /api/v1/admin/orders/{order_id}/cancel`;
+  - `POST /api/v1/admin/orders/{order_id}/resync-google`;
+  - `POST /api/v1/admin/google/pending/retry`;
+  - request body `AdminOrderActionRequest`: reason, actor, idempotency_key, expected_updated_at, dry_run.
+- Защита данных:
+  - archive-without-kiz и cancel разрешены только для активного заказа без отсканированных КИЗов;
+  - действие пишет audit log и причину в `raw_payload`;
+  - заказ и его позиции получают отдельные статусы `archived_no_kiz` или `cancelled`;
+  - эти статусы не входят в `COMPLETED_STATUSES`, поэтому не считаются обычным выполнением заказа и не доступны как основание возврата;
+  - активная выдача `/api/v1/orders/active` больше не показывает `archived_no_kiz` и `cancelled`.
+- Google Sheets:
+  - обычный `Архив` оставлен только для реально завершенных заказов;
+  - заказы без КИЗов переносятся в отдельный лист `Архив без КИЗов`;
+  - отмененные заказы переносятся в отдельный лист `Отмененные`;
+  - если Google временно недоступен, событие попадает в server-side pending queue и повторяется через retry.
+- Frontend:
+  - добавлен выбор заказа чекбоксом в web-таблице;
+  - action-bar показывает выбранный заказ, план/факт блоков и Google-очередь;
+  - доступны действия: ресинк Google, архив без КИЗов, отмена, повтор Google-очереди;
+  - опасные действия требуют reason и confirm;
+  - web-сканирование КИЗов и обычное завершение заказа в браузер не возвращались.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_backend_api_persistence tests.test_backend_google_sheets_exporter` - 40 тестов OK;
+  - `./.venv/bin/python -m unittest discover -s tests` - 238 тестов OK;
+  - `npm run build` во `frontend` - OK;
+  - `python -m compileall` по изменённым backend-файлам - OK.
+- Доставлено на VDS:
+  - перед заменой создан restore point `/opt/taksklad/restore_points/pre-web-safe-actions-20260601T184438Z`;
+  - синхронизированы `backend/`, `frontend/`, `deploy/vds/` без серверного `.env`;
+  - дополнительно синхронизирован `version.json`, потому что на VDS оставался старый manifest `2.0.0`, а текущая рабочая линия `2.0.1`;
+  - пересобраны и перезапущены `backend-api`, `google-sheets-sync-worker`, `frontend`;
+  - Postgres volume и данные не трогались.
+- Проверено на VDS:
+  - `https://api.taksklad.uz/health` вернул `status=ok`;
+  - внутри `backend-api` выполнен `py_compile` изменённых backend-файлов;
+  - `GET /api/v1/admin/table` внутри контейнера вернул `rows=114`, `active_orders=0`, `pending_google_exports=0`;
+  - проверено наличие новых admin routes;
+  - routed-test `https://taksklad.uz/` через IP VDS возвращает `401 Basic`, frontend-router отвечает;
+  - `./deploy/vds/acceptance_status.sh` вернул `status=ok`.
+
+### Web Login Entry MVP
+
+- Причина: после привязки `taksklad.uz` к VDS нужен нормальный вход в web-панель, а не Traefik BasicAuth и не открытая таблица.
+- Архитектурное решение:
+  - frontend стал публичной страницей входа;
+  - реальные API-данные за `/api/` закрыты nginx `auth_request`;
+  - nginx сначала проверяет web-cookie через `GET /api/v1/auth/check`;
+  - только после валидной web-сессии nginx добавляет внутренний service token к запросам backend;
+  - пароль не хранится во frontend, на VDS лежит только PBKDF2-хеш в `.env`;
+  - web-сессия хранится в `HttpOnly`, `Secure`, `SameSite=Lax` cookie.
+- Backend:
+  - добавлены `POST /api/v1/auth/login`, `POST /api/v1/auth/logout`, `GET /api/v1/auth/session`, `GET /api/v1/auth/check`;
+  - добавлен HMAC session token с TTL;
+  - добавлен простой rate limit на неверные попытки входа;
+  - существующие service-token API не открывались наружу.
+- Frontend:
+  - добавлен экран входа TakSklad с рабочим оформлением;
+  - после входа открывается web-панель с таблицей, фильтрами, безопасными действиями и активностью;
+  - logout очищает сессию и возвращает на экран входа.
+- Deploy:
+  - перед заменой создан restore point `/opt/taksklad/restore_points/pre-web-login-entry-20260601T191258Z`;
+  - синхронизированы `backend/`, `frontend/`, `deploy/vds/` без вывода секретов;
+  - серверный `.env` обновлен web-auth параметрами;
+  - пересобраны и перезапущены `backend-api` и `frontend`;
+  - Traefik BasicAuth снят с frontend-router, потому что защиту API теперь выполняет web-cookie gate.
+- Проверено:
+  - `curl -I https://taksklad.uz/` возвращает `200 text/html`;
+  - `GET https://taksklad.uz/api/v1/admin/table` без cookie возвращает `401`;
+  - login возвращает `200` и выставляет cookie с `HttpOnly`, `Secure`, `SameSite=Lax`;
+  - `GET /api/v1/admin/table` с cookie возвращает `200`;
+  - после logout тот же endpoint снова возвращает `401`;
+  - `https://api.taksklad.uz/health` возвращает `status=ok`;
+  - `https://api.taksklad.uz/docs` и `/openapi.json` снаружи возвращают `404`;
+  - `./deploy/vds/acceptance_status.sh` на VDS вернул общий `status=ok`.
+
+### Web Login Fix: same-origin API and HTTPS hardening
+
+- Причина: после первого деплоя пользователь видел `Не защищено` в Chrome и форма входа показывала ошибку на корректные данные.
+- Что найдено:
+  - backend auth на VDS корректно принимает рабочие данные через `https://taksklad.uz/api/v1/auth/login`;
+  - парольный hash в контейнере не поврежден: формат PBKDF2 корректный;
+  - публичный сертификат `taksklad.uz` валиден, Let's Encrypt, SAN содержит `taksklad.uz` и `www.taksklad.uz`;
+  - `http://taksklad.uz/` уже редиректит на `https://taksklad.uz/`;
+  - вероятная причина Chrome `Не защищено` - старый DNS/cache после смены IP с `91.213.99.99` на `135.181.245.84`;
+  - реальная причина ошибки входа в web UI - frontend был собран с `VITE_TAKSKLAD_API_URL=https://api.taksklad.uz` и мог уходить напрямую на backend host, минуя same-origin nginx web-gate.
+- Исправление:
+  - frontend больше не использует `VITE_TAKSKLAD_API_URL` для web-панели;
+  - frontend больше не читает старый `taksklad-web-config` из `localStorage`;
+  - все web-запросы идут только в same-origin `/api` на текущем host;
+  - добавлен `Strict-Transport-Security: max-age=31536000; includeSubDomains`;
+  - в Traefik labels добавлен явный HTTP-router для frontend с permanent redirect на HTTPS.
+- Доставлено на VDS:
+  - синхронизированы `frontend/` и `deploy/vds/` без серверного `.env`;
+  - пересобран и перезапущен `frontend`;
+  - `backend-api` был пересоздан docker compose во время `up -d --build frontend`, env и данные не менялись.
+- Проверено:
+  - новый bundle `index-Pkuib_xb.js` не содержит `https://api.taksklad.uz`;
+  - `curl -sIL http://taksklad.uz/` возвращает `308` на `https://taksklad.uz/`, затем `200`;
+  - `curl -I https://taksklad.uz/` возвращает `Strict-Transport-Security`;
+  - login через `https://taksklad.uz/api/v1/auth/login` возвращает `200`;
+  - cookie выставляется с `HttpOnly`, `Secure`, `SameSite=Lax`;
+  - `GET /api/v1/admin/table` с cookie возвращает `200`;
+  - `GET /api/v1/admin/table` без cookie возвращает `401`;
+  - `./deploy/vds/acceptance_status.sh` на VDS вернул общий `status=ok`.
+
+### Excel Import Address Fix: repeated coordinates and placeholder addresses
+
+- Причина: два Excel-файла из Telegram не подтянули адреса в Google `data`, хотя координаты в файлах были.
+- Файлы:
+  - `Шаблон_отправки_заказов_на_склад_01_06_2026_2ч.xlsx`;
+  - `Шаблон_отправки_заказов_на_склад_01_06_2026_1ч.xlsx`.
+- Что найдено:
+  - в обоих файлах нет адресной колонки, адрес должен получаться только через reverse geocode по координатам;
+  - в SmartUp/`Конструктор отчетов` заголовок `Координаты клиента` повторяется несколько раз: широта, долгота и полная пара;
+  - backend-импорт раньше выбирал первую одноименную колонку, где лежит только широта, поэтому координаты считались некорректными;
+  - значения вроде `Адрес не найден` раньше считались реальным адресом, поэтому reverse geocode не запускался;
+  - в файле `2ч` две строки содержат `Самовывоз` без числовых координат, их нельзя геокодировать автоматически.
+- Исправление:
+  - backend importer теперь выбирает координатную колонку с полной парой `lat,lon`;
+  - если полной пары нет, importer собирает координаты из соседних колонок широта + долгота;
+  - desktop importer получил ту же логику, чтобы ручной импорт не расходился с Telegram/VDS;
+  - `Адрес не найден`, `Адреса не найдены`, `Адрес не определен`, `Адрес отсутствует` и `Координаты: ...` считаются отсутствующим адресом;
+  - backend/Google backfill теперь может заменять такие заглушки нормальным адресом.
+- Перед изменением данных:
+  - создан Postgres backup `/opt/taksklad/backups/postgres/taksklad-postgres-20260602T061135Z.sql.gz`;
+  - создан restore point `/opt/taksklad/restore_points/pre-excel-address-geocode-fix-20260602T061151Z`;
+  - в restore point сохранен снимок Google `data` на 88 строк.
+- Деплой:
+  - обновлены `backend-api`, `telegram-worker`, `google-sheets-sync-worker`;
+  - Postgres volume не трогался;
+  - реальные строки обновлялись только повторным импортом тех же двух Excel-файлов.
+- Результат повторного импорта:
+  - `2ч`: 38 строк распознаны как дубли, новых позиций 0, backend address updates 14, Google updated 36, две строки без координат остались без адреса;
+  - `1ч`: 49 строк распознаны как дубли, новых позиций 0, backend address updates 24, Google updated 49;
+  - Google pending queue после операции: pending 0.
+- Проверено:
+  - dry-run `2ч`: 38 rows, 36 coordinate rows, 2 bad addresses;
+  - dry-run `1ч`: 49 rows, 49 coordinate rows, 0 bad addresses;
+  - Google `data`: `1ч` 49/49 адресов заполнены, `2ч` 36/38 адресов заполнены;
+  - backend: `1ч` 24 заказа без пропусков адреса, `2ч` 15 заказов, 1 заказ без адреса из-за самовывоза;
+  - `https://api.taksklad.uz/health` вернул `status=ok`;
+  - локально `./.venv/bin/python -m unittest discover -s tests` - 244 tests OK;
+  - `git diff --check` - OK.
+- Важно:
+  - `./deploy/vds/acceptance_status.sh` после появления активных заказов вернул failure только по SkladBot coverage: 39 активных заказов без номера SkladBot;
+  - Google/backend sync при этом вернул `status=ok`, matched items 87, field mismatches 0.
+
+### Desktop Release 2.0.1: Mac update lock fix and ready archives
+
+- Причина: старая macOS-сборка была собрана как `2.0.0`, а публичный `version.json` уже отдавал `latest_version=2.0.1`. После согласия на обновление macOS-сборка пыталась использовать Windows-only updater, он падал, а интерфейс оставался заблокированным через `update_required`.
+- Что изменено:
+  - в desktop update mixin добавлена проверка поддерживаемой платформы;
+  - на macOS автообновление теперь не запускается и не ставит блокировку, а показывает неблокирующее сообщение о ручной установке свежего архива;
+  - добавлен unit-тест на этот сценарий;
+  - macOS `.app` пересобрана как `2.0.1`;
+  - macOS bundle metadata обновлена до `CFBundleShortVersionString=2.0.1`;
+  - macOS PyInstaller entrypoint получил `--smoke-import`;
+  - Windows-ready archive `2.0.1` пересобран с корректной внутренней SHA для `TakSklad/TakSklad.exe`.
+- Готовые архивы:
+  - `outputs/windows_ready/TakSklad-2.0.1-win-ready.zip`;
+  - `outputs/mac_ready/TakSklad-2.0.1-mac-ready.zip`.
+- Проверено:
+  - `outputs/mac_ready/TakSklad-2.0.1-mac-ready/TakSklad.app/Contents/MacOS/TakSklad --smoke-import` - OK;
+  - `shasum -a 256 -c outputs/mac_ready/TakSklad-2.0.1-mac-ready.zip.sha256.txt` - OK;
+  - `unzip -t outputs/mac_ready/TakSklad-2.0.1-mac-ready.zip` - OK;
+  - `shasum -a 256 -c outputs/windows_ready/TakSklad-2.0.1-win-ready.zip.sha256.txt` - OK;
+  - `unzip -t outputs/windows_ready/TakSklad-2.0.1-win-ready.zip` - OK;
+  - Windows-ready zip не содержит `.ps1`;
+  - Windows-ready zip содержит `TakSklad.exe` и рабочие JSON рядом с ним;
+  - внутренний checksum `checksums/TakSklad.exe.sha256.txt` совпадает с фактическим exe внутри архива;
+  - `./.venv/bin/python tools/release_preflight.py --verify-downloads --timeout 120` - `status=ok`;
+  - `./.venv/bin/python -m compileall -q src/taksklad backend/app tools main.py tests` - OK;
+  - `./.venv/bin/python -m unittest discover -s tests` - 245 tests OK.

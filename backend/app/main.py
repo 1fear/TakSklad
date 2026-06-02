@@ -1,9 +1,12 @@
+import time
 from urllib.parse import quote
 from threading import Lock, Thread
+from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Response, status
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 
+from .admin_service import build_admin_table
 from .db import get_db
 from .diagnostics_service import build_backend_diagnostics_log
 from .google_sheets_sync_worker import sync_google_sheet_to_backend
@@ -12,6 +15,11 @@ from .imports_service import create_import as create_import_in_db
 from .imports_service import list_imports as list_imports_in_db
 from .kiz_reports_service import build_kiz_source_file_report_xlsx, list_completed_kiz_source_files
 from .logistics_service import build_logistics_report_xlsx, list_logistics_dates
+from .order_actions_service import (
+    archive_order_without_kiz as archive_order_without_kiz_in_db,
+    cancel_order as cancel_order_in_db,
+    resync_order_to_google as resync_order_to_google_in_db,
+)
 from .orders_service import ApiError, complete_order as complete_order_in_db
 from .orders_service import create_scan as create_scan_in_db
 from .orders_service import list_active_orders as list_active_orders_in_db
@@ -21,6 +29,10 @@ from .orders_service import mark_order_returned as mark_order_returned_in_db
 from .reports_service import build_day_report
 from .skladbot_worker import update_orders_from_skladbot
 from .schemas import (
+    AdminOrderActionRequest,
+    AdminTableRead,
+    AuthLoginRequest,
+    AuthSessionRead,
     DayReportRead,
     HealthResponse,
     ImportCreate,
@@ -31,11 +43,20 @@ from .schemas import (
     ScanRead,
 )
 from .settings import APP_VERSION, load_settings
+from .web_auth import (
+    SESSION_COOKIE_NAME,
+    WebAuthError,
+    authenticate_web_user,
+    create_session_token,
+    verify_session_token,
+)
 
 
 settings = load_settings()
 sync_sources_lock = Lock()
 skladbot_sync_lock = Lock()
+login_attempts_lock = Lock()
+login_attempts = {}
 
 app = FastAPI(
     title="TakSklad Backend API",
@@ -82,12 +103,145 @@ def health():
     }
 
 
+auth_api = APIRouter(prefix="/api/v1/auth")
+
+
+def auth_session_read(payload):
+    expires_at = datetime.fromtimestamp(int(payload.get("exp") or 0), timezone.utc)
+    return AuthSessionRead(authenticated=True, login=payload.get("sub") or "", expires_at=expires_at)
+
+
+def read_web_session(request: Request):
+    return verify_session_token(settings, request.cookies.get(SESSION_COOKIE_NAME))
+
+
+@auth_api.post("/login", response_model=AuthSessionRead)
+def web_login(payload: AuthLoginRequest, request: Request, response: Response):
+    login_key = login_attempt_key(request, payload.login)
+    ensure_login_not_locked(login_key)
+    try:
+        login = authenticate_web_user(settings, payload.login, payload.password)
+        token = create_session_token(settings, login)
+        session_payload = verify_session_token(settings, token)
+    except WebAuthError as exc:
+        register_login_failure(login_key)
+        if "configured" in str(exc):
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Web auth is not configured") from exc
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials") from exc
+
+    clear_login_failures(login_key)
+    response.set_cookie(
+        SESSION_COOKIE_NAME,
+        token,
+        max_age=settings.web_session_ttl_seconds,
+        path="/",
+        httponly=True,
+        secure=settings.web_cookie_secure,
+        samesite="lax",
+    )
+    return auth_session_read(session_payload)
+
+
+def login_attempt_key(request: Request, login):
+    forwarded = request.headers.get("x-forwarded-for") or ""
+    ip = forwarded.split(",", 1)[0].strip() or (request.client.host if request.client else "unknown")
+    normalized_login = "".join(ch for ch in str(login or "").strip() if ch.isdigit() or ch == "+")
+    return f"{ip}:{normalized_login}"
+
+
+def ensure_login_not_locked(key):
+    now = time.time()
+    with login_attempts_lock:
+        record = login_attempts.get(key) or {}
+        locked_until = float(record.get("locked_until") or 0)
+        if locked_until > now:
+            raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many login attempts")
+
+
+def register_login_failure(key):
+    now = time.time()
+    with login_attempts_lock:
+        record = login_attempts.get(key) or {}
+        window_start = float(record.get("window_start") or now)
+        if now - window_start > settings.web_login_window_seconds:
+            record = {"window_start": now, "count": 0, "locked_until": 0}
+        record["count"] = int(record.get("count") or 0) + 1
+        if record["count"] >= settings.web_login_max_attempts:
+            record["locked_until"] = now + settings.web_login_lock_seconds
+        login_attempts[key] = record
+
+
+def clear_login_failures(key):
+    with login_attempts_lock:
+        login_attempts.pop(key, None)
+
+
+@auth_api.post("/logout", response_model=AuthSessionRead)
+def web_logout(response: Response):
+    response.delete_cookie(SESSION_COOKIE_NAME, path="/")
+    return AuthSessionRead(authenticated=False)
+
+
+@auth_api.get("/session", response_model=AuthSessionRead)
+def web_session(request: Request):
+    try:
+        return auth_session_read(read_web_session(request))
+    except WebAuthError:
+        return AuthSessionRead(authenticated=False)
+
+
+@auth_api.get("/check")
+def web_auth_check(request: Request):
+    try:
+        read_web_session(request)
+    except WebAuthError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated") from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+app.include_router(auth_api)
+
+
 api = APIRouter(prefix="/api/v1", dependencies=[Depends(require_service_token)])
 
 
 @api.get("/orders/active")
 def list_active_orders(db=Depends(get_db)) -> list[OrderRead]:
     return list_active_orders_in_db(db)
+
+
+@api.get("/admin/table", response_model=AdminTableRead)
+def admin_table(limit: int = 1000, activity_limit: int = 30, db=Depends(get_db)):
+    return build_admin_table(db, limit=limit, activity_limit=activity_limit)
+
+
+@api.post("/admin/google/pending/retry")
+def retry_pending_google_exports(limit: int = 50, db=Depends(get_db)):
+    return process_pending_google_sheets_exports(db, limit=limit)
+
+
+@api.post("/admin/orders/{order_id}/archive-without-kiz", response_model=OrderRead)
+def archive_order_without_kiz(order_id: str, payload: AdminOrderActionRequest, db=Depends(get_db)):
+    try:
+        return archive_order_without_kiz_in_db(db, order_id, payload)
+    except ApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@api.post("/admin/orders/{order_id}/cancel", response_model=OrderRead)
+def cancel_order(order_id: str, payload: AdminOrderActionRequest, db=Depends(get_db)):
+    try:
+        return cancel_order_in_db(db, order_id, payload)
+    except ApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@api.post("/admin/orders/{order_id}/resync-google", response_model=OrderRead)
+def resync_order_to_google(order_id: str, payload: AdminOrderActionRequest | None = None, db=Depends(get_db)):
+    try:
+        return resync_order_to_google_in_db(db, order_id, payload)
+    except ApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 @api.post("/sync/sources")

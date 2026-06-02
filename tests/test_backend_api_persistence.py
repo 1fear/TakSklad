@@ -14,6 +14,8 @@ from backend.app.db import get_db
 from backend.app.google_sheets_exporter import update_missing_sheet_addresses
 from backend.app.main import app, require_service_token
 from backend.app.models import AuditLog, Base, ImportJob, Order, OrderItem, PendingEvent, ScanCode
+from backend.app.settings import load_settings
+from backend.app.web_auth import SESSION_COOKIE_NAME, hash_password
 
 
 class BackendApiPersistenceTests(unittest.TestCase):
@@ -79,6 +81,216 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(payload[0]["id"], active_order_id)
         self.assertEqual(payload[0]["status"], "not_completed")
         self.assertEqual(payload[0]["items"][0]["product"], "Test Product")
+
+    def test_admin_table_returns_flat_rows_totals_and_recent_activity(self):
+        with self.SessionLocal() as db:
+            order = Order(
+                payment_type="cash",
+                client="Admin Client",
+                address="Admin Address",
+                representative="Admin Rep",
+                order_date=date(2026, 6, 2),
+                status="not_completed",
+                raw_payload={
+                    "coordinates": "41.2,69.2",
+                    "skladbot_request_number": "SB-77",
+                    "skladbot_request_id": "771",
+                    "skladbot_status": "found",
+                },
+            )
+            item = OrderItem(
+                order=order,
+                product="Admin Product",
+                quantity_pieces=30,
+                quantity_blocks=3,
+                pieces_per_block=10,
+                scanned_blocks=1,
+                status="not_completed",
+                raw_payload={
+                    "source_file": "orders.xlsx",
+                    "google_sheet_row_number": 12,
+                    "google_sheet_synced_at": "2026-06-01T12:00:00+00:00",
+                    "block_price": 240000,
+                    "line_total": 720000,
+                },
+            )
+            db.add(order)
+            db.commit()
+            item_id = str(item.id)
+            order_id = str(order.id)
+            db.add(PendingEvent(
+                event_type="google_sheets_export",
+                status="pending",
+                payload={
+                    "action": "google_sheets_scan_export",
+                    "entity_type": "order_item",
+                    "entity_id": item_id,
+                },
+            ))
+            db.add(AuditLog(
+                action="admin_test_activity",
+                entity_type="order",
+                entity_id=order_id,
+                payload={"client": "Admin Client"},
+            ))
+            db.commit()
+
+        response = self.client.get("/api/v1/admin/table")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["totals"]["orders"], 1)
+        self.assertEqual(payload["totals"]["items"], 1)
+        self.assertEqual(payload["totals"]["active_orders"], 1)
+        self.assertEqual(payload["totals"]["planned_blocks"], 3)
+        self.assertEqual(payload["totals"]["scanned_blocks"], 1)
+        self.assertEqual(payload["totals"]["remaining_blocks"], 2)
+        self.assertEqual(payload["totals"]["pending_google_exports"], 1)
+
+        row = payload["rows"][0]
+        self.assertEqual(row["order_id"], order_id)
+        self.assertEqual(row["item_id"], item_id)
+        self.assertEqual(row["status_bucket"], "active")
+        self.assertEqual(row["client"], "Admin Client")
+        self.assertEqual(row["product"], "Admin Product")
+        self.assertEqual(row["source_file"], "orders.xlsx")
+        self.assertEqual(row["google_sheet_status"], "pending")
+        self.assertEqual(row["skladbot_request_number"], "SB-77")
+        self.assertEqual(row["line_total"], 720000)
+        self.assertEqual(payload["recent_activity"][0]["action"], "admin_test_activity")
+
+    def test_web_auth_login_sets_cookie_and_check_accepts_session(self):
+        auth_settings = load_settings({
+            "TAKSKLAD_ENV": "local",
+            "TAKSKLAD_API_TOKEN": "service-token",
+            "TAKSKLAD_WEB_LOGIN": "998000000000",
+            "TAKSKLAD_WEB_PASSWORD_HASH": hash_password("test-password", salt="test-salt", iterations=1000),
+            "TAKSKLAD_WEB_SESSION_SECRET": "test-session-secret",
+            "TAKSKLAD_WEB_COOKIE_SECURE": "false",
+        })
+
+        with mock.patch("backend.app.main.settings", auth_settings):
+            session_before = self.client.get("/api/v1/auth/session")
+            self.assertEqual(session_before.status_code, 200)
+            self.assertFalse(session_before.json()["authenticated"])
+
+            bad_login = self.client.post(
+                "/api/v1/auth/login",
+                json={"login": "998000000000", "password": "wrong-password"},
+            )
+            self.assertEqual(bad_login.status_code, 401)
+            self.assertNotIn(SESSION_COOKIE_NAME, bad_login.cookies)
+
+            login = self.client.post(
+                "/api/v1/auth/login",
+                json={"login": "998000000000", "password": "test-password"},
+            )
+            self.assertEqual(login.status_code, 200)
+            self.assertTrue(login.json()["authenticated"])
+            self.assertEqual(login.json()["login"], "998000000000")
+            self.assertIn(SESSION_COOKIE_NAME, login.cookies)
+            set_cookie = login.headers["set-cookie"]
+            self.assertIn("HttpOnly", set_cookie)
+            self.assertIn("SameSite=lax", set_cookie)
+
+            check = self.client.get("/api/v1/auth/check")
+            self.assertEqual(check.status_code, 204)
+
+            logout = self.client.post("/api/v1/auth/logout")
+            self.assertEqual(logout.status_code, 200)
+            self.assertFalse(logout.json()["authenticated"])
+
+            check_after_logout = self.client.get("/api/v1/auth/check")
+            self.assertEqual(check_after_logout.status_code, 401)
+
+    def test_archive_without_kiz_moves_unscanned_order_out_of_active_without_marking_completed(self):
+        order_id, item_id = self.seed_order(quantity_blocks=3)
+
+        with mock.patch(
+            "backend.app.order_actions_service.archive_backend_order_without_kiz_to_google_sheets",
+            return_value={"status": "completed", "updated": 1},
+        ) as google_export:
+            response = self.client.post(
+                f"/api/v1/admin/orders/{order_id}/archive-without-kiz",
+                json={"reason": "Emergency close", "actor": "anton"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "archived_no_kiz")
+        self.assertEqual(payload["items"][0]["status"], "archived_no_kiz")
+        google_export.assert_called_once()
+
+        active = self.client.get("/api/v1/orders/active")
+        self.assertEqual(active.status_code, 200)
+        self.assertEqual(active.json(), [])
+
+        admin = self.client.get("/api/v1/admin/table")
+        self.assertEqual(admin.status_code, 200)
+        self.assertEqual(admin.json()["rows"][0]["status_bucket"], "archive_no_kiz")
+
+        with self.SessionLocal() as db:
+            item = db.get(OrderItem, uuid.UUID(item_id))
+            self.assertEqual(item.scanned_blocks, 0)
+            actions = [row.action for row in db.execute(select(AuditLog)).scalars().all()]
+            self.assertIn("order_archived_without_kiz", actions)
+            self.assertNotIn("order_completed", actions)
+
+    def test_archive_without_kiz_rejects_order_with_scans(self):
+        order_id, _item_id = self.seed_order(scanned_blocks=1)
+
+        response = self.client.post(
+            f"/api/v1/admin/orders/{order_id}/archive-without-kiz",
+            json={"reason": "Emergency close", "actor": "anton"},
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["detail"]["message"], "Order already has scanned KIZ codes")
+
+    def test_cancel_order_requires_no_scans_and_queues_google_export_when_google_is_down(self):
+        order_id, _item_id = self.seed_order(quantity_blocks=4)
+
+        with mock.patch(
+            "backend.app.order_actions_service.cancel_backend_order_in_google_sheets",
+            side_effect=RuntimeError("Google timeout"),
+        ):
+            response = self.client.post(
+                f"/api/v1/admin/orders/{order_id}/cancel",
+                json={"reason": "Wrong import", "actor": "anton"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "cancelled")
+        with self.SessionLocal() as db:
+            event = db.execute(
+                select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")
+            ).scalar_one()
+            self.assertEqual(event.status, "pending")
+            self.assertEqual(event.payload["action"], "google_sheets_cancel_export")
+            self.assertEqual(event.payload["entity_id"], order_id)
+            self.assertIn("Google timeout", event.last_error)
+
+    def test_resync_google_for_active_order_pushes_items_without_archiving_order(self):
+        order_id, item_id = self.seed_order(quantity_blocks=2)
+
+        with mock.patch(
+            "backend.app.order_actions_service.sync_backend_order_item_to_google_sheets",
+            return_value={"status": "completed", "updated": 1},
+        ) as google_export:
+            response = self.client.post(
+                f"/api/v1/admin/orders/{order_id}/resync-google",
+                json={"reason": "Manual resync", "actor": "anton"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "not_completed")
+        google_export.assert_called_once()
+        with self.SessionLocal() as db:
+            item = db.get(OrderItem, uuid.UUID(item_id))
+            self.assertEqual(item.status, "not_completed")
+            actions = [row.action for row in db.execute(select(AuditLog)).scalars().all()]
+            self.assertIn("order_google_resync_requested", actions)
+            self.assertIn("google_sheets_scan_export", actions)
 
     def test_sync_sources_runs_google_sheet_sync_then_skladbot_sync(self):
         with mock.patch("backend.app.main.sync_google_sheet_to_backend") as google_sync, mock.patch(
@@ -620,6 +832,31 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(updated, 1)
         self.assertEqual(sheet.updates, [{"range": "D2", "values": [["Ташкент, Чиланзарский район, 10"]]}])
         self.assertEqual(sheet.value_input_option, "USER_ENTERED")
+
+    def test_google_sheets_export_updates_not_found_address_for_existing_import_id(self):
+        class FakeSheet:
+            def __init__(self):
+                self.updates = []
+
+            def batch_update(self, updates, value_input_option=None):
+                self.updates.extend(updates)
+                self.value_input_option = value_input_option
+
+        rows = [
+            ["Дата отгрузки", "Тип оплаты", "Клиент", "Адрес"] + [""] * 22 + ["ID заказа", "ID импорта"],
+            ["30.05.2026", "cash", "Backfill Client", "Адрес не найден"] + [""] * 22 + ["order-1", "import-1"],
+        ]
+        records = [{
+            "ID заказа": "order-1",
+            "ID импорта": "import-1",
+            "Адрес": "Ташкент, Чиланзарский район, 10",
+        }]
+        sheet = FakeSheet()
+
+        updated = update_missing_sheet_addresses(sheet, rows, records)
+
+        self.assertEqual(updated, 1)
+        self.assertEqual(sheet.updates, [{"range": "D2", "values": [["Ташкент, Чиланзарский район, 10"]]}])
 
     def test_import_stores_coordinates_blocks_and_prices(self):
         rows = [

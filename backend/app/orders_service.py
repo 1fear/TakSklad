@@ -23,8 +23,11 @@ from .schemas import OrderItemRead, OrderRead, ScanCreate, ScanRead
 STATUS_COMPLETED = "completed"
 STATUS_NOT_COMPLETED = "not_completed"
 STATUS_RETURNED = "returned"
+STATUS_ARCHIVED_NO_KIZ = "archived_no_kiz"
+STATUS_CANCELLED = "cancelled"
 STATUS_REMOVED_FROM_GOOGLE = "removed_from_google_sheet"
 COMPLETED_STATUSES = (STATUS_COMPLETED, "done", "closed", STATUS_RETURNED)
+INACTIVE_ORDER_STATUSES = (*COMPLETED_STATUSES, STATUS_ARCHIVED_NO_KIZ, STATUS_CANCELLED)
 HIDDEN_ITEM_STATUSES = (STATUS_REMOVED_FROM_GOOGLE,)
 logger = logging.getLogger(__name__)
 
@@ -47,7 +50,7 @@ def list_active_orders(db: Session):
     stmt = (
         select(Order)
         .options(selectinload(Order.items).selectinload(OrderItem.scan_codes))
-        .where(~Order.status.in_(COMPLETED_STATUSES))
+        .where(~Order.status.in_(INACTIVE_ORDER_STATUSES))
         .order_by(Order.order_date.asc(), Order.created_at.asc())
     )
     active_orders = []
@@ -174,6 +177,8 @@ def complete_order(db: Session, order_id):
     ).scalar_one_or_none()
     if order is None:
         raise ApiError(404, "Order not found")
+    if order.status in (STATUS_ARCHIVED_NO_KIZ, STATUS_CANCELLED):
+        raise ApiError(409, "Order is not active")
     if order.status in COMPLETED_STATUSES:
         response = order_to_read(order)
         if order.status != STATUS_RETURNED:

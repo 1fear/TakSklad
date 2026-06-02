@@ -41,6 +41,13 @@ SOURCE_FILE_FIELDS = ("Источник файла", "source_file")
 SOURCE_ROW_FIELDS = ("Строка файла", "source_row")
 SKLADBOT_NUMBER_FIELDS = ("Номер заявки SkladBot", "skladbot_request_number")
 SKLADBOT_ID_FIELDS = ("ID заявки SkladBot", "skladbot_request_id")
+MISSING_ADDRESS_MARKERS = {
+    "адрес не указан",
+    "адрес не найден",
+    "адреса не найдены",
+    "адрес не определен",
+    "адрес отсутствует",
+}
 
 
 class ImportRowError(Exception):
@@ -428,12 +435,12 @@ def normalize_lookup_text(value):
 
 def is_missing_address(value):
     text = normalize_lookup_text(value)
-    return not text or text == "адрес не указан"
+    return not text or text in MISSING_ADDRESS_MARKERS or text.startswith("координаты")
 
 
 def is_real_address(value):
     text = normalize_lookup_text(value)
-    return bool(text and text != "адрес не указан" and not text.startswith("координаты "))
+    return bool(text and not is_missing_address(text))
 
 
 def parse_int(value):

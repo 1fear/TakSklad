@@ -102,6 +102,55 @@ class ExcelNormalizerTests(unittest.TestCase):
         self.assertEqual(record["Тип оплаты"], "Терминал")
         self.assertEqual(record["Товары"], "Chapman Brown OP 20")
         self.assertEqual(record["Кол-во ШТ"], 20)
+        self.assertEqual(record["Адрес"], "Адрес 41.373879, 69.322741")
+
+    def test_parses_constructor_report_with_repeated_split_coordinates(self):
+        excel_import = import_excel_import()
+        calls = []
+
+        def fake_reverse_geocoder(coords, cache=None):
+            calls.append(coords)
+            return "Ташкент, Юнусабадский район", ""
+
+        excel_import.reverse_geocode_yandex = fake_reverse_geocoder
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "Шаблон_отправки_заказов_на_склад_01_06_2026.xlsx"
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.title = "Конструктор отчетов"
+            worksheet.append([
+                "Торговый представитель",
+                "Клиент",
+                "Координаты клиента",
+                "Координаты клиента",
+                "Координаты клиента",
+                "ТМЦ",
+                "Тип оплаты",
+                "Статус",
+                "Количество заказа",
+                "Сумма с переоценкой",
+                "Дата отгрузки",
+            ])
+            worksheet.append([
+                "ТП1",
+                "Client One",
+                "41.325658539017745",
+                "69.23166364431383",
+                "41.325658539017745,69.23166364431383",
+                "Chapman Brown OP 20",
+                "Терминал",
+                "В обработке",
+                20,
+                480000,
+                "2026-06-03",
+            ])
+            workbook.save(path)
+            result = excel_import.parse_excel_order_files([str(path)])
+
+        self.assertEqual(calls, ["41.325658539017745, 69.23166364431383"])
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(result["records"][0]["Адрес"], "Ташкент, Юнусабадский район")
 
     def test_summary_rows_are_skipped(self):
         row = ["ИТОГО", "ИТОГО", "ИТОГО", "ИТОГО", "ИТОГО", "ИТОГО", 20]

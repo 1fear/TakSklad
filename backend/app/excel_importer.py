@@ -15,6 +15,13 @@ SUPPORTED_EXCEL_EXTENSIONS = {".xlsx", ".xlsm"}
 SUMMARY_MARKERS = {"итого", "total", "grand total", "всего"}
 DATE_PATTERN = re.compile(r"(?<!\d)(\d{1,2})[._/-](\d{1,2})[._/-](\d{2,4})(?!\d)")
 COUNTRY_PREFIXES = ("узбекистан", "uzbekistan", "o'zbekiston", "oʻzbekiston")
+MISSING_ADDRESS_MARKERS = {
+    "адрес не указан",
+    "адрес не найден",
+    "адреса не найдены",
+    "адрес не определен",
+    "адрес отсутствует",
+}
 YANDEX_GEOCODER_ENV_VAR = "YANDEX_GEOCODER_API_KEY"
 YANDEX_GEOCODER_URL = "https://geocode-maps.yandex.ru/v1/"
 
@@ -205,6 +212,15 @@ def build_header_index(header):
     return result
 
 
+def build_header_positions(header):
+    result = {}
+    for index, value in enumerate(header):
+        key = normalize_lookup_text(value)
+        if key:
+            result.setdefault(key, []).append(index)
+    return result
+
+
 def find_column(header_index, aliases):
     for alias in aliases:
         key = normalize_lookup_text(alias)
@@ -213,8 +229,17 @@ def find_column(header_index, aliases):
     return None
 
 
+def find_columns(header_positions, aliases):
+    result = []
+    for alias in aliases:
+        key = normalize_lookup_text(alias)
+        result.extend(header_positions.get(key, []))
+    return sorted(set(result))
+
+
 def build_columns(header):
     header_index = build_header_index(header)
+    header_positions = build_header_positions(header)
     columns = {}
     missing = []
     for key, aliases in REQUIRED_ALIASES.items():
@@ -224,6 +249,7 @@ def build_columns(header):
             missing.append(aliases[0])
     for key, aliases in OPTIONAL_ALIASES.items():
         columns[key] = find_column(header_index, aliases)
+    columns["coordinates_candidates"] = find_columns(header_positions, OPTIONAL_ALIASES["coordinates"])
     optional_found = sum(1 for key in OPTIONAL_ALIASES if columns.get(key) is not None)
     required_found = len(REQUIRED_ALIASES) - len(missing)
     return columns, missing, required_found * 10 + optional_found
@@ -333,12 +359,19 @@ def detect_excel_source(workbook, file_name):
 def clean_address_for_display(value):
     text = normalize_text(value)
     lowered = text.casefold()
+    if is_missing_address_text(text):
+        return ""
     for prefix in COUNTRY_PREFIXES:
         if lowered == prefix:
             return ""
         if lowered.startswith(prefix + ","):
             return text[len(prefix):].lstrip(" ,")
     return text
+
+
+def is_missing_address_text(value):
+    text = normalize_text(value).casefold().replace("ё", "е")
+    return not text or text in MISSING_ADDRESS_MARKERS or text.startswith("координаты")
 
 
 def normalize_coordinates(value):
@@ -353,13 +386,64 @@ def normalize_coordinates(value):
     return f"{first}, {second}"
 
 
+def parse_coordinate_component(value):
+    text = normalize_text(value).replace(",", ".")
+    if not re.fullmatch(r"-?\d+(?:\.\d+)?", text):
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def format_coordinate(value):
+    return f"{value:.12f}".rstrip("0").rstrip(".")
+
+
+def normalize_split_coordinates(latitude_value, longitude_value):
+    latitude = parse_coordinate_component(latitude_value)
+    longitude = parse_coordinate_component(longitude_value)
+    if latitude is None or longitude is None:
+        return ""
+    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+        return ""
+    return f"{format_coordinate(latitude)}, {format_coordinate(longitude)}"
+
+
+def normalize_coordinates_from_row(row, columns):
+    candidates = list(columns.get("coordinates_candidates") or [])
+    primary = columns.get("coordinates")
+    if primary is not None and primary not in candidates:
+        candidates.insert(0, primary)
+
+    expanded_candidates = []
+    for index in candidates:
+        for offset in (0, 1, 2):
+            expanded = index + offset
+            if expanded < len(row) and expanded not in expanded_candidates:
+                expanded_candidates.append(expanded)
+
+    for index in expanded_candidates:
+        coordinates = normalize_coordinates(get_cell(row, index))
+        if coordinates:
+            return coordinates
+
+    for index in candidates:
+        if index + 1 >= len(row):
+            continue
+        coordinates = normalize_split_coordinates(get_cell(row, index), get_cell(row, index + 1))
+        if coordinates:
+            return coordinates
+    return ""
+
+
 def yandex_key():
     return normalize_text(os.environ.get(YANDEX_GEOCODER_ENV_VAR))
 
 
 def geocode_address_yandex(address, cache=None):
     address = clean_address_for_display(address)
-    if not address or address == "Адрес не указан":
+    if not address:
         return "", "адрес не указан"
     if cache is not None and address in cache:
         return cache[address]
@@ -496,7 +580,7 @@ def excel_file_to_import_payload(file_path, file_name=None, source="telegram", s
 
             date_value = shipment_date or parse_date_text(get_cell(row, columns.get("date"))) or default_date
             address = clean_address_for_display(get_cell(row, columns.get("address")))
-            coordinates = normalize_coordinates(get_cell(row, columns.get("coordinates")))
+            coordinates = normalize_coordinates_from_row(row, columns)
             if not address and coordinates:
                 geocoded_address, geocode_error = reverse_geocode_yandex(coordinates, cache=geocode_cache)
                 if geocoded_address:

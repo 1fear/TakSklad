@@ -47,6 +47,24 @@ class FakeSheet:
         del self.rows[row_number - 1]
 
 
+class FakeSpreadsheet:
+    def __init__(self, sheets):
+        self.sheets = dict(sheets)
+        for sheet in self.sheets.values():
+            sheet.spreadsheet = self
+
+    def worksheet(self, title):
+        if title not in self.sheets:
+            raise Exception("sheet not found")
+        return self.sheets[title]
+
+    def add_worksheet(self, title, rows=1000, cols=32):
+        sheet = FakeSheet(title, [])
+        sheet.spreadsheet = self
+        self.sheets[title] = sheet
+        return sheet
+
+
 class BackendGoogleSheetsExporterTests(unittest.TestCase):
     def make_scan(self, code, scanned_at="2026-06-01T10:00:00+05:00"):
         return SimpleNamespace(id=code, code=code, scanned_at=scanned_at)
@@ -164,6 +182,42 @@ class BackendGoogleSheetsExporterTests(unittest.TestCase):
         self.assertEqual(archive_sheet.rows[1][header_idx["Отсканированные коды"]], "0101\n0102")
         self.assertEqual(archive_sheet.rows[2][header_idx["Отсканированные коды"]], "0103")
         self.assertEqual(archive_sheet.rows[1][header_idx["Статус"]], "Выполнено")
+
+    def test_archive_without_kiz_uses_separate_google_sheet(self):
+        header = exporter.build_import_sheet_header()
+        item = self.make_item("import-1", "order-1", codes=[])
+        data_sheet = FakeSheet("data", [header.copy(), self.make_row("import-1", "order-1")])
+        spreadsheet = FakeSpreadsheet({"data": data_sheet})
+        fake_client = SimpleNamespace(open_by_key=lambda _key: spreadsheet)
+
+        with mock.patch.object(exporter, "get_google_client", return_value=fake_client):
+            result = exporter.archive_backend_order_without_kiz_to_google_sheets(self.make_order([item]))
+
+        self.assertEqual(result["status"], "completed")
+        self.assertIn(exporter.ARCHIVE_NO_KIZ_SHEET_NAME, spreadsheet.sheets)
+        self.assertNotIn(exporter.ARCHIVE_SHEET_NAME, spreadsheet.sheets)
+        target_sheet = spreadsheet.sheets[exporter.ARCHIVE_NO_KIZ_SHEET_NAME]
+        header_idx = exporter.get_header_index(target_sheet.rows[0])
+        self.assertEqual(target_sheet.rows[1][header_idx["Статус"]], exporter.STATUS_ARCHIVED_NO_KIZ)
+        self.assertEqual(len(data_sheet.rows), 1)
+
+    def test_cancel_order_uses_separate_google_sheet(self):
+        header = exporter.build_import_sheet_header()
+        item = self.make_item("import-1", "order-1", codes=[])
+        data_sheet = FakeSheet("data", [header.copy(), self.make_row("import-1", "order-1")])
+        spreadsheet = FakeSpreadsheet({"data": data_sheet})
+        fake_client = SimpleNamespace(open_by_key=lambda _key: spreadsheet)
+
+        with mock.patch.object(exporter, "get_google_client", return_value=fake_client):
+            result = exporter.cancel_backend_order_in_google_sheets(self.make_order([item]))
+
+        self.assertEqual(result["status"], "completed")
+        self.assertIn(exporter.CANCELLED_SHEET_NAME, spreadsheet.sheets)
+        self.assertNotIn(exporter.ARCHIVE_SHEET_NAME, spreadsheet.sheets)
+        target_sheet = spreadsheet.sheets[exporter.CANCELLED_SHEET_NAME]
+        header_idx = exporter.get_header_index(target_sheet.rows[0])
+        self.assertEqual(target_sheet.rows[1][header_idx["Статус"]], exporter.STATUS_CANCELLED)
+        self.assertEqual(len(data_sheet.rows), 1)
 
     def test_mark_backend_return_rows_updates_archive_and_returns_sheet(self):
         header = exporter.build_import_sheet_header()

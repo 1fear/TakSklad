@@ -1,4 +1,5 @@
 import logging
+import os
 import subprocess
 import threading
 import time
@@ -21,6 +22,9 @@ from .utils import normalize_text, parse_int_value
 
 
 class UpdateMixin:
+    def auto_update_supported(self):
+        return os.name == "nt"
+
     def ensure_update_allowed(self):
         if not self.update_required:
             return True
@@ -110,6 +114,20 @@ class UpdateMixin:
         package_update_required = package_transition_required(update_info)
 
         if not update_available and not below_min_version and not package_update_required:
+            return
+
+        if not self.auto_update_supported():
+            self.update_info = update_info
+            self.update_required = False
+            target_version = latest_version or min_supported_version or "новой версии"
+            self.status_var.set(
+                f"ℹ Доступно обновление {target_version}. На Mac установите свежий архив вручную."
+            )
+            logging.info(
+                "Автообновление пропущено: платформа не поддерживается (current=%s latest=%s)",
+                APP_VERSION,
+                latest_version,
+            )
             return
 
         # Cooldown на случай зацикленного автообновления. Если пользователь
