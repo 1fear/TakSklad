@@ -50,6 +50,7 @@ jobs:
         shell: pwsh
         run: |
           $srcPath = (Resolve-Path src).Path
+          $env:PYTHONPATH = $srcPath
           "PYTHONPATH=$srcPath" >> $env:GITHUB_ENV
           if (Test-Path taksklad) {
             Rename-Item taksklad taksklad_bridge_disabled

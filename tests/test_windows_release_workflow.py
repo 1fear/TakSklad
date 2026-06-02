@@ -13,6 +13,7 @@ class WindowsReleaseWorkflowTests(unittest.TestCase):
 
         self.assertIn("--collect-submodules=taksklad", workflow)
         self.assertIn("pyinstaller_entry.py", workflow)
+        self.assertIn("$env:PYTHONPATH = $srcPath", workflow)
         self.assertIn("PYTHONPATH=$srcPath", workflow)
         self.assertIn("Rename-Item taksklad taksklad_bridge_disabled", workflow)
         self.assertIn("import taksklad, taksklad.main", workflow)
