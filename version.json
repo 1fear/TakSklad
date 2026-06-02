@@ -1,12 +1,12 @@
 {
-  "latest_version": "2.0.1",
+  "latest_version": "2.0.2",
   "min_supported_version": "1.1.7",
   "mandatory": false,
   "package_type": "onefile_exe",
   "entrypoint": "TakSklad.exe",
-  "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.1/TakSklad.exe",
-  "sha256": "e0faa6c8ad10f81a21090c2ccaee56458f34019f4d7413aa771b4466794cf357",
-  "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.1/TakSklad-windows-x64.zip",
-  "sha256_onedir": "25ad0ce41ee9614d052c1d7c8abf69a99dca0fa964a3ffd7536fd936a1be7149",
-  "message": "TakSklad 2.0.1: исправлен запуск Windows exe, приложение запускается напрямую через TakSklad.exe."
+  "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.2/TakSklad.exe",
+  "sha256": "55b37759e9ce876e393de86eef800885b45a4fcf199046c2ac36081308d5610b",
+  "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.2/TakSklad-windows-x64.zip",
+  "sha256_onedir": "7a1a4afd41b6f2f9adf1c9cc5ac3e075ef68539fea77c490feacaa1c25d1e1ed",
+  "message": "TakSklad 2.0.2: исправлена Windows-упаковка PyInstaller, пакет taksklad входит в exe; smoke-тест проходит из чистой папки."
 }

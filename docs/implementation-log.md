@@ -3793,3 +3793,32 @@ cd /opt/taksklad/app
   - `./.venv/bin/python tools/release_preflight.py --verify-downloads --timeout 120` - `status=ok`;
   - `./.venv/bin/python -m compileall -q src/taksklad backend/app tools main.py tests` - OK;
   - `./.venv/bin/python -m unittest discover -s tests` - 245 tests OK.
+
+### Desktop Release 2.0.2: Windows PyInstaller packaging correction
+
+- Причина: Windows-ready zip `2.0.1` оказался недействительным для склада. На чистом Windows-компьютере `TakSklad.exe` падал с `ModuleNotFoundError: No module named 'taksklad'`.
+- Что найдено:
+  - локальный `outputs/windows_ready/TakSklad-2.0.1-win-ready.zip` был собран из старого сломанного onedir-артефакта;
+  - опубликованные GitHub assets `v2.0.1` также не содержали `taksklad.main`;
+  - старый workflow smoke-тест мог проходить ложно, потому что запускался из checkout-папки с исходниками.
+- Исправлено:
+  - версия поднята до `2.0.2`;
+  - Windows workflow собирает через `pyinstaller_entry.py`;
+  - для сборки выставлен `PYTHONPATH=src`;
+  - корневой bridge-пакет `taksklad` временно отключается на Windows runner, чтобы PyInstaller брал настоящий пакет из `src/taksklad`;
+  - smoke-тест onefile и onedir теперь запускается из чистых временных папок без исходников проекта;
+  - публичный `version.json` переведен на `v2.0.2`.
+- Готовый архив для склада:
+  - `outputs/windows_ready/TakSklad-2.0.2-win-ready.zip`.
+- Проверено:
+  - GitHub Actions `v2.0.2` прошел clean-dir smoke для onefile и onedir;
+  - скачанный `TakSklad-windows-x64.zip` имеет SHA256 `7a1a4afd41b6f2f9adf1c9cc5ac3e075ef68539fea77c490feacaa1c25d1e1ed`;
+  - публичный onefile `TakSklad.exe` имеет SHA256 `55b37759e9ce876e393de86eef800885b45a4fcf199046c2ac36081308d5610b`;
+  - новый ready zip целый, SHA256 `2c2498e57e628bd37b3cb1ae32a22b332ad44e94b2c29cfd0bd668775e0e28a1`;
+  - внутренний `TakSklad/TakSklad.exe` имеет SHA256 `87e1637d527879899aba71b94d486a86e745b36aebdfce038de1a43b8d960849`;
+  - внутри `TakSklad.exe` есть `taksklad.main` и `taksklad.excel_normalizer`;
+  - ready zip содержит JSON рядом с exe и не содержит `.ps1`;
+  - релизные unit-тесты прошли.
+- Важно:
+  - Windows `2.0.0` и `2.0.1` не использовать;
+  - для склада выдавать только `TakSklad-2.0.2-win-ready.zip`.
