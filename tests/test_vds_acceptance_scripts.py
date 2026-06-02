@@ -104,6 +104,30 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         self.assertIn("SKLADBOT_DETAIL_LIMIT=30", env_example)
         self.assertIn("TELEGRAM_ADMIN_CHAT_IDS=", env_example)
 
+    def test_web_deploy_forces_https_security_headers(self):
+        compose = (PROJECT_ROOT / "deploy" / "vds" / "docker-compose.yml").read_text(encoding="utf-8")
+        nginx = (PROJECT_ROOT / "frontend" / "nginx.conf.template").read_text(encoding="utf-8")
+
+        self.assertIn("traefik.http.routers.taksklad-backend.middlewares=taksklad-security-headers", compose)
+        self.assertIn("traefik.http.routers.taksklad-frontend.middlewares=taksklad-security-headers,taksklad-frontend-csp", compose)
+        self.assertIn("traefik.http.routers.taksklad-adminer.middlewares=taksklad-security-headers", compose)
+        self.assertIn("headers.stsSeconds=31536000", compose)
+        self.assertIn("headers.stsIncludeSubdomains=true", compose)
+        self.assertIn("headers.contentTypeNosniff=true", compose)
+        self.assertIn("headers.frameDeny=true", compose)
+        self.assertIn("upgrade-insecure-requests", compose)
+        self.assertIn("block-all-mixed-content", compose)
+
+        self.assertIn('add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;', nginx)
+        self.assertIn("Content-Security-Policy", nginx)
+        self.assertIn("upgrade-insecure-requests", nginx)
+        self.assertIn("block-all-mixed-content", nginx)
+        self.assertIn('add_header X-Content-Type-Options "nosniff" always;', nginx)
+        self.assertIn('add_header X-Frame-Options "DENY" always;', nginx)
+        self.assertIn('add_header Referrer-Policy "same-origin" always;', nginx)
+        self.assertNotIn("proxy_set_header X-Forwarded-Proto $scheme;", nginx)
+        self.assertEqual(nginx.count("proxy_set_header X-Forwarded-Proto https;"), 4)
+
 
 if __name__ == "__main__":
     unittest.main()

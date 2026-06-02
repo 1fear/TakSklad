@@ -3829,3 +3829,36 @@ cd /opt/taksklad/app
 - Важно:
   - Windows `2.0.0` и `2.0.1` не использовать;
   - для склада выдавать только `TakSklad-2.0.2-win-ready.zip`.
+
+### Web HTTPS hardening for taksklad.uz
+
+- Причина: Chrome показывал `Не защищено` при открытии `taksklad.uz`, хотя сертификат Let's Encrypt был действительным. Риск был не в сертификате, а в том, что web-контур не был жестко защищен от HTTP/mixed-content и API не отдавал полный набор security headers.
+- Что проверено:
+  - `taksklad.uz`, `www.taksklad.uz`, `api.taksklad.uz` указывают на VDS `135.181.245.84`;
+  - HTTP для корневого домена перенаправляется на HTTPS;
+  - сертификаты Let's Encrypt действительны;
+  - frontend bundle не содержит hardcoded `http://taksklad.uz`, `http://api.taksklad.uz` или `https://api.taksklad.uz`;
+  - frontend использует same-origin API через `/api/...`.
+- Исправлено:
+  - nginx frontend теперь отдает `Strict-Transport-Security`, `Content-Security-Policy`, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`;
+  - CSP включает `upgrade-insecure-requests` и `block-all-mixed-content`;
+  - nginx proxy больше не передает backend значение `$scheme` от внутреннего HTTP между Traefik и контейнером, а фиксирует `X-Forwarded-Proto=https`;
+  - Traefik middleware `taksklad-security-headers` добавлен на frontend, backend API и adminer-router;
+  - отдельный Traefik CSP middleware добавлен на frontend-router.
+- Деплой:
+  - перед заменой создан restore point на VDS: `/opt/taksklad/restore_points/pre-web-https-security-20260602T080353Z`;
+  - обновлены `frontend/nginx.conf.template` и `deploy/vds/docker-compose.yml`;
+  - пересобраны и пересозданы `frontend` и `backend-api`;
+  - случайно поднятый во время recreate `adminer` сразу остановлен и удален, постоянно запущенными остались только рабочие web/backend контейнеры.
+- Проверено после деплоя:
+  - `http://taksklad.uz/` возвращает `308` на `https://taksklad.uz/`;
+  - `https://taksklad.uz/` возвращает `200` и security headers;
+  - `https://www.taksklad.uz/` возвращает `200` и security headers;
+  - `https://api.taksklad.uz/health` возвращает `200` и security headers;
+  - серверный acceptance-smoke: backend health OK, compose running OK, Google/backend sync OK;
+  - общий `acceptance_status.sh` сейчас остается `failed` только по не связанным с HTTPS пунктам: 23 активных заказа без номера SkladBot и незакрытые ручные GO/NO-GO чекбоксы релиза;
+  - локально `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK;
+  - локально `./.venv/bin/python -m unittest discover -s tests` - 247 tests OK;
+  - `git diff --check` - OK.
+- Остаточный риск:
+  - если Chrome продолжит показывать старый индикатор сразу после исправления, вероятная причина - старая вкладка/cache/HSTS state браузера после смены домена и DNS. Серверная часть уже отдает HTTPS и защитные заголовки.
