@@ -255,6 +255,21 @@ def archive_backend_order_to_google_sheets(order):
     return move_backend_order_to_google_sheet(order, ARCHIVE_SHEET_NAME)
 
 
+def archive_backend_orders_to_google_sheets(orders):
+    orders = list(orders or [])
+    if not orders:
+        return {"status": "skipped", "updated": 0, "orders": {}}
+
+    try:
+        spreadsheet = get_google_client().open_by_key(SPREADSHEET_ID)
+    except GoogleSheetsExportDisabled as exc:
+        return GoogleSheetsExportResult(status="disabled", error=str(exc)).as_dict()
+
+    data_sheet = spreadsheet.worksheet(SHEET_NAME)
+    archive_sheet = get_or_create_sheet(spreadsheet, ARCHIVE_SHEET_NAME)
+    return archive_backend_orders_rows(data_sheet, archive_sheet, orders)
+
+
 def archive_backend_order_without_kiz_to_google_sheets(order):
     return move_backend_order_to_google_sheet(
         order,
@@ -472,12 +487,27 @@ def format_skladbot_status(value):
 
 
 def archive_backend_order_rows(data_sheet, archive_sheet, order, sheet_status=None):
+    return archive_backend_orders_rows(data_sheet, archive_sheet, [order], sheet_status=sheet_status)
+
+
+def archive_backend_orders_rows(data_sheet, archive_sheet, orders, sheet_status=None):
+    orders = list(orders or [])
+    if not orders:
+        return {"status": "skipped", "updated": 0, "orders": {}}
+
     ensure_import_sheet_layout(data_sheet)
     ensure_import_sheet_layout(archive_sheet)
     data_rows = data_sheet.get_all_values()
     archive_rows = archive_sheet.get_all_values()
     if not data_rows:
-        return GoogleSheetsExportResult(status="missing").as_dict()
+        return {
+            "status": "missing",
+            "updated": 0,
+            "orders": {
+                str(getattr(order, "id", "")): {"status": "missing", "updated": 0, "error": "data rows not found"}
+                for order in orders
+            },
+        }
 
     header = data_rows[0]
     header_idx = get_header_index(header)
@@ -486,34 +516,73 @@ def archive_backend_order_rows(data_sheet, archive_sheet, order, sheet_status=No
     archived_import_ids, archived_order_ids = get_existing_import_keys(archive_rows)
     header_len = max(len(header), SERVICE_COLUMN_START_INDEX + len(SERVICE_COLUMNS))
 
-    target_rows = []
-    used_rows = set()
-    for item in getattr(order, "items", []) or []:
-        row_number = find_backend_item_row_number(data_rows, item)
-        if row_number and row_number not in used_rows:
-            target_rows.append((row_number, item))
-            used_rows.add(row_number)
-
-    if not target_rows:
-        return GoogleSheetsExportResult(status="missing").as_dict()
-
+    results_by_order_id = {}
     rows_to_archive = []
-    for row_number, item in sorted(target_rows, key=lambda value: value[0]):
-        source_row = list(data_rows[row_number - 1])
-        if len(source_row) < header_len:
-            source_row.extend([""] * (header_len - len(source_row)))
+    rows_to_delete = set()
+    archive_rows_for_duplicates = list(archive_rows)
+    for order in orders:
+        order_id = str(getattr(order, "id", "") or "")
+        target_rows = []
+        already_archived_count = 0
+        used_rows = set()
+        for item in getattr(order, "items", []) or []:
+            row_number = find_backend_item_row_number(data_rows, item)
+            if row_number and row_number not in used_rows:
+                target_rows.append((row_number, item, None))
+                used_rows.add(row_number)
+                continue
+            if find_backend_item_row_number(archive_rows_for_duplicates, item):
+                already_archived_count += 1
+                continue
+            target_rows.append((None, item, build_backend_item_archive_row(order, item, header_len, sheet_status)))
 
-        source_order_id = get_backend_item_source_order_id(item)
-        source_import_id = get_backend_item_source_import_id(item)
-        if (
-            (source_order_id and source_order_id in archived_order_ids)
-            or (source_import_id and source_import_id in archived_import_ids)
-            or archive_row_already_exists(source_row, header_idx, archive_rows, archive_header_idx)
-        ):
+        if not target_rows:
+            if already_archived_count:
+                results_by_order_id[order_id] = {
+                    "status": "skipped",
+                    "updated": 0,
+                    "archived": 0,
+                    "error": "order rows already archived",
+                }
+            else:
+                results_by_order_id[order_id] = {"status": "missing", "updated": 0, "error": "order rows not found"}
             continue
 
-        apply_backend_item_state_to_row(source_row, header_idx, item, completed=True, sheet_status=sheet_status)
-        rows_to_archive.append(source_row[:header_len])
+        appended = 0
+        for row_number, item, generated_row in sorted(target_rows, key=lambda value: value[0] or 10**9):
+            if generated_row is None:
+                source_row = list(data_rows[row_number - 1])
+                if len(source_row) < header_len:
+                    source_row.extend([""] * (header_len - len(source_row)))
+            else:
+                source_row = list(generated_row)
+
+            source_order_id = get_backend_item_source_order_id(item)
+            source_import_id = get_backend_item_source_import_id(item)
+            already_archived = (
+                (source_order_id and source_order_id in archived_order_ids)
+                or (source_import_id and source_import_id in archived_import_ids)
+                or archive_row_already_exists(source_row, header_idx, archive_rows_for_duplicates, archive_header_idx)
+            )
+            if not already_archived:
+                apply_backend_item_state_to_row(source_row, header_idx, item, completed=True, sheet_status=sheet_status)
+                archived_row = source_row[:header_len]
+                rows_to_archive.append(archived_row)
+                archive_rows_for_duplicates.append(archived_row)
+                if source_order_id:
+                    archived_order_ids.add(source_order_id)
+                if source_import_id:
+                    archived_import_ids.add(source_import_id)
+                appended += 1
+
+            if row_number:
+                rows_to_delete.add(row_number)
+
+        results_by_order_id[order_id] = {
+            "status": "completed",
+            "updated": len(target_rows),
+            "archived": appended,
+        }
 
     if rows_to_archive:
         start_row = max(2, len(archive_rows) + 1)
@@ -523,10 +592,53 @@ def archive_backend_order_rows(data_sheet, archive_sheet, order, sheet_status=No
             "values": rows_to_archive,
         }], value_input_option="USER_ENTERED")
 
-    for row_number, _item in sorted(target_rows, key=lambda value: value[0], reverse=True):
+    for row_number in sorted(rows_to_delete, reverse=True):
         data_sheet.delete_rows(row_number)
 
-    return GoogleSheetsExportResult(status="completed", updated=len(target_rows)).as_dict()
+    updated = sum(int(value.get("updated") or 0) for value in results_by_order_id.values())
+    statuses = {str(value.get("status") or "").strip().lower() for value in results_by_order_id.values()}
+    if updated:
+        status = "completed"
+    elif statuses and statuses <= {"skipped"}:
+        status = "skipped"
+    else:
+        status = "missing"
+    return {
+        "status": status,
+        "updated": updated,
+        "archived": len(rows_to_archive),
+        "orders": results_by_order_id,
+    }
+
+
+def build_backend_item_archive_row(order, item, header_len, sheet_status=None):
+    item_payload = getattr(item, "raw_payload", None) or {}
+    order_payload = getattr(order, "raw_payload", None) or {}
+    record = {
+        ORDER_DATE_COLUMN: format_sheet_date(getattr(order, "order_date", None)),
+        "Тип оплаты": normalize_text(getattr(order, "payment_type", "")),
+        "Клиент": normalize_text(getattr(order, "client", "")),
+        "Адрес": normalize_text(getattr(order, "address", "")) or "Адрес не указан",
+        "Торговый представитель": normalize_text(getattr(order, "representative", "")),
+        "Товары": normalize_text(getattr(item, "product", "")),
+        "Кол-во ШТ": parse_int_value(getattr(item, "quantity_pieces", 0)),
+        "Кол-во блок": parse_int_value(getattr(item, "quantity_blocks", 0)),
+        "Отсканированные коды": "\n".join(backend_item_codes(item)),
+        STATUS_COLUMN: normalize_text(sheet_status) or STATUS_COMPLETED,
+        "ID заказа": get_backend_item_source_order_id(item) or normalize_text(getattr(order, "external_id", "")) or str(getattr(order, "id", "")),
+        "ID импорта": get_backend_item_source_import_id(item) or str(getattr(item, "id", "")),
+        "Источник файла": normalize_text(item_payload.get("source_file") or order_payload.get("source_file")),
+        "Строка файла": normalize_text(item_payload.get("source_row") or order_payload.get("source_row")),
+        "Дата импорта": normalize_text(item_payload.get("imported_at") or order_payload.get("imported_at")),
+        "Номер заявки SkladBot": normalize_text(order_payload.get("skladbot_request_number")),
+        "ID заявки SkladBot": normalize_text(order_payload.get("skladbot_request_id")),
+        "Статус SkladBot": format_skladbot_status(order_payload.get("skladbot_status")),
+        "Последняя проверка SkladBot": normalize_text(order_payload.get("skladbot_checked_at")),
+    }
+    row = build_import_record_row(record)
+    if len(row) < header_len:
+        row.extend([""] * (header_len - len(row)))
+    return row[:header_len]
 
 
 def mark_backend_return_rows(archive_sheet, returns_sheet, order):

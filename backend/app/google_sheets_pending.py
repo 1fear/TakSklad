@@ -1,7 +1,7 @@
 import logging
 from threading import Lock
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, selectinload
 from .google_sheets_exporter import (
     append_import_records_to_google_sheets,
     archive_backend_order_to_google_sheets,
+    archive_backend_orders_to_google_sheets,
     archive_backend_order_without_kiz_to_google_sheets,
     cancel_backend_order_in_google_sheets,
     mark_backend_order_returned_in_google_sheets,
@@ -31,7 +32,17 @@ SKLADBOT_EXPORT_INACTIVE_ORDER_STATUSES = (
     "archived_no_kiz",
     "cancelled",
 )
+SCAN_EXPORT_TERMINAL_STATUSES = {
+    "completed",
+    "done",
+    "closed",
+    "returned",
+    "archived_no_kiz",
+    "cancelled",
+    "removed_from_google_sheet",
+}
 LOCAL_EXPORT_LOCK = Lock()
+STALE_PROCESSING_EXPORT_TIMEOUT = timedelta(minutes=10)
 logger = logging.getLogger(__name__)
 
 
@@ -124,11 +135,17 @@ def process_pending_google_sheets_exports(db: Session, limit=50):
         return {**result, "status": "busy", "message": "Google Sheets export is already running"}
 
     try:
+        reset_stale_processing_export_events(db)
         events = select_pending_export_events(db, limit)
         result["checked"] = len(events)
         if not events:
             return result
         batch_result = process_scan_export_events_batch(db, events, result)
+        if batch_result.get("paused"):
+            result["remaining"] = count_pending_export_events(db)
+            return {**result, "status": "paused"}
+        events = batch_result["remaining_events"]
+        batch_result = process_archive_export_events_batch(db, events, result)
         if batch_result.get("paused"):
             result["remaining"] = count_pending_export_events(db)
             return {**result, "status": "paused"}
@@ -272,8 +289,89 @@ def process_scan_export_events_batch(db: Session, events, result):
         logger.exception("Pending Google Sheets scan export batch failed")
         export_result = {"status": "error", "error": str(exc)}
 
+    missing_export = str((export_result or {}).get("status") or "").strip().lower() == "missing"
     for event in found_events:
-        finish_export_event(db, event, export_result, result)
+        event_result = export_result
+        if missing_export:
+            entity_uuid = parse_uuid((event.payload or {}).get("entity_id") or "")
+            item = items_by_id.get(entity_uuid)
+            if item and is_terminal_scan_export_item(item):
+                event_result = {
+                    "status": "skipped",
+                    "error": "order item already left active Google sheet",
+                }
+        finish_export_event(db, event, event_result, result)
+    return {"remaining_events": remaining_events, "paused": False}
+
+
+def process_archive_export_events_batch(db: Session, events, result):
+    archive_events = []
+    for event in events:
+        if (event.payload or {}).get("action") != "google_sheets_archive_export":
+            break
+        archive_events.append(event)
+    if not archive_events:
+        return {"remaining_events": events, "paused": False}
+
+    remaining_events = events[len(archive_events):]
+    events_by_order_id = {}
+    invalid_events = []
+    for event in archive_events:
+        event.status = "processing"
+        event.attempts = int(event.attempts or 0) + 1
+        entity_uuid = parse_uuid((event.payload or {}).get("entity_id") or "")
+        if entity_uuid is None:
+            invalid_events.append(event)
+        else:
+            events_by_order_id.setdefault(entity_uuid, []).append(event)
+    db.commit()
+
+    for event in invalid_events:
+        finish_export_event(db, event, {"status": "missing", "error": "invalid order id"}, result)
+
+    order_ids = list(events_by_order_id)
+    if not order_ids:
+        return {"remaining_events": remaining_events, "paused": False}
+
+    orders = db.execute(
+        select(Order)
+        .options(selectinload(Order.items).selectinload(OrderItem.scan_codes))
+        .where(Order.id.in_(order_ids))
+    ).scalars().all()
+    orders_by_id = {order.id: order for order in orders}
+
+    found_events = []
+    for order_id, order_events in events_by_order_id.items():
+        if order_id not in orders_by_id:
+            for event in order_events:
+                finish_export_event(db, event, {"status": "missing", "error": "order not found"}, result)
+            continue
+        found_events.extend(order_events)
+
+    if not orders_by_id:
+        return {"remaining_events": remaining_events, "paused": False}
+
+    try:
+        export_result = archive_backend_orders_to_google_sheets(orders_by_id.values())
+    except Exception as exc:
+        if is_google_rate_limit_error(exc):
+            logger.warning("Pending Google Sheets archive export batch paused after rate limit: %s", exc)
+            export_result = {"status": "rate_limited", "error": str(exc)}
+            for event in found_events:
+                event.status = "pending"
+                event.last_error = format_export_error(export_result)
+                event.payload = {**(event.payload or {}), "last_result": export_result}
+                add_export_audit(db, event, "google_sheets_pending_export_rate_limited", export_result)
+            db.commit()
+            return {"remaining_events": remaining_events, "paused": True}
+        logger.exception("Pending Google Sheets archive export batch failed")
+        export_result = {"status": "error", "error": str(exc)}
+
+    order_results = (export_result or {}).get("orders") or {}
+    for event in found_events:
+        entity_id = str((event.payload or {}).get("entity_id") or "")
+        event_result = order_results.get(entity_id) or export_result
+        finish_export_event(db, event, event_result, result)
     return {"remaining_events": remaining_events, "paused": False}
 
 
@@ -312,6 +410,12 @@ def add_export_audit(db: Session, event: PendingEvent, action, export_result):
     ))
 
 
+def is_terminal_scan_export_item(item):
+    item_status = str(getattr(item, "status", "") or "").strip().lower()
+    order_status = str(getattr(getattr(item, "order", None), "status", "") or "").strip().lower()
+    return item_status in SCAN_EXPORT_TERMINAL_STATUSES or order_status in SCAN_EXPORT_TERMINAL_STATUSES
+
+
 def select_pending_export_events(db: Session, limit):
     stmt = (
         select(PendingEvent)
@@ -323,6 +427,35 @@ def select_pending_export_events(db: Session, limit):
     if db.bind.dialect.name == "postgresql":
         stmt = stmt.with_for_update(skip_locked=True)
     return db.execute(stmt).scalars().all()
+
+
+def reset_stale_processing_export_events(db: Session):
+    cutoff = datetime.now(timezone.utc) - STALE_PROCESSING_EXPORT_TIMEOUT
+    events = db.execute(
+        select(PendingEvent)
+        .where(PendingEvent.event_type == GOOGLE_SHEETS_EXPORT_EVENT_TYPE)
+        .where(PendingEvent.status == "processing")
+        .where(PendingEvent.updated_at < cutoff)
+    ).scalars().all()
+    if not events:
+        return 0
+    for event in events:
+        event.status = "pending"
+        event.payload = {
+            **(event.payload or {}),
+            "last_result": {"status": "reset", "error": "stale processing export reset"},
+        }
+        db.add(AuditLog(
+            action="google_sheets_pending_export_stale_reset",
+            entity_type="pending_event",
+            entity_id=str(event.id),
+            payload={
+                "event_action": (event.payload or {}).get("action") or "",
+                "event_entity_id": (event.payload or {}).get("entity_id") or "",
+            },
+        ))
+    db.commit()
+    return len(events)
 
 
 def count_pending_export_events(db: Session):

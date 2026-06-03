@@ -4307,3 +4307,20 @@ cd /opt/taksklad/app
   - ready archive SHA256: `1b40793e4936b9aca0c0bea59d78b89ee20b136fee81695481f58aee29479a24`;
   - ready archive содержит рядом с `TakSklad.exe`: `.env.taksklad-vds-2.0.generated.json`, `TakSklad_data.json`, `credentials.json`, `version.json`;
   - `./.venv/bin/python tools/release_preflight.py --verify-downloads` скачал оба assets и подтвердил SHA; единственный fail до commit был ожидаемый `version.json has local git diff`.
+
+### Google archive mirror batch fix
+
+- Причина: после релиза `2.0.6` scan-события уже схлопывались в batch, но обычный перенос завершённых заказов в Google `Архив` всё ещё шёл по одному заказу. Каждый заказ заново читал листы `data` и `Архив`, из-за чего зеркало быстро упиралось в Google read quota `429`.
+- Backend:
+  - добавлен batch-перенос нескольких обычных `google_sheets_archive_export` событий за один проход;
+  - для batch-архива Google `data` и `Архив` читаются один раз, строки в архив пишутся одним `batch_update`, строки из `data` удаляются снизу вверх;
+  - если архивное событие повторное и строки уже находятся в `Архиве`, событие закрывается как `skipped`, а не остаётся в `failed`;
+  - если завершённого заказа уже нет в Google `data` и нет в `Архиве`, строка архива восстанавливается из VDS заказа/позиции/КИЗов;
+  - если scan-событие по уже завершённой позиции не находит строку в активном `data`, оно закрывается как `skipped`, потому что финальное состояние пишет архивный экспорт;
+  - старые зависшие `processing` события старше 10 минут автоматически возвращаются в `pending` и повторно обрабатываются;
+  - специальные действия `archive_no_kiz`, `cancel`, `return` оставлены поштучными, чтобы не менять порядок редких административных операций;
+  - scan batch и rate-limit поведение сохранены: при `429` событие возвращается в `pending`, worker ставит паузу до следующего цикла.
+- Проверено:
+  - `./.venv/bin/python -m py_compile backend/app/google_sheets_exporter.py backend/app/google_sheets_pending.py` - OK;
+  - `./.venv/bin/python -m unittest tests.test_backend_google_sheets_exporter tests.test_backend_google_sheets_pending` - 19 tests OK;
+  - `./.venv/bin/python -m unittest discover -s tests` - 319 tests OK.

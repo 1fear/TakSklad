@@ -1,4 +1,5 @@
 import unittest
+from datetime import date, datetime, timedelta, timezone
 from unittest import mock
 
 from sqlalchemy import create_engine, select
@@ -11,7 +12,7 @@ from backend.app.google_sheets_pending import (
     process_pending_google_sheets_exports,
     release_google_sheets_export_lock,
 )
-from backend.app.models import Base, PendingEvent
+from backend.app.models import Base, Order, OrderItem, PendingEvent
 
 
 class GoogleSheetsPendingLockTests(unittest.TestCase):
@@ -67,6 +68,191 @@ class GoogleSheetsPendingLockTests(unittest.TestCase):
             self.assertEqual(events[0].attempts, 1)
             self.assertIn("429", events[0].last_error)
             self.assertEqual(events[1].attempts, 0)
+        finally:
+            Base.metadata.drop_all(engine)
+            engine.dispose()
+
+    def test_archive_events_are_batched_before_single_event_processing(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        try:
+            with SessionLocal() as db:
+                order_one = Order(
+                    order_date=date(2026, 6, 5),
+                    payment_type="Перечисление",
+                    client="Client One",
+                    address="Tashkent",
+                    status="completed",
+                    raw_payload={},
+                )
+                order_one.items.append(OrderItem(
+                    product="Chapman Brown OP 20",
+                    quantity_pieces=10,
+                    quantity_blocks=1,
+                    scanned_blocks=1,
+                    status="completed",
+                    raw_payload={"source_import_id": "import-1", "source_order_id": "order-1"},
+                ))
+                order_two = Order(
+                    order_date=date(2026, 6, 5),
+                    payment_type="Перечисление",
+                    client="Client Two",
+                    address="Tashkent",
+                    status="completed",
+                    raw_payload={},
+                )
+                order_two.items.append(OrderItem(
+                    product="Chapman RED OP 20",
+                    quantity_pieces=10,
+                    quantity_blocks=1,
+                    scanned_blocks=1,
+                    status="completed",
+                    raw_payload={"source_import_id": "import-2", "source_order_id": "order-2"},
+                ))
+                db.add_all([order_one, order_two])
+                db.flush()
+                order_one_id = str(order_one.id)
+                order_two_id = str(order_two.id)
+                db.add_all([
+                    PendingEvent(
+                        event_type=GOOGLE_SHEETS_EXPORT_EVENT_TYPE,
+                        status="pending",
+                        payload={"action": "google_sheets_archive_export", "entity_id": order_one_id},
+                    ),
+                    PendingEvent(
+                        event_type=GOOGLE_SHEETS_EXPORT_EVENT_TYPE,
+                        status="pending",
+                        payload={"action": "google_sheets_archive_export", "entity_id": order_two_id},
+                    ),
+                ])
+                db.commit()
+
+                def fake_archive(orders):
+                    return {
+                        "status": "completed",
+                        "updated": len(list(orders)),
+                        "orders": {
+                            order_one_id: {"status": "completed", "updated": 1},
+                            order_two_id: {"status": "completed", "updated": 1},
+                        },
+                    }
+
+                with mock.patch(
+                    "backend.app.google_sheets_pending.archive_backend_orders_to_google_sheets",
+                    side_effect=fake_archive,
+                ) as archive_mock, mock.patch(
+                    "backend.app.google_sheets_pending.run_google_sheets_export_event"
+                ) as single_export_mock:
+                    result = process_pending_google_sheets_exports(db, limit=50)
+
+                events = db.execute(
+                    select(PendingEvent).order_by(PendingEvent.created_at, PendingEvent.id)
+                ).scalars().all()
+
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["checked"], 2)
+            self.assertEqual(result["synced"], 2)
+            self.assertEqual(archive_mock.call_count, 1)
+            self.assertEqual(single_export_mock.call_count, 0)
+            self.assertEqual([event.status for event in events], ["completed", "completed"])
+            self.assertEqual([event.attempts for event in events], [1, 1])
+        finally:
+            Base.metadata.drop_all(engine)
+            engine.dispose()
+
+    def test_terminal_scan_event_missing_google_row_is_skipped(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        try:
+            with SessionLocal() as db:
+                order = Order(
+                    order_date=date(2026, 6, 5),
+                    payment_type="Перечисление",
+                    client="Client",
+                    address="Tashkent",
+                    status="completed",
+                    raw_payload={},
+                )
+                item = OrderItem(
+                    product="Chapman Brown OP 20",
+                    quantity_pieces=10,
+                    quantity_blocks=1,
+                    scanned_blocks=1,
+                    status="completed",
+                    raw_payload={"source_import_id": "import-1", "source_order_id": "order-1"},
+                )
+                order.items.append(item)
+                db.add(order)
+                db.flush()
+                item_id = str(item.id)
+                db.add(PendingEvent(
+                    event_type=GOOGLE_SHEETS_EXPORT_EVENT_TYPE,
+                    status="pending",
+                    payload={"action": "google_sheets_scan_export", "entity_id": item_id},
+                ))
+                db.commit()
+
+                with mock.patch(
+                    "backend.app.google_sheets_pending.sync_backend_order_items_to_google_sheets",
+                    return_value={"status": "missing", "error": "order item rows not found"},
+                ):
+                    result = process_pending_google_sheets_exports(db, limit=50)
+
+                event = db.execute(select(PendingEvent)).scalar_one()
+
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["synced"], 1)
+            self.assertEqual(result["failed"], 0)
+            self.assertEqual(event.status, "completed")
+            self.assertEqual((event.payload or {}).get("last_result", {}).get("status"), "skipped")
+        finally:
+            Base.metadata.drop_all(engine)
+            engine.dispose()
+
+    def test_stale_processing_event_is_reset_and_processed(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        try:
+            with SessionLocal() as db:
+                db.add(PendingEvent(
+                    event_type=GOOGLE_SHEETS_EXPORT_EVENT_TYPE,
+                    status="processing",
+                    attempts=3,
+                    payload={"action": "google_sheets_import_export", "entity_id": "import-1", "records": [{"x": 1}]},
+                    last_error="old processing",
+                    updated_at=datetime.now(timezone.utc) - timedelta(minutes=30),
+                ))
+                db.commit()
+
+                with mock.patch(
+                    "backend.app.google_sheets_pending.run_google_sheets_export_event",
+                    return_value={"status": "skipped"},
+                ) as export_mock:
+                    result = process_pending_google_sheets_exports(db, limit=50)
+
+                event = db.execute(select(PendingEvent)).scalar_one()
+
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["checked"], 1)
+            self.assertEqual(result["synced"], 1)
+            self.assertEqual(event.status, "completed")
+            self.assertEqual(event.attempts, 4)
+            self.assertEqual(export_mock.call_count, 1)
         finally:
             Base.metadata.drop_all(engine)
             engine.dispose()

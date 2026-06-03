@@ -102,9 +102,9 @@ class BackendGoogleSheetsExporterTests(unittest.TestCase):
             scan_codes=[self.make_scan(code) for code in codes],
         )
 
-    def make_order(self, items, **raw_payload):
+    def make_order(self, items, order_id="backend-order-1", **raw_payload):
         return SimpleNamespace(
-            id="backend-order-1",
+            id=order_id,
             order_date=date(2026, 6, 1),
             payment_type="Перечисление",
             client="Client",
@@ -285,6 +285,79 @@ class BackendGoogleSheetsExporterTests(unittest.TestCase):
         self.assertEqual(archive_sheet.rows[1][header_idx["Отсканированные коды"]], "0101\n0102")
         self.assertEqual(archive_sheet.rows[2][header_idx["Отсканированные коды"]], "0103")
         self.assertEqual(archive_sheet.rows[1][header_idx["Статус"]], "Выполнено")
+
+    def test_archive_backend_orders_rows_batches_multiple_orders(self):
+        header = exporter.build_import_sheet_header()
+        item_one = self.make_item("import-1", "order-1", codes=["0101"])
+        item_two = self.make_item("import-2", "order-2", codes=["0102", "0103"])
+        data_sheet = FakeSheet("data", [
+            header.copy(),
+            self.make_row("import-1", "order-1"),
+            self.make_row("import-2", "order-2"),
+        ])
+        archive_sheet = FakeSheet("Архив", [header.copy()])
+
+        result = exporter.archive_backend_orders_rows(data_sheet, archive_sheet, [
+            self.make_order([item_one], order_id="backend-order-1"),
+            self.make_order([item_two], order_id="backend-order-2"),
+        ])
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["updated"], 2)
+        self.assertEqual(result["archived"], 2)
+        self.assertEqual(result["orders"]["backend-order-1"]["updated"], 1)
+        self.assertEqual(result["orders"]["backend-order-2"]["updated"], 1)
+        self.assertEqual(len(data_sheet.rows), 1)
+        self.assertEqual(len(archive_sheet.rows), 3)
+        header_idx = exporter.get_header_index(archive_sheet.rows[0])
+        self.assertEqual(archive_sheet.rows[1][header_idx["Отсканированные коды"]], "0101")
+        self.assertEqual(archive_sheet.rows[2][header_idx["Отсканированные коды"]], "0102\n0103")
+
+    def test_archive_backend_orders_rows_skips_order_already_archived(self):
+        header = exporter.build_import_sheet_header()
+        item = self.make_item("import-1", "order-1", codes=["0101"])
+        data_sheet = FakeSheet("data", [header.copy()])
+        archive_sheet = FakeSheet("Архив", [
+            header.copy(),
+            self.make_row("import-1", "order-1", codes="0101", status="Выполнено"),
+        ])
+
+        result = exporter.archive_backend_orders_rows(data_sheet, archive_sheet, [
+            self.make_order([item], order_id="backend-order-1"),
+        ])
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["orders"]["backend-order-1"]["status"], "skipped")
+        self.assertEqual(len(data_sheet.rows), 1)
+        self.assertEqual(len(archive_sheet.rows), 2)
+
+    def test_archive_backend_orders_rows_restores_missing_data_row_from_backend(self):
+        header = exporter.build_import_sheet_header()
+        item = self.make_item("import-1", "order-1", codes=["0101", "0102"])
+        data_sheet = FakeSheet("data", [header.copy()])
+        archive_sheet = FakeSheet("Архив", [header.copy()])
+
+        result = exporter.archive_backend_orders_rows(data_sheet, archive_sheet, [
+            self.make_order(
+                [item],
+                order_id="backend-order-1",
+                skladbot_request_number="WH-R-1",
+                skladbot_request_id="1",
+                skladbot_status="found",
+            ),
+        ])
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["updated"], 1)
+        self.assertEqual(result["archived"], 1)
+        self.assertEqual(len(data_sheet.rows), 1)
+        self.assertEqual(len(archive_sheet.rows), 2)
+        header_idx = exporter.get_header_index(archive_sheet.rows[0])
+        self.assertEqual(archive_sheet.rows[1][header_idx["ID заказа"]], "order-1")
+        self.assertEqual(archive_sheet.rows[1][header_idx["ID импорта"]], "import-1")
+        self.assertEqual(archive_sheet.rows[1][header_idx["Отсканированные коды"]], "0101\n0102")
+        self.assertEqual(archive_sheet.rows[1][header_idx["Статус"]], "Выполнено")
+        self.assertEqual(archive_sheet.rows[1][header_idx["Номер заявки SkladBot"]], "WH-R-1")
 
     def test_archive_without_kiz_uses_separate_google_sheet(self):
         header = exporter.build_import_sheet_header()
