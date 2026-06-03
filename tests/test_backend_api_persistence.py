@@ -1059,6 +1059,116 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(updated, 1)
         self.assertEqual(sheet.updates, [{"range": "D2", "values": [["Ташкент, Чиланзарский район, 10"]]}])
 
+    def test_google_sheets_export_updates_coordinate_address_by_business_key_when_ids_changed(self):
+        class FakeSheet:
+            def __init__(self):
+                self.updates = []
+
+            def batch_update(self, updates, value_input_option=None):
+                self.updates.extend(updates)
+                self.value_input_option = value_input_option
+
+        rows = [
+            [
+                "Дата отгрузки",
+                "Тип оплаты",
+                "Клиент",
+                "Адрес",
+                "Торговый представитель",
+                "Товары",
+                "Кол-во ШТ",
+                "Кол-во блок",
+            ] + [""] * 18 + ["ID заказа", "ID импорта"],
+            [
+                "04.06.2026",
+                "Терминал",
+                "Backfill Client",
+                "Координаты: 41.325341, 69.233731",
+                "ТП2",
+                "Chapman Brown OP 20",
+                "500",
+                "50",
+            ] + [""] * 18 + ["old-order", "old-import"],
+        ]
+        records = [{
+            "Дата отгрузки": "04.06.2026",
+            "Тип оплаты": "Терминал",
+            "Клиент": "Backfill Client",
+            "Адрес": "Ташкент, улица Сакичмон, 1/18",
+            "Торговый представитель": "ТП2",
+            "Товары": "Chapman Brown OP 20",
+            "Кол-во ШТ": 500,
+            "Кол-во блок": 50,
+            "ID заказа": "new-order",
+            "ID импорта": "new-import",
+        }]
+        sheet = FakeSheet()
+
+        updated = update_missing_sheet_addresses(sheet, rows, records)
+
+        self.assertEqual(updated, 1)
+        self.assertEqual(sheet.updates, [{"range": "D2", "values": [["Ташкент, улица Сакичмон, 1/18"]]}])
+        self.assertEqual(rows[1][3], "Ташкент, улица Сакичмон, 1/18")
+
+    def test_google_sheets_export_does_not_update_ambiguous_business_key_address(self):
+        class FakeSheet:
+            def __init__(self):
+                self.updates = []
+
+            def batch_update(self, updates, value_input_option=None):
+                self.updates.extend(updates)
+
+        rows = [
+            [
+                "Дата отгрузки",
+                "Тип оплаты",
+                "Клиент",
+                "Адрес",
+                "Торговый представитель",
+                "Товары",
+                "Кол-во ШТ",
+                "Кол-во блок",
+            ] + [""] * 18 + ["ID заказа", "ID импорта"],
+            [
+                "04.06.2026",
+                "Терминал",
+                "Backfill Client",
+                "Координаты: 41.325341, 69.233731",
+                "ТП2",
+                "Chapman Brown OP 20",
+                "500",
+                "50",
+            ] + [""] * 18 + ["old-order-1", "old-import-1"],
+            [
+                "04.06.2026",
+                "Терминал",
+                "Backfill Client",
+                "Координаты: 41.325341, 69.233731",
+                "ТП2",
+                "Chapman Brown OP 20",
+                "500",
+                "50",
+            ] + [""] * 18 + ["old-order-2", "old-import-2"],
+        ]
+        records = [{
+            "Дата отгрузки": "04.06.2026",
+            "Тип оплаты": "Терминал",
+            "Клиент": "Backfill Client",
+            "Адрес": "Ташкент, улица Сакичмон, 1/18",
+            "Торговый представитель": "ТП2",
+            "Товары": "Chapman Brown OP 20",
+            "Кол-во ШТ": 500,
+            "Кол-во блок": 50,
+            "ID заказа": "new-order",
+            "ID импорта": "new-import",
+        }]
+        sheet = FakeSheet()
+
+        updated = update_missing_sheet_addresses(sheet, rows, records)
+
+        self.assertEqual(updated, 0)
+        self.assertEqual(sheet.updates, [])
+
     def test_import_stores_coordinates_blocks_and_prices(self):
         rows = [
             {

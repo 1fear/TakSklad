@@ -4135,3 +4135,23 @@ cd /opt/taksklad/app
   - готовый складской архив: `outputs/windows_ready/TakSklad-2.0.4-win-ready.zip`;
   - ready archive SHA256: `03babd3c55b8dfd6815fecdec563f00a94297c2a061d644e2e3209ccf548d4d1`;
   - ready archive содержит рядом с `TakSklad.exe`: `.env.taksklad-vds-2.0.generated.json`, `TakSklad_data.json`, `credentials.json`, `version.json`.
+
+### Google address backfill from VDS
+
+- Причина: в Google `data` после импорта остались адреса вида `Координаты: ...`, хотя VDS уже хранил нормальные адреса после геокодирования.
+- Backup перед правкой Google:
+  - `/opt/taksklad/backups/google_sheets/google_sheets_address_backfill_backup_20260603T112520Z.json`.
+- Разовая правка данных:
+  - обновлено `92` строки в Google `data`;
+  - неоднозначных совпадений не было;
+  - после проверки строк с адресом `Координаты: ...` в `data`: `0`.
+- Код:
+  - `update_missing_sheet_addresses()` теперь сначала обновляет адрес по `ID заказа`/`ID импорта`;
+  - если ID изменились между импортами, добавлен fallback по строгому бизнес-ключу: дата, тип оплаты, клиент, торговый, товар, штуки и блоки;
+  - fallback применяется только для пустых/технических адресов и пропускает неоднозначные совпадения;
+  - `all_rows` обновляется в памяти после backfill, чтобы следующий duplicate-check не добавлял дубль.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_backend_api_persistence` - 48 tests OK;
+  - `./.venv/bin/python -m unittest tests.test_backend_google_sheets_exporter tests.test_google_sheets_sync_worker` - 20 tests OK;
+  - `./.venv/bin/python -m unittest discover -s tests` - 293 tests OK;
+  - `./.venv/bin/python -m compileall -q backend/app src/taksklad` - OK.

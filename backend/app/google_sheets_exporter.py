@@ -497,6 +497,8 @@ def update_missing_sheet_addresses(sheet, all_rows, records):
 
     rows_by_import_id = {}
     rows_by_order_id = {}
+    rows_by_business_key = {}
+    ambiguous_business_keys = set()
     for sheet_row_number, row in enumerate(all_rows[1:], start=2):
         for import_idx in import_indices:
             import_id = get_cell(row, import_idx)
@@ -506,6 +508,21 @@ def update_missing_sheet_addresses(sheet, all_rows, records):
             order_id = get_cell(row, order_idx)
             if order_id and order_id not in rows_by_order_id:
                 rows_by_order_id[order_id] = (sheet_row_number, row)
+        if is_missing_address(get_cell(row, address_idx)):
+            business_key = make_address_backfill_business_key({
+                ORDER_DATE_COLUMN: get_cell(row, header_idx.get(ORDER_DATE_COLUMN, header_idx.get(LEGACY_ORDER_DATE_COLUMN))),
+                "Тип оплаты": get_cell(row, header_idx.get("Тип оплаты")),
+                "Клиент": get_cell(row, header_idx.get("Клиент")),
+                "Торговый представитель": get_cell(row, header_idx.get("Торговый представитель")),
+                "Товары": get_cell(row, header_idx.get("Товары")),
+                "Кол-во ШТ": get_cell(row, header_idx.get("Кол-во ШТ")),
+                "Кол-во блок": get_cell(row, header_idx.get("Кол-во блок")),
+            })
+            if business_key:
+                if business_key in rows_by_business_key:
+                    ambiguous_business_keys.add(business_key)
+                else:
+                    rows_by_business_key[business_key] = (sheet_row_number, row)
 
     updates = []
     updated_rows = set()
@@ -521,6 +538,10 @@ def update_missing_sheet_addresses(sheet, all_rows, records):
         if found is None and order_id:
             found = rows_by_order_id.get(order_id)
         if found is None:
+            business_key = make_address_backfill_business_key(record)
+            if business_key and business_key not in ambiguous_business_keys:
+                found = rows_by_business_key.get(business_key)
+        if found is None:
             continue
 
         sheet_row_number, row = found
@@ -534,11 +555,35 @@ def update_missing_sheet_addresses(sheet, all_rows, records):
             "range": f"{address_column}{sheet_row_number}",
             "values": [[new_address]],
         })
+        if address_idx < len(row):
+            row[address_idx] = new_address
         updated_rows.add(sheet_row_number)
 
     if updates:
         sheet.batch_update(updates, value_input_option="USER_ENTERED")
     return len(updates)
+
+
+def make_address_backfill_business_key(record):
+    payload = {
+        "date": parse_date_to_standard(record.get(ORDER_DATE_COLUMN) or record.get(LEGACY_ORDER_DATE_COLUMN)),
+        "payment": normalize_lookup_text(record.get("Тип оплаты")),
+        "client": normalize_lookup_text(record.get("Клиент")),
+        "representative": normalize_lookup_text(record.get("Торговый представитель")),
+        "product": normalize_lookup_text(record.get("Товары")),
+        "quantity_pieces": parse_int_value(record.get("Кол-во ШТ")),
+        "quantity_blocks": parse_int_value(record.get("Кол-во блок")),
+    }
+    if (
+        not payload["date"]
+        or not payload["payment"]
+        or not payload["client"]
+        or not payload["product"]
+        or payload["quantity_pieces"] <= 0
+        or payload["quantity_blocks"] <= 0
+    ):
+        return ""
+    return make_hash(payload)
 
 
 def get_google_client():
