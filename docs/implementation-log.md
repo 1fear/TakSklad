@@ -4126,3 +4126,12 @@ cd /opt/taksklad/app
   - `./.venv/bin/python -m compileall -q backend/app src/taksklad` - OK;
   - `npm run build` - OK;
   - `./.venv/bin/python tools/release_preflight.py --skip-network` - status OK.
+- Windows release:
+  - создан tag/release `v2.0.4`;
+  - GitHub Actions `Build Windows Release` run `26880027531` завершился success;
+  - пройдены smoke-test onefile и onedir: `TakSklad.exe --smoke-import` из чистых папок;
+  - официальный `TakSklad.exe` SHA256: `4902982669798eb8e7bc982ccf793a7a202d9aa3a2520c4cc51d6cd31a59c0c7`;
+  - официальный `TakSklad-windows-x64.zip` SHA256: `c9f6eb8bcbe7767b3c56e966dc472e86c6760c3c7a4aadbb25871be181a49ebd`;
+  - готовый складской архив: `outputs/windows_ready/TakSklad-2.0.4-win-ready.zip`;
+  - ready archive SHA256: `03babd3c55b8dfd6815fecdec563f00a94297c2a061d644e2e3209ccf548d4d1`;
+  - ready archive содержит рядом с `TakSklad.exe`: `.env.taksklad-vds-2.0.generated.json`, `TakSklad_data.json`, `credentials.json`, `version.json`.

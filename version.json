@@ -1,12 +1,12 @@
 {
-  "latest_version": "2.0.3",
+  "latest_version": "2.0.4",
   "min_supported_version": "1.1.7",
   "mandatory": false,
   "package_type": "onefile_exe",
   "entrypoint": "TakSklad.exe",
-  "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.3/TakSklad.exe",
-  "sha256": "1ecc311f01513bc1a234a00a9e9eb4ea94d31b2b88c426a28be7b7394f986430",
-  "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.3/TakSklad-windows-x64.zip",
-  "sha256_onedir": "b1ef3fb2428642445935b41d141419f64b616372d51a59582975d8107d95f939",
-  "message": "TakSklad 2.0.3: исправлены сброс КИЗов, недосканированные заказы, stale-статусы Google, обработка GS1 КИЗов и диагностика печати."
+  "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.4/TakSklad.exe",
+  "sha256": "4902982669798eb8e7bc982ccf793a7a202d9aa3a2520c4cc51d6cd31a59c0c7",
+  "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.4/TakSklad-windows-x64.zip",
+  "sha256_onedir": "c9f6eb8bcbe7767b3c56e966dc472e86c6760c3c7a4aadbb25871be181a49ebd",
+  "message": "TakSklad 2.0.4: стабилизированы сканирование, очередь синхронизации, web/admin действия и спокойный статус повторной отправки."
 }
