@@ -223,6 +223,20 @@ def sync_backend_order_item_to_google_sheets(item):
     return update_backend_order_item_row(sheet, item)
 
 
+def sync_backend_order_items_to_google_sheets(items):
+    items = list(items or [])
+    if not items:
+        return GoogleSheetsExportResult(status="skipped").as_dict()
+
+    try:
+        spreadsheet = get_google_client().open_by_key(SPREADSHEET_ID)
+    except GoogleSheetsExportDisabled as exc:
+        return GoogleSheetsExportResult(status="disabled", error=str(exc)).as_dict()
+
+    sheet = spreadsheet.worksheet(SHEET_NAME)
+    return update_backend_order_item_rows(sheet, items)
+
+
 def sync_backend_orders_skladbot_to_google_sheets(orders):
     orders = list(orders or [])
     if not orders:
@@ -280,32 +294,46 @@ def mark_backend_order_returned_in_google_sheets(order):
 
 
 def update_backend_order_item_row(sheet, item):
+    return update_backend_order_item_rows(sheet, [item])
+
+
+def update_backend_order_item_rows(sheet, items):
+    items = list(items or [])
+    if not items:
+        return GoogleSheetsExportResult(status="skipped").as_dict()
+
     ensure_import_sheet_layout(sheet)
     all_rows = sheet.get_all_values()
     header = all_rows[0] if all_rows else []
     header_idx = get_header_index(header)
-    row_number = find_backend_item_row_number(all_rows, item)
-    if not row_number:
-        return GoogleSheetsExportResult(status="missing").as_dict()
 
     updates = []
     codes_idx = header_idx.get("Отсканированные коды")
-    if codes_idx is not None:
-        updates.append({
-            "range": f"{column_index_to_letter(codes_idx)}{row_number}",
-            "values": [["\n".join(backend_item_codes(item))]],
-        })
-
     status_idx = header_idx.get(STATUS_COLUMN)
-    if status_idx is not None:
-        updates.append({
-            "range": f"{column_index_to_letter(status_idx)}{row_number}",
-            "values": [[backend_item_sheet_status(item)]],
-        })
+    updated_rows = set()
+    missing = 0
+    for item in items:
+        row_number = find_backend_item_row_number(all_rows, item)
+        if not row_number:
+            missing += 1
+            continue
+        updated_rows.add(row_number)
+        if codes_idx is not None:
+            updates.append({
+                "range": f"{column_index_to_letter(codes_idx)}{row_number}",
+                "values": [["\n".join(backend_item_codes(item))]],
+            })
+        if status_idx is not None:
+            updates.append({
+                "range": f"{column_index_to_letter(status_idx)}{row_number}",
+                "values": [[backend_item_sheet_status(item)]],
+            })
 
     if updates:
         sheet.batch_update(updates, value_input_option="USER_ENTERED")
-    return GoogleSheetsExportResult(status="completed", updated=1 if updates else 0).as_dict()
+    if not updated_rows and missing:
+        return GoogleSheetsExportResult(status="missing", error="order item rows not found").as_dict()
+    return GoogleSheetsExportResult(status="completed", updated=len(updated_rows)).as_dict()
 
 
 def update_backend_orders_skladbot_rows(sheet, orders):
@@ -766,17 +794,19 @@ def ensure_import_sheet_layout(sheet):
         return header
 
     header = [normalize_header_name(col) for col in all_rows[0]]
+    original_header = list(header)
     if len(header) < required_len:
         header.extend([""] * (required_len - len(header)))
 
     for target_idx, column in get_import_column_targets():
         header[target_idx] = column
 
-    last_col = column_index_to_letter(len(header) - 1)
-    sheet.batch_update([{
-        "range": f"A1:{last_col}1",
-        "values": [header],
-    }], value_input_option="USER_ENTERED")
+    if header != original_header:
+        last_col = column_index_to_letter(len(header) - 1)
+        sheet.batch_update([{
+            "range": f"A1:{last_col}1",
+            "values": [header],
+        }], value_input_option="USER_ENTERED")
     return header
 
 

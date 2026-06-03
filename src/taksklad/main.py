@@ -959,6 +959,30 @@ class ScanningApp(
                                     wraplength=400, justify="left")
         self.current_info.pack(anchor="w", padx=20, pady=(0, 10))
 
+        self.current_client_label = tk.Label(
+            info_card,
+            text="",
+            bg=BG_CARD,
+            fg=FG_TEXT,
+            font=("Segoe UI", 16, "bold"),
+            wraplength=620,
+            justify="left",
+            anchor="w",
+        )
+        self.current_client_label.pack(anchor="w", fill="x", padx=20, pady=(0, 6))
+
+        self.current_product_label = tk.Label(
+            info_card,
+            text="",
+            bg=BG_CARD,
+            fg=ACCENT,
+            font=("Segoe UI", 15, "bold"),
+            wraplength=620,
+            justify="left",
+            anchor="w",
+        )
+        self.current_product_label.pack(anchor="w", fill="x", padx=20, pady=(0, 10))
+
         self.party_summary_label = tk.Label(
             info_card,
             text="Партия не выбрана",
@@ -1451,6 +1475,8 @@ class ScanningApp(
         self.saved_codes_count = 0
         self.current_legal_entity_products = []
         self.current_info.config(text="Не выбрано")
+        self.current_client_label.config(text="")
+        self.current_product_label.config(text="")
         self.party_summary_label.config(text="Партия не выбрана")
         self.position_label.config(text="")
         self.progress_label.config(text="0 / 0")
@@ -1633,18 +1659,20 @@ class ScanningApp(
         pieces_per_block = get_product_rule(self.current_order.get("Товары", ""), self.product_catalog)["pieces_per_block"]
         order_sum = parse_int_value(self.current_order.get("Сумма позиции"))
         order_sum_text = f"{order_sum:,} сум".replace(",", " ") if order_sum else "не указана"
+        client_text = normalize_text(self.current_order.get("Клиент")) or "Юр.лицо не указано"
+        product_text = normalize_text(self.current_order.get("Товары")) or "SKU не указан"
 
         info_text = f"""№ SkladBot: {self.current_order.get(SKLADBOT_REQUEST_NUMBER_COLUMN, '')}
 📅 Дата отгрузки: {get_order_date_value(self.current_order) or 'не указана'}
-🏢 Юр.лицо: {self.current_order.get('Клиент', '')}
 👤 Торг.пред: {self.current_order.get('Торговый представитель', '')}
 📍 Адрес: {self.current_order.get('Адрес', 'Адрес не указан')}
-📦 Товар: {self.current_order.get('Товары', '')}
 💳 Тип оплаты: {self.current_order.get('Тип оплаты', '')}
 💰 Сумма: {order_sum_text}
 📦 План: {plan_blocks} блоков (1 блок = {pieces_per_block} ШТ)"""
 
         self.current_info.config(text=info_text)
+        self.current_client_label.config(text=f"🏢 {client_text}")
+        self.current_product_label.config(text=f"📦 {product_text}")
 
         total_products = len(self.current_legal_entity_orders)
         self.position_label.config(text=f"Позиция {self.current_product_idx + 1} из {total_products}")
@@ -1749,7 +1777,7 @@ class ScanningApp(
 
         self.scan_entry.focus_set()
 
-    def next_product(self):
+    def next_product(self, finish_after_save=False):
         if not self.ensure_update_allowed():
             return
 
@@ -1771,7 +1799,7 @@ class ScanningApp(
         order = self.current_order
         scanned_codes = self.scanned_codes.copy()
         pieces_per_block = get_product_rule(order.get("Товары", ""), self.product_catalog)["pieces_per_block"]
-        self.set_busy("⏳ Сохраняю КИЗы...")
+        self.set_busy("⏳ Сохраняю КИЗы в VDS..." if finish_after_save else "⏳ Сохраняю КИЗы...")
         self.safe_config(self.next_product_btn, state="disabled")
         self.safe_config(self.finish_btn, state="disabled")
 
@@ -1845,13 +1873,20 @@ class ScanningApp(
             else:
                 self.current_order = None
                 self.next_product_btn.config(state="disabled")
+                if finish_after_save:
+                    self.finish_btn.config(state="disabled")
+                    self.status_var.set("✅ КИЗы сохранены. Готовлю завершение и печать...")
+                    self.status_label.config(bg=BG_MAIN, fg=FG_MUTED)
+                    self.update_stats_display()
+                    self.after(0, lambda: self.finish_legal_entity(from_next_product=True))
+                    return
                 self.finish_btn.config(state="normal")
                 if result.get("queued"):
-                    self.status_var.set("⚠️ Все позиции сохранены локально. Проверьте печать и нажмите 'ЗАВЕРШИТЬ ЗАКАЗ'")
+                    self.status_var.set("⚠️ Все позиции сохранены локально. Нажмите 'ЗАВЕРШИТЬ ЗАКАЗ'")
                 elif result.get("backend"):
-                    self.status_var.set("✅ Все позиции сохранены в VDS. Проверьте печать и нажмите 'ЗАВЕРШИТЬ ЗАКАЗ'")
+                    self.status_var.set("✅ Все позиции сохранены в VDS. Нажмите 'ЗАВЕРШИТЬ ЗАКАЗ'")
                 else:
-                    self.status_var.set("✅ Все позиции сохранены. Проверьте печать и нажмите 'ЗАВЕРШИТЬ ЗАКАЗ'")
+                    self.status_var.set("✅ Все позиции сохранены. Нажмите 'ЗАВЕРШИТЬ ЗАКАЗ'")
                 self.status_label.config(bg=BG_MAIN, fg=FG_MUTED)
             self.update_stats_display()
 
@@ -1885,7 +1920,7 @@ class ScanningApp(
                 and self.current_product_idx == len(self.current_legal_entity_orders) - 1
                 and len(self.scanned_codes) == get_plan_blocks(self.current_order)
             ):
-                self.next_product()
+                self.next_product(finish_after_save=True)
                 return
             self.show_error("Сначала завершите все позиции по заказу!")
             return
@@ -1925,7 +1960,7 @@ class ScanningApp(
             self.finish_btn.config(state="normal")
             return
 
-        self.set_busy("⏳ Готовлю и печатаю сводный лист...")
+        self.set_busy("⏳ Печатаю сводный лист и завершаю заказ...")
         self.safe_config(self.finish_btn, state="disabled")
         self.safe_config(self.next_product_btn, state="disabled")
 

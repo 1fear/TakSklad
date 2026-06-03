@@ -42,7 +42,7 @@ class GoogleSheetsPendingLockTests(unittest.TestCase):
                 db.add(PendingEvent(
                     event_type=GOOGLE_SHEETS_EXPORT_EVENT_TYPE,
                     status="pending",
-                    payload={"action": "google_sheets_scan_export", "entity_id": "item-1"},
+                    payload={"action": "google_sheets_import_export", "entity_id": "import-1"},
                 ))
                 db.commit()
 

@@ -67,8 +67,8 @@ class DesktopUiContractTests(unittest.TestCase):
         self.assertIn("Заказ выполнен! Нажмите 'ЗАВЕРШИТЬ ЗАКАЗ'", scan_source)
         self.assertIn("self.current_product_idx >= len(self.current_legal_entity_orders) - 1", scan_source)
         self.assertIn("self.current_product_idx == len(self.current_legal_entity_orders) - 1", finish_source)
-        self.assertIn("self.next_product()", finish_source)
-        self.assertNotIn("finish_legal_entity(from_next_product=True)", next_source)
+        self.assertIn("self.next_product(finish_after_save=True)", finish_source)
+        self.assertIn("finish_legal_entity(from_next_product=True)", next_source)
         self.assertIn("Все позиции сохранены", next_source)
 
     def test_finish_requires_every_position_saved_and_fully_scanned(self):

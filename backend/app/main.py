@@ -13,7 +13,13 @@ from .google_sheets_sync_worker import sync_google_sheet_to_backend
 from .google_sheets_pending import process_pending_google_sheets_exports
 from .imports_service import create_import as create_import_in_db
 from .imports_service import list_imports as list_imports_in_db
-from .kiz_reports_service import build_kiz_source_file_report_xlsx, list_completed_kiz_source_files
+from .kiz_reports_service import (
+    build_kiz_date_range_report_xlsx,
+    build_kiz_date_report_xlsx,
+    build_kiz_source_file_report_xlsx,
+    list_completed_kiz_dates,
+    list_completed_kiz_source_files,
+)
 from .logistics_service import build_logistics_report_xlsx, list_logistics_dates
 from .order_actions_service import (
     archive_order_without_kiz as archive_order_without_kiz_in_db,
@@ -436,6 +442,43 @@ def day_report(report_date: str | None = None, db=Depends(get_db)):
 @api.get("/reports/kiz/source-files")
 def kiz_source_files(db=Depends(get_db)) -> list[dict]:
     return list_completed_kiz_source_files(db)
+
+
+@api.get("/reports/kiz/dates")
+def kiz_dates(db=Depends(get_db)) -> list[dict]:
+    return list_completed_kiz_dates(db)
+
+
+@api.get("/reports/kiz/date")
+def kiz_date_report(shipment_date: str, db=Depends(get_db)):
+    try:
+        content, filename = build_kiz_date_report_xlsx(db, shipment_date)
+    except ApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+            "X-TakSklad-Filename": quote(filename),
+        },
+    )
+
+
+@api.get("/reports/kiz/range")
+def kiz_date_range_report(date_from: str, date_to: str, db=Depends(get_db)):
+    try:
+        content, filename = build_kiz_date_range_report_xlsx(db, date_from, date_to)
+    except ApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+            "X-TakSklad-Filename": quote(filename),
+        },
+    )
 
 
 @api.get("/reports/kiz/source-file")

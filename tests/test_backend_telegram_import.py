@@ -418,6 +418,34 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertEqual(answered, [("cb-2", "")])
         self.assertEqual(calls, [("123", "2")])
 
+    def test_telegram_worker_handles_inline_kiz_date_callback(self):
+        worker = TelegramWorker.__new__(TelegramWorker)
+        worker.allowed_chat_ids = set()
+        answered = []
+        calls = []
+
+        def fake_answer(callback_query_id, text=""):
+            answered.append((callback_query_id, text))
+
+        def fake_send_date(chat_id, shipment_date):
+            calls.append((chat_id, shipment_date))
+            return True
+
+        worker.answer_callback_query = fake_answer
+        worker.send_kiz_date_report = fake_send_date
+
+        worker.handle_update({
+            "update_id": 22,
+            "callback_query": {
+                "id": "cb-3",
+                "data": "kiz_date:2026-05-30",
+                "message": {"chat": {"id": 123}},
+            },
+        })
+
+        self.assertEqual(answered, [("cb-3", "")])
+        self.assertEqual(calls, [("123", "2026-05-30")])
+
     def test_telegram_worker_reports_logistics_backend_error_to_user(self):
         worker = TelegramWorker.__new__(TelegramWorker)
         messages = []
@@ -533,19 +561,15 @@ class BackendTelegramImportTests(unittest.TestCase):
         states = []
 
         def fake_backend_get(path, params=None):
-            self.assertEqual(path, "/api/v1/reports/kiz/source-files")
+            self.assertEqual(path, "/api/v1/reports/kiz/dates")
             return [
                 {
-                    "source_key": "import:first",
-                    "source_file": "orders-a.xlsx",
-                    "dates": ["2026-05-29"],
+                    "date": "2026-05-29",
                     "planned_blocks": 3,
                     "scanned_blocks": 3,
                 },
                 {
-                    "source_key": "import:second",
-                    "source_file": "orders-b.xlsx",
-                    "dates": ["2026-05-30"],
+                    "date": "2026-05-30",
                     "planned_blocks": 2,
                     "scanned_blocks": 2,
                 },
@@ -569,9 +593,8 @@ class BackendTelegramImportTests(unittest.TestCase):
 
         self.assertIn("29.05.2026", messages[0][1])
         self.assertIn("30.05.2026", messages[0][1])
-        self.assertEqual(messages[0][2]["inline_keyboard"][0][0]["callback_data"], "kiz_file:1")
-        self.assertEqual(states[0][1]["kiz_files"][0]["source_file"], "orders-a.xlsx")
-        self.assertEqual(states[0][1]["kiz_files"][0]["source_key"], "import:first")
+        self.assertEqual(messages[0][2]["inline_keyboard"][0][0]["callback_data"], "kiz_date:2026-05-29")
+        self.assertEqual(states[0][1]["kiz_dates"][0]["date"], "2026-05-29")
 
     def test_telegram_worker_downloads_kiz_source_file_by_import_key(self):
         worker = TelegramWorker.__new__(TelegramWorker)

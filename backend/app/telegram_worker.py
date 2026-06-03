@@ -28,6 +28,7 @@ TELEGRAM_BUTTON_KIZ_BY_FILES = "Выгрузка КИЗов"
 TELEGRAM_BUTTON_STATUS = "Статус"
 TELEGRAM_LOGISTICS_DATE_PREFIX = "Логистика "
 TELEGRAM_KIZ_FILE_PREFIX = "КИЗ файл "
+TELEGRAM_KIZ_DATE_PREFIX = "КИЗ дата "
 TELEGRAM_EXCEL_IMPORT_EVENT_TYPE = "telegram_excel_import"
 TELEGRAM_EXCEL_IMPORT_ACTIVE_STATUSES = ("pending",)
 TELEGRAM_CHAT_STATE_EVENT_PREFIX = "telegram_chat_state:"
@@ -99,6 +100,22 @@ def parse_date_from_text(value):
     except ValueError:
         return ""
     return parsed.strftime("%d.%m.%Y")
+
+
+def parse_dates_from_text(value):
+    result = []
+    for match in DATE_PATTERN.finditer(normalize_text(value)):
+        day, month, year = match.groups()
+        if len(year) == 2:
+            year = "20" + year
+        try:
+            parsed = datetime.strptime(f"{int(day):02d}.{int(month):02d}.{year}", "%d.%m.%Y")
+        except ValueError:
+            continue
+        iso = parsed.strftime("%Y-%m-%d")
+        if iso not in result:
+            result.append(iso)
+    return result
 
 
 def parse_int(value):
@@ -363,6 +380,19 @@ class TelegramWorker:
             }])
         return telegram_inline_keyboard(rows)
 
+    def kiz_dates_keyboard(self, dates):
+        rows = []
+        for index, item in enumerate(dates, start=1):
+            date_value = normalize_text(item.get("date"))
+            iso_date = iso_date_from_display(date_value)
+            if not iso_date:
+                continue
+            rows.append([{
+                "text": f"{index}. {display_date(iso_date)}",
+                "callback_data": f"kiz_date:{iso_date}",
+            }])
+        return telegram_inline_keyboard(rows)
+
     def send_logistics_report(self, chat_id, shipment_date):
         iso_date = iso_date_from_display(shipment_date)
         if not iso_date:
@@ -404,33 +434,96 @@ class TelegramWorker:
         self.safe_send_message(chat_id, "Выберите дату отгрузки для отчёта логистики:", reply_markup=self.logistics_date_keyboard(dates))
 
     def show_kiz_source_files(self, chat_id):
-        files = self.backend_get("/api/v1/reports/kiz/source-files")
-        files = files if isinstance(files, list) else []
-        if not files:
-            self.safe_send_message(chat_id, "Нет полностью завершённых исходных файлов для выгрузки КИЗов.")
+        dates = self.backend_get("/api/v1/reports/kiz/dates")
+        dates = dates if isinstance(dates, list) else []
+        if not dates:
+            self.safe_send_message(chat_id, "Нет полностью завершённых дат отгрузки для выгрузки КИЗов.")
             return
-        if len(files) == 1:
-            self.send_kiz_source_file_report(chat_id, files[0].get("source_file") or "", files[0].get("source_key") or "")
+        if len(dates) == 1:
+            self.send_kiz_date_report(chat_id, dates[0].get("date") or "")
             return
 
         state = self.get_chat_state(chat_id)
-        state["kiz_files"] = [
+        state["kiz_dates"] = [
             {
                 "index": index,
-                "source_file": item.get("source_file") or "",
-                "source_key": item.get("source_key") or "",
+                "date": item.get("date") or "",
             }
-            for index, item in enumerate(files, start=1)
+            for index, item in enumerate(dates, start=1)
         ]
         self.save_chat_state(chat_id, state)
-        lines = ["Выберите исходный файл для выгрузки КИЗов:"]
-        for index, item in enumerate(files, start=1):
-            dates = ", ".join(display_date(value) for value in item.get("dates") or []) or "без даты"
+        lines = ["Выберите дату отгрузки для выгрузки КИЗов:"]
+        for index, item in enumerate(dates, start=1):
             lines.append(
-                f"{index}. {item.get('source_file')} - {dates}, "
+                f"{index}. {display_date(item.get('date'))} - "
                 f"{item.get('scanned_blocks', 0)}/{item.get('planned_blocks', 0)} блоков"
             )
-        self.safe_send_message(chat_id, "\n".join(lines), reply_markup=self.kiz_files_keyboard(files))
+        self.safe_send_message(chat_id, "\n".join(lines), reply_markup=self.kiz_dates_keyboard(dates))
+
+    def send_kiz_date_report(self, chat_id, shipment_date):
+        iso_date = iso_date_from_display(shipment_date)
+        if not iso_date:
+            self.safe_send_message(chat_id, "Не понял дату. Используйте формат 05.06.2026.")
+            return False
+        report_date = datetime.strptime(iso_date, "%Y-%m-%d").strftime("%d.%m.%Y")
+        try:
+            content, headers = self.backend_get_bytes("/api/v1/reports/kiz/date", params={"shipment_date": iso_date})
+        except httpx.HTTPStatusError as exc:
+            self.safe_send_message(
+                chat_id,
+                f"Не удалось выгрузить КИЗы за {report_date}: {backend_http_error_detail(exc)}",
+            )
+            return False
+        except httpx.HTTPError as exc:
+            self.safe_send_message(
+                chat_id,
+                f"Не удалось выгрузить КИЗы за {report_date}: backend временно недоступен ({exc.__class__.__name__})",
+            )
+            return False
+        filename_header = urllib.parse.unquote(headers.get("X-TakSklad-Filename") or "")
+        filename = filename_header or f"TakSklad_КИЗ_{report_date}.xlsx"
+        self.safe_send_document(
+            chat_id,
+            content,
+            filename,
+            caption=f"КИЗы за дату отгрузки {report_date}",
+        )
+        return True
+
+    def send_kiz_range_report(self, chat_id, date_from, date_to):
+        iso_from = iso_date_from_display(date_from)
+        iso_to = iso_date_from_display(date_to)
+        if not iso_from or not iso_to:
+            self.safe_send_message(chat_id, "Не понял период. Используйте формат: /kiz 04.06.2026 05.06.2026.")
+            return False
+        display_from = datetime.strptime(iso_from, "%Y-%m-%d").strftime("%d.%m.%Y")
+        display_to = datetime.strptime(iso_to, "%Y-%m-%d").strftime("%d.%m.%Y")
+        try:
+            content, headers = self.backend_get_bytes(
+                "/api/v1/reports/kiz/range",
+                params={"date_from": iso_from, "date_to": iso_to},
+            )
+        except httpx.HTTPStatusError as exc:
+            self.safe_send_message(
+                chat_id,
+                f"Не удалось выгрузить КИЗы за период {display_from}-{display_to}: {backend_http_error_detail(exc)}",
+            )
+            return False
+        except httpx.HTTPError as exc:
+            self.safe_send_message(
+                chat_id,
+                f"Не удалось выгрузить КИЗы за период {display_from}-{display_to}: backend временно недоступен ({exc.__class__.__name__})",
+            )
+            return False
+        filename_header = urllib.parse.unquote(headers.get("X-TakSklad-Filename") or "")
+        filename = filename_header or f"TakSklad_КИЗ_{display_from}-{display_to}.xlsx"
+        self.safe_send_document(
+            chat_id,
+            content,
+            filename,
+            caption=f"КИЗы за период {display_from}-{display_to}",
+        )
+        return True
 
     def send_kiz_source_file_report(self, chat_id, source_file, source_key=""):
         source_file = normalize_text(source_file)
@@ -518,6 +611,16 @@ class TelegramWorker:
             selected.get("source_file") or "",
             selected.get("source_key") or "",
         )
+
+    def send_kiz_date_by_index(self, chat_id, text):
+        index = parse_int(text.replace(TELEGRAM_KIZ_DATE_PREFIX, "", 1))
+        state = self.get_chat_state(chat_id)
+        dates = state.get("kiz_dates") or []
+        selected = next((item for item in dates if parse_int(item.get("index")) == index), None)
+        if not selected:
+            self.safe_send_message(chat_id, f"Не нашёл выбранную дату. Нажмите «{TELEGRAM_BUTTON_KIZ_BY_FILES}» ещё раз.")
+            return False
+        return self.send_kiz_date_report(chat_id, selected.get("date") or "")
 
     def send_backend_diagnostics_log(self, chat_id):
         content, headers = self.backend_get_bytes("/api/v1/diagnostics/logs", params={"limit": 100})
@@ -835,11 +938,31 @@ class TelegramWorker:
         if text.startswith(TELEGRAM_LOGISTICS_DATE_PREFIX):
             self.send_logistics_report(chat_id, text.replace(TELEGRAM_LOGISTICS_DATE_PREFIX, "", 1).strip())
             return
-        if text_matches(text, "/kiz_files", TELEGRAM_BUTTON_KIZ_BY_FILES):
+        if text_matches(
+            text,
+            "/kiz_files",
+            "/kiz",
+            TELEGRAM_BUTTON_KIZ_BY_FILES,
+            "Скачать сканы за сегодня",
+            "Документы по импорту",
+        ):
             self.show_kiz_source_files(chat_id)
+            return
+        if text.startswith(TELEGRAM_KIZ_DATE_PREFIX):
+            self.send_kiz_date_by_index(chat_id, text)
             return
         if text.startswith(TELEGRAM_KIZ_FILE_PREFIX):
             self.send_kiz_source_file_by_index(chat_id, text)
+            return
+        if normalize_text(text).casefold().startswith(("/kiz", "киз")):
+            dates = parse_dates_from_text(text)
+            if len(dates) >= 2:
+                self.send_kiz_range_report(chat_id, dates[0], dates[1])
+                return
+            if len(dates) == 1:
+                self.send_kiz_date_report(chat_id, dates[0])
+                return
+            self.show_kiz_source_files(chat_id)
             return
         if text_matches(text, "/status", TELEGRAM_BUTTON_STATUS):
             self.send_status_report(chat_id)
@@ -897,6 +1020,9 @@ class TelegramWorker:
         self.answer_callback_query(callback_id)
         if data.startswith("logistics:"):
             self.send_logistics_report(chat_id, data.split(":", 1)[1])
+            return
+        if data.startswith("kiz_date:"):
+            self.send_kiz_date_report(chat_id, data.split(":", 1)[1])
             return
         if data.startswith("kiz_file:"):
             self.send_kiz_source_file_by_index(chat_id, data.split(":", 1)[1])

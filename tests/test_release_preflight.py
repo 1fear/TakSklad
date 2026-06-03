@@ -90,7 +90,7 @@ class ReleasePreflightTests(unittest.TestCase):
                 "ACCEPTANCE_RESULTS.md\n"
                 "Assert-TestPackageDoesNotContainLocalSecrets\n"
                 "version.json has local changes\n"
-                "safe non-mandatory 2.0.5 rollout manifest\n"
+                "safe non-mandatory 2.0.6 rollout manifest\n"
             )
         return "ok"
 
@@ -100,13 +100,13 @@ class ReleasePreflightTests(unittest.TestCase):
             (root / VERSION_JSON).write_text(
                 json.dumps(
                     {
-                        "latest_version": "2.0.5",
+                        "latest_version": "2.0.6",
                         "min_supported_version": "1.1.7",
                         "mandatory": False,
                         "package_type": "onefile_exe",
-                        "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.5/TakSklad.exe",
+                        "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.6/TakSklad.exe",
                         "sha256": "a" * 64,
-                        "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.5/TakSklad-windows-x64.zip",
+                        "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.6/TakSklad-windows-x64.zip",
                         "sha256_onedir": "b" * 64,
                     },
                     ensure_ascii=False,
@@ -124,7 +124,7 @@ class ReleasePreflightTests(unittest.TestCase):
             (root / VERSION_JSON).write_text(
                 json.dumps(
                     {
-                        "latest_version": "2.0.5",
+                        "latest_version": "2.0.6",
                         "min_supported_version": "1.1.7",
                         "mandatory": False,
                         "package_type": "onefile_exe",
@@ -140,8 +140,8 @@ class ReleasePreflightTests(unittest.TestCase):
             check = check_version_json(root)
 
         self.assertFalse(check["ok"])
-        self.assertIn("download_url must be an HTTPS release URL for v2.0.5", check["problems"])
-        self.assertIn("download_url_onedir must be an HTTPS release URL for v2.0.5", check["problems"])
+        self.assertIn("download_url must be an HTTPS release URL for v2.0.6", check["problems"])
+        self.assertIn("download_url_onedir must be an HTTPS release URL for v2.0.6", check["problems"])
         self.assertIn("sha256 must be a lowercase SHA256 hex digest", check["problems"])
         self.assertIn("sha256_onedir must be a lowercase SHA256 hex digest", check["problems"])
 
@@ -151,7 +151,7 @@ class ReleasePreflightTests(unittest.TestCase):
             (root / VERSION_JSON).write_text(
                 json.dumps(
                     {
-                        "latest_version": "2.0.5",
+                        "latest_version": "2.0.6",
                         "min_supported_version": "2.0.0",
                         "mandatory": True,
                         "download_url": "https://example.com/TakSklad.zip",
@@ -178,9 +178,9 @@ class ReleasePreflightTests(unittest.TestCase):
             (root / VERSION_JSON).write_text(
                 json.dumps(
                     {
-                        "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.5/TakSklad.exe",
+                        "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.6/TakSklad.exe",
                         "sha256": onefile_sha,
-                        "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.5/TakSklad-windows-x64.zip",
+                        "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.6/TakSklad-windows-x64.zip",
                         "sha256_onedir": onedir_sha,
                     },
                     ensure_ascii=False,
@@ -226,9 +226,9 @@ class ReleasePreflightTests(unittest.TestCase):
             (root / VERSION_JSON).write_text(
                 json.dumps(
                     {
-                        "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.5/TakSklad.exe",
+                        "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.6/TakSklad.exe",
                         "sha256": "a" * 64,
-                        "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.5/TakSklad-windows-x64.zip",
+                        "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.6/TakSklad-windows-x64.zip",
                         "sha256_onedir": "b" * 64,
                     },
                     ensure_ascii=False,

@@ -1,4 +1,5 @@
 from io import BytesIO
+from datetime import date, datetime
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
@@ -9,6 +10,8 @@ from sqlalchemy.orm import Session, selectinload
 from .models import Order, OrderItem
 from .orders_service import ApiError, COMPLETED_STATUSES
 from .reports_service import payment_group
+
+TERMINAL_NO_KIZ_STATUSES = {"archived_no_kiz", "cancelled", "removed_from_google_sheet"}
 
 
 KIZ_REPORT_HEADERS = [
@@ -63,6 +66,32 @@ def list_completed_kiz_source_files(db: Session):
     return result
 
 
+def list_completed_kiz_dates(db: Session):
+    items = load_items(db)
+    grouped = {}
+    for item in items:
+        order = item.order
+        if not order or not order.order_date:
+            continue
+        grouped.setdefault(order.order_date, []).append(item)
+
+    result = []
+    for shipment_date, date_items in sorted(grouped.items()):
+        if not date_kiz_is_completed(date_items):
+            continue
+        report_items = reportable_kiz_items(date_items)
+        if not report_items:
+            continue
+        result.append({
+            "date": shipment_date.isoformat(),
+            "items": len(report_items),
+            "orders": len({item.order.id for item in report_items if item.order}),
+            "planned_blocks": sum(max(0, item.quantity_blocks or 0) for item in report_items),
+            "scanned_blocks": sum(len(item.scan_codes or []) for item in report_items),
+        })
+    return result
+
+
 def build_kiz_source_file_report_xlsx(db: Session, source_file: str, source_key: str = ""):
     source_file = str(source_file or "").strip()
     source_key = str(source_key or "").strip()
@@ -79,12 +108,76 @@ def build_kiz_source_file_report_xlsx(db: Session, source_file: str, source_key:
     if not all(item_is_completed(item) for item in items):
         raise ApiError(409, f"Source file {source_file} is not fully completed")
 
+    return build_kiz_items_report_xlsx(items, source_file, kiz_source_file_report_filename(source_file))
+
+
+def build_kiz_date_report_xlsx(db: Session, shipment_date: str):
+    target_date = parse_report_date(shipment_date)
+    if not target_date:
+        raise ApiError(422, "shipment_date is required")
+
+    items = [
+        item
+        for item in load_items(db)
+        if item.order and item.order.order_date == target_date
+    ]
+    if not items:
+        raise ApiError(404, f"No rows for shipment date {target_date.isoformat()}")
+    ensure_date_kiz_completed(items, target_date.isoformat())
+    report_items = reportable_kiz_items(items)
+    if not report_items:
+        raise ApiError(404, f"No KIZ scans for shipment date {target_date.isoformat()}")
+    display = target_date.strftime("%d.%m.%Y")
+    return build_kiz_items_report_xlsx(
+        report_items,
+        f"Дата {display}",
+        f"TakSklad_КИЗ_{display}.xlsx",
+    )
+
+
+def build_kiz_date_range_report_xlsx(db: Session, date_from: str, date_to: str):
+    start_date = parse_report_date(date_from)
+    end_date = parse_report_date(date_to)
+    if not start_date or not end_date:
+        raise ApiError(422, "date_from and date_to are required")
+    if start_date > end_date:
+        start_date, end_date = end_date, start_date
+
+    items_by_date = {}
+    for item in load_items(db):
+        order = item.order
+        if not order or not order.order_date:
+            continue
+        if start_date <= order.order_date <= end_date:
+            items_by_date.setdefault(order.order_date, []).append(item)
+    if not items_by_date:
+        raise ApiError(404, "No rows for shipment date range")
+
+    for shipment_date, items in sorted(items_by_date.items()):
+        ensure_date_kiz_completed(items, shipment_date.isoformat())
+
+    report_items = []
+    for items in items_by_date.values():
+        report_items.extend(reportable_kiz_items(items))
+    if not report_items:
+        raise ApiError(404, "No KIZ scans for shipment date range")
+
+    start_display = start_date.strftime("%d.%m.%Y")
+    end_display = end_date.strftime("%d.%m.%Y")
+    return build_kiz_items_report_xlsx(
+        report_items,
+        f"Период {start_display}-{end_display}",
+        f"TakSklad_КИЗ_{start_display}-{end_display}.xlsx",
+    )
+
+
+def build_kiz_items_report_xlsx(items, source_label, filename):
     workbook = Workbook()
     summary_sheet = workbook.active
     summary_sheet.title = "Сводка"
     summary_sheet.append(KIZ_SUMMARY_HEADERS)
     apply_header_style(summary_sheet)
-    for row in build_summary_rows(items, source_file):
+    for row in build_summary_rows(items, source_label):
         summary_sheet.append(row)
     autosize_columns(summary_sheet)
 
@@ -113,16 +206,16 @@ def build_kiz_source_file_report_xlsx(db: Session, source_file: str, source_key:
                     item.quantity_blocks,
                     code,
                     parse_int(raw_payload.get("line_total")),
-                    source_file,
+                    source_file_for_item(item) or source_label,
                 ])
         autosize_columns(sheet)
 
     buffer = BytesIO()
     workbook.save(buffer)
-    return buffer.getvalue(), kiz_source_file_report_filename(source_file)
+    return buffer.getvalue(), filename
 
 
-def build_summary_rows(items, source_file):
+def build_summary_rows(items, source_label):
     grouped = {}
     for item in items:
         if not item.order:
@@ -147,9 +240,67 @@ def build_summary_rows(items, source_file):
             planned_blocks,
             scanned_blocks,
             order_total,
-            source_file,
+            summary_source_for_items(order_items, source_label),
         ])
     return rows
+
+
+def reportable_kiz_items(items):
+    return [
+        item
+        for item in items
+        if item_is_completed(item) and item.scan_codes
+    ]
+
+
+def date_kiz_is_completed(items):
+    return not incomplete_kiz_items(items)
+
+
+def ensure_date_kiz_completed(items, label):
+    incomplete = incomplete_kiz_items(items)
+    if incomplete:
+        raise ApiError(409, f"Shipment date {label} is not fully completed: {len(incomplete)} positions left")
+
+
+def incomplete_kiz_items(items):
+    return [
+        item
+        for item in items
+        if item_requires_kiz_completion(item) and not item_is_completed(item)
+    ]
+
+
+def item_requires_kiz_completion(item):
+    status = str(item.status or "").strip()
+    if status in TERMINAL_NO_KIZ_STATUSES:
+        return False
+    if item.order and str(item.order.status or "").strip() in TERMINAL_NO_KIZ_STATUSES:
+        return False
+    return bool(item.requires_kiz and (item.quantity_blocks or 0) > 0)
+
+
+def summary_source_for_items(items, source_label):
+    source_files = sorted({source_file_for_item(item) for item in items if source_file_for_item(item)})
+    if len(source_files) == 1:
+        return source_files[0]
+    if source_files:
+        return ", ".join(source_files[:2]) + (f" +{len(source_files) - 2}" if len(source_files) > 2 else "")
+    return source_label
+
+
+def parse_report_date(value):
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value or "").strip()
+    for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            pass
+    return None
 
 
 def load_items(db: Session):

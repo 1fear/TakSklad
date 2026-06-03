@@ -4257,3 +4257,45 @@ cd /opt/taksklad/app
   - `./.venv/bin/python -m compileall -q backend/app` - OK;
   - `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK;
   - VDS после деплоя: SkladBot details идут с `200 OK`, без `429`; после ускорения цикла pending начал снижаться по `3` совпадения за цикл; выявленная серия `5xx` от SkladBot API обработана дополнительной защитной паузой в коде.
+
+### Desktop 2.0.6 scanning UX, Telegram KIZ by date, Google batch mirror
+
+- Причина: после боевого теста приложение сканирования работает стабильно, но нужны короткие UX/операционные правки:
+  - в текущем заказе юрлицо и текущий SKU должны быть заметнее для склада;
+  - последний клик `ЗАВЕРШИТЬ ЗАКАЗ` не должен требовать второго нажатия после сохранения последней позиции;
+  - Telegram-выгрузка КИЗов должна строиться с VDS по дате отгрузки, а не по локальным сменам разных ПК или исходным Excel-файлам;
+  - Google Sheets как зеркало должен догонять VDS быстрее и не тратить quota на один полный проход по листу на каждый КИЗ.
+- Desktop:
+  - `APP_VERSION` поднята до `2.0.6`;
+  - в карточку текущей позиции добавлены отдельные крупные labels для юрлица и SKU;
+  - на последней позиции кнопка `ЗАВЕРШИТЬ ЗАКАЗ` после сохранения КИЗов автоматически продолжает завершение и печать;
+  - порядок безопасности сохранён: сводный лист печатается до финального backend-complete, чтобы при ошибке печати заказ не закрывался преждевременно.
+- Backend/Telegram:
+  - добавлены endpoints `GET /api/v1/reports/kiz/dates`, `/api/v1/reports/kiz/date`, `/api/v1/reports/kiz/range`;
+  - Telegram-кнопка `Выгрузка КИЗов` теперь показывает даты отгрузки из VDS;
+  - добавлены команды `/kiz 05.06.2026` и `/kiz 04.06.2026 05.06.2026`;
+  - старый отчет по исходному файлу оставлен как совместимый технический путь.
+- Google mirror:
+  - `google_sheets_scan_export` теперь обрабатывается batch-ом: несколько scan-событий читают Google `data` один раз и пишутся одним batch update;
+  - `ensure_import_sheet_layout()` больше не пишет заголовок в Google, если он уже совпадает;
+  - архив/возвраты/отмены не схлопывались, потому что для них важен порядок операций.
+- VDS:
+  - restore point: `/opt/taksklad/restore_points/pre-kiz-date-google-batch-20260603T175506Z`;
+  - Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260603T175506Z.sql.gz`;
+  - обновлён `backend/app`;
+  - пересобраны и перезапущены `backend-api`, `telegram-worker`, `google-sheets-sync-worker`;
+  - `https://api.taksklad.uz/health` - OK;
+  - новый endpoint `/api/v1/reports/kiz/dates` проверен с service-token на VDS.
+- Наблюдение после деплоя:
+  - pending Google снизился примерно с `200` до `170` после первого batch-прохода;
+  - Google снова вернул `429` по read quota, worker корректно остановил batch до следующего цикла;
+  - состав очереди после деплоя: `pending scan 82`, `pending archive 56`, `pending skladbot 1`, `failed scan 23`, `failed archive 9`, `processing scan 1`.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_desktop_ui_contract tests.test_backend_telegram_import tests.test_backend_google_sheets_pending tests.test_backend_api_persistence` - 96 tests OK;
+  - `./.venv/bin/python -m unittest discover -s tests` - 313 tests OK;
+  - `./.venv/bin/python -m py_compile src/taksklad/main.py backend/app/kiz_reports_service.py backend/app/main.py backend/app/telegram_worker.py backend/app/google_sheets_exporter.py backend/app/google_sheets_pending.py` - OK;
+  - `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK;
+  - `git diff --check` - OK.
+- Release:
+  - Windows release `v2.0.6` готовится отдельным шагом;
+  - публичный `version.json` не обновлять до появления реальных GitHub assets и SHA256.

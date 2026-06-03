@@ -709,7 +709,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             ))
             db.commit()
 
-        def fake_export(_item):
+        def fake_export(_items):
             call_order.append("pending_google_export")
             return {"status": "completed", "updated": 1}
 
@@ -718,7 +718,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             return {"rows": 1, "matched": 1, "orders_updated": 0, "items_updated": 0, "conflicts": 0}
 
         with mock.patch(
-            "backend.app.google_sheets_pending.sync_backend_order_item_to_google_sheets",
+            "backend.app.google_sheets_pending.sync_backend_order_items_to_google_sheets",
             side_effect=fake_export,
         ), mock.patch(
             "backend.app.main.sync_google_sheet_to_backend",
@@ -1466,7 +1466,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
                 "ID заказа": "kiz-source-order",
             },
             {
-                "Дата отгрузки": "2026-05-30",
+                "Дата отгрузки": "2026-05-31",
                 "Тип оплаты": "Перечисление",
                 "Клиент": "Open Client",
                 "Адрес": "Open Address",
@@ -1511,6 +1511,19 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(sheet["I2"].value, "010000000301")
         self.assertEqual(sheet["I3"].value, "010000000302")
         self.assertEqual(sheet["K2"].value, "source-a.xlsx")
+        workbook.close()
+
+        dates = self.client.get("/api/v1/reports/kiz/dates")
+        self.assertEqual(dates.status_code, 200)
+        self.assertEqual(dates.json()[0]["date"], "2026-05-30")
+
+        date_report = self.client.get("/api/v1/reports/kiz/date", params={"shipment_date": "2026-05-30"})
+        self.assertEqual(date_report.status_code, 200)
+        workbook = openpyxl.load_workbook(BytesIO(date_report.content), data_only=True)
+        summary = workbook["Сводка"]
+        self.assertEqual(summary["C2"].value, "KIZ Client")
+        self.assertEqual(summary["G2"].value, 2)
+        self.assertEqual(summary["H2"].value, 2)
         workbook.close()
 
     def test_kiz_source_file_report_separates_same_filename_by_import(self):
