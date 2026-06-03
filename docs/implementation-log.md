@@ -4297,5 +4297,10 @@ cd /opt/taksklad/app
   - `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK;
   - `git diff --check` - OK.
 - Release:
-  - Windows release `v2.0.6` готовится отдельным шагом;
-  - публичный `version.json` не обновлять до появления реальных GitHub assets и SHA256.
+  - создан tag/release `v2.0.6`;
+  - GitHub Actions `Build Windows Release` run `26903757412` завершился success;
+  - smoke-test `TakSklad.exe --smoke-import` прошёл в GitHub Actions;
+  - официальный `TakSklad.exe` SHA256: `0ec39f25faa5c5e66b92963be859e4505c02292eb4a54f489382077de6788cf0`;
+  - официальный `TakSklad-windows-x64.zip` SHA256: `cb4783d0300e4008b90fe24d09e319a91ac00bfc7ae6d9bade5bb52d6a7d8c3d`;
+  - `version.json` обновлён на `2.0.6`, rollout остаётся `mandatory=false`;
+  - `./.venv/bin/python tools/release_preflight.py --verify-downloads` скачал оба assets и подтвердил SHA; единственный fail до commit был ожидаемый `version.json has local git diff`.
