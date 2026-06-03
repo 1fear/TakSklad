@@ -4230,3 +4230,27 @@ cd /opt/taksklad/app
   - `npm run build` - OK;
   - `git diff --check` - OK.
   - `./.venv/bin/python tools/release_preflight.py --verify-downloads` - download/SHA checks OK; до коммита `version.json` единственный fail был ожидаемый `version.json has local git diff`.
+
+### SkladBot API token pool failover
+
+- Причина: SkladBot API снова начал ограничивать запросы `429`, из-за чего номера заявок подтягивались слишком медленно. Увеличивать `SKLADBOT_DETAIL_LIMIT` нельзя, потому что раньше большой пакет деталей уже давал ошибку.
+- Backend:
+  - `skladbot-worker` поддерживает пул токенов через `SKLADBOT_API_TOKENS`;
+  - при `429` конкретный токен уходит в cooldown, worker переключается на следующий токен;
+  - при `401/403` конкретный токен отключается до перезапуска worker-а;
+  - при временном `5xx` от SkladBot API worker делает короткую паузу перед повтором, чтобы не забивать detail endpoint;
+  - ошибки SkladBot санитизируются, токены не попадают в payload/log;
+  - количество попыток теперь покрывает весь пул токенов, поэтому 10-й токен реально достижим даже при стандартном `SKLADBOT_API_MAX_RETRIES`.
+- VDS:
+  - создан restore point `/opt/taksklad/restore_points/pre-skladbot-token-pool-20260603T141057Z`;
+  - в `.env` добавлен пул из `10` SkladBot API-токенов без вывода значений в логи;
+  - `SKLADBOT_DETAIL_LIMIT=3` оставлен;
+  - `SKLADBOT_WORKER_INTERVAL_SECONDS=60` оставлен;
+  - `SKLADBOT_REQUEST_DELAY_SECONDS` снижен с `20` до `2`, чтобы цикл из 3 деталей занимал секунды, а не минуту;
+  - пересобран и перезапущен `skladbot-worker`.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_backend_skladbot_worker` - 43 tests OK;
+  - `./.venv/bin/python -m unittest discover -s tests` - 310 tests OK;
+  - `./.venv/bin/python -m compileall -q backend/app` - OK;
+  - `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK;
+  - VDS после деплоя: SkladBot details идут с `200 OK`, без `429`; после ускорения цикла pending начал снижаться по `3` совпадения за цикл; выявленная серия `5xx` от SkladBot API обработана дополнительной защитной паузой в коде.

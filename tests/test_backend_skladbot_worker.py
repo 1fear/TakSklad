@@ -10,6 +10,7 @@ from backend.app.skladbot_diagnostic import diagnose_skladbot_matches
 from backend.app.models import AuditLog, Base, Order, OrderItem, PendingEvent
 from backend.app.skladbot_worker import (
     CandidateRequests,
+    SkladBotClient,
     address_soft_match,
     active_order_unloading_dates,
     business_today,
@@ -20,6 +21,7 @@ from backend.app.skladbot_worker import (
     nearest_request_diagnostics,
     order_has_skladbot_number,
     parse_date,
+    parse_skladbot_api_tokens,
     product_matches,
     request_created_recently,
     request_match_diagnostics,
@@ -27,12 +29,278 @@ from backend.app.skladbot_worker import (
     request_type_matches,
     rotate_candidate_list_items,
     request_unloading_date_matches_active_orders,
+    sanitize_skladbot_error,
     update_orders_from_skladbot,
     worker_interval_seconds,
 )
 
 
 class BackendSkladBotWorkerTests(unittest.TestCase):
+    def test_parse_skladbot_api_tokens_accepts_pool_and_deduplicates(self):
+        tokens = parse_skladbot_api_tokens({
+            "SKLADBOT_API_TOKEN": "old-token",
+            "SKLADBOT_API_TOKENS": " token-1,token-2 token-3;token-1 ",
+        })
+
+        self.assertEqual(tokens, ["token-1", "token-2", "token-3"])
+
+    def test_parse_skladbot_api_tokens_supports_ten_token_pool(self):
+        token_pool = ",".join(f"token-{index}" for index in range(1, 11))
+
+        self.assertEqual(
+            parse_skladbot_api_tokens({"SKLADBOT_API_TOKENS": token_pool}),
+            [f"token-{index}" for index in range(1, 11)],
+        )
+
+    def test_parse_skladbot_api_tokens_falls_back_to_single_token(self):
+        self.assertEqual(
+            parse_skladbot_api_tokens({"SKLADBOT_API_TOKEN": "single-token"}),
+            ["single-token"],
+        )
+
+    def test_parse_skladbot_api_tokens_falls_back_when_pool_is_malformed(self):
+        self.assertEqual(
+            parse_skladbot_api_tokens({"SKLADBOT_API_TOKEN": "single-token", "SKLADBOT_API_TOKENS": ",;  ,"}),
+            ["single-token"],
+        )
+
+    def test_parse_skladbot_api_tokens_empty_dict_does_not_read_process_env(self):
+        with mock.patch.dict("os.environ", {"SKLADBOT_API_TOKEN": "real-env-token"}):
+            self.assertEqual(parse_skladbot_api_tokens({}), [])
+
+    def test_sanitize_skladbot_error_masks_tokens(self):
+        with mock.patch.dict("os.environ", {
+            "SKLADBOT_API_TOKENS": "secret-token-a,secret-token-b",
+        }, clear=True):
+            sanitized = sanitize_skladbot_error(
+                "Authorization: Bearer secret-token-a failed, secret-token-b also failed"
+            )
+
+        self.assertNotIn("secret-token-a", sanitized)
+        self.assertNotIn("secret-token-b", sanitized)
+        self.assertIn("Bearer ***", sanitized)
+
+    def test_skladbot_client_rotates_token_on_429_without_multiplying_retries(self):
+        calls = []
+
+        class FakeResponse:
+            def __init__(self, status_code, payload=None, headers=None):
+                self.status_code = status_code
+                self._payload = payload or {}
+                self.headers = headers or {}
+
+            def json(self):
+                return self._payload
+
+            def raise_for_status(self):
+                if self.status_code >= 400:
+                    raise AssertionError(f"unexpected HTTP {self.status_code}")
+
+        class FakeHttpClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def get(self, url, params=None, headers=None):
+                calls.append(headers["Authorization"])
+                if len(calls) == 1:
+                    return FakeResponse(429, headers={"Retry-After": "30"})
+                return FakeResponse(200, payload={"ok": True})
+
+        with mock.patch.dict("os.environ", {
+            "SKLADBOT_API_TOKENS": "token-a,token-b,token-c",
+            "SKLADBOT_API_MAX_RETRIES": "2",
+            "SKLADBOT_REQUEST_DELAY_SECONDS": "20",
+            "SKLADBOT_TOKEN_SWITCH_DELAY_SECONDS": "0",
+        }, clear=True), mock.patch("backend.app.skladbot_worker.httpx.Client", FakeHttpClient):
+            client = SkladBotClient()
+            result = client.get("/requests")
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(calls, ["Bearer token-a", "Bearer token-b"])
+
+    def test_skladbot_client_can_reach_tenth_token_despite_default_retry_setting(self):
+        calls = []
+
+        class FakeResponse:
+            def __init__(self, status_code, payload=None, headers=None):
+                self.status_code = status_code
+                self._payload = payload or {}
+                self.headers = headers or {}
+
+            def json(self):
+                return self._payload
+
+            def raise_for_status(self):
+                if self.status_code >= 400:
+                    raise AssertionError(f"unexpected HTTP {self.status_code}")
+
+        class FakeHttpClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def get(self, url, params=None, headers=None):
+                calls.append(headers["Authorization"])
+                if len(calls) < 10:
+                    return FakeResponse(429, headers={"Retry-After": "30"})
+                return FakeResponse(200, payload={"ok": True})
+
+        token_pool = ",".join(f"token-{index}" for index in range(1, 11))
+        with mock.patch.dict("os.environ", {
+            "SKLADBOT_API_TOKENS": token_pool,
+            "SKLADBOT_API_MAX_RETRIES": "2",
+            "SKLADBOT_REQUEST_DELAY_SECONDS": "20",
+            "SKLADBOT_TOKEN_SWITCH_DELAY_SECONDS": "0",
+        }, clear=True), mock.patch("backend.app.skladbot_worker.httpx.Client", FakeHttpClient):
+            client = SkladBotClient()
+            result = client.get("/requests")
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(len(calls), 10)
+        self.assertEqual(calls[-1], "Bearer token-10")
+
+    def test_skladbot_client_disables_invalid_token_and_tries_next_token(self):
+        calls = []
+
+        class FakeResponse:
+            def __init__(self, status_code, payload=None):
+                self.status_code = status_code
+                self._payload = payload or {}
+                self.headers = {}
+
+            def json(self):
+                return self._payload
+
+            def raise_for_status(self):
+                if self.status_code >= 400:
+                    raise AssertionError(f"unexpected HTTP {self.status_code}")
+
+        class FakeHttpClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def get(self, url, params=None, headers=None):
+                calls.append(headers["Authorization"])
+                if len(calls) == 1:
+                    return FakeResponse(401)
+                return FakeResponse(200, payload={"ok": True})
+
+        with mock.patch.dict("os.environ", {
+            "SKLADBOT_API_TOKENS": "token-a,token-b",
+            "SKLADBOT_API_MAX_RETRIES": "2",
+        }, clear=True), mock.patch("backend.app.skladbot_worker.httpx.Client", FakeHttpClient):
+            client = SkladBotClient()
+            result = client.get("/requests")
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(calls, ["Bearer token-a", "Bearer token-b"])
+        self.assertEqual(client.disabled_token_indexes, {0})
+
+    def test_skladbot_client_rotates_token_on_timeout(self):
+        calls = []
+
+        class FakeResponse:
+            status_code = 200
+            headers = {}
+
+            def json(self):
+                return {"ok": True}
+
+            def raise_for_status(self):
+                return None
+
+        class FakeHttpClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def get(self, url, params=None, headers=None):
+                calls.append(headers["Authorization"])
+                if len(calls) == 1:
+                    import httpx
+                    raise httpx.TimeoutException("timeout")
+                return FakeResponse()
+
+        with mock.patch.dict("os.environ", {
+            "SKLADBOT_API_TOKENS": "token-a,token-b",
+            "SKLADBOT_API_MAX_RETRIES": "2",
+            "SKLADBOT_REQUEST_DELAY_SECONDS": "1",
+            "SKLADBOT_TOKEN_SWITCH_DELAY_SECONDS": "0",
+        }, clear=True), mock.patch("backend.app.skladbot_worker.httpx.Client", FakeHttpClient):
+            client = SkladBotClient()
+            result = client.get("/requests")
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(calls, ["Bearer token-a", "Bearer token-b"])
+
+    def test_skladbot_client_throttles_server_errors_before_retry(self):
+        calls = []
+
+        class FakeResponse:
+            def __init__(self, status_code, payload=None):
+                self.status_code = status_code
+                self._payload = payload or {}
+                self.headers = {}
+
+            def json(self):
+                return self._payload
+
+            def raise_for_status(self):
+                if self.status_code >= 400:
+                    raise AssertionError(f"unexpected HTTP {self.status_code}")
+
+        class FakeHttpClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def get(self, url, params=None, headers=None):
+                calls.append(headers["Authorization"])
+                if len(calls) == 1:
+                    return FakeResponse(500)
+                return FakeResponse(200, payload={"ok": True})
+
+        with mock.patch.dict("os.environ", {
+            "SKLADBOT_API_TOKENS": "token-a,token-b",
+            "SKLADBOT_API_MAX_RETRIES": "2",
+            "SKLADBOT_REQUEST_DELAY_SECONDS": "2",
+        }, clear=True), mock.patch("backend.app.skladbot_worker.httpx.Client", FakeHttpClient), mock.patch(
+            "backend.app.skladbot_worker.time.sleep"
+        ) as sleep_mock:
+            client = SkladBotClient()
+            result = client.get("/requests")
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(calls, ["Bearer token-a", "Bearer token-b"])
+        sleep_mock.assert_called_once_with(2.0)
+
     def test_request_type_matches_only_outgoing_3pl(self):
         self.assertTrue(request_type_matches("3PL отгрузка"))
         self.assertTrue(request_type_matches("Отгрузка 3PL"))

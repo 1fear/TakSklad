@@ -80,6 +80,40 @@ def env_float(name, default):
         return default
 
 
+def parse_skladbot_api_tokens(environ=None):
+    if environ is None:
+        environ = os.environ
+    raw_tokens = normalize_text(environ.get("SKLADBOT_API_TOKENS"))
+    if raw_tokens:
+        candidates = re.split(r"[\s,;]+", raw_tokens)
+    else:
+        candidates = [environ.get("SKLADBOT_API_TOKEN", "")]
+    tokens = []
+    seen = set()
+    for candidate in candidates:
+        token = normalize_text(candidate)
+        if not token or token in seen:
+            continue
+        tokens.append(token)
+        seen.add(token)
+    if not tokens and raw_tokens:
+        fallback_token = normalize_text(environ.get("SKLADBOT_API_TOKEN", ""))
+        if fallback_token:
+            tokens.append(fallback_token)
+    return tokens
+
+
+def sanitize_skladbot_error(value):
+    text = normalize_text(value)
+    if not text:
+        return ""
+    for token in parse_skladbot_api_tokens():
+        if token:
+            text = text.replace(token, "***")
+    text = re.sub(r"(Authorization['\"]?\s*[:=]\s*['\"]?Bearer\s+)[A-Za-z0-9._-]+", r"\1***", text, flags=re.I)
+    return text
+
+
 def normalize_text(value):
     return str(value or "").strip()
 
@@ -366,7 +400,10 @@ def request_list_value(item, *keys):
 
 class SkladBotClient:
     def __init__(self):
-        self.token = normalize_text(os.environ.get("SKLADBOT_API_TOKEN"))
+        self.tokens = parse_skladbot_api_tokens()
+        self.token_index = 0
+        self.token_cooldown_until = {}
+        self.disabled_token_indexes = set()
         self.base_url = normalize_text(os.environ.get("SKLADBOT_API_BASE_URL")) or "https://api.skladbot.ru/v1"
         self.base_url = self.base_url.rstrip("/")
         self.timeout = env_int("SKLADBOT_API_TIMEOUT_SECONDS", 8)
@@ -375,30 +412,146 @@ class SkladBotClient:
         self.limit = env_int("SKLADBOT_REQUESTS_LIMIT", 500)
         self.request_delay = max(0.0, env_float("SKLADBOT_REQUEST_DELAY_SECONDS", 0.25))
         self.max_retries = max(0, env_int("SKLADBOT_API_MAX_RETRIES", 2))
+        self.token_switch_delay = max(0.0, env_float("SKLADBOT_TOKEN_SWITCH_DELAY_SECONDS", 0.0))
+        self.max_cooldown_wait = max(0.0, env_float("SKLADBOT_MAX_COOLDOWN_WAIT_SECONDS", 5.0))
 
     @property
     def configured(self):
-        return bool(self.token)
+        return bool(self.tokens)
+
+    def pick_token_index(self):
+        now = time.monotonic()
+        for offset in range(len(self.tokens)):
+            index = (self.token_index + offset) % len(self.tokens)
+            if index in self.disabled_token_indexes:
+                continue
+            if self.token_cooldown_until.get(index, 0.0) <= now:
+                self.token_index = index
+                return index
+        return None
+
+    def mark_token_cooldown(self, index, seconds):
+        if index is None:
+            return
+        self.token_cooldown_until[index] = time.monotonic() + max(0.0, float(seconds or 0))
+
+    def mark_token_disabled(self, index):
+        if index is not None:
+            self.disabled_token_indexes.add(index)
+
+    def wait_for_available_token(self):
+        index = self.pick_token_index()
+        if index is not None:
+            return index
+        if len(self.disabled_token_indexes) >= len(self.tokens):
+            raise RuntimeError("All SkladBot API tokens are disabled")
+        now = time.monotonic()
+        cooldowns = [
+            cooldown_until
+            for index, cooldown_until in self.token_cooldown_until.items()
+            if index not in self.disabled_token_indexes and cooldown_until > now
+        ]
+        if cooldowns:
+            sleep_for = max(0.0, min(cooldowns) - now)
+            if self.max_cooldown_wait > 0:
+                sleep_for = min(sleep_for, self.max_cooldown_wait)
+            logging.warning("SkladBot API tokens are in cooldown, wait %.1fs", sleep_for)
+            time.sleep(sleep_for)
+        index = self.pick_token_index()
+        if index is None:
+            raise RuntimeError("SkladBot API tokens are not available")
+        return index
+
+    def advance_token(self, index):
+        if self.tokens:
+            self.token_index = (int(index or 0) + 1) % len(self.tokens)
+
+    def retry_sleep(self, seconds):
+        if len(self.tokens) <= 1:
+            time.sleep(max(0.0, float(seconds or 0)))
+            return
+        if self.token_switch_delay > 0:
+            time.sleep(min(max(0.0, float(seconds or 0)), self.token_switch_delay))
 
     def get(self, path, params=None):
-        if not self.token:
+        if not self.tokens:
             raise RuntimeError("SKLADBOT_API_TOKEN is not configured")
         url = f"{self.base_url}/{path.lstrip('/')}"
+        max_attempts = max(self.max_retries + 1, len(self.tokens))
+        last_response = None
         with httpx.Client(timeout=self.timeout) as client:
-            for attempt in range(self.max_retries + 1):
-                response = client.get(
-                    url,
-                    params=params or {},
-                    headers={"Authorization": f"Bearer {self.token}", "Accept": "application/json"},
-                )
-                if response.status_code == 429 and attempt < self.max_retries:
+            for attempt in range(max_attempts):
+                token_index = self.wait_for_available_token()
+                token = self.tokens[token_index]
+                try:
+                    response = client.get(
+                        url,
+                        params=params or {},
+                        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                    )
+                except httpx.TimeoutException:
+                    cooldown = max(1.0, self.request_delay)
+                    self.mark_token_cooldown(token_index, cooldown)
+                    self.advance_token(token_index)
+                    if attempt + 1 < max_attempts:
+                        logging.warning(
+                            "SkladBot API timeout with token %s/%s, retry %s/%s",
+                            token_index + 1,
+                            len(self.tokens),
+                            attempt + 1,
+                            max_attempts - 1,
+                        )
+                        self.retry_sleep(cooldown)
+                        continue
+                    raise
+                last_response = response
+                if response.status_code in {401, 403}:
+                    self.mark_token_disabled(token_index)
+                    self.advance_token(token_index)
+                    logging.warning(
+                        "SkladBot API token %s/%s disabled after HTTP %s",
+                        token_index + 1,
+                        len(self.tokens),
+                        response.status_code,
+                    )
+                    if attempt + 1 < max_attempts and len(self.disabled_token_indexes) < len(self.tokens):
+                        continue
+                    response.raise_for_status()
+                if response.status_code == 429 and attempt + 1 < max_attempts:
                     retry_after = parse_int(response.headers.get("Retry-After"))
                     sleep_for = retry_after if retry_after > 0 else max(1.0, self.request_delay * 4 * (attempt + 1))
-                    logging.warning("SkladBot API 429, retry %s/%s after %.1fs", attempt + 1, self.max_retries, sleep_for)
+                    self.mark_token_cooldown(token_index, sleep_for)
+                    self.advance_token(token_index)
+                    logging.warning(
+                        "SkladBot API 429 with token %s/%s, retry %s/%s after %.1fs",
+                        token_index + 1,
+                        len(self.tokens),
+                        attempt + 1,
+                        max_attempts - 1,
+                        sleep_for,
+                    )
+                    self.retry_sleep(sleep_for)
+                    continue
+                if 500 <= response.status_code < 600 and attempt + 1 < max_attempts:
+                    sleep_for = max(1.0, self.request_delay)
+                    self.mark_token_cooldown(token_index, sleep_for)
+                    self.advance_token(token_index)
+                    logging.warning(
+                        "SkladBot API HTTP %s with token %s/%s, retry %s/%s after %.1fs",
+                        response.status_code,
+                        token_index + 1,
+                        len(self.tokens),
+                        attempt + 1,
+                        max_attempts - 1,
+                        sleep_for,
+                    )
                     time.sleep(sleep_for)
                     continue
                 response.raise_for_status()
                 return response.json()
+        if last_response is not None:
+            last_response.raise_for_status()
+        raise RuntimeError("SkladBot API request failed")
 
     def list_requests(self):
         return extract_list_items(self.get("/requests", {
@@ -520,8 +673,12 @@ def fetch_candidate_requests(today=None, orders=None, client=None, start_after_r
             )
             continue
         except Exception as exc:
-            detail_errors.append({"request_id": request_id, "error": str(exc)})
-            logging.warning("SkladBot worker: skip request_id=%s after detail fetch error", request_id, exc_info=True)
+            detail_errors.append({"request_id": request_id, "error": sanitize_skladbot_error(exc)})
+            logging.warning(
+                "SkladBot worker: skip request_id=%s after detail fetch error: %s",
+                request_id,
+                sanitize_skladbot_error(exc),
+            )
             continue
         if client.request_delay:
             time.sleep(client.request_delay)
