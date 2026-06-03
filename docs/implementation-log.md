@@ -4215,9 +4215,18 @@ cd /opt/taksklad/app
   - `https://api.taksklad.uz/health` - OK.
 - Release:
   - desktop version поднята до `2.0.5`;
-  - `version.json` оставлен на `2.0.4` до появления GitHub Release assets `v2.0.5`, чтобы автообновление не вело на несуществующий архив.
+  - создан tag/release `v2.0.5`;
+  - GitHub Actions `Build Windows Release` run `26888232768` завершился success;
+  - smoke-test `TakSklad.exe --smoke-import` прошёл в GitHub Actions;
+  - официальный `TakSklad.exe` SHA256: `4b8eded617a21abe1de8717027dd08cde87e0182f327bf314932cf0c045b2733`;
+  - официальный `TakSklad-windows-x64.zip` SHA256: `190ad3acbaf8d16224a87b4bd9936f453008fad25dfcf95f110b2bb2b8577a24`;
+  - `version.json` обновлён на `2.0.5`, rollout остаётся `mandatory=false`;
+  - готовый складской архив: `outputs/windows_ready/TakSklad-2.0.5-win-ready.zip`;
+  - ready archive SHA256: `915eb30983b62f9260a555e4f2419dab6f260b478bcf55763b1added75284484`;
+  - ready archive содержит рядом с `TakSklad.exe`: `.env.taksklad-vds-2.0.generated.json`, `TakSklad_data.json`, `credentials.json`, `version.json`.
 - Проверено:
   - `./.venv/bin/python -m unittest discover -s tests` - 299 tests OK;
   - `./.venv/bin/python -m compileall -q backend/app src/taksklad` - OK;
   - `npm run build` - OK;
   - `git diff --check` - OK.
+  - `./.venv/bin/python tools/release_preflight.py --verify-downloads` - download/SHA checks OK; до коммита `version.json` единственный fail был ожидаемый `version.json has local git diff`.
