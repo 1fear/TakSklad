@@ -28,10 +28,12 @@ def build_backend_status(sync_result=None, pending_backend=0):
 
     if blocked:
         return "Синхронизация: заказ недосканирован", DANGER
+    if failed and remaining:
+        return "Синхронизация: ожидает повторной отправки", FG_MUTED
     if failed:
-        return "Синхронизация: временная ошибка", ERROR_FG
+        return "Синхронизация: нужна проверка", ERROR_FG
     if remaining:
-        return "Синхронизация: ожидает отправки", DANGER
+        return "Синхронизация: ожидает отправки", FG_MUTED
     if backend_result.get("enabled"):
         return "", FG_MUTED
     return "", FG_MUTED

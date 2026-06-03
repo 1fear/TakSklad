@@ -160,6 +160,59 @@ def append_import_records_to_google_sheets(records):
     ).as_dict()
 
 
+def restore_import_records_to_google_sheets(records):
+    if not records:
+        return GoogleSheetsExportResult(status="skipped").as_dict()
+
+    try:
+        client = get_google_client()
+    except GoogleSheetsExportDisabled as exc:
+        return GoogleSheetsExportResult(status="disabled", error=str(exc)).as_dict()
+
+    spreadsheet = client.open_by_key(SPREADSHEET_ID)
+    sheet = spreadsheet.worksheet(SHEET_NAME)
+    ensure_import_sheet_layout(sheet)
+    all_rows = sheet.get_all_values()
+    header = all_rows[0] if all_rows else build_import_sheet_header()
+
+    updates = []
+    rows_to_append = []
+    updated = 0
+    header_len = max(SERVICE_COLUMN_START_INDEX + len(SERVICE_COLUMNS), len(header))
+    for record in records:
+        row_values = build_import_record_row(record)
+        row_number = find_record_row_number(all_rows, record)
+        if row_number:
+            end_col = column_index_to_letter(max(header_len, len(row_values)) - 1)
+            updates.append({
+                "range": f"A{row_number}:{end_col}{row_number}",
+                "values": [row_values],
+            })
+            updated += 1
+        else:
+            rows_to_append.append(row_values)
+
+    if updates:
+        sheet.batch_update(updates, value_input_option="USER_ENTERED")
+    if rows_to_append:
+        start_row = len(all_rows) + 1
+        end_row = start_row + len(rows_to_append) - 1
+        end_col = column_index_to_letter(len(rows_to_append[0]) - 1)
+        sheet.batch_update(
+            [{
+                "range": f"A{start_row}:{end_col}{end_row}",
+                "values": rows_to_append,
+            }],
+            value_input_option="USER_ENTERED",
+        )
+
+    return GoogleSheetsExportResult(
+        status="completed",
+        imported=len(rows_to_append),
+        updated=updated,
+    ).as_dict()
+
+
 def sync_backend_order_item_to_google_sheets(item):
     try:
         spreadsheet = get_google_client().open_by_key(SPREADSHEET_ID)
@@ -238,11 +291,9 @@ def update_backend_order_item_row(sheet, item):
     updates = []
     codes_idx = header_idx.get("Отсканированные коды")
     if codes_idx is not None:
-        current_codes = split_codes(get_cell(all_rows[row_number - 1], codes_idx))
-        merged_codes = merge_codes(current_codes, backend_item_codes(item))
         updates.append({
             "range": f"{column_index_to_letter(codes_idx)}{row_number}",
-            "values": [["\n".join(merged_codes)]],
+            "values": [["\n".join(backend_item_codes(item))]],
         })
 
     status_idx = header_idx.get(STATUS_COLUMN)
@@ -635,6 +686,26 @@ def get_existing_import_keys(all_rows):
     return import_ids, order_ids
 
 
+def find_record_row_number(all_rows, record):
+    if not all_rows:
+        return None
+    header = all_rows[0]
+    import_indices = get_header_indices(header, "ID импорта")
+    order_indices = get_header_indices(header, "ID заказа")
+    import_id = normalize_text(record.get("ID импорта"))
+    order_id = normalize_text(record.get("ID заказа"))
+    for row_number, row in enumerate(all_rows[1:], start=2):
+        if import_id:
+            for import_idx in import_indices:
+                if get_cell(row, import_idx) == import_id:
+                    return row_number
+        if order_id:
+            for order_idx in order_indices:
+                if get_cell(row, order_idx) == order_id:
+                    return row_number
+    return None
+
+
 def get_existing_order_duplicate_keys(all_rows):
     if not all_rows:
         return set()
@@ -743,7 +814,7 @@ def backend_item_sheet_status(item):
 def apply_backend_item_state_to_row(row, header_idx, item, completed=False, sheet_status=None):
     codes_idx = header_idx.get("Отсканированные коды")
     if codes_idx is not None:
-        row[codes_idx] = "\n".join(merge_codes(split_codes(get_cell(row, codes_idx)), backend_item_codes(item)))
+        row[codes_idx] = "\n".join(backend_item_codes(item))
     status_idx = header_idx.get(STATUS_COLUMN)
     if status_idx is not None:
         row[status_idx] = normalize_text(sheet_status) or (STATUS_COMPLETED if completed else backend_item_sheet_status(item))

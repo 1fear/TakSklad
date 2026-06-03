@@ -11,7 +11,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
 
 from .db import SessionLocal
-from .google_sheets_exporter import sync_backend_orders_skladbot_to_google_sheets
+from .google_sheets_pending import queue_google_sheets_export
 from .models import AuditLog, Order, OrderItem
 from .orders_service import COMPLETED_STATUSES
 from .settings import load_settings
@@ -25,6 +25,25 @@ RETURN_REQUEST_TOKENS = {"возврат", "возврата", "return", "return
 PRODUCT_COLORS = ("brown", "red", "gold")
 PRODUCT_FORMATS = ("op", "ssl")
 SKLADBOT_SYNC_LOCK_KEY = 22052631
+
+
+class CandidateRequests(list):
+    def __init__(self, items=None, complete=True, reason="", details_checked=0, detail_limit=0, errors=None):
+        super().__init__(items or [])
+        self.complete = complete
+        self.reason = reason
+        self.details_checked = details_checked
+        self.detail_limit = detail_limit
+        self.errors = errors or []
+
+    def meta(self):
+        return {
+            "complete": self.complete,
+            "reason": self.reason,
+            "details_checked": self.details_checked,
+            "detail_limit": self.detail_limit,
+            "errors": self.errors,
+        }
 
 
 def env_int(name, default):
@@ -218,6 +237,23 @@ def date_in_window(value, today=None, lookback_days=1):
     return today - timedelta(days=lookback_days) <= parsed <= today
 
 
+def active_order_unloading_dates(orders=None, today=None):
+    today = today or business_today()
+    dates = {today + timedelta(days=1)}
+    for order in orders or []:
+        order_date = getattr(order, "order_date", None)
+        if order_date:
+            dates.add(order_date)
+    return dates
+
+
+def request_unloading_date_matches_active_orders(request, orders=None, today=None):
+    parsed = parse_date(request.get("unloading_date") if isinstance(request, dict) else None)
+    if not parsed:
+        return False
+    return parsed in active_order_unloading_dates(orders=orders, today=today)
+
+
 def request_created_recently(request, today=None, lookback_days=1):
     dated_values = [
         value
@@ -395,12 +431,15 @@ def fetch_candidate_requests(today=None, orders=None, client=None):
     client = client or SkladBotClient()
     if not client.configured:
         logging.info("SkladBot worker disabled: SKLADBOT_API_TOKEN is not configured")
-        return []
+        return CandidateRequests([], complete=True)
 
     lookback_days = dynamic_skladbot_lookback_days(orders=orders, today=today)
-    detail_limit = max(1, env_int("SKLADBOT_DETAIL_LIMIT", 30))
+    detail_limit = max(1, env_int("SKLADBOT_DETAIL_LIMIT", 3))
     result = []
     details_checked = 0
+    detail_errors = []
+    stopped_by_limit = False
+    list_items = []
     for item in client.list_requests():
         list_type = normalize_text(request_list_value(item, "type"))
         if list_type and not request_type_matches(list_type):
@@ -408,29 +447,56 @@ def fetch_candidate_requests(today=None, orders=None, client=None):
         request_id = parse_int(request_list_value(item, "id"))
         if request_id <= 0:
             continue
+        list_unloading_date = request_list_value(item, "unloading_date", "unloadingDate")
         list_dates = {
             "created_at": request_list_value(item, "created_at", "createdAt"),
             "updated_at": request_list_value(item, "updated_at", "updatedAt"),
         }
-        if any(parse_date(value) for value in list_dates.values()) and not request_created_recently(
-            list_dates,
+        list_recent = request_created_recently(list_dates, today=today, lookback_days=lookback_days)
+        list_unloading_matches = request_unloading_date_matches_active_orders(
+            {"unloading_date": list_unloading_date},
+            orders=orders,
             today=today,
-            lookback_days=lookback_days,
-        ):
-            continue
+        )
+        has_list_dates = any(parse_date(value) for value in [*list_dates.values(), list_unloading_date])
+        if has_list_dates and not list_recent and not list_unloading_matches:
+            if parse_date(list_unloading_date) or not orders:
+                continue
+        freshness_candidates = [
+            parse_date(list_dates.get("updated_at")),
+            parse_date(list_dates.get("created_at")),
+        ]
+        freshness_date = max((value for value in freshness_candidates if value), default=None)
+        if freshness_date is None:
+            freshness_date = parse_date(list_unloading_date)
+        priority = 0 if list_unloading_matches else 1 if list_recent else 2
+        list_items.append((priority, freshness_date, request_id, item))
+
+    list_items.sort(
+        key=lambda value: (
+            value[0],
+            -(value[1].toordinal() if value[1] else 0),
+        )
+    )
+
+    for _priority, _freshness_date, _request_id, item in list_items:
         if details_checked >= detail_limit:
+            stopped_by_limit = True
             break
+        request_id = parse_int(request_list_value(item, "id"))
         try:
             detail = client.get_request_detail(request_id)
             details_checked += 1
         except httpx.HTTPStatusError as exc:
+            detail_errors.append({"request_id": request_id, "error": f"HTTP {exc.response.status_code if exc.response is not None else 'unknown'}"})
             logging.warning(
                 "SkladBot worker: skip request_id=%s after HTTP %s",
                 request_id,
                 exc.response.status_code if exc.response is not None else "unknown",
             )
             continue
-        except Exception:
+        except Exception as exc:
+            detail_errors.append({"request_id": request_id, "error": str(exc)})
             logging.warning("SkladBot worker: skip request_id=%s after detail fetch error", request_id, exc_info=True)
             continue
         if client.request_delay:
@@ -438,19 +504,37 @@ def fetch_candidate_requests(today=None, orders=None, client=None):
         request = normalize_request_payload(item, detail)
         if not request_type_matches(request.get("type")):
             continue
-        if not request_created_recently(request, today=today, lookback_days=lookback_days):
+        if not (
+            request_created_recently(request, today=today, lookback_days=lookback_days)
+            or request_unloading_date_matches_active_orders(request, orders=orders, today=today)
+        ):
             continue
         result.append(request)
         if orders and all_orders_have_candidate_match(orders, result):
             break
+    complete = not detail_errors and not (stopped_by_limit and not all_orders_have_candidate_match(orders or [], result))
+    reason = ""
+    if detail_errors:
+        reason = "detail_errors"
+    if stopped_by_limit and not all_orders_have_candidate_match(orders or [], result):
+        reason = "detail_limit_reached"
     logging.info(
-        "SkladBot worker: candidates=%s details_checked=%s lookback_days=%s detail_limit=%s",
+        "SkladBot worker: candidates=%s details_checked=%s lookback_days=%s detail_limit=%s complete=%s reason=%s",
         len(result),
         details_checked,
         lookback_days,
         detail_limit,
+        complete,
+        reason,
     )
-    return result
+    return CandidateRequests(
+        result,
+        complete=complete,
+        reason=reason,
+        details_checked=details_checked,
+        detail_limit=detail_limit,
+        errors=detail_errors[:20],
+    )
 
 
 def order_group_payload(order):
@@ -553,6 +637,7 @@ def update_orders_from_skladbot():
     matched = 0
     not_found = 0
     multiple = 0
+    incomplete = 0
 
     with SessionLocal() as db:
         if not try_acquire_skladbot_sync_lock(db):
@@ -610,6 +695,12 @@ def update_orders_from_skladbot():
                     ]
                     raw_payload["skladbot_nearest"] = nearest_request_diagnostics(order, requests)
                     multiple += 1
+                elif not getattr(requests, "complete", True):
+                    raw_payload["skladbot_status"] = "error"
+                    raw_payload["skladbot_error"] = "sync_incomplete"
+                    raw_payload["skladbot_fetch"] = requests.meta() if hasattr(requests, "meta") else {}
+                    raw_payload["skladbot_nearest"] = nearest_request_diagnostics(order, requests)
+                    incomplete += 1
                 else:
                     raw_payload["skladbot_status"] = "not_found"
                     raw_payload["skladbot_nearest"] = nearest_request_diagnostics(order, requests)
@@ -629,10 +720,12 @@ def update_orders_from_skladbot():
                     "matched": matched,
                     "not_found": not_found,
                     "multiple": multiple,
+                    "incomplete": incomplete,
+                    "fetch": requests.meta() if hasattr(requests, "meta") else {},
                 },
             ))
             db.commit()
-            google_sheets_result = export_skladbot_numbers_to_google_sheets(db, orders_to_check)
+            google_sheets_result = export_skladbot_numbers_to_google_sheets(db, orders)
             db.add(AuditLog(
                 action="skladbot_google_sheets_export",
                 entity_type="skladbot",
@@ -651,16 +744,32 @@ def update_orders_from_skladbot():
         not_found,
         multiple,
     )
-    return {"requests": len(requests), "updated": updated, "matched": matched, "not_found": not_found, "multiple": multiple}
+    return {
+        "requests": len(requests),
+        "updated": updated,
+        "matched": matched,
+        "not_found": not_found,
+        "multiple": multiple,
+        "incomplete": incomplete,
+        "fetch": requests.meta() if hasattr(requests, "meta") else {},
+        "google_sheets_export": google_sheets_result,
+    }
 
 
 def export_skladbot_numbers_to_google_sheets(db, orders):
-    try:
-        return sync_backend_orders_skladbot_to_google_sheets(orders)
-    except Exception as exc:
-        logging.exception("SkladBot worker: failed to export request numbers to Google Sheets")
-        db.rollback()
-        return {"status": "error", "error": str(exc)}
+    order_ids = [str(order.id) for order in orders or []]
+    if not order_ids:
+        return {"status": "skipped", "updated": 0, "error": ""}
+    result = {"status": "queued", "queued": True, "updated": 0, "error": ""}
+    event = queue_google_sheets_export(
+        db,
+        "google_sheets_skladbot_export",
+        "skladbot",
+        "active_orders",
+        result=result,
+        payload={"order_ids": order_ids},
+    )
+    return {**result, "pending_event_id": str(event.id) if event else ""}
 
 
 def try_acquire_skladbot_sync_lock(db):

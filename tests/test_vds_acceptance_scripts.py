@@ -92,16 +92,23 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         self.assertIn("TAKSKLAD_TIMEZONE: ${TAKSKLAD_TIMEZONE:-Asia/Tashkent}", compose)
         self.assertIn("TAKSKLAD_DEFAULT_BLOCK_PRICE: ${TAKSKLAD_DEFAULT_BLOCK_PRICE:-240000}", compose)
         self.assertIn("SKLADBOT_WORKER_INTERVAL_SECONDS: ${SKLADBOT_WORKER_INTERVAL_SECONDS:-60}", compose)
+        self.assertIn("SKLADBOT_REQUEST_DELAY_SECONDS: ${SKLADBOT_REQUEST_DELAY_SECONDS:-20}", compose)
         self.assertIn("SKLADBOT_SYNC_MAX_LOOKBACK_DAYS: ${SKLADBOT_SYNC_MAX_LOOKBACK_DAYS:-7}", compose)
         self.assertIn("SKLADBOT_ORDER_CREATE_LEAD_DAYS: ${SKLADBOT_ORDER_CREATE_LEAD_DAYS:-3}", compose)
-        self.assertIn("SKLADBOT_DETAIL_LIMIT: ${SKLADBOT_DETAIL_LIMIT:-30}", compose)
+        self.assertIn("SKLADBOT_DETAIL_LIMIT: ${SKLADBOT_DETAIL_LIMIT:-3}", compose)
+        self.assertIn(
+            "TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED: ${TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED:-false}",
+            compose,
+        )
         self.assertIn("YANDEX_GEOCODER_API_KEY=", env_example)
         self.assertIn("TAKSKLAD_TIMEZONE=Asia/Tashkent", env_example)
         self.assertIn("TAKSKLAD_DEFAULT_BLOCK_PRICE=240000", env_example)
         self.assertIn("SKLADBOT_WORKER_INTERVAL_SECONDS=60", env_example)
+        self.assertIn("SKLADBOT_REQUEST_DELAY_SECONDS=20", env_example)
         self.assertIn("SKLADBOT_SYNC_MAX_LOOKBACK_DAYS=7", env_example)
         self.assertIn("SKLADBOT_ORDER_CREATE_LEAD_DAYS=3", env_example)
-        self.assertIn("SKLADBOT_DETAIL_LIMIT=30", env_example)
+        self.assertIn("SKLADBOT_DETAIL_LIMIT=3", env_example)
+        self.assertIn("TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED=false", env_example)
         self.assertIn("TELEGRAM_ADMIN_CHAT_IDS=", env_example)
 
     def test_web_deploy_forces_https_security_headers(self):

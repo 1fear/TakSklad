@@ -7,9 +7,11 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.app.skladbot_diagnostic import diagnose_skladbot_matches
-from backend.app.models import AuditLog, Base, Order, OrderItem
+from backend.app.models import AuditLog, Base, Order, OrderItem, PendingEvent
 from backend.app.skladbot_worker import (
+    CandidateRequests,
     address_soft_match,
+    active_order_unloading_dates,
     business_today,
     client_matches,
     dynamic_skladbot_lookback_days,
@@ -22,6 +24,7 @@ from backend.app.skladbot_worker import (
     request_match_diagnostics,
     request_matches_order,
     request_type_matches,
+    request_unloading_date_matches_active_orders,
     update_orders_from_skladbot,
     worker_interval_seconds,
 )
@@ -259,15 +262,12 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
             }
             with mock.patch("backend.app.skladbot_worker.SessionLocal", SessionLocal), mock.patch(
                 "backend.app.skladbot_worker.fetch_candidate_requests",
-                return_value=[request],
-            ), mock.patch(
-                "backend.app.skladbot_worker.sync_backend_orders_skladbot_to_google_sheets",
-                return_value={"status": "completed", "updated": 1},
-            ) as google_export:
+                return_value=CandidateRequests([request], complete=True),
+            ):
                 result = update_orders_from_skladbot()
 
             self.assertEqual(result["matched"], 1)
-            google_export.assert_called_once()
+            self.assertEqual(result["google_sheets_export"]["status"], "queued")
             with SessionLocal() as db:
                 order = db.execute(select(Order)).scalar_one()
                 self.assertEqual(order.raw_payload["skladbot_request_number"], "WH-R-191794")
@@ -275,7 +275,84 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
                 audit = db.execute(
                     select(AuditLog).where(AuditLog.action == "skladbot_google_sheets_export")
                 ).scalar_one()
-                self.assertEqual(audit.payload["status"], "completed")
+                self.assertEqual(audit.payload["status"], "queued")
+                event = db.execute(select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")).scalar_one()
+                self.assertEqual(event.payload["action"], "google_sheets_skladbot_export")
+        finally:
+            Base.metadata.drop_all(engine)
+            engine.dispose()
+
+    def test_update_orders_exports_all_active_orders_to_google_sheets_after_match(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        try:
+            with SessionLocal() as db:
+                existing = Order(
+                    order_date=date(2026, 5, 29),
+                    payment_type="Перечисление",
+                    client='"EXISTING CLIENT" MCHJ',
+                    address="Address",
+                    representative="Rep",
+                    status="not_completed",
+                    raw_payload={
+                        "skladbot_request_number": "WH-R-100",
+                        "skladbot_request_id": "100",
+                        "skladbot_status": "found",
+                    },
+                )
+                existing.items = [
+                    OrderItem(
+                        product="Chapman Brown OP 20",
+                        quantity_blocks=1,
+                        status="not_completed",
+                        raw_payload={"source_import_id": "import-1", "source_order_id": "order-1"},
+                    )
+                ]
+                missing = Order(
+                    order_date=date(2026, 5, 29),
+                    payment_type="Перечисление",
+                    client='"TABACHNAYA LAVKA" MCHJ',
+                    address="Address",
+                    representative="Rep",
+                    status="not_completed",
+                    raw_payload={},
+                )
+                missing.items = [
+                    OrderItem(
+                        product="Chapman Brown OP 20",
+                        quantity_blocks=2,
+                        status="not_completed",
+                        raw_payload={"source_import_id": "import-2", "source_order_id": "order-2"},
+                    )
+                ]
+                db.add_all([existing, missing])
+                db.commit()
+
+            request = {
+                "id": 191794,
+                "number": "WH-R-191794",
+                "unloading_date": "29.05.2026",
+                "recipient": '"TABACHNAYA LAVKA" MCHJ',
+                "comment": "Перечисление",
+                "products": [{"name": "Chapman Brown OP 20 UZ", "amount": 2}],
+                "raw": {},
+            }
+            with mock.patch("backend.app.skladbot_worker.SessionLocal", SessionLocal), mock.patch(
+                "backend.app.skladbot_worker.fetch_candidate_requests",
+                return_value=CandidateRequests([request], complete=True),
+            ):
+                result = update_orders_from_skladbot()
+
+            self.assertEqual(result["matched"], 1)
+            self.assertEqual(result["google_sheets_export"]["status"], "queued")
+            with SessionLocal() as db:
+                event = db.execute(select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")).scalar_one()
+                self.assertEqual(len(event.payload["order_ids"]), 2)
         finally:
             Base.metadata.drop_all(engine)
             engine.dispose()
@@ -319,21 +396,71 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
 
             with mock.patch("backend.app.skladbot_worker.SessionLocal", SessionLocal), mock.patch(
                 "backend.app.skladbot_worker.fetch_candidate_requests",
-            ) as fetch_candidates, mock.patch(
-                "backend.app.skladbot_worker.sync_backend_orders_skladbot_to_google_sheets",
-                return_value={"status": "completed", "updated": 1},
-            ) as google_export:
+            ) as fetch_candidates:
                 result = update_orders_from_skladbot()
 
             self.assertEqual(result["already_numbered"], 1)
-            self.assertEqual(result["google_sheets_export"]["updated"], 1)
+            self.assertEqual(result["google_sheets_export"]["status"], "queued")
             fetch_candidates.assert_not_called()
-            google_export.assert_called_once()
             with SessionLocal() as db:
                 audit = db.execute(
                     select(AuditLog).where(AuditLog.action == "skladbot_google_sheets_export")
                 ).scalar_one()
-                self.assertEqual(audit.payload["status"], "completed")
+                self.assertEqual(audit.payload["status"], "queued")
+        finally:
+            Base.metadata.drop_all(engine)
+            engine.dispose()
+
+    def test_update_orders_does_not_write_not_found_when_skladbot_check_is_incomplete(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        try:
+            with SessionLocal() as db:
+                order = Order(
+                    order_date=date(2026, 5, 29),
+                    payment_type="Перечисление",
+                    client='"TABACHNAYA LAVKA" MCHJ',
+                    address="Address",
+                    representative="Rep",
+                    status="not_completed",
+                    raw_payload={},
+                )
+                order.items = [
+                    OrderItem(
+                        product="Chapman Brown OP 20",
+                        quantity_blocks=2,
+                        status="not_completed",
+                        raw_payload={"source_import_id": "import-1", "source_order_id": "order-1"},
+                    )
+                ]
+                db.add(order)
+                db.commit()
+
+            incomplete_requests = CandidateRequests(
+                [],
+                complete=False,
+                reason="detail_limit_reached",
+                details_checked=1,
+                detail_limit=1,
+            )
+            with mock.patch("backend.app.skladbot_worker.SessionLocal", SessionLocal), mock.patch(
+                "backend.app.skladbot_worker.fetch_candidate_requests",
+                return_value=incomplete_requests,
+            ):
+                result = update_orders_from_skladbot()
+
+            self.assertEqual(result["not_found"], 0)
+            self.assertEqual(result["incomplete"], 1)
+            with SessionLocal() as db:
+                order = db.execute(select(Order)).scalar_one()
+                self.assertEqual(order.raw_payload["skladbot_status"], "error")
+                self.assertEqual(order.raw_payload["skladbot_error"], "sync_incomplete")
+                self.assertEqual(order.raw_payload["skladbot_fetch"]["reason"], "detail_limit_reached")
         finally:
             Base.metadata.drop_all(engine)
             engine.dispose()
@@ -491,6 +618,210 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
         self.assertEqual(fake_client.detail_ids, [1])
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["number"], "WH-R-1")
+
+    def test_candidate_window_includes_tomorrow_and_active_order_dates(self):
+        orders = [
+            Order(order_date=date(2026, 6, 5), raw_payload={}),
+        ]
+
+        self.assertEqual(
+            active_order_unloading_dates(orders=orders, today=date(2026, 6, 1)),
+            {date(2026, 6, 2), date(2026, 6, 5)},
+        )
+        self.assertTrue(
+            request_unloading_date_matches_active_orders(
+                {"unloading_date": "05.06.2026"},
+                orders=orders,
+                today=date(2026, 6, 1),
+            )
+        )
+        self.assertTrue(
+            request_unloading_date_matches_active_orders(
+                {"unloading_date": "02.06.2026"},
+                orders=[],
+                today=date(2026, 6, 1),
+            )
+        )
+
+    def test_fetch_candidates_keeps_old_created_request_when_unloading_date_matches_active_order(self):
+        class FakeClient:
+            configured = True
+            request_delay = 0
+            limit = 500
+
+            def __init__(self):
+                self.detail_ids = []
+
+            def list_requests(self):
+                return [
+                    {"id": 1, "type": "Отгрузка 3PL", "created_at": "2026-05-20", "delivery_number": "WH-R-1"},
+                ]
+
+            def get_request_detail(self, request_id):
+                self.detail_ids.append(request_id)
+                return {
+                    "id": request_id,
+                    "delivery_number": "WH-R-1",
+                    "customer": {"name": "ООО Bastion Import Chapman MCHJ"},
+                    "type": "Отгрузка 3PL",
+                    "createdAt": "2026-05-20",
+                    "comment": "Перечисление",
+                    "fields": [
+                        {"name": "Дата выгрузки", "value": "05.06.2026"},
+                        {"name": "Название компании/Имя человека", "value": '"TABACHNAYA LAVKA" MCHJ'},
+                    ],
+                    "products": [
+                        {"name": "Chapman Brown OP 20 UZ", "amount": 2},
+                    ],
+                }
+
+        order = Order(
+            order_date=date(2026, 6, 5),
+            payment_type="Перечисление",
+            client='"TABACHNAYA LAVKA" MCHJ',
+            address="Address",
+            status="not_completed",
+            raw_payload={},
+        )
+        order.items = [
+            OrderItem(product="Chapman Brown OP 20", quantity_blocks=2),
+        ]
+        fake_client = FakeClient()
+
+        with mock.patch.dict("os.environ", {
+            "SKLADBOT_SYNC_LOOKBACK_DAYS": "1",
+            "SKLADBOT_SYNC_MAX_LOOKBACK_DAYS": "7",
+            "SKLADBOT_DETAIL_LIMIT": "30",
+        }):
+            result = fetch_candidate_requests(today=date(2026, 6, 1), orders=[order], client=fake_client)
+
+        self.assertEqual(fake_client.detail_ids, [1])
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["number"], "WH-R-1")
+        self.assertTrue(result.complete)
+
+    def test_fetch_candidates_default_detail_limit_is_3_and_prioritizes_fresh_requests(self):
+        class FakeClient:
+            configured = True
+            request_delay = 0
+            limit = 500
+
+            def __init__(self):
+                self.detail_ids = []
+
+            def list_requests(self):
+                old_items = [
+                    {
+                        "id": request_id,
+                        "type": "Отгрузка 3PL",
+                        "created_at": "2026-05-20",
+                        "updated_at": "2026-05-20",
+                        "unloading_date": "05.06.2026",
+                        "delivery_number": f"WH-R-{request_id}",
+                    }
+                    for request_id in range(1, 31)
+                ]
+                return [
+                    *old_items,
+                    {
+                        "id": 99,
+                        "type": "Отгрузка 3PL",
+                        "created_at": "2026-06-01",
+                        "updated_at": "2026-06-01",
+                        "unloading_date": "05.06.2026",
+                        "delivery_number": "WH-R-99",
+                    },
+                ]
+
+            def get_request_detail(self, request_id):
+                self.detail_ids.append(request_id)
+                return {
+                    "id": request_id,
+                    "delivery_number": f"WH-R-{request_id}",
+                    "type": "Отгрузка 3PL",
+                    "createdAt": "2026-06-01" if request_id == 99 else "2026-05-20",
+                    "comment": "Перечисление",
+                    "fields": [
+                        {"name": "Дата выгрузки", "value": "05.06.2026"},
+                        {"name": "Название компании/Имя человека", "value": '"OTHER CLIENT" MCHJ'},
+                    ],
+                    "products": [
+                        {"name": "Chapman Brown OP 20 UZ", "amount": 2},
+                    ],
+                }
+
+        order = Order(
+            order_date=date(2026, 6, 5),
+            payment_type="Перечисление",
+            client='"TABACHNAYA LAVKA" MCHJ',
+            address="Address",
+            status="not_completed",
+            raw_payload={},
+        )
+        order.items = [
+            OrderItem(product="Chapman Brown OP 20", quantity_blocks=2),
+        ]
+        fake_client = FakeClient()
+
+        with mock.patch.dict("os.environ", {}, clear=True):
+            result = fetch_candidate_requests(today=date(2026, 6, 1), orders=[order], client=fake_client)
+
+        self.assertEqual(len(fake_client.detail_ids), 3)
+        self.assertEqual(fake_client.detail_ids[0], 99)
+        self.assertFalse(result.complete)
+        self.assertEqual(result.reason, "detail_limit_reached")
+
+    def test_fetch_candidates_marks_result_incomplete_when_detail_limit_blocks_full_check(self):
+        class FakeClient:
+            configured = True
+            request_delay = 0
+            limit = 500
+
+            def __init__(self):
+                self.detail_ids = []
+
+            def list_requests(self):
+                return [
+                    {"id": 1, "type": "Отгрузка 3PL", "created_at": "2026-05-20", "delivery_number": "WH-R-1"},
+                    {"id": 2, "type": "Отгрузка 3PL", "created_at": "2026-05-20", "delivery_number": "WH-R-2"},
+                ]
+
+            def get_request_detail(self, request_id):
+                self.detail_ids.append(request_id)
+                return {
+                    "id": request_id,
+                    "delivery_number": f"WH-R-{request_id}",
+                    "type": "Отгрузка 3PL",
+                    "createdAt": "2026-05-20",
+                    "comment": "Перечисление",
+                    "fields": [
+                        {"name": "Дата выгрузки", "value": "05.06.2026"},
+                        {"name": "Название компании/Имя человека", "value": '"OTHER CLIENT" MCHJ'},
+                    ],
+                    "products": [
+                        {"name": "Chapman Brown OP 20 UZ", "amount": 2},
+                    ],
+                }
+
+        order = Order(
+            order_date=date(2026, 6, 5),
+            payment_type="Перечисление",
+            client='"TABACHNAYA LAVKA" MCHJ',
+            address="Address",
+            status="not_completed",
+            raw_payload={},
+        )
+        order.items = [
+            OrderItem(product="Chapman Brown OP 20", quantity_blocks=2),
+        ]
+        fake_client = FakeClient()
+
+        with mock.patch.dict("os.environ", {"SKLADBOT_DETAIL_LIMIT": "1"}):
+            result = fetch_candidate_requests(today=date(2026, 6, 1), orders=[order], client=fake_client)
+
+        self.assertEqual(fake_client.detail_ids, [1])
+        self.assertFalse(result.complete)
+        self.assertEqual(result.reason, "detail_limit_reached")
 
     def test_diagnostic_uses_active_orders_for_candidate_window(self):
         engine = create_engine(

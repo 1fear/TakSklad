@@ -29,13 +29,34 @@ TELEGRAM_BUTTON_STATUS = "Статус"
 TELEGRAM_LOGISTICS_DATE_PREFIX = "Логистика "
 TELEGRAM_KIZ_FILE_PREFIX = "КИЗ файл "
 TELEGRAM_EXCEL_IMPORT_EVENT_TYPE = "telegram_excel_import"
-TELEGRAM_EXCEL_IMPORT_ACTIVE_STATUSES = ("pending", "processing")
+TELEGRAM_EXCEL_IMPORT_ACTIVE_STATUSES = ("pending",)
 TELEGRAM_CHAT_STATE_EVENT_PREFIX = "telegram_chat_state:"
 DATE_PATTERN = re.compile(r"(?<!\d)(\d{1,2})[._/-](\d{1,2})[._/-](\d{2,4})(?!\d)")
 
 
 def normalize_text(value):
     return str(value or "").strip()
+
+
+def find_existing_telegram_import_event(db, document, update_id=None):
+    file_id = normalize_text((document or {}).get("file_id"))
+    update_id = normalize_text(update_id)
+    if not file_id and not update_id:
+        return None
+    candidates = db.execute(
+        select(PendingEvent)
+        .where(PendingEvent.event_type == TELEGRAM_EXCEL_IMPORT_EVENT_TYPE)
+        .where(PendingEvent.status.in_(("pending", "processing", "completed", "failed")))
+        .order_by(PendingEvent.created_at.desc(), PendingEvent.id.desc())
+    ).scalars().all()
+    for event in candidates:
+        payload = event.payload or {}
+        payload_document = payload.get("document") or {}
+        if update_id and normalize_text(payload.get("update_id")) == update_id:
+            return event
+        if file_id and normalize_text(payload_document.get("file_id")) == file_id:
+            return event
+    return None
 
 
 def parse_chat_ids(value):
@@ -625,6 +646,24 @@ class TelegramWorker:
             return False
 
         with SessionLocal() as db:
+            existing_event = find_existing_telegram_import_event(db, document, update_id)
+            if existing_event is not None:
+                if existing_event.status == "failed":
+                    existing_event.status = "pending"
+                    existing_event.last_error = ""
+                    existing_event.attempts = 0
+                    db.commit()
+                self.safe_send_message(
+                    chat_id,
+                    "\n".join([
+                        "Excel-файл уже есть в очереди импорта.",
+                        "",
+                        f"Файл: {file_name}",
+                        f"Дата отгрузки: {shipment_date or 'не задана'}",
+                    ]),
+                )
+                return True
+
             event = PendingEvent(
                 event_type=TELEGRAM_EXCEL_IMPORT_EVENT_TYPE,
                 status="pending",
@@ -654,12 +693,15 @@ class TelegramWorker:
 
     def take_next_telegram_import_event(self):
         with SessionLocal() as db:
-            event = db.execute(
+            stmt = (
                 select(PendingEvent)
                 .where(PendingEvent.event_type == TELEGRAM_EXCEL_IMPORT_EVENT_TYPE)
                 .where(PendingEvent.status.in_(TELEGRAM_EXCEL_IMPORT_ACTIVE_STATUSES))
                 .order_by(PendingEvent.created_at, PendingEvent.id)
-            ).scalars().first()
+            )
+            if db.bind.dialect.name == "postgresql":
+                stmt = stmt.with_for_update(skip_locked=True)
+            event = db.execute(stmt).scalars().first()
             if event is None:
                 return None
 

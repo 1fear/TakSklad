@@ -3966,3 +3966,163 @@ cd /opt/taksklad/app
   - `https://api.taksklad.uz/health` - OK;
   - локально `npm run build` - OK;
   - локально `./.venv/bin/python -m unittest discover -s tests` - 260 tests OK.
+
+### MVP 2.0 operational stabilization after first live scan
+
+- Причина: первый боевой прогон показал, что Google Sheets нельзя держать в горячем пути сканирования. При лимитах Google запись КИЗов тормозила склад, отмена последнего КИЗа становилась ненадежной, а обратная синхронизация Google -> backend могла помечать активные позиции как `removed_from_google_sheet`.
+- Архитектурное решение:
+  - Postgres/VDS становится рабочим source of truth для сканов, завершений, сбросов и статусов;
+  - Google Sheets остается рабочим окном и проекцией, но запись в него идет через очередь pending events;
+  - обратный sync Google -> backend по умолчанию выключен через `TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED=false`;
+  - если строка пропала из Google, backend больше не удаляет позицию сам, а пишет audit-конфликт.
+- Backend:
+  - импорт Excel коммитится в Postgres и только ставит экспорт в Google-очередь;
+  - сканы, завершение заказа, возвраты, сброс заказа и восстановление заказа не ждут прямой записи Google;
+  - Google export queue защищена lock/advisory lock и `FOR UPDATE SKIP LOCKED`;
+  - добавлены админ-действия: reset/rescan, restore, resync SkladBot, Google projection queue;
+  - Telegram import дедуплицируется по `update_id`/`file_id` и забирает только `pending` события;
+  - SkladBot worker больше не пишет Google напрямую, а сохраняет Postgres и ставит Google-проекцию в очередь.
+- Desktop:
+  - завершить заказ можно только когда все позиции реально отсканированы и сохранены;
+  - недосканированный заказ не должен исчезать из списка из-за частично выполненной позиции;
+  - отмена последнего КИЗа умеет обновлять queued/Google state;
+  - печать не должна скрывать недосканированный заказ как завершенный.
+- Web:
+  - добавлены действия reset/rescan, restore, resync SkladBot, Google sync и audit log;
+  - login state сбрасывается только при реальном `401`, а не при временном `5xx`/proxy/API сбое.
+- SkladBot:
+  - временно дефолт `SKLADBOT_DETAIL_LIMIT` был поднят с `30` до `500`, чтобы worker не обрывался на первых заявках боевого дня; follow-up ниже вернул актуальный лимит `30`;
+  - динамическое окно по датам отгрузки сохранено.
+- Проверено локально:
+  - `./.venv/bin/python -m unittest discover -s tests` - 280 tests OK;
+  - `PYTHONPATH=src ./.venv/bin/python -m py_compile src/taksklad/*.py backend/app/*.py` - OK;
+  - `npm run build` - OK.
+
+### Desktop/Web critical follow-up fixes for VDS-first workflow
+
+- Причина: независимая QA-проверка показала, что часть старого workflow всё ещё держала Google как primary:
+  - desktop refresh в backend-режиме сначала читал Google;
+  - desktop сохранял позиции и архивировал через Google напрямую;
+  - отмена сохранённого КИЗа удаляла только локальное pending-событие, но не откатывала уже принятый VDS scan;
+  - web-login проходил, но admin endpoints могли требовать Bearer token и сбрасывать web-session;
+  - Google exporter склеивал старые коды из Google с кодами из VDS, из-за чего reset/rescan мог оставить stale-КИЗы.
+- Исправлено:
+  - `/api/v1` теперь принимает либо service Bearer token, либо валидную web httpOnly cookie;
+  - desktop в `TAKSKLAD_BACKEND_READ_ORDERS_ENABLED` режиме читает список из VDS, а Google использует только как аварийный fallback;
+  - desktop сохранение позиции в VDS-режиме синхронно ждёт принятия backend queue; если backend не принял КИЗы, позиция не считается сохранённой;
+  - добавлен backend endpoint `POST /api/v1/scans/undo`, который удаляет scan code, пересчитывает `scanned_blocks`, возвращает позицию в `not_completed`, пишет audit и ставит Google projection в очередь;
+  - desktop undo сохранённого КИЗа вызывает backend undo, а не только чистит локальную очередь;
+  - завершение заказа в desktop теперь печатает до backend complete: если печать не прошла, VDS-заказ остаётся активным;
+  - desktop больше не делает прямой Google archive для VDS-заказов: backend complete сам ставит Google archive projection;
+  - Google exporter теперь заменяет КИЗы в строке состоянием из VDS, а restore/reset projection обновляет существующую строку вместо silent duplicate skip;
+  - SkladBot resync больше не стирает старый номер заявки до успешной работы worker-а;
+  - web reset/rescan заблокирован для возвратов, счётчик Google queue по выбранному заказу не завышается суммированием одинаковых row-level значений.
+- Проверено локально:
+  - целевые тесты backend/desktop/web/exporter - 83 tests OK;
+  - `./.venv/bin/python -m unittest discover -s tests` - 286 tests OK;
+  - `PYTHONPATH=src ./.venv/bin/python -m py_compile src/taksklad/*.py backend/app/*.py` - OK;
+  - `npm run build` - OK;
+  - локальный web screen `http://127.0.0.1:5173/` открыл login layout и основные блоки.
+
+### Web bulk archive, SkladBot throttling and Chapman reconcile
+
+- Причина: после боевого дня нужно было убрать риск массовых ручных действий по одному заказу, вернуть безопасный SkladBot detail-limit и сверить VDS/Google с двумя оригинальными Excel Chapman за `03.06.2026`.
+- Backend/web:
+  - добавлен `POST /api/v1/admin/orders/bulk/complete-without-kiz`;
+  - действие закрывает выбранные активные заказы как `completed`, ставит `google_sheets_archive_export` и работает одной транзакцией;
+  - если хотя бы один заказ не активный, имеет сканы или pending Google export, вся пачка отклоняется;
+  - web-таблица получила кнопку `Выделить все` для видимых после фильтров заказов и действие `В архив как выполнено`;
+  - admin dashboard totals теперь считаются по всем строкам, а не по обрезанному `limit`.
+- SkladBot:
+  - `SKLADBOT_DETAIL_LIMIT` возвращен к безопасной модели и после live-429 выставлен на `3`;
+  - свежие заявки сортируются выше старых по `updated_at/created_at`, чтобы маленький лимит не застревал на старом списке;
+  - на VDS выставлен `SKLADBOT_REQUEST_DELAY_SECONDS=20`, чтобы detail-запросы не ловили регулярный 429.
+- Данные VDS:
+  - перед серверными изменениями создан restore point `/opt/taksklad/restore_points/pre-skladbot-web-bulk-reconcile-20260602T185920Z`;
+  - Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260602T185921Z.sql.gz`;
+  - restore drill прошел OK;
+  - добавлен guarded-инструмент `tools/reconcile_chapman_orders.py`;
+  - dry-run по двум оригинальным Excel: `87/87` строк найдены в Postgres, `missing_backend=0`;
+  - найдено одно расхождение: `"ALCODRINK" MCHJ`, файл `2ч`, строка 25, `Chapman RED OP 20` было `2` блока вместо `1`;
+  - точечно исправлено в Postgres: `20 шт/2 блока/480000` -> `10 шт/1 блок/240000`, без удаления КИЗов;
+  - Google projection обработан, повторная сверка: `field_mismatches=0`;
+  - старая orphan Google pending-задача для завершенного заказа WINTERFELL закрыта как `obsolete`, текущая Google queue: `0`.
+- VDS deploy:
+  - синхронизированы backend/frontend/compose изменения;
+  - пересобраны и запущены `backend-api`, `frontend`, `skladbot-worker`, `telegram-worker`, `google-sheets-sync-worker`;
+  - `https://api.taksklad.uz/health` возвращает OK;
+  - login через `https://taksklad.uz/api/v1/auth/login` с рабочими данными возвращает `200`, admin table с cookie возвращает `200`.
+- Проверено локально:
+  - `./.venv/bin/python -m unittest tests.test_backend_api_persistence tests.test_backend_skladbot_worker tests.test_vds_acceptance_scripts` - 78 tests OK;
+  - `./.venv/bin/python -m unittest discover -s tests` - 290 tests OK;
+  - `./.venv/bin/python -m compileall -q backend/app src/taksklad tools/reconcile_chapman_orders.py` - OK;
+  - `npm run build` - OK.
+
+### Chapman transfer totals data repair for 03.06.2026
+
+- Причина: итог по двум оригинальным Excel-файлам Chapman за `03.06.2026` по типу оплаты `Перечисление` должен быть `39` клиентов/заказов, `87` позиций и `395` блоков, но VDS считал `392` из-за двух позиций ALCODRINK со статусом `removed_from_google_sheet`.
+- Backup перед правками:
+  - VDS order/items backup: `outputs/backups/alcodrink_restore_backup_20260602T195726Z.json`;
+  - Google ALCODRINK rows backup: `outputs/backups/google_alcodrink_rows_backup_20260602T200101Z.json`;
+  - Google BABILOV rows backup: `outputs/backups/google_babilov_rows_backup_20260602T200626Z.json`.
+- Исправлено:
+  - в VDS восстановлены две позиции `"ALCODRINK" MCHJ`: `Chapman Brown OP 20` на `1` блок и `Chapman Gold SSL 100\`20` на `2` блока;
+  - статус восстановленных позиций выставлен `not_completed`, дата заказа нормализована на `2026-06-03`;
+  - в Google `data` оставлены 3 корректные строки ALCODRINK, удалены 2 дубля после restore projection;
+  - в Google `Архив` восстановлена отсутствующая строка `"BABILOV RASHID" MChJ`, `Chapman Brown OP 20`, `2` блока.
+- Финальная сверка VDS vs Google `data + Архив`:
+  - VDS: `39` клиентов/заказов, `87` позиций, `395` блоков;
+  - Google: `39` клиентов, `87` позиций, `395` блоков;
+  - разбивка совпадает: Brown `208`, Gold `86`, RED `101`;
+  - `missing_by_import_count=0`, `extra_by_import_count=0`, pending Google exports `0`.
+
+### Google data cleanup and web action UX fix
+
+- Причина: после боевого дня в Google `data` оставались активные строки, псевдопустые строки со статусом/SkladBot-колонками и часть неподтянутых SkladBot-номеров; в web reset/rescan требовал причину, а bulk-кнопка `В архив как выполнено` серела на заказах со сканами.
+- Backup перед data-maintenance:
+  - Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260602T201802Z.sql.gz`;
+  - Google sheets backup на VDS: `/opt/taksklad/backups/google_sheets/google_sheets_maintenance_backup_20260602T201855Z.json`;
+  - локальная копия: `outputs/backups/google_sheets_maintenance_backup_20260602T201855Z.json`.
+- Google/VDS data-maintenance:
+  - все активные VDS-заказы за `03.06.2026` переведены в `completed`;
+  - Google `data -> Архив` выполнен пакетно, чтобы не упираться в Google read quota;
+  - удалены псевдопустые строки `data`, где были только статус/SkladBot-колонки без бизнес-данных;
+  - `data` после cleanup содержит только заголовок;
+  - `Архив` за `03.06.2026`: `190` позиций, `955` блоков, все со статусом `Выполнено`;
+  - разбивка `03.06.2026`: `Перечисление` - `87` позиций / `395` блоков, `Терминал` - `103` позиции / `560` блоков;
+  - pending Google exports: `0`;
+  - активных VDS-заказов за дату: `0`.
+- SkladBot:
+  - SkladBot API во время диагностики начал отдавать `429`, расширенный диагностический проход остановлен, чтобы не забивать API;
+  - в архиве осталось `11` строк по `5` заказам без подтвержденного SkladBot-номера; VDS по этим заказам также хранит `skladbot_status=error`, `skladbot_error=sync_incomplete`;
+  - одна старая архивная строка MADINA была дозаполнена SkladBot-номером из VDS.
+- Web/backend UX:
+  - `reset/rescan` больше не требует ввода причины в web и backend;
+  - `AdminOrderActionRequest.reason` и `AdminBulkOrderActionRequest.reason` стали необязательными;
+  - bulk `В архив как выполнено` больше не блокируется на полностью отсканированных заказах;
+  - частично отсканированные позиции по-прежнему блокируют bulk-закрытие, чтобы не закрывать дырявые заказы случайно.
+- VDS deploy:
+  - обновлены и пересозданы `backend-api` и `frontend`;
+  - `https://api.taksklad.uz/health` - OK;
+  - web login и `admin/table` с cookie - `200`.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_backend_api_persistence` - 46 tests OK;
+  - `./.venv/bin/python -m unittest discover -s tests` - 291 tests OK;
+  - `./.venv/bin/python -m compileall -q backend/app src/taksklad` - OK;
+  - `npm run build` - OK.
+
+### Desktop 2.0.4 finalization for warehouse rollout
+
+- Причина: перед решающим складским днем нужно выдать новую Windows-сборку с накопленными исправлениями scan/undo/finish/print/backend queue и убрать пугающий красный статус синхронизации при временной очереди.
+- Desktop:
+  - версия поднята до `APP_VERSION=2.0.4`;
+  - `Синхронизация: временная ошибка` больше не показывается красным, если событие осталось в очереди и будет отправлено повторно;
+  - новый спокойный статус: `Синхронизация: ожидает повторной отправки`;
+  - реальные блокировки процесса остаются заметными: `Синхронизация: заказ недосканирован`;
+  - случай `failed` без pending-очереди остается красным как `Синхронизация: нужна проверка`.
+- Проверено локально:
+  - `./.venv/bin/python -m unittest tests.test_desktop_ui_contract tests.test_backend_bridge tests.test_pending_store tests.test_desktop_pending_store tests.test_google_error_messages tests.test_printing` - 38 tests OK;
+  - `./.venv/bin/python -m unittest discover -s tests` - 291 tests OK;
+  - `./.venv/bin/python -m compileall -q backend/app src/taksklad` - OK;
+  - `npm run build` - OK;
+  - `./.venv/bin/python tools/release_preflight.py --skip-network` - status OK.

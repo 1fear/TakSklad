@@ -8,7 +8,7 @@ from .config import BACKUP_DIR, SHEET_NAME, SKLADBOT_REQUEST_NUMBER_COLUMN, SPRE
 from .orders import get_order_date_value
 from .sheets import get_google_client, update_scanned_codes_to_gsheet
 from .storage import load_data_section, save_data_section
-from .utils import make_hash, normalize_text
+from .utils import make_hash, normalize_text, split_codes
 
 
 def write_scan_backup(action, order, code=None, codes=None):
@@ -135,6 +135,56 @@ def remove_pending_save(pending_id):
     new_pending = [item for item in pending if item.get("id") != pending_id]
     if len(new_pending) != len(pending):
         save_pending_saves(new_pending)
+
+
+def order_matches_pending_save(order, pending_order):
+    for field in ("ID импорта", "ID заказа", "_row_number"):
+        left = normalize_text(order.get(field))
+        right = normalize_text(pending_order.get(field))
+        if left and right and left == right:
+            return True
+
+    checks = []
+    for field in ("Дата отгрузки", "Дата заказа", "Тип оплаты", "Клиент", "Адрес", "Товары"):
+        left = normalize_text(order.get(field))
+        right = normalize_text(pending_order.get(field))
+        if left or right:
+            checks.append(left == right)
+    return bool(checks) and all(checks)
+
+
+def update_pending_save_codes_for_undo(order, previous_codes, remaining_codes, reason):
+    previous_codes = split_codes("\n".join(previous_codes))
+    remaining_codes = split_codes("\n".join(remaining_codes))
+    pending = load_pending_saves()
+    if not pending:
+        return False
+
+    previous_id = make_pending_save_id(order, previous_codes)
+    updated = False
+    new_pending = []
+    for item in pending:
+        pending_order = item.get("order", {})
+        item_codes = split_codes("\n".join(item.get("codes", [])))
+        is_target = item.get("id") == previous_id or (
+            item_codes == previous_codes and order_matches_pending_save(order, pending_order)
+        )
+        if not is_target:
+            new_pending.append(item)
+            continue
+
+        updated = True
+        if remaining_codes:
+            item = dict(item)
+            item["id"] = make_pending_save_id(order, remaining_codes)
+            item["codes"] = remaining_codes
+            item["last_error"] = reason
+            item["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            new_pending.append(item)
+
+    if updated:
+        save_pending_saves(new_pending)
+    return updated
 
 
 def get_pending_codes():

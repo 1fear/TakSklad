@@ -52,6 +52,13 @@ def env_int(name, default):
         return default
 
 
+def env_bool(name, default=False):
+    text = normalize_text(os.environ.get(name)).casefold()
+    if not text:
+        return default
+    return text in {"1", "true", "yes", "on", "да"}
+
+
 def sync_google_sheet_to_backend(db: Session, sheet=None, now=None, archive_completed_data_rows=None):
     now = now or datetime.now(timezone.utc)
     if archive_completed_data_rows is None:
@@ -526,34 +533,17 @@ def mark_backend_items_missing_from_google(db: Session, item_index, matched_item
                 STATUS_REMOVED_FROM_GOOGLE,
             ):
                 continue
-            if item.scanned_blocks > 0 or item.scan_codes:
-                result["conflicts"] += 1
-                db.add(AuditLog(
-                    action="google_sheets_backend_sync_conflict",
-                    entity_type="order_item",
-                    entity_id=str(item.id),
-                    payload={
-                        "order_id": str(item.order_id),
-                        "reason": "backend item is missing from Google Sheets but already has scans",
-                        "source_import_id": (item.raw_payload or {}).get("source_import_id"),
-                        "source_order_id": (item.raw_payload or {}).get("source_order_id"),
-                    },
-                ))
-                continue
-
-            item.status = STATUS_REMOVED_FROM_GOOGLE
-            raw_payload = dict(item.raw_payload or {})
-            raw_payload["removed_from_google_sheet_at"] = now.isoformat()
-            item.raw_payload = raw_payload
-            result["removed"] += 1
+            result["conflicts"] += 1
             db.add(AuditLog(
-                action="google_sheets_backend_item_removed",
+                action="google_sheets_backend_sync_conflict",
                 entity_type="order_item",
                 entity_id=str(item.id),
                 payload={
                     "order_id": str(item.order_id),
-                    "source_import_id": raw_payload.get("source_import_id"),
-                    "source_order_id": raw_payload.get("source_order_id"),
+                    "reason": "backend item is missing from Google Sheets; VDS kept item active because Postgres is source of truth",
+                    "source_import_id": (item.raw_payload or {}).get("source_import_id"),
+                    "source_order_id": (item.raw_payload or {}).get("source_order_id"),
+                    "scanned_blocks": item.scanned_blocks,
                 },
             ))
 
@@ -569,7 +559,10 @@ def main():
         try:
             with SessionLocal() as db:
                 pending_result = process_pending_google_sheets_exports(db)
-                result = sync_google_sheet_to_backend(db)
+                if env_bool("TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED", default=False):
+                    result = sync_google_sheet_to_backend(db)
+                else:
+                    result = {**build_result(rows=0), "status": "skipped"}
             logging.info(
                 "Google Sheets sync: pending_synced=%s pending_failed=%s rows=%s matched=%s missing=%s orders_updated=%s items_updated=%s conflicts=%s archived=%s removed=%s",
                 pending_result["synced"],

@@ -215,7 +215,7 @@ class GoogleSheetsSyncWorkerTests(unittest.TestCase):
             self.assertEqual(item.raw_payload["line_total"], 240000)
             self.assertEqual(item.raw_payload["calculated_line_total"], 240000)
 
-    def test_sync_hides_backend_item_removed_from_google_sheet_when_unscanned(self):
+    def test_sync_keeps_backend_item_removed_from_google_sheet_when_unscanned(self):
         order_id, _ = self.seed_order()
         removed_item_id = self.add_second_item(order_id)
 
@@ -223,14 +223,14 @@ class GoogleSheetsSyncWorkerTests(unittest.TestCase):
             result = sync_google_sheet_to_backend(db, sheet=self.make_sheet())
 
         self.assertEqual(result["matched"], 1)
-        self.assertEqual(result["removed"], 1)
+        self.assertEqual(result["removed"], 0)
+        self.assertEqual(result["conflicts"], 1)
         with self.SessionLocal() as db:
             removed_item = db.get(OrderItem, uuid.UUID(removed_item_id))
-            self.assertEqual(removed_item.status, "removed_from_google_sheet")
-            self.assertTrue(removed_item.raw_payload["removed_from_google_sheet_at"])
+            self.assertEqual(removed_item.status, "not_completed")
             active_orders = list_active_orders(db)
             self.assertEqual(len(active_orders), 1)
-            self.assertEqual(len(active_orders[0].items), 1)
+            self.assertEqual(len(active_orders[0].items), 2)
 
     def test_sync_keeps_backend_item_missing_from_google_sheet_when_scanned(self):
         order_id, _ = self.seed_order()

@@ -22,6 +22,7 @@ class Settings:
     web_login_max_attempts: int
     web_login_window_seconds: int
     web_login_lock_seconds: int
+    google_to_backend_sync_enabled: bool
 
     @property
     def api_auth_enabled(self):
@@ -87,4 +88,8 @@ def load_settings(environ=None):
         web_login_max_attempts=max(1, parse_int(environ.get("TAKSKLAD_WEB_LOGIN_MAX_ATTEMPTS"), 5)),
         web_login_window_seconds=max(30, parse_int(environ.get("TAKSKLAD_WEB_LOGIN_WINDOW_SECONDS"), 300)),
         web_login_lock_seconds=max(60, parse_int(environ.get("TAKSKLAD_WEB_LOGIN_LOCK_SECONDS"), 900)),
+        google_to_backend_sync_enabled=parse_bool(
+            environ.get("TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED"),
+            default=False,
+        ),
     )

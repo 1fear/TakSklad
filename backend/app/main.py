@@ -18,7 +18,11 @@ from .logistics_service import build_logistics_report_xlsx, list_logistics_dates
 from .order_actions_service import (
     archive_order_without_kiz as archive_order_without_kiz_in_db,
     cancel_order as cancel_order_in_db,
+    complete_orders_without_kiz as complete_orders_without_kiz_in_db,
+    reset_order_for_rescan as reset_order_for_rescan_in_db,
+    restore_order as restore_order_in_db,
     resync_order_to_google as resync_order_to_google_in_db,
+    resync_order_skladbot as resync_order_skladbot_in_db,
 )
 from .orders_service import ApiError, complete_order as complete_order_in_db
 from .orders_service import create_scan as create_scan_in_db
@@ -26,10 +30,13 @@ from .orders_service import list_active_orders as list_active_orders_in_db
 from .orders_service import list_returned_orders as list_returned_orders_in_db
 from .orders_service import lookup_return_order as lookup_return_order_in_db
 from .orders_service import mark_order_returned as mark_order_returned_in_db
+from .orders_service import undo_scan as undo_scan_in_db
 from .reports_service import build_day_report
 from .skladbot_worker import update_orders_from_skladbot
 from .schemas import (
     AdminOrderActionRequest,
+    AdminBulkOrderActionRequest,
+    AdminBulkOrderActionResult,
     AdminTableRead,
     AuthLoginRequest,
     AuthSessionRead,
@@ -41,6 +48,7 @@ from .schemas import (
     OrderRead,
     ScanCreate,
     ScanRead,
+    ScanUndo,
 )
 from .settings import APP_VERSION, load_settings
 from .web_auth import (
@@ -82,15 +90,27 @@ def configure_cors(app_instance: FastAPI, app_settings) -> None:
 configure_cors(app, settings)
 
 
-def require_service_token(authorization: str | None = Header(default=None)):
+def is_valid_service_token(authorization: str | None) -> bool:
+    if not settings.api_auth_enabled:
+        return True
+    expected = f"Bearer {settings.api_token}"
+    return authorization == expected
+
+
+def require_service_token(request: Request, authorization: str | None = Header(default=None)):
+    if is_valid_service_token(authorization):
+        return
+    try:
+        read_web_session(request)
+        return
+    except WebAuthError:
+        pass
     if not settings.api_auth_enabled:
         return
-    expected = f"Bearer {settings.api_token}"
-    if authorization != expected:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid service token",
-        )
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid service token or web session",
+    )
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -220,6 +240,14 @@ def retry_pending_google_exports(limit: int = 50, db=Depends(get_db)):
     return process_pending_google_sheets_exports(db, limit=limit)
 
 
+@api.post("/admin/orders/bulk/complete-without-kiz", response_model=AdminBulkOrderActionResult)
+def complete_orders_without_kiz(payload: AdminBulkOrderActionRequest, db=Depends(get_db)):
+    try:
+        return complete_orders_without_kiz_in_db(db, payload)
+    except ApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
 @api.post("/admin/orders/{order_id}/archive-without-kiz", response_model=OrderRead)
 def archive_order_without_kiz(order_id: str, payload: AdminOrderActionRequest, db=Depends(get_db)):
     try:
@@ -244,6 +272,30 @@ def resync_order_to_google(order_id: str, payload: AdminOrderActionRequest | Non
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
+@api.post("/admin/orders/{order_id}/reset-rescan", response_model=OrderRead)
+def reset_order_for_rescan(order_id: str, payload: AdminOrderActionRequest, db=Depends(get_db)):
+    try:
+        return reset_order_for_rescan_in_db(db, order_id, payload)
+    except ApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@api.post("/admin/orders/{order_id}/restore", response_model=OrderRead)
+def restore_order(order_id: str, payload: AdminOrderActionRequest, db=Depends(get_db)):
+    try:
+        return restore_order_in_db(db, order_id, payload)
+    except ApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@api.post("/admin/orders/{order_id}/resync-skladbot", response_model=OrderRead)
+def resync_order_skladbot(order_id: str, payload: AdminOrderActionRequest, db=Depends(get_db)):
+    try:
+        return resync_order_skladbot_in_db(db, order_id, payload)
+    except ApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
 @api.post("/sync/sources")
 def sync_sources(skladbot: bool = True, wait_skladbot: bool = False, db=Depends(get_db)):
     if not sync_sources_lock.acquire(blocking=False):
@@ -262,12 +314,18 @@ def sync_sources(skladbot: bool = True, wait_skladbot: bool = False, db=Depends(
             pending_google_result = {"status": "error", "error": str(exc)}
             errors.append("google_sheets_pending")
 
-        try:
-            google_sheets_result = sync_google_sheet_to_backend(db)
-            google_sheets_result = {"status": "completed", **google_sheets_result}
-        except Exception as exc:
-            google_sheets_result = {"status": "error", "error": str(exc)}
-            errors.append("google_sheets")
+        if settings.google_to_backend_sync_enabled:
+            try:
+                google_sheets_result = sync_google_sheet_to_backend(db)
+                google_sheets_result = {"status": "completed", **google_sheets_result}
+            except Exception as exc:
+                google_sheets_result = {"status": "error", "error": str(exc)}
+                errors.append("google_sheets")
+        else:
+            google_sheets_result = {
+                "status": "skipped",
+                "message": "Google -> backend sync is disabled; VDS/Postgres is source of truth",
+            }
 
         if skladbot and wait_skladbot:
             try:
@@ -315,6 +373,14 @@ def list_returns(limit: int = 50, db=Depends(get_db)):
 def create_scan(payload: ScanCreate, db=Depends(get_db)):
     try:
         return create_scan_in_db(db, payload)
+    except ApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@api.post("/scans/undo", response_model=ScanRead)
+def undo_scan(payload: ScanUndo, db=Depends(get_db)):
+    try:
+        return undo_scan_in_db(db, payload)
     except ApiError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 

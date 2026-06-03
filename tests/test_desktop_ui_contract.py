@@ -3,9 +3,16 @@ import unittest
 from unittest import mock
 
 from taksklad import app_day_end
-from taksklad.config import ACCENT, BG_MAIN, FG_TEXT, WARNING
+from taksklad.config import ACCENT, BG_MAIN, ERROR_FG, FG_MUTED, FG_TEXT, WARNING
 from taksklad.app_day_end import build_backend_status
-from taksklad.main import ScanningApp
+from taksklad import backend_client
+from taksklad.main import (
+    ScanningApp,
+    complete_backend_orders_or_raise,
+    format_print_failure_after_backend_complete,
+    group_finish_blocker,
+    is_terminal_scan_state,
+)
 from taksklad.startup_check import format_app_version_label
 from taksklad.ui_widgets import AppButton
 
@@ -54,12 +61,78 @@ class DesktopUiContractTests(unittest.TestCase):
         load_source = inspect.getsource(ScanningApp.load_current_product)
         scan_source = inspect.getsource(ScanningApp.on_scan)
         finish_source = inspect.getsource(ScanningApp.finish_legal_entity)
+        next_source = inspect.getsource(ScanningApp.next_product)
 
         self.assertIn("self.finish_btn.config(state=\"disabled\")", load_source)
         self.assertIn("Заказ выполнен! Нажмите 'ЗАВЕРШИТЬ ЗАКАЗ'", scan_source)
         self.assertIn("self.current_product_idx >= len(self.current_legal_entity_orders) - 1", scan_source)
         self.assertIn("self.current_product_idx == len(self.current_legal_entity_orders) - 1", finish_source)
         self.assertIn("self.next_product()", finish_source)
+        self.assertNotIn("finish_legal_entity(from_next_product=True)", next_source)
+        self.assertIn("Все позиции сохранены", next_source)
+
+    def test_finish_requires_every_position_saved_and_fully_scanned(self):
+        orders = [
+            {"Кол-во блок": 2, "Отсканированные коды": "01000000000000000001\n01000000000000000002"},
+            {"Кол-во блок": 1, "Отсканированные коды": "01000000000000000003"},
+        ]
+
+        self.assertEqual(group_finish_blocker(orders, [{"Товары": "A"}]), "Сначала сохраните все позиции заказа")
+        self.assertEqual(
+            group_finish_blocker([{**orders[0], "Отсканированные коды": "01000000000000000001"}], [{"Товары": "A"}]),
+            "Позиция 1: отсканировано 1 из 2 блоков",
+        )
+        self.assertEqual(group_finish_blocker(orders, [{"Товары": "A"}, {"Товары": "B"}]), "")
+
+    def test_undo_saved_code_updates_active_row_and_keeps_finish_disabled_when_incomplete(self):
+        source = inspect.getsource(ScanningApp.undo_last_scan)
+
+        self.assertIn("allow_empty=True", source)
+        self.assertNotIn("Нельзя отменить коды, уже записанные в Google Sheets", source)
+        self.assertIn("self.finish_btn.config(state=\"disabled\")", source)
+
+    def test_undo_terminal_state_guard_does_not_block_completed_active_position(self):
+        self.assertTrue(is_terminal_scan_state({"Статус": "Архив без КИЗ"}))
+        self.assertTrue(is_terminal_scan_state({"Статус": "Возврат"}))
+        self.assertFalse(is_terminal_scan_state({"Статус": "Выполнено"}))
+
+    def test_finish_prints_before_backend_complete_and_skips_direct_google_archive_in_backend_mode(self):
+        source = inspect.getsource(ScanningApp.finish_legal_entity)
+
+        self.assertLess(source.index("print_summary(address, summary_products)"), source.index("complete_backend_orders_or_raise"))
+        self.assertIn("Заказ не завершён в backend", source)
+        self.assertIn("not (backend_order_ids and backend_enabled())", source)
+
+    def test_backend_complete_accepts_already_completed_order_for_repeat_print(self):
+        completed = []
+
+        def fake_complete(order_id):
+            if order_id == "order-done":
+                raise backend_client.BackendApiError(
+                    "Backend HTTP 409: Order already completed",
+                    status_code=409,
+                    detail={"message": "Order already completed"},
+                )
+            completed.append(order_id)
+
+        with (
+            mock.patch("taksklad.main.backend_configured", return_value=True),
+            mock.patch("taksklad.main.complete_order", side_effect=fake_complete),
+        ):
+            result = complete_backend_orders_or_raise(["order-new", "order-done"])
+
+        self.assertEqual(completed, ["order-new"])
+        self.assertEqual(result, {"completed": 1, "already_completed": 1})
+
+    def test_print_failure_after_backend_complete_keeps_repeat_print_message(self):
+        message = format_print_failure_after_backend_complete(
+            RuntimeError("printer offline"),
+            {"completed": 1, "already_completed": 0},
+        )
+
+        self.assertIn("Backend уже завершил заказ", message)
+        self.assertIn("Повторите печать", message)
+        self.assertIn("printer offline", message)
 
     def test_selected_order_shows_party_summary(self):
         select_source = inspect.getsource(ScanningApp.select_legal_entity)
@@ -118,15 +191,25 @@ class DesktopUiContractTests(unittest.TestCase):
             mock.patch.object(app_day_end, "backend_enabled", return_value=True),
             mock.patch.object(app_day_end, "backend_configured", return_value=True),
         ):
-            text, _ = build_backend_status({"backend": {"enabled": True, "remaining": 1}}, pending_backend=2)
+            text, color = build_backend_status({"backend": {"enabled": True, "remaining": 1}}, pending_backend=2)
         self.assertEqual(text, "Синхронизация: ожидает отправки")
+        self.assertEqual(color, FG_MUTED)
 
         with (
             mock.patch.object(app_day_end, "backend_enabled", return_value=True),
             mock.patch.object(app_day_end, "backend_configured", return_value=True),
         ):
-            text, _ = build_backend_status({"backend": {"enabled": True, "failed": 1, "remaining": 3}})
-        self.assertEqual(text, "Синхронизация: временная ошибка")
+            text, color = build_backend_status({"backend": {"enabled": True, "failed": 1, "remaining": 3}})
+        self.assertEqual(text, "Синхронизация: ожидает повторной отправки")
+        self.assertEqual(color, FG_MUTED)
+
+        with (
+            mock.patch.object(app_day_end, "backend_enabled", return_value=True),
+            mock.patch.object(app_day_end, "backend_configured", return_value=True),
+        ):
+            text, color = build_backend_status({"backend": {"enabled": True, "failed": 1, "remaining": 0}})
+        self.assertEqual(text, "Синхронизация: нужна проверка")
+        self.assertEqual(color, ERROR_FG)
 
         with (
             mock.patch.object(app_day_end, "backend_enabled", return_value=True),

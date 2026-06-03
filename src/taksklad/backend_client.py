@@ -149,6 +149,19 @@ def create_scan(order_item_id, code, workstation_id=None, scanned_at=None):
     return backend_request("POST", "/api/v1/scans", payload)
 
 
+def undo_scan(order_item_id, code, workstation_id=None, actor="desktop"):
+    return backend_request(
+        "POST",
+        "/api/v1/scans/undo",
+        {
+            "order_item_id": order_item_id,
+            "code": code,
+            "workstation_id": workstation_id,
+            "actor": actor,
+        },
+    )
+
+
 def complete_order(order_id):
     return backend_request("POST", f"/api/v1/orders/{order_id}/complete")
 

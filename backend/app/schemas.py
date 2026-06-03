@@ -116,10 +116,32 @@ class AdminTableRead(BaseModel):
 
 
 class AdminOrderActionRequest(BaseModel):
-    reason: str = Field(min_length=1)
+    reason: str = ""
     actor: str = "web"
     idempotency_key: str = ""
     expected_updated_at: str = ""
+    dry_run: bool = False
+
+
+class AdminBulkOrderActionRequest(BaseModel):
+    order_ids: list[str] = Field(min_length=1, max_length=500)
+    reason: str = ""
+    actor: str = "web"
+    idempotency_key: str = ""
+    expected_updated_at_by_order: dict[str, str] = Field(default_factory=dict)
+    dry_run: bool = False
+
+
+class AdminBulkOrderActionError(BaseModel):
+    order_id: str
+    message: str
+
+
+class AdminBulkOrderActionResult(BaseModel):
+    requested: int
+    completed: int
+    failed: int
+    errors: list[AdminBulkOrderActionError] = Field(default_factory=list)
     dry_run: bool = False
 
 
@@ -130,6 +152,23 @@ class ScanCreate(BaseModel):
     scanned_by: str | None = None
     scanned_at: datetime | None = None
     raw_payload: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("code")
+    @classmethod
+    def normalize_code(cls, value):
+        code = str(value or "").strip(" \t\r\n")
+        if not code:
+            raise ValueError("Code must not be empty")
+        if any(char in code for char in (" ", "\t", "\r", "\n", "\v", "\f")):
+            raise ValueError("Code must not contain spaces or line breaks")
+        return code
+
+
+class ScanUndo(BaseModel):
+    order_item_id: str
+    code: str = Field(min_length=1)
+    workstation_id: str | None = None
+    actor: str = "desktop"
 
     @field_validator("code")
     @classmethod

@@ -763,13 +763,13 @@ def get_today_orders(apply_skladbot_filter=None, include_rows=False):
         raise
 
 
-def update_scanned_codes_to_gsheet(sheet, order, scanned_codes):
+def update_scanned_codes_to_gsheet(sheet, order, scanned_codes, allow_empty=False):
     try:
-        if not scanned_codes:
+        if not scanned_codes and not allow_empty:
             return False, "Нет отсканированных кодов для записи"
 
         scanned_codes = split_codes("\n".join(scanned_codes))
-        if not scanned_codes:
+        if not scanned_codes and not allow_empty:
             return False, "Нет корректных отсканированных кодов для записи"
 
         if len(scanned_codes) != len(set(scanned_codes)):
@@ -806,7 +806,9 @@ def update_scanned_codes_to_gsheet(sheet, order, scanned_codes):
         if existing_codes:
             existing_set = set(existing_codes)
             scanned_set = set(scanned_codes)
-            if not existing_set.issubset(scanned_set):
+            if not existing_set.issubset(scanned_set) and not (
+                allow_empty and scanned_set.issubset(existing_set)
+            ):
                 return False, "В строке заказа уже есть другие отсканированные коды"
 
         duplicate_codes = []

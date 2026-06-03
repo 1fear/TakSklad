@@ -30,7 +30,7 @@ TakSklad 2.0 должен стать рабочей VDS-backed версией с
 - Telegram worker на VDS работает как единственный слушатель Telegram.
 - Импорт Excel идёт через backend.
 - Менеджер задаёт дату отгрузки при Telegram-импорте, если источник не содержит надёжную дату.
-- VDS SkladBot worker работает узко и динамически: базовое окно `SKLADBOT_SYNC_LOOKBACK_DAYS=1`, потолок `SKLADBOT_SYNC_MAX_LOOKBACK_DAYS=7`, запас на заранее созданные заявки `SKLADBOT_ORDER_CREATE_LEAD_DAYS=3`, лимит детальных заявок `SKLADBOT_DETAIL_LIMIT=30`, `SKLADBOT_CUSTOMER_ID=6211`, `SKLADBOT_SHIPMENT_TYPE_ID=3389`, интервал 60 секунд.
+- VDS SkladBot worker работает динамически: базовое окно `SKLADBOT_SYNC_LOOKBACK_DAYS=1`, потолок `SKLADBOT_SYNC_MAX_LOOKBACK_DAYS=7`, запас на заранее созданные заявки `SKLADBOT_ORDER_CREATE_LEAD_DAYS=3`, лимит детальных заявок `SKLADBOT_DETAIL_LIMIT=3`, пауза между detail-запросами `SKLADBOT_REQUEST_DELAY_SECONDS=20`, `SKLADBOT_CUSTOMER_ID=6211`, `SKLADBOT_SHIPMENT_TYPE_ID=3389`, интервал 60 секунд.
 - SkladBot matching сравнивает количество только в блоках, товар - по нормализованному цвету и формату, адрес - только как мягкий признак.
 - SkladBot matching поддерживает безопасный partial-match: лишние товары в заявке не блокируют совпадение, но несколько подходящих заявок остаются `multiple`.
 - Логистический отчёт формируется по выбранной дате отгрузки и содержит координаты доставки.

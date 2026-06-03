@@ -127,7 +127,7 @@ class BackendGoogleSheetsExporterTests(unittest.TestCase):
         self.assertEqual(service_account.call_args.kwargs["http_client"], exporter.GoogleTimeoutHTTPClient)
         self.assertGreaterEqual(exporter.GOOGLE_API_TIMEOUT_SECONDS, 1)
 
-    def test_update_backend_order_item_row_writes_codes_and_status(self):
+    def test_update_backend_order_item_row_replaces_codes_and_status_from_backend(self):
         header = exporter.build_import_sheet_header()
         sheet = FakeSheet("data", [header, self.make_row("import-1", "order-1", codes="0100")])
         item = self.make_item()
@@ -136,8 +136,40 @@ class BackendGoogleSheetsExporterTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "completed")
         header_idx = exporter.get_header_index(sheet.rows[0])
-        self.assertEqual(sheet.rows[1][header_idx["Отсканированные коды"]], "0100\n0101\n0102")
+        self.assertEqual(sheet.rows[1][header_idx["Отсканированные коды"]], "0101\n0102")
         self.assertEqual(sheet.rows[1][header_idx["Статус"]], "Выполнено")
+
+    def test_restore_import_records_updates_existing_row_instead_of_skipping_duplicate(self):
+        header = exporter.build_import_sheet_header()
+        sheet = FakeSheet("data", [
+            header.copy(),
+            self.make_row("import-1", "order-1", codes="stale-code", status="Выполнено"),
+        ])
+        spreadsheet = FakeSpreadsheet({"data": sheet})
+        record = {
+            "Дата отгрузки": "01.06.2026",
+            "Тип оплаты": "Перечисление",
+            "Клиент": "Client",
+            "Адрес": "Tashkent, Test 1",
+            "Торговый представитель": "Rep",
+            "Товары": "Chapman RED OP 20",
+            "Кол-во ШТ": 20,
+            "Кол-во блок": 2,
+            "Отсканированные коды": "",
+            "Статус": "Не выполнено",
+            "ID заказа": "order-1",
+            "ID импорта": "import-1",
+        }
+
+        with mock.patch.object(exporter, "get_google_client", return_value=SimpleNamespace(open_by_key=lambda _key: spreadsheet)):
+            result = exporter.restore_import_records_to_google_sheets([record])
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["updated"], 1)
+        self.assertEqual(result["imported"], 0)
+        header_idx = exporter.get_header_index(sheet.rows[0])
+        self.assertEqual(sheet.rows[1][header_idx["Отсканированные коды"]], "")
+        self.assertEqual(sheet.rows[1][header_idx["Статус"]], "Не выполнено")
 
     def test_update_backend_orders_skladbot_rows_writes_request_fields(self):
         header = exporter.build_import_sheet_header()

@@ -31,18 +31,15 @@ def build_admin_table(db: Session, limit=1000, activity_limit=30):
         .order_by(Order.order_date.asc(), Order.created_at.asc())
     ).scalars().all()
 
-    rows = []
+    all_rows = []
     for order in orders:
         for item in sorted(order.items, key=lambda value: (str(value.created_at or ""), str(value.id))):
-            rows.append(order_item_to_admin_row(order, item, pending_by_entity))
-            if len(rows) >= row_limit:
-                break
-        if len(rows) >= row_limit:
-            break
+            all_rows.append(order_item_to_admin_row(order, item, pending_by_entity))
+    rows = all_rows[:row_limit]
 
     return AdminTableRead(
         generated_at=datetime.now(timezone.utc),
-        totals=build_totals(rows, pending_total),
+        totals=build_totals(all_rows, pending_total),
         rows=rows,
         recent_activity=list_recent_activity(db, activity_row_limit),
     )

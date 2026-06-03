@@ -7,6 +7,7 @@ from .backend_client import (
     backend_configured,
     complete_order,
     create_scan,
+    undo_scan,
 )
 from .storage import load_data_section, save_data_section
 from .utils import make_hash, normalize_kiz_code, normalize_text, split_codes
@@ -102,6 +103,23 @@ def remove_pending_backend_scan(order, code):
         return False
     save_pending_backend_events(new_pending)
     return True
+
+
+def undo_backend_scan(order, code):
+    if remove_pending_backend_scan(order, code):
+        return {"status": "removed_from_queue"}
+    order_item_id = normalize_text(order.get("_backend_order_item_id"))
+    code = normalize_kiz_code(code)
+    if not order_item_id or not code:
+        return {"status": "skipped"}
+    if not backend_configured():
+        raise BackendApiError("Backend URL не настроен")
+    return undo_scan(
+        order_item_id,
+        code,
+        workstation_id=socket.gethostname(),
+        actor="desktop",
+    )
 
 
 def queue_backend_order_complete(order_id):

@@ -6,11 +6,9 @@ from datetime import date, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from .google_sheets_exporter import append_import_records_to_google_sheets, make_sheet_record
+from .google_sheets_exporter import make_sheet_record
 from .google_sheets_pending import (
-    mark_google_sheets_export_synced,
     queue_google_sheets_export,
-    should_queue_google_sheets_export,
 )
 from .models import AuditLog, ImportFile, ImportJob, Order, OrderItem
 from .orders_service import STATUS_COMPLETED, STATUS_NOT_COMPLETED
@@ -152,6 +150,7 @@ def create_import(db: Session, payload: ImportCreate):
             status=row["status"],
             raw_payload={
                 "item_key": row["item_key"],
+                "business_line_key": row["item_key"],
                 "source_order_id": row["source_order_id"],
                 "source_import_id": row["source_import_id"],
                 "source_file": row["source_file"],
@@ -227,37 +226,31 @@ def create_import(db: Session, payload: ImportCreate):
 
 
 def export_import_records_to_google_sheets(db: Session, records, import_job_id=""):
-    try:
-        result = append_import_records_to_google_sheets(records)
-    except Exception as exc:
-        logger.exception("Google Sheets export failed after backend import")
-        result = {
-            "status": "error",
+    if not records:
+        return {
+            "status": "skipped",
             "imported": 0,
             "duplicates": 0,
             "updated": 0,
-            "error": str(exc),
+            "error": "",
         }
-    if should_queue_google_sheets_export(result):
-        event = queue_google_sheets_export(
-            db,
-            "google_sheets_import_export",
-            "import",
-            import_job_id,
-            result=result,
-            payload={"records": records},
-        )
-        return {**result, "queued": True, "pending_event_id": str(event.id) if event else ""}
-
-    completed_events = mark_google_sheets_export_synced(
+    result = {
+        "status": "queued",
+        "imported": 0,
+        "duplicates": 0,
+        "updated": 0,
+        "error": "",
+        "queued": True,
+    }
+    event = queue_google_sheets_export(
         db,
         "google_sheets_import_export",
+        "import",
         import_job_id,
         result=result,
+        payload={"records": records},
     )
-    if completed_events:
-        return {**result, "completed_pending_events": completed_events}
-    return result
+    return {**result, "pending_event_id": str(event.id) if event else ""}
 
 
 def list_imports(db: Session):
@@ -380,8 +373,6 @@ def normalize_import_row(raw_row):
     })
     item_key = stable_hash({
         "order_key": order_key,
-        "source_order_id": source_order_id,
-        "source_import_id": source_import_id,
         "product": product,
         "quantity_pieces": quantity_pieces,
         "quantity_blocks": quantity_blocks,

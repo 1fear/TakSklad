@@ -6,18 +6,9 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
-from .google_sheets_exporter import (
-    archive_backend_order_to_google_sheets,
-    mark_backend_order_returned_in_google_sheets,
-    sync_backend_order_item_to_google_sheets,
-)
-from .google_sheets_pending import (
-    mark_google_sheets_export_synced,
-    queue_google_sheets_export,
-    should_queue_google_sheets_export,
-)
+from .google_sheets_pending import queue_google_sheets_export
 from .models import AuditLog, Order, OrderItem, ScanCode
-from .schemas import OrderItemRead, OrderRead, ScanCreate, ScanRead
+from .schemas import OrderItemRead, OrderRead, ScanCreate, ScanRead, ScanUndo
 
 
 STATUS_COMPLETED = "completed"
@@ -142,6 +133,80 @@ def create_scan(db: Session, payload: ScanCreate):
     db.refresh(scan)
     db.refresh(item)
     response = scan_to_read(scan, item)
+    export_order_item_scan_to_google_sheets_best_effort(db, item.id)
+    return response
+
+
+def undo_scan(db: Session, payload: ScanUndo):
+    order_item_id = parse_uuid(payload.order_item_id, "order_item_id")
+    code = str(payload.code or "").strip(" \t\r\n")
+    if not code:
+        raise ApiError(422, "Code must not be empty")
+
+    item = db.execute(
+        select(OrderItem)
+        .options(selectinload(OrderItem.order), selectinload(OrderItem.scan_codes))
+        .where(OrderItem.id == order_item_id)
+        .with_for_update()
+    ).scalar_one_or_none()
+    if item is None:
+        raise ApiError(404, "Order item not found")
+    if item.order.status in INACTIVE_ORDER_STATUSES:
+        raise ApiError(409, "Cannot undo scan for inactive order")
+
+    scan = db.execute(
+        select(ScanCode)
+        .where(ScanCode.order_item_id == item.id)
+        .where(ScanCode.code == code)
+        .with_for_update()
+    ).scalar_one_or_none()
+    if scan is None:
+        existing_scan = db.execute(select(ScanCode).where(ScanCode.code == code)).scalar_one_or_none()
+        if existing_scan is not None:
+            raise ApiError(409, {
+                "message": "Code belongs to another order item",
+                "existing_order_item_id": str(existing_scan.order_item_id),
+                "order_item_id": str(item.id),
+            })
+        raise ApiError(404, "Scan code was not found for this order item")
+
+    scan_id = scan.id
+    scanned_at = scan.scanned_at
+    db.delete(scan)
+    remaining_codes = [
+        existing.code
+        for existing in item.scan_codes
+        if existing.id != scan_id
+    ]
+    item.scanned_blocks = len(remaining_codes)
+    if item.quantity_blocks > 0 and item.scanned_blocks >= item.quantity_blocks:
+        item.status = STATUS_COMPLETED
+    else:
+        item.status = STATUS_NOT_COMPLETED
+    if item.order.status not in INACTIVE_ORDER_STATUSES:
+        item.order.status = STATUS_NOT_COMPLETED
+
+    db.add(AuditLog(
+        action="scan_code_deleted",
+        entity_type="scan_code",
+        entity_id=str(scan_id),
+        payload={
+            "order_item_id": str(item.id),
+            "code": code,
+            "workstation_id": payload.workstation_id,
+            "actor": payload.actor,
+        },
+    ))
+    db.commit()
+    db.refresh(item)
+    response = ScanRead(
+        id=str(scan_id),
+        order_item_id=str(item.id),
+        code=code,
+        scanned_blocks=item.scanned_blocks,
+        item_status=item.status,
+        scanned_at=scanned_at,
+    )
     export_order_item_scan_to_google_sheets_best_effort(db, item.id)
     return response
 
@@ -311,7 +376,6 @@ def export_order_item_scan_to_google_sheets_best_effort(db: Session, item_id):
         action="google_sheets_scan_export",
         entity_type="order_item",
         entity_id=str(item.id),
-        callback=lambda: sync_backend_order_item_to_google_sheets(item),
     )
 
 
@@ -328,7 +392,6 @@ def export_order_archive_to_google_sheets_best_effort(db: Session, order_id):
         action="google_sheets_archive_export",
         entity_type="order",
         entity_id=str(order.id),
-        callback=lambda: archive_backend_order_to_google_sheets(order),
     )
 
 
@@ -345,25 +408,14 @@ def export_order_return_to_google_sheets_best_effort(db: Session, order_id):
         action="google_sheets_return_export",
         entity_type="order",
         entity_id=str(order.id),
-        callback=lambda: mark_backend_order_returned_in_google_sheets(order),
     )
 
 
-def record_google_sheets_export_result(db: Session, action, entity_type, entity_id, callback):
+def record_google_sheets_export_result(db: Session, action, entity_type, entity_id):
+    result = {"status": "queued", "queued": True, "error": ""}
     try:
-        result = callback()
-    except Exception as exc:
-        logger.exception("Google Sheets export failed: %s", action)
-        result = {"status": "error", "error": str(exc)}
-
-    try:
-        if should_queue_google_sheets_export(result):
-            event = queue_google_sheets_export(db, action, entity_type, entity_id, result=result)
-            result = {**result, "queued": True, "pending_event_id": str(event.id) if event else ""}
-        else:
-            completed_events = mark_google_sheets_export_synced(db, action, entity_id, result=result)
-            if completed_events:
-                result = {**result, "completed_pending_events": completed_events}
+        event = queue_google_sheets_export(db, action, entity_type, entity_id, result=result)
+        result = {**result, "pending_event_id": str(event.id) if event else ""}
         db.add(AuditLog(
             action=action,
             entity_type=entity_type,

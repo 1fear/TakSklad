@@ -157,11 +157,46 @@ type RequestOptions = {
   body?: unknown;
 };
 
+export class ApiRequestError extends Error {
+  status: number;
+  statusText: string;
+
+  constructor(status: number, statusText: string, detail: string) {
+    const prefix = `${status} ${statusText}`.trim();
+    super(detail ? `${prefix}: ${detail}` : prefix || "Ошибка запроса");
+    this.name = "ApiRequestError";
+    this.status = status;
+    this.statusText = statusText;
+  }
+}
+
 export type AdminActionPayload = {
-  reason: string;
+  reason?: string;
   actor?: string;
   idempotency_key?: string;
 };
+
+export type AdminBulkActionResult = {
+  requested: number;
+  completed: number;
+  failed: number;
+  errors: Array<{ order_id: string; message: string }>;
+  dry_run: boolean;
+};
+
+export type SyncSourcesResult = {
+  status?: string;
+  errors?: string[];
+  google_sheets_pending?: Record<string, unknown>;
+  google_sheets?: Record<string, unknown>;
+  skladbot?: Record<string, unknown>;
+};
+
+export const plannedAdminActionEndpoints = {
+  resetRescan: "/api/v1/admin/orders/{order_id}/reset-rescan",
+  restore: "/api/v1/admin/orders/{order_id}/restore",
+  resyncSkladBot: "/api/v1/admin/orders/{order_id}/resync-skladbot",
+} as const;
 
 export function defaultApiUrl() {
   return "";
@@ -191,8 +226,7 @@ export async function apiRequest<T>(
     } catch {
       detail = await response.text();
     }
-    const prefix = `${response.status} ${response.statusText}`.trim();
-    throw new Error(detail ? `${prefix}: ${detail}` : prefix || "Ошибка запроса");
+    throw new ApiRequestError(response.status, response.statusText, detail);
   }
 
   return response.json() as Promise<T>;
@@ -248,6 +282,66 @@ export function cancelOrder(config: ApiConfig, orderId: string, payload: AdminAc
     method: "POST",
     body: payload,
   });
+}
+
+export function resetOrderForRescan(config: ApiConfig, orderId: string, payload: AdminActionPayload) {
+  return apiRequest<Order>(config, `/api/v1/admin/orders/${orderId}/reset-rescan`, {
+    method: "POST",
+    body: payload,
+  });
+}
+
+export function restoreOrder(config: ApiConfig, orderId: string, payload: AdminActionPayload) {
+  return apiRequest<Order>(config, `/api/v1/admin/orders/${orderId}/restore`, {
+    method: "POST",
+    body: payload,
+  });
+}
+
+export function resyncSkladBotOrder(config: ApiConfig, orderId: string, payload: AdminActionPayload) {
+  return apiRequest<Order>(config, `/api/v1/admin/orders/${orderId}/resync-skladbot`, {
+    method: "POST",
+    body: payload,
+  });
+}
+
+export function completeOrdersWithoutKiz(config: ApiConfig, orderIds: string[], payload: AdminActionPayload) {
+  return apiRequest<AdminBulkActionResult>(config, "/api/v1/admin/orders/bulk/complete-without-kiz", {
+    method: "POST",
+    body: {
+      order_ids: orderIds,
+      ...payload,
+    },
+  });
+}
+
+export function syncSources(config: ApiConfig, options: { skladbot?: boolean; waitSkladbot?: boolean } = {}) {
+  const params = new URLSearchParams({
+    skladbot: options.skladbot === false ? "0" : "1",
+    wait_skladbot: options.waitSkladbot ? "1" : "0",
+  });
+  return apiRequest<SyncSourcesResult>(config, `/api/v1/sync/sources?${params.toString()}`, {
+    method: "POST",
+  });
+}
+
+export async function downloadDiagnosticsLog(config: ApiConfig) {
+  const apiUrl = config.apiUrl.replace(/\/$/, "");
+  const response = await fetch(`${apiUrl}/api/v1/diagnostics/logs`, {
+    credentials: "include",
+    headers: {
+      ...(config.token ? { Authorization: `Bearer ${config.token}` } : {}),
+    },
+  });
+
+  if (!response.ok) {
+    throw new ApiRequestError(response.status, response.statusText, "Не удалось скачать audit log");
+  }
+
+  return {
+    blob: await response.blob(),
+    filename: response.headers.get("X-TakSklad-Filename") || "TakSklad_backend_diagnostics.txt",
+  };
 }
 
 export function getDayReport(config: ApiConfig, reportDate: string) {

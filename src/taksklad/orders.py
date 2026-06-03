@@ -129,18 +129,51 @@ def order_group_key(order):
 def row_matches_order(row, header_idx, order):
     order_id = normalize_text(order.get("ID заказа"))
     order_id_idx = header_idx.get("ID заказа")
-    if order_id and order_id_idx is not None and get_cell(row, order_id_idx) == order_id:
+    import_id = normalize_text(order.get("ID импорта"))
+    import_id_idx = header_idx.get("ID импорта")
+    if import_id and import_id_idx is not None and get_cell(row, import_id_idx) == import_id:
         return True
 
-    checks = [
-        (
+    business_matches = row_business_matches_order(row, header_idx, order)
+    if order_id and order_id_idx is not None and get_cell(row, order_id_idx) == order_id:
+        return business_matches if order_has_business_identity(order) else True
+
+    return business_matches
+
+
+def order_has_business_identity(order):
+    return any(
+        normalize_text(order.get(field))
+        for field in (
             ORDER_DATE_COLUMN,
-            parse_date_to_standard(get_cell(row, get_order_date_header_index(header_idx)))
-            == parse_date_to_standard(get_order_date_value(order)),
-        ),
-        ("Тип оплаты", get_cell(row, header_idx.get("Тип оплаты")) == normalize_text(order.get("Тип оплаты"))),
-        ("Клиент", get_cell(row, header_idx.get("Клиент")) == normalize_text(order.get("Клиент"))),
-        ("Адрес", get_cell(row, header_idx.get("Адрес")) == normalize_text(order.get("Адрес"))),
-        ("Товары", get_cell(row, header_idx.get("Товары")) == normalize_text(order.get("Товары"))),
-    ]
-    return all(result for _, result in checks)
+            LEGACY_ORDER_DATE_COLUMN,
+            "Тип оплаты",
+            "Клиент",
+            "Адрес",
+            "Товары",
+            "Кол-во ШТ",
+            "Кол-во блок",
+        )
+    )
+
+
+def row_business_matches_order(row, header_idx, order):
+    checks = []
+
+    expected_date = parse_date_to_standard(get_order_date_value(order))
+    if expected_date:
+        checks.append(
+            parse_date_to_standard(get_cell(row, get_order_date_header_index(header_idx))) == expected_date
+        )
+
+    for field in ("Тип оплаты", "Клиент", "Адрес", "Товары"):
+        expected = normalize_text(order.get(field))
+        if expected:
+            checks.append(get_cell(row, header_idx.get(field)) == expected)
+
+    for field in ("Кол-во ШТ", "Кол-во блок"):
+        expected = parse_int_value(order.get(field))
+        if expected:
+            checks.append(parse_int_value(get_cell(row, header_idx.get(field))) == expected)
+
+    return bool(checks) and all(checks)

@@ -25,8 +25,11 @@ from .app_skladbot import SkladBotActionsMixin
 from .app_telegram import TelegramActionsMixin
 from .app_updates import UpdateMixin
 from .backend_client import (
+    BackendApiError,
+    backend_configured,
     backend_enabled,
     backend_read_orders_enabled,
+    complete_order,
     fetch_backend_sheet_data,
     fetch_returned_orders,
     lookup_return_order,
@@ -37,10 +40,10 @@ from .backend_events import (
     get_pending_backend_codes,
     load_pending_backend_events,
     remove_pending_backend_scan,
-    queue_backend_order_complete,
     queue_backend_scan,
     queue_backend_scans_for_order,
     sync_pending_backend_events,
+    undo_backend_scan,
 )
 from .desktop_diagnostics import log_refresh_diagnostic_summary
 from .orders import (
@@ -57,6 +60,7 @@ from .pending_store import (
     load_pending_saves,
     remove_pending_print,
     sync_pending_saves,
+    update_pending_save_codes_for_undo,
     write_scan_backup,
 )
 from .printing import print_summary
@@ -93,6 +97,7 @@ from .utils import (
     normalize_text,
     parse_date_to_standard,
     parse_int_value,
+    split_codes,
     validate_kiz_code,
 )
 
@@ -151,6 +156,87 @@ def format_money(value):
     return f"{amount:,} сум".replace(",", " ")
 
 
+def scanned_codes_for_order(order):
+    return split_codes(order.get("Отсканированные коды") or "\n".join(order.get("_existing_scanned_codes") or []))
+
+
+def group_finish_blocker(orders, completed_products):
+    if not orders:
+        return "Нет строк заказа для завершения"
+    if len(completed_products) < len(orders):
+        return "Сначала сохраните все позиции заказа"
+    for idx, order in enumerate(orders, start=1):
+        plan_blocks = get_plan_blocks(order)
+        scanned_count = len(scanned_codes_for_order(order))
+        if plan_blocks <= 0:
+            return f"В позиции {idx} не указано корректное 'Кол-во блок'"
+        if scanned_count < plan_blocks:
+            return f"Позиция {idx}: отсканировано {scanned_count} из {plan_blocks} блоков"
+    return ""
+
+
+def is_terminal_scan_state(order):
+    status = normalize_text(order.get(STATUS_COLUMN)).lower().replace("ё", "е")
+    return any(marker in status for marker in ("архив", "возврат", "закрыт", "closed", "returned", "archive"))
+
+
+def order_uses_backend_scan_path(order):
+    return bool(backend_enabled() and normalize_text(order.get("_backend_order_item_id")))
+
+
+def is_backend_order_already_completed_error(exc):
+    if not isinstance(exc, BackendApiError) or exc.retryable:
+        return False
+    detail = normalize_text(exc.detail or exc).lower()
+    return any(
+        marker in detail
+        for marker in (
+            "already completed",
+            "already complete",
+            "already closed",
+            "order completed",
+            "order is completed",
+            "order closed",
+            "заказ уже заверш",
+            "заказ заверш",
+            "заказ уже закрыт",
+            "заказ закрыт",
+        )
+    )
+
+
+def complete_backend_orders_or_raise(order_ids):
+    order_ids = [normalize_text(order_id) for order_id in order_ids if normalize_text(order_id)]
+    if not order_ids:
+        return {"completed": 0, "already_completed": 0}
+    if not backend_configured():
+        raise RuntimeError("Backend включён, но URL сервера не настроен. Заказ не архивирован.")
+
+    result = {"completed": 0, "already_completed": 0}
+    for order_id in order_ids:
+        try:
+            complete_order(order_id)
+            result["completed"] += 1
+        except BackendApiError as exc:
+            if is_backend_order_already_completed_error(exc):
+                result["already_completed"] += 1
+                continue
+            raise
+    return result
+
+
+def format_print_failure_after_backend_complete(exc, backend_complete_result):
+    completed = int(backend_complete_result.get("completed") or 0)
+    already_completed = int(backend_complete_result.get("already_completed") or 0)
+    if completed or already_completed:
+        return (
+            "Backend уже завершил заказ, но сводный лист не напечатался. "
+            "Статус на сервере не откатываю. Повторите печать через завершение заказа или очередь печати. "
+            f"Причина: {exc}"
+        )
+    return f"Сводный лист не напечатался. Заказ не архивирован. Причина: {exc}"
+
+
 def is_date_separator(value):
     return isinstance(value, tuple) and len(value) == 2 and value[0] == "__date__"
 
@@ -195,6 +281,14 @@ def fetch_google_sheet_data():
 
 
 def fetch_sheet_data():
+    if backend_read_orders_enabled():
+        try:
+            today_orders, sheet, all_existing_codes = fetch_backend_sheet_data()
+            all_existing_codes.update(get_pending_backend_codes())
+            return today_orders, sheet, all_existing_codes
+        except Exception:
+            logging.warning("Backend orders unavailable, fallback to Google Sheets", exc_info=True)
+
     try:
         return fetch_google_sheet_data()
     except Exception:
@@ -221,9 +315,9 @@ def fetch_sheet_data_with_sync(sync_skladbot=True):
             }
 
         try:
-            sources_result = sync_backend_sources(sync_skladbot=sync_skladbot, wait_skladbot=sync_skladbot)
+            sources_result = sync_backend_sources(sync_skladbot=sync_skladbot, wait_skladbot=False)
         except Exception as exc:
-            logging.warning("Backend sources sync failed before Google primary refresh", exc_info=True)
+            logging.warning("Backend sources sync failed before backend refresh", exc_info=True)
             sources_result = {
                 "status": "error",
                 "message": str(exc),
@@ -232,22 +326,6 @@ def fetch_sheet_data_with_sync(sync_skladbot=True):
             }
 
         try:
-            today_orders, sheet, all_existing_codes = fetch_google_sheet_data()
-            try:
-                google_queue_result = sync_pending_saves(sheet)
-                if google_queue_result.get("synced"):
-                    today_orders, sheet, all_existing_codes = fetch_google_sheet_data()
-            except Exception as exc:
-                logging.warning("Google pending save sync failed during backend refresh", exc_info=True)
-                google_queue_result = {
-                    "synced": 0,
-                    "failed": 1,
-                    "remaining": len(load_pending_saves()),
-                    "message": str(exc),
-                }
-            primary_source = "google_sheets"
-        except Exception:
-            logging.warning("Google primary refresh failed, fallback to backend orders", exc_info=True)
             today_orders, sheet, all_existing_codes = fetch_backend_sheet_data()
             all_existing_codes.update(get_pending_backend_codes())
             google_queue_result = {
@@ -255,7 +333,12 @@ def fetch_sheet_data_with_sync(sync_skladbot=True):
                 "failed": 0,
                 "remaining": len(load_pending_saves()),
             }
-            primary_source = "backend_fallback"
+            primary_source = "backend"
+        except Exception:
+            logging.warning("Backend primary refresh failed, fallback to Google Sheets", exc_info=True)
+            today_orders, sheet, all_existing_codes = fetch_google_sheet_data()
+            google_queue_result = {"synced": 0, "failed": 0, "remaining": len(load_pending_saves())}
+            primary_source = "google_fallback"
 
         sync_result = {
             "synced": google_queue_result.get("synced", 0),
@@ -715,18 +798,62 @@ class ScanningApp(
             self.show_error("Нет активной позиции")
             return
 
+        if is_terminal_scan_state(self.current_order):
+            self.show_error("Нельзя отменить код в архиве, возврате или закрытой смене")
+            return
+
         if not self.scanned_codes:
             self.show_error("Нет кодов для отмены")
             return
 
-        if len(self.scanned_codes) <= self.saved_codes_count:
-            self.show_error("Нельзя отменить коды, уже записанные в Google Sheets")
+        previous_codes = self.scanned_codes.copy()
+        removed_code = self.scanned_codes.pop()
+        remaining_codes = self.scanned_codes.copy()
+        was_saved = len(self.scanned_codes) < self.saved_codes_count
+
+        if not write_scan_backup("undo_scan", self.current_order, code=removed_code, codes=remaining_codes):
+            self.scanned_codes.append(removed_code)
+            self.show_error("Не удалось сохранить локальный backup отмены. Код не отменён")
             return
 
-        removed_code = self.scanned_codes.pop()
+        pending_updated = update_pending_save_codes_for_undo(
+            self.current_order,
+            previous_codes,
+            remaining_codes,
+            "Откат последнего КИЗа в desktop",
+        )
+
+        if was_saved and order_uses_backend_scan_path(self.current_order) and not pending_updated:
+            try:
+                undo_backend_scan(self.current_order, removed_code)
+            except Exception as exc:
+                self.scanned_codes.append(removed_code)
+                self.show_error(f"Не удалось отменить код в VDS: {exc}")
+                return
+            self.saved_codes_count = len(remaining_codes)
+        elif was_saved and not self.sheet and not pending_updated:
+            self.scanned_codes.append(removed_code)
+            self.show_error("Нет подключения к Google Sheets для отмены уже записанного кода")
+            return
+
+        if was_saved and self.sheet and not pending_updated and not order_uses_backend_scan_path(self.current_order):
+            ok, message = update_scanned_codes_to_gsheet(
+                self.sheet,
+                self.current_order,
+                remaining_codes,
+                allow_empty=True,
+            )
+            if not ok:
+                self.scanned_codes.append(removed_code)
+                self.show_error(f"Не удалось отменить код в Google Sheets: {message}")
+                return
+            self.saved_codes_count = len(remaining_codes)
+
+        self.current_order["Отсканированные коды"] = "\n".join(remaining_codes)
+        self.current_order["_existing_scanned_codes"] = remaining_codes.copy()
+        self.current_order[STATUS_COLUMN] = get_order_status(self.current_order)
         self.all_existing_codes.discard(removed_code)
         remove_pending_backend_scan(self.current_order, removed_code)
-        write_scan_backup("undo_scan", self.current_order, code=removed_code, codes=self.scanned_codes.copy())
 
         plan_blocks = get_plan_blocks(self.current_order)
 
@@ -737,7 +864,13 @@ class ScanningApp(
 
         if scanned_count < plan_blocks:
             self.next_product_btn.config(state="disabled")
+            self.finish_btn.config(state="disabled")
+        elif self.current_product_idx >= len(self.current_legal_entity_orders) - 1:
+            self.next_product_btn.config(state="disabled")
             self.finish_btn.config(state="normal")
+        else:
+            self.next_product_btn.config(state="normal")
+            self.finish_btn.config(state="disabled")
 
         self.scan_entry.focus_set()
 
@@ -1637,11 +1770,24 @@ class ScanningApp(
         order = self.current_order
         scanned_codes = self.scanned_codes.copy()
         pieces_per_block = get_product_rule(order.get("Товары", ""), self.product_catalog)["pieces_per_block"]
-        self.set_busy("⏳ Сохраняю КИЗы в Google Sheets...")
+        self.set_busy("⏳ Сохраняю КИЗы...")
         self.safe_config(self.next_product_btn, state="disabled")
         self.safe_config(self.finish_btn, state="disabled")
 
         def work():
+            if order_uses_backend_scan_path(order):
+                for saved_code in scanned_codes:
+                    queue_backend_scan(order, saved_code)
+                backend_sync_result = sync_pending_backend_events()
+                if backend_sync_result.get("failed") or backend_sync_result.get("remaining"):
+                    raise RuntimeError(
+                        "Backend не принял все КИЗы позиции. "
+                        f"Осталось в очереди: {backend_sync_result.get('remaining', 0)}"
+                    )
+                if not write_scan_backup("position_saved_backend", order, codes=scanned_codes):
+                    raise RuntimeError("Коды сохранены в backend, но локальный backup позиции не создан")
+                return {"queued": False, "message": "backend_saved", "backend": True}
+
             ok = False
             message = "Нет подключения к Google Sheets"
             if self.sheet:
@@ -1690,11 +1836,22 @@ class ScanningApp(
                 self.load_current_product()
                 if result.get("queued"):
                     self.status_var.set("⚠️ Позиция сохранена локально, отправится при обновлении")
+                elif result.get("backend"):
+                    self.status_var.set("✅ Позиция сохранена в VDS")
                 else:
                     self.status_var.set("✅ Позиция сохранена")
                 self.status_label.config(bg=BG_MAIN, fg=FG_MUTED)
             else:
-                self.finish_legal_entity(from_next_product=True)
+                self.current_order = None
+                self.next_product_btn.config(state="disabled")
+                self.finish_btn.config(state="normal")
+                if result.get("queued"):
+                    self.status_var.set("⚠️ Все позиции сохранены локально. Проверьте печать и нажмите 'ЗАВЕРШИТЬ ЗАКАЗ'")
+                elif result.get("backend"):
+                    self.status_var.set("✅ Все позиции сохранены в VDS. Проверьте печать и нажмите 'ЗАВЕРШИТЬ ЗАКАЗ'")
+                else:
+                    self.status_var.set("✅ Все позиции сохранены. Проверьте печать и нажмите 'ЗАВЕРШИТЬ ЗАКАЗ'")
+                self.status_label.config(bg=BG_MAIN, fg=FG_MUTED)
             self.update_stats_display()
 
         def on_error(exc):
@@ -1736,6 +1893,12 @@ class ScanningApp(
             self.show_error("Нет завершённых позиций по заказу!")
             return
 
+        finish_blocker = group_finish_blocker(self.current_legal_entity_orders, self.current_legal_entity_products)
+        if finish_blocker:
+            self.show_error(f"Нельзя завершить заказ: {finish_blocker}")
+            self.finish_btn.config(state="disabled")
+            return
+
         if not self.confirm_print_settings():
             self.show_error("Печать сводного листа отменена")
             self.finish_btn.config(state="normal")
@@ -1757,6 +1920,7 @@ class ScanningApp(
             first_product = current_products[0]
             address = first_product.get('Адрес', 'Адрес не указан')
             summary_products = current_products
+            backend_complete_result = {"completed": 0, "already_completed": 0}
 
             if self.sheet:
                 sheet_products = build_summary_products_from_gsheet(
@@ -1770,13 +1934,29 @@ class ScanningApp(
 
             pending_print_id = add_pending_print(address, summary_products)
 
-            printed_files = print_summary(address, summary_products)
-            if not printed_files:
-                raise RuntimeError("Сводочный лист не создан или не отправлен на печать")
+            try:
+                printed_files = print_summary(address, summary_products)
+                if not printed_files:
+                    raise RuntimeError("Сводочный лист не создан или не отправлен на печать")
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Сводный лист не напечатался. Заказ не завершён в backend. Причина: {exc}"
+                ) from exc
 
             remove_pending_print(pending_print_id)
 
-            if self.sheet:
+            if backend_order_ids and backend_enabled():
+                for order in current_orders:
+                    queue_backend_scans_for_order(order)
+                backend_sync_result = sync_pending_backend_events()
+                if backend_sync_result.get("failed") or backend_sync_result.get("remaining"):
+                    raise RuntimeError(
+                        "Сводный лист напечатан, но backend не принял все КИЗы. "
+                        f"Осталось в очереди: {backend_sync_result.get('remaining', 0)}"
+                    )
+                backend_complete_result = complete_backend_orders_or_raise(backend_order_ids)
+
+            if self.sheet and not (backend_order_ids and backend_enabled()):
                 ok, archive_message = archive_order_group_to_gsheet(
                     self.sheet,
                     current_orders,
@@ -1791,10 +1971,9 @@ class ScanningApp(
             ):
                 raise RuntimeError("Сводка напечатана, но backup завершения заказа не создан")
 
-            for order in current_orders:
-                queue_backend_scans_for_order(order)
-            for backend_order_id in backend_order_ids:
-                queue_backend_order_complete(backend_order_id)
+            if not (backend_order_ids and backend_enabled()):
+                for order in current_orders:
+                    queue_backend_scans_for_order(order)
 
             return {
                 "first_product": first_product,

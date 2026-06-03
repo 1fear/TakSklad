@@ -1,8 +1,9 @@
 import logging
+from threading import Lock
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session, selectinload
 
 from .google_sheets_exporter import (
@@ -11,14 +12,26 @@ from .google_sheets_exporter import (
     archive_backend_order_without_kiz_to_google_sheets,
     cancel_backend_order_in_google_sheets,
     mark_backend_order_returned_in_google_sheets,
+    restore_import_records_to_google_sheets,
+    sync_backend_orders_skladbot_to_google_sheets,
     sync_backend_order_item_to_google_sheets,
 )
 from .models import AuditLog, Order, OrderItem, PendingEvent
 
 
 GOOGLE_SHEETS_EXPORT_EVENT_TYPE = "google_sheets_export"
+GOOGLE_SHEETS_EXPORT_LOCK_KEY = 22052632
 RETRYABLE_EXPORT_STATUSES = {"disabled", "error"}
 SUCCESS_EXPORT_STATUSES = {"completed", "skipped"}
+SKLADBOT_EXPORT_INACTIVE_ORDER_STATUSES = (
+    "completed",
+    "done",
+    "closed",
+    "returned",
+    "archived_no_kiz",
+    "cancelled",
+)
+LOCAL_EXPORT_LOCK = Lock()
 logger = logging.getLogger(__name__)
 
 
@@ -99,74 +112,88 @@ def mark_google_sheets_export_synced(db: Session, action, entity_id, result=None
 
 def process_pending_google_sheets_exports(db: Session, limit=50):
     limit = max(1, min(int(limit or 50), 200))
-    events = db.execute(
-        select(PendingEvent)
-        .where(PendingEvent.event_type == GOOGLE_SHEETS_EXPORT_EVENT_TYPE)
-        .where(PendingEvent.status.in_(("pending", "failed")))
-        .order_by(PendingEvent.created_at, PendingEvent.id)
-        .limit(limit)
-    ).scalars().all()
     result = {
         "status": "completed",
-        "checked": len(events),
+        "checked": 0,
         "synced": 0,
         "failed": 0,
         "remaining": 0,
         "errors": [],
     }
-    if not events:
+    if not acquire_google_sheets_export_lock(db):
+        return {**result, "status": "busy", "message": "Google Sheets export is already running"}
+
+    try:
+        events = select_pending_export_events(db, limit)
+        result["checked"] = len(events)
+        if not events:
+            return result
+
+        for event in events:
+            event.status = "processing"
+            event.attempts = int(event.attempts or 0) + 1
+            db.commit()
+
+            try:
+                export_result = run_google_sheets_export_event(db, event)
+            except Exception as exc:
+                logger.exception("Pending Google Sheets export failed")
+                export_result = {"status": "error", "error": str(exc)}
+
+            status = str(export_result.get("status") or "").strip().lower()
+            event.payload = {**(event.payload or {}), "last_result": export_result}
+            if status in SUCCESS_EXPORT_STATUSES:
+                event.status = "completed"
+                event.last_error = ""
+                result["synced"] += 1
+            else:
+                event.status = "failed"
+                event.last_error = format_export_error(export_result)
+                result["failed"] += 1
+                result["errors"].append({
+                    "id": str(event.id),
+                    "action": (event.payload or {}).get("action") or "",
+                    "entity_id": (event.payload or {}).get("entity_id") or "",
+                    "status": export_result.get("status") or "error",
+                    "error": event.last_error,
+                })
+
+            db.add(AuditLog(
+                action="google_sheets_pending_export_processed",
+                entity_type="pending_event",
+                entity_id=str(event.id),
+                payload={
+                    "event_action": (event.payload or {}).get("action") or "",
+                    "event_entity_id": (event.payload or {}).get("entity_id") or "",
+                    "result": export_result,
+                },
+            ))
+            db.commit()
+
+        result["remaining"] = db.execute(
+            select(PendingEvent)
+            .where(PendingEvent.event_type == GOOGLE_SHEETS_EXPORT_EVENT_TYPE)
+            .where(PendingEvent.status.in_(("pending", "failed")))
+        ).scalars().unique().all()
+        result["remaining"] = len(result["remaining"])
+        if result["failed"]:
+            result["status"] = "completed_with_errors"
         return result
+    finally:
+        release_google_sheets_export_lock(db)
 
-    for event in events:
-        event.status = "processing"
-        event.attempts = int(event.attempts or 0) + 1
-        db.commit()
 
-        try:
-            export_result = run_google_sheets_export_event(db, event)
-        except Exception as exc:
-            logger.exception("Pending Google Sheets export failed")
-            export_result = {"status": "error", "error": str(exc)}
-
-        status = str(export_result.get("status") or "").strip().lower()
-        event.payload = {**(event.payload or {}), "last_result": export_result}
-        if status in SUCCESS_EXPORT_STATUSES:
-            event.status = "completed"
-            event.last_error = ""
-            result["synced"] += 1
-        else:
-            event.status = "failed"
-            event.last_error = format_export_error(export_result)
-            result["failed"] += 1
-            result["errors"].append({
-                "id": str(event.id),
-                "action": (event.payload or {}).get("action") or "",
-                "entity_id": (event.payload or {}).get("entity_id") or "",
-                "status": export_result.get("status") or "error",
-                "error": event.last_error,
-            })
-
-        db.add(AuditLog(
-            action="google_sheets_pending_export_processed",
-            entity_type="pending_event",
-            entity_id=str(event.id),
-            payload={
-                "event_action": (event.payload or {}).get("action") or "",
-                "event_entity_id": (event.payload or {}).get("entity_id") or "",
-                "result": export_result,
-            },
-        ))
-        db.commit()
-
-    result["remaining"] = db.execute(
+def select_pending_export_events(db: Session, limit):
+    stmt = (
         select(PendingEvent)
         .where(PendingEvent.event_type == GOOGLE_SHEETS_EXPORT_EVENT_TYPE)
         .where(PendingEvent.status.in_(("pending", "failed")))
-    ).scalars().unique().all()
-    result["remaining"] = len(result["remaining"])
-    if result["failed"]:
-        result["status"] = "completed_with_errors"
-    return result
+        .order_by(PendingEvent.created_at, PendingEvent.id)
+        .limit(limit)
+    )
+    if db.bind.dialect.name == "postgresql":
+        stmt = stmt.with_for_update(skip_locked=True)
+    return db.execute(stmt).scalars().all()
 
 
 def run_google_sheets_export_event(db: Session, event: PendingEvent):
@@ -241,7 +268,52 @@ def run_google_sheets_export_event(db: Session, event: PendingEvent):
             return {"status": "missing", "error": "import records not found"}
         return append_import_records_to_google_sheets(records)
 
+    if action == "google_sheets_restore_order_export":
+        records = payload.get("records") or []
+        if not records:
+            return {"status": "missing", "error": "restore records not found"}
+        return restore_import_records_to_google_sheets(records)
+
+    if action == "google_sheets_skladbot_export":
+        orders = load_skladbot_export_orders(db, payload)
+        if not orders:
+            return {"status": "skipped", "error": "orders not found"}
+        return sync_backend_orders_skladbot_to_google_sheets(orders)
+
     return {"status": "missing", "error": f"unknown google export action: {action}"}
+
+
+def load_skladbot_export_orders(db: Session, payload):
+    order_ids = [parse_uuid(value) for value in (payload.get("order_ids") or [])]
+    order_ids = [value for value in order_ids if value is not None]
+    stmt = (
+        select(Order)
+        .options(selectinload(Order.items).selectinload(OrderItem.scan_codes))
+        .where(~Order.status.in_(SKLADBOT_EXPORT_INACTIVE_ORDER_STATUSES))
+    )
+    if order_ids:
+        stmt = stmt.where(Order.id.in_(order_ids))
+    return db.execute(stmt).scalars().all()
+
+
+def acquire_google_sheets_export_lock(db: Session):
+    if db.bind.dialect.name == "postgresql":
+        return bool(db.execute(
+            text("SELECT pg_try_advisory_lock(:lock_key)"),
+            {"lock_key": GOOGLE_SHEETS_EXPORT_LOCK_KEY},
+        ).scalar())
+    return LOCAL_EXPORT_LOCK.acquire(blocking=False)
+
+
+def release_google_sheets_export_lock(db: Session):
+    if db.bind.dialect.name == "postgresql":
+        db.execute(
+            text("SELECT pg_advisory_unlock(:lock_key)"),
+            {"lock_key": GOOGLE_SHEETS_EXPORT_LOCK_KEY},
+        )
+        return
+    if LOCAL_EXPORT_LOCK.locked():
+        LOCAL_EXPORT_LOCK.release()
 
 
 def format_export_error(result):
@@ -251,6 +323,8 @@ def format_export_error(result):
     if error:
         return error
     status = str(result.get("status") or "").strip()
+    if status in {"queued", "completed", "skipped"}:
+        return ""
     return f"Google Sheets export status: {status}" if status else ""
 
 

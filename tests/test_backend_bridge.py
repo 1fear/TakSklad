@@ -223,6 +223,27 @@ class BackendBridgeTests(unittest.TestCase):
         self.assertTrue(removed)
         self.assertEqual(saved, [[]])
 
+    def test_backend_undo_calls_server_when_scan_is_not_pending(self):
+        calls = []
+
+        with (
+            mock.patch.object(backend_events, "remove_pending_backend_scan", return_value=False),
+            mock.patch.object(backend_events, "backend_configured", return_value=True),
+            mock.patch.object(
+                backend_events,
+                "undo_scan",
+                side_effect=lambda order_item_id, code, workstation_id=None, actor="desktop": calls.append(
+                    (order_item_id, code, actor)
+                ),
+            ),
+        ):
+            backend_events.undo_backend_scan(
+                {"_backend_order_item_id": "item-1"},
+                "01000000000000000001",
+            )
+
+        self.assertEqual(calls, [("item-1", "01000000000000000001", "desktop")])
+
     def test_backend_queue_syncs_order_complete(self):
         pending = [{
             "id": "event-1",
