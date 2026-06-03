@@ -1,5 +1,6 @@
 import re
 import unittest
+from datetime import date
 from types import SimpleNamespace
 from unittest import mock
 
@@ -75,23 +76,40 @@ class BackendGoogleSheetsExporterTests(unittest.TestCase):
     def make_scan(self, code, scanned_at="2026-06-01T10:00:00+05:00"):
         return SimpleNamespace(id=code, code=code, scanned_at=scanned_at)
 
-    def make_item(self, import_id="import-1", order_id="order-1", codes=None, status="completed"):
+    def make_item(
+        self,
+        import_id="import-1",
+        order_id="order-1",
+        codes=None,
+        status="completed",
+        product="Chapman RED OP 20",
+        quantity_pieces=20,
+        quantity_blocks=None,
+    ):
         codes = codes or ["0101", "0102"]
+        quantity_blocks = len(codes) if quantity_blocks is None else quantity_blocks
         return SimpleNamespace(
             id=import_id,
+            product=product,
             raw_payload={
                 "source_import_id": import_id,
                 "source_order_id": order_id,
             },
             status=status,
             scanned_blocks=len(codes),
-            quantity_blocks=len(codes),
+            quantity_pieces=quantity_pieces,
+            quantity_blocks=quantity_blocks,
             scan_codes=[self.make_scan(code) for code in codes],
         )
 
     def make_order(self, items, **raw_payload):
         return SimpleNamespace(
             id="backend-order-1",
+            order_date=date(2026, 6, 1),
+            payment_type="Перечисление",
+            client="Client",
+            address="Tashkent, Test 1",
+            representative="Rep",
             items=items,
             raw_payload=raw_payload,
         )
@@ -198,6 +216,53 @@ class BackendGoogleSheetsExporterTests(unittest.TestCase):
             self.assertEqual(row[header_idx["ID заявки SkladBot"]], "191794")
             self.assertEqual(row[header_idx["Статус SkladBot"]], "Найдено")
             self.assertEqual(row[header_idx["Последняя проверка SkladBot"]], "2026-06-01T11:30:00+05:00")
+
+    def test_update_backend_orders_skladbot_rows_does_not_clear_existing_number_on_pending(self):
+        header = exporter.build_import_sheet_header()
+        row = self.make_row("import-1", "order-1")
+        header_idx = exporter.get_header_index(header)
+        row[header_idx["Номер заявки SkladBot"]] = "WH-R-OLD"
+        row[header_idx["ID заявки SkladBot"]] = "old-id"
+        sheet = FakeSheet("data", [header, row])
+        item = self.make_item("import-1", "order-1", codes=[])
+        order = self.make_order(
+            [item],
+            skladbot_status="pending",
+            skladbot_checked_at="2026-06-03T12:00:00+05:00",
+        )
+
+        result = exporter.update_backend_orders_skladbot_rows(sheet, [order])
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["updated"], 1)
+        self.assertEqual(sheet.rows[1][header_idx["Номер заявки SkladBot"]], "WH-R-OLD")
+        self.assertEqual(sheet.rows[1][header_idx["ID заявки SkladBot"]], "old-id")
+        self.assertEqual(sheet.rows[1][header_idx["Статус SkladBot"]], "Проверяется")
+        self.assertEqual(sheet.rows[1][header_idx["Последняя проверка SkladBot"]], "2026-06-03T12:00:00+05:00")
+
+    def test_update_backend_orders_skladbot_rows_uses_business_key_when_ids_changed(self):
+        header = exporter.build_import_sheet_header()
+        sheet = FakeSheet("data", [
+            header,
+            self.make_row("old-import", "old-order"),
+        ])
+        item = self.make_item("new-import", "new-order", codes=[], quantity_blocks=2, quantity_pieces=20)
+        order = self.make_order(
+            [item],
+            skladbot_request_number="WH-R-193025",
+            skladbot_request_id="193025",
+            skladbot_status="found",
+            skladbot_checked_at="2026-06-03T12:20:00+05:00",
+        )
+
+        result = exporter.update_backend_orders_skladbot_rows(sheet, [order])
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["updated"], 1)
+        header_idx = exporter.get_header_index(sheet.rows[0])
+        self.assertEqual(sheet.rows[1][header_idx["Номер заявки SkladBot"]], "WH-R-193025")
+        self.assertEqual(sheet.rows[1][header_idx["ID заявки SkladBot"]], "193025")
+        self.assertEqual(sheet.rows[1][header_idx["Статус SkladBot"]], "Найдено")
 
     def test_archive_backend_order_rows_moves_rows_to_archive(self):
         header = exporter.build_import_sheet_header()

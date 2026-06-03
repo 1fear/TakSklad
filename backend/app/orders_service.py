@@ -77,14 +77,15 @@ def create_scan(db: Session, payload: ScanCreate):
     ).scalar_one_or_none()
     if item is None:
         raise ApiError(404, "Order item not found")
-    if item.status in COMPLETED_STATUSES or (
-        item.quantity_blocks > 0 and item.scanned_blocks >= item.quantity_blocks
-    ):
-        raise ApiError(409, "Order item is already fully scanned")
 
     existing_scan = db.execute(select(ScanCode).where(ScanCode.code == code)).scalar_one_or_none()
     if existing_scan is not None:
         return existing_scan_response_or_error(existing_scan, item)
+
+    if item.status in COMPLETED_STATUSES or (
+        item.quantity_blocks > 0 and item.scanned_blocks >= item.quantity_blocks
+    ):
+        raise ApiError(409, "Order item is already fully scanned")
 
     scan_id = uuid.uuid4()
     scan_raw_payload = dict(payload.raw_payload or {})

@@ -28,13 +28,29 @@ SKLADBOT_SYNC_LOCK_KEY = 22052631
 
 
 class CandidateRequests(list):
-    def __init__(self, items=None, complete=True, reason="", details_checked=0, detail_limit=0, errors=None):
+    def __init__(
+        self,
+        items=None,
+        complete=True,
+        reason="",
+        details_checked=0,
+        detail_limit=0,
+        errors=None,
+        checked_request_ids=None,
+        last_checked_request_id=0,
+        candidate_count=0,
+        rotated_after_request_id=0,
+    ):
         super().__init__(items or [])
         self.complete = complete
         self.reason = reason
         self.details_checked = details_checked
         self.detail_limit = detail_limit
         self.errors = errors or []
+        self.checked_request_ids = checked_request_ids or []
+        self.last_checked_request_id = last_checked_request_id
+        self.candidate_count = candidate_count
+        self.rotated_after_request_id = rotated_after_request_id
 
     def meta(self):
         return {
@@ -43,6 +59,10 @@ class CandidateRequests(list):
             "details_checked": self.details_checked,
             "detail_limit": self.detail_limit,
             "errors": self.errors,
+            "checked_request_ids": self.checked_request_ids,
+            "last_checked_request_id": self.last_checked_request_id,
+            "candidate_count": self.candidate_count,
+            "rotated_after_request_id": self.rotated_after_request_id,
         }
 
 
@@ -427,7 +447,7 @@ def normalize_request_payload(list_item, detail):
     }
 
 
-def fetch_candidate_requests(today=None, orders=None, client=None):
+def fetch_candidate_requests(today=None, orders=None, client=None, start_after_request_id=0):
     client = client or SkladBotClient()
     if not client.configured:
         logging.info("SkladBot worker disabled: SKLADBOT_API_TOKEN is not configured")
@@ -478,7 +498,10 @@ def fetch_candidate_requests(today=None, orders=None, client=None):
             -(value[1].toordinal() if value[1] else 0),
         )
     )
+    list_items = rotate_candidate_list_items(list_items, start_after_request_id)
 
+    candidate_count = len(list_items)
+    checked_request_ids = []
     for _priority, _freshness_date, _request_id, item in list_items:
         if details_checked >= detail_limit:
             stopped_by_limit = True
@@ -487,6 +510,7 @@ def fetch_candidate_requests(today=None, orders=None, client=None):
         try:
             detail = client.get_request_detail(request_id)
             details_checked += 1
+            checked_request_ids.append(request_id)
         except httpx.HTTPStatusError as exc:
             detail_errors.append({"request_id": request_id, "error": f"HTTP {exc.response.status_code if exc.response is not None else 'unknown'}"})
             logging.warning(
@@ -534,7 +558,21 @@ def fetch_candidate_requests(today=None, orders=None, client=None):
         details_checked=details_checked,
         detail_limit=detail_limit,
         errors=detail_errors[:20],
+        checked_request_ids=checked_request_ids,
+        last_checked_request_id=checked_request_ids[-1] if checked_request_ids else 0,
+        candidate_count=candidate_count,
+        rotated_after_request_id=parse_int(start_after_request_id),
     )
+
+
+def rotate_candidate_list_items(list_items, start_after_request_id=0):
+    cursor = parse_int(start_after_request_id)
+    if cursor <= 0 or len(list_items) < 2:
+        return list_items
+    for index, item in enumerate(list_items):
+        if item[2] == cursor:
+            return list_items[index + 1:] + list_items[:index + 1]
+    return list_items
 
 
 def order_group_payload(order):
@@ -638,6 +676,7 @@ def update_orders_from_skladbot():
     not_found = 0
     multiple = 0
     incomplete = 0
+    pending = 0
 
     with SessionLocal() as db:
         if not try_acquire_skladbot_sync_lock(db):
@@ -674,7 +713,10 @@ def update_orders_from_skladbot():
                     "google_sheets_export": google_sheets_result,
                 }
 
-            requests = fetch_candidate_requests(orders=orders_to_check)
+            requests = fetch_candidate_requests(
+                orders=orders_to_check,
+                start_after_request_id=load_skladbot_fetch_cursor(db),
+            )
 
             for order in orders_to_check:
                 matches = [request for request in requests if request_matches_order(order, request)]
@@ -696,11 +738,12 @@ def update_orders_from_skladbot():
                     raw_payload["skladbot_nearest"] = nearest_request_diagnostics(order, requests)
                     multiple += 1
                 elif not getattr(requests, "complete", True):
-                    raw_payload["skladbot_status"] = "error"
-                    raw_payload["skladbot_error"] = "sync_incomplete"
+                    raw_payload["skladbot_status"] = "pending"
+                    raw_payload.pop("skladbot_error", None)
                     raw_payload["skladbot_fetch"] = requests.meta() if hasattr(requests, "meta") else {}
                     raw_payload["skladbot_nearest"] = nearest_request_diagnostics(order, requests)
                     incomplete += 1
+                    pending += 1
                 else:
                     raw_payload["skladbot_status"] = "not_found"
                     raw_payload["skladbot_nearest"] = nearest_request_diagnostics(order, requests)
@@ -721,6 +764,7 @@ def update_orders_from_skladbot():
                     "not_found": not_found,
                     "multiple": multiple,
                     "incomplete": incomplete,
+                    "pending": pending,
                     "fetch": requests.meta() if hasattr(requests, "meta") else {},
                 },
             ))
@@ -737,12 +781,13 @@ def update_orders_from_skladbot():
             release_skladbot_sync_lock(db)
 
     logging.info(
-        "SkladBot worker: requests=%s orders=%s matched=%s not_found=%s multiple=%s",
+        "SkladBot worker: requests=%s orders=%s matched=%s not_found=%s multiple=%s pending=%s",
         len(requests),
         updated,
         matched,
         not_found,
         multiple,
+        pending,
     )
     return {
         "requests": len(requests),
@@ -751,9 +796,24 @@ def update_orders_from_skladbot():
         "not_found": not_found,
         "multiple": multiple,
         "incomplete": incomplete,
+        "pending": pending,
         "fetch": requests.meta() if hasattr(requests, "meta") else {},
         "google_sheets_export": google_sheets_result,
     }
+
+
+def load_skladbot_fetch_cursor(db):
+    event = db.execute(
+        select(AuditLog)
+        .where(AuditLog.action == "skladbot_worker_sync")
+        .order_by(AuditLog.created_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    payload = event.payload if event is not None else {}
+    fetch = payload.get("fetch") if isinstance(payload, dict) else {}
+    if not isinstance(fetch, dict):
+        return 0
+    return parse_int(fetch.get("last_checked_request_id"))
 
 
 def export_skladbot_numbers_to_google_sheets(db, orders):

@@ -586,6 +586,30 @@ class BackendApiPersistenceTests(unittest.TestCase):
             other_item = db.get(OrderItem, uuid.UUID(other_item_id))
             self.assertEqual(other_item.scanned_blocks, 0)
 
+    def test_scan_create_is_idempotent_for_same_completed_item(self):
+        _, item_id = self.seed_order(quantity_blocks=1)
+
+        first = self.client.post(
+            "/api/v1/scans",
+            json={"order_item_id": item_id, "code": "010123456789", "workstation_id": "pc-1"},
+        )
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(first.json()["item_status"], "completed")
+
+        duplicate = self.client.post(
+            "/api/v1/scans",
+            json={"order_item_id": item_id, "code": "010123456789", "workstation_id": "pc-2"},
+        )
+        self.assertEqual(duplicate.status_code, 201)
+        self.assertEqual(duplicate.json()["order_item_id"], item_id)
+        self.assertEqual(duplicate.json()["scanned_blocks"], 1)
+
+        with self.SessionLocal() as db:
+            self.assertEqual(len(db.execute(select(ScanCode)).scalars().all()), 1)
+            item = db.get(OrderItem, uuid.UUID(item_id))
+            self.assertEqual(item.scanned_blocks, 1)
+            self.assertEqual(item.status, "completed")
+
     def test_scan_create_exports_scan_state_to_google_sheets_best_effort(self):
         _, item_id = self.seed_order()
 

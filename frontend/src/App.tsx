@@ -1139,7 +1139,7 @@ function matchesSkladBotFilter(row: AdminTableRow, filter: SkladBotFilter) {
   if (filter === "all") return true;
   if (filter === "found") return hasNumber;
   if (filter === "missing") return !hasNumber;
-  return ["not_found", "multiple", "error"].includes(row.skladbot_status);
+  return ["not_found", "multiple", "error", "pending"].includes(row.skladbot_status);
 }
 
 function scanState(row: AdminTableRow): ScanFilter {
@@ -1216,6 +1216,7 @@ function skladbotStatusLabel(row: AdminTableRow) {
   if (row.skladbot_status === "found" || row.skladbot_request_number || row.skladbot_request_id) return "Найдено";
   if (row.skladbot_status === "not_found") return "Не найдено";
   if (row.skladbot_status === "multiple") return "Несколько";
+  if (row.skladbot_status === "pending") return "Проверяется";
   if (row.skladbot_status === "error") return "Ошибка";
   return "Без номера";
 }

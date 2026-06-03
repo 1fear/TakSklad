@@ -325,6 +325,7 @@ def update_backend_orders_skladbot_rows(sheet, orders):
     if any(header_idx.get(column) is None for column in column_names):
         return GoogleSheetsExportResult(status="missing").as_dict()
 
+    rows_by_business_key, ambiguous_business_keys = build_backend_item_business_row_index(all_rows)
     updates = []
     updated_rows = set()
     for order in orders:
@@ -338,10 +339,21 @@ def update_backend_orders_skladbot_rows(sheet, orders):
         for item in getattr(order, "items", []) or []:
             row_number = find_backend_item_row_number(all_rows, item)
             if not row_number:
+                business_key = make_backend_item_sheet_business_key(order, item)
+                if business_key and business_key not in ambiguous_business_keys:
+                    row_number = rows_by_business_key.get(business_key)
+            if not row_number:
                 continue
             updated_rows.add(row_number)
+            row = all_rows[row_number - 1] if row_number - 1 < len(all_rows) else []
             for column, value in values.items():
                 idx = header_idx[column]
+                if (
+                    column in {"Номер заявки SkladBot", "ID заявки SkladBot"}
+                    and not value
+                    and normalize_text(get_cell(row, idx))
+                ):
+                    continue
                 updates.append({
                     "range": f"{column_index_to_letter(idx)}{row_number}",
                     "values": [[value]],
@@ -352,6 +364,70 @@ def update_backend_orders_skladbot_rows(sheet, orders):
     return GoogleSheetsExportResult(status="completed", updated=len(updated_rows)).as_dict()
 
 
+def build_backend_item_business_row_index(all_rows):
+    if not all_rows:
+        return {}, set()
+    header_idx = get_header_index(all_rows[0])
+    rows_by_key = {}
+    ambiguous = set()
+    for row_number, row in enumerate(all_rows[1:], start=2):
+        record = {
+            ORDER_DATE_COLUMN: get_cell(row, header_idx.get(ORDER_DATE_COLUMN, header_idx.get(LEGACY_ORDER_DATE_COLUMN))),
+            "Тип оплаты": get_cell(row, header_idx.get("Тип оплаты")),
+            "Клиент": get_cell(row, header_idx.get("Клиент")),
+            "Адрес": get_cell(row, header_idx.get("Адрес")),
+            "Торговый представитель": get_cell(row, header_idx.get("Торговый представитель")),
+            "Товары": get_cell(row, header_idx.get("Товары")),
+            "Кол-во ШТ": get_cell(row, header_idx.get("Кол-во ШТ")),
+            "Кол-во блок": get_cell(row, header_idx.get("Кол-во блок")),
+        }
+        key = make_backend_item_business_key(record)
+        if not key:
+            continue
+        if key in rows_by_key:
+            ambiguous.add(key)
+        else:
+            rows_by_key[key] = row_number
+    return rows_by_key, ambiguous
+
+
+def make_backend_item_sheet_business_key(order, item):
+    record = {
+        ORDER_DATE_COLUMN: getattr(order, "order_date", ""),
+        "Тип оплаты": getattr(order, "payment_type", ""),
+        "Клиент": getattr(order, "client", ""),
+        "Адрес": getattr(order, "address", ""),
+        "Торговый представитель": getattr(order, "representative", ""),
+        "Товары": getattr(item, "product", ""),
+        "Кол-во ШТ": getattr(item, "quantity_pieces", 0),
+        "Кол-во блок": getattr(item, "quantity_blocks", 0),
+    }
+    return make_backend_item_business_key(record)
+
+
+def make_backend_item_business_key(record):
+    payload = {
+        "date": parse_date_to_standard(record.get(ORDER_DATE_COLUMN) or record.get(LEGACY_ORDER_DATE_COLUMN)),
+        "payment": normalize_lookup_text(record.get("Тип оплаты")),
+        "client": normalize_lookup_text(record.get("Клиент")),
+        "address": normalize_lookup_text(record.get("Адрес")),
+        "representative": normalize_lookup_text(record.get("Торговый представитель")),
+        "product": normalize_lookup_text(record.get("Товары")),
+        "quantity_pieces": parse_int_value(record.get("Кол-во ШТ")),
+        "quantity_blocks": parse_int_value(record.get("Кол-во блок")),
+    }
+    if (
+        not payload["date"]
+        or not payload["payment"]
+        or not payload["client"]
+        or not payload["product"]
+        or payload["quantity_pieces"] <= 0
+        or payload["quantity_blocks"] <= 0
+    ):
+        return ""
+    return make_hash(payload)
+
+
 def format_skladbot_status(value):
     text = normalize_text(value).casefold()
     if text == "found":
@@ -360,6 +436,8 @@ def format_skladbot_status(value):
         return "Не найдено"
     if text == "multiple":
         return "Несколько совпадений"
+    if text in {"pending", "checking", "in_progress"}:
+        return "Проверяется"
     if text == "error":
         return "Ошибка синхронизации"
     return normalize_text(value)

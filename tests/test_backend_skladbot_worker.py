@@ -16,6 +16,7 @@ from backend.app.skladbot_worker import (
     client_matches,
     dynamic_skladbot_lookback_days,
     fetch_candidate_requests,
+    load_skladbot_fetch_cursor,
     nearest_request_diagnostics,
     order_has_skladbot_number,
     parse_date,
@@ -24,6 +25,7 @@ from backend.app.skladbot_worker import (
     request_match_diagnostics,
     request_matches_order,
     request_type_matches,
+    rotate_candidate_list_items,
     request_unloading_date_matches_active_orders,
     update_orders_from_skladbot,
     worker_interval_seconds,
@@ -411,7 +413,7 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
             Base.metadata.drop_all(engine)
             engine.dispose()
 
-    def test_update_orders_does_not_write_not_found_when_skladbot_check_is_incomplete(self):
+    def test_update_orders_marks_pending_when_skladbot_check_is_incomplete(self):
         engine = create_engine(
             "sqlite+pysqlite:///:memory:",
             connect_args={"check_same_thread": False},
@@ -456,14 +458,116 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
 
             self.assertEqual(result["not_found"], 0)
             self.assertEqual(result["incomplete"], 1)
+            self.assertEqual(result["pending"], 1)
             with SessionLocal() as db:
                 order = db.execute(select(Order)).scalar_one()
-                self.assertEqual(order.raw_payload["skladbot_status"], "error")
-                self.assertEqual(order.raw_payload["skladbot_error"], "sync_incomplete")
+                self.assertEqual(order.raw_payload["skladbot_status"], "pending")
+                self.assertNotIn("skladbot_error", order.raw_payload)
                 self.assertEqual(order.raw_payload["skladbot_fetch"]["reason"], "detail_limit_reached")
         finally:
             Base.metadata.drop_all(engine)
             engine.dispose()
+
+    def test_load_skladbot_fetch_cursor_reads_last_checked_request_id(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        try:
+            with SessionLocal() as db:
+                db.add(AuditLog(
+                    action="skladbot_worker_sync",
+                    entity_type="skladbot",
+                    entity_id="worker",
+                    payload={"fetch": {"last_checked_request_id": 192991}},
+                ))
+                db.commit()
+
+            with SessionLocal() as db:
+                self.assertEqual(load_skladbot_fetch_cursor(db), 192991)
+        finally:
+            Base.metadata.drop_all(engine)
+            engine.dispose()
+
+    def test_rotate_candidate_list_items_continues_after_previous_request(self):
+        items = [
+            (0, date(2026, 6, 4), 193004, {"id": 193004}),
+            (0, date(2026, 6, 4), 193003, {"id": 193003}),
+            (0, date(2026, 6, 4), 193002, {"id": 193002}),
+            (0, date(2026, 6, 4), 192991, {"id": 192991}),
+        ]
+
+        rotated = rotate_candidate_list_items(items, start_after_request_id=193002)
+
+        self.assertEqual([item[2] for item in rotated], [192991, 193004, 193003, 193002])
+
+    def test_fetch_candidates_uses_cursor_with_default_detail_limit(self):
+        class FakeClient:
+            configured = True
+            request_delay = 0
+            limit = 100
+
+            def __init__(self):
+                self.detail_ids = []
+
+            def list_requests(self):
+                return [
+                    {
+                        "id": request_id,
+                        "type": "Отгрузка 3PL",
+                        "created_at": "2026-06-03",
+                        "updated_at": "2026-06-03",
+                        "unloading_date": "04.06.2026",
+                        "delivery_number": f"WH-R-{request_id}",
+                    }
+                    for request_id in (193004, 193003, 193002, 192991)
+                ]
+
+            def get_request_detail(self, request_id):
+                self.detail_ids.append(request_id)
+                return {
+                    "id": request_id,
+                    "delivery_number": f"WH-R-{request_id}",
+                    "customer": {"name": "ООО Bastion Import Chapman MCHJ"},
+                    "type": "Отгрузка 3PL",
+                    "createdAt": "2026-06-03",
+                    "comment": "Терминал",
+                    "fields": [
+                        {"name": "Дата выгрузки", "value": "04.06.2026"},
+                        {"name": "Название компании/Имя человека", "value": '"OTHER CLIENT" MCHJ'},
+                    ],
+                    "products": [
+                        {"name": "Chapman Brown OP 20 UZ", "amount": 1},
+                    ],
+                }
+
+        order = Order(
+            order_date=date(2026, 6, 4),
+            payment_type="Терминал",
+            client='"TARGET CLIENT" MCHJ',
+            address="Address",
+            status="not_completed",
+            raw_payload={},
+        )
+        order.items = [OrderItem(product="Chapman Brown OP 20", quantity_blocks=1)]
+        fake_client = FakeClient()
+
+        with mock.patch.dict("os.environ", {}, clear=True):
+            result = fetch_candidate_requests(
+                today=date(2026, 6, 3),
+                orders=[order],
+                client=fake_client,
+                start_after_request_id=193002,
+            )
+
+        self.assertEqual(fake_client.detail_ids, [192991, 193004, 193003])
+        self.assertFalse(result.complete)
+        self.assertEqual(result.reason, "detail_limit_reached")
+        self.assertEqual(result.last_checked_request_id, 193003)
+        self.assertEqual(result.checked_request_ids, [192991, 193004, 193003])
 
     def test_candidate_window_uses_created_date_not_future_unloading_date(self):
         request = {

@@ -75,6 +75,7 @@ from .sheets import (
     fetch_returned_orders_from_gsheet,
     get_all_existing_codes,
     get_today_orders,
+    google_backoff_remaining,
     lookup_return_order_in_gsheet,
     mark_return_order_in_gsheet,
     release_telegram_poll_lock,
@@ -1899,11 +1900,6 @@ class ScanningApp(
             self.finish_btn.config(state="disabled")
             return
 
-        if not self.confirm_print_settings():
-            self.show_error("Печать сводного листа отменена")
-            self.finish_btn.config(state="normal")
-            return
-
         group_key = self.current_group_key
         current_orders = [order.copy() for order in self.current_legal_entity_orders]
         current_products = [product.copy() for product in self.current_legal_entity_products]
@@ -1912,6 +1908,23 @@ class ScanningApp(
             for order in current_orders
             if normalize_text(order.get("_backend_order_id"))
         })
+        uses_backend_finish = bool(backend_order_ids and backend_enabled())
+
+        if self.sheet and not uses_backend_finish:
+            google_pause_remaining = google_backoff_remaining()
+            if google_pause_remaining > 0:
+                self.show_error(
+                    f"Google Sheets временно на паузе ({google_pause_remaining} сек.). "
+                    "Завершение и печать запустятся после паузы."
+                )
+                self.finish_btn.config(state="normal")
+                return
+
+        if not self.confirm_print_settings():
+            self.show_error("Печать сводного листа отменена")
+            self.finish_btn.config(state="normal")
+            return
+
         self.set_busy("⏳ Готовлю и печатаю сводный лист...")
         self.safe_config(self.finish_btn, state="disabled")
         self.safe_config(self.next_product_btn, state="disabled")
@@ -1922,7 +1935,7 @@ class ScanningApp(
             summary_products = current_products
             backend_complete_result = {"completed": 0, "already_completed": 0}
 
-            if self.sheet:
+            if self.sheet and not uses_backend_finish:
                 sheet_products = build_summary_products_from_gsheet(
                     self.sheet,
                     group_key or order_group_key(first_product)
@@ -1945,9 +1958,7 @@ class ScanningApp(
 
             remove_pending_print(pending_print_id)
 
-            if backend_order_ids and backend_enabled():
-                for order in current_orders:
-                    queue_backend_scans_for_order(order)
+            if uses_backend_finish:
                 backend_sync_result = sync_pending_backend_events()
                 if backend_sync_result.get("failed") or backend_sync_result.get("remaining"):
                     raise RuntimeError(

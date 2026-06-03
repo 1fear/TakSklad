@@ -4155,3 +4155,69 @@ cd /opt/taksklad/app
   - `./.venv/bin/python -m unittest tests.test_backend_google_sheets_exporter tests.test_google_sheets_sync_worker` - 20 tests OK;
   - `./.venv/bin/python -m unittest discover -s tests` - 293 tests OK;
   - `./.venv/bin/python -m compileall -q backend/app src/taksklad` - OK.
+
+### SkladBot cursor sync and pending status fix
+
+- Причина: SkladBot API ограничивает частые запросы `429`, а VDS worker с `SKLADBOT_DETAIL_LIMIT=3` мог каждый цикл проверять только малую часть карточек. Неполный проход массово записывался как `skladbot_status=error`, из-за чего сайт показывал `Ошибка`, хотя фактически синхронизация просто ждала следующий проход.
+- Backend:
+  - `skladbot-worker` теперь сохраняет `last_checked_request_id` в audit payload и следующий цикл начинает после него;
+  - маленький лимит `SKLADBOT_DETAIL_LIMIT=3` сохранён, но worker проходит список заявок порциями, а не застревает на одном наборе;
+  - при `detail_limit_reached` заказы получают статус `pending`, а не `error`;
+  - `format_skladbot_status()` показывает `pending` как `Проверяется`;
+  - Google-export больше не затирает уже существующий номер/ID SkladBot пустым значением, если backend пришёл без номера.
+- Frontend:
+  - web-панель показывает `pending` как `Проверяется`;
+  - фильтр проблем SkladBot включает `pending`, чтобы такие строки было легко найти.
+- VDS:
+  - restore point перед деплоем: `/opt/taksklad/restore_points/pre-skladbot-cursor-fix-20260603T121226Z`;
+  - пересобраны и перезапущены `backend-api`, `skladbot-worker`, `google-sheets-sync-worker`, `frontend`;
+  - runtime `SKLADBOT_WORKER_INTERVAL_SECONDS` исправлен с `600` на `60`, `SKLADBOT_DETAIL_LIMIT=3` оставлен.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_backend_skladbot_worker tests.test_backend_google_sheets_exporter tests.test_google_sheets_sync_worker` - 53 tests OK;
+  - `./.venv/bin/python -m unittest discover -s tests` - 297 tests OK;
+  - `./.venv/bin/python -m compileall -q backend/app src/taksklad` - OK;
+  - `npm run build` - OK;
+  - `https://api.taksklad.uz/health` - OK.
+
+### Active `Перечисление` transfer date correction
+
+- Причина: активные заказы `Перечисление`, которые фактически должны идти на `05.06.2026`, были загружены с датой `03.06.2026`. Это мешало SkladBot matching, потому что дата отгрузки является частью бизнес-сопоставления.
+- Backup перед правкой:
+  - Postgres: `/opt/taksklad/backups/postgres/taksklad-postgres-20260603T125657Z.sql.gz`;
+  - Google: `/opt/taksklad/backups/google_sheets/google_sheets_before_transfer_date_fix_20260603T125658Z.json`.
+- Разовая правка данных:
+  - VDS: обновлено `33` заказа, `79` позиций, `285` блоков с `03.06.2026` на `05.06.2026`;
+  - Google `data`: обновлено `79` строк, `285` блоков;
+  - активных `Перечисление` на `03.06.2026` после проверки: `0`.
+- Важно:
+  - `order_key`, `item_key`, `business_line_key` не пересчитывались, чтобы не потерять связь с уже импортированными строками и pending-очередями;
+  - SkladBot matching должен работать по обновлённой дате `05.06.2026`.
+
+### Desktop 2.0.5 backend scan finish idempotency fix
+
+- Причина: в `TakSklad (63).log` версия `2.0.4` успешно сохраняла КИЗы, но при завершении заказа падала с ошибкой `Сводный лист напечатан, но backend не принял все КИЗы. Осталось в очереди: 3`.
+- Корень:
+  - desktop при backend-завершении повторно ставил уже сохранённые КИЗы в backend-очередь;
+  - backend проверял `item already fully scanned` раньше проверки существующего такого же КИЗа;
+  - повтор того же самого кода по уже завершённой позиции возвращал `409`, поэтому очередь не схлопывалась.
+- Backend:
+  - `create_scan()` теперь сначала проверяет существующий `ScanCode`;
+  - повтор того же КИЗа по той же позиции считается идемпотентным даже после полного скана позиции;
+  - чужой дубль по другой позиции/заказу по-прежнему блокируется.
+- Desktop:
+  - backend-завершение больше не переочередит КИЗы перед `sync_pending_backend_events()`;
+  - backend-режим завершения больше не читает Google для сводки, если данные уже есть в текущем заказе;
+  - Google-only режим перед печатью проверяет активный `429` backoff и не запускает печать, пока Google на паузе.
+- VDS:
+  - restore point перед деплоем: `/opt/taksklad/restore_points/pre-204-scan-idempotency-fix-20260603T131632Z`;
+  - Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260603T131635Z.sql.gz`;
+  - пересобраны и перезапущены `backend-api`, `skladbot-worker`, `google-sheets-sync-worker`, `frontend`;
+  - `https://api.taksklad.uz/health` - OK.
+- Release:
+  - desktop version поднята до `2.0.5`;
+  - `version.json` оставлен на `2.0.4` до появления GitHub Release assets `v2.0.5`, чтобы автообновление не вело на несуществующий архив.
+- Проверено:
+  - `./.venv/bin/python -m unittest discover -s tests` - 299 tests OK;
+  - `./.venv/bin/python -m compileall -q backend/app src/taksklad` - OK;
+  - `npm run build` - OK;
+  - `git diff --check` - OK.

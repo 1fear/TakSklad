@@ -102,6 +102,13 @@ class DesktopUiContractTests(unittest.TestCase):
         self.assertLess(source.index("print_summary(address, summary_products)"), source.index("complete_backend_orders_or_raise"))
         self.assertIn("Заказ не завершён в backend", source)
         self.assertIn("not (backend_order_ids and backend_enabled())", source)
+        self.assertIn("self.sheet and not uses_backend_finish", source)
+        self.assertNotIn(
+            "for order in current_orders:\n"
+            "                    queue_backend_scans_for_order(order)\n"
+            "                backend_sync_result = sync_pending_backend_events()",
+            source,
+        )
 
     def test_backend_complete_accepts_already_completed_order_for_repeat_print(self):
         completed = []
