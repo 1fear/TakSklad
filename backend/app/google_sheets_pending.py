@@ -3,7 +3,7 @@ from threading import Lock
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from .google_sheets_exporter import (
@@ -20,7 +20,6 @@ from .models import AuditLog, Order, OrderItem, PendingEvent
 
 
 GOOGLE_SHEETS_EXPORT_EVENT_TYPE = "google_sheets_export"
-GOOGLE_SHEETS_EXPORT_LOCK_KEY = 22052632
 RETRYABLE_EXPORT_STATUSES = {"disabled", "error"}
 SUCCESS_EXPORT_STATUSES = {"completed", "skipped"}
 SKLADBOT_EXPORT_INACTIVE_ORDER_STATUSES = (
@@ -137,6 +136,32 @@ def process_pending_google_sheets_exports(db: Session, limit=50):
             try:
                 export_result = run_google_sheets_export_event(db, event)
             except Exception as exc:
+                if is_google_rate_limit_error(exc):
+                    logger.warning("Pending Google Sheets export paused after rate limit: %s", exc)
+                    export_result = {"status": "rate_limited", "error": str(exc)}
+                    event.status = "pending"
+                    event.last_error = format_export_error(export_result)
+                    event.payload = {**(event.payload or {}), "last_result": export_result}
+                    result["errors"].append({
+                        "id": str(event.id),
+                        "action": (event.payload or {}).get("action") or "",
+                        "entity_id": (event.payload or {}).get("entity_id") or "",
+                        "status": export_result["status"],
+                        "error": event.last_error,
+                    })
+                    db.add(AuditLog(
+                        action="google_sheets_pending_export_rate_limited",
+                        entity_type="pending_event",
+                        entity_id=str(event.id),
+                        payload={
+                            "event_action": (event.payload or {}).get("action") or "",
+                            "event_entity_id": (event.payload or {}).get("entity_id") or "",
+                            "result": export_result,
+                        },
+                    ))
+                    db.commit()
+                    result["remaining"] = count_pending_export_events(db)
+                    return {**result, "status": "paused"}
                 logger.exception("Pending Google Sheets export failed")
                 export_result = {"status": "error", "error": str(exc)}
 
@@ -170,12 +195,7 @@ def process_pending_google_sheets_exports(db: Session, limit=50):
             ))
             db.commit()
 
-        result["remaining"] = db.execute(
-            select(PendingEvent)
-            .where(PendingEvent.event_type == GOOGLE_SHEETS_EXPORT_EVENT_TYPE)
-            .where(PendingEvent.status.in_(("pending", "failed")))
-        ).scalars().unique().all()
-        result["remaining"] = len(result["remaining"])
+        result["remaining"] = count_pending_export_events(db)
         if result["failed"]:
             result["status"] = "completed_with_errors"
         return result
@@ -194,6 +214,15 @@ def select_pending_export_events(db: Session, limit):
     if db.bind.dialect.name == "postgresql":
         stmt = stmt.with_for_update(skip_locked=True)
     return db.execute(stmt).scalars().all()
+
+
+def count_pending_export_events(db: Session):
+    events = db.execute(
+        select(PendingEvent)
+        .where(PendingEvent.event_type == GOOGLE_SHEETS_EXPORT_EVENT_TYPE)
+        .where(PendingEvent.status.in_(("pending", "failed")))
+    ).scalars().unique().all()
+    return len(events)
 
 
 def run_google_sheets_export_event(db: Session, event: PendingEvent):
@@ -298,19 +327,12 @@ def load_skladbot_export_orders(db: Session, payload):
 
 def acquire_google_sheets_export_lock(db: Session):
     if db.bind.dialect.name == "postgresql":
-        return bool(db.execute(
-            text("SELECT pg_try_advisory_lock(:lock_key)"),
-            {"lock_key": GOOGLE_SHEETS_EXPORT_LOCK_KEY},
-        ).scalar())
+        return True
     return LOCAL_EXPORT_LOCK.acquire(blocking=False)
 
 
 def release_google_sheets_export_lock(db: Session):
     if db.bind.dialect.name == "postgresql":
-        db.execute(
-            text("SELECT pg_advisory_unlock(:lock_key)"),
-            {"lock_key": GOOGLE_SHEETS_EXPORT_LOCK_KEY},
-        )
         return
     if LOCAL_EXPORT_LOCK.locked():
         LOCAL_EXPORT_LOCK.release()
@@ -326,6 +348,11 @@ def format_export_error(result):
     if status in {"queued", "completed", "skipped"}:
         return ""
     return f"Google Sheets export status: {status}" if status else ""
+
+
+def is_google_rate_limit_error(exc):
+    message = str(exc or "").casefold()
+    return "429" in message or "quota" in message or "rate limit" in message or "rate_limit" in message
 
 
 def parse_uuid(value):

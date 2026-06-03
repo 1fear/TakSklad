@@ -4234,6 +4234,8 @@ cd /opt/taksklad/app
 ### SkladBot API token pool failover
 
 - Причина: SkladBot API снова начал ограничивать запросы `429`, из-за чего номера заявок подтягивались слишком медленно. Увеличивать `SKLADBOT_DETAIL_LIMIT` нельзя, потому что раньше большой пакет деталей уже давал ошибку.
+- Дополнительно найдено: Google-export мог застрять в статусе `busy`, потому что session-level PostgreSQL advisory lock оставался на idle pooled connection после `commit`. Для PostgreSQL глобальный advisory lock убран, обработка pending-событий опирается на уже существующий `SELECT ... FOR UPDATE SKIP LOCKED`.
+- Дополнительно по Google `429`: pending-очередь теперь останавливается на первом rate limit, возвращает событие в `pending` и не помечает пачку записей как `failed`.
 - Backend:
   - `skladbot-worker` поддерживает пул токенов через `SKLADBOT_API_TOKENS`;
   - при `429` конкретный токен уходит в cooldown, worker переключается на следующий токен;
@@ -4250,7 +4252,8 @@ cd /opt/taksklad/app
   - пересобран и перезапущен `skladbot-worker`.
 - Проверено:
   - `./.venv/bin/python -m unittest tests.test_backend_skladbot_worker` - 43 tests OK;
-  - `./.venv/bin/python -m unittest discover -s tests` - 310 tests OK;
+  - `./.venv/bin/python -m unittest tests.test_backend_google_sheets_pending` - 2 tests OK;
+  - `./.venv/bin/python -m unittest discover -s tests` - 312 tests OK;
   - `./.venv/bin/python -m compileall -q backend/app` - OK;
   - `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK;
   - VDS после деплоя: SkladBot details идут с `200 OK`, без `429`; после ускорения цикла pending начал снижаться по `3` совпадения за цикл; выявленная серия `5xx` от SkladBot API обработана дополнительной защитной паузой в коде.
