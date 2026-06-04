@@ -4324,3 +4324,54 @@ cd /opt/taksklad/app
   - `./.venv/bin/python -m py_compile backend/app/google_sheets_exporter.py backend/app/google_sheets_pending.py` - OK;
   - `./.venv/bin/python -m unittest tests.test_backend_google_sheets_exporter tests.test_backend_google_sheets_pending` - 19 tests OK;
   - `./.venv/bin/python -m unittest discover -s tests` - 319 tests OK.
+
+### Live Google/VDS cleanup and delivery-date parser fix
+
+- Причина: свежий Excel `Шаблон_отправки_заказов_на_склад_04_06_2026.xlsx` имел фактическую `ДАТА ДОСТАВКИ = 05.06.2026`, но importer взял `04.06.2026` из имени файла, потому что колонка даты была в верхней строке над основной шапкой.
+- Live cleanup:
+  - перед изменениями создан VDS backup `/opt/taksklad/backups/postgres/taksklad-postgres-20260604T054930Z.sql.gz`;
+  - локально сохранён backup изменённых Google `data` строк: `outputs/diagnostics/2026-06-04-live/google_data_rows_before_0406_fix.json`;
+  - локально сохранён backup удалённых лишних архивных строк: `outputs/diagnostics/2026-06-04-live-after-fix/google_archive_rows_before_extra_delete_0406_terminal.json`;
+  - в VDS дата активных заказов `Перечисление` из файла `Шаблон_отправки_заказов_на_склад_04_06_2026.xlsx` исправлена с `2026-06-04` на `2026-06-05`, затронуто `16` заказов;
+  - в Google `data` дата `40` строк перечисления исправлена на `05.06.2026`;
+  - из Google `data` удалены `87` активных терминальных дублей за `04.06.2026`, которые уже были покрыты `Архивом`;
+  - из Google `Архив` удалены `5` лишних терминальных дублей за `04.06.2026`.
+- Итоговая сверка:
+  - VDS: `04.06.2026 Терминал completed` - `114` позиций, `331` блок, `331` отсканирован;
+  - Google `Архив`: `04.06.2026 Терминал Выполнено` - `114` строк, `331` блок, `331` КИЗ;
+  - VDS: `05.06.2026 Перечисление active` - `16` заказов, `40` позиций, `97` блоков;
+  - Google `data`: `05.06.2026 Перечисление Не выполнено` - `40` строк, `97` блоков;
+  - pending Google queue после проверки: `0`.
+- Код:
+  - backend importer теперь ищет `Дата доставки` / `Дата отгрузки` / `Дата поставки` в строках над основной шапкой;
+  - desktop importer получил такую же защиту;
+  - Telegram import meta теперь показывает реальную единую дату строк, если она взята из Excel, а не дату из имени файла.
+- VDS:
+  - на сервер синхронизирован `backend/app/excel_importer.py`;
+  - пересобраны и перезапущены `backend-api` и `telegram-worker`;
+  - `https://api.taksklad.uz/health` - OK;
+  - серверный parser smoke подтвердил: файл с именем `04_06` и верхней `ДАТА ДОСТАВКИ=2026-06-05` импортируется как `05.06.2026`.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_backend_telegram_import tests.test_excel_normalizer` - 38 tests OK;
+  - `./.venv/bin/python -m unittest discover -s tests` - 322 tests OK.
+
+### macOS ready build 2.0.6
+
+- Причина: нужна Mac-сборка, которая запускается в один клик и работает с теми же JSON/VDS настройками, что складской ПК.
+- Исправлено:
+  - для frozen macOS `.app` рабочая папка теперь определяется как папка рядом с `TakSklad.app`, а не `TakSklad.app/Contents/MacOS`;
+  - прямой запуск `.app` больше не пишет `docs/TakSklad.log` внутрь bundle и не ломает подпись;
+  - `START_TAKSKLAD.command` оставлен как запасной one-click запуск;
+  - Mac bundle пересобран через `./.venv/bin/python -m PyInstaller --clean --noconfirm TakSklad.spec`, чтобы не повторить ошибку `_struct`.
+- Готовый артефакт:
+  - папка: `outputs/mac_ready/TakSklad-2.0.6-mac-ready`;
+  - архив: `outputs/mac_ready/TakSklad-2.0.6-mac-ready.zip`;
+  - комплект содержит `TakSklad.app`, `.env.taksklad-vds-2.0.generated.json`, `credentials.json`, `TakSklad_data.json`, `version.json`, command-файлы.
+- Проверено:
+  - `START_TAKSKLAD.command --smoke-import` - OK;
+  - `START_BACKEND.command --smoke-import` - OK;
+  - `START_LOCAL.command --smoke-import` - OK;
+  - `TakSklad.app/Contents/MacOS/TakSklad --smoke-import` - OK;
+  - короткий GUI-launch через `START_TAKSKLAD.command` - OK;
+  - короткий прямой GUI-launch бинарника `.app` - OK;
+  - `codesign --verify --deep --strict` после запусков - OK.

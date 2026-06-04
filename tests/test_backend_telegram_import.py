@@ -62,6 +62,46 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertEqual(row["Кол-во блок"], 2)
         self.assertEqual(row["Источник файла"], "orders_30_05_2026.xlsx")
 
+    def test_excel_file_to_import_payload_reads_delivery_date_from_upper_header(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "Шаблон_отправки_заказов_на_склад_04_06_2026.xlsx"
+            workbook = openpyxl.Workbook()
+            sheet = workbook.active
+            sheet.title = "Конструктор отчетов"
+            sheet.append(["", "", "", "", "", "", "", "ИТОГО", "", "ДАТА ДОСТАВКИ"])
+            sheet.append([
+                "Торговый представитель",
+                "Клиент",
+                "Координаты клиента",
+                "",
+                "",
+                "ТМЦ",
+                "Тип оплаты",
+                "Количество заказа",
+                "Сумма с переоценкой",
+                "",
+            ])
+            sheet.append([
+                "ТП1",
+                "Client One",
+                "41.320075",
+                "69.298547",
+                "41.320075,69.298547",
+                "Chapman Brown OP 20",
+                "Перечисление",
+                20,
+                480000,
+                "2026-06-05",
+            ])
+            workbook.save(path)
+
+            payload = excel_file_to_import_payload(path, file_name=path.name, source="telegram")
+
+        self.assertEqual(len(payload["rows"]), 1)
+        self.assertEqual(payload["rows"][0]["Дата отгрузки"], "05.06.2026")
+        self.assertEqual(payload["meta"]["shipment_date"], "05.06.2026")
+        self.assertEqual(payload["meta"]["shipment_dates"], ["05.06.2026"])
+
     def test_telegram_worker_imports_document_through_backend_api(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             source_path = Path(tmp_dir) / "orders.xlsx"

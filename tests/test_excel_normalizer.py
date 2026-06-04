@@ -104,6 +104,50 @@ class ExcelNormalizerTests(unittest.TestCase):
         self.assertEqual(record["Кол-во ШТ"], 20)
         self.assertEqual(record["Адрес"], "Адрес 41.373879, 69.322741")
 
+    def test_parses_delivery_date_from_upper_header(self):
+        excel_import = import_excel_import()
+        excel_import.reverse_geocode_yandex = lambda coords, cache=None: (f"Адрес {coords}", "")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "Шаблон_отправки_заказов_на_склад_04_06_2026.xlsx"
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.title = "Конструктор отчетов"
+            worksheet.append(["", "", "", "", "", "", "", "ИТОГО", "", "ДАТА ДОСТАВКИ"])
+            worksheet.append([
+                "Торговый представитель",
+                "Клиент",
+                "Координаты клиента",
+                "",
+                "",
+                "ТМЦ",
+                "Тип оплаты",
+                "Количество заказа",
+                "Сумма с переоценкой",
+                "",
+            ])
+            worksheet.append([
+                "ТП1",
+                "Client One",
+                "41.320075",
+                "69.298547",
+                "41.320075,69.298547",
+                "Chapman Brown OP 20",
+                "Перечисление",
+                20,
+                480000,
+                "2026-06-05",
+            ])
+            workbook.save(path)
+
+            workbook_read = load_workbook(path, data_only=True, read_only=True)
+            source = detect_excel_source(workbook_read, str(path))
+            result = excel_import.parse_excel_order_files([str(path)])
+
+        self.assertEqual(source["columns"]["date"], 9)
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(result["records"][0]["Дата отгрузки"], "05.06.2026")
+
     def test_parses_constructor_report_with_repeated_split_coordinates(self):
         excel_import = import_excel_import()
         calls = []

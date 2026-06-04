@@ -13,7 +13,16 @@ APP_RELEASE_ZIP_NAME = "TakSklad-windows-x64.zip"
 
 def get_app_dir():
     if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
+        executable_dir = os.path.dirname(sys.executable)
+        if (
+            sys.platform == "darwin"
+            and os.path.basename(executable_dir) == "MacOS"
+            and os.path.basename(os.path.dirname(executable_dir)) == "Contents"
+        ):
+            return os.path.abspath(
+                os.path.join(executable_dir, os.pardir, os.pardir, os.pardir)
+            )
+        return executable_dir
     return os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir))
 
 
