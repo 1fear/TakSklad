@@ -13,6 +13,7 @@ from .google_sheets_pending import (
 from .models import AuditLog, ImportFile, ImportJob, Order, OrderItem
 from .orders_service import STATUS_COMPLETED, STATUS_NOT_COMPLETED
 from .schemas import ImportCreate, ImportRead, ImportResult
+from .skladbot_request_dry_run import create_skladbot_dry_run_for_import
 
 
 logger = logging.getLogger(__name__)
@@ -203,6 +204,11 @@ def create_import(db: Session, payload: ImportCreate):
         **(import_job.raw_payload or {}),
         "google_sheets": google_sheets_result,
     }
+    skladbot_dry_run_result = create_skladbot_dry_run_for_import(db, str(import_job.id))
+    import_job.raw_payload = {
+        **(import_job.raw_payload or {}),
+        "skladbot_dry_run": skladbot_dry_run_result,
+    }
     db.commit()
     db.refresh(import_job)
     return ImportResult(
@@ -222,6 +228,11 @@ def create_import(db: Session, payload: ImportCreate):
         google_sheets_duplicates=google_sheets_result.get("duplicates", 0),
         google_sheets_updated=google_sheets_result.get("updated", 0),
         google_sheets_error=google_sheets_result.get("error", ""),
+        skladbot_dry_run_status=skladbot_dry_run_result.get("status", ""),
+        skladbot_dry_run_ready=skladbot_dry_run_result.get("ready", 0),
+        skladbot_dry_run_blocked=skladbot_dry_run_result.get("blocked", 0),
+        skladbot_dry_run_already_linked=skladbot_dry_run_result.get("already_linked", 0),
+        skladbot_dry_run_event_id=skladbot_dry_run_result.get("event_id", ""),
     )
 
 

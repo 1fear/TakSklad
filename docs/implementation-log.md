@@ -4399,3 +4399,33 @@ cd /opt/taksklad/app
   - `./.venv/bin/python -m unittest tests.test_backend_skladbot_worker tests.test_backend_google_sheets_pending tests.test_backend_api_persistence tests.test_vds_acceptance_scripts` - 108 tests OK;
   - `./.venv/bin/python -m unittest discover -s tests` - 329 tests OK;
   - `https://api.taksklad.uz/health` - OK.
+
+### SkladBot request auto-create dry-run
+
+- Причина: нужно убрать ручной этап создания заявок SkladBot после Telegram Excel import, но первый этап должен быть безопасным и без реального `POST /v1/requests`.
+- Backend:
+  - добавлен сервис `skladbot_request_dry_run`, который после импорта строит preview будущей заявки SkladBot по каждому заказу;
+  - одна заявка = один заказ TakSklad, товары внутри заявки собираются по всем позициям заказа, даже если текущий импорт добавил только часть строк;
+  - payload использует `customer_id=6211`, `request_type_id=3389`, поля `address`, `comment`, `company_name`, `unloading_date`;
+  - SKU mapping: Red `2189390`, Brown `2189391`, Gold SSL `2189394`;
+  - неизвестный SKU не ломает импорт, а получает статус `blocked`;
+  - заказ с уже заполненным `skladbot_request_number` или `skladbot_request_id` получает статус `already_linked`;
+  - результат хранится в `pending_events` с `event_type=skladbot_request_dry_run`, `would_post=false`, и пишется в `audit_log`;
+  - повторный запуск для того же `import_id` не плодит дубли, пересборка доступна отдельным API;
+  - режим контролируется `SKLADBOT_CREATE_REQUESTS_MODE=dry_run|enabled|disabled`, по умолчанию `dry_run`;
+  - `enabled` на этом этапе сохраняется как `configured_mode`, но фактический режим остается `dry_run`.
+- API:
+  - `GET /api/v1/admin/skladbot/dry-runs?import_id=...`;
+  - `POST /api/v1/admin/skladbot/dry-runs/{id}/rebuild`.
+- Web:
+  - добавлена вкладка `SkladBot dry-run`;
+  - показываются импорт, клиент, дата, тип оплаты, адрес, товары, блоки, статус, причина блокировки и JSON preview;
+  - в истории импортов добавлена короткая сводка dry-run.
+- Важно:
+  - реальное создание заявок SkladBot не включено;
+  - на этом этапе SkladBot API не получает POST-запросы от TakSklad.
+- Проверено:
+  - `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m unittest tests.test_backend_skladbot_request_dry_run` - 9 tests OK;
+  - `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m unittest tests.test_backend_api_persistence` - 50 tests OK;
+  - `npm run build` в `frontend` - OK;
+  - `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m unittest discover -s tests` - 338 tests OK.

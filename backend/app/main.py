@@ -38,6 +38,7 @@ from .orders_service import lookup_return_order as lookup_return_order_in_db
 from .orders_service import mark_order_returned as mark_order_returned_in_db
 from .orders_service import undo_scan as undo_scan_in_db
 from .reports_service import build_day_report
+from .skladbot_request_dry_run import list_skladbot_dry_runs, rebuild_skladbot_dry_run
 from .skladbot_worker import update_orders_from_skladbot
 from .schemas import (
     AdminOrderActionRequest,
@@ -55,6 +56,7 @@ from .schemas import (
     ScanCreate,
     ScanRead,
     ScanUndo,
+    SkladBotDryRunRead,
 )
 from .settings import APP_VERSION, load_settings
 from .web_auth import (
@@ -300,6 +302,19 @@ def resync_order_skladbot(order_id: str, payload: AdminOrderActionRequest, db=De
         return resync_order_skladbot_in_db(db, order_id, payload)
     except ApiError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@api.get("/admin/skladbot/dry-runs", response_model=list[SkladBotDryRunRead])
+def admin_skladbot_dry_runs(import_id: str | None = None, db=Depends(get_db)):
+    return list_skladbot_dry_runs(db, import_id=import_id)
+
+
+@api.post("/admin/skladbot/dry-runs/{dry_run_id}/rebuild", response_model=list[SkladBotDryRunRead])
+def admin_rebuild_skladbot_dry_run(dry_run_id: str, db=Depends(get_db)):
+    try:
+        return rebuild_skladbot_dry_run(db, dry_run_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 @api.post("/sync/sources")

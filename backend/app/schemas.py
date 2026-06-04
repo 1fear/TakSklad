@@ -224,6 +224,38 @@ class ImportResult(BaseModel):
     google_sheets_duplicates: int = 0
     google_sheets_updated: int = 0
     google_sheets_error: str = ""
+    skladbot_dry_run_status: str = ""
+    skladbot_dry_run_ready: int = 0
+    skladbot_dry_run_blocked: int = 0
+    skladbot_dry_run_already_linked: int = 0
+    skladbot_dry_run_event_id: str = ""
+
+
+class SkladBotDryRunProductRead(BaseModel):
+    product: str
+    quantity_blocks: int
+    product_data_id: int | None = None
+    barcode: str = ""
+    is_main_barcode: bool = False
+    status: str
+    error: str = ""
+
+
+class SkladBotDryRunRead(BaseModel):
+    id: str
+    event_id: str
+    import_id: str
+    order_id: str
+    client: str
+    order_date: date | None = None
+    payment_type: str
+    address: str
+    blocks: int
+    status: str
+    error: str = ""
+    products: list[SkladBotDryRunProductRead] = Field(default_factory=list)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    generated_at: datetime | None = None
 
 
 class DayReportTotals(BaseModel):

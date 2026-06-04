@@ -19,6 +19,7 @@ import {
   Search,
   Server,
   ShieldCheck,
+  SquareCode,
   Undo2,
 } from "lucide-react";
 import type { ReactNode } from "react";
@@ -32,6 +33,7 @@ import {
   ApiRequestError,
   DayReport,
   ImportRecord,
+  SkladBotDryRun,
   archiveOrderWithoutKiz,
   cancelOrder,
   completeOrdersWithoutKiz,
@@ -41,8 +43,10 @@ import {
   getAuthSession,
   getDayReport,
   listImports,
+  listSkladBotDryRuns,
   loginWeb,
   logoutWeb,
+  rebuildSkladBotDryRun,
   resetOrderForRescan,
   restoreOrder,
   resyncGoogleOrder,
@@ -52,7 +56,7 @@ import {
 } from "./api";
 import "./styles.css";
 
-type Tab = "table" | "report" | "imports" | "activity";
+type Tab = "table" | "report" | "imports" | "skladbotDryRun" | "activity";
 type StatusFilter = "all" | "active" | "archive" | "archive_no_kiz" | "cancelled" | "returned" | "removed_from_google";
 type ScanFilter = "all" | "not_started" | "in_progress" | "completed" | "over_scanned" | "no_plan";
 type SkladBotFilter = "all" | "found" | "missing" | "problem";
@@ -80,6 +84,7 @@ function App() {
   const [config] = useState<ApiConfig>(() => loadConfig());
   const [adminTable, setAdminTable] = useState<AdminTable | null>(null);
   const [imports, setImports] = useState<ImportRecord[]>([]);
+  const [dryRuns, setDryRuns] = useState<SkladBotDryRun[]>([]);
   const [report, setReport] = useState<DayReport | null>(null);
   const [reportDate, setReportDate] = useState(todayIso());
   const [shipmentDateFilter, setShipmentDateFilter] = useState("");
@@ -147,14 +152,16 @@ function App() {
     setError("");
     if (showNotice) setNotice("");
     try {
-      const [nextAdminTable, nextReport, nextImports] = await Promise.all([
+      const [nextAdminTable, nextReport, nextImports, nextDryRuns] = await Promise.all([
         getAdminTable(activeConfig),
         getDayReport(activeConfig, reportDate),
         listImports(activeConfig),
+        listSkladBotDryRuns(activeConfig),
       ]);
       setAdminTable(nextAdminTable);
       setReport(nextReport);
       setImports(nextImports);
+      setDryRuns(nextDryRuns);
       setSelectedOrderIds((current) => current.filter((id) => nextAdminTable.rows.some((row) => row.order_id === id)));
       if (showNotice) {
         setNotice(`Обновлено: ${new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}`);
@@ -232,6 +239,7 @@ function App() {
       setAuthUser("");
       setAdminTable(null);
       setImports([]);
+      setDryRuns([]);
       setReport(null);
       setSelectedOrderIds([]);
     }
@@ -283,6 +291,22 @@ function App() {
       setNotice(`Источники обновлены: ${status}, SkladBot ${skladbotStatus}`);
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : "Не удалось обновить Google/SkladBot");
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  async function rebuildDryRun(eventId: string) {
+    if (!eventId) return;
+    setBusyAction(`rebuild-dry-run:${eventId}`);
+    setError("");
+    setNotice("");
+    try {
+      await rebuildSkladBotDryRun(config, eventId);
+      await refreshAll(config, false);
+      setNotice("SkladBot dry-run пересобран");
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "Не удалось пересобрать SkladBot dry-run");
     } finally {
       setBusyAction("");
     }
@@ -407,6 +431,10 @@ function App() {
           <button className={tab === "imports" ? "active" : ""} onClick={() => setTab("imports")}>
             <FileSpreadsheet size={18} />
             Импорты
+          </button>
+          <button className={tab === "skladbotDryRun" ? "active" : ""} onClick={() => setTab("skladbotDryRun")}>
+            <SquareCode size={18} />
+            SkladBot dry-run
           </button>
           <button className={tab === "activity" ? "active" : ""} onClick={() => setTab("activity")}>
             <History size={18} />
@@ -605,16 +633,26 @@ function App() {
               <h2>История импортов</h2>
             </div>
             <DataTable
-              headers={["Дата", "Источник", "Статус", "Строк", "Импортировано"]}
+              headers={["Дата", "Источник", "Статус", "Строк", "Импортировано", "SkladBot dry-run"]}
               rows={imports.map((item) => [
                 new Date(item.created_at).toLocaleString("ru-RU"),
                 item.source,
                 item.status,
                 String(item.rows_total),
                 String(item.rows_imported),
+                importDryRunSummaryText(item),
               ])}
             />
           </section>
+        )}
+
+        {tab === "skladbotDryRun" && (
+          <SkladBotDryRunPanel
+            dryRuns={dryRuns}
+            imports={imports}
+            busyAction={busyAction}
+            onRebuild={(eventId) => void rebuildDryRun(eventId)}
+          />
         )}
 
         {tab === "activity" && (
@@ -1092,6 +1130,132 @@ function AdminRowsTable({
   );
 }
 
+function SkladBotDryRunPanel({
+  dryRuns,
+  imports,
+  busyAction,
+  onRebuild,
+}: {
+  dryRuns: SkladBotDryRun[];
+  imports: ImportRecord[];
+  busyAction: string;
+  onRebuild: (eventId: string) => void;
+}) {
+  const [importFilter, setImportFilter] = useState("");
+  const filteredRuns = useMemo(
+    () => dryRuns.filter((item) => !importFilter || item.import_id === importFilter),
+    [dryRuns, importFilter],
+  );
+  const summary = useMemo(() => ({
+    ready: filteredRuns.filter((item) => item.status === "ready").length,
+    blocked: filteredRuns.filter((item) => item.status === "blocked").length,
+    alreadyLinked: filteredRuns.filter((item) => item.status === "already_linked").length,
+  }), [filteredRuns]);
+  const importsById = useMemo(
+    () => new Map(imports.map((item) => [item.id, item])),
+    [imports],
+  );
+
+  return (
+    <section className="table-panel">
+      <div className="panel-header table-panel-header">
+        <div>
+          <h2>SkladBot dry-run</h2>
+          <span className="panel-subtitle">Будущие заявки без отправки в SkladBot</span>
+        </div>
+        <SelectFilter value={importFilter} onChange={setImportFilter}>
+          <option value="">Все импорты</option>
+          {imports.map((item) => (
+            <option key={item.id} value={item.id}>
+              {new Date(item.created_at).toLocaleString("ru-RU")} · {shortId(item.id)}
+            </option>
+          ))}
+        </SelectFilter>
+      </div>
+
+      <section className="stats-row compact">
+        <Metric icon={<SquareCode size={20} />} label="Ready" value={summary.ready} />
+        <Metric icon={<AlertCircle size={20} />} label="Blocked" value={summary.blocked} tone={summary.blocked > 0 ? "warn" : undefined} />
+        <Metric icon={<Server size={20} />} label="Уже WH-R" value={summary.alreadyLinked} />
+        <Metric icon={<ClipboardList size={20} />} label="Всего" value={filteredRuns.length} />
+      </section>
+
+      <div className="data-table-wrap dry-run-table-wrap">
+        <table className="data-table dry-run-table">
+          <thead>
+            <tr>
+              <th>Импорт</th>
+              <th>Клиент</th>
+              <th>Дата/оплата</th>
+              <th>Адрес</th>
+              <th>Товары</th>
+              <th>Статус</th>
+              <th>JSON</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {filteredRuns.map((item) => {
+              const importRecord = importsById.get(item.import_id);
+              const rebuildAction = `rebuild-dry-run:${item.event_id}`;
+              return (
+                <tr key={item.id}>
+                  <td>
+                    <strong className="cell-title">{shortId(item.import_id)}</strong>
+                    <span className="table-muted cell-sub">
+                      {importRecord ? new Date(importRecord.created_at).toLocaleString("ru-RU") : formatDateTime(item.generated_at)}
+                    </span>
+                  </td>
+                  <td>
+                    <strong className="cell-title">{item.client}</strong>
+                    <span className="table-muted cell-sub">{shortId(item.order_id)}</span>
+                  </td>
+                  <td>
+                    <strong className="cell-title">{formatDate(item.order_date)}</strong>
+                    <span className="table-muted cell-sub">{item.payment_type}</span>
+                  </td>
+                  <td className="dry-run-address">{item.address || "-"}</td>
+                  <td>
+                    <strong className="cell-title">{item.blocks} блок.</strong>
+                    <div className="dry-run-products">
+                      {item.products.map((product, index) => (
+                        <span key={`${item.id}-${product.product}-${index}`} className={product.status === "blocked" ? "blocked" : ""}>
+                          {product.product}: {product.quantity_blocks}
+                        </span>
+                      ))}
+                    </div>
+                  </td>
+                  <td>
+                    <span className={`status-badge dry-run-${item.status}`}>{dryRunStatusLabel(item.status)}</span>
+                    {item.error && <span className="table-muted cell-sub">{item.error}</span>}
+                  </td>
+                  <td>
+                    <details className="json-preview">
+                      <summary>JSON</summary>
+                      <pre>{JSON.stringify(item.payload, null, 2)}</pre>
+                    </details>
+                  </td>
+                  <td>
+                    <button className="ghost-button" onClick={() => onRebuild(item.event_id)} disabled={Boolean(busyAction)}>
+                      {busyAction === rebuildAction ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
+                      Пересобрать
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+            {filteredRuns.length === 0 && (
+              <tr>
+                <td colSpan={8}>Dry-run еще не создан</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
 function ActivityList({ items }: { items: AdminActivity[] }) {
   return (
     <div className="activity-list">
@@ -1219,6 +1383,30 @@ function skladbotStatusLabel(row: AdminTableRow) {
   if (row.skladbot_status === "pending") return "Проверяется";
   if (row.skladbot_status === "error") return "Ошибка";
   return "Без номера";
+}
+
+function dryRunStatusLabel(value: string) {
+  if (value === "ready") return "Ready";
+  if (value === "blocked") return "Заблокировано";
+  if (value === "already_linked") return "Уже есть WH-R";
+  return value || "-";
+}
+
+function importDryRunSummaryText(item: ImportRecord) {
+  const summary = readImportDryRunSummary(item);
+  if (!summary) return "Не создан";
+  const ready = Number(summary.ready ?? 0);
+  const blocked = Number(summary.blocked ?? 0);
+  const alreadyLinked = Number(summary.already_linked ?? 0);
+  const mode = typeof summary.mode === "string" ? summary.mode : "dry_run";
+  return `${mode}: ready ${ready}, blocked ${blocked}, WH-R ${alreadyLinked}`;
+}
+
+function readImportDryRunSummary(item: ImportRecord): Record<string, unknown> | null {
+  const summary = item.raw_payload?.skladbot_dry_run;
+  return summary && typeof summary === "object" && !Array.isArray(summary)
+    ? summary as Record<string, unknown>
+    : null;
 }
 
 function googleStatusLabel(value: string) {
