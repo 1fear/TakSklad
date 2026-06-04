@@ -549,7 +549,10 @@ def run_google_sheets_export_event(db: Session, event: PendingEvent):
         orders = load_skladbot_export_orders(db, payload)
         if not orders:
             return {"status": "skipped", "error": "orders not found"}
-        return sync_backend_orders_skladbot_to_google_sheets(orders)
+        return sync_backend_orders_skladbot_to_google_sheets(
+            orders,
+            include_archive=bool(payload.get("include_archive")),
+        )
 
     return {"status": "missing", "error": f"unknown google export action: {action}"}
 
@@ -557,11 +560,13 @@ def run_google_sheets_export_event(db: Session, event: PendingEvent):
 def load_skladbot_export_orders(db: Session, payload):
     order_ids = [parse_uuid(value) for value in (payload.get("order_ids") or [])]
     order_ids = [value for value in order_ids if value is not None]
+    include_inactive = bool(payload.get("include_inactive")) and bool(order_ids)
     stmt = (
         select(Order)
         .options(selectinload(Order.items).selectinload(OrderItem.scan_codes))
-        .where(~Order.status.in_(SKLADBOT_EXPORT_INACTIVE_ORDER_STATUSES))
     )
+    if not include_inactive:
+        stmt = stmt.where(~Order.status.in_(SKLADBOT_EXPORT_INACTIVE_ORDER_STATUSES))
     if order_ids:
         stmt = stmt.where(Order.id.in_(order_ids))
     return db.execute(stmt).scalars().all()

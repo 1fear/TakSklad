@@ -492,6 +492,8 @@ def pending_google_export_exists(db: Session, order):
     ).scalars().all()
     for event in events:
         payload = event.payload or {}
+        if payload.get("action") == "google_sheets_skladbot_export":
+            continue
         if str(payload.get("entity_id") or "") in entity_ids:
             return True
         order_ids = payload.get("order_ids") or []

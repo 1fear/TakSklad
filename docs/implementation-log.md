@@ -4375,3 +4375,27 @@ cd /opt/taksklad/app
   - короткий GUI-launch через `START_TAKSKLAD.command` - OK;
   - короткий прямой GUI-launch бинарника `.app` - OK;
   - `codesign --verify --deep --strict` после запусков - OK.
+
+### SkladBot sync acceleration and completed-order backfill
+
+- Причина: склад может завершить заказ раньше, чем worker успел подтянуть номер WH-R из SkladBot. Закрытие без WH-R оставлено разрешенным, потому что это рабочая логика склада, но номер нужен позже для возвратов и сверок.
+- Backend:
+  - `SKLADBOT_DETAIL_LIMIT` увеличен с `3` до `10`, чтобы за один проход проверять больше свежих заявок SkladBot без резкого роста нагрузки;
+  - advisory lock SkladBot worker переведен на `pg_try_advisory_xact_lock`, чтобы lock не зависал после commit/session reuse;
+  - worker теперь проверяет не только активные, но и свежие завершенные заказы без полного комплекта `skladbot_request_number` + `skladbot_request_id`;
+  - окно догонки завершенных заказов на VDS задано через `SKLADBOT_COMPLETED_BACKFILL_DAYS=2`;
+  - после нахождения WH-R для свежего завершенного заказа worker ставит событие `google_sheets_skladbot_export` с `include_archive=true`, чтобы обновить Google `Архив`;
+  - SkladBot metadata export больше не блокирует массовое закрытие заказов без КИЗов в кабинете.
+- VDS:
+  - перед деплоем создан backup `/opt/taksklad/backups/postgres/taksklad-postgres-20260604T081842Z.sql.gz`;
+  - обновлены и перезапущены `backend-api`, `skladbot-worker`, `google-sheets-sync-worker`;
+  - настройки VDS: `SKLADBOT_DETAIL_LIMIT=10`, `SKLADBOT_COMPLETED_BACKFILL_DAYS=2`, `SKLADBOT_SYNC_INTERVAL_SECONDS=60`;
+  - проверено, что SkladBot worker работает без зависшего lock и без 429/API errors.
+- Live verification:
+  - по импорту `2e7702bf-eb5a-4b65-a28e-d0c4c93cb6f2` все `16/16` заказов получили WH-R и SkladBot ID в VDS;
+  - Google queue по `google_sheets_skladbot_export` завершена, failed events нет;
+  - последние SkladBot export события обновили Google `Архив`, а не только активный `data`.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_backend_skladbot_worker tests.test_backend_google_sheets_pending tests.test_backend_api_persistence tests.test_vds_acceptance_scripts` - 108 tests OK;
+  - `./.venv/bin/python -m unittest discover -s tests` - 329 tests OK;
+  - `https://api.taksklad.uz/health` - OK.

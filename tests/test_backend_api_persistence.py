@@ -408,6 +408,34 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertEqual(len(events), 2)
             self.assertEqual({event.payload["action"] for event in events}, {"google_sheets_archive_export"})
 
+    def test_bulk_complete_without_kiz_ignores_pending_skladbot_export(self):
+        order_id, _item_id = self.seed_order(quantity_blocks=3)
+        with self.SessionLocal() as db:
+            db.add(PendingEvent(
+                event_type="google_sheets_export",
+                status="pending",
+                payload={
+                    "action": "google_sheets_skladbot_export",
+                    "entity_id": "skladbot",
+                    "order_ids": [order_id],
+                },
+            ))
+            db.commit()
+
+        response = self.client.post(
+            "/api/v1/admin/orders/bulk/complete-without-kiz",
+            json={
+                "order_ids": [order_id],
+                "actor": "anton",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["completed"], 1)
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            self.assertEqual(order.status, "completed")
+
     def test_bulk_complete_without_kiz_rejects_partially_scanned_order_without_partial_changes(self):
         clean_order_id, _clean_item_id = self.seed_order(quantity_blocks=3)
         scanned_order_id, _scanned_item_id = self.seed_order(quantity_blocks=3, scanned_blocks=1)

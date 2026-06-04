@@ -9,6 +9,7 @@ from sqlalchemy.pool import StaticPool
 from backend.app.google_sheets_pending import (
     GOOGLE_SHEETS_EXPORT_EVENT_TYPE,
     acquire_google_sheets_export_lock,
+    load_skladbot_export_orders,
     process_pending_google_sheets_exports,
     release_google_sheets_export_lock,
 )
@@ -215,6 +216,116 @@ class GoogleSheetsPendingLockTests(unittest.TestCase):
             self.assertEqual(result["failed"], 0)
             self.assertEqual(event.status, "completed")
             self.assertEqual((event.payload or {}).get("last_result", {}).get("status"), "skipped")
+        finally:
+            Base.metadata.drop_all(engine)
+            engine.dispose()
+
+    def test_skladbot_export_can_include_completed_order_for_archive_backfill(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        try:
+            with SessionLocal() as db:
+                order = Order(
+                    order_date=date(2026, 6, 5),
+                    payment_type="Перечисление",
+                    client="Client",
+                    address="Tashkent",
+                    status="completed",
+                    raw_payload={"skladbot_request_number": "WH-R-1"},
+                )
+                order.items.append(OrderItem(
+                    product="Chapman Brown OP 20",
+                    quantity_pieces=10,
+                    quantity_blocks=1,
+                    scanned_blocks=1,
+                    status="completed",
+                    raw_payload={"source_import_id": "import-1", "source_order_id": "order-1"},
+                ))
+                db.add(order)
+                db.flush()
+                order_id = str(order.id)
+
+                without_inactive = load_skladbot_export_orders(db, {"order_ids": [order_id]})
+                with_inactive = load_skladbot_export_orders(
+                    db,
+                    {"order_ids": [order_id], "include_inactive": True},
+                )
+
+            self.assertEqual(without_inactive, [])
+            self.assertEqual([str(order.id) for order in with_inactive], [order_id])
+        finally:
+            Base.metadata.drop_all(engine)
+            engine.dispose()
+
+    def test_skladbot_export_event_passes_archive_mode_to_exporter(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        try:
+            with SessionLocal() as db:
+                order = Order(
+                    order_date=date(2026, 6, 5),
+                    payment_type="Перечисление",
+                    client="Client",
+                    address="Tashkent",
+                    status="completed",
+                    raw_payload={"skladbot_request_number": "WH-R-1"},
+                )
+                order.items.append(OrderItem(
+                    product="Chapman Brown OP 20",
+                    quantity_pieces=10,
+                    quantity_blocks=1,
+                    scanned_blocks=1,
+                    status="completed",
+                    raw_payload={"source_import_id": "import-1", "source_order_id": "order-1"},
+                ))
+                db.add(order)
+                db.flush()
+                order_id = str(order.id)
+                db.add(PendingEvent(
+                    event_type=GOOGLE_SHEETS_EXPORT_EVENT_TYPE,
+                    status="pending",
+                    payload={
+                        "action": "google_sheets_skladbot_export",
+                        "entity_id": "skladbot",
+                        "order_ids": [order_id],
+                        "include_inactive": True,
+                        "include_archive": True,
+                    },
+                ))
+                db.commit()
+
+                captured_order_ids = []
+                captured_include_archive = []
+
+                def fake_skladbot_export(orders, include_archive=False):
+                    captured_order_ids.extend(str(row.id) for row in orders)
+                    captured_include_archive.append(include_archive)
+                    return {"status": "completed", "updated": 1}
+
+                with mock.patch(
+                    "backend.app.google_sheets_pending.sync_backend_orders_skladbot_to_google_sheets",
+                    side_effect=fake_skladbot_export,
+                ) as export_mock:
+                    result = process_pending_google_sheets_exports(db, limit=50)
+
+                event = db.execute(select(PendingEvent)).scalar_one()
+
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["synced"], 1)
+            self.assertEqual(event.status, "completed")
+            export_mock.assert_called_once()
+            self.assertEqual(captured_include_archive, [True])
+            self.assertEqual(captured_order_ids, [order_id])
         finally:
             Base.metadata.drop_all(engine)
             engine.dispose()

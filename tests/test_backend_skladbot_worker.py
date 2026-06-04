@@ -1,5 +1,5 @@
 import unittest
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from unittest import mock
 
 from sqlalchemy import create_engine, select
@@ -18,7 +18,9 @@ from backend.app.skladbot_worker import (
     dynamic_skladbot_lookback_days,
     fetch_candidate_requests,
     load_skladbot_fetch_cursor,
+    load_skladbot_sync_orders,
     nearest_request_diagnostics,
+    order_needs_skladbot_backfill,
     order_has_skladbot_number,
     parse_date,
     parse_skladbot_api_tokens,
@@ -30,6 +32,7 @@ from backend.app.skladbot_worker import (
     rotate_candidate_list_items,
     request_unloading_date_matches_active_orders,
     sanitize_skladbot_error,
+    try_acquire_skladbot_sync_lock,
     update_orders_from_skladbot,
     worker_interval_seconds,
 )
@@ -533,11 +536,14 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
             with mock.patch("backend.app.skladbot_worker.SessionLocal", SessionLocal), mock.patch(
                 "backend.app.skladbot_worker.fetch_candidate_requests",
                 return_value=CandidateRequests([request], complete=True),
-            ):
+            ) as fetch_candidates:
                 result = update_orders_from_skladbot()
 
             self.assertEqual(result["matched"], 1)
+            self.assertEqual(result["active_orders"], 1)
+            self.assertEqual(result["completed_backfill_orders"], 0)
             self.assertEqual(result["google_sheets_export"]["status"], "queued")
+            self.assertEqual(len(fetch_candidates.call_args.kwargs["orders"]), 1)
             with SessionLocal() as db:
                 order = db.execute(select(Order)).scalar_one()
                 self.assertEqual(order.raw_payload["skladbot_request_number"], "WH-R-191794")
@@ -548,9 +554,141 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
                 self.assertEqual(audit.payload["status"], "queued")
                 event = db.execute(select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")).scalar_one()
                 self.assertEqual(event.payload["action"], "google_sheets_skladbot_export")
+                self.assertFalse(event.payload["include_inactive"])
+                self.assertFalse(event.payload["include_archive"])
         finally:
             Base.metadata.drop_all(engine)
             engine.dispose()
+
+    def test_update_orders_backfills_fresh_completed_order_without_skladbot_number(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        try:
+            with SessionLocal() as db:
+                order = Order(
+                    order_date=date(2026, 6, 5),
+                    payment_type="Перечисление",
+                    client='"TABACHNAYA LAVKA" MCHJ',
+                    address="Address",
+                    representative="Rep",
+                    status="completed",
+                    raw_payload={},
+                )
+                order.items = [
+                    OrderItem(
+                        product="Chapman Brown OP 20",
+                        quantity_blocks=2,
+                        quantity_pieces=20,
+                        pieces_per_block=10,
+                        scanned_blocks=2,
+                        status="completed",
+                        raw_payload={"source_import_id": "import-1", "source_order_id": "order-1"},
+                    )
+                ]
+                db.add(order)
+                db.commit()
+
+            request = {
+                "id": 191794,
+                "number": "WH-R-191794",
+                "unloading_date": "05.06.2026",
+                "recipient": '"TABACHNAYA LAVKA" MCHJ',
+                "comment": "Перечисление",
+                "products": [{"name": "Chapman Brown OP 20 UZ", "amount": 2}],
+                "raw": {},
+            }
+            with mock.patch("backend.app.skladbot_worker.SessionLocal", SessionLocal), mock.patch(
+                "backend.app.skladbot_worker.fetch_candidate_requests",
+                return_value=CandidateRequests([request], complete=True),
+            ) as fetch_candidates:
+                result = update_orders_from_skladbot()
+
+            self.assertEqual(result["matched"], 1)
+            self.assertEqual(result["active_orders"], 0)
+            self.assertEqual(result["completed_backfill_orders"], 1)
+            self.assertEqual(len(fetch_candidates.call_args.kwargs["orders"]), 1)
+            with SessionLocal() as db:
+                order = db.execute(select(Order)).scalar_one()
+                self.assertEqual(order.raw_payload["skladbot_request_number"], "WH-R-191794")
+                self.assertEqual(order.raw_payload["skladbot_request_id"], "191794")
+                self.assertEqual(order.raw_payload["skladbot_status"], "found")
+                event = db.execute(select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")).scalar_one()
+                self.assertEqual(event.payload["action"], "google_sheets_skladbot_export")
+                self.assertTrue(event.payload["include_inactive"])
+                self.assertTrue(event.payload["include_archive"])
+        finally:
+            Base.metadata.drop_all(engine)
+            engine.dispose()
+
+    def test_load_skladbot_sync_orders_skips_stale_completed_backfill_orders(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        try:
+            old_time = datetime(2026, 5, 29, 8, 0, tzinfo=timezone.utc)
+            with SessionLocal() as db:
+                fresh = Order(
+                    order_date=date(2026, 6, 5),
+                    payment_type="Перечисление",
+                    client="Fresh",
+                    address="Address",
+                    status="completed",
+                    raw_payload={},
+                    updated_at=old_time,
+                )
+                fresh.items = [OrderItem(product="Chapman Brown OP 20", quantity_blocks=1, status="completed")]
+                stale = Order(
+                    order_date=date(2026, 5, 29),
+                    payment_type="Перечисление",
+                    client="Stale",
+                    address="Address",
+                    status="completed",
+                    raw_payload={},
+                    updated_at=old_time,
+                )
+                stale.items = [OrderItem(product="Chapman Brown OP 20", quantity_blocks=1, status="completed")]
+                returned = Order(
+                    order_date=date(2026, 6, 5),
+                    payment_type="Перечисление",
+                    client="Returned",
+                    address="Address",
+                    status="returned",
+                    raw_payload={},
+                )
+                returned.items = [OrderItem(product="Chapman Brown OP 20", quantity_blocks=1, status="returned")]
+                db.add_all([fresh, stale, returned])
+                db.commit()
+
+            with SessionLocal() as db, mock.patch(
+                "backend.app.skladbot_worker.completed_backfill_cutoffs",
+                return_value=(date(2026, 6, 3), datetime(2026, 6, 3, 0, 0, tzinfo=timezone.utc)),
+            ):
+                orders, active_orders, completed_backfill_orders = load_skladbot_sync_orders(db)
+
+            self.assertEqual(active_orders, [])
+            self.assertEqual([order.client for order in completed_backfill_orders], ["Fresh"])
+            self.assertEqual([order.client for order in orders], ["Fresh"])
+        finally:
+            Base.metadata.drop_all(engine)
+            engine.dispose()
+
+    def test_order_needs_skladbot_backfill_requires_number_and_id(self):
+        self.assertTrue(order_needs_skladbot_backfill(Order(raw_payload={})))
+        self.assertTrue(order_needs_skladbot_backfill(Order(raw_payload={"skladbot_request_id": "191794"})))
+        self.assertTrue(order_needs_skladbot_backfill(Order(raw_payload={"skladbot_request_number": "WH-R-191794"})))
+        self.assertFalse(order_needs_skladbot_backfill(Order(raw_payload={
+            "skladbot_request_number": "WH-R-191794",
+            "skladbot_request_id": "191794",
+        })))
 
     def test_update_orders_exports_all_active_orders_to_google_sheets_after_match(self):
         engine = create_engine(
@@ -823,7 +961,7 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
         order.items = [OrderItem(product="Chapman Brown OP 20", quantity_blocks=1)]
         fake_client = FakeClient()
 
-        with mock.patch.dict("os.environ", {}, clear=True):
+        with mock.patch.dict("os.environ", {"SKLADBOT_DETAIL_LIMIT": "3"}, clear=True):
             result = fetch_candidate_requests(
                 today=date(2026, 6, 3),
                 orders=[order],
@@ -1072,7 +1210,7 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
         self.assertEqual(result[0]["number"], "WH-R-1")
         self.assertTrue(result.complete)
 
-    def test_fetch_candidates_default_detail_limit_is_3_and_prioritizes_fresh_requests(self):
+    def test_fetch_candidates_default_detail_limit_is_10_and_prioritizes_fresh_requests(self):
         class FakeClient:
             configured = True
             request_delay = 0
@@ -1138,7 +1276,7 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {}, clear=True):
             result = fetch_candidate_requests(today=date(2026, 6, 1), orders=[order], client=fake_client)
 
-        self.assertEqual(len(fake_client.detail_ids), 3)
+        self.assertEqual(len(fake_client.detail_ids), 10)
         self.assertEqual(fake_client.detail_ids[0], 99)
         self.assertFalse(result.complete)
         self.assertEqual(result.reason, "detail_limit_reached")
@@ -1290,6 +1428,17 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
 
         with mock.patch.dict("os.environ", {"SKLADBOT_WORKER_INTERVAL_SECONDS": "120"}, clear=True):
             self.assertEqual(worker_interval_seconds(), 120)
+
+    def test_postgres_skladbot_lock_is_transaction_scoped(self):
+        db = mock.Mock()
+        db.bind.dialect.name = "postgresql"
+        db.execute.return_value.scalar.return_value = True
+
+        self.assertTrue(try_acquire_skladbot_sync_lock(db))
+
+        sql = str(db.execute.call_args.args[0])
+        self.assertIn("pg_try_advisory_xact_lock", sql)
+        self.assertNotIn("pg_try_advisory_lock(", sql)
 
 
 if __name__ == "__main__":

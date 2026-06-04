@@ -95,7 +95,8 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         self.assertIn("SKLADBOT_REQUEST_DELAY_SECONDS: ${SKLADBOT_REQUEST_DELAY_SECONDS:-2}", compose)
         self.assertIn("SKLADBOT_SYNC_MAX_LOOKBACK_DAYS: ${SKLADBOT_SYNC_MAX_LOOKBACK_DAYS:-7}", compose)
         self.assertIn("SKLADBOT_ORDER_CREATE_LEAD_DAYS: ${SKLADBOT_ORDER_CREATE_LEAD_DAYS:-3}", compose)
-        self.assertIn("SKLADBOT_DETAIL_LIMIT: ${SKLADBOT_DETAIL_LIMIT:-3}", compose)
+        self.assertIn("SKLADBOT_DETAIL_LIMIT: ${SKLADBOT_DETAIL_LIMIT:-10}", compose)
+        self.assertIn("SKLADBOT_COMPLETED_BACKFILL_DAYS: ${SKLADBOT_COMPLETED_BACKFILL_DAYS:-2}", compose)
         self.assertIn(
             "TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED: ${TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED:-false}",
             compose,
@@ -107,7 +108,8 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         self.assertIn("SKLADBOT_REQUEST_DELAY_SECONDS=2", env_example)
         self.assertIn("SKLADBOT_SYNC_MAX_LOOKBACK_DAYS=7", env_example)
         self.assertIn("SKLADBOT_ORDER_CREATE_LEAD_DAYS=3", env_example)
-        self.assertIn("SKLADBOT_DETAIL_LIMIT=3", env_example)
+        self.assertIn("SKLADBOT_DETAIL_LIMIT=10", env_example)
+        self.assertIn("SKLADBOT_COMPLETED_BACKFILL_DAYS=2", env_example)
         self.assertIn("TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED=false", env_example)
         self.assertIn("TELEGRAM_ADMIN_CHAT_IDS=", env_example)
 

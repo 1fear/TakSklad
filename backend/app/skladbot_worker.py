@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
-from sqlalchemy import select, text
+from sqlalchemy import or_, select, text
 from sqlalchemy.orm import selectinload
 
 from .db import SessionLocal
@@ -25,6 +25,7 @@ RETURN_REQUEST_TOKENS = {"возврат", "возврата", "return", "return
 PRODUCT_COLORS = ("brown", "red", "gold")
 PRODUCT_FORMATS = ("op", "ssl")
 SKLADBOT_SYNC_LOCK_KEY = 22052631
+SKLADBOT_COMPLETED_BACKFILL_STATUSES = ("completed", "done", "closed")
 
 
 class CandidateRequests(list):
@@ -344,6 +345,65 @@ def order_has_skladbot_number(order):
     return bool(normalize_text(raw_payload.get("skladbot_request_number")) or normalize_text(raw_payload.get("skladbot_request_id")))
 
 
+def order_needs_skladbot_backfill(order):
+    raw_payload = getattr(order, "raw_payload", None) or {}
+    return not (
+        normalize_text(raw_payload.get("skladbot_request_number"))
+        and normalize_text(raw_payload.get("skladbot_request_id"))
+    )
+
+
+def completed_backfill_days():
+    return max(0, env_int("SKLADBOT_COMPLETED_BACKFILL_DAYS", 2))
+
+
+def completed_backfill_cutoffs(today=None, now=None):
+    days = completed_backfill_days()
+    now = now or datetime.now(timezone.utc)
+    today = today or business_today(now)
+    return today - timedelta(days=days), now - timedelta(days=days)
+
+
+def load_skladbot_sync_orders(db, now=None):
+    active_orders = db.execute(
+        select(Order)
+        .options(selectinload(Order.items))
+        .where(~Order.status.in_(COMPLETED_STATUSES))
+        .order_by(Order.order_date.asc(), Order.created_at.asc())
+    ).scalars().all()
+
+    cutoff_date, cutoff_datetime = completed_backfill_cutoffs(now=now)
+    completed_backfill = []
+    if completed_backfill_days() > 0:
+        completed_backfill = db.execute(
+            select(Order)
+            .options(selectinload(Order.items))
+            .where(Order.status.in_(SKLADBOT_COMPLETED_BACKFILL_STATUSES))
+            .where(
+                or_(
+                    Order.updated_at >= cutoff_datetime,
+                    Order.order_date >= cutoff_date,
+                )
+            )
+            .order_by(Order.updated_at.desc(), Order.created_at.desc())
+        ).scalars().all()
+        completed_backfill = [
+            order
+            for order in completed_backfill
+            if order_needs_skladbot_backfill(order)
+        ]
+
+    seen = set()
+    orders = []
+    for order in [*active_orders, *completed_backfill]:
+        order_id = str(order.id)
+        if order_id in seen:
+            continue
+        seen.add(order_id)
+        orders.append(order)
+    return orders, active_orders, completed_backfill
+
+
 def all_orders_have_candidate_match(orders, requests):
     if not orders:
         return False
@@ -607,7 +667,7 @@ def fetch_candidate_requests(today=None, orders=None, client=None, start_after_r
         return CandidateRequests([], complete=True)
 
     lookback_days = dynamic_skladbot_lookback_days(orders=orders, today=today)
-    detail_limit = max(1, env_int("SKLADBOT_DETAIL_LIMIT", 3))
+    detail_limit = max(1, env_int("SKLADBOT_DETAIL_LIMIT", 10))
     result = []
     details_checked = 0
     detail_errors = []
@@ -840,19 +900,22 @@ def update_orders_from_skladbot():
             logging.info("SkladBot worker: another sync is already running, skip")
             return {"requests": 0, "updated": 0, "matched": 0, "not_found": 0, "multiple": 0, "busy": True}
         try:
-            orders = db.execute(
-                select(Order)
-                .options(selectinload(Order.items))
-                .where(~Order.status.in_(COMPLETED_STATUSES))
-            ).scalars().all()
+            orders, active_orders, completed_backfill_orders = load_skladbot_sync_orders(db)
             if not orders:
-                logging.info("SkladBot worker: no active backend orders, skip SkladBot API")
-                return {"requests": 0, "updated": 0, "matched": 0, "not_found": 0, "multiple": 0}
+                logging.info("SkladBot worker: no active or recent completed backend orders, skip SkladBot API")
+                return {
+                    "requests": 0,
+                    "updated": 0,
+                    "matched": 0,
+                    "not_found": 0,
+                    "multiple": 0,
+                    "completed_backfill_orders": 0,
+                }
 
-            orders_to_check = [order for order in orders if not order_has_skladbot_number(order)]
+            orders_to_check = [order for order in orders if order_needs_skladbot_backfill(order)]
             if not orders_to_check:
-                logging.info("SkladBot worker: all active orders already have SkladBot numbers, skip SkladBot API")
-                google_sheets_result = export_skladbot_numbers_to_google_sheets(db, orders)
+                logging.info("SkladBot worker: all active/recent orders already have SkladBot numbers, skip SkladBot API")
+                google_sheets_result = export_skladbot_numbers_to_google_sheets(db, active_orders)
                 db.add(AuditLog(
                     action="skladbot_google_sheets_export",
                     entity_type="skladbot",
@@ -867,6 +930,8 @@ def update_orders_from_skladbot():
                     "not_found": 0,
                     "multiple": 0,
                     "already_numbered": len(orders),
+                    "active_orders": len(active_orders),
+                    "completed_backfill_orders": len(completed_backfill_orders),
                     "google_sheets_export": google_sheets_result,
                 }
 
@@ -916,6 +981,8 @@ def update_orders_from_skladbot():
                     "requests": len(requests),
                     "orders_checked": len(orders_to_check),
                     "orders_already_numbered": len(orders) - len(orders_to_check),
+                    "active_orders": len(active_orders),
+                    "completed_backfill_orders": len(completed_backfill_orders),
                     "updated": updated,
                     "matched": matched,
                     "not_found": not_found,
@@ -925,8 +992,13 @@ def update_orders_from_skladbot():
                     "fetch": requests.meta() if hasattr(requests, "meta") else {},
                 },
             ))
-            db.commit()
-            google_sheets_result = export_skladbot_numbers_to_google_sheets(db, orders)
+            include_archive = bool(completed_backfill_orders)
+            google_sheets_result = export_skladbot_numbers_to_google_sheets(
+                db,
+                orders,
+                include_inactive=include_archive,
+                include_archive=include_archive,
+            )
             db.add(AuditLog(
                 action="skladbot_google_sheets_export",
                 entity_type="skladbot",
@@ -954,6 +1026,8 @@ def update_orders_from_skladbot():
         "multiple": multiple,
         "incomplete": incomplete,
         "pending": pending,
+        "active_orders": len(active_orders),
+        "completed_backfill_orders": len(completed_backfill_orders),
         "fetch": requests.meta() if hasattr(requests, "meta") else {},
         "google_sheets_export": google_sheets_result,
     }
@@ -973,7 +1047,7 @@ def load_skladbot_fetch_cursor(db):
     return parse_int(fetch.get("last_checked_request_id"))
 
 
-def export_skladbot_numbers_to_google_sheets(db, orders):
+def export_skladbot_numbers_to_google_sheets(db, orders, include_inactive=False, include_archive=False):
     order_ids = [str(order.id) for order in orders or []]
     if not order_ids:
         return {"status": "skipped", "updated": 0, "error": ""}
@@ -984,7 +1058,11 @@ def export_skladbot_numbers_to_google_sheets(db, orders):
         "skladbot",
         "active_orders",
         result=result,
-        payload={"order_ids": order_ids},
+        payload={
+            "order_ids": order_ids,
+            "include_inactive": bool(include_inactive),
+            "include_archive": bool(include_archive),
+        },
     )
     return {**result, "pending_event_id": str(event.id) if event else ""}
 
@@ -993,7 +1071,7 @@ def try_acquire_skladbot_sync_lock(db):
     if db.bind.dialect.name != "postgresql":
         return True
     return bool(db.execute(
-        text("SELECT pg_try_advisory_lock(:lock_key)"),
+        text("SELECT pg_try_advisory_xact_lock(:lock_key)"),
         {"lock_key": SKLADBOT_SYNC_LOCK_KEY},
     ).scalar())
 
@@ -1001,10 +1079,7 @@ def try_acquire_skladbot_sync_lock(db):
 def release_skladbot_sync_lock(db):
     if db.bind.dialect.name != "postgresql":
         return
-    db.execute(
-        text("SELECT pg_advisory_unlock(:lock_key)"),
-        {"lock_key": SKLADBOT_SYNC_LOCK_KEY},
-    )
+    return
 
 
 def main():

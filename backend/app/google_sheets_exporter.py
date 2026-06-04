@@ -237,7 +237,7 @@ def sync_backend_order_items_to_google_sheets(items):
     return update_backend_order_item_rows(sheet, items)
 
 
-def sync_backend_orders_skladbot_to_google_sheets(orders):
+def sync_backend_orders_skladbot_to_google_sheets(orders, include_archive=False):
     orders = list(orders or [])
     if not orders:
         return GoogleSheetsExportResult(status="skipped").as_dict()
@@ -248,7 +248,23 @@ def sync_backend_orders_skladbot_to_google_sheets(orders):
         return GoogleSheetsExportResult(status="disabled", error=str(exc)).as_dict()
 
     sheet = spreadsheet.worksheet(SHEET_NAME)
-    return update_backend_orders_skladbot_rows(sheet, orders)
+    data_result = update_backend_orders_skladbot_rows(sheet, orders)
+    if not include_archive:
+        return data_result
+
+    archive_sheet = get_or_create_sheet(spreadsheet, ARCHIVE_SHEET_NAME)
+    archive_result = update_backend_orders_skladbot_rows(archive_sheet, orders)
+    status = "completed"
+    if data_result.get("status") in {"disabled", "error"}:
+        status = data_result.get("status")
+    elif archive_result.get("status") in {"disabled", "error"}:
+        status = archive_result.get("status")
+    return {
+        "status": status,
+        "updated": int(data_result.get("updated") or 0) + int(archive_result.get("updated") or 0),
+        "data": data_result,
+        "archive": archive_result,
+    }
 
 
 def archive_backend_order_to_google_sheets(order):
