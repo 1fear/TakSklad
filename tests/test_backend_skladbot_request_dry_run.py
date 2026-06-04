@@ -1,4 +1,5 @@
 import unittest
+import uuid
 from datetime import date
 from unittest import mock
 
@@ -274,6 +275,48 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
         self.assertEqual(events[0].payload["summary"]["ready"], 1)
         self.assertEqual(len(audit), 1)
         self.assertEqual(audit[0].payload["import_id"], payload["id"])
+
+    def test_import_endpoint_survives_dry_run_failure(self):
+        with mock.patch(
+            "backend.app.imports_service.create_skladbot_dry_run_for_import",
+            side_effect=RuntimeError("dry-run temporary failure"),
+        ):
+            response = self.client.post("/api/v1/imports", json={
+                "source": "telegram",
+                "filename": "orders.xlsx",
+                "sha256": "b" * 64,
+                "rows": [
+                    {
+                        "Дата отгрузки": "05.06.2026",
+                        "Тип оплаты": "Перечисление",
+                        "Клиент": '"TEST CLIENT" MCHJ',
+                        "Адрес": "Ташкент, улица Тестовая, 1",
+                        "Торговый представитель": "ТП1",
+                        "Товары": "Chapman Brown OP 20",
+                        "Кол-во ШТ": 10,
+                        "Кол-во блок": 1,
+                    }
+                ],
+            })
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        self.assertEqual(payload["rows_imported"], 1)
+        self.assertEqual(payload["skladbot_dry_run_status"], "error")
+
+        with self.SessionLocal() as db:
+            google_events = db.execute(
+                select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")
+            ).scalars().all()
+            failed_audit = db.execute(
+                select(AuditLog).where(AuditLog.action == "skladbot_request_dry_run_failed")
+            ).scalars().all()
+            import_job = db.get(ImportJob, uuid.UUID(payload["id"]))
+
+        self.assertEqual(len(google_events), 1)
+        self.assertEqual(google_events[0].payload["action"], "google_sheets_import_export")
+        self.assertEqual(len(failed_audit), 1)
+        self.assertEqual(import_job.raw_payload["skladbot_dry_run"]["status"], "error")
 
     def test_admin_api_lists_and_rebuilds_dry_runs(self):
         import_id, _order_id = self.seed_import_order()

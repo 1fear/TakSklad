@@ -204,13 +204,47 @@ def create_import(db: Session, payload: ImportCreate):
         **(import_job.raw_payload or {}),
         "google_sheets": google_sheets_result,
     }
-    skladbot_dry_run_result = create_skladbot_dry_run_for_import(db, str(import_job.id))
-    import_job.raw_payload = {
-        **(import_job.raw_payload or {}),
-        "skladbot_dry_run": skladbot_dry_run_result,
-    }
     db.commit()
     db.refresh(import_job)
+    import_job_id = import_job.id
+    try:
+        skladbot_dry_run_result = create_skladbot_dry_run_for_import(db, str(import_job_id))
+        import_job.raw_payload = {
+            **(import_job.raw_payload or {}),
+            "skladbot_dry_run": skladbot_dry_run_result,
+        }
+        db.commit()
+        db.refresh(import_job)
+    except Exception as exc:
+        db.rollback()
+        logger.exception("SkladBot dry-run failed for import %s", import_job_id)
+        skladbot_dry_run_result = {
+            "status": "error",
+            "mode": "dry_run",
+            "orders": 0,
+            "ready": 0,
+            "blocked": 0,
+            "already_linked": 0,
+            "event_id": "",
+            "error": str(exc)[:500],
+        }
+        import_job = db.get(ImportJob, import_job_id)
+        import_job.raw_payload = {
+            **(import_job.raw_payload or {}),
+            "skladbot_dry_run": skladbot_dry_run_result,
+        }
+        db.add(AuditLog(
+            action="skladbot_request_dry_run_failed",
+            entity_type="import",
+            entity_id=str(import_job_id),
+            payload={
+                "import_id": str(import_job_id),
+                "status": "error",
+                "error": str(exc)[:500],
+            },
+        ))
+        db.commit()
+        db.refresh(import_job)
     return ImportResult(
         id=str(import_job.id),
         source=import_job.source,

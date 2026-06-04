@@ -4411,6 +4411,7 @@ cd /opt/taksklad/app
   - неизвестный SKU не ломает импорт, а получает статус `blocked`;
   - заказ с уже заполненным `skladbot_request_number` или `skladbot_request_id` получает статус `already_linked`;
   - результат хранится в `pending_events` с `event_type=skladbot_request_dry_run`, `would_post=false`, и пишется в `audit_log`;
+  - dry-run работает best-effort: если preview упал, основной импорт остается успешным, Google-очередь сохраняется, а ошибка пишется в import `raw_payload` и `audit_log`;
   - повторный запуск для того же `import_id` не плодит дубли, пересборка доступна отдельным API;
   - режим контролируется `SKLADBOT_CREATE_REQUESTS_MODE=dry_run|enabled|disabled`, по умолчанию `dry_run`;
   - `enabled` на этом этапе сохраняется как `configured_mode`, но фактический режим остается `dry_run`.
@@ -4421,11 +4422,12 @@ cd /opt/taksklad/app
   - добавлена вкладка `SkladBot dry-run`;
   - показываются импорт, клиент, дата, тип оплаты, адрес, товары, блоки, статус, причина блокировки и JSON preview;
   - в истории импортов добавлена короткая сводка dry-run.
+  - загрузка dry-run отделена от основной таблицы, поэтому сбой dry-run API не блокирует вход и рабочую таблицу.
 - Важно:
   - реальное создание заявок SkladBot не включено;
   - на этом этапе SkladBot API не получает POST-запросы от TakSklad.
 - Проверено:
-  - `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m unittest tests.test_backend_skladbot_request_dry_run` - 9 tests OK;
+  - `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m unittest tests.test_backend_skladbot_request_dry_run` - 10 tests OK;
   - `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m unittest tests.test_backend_api_persistence` - 50 tests OK;
   - `npm run build` в `frontend` - OK;
-  - `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m unittest discover -s tests` - 338 tests OK.
+  - `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m unittest discover -s tests` - 339 tests OK.

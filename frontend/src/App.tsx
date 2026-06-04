@@ -152,16 +152,15 @@ function App() {
     setError("");
     if (showNotice) setNotice("");
     try {
-      const [nextAdminTable, nextReport, nextImports, nextDryRuns] = await Promise.all([
+      const [nextAdminTable, nextReport, nextImports] = await Promise.all([
         getAdminTable(activeConfig),
         getDayReport(activeConfig, reportDate),
         listImports(activeConfig),
-        listSkladBotDryRuns(activeConfig),
       ]);
       setAdminTable(nextAdminTable);
       setReport(nextReport);
       setImports(nextImports);
-      setDryRuns(nextDryRuns);
+      void refreshDryRuns(activeConfig);
       setSelectedOrderIds((current) => current.filter((id) => nextAdminTable.rows.some((row) => row.order_id === id)));
       if (showNotice) {
         setNotice(`Обновлено: ${new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}`);
@@ -177,6 +176,14 @@ function App() {
       }
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function refreshDryRuns(activeConfig = config) {
+    try {
+      setDryRuns(await listSkladBotDryRuns(activeConfig));
+    } catch {
+      setDryRuns([]);
     }
   }
 
@@ -303,7 +310,7 @@ function App() {
     setNotice("");
     try {
       await rebuildSkladBotDryRun(config, eventId);
-      await refreshAll(config, false);
+      await refreshDryRuns(config);
       setNotice("SkladBot dry-run пересобран");
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : "Не удалось пересобрать SkladBot dry-run");
