@@ -4431,3 +4431,19 @@ cd /opt/taksklad/app
   - `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m unittest tests.test_backend_api_persistence` - 50 tests OK;
   - `npm run build` в `frontend` - OK;
   - `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m unittest discover -s tests` - 339 tests OK.
+
+### Release 2.0.7 SkladBot dry-run rollout
+
+- Причина: dry-run автосоздания заявок SkladBot проверен на VDS и должен войти в единый релизный контур backend/web/desktop.
+- Dry-run проверен на реальной VDS базе без реального SkladBot POST:
+  - последний импорт `710fb0c0-7008-4e73-8a8a-10d502d7df2e`: `22` заказа, `22 already_linked`, `51` товарная строка распознана mapping;
+  - импорт `9de07944-00d6-4b3f-818e-e76ebb3cebb8`: `33` заказа, `5 ready`, `28 already_linked`, `0 blocked`, `5` payload готовы к preview;
+  - API `GET /api/v1/admin/skladbot/dry-runs?import_id=...` вернул `200`, `33` строки, `5` payload.
+- Релизные изменения:
+  - `APP_VERSION` поднята до `2.0.7`;
+  - release preflight, Windows test archive helper и VDS acceptance status переведены на `2.0.7`;
+  - `version.json` подготовлен под `v2.0.7`, реальные SHA будут обновлены после GitHub Actions сборки артефактов.
+- Важно:
+  - боевой `POST /v1/requests` в SkladBot не включён;
+  - production режим остается `SKLADBOT_CREATE_REQUESTS_MODE=dry_run`;
+  - включение `enabled` будет отдельным этапом после ручного сравнения preview с заявкой менеджера.

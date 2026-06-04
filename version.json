@@ -1,12 +1,12 @@
 {
-  "latest_version": "2.0.6",
+  "latest_version": "2.0.7",
   "min_supported_version": "1.1.7",
   "mandatory": false,
   "package_type": "onefile_exe",
   "entrypoint": "TakSklad.exe",
-  "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.6/TakSklad.exe",
+  "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.7/TakSklad.exe",
   "sha256": "0ec39f25faa5c5e66b92963be859e4505c02292eb4a54f489382077de6788cf0",
-  "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.6/TakSklad-windows-x64.zip",
+  "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.7/TakSklad-windows-x64.zip",
   "sha256_onedir": "cb4783d0300e4008b90fe24d09e319a91ac00bfc7ae6d9bade5bb52d6a7d8c3d",
-  "message": "TakSklad 2.0.6: крупное юрлицо и SKU в сканировании, завершение заказа без второго клика, Telegram КИЗы по датам VDS."
+  "message": "TakSklad 2.0.7: SkladBot dry-run после Telegram-импорта, VDS/web-кабинет и безопасная проверка будущих заявок."
 }
