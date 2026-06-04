@@ -972,9 +972,25 @@ button {
   color: #1d6b3a;
 }
 
+.status-badge.dry-run-queued {
+  background: #efe9dd;
+  color: #725321;
+}
+
+.status-badge.dry-run-created,
+.status-badge.dry-run-recovered {
+  background: #dff2ee;
+  color: #166757;
+}
+
 .status-badge.dry-run-blocked {
   background: #f3e6e2;
   color: #8a2f22;
+}
+
+.status-badge.dry-run-create_failed {
+  background: #f7d8d3;
+  color: #9e2718;
 }
 
 .status-badge.dry-run-already_linked {

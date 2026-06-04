@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Integer, String, Text, Uuid, UniqueConstraint, func
+from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Index, Integer, String, Text, Uuid, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -94,9 +94,11 @@ class ImportFile(Base):
 
 class PendingEvent(Base):
     __tablename__ = "pending_events"
+    __table_args__ = (Index("uq_pending_events_idempotency_key", "idempotency_key", unique=True),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
     event_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    idempotency_key: Mapped[str | None] = mapped_column(String(180))
     status: Mapped[str] = mapped_column(String(40), nullable=False, default="pending")
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     payload: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)

@@ -4447,3 +4447,38 @@ cd /opt/taksklad/app
   - боевой `POST /v1/requests` в SkladBot не включён;
   - production режим остается `SKLADBOT_CREATE_REQUESTS_MODE=dry_run`;
   - включение `enabled` будет отдельным этапом после ручного сравнения preview с заявкой менеджера.
+
+### SkladBot request auto-create enabled
+
+- Причина: убрать ручной этап создания заявок SkladBot после Telegram Excel import. Целевой поток: Excel в Telegram -> VDS/Google import -> автоматическое создание заявки SkladBot -> сохранение WH-R в VDS -> экспорт WH-R в Google.
+- Backend:
+  - добавлен `PendingEvent.idempotency_key` и уникальный индекс, чтобы один заказ не мог создать SkladBot-заявку дважды;
+  - `SKLADBOT_CREATE_REQUESTS_MODE=enabled` теперь ставит `skladbot_request_create` events для ready-заказов после import;
+  - `rebuild` dry-run остается read-only и не вызывает POST;
+  - `skladbot-worker` обрабатывает `skladbot_request_create` перед обычным WH-R backfill;
+  - перед повторным POST после retry worker ищет уже созданную заявку, чтобы не плодить дубли после timeout/process crash;
+  - после `POST /v1/requests` worker обязательно делает `GET /v1/requests/show/{id}` и сохраняет канонический WH-R из detail;
+  - созданный номер/ID пишутся в `Order.raw_payload`, затем ставится точечный `google_sheets_skladbot_export` по `order_id`.
+- SkladBot API verification:
+  - `GET /v1/requests/form-data` подтвердил `request_type_id=3389` и обязательные поля `address`, `comment`, `company_name`, `unloading_date`;
+  - product lookup подтвердил mapping Red `2189390`, Brown `2189391`, Gold SSL `2189394`;
+  - создано 2 разрешенные тестовые заявки API на `company_name=ИП Даврон`: `WH-R-193682`, `WH-R-193683`;
+  - важное наблюдение: POST response вернул некорректно повторяющийся `delivery_number`, а `show/{id}` вернул правильные WH-R, поэтому canonical read после POST обязателен.
+- VDS:
+  - перед деплоем создан backup `/opt/taksklad/backups/postgres/taksklad-postgres-20260604T180955Z.sql.gz`;
+  - обновлены `backend/`, `frontend/`, `deploy/vds/`;
+  - применена schema с `pending_events.idempotency_key`;
+  - на VDS выставлено `SKLADBOT_CREATE_REQUESTS_MODE=enabled`;
+  - пересобраны и перезапущены `backend-api`, `skladbot-worker`, `frontend`;
+  - активных заказов без WH-R на момент включения нет, поэтому задним числом лишние заявки не создавались.
+- Web:
+  - вкладка `SkladBot dry-run` теперь показывает статусы `queued`, `created`, `recovered`, `create_failed`;
+  - история импортов показывает queued/created/blocked summary.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_backend_skladbot_request_dry_run` - 15 tests OK;
+  - `./.venv/bin/python -m unittest tests.test_backend_skladbot_worker` - 47 tests OK;
+  - `./.venv/bin/python -m unittest tests.test_backend_google_sheets_exporter tests.test_backend_google_sheets_pending` - 21 tests OK;
+  - `./.venv/bin/python -m unittest tests.test_backend_api_persistence` - 50 tests OK;
+  - `./.venv/bin/python -m unittest discover -s tests` - 344 tests OK;
+  - `npm run build` в `frontend` - OK;
+  - `https://api.taksklad.uz/health` - OK.

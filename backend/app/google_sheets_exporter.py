@@ -491,12 +491,18 @@ def format_skladbot_status(value):
     text = normalize_text(value).casefold()
     if text == "found":
         return "Найдено"
+    if text == "created":
+        return "Создано"
+    if text == "created_recovered":
+        return "Создано, восстановлено"
     if text == "not_found":
         return "Не найдено"
     if text == "multiple":
         return "Несколько совпадений"
     if text in {"pending", "checking", "in_progress"}:
         return "Проверяется"
+    if text == "create_failed":
+        return "Ошибка создания"
     if text == "error":
         return "Ошибка синхронизации"
     return normalize_text(value)

@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS import_files (
 CREATE TABLE IF NOT EXISTS pending_events (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     event_type varchar(80) NOT NULL,
+    idempotency_key varchar(180),
     status varchar(40) NOT NULL DEFAULT 'pending',
     attempts integer NOT NULL DEFAULT 0,
     payload jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -79,6 +80,8 @@ CREATE TABLE IF NOT EXISTS pending_events (
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE pending_events ADD COLUMN IF NOT EXISTS idempotency_key varchar(180);
 
 CREATE TABLE IF NOT EXISTS audit_log (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -95,4 +98,5 @@ CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON order_items(order_id);
 CREATE INDEX IF NOT EXISTS idx_scan_codes_order_item_id ON scan_codes(order_item_id);
 CREATE INDEX IF NOT EXISTS idx_import_files_sha256 ON import_files(sha256);
 CREATE INDEX IF NOT EXISTS idx_pending_events_status ON pending_events(status);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_pending_events_idempotency_key ON pending_events(idempotency_key);
 CREATE INDEX IF NOT EXISTS idx_audit_log_created_at ON audit_log(created_at);

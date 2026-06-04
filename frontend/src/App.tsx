@@ -1155,7 +1155,11 @@ function SkladBotDryRunPanel({
   );
   const summary = useMemo(() => ({
     ready: filteredRuns.filter((item) => item.status === "ready").length,
+    queued: filteredRuns.filter((item) => item.status === "queued").length,
+    created: filteredRuns.filter((item) => item.status === "created").length,
+    recovered: filteredRuns.filter((item) => item.status === "recovered").length,
     blocked: filteredRuns.filter((item) => item.status === "blocked").length,
+    failed: filteredRuns.filter((item) => item.status === "create_failed").length,
     alreadyLinked: filteredRuns.filter((item) => item.status === "already_linked").length,
   }), [filteredRuns]);
   const importsById = useMemo(
@@ -1168,7 +1172,7 @@ function SkladBotDryRunPanel({
       <div className="panel-header table-panel-header">
         <div>
           <h2>SkladBot dry-run</h2>
-          <span className="panel-subtitle">Будущие заявки без отправки в SkladBot</span>
+          <span className="panel-subtitle">Preview и очередь автосоздания заявок SkladBot</span>
         </div>
         <SelectFilter value={importFilter} onChange={setImportFilter}>
           <option value="">Все импорты</option>
@@ -1182,9 +1186,10 @@ function SkladBotDryRunPanel({
 
       <section className="stats-row compact">
         <Metric icon={<SquareCode size={20} />} label="Ready" value={summary.ready} />
-        <Metric icon={<AlertCircle size={20} />} label="Blocked" value={summary.blocked} tone={summary.blocked > 0 ? "warn" : undefined} />
+        <Metric icon={<ClipboardList size={20} />} label="Queued" value={summary.queued} />
+        <Metric icon={<Server size={20} />} label="Created" value={summary.created + summary.recovered} />
+        <Metric icon={<AlertCircle size={20} />} label="Blocked" value={summary.blocked + summary.failed} tone={summary.blocked + summary.failed > 0 ? "warn" : undefined} />
         <Metric icon={<Server size={20} />} label="Уже WH-R" value={summary.alreadyLinked} />
-        <Metric icon={<ClipboardList size={20} />} label="Всего" value={filteredRuns.length} />
       </section>
 
       <div className="data-table-wrap dry-run-table-wrap">
@@ -1384,17 +1389,24 @@ function scanStateLabel(value: ScanFilter) {
 }
 
 function skladbotStatusLabel(row: AdminTableRow) {
+  if (row.skladbot_status === "created") return "Создано";
+  if (row.skladbot_status === "created_recovered") return "Восстановлено";
   if (row.skladbot_status === "found" || row.skladbot_request_number || row.skladbot_request_id) return "Найдено";
   if (row.skladbot_status === "not_found") return "Не найдено";
   if (row.skladbot_status === "multiple") return "Несколько";
   if (row.skladbot_status === "pending") return "Проверяется";
+  if (row.skladbot_status === "create_failed") return "Ошибка создания";
   if (row.skladbot_status === "error") return "Ошибка";
   return "Без номера";
 }
 
 function dryRunStatusLabel(value: string) {
   if (value === "ready") return "Ready";
+  if (value === "queued") return "В очереди";
+  if (value === "created") return "Создано";
+  if (value === "recovered") return "Восстановлено";
   if (value === "blocked") return "Заблокировано";
+  if (value === "create_failed") return "Ошибка создания";
   if (value === "already_linked") return "Уже есть WH-R";
   return value || "-";
 }
@@ -1403,10 +1415,14 @@ function importDryRunSummaryText(item: ImportRecord) {
   const summary = readImportDryRunSummary(item);
   if (!summary) return "Не создан";
   const ready = Number(summary.ready ?? 0);
+  const queued = Number(summary.queued ?? 0);
+  const created = Number(summary.created ?? 0);
+  const recovered = Number(summary.recovered ?? 0);
   const blocked = Number(summary.blocked ?? 0);
+  const failed = Number(summary.create_failed ?? 0);
   const alreadyLinked = Number(summary.already_linked ?? 0);
   const mode = typeof summary.mode === "string" ? summary.mode : "dry_run";
-  return `${mode}: ready ${ready}, blocked ${blocked}, WH-R ${alreadyLinked}`;
+  return `${mode}: ready ${ready}, queued ${queued}, created ${created + recovered}, blocked ${blocked + failed}, WH-R ${alreadyLinked}`;
 }
 
 function readImportDryRunSummary(item: ImportRecord): Record<string, unknown> | null {

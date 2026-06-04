@@ -613,12 +613,69 @@ class SkladBotClient:
             last_response.raise_for_status()
         raise RuntimeError("SkladBot API request failed")
 
+    def post(self, path, payload=None):
+        if not self.tokens:
+            raise RuntimeError("SKLADBOT_API_TOKEN is not configured")
+        url = f"{self.base_url}/{path.lstrip('/')}"
+        with httpx.Client(timeout=self.timeout) as client:
+            token_index = self.wait_for_available_token()
+            token = self.tokens[token_index]
+            try:
+                response = client.post(
+                    url,
+                    json=payload or {},
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Accept": "application/json",
+                        "Content-Type": "application/json",
+                    },
+                )
+            except httpx.TimeoutException:
+                cooldown = max(1.0, self.request_delay)
+                self.mark_token_cooldown(token_index, cooldown)
+                self.advance_token(token_index)
+                raise
+            if response.status_code in {401, 403}:
+                self.mark_token_disabled(token_index)
+                self.advance_token(token_index)
+                logging.warning(
+                    "SkladBot API POST token %s/%s disabled after HTTP %s",
+                    token_index + 1,
+                    len(self.tokens),
+                    response.status_code,
+                )
+            elif response.status_code == 429:
+                retry_after = parse_int(response.headers.get("Retry-After"))
+                sleep_for = retry_after if retry_after > 0 else max(1.0, self.request_delay * 4)
+                self.mark_token_cooldown(token_index, sleep_for)
+                self.advance_token(token_index)
+                logging.warning(
+                    "SkladBot API POST 429 with token %s/%s, request queued for later retry",
+                    token_index + 1,
+                    len(self.tokens),
+                )
+            elif 500 <= response.status_code < 600:
+                cooldown = max(1.0, self.request_delay)
+                self.mark_token_cooldown(token_index, cooldown)
+                self.advance_token(token_index)
+                logging.warning(
+                    "SkladBot API POST HTTP %s with token %s/%s, request queued for later reconcile",
+                    response.status_code,
+                    token_index + 1,
+                    len(self.tokens),
+                )
+            response.raise_for_status()
+            return response.json()
+
     def list_requests(self):
         return extract_list_items(self.get("/requests", {
             "customer_id": self.customer_id,
             "type_id": self.shipment_type_id,
             "limit": self.limit,
         }))
+
+    def create_request(self, payload):
+        return self.post("/requests", payload)
 
     def get_request_detail(self, request_id):
         payload = self.get(f"/requests/show/{request_id}")
@@ -1086,6 +1143,15 @@ def main():
     interval = worker_interval_seconds()
     once = normalize_lookup_text(os.environ.get("SKLADBOT_WORKER_ONCE")) in {"1", "true", "yes", "да"}
     while True:
+        try:
+            from .skladbot_request_dry_run import process_pending_skladbot_request_creates
+
+            with SessionLocal() as db:
+                result = process_pending_skladbot_request_creates(db)
+                if result.get("checked"):
+                    logging.info("SkladBot create worker: %s", result)
+        except Exception:
+            logging.exception("SkladBot create worker failed")
         try:
             update_orders_from_skladbot()
         except Exception:

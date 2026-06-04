@@ -123,7 +123,7 @@ TELEGRAM_SETTINGS_FILE = os.path.join(APP_DIR, "telegram_settings.json")
 YANDEX_GEOCODER_KEY_FILE = os.path.join(APP_DIR, "yandex_geocoder_key.txt")
 YANDEX_GEOCODER_ENV_VAR = "YANDEX_GEOCODER_API_KEY"
 
-APP_VERSION = "2.0.7"
+APP_VERSION = "2.0.8"
 APP_BUILD_LABEL = os.environ.get("TAKSKLAD_BUILD_LABEL", "MVP 2.0").strip()
 UPDATE_INFO_URL = os.environ.get(
     "TAKSKLAD_UPDATE_INFO_URL",

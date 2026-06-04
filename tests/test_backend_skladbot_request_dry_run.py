@@ -3,6 +3,7 @@ import uuid
 from datetime import date
 from unittest import mock
 
+import httpx
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
@@ -12,10 +13,13 @@ from backend.app.db import get_db
 from backend.app.main import app, require_service_token
 from backend.app.models import AuditLog, Base, ImportJob, Order, OrderItem, PendingEvent
 from backend.app.skladbot_request_dry_run import (
+    SKLADBOT_REQUEST_CREATE_EVENT_TYPE,
     SKLADBOT_REQUEST_DRY_RUN_EVENT_TYPE,
     create_skladbot_dry_run_for_import,
     list_skladbot_dry_runs,
+    process_pending_skladbot_request_creates,
 )
+from backend.app.skladbot_worker import SkladBotClient
 
 
 class BackendSkladBotRequestDryRunTests(unittest.TestCase):
@@ -223,20 +227,322 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
         self.assertEqual(second["status"], "deduplicated")
         self.assertEqual(len(events), 1)
 
-    def test_enabled_mode_still_keeps_dry_run_effective_mode(self):
+    def test_enabled_mode_queues_create_event_without_posting_inline(self):
         import_id, _order_id = self.seed_import_order()
 
         with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "enabled"}, clear=False):
             with self.SessionLocal() as db:
                 summary = create_skladbot_dry_run_for_import(db, import_id)
                 db.commit()
-                event = db.execute(
+                dry_run_event = db.execute(
                     select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_REQUEST_DRY_RUN_EVENT_TYPE)
                 ).scalar_one()
+                create_event = db.execute(
+                    select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
+                ).scalar_one()
 
-        self.assertEqual(summary["mode"], "dry_run")
-        self.assertEqual(event.payload["configured_mode"], "enabled")
-        self.assertFalse(event.payload["would_post"])
+        self.assertEqual(summary["mode"], "enabled")
+        self.assertEqual(summary["queued"], 1)
+        self.assertEqual(summary["ready"], 0)
+        self.assertEqual(dry_run_event.payload["configured_mode"], "enabled")
+        self.assertTrue(dry_run_event.payload["would_post"])
+        self.assertEqual(create_event.status, "pending")
+        self.assertEqual(create_event.payload["create_status"], "queued")
+
+    def test_enabled_mode_creates_request_and_updates_order(self):
+        import_id, order_id = self.seed_import_order()
+
+        class FakeSkladBotClient:
+            def __init__(self):
+                self.created_payloads = []
+
+            @property
+            def configured(self):
+                return True
+
+            def create_request(self, payload):
+                self.created_payloads.append(payload)
+                return {
+                    "data": {
+                        "id": 777,
+                        "delivery_number": "WH-R-777",
+                        "created_at": "2026-06-04T12:00:00.000000Z",
+                    }
+                }
+
+            def get_request_detail(self, request_id):
+                self.request_id = request_id
+                return {
+                    "id": request_id,
+                    "delivery_number": "WH-R-777",
+                    "fields": [
+                        {"field": "address", "value": "Ташкент, улица Тестовая, 1"},
+                        {"field": "company_name", "value": '"TEST CLIENT" MCHJ'},
+                        {"field": "unloading_date", "value": "2026-06-05"},
+                        {"field": "comment", "value": "Перечисление"},
+                    ],
+                    "products": [
+                        {"name": "Chapman RED OP 20", "barcode": "4006396053947", "amount": 2},
+                        {"name": "Chapman Brown OP 20", "barcode": "4006396053978", "amount": 3},
+                    ],
+                }
+
+            def list_requests(self):
+                return []
+
+        fake_client = FakeSkladBotClient()
+        with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "enabled"}, clear=False):
+            with mock.patch("backend.app.skladbot_request_dry_run.SkladBotClient", return_value=fake_client):
+                with self.SessionLocal() as db:
+                    summary = create_skladbot_dry_run_for_import(db, import_id)
+                    process_result = process_pending_skladbot_request_creates(db, client=fake_client)
+                    db.commit()
+                    order = db.get(Order, uuid.UUID(order_id))
+                    dry_run_event = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_REQUEST_DRY_RUN_EVENT_TYPE)
+                    ).scalar_one()
+                    create_event = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
+                    ).scalar_one()
+                    google_event = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")
+                    ).scalar_one()
+
+        self.assertEqual(summary["mode"], "enabled")
+        self.assertEqual(summary["queued"], 1)
+        self.assertEqual(summary["ready"], 0)
+        self.assertEqual(process_result["created"], 1)
+        self.assertEqual(len(fake_client.created_payloads), 1)
+        self.assertEqual(fake_client.request_id, 777)
+        self.assertEqual(order.raw_payload["skladbot_request_number"], "WH-R-777")
+        self.assertEqual(order.raw_payload["skladbot_request_id"], "777")
+        self.assertEqual(order.raw_payload["skladbot_status"], "created")
+        self.assertTrue(order.raw_payload["skladbot_created_by_taksklad"])
+        self.assertEqual(google_event.payload["action"], "google_sheets_skladbot_export")
+        self.assertIn(order_id, google_event.payload["order_ids"])
+        self.assertEqual(google_event.payload["entity_id"], order_id)
+        self.assertTrue(dry_run_event.payload["would_post"])
+        self.assertEqual(create_event.status, "completed")
+        self.assertEqual(create_event.payload["create_status"], "created")
+
+    def test_enabled_mode_does_not_save_wh_r_without_canonical_detail(self):
+        import_id, order_id = self.seed_import_order()
+
+        class FakeSkladBotClient:
+            def __init__(self):
+                self.create_calls = 0
+
+            @property
+            def configured(self):
+                return True
+
+            def create_request(self, payload):
+                self.create_calls += 1
+                return {"data": {"id": 780, "delivery_number": "WH-R-STALE"}}
+
+            def get_request_detail(self, request_id):
+                raise RuntimeError("show endpoint unavailable")
+
+            def list_requests(self):
+                return []
+
+        fake_client = FakeSkladBotClient()
+        with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "enabled"}, clear=False):
+            with mock.patch("backend.app.skladbot_request_dry_run.SkladBotClient", return_value=fake_client):
+                with self.SessionLocal() as db:
+                    summary = create_skladbot_dry_run_for_import(db, import_id)
+                    process_result = process_pending_skladbot_request_creates(db, client=fake_client)
+                    db.commit()
+                    order = db.get(Order, uuid.UUID(order_id))
+                    create_event = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
+                    ).scalar_one()
+
+        self.assertEqual(summary["queued"], 1)
+        self.assertEqual(process_result["failed"], 1)
+        self.assertEqual(fake_client.create_calls, 1)
+        self.assertEqual(create_event.status, "failed")
+        self.assertEqual(order.raw_payload["skladbot_status"], "create_failed")
+        self.assertNotEqual(order.raw_payload.get("skladbot_request_number"), "WH-R-STALE")
+
+    def test_enabled_mode_deduplicates_after_created_order_number(self):
+        import_id, order_id = self.seed_import_order()
+
+        class FakeSkladBotClient:
+            def __init__(self):
+                self.created_payloads = []
+
+            @property
+            def configured(self):
+                return True
+
+            def create_request(self, payload):
+                self.created_payloads.append(payload)
+                return {"data": {"id": 778, "delivery_number": "WH-R-778"}}
+
+            def get_request_detail(self, request_id):
+                return {"id": request_id, "delivery_number": "WH-R-778", "fields": [], "products": []}
+
+            def list_requests(self):
+                return []
+
+        fake_client = FakeSkladBotClient()
+        with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "enabled"}, clear=False):
+            with mock.patch("backend.app.skladbot_request_dry_run.SkladBotClient", return_value=fake_client):
+                with self.SessionLocal() as db:
+                    first = create_skladbot_dry_run_for_import(db, import_id)
+                    process_pending_skladbot_request_creates(db, client=fake_client)
+                    second = create_skladbot_dry_run_for_import(db, import_id, rebuild=True)
+                    db.commit()
+                    order = db.get(Order, uuid.UUID(order_id))
+
+        self.assertEqual(first["queued"], 1)
+        self.assertEqual(second["already_linked"], 1)
+        self.assertEqual(len(fake_client.created_payloads), 1)
+        self.assertEqual(order.raw_payload["skladbot_request_number"], "WH-R-778")
+
+    def test_enabled_mode_recovers_created_request_after_timeout(self):
+        import_id, order_id = self.seed_import_order()
+
+        class FakeSkladBotClient:
+            @property
+            def configured(self):
+                return True
+
+            def create_request(self, payload):
+                raise TimeoutError("temporary timeout")
+
+            def list_requests(self):
+                return [{"id": 779, "delivery_number": "WH-R-779", "type": "3PL отгрузка"}]
+
+            def get_request_detail(self, request_id):
+                return {
+                    "id": request_id,
+                    "delivery_number": "WH-R-779",
+                    "type": "3PL отгрузка",
+                    "fields": [
+                        {"field": "address", "value": "Ташкент, улица Тестовая, 1"},
+                        {"field": "company_name", "value": '"TEST CLIENT" MCHJ'},
+                        {"field": "unloading_date", "value": "2026-06-05"},
+                        {"field": "comment", "value": "Перечисление"},
+                    ],
+                    "products": [
+                        {"name": "Chapman RED OP 20", "barcode": "4006396053947", "amount": 2},
+                        {"name": "Chapman Brown OP 20", "barcode": "4006396053978", "amount": 3},
+                    ],
+                }
+
+        with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "enabled"}, clear=False):
+            with mock.patch("backend.app.skladbot_request_dry_run.SkladBotClient", return_value=FakeSkladBotClient()):
+                with self.SessionLocal() as db:
+                    summary = create_skladbot_dry_run_for_import(db, import_id)
+                    process_result = process_pending_skladbot_request_creates(db, client=FakeSkladBotClient())
+                    db.commit()
+                    order = db.get(Order, uuid.UUID(order_id))
+
+        self.assertEqual(summary["queued"], 1)
+        self.assertEqual(process_result["recovered"], 1)
+        self.assertEqual(order.raw_payload["skladbot_request_number"], "WH-R-779")
+        self.assertEqual(order.raw_payload["skladbot_status"], "created_recovered")
+
+    def test_enabled_mode_records_error_without_breaking_import(self):
+        import_id, order_id = self.seed_import_order()
+
+        class FakeSkladBotClient:
+            @property
+            def configured(self):
+                return True
+
+            def create_request(self, payload):
+                raise RuntimeError("SkladBot unavailable")
+
+            def list_requests(self):
+                return []
+
+        with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "enabled"}, clear=False):
+            with mock.patch("backend.app.skladbot_request_dry_run.SkladBotClient", return_value=FakeSkladBotClient()):
+                with self.SessionLocal() as db:
+                    summary = create_skladbot_dry_run_for_import(db, import_id)
+                    process_result = process_pending_skladbot_request_creates(db, client=FakeSkladBotClient())
+                    db.commit()
+                    order = db.get(Order, uuid.UUID(order_id))
+
+        self.assertEqual(summary["queued"], 1)
+        self.assertEqual(process_result["failed"], 1)
+        self.assertEqual(order.raw_payload["skladbot_status"], "create_failed")
+        self.assertNotIn("skladbot_request_number", {k: v for k, v in order.raw_payload.items() if v})
+
+    def test_skladbot_client_post_uses_bearer_without_printing_token(self):
+        captured = {}
+
+        class FakeHttpClient:
+            def __init__(self, timeout):
+                self.timeout = timeout
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def post(self, url, json=None, headers=None):
+                captured["url"] = url
+                captured["json"] = json
+                captured["headers"] = headers
+
+                class Response:
+                    status_code = 201
+                    headers = {}
+
+                    def raise_for_status(self):
+                        return None
+
+                    def json(self):
+                        return {"data": {"id": 1, "delivery_number": "WH-R-1"}}
+
+                return Response()
+
+        with mock.patch.dict("os.environ", {"SKLADBOT_API_TOKEN": "secret-token", "SKLADBOT_API_TOKENS": ""}, clear=False):
+            with mock.patch("backend.app.skladbot_worker.httpx.Client", FakeHttpClient):
+                payload = {"customer_id": 6211, "request_type_id": 3389, "products": []}
+                result = SkladBotClient().create_request(payload)
+
+        self.assertEqual(result["data"]["delivery_number"], "WH-R-1")
+        self.assertEqual(captured["url"], "https://api.skladbot.ru/v1/requests")
+        self.assertEqual(captured["headers"]["Authorization"], "Bearer secret-token")
+        self.assertEqual(captured["json"], payload)
+
+    def test_skladbot_client_post_does_not_retry_after_timeout(self):
+        calls = {"count": 0}
+
+        class FakeHttpClient:
+            def __init__(self, timeout):
+                self.timeout = timeout
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def post(self, url, json=None, headers=None):
+                calls["count"] += 1
+                raise httpx.TimeoutException("ambiguous timeout")
+
+        with mock.patch.dict(
+            "os.environ",
+            {
+                "SKLADBOT_API_TOKEN": "",
+                "SKLADBOT_API_TOKENS": "first-token,second-token",
+                "SKLADBOT_API_MAX_RETRIES": "5",
+            },
+            clear=False,
+        ):
+            with mock.patch("backend.app.skladbot_worker.httpx.Client", FakeHttpClient):
+                with self.assertRaises(httpx.TimeoutException):
+                    SkladBotClient().create_request({"customer_id": 6211})
+
+        self.assertEqual(calls["count"], 1)
 
     def test_import_endpoint_creates_dry_run_event_audit_and_keeps_would_post_false(self):
         response = self.client.post("/api/v1/imports", json={
