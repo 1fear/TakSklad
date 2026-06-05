@@ -4482,3 +4482,21 @@ cd /opt/taksklad/app
   - `./.venv/bin/python -m unittest discover -s tests` - 344 tests OK;
   - `npm run build` в `frontend` - OK;
   - `https://api.taksklad.uz/health` - OK.
+
+### Release 2.0.8 forced update rollout
+
+- Причина: складские ПК должны перейти на актуальную рабочую сборку `2.0.8`, где собраны последние исправления backend-first логики, SkladBot auto-create и Windows release artifacts.
+- Изменено:
+  - `version.json` переведен в принудительный режим: `latest_version=2.0.8`, `min_supported_version=2.0.8`, `mandatory=true`;
+  - текст update message прямо просит нажать `Да`, дождаться установки и запускать только новый `TakSklad.exe`;
+  - release preflight, Windows test archive helper, VDS acceptance status, GO/NO-GO и acceptance kit теперь считают корректным только forced rollout `2.0.8`;
+  - `main/version.json` обновлен отдельным commit, потому автообновление старых клиентов читает публичный manifest из `main`;
+  - серверная копия `/opt/taksklad/app/version.json` и acceptance scripts синхронизированы на VDS.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_release_preflight tests.test_vds_acceptance_scripts tests.test_windows_test_build_helper tests.test_release_go_no_go` - 25 tests OK;
+  - `./.venv/bin/python tools/release_preflight.py --verify-downloads --timeout 120` - `status=ok`;
+  - GitHub release assets `TakSklad.exe` и `TakSklad-windows-x64.zip` скачаны и совпали по SHA256;
+  - публичный `https://raw.githubusercontent.com/1fear/TakSklad/main/version.json` отдает `mandatory=true` и `min_supported_version=2.0.8`;
+  - VDS health: `https://api.taksklad.uz/health` возвращает `version=2.0.8`.
+- Ограничение:
+  - старые desktop-клиенты `2.0.5/2.0.6` технически показывают обязательность через `below_min_version`, но в их коде окно обновления еще содержит кнопку отказа. Полностью убрать отказ можно только следующим desktop release с hard-block обновлений и версионным header/backend gate.
