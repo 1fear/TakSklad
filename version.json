@@ -5,8 +5,8 @@
   "package_type": "onefile_exe",
   "entrypoint": "TakSklad.exe",
   "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.9/TakSklad.exe",
-  "sha256": "21cc07dadfc295502ac38c074097e35ac9454456961736b4a5061b132c796e22",
+  "sha256": "10ea2376ec194dc87f6007fec8a476e9444fdb04aeb79352f399aa7aca70e8f4",
   "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.9/TakSklad-windows-x64.zip",
-  "sha256_onedir": "79204de3055bc0b14f29f3587126639db8db553915ef520d2e3a6da6b3bd26ad",
-  "message": "TakSklad 2.0.9: обязательное обновление перед работой склада. Нажмите Да, дождитесь установки и запускайте только TakSklad.exe из новой папки."
+  "sha256_onedir": "e07f4ff712ebd962922cc25e43bba499886a0b9db0fb6b74ac2a84293d5f04c3",
+  "message": "TakSklad 2.0.9: обязательное обновление перед тестом возвратов. Нажмите Да, дождитесь установки и запускайте только TakSklad.exe из новой папки."
 }

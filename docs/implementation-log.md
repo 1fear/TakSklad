@@ -4543,3 +4543,19 @@ cd /opt/taksklad/app
   - `./.venv/bin/python -m unittest discover -s tests` - 354 tests OK;
   - `git diff --check` - OK;
   - `https://api.taksklad.uz/health` - OK, версия backend `2.0.8`.
+
+### Release 2.0.9 Windows rollout
+
+- Причина: складским ПК нужна новая desktop-сборка с окном подтверждения возврата; backend уже требует `confirmed_items` при возврате.
+- Изменено:
+  - `APP_VERSION` повышен до `2.0.9`;
+  - `version.json` переведен на `latest_version=2.0.9`, `min_supported_version=2.0.9`, `mandatory=true`;
+  - release/preflight/acceptance guard'ы переведены с `2.0.8` на `2.0.9`.
+- GitHub release:
+  - создан tag/release `v2.0.9`;
+  - Windows workflow `27003534719` завершился успешно;
+  - smoke-test `TakSklad.exe --smoke-import` прошел для onefile и onedir;
+  - assets опубликованы: `TakSklad.exe`, `TakSklad-windows-x64.zip` и SHA-файлы.
+- SHA:
+  - `TakSklad.exe`: `10ea2376ec194dc87f6007fec8a476e9444fdb04aeb79352f399aa7aca70e8f4`;
+  - `TakSklad-windows-x64.zip`: `e07f4ff712ebd962922cc25e43bba499886a0b9db0fb6b74ac2a84293d5f04c3`.
