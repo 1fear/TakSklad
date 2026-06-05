@@ -4549,6 +4549,7 @@ cd /opt/taksklad/app
 - Причина: складским ПК нужна новая desktop-сборка с окном подтверждения возврата; backend уже требует `confirmed_items` при возврате.
 - Изменено:
   - `APP_VERSION` повышен до `2.0.9`;
+  - backend `APP_VERSION` повышен до `2.0.9`, чтобы `/health` совпадал с текущей release-линей;
   - `version.json` переведен на `latest_version=2.0.9`, `min_supported_version=2.0.9`, `mandatory=true`;
   - release/preflight/acceptance guard'ы переведены с `2.0.8` на `2.0.9`.
 - GitHub release:
