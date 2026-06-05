@@ -137,15 +137,15 @@ function Assert-VersionJsonSafeForTestBuild {
         )
         $IsSafeRollout = (
             $Manifest.latest_version -eq $MinAppVersion -and
-            $Manifest.min_supported_version -eq "1.1.7" -and
-            $Manifest.mandatory -ne $true -and
+            $Manifest.min_supported_version -eq $MinAppVersion -and
+            $Manifest.mandatory -eq $true -and
             $Manifest.download_url -and
             $Manifest.sha256 -and
             $Manifest.download_url_onedir -and
             $Manifest.sha256_onedir
         )
         if (-not $IsStablePinned -and -not $IsSafeRollout) {
-            throw "Public version.json is neither stable 1.1.7 nor safe non-mandatory 2.0.8 rollout manifest."
+            throw "Public version.json is neither stable 1.1.7 nor forced 2.0.8 rollout manifest."
         }
     }
 }

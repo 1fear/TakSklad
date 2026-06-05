@@ -47,7 +47,7 @@
     "version_json_staged_rollout": true,
     "github_release_published": true,
     "push_notifications_allowed": true,
-    "mandatory_update_disabled": true,
+    "mandatory_update_enabled": true,
     "no_real_skladbot_request_creation": true,
     "contains_secrets": false
   }

@@ -287,10 +287,10 @@ if sha_status != "ok":
     errors.append("acceptance Excel SHA mismatch")
 if version_info.get("latest_version") != "2.0.8":
     errors.append("version.json latest_version must be 2.0.8")
-if version_info.get("min_supported_version") != "1.1.7":
-    errors.append("version.json min_supported_version must stay 1.1.7 for non-forced rollout")
-if version_info.get("mandatory") not in (False, None):
-    errors.append("version.json mandatory must be false during staged rollout")
+if version_info.get("min_supported_version") != "2.0.8":
+    errors.append("version.json min_supported_version must be 2.0.8 for forced rollout")
+if version_info.get("mandatory") is not True:
+    errors.append("version.json mandatory must be true during forced rollout")
 if version_info.get("package_type") != "onefile_exe":
     errors.append("version.json package_type must be onefile_exe")
 if not version_info.get("download_url_set") or not version_info.get("sha256_set"):
@@ -298,7 +298,7 @@ if not version_info.get("download_url_set") or not version_info.get("sha256_set"
 if not version_info.get("download_url_onedir_set") or not version_info.get("sha256_onedir_set"):
     errors.append("version.json onedir download_url_onedir and sha256_onedir must be set")
 safety = manifest_info.get("safety") or {}
-for key in ("version_json_staged_rollout", "github_release_published", "push_notifications_allowed", "mandatory_update_disabled"):
+for key in ("version_json_staged_rollout", "github_release_published", "push_notifications_allowed", "mandatory_update_enabled"):
     if safety.get(key) is not True:
         errors.append(f"manifest safety.{key} must be true")
 if safety.get("contains_secrets") is not False:

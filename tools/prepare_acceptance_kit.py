@@ -79,7 +79,7 @@ def build_manifest(output_dir=DEFAULT_OUTPUT_DIR, marker=DEFAULT_MARKER, shipmen
             "version_json_staged_rollout": True,
             "github_release_published": True,
             "push_notifications_allowed": True,
-            "mandatory_update_disabled": True,
+            "mandatory_update_enabled": True,
             "no_real_skladbot_request_creation": True,
             "contains_secrets": False,
         },
@@ -90,7 +90,7 @@ def build_readme(manifest):
     kiz_codes = "\n".join(f"- `{code}`" for code in manifest["test_kiz_codes"])
     return f"""# TakSklad Acceptance Kit
 
-Назначение: ручная проверка Telegram import и Windows desktop acceptance после публикации 2.0.0 manifest. Обновления через `version.json` разрешены, но принудительное обновление `mandatory=true` не включается до ручного GO.
+Назначение: ручная проверка Telegram import и Windows desktop acceptance после публикации 2.0.8 manifest. Обновления через `version.json` разрешены; текущая линия 2.0.8 переведена в forced rollout.
 
 ## Состав
 
@@ -259,8 +259,8 @@ cd /opt/taksklad/app
 
 ## Чего Не Делать
 
-- Не включать `mandatory=true` до ручного GO.
-- Не публиковать новый Windows release поверх 2.0.0 без повторной проверки.
+- Не откатывать `mandatory=true` без отдельного решения Антона.
+- Не публиковать новый Windows release поверх 2.0.8 без повторной проверки.
 - Не создавать реальную заявку SkladBot без отдельного подтверждения.
 """
 
@@ -290,7 +290,7 @@ SHA-256 Excel: `{manifest["excel_sha256"]}`
 ## 1. Preflight
 
 - [ ] `.venv/bin/python tools/release_preflight.py` вернул `status=ok`.
-- [ ] `version.json` указывает на `2.0.0`, `mandatory=false`, ссылки и SHA заполнены.
+- [ ] `version.json` указывает на `2.0.8`, `mandatory=true`, ссылки и SHA заполнены.
 - [ ] В Git нет tracked runtime/secret-файлов.
 
 ## 2. Telegram Import
@@ -360,7 +360,7 @@ SHA-256 Excel: `{manifest["excel_sha256"]}`
 - [ ] Windows desktop acceptance принят.
 - [x] Критичных дефектов нет.
 - [x] Rollback понятен.
-- [x] `version.json` проверен и `mandatory=false`.
+- [x] `version.json` проверен и `mandatory=true`.
 
 Итог:
 
@@ -400,7 +400,7 @@ SHA-256 Excel: `{manifest["excel_sha256"]}`
 ## 1. Preflight
 
 - [ ] `.venv/bin/python tools/release_preflight.py` вернул `status=ok`.
-- [ ] `version.json` указывает на `2.0.0`, `mandatory=false`, ссылки и SHA заполнены.
+- [ ] `version.json` указывает на `2.0.8`, `mandatory=true`, ссылки и SHA заполнены.
 - [ ] В Git нет tracked runtime/secret-файлов.
 
 Заметки:
@@ -529,7 +529,7 @@ cd /opt/taksklad/app
 - [ ] Windows desktop acceptance принят.
 - [ ] Критичных дефектов нет.
 - [ ] Rollback понятен.
-- [ ] `version.json` проверен и `mandatory=false`.
+- [ ] `version.json` проверен и `mandatory=true`.
 
 Итог:
 

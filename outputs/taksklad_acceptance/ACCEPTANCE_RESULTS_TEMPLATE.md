@@ -21,7 +21,7 @@ SHA-256 Excel: `204b932a704b39294b513a95964844db1ed74d028e3daff13beef3ab09ec98fd
 ## 1. Preflight
 
 - [ ] `.venv/bin/python tools/release_preflight.py` вернул `status=ok`.
-- [ ] `version.json` указывает на `2.0.0`, `mandatory=false`, ссылки и SHA заполнены.
+- [ ] `version.json` указывает на `2.0.8`, `mandatory=true`, ссылки и SHA заполнены.
 - [ ] В Git нет tracked runtime/secret-файлов.
 
 Заметки:
@@ -152,7 +152,7 @@ cd /opt/taksklad/app
 - [ ] Windows desktop acceptance принят.
 - [ ] Критичных дефектов нет.
 - [ ] Rollback понятен.
-- [ ] `version.json` проверен и `mandatory=false`.
+- [ ] `version.json` проверен и `mandatory=true`.
 
 Итог:
 
