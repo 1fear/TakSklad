@@ -14,6 +14,7 @@ from backend.app.db import get_db
 from backend.app.google_sheets_exporter import update_missing_sheet_addresses
 from backend.app.main import app, require_service_token
 from backend.app.models import AuditLog, Base, ImportJob, Order, OrderItem, PendingEvent, ScanCode
+from backend.app.skladbot_return_requests import SKLADBOT_RETURN_REQUEST_CREATE_EVENT_TYPE
 from backend.app.settings import load_settings
 from backend.app.web_auth import SESSION_COOKIE_NAME, hash_password
 
@@ -68,6 +69,15 @@ class BackendApiPersistenceTests(unittest.TestCase):
             db.add_all([order, item])
             db.commit()
             return str(order.id), str(item.id)
+
+    def confirmed_return_items(self, item_id, product="Test Product", blocks=2, pieces=20):
+        return [{
+            "item_id": item_id,
+            "product": product,
+            "sku": product,
+            "quantity_blocks": blocks,
+            "quantity_pieces": pieces,
+        }]
 
     def test_active_orders_returns_uncompleted_orders_with_items(self):
         active_order_id, _ = self.seed_order()
@@ -812,7 +822,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertIn("google_sheets_archive_export", [event.payload["action"] for event in events])
 
     def test_return_lookup_and_mark_returned_excludes_order_from_active_list(self):
-        order_id, _ = self.seed_order(status="completed", scanned_blocks=2, item_status="completed")
+        order_id, item_id = self.seed_order(status="completed", scanned_blocks=2, item_status="completed")
         with self.SessionLocal() as db:
             order = db.get(Order, uuid.UUID(order_id))
             order.raw_payload = {
@@ -829,7 +839,11 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
         returned = self.client.post(
             f"/api/v1/returns/{order_id}",
-            json={"return_reference": "WR-RETURN-100", "returned_by": "test"},
+            json={
+                "return_reference": "WR-RETURN-100",
+                "returned_by": "test",
+                "confirmed_items": self.confirmed_return_items(item_id),
+            },
         )
 
         self.assertEqual(returned.status_code, 200)
@@ -864,11 +878,17 @@ class BackendApiPersistenceTests(unittest.TestCase):
             order = db.get(Order, uuid.UUID(order_id))
             self.assertEqual(order.raw_payload["return_status"], "returned")
             self.assertEqual(order.raw_payload["return_reference"], "WR-RETURN-100")
+            self.assertEqual(order.raw_payload["skladbot_return_confirmed_items"][0]["item_id"], item_id)
+            event = db.execute(
+                select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_RETURN_REQUEST_CREATE_EVENT_TYPE)
+            ).scalar_one()
+            self.assertEqual(event.idempotency_key, f"skladbot:return_create:v1:order:{order_id}")
             actions = [row.action for row in db.execute(select(AuditLog)).scalars().all()]
             self.assertIn("order_returned", actions)
+            self.assertIn("skladbot_return_request_create_queued", actions)
 
     def test_mark_return_exports_archive_and_returns_to_google_sheets_best_effort(self):
-        order_id, _ = self.seed_order(status="completed", scanned_blocks=2, item_status="completed")
+        order_id, item_id = self.seed_order(status="completed", scanned_blocks=2, item_status="completed")
         with self.SessionLocal() as db:
             order = db.get(Order, uuid.UUID(order_id))
             order.raw_payload = {
@@ -879,7 +899,11 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
         returned = self.client.post(
             f"/api/v1/returns/{order_id}",
-            json={"return_reference": "WR-RETURN-101", "returned_by": "test"},
+            json={
+                "return_reference": "WR-RETURN-101",
+                "returned_by": "test",
+                "confirmed_items": self.confirmed_return_items(item_id),
+            },
         )
 
         self.assertEqual(returned.status_code, 200)
@@ -896,6 +920,24 @@ class BackendApiPersistenceTests(unittest.TestCase):
             ]
             self.assertIn("google_sheets_archive_export", event_actions)
             self.assertIn("google_sheets_return_export", event_actions)
+
+    def test_mark_return_rejects_mismatched_confirmed_items_without_side_effects(self):
+        order_id, item_id = self.seed_order(status="completed", scanned_blocks=2, item_status="completed")
+
+        returned = self.client.post(
+            f"/api/v1/returns/{order_id}",
+            json={
+                "return_reference": "WR-RETURN-102",
+                "returned_by": "test",
+                "confirmed_items": self.confirmed_return_items(item_id, blocks=1),
+            },
+        )
+
+        self.assertEqual(returned.status_code, 422)
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            self.assertEqual(order.status, "completed")
+            self.assertEqual(db.execute(select(PendingEvent)).scalars().all(), [])
 
     def test_import_creates_grouped_order_items_and_history(self):
         rows = [

@@ -667,10 +667,10 @@ class SkladBotClient:
             response.raise_for_status()
             return response.json()
 
-    def list_requests(self):
+    def list_requests(self, type_id=None):
         return extract_list_items(self.get("/requests", {
             "customer_id": self.customer_id,
-            "type_id": self.shipment_type_id,
+            "type_id": self.shipment_type_id if type_id is None else type_id,
             "limit": self.limit,
         }))
 
@@ -1145,11 +1145,15 @@ def main():
     while True:
         try:
             from .skladbot_request_dry_run import process_pending_skladbot_request_creates
+            from .skladbot_return_requests import process_pending_skladbot_return_request_creates
 
             with SessionLocal() as db:
                 result = process_pending_skladbot_request_creates(db)
                 if result.get("checked"):
                     logging.info("SkladBot create worker: %s", result)
+                return_result = process_pending_skladbot_return_request_creates(db)
+                if return_result.get("checked"):
+                    logging.info("SkladBot return create worker: %s", return_result)
         except Exception:
             logging.exception("SkladBot create worker failed")
         try:

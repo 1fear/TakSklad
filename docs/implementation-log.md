@@ -4500,3 +4500,46 @@ cd /opt/taksklad/app
   - VDS health: `https://api.taksklad.uz/health` возвращает `version=2.0.8`.
 - Ограничение:
   - старые desktop-клиенты `2.0.5/2.0.6` технически показывают обязательность через `below_min_version`, но в их коде окно обновления еще содержит кнопку отказа. Полностью убрать отказ можно только следующим desktop release с hard-block обновлений и версионным header/backend gate.
+
+### Returns confirmation and SkladBot Возврат 3PL auto-create
+
+- Причина: возвраты должны проходить через понятное подтверждение состава на складе и автоматически создавать отдельную заявку SkladBot `Возврат 3PL`, не затирая исходный WH-R отгрузки.
+- Desktop:
+  - после поиска возврата приложение показывает окно подтверждения с исходной заявкой, клиентом, датой отгрузки, адресом, типом оплаты и SKU/блоками;
+  - оператор подтверждает полный возврат без редактирования количества;
+  - в backend отправляются `return_reference`, `returned_by` и `confirmed_items`.
+- Backend:
+  - `POST /api/v1/returns/{order_id}` принимает строгую схему возврата;
+  - `confirmed_items` сверяются с исходным заказом по item id, SKU, блокам и штукам;
+  - при расхождении возврат отклоняется без изменения заказа и без pending events;
+  - при успешном возврате создается отдельный `PendingEvent` типа `skladbot_return_request_create`.
+- SkladBot:
+  - добавлен worker для реального создания `Возврат 3PL`;
+  - payload: `customer_id=6211`, `request_type_id=3403`, поля `address`, `comment`, `company_name`, `unloading_date`, товары в блоках;
+  - возвратные номер/ID пишутся отдельно: `skladbot_return_request_number`, `skladbot_return_request_id`, `skladbot_return_request_status`;
+  - исходные `skladbot_request_number` и `skladbot_request_id` от отгрузки не меняются.
+- Google:
+  - в `Архив` и `Возвраты` добавлены отдельные колонки возвратной заявки SkladBot;
+  - повторный экспорт возврата обновляет Google после создания возвратного WH-R.
+- Проверено:
+  - `./.venv/bin/python -m unittest discover -s tests` - 353 tests OK.
+
+### Returns 3PL VDS deploy and smoke
+
+- Причина: вывести новый контур возвратов на VDS и проверить реальное создание заявки SkladBot до боевого теста.
+- Перед деплоем создан backup Postgres: `/opt/taksklad/backups/postgres/taksklad-postgres-20260605T074030Z.sql.gz`.
+- На VDS обновлен `backend/`, пересобраны и перезапущены `backend-api`, `skladbot-worker`, `telegram-worker`, `google-sheets-sync-worker`.
+- Добавлена защита от дублей возвратных заявок:
+  - при retry `skladbot_return_request_create` worker сначала ищет уже созданную `Возврат 3PL`;
+  - если заявка найдена по клиенту, дате, типу оплаты, SKU и блокам, сохраняется статус `created_recovered` без повторного POST.
+- Smoke на VDS:
+  - создан тестовый заказ `TAKSKLAD_RETURN_TEST_20260605_10610b80`;
+  - исходный тестовый WH-R: `WH-R-TEST-10610b80`;
+  - создана реальная возвратная заявка SkladBot: `WH-R-193808`, id `193808`;
+  - order_id в VDS: `916144c7-ac11-4a3e-8f79-a8dd4199ff0c`;
+  - Google events `google_sheets_archive_export` и `google_sheets_return_export` завершились успешно.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_backend_skladbot_request_dry_run` - 21 tests OK;
+  - `./.venv/bin/python -m unittest discover -s tests` - 354 tests OK;
+  - `git diff --check` - OK;
+  - `https://api.taksklad.uz/health` - OK, версия backend `2.0.8`.

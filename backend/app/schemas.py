@@ -45,10 +45,27 @@ class OrderRead(BaseModel):
     status: str
     skladbot_request_number: str = ""
     skladbot_request_id: str = ""
+    skladbot_return_request_number: str = ""
+    skladbot_return_request_id: str = ""
+    skladbot_return_status: str = ""
     return_status: str = ""
     returned_at: str = ""
     return_reference: str = ""
     items: list[OrderItemRead] = Field(default_factory=list)
+
+
+class ReturnConfirmedItem(BaseModel):
+    item_id: str = ""
+    product: str = ""
+    sku: str = ""
+    quantity_blocks: int
+    quantity_pieces: int = 0
+
+
+class ReturnMarkRequest(BaseModel):
+    return_reference: str = ""
+    returned_by: str = "desktop"
+    confirmed_items: list[ReturnConfirmedItem] = Field(default_factory=list)
 
 
 class AdminTableTotals(BaseModel):

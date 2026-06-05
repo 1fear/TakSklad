@@ -176,13 +176,14 @@ def fetch_returned_orders(limit=50):
     return backend_request("GET", f"/api/v1/returns?{quoted}")
 
 
-def mark_order_returned(order_id, return_reference="", returned_by="desktop"):
+def mark_order_returned(order_id, return_reference="", returned_by="desktop", confirmed_items=None):
     return backend_request(
         "POST",
         f"/api/v1/returns/{order_id}",
         {
             "return_reference": return_reference,
             "returned_by": returned_by,
+            "confirmed_items": confirmed_items or [],
         },
     )
 

@@ -322,7 +322,7 @@ def lookup_return_order(db: Session, lookup_value):
     return order_to_read(matches[0])
 
 
-def mark_order_returned(db: Session, order_id, return_reference="", returned_by="desktop"):
+def mark_order_returned(db: Session, order_id, return_reference="", returned_by="desktop", confirmed_items=None):
     parsed_order_id = parse_uuid(order_id, "order_id")
     order = db.execute(
         select(Order)
@@ -338,13 +338,18 @@ def mark_order_returned(db: Session, order_id, return_reference="", returned_by=
     if order.status not in COMPLETED_STATUSES:
         raise ApiError(409, "Only completed archived orders can be returned")
 
+    confirmed = validate_return_confirmed_items(order, confirmed_items)
     returned_at = datetime.now(timezone.utc)
     raw_payload["return_status"] = "returned"
     raw_payload["returned_at"] = returned_at.isoformat()
     raw_payload["return_reference"] = normalize_text(return_reference)
     raw_payload["returned_by"] = normalize_text(returned_by) or "desktop"
+    raw_payload["skladbot_return_confirmed_items"] = confirmed
     order.raw_payload = raw_payload
     order.status = STATUS_RETURNED
+    from .skladbot_return_requests import queue_skladbot_return_request_create
+
+    event = queue_skladbot_return_request_create(db, order, confirmed)
 
     db.add(AuditLog(
         action="order_returned",
@@ -354,6 +359,8 @@ def mark_order_returned(db: Session, order_id, return_reference="", returned_by=
             "return_reference": raw_payload["return_reference"],
             "returned_by": raw_payload["returned_by"],
             "returned_at": raw_payload["returned_at"],
+            "confirmed_items": confirmed,
+            "skladbot_return_create_event_id": str(event.id) if event else "",
         },
     ))
     db.commit()
@@ -362,6 +369,54 @@ def mark_order_returned(db: Session, order_id, return_reference="", returned_by=
     export_order_archive_to_google_sheets_best_effort(db, order.id)
     export_order_return_to_google_sheets_best_effort(db, order.id)
     return response
+
+
+def validate_return_confirmed_items(order, confirmed_items):
+    items = [
+        item
+        for item in order.items
+        if item.status not in HIDDEN_ITEM_STATUSES
+    ]
+    if not items:
+        raise ApiError(422, "Order has no returnable items")
+    if not confirmed_items:
+        raise ApiError(422, "Return confirmed_items are required")
+
+    by_id = {str(item.id): item for item in items}
+    used_ids = set()
+    confirmed = []
+    for raw_item in confirmed_items or []:
+        if hasattr(raw_item, "model_dump"):
+            raw_item = raw_item.model_dump()
+        raw_item = raw_item if isinstance(raw_item, dict) else {}
+        item_id = normalize_text(raw_item.get("item_id") or raw_item.get("order_item_id") or raw_item.get("id"))
+        if not item_id or item_id not in by_id:
+            raise ApiError(422, f"Return item does not belong to order: {item_id or 'empty'}")
+        if item_id in used_ids:
+            raise ApiError(422, f"Duplicate return item: {item_id}")
+        item = by_id[item_id]
+        product = normalize_text(raw_item.get("product") or raw_item.get("sku"))
+        quantity_blocks = parse_int(raw_item.get("quantity_blocks"))
+        quantity_pieces = parse_int(raw_item.get("quantity_pieces"))
+        if normalize_lookup(product) != normalize_lookup(item.product):
+            raise ApiError(422, f"Return SKU mismatch for {item.product}")
+        if quantity_blocks != int(item.quantity_blocks or 0):
+            raise ApiError(422, f"Return blocks mismatch for {item.product}")
+        if quantity_pieces and quantity_pieces != int(item.quantity_pieces or 0):
+            raise ApiError(422, f"Return pieces mismatch for {item.product}")
+        used_ids.add(item_id)
+        confirmed.append({
+            "item_id": item_id,
+            "product": item.product,
+            "sku": item.product,
+            "quantity_blocks": int(item.quantity_blocks or 0),
+            "quantity_pieces": int(item.quantity_pieces or 0),
+        })
+
+    missing_items = [item.product for item in items if str(item.id) not in used_ids]
+    if missing_items:
+        raise ApiError(422, f"Return confirmation is incomplete: {', '.join(missing_items)}")
+    return confirmed
 
 
 def export_order_item_scan_to_google_sheets_best_effort(db: Session, item_id):
@@ -452,6 +507,9 @@ def order_to_read(order: Order):
         status=order.status,
         skladbot_request_number=raw_payload.get("skladbot_request_number") or "",
         skladbot_request_id=raw_payload.get("skladbot_request_id") or "",
+        skladbot_return_request_number=raw_payload.get("skladbot_return_request_number") or "",
+        skladbot_return_request_id=raw_payload.get("skladbot_return_request_id") or "",
+        skladbot_return_status=raw_payload.get("skladbot_return_request_status") or "",
         return_status=raw_payload.get("return_status") or "",
         returned_at=raw_payload.get("returned_at") or "",
         return_reference=raw_payload.get("return_reference") or "",

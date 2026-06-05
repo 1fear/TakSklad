@@ -19,6 +19,11 @@ from backend.app.skladbot_request_dry_run import (
     list_skladbot_dry_runs,
     process_pending_skladbot_request_creates,
 )
+from backend.app.skladbot_return_requests import (
+    SKLADBOT_RETURN_REQUEST_CREATE_EVENT_TYPE,
+    process_pending_skladbot_return_request_creates,
+    queue_skladbot_return_request_create,
+)
 from backend.app.skladbot_worker import SkladBotClient
 
 
@@ -94,6 +99,19 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
                 ))
             db.commit()
             return str(import_job.id), str(order.id)
+
+    def confirmed_items_for_order(self, db, order_id):
+        order = db.get(Order, uuid.UUID(order_id))
+        return [
+            {
+                "item_id": str(item.id),
+                "product": item.product,
+                "sku": item.product,
+                "quantity_blocks": item.quantity_blocks,
+                "quantity_pieces": item.quantity_pieces,
+            }
+            for item in order.items
+        ]
 
     def test_builds_one_ready_payload_for_order_with_multiple_sku(self):
         import_id, order_id = self.seed_import_order()
@@ -640,3 +658,196 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
         )
         self.assertEqual(rebuild_response.status_code, 200)
         self.assertEqual(len(rebuild_response.json()), 1)
+
+    def test_return_create_event_is_idempotent_for_same_order(self):
+        _import_id, order_id = self.seed_import_order()
+
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            order.status = "returned"
+            confirmed_items = self.confirmed_items_for_order(db, order_id)
+            first = queue_skladbot_return_request_create(db, order, confirmed_items)
+            second = queue_skladbot_return_request_create(db, order, confirmed_items)
+            db.commit()
+            events = db.execute(
+                select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_RETURN_REQUEST_CREATE_EVENT_TYPE)
+            ).scalars().all()
+
+        self.assertEqual(str(first.id), str(second.id))
+        self.assertEqual(len(events), 1)
+        self.assertTrue(events[0].idempotency_key.startswith("skladbot:return_create:v1:order:"))
+        self.assertFalse(events[0].idempotency_key.startswith("skladbot:create:v1:order:"))
+
+    def test_return_create_worker_creates_return_3pl_request_and_keeps_outgoing_wh_r(self):
+        _import_id, order_id = self.seed_import_order()
+
+        class FakeSkladBotClient:
+            def __init__(self):
+                self.created_payloads = []
+
+            @property
+            def configured(self):
+                return True
+
+            def create_request(self, payload):
+                self.created_payloads.append(payload)
+                return {"data": {"id": 190707, "delivery_number": "WH-R-190707"}}
+
+            def get_request_detail(self, request_id):
+                self.request_id = request_id
+                return {
+                    "id": request_id,
+                    "delivery_number": "WH-R-190707",
+                    "type": "Возврат 3PL",
+                    "fields": [
+                        {"field": "address", "value": "Ташкент, улица Тестовая, 1"},
+                        {"field": "company_name", "value": '"TEST CLIENT" MCHJ'},
+                        {"field": "unloading_date", "value": "2026-06-05"},
+                        {"field": "comment", "value": "Перечисление"},
+                    ],
+                    "products": [
+                        {"name": "Chapman RED OP 20", "barcode": "4006396053947", "amount": 2},
+                        {"name": "Chapman Brown OP 20", "barcode": "4006396053978", "amount": 3},
+                    ],
+                }
+
+        fake_client = FakeSkladBotClient()
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            order.status = "returned"
+            order.raw_payload = {
+                **(order.raw_payload or {}),
+                "skladbot_request_number": "WH-R-OUT",
+                "skladbot_request_id": "180000",
+            }
+            confirmed_items = self.confirmed_items_for_order(db, order_id)
+            order.raw_payload = {
+                **(order.raw_payload or {}),
+                "skladbot_return_confirmed_items": confirmed_items,
+            }
+            queue_skladbot_return_request_create(db, order, confirmed_items)
+            process_result = process_pending_skladbot_return_request_creates(db, client=fake_client)
+            db.commit()
+            order = db.get(Order, uuid.UUID(order_id))
+            event = db.execute(
+                select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_RETURN_REQUEST_CREATE_EVENT_TYPE)
+            ).scalar_one()
+            google_event = db.execute(
+                select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")
+            ).scalar_one()
+
+        self.assertEqual(process_result["created"], 1)
+        self.assertEqual(len(fake_client.created_payloads), 1)
+        payload = fake_client.created_payloads[0]
+        self.assertEqual(payload["request_type_id"], 3403)
+        self.assertEqual(payload["customer_id"], 6211)
+        self.assertEqual(payload["fields"]["company_name"]["value"], '"TEST CLIENT" MCHJ')
+        self.assertEqual(payload["fields"]["unloading_date"]["value"], "2026-06-05")
+        self.assertEqual([product["amount"] for product in payload["products"]], [2, 3])
+        self.assertEqual(order.raw_payload["skladbot_request_number"], "WH-R-OUT")
+        self.assertEqual(order.raw_payload["skladbot_request_id"], "180000")
+        self.assertEqual(order.raw_payload["skladbot_return_request_number"], "WH-R-190707")
+        self.assertEqual(order.raw_payload["skladbot_return_request_id"], "190707")
+        self.assertEqual(order.raw_payload["skladbot_return_request_status"], "created")
+        self.assertEqual(event.status, "completed")
+        self.assertEqual(event.payload["create_status"], "created")
+        self.assertEqual(google_event.payload["action"], "google_sheets_return_export")
+
+    def test_return_create_worker_recovers_existing_request_on_retry_without_duplicate_post(self):
+        _import_id, order_id = self.seed_import_order()
+
+        class FakeSkladBotClient:
+            @property
+            def configured(self):
+                return True
+
+            def create_request(self, payload):
+                raise AssertionError("retry must reconcile before POST /requests")
+
+            def list_requests(self, type_id=None):
+                self.request_type_id = type_id
+                return [{"id": 190708, "delivery_number": "WH-R-190708", "type": "Возврат 3PL"}]
+
+            def get_request_detail(self, request_id):
+                return {
+                    "id": request_id,
+                    "delivery_number": "WH-R-190708",
+                    "type": "Возврат 3PL",
+                    "fields": [
+                        {"field": "address", "value": "Ташкент, улица Тестовая, 1"},
+                        {"field": "company_name", "value": '"TEST CLIENT" MCHJ'},
+                        {"field": "unloading_date", "value": "2026-06-05"},
+                        {"field": "comment", "value": "Перечисление"},
+                    ],
+                    "products": [
+                        {"name": "Chapman RED OP 20", "barcode": "4006396053947", "amount": 2},
+                        {"name": "Chapman Brown OP 20", "barcode": "4006396053978", "amount": 3},
+                    ],
+                }
+
+        fake_client = FakeSkladBotClient()
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            order.status = "returned"
+            order.raw_payload = {
+                **(order.raw_payload or {}),
+                "skladbot_request_number": "WH-R-OUT",
+                "skladbot_request_id": "180000",
+            }
+            confirmed_items = self.confirmed_items_for_order(db, order_id)
+            order.raw_payload = {
+                **(order.raw_payload or {}),
+                "skladbot_return_confirmed_items": confirmed_items,
+            }
+            event = queue_skladbot_return_request_create(db, order, confirmed_items)
+            event.status = "failed"
+            event.attempts = 1
+            process_result = process_pending_skladbot_return_request_creates(db, client=fake_client)
+            db.commit()
+            order = db.get(Order, uuid.UUID(order_id))
+            event = db.execute(
+                select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_RETURN_REQUEST_CREATE_EVENT_TYPE)
+            ).scalar_one()
+
+        self.assertEqual(fake_client.request_type_id, 3403)
+        self.assertEqual(process_result["recovered"], 1)
+        self.assertEqual(order.raw_payload["skladbot_return_request_number"], "WH-R-190708")
+        self.assertEqual(order.raw_payload["skladbot_return_request_id"], "190708")
+        self.assertEqual(order.raw_payload["skladbot_return_request_status"], "created_recovered")
+        self.assertEqual(order.raw_payload["skladbot_request_number"], "WH-R-OUT")
+        self.assertEqual(event.status, "completed")
+        self.assertEqual(event.payload["create_status"], "created_recovered")
+
+    def test_return_create_worker_blocks_unknown_sku_without_posting(self):
+        _import_id, order_id = self.seed_import_order(products=[("Unknown SKU", 1)])
+
+        class FakeSkladBotClient:
+            @property
+            def configured(self):
+                return True
+
+            def create_request(self, payload):
+                raise AssertionError("POST /requests must not be called for blocked return")
+
+        fake_client = FakeSkladBotClient()
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            order.status = "returned"
+            confirmed_items = self.confirmed_items_for_order(db, order_id)
+            order.raw_payload = {
+                **(order.raw_payload or {}),
+                "skladbot_return_confirmed_items": confirmed_items,
+            }
+            queue_skladbot_return_request_create(db, order, confirmed_items)
+            process_result = process_pending_skladbot_return_request_creates(db, client=fake_client)
+            db.commit()
+            order = db.get(Order, uuid.UUID(order_id))
+            event = db.execute(
+                select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_RETURN_REQUEST_CREATE_EVENT_TYPE)
+            ).scalar_one()
+
+        self.assertEqual(process_result["blocked"], 1)
+        self.assertEqual(event.status, "blocked")
+        self.assertIn("SKU не найден", event.last_error)
+        self.assertEqual(order.raw_payload["skladbot_return_request_status"], "blocked")
+        self.assertNotIn("skladbot_return_request_number", order.raw_payload)

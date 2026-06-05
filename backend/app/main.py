@@ -53,6 +53,7 @@ from .schemas import (
     ImportRead,
     ImportResult,
     OrderRead,
+    ReturnMarkRequest,
     ScanCreate,
     ScanRead,
     ScanUndo,
@@ -423,14 +424,14 @@ def lookup_return(lookup: str, db=Depends(get_db)):
 
 
 @api.post("/returns/{order_id}", response_model=OrderRead)
-def mark_return(order_id: str, payload: dict | None = None, db=Depends(get_db)):
-    payload = payload or {}
+def mark_return(order_id: str, payload: ReturnMarkRequest, db=Depends(get_db)):
     try:
         return mark_order_returned_in_db(
             db,
             order_id,
-            return_reference=payload.get("return_reference") or "",
-            returned_by=payload.get("returned_by") or "desktop",
+            return_reference=payload.return_reference or "",
+            returned_by=payload.returned_by or "desktop",
+            confirmed_items=[item.model_dump() for item in payload.confirmed_items],
         )
     except ApiError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
