@@ -86,6 +86,11 @@ def merge_aliases(base_aliases, extra_aliases):
 
 NORMALIZER_REQUIRED_ALIASES = merge_aliases(SOURCE_REQUIRED_ALIASES, EXTRA_REQUIRED_ALIASES)
 NORMALIZER_OPTIONAL_ALIASES = merge_aliases(SOURCE_OPTIONAL_ALIASES, EXTRA_OPTIONAL_ALIASES)
+CONTEXT_DATE_ALIASES = [
+    "Дата доставки",
+    "Дата отгрузки",
+    "Дата поставки",
+]
 
 
 def get_source_header_index(header):
@@ -120,6 +125,21 @@ def find_source_columns(header_positions, aliases):
         key = normalize_lookup_text(alias)
         result.extend(header_positions.get(key, []))
     return sorted(set(result))
+
+
+def find_context_column(preview_rows, header_row, aliases):
+    for row in reversed(preview_rows[: max(header_row - 1, 0)]):
+        idx = find_source_column(get_source_header_index(row), aliases)
+        if idx is not None:
+            return idx
+    return None
+
+
+def add_context_columns(columns, preview_rows, header_row):
+    columns = dict(columns)
+    if columns.get("date") is None:
+        columns["date"] = find_context_column(preview_rows, header_row, CONTEXT_DATE_ALIASES)
+    return columns
 
 
 def get_source_cell(row, idx):
@@ -259,6 +279,7 @@ def detect_excel_source(workbook, file_name):
         detected = detect_header_row(preview_rows)
         if not detected:
             continue
+        columns = add_context_columns(detected["columns"], preview_rows, detected["header_row"])
 
         default_date = extract_default_date_from_file_name(file_name)
         default_date_source = "file_name" if default_date else ""
@@ -270,7 +291,7 @@ def detect_excel_source(workbook, file_name):
             "sheet_name": sheet_name,
             "header_row": detected["header_row"],
             "first_data_row": detected["header_row"] + 1,
-            "columns": detected["columns"],
+            "columns": columns,
             "default_date": default_date,
             "default_date_source": default_date_source,
             "score": detected["score"] + (5 if sheet_name == "Заявки" else 0),

@@ -25,6 +25,7 @@ class BackendSkeletonTests(unittest.TestCase):
             "backend/app/models.py",
             "backend/app/schemas.py",
             "backend/sql/001_initial_schema.sql",
+            "backend/sql/002_kiz_movements.sql",
             "deploy/vds/docker-compose.yml",
             "deploy/vds/.env.example",
             "deploy/traefik/docker-compose.yml",
@@ -61,6 +62,8 @@ class BackendSkeletonTests(unittest.TestCase):
             "orders",
             "order_items",
             "scan_codes",
+            "kiz_codes",
+            "kiz_movements",
             "imports",
             "import_files",
             "pending_events",
@@ -69,7 +72,8 @@ class BackendSkeletonTests(unittest.TestCase):
         ]:
             self.assertIn(f"create table if not exists {table_name}", schema_sql)
 
-        self.assertIn("unique (code)", schema_sql)
+        self.assertIn("constraint uq_kiz_codes_code unique (code)", schema_sql)
+        self.assertNotIn("constraint uq_scan_codes_code unique (code)", schema_sql)
         self.assertIn("sha256 varchar(64) not null unique", schema_sql)
         self.assertIn("jsonb", schema_sql)
 

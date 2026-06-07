@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Integer, String, Text, Uuid, UniqueConstraint, func
+from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Index, Integer, String, Text, Uuid, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -54,7 +54,10 @@ class OrderItem(Base):
 
 class ScanCode(Base):
     __tablename__ = "scan_codes"
-    __table_args__ = (UniqueConstraint("code", name="uq_scan_codes_code"),)
+    __table_args__ = (
+        Index("idx_scan_codes_code", "code"),
+        Index("idx_scan_codes_code_order_item_id", "code", "order_item_id"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
     order_item_id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, ForeignKey("order_items.id", ondelete="CASCADE"), nullable=False)
@@ -66,6 +69,43 @@ class ScanCode(Base):
     raw_payload: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
 
     order_item: Mapped[OrderItem] = relationship(back_populates="scan_codes")
+
+
+class KizCode(Base):
+    __tablename__ = "kiz_codes"
+    __table_args__ = (UniqueConstraint("code", name="uq_kiz_codes_code"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    code: Mapped[str] = mapped_column(Text, nullable=False)
+    first_seen_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    movements: Mapped[list["KizMovement"]] = relationship(back_populates="kiz_code")
+
+
+class KizMovement(Base):
+    __tablename__ = "kiz_movements"
+    __table_args__ = (
+        Index("idx_kiz_movements_kiz_id_occurred_at", "kiz_id", "occurred_at"),
+        Index("idx_kiz_movements_order_id", "order_id"),
+        Index("idx_kiz_movements_order_item_id", "order_item_id"),
+        Index("idx_kiz_movements_scan_code_id", "scan_code_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    kiz_id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, ForeignKey("kiz_codes.id", ondelete="CASCADE"), nullable=False)
+    movement_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    order_id: Mapped[uuid.UUID | None] = mapped_column(UUID_TYPE, ForeignKey("orders.id", ondelete="SET NULL"))
+    order_item_id: Mapped[uuid.UUID | None] = mapped_column(UUID_TYPE, ForeignKey("order_items.id", ondelete="SET NULL"))
+    scan_code_id: Mapped[uuid.UUID | None] = mapped_column(UUID_TYPE, ForeignKey("scan_codes.id", ondelete="SET NULL"))
+    return_reference: Mapped[str | None] = mapped_column(String(120))
+    source: Mapped[str] = mapped_column(String(40), nullable=False, default="backend")
+    actor: Mapped[str | None] = mapped_column(String(120))
+    workstation_id: Mapped[str | None] = mapped_column(String(120))
+    occurred_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    raw_payload: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+
+    kiz_code: Mapped[KizCode] = relationship(back_populates="movements")
 
 
 class ImportJob(Base):
@@ -94,9 +134,11 @@ class ImportFile(Base):
 
 class PendingEvent(Base):
     __tablename__ = "pending_events"
+    __table_args__ = (Index("uq_pending_events_idempotency_key", "idempotency_key", unique=True),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
     event_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    idempotency_key: Mapped[str | None] = mapped_column(String(180))
     status: Mapped[str] = mapped_column(String(40), nullable=False, default="pending")
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     payload: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)

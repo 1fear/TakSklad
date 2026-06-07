@@ -4324,3 +4324,347 @@ cd /opt/taksklad/app
   - `./.venv/bin/python -m py_compile backend/app/google_sheets_exporter.py backend/app/google_sheets_pending.py` - OK;
   - `./.venv/bin/python -m unittest tests.test_backend_google_sheets_exporter tests.test_backend_google_sheets_pending` - 19 tests OK;
   - `./.venv/bin/python -m unittest discover -s tests` - 319 tests OK.
+
+### Live Google/VDS cleanup and delivery-date parser fix
+
+- Причина: свежий Excel `Шаблон_отправки_заказов_на_склад_04_06_2026.xlsx` имел фактическую `ДАТА ДОСТАВКИ = 05.06.2026`, но importer взял `04.06.2026` из имени файла, потому что колонка даты была в верхней строке над основной шапкой.
+- Live cleanup:
+  - перед изменениями создан VDS backup `/opt/taksklad/backups/postgres/taksklad-postgres-20260604T054930Z.sql.gz`;
+  - локально сохранён backup изменённых Google `data` строк: `outputs/diagnostics/2026-06-04-live/google_data_rows_before_0406_fix.json`;
+  - локально сохранён backup удалённых лишних архивных строк: `outputs/diagnostics/2026-06-04-live-after-fix/google_archive_rows_before_extra_delete_0406_terminal.json`;
+  - в VDS дата активных заказов `Перечисление` из файла `Шаблон_отправки_заказов_на_склад_04_06_2026.xlsx` исправлена с `2026-06-04` на `2026-06-05`, затронуто `16` заказов;
+  - в Google `data` дата `40` строк перечисления исправлена на `05.06.2026`;
+  - из Google `data` удалены `87` активных терминальных дублей за `04.06.2026`, которые уже были покрыты `Архивом`;
+  - из Google `Архив` удалены `5` лишних терминальных дублей за `04.06.2026`.
+- Итоговая сверка:
+  - VDS: `04.06.2026 Терминал completed` - `114` позиций, `331` блок, `331` отсканирован;
+  - Google `Архив`: `04.06.2026 Терминал Выполнено` - `114` строк, `331` блок, `331` КИЗ;
+  - VDS: `05.06.2026 Перечисление active` - `16` заказов, `40` позиций, `97` блоков;
+  - Google `data`: `05.06.2026 Перечисление Не выполнено` - `40` строк, `97` блоков;
+  - pending Google queue после проверки: `0`.
+- Код:
+  - backend importer теперь ищет `Дата доставки` / `Дата отгрузки` / `Дата поставки` в строках над основной шапкой;
+  - desktop importer получил такую же защиту;
+  - Telegram import meta теперь показывает реальную единую дату строк, если она взята из Excel, а не дату из имени файла.
+- VDS:
+  - на сервер синхронизирован `backend/app/excel_importer.py`;
+  - пересобраны и перезапущены `backend-api` и `telegram-worker`;
+  - `https://api.taksklad.uz/health` - OK;
+  - серверный parser smoke подтвердил: файл с именем `04_06` и верхней `ДАТА ДОСТАВКИ=2026-06-05` импортируется как `05.06.2026`.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_backend_telegram_import tests.test_excel_normalizer` - 38 tests OK;
+  - `./.venv/bin/python -m unittest discover -s tests` - 322 tests OK.
+
+### macOS ready build 2.0.6
+
+- Причина: нужна Mac-сборка, которая запускается в один клик и работает с теми же JSON/VDS настройками, что складской ПК.
+- Исправлено:
+  - для frozen macOS `.app` рабочая папка теперь определяется как папка рядом с `TakSklad.app`, а не `TakSklad.app/Contents/MacOS`;
+  - прямой запуск `.app` больше не пишет `docs/TakSklad.log` внутрь bundle и не ломает подпись;
+  - `START_TAKSKLAD.command` оставлен как запасной one-click запуск;
+  - Mac bundle пересобран через `./.venv/bin/python -m PyInstaller --clean --noconfirm TakSklad.spec`, чтобы не повторить ошибку `_struct`.
+- Готовый артефакт:
+  - папка: `outputs/mac_ready/TakSklad-2.0.6-mac-ready`;
+  - архив: `outputs/mac_ready/TakSklad-2.0.6-mac-ready.zip`;
+  - комплект содержит `TakSklad.app`, `.env.taksklad-vds-2.0.generated.json`, `credentials.json`, `TakSklad_data.json`, `version.json`, command-файлы.
+- Проверено:
+  - `START_TAKSKLAD.command --smoke-import` - OK;
+  - `START_BACKEND.command --smoke-import` - OK;
+  - `START_LOCAL.command --smoke-import` - OK;
+  - `TakSklad.app/Contents/MacOS/TakSklad --smoke-import` - OK;
+  - короткий GUI-launch через `START_TAKSKLAD.command` - OK;
+  - короткий прямой GUI-launch бинарника `.app` - OK;
+  - `codesign --verify --deep --strict` после запусков - OK.
+
+### SkladBot sync acceleration and completed-order backfill
+
+- Причина: склад может завершить заказ раньше, чем worker успел подтянуть номер WH-R из SkladBot. Закрытие без WH-R оставлено разрешенным, потому что это рабочая логика склада, но номер нужен позже для возвратов и сверок.
+- Backend:
+  - `SKLADBOT_DETAIL_LIMIT` увеличен с `3` до `10`, чтобы за один проход проверять больше свежих заявок SkladBot без резкого роста нагрузки;
+  - advisory lock SkladBot worker переведен на `pg_try_advisory_xact_lock`, чтобы lock не зависал после commit/session reuse;
+  - worker теперь проверяет не только активные, но и свежие завершенные заказы без полного комплекта `skladbot_request_number` + `skladbot_request_id`;
+  - окно догонки завершенных заказов на VDS задано через `SKLADBOT_COMPLETED_BACKFILL_DAYS=2`;
+  - после нахождения WH-R для свежего завершенного заказа worker ставит событие `google_sheets_skladbot_export` с `include_archive=true`, чтобы обновить Google `Архив`;
+  - SkladBot metadata export больше не блокирует массовое закрытие заказов без КИЗов в кабинете.
+- VDS:
+  - перед деплоем создан backup `/opt/taksklad/backups/postgres/taksklad-postgres-20260604T081842Z.sql.gz`;
+  - обновлены и перезапущены `backend-api`, `skladbot-worker`, `google-sheets-sync-worker`;
+  - настройки VDS: `SKLADBOT_DETAIL_LIMIT=10`, `SKLADBOT_COMPLETED_BACKFILL_DAYS=2`, `SKLADBOT_SYNC_INTERVAL_SECONDS=60`;
+  - проверено, что SkladBot worker работает без зависшего lock и без 429/API errors.
+- Live verification:
+  - по импорту `2e7702bf-eb5a-4b65-a28e-d0c4c93cb6f2` все `16/16` заказов получили WH-R и SkladBot ID в VDS;
+  - Google queue по `google_sheets_skladbot_export` завершена, failed events нет;
+  - последние SkladBot export события обновили Google `Архив`, а не только активный `data`.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_backend_skladbot_worker tests.test_backend_google_sheets_pending tests.test_backend_api_persistence tests.test_vds_acceptance_scripts` - 108 tests OK;
+  - `./.venv/bin/python -m unittest discover -s tests` - 329 tests OK;
+  - `https://api.taksklad.uz/health` - OK.
+
+### SkladBot request auto-create dry-run
+
+- Причина: нужно убрать ручной этап создания заявок SkladBot после Telegram Excel import, но первый этап должен быть безопасным и без реального `POST /v1/requests`.
+- Backend:
+  - добавлен сервис `skladbot_request_dry_run`, который после импорта строит preview будущей заявки SkladBot по каждому заказу;
+  - одна заявка = один заказ TakSklad, товары внутри заявки собираются по всем позициям заказа, даже если текущий импорт добавил только часть строк;
+  - payload использует `customer_id=6211`, `request_type_id=3389`, поля `address`, `comment`, `company_name`, `unloading_date`;
+  - SKU mapping: Red `2189390`, Brown `2189391`, Gold SSL `2189394`;
+  - неизвестный SKU не ломает импорт, а получает статус `blocked`;
+  - заказ с уже заполненным `skladbot_request_number` или `skladbot_request_id` получает статус `already_linked`;
+  - результат хранится в `pending_events` с `event_type=skladbot_request_dry_run`, `would_post=false`, и пишется в `audit_log`;
+  - dry-run работает best-effort: если preview упал, основной импорт остается успешным, Google-очередь сохраняется, а ошибка пишется в import `raw_payload` и `audit_log`;
+  - повторный запуск для того же `import_id` не плодит дубли, пересборка доступна отдельным API;
+  - режим контролируется `SKLADBOT_CREATE_REQUESTS_MODE=dry_run|enabled|disabled`, по умолчанию `dry_run`;
+  - `enabled` на этом этапе сохраняется как `configured_mode`, но фактический режим остается `dry_run`.
+- API:
+  - `GET /api/v1/admin/skladbot/dry-runs?import_id=...`;
+  - `POST /api/v1/admin/skladbot/dry-runs/{id}/rebuild`.
+- Web:
+  - добавлена вкладка `SkladBot dry-run`;
+  - показываются импорт, клиент, дата, тип оплаты, адрес, товары, блоки, статус, причина блокировки и JSON preview;
+  - в истории импортов добавлена короткая сводка dry-run.
+  - загрузка dry-run отделена от основной таблицы, поэтому сбой dry-run API не блокирует вход и рабочую таблицу.
+- Важно:
+  - реальное создание заявок SkladBot не включено;
+  - на этом этапе SkladBot API не получает POST-запросы от TakSklad.
+- Проверено:
+  - `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m unittest tests.test_backend_skladbot_request_dry_run` - 10 tests OK;
+  - `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m unittest tests.test_backend_api_persistence` - 50 tests OK;
+  - `npm run build` в `frontend` - OK;
+  - `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m unittest discover -s tests` - 339 tests OK.
+
+### Release 2.0.7 SkladBot dry-run rollout
+
+- Причина: dry-run автосоздания заявок SkladBot проверен на VDS и должен войти в единый релизный контур backend/web/desktop.
+- Dry-run проверен на реальной VDS базе без реального SkladBot POST:
+  - последний импорт `710fb0c0-7008-4e73-8a8a-10d502d7df2e`: `22` заказа, `22 already_linked`, `51` товарная строка распознана mapping;
+  - импорт `9de07944-00d6-4b3f-818e-e76ebb3cebb8`: `33` заказа, `5 ready`, `28 already_linked`, `0 blocked`, `5` payload готовы к preview;
+  - API `GET /api/v1/admin/skladbot/dry-runs?import_id=...` вернул `200`, `33` строки, `5` payload.
+- Релизные изменения:
+  - `APP_VERSION` поднята до `2.0.7`;
+  - release preflight, Windows test archive helper и VDS acceptance status переведены на `2.0.7`;
+  - `version.json` подготовлен под `v2.0.7`, реальные SHA будут обновлены после GitHub Actions сборки артефактов.
+- Важно:
+  - боевой `POST /v1/requests` в SkladBot не включён;
+  - production режим остается `SKLADBOT_CREATE_REQUESTS_MODE=dry_run`;
+  - включение `enabled` будет отдельным этапом после ручного сравнения preview с заявкой менеджера.
+
+### SkladBot request auto-create enabled
+
+- Причина: убрать ручной этап создания заявок SkladBot после Telegram Excel import. Целевой поток: Excel в Telegram -> VDS/Google import -> автоматическое создание заявки SkladBot -> сохранение WH-R в VDS -> экспорт WH-R в Google.
+- Backend:
+  - добавлен `PendingEvent.idempotency_key` и уникальный индекс, чтобы один заказ не мог создать SkladBot-заявку дважды;
+  - `SKLADBOT_CREATE_REQUESTS_MODE=enabled` теперь ставит `skladbot_request_create` events для ready-заказов после import;
+  - `rebuild` dry-run остается read-only и не вызывает POST;
+  - `skladbot-worker` обрабатывает `skladbot_request_create` перед обычным WH-R backfill;
+  - перед повторным POST после retry worker ищет уже созданную заявку, чтобы не плодить дубли после timeout/process crash;
+  - после `POST /v1/requests` worker обязательно делает `GET /v1/requests/show/{id}` и сохраняет канонический WH-R из detail;
+  - созданный номер/ID пишутся в `Order.raw_payload`, затем ставится точечный `google_sheets_skladbot_export` по `order_id`.
+- SkladBot API verification:
+  - `GET /v1/requests/form-data` подтвердил `request_type_id=3389` и обязательные поля `address`, `comment`, `company_name`, `unloading_date`;
+  - product lookup подтвердил mapping Red `2189390`, Brown `2189391`, Gold SSL `2189394`;
+  - создано 2 разрешенные тестовые заявки API на `company_name=ИП Даврон`: `WH-R-193682`, `WH-R-193683`;
+  - важное наблюдение: POST response вернул некорректно повторяющийся `delivery_number`, а `show/{id}` вернул правильные WH-R, поэтому canonical read после POST обязателен.
+- VDS:
+  - перед деплоем создан backup `/opt/taksklad/backups/postgres/taksklad-postgres-20260604T180955Z.sql.gz`;
+  - обновлены `backend/`, `frontend/`, `deploy/vds/`;
+  - применена schema с `pending_events.idempotency_key`;
+  - на VDS выставлено `SKLADBOT_CREATE_REQUESTS_MODE=enabled`;
+  - пересобраны и перезапущены `backend-api`, `skladbot-worker`, `frontend`;
+  - активных заказов без WH-R на момент включения нет, поэтому задним числом лишние заявки не создавались.
+- Web:
+  - вкладка `SkladBot dry-run` теперь показывает статусы `queued`, `created`, `recovered`, `create_failed`;
+  - история импортов показывает queued/created/blocked summary.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_backend_skladbot_request_dry_run` - 15 tests OK;
+  - `./.venv/bin/python -m unittest tests.test_backend_skladbot_worker` - 47 tests OK;
+  - `./.venv/bin/python -m unittest tests.test_backend_google_sheets_exporter tests.test_backend_google_sheets_pending` - 21 tests OK;
+  - `./.venv/bin/python -m unittest tests.test_backend_api_persistence` - 50 tests OK;
+  - `./.venv/bin/python -m unittest discover -s tests` - 344 tests OK;
+  - `npm run build` в `frontend` - OK;
+  - `https://api.taksklad.uz/health` - OK.
+
+### Release 2.0.8 forced update rollout
+
+- Причина: складские ПК должны перейти на актуальную рабочую сборку `2.0.8`, где собраны последние исправления backend-first логики, SkladBot auto-create и Windows release artifacts.
+- Изменено:
+  - `version.json` переведен в принудительный режим: `latest_version=2.0.8`, `min_supported_version=2.0.8`, `mandatory=true`;
+  - текст update message прямо просит нажать `Да`, дождаться установки и запускать только новый `TakSklad.exe`;
+  - release preflight, Windows test archive helper, VDS acceptance status, GO/NO-GO и acceptance kit теперь считают корректным только forced rollout `2.0.8`;
+  - `main/version.json` обновлен отдельным commit, потому автообновление старых клиентов читает публичный manifest из `main`;
+  - серверная копия `/opt/taksklad/app/version.json` и acceptance scripts синхронизированы на VDS.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_release_preflight tests.test_vds_acceptance_scripts tests.test_windows_test_build_helper tests.test_release_go_no_go` - 25 tests OK;
+  - `./.venv/bin/python tools/release_preflight.py --verify-downloads --timeout 120` - `status=ok`;
+  - GitHub release assets `TakSklad.exe` и `TakSklad-windows-x64.zip` скачаны и совпали по SHA256;
+  - публичный `https://raw.githubusercontent.com/1fear/TakSklad/main/version.json` отдает `mandatory=true` и `min_supported_version=2.0.8`;
+  - VDS health: `https://api.taksklad.uz/health` возвращает `version=2.0.8`.
+- Ограничение:
+  - старые desktop-клиенты `2.0.5/2.0.6` технически показывают обязательность через `below_min_version`, но в их коде окно обновления еще содержит кнопку отказа. Полностью убрать отказ можно только следующим desktop release с hard-block обновлений и версионным header/backend gate.
+
+### Returns confirmation and SkladBot Возврат 3PL auto-create
+
+- Причина: возвраты должны проходить через понятное подтверждение состава на складе и автоматически создавать отдельную заявку SkladBot `Возврат 3PL`, не затирая исходный WH-R отгрузки.
+- Desktop:
+  - после поиска возврата приложение показывает окно подтверждения с исходной заявкой, клиентом, датой отгрузки, адресом, типом оплаты и SKU/блоками;
+  - оператор подтверждает полный возврат без редактирования количества;
+  - в backend отправляются `return_reference`, `returned_by` и `confirmed_items`.
+- Backend:
+  - `POST /api/v1/returns/{order_id}` принимает строгую схему возврата;
+  - `confirmed_items` сверяются с исходным заказом по item id, SKU, блокам и штукам;
+  - при расхождении возврат отклоняется без изменения заказа и без pending events;
+  - при успешном возврате создается отдельный `PendingEvent` типа `skladbot_return_request_create`.
+- SkladBot:
+  - добавлен worker для реального создания `Возврат 3PL`;
+  - payload: `customer_id=6211`, `request_type_id=3403`, поля `address`, `comment`, `company_name`, `unloading_date`, товары в блоках;
+  - возвратные номер/ID пишутся отдельно: `skladbot_return_request_number`, `skladbot_return_request_id`, `skladbot_return_request_status`;
+  - исходные `skladbot_request_number` и `skladbot_request_id` от отгрузки не меняются.
+- Google:
+  - в `Архив` и `Возвраты` добавлены отдельные колонки возвратной заявки SkladBot;
+  - повторный экспорт возврата обновляет Google после создания возвратного WH-R.
+- Проверено:
+  - `./.venv/bin/python -m unittest discover -s tests` - 353 tests OK.
+
+### Returns 3PL VDS deploy and smoke
+
+- Причина: вывести новый контур возвратов на VDS и проверить реальное создание заявки SkladBot до боевого теста.
+- Перед деплоем создан backup Postgres: `/opt/taksklad/backups/postgres/taksklad-postgres-20260605T074030Z.sql.gz`.
+- На VDS обновлен `backend/`, пересобраны и перезапущены `backend-api`, `skladbot-worker`, `telegram-worker`, `google-sheets-sync-worker`.
+- Добавлена защита от дублей возвратных заявок:
+  - при retry `skladbot_return_request_create` worker сначала ищет уже созданную `Возврат 3PL`;
+  - если заявка найдена по клиенту, дате, типу оплаты, SKU и блокам, сохраняется статус `created_recovered` без повторного POST.
+- Smoke на VDS:
+  - создан тестовый заказ `TAKSKLAD_RETURN_TEST_20260605_10610b80`;
+  - исходный тестовый WH-R: `WH-R-TEST-10610b80`;
+  - создана реальная возвратная заявка SkladBot: `WH-R-193808`, id `193808`;
+  - order_id в VDS: `916144c7-ac11-4a3e-8f79-a8dd4199ff0c`;
+  - Google events `google_sheets_archive_export` и `google_sheets_return_export` завершились успешно.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_backend_skladbot_request_dry_run` - 21 tests OK;
+  - `./.venv/bin/python -m unittest discover -s tests` - 354 tests OK;
+  - `git diff --check` - OK;
+  - `https://api.taksklad.uz/health` - OK, версия backend `2.0.8`.
+
+### Release 2.0.9 Windows rollout
+
+- Причина: складским ПК нужна новая desktop-сборка с окном подтверждения возврата; backend уже требует `confirmed_items` при возврате.
+- Изменено:
+  - `APP_VERSION` повышен до `2.0.9`;
+  - backend `APP_VERSION` повышен до `2.0.9`, чтобы `/health` совпадал с текущей release-линей;
+  - `version.json` переведен на `latest_version=2.0.9`, `min_supported_version=2.0.9`, `mandatory=true`;
+  - release/preflight/acceptance guard'ы переведены с `2.0.8` на `2.0.9`.
+- GitHub release:
+  - создан tag/release `v2.0.9`;
+  - Windows workflow `27003534719` завершился успешно;
+  - smoke-test `TakSklad.exe --smoke-import` прошел для onefile и onedir;
+  - assets опубликованы: `TakSklad.exe`, `TakSklad-windows-x64.zip` и SHA-файлы.
+- SHA:
+  - `TakSklad.exe`: `10ea2376ec194dc87f6007fec8a476e9444fdb04aeb79352f399aa7aca70e8f4`;
+  - `TakSklad-windows-x64.zip`: `e07f4ff712ebd962922cc25e43bba499886a0b9db0fb6b74ac2a84293d5f04c3`.
+
+### Telegram KIZ export modes
+
+- Причина: менеджеру нужны оба сценария выгрузки КИЗов:
+  - по дате отгрузки, например если сегодня склад собирал за `08.06`;
+  - по конкретным Excel-файлам, которые ранее были загружены в Telegram-бот.
+- Backend:
+  - `GET /api/v1/reports/kiz/source-files` теперь возвращает все загруженные source-файлы с прогрессом `scanned_blocks/planned_blocks`, `remaining_blocks` и `completed`;
+  - готовые source-файлы по-прежнему выгружаются через `GET /api/v1/reports/kiz/source-file`;
+  - `GET /api/v1/reports/kiz/dates` теперь показывает даты, где уже есть отсканированные КИЗы, и отдаёт прогресс по всей дате;
+  - отчёт по дате/диапазону выгружает уже отсканированные завершённые позиции, даже если по этой дате есть ещё незавершённые позиции.
+- Telegram:
+  - кнопка `Выгрузка КИЗов` сначала показывает выбор режима: `По датам отгрузки` или `По загруженным Excel-файлам`;
+  - список файлов показывает каждый загруженный файл и прогресс `сколько/сколько` блоков отпикано;
+  - inline-кнопка выгрузки появляется только у готовых файлов, чтобы случайно не отправить неполный файл по source-file;
+  - прямые команды `/kiz 08.06.2026` и `/kiz 04.06.2026 05.06.2026` сохранены.
+
+### Returns source of truth and KIZ movement lifecycle
+
+- Причина: первый боевой возврат мог записаться напрямую в Google Sheets и затем зеркалиться в Postgres без `order_returned`, без `confirmed_items` и без события `skladbot_return_request_create`. Отдельно глобальный unique на `scan_codes.code` не давал повторно отгрузить КИЗ после возврата.
+- Desktop:
+  - в backend-режиме список и lookup возвратов читаются из backend;
+  - `mark_return_for_display()` больше не пишет Google-only возврат через `mark_return_order_in_gsheet`;
+  - если у Google fallback-заказа нет `_backend_order_id`, возврат отклоняется понятной ошибкой;
+  - legacy Google write fallback сохранен только когда backend read mode выключен.
+- Google sync:
+  - ручные возвратные колонки из Google больше не переводят заказ в `returned`;
+  - такие строки пишутся в `audit_log` как `google_sheets_backend_sync_conflict`;
+  - backend -> Google mirror после настоящего backend-возврата сохранен.
+- Backend KIZ lifecycle:
+  - добавлены таблицы `kiz_codes` и `kiz_movements`;
+  - `scan_codes` теперь хранит события сканирования отгрузок и больше не имеет глобального unique по `code`;
+  - один и тот же КИЗ блокируется для другой позиции, пока последний movement не `return`, `undo` или `reset`;
+  - после backend-возврата по всем сканам заказа пишется movement `return`, и этот КИЗ можно снова сканировать в новую отгрузку как `re_outbound`;
+  - неуспешный возврат не освобождает КИЗ.
+- SQL/deploy:
+  - добавлена миграция `backend/sql/002_kiz_movements.sql`;
+  - миграция создает `kiz_codes`, `kiz_movements`, backfill-ит outbound movements для существующих `scan_codes`, return movements для уже returned-заказов и снимает `uq_scan_codes_code`;
+  - `deploy/vds/apply_schema.sh` теперь применяет все SQL-файлы по порядку.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_backend_api_persistence tests.test_google_sheets_sync_worker tests.test_desktop_ui_contract tests.test_backend_skeleton` - 91 tests OK;
+  - `./.venv/bin/python -m unittest discover tests` - 363 tests OK.
+
+### Returns/KIZ lifecycle pre-merge and VDS readiness gate
+
+- Цель: перед merge/push/deploy проверить, что backend остаётся source of truth, Google Sheets работает только как зеркало, возвраты создают SkladBot return event, а возвращённый КИЗ можно снова отгружать без старой ошибки global duplicate.
+- Локальные проверки:
+  - `./.venv/bin/python -m unittest discover tests` - 363 tests OK;
+  - `./.venv/bin/python -m compileall -q backend/app src/taksklad tools main.py tests` - OK;
+  - `npm run build` в `frontend` - OK, `tsc -b && vite build`;
+  - `for f in deploy/vds/*.sh; do bash -n "$f"; done` - OK;
+  - `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK;
+  - `docker compose --env-file deploy/traefik/.env.example -f deploy/traefik/docker-compose.yml config` - OK;
+  - `./.venv/bin/python tools/release_preflight.py --verify-downloads --timeout 120` - `status=ok`, GitHub release assets SHA совпали;
+  - `git diff --check` - OK.
+- PostgreSQL migration dry-run:
+  - fresh schema: `001_initial_schema.sql` + `002_kiz_movements.sql` применились в disposable Postgres;
+  - legacy schema из `HEAD` с `uq_scan_codes_code` + seed data + `002_kiz_movements.sql` применились в disposable Postgres;
+  - после legacy migration остался только `uq_kiz_codes_code`, returned-КИЗ получил latest movement `return`, active-КИЗ остался latest `outbound`.
+- VDS readiness до deploy:
+  - `ssh root@135.181.245.84 'cd /opt/taksklad/app && ./deploy/vds/acceptance_status.sh'` - общий `status=ok`;
+  - `backend-api`, `frontend`, `postgres`, `telegram-worker`, `skladbot-worker`, `google-sheets-sync-worker` running;
+  - `google_backend_sync.status=ok`, `field_mismatch_count=0`, `backend_active_orders=24`, `backend_active_items=50`;
+  - `skladbot_coverage.status=ok`;
+  - `telegram_menu.status=ok`.
+- Ограничение:
+  - локальный `./deploy/vds/acceptance_status.sh` без локального docker stack падает на `service "backend-api" is not running`; для онлайн-состояния использовать запуск на VDS через SSH.
+
+### Returns/KIZ lifecycle VDS deploy and production return repair
+
+- На VDS задеплоен коммит `bdc08b2` через штатный `rsync`, потому что `/opt/taksklad/app` не является Git checkout.
+- Перед изменениями создан backup Postgres:
+  - `/opt/taksklad/backups/postgres/taksklad-postgres-20260607T110107Z.sql.gz`.
+- Применена схема:
+  - `backend/sql/001_initial_schema.sql`;
+  - `backend/sql/002_kiz_movements.sql`.
+- Пересобраны и перезапущены:
+  - `backend-api`;
+  - `google-sheets-sync-worker`;
+  - `skladbot-worker`;
+  - `telegram-worker`.
+- VDS migration check:
+  - `kiz_codes=1517`;
+  - `kiz_movements=1518`;
+  - старый constraint `uq_scan_codes_code` снят;
+  - новый constraint `uq_kiz_codes_code` есть.
+- Полный тестовый прогон на VDS выполнен в отдельном временном `python:3.12-bookworm` контейнере с полными зависимостями:
+  - `python -m unittest discover tests` - 363 tests OK.
+- Онлайн-проверки после deploy:
+  - `https://api.taksklad.uz/health` - 200 OK, backend `2.0.9`;
+  - `https://taksklad.uz/` - 200 OK;
+  - `./deploy/vds/acceptance_status.sh` на VDS - общий `status=ok`;
+  - `google_backend_sync.status=ok`, `field_mismatch_count=0`, `backend_active_orders=24`, `backend_active_items=50`;
+  - `skladbot_coverage.status=ok`;
+  - `telegram_menu.status=ok`.
+- Боевой возврат `WH-R-193081`:
+  - заказ в DB уже был `returned`, но без `skladbot_return_request_create`;
+  - КИЗ имел movement history `outbound -> return`, latest movement `return`;
+  - создано idempotent pending event `skladbot_return_request_create`;
+  - SkladBot API вернул `201 Created`;
+  - создана возвратная заявка `WH-R-194284`, id `194284`;
+  - pending event завершен `completed`, `failed=0`, `remaining=0`;
+  - Google mirror обработал очередь: `pending_synced=2`, `pending_failed=0`;
+  - повторная VDS acceptance после боевой операции осталась `status=ok`.
+- Итог:
+  - DB остается source of truth для возвратов и КИЗов;
+  - Google Sheets работает как зеркало;
+  - возвращенный КИЗ доступен для новой отгрузки через movement `re_outbound`, если последним движением был `return`.

@@ -7,6 +7,16 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from .google_sheets_pending import queue_google_sheets_export
+from .kiz_movements_service import (
+    MOVEMENT_RETURN,
+    MOVEMENT_UNDO,
+    find_other_item_scan,
+    find_same_item_scan,
+    kiz_is_available_for_outbound,
+    latest_kiz_movement,
+    outbound_movement_type_for,
+    record_kiz_movement,
+)
 from .models import AuditLog, Order, OrderItem, ScanCode
 from .schemas import OrderItemRead, OrderRead, ScanCreate, ScanRead, ScanUndo
 
@@ -78,9 +88,23 @@ def create_scan(db: Session, payload: ScanCreate):
     if item is None:
         raise ApiError(404, "Order item not found")
 
-    existing_scan = db.execute(select(ScanCode).where(ScanCode.code == code)).scalar_one_or_none()
-    if existing_scan is not None:
-        return existing_scan_response_or_error(existing_scan, item)
+    same_item_scan = find_same_item_scan(db, code=code, order_item_id=item.id)
+    if same_item_scan is not None:
+        return scan_to_read(same_item_scan, item)
+
+    other_item_scan = find_other_item_scan(db, code=code, order_item_id=item.id)
+    latest_movement = latest_kiz_movement(db, code)
+    if other_item_scan is not None and latest_movement is None:
+        return existing_scan_response_or_error(other_item_scan, item)
+    if other_item_scan is not None and not kiz_is_available_for_outbound(latest_movement):
+        return existing_scan_response_or_error(other_item_scan, item)
+    if other_item_scan is None and latest_movement is not None and not kiz_is_available_for_outbound(latest_movement):
+        raise ApiError(409, {
+            "message": "Code already scanned in another order item",
+            "existing_order_item_id": str(latest_movement.order_item_id or ""),
+            "order_item_id": str(item.id),
+        })
+    movement_type = outbound_movement_type_for(latest_movement)
 
     if item.status in COMPLETED_STATUSES or (
         item.quantity_blocks > 0 and item.scanned_blocks >= item.quantity_blocks
@@ -102,6 +126,23 @@ def create_scan(db: Session, payload: ScanCreate):
         raw_payload=scan_raw_payload,
     )
     db.add(scan)
+    movement = record_kiz_movement(
+        db,
+        code=code,
+        movement_type=movement_type,
+        order_id=item.order_id,
+        order_item_id=item.id,
+        scan_code_id=scan_id,
+        source="backend",
+        actor=payload.scanned_by or "",
+        workstation_id=payload.workstation_id or "",
+        occurred_at=scan.scanned_at,
+        raw_payload={
+            "scan_source": scan.source,
+            "previous_movement_type": latest_movement.movement_type if latest_movement else "",
+            "previous_order_item_id": str(latest_movement.order_item_id or "") if latest_movement else "",
+        },
+    )
 
     item.scanned_blocks += 1
     if item.quantity_blocks > 0 and item.scanned_blocks >= item.quantity_blocks:
@@ -118,6 +159,8 @@ def create_scan(db: Session, payload: ScanCreate):
             "code": code,
             "workstation_id": payload.workstation_id,
             "scanned_by": payload.scanned_by,
+            "kiz_movement_id": str(movement.id) if movement else "",
+            "kiz_movement_type": movement_type,
         },
     ))
 
@@ -125,10 +168,14 @@ def create_scan(db: Session, payload: ScanCreate):
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        existing_scan = db.execute(select(ScanCode).where(ScanCode.code == code)).scalar_one_or_none()
         item = db.execute(select(OrderItem).where(OrderItem.id == order_item_id)).scalar_one_or_none()
-        if existing_scan is not None and item is not None:
-            return existing_scan_response_or_error(existing_scan, item)
+        if item is not None:
+            same_item_scan = find_same_item_scan(db, code=code, order_item_id=item.id)
+            if same_item_scan is not None:
+                return scan_to_read(same_item_scan, item)
+            other_item_scan = find_other_item_scan(db, code=code, order_item_id=item.id)
+            if other_item_scan is not None:
+                return existing_scan_response_or_error(other_item_scan, item)
         raise ApiError(409, "Code already scanned") from exc
 
     db.refresh(scan)
@@ -173,6 +220,21 @@ def undo_scan(db: Session, payload: ScanUndo):
 
     scan_id = scan.id
     scanned_at = scan.scanned_at
+    movement = record_kiz_movement(
+        db,
+        code=code,
+        movement_type=MOVEMENT_UNDO,
+        order_id=item.order_id,
+        order_item_id=item.id,
+        scan_code_id=scan_id,
+        source="backend",
+        actor=payload.actor or "",
+        workstation_id=payload.workstation_id or "",
+        occurred_at=datetime.now(timezone.utc),
+        raw_payload={
+            "undone_scan_scanned_at": scanned_at.isoformat() if scanned_at else "",
+        },
+    )
     db.delete(scan)
     remaining_codes = [
         existing.code
@@ -196,6 +258,7 @@ def undo_scan(db: Session, payload: ScanUndo):
             "code": code,
             "workstation_id": payload.workstation_id,
             "actor": payload.actor,
+            "kiz_movement_id": str(movement.id) if movement else "",
         },
     ))
     db.commit()
@@ -322,7 +385,7 @@ def lookup_return_order(db: Session, lookup_value):
     return order_to_read(matches[0])
 
 
-def mark_order_returned(db: Session, order_id, return_reference="", returned_by="desktop"):
+def mark_order_returned(db: Session, order_id, return_reference="", returned_by="desktop", confirmed_items=None):
     parsed_order_id = parse_uuid(order_id, "order_id")
     order = db.execute(
         select(Order)
@@ -338,13 +401,39 @@ def mark_order_returned(db: Session, order_id, return_reference="", returned_by=
     if order.status not in COMPLETED_STATUSES:
         raise ApiError(409, "Only completed archived orders can be returned")
 
+    confirmed = validate_return_confirmed_items(order, confirmed_items)
     returned_at = datetime.now(timezone.utc)
     raw_payload["return_status"] = "returned"
     raw_payload["returned_at"] = returned_at.isoformat()
     raw_payload["return_reference"] = normalize_text(return_reference)
     raw_payload["returned_by"] = normalize_text(returned_by) or "desktop"
+    raw_payload["skladbot_return_confirmed_items"] = confirmed
     order.raw_payload = raw_payload
     order.status = STATUS_RETURNED
+    from .skladbot_return_requests import queue_skladbot_return_request_create
+
+    event = queue_skladbot_return_request_create(db, order, confirmed)
+    return_movements = []
+    for item in order.items:
+        for scan in item.scan_codes or []:
+            movement = record_kiz_movement(
+                db,
+                code=scan.code,
+                movement_type=MOVEMENT_RETURN,
+                order_id=order.id,
+                order_item_id=item.id,
+                scan_code_id=scan.id,
+                return_reference=raw_payload["return_reference"],
+                source="backend",
+                actor=raw_payload["returned_by"],
+                occurred_at=returned_at,
+                raw_payload={
+                    "return_reference": raw_payload["return_reference"],
+                    "returned_by": raw_payload["returned_by"],
+                },
+            )
+            if movement is not None:
+                return_movements.append(str(movement.id))
 
     db.add(AuditLog(
         action="order_returned",
@@ -354,6 +443,9 @@ def mark_order_returned(db: Session, order_id, return_reference="", returned_by=
             "return_reference": raw_payload["return_reference"],
             "returned_by": raw_payload["returned_by"],
             "returned_at": raw_payload["returned_at"],
+            "confirmed_items": confirmed,
+            "skladbot_return_create_event_id": str(event.id) if event else "",
+            "kiz_return_movements": return_movements,
         },
     ))
     db.commit()
@@ -362,6 +454,54 @@ def mark_order_returned(db: Session, order_id, return_reference="", returned_by=
     export_order_archive_to_google_sheets_best_effort(db, order.id)
     export_order_return_to_google_sheets_best_effort(db, order.id)
     return response
+
+
+def validate_return_confirmed_items(order, confirmed_items):
+    items = [
+        item
+        for item in order.items
+        if item.status not in HIDDEN_ITEM_STATUSES
+    ]
+    if not items:
+        raise ApiError(422, "Order has no returnable items")
+    if not confirmed_items:
+        raise ApiError(422, "Return confirmed_items are required")
+
+    by_id = {str(item.id): item for item in items}
+    used_ids = set()
+    confirmed = []
+    for raw_item in confirmed_items or []:
+        if hasattr(raw_item, "model_dump"):
+            raw_item = raw_item.model_dump()
+        raw_item = raw_item if isinstance(raw_item, dict) else {}
+        item_id = normalize_text(raw_item.get("item_id") or raw_item.get("order_item_id") or raw_item.get("id"))
+        if not item_id or item_id not in by_id:
+            raise ApiError(422, f"Return item does not belong to order: {item_id or 'empty'}")
+        if item_id in used_ids:
+            raise ApiError(422, f"Duplicate return item: {item_id}")
+        item = by_id[item_id]
+        product = normalize_text(raw_item.get("product") or raw_item.get("sku"))
+        quantity_blocks = parse_int(raw_item.get("quantity_blocks"))
+        quantity_pieces = parse_int(raw_item.get("quantity_pieces"))
+        if normalize_lookup(product) != normalize_lookup(item.product):
+            raise ApiError(422, f"Return SKU mismatch for {item.product}")
+        if quantity_blocks != int(item.quantity_blocks or 0):
+            raise ApiError(422, f"Return blocks mismatch for {item.product}")
+        if quantity_pieces and quantity_pieces != int(item.quantity_pieces or 0):
+            raise ApiError(422, f"Return pieces mismatch for {item.product}")
+        used_ids.add(item_id)
+        confirmed.append({
+            "item_id": item_id,
+            "product": item.product,
+            "sku": item.product,
+            "quantity_blocks": int(item.quantity_blocks or 0),
+            "quantity_pieces": int(item.quantity_pieces or 0),
+        })
+
+    missing_items = [item.product for item in items if str(item.id) not in used_ids]
+    if missing_items:
+        raise ApiError(422, f"Return confirmation is incomplete: {', '.join(missing_items)}")
+    return confirmed
 
 
 def export_order_item_scan_to_google_sheets_best_effort(db: Session, item_id):
@@ -452,6 +592,9 @@ def order_to_read(order: Order):
         status=order.status,
         skladbot_request_number=raw_payload.get("skladbot_request_number") or "",
         skladbot_request_id=raw_payload.get("skladbot_request_id") or "",
+        skladbot_return_request_number=raw_payload.get("skladbot_return_request_number") or "",
+        skladbot_return_request_id=raw_payload.get("skladbot_return_request_id") or "",
+        skladbot_return_status=raw_payload.get("skladbot_return_request_status") or "",
         return_status=raw_payload.get("return_status") or "",
         returned_at=raw_payload.get("returned_at") or "",
         return_reference=raw_payload.get("return_reference") or "",

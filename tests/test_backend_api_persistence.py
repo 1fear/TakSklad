@@ -13,7 +13,8 @@ from sqlalchemy.pool import StaticPool
 from backend.app.db import get_db
 from backend.app.google_sheets_exporter import update_missing_sheet_addresses
 from backend.app.main import app, require_service_token
-from backend.app.models import AuditLog, Base, ImportJob, Order, OrderItem, PendingEvent, ScanCode
+from backend.app.models import AuditLog, Base, ImportJob, KizCode, KizMovement, Order, OrderItem, PendingEvent, ScanCode
+from backend.app.skladbot_return_requests import SKLADBOT_RETURN_REQUEST_CREATE_EVENT_TYPE
 from backend.app.settings import load_settings
 from backend.app.web_auth import SESSION_COOKIE_NAME, hash_password
 
@@ -68,6 +69,15 @@ class BackendApiPersistenceTests(unittest.TestCase):
             db.add_all([order, item])
             db.commit()
             return str(order.id), str(item.id)
+
+    def confirmed_return_items(self, item_id, product="Test Product", blocks=2, pieces=20):
+        return [{
+            "item_id": item_id,
+            "product": product,
+            "sku": product,
+            "quantity_blocks": blocks,
+            "quantity_pieces": pieces,
+        }]
 
     def test_active_orders_returns_uncompleted_orders_with_items(self):
         active_order_id, _ = self.seed_order()
@@ -407,6 +417,34 @@ class BackendApiPersistenceTests(unittest.TestCase):
             events = db.execute(select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")).scalars().all()
             self.assertEqual(len(events), 2)
             self.assertEqual({event.payload["action"] for event in events}, {"google_sheets_archive_export"})
+
+    def test_bulk_complete_without_kiz_ignores_pending_skladbot_export(self):
+        order_id, _item_id = self.seed_order(quantity_blocks=3)
+        with self.SessionLocal() as db:
+            db.add(PendingEvent(
+                event_type="google_sheets_export",
+                status="pending",
+                payload={
+                    "action": "google_sheets_skladbot_export",
+                    "entity_id": "skladbot",
+                    "order_ids": [order_id],
+                },
+            ))
+            db.commit()
+
+        response = self.client.post(
+            "/api/v1/admin/orders/bulk/complete-without-kiz",
+            json={
+                "order_ids": [order_id],
+                "actor": "anton",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["completed"], 1)
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            self.assertEqual(order.status, "completed")
 
     def test_bulk_complete_without_kiz_rejects_partially_scanned_order_without_partial_changes(self):
         clean_order_id, _clean_item_id = self.seed_order(quantity_blocks=3)
@@ -784,7 +822,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertIn("google_sheets_archive_export", [event.payload["action"] for event in events])
 
     def test_return_lookup_and_mark_returned_excludes_order_from_active_list(self):
-        order_id, _ = self.seed_order(status="completed", scanned_blocks=2, item_status="completed")
+        order_id, item_id = self.seed_order(status="completed", scanned_blocks=2, item_status="completed")
         with self.SessionLocal() as db:
             order = db.get(Order, uuid.UUID(order_id))
             order.raw_payload = {
@@ -801,7 +839,11 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
         returned = self.client.post(
             f"/api/v1/returns/{order_id}",
-            json={"return_reference": "WR-RETURN-100", "returned_by": "test"},
+            json={
+                "return_reference": "WR-RETURN-100",
+                "returned_by": "test",
+                "confirmed_items": self.confirmed_return_items(item_id),
+            },
         )
 
         self.assertEqual(returned.status_code, 200)
@@ -836,11 +878,103 @@ class BackendApiPersistenceTests(unittest.TestCase):
             order = db.get(Order, uuid.UUID(order_id))
             self.assertEqual(order.raw_payload["return_status"], "returned")
             self.assertEqual(order.raw_payload["return_reference"], "WR-RETURN-100")
+            self.assertEqual(order.raw_payload["skladbot_return_confirmed_items"][0]["item_id"], item_id)
+            event = db.execute(
+                select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_RETURN_REQUEST_CREATE_EVENT_TYPE)
+            ).scalar_one()
+            self.assertEqual(event.idempotency_key, f"skladbot:return_create:v1:order:{order_id}")
             actions = [row.action for row in db.execute(select(AuditLog)).scalars().all()]
             self.assertIn("order_returned", actions)
+            self.assertIn("skladbot_return_request_create_queued", actions)
+
+    def test_return_releases_kiz_for_new_outbound_scan_with_history(self):
+        first_order_id, first_item_id = self.seed_order(quantity_blocks=1)
+        code = "01040000000000000001"
+
+        first_scan = self.client.post(
+            "/api/v1/scans",
+            json={"order_item_id": first_item_id, "code": code, "workstation_id": "pc-1"},
+        )
+        self.assertEqual(first_scan.status_code, 201)
+        self.assertEqual(first_scan.json()["item_status"], "completed")
+        self.assertEqual(self.client.post(f"/api/v1/orders/{first_order_id}/complete").status_code, 200)
+
+        returned = self.client.post(
+            f"/api/v1/returns/{first_order_id}",
+            json={
+                "return_reference": "WH-R-RETURN-200",
+                "returned_by": "warehouse-pc",
+                "confirmed_items": self.confirmed_return_items(first_item_id, blocks=1, pieces=20),
+            },
+        )
+        self.assertEqual(returned.status_code, 200)
+
+        second_order_id, second_item_id = self.seed_order(quantity_blocks=1)
+        second_scan = self.client.post(
+            "/api/v1/scans",
+            json={"order_item_id": second_item_id, "code": code, "workstation_id": "pc-2"},
+        )
+
+        self.assertEqual(second_scan.status_code, 201)
+        self.assertEqual(second_scan.json()["order_item_id"], second_item_id)
+        self.assertEqual(second_scan.json()["item_status"], "completed")
+
+        with self.SessionLocal() as db:
+            scan_rows = db.execute(
+                select(ScanCode).where(ScanCode.code == code).order_by(ScanCode.scanned_at, ScanCode.id)
+            ).scalars().all()
+            self.assertEqual(len(scan_rows), 2)
+            self.assertEqual({str(scan.order_item_id) for scan in scan_rows}, {first_item_id, second_item_id})
+
+            kiz_codes = db.execute(select(KizCode).where(KizCode.code == code)).scalars().all()
+            self.assertEqual(len(kiz_codes), 1)
+            movements = db.execute(
+                select(KizMovement)
+                .where(KizMovement.kiz_id == kiz_codes[0].id)
+                .order_by(KizMovement.occurred_at, KizMovement.id)
+            ).scalars().all()
+            self.assertEqual([movement.movement_type for movement in movements], ["outbound", "return", "re_outbound"])
+            self.assertEqual(str(movements[-1].order_item_id), second_item_id)
+
+            first_order = db.get(Order, uuid.UUID(first_order_id))
+            second_order = db.get(Order, uuid.UUID(second_order_id))
+            self.assertEqual(first_order.status, "returned")
+            self.assertEqual(second_order.status, "not_completed")
+
+    def test_failed_return_does_not_release_kiz_for_new_order(self):
+        first_order_id, first_item_id = self.seed_order(quantity_blocks=1)
+        code = "01040000000000000002"
+        self.assertEqual(
+            self.client.post("/api/v1/scans", json={"order_item_id": first_item_id, "code": code}).status_code,
+            201,
+        )
+        self.assertEqual(self.client.post(f"/api/v1/orders/{first_order_id}/complete").status_code, 200)
+
+        failed_return = self.client.post(
+            f"/api/v1/returns/{first_order_id}",
+            json={
+                "return_reference": "WH-R-RETURN-201",
+                "returned_by": "warehouse-pc",
+                "confirmed_items": self.confirmed_return_items(first_item_id, blocks=2, pieces=20),
+            },
+        )
+        self.assertEqual(failed_return.status_code, 422)
+
+        _second_order_id, second_item_id = self.seed_order(quantity_blocks=1)
+        second_scan = self.client.post(
+            "/api/v1/scans",
+            json={"order_item_id": second_item_id, "code": code},
+        )
+        self.assertEqual(second_scan.status_code, 409)
+
+        with self.SessionLocal() as db:
+            movements = db.execute(
+                select(KizMovement).join(KizCode, KizMovement.kiz_id == KizCode.id).where(KizCode.code == code)
+            ).scalars().all()
+            self.assertEqual([movement.movement_type for movement in movements], ["outbound"])
 
     def test_mark_return_exports_archive_and_returns_to_google_sheets_best_effort(self):
-        order_id, _ = self.seed_order(status="completed", scanned_blocks=2, item_status="completed")
+        order_id, item_id = self.seed_order(status="completed", scanned_blocks=2, item_status="completed")
         with self.SessionLocal() as db:
             order = db.get(Order, uuid.UUID(order_id))
             order.raw_payload = {
@@ -851,7 +985,11 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
         returned = self.client.post(
             f"/api/v1/returns/{order_id}",
-            json={"return_reference": "WR-RETURN-101", "returned_by": "test"},
+            json={
+                "return_reference": "WR-RETURN-101",
+                "returned_by": "test",
+                "confirmed_items": self.confirmed_return_items(item_id),
+            },
         )
 
         self.assertEqual(returned.status_code, 200)
@@ -868,6 +1006,24 @@ class BackendApiPersistenceTests(unittest.TestCase):
             ]
             self.assertIn("google_sheets_archive_export", event_actions)
             self.assertIn("google_sheets_return_export", event_actions)
+
+    def test_mark_return_rejects_mismatched_confirmed_items_without_side_effects(self):
+        order_id, item_id = self.seed_order(status="completed", scanned_blocks=2, item_status="completed")
+
+        returned = self.client.post(
+            f"/api/v1/returns/{order_id}",
+            json={
+                "return_reference": "WR-RETURN-102",
+                "returned_by": "test",
+                "confirmed_items": self.confirmed_return_items(item_id, blocks=1),
+            },
+        )
+
+        self.assertEqual(returned.status_code, 422)
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            self.assertEqual(order.status, "completed")
+            self.assertEqual(db.execute(select(PendingEvent)).scalars().all(), [])
 
     def test_import_creates_grouped_order_items_and_history(self):
         rows = [
@@ -1450,7 +1606,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(sheet["AG2"].value, "69.223027")
         workbook.close()
 
-    def test_kiz_source_file_report_lists_only_completed_source_files(self):
+    def test_kiz_reports_show_source_file_progress_and_allow_partial_date_export(self):
         rows = [
             {
                 "Дата отгрузки": "2026-05-30",
@@ -1464,6 +1620,17 @@ class BackendApiPersistenceTests(unittest.TestCase):
                 "Сумма позиции": "480000",
                 "Источник файла": "source-a.xlsx",
                 "ID заказа": "kiz-source-order",
+            },
+            {
+                "Дата отгрузки": "2026-05-30",
+                "Тип оплаты": "Терминал",
+                "Клиент": "Partial Date Client",
+                "Адрес": "Partial Address",
+                "Товары": "Chapman RED OP 20",
+                "Кол-во ШТ": "10",
+                "Кол-во блок": "1",
+                "Источник файла": "source-c.xlsx",
+                "ID заказа": "partial-date-order",
             },
             {
                 "Дата отгрузки": "2026-05-31",
@@ -1490,12 +1657,20 @@ class BackendApiPersistenceTests(unittest.TestCase):
         source_files = self.client.get("/api/v1/reports/kiz/source-files")
         self.assertEqual(source_files.status_code, 200)
         source_payload = source_files.json()
-        self.assertEqual([item["source_file"] for item in source_payload], ["source-a.xlsx"])
-        self.assertTrue(source_payload[0]["source_key"].startswith("import:"))
+        by_file = {item["source_file"]: item for item in source_payload}
+        self.assertEqual(set(by_file), {"source-a.xlsx", "source-b.xlsx", "source-c.xlsx"})
+        self.assertTrue(by_file["source-a.xlsx"]["source_key"].startswith("import:"))
+        self.assertTrue(by_file["source-a.xlsx"]["completed"])
+        self.assertEqual(by_file["source-a.xlsx"]["scanned_blocks"], 2)
+        self.assertEqual(by_file["source-a.xlsx"]["planned_blocks"], 2)
+        self.assertFalse(by_file["source-b.xlsx"]["completed"])
+        self.assertEqual(by_file["source-b.xlsx"]["scanned_blocks"], 0)
+        self.assertEqual(by_file["source-b.xlsx"]["planned_blocks"], 1)
+        self.assertFalse(by_file["source-c.xlsx"]["completed"])
 
         report = self.client.get(
             "/api/v1/reports/kiz/source-file",
-            params={"source_file": "source-a.xlsx", "source_key": source_payload[0]["source_key"]},
+            params={"source_file": "source-a.xlsx", "source_key": by_file["source-a.xlsx"]["source_key"]},
         )
         self.assertEqual(report.status_code, 200)
         workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
@@ -1516,6 +1691,9 @@ class BackendApiPersistenceTests(unittest.TestCase):
         dates = self.client.get("/api/v1/reports/kiz/dates")
         self.assertEqual(dates.status_code, 200)
         self.assertEqual(dates.json()[0]["date"], "2026-05-30")
+        self.assertFalse(dates.json()[0]["completed"])
+        self.assertEqual(dates.json()[0]["planned_blocks"], 3)
+        self.assertEqual(dates.json()[0]["scanned_blocks"], 2)
 
         date_report = self.client.get("/api/v1/reports/kiz/date", params={"shipment_date": "2026-05-30"})
         self.assertEqual(date_report.status_code, 200)
@@ -1582,12 +1760,14 @@ class BackendApiPersistenceTests(unittest.TestCase):
         source_files = self.client.get("/api/v1/reports/kiz/source-files")
         self.assertEqual(source_files.status_code, 200)
         same_name_files = [item for item in source_files.json() if item["source_file"] == "same-name.xlsx"]
-        self.assertEqual(len(same_name_files), 1)
-        self.assertTrue(same_name_files[0]["source_key"].startswith("import:"))
+        self.assertEqual(len(same_name_files), 2)
+        completed_files = [item for item in same_name_files if item["completed"]]
+        self.assertEqual(len(completed_files), 1)
+        self.assertTrue(completed_files[0]["source_key"].startswith("import:"))
 
         report = self.client.get(
             "/api/v1/reports/kiz/source-file",
-            params={"source_file": "same-name.xlsx", "source_key": same_name_files[0]["source_key"]},
+            params={"source_file": "same-name.xlsx", "source_key": completed_files[0]["source_key"]},
         )
         self.assertEqual(report.status_code, 200)
         workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)

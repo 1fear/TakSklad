@@ -13,6 +13,7 @@ from .google_sheets_pending import (
 from .models import AuditLog, ImportFile, ImportJob, Order, OrderItem
 from .orders_service import STATUS_COMPLETED, STATUS_NOT_COMPLETED
 from .schemas import ImportCreate, ImportRead, ImportResult
+from .skladbot_request_dry_run import create_skladbot_dry_run_for_import
 
 
 logger = logging.getLogger(__name__)
@@ -205,6 +206,45 @@ def create_import(db: Session, payload: ImportCreate):
     }
     db.commit()
     db.refresh(import_job)
+    import_job_id = import_job.id
+    try:
+        skladbot_dry_run_result = create_skladbot_dry_run_for_import(db, str(import_job_id))
+        import_job.raw_payload = {
+            **(import_job.raw_payload or {}),
+            "skladbot_dry_run": skladbot_dry_run_result,
+        }
+        db.commit()
+        db.refresh(import_job)
+    except Exception as exc:
+        db.rollback()
+        logger.exception("SkladBot dry-run failed for import %s", import_job_id)
+        skladbot_dry_run_result = {
+            "status": "error",
+            "mode": "dry_run",
+            "orders": 0,
+            "ready": 0,
+            "blocked": 0,
+            "already_linked": 0,
+            "event_id": "",
+            "error": str(exc)[:500],
+        }
+        import_job = db.get(ImportJob, import_job_id)
+        import_job.raw_payload = {
+            **(import_job.raw_payload or {}),
+            "skladbot_dry_run": skladbot_dry_run_result,
+        }
+        db.add(AuditLog(
+            action="skladbot_request_dry_run_failed",
+            entity_type="import",
+            entity_id=str(import_job_id),
+            payload={
+                "import_id": str(import_job_id),
+                "status": "error",
+                "error": str(exc)[:500],
+            },
+        ))
+        db.commit()
+        db.refresh(import_job)
     return ImportResult(
         id=str(import_job.id),
         source=import_job.source,
@@ -222,6 +262,11 @@ def create_import(db: Session, payload: ImportCreate):
         google_sheets_duplicates=google_sheets_result.get("duplicates", 0),
         google_sheets_updated=google_sheets_result.get("updated", 0),
         google_sheets_error=google_sheets_result.get("error", ""),
+        skladbot_dry_run_status=skladbot_dry_run_result.get("status", ""),
+        skladbot_dry_run_ready=skladbot_dry_run_result.get("ready", 0),
+        skladbot_dry_run_blocked=skladbot_dry_run_result.get("blocked", 0),
+        skladbot_dry_run_already_linked=skladbot_dry_run_result.get("already_linked", 0),
+        skladbot_dry_run_event_id=skladbot_dry_run_result.get("event_id", ""),
     )
 
 

@@ -1,5 +1,6 @@
 import inspect
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 from taksklad import app_day_end
@@ -130,6 +131,163 @@ class DesktopUiContractTests(unittest.TestCase):
 
         self.assertEqual(completed, ["order-new"])
         self.assertEqual(result, {"completed": 1, "already_completed": 1})
+
+    def test_return_mark_sends_confirmed_items_to_backend(self):
+        fake_app = SimpleNamespace(telegram_lock_owner_label="warehouse-pc")
+        confirmed_items = [{
+            "item_id": "item-1",
+            "product": "Chapman RED OP 20",
+            "sku": "Chapman RED OP 20",
+            "quantity_blocks": 2,
+            "quantity_pieces": 20,
+        }]
+        with (
+            mock.patch("taksklad.main.backend_read_orders_enabled", return_value=True),
+            mock.patch("taksklad.main.mark_order_returned", return_value={"status": "returned"}) as mark_returned,
+        ):
+            result = ScanningApp.mark_return_for_display(
+                fake_app,
+                {"id": "order-1", "items": []},
+                "WH-R-100",
+                confirmed_items=confirmed_items,
+            )
+
+        self.assertEqual(result["status"], "returned")
+        mark_returned.assert_called_once_with(
+            "order-1",
+            return_reference="WH-R-100",
+            returned_by="warehouse-pc",
+            confirmed_items=confirmed_items,
+        )
+
+    def test_backend_returns_list_reads_backend_without_google_fallback(self):
+        fake_app = SimpleNamespace()
+
+        with (
+            mock.patch("taksklad.main.backend_read_orders_enabled", return_value=True),
+            mock.patch("taksklad.main.fetch_returned_orders", return_value=[{"id": "order-1"}]) as fetch_backend,
+            mock.patch("taksklad.main.fetch_returned_orders_from_gsheet") as fetch_google,
+        ):
+            result = ScanningApp.fetch_returns_for_display(fake_app, limit=25)
+
+        self.assertEqual(result, [{"id": "order-1"}])
+        fetch_backend.assert_called_once_with(limit=25)
+        fetch_google.assert_not_called()
+
+    def test_backend_return_lookup_reads_backend_without_google_fallback(self):
+        fake_app = SimpleNamespace()
+
+        with (
+            mock.patch("taksklad.main.backend_read_orders_enabled", return_value=True),
+            mock.patch("taksklad.main.lookup_return_order", return_value={"id": "order-1"}) as lookup_backend,
+            mock.patch("taksklad.main.lookup_return_order_in_gsheet") as lookup_google,
+        ):
+            result = ScanningApp.lookup_return_for_display(fake_app, "WH-R-100")
+
+        self.assertEqual(result, {"id": "order-1"})
+        lookup_backend.assert_called_once_with("WH-R-100")
+        lookup_google.assert_not_called()
+
+    def test_backend_return_rejects_google_order_without_backend_id(self):
+        fake_app = SimpleNamespace(telegram_lock_owner_label="warehouse-pc")
+        google_order = {
+            "source": "google_sheets",
+            "_row_numbers": [42],
+            "id": "GS-100",
+        }
+
+        with (
+            mock.patch("taksklad.main.backend_read_orders_enabled", return_value=True),
+            mock.patch("taksklad.main.mark_return_order_in_gsheet") as mark_gsheet_return,
+            mock.patch("taksklad.main.mark_order_returned") as mark_backend_return,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "backend/order id"):
+                ScanningApp.mark_return_for_display(
+                    fake_app,
+                    google_order,
+                    "WH-R-101",
+                    confirmed_items=[{"item_id": "item-1"}],
+                )
+
+        mark_gsheet_return.assert_not_called()
+        mark_backend_return.assert_not_called()
+
+    def test_backend_return_uses_backend_id_for_google_order(self):
+        fake_app = SimpleNamespace(telegram_lock_owner_label="warehouse-pc")
+        confirmed_items = [{"item_id": "item-1", "quantity_blocks": 1}]
+        google_order = {
+            "source": "google_sheets",
+            "_row_numbers": [42],
+            "_backend_order_id": "order-1",
+            "id": "GS-100",
+        }
+
+        with (
+            mock.patch("taksklad.main.backend_read_orders_enabled", return_value=True),
+            mock.patch("taksklad.main.mark_return_order_in_gsheet") as mark_gsheet_return,
+            mock.patch("taksklad.main.mark_order_returned", return_value={"status": "returned"}) as mark_backend_return,
+        ):
+            result = ScanningApp.mark_return_for_display(
+                fake_app,
+                google_order,
+                "WH-R-101",
+                confirmed_items=confirmed_items,
+            )
+
+        self.assertEqual(result["status"], "returned")
+        mark_backend_return.assert_called_once_with(
+            "order-1",
+            return_reference="WH-R-101",
+            returned_by="warehouse-pc",
+            confirmed_items=confirmed_items,
+        )
+        mark_gsheet_return.assert_not_called()
+
+    def test_legacy_return_keeps_google_write_fallback_for_google_order(self):
+        fake_app = SimpleNamespace(telegram_lock_owner_label="warehouse-pc")
+        google_order = {
+            "source": "google_sheets",
+            "_row_numbers": [42],
+            "id": "GS-100",
+        }
+        updated_order = {**google_order, "status": "returned"}
+
+        with (
+            mock.patch("taksklad.main.backend_read_orders_enabled", return_value=False),
+            mock.patch("taksklad.main.mark_return_order_in_gsheet", return_value=updated_order) as mark_gsheet_return,
+            mock.patch("taksklad.main.mark_order_returned") as mark_backend_return,
+        ):
+            result = ScanningApp.mark_return_for_display(fake_app, google_order, "WH-R-101")
+
+        self.assertEqual(result, updated_order)
+        mark_gsheet_return.assert_called_once_with(
+            google_order,
+            return_reference="WH-R-101",
+            returned_by="warehouse-pc",
+        )
+        mark_backend_return.assert_not_called()
+
+    def test_return_confirmed_items_are_built_from_backend_items(self):
+        order = {
+            "items": [
+                {
+                    "id": "item-1",
+                    "product": "Chapman RED OP 20",
+                    "quantity_blocks": 2,
+                    "quantity_pieces": 20,
+                }
+            ]
+        }
+
+        confirmed = ScanningApp.build_return_confirmed_items(SimpleNamespace(), order)
+
+        self.assertEqual(confirmed, [{
+            "item_id": "item-1",
+            "product": "Chapman RED OP 20",
+            "sku": "Chapman RED OP 20",
+            "quantity_blocks": 2,
+            "quantity_pieces": 20,
+        }])
 
     def test_print_failure_after_backend_complete_keeps_repeat_print_message(self):
         message = format_print_failure_after_backend_complete(

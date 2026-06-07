@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from .google_sheets_pending import queue_google_sheets_export
 from .google_sheets_exporter import make_sheet_record
+from .kiz_movements_service import MOVEMENT_RESET, record_kiz_movement
 from .models import AuditLog, Order, OrderItem, PendingEvent
 from .orders_service import (
     ApiError,
@@ -155,12 +156,29 @@ def reset_order_for_rescan(db: Session, order_id, payload):
     actor = normalize_text(getattr(payload, "actor", "")) or "web"
     reset_counts = []
     for item in order.items:
+        scan_codes = list(item.scan_codes or [])
         reset_counts.append({
             "item_id": str(item.id),
             "product": item.product,
             "scanned_blocks": int(item.scanned_blocks or 0),
-            "scan_codes": len(item.scan_codes or []),
+            "scan_codes": len(scan_codes),
         })
+        for scan in scan_codes:
+            record_kiz_movement(
+                db,
+                code=scan.code,
+                movement_type=MOVEMENT_RESET,
+                order_id=order.id,
+                order_item_id=item.id,
+                scan_code_id=scan.id,
+                source="backend",
+                actor=actor,
+                occurred_at=now,
+                raw_payload={
+                    "reason": reason,
+                    "reset_from_status": order.status,
+                },
+            )
         item.scan_codes.clear()
         item.scanned_blocks = 0
         item.status = STATUS_NOT_COMPLETED
@@ -492,6 +510,8 @@ def pending_google_export_exists(db: Session, order):
     ).scalars().all()
     for event in events:
         payload = event.payload or {}
+        if payload.get("action") == "google_sheets_skladbot_export":
+            continue
         if str(payload.get("entity_id") or "") in entity_ids:
             return True
         order_ids = payload.get("order_ids") or []

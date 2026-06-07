@@ -385,24 +385,29 @@ class GoogleSheetsSyncWorkerTests(unittest.TestCase):
             self.assertEqual(audit.entity_id, order_id)
             self.assertEqual(audit.payload["status"], "completed")
 
-    def test_sync_marks_order_returned_from_google_archive_return_columns(self):
+    def test_sync_ignores_manual_google_return_columns_and_keeps_backend_source_of_truth(self):
         order_id, item_id = self.seed_order(order_status="completed", item_status="completed")
 
         with self.SessionLocal() as db:
             result = sync_google_sheet_to_backend(db, sheet=self.make_return_sheet())
 
         self.assertEqual(result["matched"], 1)
-        self.assertEqual(result["orders_updated"], 1)
+        self.assertEqual(result["conflicts"], 1)
 
         with self.SessionLocal() as db:
             order = db.get(Order, uuid.UUID(order_id))
             item = db.get(OrderItem, uuid.UUID(item_id))
-            self.assertEqual(order.status, "returned")
+            self.assertEqual(order.status, "completed")
             self.assertEqual(item.status, "completed")
-            self.assertEqual(order.raw_payload["return_status"], "returned")
-            self.assertEqual(order.raw_payload["returned_at"], "31.05.2026 23:30:00")
-            self.assertEqual(order.raw_payload["return_reference"], "SB-100")
-            self.assertEqual(order.raw_payload["returned_by"], "desktop-test")
+            self.assertNotIn("return_status", order.raw_payload)
+            self.assertNotIn("returned_at", order.raw_payload)
+            self.assertNotIn("return_reference", order.raw_payload)
+            self.assertNotIn("returned_by", order.raw_payload)
+            audit = db.execute(
+                select(AuditLog).where(AuditLog.action == "google_sheets_backend_sync_conflict")
+            ).scalar_one()
+            self.assertEqual(audit.payload["conflicts"][0]["field"], "return_status")
+            self.assertIn("backend return endpoint", audit.payload["conflicts"][0]["reason"])
 
 
 if __name__ == "__main__":

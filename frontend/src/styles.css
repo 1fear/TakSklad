@@ -967,6 +967,89 @@ button {
   color: #8a2f22;
 }
 
+.status-badge.dry-run-ready {
+  background: #e5f4ea;
+  color: #1d6b3a;
+}
+
+.status-badge.dry-run-queued {
+  background: #efe9dd;
+  color: #725321;
+}
+
+.status-badge.dry-run-created,
+.status-badge.dry-run-recovered {
+  background: #dff2ee;
+  color: #166757;
+}
+
+.status-badge.dry-run-blocked {
+  background: #f3e6e2;
+  color: #8a2f22;
+}
+
+.status-badge.dry-run-create_failed {
+  background: #f7d8d3;
+  color: #9e2718;
+}
+
+.status-badge.dry-run-already_linked {
+  background: #e7f1f8;
+  color: #1f5f82;
+}
+
+.dry-run-table-wrap {
+  max-height: none;
+}
+
+.dry-run-table td {
+  vertical-align: top;
+}
+
+.dry-run-address {
+  max-width: 320px;
+  overflow-wrap: anywhere;
+}
+
+.dry-run-products {
+  display: grid;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.dry-run-products span {
+  color: #4f5b4d;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.dry-run-products span.blocked {
+  color: #8a2f22;
+}
+
+.json-preview {
+  max-width: 360px;
+}
+
+.json-preview summary {
+  cursor: pointer;
+  color: #16635b;
+  font-weight: 700;
+}
+
+.json-preview pre {
+  max-width: 360px;
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid #eceee8;
+  border-radius: 8px;
+  background: #f8f9f5;
+  padding: 10px;
+  color: #20231f;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .activity-badge {
   background: #eef2ec;
   color: #4f5b4d;

@@ -1,6 +1,6 @@
 # TakSklad Acceptance Kit
 
-Назначение: ручная проверка Telegram import и Windows desktop acceptance после публикации 2.0.0 manifest. Обновления через `version.json` разрешены, но принудительное обновление `mandatory=true` не включается до ручного GO.
+Назначение: ручная проверка Telegram import и Windows desktop acceptance после публикации 2.0.8 manifest. Обновления через `version.json` разрешены, но текущая линия 2.0.8 переведена в forced rollout.
 
 ## Состав
 
@@ -171,6 +171,6 @@ cd /opt/taksklad/app
 
 ## Чего Не Делать
 
-- Не включать `mandatory=true` до ручного GO.
-- Не публиковать новый Windows release поверх 2.0.0 без повторной проверки.
+- Не откатывать `mandatory=true` без отдельного решения Антона.
+- Не публиковать новый Windows release поверх 2.0.8 без повторной проверки.
 - Не создавать реальную заявку SkladBot без отдельного подтверждения.

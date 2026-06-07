@@ -62,6 +62,46 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertEqual(row["Кол-во блок"], 2)
         self.assertEqual(row["Источник файла"], "orders_30_05_2026.xlsx")
 
+    def test_excel_file_to_import_payload_reads_delivery_date_from_upper_header(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "Шаблон_отправки_заказов_на_склад_04_06_2026.xlsx"
+            workbook = openpyxl.Workbook()
+            sheet = workbook.active
+            sheet.title = "Конструктор отчетов"
+            sheet.append(["", "", "", "", "", "", "", "ИТОГО", "", "ДАТА ДОСТАВКИ"])
+            sheet.append([
+                "Торговый представитель",
+                "Клиент",
+                "Координаты клиента",
+                "",
+                "",
+                "ТМЦ",
+                "Тип оплаты",
+                "Количество заказа",
+                "Сумма с переоценкой",
+                "",
+            ])
+            sheet.append([
+                "ТП1",
+                "Client One",
+                "41.320075",
+                "69.298547",
+                "41.320075,69.298547",
+                "Chapman Brown OP 20",
+                "Перечисление",
+                20,
+                480000,
+                "2026-06-05",
+            ])
+            workbook.save(path)
+
+            payload = excel_file_to_import_payload(path, file_name=path.name, source="telegram")
+
+        self.assertEqual(len(payload["rows"]), 1)
+        self.assertEqual(payload["rows"][0]["Дата отгрузки"], "05.06.2026")
+        self.assertEqual(payload["meta"]["shipment_date"], "05.06.2026")
+        self.assertEqual(payload["meta"]["shipment_dates"], ["05.06.2026"])
+
     def test_telegram_worker_imports_document_through_backend_api(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             source_path = Path(tmp_dir) / "orders.xlsx"
@@ -555,7 +595,23 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertEqual(imported, [("123", "a.xlsx", ""), ("123", "b.xlsx", "")])
         self.assertEqual(finished, [("event-1", True, ""), ("event-2", True, "")])
 
-    def test_telegram_worker_shows_kiz_source_file_dates_as_display_dates(self):
+    def test_telegram_worker_shows_kiz_export_menu_modes(self):
+        worker = TelegramWorker.__new__(TelegramWorker)
+        messages = []
+
+        def fake_send(chat_id, text, reply_markup=None):
+            messages.append((chat_id, text, reply_markup))
+
+        worker.safe_send_message = fake_send
+
+        worker.show_kiz_export_menu("123")
+
+        self.assertIn("Как выгрузить КИЗы", messages[0][1])
+        keyboard = messages[0][2]["inline_keyboard"]
+        self.assertEqual(keyboard[0][0]["callback_data"], "kiz_mode:dates")
+        self.assertEqual(keyboard[1][0]["callback_data"], "kiz_mode:files")
+
+    def test_telegram_worker_shows_kiz_dates_as_display_dates(self):
         worker = TelegramWorker.__new__(TelegramWorker)
         messages = []
         states = []
@@ -589,12 +645,63 @@ class BackendTelegramImportTests(unittest.TestCase):
         worker.save_chat_state = fake_save_state
         worker.safe_send_message = fake_send
 
-        worker.show_kiz_source_files("123")
+        worker.show_kiz_dates("123")
 
         self.assertIn("29.05.2026", messages[0][1])
         self.assertIn("30.05.2026", messages[0][1])
         self.assertEqual(messages[0][2]["inline_keyboard"][0][0]["callback_data"], "kiz_date:2026-05-29")
         self.assertEqual(states[0][1]["kiz_dates"][0]["date"], "2026-05-29")
+
+    def test_telegram_worker_shows_kiz_source_files_with_progress(self):
+        worker = TelegramWorker.__new__(TelegramWorker)
+        messages = []
+        states = []
+
+        def fake_backend_get(path, params=None):
+            self.assertEqual(path, "/api/v1/reports/kiz/source-files")
+            return [
+                {
+                    "source_key": "import:done",
+                    "source_file": "done.xlsx",
+                    "planned_blocks": 3,
+                    "scanned_blocks": 3,
+                    "completed": True,
+                    "dates": ["2026-06-04"],
+                },
+                {
+                    "source_key": "import:open",
+                    "source_file": "open.xlsx",
+                    "planned_blocks": 5,
+                    "scanned_blocks": 2,
+                    "completed": False,
+                    "dates": ["2026-06-08"],
+                },
+            ]
+
+        def fake_get_state(chat_id):
+            return {}
+
+        def fake_save_state(chat_id, payload):
+            states.append((chat_id, payload))
+
+        def fake_send(chat_id, text, reply_markup=None):
+            messages.append((chat_id, text, reply_markup))
+
+        worker.backend_get = fake_backend_get
+        worker.get_chat_state = fake_get_state
+        worker.save_chat_state = fake_save_state
+        worker.safe_send_message = fake_send
+
+        worker.show_kiz_source_files("123")
+
+        self.assertIn("done.xlsx", messages[0][1])
+        self.assertIn("3/3 блоков", messages[0][1])
+        self.assertIn("open.xlsx", messages[0][1])
+        self.assertIn("2/5 блоков", messages[0][1])
+        self.assertEqual(messages[0][2]["inline_keyboard"][0][0]["callback_data"], "kiz_file:1")
+        self.assertEqual(len(messages[0][2]["inline_keyboard"]), 1)
+        self.assertEqual(states[0][1]["kiz_files"][0]["source_key"], "import:done")
+        self.assertFalse(states[0][1]["kiz_files"][1]["completed"])
 
     def test_telegram_worker_downloads_kiz_source_file_by_import_key(self):
         worker = TelegramWorker.__new__(TelegramWorker)

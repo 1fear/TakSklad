@@ -39,6 +39,10 @@ RETURN_STATUS_COLUMN = "Статус возврата"
 RETURN_DATE_COLUMN = "Дата возврата"
 RETURN_REFERENCE_COLUMN = "Основание возврата"
 RETURNED_BY_COLUMN = "Принял возврат"
+RETURN_SKLADBOT_NUMBER_COLUMN = "Номер заявки возврата SkladBot"
+RETURN_SKLADBOT_ID_COLUMN = "ID заявки возврата SkladBot"
+RETURN_SKLADBOT_STATUS_COLUMN = "Статус заявки возврата SkladBot"
+RETURN_CONFIRMED_BLOCKS_COLUMN = "Подтверждено блоков возврат"
 RETURN_STATUS_VALUE = "Возврат"
 
 WORKING_COLUMNS = [
@@ -70,6 +74,10 @@ RETURN_COLUMNS = [
     RETURN_DATE_COLUMN,
     RETURN_REFERENCE_COLUMN,
     RETURNED_BY_COLUMN,
+    RETURN_SKLADBOT_NUMBER_COLUMN,
+    RETURN_SKLADBOT_ID_COLUMN,
+    RETURN_SKLADBOT_STATUS_COLUMN,
+    RETURN_CONFIRMED_BLOCKS_COLUMN,
 ]
 
 
@@ -237,7 +245,7 @@ def sync_backend_order_items_to_google_sheets(items):
     return update_backend_order_item_rows(sheet, items)
 
 
-def sync_backend_orders_skladbot_to_google_sheets(orders):
+def sync_backend_orders_skladbot_to_google_sheets(orders, include_archive=False):
     orders = list(orders or [])
     if not orders:
         return GoogleSheetsExportResult(status="skipped").as_dict()
@@ -248,7 +256,23 @@ def sync_backend_orders_skladbot_to_google_sheets(orders):
         return GoogleSheetsExportResult(status="disabled", error=str(exc)).as_dict()
 
     sheet = spreadsheet.worksheet(SHEET_NAME)
-    return update_backend_orders_skladbot_rows(sheet, orders)
+    data_result = update_backend_orders_skladbot_rows(sheet, orders)
+    if not include_archive:
+        return data_result
+
+    archive_sheet = get_or_create_sheet(spreadsheet, ARCHIVE_SHEET_NAME)
+    archive_result = update_backend_orders_skladbot_rows(archive_sheet, orders)
+    status = "completed"
+    if data_result.get("status") in {"disabled", "error"}:
+        status = data_result.get("status")
+    elif archive_result.get("status") in {"disabled", "error"}:
+        status = archive_result.get("status")
+    return {
+        "status": status,
+        "updated": int(data_result.get("updated") or 0) + int(archive_result.get("updated") or 0),
+        "data": data_result,
+        "archive": archive_result,
+    }
 
 
 def archive_backend_order_to_google_sheets(order):
@@ -475,12 +499,18 @@ def format_skladbot_status(value):
     text = normalize_text(value).casefold()
     if text == "found":
         return "Найдено"
+    if text == "created":
+        return "Создано"
+    if text == "created_recovered":
+        return "Создано, восстановлено"
     if text == "not_found":
         return "Не найдено"
     if text == "multiple":
         return "Несколько совпадений"
     if text in {"pending", "checking", "in_progress"}:
         return "Проверяется"
+    if text == "create_failed":
+        return "Ошибка создания"
     if text == "error":
         return "Ошибка синхронизации"
     return normalize_text(value)
@@ -661,6 +691,7 @@ def mark_backend_return_rows(archive_sheet, returns_sheet, order):
         return GoogleSheetsExportResult(status="missing").as_dict()
 
     updates = []
+    return_updates = []
     rows_to_returns = []
     return_values = backend_order_return_values(order)
     header_len = len(archive_header)
@@ -681,15 +712,25 @@ def mark_backend_return_rows(archive_sheet, returns_sheet, order):
 
         source_order_id = get_backend_item_source_order_id(item)
         source_import_id = get_backend_item_source_import_id(item)
-        if (
-            (source_order_id and source_order_id in returns_order_ids)
-            or (source_import_id and source_import_id in returns_import_ids)
-        ):
+        return_row_number = find_backend_item_row_number(returns_rows, item)
+        if return_row_number:
+            for column, value in return_values.items():
+                idx = header_idx.get(column)
+                if idx is None:
+                    continue
+                return_updates.append({
+                    "range": f"{column_index_to_letter(idx)}{return_row_number}",
+                    "values": [[value]],
+                })
+            continue
+        if (source_order_id and source_order_id in returns_order_ids) or (source_import_id and source_import_id in returns_import_ids):
             continue
         rows_to_returns.append(source_row[:header_len])
 
     if updates:
         archive_sheet.batch_update(updates, value_input_option="USER_ENTERED")
+    if return_updates:
+        returns_sheet.batch_update(return_updates, value_input_option="USER_ENTERED")
     if rows_to_returns:
         start_row = max(2, len(returns_rows) + 1)
         end_col = column_index_to_letter(header_len - 1)
@@ -1104,11 +1145,21 @@ def archive_row_already_exists(source_row, source_header_idx, archive_rows, arch
 
 def backend_order_return_values(order):
     raw_payload = getattr(order, "raw_payload", None) or {}
+    confirmed_items = raw_payload.get("skladbot_return_confirmed_items") or []
+    confirmed_blocks = sum(
+        parse_int_value(item.get("quantity_blocks"))
+        for item in confirmed_items
+        if isinstance(item, dict)
+    )
     return {
         RETURN_STATUS_COLUMN: RETURN_STATUS_VALUE,
         RETURN_DATE_COLUMN: normalize_text(raw_payload.get("returned_at")) or datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
         RETURN_REFERENCE_COLUMN: normalize_text(raw_payload.get("return_reference")),
         RETURNED_BY_COLUMN: normalize_text(raw_payload.get("returned_by")) or "backend",
+        RETURN_SKLADBOT_NUMBER_COLUMN: normalize_text(raw_payload.get("skladbot_return_request_number")),
+        RETURN_SKLADBOT_ID_COLUMN: normalize_text(raw_payload.get("skladbot_return_request_id")),
+        RETURN_SKLADBOT_STATUS_COLUMN: format_skladbot_status(raw_payload.get("skladbot_return_request_status")),
+        RETURN_CONFIRMED_BLOCKS_COLUMN: confirmed_blocks,
     }
 
 

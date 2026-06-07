@@ -136,6 +136,11 @@ OPTIONAL_ALIASES = {
         "ID заявки",
     ],
 }
+CONTEXT_DATE_ALIASES = [
+    "Дата доставки",
+    "Дата отгрузки",
+    "Дата поставки",
+]
 
 
 def normalize_text(value):
@@ -235,6 +240,21 @@ def find_columns(header_positions, aliases):
         key = normalize_lookup_text(alias)
         result.extend(header_positions.get(key, []))
     return sorted(set(result))
+
+
+def find_context_column(rows, header_row, aliases):
+    for row in reversed(rows[: max(header_row - 1, 0)]):
+        index = find_column(build_header_index(row), aliases)
+        if index is not None:
+            return index
+    return None
+
+
+def add_context_columns(columns, rows, header_row):
+    columns = dict(columns)
+    if columns.get("date") is None:
+        columns["date"] = find_context_column(rows, header_row, CONTEXT_DATE_ALIASES)
+    return columns
 
 
 def build_columns(header):
@@ -340,6 +360,7 @@ def detect_excel_source(workbook, file_name):
         detected = detect_header_row(preview_rows)
         if not detected:
             continue
+        columns = add_context_columns(detected["columns"], preview_rows, detected["header_row"])
         default_date = default_date_from_file_name(file_name) or default_date_from_context(
             preview_rows,
             detected["header_row"],
@@ -347,7 +368,7 @@ def detect_excel_source(workbook, file_name):
         candidate = {
             "sheet_name": sheet_name,
             "first_data_row": detected["header_row"] + 1,
-            "columns": detected["columns"],
+            "columns": columns,
             "default_date": default_date,
             "score": detected["score"] + (5 if sheet_name == "Заявки" else 0),
         }
@@ -647,6 +668,9 @@ def excel_file_to_import_payload(file_path, file_name=None, source="telegram", s
     finally:
         workbook.close()
 
+    row_dates = sorted({row.get("Дата отгрузки") for row in rows if row.get("Дата отгрузки")})
+    display_shipment_date = shipment_date or (row_dates[0] if len(row_dates) == 1 else default_date)
+
     return {
         "source": source,
         "filename": file_name,
@@ -655,7 +679,8 @@ def excel_file_to_import_payload(file_path, file_name=None, source="telegram", s
         "meta": {
             "sheet_name": sheet_name,
             "source_rows_count": source_rows_count,
-            "shipment_date": shipment_date or default_date,
+            "shipment_date": display_shipment_date,
+            "shipment_dates": row_dates,
             "geocoded_count": geocoded_count,
             "geocode_failed_count": geocode_failed_count,
             "warnings": warnings,

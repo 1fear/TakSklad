@@ -13,7 +13,16 @@ APP_RELEASE_ZIP_NAME = "TakSklad-windows-x64.zip"
 
 def get_app_dir():
     if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
+        executable_dir = os.path.dirname(sys.executable)
+        if (
+            sys.platform == "darwin"
+            and os.path.basename(executable_dir) == "MacOS"
+            and os.path.basename(os.path.dirname(executable_dir)) == "Contents"
+        ):
+            return os.path.abspath(
+                os.path.join(executable_dir, os.pardir, os.pardir, os.pardir)
+            )
+        return executable_dir
     return os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir))
 
 
@@ -114,7 +123,7 @@ TELEGRAM_SETTINGS_FILE = os.path.join(APP_DIR, "telegram_settings.json")
 YANDEX_GEOCODER_KEY_FILE = os.path.join(APP_DIR, "yandex_geocoder_key.txt")
 YANDEX_GEOCODER_ENV_VAR = "YANDEX_GEOCODER_API_KEY"
 
-APP_VERSION = "2.0.6"
+APP_VERSION = "2.0.9"
 APP_BUILD_LABEL = os.environ.get("TAKSKLAD_BUILD_LABEL", "MVP 2.0").strip()
 UPDATE_INFO_URL = os.environ.get(
     "TAKSKLAD_UPDATE_INFO_URL",

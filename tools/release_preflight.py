@@ -58,10 +58,10 @@ WINDOWS_TEST_BUILD_REQUIRED_FRAGMENTS = [
     "ACCEPTANCE_RESULTS.md",
     "Assert-TestPackageDoesNotContainLocalSecrets",
     "version.json has local changes",
-    "safe non-mandatory 2.0.6 rollout manifest",
+    "forced 2.0.9 rollout manifest",
 ]
-EXPECTED_RELEASE_VERSION = "2.0.6"
-EXPECTED_MIN_SUPPORTED_VERSION = "1.1.7"
+EXPECTED_RELEASE_VERSION = "2.0.9"
+EXPECTED_MIN_SUPPORTED_VERSION = "2.0.9"
 EXPECTED_PACKAGE_TYPE = "onefile_exe"
 EXPECTED_RELEASE_TAG = f"v{EXPECTED_RELEASE_VERSION}"
 
@@ -100,9 +100,9 @@ def check_version_json(root):
     if payload.get("latest_version") != EXPECTED_RELEASE_VERSION:
         problems.append(f"latest_version must be {EXPECTED_RELEASE_VERSION}")
     if payload.get("min_supported_version") != EXPECTED_MIN_SUPPORTED_VERSION:
-        problems.append(f"min_supported_version must stay {EXPECTED_MIN_SUPPORTED_VERSION} for non-forced rollout")
-    if payload.get("mandatory") not in (False, None):
-        problems.append("mandatory must be false during staged rollout")
+        problems.append(f"min_supported_version must be {EXPECTED_MIN_SUPPORTED_VERSION} for forced rollout")
+    if payload.get("mandatory") is not True:
+        problems.append("mandatory must be true during forced rollout")
     if payload.get("package_type") != EXPECTED_PACKAGE_TYPE:
         problems.append(f"package_type must be {EXPECTED_PACKAGE_TYPE}")
     if not payload.get("download_url") or not payload.get("sha256"):
@@ -264,7 +264,7 @@ def check_acceptance_kit(root):
         "version_json_staged_rollout",
         "github_release_published",
         "push_notifications_allowed",
-        "mandatory_update_disabled",
+        "mandatory_update_enabled",
     )
     for key in (*required_true_safety, "contains_secrets"):
         if key == "contains_secrets":

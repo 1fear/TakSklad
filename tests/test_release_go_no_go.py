@@ -42,7 +42,7 @@ GO_TEXT = """# TakSklad 2.0 Acceptance Results
 - [x] Windows desktop acceptance принят.
 - [x] Критичных дефектов нет.
 - [x] Rollback понятен.
-- [x] `version.json` проверен и `mandatory=false`.
+- [x] `version.json` проверен и `mandatory=true`.
 
 Итог:
 

@@ -19,6 +19,14 @@ from .google_sheets_exporter import (
     normalize_text,
     parse_int_value,
 )
+from .kiz_movements_service import (
+    find_other_item_scan,
+    find_same_item_scan,
+    kiz_is_available_for_outbound,
+    latest_kiz_movement,
+    outbound_movement_type_for,
+    record_kiz_movement,
+)
 from .models import AuditLog, Order, OrderItem, ScanCode
 from .orders_service import (
     COMPLETED_STATUSES,
@@ -244,10 +252,19 @@ def find_item_for_record(record, item_index):
 def apply_record_to_item(db: Session, item: OrderItem, record, now):
     order = item.order
     conflicts = []
-    order_changed = update_order_fields(order, record)
+    return_fields_allowed = google_return_fields_allowed(order, record)
+    if is_returned_record(record) and not return_fields_allowed:
+        conflicts.append({
+            "field": "return_status",
+            "old": (order.raw_payload or {}).get("return_status") or "",
+            "new": normalize_text(record.get("return_status")),
+            "reason": "Google Sheets return marker ignored; backend return endpoint is source of truth",
+        })
+
+    order_changed = update_order_fields(order, record, apply_returns=return_fields_allowed)
     item_changed = update_item_fields(item, record, conflicts)
     scans_changed = update_item_scans_from_record(db, item, record, conflicts, now)
-    status_changed = update_status_from_record(order, item, record)
+    status_changed = update_status_from_record(order, item, record, allow_return=return_fields_allowed)
 
     if order_changed or status_changed:
         raw_payload = dict(order.raw_payload or {})
@@ -289,7 +306,7 @@ def apply_record_to_item(db: Session, item: OrderItem, record, now):
     }
 
 
-def update_order_fields(order: Order, record):
+def update_order_fields(order: Order, record, apply_returns=True):
     changed = False
     for field_name, value in (
         ("order_date", record.get("order_date")),
@@ -307,7 +324,8 @@ def update_order_fields(order: Order, record):
     raw_payload = dict(order.raw_payload or {})
     before = dict(raw_payload)
     apply_skladbot_fields(raw_payload, record)
-    apply_return_fields(raw_payload, record)
+    if apply_returns:
+        apply_return_fields(raw_payload, record)
     if raw_payload != before:
         order.raw_payload = raw_payload
         changed = True
@@ -336,6 +354,13 @@ def apply_return_fields(raw_payload, record):
         raw_payload["return_reference"] = normalize_text(record.get("return_reference"))
     if normalize_text(record.get("returned_by")):
         raw_payload["returned_by"] = normalize_text(record.get("returned_by"))
+
+
+def google_return_fields_allowed(order: Order, record):
+    if not is_returned_record(record):
+        return True
+    raw_payload = order.raw_payload or {}
+    return order.status == STATUS_RETURNED or raw_payload.get("return_status") == "returned"
 
 
 def update_item_fields(item: OrderItem, record, conflicts):
@@ -423,28 +448,62 @@ def update_item_scans_from_record(db: Session, item: OrderItem, record, conflict
     for code in scanned_codes:
         if code in existing_for_item:
             continue
-        existing_scan = db.execute(select(ScanCode).where(ScanCode.code == code)).scalar_one_or_none()
-        if existing_scan is not None and existing_scan.order_item_id != item.id:
+        same_item_scan = find_same_item_scan(db, code=code, order_item_id=item.id)
+        if same_item_scan is not None:
+            existing_for_item.add(code)
+            continue
+        other_item_scan = find_other_item_scan(db, code=code, order_item_id=item.id)
+        latest_movement = latest_kiz_movement(db, code)
+        if other_item_scan is not None and latest_movement is None:
             conflicts.append({
                 "field": "scanned_codes",
                 "code": code,
                 "reason": "code already exists for another order item",
             })
             continue
-        if existing_scan is None:
-            item.scan_codes.append(ScanCode(
-                order_item_id=item.id,
-                code=code,
-                source="google_sheets",
-                scanned_at=now,
-                raw_payload={
-                    "google_sheet_row_number": record.get("row_number"),
-                    "google_sheet_source_sheet": record.get("source_sheet") or SHEET_NAME,
-                },
-            ))
-            existing_for_item.add(code)
-            db.flush()
-            changed = True
+        if other_item_scan is not None and not kiz_is_available_for_outbound(latest_movement):
+            conflicts.append({
+                "field": "scanned_codes",
+                "code": code,
+                "reason": "code already exists for another order item",
+            })
+            continue
+        if other_item_scan is None and latest_movement is not None and not kiz_is_available_for_outbound(latest_movement):
+            conflicts.append({
+                "field": "scanned_codes",
+                "code": code,
+                "reason": "code already exists for another order item",
+            })
+            continue
+        scan = ScanCode(
+            order_item_id=item.id,
+            code=code,
+            source="google_sheets",
+            scanned_at=now,
+            raw_payload={
+                "google_sheet_row_number": record.get("row_number"),
+                "google_sheet_source_sheet": record.get("source_sheet") or SHEET_NAME,
+            },
+        )
+        item.scan_codes.append(scan)
+        db.flush()
+        record_kiz_movement(
+            db,
+            code=code,
+            movement_type=outbound_movement_type_for(latest_movement),
+            order_id=item.order_id,
+            order_item_id=item.id,
+            scan_code_id=scan.id,
+            source="google_sheets",
+            occurred_at=now,
+            raw_payload={
+                "google_sheet_row_number": record.get("row_number"),
+                "google_sheet_source_sheet": record.get("source_sheet") or SHEET_NAME,
+                "previous_movement_type": latest_movement.movement_type if latest_movement else "",
+            },
+        )
+        existing_for_item.add(code)
+        changed = True
 
     if conflicts:
         return changed
@@ -456,9 +515,9 @@ def update_item_scans_from_record(db: Session, item: OrderItem, record, conflict
     return changed
 
 
-def update_status_from_record(order: Order, item: OrderItem, record):
+def update_status_from_record(order: Order, item: OrderItem, record, allow_return=True):
     status = normalize_text(record.get("status")).casefold()
-    returned = is_returned_record(record)
+    returned = bool(allow_return and is_returned_record(record))
     requires_full_scan = bool(item.requires_kiz and item.quantity_blocks > 0)
     fully_scanned = not requires_full_scan or item.scanned_blocks >= item.quantity_blocks
     google_requests_completion = (

@@ -77,6 +77,33 @@ export type ImportRecord = {
   created_at: string;
 };
 
+export type SkladBotDryRunProduct = {
+  product: string;
+  quantity_blocks: number;
+  product_data_id: number | null;
+  barcode: string;
+  is_main_barcode: boolean;
+  status: "ready" | "blocked" | string;
+  error: string;
+};
+
+export type SkladBotDryRun = {
+  id: string;
+  event_id: string;
+  import_id: string;
+  order_id: string;
+  client: string;
+  order_date: string | null;
+  payment_type: string;
+  address: string;
+  blocks: number;
+  status: "ready" | "blocked" | "already_linked" | string;
+  error: string;
+  products: SkladBotDryRunProduct[];
+  payload: Record<string, unknown>;
+  generated_at: string | null;
+};
+
 export type AdminTableTotals = {
   orders: number;
   items: number;
@@ -351,4 +378,15 @@ export function getDayReport(config: ApiConfig, reportDate: string) {
 
 export function listImports(config: ApiConfig) {
   return apiRequest<ImportRecord[]>(config, "/api/v1/imports");
+}
+
+export function listSkladBotDryRuns(config: ApiConfig, importId = "") {
+  const query = importId ? `?import_id=${encodeURIComponent(importId)}` : "";
+  return apiRequest<SkladBotDryRun[]>(config, `/api/v1/admin/skladbot/dry-runs${query}`);
+}
+
+export function rebuildSkladBotDryRun(config: ApiConfig, dryRunId: string) {
+  return apiRequest<SkladBotDryRun[]>(config, `/api/v1/admin/skladbot/dry-runs/${encodeURIComponent(dryRunId)}/rebuild`, {
+    method: "POST",
+  });
 }

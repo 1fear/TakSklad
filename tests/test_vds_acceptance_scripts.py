@@ -14,12 +14,12 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
             "result_file",
             "Acceptance result template not found",
             "Acceptance result file not found",
-            "version.json latest_version must be 2.0.6",
-            "version.json min_supported_version must stay 1.1.7 for non-forced rollout",
-            "version.json mandatory must be false during staged rollout",
+            "version.json latest_version must be 2.0.9",
+            "version.json min_supported_version must be 2.0.9 for forced rollout",
+            "version.json mandatory must be true during forced rollout",
             "version.json onefile download_url and sha256 must be set",
             "version.json onedir download_url_onedir and sha256_onedir must be set",
-            '"version_json_staged_rollout", "github_release_published", "push_notifications_allowed", "mandatory_update_disabled"',
+            '"version_json_staged_rollout", "github_release_published", "push_notifications_allowed", "mandatory_update_enabled"',
             "manifest safety.{key} must be true",
             "manifest safety.contains_secrets must be false",
             "ACCEPTANCE_RESULTS.md",
@@ -95,7 +95,8 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         self.assertIn("SKLADBOT_REQUEST_DELAY_SECONDS: ${SKLADBOT_REQUEST_DELAY_SECONDS:-2}", compose)
         self.assertIn("SKLADBOT_SYNC_MAX_LOOKBACK_DAYS: ${SKLADBOT_SYNC_MAX_LOOKBACK_DAYS:-7}", compose)
         self.assertIn("SKLADBOT_ORDER_CREATE_LEAD_DAYS: ${SKLADBOT_ORDER_CREATE_LEAD_DAYS:-3}", compose)
-        self.assertIn("SKLADBOT_DETAIL_LIMIT: ${SKLADBOT_DETAIL_LIMIT:-3}", compose)
+        self.assertIn("SKLADBOT_DETAIL_LIMIT: ${SKLADBOT_DETAIL_LIMIT:-10}", compose)
+        self.assertIn("SKLADBOT_COMPLETED_BACKFILL_DAYS: ${SKLADBOT_COMPLETED_BACKFILL_DAYS:-2}", compose)
         self.assertIn(
             "TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED: ${TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED:-false}",
             compose,
@@ -107,7 +108,8 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         self.assertIn("SKLADBOT_REQUEST_DELAY_SECONDS=2", env_example)
         self.assertIn("SKLADBOT_SYNC_MAX_LOOKBACK_DAYS=7", env_example)
         self.assertIn("SKLADBOT_ORDER_CREATE_LEAD_DAYS=3", env_example)
-        self.assertIn("SKLADBOT_DETAIL_LIMIT=3", env_example)
+        self.assertIn("SKLADBOT_DETAIL_LIMIT=10", env_example)
+        self.assertIn("SKLADBOT_COMPLETED_BACKFILL_DAYS=2", env_example)
         self.assertIn("TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED=false", env_example)
         self.assertIn("TELEGRAM_ADMIN_CHAT_IDS=", env_example)
 

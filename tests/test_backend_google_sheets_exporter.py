@@ -405,6 +405,15 @@ class BackendGoogleSheetsExporterTests(unittest.TestCase):
             returned_at="2026-06-01T12:00:00+05:00",
             return_reference="WH-R-1",
             returned_by="tester",
+            skladbot_request_number="WH-R-OUT",
+            skladbot_request_id="100",
+            skladbot_return_request_number="WH-R-RETURN",
+            skladbot_return_request_id="190707",
+            skladbot_return_request_status="created",
+            skladbot_return_confirmed_items=[{
+                "product": "Chapman RED OP 20",
+                "quantity_blocks": 2,
+            }],
         )
 
         result = exporter.mark_backend_return_rows(archive_sheet, returns_sheet, order)
@@ -414,9 +423,43 @@ class BackendGoogleSheetsExporterTests(unittest.TestCase):
         self.assertEqual(archive_sheet.rows[1][archive_header_idx[exporter.RETURN_STATUS_COLUMN]], "Возврат")
         self.assertEqual(archive_sheet.rows[1][archive_header_idx[exporter.RETURN_REFERENCE_COLUMN]], "WH-R-1")
         self.assertEqual(archive_sheet.rows[1][archive_header_idx[exporter.RETURNED_BY_COLUMN]], "tester")
+        self.assertEqual(archive_sheet.rows[1][archive_header_idx["Номер заявки SkladBot"]], "")
+        self.assertEqual(archive_sheet.rows[1][archive_header_idx[exporter.RETURN_SKLADBOT_NUMBER_COLUMN]], "WH-R-RETURN")
+        self.assertEqual(archive_sheet.rows[1][archive_header_idx[exporter.RETURN_SKLADBOT_ID_COLUMN]], "190707")
+        self.assertEqual(archive_sheet.rows[1][archive_header_idx[exporter.RETURN_SKLADBOT_STATUS_COLUMN]], "Создано")
+        self.assertEqual(archive_sheet.rows[1][archive_header_idx[exporter.RETURN_CONFIRMED_BLOCKS_COLUMN]], 2)
         self.assertEqual(len(returns_sheet.rows), 2)
         returns_header_idx = exporter.get_header_index(returns_sheet.rows[0])
         self.assertEqual(returns_sheet.rows[1][returns_header_idx[exporter.RETURN_STATUS_COLUMN]], "Возврат")
+        self.assertEqual(returns_sheet.rows[1][returns_header_idx[exporter.RETURN_SKLADBOT_NUMBER_COLUMN]], "WH-R-RETURN")
+
+    def test_mark_backend_return_rows_updates_existing_returns_row(self):
+        header = exporter.build_import_sheet_header()
+        item = self.make_item("import-1", "order-1", codes=["0101", "0102"])
+        archive_sheet = FakeSheet("Архив", [header.copy(), self.make_row("import-1", "order-1", status="Выполнено")])
+        returns_sheet = FakeSheet("Возвраты", [header.copy(), self.make_row("import-1", "order-1", status="Выполнено")])
+        order = self.make_order(
+            [item],
+            returned_at="2026-06-01T12:00:00+05:00",
+            return_reference="WH-R-1",
+            returned_by="tester",
+            skladbot_return_request_number="WH-R-RETURN",
+            skladbot_return_request_id="190707",
+            skladbot_return_request_status="created",
+            skladbot_return_confirmed_items=[{
+                "product": "Chapman RED OP 20",
+                "quantity_blocks": 2,
+            }],
+        )
+
+        result = exporter.mark_backend_return_rows(archive_sheet, returns_sheet, order)
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(len(returns_sheet.rows), 2)
+        returns_header_idx = exporter.get_header_index(returns_sheet.rows[0])
+        self.assertEqual(returns_sheet.rows[1][returns_header_idx[exporter.RETURN_STATUS_COLUMN]], "Возврат")
+        self.assertEqual(returns_sheet.rows[1][returns_header_idx[exporter.RETURN_SKLADBOT_NUMBER_COLUMN]], "WH-R-RETURN")
+        self.assertEqual(returns_sheet.rows[1][returns_header_idx[exporter.RETURN_CONFIRMED_BLOCKS_COLUMN]], 2)
 
 
 if __name__ == "__main__":
