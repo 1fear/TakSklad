@@ -49,11 +49,9 @@ def list_completed_kiz_source_files(db: Session):
         source_file = source_file_for_items(items)
         if not source_file or not items:
             continue
-        planned_blocks = sum(max(0, item.quantity_blocks or 0) for item in items)
-        scanned_blocks = sum(max(0, item.scanned_blocks or 0) for item in items)
-        completed = all(item_is_completed(item) for item in items)
-        if not completed:
-            continue
+        planned_blocks = planned_kiz_blocks(items)
+        scanned_blocks = scanned_kiz_blocks(items)
+        completed = not incomplete_kiz_items(items)
         dates = sorted({item.order.order_date.isoformat() for item in items if item.order and item.order.order_date})
         result.append({
             "source_key": source_key,
@@ -62,6 +60,8 @@ def list_completed_kiz_source_files(db: Session):
             "items": len(items),
             "planned_blocks": planned_blocks,
             "scanned_blocks": scanned_blocks,
+            "remaining_blocks": max(0, planned_blocks - scanned_blocks),
+            "completed": completed,
         })
     return result
 
@@ -77,17 +77,19 @@ def list_completed_kiz_dates(db: Session):
 
     result = []
     for shipment_date, date_items in sorted(grouped.items()):
-        if not date_kiz_is_completed(date_items):
-            continue
         report_items = reportable_kiz_items(date_items)
         if not report_items:
             continue
+        planned_blocks = planned_kiz_blocks(date_items)
+        scanned_blocks = scanned_kiz_blocks(date_items)
         result.append({
             "date": shipment_date.isoformat(),
             "items": len(report_items),
             "orders": len({item.order.id for item in report_items if item.order}),
-            "planned_blocks": sum(max(0, item.quantity_blocks or 0) for item in report_items),
-            "scanned_blocks": sum(len(item.scan_codes or []) for item in report_items),
+            "planned_blocks": planned_blocks,
+            "scanned_blocks": scanned_blocks,
+            "remaining_blocks": max(0, planned_blocks - scanned_blocks),
+            "completed": date_kiz_is_completed(date_items),
         })
     return result
 
@@ -105,7 +107,7 @@ def build_kiz_source_file_report_xlsx(db: Session, source_file: str, source_key:
     ]
     if not items:
         raise ApiError(404, f"No rows for source file {source_file}")
-    if not all(item_is_completed(item) for item in items):
+    if incomplete_kiz_items(items):
         raise ApiError(409, f"Source file {source_file} is not fully completed")
 
     return build_kiz_items_report_xlsx(items, source_file, kiz_source_file_report_filename(source_file))
@@ -123,7 +125,6 @@ def build_kiz_date_report_xlsx(db: Session, shipment_date: str):
     ]
     if not items:
         raise ApiError(404, f"No rows for shipment date {target_date.isoformat()}")
-    ensure_date_kiz_completed(items, target_date.isoformat())
     report_items = reportable_kiz_items(items)
     if not report_items:
         raise ApiError(404, f"No KIZ scans for shipment date {target_date.isoformat()}")
@@ -152,9 +153,6 @@ def build_kiz_date_range_report_xlsx(db: Session, date_from: str, date_to: str):
             items_by_date.setdefault(order.order_date, []).append(item)
     if not items_by_date:
         raise ApiError(404, "No rows for shipment date range")
-
-    for shipment_date, items in sorted(items_by_date.items()):
-        ensure_date_kiz_completed(items, shipment_date.isoformat())
 
     report_items = []
     for items in items_by_date.values():
@@ -249,8 +247,24 @@ def reportable_kiz_items(items):
     return [
         item
         for item in items
-        if item_is_completed(item) and item.scan_codes
+        if item_kiz_is_completed(item) and item.scan_codes
     ]
+
+
+def planned_kiz_blocks(items):
+    return sum(
+        max(0, item.quantity_blocks or 0)
+        for item in items
+        if item_requires_kiz_completion(item)
+    )
+
+
+def scanned_kiz_blocks(items):
+    return sum(
+        item_kiz_scanned_blocks(item)
+        for item in items
+        if item_requires_kiz_completion(item)
+    )
 
 
 def date_kiz_is_completed(items):
@@ -267,8 +281,21 @@ def incomplete_kiz_items(items):
     return [
         item
         for item in items
-        if item_requires_kiz_completion(item) and not item_is_completed(item)
+        if item_requires_kiz_completion(item) and not item_kiz_is_completed(item)
     ]
+
+
+def item_kiz_is_completed(item):
+    if not item_requires_kiz_completion(item):
+        return True
+    return item_kiz_scanned_blocks(item) >= max(0, item.quantity_blocks or 0)
+
+
+def item_kiz_scanned_blocks(item):
+    scan_codes = getattr(item, "scan_codes", None)
+    if scan_codes is not None:
+        return len(scan_codes or [])
+    return max(0, item.scanned_blocks or 0)
 
 
 def item_requires_kiz_completion(item):

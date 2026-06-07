@@ -46,8 +46,30 @@ CREATE TABLE IF NOT EXISTS scan_codes (
     workstation_id varchar(120),
     scanned_by varchar(120),
     scanned_at timestamptz NOT NULL DEFAULT now(),
-    raw_payload jsonb NOT NULL DEFAULT '{}'::jsonb,
-    CONSTRAINT uq_scan_codes_code UNIQUE (code)
+    raw_payload jsonb NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE TABLE IF NOT EXISTS kiz_codes (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    code text NOT NULL,
+    first_seen_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT uq_kiz_codes_code UNIQUE (code)
+);
+
+CREATE TABLE IF NOT EXISTS kiz_movements (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    kiz_id uuid NOT NULL REFERENCES kiz_codes(id) ON DELETE CASCADE,
+    movement_type varchar(40) NOT NULL,
+    order_id uuid REFERENCES orders(id) ON DELETE SET NULL,
+    order_item_id uuid REFERENCES order_items(id) ON DELETE SET NULL,
+    scan_code_id uuid REFERENCES scan_codes(id) ON DELETE SET NULL,
+    return_reference varchar(120),
+    source varchar(40) NOT NULL DEFAULT 'backend',
+    actor varchar(120),
+    workstation_id varchar(120),
+    occurred_at timestamptz NOT NULL DEFAULT now(),
+    raw_payload jsonb NOT NULL DEFAULT '{}'::jsonb
 );
 
 CREATE TABLE IF NOT EXISTS imports (
@@ -96,6 +118,12 @@ CREATE TABLE IF NOT EXISTS audit_log (
 CREATE INDEX IF NOT EXISTS idx_orders_status_date ON orders(status, order_date);
 CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON order_items(order_id);
 CREATE INDEX IF NOT EXISTS idx_scan_codes_order_item_id ON scan_codes(order_item_id);
+CREATE INDEX IF NOT EXISTS idx_scan_codes_code ON scan_codes(code);
+CREATE INDEX IF NOT EXISTS idx_scan_codes_code_order_item_id ON scan_codes(code, order_item_id);
+CREATE INDEX IF NOT EXISTS idx_kiz_movements_kiz_id_occurred_at ON kiz_movements(kiz_id, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_kiz_movements_order_id ON kiz_movements(order_id);
+CREATE INDEX IF NOT EXISTS idx_kiz_movements_order_item_id ON kiz_movements(order_item_id);
+CREATE INDEX IF NOT EXISTS idx_kiz_movements_scan_code_id ON kiz_movements(scan_code_id);
 CREATE INDEX IF NOT EXISTS idx_import_files_sha256 ON import_files(sha256);
 CREATE INDEX IF NOT EXISTS idx_pending_events_status ON pending_events(status);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_pending_events_idempotency_key ON pending_events(idempotency_key);

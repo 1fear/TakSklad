@@ -155,6 +155,13 @@ def display_date(value):
     return parsed or text
 
 
+def kiz_progress_completed(item):
+    item = item or {}
+    if "completed" in item:
+        return bool(item.get("completed"))
+    return parse_int(item.get("scanned_blocks")) >= parse_int(item.get("planned_blocks"))
+
+
 def backend_http_error_detail(exc):
     response = getattr(exc, "response", None)
     if response is None:
@@ -372,6 +379,8 @@ class TelegramWorker:
     def kiz_files_keyboard(self, files):
         rows = []
         for index, item in enumerate(files, start=1):
+            if not kiz_progress_completed(item):
+                continue
             source_file = normalize_text(item.get("source_file")) or f"Файл {index}"
             text = source_file if len(source_file) <= 40 else source_file[:37] + "..."
             rows.append([{
@@ -392,6 +401,12 @@ class TelegramWorker:
                 "callback_data": f"kiz_date:{iso_date}",
             }])
         return telegram_inline_keyboard(rows)
+
+    def kiz_export_mode_keyboard(self):
+        return telegram_inline_keyboard([
+            [{"text": "По датам отгрузки", "callback_data": "kiz_mode:dates"}],
+            [{"text": "По загруженным Excel-файлам", "callback_data": "kiz_mode:files"}],
+        ])
 
     def send_logistics_report(self, chat_id, shipment_date):
         iso_date = iso_date_from_display(shipment_date)
@@ -433,11 +448,18 @@ class TelegramWorker:
             return
         self.safe_send_message(chat_id, "Выберите дату отгрузки для отчёта логистики:", reply_markup=self.logistics_date_keyboard(dates))
 
-    def show_kiz_source_files(self, chat_id):
+    def show_kiz_export_menu(self, chat_id):
+        self.safe_send_message(
+            chat_id,
+            "Как выгрузить КИЗы?",
+            reply_markup=self.kiz_export_mode_keyboard(),
+        )
+
+    def show_kiz_dates(self, chat_id):
         dates = self.backend_get("/api/v1/reports/kiz/dates")
         dates = dates if isinstance(dates, list) else []
         if not dates:
-            self.safe_send_message(chat_id, "Нет полностью завершённых дат отгрузки для выгрузки КИЗов.")
+            self.safe_send_message(chat_id, "Нет дат отгрузки с отсканированными КИЗами.")
             return
         if len(dates) == 1:
             self.send_kiz_date_report(chat_id, dates[0].get("date") or "")
@@ -454,11 +476,50 @@ class TelegramWorker:
         self.save_chat_state(chat_id, state)
         lines = ["Выберите дату отгрузки для выгрузки КИЗов:"]
         for index, item in enumerate(dates, start=1):
+            completed = kiz_progress_completed(item)
+            status = "готово" if completed else f"частично, осталось {item.get('remaining_blocks', 0)}"
             lines.append(
                 f"{index}. {display_date(item.get('date'))} - "
-                f"{item.get('scanned_blocks', 0)}/{item.get('planned_blocks', 0)} блоков"
+                f"{item.get('scanned_blocks', 0)}/{item.get('planned_blocks', 0)} блоков, {status}"
             )
         self.safe_send_message(chat_id, "\n".join(lines), reply_markup=self.kiz_dates_keyboard(dates))
+
+    def show_kiz_source_files(self, chat_id):
+        files = self.backend_get("/api/v1/reports/kiz/source-files")
+        files = files if isinstance(files, list) else []
+        if not files:
+            self.safe_send_message(chat_id, "Нет загруженных Excel-файлов для выгрузки КИЗов.")
+            return
+
+        state = self.get_chat_state(chat_id)
+        state["kiz_files"] = [
+            {
+                "index": index,
+                "source_file": item.get("source_file") or "",
+                "source_key": item.get("source_key") or "",
+                "completed": kiz_progress_completed(item),
+            }
+            for index, item in enumerate(files, start=1)
+        ]
+        self.save_chat_state(chat_id, state)
+
+        lines = ["Загруженные Excel-файлы и готовность КИЗов:"]
+        for index, item in enumerate(files, start=1):
+            dates = ", ".join(display_date(value) for value in item.get("dates") or [])
+            completed = kiz_progress_completed(item)
+            status = "готов к выгрузке" if completed else f"не готов, осталось {item.get('remaining_blocks', 0)}"
+            date_suffix = f" | даты: {dates}" if dates else ""
+            lines.append(
+                f"{index}. {item.get('source_file') or 'без файла'} - "
+                f"{item.get('scanned_blocks', 0)}/{item.get('planned_blocks', 0)} блоков, {status}{date_suffix}"
+            )
+
+        keyboard = self.kiz_files_keyboard(files)
+        self.safe_send_message(
+            chat_id,
+            "\n".join(lines),
+            reply_markup=keyboard if keyboard.get("inline_keyboard") else None,
+        )
 
     def send_kiz_date_report(self, chat_id, shipment_date):
         iso_date = iso_date_from_display(shipment_date)
@@ -908,7 +969,7 @@ class TelegramWorker:
                     "Используйте нижнее меню Telegram:",
                     f"- {TELEGRAM_BUTTON_SHIPMENT_DATE} - задать дату отгрузки для следующих Excel-файлов;",
                     f"- {TELEGRAM_BUTTON_LOGISTICS_REPORT} - выгрузить общий файл для логистики по выбранной дате;",
-                    f"- {TELEGRAM_BUTTON_KIZ_BY_FILES} - выгрузить КИЗы по завершённым исходным файлам;",
+                    f"- {TELEGRAM_BUTTON_KIZ_BY_FILES} - выгрузить КИЗы по датам или загруженным Excel-файлам;",
                     f"- {TELEGRAM_BUTTON_STATUS} - показать общий статус по заказам и КИЗам;",
                     "",
                     "Excel-файлы можно просто отправлять или пересылать в этот чат. Если отправить несколько файлов подряд, они попадут в очередь и обработаются по порядку.",
@@ -946,7 +1007,7 @@ class TelegramWorker:
             "Скачать сканы за сегодня",
             "Документы по импорту",
         ):
-            self.show_kiz_source_files(chat_id)
+            self.show_kiz_export_menu(chat_id)
             return
         if text.startswith(TELEGRAM_KIZ_DATE_PREFIX):
             self.send_kiz_date_by_index(chat_id, text)
@@ -962,7 +1023,7 @@ class TelegramWorker:
             if len(dates) == 1:
                 self.send_kiz_date_report(chat_id, dates[0])
                 return
-            self.show_kiz_source_files(chat_id)
+            self.show_kiz_export_menu(chat_id)
             return
         if text_matches(text, "/status", TELEGRAM_BUTTON_STATUS):
             self.send_status_report(chat_id)
@@ -1020,6 +1081,12 @@ class TelegramWorker:
         self.answer_callback_query(callback_id)
         if data.startswith("logistics:"):
             self.send_logistics_report(chat_id, data.split(":", 1)[1])
+            return
+        if data == "kiz_mode:dates":
+            self.show_kiz_dates(chat_id)
+            return
+        if data == "kiz_mode:files":
+            self.show_kiz_source_files(chat_id)
             return
         if data.startswith("kiz_date:"):
             self.send_kiz_date_report(chat_id, data.split(":", 1)[1])

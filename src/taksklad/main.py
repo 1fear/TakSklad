@@ -1544,34 +1544,22 @@ class ScanningApp(
         return bool(result["confirmed"])
 
     def fetch_returns_for_display(self, limit=50):
-        try:
-            return fetch_returned_orders_from_gsheet(limit=limit)
-        except Exception:
-            if not backend_read_orders_enabled():
-                raise
-            logging.warning("Не удалось загрузить возвраты из Google Sheets, используем backend fallback", exc_info=True)
+        if backend_read_orders_enabled():
             return fetch_returned_orders(limit=limit)
+        return fetch_returned_orders_from_gsheet(limit=limit)
 
     def lookup_return_for_display(self, lookup):
         if backend_read_orders_enabled():
-            try:
-                return lookup_return_order(lookup)
-            except Exception:
-                logging.warning("Не удалось найти возврат в backend, используем Google Sheets fallback", exc_info=True)
-        try:
-            return lookup_return_order_in_gsheet(lookup)
-        except Exception:
-            if not backend_read_orders_enabled():
-                raise
-            logging.warning("Не удалось найти возврат в Google Sheets, используем backend fallback", exc_info=True)
             return lookup_return_order(lookup)
+        return lookup_return_order_in_gsheet(lookup)
 
     def mark_return_for_display(self, order, return_reference, confirmed_items=None):
         is_google_order = normalize_text(order.get("source")) == "google_sheets" or order.get("_row_numbers")
         backend_order_id = normalize_text(order.get("_backend_order_id"))
         if not is_google_order:
             backend_order_id = normalize_text(order.get("id") or backend_order_id)
-        if backend_order_id and backend_read_orders_enabled():
+        backend_reads_enabled = backend_read_orders_enabled()
+        if backend_order_id and backend_reads_enabled:
             return mark_order_returned(
                 backend_order_id,
                 return_reference=return_reference,
@@ -1580,6 +1568,8 @@ class ScanningApp(
             )
 
         if is_google_order:
+            if backend_reads_enabled:
+                raise RuntimeError("Возврат нужно провести через backend/order id: у Google-заявки нет _backend_order_id.")
             updated_order = mark_return_order_in_gsheet(
                 order,
                 return_reference=return_reference,

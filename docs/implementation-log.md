@@ -4560,3 +4560,70 @@ cd /opt/taksklad/app
 - SHA:
   - `TakSklad.exe`: `10ea2376ec194dc87f6007fec8a476e9444fdb04aeb79352f399aa7aca70e8f4`;
   - `TakSklad-windows-x64.zip`: `e07f4ff712ebd962922cc25e43bba499886a0b9db0fb6b74ac2a84293d5f04c3`.
+
+### Telegram KIZ export modes
+
+- Причина: менеджеру нужны оба сценария выгрузки КИЗов:
+  - по дате отгрузки, например если сегодня склад собирал за `08.06`;
+  - по конкретным Excel-файлам, которые ранее были загружены в Telegram-бот.
+- Backend:
+  - `GET /api/v1/reports/kiz/source-files` теперь возвращает все загруженные source-файлы с прогрессом `scanned_blocks/planned_blocks`, `remaining_blocks` и `completed`;
+  - готовые source-файлы по-прежнему выгружаются через `GET /api/v1/reports/kiz/source-file`;
+  - `GET /api/v1/reports/kiz/dates` теперь показывает даты, где уже есть отсканированные КИЗы, и отдаёт прогресс по всей дате;
+  - отчёт по дате/диапазону выгружает уже отсканированные завершённые позиции, даже если по этой дате есть ещё незавершённые позиции.
+- Telegram:
+  - кнопка `Выгрузка КИЗов` сначала показывает выбор режима: `По датам отгрузки` или `По загруженным Excel-файлам`;
+  - список файлов показывает каждый загруженный файл и прогресс `сколько/сколько` блоков отпикано;
+  - inline-кнопка выгрузки появляется только у готовых файлов, чтобы случайно не отправить неполный файл по source-file;
+  - прямые команды `/kiz 08.06.2026` и `/kiz 04.06.2026 05.06.2026` сохранены.
+
+### Returns source of truth and KIZ movement lifecycle
+
+- Причина: первый боевой возврат мог записаться напрямую в Google Sheets и затем зеркалиться в Postgres без `order_returned`, без `confirmed_items` и без события `skladbot_return_request_create`. Отдельно глобальный unique на `scan_codes.code` не давал повторно отгрузить КИЗ после возврата.
+- Desktop:
+  - в backend-режиме список и lookup возвратов читаются из backend;
+  - `mark_return_for_display()` больше не пишет Google-only возврат через `mark_return_order_in_gsheet`;
+  - если у Google fallback-заказа нет `_backend_order_id`, возврат отклоняется понятной ошибкой;
+  - legacy Google write fallback сохранен только когда backend read mode выключен.
+- Google sync:
+  - ручные возвратные колонки из Google больше не переводят заказ в `returned`;
+  - такие строки пишутся в `audit_log` как `google_sheets_backend_sync_conflict`;
+  - backend -> Google mirror после настоящего backend-возврата сохранен.
+- Backend KIZ lifecycle:
+  - добавлены таблицы `kiz_codes` и `kiz_movements`;
+  - `scan_codes` теперь хранит события сканирования отгрузок и больше не имеет глобального unique по `code`;
+  - один и тот же КИЗ блокируется для другой позиции, пока последний movement не `return`, `undo` или `reset`;
+  - после backend-возврата по всем сканам заказа пишется movement `return`, и этот КИЗ можно снова сканировать в новую отгрузку как `re_outbound`;
+  - неуспешный возврат не освобождает КИЗ.
+- SQL/deploy:
+  - добавлена миграция `backend/sql/002_kiz_movements.sql`;
+  - миграция создает `kiz_codes`, `kiz_movements`, backfill-ит outbound movements для существующих `scan_codes`, return movements для уже returned-заказов и снимает `uq_scan_codes_code`;
+  - `deploy/vds/apply_schema.sh` теперь применяет все SQL-файлы по порядку.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_backend_api_persistence tests.test_google_sheets_sync_worker tests.test_desktop_ui_contract tests.test_backend_skeleton` - 91 tests OK;
+  - `./.venv/bin/python -m unittest discover tests` - 363 tests OK.
+
+### Returns/KIZ lifecycle pre-merge and VDS readiness gate
+
+- Цель: перед merge/push/deploy проверить, что backend остаётся source of truth, Google Sheets работает только как зеркало, возвраты создают SkladBot return event, а возвращённый КИЗ можно снова отгружать без старой ошибки global duplicate.
+- Локальные проверки:
+  - `./.venv/bin/python -m unittest discover tests` - 363 tests OK;
+  - `./.venv/bin/python -m compileall -q backend/app src/taksklad tools main.py tests` - OK;
+  - `npm run build` в `frontend` - OK, `tsc -b && vite build`;
+  - `for f in deploy/vds/*.sh; do bash -n "$f"; done` - OK;
+  - `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK;
+  - `docker compose --env-file deploy/traefik/.env.example -f deploy/traefik/docker-compose.yml config` - OK;
+  - `./.venv/bin/python tools/release_preflight.py --verify-downloads --timeout 120` - `status=ok`, GitHub release assets SHA совпали;
+  - `git diff --check` - OK.
+- PostgreSQL migration dry-run:
+  - fresh schema: `001_initial_schema.sql` + `002_kiz_movements.sql` применились в disposable Postgres;
+  - legacy schema из `HEAD` с `uq_scan_codes_code` + seed data + `002_kiz_movements.sql` применились в disposable Postgres;
+  - после legacy migration остался только `uq_kiz_codes_code`, returned-КИЗ получил latest movement `return`, active-КИЗ остался latest `outbound`.
+- VDS readiness до deploy:
+  - `ssh root@135.181.245.84 'cd /opt/taksklad/app && ./deploy/vds/acceptance_status.sh'` - общий `status=ok`;
+  - `backend-api`, `frontend`, `postgres`, `telegram-worker`, `skladbot-worker`, `google-sheets-sync-worker` running;
+  - `google_backend_sync.status=ok`, `field_mismatch_count=0`, `backend_active_orders=24`, `backend_active_items=50`;
+  - `skladbot_coverage.status=ok`;
+  - `telegram_menu.status=ok`.
+- Ограничение:
+  - локальный `./deploy/vds/acceptance_status.sh` без локального docker stack падает на `service "backend-api" is not running`; для онлайн-состояния использовать запуск на VDS через SSH.
