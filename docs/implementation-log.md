@@ -4627,3 +4627,44 @@ cd /opt/taksklad/app
   - `telegram_menu.status=ok`.
 - Ограничение:
   - локальный `./deploy/vds/acceptance_status.sh` без локального docker stack падает на `service "backend-api" is not running`; для онлайн-состояния использовать запуск на VDS через SSH.
+
+### Returns/KIZ lifecycle VDS deploy and production return repair
+
+- На VDS задеплоен коммит `bdc08b2` через штатный `rsync`, потому что `/opt/taksklad/app` не является Git checkout.
+- Перед изменениями создан backup Postgres:
+  - `/opt/taksklad/backups/postgres/taksklad-postgres-20260607T110107Z.sql.gz`.
+- Применена схема:
+  - `backend/sql/001_initial_schema.sql`;
+  - `backend/sql/002_kiz_movements.sql`.
+- Пересобраны и перезапущены:
+  - `backend-api`;
+  - `google-sheets-sync-worker`;
+  - `skladbot-worker`;
+  - `telegram-worker`.
+- VDS migration check:
+  - `kiz_codes=1517`;
+  - `kiz_movements=1518`;
+  - старый constraint `uq_scan_codes_code` снят;
+  - новый constraint `uq_kiz_codes_code` есть.
+- Полный тестовый прогон на VDS выполнен в отдельном временном `python:3.12-bookworm` контейнере с полными зависимостями:
+  - `python -m unittest discover tests` - 363 tests OK.
+- Онлайн-проверки после deploy:
+  - `https://api.taksklad.uz/health` - 200 OK, backend `2.0.9`;
+  - `https://taksklad.uz/` - 200 OK;
+  - `./deploy/vds/acceptance_status.sh` на VDS - общий `status=ok`;
+  - `google_backend_sync.status=ok`, `field_mismatch_count=0`, `backend_active_orders=24`, `backend_active_items=50`;
+  - `skladbot_coverage.status=ok`;
+  - `telegram_menu.status=ok`.
+- Боевой возврат `WH-R-193081`:
+  - заказ в DB уже был `returned`, но без `skladbot_return_request_create`;
+  - КИЗ имел movement history `outbound -> return`, latest movement `return`;
+  - создано idempotent pending event `skladbot_return_request_create`;
+  - SkladBot API вернул `201 Created`;
+  - создана возвратная заявка `WH-R-194284`, id `194284`;
+  - pending event завершен `completed`, `failed=0`, `remaining=0`;
+  - Google mirror обработал очередь: `pending_synced=2`, `pending_failed=0`;
+  - повторная VDS acceptance после боевой операции осталась `status=ok`.
+- Итог:
+  - DB остается source of truth для возвратов и КИЗов;
+  - Google Sheets работает как зеркало;
+  - возвращенный КИЗ доступен для новой отгрузки через movement `re_outbound`, если последним движением был `return`.
