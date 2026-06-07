@@ -403,6 +403,7 @@ def build_skladbot_payload(order: Order, products: list[dict[str, Any]]) -> dict
     return {
         "customer_id": SKLADBOT_CUSTOMER_ID,
         "request_type_id": SKLADBOT_REQUEST_TYPE_ID,
+        "notify": True,
         "comment": order.payment_type,
         "fields": {
             "address": {"value": order.address},

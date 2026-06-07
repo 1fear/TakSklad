@@ -102,6 +102,7 @@ def build_skladbot_return_payload(order: Order, confirmed_items: list[dict[str, 
     payload = {
         "customer_id": SKLADBOT_CUSTOMER_ID,
         "request_type_id": SKLADBOT_RETURN_REQUEST_TYPE_ID,
+        "notify": True,
         "comment": order.payment_type,
         "fields": {
             "address": {"value": order.address},

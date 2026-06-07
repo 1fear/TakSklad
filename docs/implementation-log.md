@@ -4668,3 +4668,17 @@ cd /opt/taksklad/app
   - DB остается source of truth для возвратов и КИЗов;
   - Google Sheets работает как зеркало;
   - возвращенный КИЗ доступен для новой отгрузки через movement `re_outbound`, если последним движением был `return`.
+
+### SkladBot request Telegram notifications
+
+- Причина: SkladBot при создании заявок отправлял в Telegram только короткое сообщение `Новая заявка #WH-R создана`, без состава заявки.
+- По новой схеме SkladBot API добавлен параметр `notify`, который включает Telegram-уведомление клиента при создании заявки.
+- Изменено:
+  - обычные `3PL отгрузка` заявки TakSklad отправляют в `POST /v1/requests` поле `notify: true`;
+  - возвратные `Возврат 3PL` заявки TakSklad тоже отправляют `notify: true`;
+  - retry/reconcile/idempotency логика не менялась.
+- Проверено:
+  - `python -m unittest tests.test_backend_skladbot_request_dry_run` - 21 tests OK;
+  - `python -m unittest discover tests` - 363 tests OK;
+  - `python -m compileall -q backend/app src/taksklad tools main.py tests` - OK;
+  - `npm run build` в `frontend` - OK.

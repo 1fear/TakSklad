@@ -130,6 +130,7 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
         self.assertEqual([product["quantity_blocks"] for product in row["products"]], [2, 3])
         self.assertEqual(row["payload"]["customer_id"], 6211)
         self.assertEqual(row["payload"]["request_type_id"], 3389)
+        self.assertIs(row["payload"]["notify"], True)
         self.assertEqual(row["payload"]["fields"]["comment"]["value"], "Перечисление")
         self.assertEqual(row["payload"]["fields"]["unloading_date"]["value"], "2026-06-05")
         self.assertEqual(
@@ -331,6 +332,7 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
         self.assertEqual(summary["ready"], 0)
         self.assertEqual(process_result["created"], 1)
         self.assertEqual(len(fake_client.created_payloads), 1)
+        self.assertIs(fake_client.created_payloads[0]["notify"], True)
         self.assertEqual(fake_client.request_id, 777)
         self.assertEqual(order.raw_payload["skladbot_request_number"], "WH-R-777")
         self.assertEqual(order.raw_payload["skladbot_request_id"], "777")
@@ -741,6 +743,7 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
         payload = fake_client.created_payloads[0]
         self.assertEqual(payload["request_type_id"], 3403)
         self.assertEqual(payload["customer_id"], 6211)
+        self.assertIs(payload["notify"], True)
         self.assertEqual(payload["fields"]["company_name"]["value"], '"TEST CLIENT" MCHJ')
         self.assertEqual(payload["fields"]["unloading_date"]["value"], "2026-06-05")
         self.assertEqual([product["amount"] for product in payload["products"]], [2, 3])
