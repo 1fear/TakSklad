@@ -25,6 +25,17 @@ MISSING_ADDRESS_MARKERS = {
 YANDEX_GEOCODER_ENV_VAR = "YANDEX_GEOCODER_API_KEY"
 YANDEX_GEOCODER_URL = "https://geocode-maps.yandex.ru/v1/"
 
+
+class ExcelDateConflictError(ValueError):
+    def __init__(self, telegram_date, excel_date):
+        self.telegram_date = telegram_date
+        self.excel_date = excel_date
+        super().__init__(
+            f"Дата отгрузки из Telegram ({telegram_date}) "
+            f"не совпадает с датой в Excel ({excel_date})"
+        )
+
+
 REQUIRED_ALIASES = {
     "client": [
         "ФИО или Наименование торговой точки",
@@ -567,8 +578,9 @@ def excel_file_to_import_payload(file_path, file_name=None, source="telegram", s
         sheet_name = source_info["sheet_name"]
         worksheet = workbook[sheet_name]
         columns = source_info["columns"]
-        shipment_date = parse_date_text(shipment_date)
-        default_date = shipment_date or source_info.get("default_date") or datetime.now().strftime("%d.%m.%Y")
+        telegram_shipment_date = parse_date_text(shipment_date)
+        excel_default_date = source_info.get("default_date") or ""
+        default_date = excel_default_date or telegram_shipment_date or datetime.now().strftime("%d.%m.%Y")
         sha256 = file_sha256(file_path)
         default_pieces_per_block = max(1, int(os.environ.get("TAKSKLAD_DEFAULT_PIECES_PER_BLOCK", "10") or "10"))
         default_block_price = max(0, int(os.environ.get("TAKSKLAD_DEFAULT_BLOCK_PRICE", "240000") or "240000"))
@@ -599,7 +611,11 @@ def excel_file_to_import_payload(file_path, file_name=None, source="telegram", s
             if blocks <= 0:
                 blocks = (quantity + default_pieces_per_block - 1) // default_pieces_per_block
 
-            date_value = shipment_date or parse_date_text(get_cell(row, columns.get("date"))) or default_date
+            row_date = parse_date_text(get_cell(row, columns.get("date")))
+            excel_date = row_date or excel_default_date
+            if telegram_shipment_date and excel_date and excel_date != telegram_shipment_date:
+                raise ExcelDateConflictError(telegram_shipment_date, excel_date)
+            date_value = excel_date or telegram_shipment_date or default_date
             address = clean_address_for_display(get_cell(row, columns.get("address")))
             coordinates = normalize_coordinates_from_row(row, columns)
             if not address and coordinates:
@@ -669,7 +685,7 @@ def excel_file_to_import_payload(file_path, file_name=None, source="telegram", s
         workbook.close()
 
     row_dates = sorted({row.get("Дата отгрузки") for row in rows if row.get("Дата отгрузки")})
-    display_shipment_date = shipment_date or (row_dates[0] if len(row_dates) == 1 else default_date)
+    display_shipment_date = row_dates[0] if len(row_dates) == 1 else default_date
 
     return {
         "source": source,

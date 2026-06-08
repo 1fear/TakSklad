@@ -5,10 +5,14 @@ from pathlib import Path
 
 import openpyxl
 import httpx
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from backend.app import telegram_worker as telegram_worker_module
 from backend.app import excel_importer
 from backend.app.excel_importer import excel_file_to_import_payload
+from backend.app.models import Base, PendingEvent
 from backend.app.telegram_worker import (
     TELEGRAM_BUTTON_KIZ_BY_FILES,
     TELEGRAM_BUTTON_LOGISTICS_REPORT,
@@ -38,6 +42,33 @@ def create_orders_workbook(path):
     ])
     sheet.append(["Client One", "Терминал", "Product One", 20, 2, "Address One", "Rep One"])
     sheet.append(["Итого", "", "", 20, 2, "", ""])
+    workbook.save(path)
+
+
+def create_conflicting_date_workbook(path):
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = "Конструктор отчетов"
+    sheet.append([
+        "Торговый представитель",
+        "Клиент",
+        "Координаты клиента",
+        "ТМЦ",
+        "Тип оплаты",
+        "Дата доставки",
+        "Количество заказа",
+        "Сумма с переоценкой",
+    ])
+    sheet.append([
+        "ТП1",
+        "Client One",
+        "41.320075,69.298547",
+        "Chapman Brown OP 20",
+        "Перечисление",
+        "09.06.2026",
+        20,
+        480000,
+    ])
     workbook.save(path)
 
 
@@ -102,6 +133,19 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertEqual(payload["meta"]["shipment_date"], "05.06.2026")
         self.assertEqual(payload["meta"]["shipment_dates"], ["05.06.2026"])
 
+    def test_excel_file_to_import_payload_rejects_telegram_date_conflict_with_excel_date(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "Шаблон_отправки_заказов_на_склад_09_06_2026.xlsx"
+            create_conflicting_date_workbook(path)
+
+            with self.assertRaisesRegex(ValueError, "не совпадает с датой в Excel"):
+                excel_file_to_import_payload(
+                    path,
+                    file_name=path.name,
+                    source="telegram",
+                    shipment_date="08.06.2026",
+                )
+
     def test_telegram_worker_imports_document_through_backend_api(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             source_path = Path(tmp_dir) / "orders.xlsx"
@@ -142,13 +186,13 @@ class BackendTelegramImportTests(unittest.TestCase):
             worker.download_telegram_document = fake_download
             worker.backend_post = fake_backend_post
 
-            worker.import_telegram_document("123", {"file_name": "orders.xlsx", "file_id": "file-1"}, shipment_date="31.05.2026")
+            worker.import_telegram_document("123", {"file_name": "orders.xlsx", "file_id": "file-1"}, shipment_date="30.05.2026")
 
         self.assertEqual(calls["path"], "/api/v1/imports")
         self.assertEqual(calls["payload"]["source"], "telegram")
         self.assertEqual(calls["payload"]["filename"], "orders.xlsx")
         self.assertEqual(len(calls["payload"]["rows"]), 1)
-        self.assertEqual(calls["payload"]["rows"][0]["Дата отгрузки"], "31.05.2026")
+        self.assertEqual(calls["payload"]["rows"][0]["Дата отгрузки"], "30.05.2026")
         self.assertEqual(messages[0][0], "123")
         self.assertIn("Начинаю импорт", messages[0][1])
         self.assertIn("Excel импортирован через Telegram", messages[-1][1])
@@ -578,7 +622,7 @@ class BackendTelegramImportTests(unittest.TestCase):
         def fake_take_next():
             return events.pop(0) if events else None
 
-        def fake_import(chat_id, document, shipment_date=""):
+        def fake_import(chat_id, document, shipment_date="", event_id=None):
             imported.append((chat_id, document["file_name"], shipment_date))
             return True, ""
 
@@ -594,6 +638,212 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertEqual(processed, 2)
         self.assertEqual(imported, [("123", "a.xlsx", ""), ("123", "b.xlsx", "")])
         self.assertEqual(finished, [("event-1", True, ""), ("event-2", True, "")])
+
+    def test_telegram_worker_waits_for_user_choice_on_date_conflict(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            source_path = Path(tmp_dir) / "orders.xlsx"
+            create_conflicting_date_workbook(source_path)
+            worker = TelegramWorker.__new__(TelegramWorker)
+            worker.token = "telegram-token"
+            worker.timeout = 20
+            worker.file_timeout = 120
+            worker.max_file_size = 20 * 1024 * 1024
+            messages = []
+            waiting = []
+
+            def fake_download(document, destination_path):
+                shutil.copyfile(source_path, destination_path)
+
+            def fake_backend_post(path, payload):
+                raise AssertionError("backend import must not run before date choice")
+
+            def fake_waiting(event_id, conflict):
+                waiting.append((event_id, conflict.telegram_date, conflict.excel_date))
+
+            def fake_send(chat_id, text, reply_markup=None):
+                messages.append((chat_id, text, reply_markup))
+
+            worker.download_telegram_document = fake_download
+            worker.backend_post = fake_backend_post
+            worker.mark_telegram_import_waiting_date_choice = fake_waiting
+            worker.safe_send_message = fake_send
+
+            result = worker.import_telegram_document(
+                "123",
+                {"file_name": "orders.xlsx", "file_id": "file-1"},
+                shipment_date="08.06.2026",
+                event_id="11111111-1111-1111-1111-111111111111",
+            )
+
+        self.assertEqual(result, (None, "date_choice_required"))
+        self.assertEqual(waiting, [("11111111-1111-1111-1111-111111111111", "08.06.2026", "09.06.2026")])
+        self.assertIn("Найден конфликт дат", messages[-1][1])
+        keyboard = messages[-1][2]["inline_keyboard"]
+        self.assertEqual(keyboard[0][0]["text"], "Использовать дату Excel: 09.06.2026")
+        self.assertEqual(
+            keyboard[0][0]["callback_data"],
+            "excel_date:use_excel:11111111-1111-1111-1111-111111111111",
+        )
+        self.assertEqual(keyboard[1][0]["callback_data"], "excel_date:cancel:11111111-1111-1111-1111-111111111111")
+
+    def test_telegram_worker_does_not_finish_event_while_waiting_for_date_choice(self):
+        worker = TelegramWorker.__new__(TelegramWorker)
+        events = [{
+            "id": "11111111-1111-1111-1111-111111111111",
+            "payload": {
+                "chat_id": "123",
+                "document": {"file_name": "orders.xlsx"},
+                "shipment_date": "08.06.2026",
+            },
+        }]
+        finished = []
+
+        def fake_take_next():
+            return events.pop(0) if events else None
+
+        def fake_import(chat_id, document, shipment_date="", event_id=None):
+            self.assertEqual(event_id, "11111111-1111-1111-1111-111111111111")
+            return None, "date_choice_required"
+
+        worker.take_next_telegram_import_event = fake_take_next
+        worker.import_telegram_document = fake_import
+        worker.finish_telegram_import_event = lambda *args: finished.append(args)
+
+        processed = worker.process_queued_telegram_imports()
+
+        self.assertEqual(processed, 1)
+        self.assertEqual(finished, [])
+
+    def test_telegram_worker_handles_date_choice_callbacks(self):
+        worker = TelegramWorker.__new__(TelegramWorker)
+        worker.allowed_chat_ids = set()
+        answered = []
+        confirmed = []
+        cancelled = []
+
+        worker.answer_callback_query = lambda callback_id, text="": answered.append((callback_id, text))
+        worker.confirm_telegram_import_excel_date = lambda chat_id, event_id: confirmed.append((chat_id, event_id))
+        worker.cancel_telegram_import_date_choice = lambda chat_id, event_id: cancelled.append((chat_id, event_id))
+
+        worker.handle_update({
+            "update_id": 78,
+            "callback_query": {
+                "id": "cb-1",
+                "data": "excel_date:use_excel:11111111-1111-1111-1111-111111111111",
+                "message": {"chat": {"id": 123}},
+            },
+        })
+        worker.handle_update({
+            "update_id": 79,
+            "callback_query": {
+                "id": "cb-2",
+                "data": "excel_date:cancel:22222222-2222-2222-2222-222222222222",
+                "message": {"chat": {"id": 123}},
+            },
+        })
+
+        self.assertEqual(answered, [("cb-1", ""), ("cb-2", "")])
+        self.assertEqual(confirmed, [("123", "11111111-1111-1111-1111-111111111111")])
+        self.assertEqual(cancelled, [("123", "22222222-2222-2222-2222-222222222222")])
+
+    def test_telegram_worker_confirm_excel_date_requeues_waiting_event(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        original_session_local = telegram_worker_module.SessionLocal
+        try:
+            with SessionLocal() as db:
+                event = PendingEvent(
+                    event_type=telegram_worker_module.TELEGRAM_EXCEL_IMPORT_EVENT_TYPE,
+                    status=telegram_worker_module.TELEGRAM_EXCEL_IMPORT_WAITING_DATE_CHOICE_STATUS,
+                    payload={
+                        "chat_id": "123",
+                        "file_name": "orders.xlsx",
+                        "document": {"file_name": "orders.xlsx"},
+                        "shipment_date": "08.06.2026",
+                        "date_conflict": {"telegram_date": "08.06.2026", "excel_date": "09.06.2026"},
+                    },
+                )
+                db.add(event)
+                db.commit()
+                event_id = str(event.id)
+
+            messages = []
+            processed = []
+            worker = TelegramWorker.__new__(TelegramWorker)
+            worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
+            worker.process_queued_telegram_imports = lambda: processed.append(True)
+            telegram_worker_module.SessionLocal = SessionLocal
+
+            result = worker.confirm_telegram_import_excel_date("123", event_id)
+
+            with SessionLocal() as db:
+                event = db.execute(select(PendingEvent)).scalar_one()
+                payload = event.payload
+
+            self.assertTrue(result)
+            self.assertEqual(event.status, "pending")
+            self.assertEqual(event.last_error, "")
+            self.assertEqual(payload["shipment_date"], "")
+            self.assertEqual(payload["date_choice_resolution"]["action"], "use_excel")
+            self.assertEqual(processed, [True])
+            self.assertIn("Импорт будет выполнен по дате из Excel", messages[0][1])
+        finally:
+            telegram_worker_module.SessionLocal = original_session_local
+            Base.metadata.drop_all(engine)
+            engine.dispose()
+
+    def test_telegram_worker_cancel_date_choice_does_not_requeue_event(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        original_session_local = telegram_worker_module.SessionLocal
+        try:
+            with SessionLocal() as db:
+                event = PendingEvent(
+                    event_type=telegram_worker_module.TELEGRAM_EXCEL_IMPORT_EVENT_TYPE,
+                    status=telegram_worker_module.TELEGRAM_EXCEL_IMPORT_WAITING_DATE_CHOICE_STATUS,
+                    payload={
+                        "chat_id": "123",
+                        "file_name": "orders.xlsx",
+                        "document": {"file_name": "orders.xlsx"},
+                        "shipment_date": "08.06.2026",
+                        "date_conflict": {"telegram_date": "08.06.2026", "excel_date": "09.06.2026"},
+                    },
+                )
+                db.add(event)
+                db.commit()
+                event_id = str(event.id)
+
+            messages = []
+            worker = TelegramWorker.__new__(TelegramWorker)
+            worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
+            telegram_worker_module.SessionLocal = SessionLocal
+
+            result = worker.cancel_telegram_import_date_choice("123", event_id)
+
+            with SessionLocal() as db:
+                event = db.execute(select(PendingEvent)).scalar_one()
+                payload = event.payload
+
+            self.assertTrue(result)
+            self.assertEqual(event.status, "cancelled")
+            self.assertEqual(event.last_error, "cancelled_by_user")
+            self.assertEqual(payload["shipment_date"], "08.06.2026")
+            self.assertEqual(payload["date_choice_resolution"]["action"], "cancel")
+            self.assertIn("Импорт отменён", messages[0][1])
+        finally:
+            telegram_worker_module.SessionLocal = original_session_local
+            Base.metadata.drop_all(engine)
+            engine.dispose()
 
     def test_telegram_worker_shows_kiz_export_menu_modes(self):
         worker = TelegramWorker.__new__(TelegramWorker)

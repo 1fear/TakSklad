@@ -2,6 +2,28 @@
 
 Здесь фиксируются все правки в коде TakSklad: что менялось, в каком файле, зачем, и какие тесты это покрывают. Записи идут от новых к старым.
 
+## 2026-06-08
+
+### Защита Telegram Excel import от старой сохранённой даты
+
+**Файлы:** `backend/app/excel_importer.py`, `tests/test_backend_telegram_import.py`, `docs/*`.
+
+**Что стало:**
+
+- Дата из Excel теперь главнее сохранённой Telegram-даты.
+- Telegram-дата используется только как fallback, если Excel не содержит надёжную дату.
+- Если Telegram передаёт одну дату, а Excel содержит другую, импорт переводится в `waiting_date_choice` до создания заказов и SkladBot-заявок.
+- Бот показывает inline-кнопки `Использовать дату Excel: ...` и `Отменить импорт`.
+- Нажатие `Использовать дату Excel` очищает старую Telegram-дату в событии и запускает импорт заново по дате файла.
+- Нажатие `Отменить импорт` переводит событие в `cancelled`; заказы и WH-R не создаются.
+
+**Проверки:**
+
+- `./.venv/bin/python -m unittest tests.test_backend_telegram_import` - 40 tests OK.
+- `./.venv/bin/python -m unittest discover tests` - 369 tests OK.
+- `./.venv/bin/python -m compileall -q backend/app src/taksklad tools main.py tests` - OK.
+- `git diff --check` - OK.
+
 ## 2026-05-30
 
 ### Перенесены Telegram-кнопки в нижнее меню и добавлена очередь Excel-файлов

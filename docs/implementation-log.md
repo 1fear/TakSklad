@@ -2,6 +2,25 @@
 
 Документ фиксирует ход работ: что сделано, что не сделано, какие ошибки найдены, какие решения приняты и что требует проверки. Новые записи добавляются сверху.
 
+## 2026-06-08
+
+### Telegram Excel import date-source guard
+
+- Причина: боевой Telegram import файла `Шаблон_отправки_заказов_на_склад_09_06_2026.xlsx` получил старую сохранённую Telegram-дату `08.06.2026`; из-за прежнего приоритета `shipment_date` перед датой Excel заказы и SkladBot-заявки создались с `unloading_date=2026-06-08`.
+- Решение:
+  - `backend/app/excel_importer.py` теперь берёт дату из Excel в первую очередь: колонка/контекст/имя файла;
+  - Telegram `shipment_date` используется только как fallback, если Excel не содержит даты;
+  - конфликт Telegram-даты с Excel-даты переводит pending import в `waiting_date_choice` до backend import и до создания SkladBot-заявок;
+  - бот показывает inline-кнопки `Использовать дату Excel: ...` и `Отменить импорт`;
+  - выбор Excel очищает старую Telegram-дату в событии и запускает импорт заново по дате файла;
+  - отмена переводит событие в `cancelled`.
+- Текущие ошибочно созданные боевые WH-R за `08.06.2026` по решению Антона оставлены как есть, без repair данных.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_backend_telegram_import` - 40 tests OK.
+  - `./.venv/bin/python -m unittest discover tests` - 369 tests OK.
+  - `./.venv/bin/python -m compileall -q backend/app src/taksklad tools main.py tests` - OK.
+  - `git diff --check` - OK.
+
 ## 2026-05-30
 
 ### Telegram нижнее меню и очередь Excel-файлов

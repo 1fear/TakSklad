@@ -13,7 +13,7 @@ import httpx
 from sqlalchemy import select
 
 from .db import SessionLocal
-from .excel_importer import excel_file_to_import_payload, is_supported_excel_file_name
+from .excel_importer import ExcelDateConflictError, excel_file_to_import_payload, is_supported_excel_file_name
 from .models import PendingEvent
 
 
@@ -30,8 +30,11 @@ TELEGRAM_LOGISTICS_DATE_PREFIX = "Логистика "
 TELEGRAM_KIZ_FILE_PREFIX = "КИЗ файл "
 TELEGRAM_KIZ_DATE_PREFIX = "КИЗ дата "
 TELEGRAM_EXCEL_IMPORT_EVENT_TYPE = "telegram_excel_import"
+TELEGRAM_EXCEL_IMPORT_WAITING_DATE_CHOICE_STATUS = "waiting_date_choice"
 TELEGRAM_EXCEL_IMPORT_ACTIVE_STATUSES = ("pending",)
 TELEGRAM_CHAT_STATE_EVENT_PREFIX = "telegram_chat_state:"
+TELEGRAM_EXCEL_DATE_CHOICE_USE_EXCEL_PREFIX = "excel_date:use_excel:"
+TELEGRAM_EXCEL_DATE_CHOICE_CANCEL_PREFIX = "excel_date:cancel:"
 DATE_PATTERN = re.compile(r"(?<!\d)(\d{1,2})[._/-](\d{1,2})[._/-](\d{2,4})(?!\d)")
 
 
@@ -47,7 +50,13 @@ def find_existing_telegram_import_event(db, document, update_id=None):
     candidates = db.execute(
         select(PendingEvent)
         .where(PendingEvent.event_type == TELEGRAM_EXCEL_IMPORT_EVENT_TYPE)
-        .where(PendingEvent.status.in_(("pending", "processing", "completed", "failed")))
+        .where(PendingEvent.status.in_((
+            "pending",
+            "processing",
+            TELEGRAM_EXCEL_IMPORT_WAITING_DATE_CHOICE_STATUS,
+            "completed",
+            "failed",
+        )))
         .order_by(PendingEvent.created_at.desc(), PendingEvent.id.desc())
     ).scalars().all()
     for event in candidates:
@@ -80,6 +89,20 @@ def telegram_bot_commands():
 
 def telegram_inline_keyboard(button_rows):
     return {"inline_keyboard": button_rows}
+
+
+def telegram_import_date_choice_keyboard(event_id, excel_date):
+    event_id = normalize_text(event_id)
+    return telegram_inline_keyboard([
+        [{
+            "text": f"Использовать дату Excel: {excel_date}",
+            "callback_data": f"{TELEGRAM_EXCEL_DATE_CHOICE_USE_EXCEL_PREFIX}{event_id}",
+        }],
+        [{
+            "text": "Отменить импорт",
+            "callback_data": f"{TELEGRAM_EXCEL_DATE_CHOICE_CANCEL_PREFIX}{event_id}",
+        }],
+    ])
 
 
 def text_matches(value, *variants):
@@ -363,6 +386,115 @@ class TelegramWorker:
         state["shipment_date"] = shipment_date
         state["shipment_date_updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.save_chat_state(chat_id, state)
+
+    def parse_telegram_import_event_id(self, event_id):
+        try:
+            return uuid.UUID(normalize_text(event_id))
+        except (TypeError, ValueError):
+            return None
+
+    def send_telegram_import_date_conflict_choice(self, chat_id, file_name, event_id, conflict):
+        self.safe_send_message(
+            chat_id,
+            "\n".join([
+                "Найден конфликт дат при импорте Excel.",
+                "",
+                f"Файл: {file_name}",
+                f"Дата в Excel: {conflict.excel_date}",
+                f"Дата в Telegram: {conflict.telegram_date}",
+                "",
+                "Заказы и заявки SkladBot ещё не созданы. Выберите дату Excel или отмените импорт.",
+            ]),
+            reply_markup=telegram_import_date_choice_keyboard(event_id, conflict.excel_date),
+        )
+
+    def mark_telegram_import_waiting_date_choice(self, event_id, conflict):
+        event_uuid = self.parse_telegram_import_event_id(event_id)
+        if event_uuid is None:
+            return False
+        with SessionLocal() as db:
+            event = db.get(PendingEvent, event_uuid)
+            if event is None:
+                return False
+            payload = dict(event.payload or {})
+            payload["date_conflict"] = {
+                "telegram_date": conflict.telegram_date,
+                "excel_date": conflict.excel_date,
+                "detected_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            event.payload = payload
+            event.status = TELEGRAM_EXCEL_IMPORT_WAITING_DATE_CHOICE_STATUS
+            event.last_error = "date_choice_required"
+            db.commit()
+            return True
+
+    def resolve_telegram_import_date_choice(self, chat_id, event_id, action):
+        event_uuid = self.parse_telegram_import_event_id(event_id)
+        if event_uuid is None:
+            return False, {}, "Кнопка устарела: некорректный ID импорта."
+        with SessionLocal() as db:
+            event = db.get(PendingEvent, event_uuid)
+            if event is None or event.event_type != TELEGRAM_EXCEL_IMPORT_EVENT_TYPE:
+                return False, {}, "Кнопка устарела: импорт не найден."
+            payload = dict(event.payload or {})
+            if normalize_text(payload.get("chat_id")) != normalize_text(chat_id):
+                return False, {}, "Нет доступа к этому импорту."
+            if event.status != TELEGRAM_EXCEL_IMPORT_WAITING_DATE_CHOICE_STATUS:
+                return False, payload, "Этот импорт уже обработан или отменён."
+
+            resolution = {
+                "action": action,
+                "resolved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            if action == "use_excel":
+                payload["shipment_date"] = ""
+                event.status = "pending"
+                event.last_error = ""
+            elif action == "cancel":
+                event.status = "cancelled"
+                event.last_error = "cancelled_by_user"
+            else:
+                return False, payload, "Неизвестный выбор даты."
+            payload["date_choice_resolution"] = resolution
+            event.payload = payload
+            db.commit()
+            return True, payload, ""
+
+    def confirm_telegram_import_excel_date(self, chat_id, event_id):
+        success, payload, error = self.resolve_telegram_import_date_choice(chat_id, event_id, "use_excel")
+        if not success:
+            self.safe_send_message(chat_id, error)
+            return False
+        file_name = normalize_text(payload.get("file_name")) or "Excel-файл"
+        excel_date = normalize_text((payload.get("date_conflict") or {}).get("excel_date"))
+        self.safe_send_message(
+            chat_id,
+            "\n".join([
+                "Принято. Импорт будет выполнен по дате из Excel.",
+                "",
+                f"Файл: {file_name}",
+                f"Дата отгрузки: {excel_date or 'из Excel'}",
+            ]),
+        )
+        self.process_queued_telegram_imports()
+        return True
+
+    def cancel_telegram_import_date_choice(self, chat_id, event_id):
+        success, payload, error = self.resolve_telegram_import_date_choice(chat_id, event_id, "cancel")
+        if not success:
+            self.safe_send_message(chat_id, error)
+            return False
+        file_name = normalize_text(payload.get("file_name")) or "Excel-файл"
+        self.safe_send_message(
+            chat_id,
+            "\n".join([
+                "Импорт отменён.",
+                "",
+                f"Файл: {file_name}",
+                "Заказы и заявки SkladBot не созданы.",
+            ]),
+        )
+        return True
 
     def logistics_date_keyboard(self, dates):
         rows = []
@@ -725,7 +857,7 @@ class TelegramWorker:
             except httpx.HTTPError:
                 raise RuntimeError("Не удалось скачать файл из Telegram") from None
 
-    def import_telegram_document(self, chat_id, document, shipment_date=""):
+    def import_telegram_document(self, chat_id, document, shipment_date="", event_id=None):
         file_name = normalize_text(document.get("file_name")) or "telegram_import.xlsx"
         if not is_supported_excel_file_name(file_name):
             self.safe_send_message(chat_id, "Файл не импортирован. Отправьте Excel-файл в формате .xlsx или .xlsm.")
@@ -783,6 +915,24 @@ class TelegramWorker:
                 lines.extend(["", "Ошибки:", "\n".join(errors[:5])])
             self.safe_send_message(chat_id, "\n".join(lines))
             return True, ""
+        except ExcelDateConflictError as exc:
+            logging.warning("Telegram worker: Excel import date conflict: %s", exc)
+            if event_id:
+                self.mark_telegram_import_waiting_date_choice(event_id, exc)
+                self.send_telegram_import_date_conflict_choice(chat_id, file_name, event_id, exc)
+                return None, "date_choice_required"
+            self.safe_send_message(
+                chat_id,
+                "\n".join([
+                    "Не удалось импортировать Excel-файл.",
+                    "",
+                    f"Файл: {file_name}",
+                    f"Причина: {exc}",
+                    "",
+                    "Заказы и заявки SkladBot не созданы.",
+                ]),
+            )
+            return False, str(exc)
         except Exception as exc:
             logging.exception("Telegram worker: Excel import failed")
             self.safe_send_message(
@@ -817,6 +967,20 @@ class TelegramWorker:
                     existing_event.last_error = ""
                     existing_event.attempts = 0
                     db.commit()
+                if existing_event.status == TELEGRAM_EXCEL_IMPORT_WAITING_DATE_CHOICE_STATUS:
+                    payload = existing_event.payload or {}
+                    conflict_payload = payload.get("date_conflict") or {}
+                    telegram_date = normalize_text(conflict_payload.get("telegram_date"))
+                    excel_date = normalize_text(conflict_payload.get("excel_date"))
+                    if telegram_date and excel_date:
+                        conflict = ExcelDateConflictError(telegram_date, excel_date)
+                        self.send_telegram_import_date_conflict_choice(
+                            chat_id,
+                            file_name,
+                            str(existing_event.id),
+                            conflict,
+                        )
+                        return True
                 self.safe_send_message(
                     chat_id,
                     "\n".join([
@@ -894,8 +1058,16 @@ class TelegramWorker:
             payload = event.get("payload") or {}
             chat_id = normalize_text(payload.get("chat_id"))
             document = payload.get("document") or {}
-            result = self.import_telegram_document(chat_id, document, shipment_date=payload.get("shipment_date") or "")
+            result = self.import_telegram_document(
+                chat_id,
+                document,
+                shipment_date=payload.get("shipment_date") or "",
+                event_id=str(event.get("id") or ""),
+            )
             success, error = result if isinstance(result, tuple) else (False, "telegram_import_failed")
+            if success is None:
+                processed += 1
+                continue
             self.finish_telegram_import_event(event["id"], success, error)
             processed += 1
         return processed
@@ -1079,6 +1251,18 @@ class TelegramWorker:
 
         data = normalize_text(callback_query.get("data"))
         self.answer_callback_query(callback_id)
+        if data.startswith(TELEGRAM_EXCEL_DATE_CHOICE_USE_EXCEL_PREFIX):
+            self.confirm_telegram_import_excel_date(
+                chat_id,
+                data.replace(TELEGRAM_EXCEL_DATE_CHOICE_USE_EXCEL_PREFIX, "", 1),
+            )
+            return
+        if data.startswith(TELEGRAM_EXCEL_DATE_CHOICE_CANCEL_PREFIX):
+            self.cancel_telegram_import_date_choice(
+                chat_id,
+                data.replace(TELEGRAM_EXCEL_DATE_CHOICE_CANCEL_PREFIX, "", 1),
+            )
+            return
         if data.startswith("logistics:"):
             self.send_logistics_report(chat_id, data.split(":", 1)[1])
             return
