@@ -1,3 +1,4 @@
+import os
 import unittest
 from datetime import date, datetime
 from io import BytesIO
@@ -184,10 +185,18 @@ class FakeSkladBotDailyReportClient:
 
 class SkladBotDailyReportTests(unittest.TestCase):
     def test_collects_requests_movements_stock_and_builds_xlsx(self):
-        report = collect_skladbot_daily_report(
-            report_date=date(2026, 6, 8),
-            client=FakeSkladBotDailyReportClient(),
-        )
+        original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
+        try:
+            os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = "0"
+            report = collect_skladbot_daily_report(
+                report_date=date(2026, 6, 8),
+                client=FakeSkladBotDailyReportClient(),
+            )
+        finally:
+            if original_delay is None:
+                os.environ.pop("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS", None)
+            else:
+                os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = original_delay
 
         summary = report["summary"]
         self.assertEqual(summary["requests_total"], 3)

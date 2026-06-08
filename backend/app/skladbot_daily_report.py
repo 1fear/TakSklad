@@ -184,7 +184,7 @@ def fetch_daily_requests(
 ) -> list[dict[str, Any]]:
     limit = max(1, env_int("SKLADBOT_DAILY_REPORT_REQUESTS_LIMIT", getattr(client, "limit", 500) or 500))
     detail_limit = max(1, env_int("SKLADBOT_DAILY_REPORT_DETAIL_LIMIT", 250))
-    request_delay = max(0.0, env_float("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS", 0.25))
+    request_delay = max(0.0, env_float("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS", 3.0))
     result = []
     seen_ids = set()
     checked_details = 0
