@@ -24,6 +24,19 @@
   - если SkladBot временно не отдаст один endpoint, отчет все равно сформируется с листом `Ошибки`.
 - Проверено:
   - `./.venv/bin/python -m unittest tests.test_skladbot_daily_report tests.test_backend_telegram_import` - 46 tests OK.
+  - `./.venv/bin/python -m unittest discover tests` - 375 tests OK.
+  - `./.venv/bin/python -m compileall -q backend/app src/taksklad tools main.py tests` - OK.
+  - `npm run build` в `frontend` - OK.
+  - `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK.
+  - VDS deploy выполнен через `rsync` + `docker compose up -d --build backend-api telegram-worker`.
+  - VDS restore point: `/opt/taksklad/restore_points/pre-skladbot-daily-report-20260608T122858Z`.
+  - VDS Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260608T122910Z.sql.gz`.
+  - VDS live dry-run на `SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS=0.25` поймал `429`, поэтому дефолт повышен до `3.0`.
+  - VDS live read-only dry-run на дефолте `3.0` завершился без ошибок: `requests_total=71`, `category_counts={Отгрузка: 67, Возврат: 3, Приемка: 1, Прочее: 0}`, `stock_total=1578`, `errors_count=0`.
+  - VDS `./deploy/vds/acceptance_status.sh` - общий `status=ok`.
+- Runtime:
+  - на VDS автоматическая отправка пока выключена: `SKLADBOT_DAILY_REPORT_ENABLED` не задан;
+  - `SKLADBOT_DAILY_REPORT_CHAT_IDS` пустой, потому что Антон ещё не указал целевой чат.
 
 ### Telegram Excel import: обязательный ручной ввод даты после файла
 

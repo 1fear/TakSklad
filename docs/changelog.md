@@ -27,6 +27,12 @@
 **Проверки:**
 
 - `./.venv/bin/python -m unittest tests.test_skladbot_daily_report tests.test_backend_telegram_import` - 46 tests OK.
+- `./.venv/bin/python -m unittest discover tests` - 375 tests OK.
+- `./.venv/bin/python -m compileall -q backend/app src/taksklad tools main.py tests` - OK.
+- `npm run build` в `frontend` - OK.
+- `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK.
+- VDS live read-only dry-run отчета за `08.06.2026`: `requests_total=71`, `Отгрузка=67`, `Возврат=3`, `Приемка=1`, `stock_total=1578`, `errors_count=0`.
+- VDS `./deploy/vds/acceptance_status.sh` - общий `status=ok`.
 
 ### Ручной выбор даты для Telegram Excel import
 
