@@ -34,6 +34,8 @@
   - VDS live dry-run на `SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS=0.25` поймал `429`, поэтому дефолт повышен до `3.0`.
   - VDS live read-only dry-run на дефолте `3.0` завершился без ошибок: `requests_total=71`, `category_counts={Отгрузка: 67, Возврат: 3, Приемка: 1, Прочее: 0}`, `stock_total=1578`, `errors_count=0`.
   - VDS `./deploy/vds/acceptance_status.sh` - общий `status=ok`.
+  - После live deploy в логах был Telegram `409 Conflict`, значит второй poller существует вне текущего VDS compose-стека или конфликт был внешним. `telegram_worker` изменён так, чтобы при `getUpdates` `409` не падать всем циклом и всё равно запускать scheduled jobs.
+  - Повторный VDS acceptance сначала поймал 3 свежих активных заказа без WH-R; после ожидания цикла `skladbot-worker` все 29 активных заказов получили SkladBot номера, финальный `acceptance_status.sh` вернул общий `status=ok`.
 - Runtime:
   - на VDS автоматическая отправка пока выключена: `SKLADBOT_DAILY_REPORT_ENABLED` не задан;
   - `SKLADBOT_DAILY_REPORT_CHAT_IDS` пустой, потому что Антон ещё не указал целевой чат.

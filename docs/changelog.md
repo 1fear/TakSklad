@@ -33,6 +33,8 @@
 - `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK.
 - VDS live read-only dry-run отчета за `08.06.2026`: `requests_total=71`, `Отгрузка=67`, `Возврат=3`, `Приемка=1`, `stock_total=1578`, `errors_count=0`.
 - VDS `./deploy/vds/acceptance_status.sh` - общий `status=ok`.
+- После обнаружения Telegram `409 Conflict` worker больше не падает всем циклом: scheduled-задачи продолжают выполняться, а конфликт логируется как warning.
+- Финальный VDS acceptance после ожидания цикла SkladBot worker: общий `status=ok`, `skladbot_coverage.status=ok`, `telegram_menu.status=ok`.
 
 ### Ручной выбор даты для Telegram Excel import
 
