@@ -6,12 +6,13 @@ import tempfile
 import time
 import urllib.parse
 import uuid
-from datetime import datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
 from sqlalchemy import select
 
+from . import skladbot_daily_report
 from .db import SessionLocal
 from .excel_importer import ExcelDateConflictError, excel_file_to_import_payload, is_supported_excel_file_name
 from .models import PendingEvent
@@ -36,6 +37,7 @@ TELEGRAM_EXCEL_IMPORT_ACTIVE_STATUSES = ("pending",)
 TELEGRAM_CHAT_STATE_EVENT_PREFIX = "telegram_chat_state:"
 TELEGRAM_EXCEL_DATE_CHOICE_USE_EXCEL_PREFIX = "excel_date:use_excel:"
 TELEGRAM_EXCEL_DATE_CHOICE_CANCEL_PREFIX = "excel_date:cancel:"
+SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE = "skladbot_daily_report_send"
 DATE_PATTERN = re.compile(r"(?<!\d)(\d{1,2})[._/-](\d{1,2})[._/-](\d{2,4})(?!\d)")
 
 
@@ -78,6 +80,13 @@ def parse_chat_ids(value):
         if part:
             result.add(part)
     return result
+
+
+def parse_bool_flag(value, default=False):
+    text = normalize_text(value).casefold()
+    if not text:
+        return default
+    return text in {"1", "true", "yes", "on", "да"}
 
 
 def telegram_bot_commands():
@@ -180,6 +189,32 @@ def display_date(value):
     return parsed or text
 
 
+def command_date_or_today(text):
+    dates = parse_dates_from_text(text)
+    if dates:
+        return datetime.strptime(dates[0], "%Y-%m-%d").date()
+    return skladbot_daily_report.business_today()
+
+
+def coerce_report_date(value):
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    iso_date = iso_date_from_display(value)
+    if iso_date:
+        return datetime.strptime(iso_date, "%Y-%m-%d").date()
+    return command_date_or_today(str(value))
+
+
+def ensure_aware_utc(value):
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def kiz_progress_completed(item):
     item = item or {}
     if "completed" in item:
@@ -245,6 +280,11 @@ class TelegramWorker:
         self.max_file_size = int(os.environ.get("TELEGRAM_WORKER_MAX_FILE_BYTES", str(20 * 1024 * 1024)) or 0)
         self.offset = self.load_offset() or int(os.environ.get("TELEGRAM_WORKER_INITIAL_OFFSET", "0") or "0")
         self.bot_menu_ready = False
+        self.skladbot_daily_report_enabled = parse_bool_flag(os.environ.get("SKLADBOT_DAILY_REPORT_ENABLED"))
+        self.skladbot_daily_report_chat_ids = parse_chat_ids(os.environ.get("SKLADBOT_DAILY_REPORT_CHAT_IDS"))
+        self.skladbot_daily_report_hour = max(0, min(23, parse_int(os.environ.get("SKLADBOT_DAILY_REPORT_HOUR") or "22")))
+        self.skladbot_daily_report_minute = max(0, min(59, parse_int(os.environ.get("SKLADBOT_DAILY_REPORT_MINUTE") or "0")))
+        self.skladbot_daily_report_retry_minutes = max(1, parse_int(os.environ.get("SKLADBOT_DAILY_REPORT_RETRY_MINUTES") or "15"))
 
     @property
     def configured(self):
@@ -861,6 +901,116 @@ class TelegramWorker:
         self.safe_send_message(chat_id, "\n".join(lines))
         return True
 
+    def send_skladbot_daily_report(self, chat_id, report_date=None, scheduled=False):
+        report_date = coerce_report_date(report_date or skladbot_daily_report.business_today())
+        report_date_text = report_date.strftime("%d.%m.%Y")
+        if not scheduled:
+            self.safe_send_message(chat_id, f"Собираю SkladBot отчет за {report_date_text}.")
+        report = skladbot_daily_report.collect_skladbot_daily_report(report_date=report_date)
+        content, filename = skladbot_daily_report.build_skladbot_daily_report_xlsx(report)
+        self.safe_send_message(chat_id, skladbot_daily_report.build_skladbot_daily_report_message(report))
+        document = self.safe_send_document(
+            chat_id,
+            content,
+            filename,
+            caption=f"SkladBot отчет за {report_date_text}",
+        )
+        return document is not None
+
+    def scheduled_skladbot_daily_report_is_due(self, now=None):
+        if not getattr(self, "skladbot_daily_report_enabled", False):
+            return False
+        if not getattr(self, "skladbot_daily_report_chat_ids", set()):
+            return False
+        now = now or datetime.now(skladbot_daily_report.business_timezone())
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=skladbot_daily_report.business_timezone())
+        scheduled_minutes = getattr(self, "skladbot_daily_report_hour", 22) * 60 + getattr(self, "skladbot_daily_report_minute", 0)
+        current_minutes = now.hour * 60 + now.minute
+        return current_minutes >= scheduled_minutes
+
+    def skladbot_daily_report_idempotency_key(self, chat_id, report_date):
+        return f"skladbot_daily_report:{report_date.isoformat()}:{chat_id}"
+
+    def claim_scheduled_skladbot_daily_report(self, chat_id, report_date, now=None):
+        now = now or datetime.now(skladbot_daily_report.business_timezone())
+        now_utc = ensure_aware_utc(now.astimezone(timezone.utc) if now.tzinfo else now)
+        idempotency_key = self.skladbot_daily_report_idempotency_key(chat_id, report_date)
+        with SessionLocal() as db:
+            event = db.execute(
+                select(PendingEvent).where(PendingEvent.idempotency_key == idempotency_key)
+            ).scalars().first()
+            if event is not None and event.status in {"completed", "processing"}:
+                return ""
+            if event is not None and event.status == "failed":
+                updated_at = ensure_aware_utc(event.updated_at)
+                retry_minutes = getattr(self, "skladbot_daily_report_retry_minutes", 15)
+                if updated_at and now_utc and now_utc - updated_at < timedelta(minutes=retry_minutes):
+                    return ""
+            payload = {
+                "chat_id": str(chat_id),
+                "report_date": report_date.isoformat(),
+                "scheduled_at": f"{getattr(self, 'skladbot_daily_report_hour', 22):02d}:{getattr(self, 'skladbot_daily_report_minute', 0):02d}",
+                "claimed_at": now_utc.isoformat() if now_utc else "",
+            }
+            if event is None:
+                event = PendingEvent(
+                    event_type=SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE,
+                    idempotency_key=idempotency_key,
+                    status="processing",
+                    attempts=1,
+                    payload=payload,
+                    last_error=None,
+                )
+                db.add(event)
+            else:
+                event.status = "processing"
+                event.attempts = (event.attempts or 0) + 1
+                event.payload = {**(event.payload or {}), **payload}
+                event.last_error = None
+            db.commit()
+            return str(event.id)
+
+    def finish_scheduled_skladbot_daily_report(self, event_id, success, error=""):
+        if not event_id:
+            return
+        with SessionLocal() as db:
+            event = db.get(PendingEvent, event_id if isinstance(event_id, uuid.UUID) else uuid.UUID(str(event_id)))
+            if event is None:
+                return
+            event.status = "completed" if success else "failed"
+            event.last_error = "" if success else normalize_text(error)
+            payload = dict(event.payload or {})
+            payload["finished_at"] = datetime.now(timezone.utc).isoformat()
+            payload["success"] = bool(success)
+            if error:
+                payload["error"] = normalize_text(error)
+            event.payload = payload
+            db.commit()
+
+    def send_due_skladbot_daily_reports(self, now=None):
+        now = now or datetime.now(skladbot_daily_report.business_timezone())
+        if not self.scheduled_skladbot_daily_report_is_due(now):
+            return 0
+        report_date = now.date()
+        sent = 0
+        for chat_id in sorted(getattr(self, "skladbot_daily_report_chat_ids", set())):
+            event_id = self.claim_scheduled_skladbot_daily_report(chat_id, report_date, now=now)
+            if not event_id:
+                continue
+            try:
+                success = self.send_skladbot_daily_report(chat_id, report_date=report_date, scheduled=True)
+            except Exception as exc:
+                error = normalize_text(exc) or exc.__class__.__name__
+                logging.exception("Telegram worker: scheduled SkladBot daily report failed")
+                self.safe_send_message(chat_id, f"Не удалось отправить ежедневный SkladBot отчет: {error[:500]}")
+                self.finish_scheduled_skladbot_daily_report(event_id, False, error)
+                continue
+            self.finish_scheduled_skladbot_daily_report(event_id, success, "" if success else "telegram_send_failed")
+            if success:
+                sent += 1
+        return sent
+
     def send_kiz_source_file_by_index(self, chat_id, text):
         index = parse_int(text.replace(TELEGRAM_KIZ_FILE_PREFIX, "", 1))
         state = self.get_chat_state(chat_id)
@@ -1184,6 +1334,7 @@ class TelegramWorker:
         if updates:
             self.save_offset()
         self.process_queued_telegram_imports()
+        self.send_due_skladbot_daily_reports()
 
     def notify_update_error(self, update, exc):
         callback_query = update.get("callback_query") or {}
@@ -1327,6 +1478,11 @@ class TelegramWorker:
             if not self.ensure_admin_chat(chat_id):
                 return
             self.send_backend_diagnostics_log(chat_id)
+            return
+        if normalize_text(text).casefold().startswith(("/skladbot_daily", "/skladbot_report")):
+            if not self.ensure_admin_chat(chat_id):
+                return
+            self.send_skladbot_daily_report(chat_id, report_date=command_date_or_today(text))
             return
 
         document = message.get("document") or {}

@@ -4,6 +4,29 @@
 
 ## 2026-06-08
 
+### Ежедневный SkladBot отчет в Telegram
+
+**Файлы:** `backend/app/skladbot_daily_report.py`, `backend/app/telegram_worker.py`, `deploy/vds/.env.example`, `tests/test_skladbot_daily_report.py`, `docs/*`.
+
+**Что стало:**
+
+- Добавлен генератор ежедневного отчета по SkladBot напрямую из SkladBot API.
+- Источник данных: SkladBot, не Google Sheets.
+- Отчет включает:
+  - заявки за день по категориям `Отгрузка`, `Возврат`, `Приемка`, `Прочее`;
+  - юрлицо/точку, дату выгрузки, адрес, комментарий и товары по каждой заявке;
+  - складские движения за день через `/warehouse/transactions`;
+  - актуальный остаток клиента через `/report/stock`;
+  - отдельный лист с ошибками сбора, если какой-то endpoint временно недоступен.
+- Telegram worker получил ручную admin-команду `/skladbot_daily ДД.ММ.ГГГГ` для проверки отчета.
+- Добавлено расписание отправки: `SKLADBOT_DAILY_REPORT_ENABLED=true`, время по умолчанию `22:00`.
+- Защита от дублей хранится в `pending_events` по ключу `date+chat_id`, поэтому один чат не получит один и тот же daily report несколько раз за день.
+- Без `SKLADBOT_DAILY_REPORT_CHAT_IDS` автоматическая отправка не включается.
+
+**Проверки:**
+
+- `./.venv/bin/python -m unittest tests.test_skladbot_daily_report tests.test_backend_telegram_import` - 46 tests OK.
+
 ### Ручной выбор даты для Telegram Excel import
 
 **Файлы:** `backend/app/telegram_worker.py`, `backend/app/excel_importer.py`, `tests/test_backend_telegram_import.py`, `docs/*`.
