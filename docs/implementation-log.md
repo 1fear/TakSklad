@@ -17,6 +17,7 @@
   - ежедневная отправка включается env-флагом `SKLADBOT_DAILY_REPORT_ENABLED=true`;
   - список получателей задается только явно через `SKLADBOT_DAILY_REPORT_CHAT_IDS`;
   - время отправки задается через `SKLADBOT_DAILY_REPORT_HOUR=22` и `SKLADBOT_DAILY_REPORT_MINUTE=0`;
+  - между detail-запросами к SkladBot используется `SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS=0.25`, чтобы снизить риск `429`;
   - защита от повторной отправки за тот же день и чат хранится в `pending_events`.
 - Ограничение:
   - без реального `chat_id` автоматическая отправка не включается;

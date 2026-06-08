@@ -21,6 +21,7 @@
 - Telegram worker получил ручную admin-команду `/skladbot_daily ДД.ММ.ГГГГ` для проверки отчета.
 - Добавлено расписание отправки: `SKLADBOT_DAILY_REPORT_ENABLED=true`, время по умолчанию `22:00`.
 - Защита от дублей хранится в `pending_events` по ключу `date+chat_id`, поэтому один чат не получит один и тот же daily report несколько раз за день.
+- Между чтением деталей заявок есть настраиваемая пауза `SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS`, чтобы не провоцировать rate limit SkladBot.
 - Без `SKLADBOT_DAILY_REPORT_CHAT_IDS` автоматическая отправка не включается.
 
 **Проверки:**

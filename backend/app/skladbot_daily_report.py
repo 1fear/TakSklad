@@ -1,4 +1,5 @@
 import os
+import time
 from datetime import date, datetime, timezone
 from io import BytesIO
 from typing import Any
@@ -11,6 +12,7 @@ from .skladbot_worker import (
     SkladBotClient,
     business_timezone,
     business_today,
+    env_float,
     env_int,
     extract_list_items,
     normalize_request_payload,
@@ -182,6 +184,7 @@ def fetch_daily_requests(
 ) -> list[dict[str, Any]]:
     limit = max(1, env_int("SKLADBOT_DAILY_REPORT_REQUESTS_LIMIT", getattr(client, "limit", 500) or 500))
     detail_limit = max(1, env_int("SKLADBOT_DAILY_REPORT_DETAIL_LIMIT", 250))
+    request_delay = max(0.0, env_float("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS", 0.25))
     result = []
     seen_ids = set()
     checked_details = 0
@@ -215,6 +218,8 @@ def fetch_daily_requests(
             except Exception as exc:
                 errors.append(f"Не удалось получить заявку {request_id}: {sanitize_skladbot_error(exc)}")
                 continue
+            if request_delay:
+                time.sleep(request_delay)
             request = normalize_request_payload(list_item, detail)
             reasons = request_inclusion_reasons(request, report_date)
             if not reasons:
