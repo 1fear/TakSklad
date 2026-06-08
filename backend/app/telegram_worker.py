@@ -1319,11 +1319,17 @@ class TelegramWorker:
 
         self.ensure_bot_menu()
         poll_timeout = max(1, min(self.poll_timeout, max(1, self.timeout - 5)))
-        updates = self.telegram_request("getUpdates", {
-            "offset": self.offset + 1 if self.offset else None,
-            "timeout": poll_timeout,
-            "allowed_updates": ["message", "callback_query"],
-        }, timeout=poll_timeout + 5) or []
+        try:
+            updates = self.telegram_request("getUpdates", {
+                "offset": self.offset + 1 if self.offset else None,
+                "timeout": poll_timeout,
+                "allowed_updates": ["message", "callback_query"],
+            }, timeout=poll_timeout + 5) or []
+        except RuntimeError as exc:
+            if "getUpdates" not in normalize_text(exc) or "HTTP 409" not in normalize_text(exc):
+                raise
+            logging.warning("Telegram worker: getUpdates conflict, scheduled jobs will still run")
+            updates = []
         for update in updates:
             self.offset = max(self.offset, int(update.get("update_id") or 0))
             try:

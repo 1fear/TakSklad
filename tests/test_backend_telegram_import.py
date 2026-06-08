@@ -1210,6 +1210,29 @@ class BackendTelegramImportTests(unittest.TestCase):
             "",
         )])
 
+    def test_telegram_worker_runs_scheduled_jobs_after_getupdates_conflict(self):
+        worker = TelegramWorker.__new__(TelegramWorker)
+        worker.token = "telegram-token"
+        worker.timeout = 20
+        worker.poll_timeout = 1
+        worker.offset = 0
+        calls = []
+
+        def fake_telegram_request(method, payload=None, timeout=None):
+            if method == "getUpdates":
+                raise RuntimeError("Telegram API request failed: getUpdates: HTTP 409 Conflict")
+            raise AssertionError(method)
+
+        worker.ensure_bot_menu = lambda: None
+        worker.telegram_request = fake_telegram_request
+        worker.process_queued_telegram_imports = lambda: calls.append("imports") or 0
+        worker.send_due_skladbot_daily_reports = lambda: calls.append("daily") or 0
+
+        worker.poll_once()
+
+        self.assertEqual(calls, ["imports", "daily"])
+        self.assertEqual(worker.offset, 0)
+
     def test_telegram_worker_handles_hidden_logs_command(self):
         worker = TelegramWorker.__new__(TelegramWorker)
         worker.allowed_chat_ids = set()
