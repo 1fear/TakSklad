@@ -30,6 +30,7 @@ TELEGRAM_LOGISTICS_DATE_PREFIX = "Логистика "
 TELEGRAM_KIZ_FILE_PREFIX = "КИЗ файл "
 TELEGRAM_KIZ_DATE_PREFIX = "КИЗ дата "
 TELEGRAM_EXCEL_IMPORT_EVENT_TYPE = "telegram_excel_import"
+TELEGRAM_EXCEL_IMPORT_WAITING_SHIPMENT_DATE_STATUS = "waiting_shipment_date"
 TELEGRAM_EXCEL_IMPORT_WAITING_DATE_CHOICE_STATUS = "waiting_date_choice"
 TELEGRAM_EXCEL_IMPORT_ACTIVE_STATUSES = ("pending",)
 TELEGRAM_CHAT_STATE_EVENT_PREFIX = "telegram_chat_state:"
@@ -53,6 +54,7 @@ def find_existing_telegram_import_event(db, document, update_id=None):
         .where(PendingEvent.status.in_((
             "pending",
             "processing",
+            TELEGRAM_EXCEL_IMPORT_WAITING_SHIPMENT_DATE_STATUS,
             TELEGRAM_EXCEL_IMPORT_WAITING_DATE_CHOICE_STATUS,
             "completed",
             "failed",
@@ -386,6 +388,74 @@ class TelegramWorker:
         state["shipment_date"] = shipment_date
         state["shipment_date_updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.save_chat_state(chat_id, state)
+
+    def take_waiting_telegram_import_for_date(self, chat_id):
+        with SessionLocal() as db:
+            stmt = (
+                select(PendingEvent)
+                .where(PendingEvent.event_type == TELEGRAM_EXCEL_IMPORT_EVENT_TYPE)
+                .where(PendingEvent.status == TELEGRAM_EXCEL_IMPORT_WAITING_SHIPMENT_DATE_STATUS)
+                .order_by(PendingEvent.created_at, PendingEvent.id)
+            )
+            events = db.execute(stmt).scalars().all()
+            for event in events:
+                payload = event.payload or {}
+                if normalize_text(payload.get("chat_id")) == normalize_text(chat_id):
+                    return str(event.id), dict(payload)
+        return "", {}
+
+    def confirm_waiting_telegram_import_shipment_date(self, chat_id, shipment_date):
+        parsed_date = parse_date_from_text(shipment_date)
+        event_id, payload = self.take_waiting_telegram_import_for_date(chat_id)
+        if not event_id:
+            return False
+        file_name = normalize_text(payload.get("file_name")) or "Excel-файл"
+        if not parsed_date:
+            self.safe_send_message(
+                chat_id,
+                "\n".join([
+                    "Ожидаю дату отгрузки для Excel-файла.",
+                    "",
+                    f"Файл: {file_name}",
+                    "Отправьте дату одним сообщением в формате ДД.ММ.ГГГГ.",
+                    "Пример: 09.06.2026",
+                ]),
+            )
+            return True
+
+        event_uuid = self.parse_telegram_import_event_id(event_id)
+        if event_uuid is None:
+            self.safe_send_message(chat_id, "Не удалось найти ожидающий импорт. Отправьте Excel-файл заново.")
+            return True
+
+        with SessionLocal() as db:
+            event = db.get(PendingEvent, event_uuid)
+            if event is None or event.event_type != TELEGRAM_EXCEL_IMPORT_EVENT_TYPE:
+                self.safe_send_message(chat_id, "Ожидающий импорт не найден. Отправьте Excel-файл заново.")
+                return True
+            if event.status != TELEGRAM_EXCEL_IMPORT_WAITING_SHIPMENT_DATE_STATUS:
+                self.safe_send_message(chat_id, "Этот Excel-файл уже обработан или находится в очереди.")
+                return True
+            payload = dict(event.payload or {})
+            payload["shipment_date"] = parsed_date
+            payload["shipment_date_source"] = "telegram_manual_input"
+            payload["shipment_date_confirmed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            event.payload = payload
+            event.status = "pending"
+            event.last_error = ""
+            db.commit()
+
+        self.safe_send_message(
+            chat_id,
+            "\n".join([
+                "Дата принята. Excel-файл поставлен в очередь импорта.",
+                "",
+                f"Файл: {file_name}",
+                f"Дата отгрузки: {parsed_date}",
+            ]),
+        )
+        self.process_queued_telegram_imports()
+        return True
 
     def parse_telegram_import_event_id(self, event_id):
         try:
@@ -876,6 +946,7 @@ class TelegramWorker:
                 file_name=file_name,
                 source="telegram",
                 shipment_date=shipment_date,
+                force_shipment_date=bool(parse_date_from_text(shipment_date)),
             )
             meta = import_payload.pop("meta", {})
             result = self.backend_post("/api/v1/imports", import_payload)
@@ -963,10 +1034,27 @@ class TelegramWorker:
             existing_event = find_existing_telegram_import_event(db, document, update_id)
             if existing_event is not None:
                 if existing_event.status == "failed":
-                    existing_event.status = "pending"
+                    payload = dict(existing_event.payload or {})
+                    payload["shipment_date"] = ""
+                    payload["shipment_date_source"] = ""
+                    payload["requeued_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    existing_event.payload = payload
+                    existing_event.status = TELEGRAM_EXCEL_IMPORT_WAITING_SHIPMENT_DATE_STATUS
                     existing_event.last_error = ""
                     existing_event.attempts = 0
                     db.commit()
+                if existing_event.status == TELEGRAM_EXCEL_IMPORT_WAITING_SHIPMENT_DATE_STATUS:
+                    self.safe_send_message(
+                        chat_id,
+                        "\n".join([
+                            "Excel-файл уже получен и ждёт дату отгрузки.",
+                            "",
+                            f"Файл: {file_name}",
+                            "Отправьте дату одним сообщением в формате ДД.ММ.ГГГГ.",
+                            "Пример: 09.06.2026",
+                        ]),
+                    )
+                    return True
                 if existing_event.status == TELEGRAM_EXCEL_IMPORT_WAITING_DATE_CHOICE_STATUS:
                     payload = existing_event.payload or {}
                     conflict_payload = payload.get("date_conflict") or {}
@@ -987,20 +1075,21 @@ class TelegramWorker:
                         "Excel-файл уже есть в очереди импорта.",
                         "",
                         f"Файл: {file_name}",
-                        f"Дата отгрузки: {shipment_date or 'не задана'}",
+                        "Дата отгрузки: уже задана или импорт завершён",
                     ]),
                 )
                 return True
 
             event = PendingEvent(
                 event_type=TELEGRAM_EXCEL_IMPORT_EVENT_TYPE,
-                status="pending",
+                status=TELEGRAM_EXCEL_IMPORT_WAITING_SHIPMENT_DATE_STATUS,
                 payload={
                     "chat_id": normalize_text(chat_id),
                     "document": document,
                     "file_name": file_name,
                     "update_id": update_id,
-                    "shipment_date": shipment_date,
+                    "shipment_date": "",
+                    "shipment_date_source": "",
                     "queued_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 },
             )
@@ -1010,11 +1099,12 @@ class TelegramWorker:
         self.safe_send_message(
             chat_id,
             "\n".join([
-                "Excel-файл поставлен в очередь импорта.",
+                "Excel-файл получен.",
                 "",
                 f"Файл: {file_name}",
-                f"Дата отгрузки: {shipment_date or 'не задана'}",
-                "Если отправить несколько файлов подряд, они будут обработаны по очереди.",
+                "Укажите дату отгрузки одним сообщением в формате ДД.ММ.ГГГГ.",
+                "Пример: 09.06.2026",
+                "Заказы и заявки SkladBot не будут созданы до ввода даты.",
             ]),
         )
         return True
@@ -1145,7 +1235,7 @@ class TelegramWorker:
                     f"- {TELEGRAM_BUTTON_STATUS} - показать общий статус по заказам и КИЗам;",
                     "",
                     "Excel-файлы можно просто отправлять или пересылать в этот чат. Если отправить несколько файлов подряд, они попадут в очередь и обработаются по порядку.",
-                    "Дату можно отправить отдельным сообщением в формате 29.05.2026 или указать в подписи к Excel-файлу.",
+                    "После каждого Excel-файла бот попросит дату отгрузки отдельным сообщением в формате ДД.ММ.ГГГГ.",
                 ]),
             )
             return
@@ -1154,16 +1244,25 @@ class TelegramWorker:
             self.send_message(
                 chat_id,
                 "\n".join([
-                    "Отправьте дату отгрузки сообщением в формате 29.05.2026.",
-                    f"Текущая дата: {current_date or 'не задана'}",
+                    "Для Excel-импорта дата запрашивается после загрузки каждого файла.",
+                    "Если нужно сохранить дату в чате вручную, отправьте её сообщением в формате 29.05.2026.",
+                    f"Сохранённая дата: {current_date or 'не задана'}",
                 ]),
             )
             return
         if text.startswith("/date ") or parse_date_from_text(text) == text:
             shipment_date = parse_date_from_text(text)
             if shipment_date:
+                if self.confirm_waiting_telegram_import_shipment_date(chat_id, shipment_date):
+                    return
                 self.set_chat_shipment_date(chat_id, shipment_date)
-                self.send_message(chat_id, f"Дата отгрузки для следующих Excel-файлов: {shipment_date}")
+                self.send_message(
+                    chat_id,
+                    "\n".join([
+                        f"Дата сохранена: {shipment_date}",
+                        "Для Excel-импорта бот всё равно спросит дату после загрузки файла.",
+                    ]),
+                )
                 return
         if text_matches(text, "/logistics", TELEGRAM_BUTTON_LOGISTICS_REPORT):
             self.show_logistics_dates(chat_id)
@@ -1232,9 +1331,10 @@ class TelegramWorker:
 
         document = message.get("document") or {}
         if document:
-            caption_date = parse_date_from_text(message.get("caption"))
-            shipment_date = caption_date or self.get_chat_shipment_date(chat_id)
-            self.enqueue_telegram_document(chat_id, document, update_id=update.get("update_id"), shipment_date=shipment_date)
+            self.enqueue_telegram_document(chat_id, document, update_id=update.get("update_id"), shipment_date="")
+            return
+
+        if text and self.confirm_waiting_telegram_import_shipment_date(chat_id, text):
             return
 
         self.send_message(chat_id, "Команда не распознана. Используйте нижнее меню Telegram или отправьте Excel-файл.")

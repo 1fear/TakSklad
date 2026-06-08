@@ -573,6 +573,7 @@ class BackendTelegramImportTests(unittest.TestCase):
 
         worker.set_chat_shipment_date = fake_set_chat_shipment_date
         worker.send_message = fake_send
+        worker.confirm_waiting_telegram_import_shipment_date = lambda chat_id, shipment_date: False
 
         worker.handle_update({
             "update_id": 11,
@@ -583,22 +584,19 @@ class BackendTelegramImportTests(unittest.TestCase):
         })
 
         self.assertEqual(saved, [("123", "29.05.2026")])
-        self.assertIn("Дата отгрузки", messages[0][1])
+        self.assertIn("Дата сохранена: 29.05.2026", messages[0][1])
+        self.assertIn("бот всё равно спросит дату", messages[0][1])
 
     def test_telegram_worker_enqueues_excel_document_from_message(self):
         worker = TelegramWorker.__new__(TelegramWorker)
         worker.allowed_chat_ids = set()
         calls = []
 
-        def fake_get_chat_shipment_date(chat_id):
-            return "29.05.2026"
-
         def fake_enqueue(chat_id, document, update_id=None, shipment_date=""):
             calls.append((chat_id, document, update_id, shipment_date))
             return True
 
         worker.enqueue_telegram_document = fake_enqueue
-        worker.get_chat_shipment_date = fake_get_chat_shipment_date
 
         worker.handle_update({
             "update_id": 77,
@@ -608,7 +606,150 @@ class BackendTelegramImportTests(unittest.TestCase):
             },
         })
 
-        self.assertEqual(calls, [("123", {"file_name": "orders.xlsx", "file_id": "file-1"}, 77, "29.05.2026")])
+        self.assertEqual(calls, [("123", {"file_name": "orders.xlsx", "file_id": "file-1"}, 77, "")])
+
+    def test_telegram_worker_enqueues_document_waiting_for_manual_shipment_date(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        original_session_local = telegram_worker_module.SessionLocal
+        try:
+            messages = []
+            worker = TelegramWorker.__new__(TelegramWorker)
+            worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
+            telegram_worker_module.SessionLocal = SessionLocal
+
+            result = worker.enqueue_telegram_document(
+                "123",
+                {"file_name": "orders.xlsx", "file_id": "file-1"},
+                update_id=77,
+            )
+
+            with SessionLocal() as db:
+                event = db.execute(select(PendingEvent)).scalar_one()
+                payload = event.payload
+
+            self.assertTrue(result)
+            self.assertEqual(event.status, telegram_worker_module.TELEGRAM_EXCEL_IMPORT_WAITING_SHIPMENT_DATE_STATUS)
+            self.assertEqual(payload["shipment_date"], "")
+            self.assertEqual(payload["shipment_date_source"], "")
+            self.assertIn("Укажите дату отгрузки", messages[0][1])
+            self.assertIn("ДД.ММ.ГГГГ", messages[0][1])
+        finally:
+            telegram_worker_module.SessionLocal = original_session_local
+            Base.metadata.drop_all(engine)
+            engine.dispose()
+
+    def test_telegram_worker_manual_date_moves_waiting_import_to_pending(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        original_session_local = telegram_worker_module.SessionLocal
+        try:
+            with SessionLocal() as db:
+                event = PendingEvent(
+                    event_type=telegram_worker_module.TELEGRAM_EXCEL_IMPORT_EVENT_TYPE,
+                    status=telegram_worker_module.TELEGRAM_EXCEL_IMPORT_WAITING_SHIPMENT_DATE_STATUS,
+                    payload={
+                        "chat_id": "123",
+                        "file_name": "orders.xlsx",
+                        "document": {"file_name": "orders.xlsx", "file_id": "file-1"},
+                        "shipment_date": "",
+                    },
+                )
+                db.add(event)
+                db.commit()
+
+            messages = []
+            processed = []
+            worker = TelegramWorker.__new__(TelegramWorker)
+            worker.allowed_chat_ids = set()
+            worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
+            worker.process_queued_telegram_imports = lambda: processed.append(True)
+            telegram_worker_module.SessionLocal = SessionLocal
+
+            worker.handle_update({
+                "update_id": 78,
+                "message": {
+                    "chat": {"id": 123},
+                    "text": "09.06.2026",
+                },
+            })
+
+            with SessionLocal() as db:
+                event = db.execute(select(PendingEvent)).scalar_one()
+                payload = event.payload
+
+            self.assertEqual(event.status, "pending")
+            self.assertEqual(event.last_error, "")
+            self.assertEqual(payload["shipment_date"], "09.06.2026")
+            self.assertEqual(payload["shipment_date_source"], "telegram_manual_input")
+            self.assertEqual(processed, [True])
+            self.assertIn("Дата принята", messages[0][1])
+        finally:
+            telegram_worker_module.SessionLocal = original_session_local
+            Base.metadata.drop_all(engine)
+            engine.dispose()
+
+    def test_telegram_worker_repeats_prompt_for_invalid_manual_import_date(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        original_session_local = telegram_worker_module.SessionLocal
+        try:
+            with SessionLocal() as db:
+                event = PendingEvent(
+                    event_type=telegram_worker_module.TELEGRAM_EXCEL_IMPORT_EVENT_TYPE,
+                    status=telegram_worker_module.TELEGRAM_EXCEL_IMPORT_WAITING_SHIPMENT_DATE_STATUS,
+                    payload={
+                        "chat_id": "123",
+                        "file_name": "orders.xlsx",
+                        "document": {"file_name": "orders.xlsx", "file_id": "file-1"},
+                        "shipment_date": "",
+                    },
+                )
+                db.add(event)
+                db.commit()
+
+            messages = []
+            processed = []
+            worker = TelegramWorker.__new__(TelegramWorker)
+            worker.allowed_chat_ids = set()
+            worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
+            worker.process_queued_telegram_imports = lambda: processed.append(True)
+            telegram_worker_module.SessionLocal = SessionLocal
+
+            worker.handle_update({
+                "update_id": 79,
+                "message": {
+                    "chat": {"id": 123},
+                    "text": "завтра",
+                },
+            })
+
+            with SessionLocal() as db:
+                event = db.execute(select(PendingEvent)).scalar_one()
+
+            self.assertEqual(event.status, telegram_worker_module.TELEGRAM_EXCEL_IMPORT_WAITING_SHIPMENT_DATE_STATUS)
+            self.assertEqual(processed, [])
+            self.assertIn("Ожидаю дату отгрузки", messages[0][1])
+            self.assertIn("ДД.ММ.ГГГГ", messages[0][1])
+        finally:
+            telegram_worker_module.SessionLocal = original_session_local
+            Base.metadata.drop_all(engine)
+            engine.dispose()
 
     def test_telegram_worker_processes_multiple_queued_imports(self):
         worker = TelegramWorker.__new__(TelegramWorker)
@@ -639,7 +780,7 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertEqual(imported, [("123", "a.xlsx", ""), ("123", "b.xlsx", "")])
         self.assertEqual(finished, [("event-1", True, ""), ("event-2", True, "")])
 
-    def test_telegram_worker_waits_for_user_choice_on_date_conflict(self):
+    def test_telegram_worker_manual_shipment_date_overrides_excel_date(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             source_path = Path(tmp_dir) / "orders.xlsx"
             create_conflicting_date_workbook(source_path)
@@ -649,23 +790,30 @@ class BackendTelegramImportTests(unittest.TestCase):
             worker.file_timeout = 120
             worker.max_file_size = 20 * 1024 * 1024
             messages = []
-            waiting = []
+            calls = {}
 
             def fake_download(document, destination_path):
                 shutil.copyfile(source_path, destination_path)
 
             def fake_backend_post(path, payload):
-                raise AssertionError("backend import must not run before date choice")
-
-            def fake_waiting(event_id, conflict):
-                waiting.append((event_id, conflict.telegram_date, conflict.excel_date))
+                calls["path"] = path
+                calls["payload"] = payload
+                return {
+                    "status": "completed",
+                    "items_created": len(payload["rows"]),
+                    "orders_created": 1,
+                    "duplicate_rows": 0,
+                    "invalid_rows": 0,
+                    "errors": [],
+                    "backend_address_updates": 0,
+                    "google_sheets_status": "disabled",
+                }
 
             def fake_send(chat_id, text, reply_markup=None):
                 messages.append((chat_id, text, reply_markup))
 
             worker.download_telegram_document = fake_download
             worker.backend_post = fake_backend_post
-            worker.mark_telegram_import_waiting_date_choice = fake_waiting
             worker.safe_send_message = fake_send
 
             result = worker.import_telegram_document(
@@ -675,16 +823,10 @@ class BackendTelegramImportTests(unittest.TestCase):
                 event_id="11111111-1111-1111-1111-111111111111",
             )
 
-        self.assertEqual(result, (None, "date_choice_required"))
-        self.assertEqual(waiting, [("11111111-1111-1111-1111-111111111111", "08.06.2026", "09.06.2026")])
-        self.assertIn("Найден конфликт дат", messages[-1][1])
-        keyboard = messages[-1][2]["inline_keyboard"]
-        self.assertEqual(keyboard[0][0]["text"], "Использовать дату Excel: 09.06.2026")
-        self.assertEqual(
-            keyboard[0][0]["callback_data"],
-            "excel_date:use_excel:11111111-1111-1111-1111-111111111111",
-        )
-        self.assertEqual(keyboard[1][0]["callback_data"], "excel_date:cancel:11111111-1111-1111-1111-111111111111")
+        self.assertEqual(result, (True, ""))
+        self.assertEqual(calls["path"], "/api/v1/imports")
+        self.assertEqual(calls["payload"]["rows"][0]["Дата отгрузки"], "08.06.2026")
+        self.assertIn("Дата отгрузки: 08.06.2026", messages[-1][1])
 
     def test_telegram_worker_does_not_finish_event_while_waiting_for_date_choice(self):
         worker = TelegramWorker.__new__(TelegramWorker)
@@ -1041,9 +1183,6 @@ class BackendTelegramImportTests(unittest.TestCase):
         def fake_error(chat_id, text, reply_markup=None):
             errors.append((chat_id, text))
 
-        def fake_get_chat_shipment_date(chat_id):
-            return "31.05.2026"
-
         def fake_enqueue(chat_id, document, update_id=None, shipment_date=""):
             enqueued.append((chat_id, document, update_id, shipment_date))
             return True
@@ -1054,7 +1193,6 @@ class BackendTelegramImportTests(unittest.TestCase):
         worker.telegram_request = fake_telegram_request
         worker.show_logistics_dates = fake_show_logistics_dates
         worker.safe_send_message = fake_error
-        worker.get_chat_shipment_date = fake_get_chat_shipment_date
         worker.enqueue_telegram_document = fake_enqueue
         worker.save_offset = fake_save_offset
         worker.process_queued_telegram_imports = lambda: 0
@@ -1069,7 +1207,7 @@ class BackendTelegramImportTests(unittest.TestCase):
             "123",
             {"file_name": "orders.xlsx", "file_id": "file-1"},
             102,
-            "31.05.2026",
+            "",
         )])
 
     def test_telegram_worker_handles_hidden_logs_command(self):

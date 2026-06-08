@@ -4,6 +4,22 @@
 
 ## 2026-06-08
 
+### Telegram Excel import: обязательный ручной ввод даты после файла
+
+- Причина: после исправления приоритета Excel-даты Антон утвердил более жёсткий рабочий процесс: при загрузке файла бот всегда спрашивает дату отгрузки, а оператор вводит её вручную в формате `ДД.ММ.ГГГГ`.
+- Решение:
+  - новый статус Telegram import-события `waiting_shipment_date`;
+  - Excel-документ после загрузки не попадает в `pending` сразу и не уходит в backend;
+  - следующий ручной ввод даты переводит самое раннее ожидающее событие этого чата в `pending`;
+  - `telegram_worker` запускает очередь только после подтверждения даты;
+  - `excel_importer` получил явный режим `force_shipment_date`, в котором ручная дата переопределяет дату из Excel;
+  - сохранённая дата чата больше не используется для автоматического Excel import.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_backend_telegram_import` - 43 tests OK.
+  - `./.venv/bin/python -m unittest discover tests` - 372 tests OK.
+  - `./.venv/bin/python -m compileall -q backend/app src/taksklad tools main.py tests` - OK.
+  - `git diff --check` - OK.
+
 ### Telegram Excel import date-source guard
 
 - Причина: боевой Telegram import файла `Шаблон_отправки_заказов_на_склад_09_06_2026.xlsx` получил старую сохранённую Telegram-дату `08.06.2026`; из-за прежнего приоритета `shipment_date` перед датой Excel заказы и SkladBot-заявки создались с `unloading_date=2026-06-08`.

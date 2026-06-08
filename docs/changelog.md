@@ -4,6 +4,26 @@
 
 ## 2026-06-08
 
+### Ручной выбор даты для Telegram Excel import
+
+**Файлы:** `backend/app/telegram_worker.py`, `backend/app/excel_importer.py`, `tests/test_backend_telegram_import.py`, `docs/*`.
+
+**Что стало:**
+
+- После загрузки Excel-файла через Telegram бот не создаёт заказы сразу.
+- Файл получает статус `waiting_shipment_date` и ждёт ответ оператора.
+- Оператор отправляет дату одним сообщением в формате `ДД.ММ.ГГГГ`.
+- Только после этого import переводится в `pending` и отправляется в backend.
+- Введённая дата считается осознанным выбором пользователя и переопределяет дату внутри Excel.
+- Старая сохранённая дата чата больше не используется для автоматической загрузки Excel.
+
+**Проверки:**
+
+- `./.venv/bin/python -m unittest tests.test_backend_telegram_import` - 43 tests OK.
+- `./.venv/bin/python -m unittest discover tests` - 372 tests OK.
+- `./.venv/bin/python -m compileall -q backend/app src/taksklad tools main.py tests` - OK.
+- `git diff --check` - OK.
+
 ### Защита Telegram Excel import от старой сохранённой даты
 
 **Файлы:** `backend/app/excel_importer.py`, `tests/test_backend_telegram_import.py`, `docs/*`.

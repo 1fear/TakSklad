@@ -564,7 +564,7 @@ def reverse_geocode_yandex(coordinates, cache=None):
     return result
 
 
-def excel_file_to_import_payload(file_path, file_name=None, source="telegram", shipment_date=None):
+def excel_file_to_import_payload(file_path, file_name=None, source="telegram", shipment_date=None, force_shipment_date=False):
     file_name = normalize_text(file_name) or Path(file_path).name
     if not is_supported_excel_file_name(file_name):
         raise ValueError("Поддерживаются только Excel-файлы .xlsx и .xlsm")
@@ -580,7 +580,9 @@ def excel_file_to_import_payload(file_path, file_name=None, source="telegram", s
         columns = source_info["columns"]
         telegram_shipment_date = parse_date_text(shipment_date)
         excel_default_date = source_info.get("default_date") or ""
-        default_date = excel_default_date or telegram_shipment_date or datetime.now().strftime("%d.%m.%Y")
+        default_date = telegram_shipment_date if force_shipment_date and telegram_shipment_date else (
+            excel_default_date or telegram_shipment_date or datetime.now().strftime("%d.%m.%Y")
+        )
         sha256 = file_sha256(file_path)
         default_pieces_per_block = max(1, int(os.environ.get("TAKSKLAD_DEFAULT_PIECES_PER_BLOCK", "10") or "10"))
         default_block_price = max(0, int(os.environ.get("TAKSKLAD_DEFAULT_BLOCK_PRICE", "240000") or "240000"))
@@ -613,9 +615,12 @@ def excel_file_to_import_payload(file_path, file_name=None, source="telegram", s
 
             row_date = parse_date_text(get_cell(row, columns.get("date")))
             excel_date = row_date or excel_default_date
-            if telegram_shipment_date and excel_date and excel_date != telegram_shipment_date:
+            if force_shipment_date and telegram_shipment_date:
+                date_value = telegram_shipment_date
+            elif telegram_shipment_date and excel_date and excel_date != telegram_shipment_date:
                 raise ExcelDateConflictError(telegram_shipment_date, excel_date)
-            date_value = excel_date or telegram_shipment_date or default_date
+            else:
+                date_value = excel_date or telegram_shipment_date or default_date
             address = clean_address_for_display(get_cell(row, columns.get("address")))
             coordinates = normalize_coordinates_from_row(row, columns)
             if not address and coordinates:
