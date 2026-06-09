@@ -4840,3 +4840,27 @@ cd /opt/taksklad/app
   - `python -m unittest discover tests` - 363 tests OK;
   - `python -m compileall -q backend/app src/taksklad tools main.py tests` - OK;
   - `npm run build` в `frontend` - OK.
+
+### Release 2.0.10 aggregate box KIZ rollout
+
+- Причина: склад должен сканировать агрегационный КИЗ короба как `+50` блоков без ручного сканирования каждого блока, при этом SKU должен проверяться по коду.
+- Изменено:
+  - `APP_VERSION` desktop и backend поднят до `2.0.10`;
+  - backend хранит для скана `scan_type` и `block_quantity` в `scan_codes.raw_payload`;
+  - один агрегационный код короба закрывает `50` блоков;
+  - backend и desktop отклоняют короб, если SKU кода не совпадает с текущей позицией;
+  - backend и desktop отклоняют короб, если в позиции осталось меньше `50` блоков;
+  - отчеты считают блоки с учетом `block_quantity`, а не только количества строк КИЗов;
+  - SkladBot API throttling оставлен с безопасной задержкой между запросами.
+- GitHub release:
+  - создан `v2.0.10`;
+  - GitHub Actions `Build Windows Release` загрузил `TakSklad.exe` и `TakSklad-windows-x64.zip`;
+  - onefile и onedir smoke `--smoke-import` прошли в workflow.
+- SHA:
+  - `TakSklad.exe`: `947610bc0f3afef0c047f72c9a5f48dc0029bbfb12c86b6a8a5442ca8b9b70fa`;
+  - `TakSklad-windows-x64.zip`: `54727d347b55294dc0b70ea1b5f3655d2ac7e421e0a6678785f8d0ed617eb770`.
+- VDS:
+  - перед деплоем создан backup Postgres `/opt/taksklad/backups/postgres/taksklad-postgres-20260609T114700Z.sql.gz`;
+  - restore point `/opt/taksklad/restore_points/pre-2010-aggregate-release-20260609T114711Z`;
+  - пересобраны `backend-api`, `frontend`, `telegram-worker`, `skladbot-worker`, `google-sheets-sync-worker`;
+  - `https://api.taksklad.uz/health` вернул backend `2.0.10`.
