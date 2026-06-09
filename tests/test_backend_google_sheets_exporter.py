@@ -15,10 +15,14 @@ def col_to_index(col):
 
 
 class FakeSheet:
-    def __init__(self, title, rows):
+    def __init__(self, title, rows, row_count=None, col_count=None, strict_grid=False):
         self.title = title
         self.rows = rows
         self.spreadsheet = None
+        self.row_count = row_count if row_count is not None else len(rows)
+        self.col_count = col_count if col_count is not None else max((len(row) for row in rows), default=0)
+        self.strict_grid = strict_grid
+        self.resize_calls = []
 
     def get_all_values(self):
         return self.rows
@@ -31,6 +35,15 @@ class FakeSheet:
 
     def append_row(self, row, value_input_option=None):
         self.rows.append(list(row))
+        self.row_count = max(self.row_count, len(self.rows))
+        self.col_count = max(self.col_count, len(row))
+
+    def resize(self, rows=None, cols=None):
+        if rows is not None:
+            self.row_count = max(self.row_count, int(rows))
+        if cols is not None:
+            self.col_count = max(self.col_count, int(cols))
+        self.resize_calls.append({"rows": rows, "cols": cols})
 
     def batch_update(self, updates, value_input_option=None):
         for update in updates:
@@ -40,12 +53,18 @@ class FakeSheet:
             start_col = col_to_index(match.group(1))
             start_row = int(match.group(2)) - 1
             for row_offset, values_row in enumerate(update.get("values") or []):
+                if self.strict_grid:
+                    target_row = start_row + row_offset + 1
+                    target_col = start_col + len(values_row)
+                    if target_row > self.row_count or target_col > self.col_count:
+                        raise RuntimeError("range exceeds grid limits")
                 for col_offset, value in enumerate(values_row):
                     self.ensure_size(start_row + row_offset, start_col + col_offset)
                     self.rows[start_row + row_offset][start_col + col_offset] = value
 
     def delete_rows(self, row_number):
         del self.rows[row_number - 1]
+        self.row_count = max(0, self.row_count - 1)
 
 
 class FakeSpreadsheet:
@@ -312,6 +331,26 @@ class BackendGoogleSheetsExporterTests(unittest.TestCase):
         header_idx = exporter.get_header_index(archive_sheet.rows[0])
         self.assertEqual(archive_sheet.rows[1][header_idx["Отсканированные коды"]], "0101")
         self.assertEqual(archive_sheet.rows[2][header_idx["Отсканированные коды"]], "0102\n0103")
+
+    def test_archive_backend_orders_rows_resizes_archive_before_batch_append(self):
+        header = exporter.build_import_sheet_header()
+        item_one = self.make_item("import-1", "order-1", codes=["0101"])
+        item_two = self.make_item("import-2", "order-2", codes=["0102"])
+        data_sheet = FakeSheet("data", [
+            header.copy(),
+            self.make_row("import-1", "order-1"),
+            self.make_row("import-2", "order-2"),
+        ])
+        archive_sheet = FakeSheet("Архив", [header.copy()], row_count=1, col_count=len(header), strict_grid=True)
+
+        result = exporter.archive_backend_orders_rows(data_sheet, archive_sheet, [
+            self.make_order([item_one], order_id="backend-order-1"),
+            self.make_order([item_two], order_id="backend-order-2"),
+        ])
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["archived"], 2)
+        self.assertEqual(archive_sheet.resize_calls[-1], {"rows": 3, "cols": len(header)})
 
     def test_archive_backend_orders_rows_skips_order_already_archived(self):
         header = exporter.build_import_sheet_header()

@@ -618,6 +618,7 @@ def archive_backend_orders_rows(data_sheet, archive_sheet, orders, sheet_status=
     if rows_to_archive:
         start_row = max(2, len(archive_rows) + 1)
         end_col = column_index_to_letter(header_len - 1)
+        ensure_sheet_capacity(archive_sheet, rows=start_row + len(rows_to_archive) - 1, cols=header_len)
         archive_sheet.batch_update([{
             "range": f"A{start_row}:{end_col}{start_row + len(rows_to_archive) - 1}",
             "values": rows_to_archive,
@@ -962,6 +963,22 @@ def ensure_import_sheet_layout(sheet):
             "values": [header],
         }], value_input_option="USER_ENTERED")
     return header
+
+
+def ensure_sheet_capacity(sheet, rows=None, cols=None):
+    current_rows = int(getattr(sheet, "row_count", 0) or 0)
+    current_cols = int(getattr(sheet, "col_count", 0) or 0)
+    target_rows = max(current_rows, int(rows or 0))
+    target_cols = max(current_cols, int(cols or 0))
+    if target_rows <= current_rows and target_cols <= current_cols:
+        return
+    resize = getattr(sheet, "resize", None)
+    if not callable(resize):
+        return
+    try:
+        resize(rows=target_rows or None, cols=target_cols or None)
+    except TypeError:
+        resize(target_rows or None, target_cols or None)
 
 
 def build_import_record_row(record):

@@ -4864,3 +4864,15 @@ cd /opt/taksklad/app
   - restore point `/opt/taksklad/restore_points/pre-2010-aggregate-release-20260609T114711Z`;
   - пересобраны `backend-api`, `frontend`, `telegram-worker`, `skladbot-worker`, `google-sheets-sync-worker`;
   - `https://api.taksklad.uz/health` вернул backend `2.0.10`.
+
+### Google Archive grid expansion hotfix
+
+- После релиза `2.0.10` VDS acceptance выявил blocker в Google mirror:
+  - `Range ('Архив'!A986:AI1031) exceeds grid limits. Max rows: 985`.
+- Причина: batch archive export писал в `Архив` за пределы текущего размера worksheet без предварительного `resize`.
+- Исправлено:
+  - `archive_backend_orders_rows()` расширяет worksheet перед batch append;
+  - добавлен regression test со strict grid.
+- Проверено:
+  - `python -m unittest tests.test_backend_google_sheets_exporter` - 16 tests OK;
+  - `python -m unittest discover -s tests` - 394 tests OK.
