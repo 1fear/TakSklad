@@ -4,6 +4,25 @@
 
 ## 2026-06-09
 
+### План и факт в списке заявок SkladBot daily report
+
+**Файлы:** `backend/app/skladbot_daily_report.py`, `tests/test_skladbot_daily_report.py`, `docs/*`.
+
+**Что стало:**
+
+- На листе `Заявки` вместо одной колонки `Блоков` теперь есть `Блоков план`, `Блоков факт`, `Отклонение`.
+- На листе `Товары заявок` добавлены `Блоков план`, `Принято факт`, `Блоков факт`, `Отклонение`.
+- Кейс приемки `план 1 / acceptedAmount 1750` теперь виден прямо в списке заявок и товарах заявки, а не только в сводке.
+- Автоматическая отправка не менялась: ежедневный отчет остается по расписанию `22:00`.
+
+**Проверки:**
+
+- `./.venv/bin/python -m unittest tests.test_skladbot_daily_report` - 7 tests OK.
+- `./.venv/bin/python -m unittest discover tests` - 402 tests OK.
+- `./.venv/bin/python -m compileall -q backend/app src/taksklad tools main.py tests` - OK.
+- `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK.
+- `git diff --check` - OK.
+
 ### Фактическая приемка в ежедневном SkladBot отчете
 
 **Файлы:** `backend/app/skladbot_daily_report.py`, `backend/app/skladbot_worker.py`, `tests/test_skladbot_daily_report.py`, `docs/*`.

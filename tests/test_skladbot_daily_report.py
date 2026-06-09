@@ -308,10 +308,18 @@ class SkladBotDailyReportTests(unittest.TestCase):
         requests_sheet = workbook["Заявки"]
         self.assertEqual([cell.value for cell in requests_sheet[1]], REQUEST_HEADERS)
         self.assertEqual(requests_sheet.max_row, 4)
-        request_row = {header: requests_sheet.cell(row=2, column=index + 1).value for index, header in enumerate(REQUEST_HEADERS)}
-        self.assertEqual(request_row["Номер"], "WH-R-101")
-        self.assertEqual(request_row["Юрлицо/точка"], "XASAN XUSAN SAVDO SERVIS XK")
-        self.assertEqual(request_row["Блоков"], 4)
+        request_rows = [
+            {header: requests_sheet.cell(row=row, column=index + 1).value for index, header in enumerate(REQUEST_HEADERS)}
+            for row in range(2, requests_sheet.max_row + 1)
+        ]
+        request_by_number = {row["Номер"]: row for row in request_rows}
+        self.assertEqual(request_by_number["WH-R-101"]["Юрлицо/точка"], "XASAN XUSAN SAVDO SERVIS XK")
+        self.assertEqual(request_by_number["WH-R-101"]["Блоков план"], 4)
+        self.assertEqual(request_by_number["WH-R-101"]["Блоков факт"], 4)
+        self.assertEqual(request_by_number["WH-R-101"]["Отклонение"], 0)
+        self.assertEqual(request_by_number["WH-R-303"]["Блоков план"], 1)
+        self.assertEqual(request_by_number["WH-R-303"]["Блоков факт"], 500)
+        self.assertEqual(request_by_number["WH-R-303"]["Отклонение"], 499)
 
         products_sheet = workbook["Товары заявок"]
         self.assertEqual([cell.value for cell in products_sheet[1]], REQUEST_PRODUCT_HEADERS)
@@ -320,6 +328,11 @@ class SkladBotDailyReportTests(unittest.TestCase):
             for row in range(2, products_sheet.max_row + 1)
         ]
         self.assertIn("Chapman Gold SSL", [row["Товар"] for row in product_rows])
+        gold_product_row = next(row for row in product_rows if row["Товар"] == "Chapman Gold SSL")
+        self.assertEqual(gold_product_row["Блоков план"], 1)
+        self.assertEqual(gold_product_row["Принято факт"], 500)
+        self.assertEqual(gold_product_row["Блоков факт"], 500)
+        self.assertEqual(gold_product_row["Отклонение"], 499)
 
         movements_sheet = workbook["Движения"]
         self.assertEqual([cell.value for cell in movements_sheet[1]], MOVEMENT_HEADERS)

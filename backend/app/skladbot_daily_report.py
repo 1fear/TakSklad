@@ -41,7 +41,9 @@ REQUEST_HEADERS = [
     "Клиент SkladBot",
     "Адрес",
     "Комментарий",
-    "Блоков",
+    "Блоков план",
+    "Блоков факт",
+    "Отклонение",
     "Товаров",
     "Причина включения",
 ]
@@ -55,7 +57,10 @@ REQUEST_PRODUCT_HEADERS = [
     "Товар",
     "Артикул",
     "Штрихкод",
-    "Блоков",
+    "Блоков план",
+    "Принято факт",
+    "Блоков факт",
+    "Отклонение",
 ]
 
 MOVEMENT_HEADERS = [
@@ -713,6 +718,8 @@ def write_summary_sheet(sheet, report: dict[str, Any]) -> None:
 def write_requests_sheet(sheet, requests: list[dict[str, Any]]) -> None:
     sheet.append(REQUEST_HEADERS)
     for request in requests:
+        planned_blocks = request_blocks(request)
+        actual_blocks = request_report_blocks(request)
         sheet.append([
             request.get("id") or "",
             request.get("number") or "",
@@ -727,7 +734,9 @@ def write_requests_sheet(sheet, requests: list[dict[str, Any]]) -> None:
             request.get("customer_name") or "",
             request.get("address") or "",
             request.get("comment") or "",
-            request_blocks(request),
+            planned_blocks,
+            actual_blocks,
+            actual_blocks - planned_blocks,
             len(request.get("products") or []),
             ", ".join(request.get("include_reasons") or []),
         ])
@@ -737,7 +746,11 @@ def write_requests_sheet(sheet, requests: list[dict[str, Any]]) -> None:
 def write_request_products_sheet(sheet, requests: list[dict[str, Any]]) -> None:
     sheet.append(REQUEST_PRODUCT_HEADERS)
     for request in requests:
+        category = normalize_text(request.get("category")) or "Прочее"
         for product in request.get("products") or []:
+            planned_blocks = parse_int(product.get("amount"))
+            actual_blocks = report_product_blocks(product, category)
+            accepted_amount = parse_int(product.get("accepted_amount"))
             sheet.append([
                 request.get("number") or "",
                 request.get("id") or "",
@@ -747,7 +760,10 @@ def write_request_products_sheet(sheet, requests: list[dict[str, Any]]) -> None:
                 product.get("name") or "",
                 product.get("vendor_code") or "",
                 product.get("barcode") or "",
-                product.get("amount") or 0,
+                planned_blocks,
+                accepted_amount,
+                actual_blocks,
+                actual_blocks - planned_blocks,
             ])
     apply_header_style(sheet)
 
@@ -890,8 +906,8 @@ def autosize_columns(sheet) -> None:
 def apply_report_template_widths(workbook: Workbook) -> None:
     widths_by_sheet = {
         "Сводка": {"A": 28, "B": 21, "C": 13.44, "D": 13, "E": 13, "F": 13},
-        "Заявки": {"A": 10, "B": 13, "C": 11, "D": 20, "E": 11, "F": 10, "G": 15, "H": 17, "I": 15, "J": 45, "K": 33, "L": 60, "M": 13, "N": 10, "O": 13, "P": 24},
-        "Товары заявок": {"A": 13, "B": 11, "C": 20, "D": 15, "E": 45, "F": 36, "G": 17, "H": 15, "I": 10},
+        "Заявки": {"A": 10, "B": 13, "C": 11, "D": 20, "E": 11, "F": 10, "G": 15, "H": 17, "I": 15, "J": 45, "K": 33, "L": 60, "M": 13, "N": 12, "O": 12, "P": 12, "Q": 10, "R": 24},
+        "Товары заявок": {"A": 13, "B": 11, "C": 20, "D": 15, "E": 45, "F": 36, "G": 17, "H": 15, "I": 12, "J": 13, "K": 12, "L": 12},
         "Движения": {"A": 13, "B": 10, "C": 17, "D": 14, "E": 10, "F": 13, "G": 13, "H": 13, "I": 13, "J": 13, "K": 13},
         "Остатки": {"A": 29, "B": 10, "C": 13, "D": 13, "E": 13, "F": 17, "G": 21, "H": 10},
         "Ошибки": {"A": 10},
