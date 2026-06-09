@@ -4922,3 +4922,10 @@ cd /opt/taksklad/app
 - Проверено до релиза:
   - `python -m unittest tests.test_desktop_ui_contract tests.test_scan_quantities tests.test_release_preflight tests.test_vds_acceptance_scripts tests.test_windows_test_build_helper` - 46 tests OK;
   - `python -m py_compile main.py src/taksklad/*.py backend/app/*.py tools/release_preflight.py` - OK.
+- Release:
+  - `APP_VERSION` desktop и backend поднят до `2.0.12`;
+  - создан GitHub release `v2.0.12`;
+  - GitHub Actions `Build Windows Release` завершился успешно, onefile и onedir smoke прошли;
+  - `TakSklad.exe`: `f8e1cd72c10085b897f74edc216a0387957345b4624c85a2be820ac58a34c560`;
+  - `TakSklad-windows-x64.zip`: `0690ae0e93158dcb4d4c4eb36ce19f520f36b4a98ef05853bf0072fed6ac7acd`;
+  - public `version.json` подготовлен к forced rollout `2.0.12`.

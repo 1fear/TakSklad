@@ -1,12 +1,12 @@
 {
-  "latest_version": "2.0.11",
-  "min_supported_version": "2.0.11",
+  "latest_version": "2.0.12",
+  "min_supported_version": "2.0.12",
   "mandatory": true,
   "package_type": "onefile_exe",
   "entrypoint": "TakSklad.exe",
-  "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.11/TakSklad.exe",
-  "sha256": "9427e26491634e2f4ad4ea2522edca1043a23e2b22c73604ef09e5d35d6821e2",
-  "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.11/TakSklad-windows-x64.zip",
-  "sha256_onedir": "9300e76dee46fb19f2666638ba5b8e7629c9ad3f192bd98a3a093dcef7db4364",
-  "message": "TakSklad 2.0.11: обязательное обновление. Добавлена строгая проверка Chapman SKU: Red/Brown/Gold КИЗ нельзя записать в чужую позицию. Нажмите Да, дождитесь установки и запускайте только TakSklad.exe из новой папки."
+  "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.12/TakSklad.exe",
+  "sha256": "f8e1cd72c10085b897f74edc216a0387957345b4624c85a2be820ac58a34c560",
+  "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.12/TakSklad-windows-x64.zip",
+  "sha256_onedir": "0690ae0e93158dcb4d4c4eb36ce19f520f36b4a98ef05853bf0072fed6ac7acd",
+  "message": "TakSklad 2.0.12: обязательное обновление. Ошибки сканирования больше не блокируют работу модальным OK, а показываются снизу на 5 секунд. Проверка Chapman SKU Red/Brown/Gold остается включенной."
 }
