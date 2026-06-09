@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from .models import Order, OrderItem
 from .orders_service import ApiError, COMPLETED_STATUSES
+from .scan_quantities import scan_block_quantity
 from .schemas import (
     DayReportOrder,
     DayReportPaymentGroup,
@@ -106,7 +107,7 @@ def summarize_order(order: Order, report_date: date):
     planned_blocks = sum(max(0, item.quantity_blocks or 0) for item in items)
     scanned_blocks = sum(max(0, item.scanned_blocks or 0) for item in items)
     scanned_today = sum(
-        1
+        scan_block_quantity(scan)
         for item in items
         for scan in item.scan_codes
         if scan_business_date(scan) == report_date

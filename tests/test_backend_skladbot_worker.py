@@ -119,13 +119,15 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
             "SKLADBOT_API_TOKENS": "token-a,token-b,token-c",
             "SKLADBOT_API_MAX_RETRIES": "2",
             "SKLADBOT_REQUEST_DELAY_SECONDS": "20",
-            "SKLADBOT_TOKEN_SWITCH_DELAY_SECONDS": "0",
-        }, clear=True), mock.patch("backend.app.skladbot_worker.httpx.Client", FakeHttpClient):
+        }, clear=True), mock.patch("backend.app.skladbot_worker.httpx.Client", FakeHttpClient), mock.patch(
+            "backend.app.skladbot_worker.time.sleep"
+        ) as sleep_mock:
             client = SkladBotClient()
             result = client.get("/requests")
 
         self.assertEqual(result, {"ok": True})
         self.assertEqual(calls, ["Bearer token-a", "Bearer token-b"])
+        sleep_mock.assert_called_once_with(30.0)
 
     def test_skladbot_client_can_reach_tenth_token_despite_default_retry_setting(self):
         calls = []
@@ -164,14 +166,58 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
             "SKLADBOT_API_TOKENS": token_pool,
             "SKLADBOT_API_MAX_RETRIES": "2",
             "SKLADBOT_REQUEST_DELAY_SECONDS": "20",
-            "SKLADBOT_TOKEN_SWITCH_DELAY_SECONDS": "0",
-        }, clear=True), mock.patch("backend.app.skladbot_worker.httpx.Client", FakeHttpClient):
+        }, clear=True), mock.patch("backend.app.skladbot_worker.httpx.Client", FakeHttpClient), mock.patch(
+            "backend.app.skladbot_worker.time.sleep"
+        ) as sleep_mock:
             client = SkladBotClient()
             result = client.get("/requests")
 
         self.assertEqual(result, {"ok": True})
         self.assertEqual(len(calls), 10)
         self.assertEqual(calls[-1], "Bearer token-10")
+        self.assertEqual([call.args[0] for call in sleep_mock.call_args_list], [30.0] * 9)
+
+    def test_skladbot_client_throttles_successive_successful_requests(self):
+        calls = []
+
+        class FakeResponse:
+            status_code = 200
+            headers = {}
+
+            def json(self):
+                return {"ok": True}
+
+            def raise_for_status(self):
+                return None
+
+        class FakeHttpClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def get(self, url, params=None, headers=None):
+                calls.append(url)
+                return FakeResponse()
+
+        with mock.patch.dict("os.environ", {
+            "SKLADBOT_API_TOKEN": "token-a",
+            "SKLADBOT_REQUEST_DELAY_SECONDS": "2",
+        }, clear=True), mock.patch("backend.app.skladbot_worker.httpx.Client", FakeHttpClient), mock.patch(
+            "backend.app.skladbot_worker.time.sleep"
+        ) as sleep_mock:
+            client = SkladBotClient()
+            self.assertEqual(client.get("/requests"), {"ok": True})
+            self.assertEqual(client.get("/requests/show/1"), {"ok": True})
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(sleep_mock.call_args_list), 1)
+        self.assertGreaterEqual(sleep_mock.call_args_list[0].args[0], 0)
+        self.assertLessEqual(sleep_mock.call_args_list[0].args[0], 2.0)
 
     def test_skladbot_client_disables_invalid_token_and_tries_next_token(self):
         calls = []
@@ -208,6 +254,7 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {
             "SKLADBOT_API_TOKENS": "token-a,token-b",
             "SKLADBOT_API_MAX_RETRIES": "2",
+            "SKLADBOT_REQUEST_DELAY_SECONDS": "0",
         }, clear=True), mock.patch("backend.app.skladbot_worker.httpx.Client", FakeHttpClient):
             client = SkladBotClient()
             result = client.get("/requests")
@@ -250,13 +297,15 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
             "SKLADBOT_API_TOKENS": "token-a,token-b",
             "SKLADBOT_API_MAX_RETRIES": "2",
             "SKLADBOT_REQUEST_DELAY_SECONDS": "1",
-            "SKLADBOT_TOKEN_SWITCH_DELAY_SECONDS": "0",
-        }, clear=True), mock.patch("backend.app.skladbot_worker.httpx.Client", FakeHttpClient):
+        }, clear=True), mock.patch("backend.app.skladbot_worker.httpx.Client", FakeHttpClient), mock.patch(
+            "backend.app.skladbot_worker.time.sleep"
+        ) as sleep_mock:
             client = SkladBotClient()
             result = client.get("/requests")
 
         self.assertEqual(result, {"ok": True})
         self.assertEqual(calls, ["Bearer token-a", "Bearer token-b"])
+        sleep_mock.assert_called_once_with(1.0)
 
     def test_skladbot_client_throttles_server_errors_before_retry(self):
         calls = []

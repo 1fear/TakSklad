@@ -6,6 +6,7 @@ from .config import (
     STATUS_COMPLETED,
     STATUS_NOT_COMPLETED,
 )
+from .scan_quantities import scanned_blocks_for_order_codes
 from .utils import (
     get_cell,
     make_hash,
@@ -68,7 +69,7 @@ def get_plan_blocks(order):
 
 def is_order_completed(order):
     plan_blocks = get_plan_blocks(order)
-    scanned_count = len(split_codes(order.get("Отсканированные коды")))
+    scanned_count = scanned_blocks_for_order_codes(order, split_codes(order.get("Отсканированные коды")))
     return plan_blocks > 0 and scanned_count >= plan_blocks
 
 

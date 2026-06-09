@@ -472,8 +472,8 @@ class SkladBotClient:
         self.limit = env_int("SKLADBOT_REQUESTS_LIMIT", 500)
         self.request_delay = max(0.0, env_float("SKLADBOT_REQUEST_DELAY_SECONDS", 0.25))
         self.max_retries = max(0, env_int("SKLADBOT_API_MAX_RETRIES", 2))
-        self.token_switch_delay = max(0.0, env_float("SKLADBOT_TOKEN_SWITCH_DELAY_SECONDS", 0.0))
         self.max_cooldown_wait = max(0.0, env_float("SKLADBOT_MAX_COOLDOWN_WAIT_SECONDS", 5.0))
+        self.last_request_at = 0.0
 
     @property
     def configured(self):
@@ -526,12 +526,21 @@ class SkladBotClient:
         if self.tokens:
             self.token_index = (int(index or 0) + 1) % len(self.tokens)
 
-    def retry_sleep(self, seconds):
-        if len(self.tokens) <= 1:
-            time.sleep(max(0.0, float(seconds or 0)))
+    def wait_between_requests(self):
+        if self.request_delay <= 0:
             return
-        if self.token_switch_delay > 0:
-            time.sleep(min(max(0.0, float(seconds or 0)), self.token_switch_delay))
+        now = time.monotonic()
+        if self.last_request_at > 0:
+            elapsed = now - self.last_request_at
+            if elapsed < self.request_delay:
+                time.sleep(self.request_delay - elapsed)
+        self.last_request_at = time.monotonic()
+
+    def retry_sleep(self, seconds):
+        sleep_for = max(0.0, float(seconds or 0))
+        if sleep_for:
+            time.sleep(sleep_for)
+        self.last_request_at = 0.0
 
     def get(self, path, params=None):
         if not self.tokens:
@@ -544,6 +553,7 @@ class SkladBotClient:
                 token_index = self.wait_for_available_token()
                 token = self.tokens[token_index]
                 try:
+                    self.wait_between_requests()
                     response = client.get(
                         url,
                         params=params or {},
@@ -605,7 +615,7 @@ class SkladBotClient:
                         max_attempts - 1,
                         sleep_for,
                     )
-                    time.sleep(sleep_for)
+                    self.retry_sleep(sleep_for)
                     continue
                 response.raise_for_status()
                 return response.json()
@@ -621,6 +631,7 @@ class SkladBotClient:
             token_index = self.wait_for_available_token()
             token = self.tokens[token_index]
             try:
+                self.wait_between_requests()
                 response = client.post(
                     url,
                     json=payload or {},

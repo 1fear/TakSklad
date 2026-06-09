@@ -19,6 +19,10 @@ from .orders import (
     order_group_key,
 )
 from .pending_store import load_pending_saves
+from .scan_quantities import (
+    block_quantity_for_code,
+    scanned_blocks_for_order_codes,
+)
 from .sheets import validate_sheet_header
 from .utils import (
     get_cell,
@@ -100,7 +104,16 @@ def build_day_report_rows_from_scan_backup(report_date=None):
 
                 for code in codes:
                     if code:
-                        rows_by_code.setdefault(code, dict(base_row, Код=code))
+                        block_quantity = block_quantity_for_code(code)
+                        row = dict(
+                            base_row,
+                            Код=code,
+                            **{
+                                "Кол-во блок": block_quantity,
+                                "Итого ШТ": pieces_per_block * block_quantity,
+                            },
+                        )
+                        rows_by_code.setdefault(code, row)
     except Exception:
         logging.exception("Не удалось прочитать backup сканов для дневного отчета")
         return report_rows
@@ -135,6 +148,7 @@ def build_day_report_rows_from_gsheet(sheet, report_date=None):
 
         for code in codes:
             pieces_per_block = get_product_rule(get_cell(row, header_idx.get("Товары")))["pieces_per_block"]
+            block_quantity = block_quantity_for_code(code)
             rows.append({
                 "Дата/время скана": "",
                 "Дата отгрузки": get_cell(row, get_order_date_header_index(header_idx)),
@@ -145,8 +159,8 @@ def build_day_report_rows_from_gsheet(sheet, report_date=None):
                 "Тип оплаты": payment_type,
                 "Номер заявки SkladBot": get_cell(row, header_idx.get(SKLADBOT_REQUEST_NUMBER_COLUMN)),
                 "Кол-во ШТ в блоке": pieces_per_block,
-                "Кол-во блок": 1,
-                "Итого ШТ": pieces_per_block,
+                "Кол-во блок": block_quantity,
+                "Итого ШТ": pieces_per_block * block_quantity,
                 "Код": code,
                 "Источник": "google_sheets",
             })
@@ -176,6 +190,7 @@ def add_pending_saves_to_report_rows(report_rows, report_date=None):
         for code in item.get("codes", []):
             if not code or code in existing_codes:
                 continue
+            block_quantity = block_quantity_for_code(code)
             rows.append({
                 "Дата/время скана": item.get("created_at", ""),
                 "Дата отгрузки": get_order_date_value(order),
@@ -186,8 +201,8 @@ def add_pending_saves_to_report_rows(report_rows, report_date=None):
                 "Тип оплаты": payment_type,
                 "Номер заявки SkladBot": order.get(SKLADBOT_REQUEST_NUMBER_COLUMN, ""),
                 "Кол-во ШТ в блоке": pieces_per_block,
-                "Кол-во блок": 1,
-                "Итого ШТ": pieces_per_block,
+                "Кол-во блок": block_quantity,
+                "Итого ШТ": pieces_per_block * block_quantity,
                 "Код": code,
                 "Источник": "pending_saves",
             })
@@ -332,6 +347,8 @@ def iter_document_orders_from_rows(all_rows, pending_saves=None):
         order["_row_number"] = row_number
         sheet_codes = split_codes(order.get("Отсканированные коды"))
         codes = merge_order_codes_with_pending(order, sheet_codes, pending_saves=pending_saves)
+        sheet_scanned_blocks = scanned_blocks_for_order_codes(order, sheet_codes)
+        scanned_blocks = scanned_blocks_for_order_codes(order, codes)
         plan_blocks = get_plan_blocks(order)
         import_at = order.get("Дата импорта", "")
         rows.append({
@@ -344,6 +361,9 @@ def iter_document_orders_from_rows(all_rows, pending_saves=None):
             "codes": codes,
             "sheet_codes_count": len(sheet_codes),
             "pending_codes_count": max(0, len(codes) - len(sheet_codes)),
+            "sheet_scanned_blocks": sheet_scanned_blocks,
+            "scanned_blocks": scanned_blocks,
+            "pending_blocks": max(0, scanned_blocks - sheet_scanned_blocks),
         })
     return rows
 
@@ -366,9 +386,10 @@ def build_document_summaries_from_gsheet(sheet, limit=12):
             })
             document["positions"] += 1
             document["plan_blocks"] += item["plan_blocks"]
-            document["scanned_blocks"] += len(item["codes"])
-            document["pending_blocks"] += item["pending_codes_count"]
-            if item["plan_blocks"] > 0 and len(item["codes"]) >= item["plan_blocks"]:
+            scanned_blocks = item["scanned_blocks"]
+            document["scanned_blocks"] += scanned_blocks
+            document["pending_blocks"] += item["pending_blocks"]
+            if item["plan_blocks"] > 0 and scanned_blocks >= item["plan_blocks"]:
                 document["completed_positions"] += 1
             if parse_datetime_for_sort(item["import_at"]) > parse_datetime_for_sort(document["last_import"]):
                 document["last_import"] = item["import_at"]
@@ -421,11 +442,11 @@ def create_document_report_excel(sheet, document_key):
         order = item["order"]
         plan_blocks = item["plan_blocks"]
         codes = item["codes"]
-        scanned_count = len(codes)
+        scanned_count = item["scanned_blocks"]
         remaining = max(0, plan_blocks - scanned_count)
         total_plan += plan_blocks
         total_scanned += scanned_count
-        pending_count += item["pending_codes_count"]
+        pending_count += item["pending_blocks"]
         if plan_blocks > 0 and scanned_count >= plan_blocks:
             completed_positions += 1
         if parse_datetime_for_sort(item["import_at"]) > parse_datetime_for_sort(last_import):
@@ -445,7 +466,7 @@ def create_document_report_excel(sheet, document_key):
             "План КИЗ": plan_blocks,
             "Отсканировано КИЗ": scanned_count,
             "Осталось КИЗ": remaining,
-            "КИЗ в локальной очереди": item["pending_codes_count"],
+            "КИЗ в локальной очереди": item["pending_blocks"],
             "Статус": "Выполнено" if plan_blocks > 0 and scanned_count >= plan_blocks else "Не выполнено",
         }
         positions.append(position_row)
@@ -798,6 +819,7 @@ def build_summary_products_from_gsheet(sheet, group_key):
         if not codes:
             continue
 
+        scanned_blocks = scanned_blocks_for_order_codes(row_record, codes)
         products.append({
             "Дата отгрузки": get_order_date_value(row_record),
             "Клиент": get_cell(row, header_idx.get("Клиент")),
@@ -807,7 +829,7 @@ def build_summary_products_from_gsheet(sheet, group_key):
             "Тип оплаты": get_cell(row, header_idx.get("Тип оплаты")),
             "Кол-во ШТ в блоке": get_product_rule(get_cell(row, header_idx.get("Товары")))["pieces_per_block"],
             "План": parse_int_value(get_cell(row, header_idx.get("Кол-во блок"))),
-            "Отсканировано": len(codes),
+            "Отсканировано": scanned_blocks,
             "Сумма позиции": parse_int_value(get_cell(row, header_idx.get("Сумма позиции"))),
             "Цена заказа": parse_int_value(get_cell(row, header_idx.get("Сумма позиции"))),
             "Коды": codes,

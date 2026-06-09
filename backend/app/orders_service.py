@@ -19,6 +19,13 @@ from .kiz_movements_service import (
 )
 from .models import AuditLog, Order, OrderItem, ScanCode
 from .schemas import OrderItemRead, OrderRead, ScanCreate, ScanRead, ScanUndo
+from .scan_quantities import (
+    SCAN_TYPE_AGGREGATE_BOX,
+    product_key_from_name,
+    scan_block_quantity,
+    scan_metadata_for_code,
+    scanned_blocks_for_scans,
+)
 
 
 STATUS_COMPLETED = "completed"
@@ -114,10 +121,32 @@ def create_scan(db: Session, payload: ScanCreate):
             return scan_to_read(latest_scan, item)
         raise ApiError(409, "Order item is already fully scanned")
 
+    scan_metadata = scan_metadata_for_code(code)
+    block_quantity = scan_metadata["block_quantity"]
+
+    if scan_metadata["scan_type"] == SCAN_TYPE_AGGREGATE_BOX:
+        item_product_key = product_key_from_name(item.product)
+        if not item_product_key or item_product_key != scan_metadata["aggregate_product_key"]:
+            raise ApiError(409, {
+                "message": "Aggregate box product does not match order item",
+                "order_item_id": str(item.id),
+                "product": item.product,
+                "aggregate_product_key": scan_metadata["aggregate_product_key"],
+            })
+        remaining_blocks = max(0, int(item.quantity_blocks or 0) - int(item.scanned_blocks or 0))
+        if item.quantity_blocks > 0 and block_quantity > remaining_blocks:
+            raise ApiError(409, {
+                "message": "Aggregate box exceeds remaining order item blocks",
+                "order_item_id": str(item.id),
+                "remaining_blocks": remaining_blocks,
+                "block_quantity": block_quantity,
+            })
+
     scan_id = uuid.uuid4()
     scan_raw_payload = dict(payload.raw_payload or {})
     if payload.scanned_at:
         scan_raw_payload.setdefault("scanned_at", payload.scanned_at.isoformat())
+    scan_raw_payload.update(scan_metadata)
 
     scan = ScanCode(
         id=scan_id,
@@ -145,10 +174,12 @@ def create_scan(db: Session, payload: ScanCreate):
             "scan_source": scan.source,
             "previous_movement_type": latest_movement.movement_type if latest_movement else "",
             "previous_order_item_id": str(latest_movement.order_item_id or "") if latest_movement else "",
+            "scan_type": scan_metadata["scan_type"],
+            "block_quantity": block_quantity,
         },
     )
 
-    item.scanned_blocks += 1
+    item.scanned_blocks += block_quantity
     if item.quantity_blocks > 0 and item.scanned_blocks >= item.quantity_blocks:
         item.status = STATUS_COMPLETED
     else:
@@ -165,6 +196,8 @@ def create_scan(db: Session, payload: ScanCreate):
             "scanned_by": payload.scanned_by,
             "kiz_movement_id": str(movement.id) if movement else "",
             "kiz_movement_type": movement_type,
+            "scan_type": scan_metadata["scan_type"],
+            "block_quantity": block_quantity,
         },
     ))
 
@@ -240,12 +273,13 @@ def undo_scan(db: Session, payload: ScanUndo):
         },
     )
     db.delete(scan)
-    remaining_codes = [
-        existing.code
+    remaining_scans = [
+        existing
         for existing in item.scan_codes
         if existing.id != scan_id
     ]
-    item.scanned_blocks = len(remaining_codes)
+    remaining_codes = [existing.code for existing in remaining_scans]
+    item.scanned_blocks = scanned_blocks_for_scans(remaining_scans)
     if item.quantity_blocks > 0 and item.scanned_blocks >= item.quantity_blocks:
         item.status = STATUS_COMPLETED
     else:
@@ -263,6 +297,8 @@ def undo_scan(db: Session, payload: ScanUndo):
             "workstation_id": payload.workstation_id,
             "actor": payload.actor,
             "kiz_movement_id": str(movement.id) if movement else "",
+            "scan_type": (scan.raw_payload or {}).get("scan_type") or "",
+            "block_quantity": scan_block_quantity(scan),
         },
     ))
     db.commit()
@@ -274,6 +310,8 @@ def undo_scan(db: Session, payload: ScanUndo):
         scanned_blocks=item.scanned_blocks,
         item_status=item.status,
         scanned_at=scanned_at,
+        scan_type=(scan.raw_payload or {}).get("scan_type") or "unit",
+        block_quantity=scan_block_quantity(scan),
     )
     export_order_item_scan_to_google_sheets_best_effort(db, item.id)
     return response
@@ -297,6 +335,8 @@ def scan_to_read(scan, item):
         scanned_blocks=item.scanned_blocks,
         item_status=item.status,
         scanned_at=scan.scanned_at,
+        scan_type=(scan.raw_payload or {}).get("scan_type") or "unit",
+        block_quantity=scan_block_quantity(scan),
     )
 
 
@@ -632,6 +672,15 @@ def item_to_read(item: OrderItem):
         status=item.status,
         scan_codes=[
             scan.code
+            for scan in sorted(item.scan_codes, key=lambda value: (str(value.scanned_at or ""), str(value.id)))
+        ],
+        scan_entries=[
+            {
+                "code": scan.code,
+                "scan_type": (scan.raw_payload or {}).get("scan_type") or "unit",
+                "block_quantity": scan_block_quantity(scan),
+                "scanned_at": scan.scanned_at,
+            }
             for scan in sorted(item.scan_codes, key=lambda value: (str(value.scanned_at or ""), str(value.id)))
         ],
     )

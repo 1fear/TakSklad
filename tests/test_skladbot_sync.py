@@ -508,6 +508,7 @@ class SkladBotSyncTests(unittest.TestCase):
                         "api_token": "token",
                         "requests_limit": 100,
                         "completed_detail_limit": 25,
+                        "request_delay_seconds": 0.05,
                     }
                 return default
 
@@ -516,6 +517,7 @@ class SkladBotSyncTests(unittest.TestCase):
 
             self.assertEqual(settings["requests_limit"], 500)
             self.assertEqual(settings["completed_detail_limit"], 25)
+            self.assertGreaterEqual(settings["request_delay_seconds"], 2.0)
         finally:
             load_skladbot_settings.__globals__["load_data_section"] = original_load_data_section
 

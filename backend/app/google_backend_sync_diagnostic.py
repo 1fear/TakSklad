@@ -10,6 +10,7 @@ from .google_sheets_exporter import format_skladbot_status, normalize_text, pars
 from .google_sheets_sync_worker import load_google_sheet_records, open_data_sheet
 from .models import Order, OrderItem
 from .orders_service import COMPLETED_STATUSES, STATUS_REMOVED_FROM_GOOGLE
+from .scan_quantities import scanned_blocks_for_scans
 
 
 DEFAULT_BLOCK_PRICE = 240000
@@ -141,7 +142,14 @@ def compare_matched_item(record, item):
 
     sheet_codes = record.get("scanned_codes") or []
     if sheet_codes:
-        compare_field(mismatches, "scanned_blocks", getattr(item, "scanned_blocks", 0), len(sheet_codes), context, numeric=True)
+        compare_field(
+            mismatches,
+            "scanned_blocks",
+            getattr(item, "scanned_blocks", 0),
+            scanned_blocks_for_scans(sheet_codes),
+            context,
+            numeric=True,
+        )
 
     compare_field(
         mismatches,

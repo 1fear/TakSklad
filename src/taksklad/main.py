@@ -70,6 +70,13 @@ from .reports import (
     order_group_display_sort_key,
     unpack_order_group_key,
 )
+from .scan_quantities import (
+    SCAN_TYPE_AGGREGATE_BOX,
+    aggregate_product_mismatch,
+    scan_entries_for_order_codes,
+    scan_metadata_for_code,
+    scanned_blocks_for_order_codes,
+)
 from .sheets import (
     archive_order_group_to_gsheet,
     fetch_returned_orders_from_gsheet,
@@ -161,6 +168,10 @@ def scanned_codes_for_order(order):
     return split_codes(order.get("Отсканированные коды") or "\n".join(order.get("_existing_scanned_codes") or []))
 
 
+def scanned_blocks_for_order(order, codes=None):
+    return scanned_blocks_for_order_codes(order, codes if codes is not None else scanned_codes_for_order(order))
+
+
 def group_finish_blocker(orders, completed_products):
     if not orders:
         return "Нет строк заказа для завершения"
@@ -168,7 +179,7 @@ def group_finish_blocker(orders, completed_products):
         return "Сначала сохраните все позиции заказа"
     for idx, order in enumerate(orders, start=1):
         plan_blocks = get_plan_blocks(order)
-        scanned_count = len(scanned_codes_for_order(order))
+        scanned_count = scanned_blocks_for_order(order)
         if plan_blocks <= 0:
             return f"В позиции {idx} не указано корректное 'Кол-во блок'"
         if scanned_count < plan_blocks:
@@ -852,13 +863,14 @@ class ScanningApp(
 
         self.current_order["Отсканированные коды"] = "\n".join(remaining_codes)
         self.current_order["_existing_scanned_codes"] = remaining_codes.copy()
+        self.current_order["_existing_scan_entries"] = scan_entries_for_order_codes(self.current_order, remaining_codes)
         self.current_order[STATUS_COLUMN] = get_order_status(self.current_order)
         self.all_existing_codes.discard(removed_code)
         remove_pending_backend_scan(self.current_order, removed_code)
 
         plan_blocks = get_plan_blocks(self.current_order)
 
-        scanned_count = len(self.scanned_codes)
+        scanned_count = scanned_blocks_for_order(self.current_order, self.scanned_codes)
         self.progress_label.config(text=f"{scanned_count} / {plan_blocks}")
         self.last_code_label.config(text=f"Отменён код: {removed_code[:40]}...")
         self.status_var.set(f"↩️ Отменён последний код ({scanned_count}/{plan_blocks})")
@@ -1799,16 +1811,19 @@ class ScanningApp(
         existing_codes = self.current_order.get("_existing_scanned_codes", [])
         self.scanned_codes = existing_codes.copy()
         self.saved_codes_count = len(existing_codes)
-        self.progress_label.config(text=f"{len(self.scanned_codes)} / {plan_blocks}")
+        existing_entries = self.current_order.get("_existing_scan_entries") or scan_entries_for_order_codes(self.current_order, existing_codes)
+        self.current_order["_existing_scan_entries"] = existing_entries
+        scanned_blocks = scanned_blocks_for_order(self.current_order, self.scanned_codes)
+        self.progress_label.config(text=f"{scanned_blocks} / {plan_blocks}")
         self.next_product_btn.config(state="disabled")
         self.finish_btn.config(state="disabled")
         self.undo_btn.config(state="normal")
         self.scan_entry.delete(0, tk.END)
         if existing_codes:
-            self.last_code_label.config(text=f"Уже записано в таблице: {len(existing_codes)} кодов")
+            self.last_code_label.config(text=f"Уже записано: {scanned_blocks} блоков, {len(existing_codes)} кодов")
         else:
             self.last_code_label.config(text="")
-        if plan_blocks > 0 and len(self.scanned_codes) >= plan_blocks:
+        if plan_blocks > 0 and scanned_blocks >= plan_blocks:
             if self.current_product_idx >= len(self.current_legal_entity_orders) - 1:
                 self.next_product_btn.config(state="disabled")
                 self.finish_btn.config(state="normal")
@@ -1846,10 +1861,24 @@ class ScanningApp(
             self.scan_entry.delete(0, tk.END)
             return
 
-        if len(self.scanned_codes) >= plan_blocks:
+        scanned_before = scanned_blocks_for_order(self.current_order, self.scanned_codes)
+        if scanned_before >= plan_blocks:
             self.show_error(f"План выполнен! Нельзя сканировать больше {plan_blocks} блоков")
             self.scan_entry.delete(0, tk.END)
             return
+
+        scan_metadata = scan_metadata_for_code(code)
+        block_quantity = scan_metadata["block_quantity"]
+        if scan_metadata["scan_type"] == SCAN_TYPE_AGGREGATE_BOX:
+            if aggregate_product_mismatch(code, self.current_order.get("Товары", "")):
+                self.show_error("Код короба не соответствует товару текущей позиции")
+                self.scan_entry.delete(0, tk.END)
+                return
+            remaining_blocks = max(0, plan_blocks - scanned_before)
+            if block_quantity > remaining_blocks:
+                self.show_error(f"Короб +{block_quantity} блоков превышает остаток позиции: осталось {remaining_blocks}")
+                self.scan_entry.delete(0, tk.END)
+                return
 
         if code in self.scanned_codes:
             self.show_error("Код уже отсканирован в этой позиции")
@@ -1876,11 +1905,16 @@ class ScanningApp(
         self.scanned_codes.append(code)
         self.all_existing_codes.add(code)
         queue_backend_scan(self.current_order, code)
-        scanned_count = len(self.scanned_codes)
+        self.current_order["_existing_scan_entries"] = scan_entries_for_order_codes(self.current_order, self.scanned_codes)
+        scanned_count = scanned_blocks_for_order(self.current_order, self.scanned_codes)
 
         self.progress_label.config(text=f"{scanned_count} / {plan_blocks}")
-        self.last_code_label.config(text=f"Последний код: {code[:40]}...")
-        self.status_var.set(f"✅ Отсканирован код ({scanned_count}/{plan_blocks})")
+        if scan_metadata["scan_type"] == SCAN_TYPE_AGGREGATE_BOX:
+            self.last_code_label.config(text=f"Последний код: короб +{block_quantity}: {code[:40]}...")
+            self.status_var.set(f"✅ Отсканирован короб +{block_quantity} ({scanned_count}/{plan_blocks})")
+        else:
+            self.last_code_label.config(text=f"Последний код: {code[:40]}...")
+            self.status_var.set(f"✅ Отсканирован код ({scanned_count}/{plan_blocks})")
         self.status_label.config(bg=BG_MAIN, fg=FG_MUTED)
         self.scan_entry.delete(0, tk.END)
 
@@ -1909,7 +1943,7 @@ class ScanningApp(
 
         plan_blocks = get_plan_blocks(self.current_order)
 
-        scanned_count = len(self.scanned_codes)
+        scanned_count = scanned_blocks_for_order(self.current_order, self.scanned_codes)
 
         if scanned_count != plan_blocks:
             self.show_error(f"Отсканировано {scanned_count} из {plan_blocks} блоков. Завершите позицию!")
@@ -1972,6 +2006,7 @@ class ScanningApp(
             order["Отсканированные коды"] = "\n".join(scanned_codes)
             order[STATUS_COLUMN] = get_order_status(order)
             order["_existing_scanned_codes"] = scanned_codes.copy()
+            order["_existing_scan_entries"] = scan_entries_for_order_codes(order, scanned_codes)
 
             completed_result = product_result.copy()
             completed_result["План блоков"] = plan_blocks
@@ -2037,7 +2072,7 @@ class ScanningApp(
                 not from_next_product
                 and self.current_order
                 and self.current_product_idx == len(self.current_legal_entity_orders) - 1
-                and len(self.scanned_codes) == get_plan_blocks(self.current_order)
+                and scanned_blocks_for_order(self.current_order, self.scanned_codes) == get_plan_blocks(self.current_order)
             ):
                 self.next_product(finish_after_save=True)
                 return

@@ -19,6 +19,7 @@ from .config import (
     TAKSKLAD_BACKEND_TIMEOUT_SECONDS,
 )
 from .http_client import open_https_url
+from .scan_quantities import scan_entries_for_codes
 from .utils import parse_date_to_standard, split_codes
 
 
@@ -215,6 +216,7 @@ def backend_order_to_rows(order):
         codes = item.get("scan_codes") or []
         if not codes:
             codes = split_codes(item.get("Отсканированные коды"))
+        scan_entries = item.get("scan_entries") or scan_entries_for_codes(codes)
         row = {
             ORDER_DATE_COLUMN: date_to_display(raw_order.get("order_date")),
             "Тип оплаты": raw_order.get("payment_type") or "",
@@ -233,6 +235,8 @@ def backend_order_to_rows(order):
             "_backend_order_id": raw_order.get("id") or "",
             "_backend_order_item_id": item.get("id") or "",
             "_existing_scanned_codes": list(codes),
+            "_existing_scan_entries": list(scan_entries),
+            "_backend_scanned_blocks": item.get("scanned_blocks") or 0,
         }
         rows.append(row)
     return rows

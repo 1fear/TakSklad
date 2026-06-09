@@ -45,7 +45,15 @@ class BackendApiPersistenceTests(unittest.TestCase):
         Base.metadata.drop_all(self.engine)
         self.engine.dispose()
 
-    def seed_order(self, *, status="not_completed", quantity_blocks=2, scanned_blocks=0, item_status="not_completed"):
+    def seed_order(
+        self,
+        *,
+        status="not_completed",
+        quantity_blocks=2,
+        scanned_blocks=0,
+        item_status="not_completed",
+        product="Test Product",
+    ):
         with self.SessionLocal() as db:
             order = Order(
                 payment_type="cash",
@@ -58,7 +66,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             )
             item = OrderItem(
                 order=order,
-                product="Test Product",
+                product=product,
                 quantity_pieces=20,
                 quantity_blocks=quantity_blocks,
                 pieces_per_block=10,
@@ -683,6 +691,103 @@ class BackendApiPersistenceTests(unittest.TestCase):
             item = db.get(OrderItem, uuid.UUID(item_id))
             self.assertEqual(item.scanned_blocks, 2)
             self.assertEqual(item.status, "completed")
+
+    def test_scan_create_counts_aggregate_box_as_fifty_blocks(self):
+        _, item_id = self.seed_order(quantity_blocks=150, product="Chapman Gold SSL 100`20")
+
+        response = self.client.post(
+            "/api/v1/scans",
+            json={
+                "order_item_id": item_id,
+                "code": "010400639605401221UZ1112022525522513824013040046110ZIG1218229310000",
+                "workstation_id": "pc-1",
+            },
+        )
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        self.assertEqual(payload["scanned_blocks"], 50)
+        self.assertEqual(payload["item_status"], "not_completed")
+        with self.SessionLocal() as db:
+            item = db.get(OrderItem, uuid.UUID(item_id))
+            scan = db.execute(select(ScanCode)).scalar_one()
+            self.assertEqual(item.scanned_blocks, 50)
+            self.assertEqual(scan.raw_payload["scan_type"], "aggregate_box")
+            self.assertEqual(scan.raw_payload["block_quantity"], 50)
+            audit = db.execute(select(AuditLog).where(AuditLog.action == "scan_code_created")).scalar_one()
+            self.assertEqual(audit.payload["scan_type"], "aggregate_box")
+            self.assertEqual(audit.payload["block_quantity"], 50)
+
+    def test_scan_create_rejects_aggregate_box_when_remaining_blocks_are_less_than_fifty(self):
+        _, item_id = self.seed_order(quantity_blocks=30, product="Chapman Gold SSL 100`20")
+
+        response = self.client.post(
+            "/api/v1/scans",
+            json={
+                "order_item_id": item_id,
+                "code": "010400639605401221UZ1112022525522513824013040046110ZIG1218229310000",
+            },
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["detail"]["message"], "Aggregate box exceeds remaining order item blocks")
+        with self.SessionLocal() as db:
+            item = db.get(OrderItem, uuid.UUID(item_id))
+            self.assertEqual(item.scanned_blocks, 0)
+            self.assertEqual(db.execute(select(ScanCode)).scalars().all(), [])
+
+    def test_scan_create_rejects_aggregate_box_for_wrong_product(self):
+        _, item_id = self.seed_order(quantity_blocks=150, product="Chapman RED OP 20")
+
+        response = self.client.post(
+            "/api/v1/scans",
+            json={
+                "order_item_id": item_id,
+                "code": "010400639605401221UZ1112022525522513824013040046110ZIG1218229310000",
+            },
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["detail"]["message"], "Aggregate box product does not match order item")
+        with self.SessionLocal() as db:
+            item = db.get(OrderItem, uuid.UUID(item_id))
+            self.assertEqual(item.scanned_blocks, 0)
+            self.assertEqual(db.execute(select(ScanCode)).scalars().all(), [])
+
+    def test_scan_undo_subtracts_aggregate_box_block_quantity(self):
+        _, item_id = self.seed_order(quantity_blocks=51, product="Chapman Gold SSL 100`20")
+        aggregate = self.client.post(
+            "/api/v1/scans",
+            json={
+                "order_item_id": item_id,
+                "code": "010400639605401221UZ1112022525522513824013040046110ZIG1218229310000",
+            },
+        )
+        unit = self.client.post(
+            "/api/v1/scans",
+            json={"order_item_id": item_id, "code": "010400639605400521UNIT"},
+        )
+        self.assertEqual(aggregate.status_code, 201)
+        self.assertEqual(unit.status_code, 201)
+        self.assertEqual(unit.json()["scanned_blocks"], 51)
+        self.assertEqual(unit.json()["item_status"], "completed")
+
+        undo_response = self.client.post(
+            "/api/v1/scans/undo",
+            json={
+                "order_item_id": item_id,
+                "code": "010400639605401221UZ1112022525522513824013040046110ZIG1218229310000",
+                "actor": "desktop",
+            },
+        )
+
+        self.assertEqual(undo_response.status_code, 200)
+        self.assertEqual(undo_response.json()["scanned_blocks"], 1)
+        self.assertEqual(undo_response.json()["item_status"], "not_completed")
+        with self.SessionLocal() as db:
+            item = db.get(OrderItem, uuid.UUID(item_id))
+            self.assertEqual(item.scanned_blocks, 1)
+            self.assertEqual([scan.code for scan in item.scan_codes], ["010400639605400521UNIT"])
 
     def test_scan_create_exports_scan_state_to_google_sheets_best_effort(self):
         _, item_id = self.seed_order()
@@ -1847,8 +1952,9 @@ class BackendApiPersistenceTests(unittest.TestCase):
         sheet = workbook["Терминал"]
         self.assertEqual(sheet["C2"].value, "KIZ Client")
         self.assertEqual(sheet["G2"].value, "Chapman Brown OP 20")
-        self.assertEqual(sheet["H2"].value, 2)
+        self.assertEqual(sheet["H2"].value, 1)
         self.assertEqual(sheet["I2"].value, "010000000301")
+        self.assertEqual(sheet["H3"].value, 1)
         self.assertEqual(sheet["I3"].value, "010000000302")
         self.assertEqual(sheet["K2"].value, "source-a.xlsx")
         workbook.close()

@@ -35,6 +35,7 @@ from .orders_service import (
     STATUS_REMOVED_FROM_GOOGLE,
     STATUS_RETURNED,
 )
+from .scan_quantities import scan_metadata_for_code, scanned_blocks_for_scans
 from .google_sheets_pending import process_pending_google_sheets_exports
 
 
@@ -483,6 +484,7 @@ def update_item_scans_from_record(db: Session, item: OrderItem, record, conflict
             raw_payload={
                 "google_sheet_row_number": record.get("row_number"),
                 "google_sheet_source_sheet": record.get("source_sheet") or SHEET_NAME,
+                **scan_metadata_for_code(code),
             },
         )
         item.scan_codes.append(scan)
@@ -508,7 +510,7 @@ def update_item_scans_from_record(db: Session, item: OrderItem, record, conflict
     if conflicts:
         return changed
 
-    new_scanned_blocks = max(item.scanned_blocks, len(scanned_codes))
+    new_scanned_blocks = max(item.scanned_blocks, scanned_blocks_for_scans(item.scan_codes))
     if item.scanned_blocks != new_scanned_blocks:
         item.scanned_blocks = new_scanned_blocks
         changed = True

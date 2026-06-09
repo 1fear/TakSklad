@@ -4,6 +4,7 @@ import tkinter as tk
 from .config import ACCENT, BG_CARD, BG_MAIN, FG_MUTED, FG_TEXT, SHEET_NAME, SPREADSHEET_ID
 from .orders import get_order_date_header_index, get_plan_blocks, order_group_key
 from .pending_store import load_pending_prints, load_pending_saves
+from .scan_quantities import scanned_blocks_for_order_codes
 from .sheets import get_google_client, validate_sheet_header
 from .ui_widgets import AppButton
 from .utils import get_cell, normalize_payment_type, parse_date_to_standard, split_codes
@@ -40,16 +41,18 @@ def build_control_panel_stats_from_gsheet(sheet):
         groups[group_key]["positions"] += 1
 
         blocks = get_plan_blocks(order)
-        codes_count = len(split_codes(order.get("Отсканированные коды")))
+        codes = split_codes(order.get("Отсканированные коды"))
+        codes_count = len(codes)
+        scanned_count = scanned_blocks_for_order_codes(order, codes)
         plan_blocks += blocks
-        scanned_blocks += codes_count
+        scanned_blocks += scanned_count
         products[order.get("Товары", "Товар не указан")] = products.get(order.get("Товары", "Товар не указан"), 0) + blocks
         payments[normalize_payment_type(order.get("Тип оплаты"))] += 1
 
-        if blocks > 0 and codes_count >= blocks:
+        if blocks > 0 and scanned_count >= blocks:
             completed_positions += 1
             groups[group_key]["completed"] += 1
-        elif codes_count > 0:
+        elif scanned_count > 0:
             in_progress_positions += 1
         else:
             new_positions += 1

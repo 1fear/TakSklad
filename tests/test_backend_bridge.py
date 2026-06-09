@@ -25,6 +25,10 @@ class BackendBridgeTests(unittest.TestCase):
                         "quantity_blocks": 2,
                         "status": "completed",
                         "scan_codes": ["01000000000000000001", "01000000000000000002"],
+                        "scan_entries": [
+                            {"code": "01000000000000000001", "scan_type": "unit", "block_quantity": 1},
+                            {"code": "01000000000000000002", "scan_type": "unit", "block_quantity": 1},
+                        ],
                     }
                 ],
             }
@@ -36,6 +40,7 @@ class BackendBridgeTests(unittest.TestCase):
         self.assertEqual(rows[0]["_backend_order_id"], "order-1")
         self.assertEqual(rows[0]["_backend_order_item_id"], "item-1")
         self.assertEqual(rows[0]["_existing_scanned_codes"], ["01000000000000000001", "01000000000000000002"])
+        self.assertEqual(rows[0]["_existing_scan_entries"][0]["block_quantity"], 1)
         self.assertEqual(rows[0]["Отсканированные коды"], "01000000000000000001\n01000000000000000002")
         self.assertEqual(rows[0]["Статус"], STATUS_COMPLETED)
 

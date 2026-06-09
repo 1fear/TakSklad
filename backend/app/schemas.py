@@ -22,6 +22,13 @@ class AuthSessionRead(BaseModel):
     expires_at: datetime | None = None
 
 
+class ScanEntryRead(BaseModel):
+    code: str
+    scan_type: str = "unit"
+    block_quantity: int = 1
+    scanned_at: datetime | None = None
+
+
 class OrderItemRead(BaseModel):
     id: str
     product: str
@@ -32,6 +39,7 @@ class OrderItemRead(BaseModel):
     line_total: int = 0
     status: str
     scan_codes: list[str] = Field(default_factory=list)
+    scan_entries: list[ScanEntryRead] = Field(default_factory=list)
 
 
 class OrderRead(BaseModel):
@@ -205,6 +213,8 @@ class ScanRead(BaseModel):
     scanned_blocks: int
     item_status: str
     scanned_at: datetime
+    scan_type: str = "unit"
+    block_quantity: int = 1
 
 
 class ImportCreate(BaseModel):

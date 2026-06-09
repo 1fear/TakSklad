@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, selectinload
 from .models import Order, OrderItem
 from .orders_service import ApiError, COMPLETED_STATUSES
 from .reports_service import payment_group
+from .scan_quantities import scan_block_quantity, scanned_blocks_for_scans
 
 TERMINAL_NO_KIZ_STATUSES = {"archived_no_kiz", "cancelled", "removed_from_google_sheet"}
 
@@ -191,8 +192,8 @@ def build_kiz_items_report_xlsx(items, source_label, filename):
             order = item.order
             raw_payload = item.raw_payload or {}
             order_raw = order.raw_payload if order else {}
-            codes = [scan.code for scan in sorted(item.scan_codes, key=lambda value: (str(value.scanned_at or ""), str(value.id)))]
-            for code in codes:
+            scans = sorted(item.scan_codes, key=lambda value: (str(value.scanned_at or ""), str(value.id)))
+            for scan in scans:
                 sheet.append([
                     order.order_date.strftime("%d.%m.%Y") if order and order.order_date else "",
                     (order_raw or {}).get("skladbot_request_number") or "",
@@ -201,8 +202,8 @@ def build_kiz_items_report_xlsx(items, source_label, filename):
                     (order_raw or {}).get("coordinates") or "",
                     order.payment_type if order else "",
                     item.product,
-                    item.quantity_blocks,
-                    code,
+                    scan_block_quantity(scan),
+                    scan.code,
                     parse_int(raw_payload.get("line_total")),
                     source_file_for_item(item) or source_label,
                 ])
@@ -294,7 +295,7 @@ def item_kiz_is_completed(item):
 def item_kiz_scanned_blocks(item):
     scan_codes = getattr(item, "scan_codes", None)
     if scan_codes is not None:
-        return len(scan_codes or [])
+        return scanned_blocks_for_scans(scan_codes or [])
     return max(0, item.scanned_blocks or 0)
 
 

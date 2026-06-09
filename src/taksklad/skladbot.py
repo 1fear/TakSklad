@@ -112,7 +112,7 @@ def load_skladbot_settings():
         request_delay = float(str(settings.get("request_delay_seconds", "")).replace(",", "."))
     except ValueError:
         request_delay = SKLADBOT_REQUEST_DELAY_SECONDS
-    settings["request_delay_seconds"] = max(0.0, min(request_delay, SKLADBOT_REQUEST_DELAY_SECONDS))
+    settings["request_delay_seconds"] = max(SKLADBOT_REQUEST_DELAY_SECONDS, min(request_delay, 60.0))
     return settings
 
 
