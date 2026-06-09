@@ -504,6 +504,89 @@ def request_blocks(request: dict[str, Any]) -> int:
     return sum(parse_int(product.get("amount")) for product in request.get("products") or [])
 
 
+def product_key(name: Any, vendor_code: Any = "", barcode: Any = "") -> str:
+    aliases = product_aliases(name, vendor_code, barcode)
+    return aliases[0] if aliases else ""
+
+
+def product_aliases(name: Any, vendor_code: Any = "", barcode: Any = "") -> list[str]:
+    aliases = []
+    product_name = normalize_text(name).lower()
+    if product_name:
+        aliases.append(f"name:{product_name}")
+    vendor = normalize_text(vendor_code).lower()
+    if vendor:
+        aliases.append(f"vendor:{vendor}")
+    product_barcode = normalize_text(barcode).lower()
+    if product_barcode:
+        aliases.append(f"barcode:{product_barcode}")
+    return aliases
+
+
+def product_label(name: Any, vendor_code: Any = "", barcode: Any = "") -> str:
+    return (
+        normalize_text(name)
+        or normalize_text(vendor_code)
+        or normalize_text(barcode)
+        or "Товар не найден"
+    )
+
+
+def product_breakdown_for_summary(report: dict[str, Any]) -> list[dict[str, Any]]:
+    products: dict[str, dict[str, Any]] = {}
+    aliases_by_product: dict[str, str] = {}
+
+    def ensure_product(name: Any, vendor_code: Any = "", barcode: Any = "") -> dict[str, Any]:
+        aliases = product_aliases(name, vendor_code, barcode)
+        key = next((
+            aliases_by_product[alias]
+            for alias in aliases
+            if alias in aliases_by_product
+        ), "")
+        if not key:
+            key = product_key(name, vendor_code, barcode)
+        if not key:
+            key = f"unknown:{len(products) + 1}"
+        if key not in products:
+            products[key] = {
+                "key": key,
+                "name": product_label(name, vendor_code, barcode),
+                "ending_stock": 0,
+                "inbound": 0,
+                "outbound": 0,
+                "returns": 0,
+            }
+        elif normalize_text(name) and not normalize_text(products[key].get("name")):
+            products[key]["name"] = product_label(name, vendor_code, barcode)
+        for alias in aliases:
+            aliases_by_product[alias] = key
+        return products[key]
+
+    for row in (report.get("stock") or {}).get("rows") or []:
+        product = ensure_product(row.get("product"), row.get("vendor_code"), row.get("barcode"))
+        product["ending_stock"] += parse_int(row.get("stock"))
+
+    for request in report.get("requests") or []:
+        category = normalize_text(request.get("category")) or "Прочее"
+        for request_product in request.get("products") or []:
+            product = ensure_product(
+                request_product.get("name"),
+                request_product.get("vendor_code"),
+                request_product.get("barcode"),
+            )
+            amount = parse_int(request_product.get("amount"))
+            if category == "Приемка":
+                product["inbound"] += amount
+            elif category == "Отгрузка":
+                product["outbound"] += amount
+            elif category == "Возврат":
+                product["returns"] += amount
+
+    result = list(products.values())
+    result.sort(key=lambda item: normalize_text(item.get("name")).lower())
+    return result
+
+
 def build_skladbot_daily_report_xlsx(report: dict[str, Any]) -> tuple[bytes, str]:
     workbook = Workbook()
     summary_sheet = workbook.active
@@ -532,22 +615,64 @@ def write_summary_sheet(sheet, report: dict[str, Any]) -> None:
     outbound_blocks = parse_int(blocks.get("Отгрузка"))
     return_blocks = parse_int(blocks.get("Возврат"))
     stock_total_value = parse_int(summary.get("stock_total"))
+    product_rows = product_breakdown_for_summary(report)
+    if not product_rows:
+        product_rows = [{
+            "name": "Товар не найден",
+            "ending_stock": stock_total_value,
+            "inbound": 0,
+            "outbound": 0,
+            "returns": 0,
+        }]
+    request_column = 3 + len(product_rows)
+    request_column_letter = get_column_letter(request_column)
     sheet.append(["Показатель", "Значение"])
     sheet.append(["Дата отчета", report_date])
     sheet.append(["Сформировано", format_datetime(generated_at)])
     sheet.append(["customer_id", report.get("customer_id") or ""])
     sheet.append([])
-    sheet.append(["Отчет о движении остатков за день", None, None, None, None, None])
-    sheet.append([None, "Всего блоков", "SKU1", "SKU2", "SKU3", "Заявок"])
-    sheet.append(["Остаток на начало дня ", "=B12-B9-B10-B11", None, None, None, None])
-    sheet.append(["Приемка", inbound_blocks, None, None, None, category_counts.get("Приемка", 0)])
-    sheet.append(["Отгрузка", -outbound_blocks, None, None, None, category_counts.get("Отгрузка", 0)])
-    sheet.append(["Возврат", return_blocks, None, None, None, category_counts.get("Возврат", 0)])
-    sheet.append(["Остаток на конец дня", stock_total_value, None, None, None, None])
+    sheet.append(["Отчет о движении остатков за день"] + [None] * (request_column - 1))
+    sheet.append([None, "Всего блоков"] + [item["name"] for item in product_rows] + ["Заявок"])
+    sheet.append(
+        ["Остаток на начало дня ", "=B12-B9-B10-B11"]
+        + [
+            (
+                f"={get_column_letter(index)}12"
+                f"-{get_column_letter(index)}9"
+                f"-{get_column_letter(index)}10"
+                f"-{get_column_letter(index)}11"
+            )
+            for index in range(3, request_column)
+        ]
+        + [None]
+    )
+    sheet.append(
+        ["Приемка", inbound_blocks]
+        + [item["inbound"] for item in product_rows]
+        + [category_counts.get("Приемка", 0)]
+    )
+    sheet.append(
+        ["Отгрузка", -outbound_blocks]
+        + [-item["outbound"] for item in product_rows]
+        + [category_counts.get("Отгрузка", 0)]
+    )
+    sheet.append(
+        ["Возврат", return_blocks]
+        + [item["returns"] for item in product_rows]
+        + [category_counts.get("Возврат", 0)]
+    )
+    sheet.append(
+        ["Остаток на конец дня", stock_total_value]
+        + [item["ending_stock"] for item in product_rows]
+        + [None]
+    )
     apply_header_style(sheet)
     for cell in ("A6", "A8", "B8", "A12", "B12"):
         sheet[cell].font = Font(bold=True)
-    apply_thin_border(sheet, "A8:F12")
+    for index in range(3, request_column):
+        for row in (8, 12):
+            sheet.cell(row=row, column=index).font = Font(bold=True)
+    apply_thin_border(sheet, f"A8:{request_column_letter}12")
 
 
 def write_requests_sheet(sheet, requests: list[dict[str, Any]]) -> None:
@@ -615,25 +740,30 @@ def write_stock_sheet(sheet, report: dict[str, Any]) -> None:
     rows = (report.get("stock") or {}).get("rows") or []
     summary = report.get("summary") or {}
     sheet.append(STOCK_HEADERS)
-    sheet.append([
-        first_stock_customer(rows),
-        "",
-        "",
-        "",
-        parse_int(summary.get("stock_total")),
-        0,
-        0,
-        0,
-    ])
+    if rows:
+        for row in rows:
+            sheet.append([
+                row.get("customer") or "",
+                row.get("product") or "",
+                row.get("vendor_code") or "",
+                row.get("barcode") or "",
+                parse_int(row.get("stock")),
+                parse_int(row.get("regular_stock")),
+                parse_int(row.get("nominal_stock")),
+                parse_int(row.get("available")),
+            ])
+    else:
+        sheet.append([
+            "",
+            "",
+            "",
+            "",
+            parse_int(summary.get("stock_total")),
+            0,
+            0,
+            0,
+        ])
     apply_header_style(sheet)
-
-
-def first_stock_customer(rows: list[dict[str, Any]]) -> str:
-    for row in rows:
-        customer = normalize_text(row.get("customer"))
-        if customer:
-            return customer
-    return ""
 
 
 def write_errors_sheet(sheet, errors: list[str]) -> None:

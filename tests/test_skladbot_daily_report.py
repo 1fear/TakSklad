@@ -19,6 +19,7 @@ from backend.app.skladbot_daily_report import (
     build_skladbot_daily_report_message,
     build_skladbot_daily_report_xlsx,
     collect_skladbot_daily_report,
+    product_breakdown_for_summary,
 )
 from backend.app.telegram_worker import (
     SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE,
@@ -149,7 +150,7 @@ class FakeSkladBotDailyReportClient:
             ]}
         if path == "/report/stock":
             return {
-                "total": 542,
+                "total": 544,
                 "items": [
                     {
                         "customer": {"name": "ООО Bastion Import Chapman MCHJ"},
@@ -160,6 +161,11 @@ class FakeSkladBotDailyReportClient:
                         "customer": {"name": "ООО Bastion Import Chapman MCHJ"},
                         "product": {"name": "Chapman Gold SSL", "vendorCode": "4006396054012", "barcode": "4006396054005"},
                         "stock": 500,
+                    },
+                    {
+                        "customer": {"name": "ООО Bastion Import Chapman MCHJ"},
+                        "product": {"name": "Chapman RED OP 20", "vendorCode": "130400237", "barcode": "4006396053947"},
+                        "stock": 2,
                     },
                 ],
             }
@@ -221,7 +227,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(summary["request_blocks_by_category"]["Приемка"], 500)
         self.assertEqual(summary["movement_in_amount"], 500)
         self.assertEqual(summary["movement_out_amount"], 4)
-        self.assertEqual(summary["stock_total"], 542)
+        self.assertEqual(summary["stock_total"], 544)
         self.assertEqual(report["errors"], [])
 
         content, filename = build_skladbot_daily_report_xlsx(report)
@@ -234,20 +240,38 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(summary_sheet["B1"].value, "Значение")
         self.assertEqual(summary_sheet["A6"].value, "Отчет о движении остатков за день")
         self.assertEqual(summary_sheet["B7"].value, "Всего блоков")
+        self.assertEqual(summary_sheet["C7"].value, "Chapman Brown OP 20")
+        self.assertEqual(summary_sheet["D7"].value, "Chapman Gold SSL")
+        self.assertEqual(summary_sheet["E7"].value, "Chapman RED OP 20")
         self.assertEqual(summary_sheet["F7"].value, "Заявок")
         self.assertEqual(summary_sheet["A8"].value, "Остаток на начало дня ")
         self.assertEqual(summary_sheet["B8"].value, "=B12-B9-B10-B11")
+        self.assertEqual(summary_sheet["C8"].value, "=C12-C9-C10-C11")
+        self.assertEqual(summary_sheet["D8"].value, "=D12-D9-D10-D11")
+        self.assertEqual(summary_sheet["E8"].value, "=E12-E9-E10-E11")
         self.assertEqual(summary_sheet["A9"].value, "Приемка")
         self.assertEqual(summary_sheet["B9"].value, 500)
+        self.assertEqual(summary_sheet["C9"].value, 0)
+        self.assertEqual(summary_sheet["D9"].value, 500)
+        self.assertEqual(summary_sheet["E9"].value, 0)
         self.assertEqual(summary_sheet["F9"].value, 1)
         self.assertEqual(summary_sheet["A10"].value, "Отгрузка")
         self.assertEqual(summary_sheet["B10"].value, -4)
+        self.assertEqual(summary_sheet["C10"].value, -4)
+        self.assertEqual(summary_sheet["D10"].value, 0)
+        self.assertEqual(summary_sheet["E10"].value, 0)
         self.assertEqual(summary_sheet["F10"].value, 1)
         self.assertEqual(summary_sheet["A11"].value, "Возврат")
         self.assertEqual(summary_sheet["B11"].value, 2)
+        self.assertEqual(summary_sheet["C11"].value, 0)
+        self.assertEqual(summary_sheet["D11"].value, 0)
+        self.assertEqual(summary_sheet["E11"].value, 2)
         self.assertEqual(summary_sheet["F11"].value, 1)
         self.assertEqual(summary_sheet["A12"].value, "Остаток на конец дня")
-        self.assertEqual(summary_sheet["B12"].value, 542)
+        self.assertEqual(summary_sheet["B12"].value, 544)
+        self.assertEqual(summary_sheet["C12"].value, 42)
+        self.assertEqual(summary_sheet["D12"].value, 500)
+        self.assertEqual(summary_sheet["E12"].value, 2)
         self.assertEqual(summary_sheet.freeze_panes, "A2")
         self.assertEqual(summary_sheet["A8"].border.left.style, "thin")
         self.assertEqual(summary_sheet["F12"].border.right.style, "thin")
@@ -281,9 +305,15 @@ class SkladBotDailyReportTests(unittest.TestCase):
 
         stock_sheet = workbook["Остатки"]
         self.assertEqual([cell.value for cell in stock_sheet[1]], STOCK_HEADERS)
-        self.assertEqual(stock_sheet.max_row, 2)
-        self.assertEqual(stock_sheet["A2"].value, "ООО Bastion Import Chapman MCHJ")
-        self.assertEqual(stock_sheet["E2"].value, 542)
+        self.assertEqual(stock_sheet.max_row, 4)
+        stock_rows = [
+            {header: stock_sheet.cell(row=row, column=index + 1).value for index, header in enumerate(STOCK_HEADERS)}
+            for row in range(2, stock_sheet.max_row + 1)
+        ]
+        self.assertEqual(sum(row["Остаток"] for row in stock_rows), 544)
+        self.assertIn("Chapman Brown OP 20", [row["Товар"] for row in stock_rows])
+        self.assertIn("Chapman Gold SSL", [row["Товар"] for row in stock_rows])
+        self.assertIn("Chapman RED OP 20", [row["Товар"] for row in stock_rows])
 
         errors_sheet = workbook["Ошибки"]
         self.assertEqual(errors_sheet["A1"].value, "Ошибка")
@@ -291,7 +321,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
         message = build_skladbot_daily_report_message(report)
         self.assertIn("SkladBot отчет за 08.06.2026", message)
         self.assertIn("Отгрузка: 1 заявок, 4 блоков", message)
-        self.assertIn("Актуальный остаток: 542", message)
+        self.assertIn("Актуальный остаток: 544", message)
 
     def test_daily_report_xlsx_handles_partial_data_and_errors(self):
         report = {
@@ -353,6 +383,33 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(client.detail_calls[101], 2)
         self.assertEqual(report["errors"], [])
         self.assertEqual(report["summary"]["requests_total"], 3)
+
+    def test_daily_report_product_breakdown_merges_stock_and_request_aliases(self):
+        report = {
+            "stock": {
+                "rows": [{
+                    "product": "",
+                    "vendor_code": "130400353",
+                    "barcode": "4006396053978",
+                    "stock": 42,
+                }],
+            },
+            "requests": [{
+                "category": "Отгрузка",
+                "products": [{
+                    "name": "Chapman Brown OP 20",
+                    "vendor_code": "130400353",
+                    "barcode": "4006396053978",
+                    "amount": 4,
+                }],
+            }],
+        }
+
+        rows = product_breakdown_for_summary(report)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["ending_stock"], 42)
+        self.assertEqual(rows[0]["outbound"], 4)
 
     def test_telegram_manual_command_sends_skladbot_daily_report(self):
         worker = TelegramWorker.__new__(TelegramWorker)

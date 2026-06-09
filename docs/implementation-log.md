@@ -4,6 +4,32 @@
 
 ## 2026-06-09
 
+### SKU-колонки в ежедневном SkladBot отчете
+
+- Симптом: в ежедневном Excel-отчете на листе `Сводка` оставались заглушки `SKU1/SKU2/SKU3`, хотя там должны быть реальные товары и движение по каждому SKU.
+- Причина: `backend/app/skladbot_daily_report.py` жестко писал три пустые SKU-колонки, а лист `Остатки` сворачивал `/report/stock` в одну агрегированную строку по клиенту.
+- Решение:
+  - `product_breakdown_for_summary()` собирает товары из текущего остатка SkladBot и товаров заявок за день;
+  - один товар склеивается по названию, артикулу или штрихкоду, чтобы остаток и заявка не превращались в разные колонки;
+  - `Сводка` строит динамические колонки с реальными названиями SKU;
+  - для каждой SKU заполняются `Остаток на начало дня`, `Приемка`, `Отгрузка`, `Возврат`, `Остаток на конец дня`;
+  - `Остатки` снова показывает построчные остатки SkladBot по товарам.
+- Source of truth:
+  - SkladBot API остается источником ежедневного отчета;
+  - Google Sheets в этом отчете не участвует.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_skladbot_daily_report` - 6 tests OK;
+  - `./.venv/bin/python -m unittest discover tests` - 401 tests OK;
+  - `./.venv/bin/python -m compileall -q backend/app src/taksklad tools main.py tests` - OK;
+  - `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK;
+  - `git diff --check` - OK;
+  - VDS restore point: `/opt/taksklad/restore_points/pre-daily-report-sku-summary-20260609T171702Z`;
+  - VDS Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260609T171702Z.sql.gz`;
+  - VDS пересобраны и перезапущены `backend-api`, `telegram-worker`;
+  - VDS synthetic XLSX-smoke внутри `telegram-worker`: вместо `SKU1/SKU2/SKU3` в сводке стоят `Chapman Brown OP 20`, `Chapman Gold SSL`, `Chapman RED OP 20`;
+  - VDS `./deploy/vds/acceptance_status.sh` - общий `status=ok`;
+  - свежие логи `backend-api` и `telegram-worker` после деплоя - без `ERROR/Traceback/Exception`.
+
 ### Оперативная разблокировка склада при полной позиции
 
 - Симптом: Windows-приложение на складе показало `КИЗы не записаны`, `Осталось в очереди: 7` по WH-R-194868.
@@ -55,10 +81,11 @@
   - `backend/app/skladbot_daily_report.py` теперь генерирует лист `Сводка` в формате примера: `Дата отчета`, `Сформировано`, `customer_id`, блок `Отчет о движении остатков за день`;
   - в сводке `Приемка` и `Возврат` положительные, `Отгрузка` отрицательная;
   - `Остаток на начало дня` считается Excel-формулой `=B12-B9-B10-B11`;
+  - колонки `SKU1/SKU2/SKU3` заменены на реальные названия товаров из SkladBot, по каждой колонке считается начало дня, приемка, отгрузка, возврат и конец дня;
   - `Остаток на конец дня` берется из SkladBot `/report/stock`;
-  - лист `Остатки` сделан агрегированным по клиенту, как в примере Антона;
+  - лист `Остатки` показывает построчные остатки SkladBot по товарам, а не одну агрегированную строку по клиенту;
   - сохранены листы `Заявки`, `Товары заявок`, `Движения`, `Остатки`, `Ошибки`;
-  - добавлены точные ширины колонок и границы таблицы `A8:F12`.
+  - добавлены точные ширины колонок и границы таблицы движения остатков.
 - После VDS dry-run обнаружен SkladBot `429 Too Many Requests` на одном detail-запросе. Добавлена защита:
   - общий `SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS` теперь применяется и между списками заявок;
   - `get_daily_request_detail()` повторяет detail-запрос при `429`;

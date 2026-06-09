@@ -4,6 +4,31 @@
 
 ## 2026-06-09
 
+### SKU-колонки в ежедневном SkladBot отчете
+
+**Файлы:** `backend/app/skladbot_daily_report.py`, `tests/test_skladbot_daily_report.py`, `docs/*`.
+
+**Что стало:**
+
+- В листе `Сводка` ежедневного отчета больше нет заглушек `SKU1/SKU2/SKU3`.
+- Колонки строятся по реальным товарам из SkladBot: остатки и заявки склеиваются по названию, артикулу или штрихкоду.
+- По каждой SKU видно остаток на начало дня, приемку, отгрузку, возврат и остаток на конец дня.
+- Лист `Остатки` снова показывает построчные остатки SkladBot по товарам, чтобы можно было сверить сводку.
+
+**Проверки:**
+
+- `./.venv/bin/python -m unittest tests.test_skladbot_daily_report` - 6 tests OK.
+- `./.venv/bin/python -m unittest discover tests` - 401 tests OK.
+- `./.venv/bin/python -m compileall -q backend/app src/taksklad tools main.py tests` - OK.
+- `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK.
+- `git diff --check` - OK.
+- VDS restore point: `/opt/taksklad/restore_points/pre-daily-report-sku-summary-20260609T171702Z`.
+- VDS Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260609T171702Z.sql.gz`.
+- VDS пересобраны и перезапущены `backend-api`, `telegram-worker`.
+- VDS synthetic XLSX-smoke внутри `telegram-worker`: заголовки `Chapman Brown OP 20`, `Chapman Gold SSL`, `Chapman RED OP 20`, колонка `Заявок`.
+- VDS `./deploy/vds/acceptance_status.sh` - общий `status=ok`.
+- `https://api.taksklad.uz/health` - 200 OK, backend `2.0.12`.
+
 ### Оперативный ack для полной позиции при застрявшей scan-очереди
 
 **Файлы:** `backend/app/orders_service.py`, `src/taksklad/backend_events.py`, `tests/*`.
@@ -57,15 +82,16 @@
 
 - Лист `Сводка` теперь повторяет рабочий шаблон Антона: дата отчета, время формирования, `customer_id` и таблица `Отчет о движении остатков за день`.
 - В таблице сводки показываются `Приемка`, `Отгрузка`, `Возврат`, количество заявок и остаток на конец дня.
+- Заглушки `SKU1/SKU2/SKU3` заменены на реальные названия товаров из SkladBot. По каждой SKU видно остаток на начало дня, приемку, отгрузку, возврат и остаток на конец дня.
 - `Отгрузка` выводится отрицательным числом, чтобы движение остатков читалось как расход.
-- Лист `Остатки` стал агрегированным по клиенту: одна строка с текущим общим остатком из SkladBot.
+- Лист `Остатки` показывает построчные остатки SkladBot по товарам, а не одну агрегированную строку по клиенту.
 - Google Sheets в ежедневном отчете не используется. Источник данных остается SkladBot API.
 - Daily report теперь выдерживает временный SkladBot `429 Too Many Requests`: detail-запрос повторяется после cooldown, а общий delay применяется и между списками заявок.
 - Добавлены env-настройки `SKLADBOT_DAILY_REPORT_429_RETRIES` и `SKLADBOT_DAILY_REPORT_429_RETRY_SECONDS`.
 
 **Проверки:**
 
-- `./.venv/bin/python -m unittest tests.test_skladbot_daily_report` - 5 tests OK.
+- `./.venv/bin/python -m unittest tests.test_skladbot_daily_report` - 6 tests OK.
 - `./.venv/bin/python -m unittest tests.test_skladbot_daily_report tests.test_backend_telegram_import` - 49 tests OK.
 - `./.venv/bin/python -m unittest discover tests` - 379 tests OK.
 - `./.venv/bin/python -m compileall -q backend/app src/taksklad tools main.py tests` - OK.
