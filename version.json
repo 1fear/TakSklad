@@ -1,12 +1,12 @@
 {
-  "latest_version": "2.0.10",
-  "min_supported_version": "2.0.10",
+  "latest_version": "2.0.11",
+  "min_supported_version": "2.0.11",
   "mandatory": true,
   "package_type": "onefile_exe",
   "entrypoint": "TakSklad.exe",
-  "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.10/TakSklad.exe",
-  "sha256": "947610bc0f3afef0c047f72c9a5f48dc0029bbfb12c86b6a8a5442ca8b9b70fa",
-  "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.10/TakSklad-windows-x64.zip",
-  "sha256_onedir": "54727d347b55294dc0b70ea1b5f3655d2ac7e421e0a6678785f8d0ed617eb770",
-  "message": "TakSklad 2.0.10: обязательное обновление. Добавлены агрегационные КИЗы коробов +50 блоков, защита SKU и задержки SkladBot API. Нажмите Да, дождитесь установки и запускайте только TakSklad.exe из новой папки."
+  "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.11/TakSklad.exe",
+  "sha256": "9427e26491634e2f4ad4ea2522edca1043a23e2b22c73604ef09e5d35d6821e2",
+  "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.11/TakSklad-windows-x64.zip",
+  "sha256_onedir": "9300e76dee46fb19f2666638ba5b8e7629c9ad3f192bd98a3a093dcef7db4364",
+  "message": "TakSklad 2.0.11: обязательное обновление. Добавлена строгая проверка Chapman SKU: Red/Brown/Gold КИЗ нельзя записать в чужую позицию. Нажмите Да, дождитесь установки и запускайте только TakSklad.exe из новой папки."
 }

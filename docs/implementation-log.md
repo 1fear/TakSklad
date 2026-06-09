@@ -4896,7 +4896,15 @@ cd /opt/taksklad/app
   - пересобраны и перезапущены `backend-api`, `google-sheets-sync-worker`, `skladbot-worker`, `telegram-worker`;
   - live-проверка на Gold-позиции `WH-R-195084` с Red-КИЗом вернула `409 Scan product does not match order item`;
   - `./deploy/vds/acceptance_status.sh` вернул общий `status=ok`.
+- Release:
+  - `APP_VERSION` desktop и backend поднят до `2.0.11`;
+  - создан GitHub release `v2.0.11`;
+  - GitHub Actions `Build Windows Release` завершился успешно, onefile и onedir smoke прошли;
+  - `TakSklad.exe`: `9427e26491634e2f4ad4ea2522edca1043a23e2b22c73604ef09e5d35d6821e2`;
+  - `TakSklad-windows-x64.zip`: `9300e76dee46fb19f2666638ba5b8e7629c9ad3f192bd98a3a093dcef7db4364`;
+  - public `version.json` переведен на forced rollout `2.0.11`.
 - Проверено:
   - `python -m unittest tests.test_scan_quantities tests.test_desktop_ui_contract.DesktopUiContractTests.test_scan_rejects_wrong_sku_before_local_backup_and_backend_queue tests.test_backend_api_persistence.BackendApiPersistenceTests.test_scan_create_rejects_unit_kiz_for_wrong_chapman_product tests.test_backend_api_persistence.BackendApiPersistenceTests.test_scan_create_rejects_aggregate_box_for_wrong_product tests.test_backend_api_persistence.BackendApiPersistenceTests.test_scan_undo_subtracts_aggregate_box_block_quantity` - 10 tests OK;
+  - `python -m unittest tests.test_release_preflight tests.test_vds_acceptance_scripts tests.test_windows_test_build_helper tests.test_app_updates tests.test_startup_check` - 21 tests OK;
   - `python -m unittest discover -s tests` - 399 tests OK;
   - `python -m py_compile main.py src/taksklad/*.py backend/app/*.py` - OK.
