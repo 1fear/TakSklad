@@ -29,6 +29,12 @@
   - `./.venv/bin/python -m compileall -q backend/app src/taksklad tools main.py tests` - OK.
   - `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK.
   - `git diff --check` - OK.
+  - VDS restore point: `/opt/taksklad/restore_points/pre-daily-report-template-20260609T082636Z`.
+  - VDS Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260609T082636Z.sql.gz`.
+  - VDS `telegram-worker` пересобран и перезапущен.
+  - VDS `.env` обновлен: `SKLADBOT_DAILY_REPORT_429_RETRIES=2`, `SKLADBOT_DAILY_REPORT_429_RETRY_SECONDS=15.0`.
+  - VDS live read-only dry-run за `09.06.2026`: `requests_total=27`, `category_counts={Отгрузка: 26, Возврат: 0, Приемка: 1, Прочее: 0}`, `blocks={Отгрузка: 1069, Возврат: 0, Приемка: 2, Прочее: 0}`, `stock_total=931`, `errors_count=0`, строки сводки `[2, -1069, 0, 931]`.
+  - VDS `./deploy/vds/acceptance_status.sh` - общий `status=ok`, `backend_health.status=ok`, `telegram_menu.status=ok`, `skladbot_coverage.status=ok`.
 
 ### Backend scan 500 из-за порядка записи scan_codes и kiz_movements
 

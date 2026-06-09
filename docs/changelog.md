@@ -26,6 +26,8 @@
 - `./.venv/bin/python -m compileall -q backend/app src/taksklad tools main.py tests` - OK.
 - `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK.
 - `git diff --check` - OK.
+- VDS live read-only dry-run отчета за `09.06.2026`: `requests_total=27`, `Отгрузка=26/1069`, `Приемка=1/2`, `Возврат=0/0`, `stock_total=931`, `errors_count=0`.
+- VDS `./deploy/vds/acceptance_status.sh` - общий `status=ok`.
 
 ### Исправление 500 при сохранении КИЗов в backend
 
