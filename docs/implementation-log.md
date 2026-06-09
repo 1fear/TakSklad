@@ -15,13 +15,17 @@
   - лист `Остатки` сделан агрегированным по клиенту, как в примере Антона;
   - сохранены листы `Заявки`, `Товары заявок`, `Движения`, `Остатки`, `Ошибки`;
   - добавлены точные ширины колонок и границы таблицы `A8:F12`.
+- После VDS dry-run обнаружен SkladBot `429 Too Many Requests` на одном detail-запросе. Добавлена защита:
+  - общий `SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS` теперь применяется и между списками заявок;
+  - `get_daily_request_detail()` повторяет detail-запрос при `429`;
+  - retry управляется `SKLADBOT_DAILY_REPORT_429_RETRIES` и `SKLADBOT_DAILY_REPORT_429_RETRY_SECONDS`.
 - Источник данных:
   - SkladBot API остается source of truth;
   - Google Sheets не используется для ежедневного отчета.
 - Проверено:
-  - `./.venv/bin/python -m unittest tests.test_skladbot_daily_report` - 4 tests OK.
-  - `./.venv/bin/python -m unittest tests.test_skladbot_daily_report tests.test_backend_telegram_import` - 48 tests OK.
-  - `./.venv/bin/python -m unittest discover tests` - 378 tests OK.
+  - `./.venv/bin/python -m unittest tests.test_skladbot_daily_report` - 5 tests OK.
+  - `./.venv/bin/python -m unittest tests.test_skladbot_daily_report tests.test_backend_telegram_import` - 49 tests OK.
+  - `./.venv/bin/python -m unittest discover tests` - 379 tests OK.
   - `./.venv/bin/python -m compileall -q backend/app src/taksklad tools main.py tests` - OK.
   - `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK.
   - `git diff --check` - OK.

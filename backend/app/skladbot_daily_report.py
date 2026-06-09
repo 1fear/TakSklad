@@ -199,6 +199,8 @@ def fetch_daily_requests(
                 "limit": limit,
             })
             list_items = extract_list_items(list_payload)
+            if request_delay:
+                time.sleep(request_delay)
         except Exception as exc:
             errors.append(f"Не удалось получить список заявок type_id={type_id}: {sanitize_skladbot_error(exc)}")
             continue
@@ -213,7 +215,7 @@ def fetch_daily_requests(
             if not reasons and has_reliable_list_dates(list_item):
                 continue
             try:
-                detail = client.get_request_detail(request_id)
+                detail = get_daily_request_detail(client, request_id, request_delay)
                 checked_details += 1
             except Exception as exc:
                 errors.append(f"Не удалось получить заявку {request_id}: {sanitize_skladbot_error(exc)}")
@@ -234,6 +236,25 @@ def fetch_daily_requests(
         parse_int(item.get("id")),
     ))
     return result
+
+
+def get_daily_request_detail(client: Any, request_id: int, request_delay: float) -> Any:
+    rate_limit_retries = max(0, env_int("SKLADBOT_DAILY_REPORT_429_RETRIES", 2))
+    retry_seconds = max(request_delay, env_float("SKLADBOT_DAILY_REPORT_429_RETRY_SECONDS", 15.0))
+    for attempt in range(rate_limit_retries + 1):
+        try:
+            return client.get_request_detail(request_id)
+        except Exception as exc:
+            if attempt >= rate_limit_retries or not is_skladbot_rate_limit_error(exc):
+                raise
+            if retry_seconds:
+                time.sleep(retry_seconds)
+    raise RuntimeError(f"Не удалось получить заявку {request_id}")
+
+
+def is_skladbot_rate_limit_error(exc: Exception) -> bool:
+    text = sanitize_skladbot_error(exc).lower()
+    return "429" in text or "too many requests" in text
 
 
 def has_reliable_list_dates(list_item: Any) -> bool:

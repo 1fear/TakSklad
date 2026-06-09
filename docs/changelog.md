@@ -6,7 +6,7 @@
 
 ### Новый шаблон ежедневного SkladBot отчета
 
-**Файлы:** `backend/app/skladbot_daily_report.py`, `tests/test_skladbot_daily_report.py`, `docs/*`.
+**Файлы:** `backend/app/skladbot_daily_report.py`, `deploy/vds/.env.example`, `tests/test_skladbot_daily_report.py`, `docs/*`.
 
 **Что стало:**
 
@@ -15,12 +15,14 @@
 - `Отгрузка` выводится отрицательным числом, чтобы движение остатков читалось как расход.
 - Лист `Остатки` стал агрегированным по клиенту: одна строка с текущим общим остатком из SkladBot.
 - Google Sheets в ежедневном отчете не используется. Источник данных остается SkladBot API.
+- Daily report теперь выдерживает временный SkladBot `429 Too Many Requests`: detail-запрос повторяется после cooldown, а общий delay применяется и между списками заявок.
+- Добавлены env-настройки `SKLADBOT_DAILY_REPORT_429_RETRIES` и `SKLADBOT_DAILY_REPORT_429_RETRY_SECONDS`.
 
 **Проверки:**
 
-- `./.venv/bin/python -m unittest tests.test_skladbot_daily_report` - 4 tests OK.
-- `./.venv/bin/python -m unittest tests.test_skladbot_daily_report tests.test_backend_telegram_import` - 48 tests OK.
-- `./.venv/bin/python -m unittest discover tests` - 378 tests OK.
+- `./.venv/bin/python -m unittest tests.test_skladbot_daily_report` - 5 tests OK.
+- `./.venv/bin/python -m unittest tests.test_skladbot_daily_report tests.test_backend_telegram_import` - 49 tests OK.
+- `./.venv/bin/python -m unittest discover tests` - 379 tests OK.
 - `./.venv/bin/python -m compileall -q backend/app src/taksklad tools main.py tests` - OK.
 - `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK.
 - `git diff --check` - OK.

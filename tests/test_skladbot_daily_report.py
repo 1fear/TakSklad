@@ -187,6 +187,17 @@ class FakeSkladBotDailyReportClient:
         }
 
 
+class TransientRateLimitDailyReportClient(FakeSkladBotDailyReportClient):
+    def __init__(self):
+        self.detail_calls = {}
+
+    def get_request_detail(self, request_id):
+        self.detail_calls[request_id] = self.detail_calls.get(request_id, 0) + 1
+        if request_id == 101 and self.detail_calls[request_id] == 1:
+            raise RuntimeError("429 Too Many Requests")
+        return super().get_request_detail(request_id)
+
+
 class SkladBotDailyReportTests(unittest.TestCase):
     def test_collects_requests_movements_stock_and_builds_xlsx(self):
         original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
@@ -317,6 +328,31 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(workbook["Остатки"].max_row, 2)
         self.assertEqual(workbook["Остатки"]["E2"].value, 0)
         self.assertEqual(workbook["Ошибки"]["A2"].value, "Не удалось получить остаток SkladBot")
+
+    def test_daily_report_retries_request_detail_after_rate_limit(self):
+        client = TransientRateLimitDailyReportClient()
+        original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
+        original_retry_seconds = os.environ.get("SKLADBOT_DAILY_REPORT_429_RETRY_SECONDS")
+        try:
+            os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = "0"
+            os.environ["SKLADBOT_DAILY_REPORT_429_RETRY_SECONDS"] = "0"
+            report = collect_skladbot_daily_report(
+                report_date=date(2026, 6, 8),
+                client=client,
+            )
+        finally:
+            if original_delay is None:
+                os.environ.pop("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS", None)
+            else:
+                os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = original_delay
+            if original_retry_seconds is None:
+                os.environ.pop("SKLADBOT_DAILY_REPORT_429_RETRY_SECONDS", None)
+            else:
+                os.environ["SKLADBOT_DAILY_REPORT_429_RETRY_SECONDS"] = original_retry_seconds
+
+        self.assertEqual(client.detail_calls[101], 2)
+        self.assertEqual(report["errors"], [])
+        self.assertEqual(report["summary"]["requests_total"], 3)
 
     def test_telegram_manual_command_sends_skladbot_daily_report(self):
         worker = TelegramWorker.__new__(TelegramWorker)
