@@ -720,6 +720,7 @@ def normalize_request_payload(list_item, detail):
                 "vendor_code": normalize_text(product.get("vendorCode") or product.get("vendor_code")),
                 "barcode": normalize_text(product.get("barcode")),
                 "amount": parse_int(product.get("amount")),
+                "accepted_amount": parse_int(product.get("acceptedAmount") or product.get("accepted_amount")),
             }
             for product in products
             if isinstance(product, dict)

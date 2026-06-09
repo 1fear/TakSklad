@@ -4,6 +4,35 @@
 
 ## 2026-06-09
 
+### Фактическая приемка в ежедневном SkladBot отчете
+
+- Симптом: в отчете `Приемка` показывала `2`, хотя SkladBot по заявке `WH-R-194859` показывал фактически принято:
+  - `Chapman Red OP 20 UZ - KingSize`: `acceptedAmount=1250`;
+  - `Chapman Brown OP 20 UZ - KingSize`: `acceptedAmount=1750`.
+- Причина: отчет использовал плановое поле `products.amount`. В заявках приемки это может быть техническое `1`, а не фактическая приемка.
+- Дополнительный факт:
+  - `/warehouse/transactions` и `/report/transactions` за `09.06.2026` не вернули приходные движения;
+  - `/report/stock` вернул только общий остаток `3818`, без SKU;
+  - `/products` вернул текущие остатки по SKU: Red `1421`, Brown `2122`, Gold `275`.
+- Решение:
+  - `backend/app/skladbot_worker.py` сохраняет `accepted_amount` из SkladBot detail;
+  - `backend/app/skladbot_daily_report.py` для категории `Приемка` берет `accepted_amount`, если он есть;
+  - `acceptedAmount` переводится в блоки делением на `10`, если значение кратно `10`;
+  - SKU-остатки на конец дня берутся из `/products`, общий `/report/stock` остается контрольным итогом.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_skladbot_daily_report` - 7 tests OK;
+  - `./.venv/bin/python -m unittest discover tests` - 402 tests OK;
+  - `./.venv/bin/python -m compileall -q backend/app src/taksklad tools main.py tests` - OK;
+  - `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK;
+  - `git diff --check` - OK;
+  - VDS restore point: `/opt/taksklad/restore_points/pre-daily-report-accepted-amount-20260609T173947Z`;
+  - VDS Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260609T173947Z.sql.gz`;
+  - VDS пересобраны и перезапущены `backend-api`, `telegram-worker`, `skladbot-worker`;
+  - VDS live-smoke по `WH-R-194859`: Red `acceptedAmount=1250 -> 125` блоков, Brown `acceptedAmount=1750 -> 175` блоков;
+  - ручная переотправка отчета за `09.06.2026` выполнена в настроенный Telegram-чат;
+  - VDS `./deploy/vds/acceptance_status.sh` - общий `status=ok`;
+  - свежие логи `backend-api`, `telegram-worker`, `skladbot-worker` - без `ERROR/Traceback/Exception`.
+
 ### SKU-колонки в ежедневном SkladBot отчете
 
 - Симптом: в ежедневном Excel-отчете на листе `Сводка` оставались заглушки `SKU1/SKU2/SKU3`, хотя там должны быть реальные товары и движение по каждому SKU.

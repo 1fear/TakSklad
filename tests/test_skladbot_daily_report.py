@@ -118,13 +118,40 @@ class FakeSkladBotDailyReportClient:
                 "BASTION IMPORT",
                 "Склад",
                 "Приемка",
-                [{"name": "Chapman Gold SSL", "vendorCode": "4006396054012", "barcode": "4006396054005", "amount": 500}],
+                [{"name": "Chapman Gold SSL", "vendorCode": "4006396054012", "barcode": "4006396054005", "amount": 1, "acceptedAmount": 5000}],
             ),
         }
         return details[request_id]
 
     def post(self, path, payload=None):
         payload = payload or {}
+        if path == "/products":
+            return {
+                "total": 3,
+                "data": {
+                    "2010857": [{
+                        "customer": {"name": "ООО Bastion Import Chapman MCHJ"},
+                        "name": "Chapman Brown OP 20",
+                        "vendor_code": "130400353",
+                        "barcode": "4006396053978",
+                        "amount": 42,
+                    }],
+                    "2010858": [{
+                        "customer": {"name": "ООО Bastion Import Chapman MCHJ"},
+                        "name": "Chapman Gold SSL",
+                        "vendor_code": "4006396054012",
+                        "barcode": "4006396054005",
+                        "amount": 500,
+                    }],
+                    "2010859": [{
+                        "customer": {"name": "ООО Bastion Import Chapman MCHJ"},
+                        "name": "Chapman RED OP 20",
+                        "vendor_code": "130400237",
+                        "barcode": "4006396053947",
+                        "amount": 2,
+                    }],
+                },
+            }
         if path == "/warehouse/transactions":
             if payload.get("type") == "in":
                 return {"data": [
@@ -401,6 +428,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
                     "vendor_code": "130400353",
                     "barcode": "4006396053978",
                     "amount": 4,
+                    "accepted_amount": 0,
                 }],
             }],
         }
@@ -410,6 +438,26 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["ending_stock"], 42)
         self.assertEqual(rows[0]["outbound"], 4)
+
+    def test_daily_report_uses_accepted_amount_for_receiving(self):
+        report = {
+            "stock": {"rows": []},
+            "requests": [{
+                "category": "Приемка",
+                "products": [{
+                    "name": "Chapman Brown OP 20",
+                    "vendor_code": "130400353",
+                    "barcode": "4006396053978",
+                    "amount": 1,
+                    "accepted_amount": 1750,
+                }],
+            }],
+        }
+
+        rows = product_breakdown_for_summary(report)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["inbound"], 175)
 
     def test_telegram_manual_command_sends_skladbot_daily_report(self):
         worker = TelegramWorker.__new__(TelegramWorker)

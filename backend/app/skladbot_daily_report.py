@@ -355,6 +355,7 @@ def normalize_movement(item: dict[str, Any], direction: str) -> dict[str, Any]:
 
 
 def fetch_current_stock(client: Any, errors: list[str]) -> dict[str, Any]:
+    products_stock = fetch_products_stock(client, errors)
     try:
         payload = client.post("/report/stock", {
             "customer_id": getattr(client, "customer_id", None),
@@ -363,9 +364,30 @@ def fetch_current_stock(client: Any, errors: list[str]) -> dict[str, Any]:
     except Exception as exc:
         error = f"Не удалось получить остаток SkladBot: {sanitize_skladbot_error(exc)}"
         errors.append(error)
+        if products_stock["rows"]:
+            products_stock["error"] = error
+            return products_stock
         return {"total": 0, "rows": [], "raw": {}, "error": error}
+    if products_stock["rows"]:
+        products_stock["raw"] = {"products": products_stock.get("raw") or {}, "report_stock": payload}
+        products_stock["report_total"] = stock_total(payload, normalize_stock_rows(payload))
+        return products_stock
     rows = normalize_stock_rows(payload)
     total = stock_total(payload, rows)
+    return {"total": total, "rows": rows, "raw": payload, "error": ""}
+
+
+def fetch_products_stock(client: Any, errors: list[str]) -> dict[str, Any]:
+    try:
+        payload = client.post("/products", {
+            "customer_id": getattr(client, "customer_id", None),
+            "limit": 1000,
+        })
+    except Exception as exc:
+        errors.append(f"Не удалось получить товары SkladBot: {sanitize_skladbot_error(exc)}")
+        return {"total": 0, "rows": [], "raw": {}, "error": ""}
+    rows = normalize_stock_rows(payload)
+    total = sum(parse_int(row.get("stock")) for row in rows)
     return {"total": total, "rows": rows, "raw": payload, "error": ""}
 
 
@@ -481,7 +503,7 @@ def summarize_daily_report(report: dict[str, Any]) -> dict[str, Any]:
         category_counts[category] = category_counts.get(category, 0) + 1
         type_name = normalize_text(request.get("type")) or "Без типа"
         type_counts[type_name] = type_counts.get(type_name, 0) + 1
-        request_blocks_by_category[category] = request_blocks_by_category.get(category, 0) + request_blocks(request)
+        request_blocks_by_category[category] = request_blocks_by_category.get(category, 0) + request_report_blocks(request)
     movement_in = [item for item in movements if item.get("direction") == "Приход"]
     movement_out = [item for item in movements if item.get("direction") == "Расход"]
     return {
@@ -502,6 +524,28 @@ def summarize_daily_report(report: dict[str, Any]) -> dict[str, Any]:
 
 def request_blocks(request: dict[str, Any]) -> int:
     return sum(parse_int(product.get("amount")) for product in request.get("products") or [])
+
+
+def request_report_blocks(request: dict[str, Any]) -> int:
+    category = normalize_text(request.get("category")) or "Прочее"
+    return sum(report_product_blocks(product, category) for product in request.get("products") or [])
+
+
+def report_product_blocks(product: dict[str, Any], category: str) -> int:
+    if normalize_text(category) == "Приемка":
+        accepted_amount = parse_int(product.get("accepted_amount"))
+        if accepted_amount > 0:
+            return accepted_amount_to_blocks(accepted_amount)
+    return parse_int(product.get("amount"))
+
+
+def accepted_amount_to_blocks(value: Any) -> int:
+    amount = parse_int(value)
+    if amount <= 0:
+        return 0
+    if amount % 10 == 0:
+        return amount // 10
+    return amount
 
 
 def product_key(name: Any, vendor_code: Any = "", barcode: Any = "") -> str:
@@ -574,7 +618,7 @@ def product_breakdown_for_summary(report: dict[str, Any]) -> list[dict[str, Any]
                 request_product.get("vendor_code"),
                 request_product.get("barcode"),
             )
-            amount = parse_int(request_product.get("amount"))
+            amount = report_product_blocks(request_product, category)
             if category == "Приемка":
                 product["inbound"] += amount
             elif category == "Отгрузка":

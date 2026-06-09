@@ -4,6 +4,32 @@
 
 ## 2026-06-09
 
+### Фактическая приемка в ежедневном SkladBot отчете
+
+**Файлы:** `backend/app/skladbot_daily_report.py`, `backend/app/skladbot_worker.py`, `tests/test_skladbot_daily_report.py`, `docs/*`.
+
+**Что стало:**
+
+- Для строки `Приемка` ежедневный отчет больше не берет плановое `products.amount`.
+- Если SkladBot отдал `acceptedAmount`, отчет использует фактически принятое количество и переводит его в блоки: `1250 -> 125`, `1750 -> 175`.
+- SKU-остатки на конец дня берутся из `/products`, где SkladBot отдает текущий `amount` по каждому товару.
+- `/report/stock` остается контрольным общим итогом, но не используется как источник SKU-детализации, потому что он возвращает только общий остаток.
+
+**Проверки:**
+
+- `./.venv/bin/python -m unittest tests.test_skladbot_daily_report` - 7 tests OK.
+- `./.venv/bin/python -m unittest discover tests` - 402 tests OK.
+- `./.venv/bin/python -m compileall -q backend/app src/taksklad tools main.py tests` - OK.
+- `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK.
+- `git diff --check` - OK.
+- VDS restore point: `/opt/taksklad/restore_points/pre-daily-report-accepted-amount-20260609T173947Z`.
+- VDS Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260609T173947Z.sql.gz`.
+- VDS пересобраны и перезапущены `backend-api`, `telegram-worker`, `skladbot-worker`.
+- VDS live-smoke по `WH-R-194859`: Red `acceptedAmount=1250 -> 125` блоков, Brown `acceptedAmount=1750 -> 175` блоков.
+- Ручная переотправка отчета за `09.06.2026` выполнена в настроенный Telegram-чат.
+- VDS `./deploy/vds/acceptance_status.sh` - общий `status=ok`.
+- Свежие логи `backend-api`, `telegram-worker`, `skladbot-worker` - без `ERROR/Traceback/Exception`.
+
 ### SKU-колонки в ежедневном SkladBot отчете
 
 **Файлы:** `backend/app/skladbot_daily_report.py`, `tests/test_skladbot_daily_report.py`, `docs/*`.
