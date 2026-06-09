@@ -4908,3 +4908,17 @@ cd /opt/taksklad/app
   - `python -m unittest tests.test_release_preflight tests.test_vds_acceptance_scripts tests.test_windows_test_build_helper tests.test_app_updates tests.test_startup_check` - 21 tests OK;
   - `python -m unittest discover -s tests` - 399 tests OK;
   - `python -m py_compile main.py src/taksklad/*.py backend/app/*.py` - OK.
+
+### Release 2.0.12 non-blocking desktop errors
+
+- Причина: на складе ошибки сканирования и синхронизации открывались через модальное окно `OK`, из-за чего оператор не мог продолжать пикать без ручного закрытия окна.
+- Изменено:
+  - `show_error()` больше не открывает `messagebox.showerror`;
+  - ошибки показываются в нижней статусной полосе красным цветом и исчезают через 5 секунд;
+  - критические ошибки по-прежнему пишутся в лог и отправляются в Telegram с документами, но не блокируют UI модальным `OK`;
+  - старые `showwarning/showinfo` для “нет заказов”, импорта и закрытия смены заменены на нижние уведомления;
+  - подтверждения `askyesno` оставлены, потому что там нужен выбор пользователя;
+  - release guard поднят на `2.0.12`.
+- Проверено до релиза:
+  - `python -m unittest tests.test_desktop_ui_contract tests.test_scan_quantities tests.test_release_preflight tests.test_vds_acceptance_scripts tests.test_windows_test_build_helper` - 46 tests OK;
+  - `python -m py_compile main.py src/taksklad/*.py backend/app/*.py tools/release_preflight.py` - OK.

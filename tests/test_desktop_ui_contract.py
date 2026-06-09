@@ -1,9 +1,11 @@
 import inspect
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
 from taksklad import app_day_end
+from taksklad import main as main_module
 from taksklad.config import ACCENT, BG_MAIN, ERROR_FG, FG_MUTED, FG_TEXT, WARNING
 from taksklad.app_day_end import build_backend_status
 from taksklad import backend_client
@@ -79,6 +81,21 @@ class DesktopUiContractTests(unittest.TestCase):
         self.assertLess(source.index("scan_product_mismatch"), source.index("write_scan_backup"))
         self.assertLess(source.index("scan_product_mismatch"), source.index("queue_backend_scan"))
         self.assertIn("КИЗ не соответствует товару текущей позиции", source)
+
+    def test_desktop_errors_use_non_blocking_status_notice(self):
+        source_root = Path(__file__).resolve().parents[1] / "src" / "taksklad"
+        forbidden = ("messagebox.showerror", "messagebox.showwarning", "messagebox.showinfo")
+        hits = []
+        for path in source_root.glob("*.py"):
+            text = path.read_text(encoding="utf-8")
+            for marker in forbidden:
+                if marker in text:
+                    hits.append(f"{path.name}: {marker}")
+
+        self.assertEqual([], hits)
+        self.assertEqual(main_module.STATUS_NOTICE_TIMEOUT_MS, 5000)
+        self.assertNotIn("messagebox", inspect.getsource(ScanningApp.show_error))
+        self.assertIn("STATUS_NOTICE_TIMEOUT_MS", inspect.getsource(ScanningApp.show_status_notice))
 
     def test_finish_requires_every_position_saved_and_fully_scanned(self):
         orders = [

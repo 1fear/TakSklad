@@ -68,7 +68,7 @@ class ImportActionsMixin:
                     details.append("\nОшибки:\n" + "\n".join(errors[:6]))
                 if warnings:
                     details.append("\nПредупреждения:\n" + "\n".join(warnings[:6]))
-                messagebox.showwarning("Импорт Excel", "Новых заказов для загрузки нет.\n\n" + "\n".join(details))
+                self.show_warning("Новых заказов для загрузки нет.\n\n" + "\n".join(details))
                 return
 
             message_lines = [
@@ -141,8 +141,7 @@ class ImportActionsMixin:
             self.apply_loaded_data(loaded, show_empty_warning=False)
             self.reset_current_selection()
             self.refresh_legal_list()
-            messagebox.showinfo(
-                "Импорт завершён",
+            self.show_info(
                 f"Загружено позиций: {import_result.get('imported', 0)}\n"
                 f"Повторно пропущено: {import_result.get('duplicates', 0)}",
             )

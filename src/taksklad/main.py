@@ -112,6 +112,8 @@ from .utils import (
 
 configure_app_logging(LOG_FILE, LOG_MAX_BYTES, LOG_BACKUP_COUNT)
 
+STATUS_NOTICE_TIMEOUT_MS = 5000
+
 def format_exception_message(title, exc):
     return (
         f"{title}\n\n"
@@ -119,12 +121,36 @@ def format_exception_message(title, exc):
         f"Подробности записаны в лог:\n{LOG_FILE}"
     )
 
-def show_exception_message(title, exc):
-    logging.exception(title)
+def show_startup_error_message(title, message):
     try:
-        messagebox.showerror("Ошибка", format_exception_message(title, exc))
+        root = tk.Tk()
+        root.title(title)
+        root.configure(bg=ERROR_BG)
+        root.resizable(False, False)
+        root.attributes("-topmost", True)
+        tk.Label(
+            root,
+            text=f"❌ {message}",
+            bg=ERROR_BG,
+            fg=ERROR_FG,
+            font=("Segoe UI", 11, "bold"),
+            padx=24,
+            pady=18,
+            wraplength=560,
+            justify="left",
+        ).pack(fill="both", expand=True)
+        root.update_idletasks()
+        x = max((root.winfo_screenwidth() - root.winfo_width()) // 2, 0)
+        y = max(root.winfo_screenheight() - root.winfo_height() - 80, 0)
+        root.geometry(f"+{x}+{y}")
+        root.after(STATUS_NOTICE_TIMEOUT_MS, root.destroy)
+        root.mainloop()
     except Exception:
         pass
+
+def show_exception_message(title, exc):
+    logging.exception(title)
+    show_startup_error_message("Ошибка", format_exception_message(title, exc))
 
 
 def date_sort_key(value):
@@ -275,13 +301,10 @@ def global_exception_handler(exc_type, exc_value, exc_traceback):
         "Неперехваченная ошибка",
         exc_info=(exc_type, exc_value, exc_traceback)
     )
-    try:
-        messagebox.showerror(
-            "Критическая ошибка",
-            format_exception_message("Неперехваченная ошибка", exc_value)
-        )
-    except Exception:
-        pass
+    show_startup_error_message(
+        "Критическая ошибка",
+        format_exception_message("Неперехваченная ошибка", exc_value),
+    )
 
 sys.excepthook = global_exception_handler
 
@@ -517,12 +540,13 @@ class ScanningApp(
     def load_data(self, show_empty_warning=True):
         self.today_orders, self.sheet, self.all_existing_codes = fetch_sheet_data()
         if show_empty_warning and not self.today_orders:
-            messagebox.showwarning("Нет заданий",
+            self.show_warning(
                 f"Нет заказов со статусом '{STATUS_NOT_COMPLETED}'.\n\n"
                 f"Проверьте:\n"
                 f"1. В таблице есть строки заказов\n"
                 f"2. Колонка '{STATUS_COLUMN}' не заполнена как '{STATUS_COMPLETED}'\n"
-                f"3. Колонка 'Отсканированные коды' заполнена не полностью")
+                f"3. Колонка 'Отсканированные коды' заполнена не полностью"
+            )
 
     def fetch_sheet_data_after_import(self):
         return fetch_sheet_data_with_sync(sync_skladbot=False)
@@ -583,8 +607,7 @@ class ScanningApp(
             self.last_sync_result = {"synced": 0, "failed": 0, "remaining": len(load_pending_saves())}
 
         if show_empty_warning and not self.today_orders:
-            messagebox.showwarning(
-                "Нет заданий",
+            self.show_warning(
                 f"Нет заказов со статусом '{STATUS_NOT_COMPLETED}'.\n\n"
                 f"Проверьте:\n"
                 f"1. В таблице есть строки заказов\n"
@@ -732,18 +755,28 @@ class ScanningApp(
         y = (self.winfo_screenheight() - self.winfo_height()) // 2
         self.geometry(f"+{x}+{y}")
 
+    def show_status_notice(self, message, *, bg, fg, prefix, log_level=None):
+        text = normalize_text(message)
+        if log_level is not None:
+            logging.log(log_level, "Уведомление пользователю: %s", text)
+        self.status_var.set(f"{prefix} {text}" if prefix else text)
+        self.safe_config(self.status_label, bg=bg, fg=fg)
+        if self.error_timer:
+            try:
+                self.after_cancel(self.error_timer)
+            except tk.TclError:
+                pass
+        self.error_timer = self.after(STATUS_NOTICE_TIMEOUT_MS, self.clear_error)
+
     def show_error(self, message, popup=True):
         logging.warning("Ошибка для пользователя: %s", message)
-        self.status_var.set(f"❌ {message}")
-        self.safe_config(self.status_label, bg=ERROR_BG, fg=ERROR_FG)
-        if self.error_timer:
-            self.after_cancel(self.error_timer)
-        self.error_timer = self.after(3000, self.clear_error)
-        if popup:
-            messagebox.showerror(
-                "Ошибка",
-                f"Причина: {message}\n\nЕсли ошибка повторяется, подробности будут в логе:\n{LOG_FILE}"
-            )
+        self.show_status_notice(message, bg=ERROR_BG, fg=ERROR_FG, prefix="❌", log_level=None)
+
+    def show_warning(self, message):
+        self.show_status_notice(message, bg=WARNING, fg=FG_TEXT, prefix="⚠", log_level=logging.WARNING)
+
+    def show_info(self, message):
+        self.show_status_notice(message, bg=BG_MAIN, fg=FG_MUTED, prefix="✅", log_level=logging.INFO)
 
     def show_critical_error(self, title, exc_or_message):
         if isinstance(exc_or_message, BaseException):
@@ -758,8 +791,7 @@ class ScanningApp(
             logging.error("%s: %s", title, message)
             detail = f"{title}\n\nПричина: {message}\n\nПодробности записаны в лог:\n{LOG_FILE}"
 
-        self.show_error(message, popup=False)
-        messagebox.showerror("Ошибка", detail)
+        self.show_error(f"{title}: {message}", popup=False)
         self.send_telegram_alert_async(f"{APP_NAME}: ошибка приложения\n\n" + detail[:3800])
         self.send_telegram_documents_async(collect_operational_documents(include_error_log=True))
 
@@ -769,12 +801,8 @@ class ScanningApp(
             exc_info=(exc_type, exc_value, exc_traceback)
         )
         try:
-            self.show_error(str(exc_value), popup=False)
+            self.show_error(f"Ошибка в интерфейсе: {exc_value}", popup=False)
             detail = format_exception_message("Ошибка в интерфейсе", exc_value)
-            messagebox.showerror(
-                "Ошибка",
-                detail
-            )
             self.send_telegram_alert_async(f"{APP_NAME}: ошибка интерфейса\n\n" + detail[:3800])
             self.send_telegram_documents_async(collect_operational_documents(include_error_log=True))
         except Exception:
@@ -1104,8 +1132,9 @@ class ScanningApp(
 
         self.status_var = tk.StringVar(value="✅ Готов к работе")
         self.status_label = tk.Label(status_frame, textvariable=self.status_var,
-                                     bg=BG_MAIN, fg=FG_MUTED, font=("Segoe UI", 10))
-        self.status_label.pack()
+                                     bg=BG_MAIN, fg=FG_MUTED, font=("Segoe UI", 10),
+                                     padx=14, pady=8, wraplength=900, justify="center")
+        self.status_label.pack(fill="x")
 
         version_frame = tk.Frame(main, bg=BG_MAIN)
         version_frame.pack(fill="x", pady=(6, 0))
@@ -1723,12 +1752,12 @@ class ScanningApp(
             return
 
         if not self.today_orders:
-            messagebox.showwarning("Ошибка", "Нет доступных юридических лиц!")
+            self.show_error("Нет доступных юридических лиц!")
             return
 
         selected_group = self._selected_order_group()
         if not selected_group:
-            messagebox.showwarning("Ошибка", "Выберите заказ из списка")
+            self.show_error("Выберите заказ из списка")
             return
         request_number, legal_entity, payment_type, address = unpack_order_group_key(selected_group)
         display_request_number = request_number or "Без номера SkladBot"
@@ -1844,7 +1873,8 @@ class ScanningApp(
             return
 
         if not self.current_order:
-            messagebox.showwarning("Ошибка", "Сначала выберите заказ")
+            self.show_error("Сначала выберите заказ")
+            self.scan_entry.delete(0, tk.END)
             return
 
         is_valid, error_msg, code = validate_kiz_code(self.scan_entry.get())
@@ -2251,9 +2281,11 @@ def run_app():
     log_startup_self_check()
 
     if not credentials_available() and not backend_read_orders_enabled():
-        messagebox.showerror("Ошибка",
+        show_startup_error_message(
+            "Ошибка",
             f"Не найдены учётные данные Google Sheets.\n\n"
-            f"Положите credentials.json рядом с программой или перенесите его в {TAKSKLAD_DATA_FILE}")
+            f"Положите credentials.json рядом с программой или перенесите его в {TAKSKLAD_DATA_FILE}",
+        )
     else:
         app = ScanningApp()
         app.mainloop()

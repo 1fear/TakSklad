@@ -115,7 +115,7 @@ class DayEndActionsMixin:
         def on_success(result):
             self.sheet = result.get("sheet") or self.sheet
             if result.get("empty"):
-                messagebox.showwarning("Нет данных", "За сегодня нет отсканированных КИЗов для отчёта")
+                self.show_warning("За сегодня нет отсканированных КИЗов для отчёта")
                 return
 
             total_report_rows = result["total_report_rows"]
@@ -137,8 +137,7 @@ class DayEndActionsMixin:
                 report_lines.append(
                     f"- {shipment_date}{part_text}: {report.get('total_report_rows', 0)} КИЗ, {status}{repeat_text}"
                 )
-            messagebox.showinfo(
-                "Отчёт сохранён",
+            self.show_info(
                 f"📊 Отчётов сохранено: {len(reports)}\n\n"
                 f"━━━━━━━━━━━━━━━━━━━━\n"
                 f"✅ Строк КИЗов: {total_report_rows}\n"
@@ -151,7 +150,10 @@ class DayEndActionsMixin:
                 + "\n".join(report_lines),
             )
 
-            self.on_close()
+            try:
+                self.after(5000, self.on_close)
+            except tk.TclError:
+                pass
 
         def on_error(exc):
             if isinstance(exc, ImportError):
