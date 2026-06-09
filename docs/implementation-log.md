@@ -26,6 +26,13 @@
   - `npm run build` в `frontend` - OK.
   - `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK.
   - `git diff --check` - OK.
+  - VDS restore point: `/opt/taksklad/restore_points/pre-pickup-logistics-20260609T090735Z`.
+  - VDS Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260609T090735Z.sql.gz`.
+  - VDS пересобраны и перезапущены `backend-api`, `telegram-worker`, `google-sheets-sync-worker`.
+  - `https://api.taksklad.uz/health` - 200 OK, backend `2.0.9`.
+  - VDS `./deploy/vds/acceptance_status.sh` - общий `status=ok`.
+  - VDS in-container smoke логистики: из 4 временных строк в XLSX попала только доставочная строка с валидными координатами; самовывоз, пустые координаты и `999,999` исключены.
+  - VDS fresh logs `backend-api`, `telegram-worker`, `google-sheets-sync-worker` - без `ERROR/Traceback/Exception`.
 
 ### Обновление шаблона ежедневного SkladBot отчета
 
