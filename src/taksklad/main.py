@@ -75,6 +75,7 @@ from .scan_quantities import (
     aggregate_product_mismatch,
     scan_entries_for_order_codes,
     scan_metadata_for_code,
+    scan_product_mismatch,
     scanned_blocks_for_order_codes,
 )
 from .sheets import (
@@ -1869,6 +1870,10 @@ class ScanningApp(
 
         scan_metadata = scan_metadata_for_code(code)
         block_quantity = scan_metadata["block_quantity"]
+        if scan_product_mismatch(code, self.current_order.get("Товары", "")):
+            self.show_error("КИЗ не соответствует товару текущей позиции")
+            self.scan_entry.delete(0, tk.END)
+            return
         if scan_metadata["scan_type"] == SCAN_TYPE_AGGREGATE_BOX:
             if aggregate_product_mismatch(code, self.current_order.get("Товары", "")):
                 self.show_error("Код короба не соответствует товару текущей позиции")

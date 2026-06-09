@@ -8,6 +8,12 @@ AGGREGATE_BOX_PRODUCT_PREFIXES = {
     "010400639605395421": "red",
 }
 
+UNIT_PRODUCT_PREFIXES = {
+    "0104006396054005": "gold",
+    "0104006396053978": "brown",
+    "0104006396053947": "red",
+}
+
 PRODUCT_KEY_MARKERS = {
     "gold": ("gold",),
     "brown": ("brown",),
@@ -15,12 +21,24 @@ PRODUCT_KEY_MARKERS = {
 }
 
 
-def scan_code_product_key(code):
+def aggregate_box_product_key(code):
     text = normalize_text(code)
     for prefix, product_key in AGGREGATE_BOX_PRODUCT_PREFIXES.items():
         if text.startswith(prefix):
             return product_key
     return ""
+
+
+def unit_product_key(code):
+    text = normalize_text(code)
+    for prefix, product_key in UNIT_PRODUCT_PREFIXES.items():
+        if text.startswith(prefix):
+            return product_key
+    return ""
+
+
+def scan_code_product_key(code):
+    return aggregate_box_product_key(code) or unit_product_key(code)
 
 
 def product_key_from_name(product):
@@ -32,7 +50,7 @@ def product_key_from_name(product):
 
 
 def scan_type_for_code(code):
-    return SCAN_TYPE_AGGREGATE_BOX if scan_code_product_key(code) else SCAN_TYPE_UNIT
+    return SCAN_TYPE_AGGREGATE_BOX if aggregate_box_product_key(code) else SCAN_TYPE_UNIT
 
 
 def block_quantity_for_code(code):
@@ -46,8 +64,17 @@ def scan_metadata_for_code(code):
     return {
         "scan_type": scan_type,
         "block_quantity": block_quantity_for_code(code),
-        "aggregate_product_key": scan_code_product_key(code) if scan_type == SCAN_TYPE_AGGREGATE_BOX else "",
+        "product_key": scan_code_product_key(code),
+        "aggregate_product_key": aggregate_box_product_key(code) if scan_type == SCAN_TYPE_AGGREGATE_BOX else "",
     }
+
+
+def scan_product_mismatch(code, product):
+    product_key = product_key_from_name(product)
+    if not product_key:
+        return False
+    code_product_key = scan_code_product_key(code)
+    return not code_product_key or product_key != code_product_key
 
 
 def scan_block_quantity(scan):

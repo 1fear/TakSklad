@@ -72,6 +72,14 @@ class DesktopUiContractTests(unittest.TestCase):
         self.assertIn("finish_legal_entity(from_next_product=True)", next_source)
         self.assertIn("Все позиции сохранены", next_source)
 
+    def test_scan_rejects_wrong_sku_before_local_backup_and_backend_queue(self):
+        source = inspect.getsource(ScanningApp.on_scan)
+
+        self.assertIn("scan_product_mismatch", source)
+        self.assertLess(source.index("scan_product_mismatch"), source.index("write_scan_backup"))
+        self.assertLess(source.index("scan_product_mismatch"), source.index("queue_backend_scan"))
+        self.assertIn("КИЗ не соответствует товару текущей позиции", source)
+
     def test_finish_requires_every_position_saved_and_fully_scanned(self):
         orders = [
             {"Кол-во блок": 2, "Отсканированные коды": "01000000000000000001\n01000000000000000002"},

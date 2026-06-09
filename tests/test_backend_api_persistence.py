@@ -754,6 +754,25 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertEqual(item.scanned_blocks, 0)
             self.assertEqual(db.execute(select(ScanCode)).scalars().all(), [])
 
+    def test_scan_create_rejects_unit_kiz_for_wrong_chapman_product(self):
+        _, item_id = self.seed_order(quantity_blocks=1, product="Chapman Gold SSL 100`20")
+
+        response = self.client.post(
+            "/api/v1/scans",
+            json={
+                "order_item_id": item_id,
+                "code": "0104006396053947217p-30o933ZXHZKjx",
+            },
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["detail"]["message"], "Scan product does not match order item")
+        with self.SessionLocal() as db:
+            item = db.get(OrderItem, uuid.UUID(item_id))
+            self.assertEqual(item.scanned_blocks, 0)
+            self.assertEqual(item.status, "not_completed")
+            self.assertEqual(db.execute(select(ScanCode)).scalars().all(), [])
+
     def test_scan_undo_subtracts_aggregate_box_block_quantity(self):
         _, item_id = self.seed_order(quantity_blocks=51, product="Chapman Gold SSL 100`20")
         aggregate = self.client.post(
@@ -1695,7 +1714,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             "/api/v1/scans",
             json={
                 "order_item_id": item_id,
-                "code": "010000000501",
+                "code": "0104006396053978217TIMEZONE001",
                 "scanned_at": "2026-05-31T20:30:00+00:00",
             },
         )
@@ -1920,7 +1939,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         active = self.client.get("/api/v1/orders/active").json()
         kiz_order = next(order for order in active if order["client"] == "KIZ Client")
         item_id = kiz_order["items"][0]["id"]
-        for code in ("010000000301", "010000000302"):
+        for code in ("0104006396053978217SOURCEA001", "0104006396053978217SOURCEA002"):
             response = self.client.post("/api/v1/scans", json={"order_item_id": item_id, "code": code})
             self.assertEqual(response.status_code, 201)
 
@@ -1953,9 +1972,9 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(sheet["C2"].value, "KIZ Client")
         self.assertEqual(sheet["G2"].value, "Chapman Brown OP 20")
         self.assertEqual(sheet["H2"].value, 1)
-        self.assertEqual(sheet["I2"].value, "010000000301")
+        self.assertEqual(sheet["I2"].value, "0104006396053978217SOURCEA001")
         self.assertEqual(sheet["H3"].value, 1)
-        self.assertEqual(sheet["I3"].value, "010000000302")
+        self.assertEqual(sheet["I3"].value, "0104006396053978217SOURCEA002")
         self.assertEqual(sheet["K2"].value, "source-a.xlsx")
         workbook.close()
 
@@ -2002,7 +2021,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         done_order = next(order for order in active if order["client"] == "Done Client")
         response = self.client.post(
             "/api/v1/scans",
-            json={"order_item_id": done_order["items"][0]["id"], "code": "010000000401"},
+            json={"order_item_id": done_order["items"][0]["id"], "code": "0104006396053978217SAMENAME001"},
         )
         self.assertEqual(response.status_code, 201)
 

@@ -24,6 +24,7 @@ from .scan_quantities import (
     product_key_from_name,
     scan_block_quantity,
     scan_metadata_for_code,
+    scan_product_mismatch,
     scanned_blocks_for_scans,
 )
 
@@ -124,8 +125,8 @@ def create_scan(db: Session, payload: ScanCreate):
     scan_metadata = scan_metadata_for_code(code)
     block_quantity = scan_metadata["block_quantity"]
 
+    item_product_key = product_key_from_name(item.product)
     if scan_metadata["scan_type"] == SCAN_TYPE_AGGREGATE_BOX:
-        item_product_key = product_key_from_name(item.product)
         if not item_product_key or item_product_key != scan_metadata["aggregate_product_key"]:
             raise ApiError(409, {
                 "message": "Aggregate box product does not match order item",
@@ -141,6 +142,14 @@ def create_scan(db: Session, payload: ScanCreate):
                 "remaining_blocks": remaining_blocks,
                 "block_quantity": block_quantity,
             })
+    elif scan_product_mismatch(code, item.product):
+        raise ApiError(409, {
+            "message": "Scan product does not match order item",
+            "order_item_id": str(item.id),
+            "product": item.product,
+            "expected_product_key": item_product_key,
+            "scan_product_key": scan_metadata.get("product_key") or "",
+        })
 
     scan_id = uuid.uuid4()
     scan_raw_payload = dict(payload.raw_payload or {})

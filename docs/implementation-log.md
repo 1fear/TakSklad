@@ -4876,3 +4876,27 @@ cd /opt/taksklad/app
 - Проверено:
   - `python -m unittest tests.test_backend_google_sheets_exporter` - 16 tests OK;
   - `python -m unittest discover -s tests` - 394 tests OK.
+
+### Unit KIZ SKU validation
+
+- Причина: desktop и backend проверяли SKU только у агрегационных коробов. Обычный Red-КИЗ мог быть принят в позицию Gold/Brown.
+- Исправлено:
+  - обычные GTIN-префиксы теперь распознаются как `brown`, `red`, `gold`;
+  - desktop отклоняет wrong-SKU до локального backup и backend queue;
+  - backend `POST /api/v1/scans` отклоняет wrong-SKU с `409` и не меняет `scan_codes`/`scanned_blocks`;
+  - неизвестный GTIN для известной Chapman-позиции теперь считается ошибкой.
+- Боевые данные:
+  - найден один текущий wrong-SKU скан: `WH-R-195084`, позиция `Chapman Gold SSL 100\`20`, Red-КИЗ `0104006396053947217p"-30o933ZXHZKjx`;
+  - backup сохранен локально: `/tmp/taksklad_wrong_sku_scans_20260609T125050Z.json`;
+  - скан снят через backend `undo_scan`;
+  - после очистки `wrong_sku_remaining=0`;
+  - `WH-R-195084` снова имеет три пустые позиции `Brown`, `Gold`, `Red` со статусом `not_completed`.
+- VDS:
+  - перед заменой файлов создан restore point `/opt/taksklad/restore_points/pre-wrong-sku-validation-20260609T125100Z`;
+  - пересобраны и перезапущены `backend-api`, `google-sheets-sync-worker`, `skladbot-worker`, `telegram-worker`;
+  - live-проверка на Gold-позиции `WH-R-195084` с Red-КИЗом вернула `409 Scan product does not match order item`;
+  - `./deploy/vds/acceptance_status.sh` вернул общий `status=ok`.
+- Проверено:
+  - `python -m unittest tests.test_scan_quantities tests.test_desktop_ui_contract.DesktopUiContractTests.test_scan_rejects_wrong_sku_before_local_backup_and_backend_queue tests.test_backend_api_persistence.BackendApiPersistenceTests.test_scan_create_rejects_unit_kiz_for_wrong_chapman_product tests.test_backend_api_persistence.BackendApiPersistenceTests.test_scan_create_rejects_aggregate_box_for_wrong_product tests.test_backend_api_persistence.BackendApiPersistenceTests.test_scan_undo_subtracts_aggregate_box_block_quantity` - 10 tests OK;
+  - `python -m unittest discover -s tests` - 399 tests OK;
+  - `python -m py_compile main.py src/taksklad/*.py backend/app/*.py` - OK.
