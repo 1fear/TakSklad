@@ -2,6 +2,17 @@
 
 Документ фиксирует ход работ: что сделано, что не сделано, какие ошибки найдены, какие решения приняты и что требует проверки. Новые записи добавляются сверху.
 
+## 2026-06-09
+
+### Backend scan 500 из-за порядка записи scan_codes и kiz_movements
+
+- Симптом: складское Windows-приложение показывало `КИЗы не записаны`, причина `Backend не принял все КИЗы позиции. Осталось в очереди: 3/4`.
+- По desktop-логу видно, что локальная `pending_backend_events` очередь не очищалась и блокировала повторные сохранения.
+- По VDS backend-логу за тот же период найден корень: `psycopg.errors.ForeignKeyViolation` по `kiz_movements_scan_code_id_fkey`.
+- Причина: `backend/app/orders_service.py` создавал объект `ScanCode`, но до `record_kiz_movement(...)` не делал `db.flush()`. В PostgreSQL `kiz_movements.scan_code_id` ссылался на `scan_codes.id`, который еще не был вставлен.
+- Решение: добавлен явный `db.flush()` сразу после `db.add(scan)` и до записи движения КИЗа.
+- Защита: добавлен тест `test_scan_flushes_scan_code_before_kiz_movement`, который падает без flush и подтверждает правильный порядок записи.
+
 ## 2026-06-08
 
 ### SkladBot daily client activity and stock report

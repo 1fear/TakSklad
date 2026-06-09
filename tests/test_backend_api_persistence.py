@@ -941,6 +941,38 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertEqual(first_order.status, "returned")
             self.assertEqual(second_order.status, "not_completed")
 
+    def test_scan_flushes_scan_code_before_kiz_movement(self):
+        _order_id, item_id = self.seed_order(quantity_blocks=1)
+        code = "01040000000000000003"
+
+        from backend.app import orders_service
+
+        original_record_kiz_movement = orders_service.record_kiz_movement
+
+        def assert_scan_code_is_persisted(db, **kwargs):
+            scan_code_id = kwargs["scan_code_id"]
+            persisted_scan = db.execute(
+                select(ScanCode).where(ScanCode.id == scan_code_id)
+            ).scalar_one_or_none()
+            if persisted_scan is None:
+                raise AssertionError("scan_code must be flushed before kiz_movement")
+            return original_record_kiz_movement(db, **kwargs)
+
+        with mock.patch.object(orders_service, "record_kiz_movement", side_effect=assert_scan_code_is_persisted):
+            response = self.client.post(
+                "/api/v1/scans",
+                json={"order_item_id": item_id, "code": code, "workstation_id": "pc-1"},
+            )
+
+        self.assertEqual(response.status_code, 201)
+
+        with self.SessionLocal() as db:
+            scan = db.execute(select(ScanCode).where(ScanCode.code == code)).scalar_one()
+            movement = db.execute(
+                select(KizMovement).join(KizCode, KizMovement.kiz_id == KizCode.id).where(KizCode.code == code)
+            ).scalar_one()
+            self.assertEqual(movement.scan_code_id, scan.id)
+
     def test_failed_return_does_not_release_kiz_for_new_order(self):
         first_order_id, first_item_id = self.seed_order(quantity_blocks=1)
         code = "01040000000000000002"

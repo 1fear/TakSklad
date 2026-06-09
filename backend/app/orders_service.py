@@ -126,6 +126,7 @@ def create_scan(db: Session, payload: ScanCreate):
         raw_payload=scan_raw_payload,
     )
     db.add(scan)
+    db.flush()
     movement = record_kiz_movement(
         db,
         code=code,

@@ -2,6 +2,22 @@
 
 Здесь фиксируются все правки в коде TakSklad: что менялось, в каком файле, зачем, и какие тесты это покрывают. Записи идут от новых к старым.
 
+## 2026-06-09
+
+### Исправление 500 при сохранении КИЗов в backend
+
+**Файлы:** `backend/app/orders_service.py`, `tests/test_backend_api_persistence.py`, `docs/*`.
+
+**Что стало:**
+
+- При создании скана backend явно flush-ит новую строку `scan_codes` до записи движения в `kiz_movements`.
+- Это убирает PostgreSQL FK-ошибку `kiz_movements_scan_code_id_fkey`, из-за которой Windows-приложение видело `Backend не принял все КИЗы позиции`.
+- Добавлен регрессионный тест, который проверяет порядок записи: `scan_codes` уже должен существовать в БД перед созданием `kiz_movements`.
+
+**Проверки:**
+
+- `./.venv/bin/python -m unittest tests.test_backend_api_persistence.BackendApiPersistenceTests.test_scan_flushes_scan_code_before_kiz_movement tests.test_backend_api_persistence.BackendApiPersistenceTests.test_return_releases_kiz_for_new_outbound_scan_with_history tests.test_backend_api_persistence.BackendApiPersistenceTests.test_failed_return_does_not_release_kiz_for_new_order` - OK.
+
 ## 2026-06-08
 
 ### Ежедневный SkladBot отчет в Telegram
