@@ -535,17 +535,8 @@ def report_product_blocks(product: dict[str, Any], category: str) -> int:
     if normalize_text(category) == "Приемка":
         accepted_amount = parse_int(product.get("accepted_amount"))
         if accepted_amount > 0:
-            return accepted_amount_to_blocks(accepted_amount)
+            return accepted_amount
     return parse_int(product.get("amount"))
-
-
-def accepted_amount_to_blocks(value: Any) -> int:
-    amount = parse_int(value)
-    if amount <= 0:
-        return 0
-    if amount % 10 == 0:
-        return amount // 10
-    return amount
 
 
 def product_key(name: Any, vendor_code: Any = "", barcode: Any = "") -> str:

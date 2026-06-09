@@ -118,7 +118,7 @@ class FakeSkladBotDailyReportClient:
                 "BASTION IMPORT",
                 "Склад",
                 "Приемка",
-                [{"name": "Chapman Gold SSL", "vendorCode": "4006396054012", "barcode": "4006396054005", "amount": 1, "acceptedAmount": 5000}],
+                [{"name": "Chapman Gold SSL", "vendorCode": "4006396054012", "barcode": "4006396054005", "amount": 1, "acceptedAmount": 500}],
             ),
         }
         return details[request_id]
@@ -457,7 +457,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
         rows = product_breakdown_for_summary(report)
 
         self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["inbound"], 175)
+        self.assertEqual(rows[0]["inbound"], 1750)
 
     def test_telegram_manual_command_sends_skladbot_daily_report(self):
         worker = TelegramWorker.__new__(TelegramWorker)

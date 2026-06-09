@@ -11,7 +11,7 @@
 **Что стало:**
 
 - Для строки `Приемка` ежедневный отчет больше не берет плановое `products.amount`.
-- Если SkladBot отдал `acceptedAmount`, отчет использует фактически принятое количество и переводит его в блоки: `1250 -> 125`, `1750 -> 175`.
+- Если SkladBot отдал `acceptedAmount`, отчет использует фактически принятое количество как есть: `1250 -> 1250`, `1750 -> 1750`.
 - SKU-остатки на конец дня берутся из `/products`, где SkladBot отдает текущий `amount` по каждому товару.
 - `/report/stock` остается контрольным общим итогом, но не используется как источник SKU-детализации, потому что он возвращает только общий остаток.
 
@@ -25,7 +25,7 @@
 - VDS restore point: `/opt/taksklad/restore_points/pre-daily-report-accepted-amount-20260609T173947Z`.
 - VDS Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260609T173947Z.sql.gz`.
 - VDS пересобраны и перезапущены `backend-api`, `telegram-worker`, `skladbot-worker`.
-- VDS live-smoke по `WH-R-194859`: Red `acceptedAmount=1250 -> 125` блоков, Brown `acceptedAmount=1750 -> 175` блоков.
+- VDS live-smoke по `WH-R-194859`: Red `acceptedAmount=1250 -> 1250` блоков, Brown `acceptedAmount=1750 -> 1750` блоков.
 - Ручная переотправка отчета за `09.06.2026` выполнена в настроенный Telegram-чат.
 - VDS `./deploy/vds/acceptance_status.sh` - общий `status=ok`.
 - Свежие логи `backend-api`, `telegram-worker`, `skladbot-worker` - без `ERROR/Traceback/Exception`.
