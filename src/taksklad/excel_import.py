@@ -39,12 +39,27 @@ MISSING_ADDRESS_MARKERS = {
     "адреса не найдены",
     "адрес не определен",
     "адрес отсутствует",
+    "самовывоз",
+    "самовывоз со склада",
+    "нет",
+    "n/a",
+    "na",
+    "null",
+    "none",
+    "-",
+    "—",
 }
+PICKUP_ADDRESS = "Самовывоз со склада"
 
 
 def is_missing_address_text(value):
     text = normalize_lookup_text(value)
     return not text or text in MISSING_ADDRESS_MARKERS or text.startswith("координаты")
+
+
+def is_pickup_address(value):
+    text = normalize_lookup_text(value)
+    return text in {normalize_lookup_text(PICKUP_ADDRESS), "самовывоз"}
 
 
 def parse_coordinate_component(value):
@@ -183,7 +198,9 @@ def parse_excel_order_files(file_paths, source_names=None):
                 or datetime.now().strftime("%d.%m.%Y")
             )
             source_address = get_source_cell(row, columns.get("address"))
-            address = "" if is_missing_address_text(source_address) else source_address
+            address = PICKUP_ADDRESS if is_pickup_address(source_address) else (
+                "" if is_missing_address_text(source_address) else source_address
+            )
             coords = get_coordinates_from_row(row, columns)
             if not address and coords:
                 geocoded_address, geocode_error = reverse_geocode_yandex(coords, cache=geocode_cache)
@@ -195,8 +212,7 @@ def parse_excel_order_files(file_paths, source_names=None):
                     address = f"Координаты: {coords}"
                     warnings.append(f"{file_name}, строка {row_number}: адрес по координатам не получен ({geocode_error})")
             if not address:
-                warnings.append(f"{file_name}, строка {row_number}: адрес пустой")
-                address = "Адрес не указан"
+                address = PICKUP_ADDRESS
 
             representative = get_source_cell(row, columns.get("representative"))
             inn = get_source_cell(row, columns.get("inn"))

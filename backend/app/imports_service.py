@@ -40,12 +40,22 @@ SOURCE_FILE_FIELDS = ("Источник файла", "source_file")
 SOURCE_ROW_FIELDS = ("Строка файла", "source_row")
 SKLADBOT_NUMBER_FIELDS = ("Номер заявки SkladBot", "skladbot_request_number")
 SKLADBOT_ID_FIELDS = ("ID заявки SkladBot", "skladbot_request_id")
+PICKUP_ADDRESS = "Самовывоз со склада"
 MISSING_ADDRESS_MARKERS = {
     "адрес не указан",
     "адрес не найден",
     "адреса не найдены",
     "адрес не определен",
     "адрес отсутствует",
+    "самовывоз",
+    "самовывоз со склада",
+    "нет",
+    "n/a",
+    "na",
+    "null",
+    "none",
+    "-",
+    "—",
 }
 
 
@@ -373,7 +383,7 @@ def normalize_import_row(raw_row):
     order_date = parse_date_value(first_value(raw_row, ORDER_DATE_FIELDS))
     payment_type = first_value(raw_row, PAYMENT_FIELDS)
     client = first_value(raw_row, CLIENT_FIELDS)
-    address = first_value(raw_row, ADDRESS_FIELDS) or "Адрес не указан"
+    address = normalize_import_address(first_value(raw_row, ADDRESS_FIELDS))
     coordinates = first_value(raw_row, COORDINATES_FIELDS)
     representative = first_value(raw_row, REPRESENTATIVE_FIELDS) or None
     product = first_value(raw_row, PRODUCT_FIELDS)
@@ -477,6 +487,11 @@ def is_missing_address(value):
 def is_real_address(value):
     text = normalize_lookup_text(value)
     return bool(text and not is_missing_address(text))
+
+
+def normalize_import_address(value):
+    text = normalize_text(value)
+    return text if is_real_address(text) else PICKUP_ADDRESS
 
 
 def parse_int(value):

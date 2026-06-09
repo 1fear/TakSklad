@@ -31,6 +31,7 @@ STATUS_NOT_COMPLETED = "Не выполнено"
 STATUS_COMPLETED = "Выполнено"
 STATUS_ARCHIVED_NO_KIZ = "Архив без КИЗов"
 STATUS_CANCELLED = "Отменено"
+PICKUP_ADDRESS = "Самовывоз со склада"
 ARCHIVE_SHEET_NAME = "Архив"
 ARCHIVE_NO_KIZ_SHEET_NAME = "Архив без КИЗов"
 CANCELLED_SHEET_NAME = "Отмененные"
@@ -648,7 +649,7 @@ def build_backend_item_archive_row(order, item, header_len, sheet_status=None):
         ORDER_DATE_COLUMN: format_sheet_date(getattr(order, "order_date", None)),
         "Тип оплаты": normalize_text(getattr(order, "payment_type", "")),
         "Клиент": normalize_text(getattr(order, "client", "")),
-        "Адрес": normalize_text(getattr(order, "address", "")) or "Адрес не указан",
+        "Адрес": normalize_text(getattr(order, "address", "")) or PICKUP_ADDRESS,
         "Торговый представитель": normalize_text(getattr(order, "representative", "")),
         "Товары": normalize_text(getattr(item, "product", "")),
         "Кол-во ШТ": parse_int_value(getattr(item, "quantity_pieces", 0)),
@@ -884,7 +885,7 @@ def make_sheet_record(row, import_id="", item_key="", filename=""):
         ORDER_DATE_COLUMN: format_sheet_date(row.get("order_date")),
         "Тип оплаты": normalize_text(row.get("payment_type")),
         "Клиент": normalize_text(row.get("client")),
-        "Адрес": normalize_text(row.get("address")) or "Адрес не указан",
+        "Адрес": normalize_text(row.get("address")) or PICKUP_ADDRESS,
         "Торговый представитель": normalize_text(row.get("representative")),
         "Товары": normalize_text(row.get("product")),
         "Кол-во ШТ": row.get("quantity_pieces") or 0,

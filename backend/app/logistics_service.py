@@ -56,16 +56,23 @@ LOGISTICS_HEADERS = [
 ]
 
 DEFAULT_BLOCK_PRICE = 240000
+PICKUP_ADDRESS = "Самовывоз со склада"
 
 
 def list_logistics_dates(db: Session):
-    rows = db.execute(
-        select(Order.order_date)
+    orders = db.execute(
+        select(Order)
         .where(Order.order_date.is_not(None))
-        .distinct()
         .order_by(Order.order_date.asc())
     ).scalars().all()
-    return [row.isoformat() for row in rows if row]
+    dates = []
+    for order in orders:
+        if not order.order_date or not is_logistics_delivery_order(order):
+            continue
+        value = order.order_date.isoformat()
+        if value not in dates:
+            dates.append(value)
+    return dates
 
 
 def build_logistics_report_xlsx(db: Session, shipment_date: str):
@@ -78,14 +85,9 @@ def build_logistics_report_xlsx(db: Session, shipment_date: str):
     ).scalars().all()
     if not orders:
         raise ApiError(404, f"No orders for shipment date {report_date.isoformat()}")
-    missing_coordinates = [
-        order.client
-        for order in orders
-        if not normalize_coordinates((order.raw_payload or {}).get("coordinates"))
-    ]
-    if missing_coordinates:
-        sample = ", ".join(missing_coordinates[:5])
-        raise ApiError(409, f"Missing coordinates for logistics report: {sample}")
+    delivery_orders = [order for order in orders if is_logistics_delivery_order(order)]
+    if not delivery_orders:
+        raise ApiError(404, f"No logistics delivery orders for shipment date {report_date.isoformat()}")
 
     workbook = Workbook()
     sheet = workbook.active
@@ -93,7 +95,7 @@ def build_logistics_report_xlsx(db: Session, shipment_date: str):
     sheet.append(LOGISTICS_HEADERS)
     apply_header_style(sheet)
 
-    for order in orders:
+    for order in delivery_orders:
         coordinates = normalize_coordinates((order.raw_payload or {}).get("coordinates"))
         latitude, longitude = split_coordinates(coordinates)
         for item in sorted(order.items, key=lambda value: (value.product, str(value.id))):
@@ -142,9 +144,34 @@ def normalize_coordinates(value):
     numbers = re.findall(r"-?\d+(?:[.,]\d+)?", text)
     if len(numbers) < 2:
         return ""
-    latitude = numbers[0].replace(",", ".")
-    longitude = numbers[1].replace(",", ".")
-    return f"{latitude},{longitude}"
+    try:
+        latitude = float(numbers[0].replace(",", "."))
+        longitude = float(numbers[1].replace(",", "."))
+    except ValueError:
+        return ""
+    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+        return ""
+    return f"{format_coordinate(latitude)},{format_coordinate(longitude)}"
+
+
+def format_coordinate(value):
+    return f"{value:.12f}".rstrip("0").rstrip(".")
+
+
+def is_logistics_delivery_order(order):
+    if is_pickup_address(order.address):
+        return False
+    return bool(normalize_coordinates((order.raw_payload or {}).get("coordinates")))
+
+
+def is_pickup_address(value):
+    text = normalize_lookup_text(value)
+    return text in {normalize_lookup_text(PICKUP_ADDRESS), "самовывоз"}
+
+
+def normalize_lookup_text(value):
+    text = str(value or "").strip().casefold().replace("ё", "е")
+    return re.sub(r"[^0-9a-zа-я]+", "", text)
 
 
 def split_coordinates(value):

@@ -1411,6 +1411,54 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertEqual(payload["meta"]["geocoded_count"], 1)
         self.assertEqual(payload["meta"]["geocode_failed_count"], 0)
 
+    def test_excel_file_to_import_payload_marks_missing_address_as_pickup(self):
+        original_geocoder = excel_importer.geocode_address_yandex
+        calls = []
+        try:
+            def fake_geocoder(address, cache=None):
+                calls.append(address)
+                return "41.311081, 69.240562", ""
+
+            excel_importer.geocode_address_yandex = fake_geocoder
+
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                path = Path(tmp_dir) / "pickup_without_address.xlsx"
+                workbook = openpyxl.Workbook()
+                sheet = workbook.active
+                sheet.title = "Заявки"
+                sheet.append([
+                    "Клиент",
+                    "Тип оплаты",
+                    "Товары",
+                    "Кол-во ШТ",
+                    "Адрес",
+                    "Торговый представитель",
+                ])
+                sheet.append([
+                    "Pickup Client",
+                    "Терминал",
+                    "Chapman Brown OP 20",
+                    20,
+                    "",
+                    "Rep One",
+                ])
+                workbook.save(path)
+
+                payload = excel_importer.excel_file_to_import_payload(
+                    path,
+                    file_name=path.name,
+                    source="telegram",
+                    shipment_date="29.05.2026",
+                )
+        finally:
+            excel_importer.geocode_address_yandex = original_geocoder
+
+        self.assertEqual(calls, [])
+        self.assertEqual(payload["rows"][0]["Адрес"], "Самовывоз со склада")
+        self.assertEqual(payload["rows"][0]["Координаты"], "")
+        self.assertEqual(payload["meta"]["geocoded_count"], 0)
+        self.assertEqual(payload["meta"]["geocode_failed_count"], 0)
+
     def test_excel_file_to_import_payload_reverse_geocodes_address_when_only_coordinates_present(self):
         original_reverse_geocoder = excel_importer.reverse_geocode_yandex
         calls = []

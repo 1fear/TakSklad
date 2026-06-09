@@ -104,6 +104,43 @@ class ExcelNormalizerTests(unittest.TestCase):
         self.assertEqual(record["Кол-во ШТ"], 20)
         self.assertEqual(record["Адрес"], "Адрес 41.373879, 69.322741")
 
+    def test_desktop_import_marks_missing_address_as_pickup(self):
+        excel_import = import_excel_import()
+        calls = []
+
+        def fake_reverse_geocoder(coords, cache=None):
+            calls.append(coords)
+            return f"Адрес {coords}", ""
+
+        excel_import.reverse_geocode_yandex = fake_reverse_geocoder
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "pickup_without_address.xlsx"
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.title = "Заявки"
+            worksheet.append([
+                "Клиент",
+                "Тип оплаты",
+                "Товары",
+                "Кол-во ШТ",
+                "Адрес",
+            ])
+            worksheet.append([
+                "Pickup Client",
+                "Терминал",
+                "Chapman Brown OP 20",
+                20,
+                "",
+            ])
+            workbook.save(path)
+
+            result = excel_import.parse_excel_order_files([str(path)])
+
+        self.assertEqual(calls, [])
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(result["records"][0]["Адрес"], "Самовывоз со склада")
+
     def test_parses_delivery_date_from_upper_header(self):
         excel_import = import_excel_import()
         excel_import.reverse_geocode_yandex = lambda coords, cache=None: (f"Адрес {coords}", "")

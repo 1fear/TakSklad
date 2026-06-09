@@ -1408,6 +1408,26 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(order["items"][0]["block_price"], 240000)
         self.assertEqual(order["items"][0]["line_total"], 4_800_000)
 
+    def test_import_marks_missing_address_as_pickup(self):
+        rows = [
+            {
+                "Дата отгрузки": "30.05.2026",
+                "Тип оплаты": "Терминал",
+                "Клиент": "Pickup Import Client",
+                "Адрес": "",
+                "Товары": "Chapman Brown OP 20",
+                "Кол-во ШТ": "20",
+                "ID заказа": "pickup-import-order",
+            },
+        ]
+
+        response = self.client.post("/api/v1/imports", json={"source": "excel", "filename": "orders.xlsx", "rows": rows})
+
+        self.assertEqual(response.status_code, 201)
+        active = self.client.get("/api/v1/orders/active")
+        self.assertEqual(active.status_code, 200)
+        self.assertEqual(active.json()[0]["address"], "Самовывоз со склада")
+
     def test_import_skips_duplicate_items_and_reports_invalid_rows(self):
         valid_row = {
             "Дата отгрузки": "2026-05-30",
@@ -1590,26 +1610,103 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(sheet["AG2"].value, "69.27")
         workbook.close()
 
-    def test_logistics_report_requires_coordinates(self):
+    def test_logistics_report_skips_pickup_and_orders_without_coordinates(self):
         rows = [
             {
                 "Дата отгрузки": "2026-05-30",
                 "Тип оплаты": "Терминал",
-                "Клиент": "No Coordinates Client",
+                "Клиент": "Route Client",
                 "Адрес": "Tashkent Address",
+                "Координаты": "41.31, 69.27",
                 "Товары": "Chapman Brown OP 20",
                 "Кол-во ШТ": "20",
                 "Кол-во блок": "2",
+                "ID заказа": "route-order",
+            },
+            {
+                "Дата отгрузки": "2026-05-30",
+                "Тип оплаты": "Терминал",
+                "Клиент": "No Coordinates Client",
+                "Адрес": "Tashkent Address Without Coordinates",
+                "Товары": "Chapman RED OP 20",
+                "Кол-во ШТ": "10",
+                "Кол-во блок": "1",
                 "ID заказа": "no-coordinates-order",
+            },
+            {
+                "Дата отгрузки": "2026-05-30",
+                "Тип оплаты": "Терминал",
+                "Клиент": "Pickup Client",
+                "Адрес": "Самовывоз со склада",
+                "Координаты": "41.32, 69.28",
+                "Товары": "Chapman Gold SSL",
+                "Кол-во ШТ": "10",
+                "Кол-во блок": "1",
+                "ID заказа": "pickup-order",
+            },
+            {
+                "Дата отгрузки": "2026-05-30",
+                "Тип оплаты": "Терминал",
+                "Клиент": "Invalid Coordinates Client",
+                "Адрес": "Invalid Coordinates Address",
+                "Координаты": "999, 999",
+                "Товары": "Chapman Brown OP 20",
+                "Кол-во ШТ": "10",
+                "Кол-во блок": "1",
+                "ID заказа": "invalid-coordinates-order",
             },
         ]
         imported = self.client.post("/api/v1/imports", json={"source": "excel", "filename": "orders.xlsx", "rows": rows})
         self.assertEqual(imported.status_code, 201)
 
+        dates = self.client.get("/api/v1/logistics/dates")
+        self.assertEqual(dates.status_code, 200)
+        self.assertEqual(dates.json(), ["2026-05-30"])
+
+        report = self.client.get("/api/v1/logistics/report?shipment_date=2026-05-30")
+        self.assertEqual(report.status_code, 200)
+        workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
+        sheet = workbook["Заявки"]
+
+        self.assertEqual(sheet.max_row, 2)
+        self.assertEqual(sheet["C2"].value, "Route Client")
+        self.assertEqual(sheet["R2"].value, "Chapman Brown OP 20")
+        workbook.close()
+
+    def test_logistics_report_404_when_date_has_only_pickup_or_unrouteable_orders(self):
+        rows = [
+            {
+                "Дата отгрузки": "2026-05-30",
+                "Тип оплаты": "Терминал",
+                "Клиент": "Pickup Client",
+                "Адрес": "Самовывоз со склада",
+                "Товары": "Chapman Brown OP 20",
+                "Кол-во ШТ": "20",
+                "Кол-во блок": "2",
+                "ID заказа": "pickup-only-order",
+            },
+            {
+                "Дата отгрузки": "2026-05-30",
+                "Тип оплаты": "Терминал",
+                "Клиент": "No Coordinates Client",
+                "Адрес": "Tashkent Address Without Coordinates",
+                "Товары": "Chapman RED OP 20",
+                "Кол-во ШТ": "10",
+                "Кол-во блок": "1",
+                "ID заказа": "no-coordinates-only-order",
+            },
+        ]
+        imported = self.client.post("/api/v1/imports", json={"source": "excel", "filename": "orders.xlsx", "rows": rows})
+        self.assertEqual(imported.status_code, 201)
+
+        dates = self.client.get("/api/v1/logistics/dates")
+        self.assertEqual(dates.status_code, 200)
+        self.assertEqual(dates.json(), [])
+
         report = self.client.get("/api/v1/logistics/report?shipment_date=2026-05-30")
 
-        self.assertEqual(report.status_code, 409)
-        self.assertIn("Missing coordinates", report.json()["detail"])
+        self.assertEqual(report.status_code, 404)
+        self.assertIn("No logistics delivery orders", report.json()["detail"])
 
     def test_logistics_report_normalizes_three_part_coordinates(self):
         rows = [

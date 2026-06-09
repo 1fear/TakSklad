@@ -15,12 +15,22 @@ SUPPORTED_EXCEL_EXTENSIONS = {".xlsx", ".xlsm"}
 SUMMARY_MARKERS = {"итого", "total", "grand total", "всего"}
 DATE_PATTERN = re.compile(r"(?<!\d)(\d{1,2})[._/-](\d{1,2})[._/-](\d{2,4})(?!\d)")
 COUNTRY_PREFIXES = ("узбекистан", "uzbekistan", "o'zbekiston", "oʻzbekiston")
+PICKUP_ADDRESS = "Самовывоз со склада"
 MISSING_ADDRESS_MARKERS = {
     "адрес не указан",
     "адрес не найден",
     "адреса не найдены",
     "адрес не определен",
     "адрес отсутствует",
+    "самовывоз",
+    "самовывоз со склада",
+    "нет",
+    "n/a",
+    "na",
+    "null",
+    "none",
+    "-",
+    "—",
 }
 YANDEX_GEOCODER_ENV_VAR = "YANDEX_GEOCODER_API_KEY"
 YANDEX_GEOCODER_URL = "https://geocode-maps.yandex.ru/v1/"
@@ -406,6 +416,11 @@ def is_missing_address_text(value):
     return not text or text in MISSING_ADDRESS_MARKERS or text.startswith("координаты")
 
 
+def is_pickup_address(value):
+    text = normalize_lookup_text(value)
+    return text in {normalize_lookup_text(PICKUP_ADDRESS), "самовывоз"}
+
+
 def normalize_coordinates(value):
     text = normalize_text(value)
     if not text:
@@ -621,7 +636,8 @@ def excel_file_to_import_payload(file_path, file_name=None, source="telegram", s
                 raise ExcelDateConflictError(telegram_shipment_date, excel_date)
             else:
                 date_value = excel_date or telegram_shipment_date or default_date
-            address = clean_address_for_display(get_cell(row, columns.get("address")))
+            source_address = get_cell(row, columns.get("address"))
+            address = PICKUP_ADDRESS if is_pickup_address(source_address) else clean_address_for_display(source_address)
             coordinates = normalize_coordinates_from_row(row, columns)
             if not address and coordinates:
                 geocoded_address, geocode_error = reverse_geocode_yandex(coordinates, cache=geocode_cache)
@@ -635,8 +651,8 @@ def excel_file_to_import_payload(file_path, file_name=None, source="telegram", s
                         f"{file_name}, строка {row_number}: адрес по координатам не получен ({geocode_error})"
                     )
             if not address:
-                address = "Адрес не указан"
-            if not coordinates:
+                address = PICKUP_ADDRESS
+            if not coordinates and not is_pickup_address(address):
                 geocoded_coordinates, geocode_error = geocode_address_yandex(address, cache=geocode_cache)
                 if geocoded_coordinates:
                     coordinates = geocoded_coordinates

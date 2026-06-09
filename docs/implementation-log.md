@@ -4,6 +4,29 @@
 
 ## 2026-06-09
 
+### Самовывоз и логистический отчет без ручной чистки
+
+- Причина: в боевом Telegram upload часть заказов без адреса попадала в логистический отчет. Их приходилось удалять руками, потому что это самовывоз или строки без маршрутизируемых координат.
+- Решение:
+  - `backend/app/excel_importer.py` и `src/taksklad/excel_import.py` нормализуют пустой/технический адрес без координат в `Самовывоз со склада`;
+  - явные варианты `Самовывоз` и `Самовывоз со склада` приводятся к одному значению;
+  - Telegram/desktop строки с координатами остаются доставкой: адрес берется reverse geocode по координатам, либо пишется `Координаты: ...`;
+  - `backend/app/imports_service.py` сохраняет `Самовывоз со склада` как backend-норму для прямого API import без реального адреса;
+  - `backend/app/logistics_service.py` строит даты и XLSX только по заказам, где адрес не самовывоз и координаты валидны;
+  - координаты для логистики теперь проверяются по диапазонам широты/долготы, поэтому `999,999` не считается маршрутом;
+  - `backend/app/google_sheets_exporter.py` пишет в mirror/export такой же fallback `Самовывоз со склада`.
+- Source of truth:
+  - backend DB остается основным источником;
+  - Google Sheets только отражает backend-состояние.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_backend_telegram_import tests.test_backend_api_persistence tests.test_excel_normalizer` - 108 tests OK.
+  - `./.venv/bin/python -m unittest tests.test_backend_google_sheets_exporter tests.test_backend_google_sheets_pending tests.test_google_sheets_sync_worker` - 33 tests OK.
+  - `./.venv/bin/python -m unittest discover tests` - 383 tests OK.
+  - `./.venv/bin/python -m compileall -q backend/app src/taksklad tools main.py tests` - OK.
+  - `npm run build` в `frontend` - OK.
+  - `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK.
+  - `git diff --check` - OK.
+
 ### Обновление шаблона ежедневного SkladBot отчета
 
 - Причина: Антон прислал рабочий XLSX-пример `TakSklad_SkladBot_daily_08.06.2026 (2).xlsx`; старый лист `Сводка` был техническим и неудобным для ежедневного отчета.

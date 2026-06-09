@@ -4,6 +4,28 @@
 
 ## 2026-06-09
 
+### Самовывоз и фильтр логистического отчета
+
+**Файлы:** `backend/app/excel_importer.py`, `backend/app/imports_service.py`, `backend/app/logistics_service.py`, `backend/app/google_sheets_exporter.py`, `src/taksklad/excel_import.py`, `tests/*`, `docs/*`.
+
+**Что стало:**
+
+- Если в Excel/API адрес пустой, технический или явно указан как `Самовывоз`, в заказ записывается `Самовывоз со склада`.
+- Для Telegram Excel import и desktop import строки с координатами остаются доставочными: если адреса нет, адрес подтягивается по координатам, а при ошибке reverse geocode остается `Координаты: ...`.
+- Google Sheets остается зеркалом: fallback-адрес в mirror/export теперь тоже `Самовывоз со склада`, а не `Адрес не указан`.
+- Логистический отчет и список дат логистики берут только доставочные заказы с валидными координатами.
+- Заказы `Самовывоз со склада`, без координат или с невалидными координатами не попадают в логистический XLSX и не ломают выгрузку всей даты.
+
+**Проверки:**
+
+- `./.venv/bin/python -m unittest tests.test_backend_telegram_import tests.test_backend_api_persistence tests.test_excel_normalizer` - 108 tests OK.
+- `./.venv/bin/python -m unittest tests.test_backend_google_sheets_exporter tests.test_backend_google_sheets_pending tests.test_google_sheets_sync_worker` - 33 tests OK.
+- `./.venv/bin/python -m unittest discover tests` - 383 tests OK.
+- `./.venv/bin/python -m compileall -q backend/app src/taksklad tools main.py tests` - OK.
+- `npm run build` в `frontend` - OK.
+- `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK.
+- `git diff --check` - OK.
+
 ### Новый шаблон ежедневного SkladBot отчета
 
 **Файлы:** `backend/app/skladbot_daily_report.py`, `deploy/vds/.env.example`, `tests/test_skladbot_daily_report.py`, `docs/*`.
