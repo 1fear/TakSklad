@@ -4929,3 +4929,13 @@ cd /opt/taksklad/app
   - `TakSklad.exe`: `f8e1cd72c10085b897f74edc216a0387957345b4624c85a2be820ac58a34c560`;
   - `TakSklad-windows-x64.zip`: `0690ae0e93158dcb4d4c4eb36ce19f520f36b4a98ef05853bf0072fed6ac7acd`;
   - public `version.json` подготовлен к forced rollout `2.0.12`.
+- VDS:
+  - перед обновлением создан backup Postgres `/opt/taksklad/backups/postgres/taksklad-postgres-20260609T132938Z.sql.gz`;
+  - restore point: `/opt/taksklad/restore_points/pre-2012-nonblocking-errors-20260609T132945Z`;
+  - синхронизированы `backend`, `deploy/vds`, `tools`, `version.json`;
+  - пересобраны и перезапущены `backend-api`, `telegram-worker`, `skladbot-worker`, `google-sheets-sync-worker`;
+  - `https://api.taksklad.uz/health` вернул backend `2.0.12`;
+  - VDS `./deploy/vds/acceptance_status.sh` вернул общий `status=ok`;
+  - свежие логи после рестарта без `ERROR/Traceback/Exception`.
+- Финальный preflight:
+  - `python tools/release_preflight.py --verify-downloads --timeout 30` - `status=ok`, оба release artifact SHA совпали.
