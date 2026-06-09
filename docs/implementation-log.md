@@ -4,6 +4,28 @@
 
 ## 2026-06-09
 
+### Обновление шаблона ежедневного SkladBot отчета
+
+- Причина: Антон прислал рабочий XLSX-пример `TakSklad_SkladBot_daily_08.06.2026 (2).xlsx`; старый лист `Сводка` был техническим и неудобным для ежедневного отчета.
+- Решение:
+  - `backend/app/skladbot_daily_report.py` теперь генерирует лист `Сводка` в формате примера: `Дата отчета`, `Сформировано`, `customer_id`, блок `Отчет о движении остатков за день`;
+  - в сводке `Приемка` и `Возврат` положительные, `Отгрузка` отрицательная;
+  - `Остаток на начало дня` считается Excel-формулой `=B12-B9-B10-B11`;
+  - `Остаток на конец дня` берется из SkladBot `/report/stock`;
+  - лист `Остатки` сделан агрегированным по клиенту, как в примере Антона;
+  - сохранены листы `Заявки`, `Товары заявок`, `Движения`, `Остатки`, `Ошибки`;
+  - добавлены точные ширины колонок и границы таблицы `A8:F12`.
+- Источник данных:
+  - SkladBot API остается source of truth;
+  - Google Sheets не используется для ежедневного отчета.
+- Проверено:
+  - `./.venv/bin/python -m unittest tests.test_skladbot_daily_report` - 4 tests OK.
+  - `./.venv/bin/python -m unittest tests.test_skladbot_daily_report tests.test_backend_telegram_import` - 48 tests OK.
+  - `./.venv/bin/python -m unittest discover tests` - 378 tests OK.
+  - `./.venv/bin/python -m compileall -q backend/app src/taksklad tools main.py tests` - OK.
+  - `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK.
+  - `git diff --check` - OK.
+
 ### Backend scan 500 из-за порядка записи scan_codes и kiz_movements
 
 - Симптом: складское Windows-приложение показывало `КИЗы не записаны`, причина `Backend не принял все КИЗы позиции. Осталось в очереди: 3/4`.

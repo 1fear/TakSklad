@@ -12,6 +12,10 @@ from sqlalchemy.pool import StaticPool
 from backend.app import telegram_worker as telegram_worker_module
 from backend.app.models import Base, PendingEvent
 from backend.app.skladbot_daily_report import (
+    MOVEMENT_HEADERS,
+    REQUEST_HEADERS,
+    REQUEST_PRODUCT_HEADERS,
+    STOCK_HEADERS,
     build_skladbot_daily_report_message,
     build_skladbot_daily_report_xlsx,
     collect_skladbot_daily_report,
@@ -211,18 +215,108 @@ class SkladBotDailyReportTests(unittest.TestCase):
 
         content, filename = build_skladbot_daily_report_xlsx(report)
         self.assertEqual(filename, "TakSklad_SkladBot_daily_08.06.2026.xlsx")
-        workbook = openpyxl.load_workbook(BytesIO(content), data_only=True)
+        workbook = openpyxl.load_workbook(BytesIO(content), data_only=False)
         self.assertEqual(workbook.sheetnames, ["Сводка", "Заявки", "Товары заявок", "Движения", "Остатки", "Ошибки"])
+
+        summary_sheet = workbook["Сводка"]
+        self.assertEqual(summary_sheet["A1"].value, "Показатель")
+        self.assertEqual(summary_sheet["B1"].value, "Значение")
+        self.assertEqual(summary_sheet["A6"].value, "Отчет о движении остатков за день")
+        self.assertEqual(summary_sheet["B7"].value, "Всего блоков")
+        self.assertEqual(summary_sheet["F7"].value, "Заявок")
+        self.assertEqual(summary_sheet["A8"].value, "Остаток на начало дня ")
+        self.assertEqual(summary_sheet["B8"].value, "=B12-B9-B10-B11")
+        self.assertEqual(summary_sheet["A9"].value, "Приемка")
+        self.assertEqual(summary_sheet["B9"].value, 500)
+        self.assertEqual(summary_sheet["F9"].value, 1)
+        self.assertEqual(summary_sheet["A10"].value, "Отгрузка")
+        self.assertEqual(summary_sheet["B10"].value, -4)
+        self.assertEqual(summary_sheet["F10"].value, 1)
+        self.assertEqual(summary_sheet["A11"].value, "Возврат")
+        self.assertEqual(summary_sheet["B11"].value, 2)
+        self.assertEqual(summary_sheet["F11"].value, 1)
+        self.assertEqual(summary_sheet["A12"].value, "Остаток на конец дня")
+        self.assertEqual(summary_sheet["B12"].value, 542)
+        self.assertEqual(summary_sheet.freeze_panes, "A2")
+        self.assertEqual(summary_sheet["A8"].border.left.style, "thin")
+        self.assertEqual(summary_sheet["F12"].border.right.style, "thin")
+        self.assertEqual(summary_sheet.column_dimensions["A"].width, 28)
+        self.assertEqual(summary_sheet.column_dimensions["B"].width, 21)
+
         requests_sheet = workbook["Заявки"]
+        self.assertEqual([cell.value for cell in requests_sheet[1]], REQUEST_HEADERS)
         self.assertEqual(requests_sheet.max_row, 4)
-        request_values = [cell.value for cell in requests_sheet[2]]
-        self.assertIn("WH-R-101", request_values)
-        self.assertIn("XASAN XUSAN SAVDO SERVIS XK", request_values)
+        request_row = {header: requests_sheet.cell(row=2, column=index + 1).value for index, header in enumerate(REQUEST_HEADERS)}
+        self.assertEqual(request_row["Номер"], "WH-R-101")
+        self.assertEqual(request_row["Юрлицо/точка"], "XASAN XUSAN SAVDO SERVIS XK")
+        self.assertEqual(request_row["Блоков"], 4)
+
+        products_sheet = workbook["Товары заявок"]
+        self.assertEqual([cell.value for cell in products_sheet[1]], REQUEST_PRODUCT_HEADERS)
+        product_rows = [
+            {header: products_sheet.cell(row=row, column=index + 1).value for index, header in enumerate(REQUEST_PRODUCT_HEADERS)}
+            for row in range(2, products_sheet.max_row + 1)
+        ]
+        self.assertIn("Chapman Gold SSL", [row["Товар"] for row in product_rows])
+
+        movements_sheet = workbook["Движения"]
+        self.assertEqual([cell.value for cell in movements_sheet[1]], MOVEMENT_HEADERS)
+        movement_rows = [
+            {header: movements_sheet.cell(row=row, column=index + 1).value for index, header in enumerate(MOVEMENT_HEADERS)}
+            for row in range(2, movements_sheet.max_row + 1)
+        ]
+        self.assertIn("Приход", [row["Направление"] for row in movement_rows])
+        self.assertIn("Расход", [row["Направление"] for row in movement_rows])
+
+        stock_sheet = workbook["Остатки"]
+        self.assertEqual([cell.value for cell in stock_sheet[1]], STOCK_HEADERS)
+        self.assertEqual(stock_sheet.max_row, 2)
+        self.assertEqual(stock_sheet["A2"].value, "ООО Bastion Import Chapman MCHJ")
+        self.assertEqual(stock_sheet["E2"].value, 542)
+
+        errors_sheet = workbook["Ошибки"]
+        self.assertEqual(errors_sheet["A1"].value, "Ошибка")
 
         message = build_skladbot_daily_report_message(report)
         self.assertIn("SkladBot отчет за 08.06.2026", message)
         self.assertIn("Отгрузка: 1 заявок, 4 блоков", message)
         self.assertIn("Актуальный остаток: 542", message)
+
+    def test_daily_report_xlsx_handles_partial_data_and_errors(self):
+        report = {
+            "report_date": date(2026, 6, 8),
+            "generated_at": datetime(2026, 6, 8, 22, 0),
+            "customer_id": 6211,
+            "requests": [],
+            "movements": [],
+            "stock": {"total": 0, "rows": []},
+            "errors": ["Не удалось получить остаток SkladBot"],
+            "summary": {
+                "requests_total": 0,
+                "category_counts": {"Отгрузка": 0, "Возврат": 0, "Приемка": 0, "Прочее": 0},
+                "type_counts": {},
+                "request_blocks_by_category": {"Отгрузка": 0, "Возврат": 0, "Приемка": 0, "Прочее": 0},
+                "movements_total": 0,
+                "movement_in_rows": 0,
+                "movement_out_rows": 0,
+                "movement_in_amount": 0,
+                "movement_out_amount": 0,
+                "stock_total": 0,
+                "stock_rows": 0,
+                "errors": 1,
+            },
+        }
+
+        content, _filename = build_skladbot_daily_report_xlsx(report)
+        workbook = openpyxl.load_workbook(BytesIO(content), data_only=False)
+
+        self.assertEqual(workbook["Сводка"]["B9"].value, 0)
+        self.assertEqual(workbook["Сводка"]["B10"].value, 0)
+        self.assertEqual(workbook["Сводка"]["B11"].value, 0)
+        self.assertEqual(workbook["Сводка"]["B12"].value, 0)
+        self.assertEqual(workbook["Остатки"].max_row, 2)
+        self.assertEqual(workbook["Остатки"]["E2"].value, 0)
+        self.assertEqual(workbook["Ошибки"]["A2"].value, "Не удалось получить остаток SkladBot")
 
     def test_telegram_manual_command_sends_skladbot_daily_report(self):
         worker = TelegramWorker.__new__(TelegramWorker)

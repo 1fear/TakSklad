@@ -4,6 +4,27 @@
 
 ## 2026-06-09
 
+### Новый шаблон ежедневного SkladBot отчета
+
+**Файлы:** `backend/app/skladbot_daily_report.py`, `tests/test_skladbot_daily_report.py`, `docs/*`.
+
+**Что стало:**
+
+- Лист `Сводка` теперь повторяет рабочий шаблон Антона: дата отчета, время формирования, `customer_id` и таблица `Отчет о движении остатков за день`.
+- В таблице сводки показываются `Приемка`, `Отгрузка`, `Возврат`, количество заявок и остаток на конец дня.
+- `Отгрузка` выводится отрицательным числом, чтобы движение остатков читалось как расход.
+- Лист `Остатки` стал агрегированным по клиенту: одна строка с текущим общим остатком из SkladBot.
+- Google Sheets в ежедневном отчете не используется. Источник данных остается SkladBot API.
+
+**Проверки:**
+
+- `./.venv/bin/python -m unittest tests.test_skladbot_daily_report` - 4 tests OK.
+- `./.venv/bin/python -m unittest tests.test_skladbot_daily_report tests.test_backend_telegram_import` - 48 tests OK.
+- `./.venv/bin/python -m unittest discover tests` - 378 tests OK.
+- `./.venv/bin/python -m compileall -q backend/app src/taksklad tools main.py tests` - OK.
+- `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK.
+- `git diff --check` - OK.
+
 ### Исправление 500 при сохранении КИЗов в backend
 
 **Файлы:** `backend/app/orders_service.py`, `tests/test_backend_api_persistence.py`, `docs/*`.

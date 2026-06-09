@@ -5,7 +5,7 @@ from io import BytesIO
 from typing import Any
 
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from .skladbot_worker import (
@@ -491,10 +491,11 @@ def build_skladbot_daily_report_xlsx(report: dict[str, Any]) -> tuple[bytes, str
     write_requests_sheet(workbook.create_sheet("Заявки"), report.get("requests") or [])
     write_request_products_sheet(workbook.create_sheet("Товары заявок"), report.get("requests") or [])
     write_movements_sheet(workbook.create_sheet("Движения"), report.get("movements") or [])
-    write_stock_sheet(workbook.create_sheet("Остатки"), (report.get("stock") or {}).get("rows") or [])
+    write_stock_sheet(workbook.create_sheet("Остатки"), report)
     write_errors_sheet(workbook.create_sheet("Ошибки"), report.get("errors") or [])
     for sheet in workbook.worksheets:
         autosize_columns(sheet)
+    apply_report_template_widths(workbook)
     buffer = BytesIO()
     workbook.save(buffer)
     return buffer.getvalue(), daily_report_filename(report.get("report_date"))
@@ -504,30 +505,28 @@ def write_summary_sheet(sheet, report: dict[str, Any]) -> None:
     summary = report.get("summary") or {}
     report_date = format_date(report.get("report_date"))
     generated_at = report.get("generated_at")
+    category_counts = summary.get("category_counts") or {}
+    blocks = summary.get("request_blocks_by_category") or {}
+    inbound_blocks = parse_int(blocks.get("Приемка"))
+    outbound_blocks = parse_int(blocks.get("Отгрузка"))
+    return_blocks = parse_int(blocks.get("Возврат"))
+    stock_total_value = parse_int(summary.get("stock_total"))
     sheet.append(["Показатель", "Значение"])
     sheet.append(["Дата отчета", report_date])
     sheet.append(["Сформировано", format_datetime(generated_at)])
     sheet.append(["customer_id", report.get("customer_id") or ""])
-    sheet.append(["Заявок всего", summary.get("requests_total", 0)])
-    category_counts = summary.get("category_counts") or {}
-    blocks = summary.get("request_blocks_by_category") or {}
-    for category in ("Отгрузка", "Возврат", "Приемка", "Прочее"):
-        sheet.append([f"{category}: заявок", category_counts.get(category, 0)])
-        sheet.append([f"{category}: блоков в заявках", blocks.get(category, 0)])
-    sheet.append(["Движений всего", summary.get("movements_total", 0)])
-    sheet.append(["Приход: строк", summary.get("movement_in_rows", 0)])
-    sheet.append(["Приход: количество", summary.get("movement_in_amount", 0)])
-    sheet.append(["Расход: строк", summary.get("movement_out_rows", 0)])
-    sheet.append(["Расход: количество", summary.get("movement_out_amount", 0)])
-    sheet.append(["Актуальный остаток", summary.get("stock_total", 0)])
-    sheet.append(["Строк остатков", summary.get("stock_rows", 0)])
-    sheet.append(["Ошибок сбора", summary.get("errors", 0)])
     sheet.append([])
-    type_header_row = sheet.max_row + 1
-    sheet.append(["Тип заявки", "Количество"])
-    for type_name, count in sorted((summary.get("type_counts") or {}).items()):
-        sheet.append([type_name, count])
-    apply_header_style(sheet, rows=(1, type_header_row))
+    sheet.append(["Отчет о движении остатков за день", None, None, None, None, None])
+    sheet.append([None, "Всего блоков", "SKU1", "SKU2", "SKU3", "Заявок"])
+    sheet.append(["Остаток на начало дня ", "=B12-B9-B10-B11", None, None, None, None])
+    sheet.append(["Приемка", inbound_blocks, None, None, None, category_counts.get("Приемка", 0)])
+    sheet.append(["Отгрузка", -outbound_blocks, None, None, None, category_counts.get("Отгрузка", 0)])
+    sheet.append(["Возврат", return_blocks, None, None, None, category_counts.get("Возврат", 0)])
+    sheet.append(["Остаток на конец дня", stock_total_value, None, None, None, None])
+    apply_header_style(sheet)
+    for cell in ("A6", "A8", "B8", "A12", "B12"):
+        sheet[cell].font = Font(bold=True)
+    apply_thin_border(sheet, "A8:F12")
 
 
 def write_requests_sheet(sheet, requests: list[dict[str, Any]]) -> None:
@@ -591,20 +590,29 @@ def write_movements_sheet(sheet, movements: list[dict[str, Any]]) -> None:
     apply_header_style(sheet)
 
 
-def write_stock_sheet(sheet, rows: list[dict[str, Any]]) -> None:
+def write_stock_sheet(sheet, report: dict[str, Any]) -> None:
+    rows = (report.get("stock") or {}).get("rows") or []
+    summary = report.get("summary") or {}
     sheet.append(STOCK_HEADERS)
-    for row in rows:
-        sheet.append([
-            row.get("customer") or "",
-            row.get("product") or "",
-            row.get("vendor_code") or "",
-            row.get("barcode") or "",
-            row.get("stock") or 0,
-            row.get("regular_stock") or 0,
-            row.get("nominal_stock") or 0,
-            row.get("available") or 0,
-        ])
+    sheet.append([
+        first_stock_customer(rows),
+        "",
+        "",
+        "",
+        parse_int(summary.get("stock_total")),
+        0,
+        0,
+        0,
+    ])
     apply_header_style(sheet)
+
+
+def first_stock_customer(rows: list[dict[str, Any]]) -> str:
+    for row in rows:
+        customer = normalize_text(row.get("customer"))
+        if customer:
+            return customer
+    return ""
 
 
 def write_errors_sheet(sheet, errors: list[str]) -> None:
@@ -674,8 +682,37 @@ def apply_header_style(sheet, rows: tuple[int, ...] = (1,)) -> None:
     sheet.freeze_panes = "A2"
 
 
+def apply_thin_border(sheet, range_ref: str) -> None:
+    border = Border(
+        left=Side(style="thin"),
+        right=Side(style="thin"),
+        top=Side(style="thin"),
+        bottom=Side(style="thin"),
+    )
+    for row in sheet[range_ref]:
+        for cell in row:
+            cell.border = border
+
+
 def autosize_columns(sheet) -> None:
     for column in sheet.columns:
         letter = get_column_letter(column[0].column)
         width = min(60, max(10, max(len(normalize_text(cell.value)) for cell in column) + 2))
         sheet.column_dimensions[letter].width = width
+
+
+def apply_report_template_widths(workbook: Workbook) -> None:
+    widths_by_sheet = {
+        "Сводка": {"A": 28, "B": 21, "C": 13.44, "D": 13, "E": 13, "F": 13},
+        "Заявки": {"A": 10, "B": 13, "C": 11, "D": 20, "E": 11, "F": 10, "G": 15, "H": 17, "I": 15, "J": 45, "K": 33, "L": 60, "M": 13, "N": 10, "O": 13, "P": 24},
+        "Товары заявок": {"A": 13, "B": 11, "C": 20, "D": 15, "E": 45, "F": 36, "G": 17, "H": 15, "I": 10},
+        "Движения": {"A": 13, "B": 10, "C": 17, "D": 14, "E": 10, "F": 13, "G": 13, "H": 13, "I": 13, "J": 13, "K": 13},
+        "Остатки": {"A": 29, "B": 10, "C": 13, "D": 13, "E": 13, "F": 17, "G": 21, "H": 10},
+        "Ошибки": {"A": 10},
+    }
+    for sheet_name, widths in widths_by_sheet.items():
+        if sheet_name not in workbook.sheetnames:
+            continue
+        sheet = workbook[sheet_name]
+        for column, width in widths.items():
+            sheet.column_dimensions[column].width = width
