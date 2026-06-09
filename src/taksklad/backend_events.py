@@ -136,6 +136,13 @@ def is_duplicate_scan_ack(exc):
     return "already scanned for this order item" in detail
 
 
+def is_fully_scanned_item_ack(exc):
+    if not isinstance(exc, BackendApiError) or exc.status_code != 409:
+        return False
+    detail = str(exc.detail or exc).lower()
+    return "order item is already fully scanned" in detail
+
+
 def is_stale_backend_event_ack(item, exc):
     if not isinstance(exc, BackendApiError) or exc.retryable:
         return False
@@ -182,7 +189,7 @@ def sync_pending_backend_events():
                 logging.warning("Backend queue: unknown event type skipped: %s", event_type)
             synced += 1
         except BackendApiError as exc:
-            if item.get("type") == "scan" and is_duplicate_scan_ack(exc):
+            if item.get("type") == "scan" and (is_duplicate_scan_ack(exc) or is_fully_scanned_item_ack(exc)):
                 synced += 1
                 continue
             if is_stale_backend_event_ack(item, exc):

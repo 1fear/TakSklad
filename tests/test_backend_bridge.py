@@ -102,6 +102,38 @@ class BackendBridgeTests(unittest.TestCase):
         self.assertEqual(saved[0][0]["attempts"], 1)
         self.assertEqual(saved[0][0]["last_error"], "timeout")
 
+    def test_backend_queue_drops_extra_scan_when_item_already_full(self):
+        pending = [{
+            "id": "event-1",
+            "type": "scan",
+            "payload": {
+                "order_item_id": "item-1",
+                "code": "01000000000000000002",
+            },
+        }]
+        saved = []
+
+        with (
+            mock.patch.object(backend_events, "backend_configured", return_value=True),
+            mock.patch.object(backend_events, "load_pending_backend_events", return_value=pending),
+            mock.patch.object(backend_events, "save_pending_backend_events", side_effect=lambda value: saved.append(value)),
+            mock.patch.object(
+                backend_events,
+                "create_scan",
+                side_effect=backend_client.BackendApiError(
+                    "Backend HTTP 409: Order item is already fully scanned",
+                    status_code=409,
+                    detail="Order item is already fully scanned",
+                ),
+            ),
+        ):
+            result = backend_events.sync_pending_backend_events()
+
+        self.assertEqual(result["synced"], 1)
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(result["remaining"], 0)
+        self.assertEqual(saved, [[]])
+
     def test_backend_queue_drops_non_retryable_complete_not_found(self):
         pending = [{
             "id": "event-1",

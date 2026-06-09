@@ -648,6 +648,42 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertEqual(item.scanned_blocks, 1)
             self.assertEqual(item.status, "completed")
 
+    def test_scan_create_acknowledges_extra_scan_when_item_already_full(self):
+        _, item_id = self.seed_order(quantity_blocks=2)
+
+        first = self.client.post(
+            "/api/v1/scans",
+            json={"order_item_id": item_id, "code": "010123456789", "workstation_id": "pc-1"},
+        )
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(first.json()["item_status"], "not_completed")
+        second = self.client.post(
+            "/api/v1/scans",
+            json={"order_item_id": item_id, "code": "010123456780", "workstation_id": "pc-1"},
+        )
+        self.assertEqual(second.status_code, 201)
+        self.assertEqual(second.json()["scanned_blocks"], 2)
+        self.assertEqual(second.json()["item_status"], "completed")
+
+        extra = self.client.post(
+            "/api/v1/scans",
+            json={"order_item_id": item_id, "code": "010987654321", "workstation_id": "pc-1"},
+        )
+
+        self.assertEqual(extra.status_code, 201)
+        self.assertEqual(extra.json()["order_item_id"], item_id)
+        self.assertEqual(extra.json()["code"], "010123456780")
+        self.assertEqual(extra.json()["scanned_blocks"], 2)
+        self.assertEqual(extra.json()["item_status"], "completed")
+
+        with self.SessionLocal() as db:
+            scans = db.execute(select(ScanCode)).scalars().all()
+            self.assertEqual(len(scans), 2)
+            self.assertEqual({scan.code for scan in scans}, {"010123456789", "010123456780"})
+            item = db.get(OrderItem, uuid.UUID(item_id))
+            self.assertEqual(item.scanned_blocks, 2)
+            self.assertEqual(item.status, "completed")
+
     def test_scan_create_exports_scan_state_to_google_sheets_best_effort(self):
         _, item_id = self.seed_order()
 

@@ -109,6 +109,9 @@ def create_scan(db: Session, payload: ScanCreate):
     if item.status in COMPLETED_STATUSES or (
         item.quantity_blocks > 0 and item.scanned_blocks >= item.quantity_blocks
     ):
+        latest_scan = latest_scan_for_item(db, item.id)
+        if latest_scan is not None:
+            return scan_to_read(latest_scan, item)
         raise ApiError(409, "Order item is already fully scanned")
 
     scan_id = uuid.uuid4()
@@ -295,6 +298,15 @@ def scan_to_read(scan, item):
         item_status=item.status,
         scanned_at=scan.scanned_at,
     )
+
+
+def latest_scan_for_item(db: Session, order_item_id):
+    return db.execute(
+        select(ScanCode)
+        .where(ScanCode.order_item_id == order_item_id)
+        .order_by(ScanCode.scanned_at.desc(), ScanCode.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
 
 
 def complete_order(db: Session, order_id):

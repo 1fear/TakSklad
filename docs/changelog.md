@@ -4,6 +4,22 @@
 
 ## 2026-06-09
 
+### Оперативный ack для полной позиции при застрявшей scan-очереди
+
+**Файлы:** `backend/app/orders_service.py`, `src/taksklad/backend_events.py`, `tests/*`.
+
+**Что стало:**
+
+- Если позиция уже полностью отпикана в backend, повторная отправка лишнего scan-события по этой позиции возвращает успешный ответ и не добавляет новый КИЗ.
+- Конфликт КИЗа с другой позицией не скрывается и остается `409`.
+- Desktop-очередь также считает `Order item is already fully scanned` принятым событием, чтобы не блокировать переход склада дальше.
+
+**Проверки:**
+
+- Точечные backend/desktop tests - 5 tests OK.
+- `./.venv/bin/python -m compileall -q backend/app src/taksklad tests/test_backend_api_persistence.py tests/test_backend_bridge.py` - OK.
+- VDS smoke по полной позиции WH-R-194868: API вернул `201`, счетчик КИЗов остался `150 -> 150`.
+
 ### Самовывоз и фильтр логистического отчета
 
 **Файлы:** `backend/app/excel_importer.py`, `backend/app/imports_service.py`, `backend/app/logistics_service.py`, `backend/app/google_sheets_exporter.py`, `src/taksklad/excel_import.py`, `tests/*`, `docs/*`.
