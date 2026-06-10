@@ -1,12 +1,12 @@
 {
-  "latest_version": "2.0.12",
-  "min_supported_version": "2.0.12",
+  "latest_version": "2.0.13",
+  "min_supported_version": "2.0.13",
   "mandatory": true,
   "package_type": "onefile_exe",
   "entrypoint": "TakSklad.exe",
-  "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.12/TakSklad.exe",
-  "sha256": "f8e1cd72c10085b897f74edc216a0387957345b4624c85a2be820ac58a34c560",
-  "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.12/TakSklad-windows-x64.zip",
-  "sha256_onedir": "0690ae0e93158dcb4d4c4eb36ce19f520f36b4a98ef05853bf0072fed6ac7acd",
-  "message": "TakSklad 2.0.12: обязательное обновление. Ошибки сканирования больше не блокируют работу модальным OK, а показываются снизу на 5 секунд. Проверка Chapman SKU Red/Brown/Gold остается включенной."
+  "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.13/TakSklad.exe",
+  "sha256": "b56880d55bbf23c38d3277c42e007c991f0606169922f4fcd828aa8164d564a6",
+  "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.13/TakSklad-windows-x64.zip",
+  "sha256_onedir": "13320719f88b4c9ab6c4a0493ed9ef38f79cf37a3661ad00c5828cb1be0a0c16",
+  "message": "TakSklad 2.0.13: обязательное обновление. Исправлен зависший переход по позициям из-за backend-очереди, старт с первой незавершенной позиции после перезапуска и видимое сообщение ошибки рядом с полем скана."
 }
