@@ -143,6 +143,22 @@ def is_fully_scanned_item_ack(exc):
     return "order item is already fully scanned" in detail
 
 
+def is_non_retryable_scan_conflict(exc):
+    if not isinstance(exc, BackendApiError) or exc.status_code != 409:
+        return False
+    detail = str(exc.detail or exc).lower()
+    return any(
+        marker in detail
+        for marker in (
+            "scan product does not match order item",
+            "code already scanned in another order item",
+            "code already scanned for another order item",
+            "aggregate box product does not match order item",
+            "aggregate box exceeds remaining order item blocks",
+        )
+    )
+
+
 def is_stale_backend_event_ack(item, exc):
     if not isinstance(exc, BackendApiError) or exc.retryable:
         return False
@@ -171,6 +187,7 @@ def sync_pending_backend_events():
     failed = 0
     dropped = 0
     blocked = 0
+    blocked_events = []
     remaining = []
     for item in pending:
         try:
@@ -192,6 +209,20 @@ def sync_pending_backend_events():
             if item.get("type") == "scan" and (is_duplicate_scan_ack(exc) or is_fully_scanned_item_ack(exc)):
                 synced += 1
                 continue
+            if item.get("type") == "scan" and is_non_retryable_scan_conflict(exc):
+                dropped += 1
+                blocked += 1
+                blocked_item = dict(item)
+                blocked_item["attempts"] = int(blocked_item.get("attempts") or 0) + 1
+                blocked_item["last_error"] = str(exc)
+                blocked_item["updated_at"] = datetime.now().astimezone().isoformat()
+                blocked_events.append(blocked_item)
+                logging.warning(
+                    "Backend queue: dropped blocked scan event for item %s: %s",
+                    (item.get("payload") or {}).get("order_item_id"),
+                    exc,
+                )
+                continue
             if is_stale_backend_event_ack(item, exc):
                 dropped += 1
                 logging.warning(
@@ -203,6 +234,11 @@ def sync_pending_backend_events():
             if is_incomplete_order_complete_ack(item, exc):
                 dropped += 1
                 blocked += 1
+                blocked_item = dict(item)
+                blocked_item["attempts"] = int(blocked_item.get("attempts") or 0) + 1
+                blocked_item["last_error"] = str(exc)
+                blocked_item["updated_at"] = datetime.now().astimezone().isoformat()
+                blocked_events.append(blocked_item)
                 logging.warning(
                     "Backend queue: dropped incomplete order_complete event for order %s: %s",
                     (item.get("payload") or {}).get("order_id"),
@@ -228,5 +264,6 @@ def sync_pending_backend_events():
         "remaining": len(remaining),
         "dropped": dropped,
         "blocked": blocked,
+        "blocked_events": blocked_events,
         "enabled": True,
     }

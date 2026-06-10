@@ -44,7 +44,7 @@ class BackendBridgeTests(unittest.TestCase):
         self.assertEqual(rows[0]["Отсканированные коды"], "01000000000000000001\n01000000000000000002")
         self.assertEqual(rows[0]["Статус"], STATUS_COMPLETED)
 
-    def test_backend_queue_keeps_ambiguous_duplicate_scan_conflict(self):
+    def test_backend_queue_drops_non_retryable_duplicate_scan_conflict(self):
         pending = [{
             "id": "event-1",
             "type": "scan",
@@ -73,10 +73,49 @@ class BackendBridgeTests(unittest.TestCase):
             result = backend_events.sync_pending_backend_events()
 
         self.assertEqual(result["synced"], 0)
-        self.assertEqual(result["failed"], 1)
-        self.assertEqual(result["remaining"], 1)
-        self.assertEqual(saved[0][0]["attempts"], 1)
-        self.assertIn("another order item", saved[0][0]["last_error"])
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(result["blocked"], 1)
+        self.assertEqual(result["dropped"], 1)
+        self.assertEqual(result["remaining"], 0)
+        self.assertEqual(saved, [[]])
+        self.assertEqual(len(result["blocked_events"]), 1)
+        self.assertEqual(result["blocked_events"][0]["payload"]["order_item_id"], "item-1")
+        self.assertIn("another order item", result["blocked_events"][0]["last_error"])
+
+    def test_backend_queue_drops_non_retryable_wrong_sku_scan_conflict(self):
+        pending = [{
+            "id": "event-1",
+            "type": "scan",
+            "payload": {
+                "order_item_id": "item-1",
+                "code": "01000000000000000001",
+                "workstation_id": "pc-1",
+            },
+        }]
+        saved = []
+
+        with (
+            mock.patch.object(backend_events, "backend_configured", return_value=True),
+            mock.patch.object(backend_events, "load_pending_backend_events", return_value=pending),
+            mock.patch.object(backend_events, "save_pending_backend_events", side_effect=lambda value: saved.append(value)),
+            mock.patch.object(
+                backend_events,
+                "create_scan",
+                side_effect=backend_client.BackendApiError(
+                    "Backend HTTP 409: Scan product does not match order item",
+                    status_code=409,
+                    detail={"message": "Scan product does not match order item"},
+                ),
+            ),
+        ):
+            result = backend_events.sync_pending_backend_events()
+
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(result["blocked"], 1)
+        self.assertEqual(result["dropped"], 1)
+        self.assertEqual(result["remaining"], 0)
+        self.assertEqual(saved, [[]])
+        self.assertIn("does not match", result["blocked_events"][0]["last_error"])
 
     def test_backend_queue_keeps_retryable_failures(self):
         pending = [{

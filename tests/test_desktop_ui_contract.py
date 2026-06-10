@@ -11,8 +11,11 @@ from taksklad.app_day_end import build_backend_status
 from taksklad import backend_client
 from taksklad.main import (
     ScanningApp,
+    backend_sync_group_blocker,
+    backend_sync_item_blocker,
     complete_backend_orders_or_raise,
     format_print_failure_after_backend_complete,
+    first_incomplete_order_index,
     group_finish_blocker,
     is_terminal_scan_state,
 )
@@ -82,6 +85,72 @@ class DesktopUiContractTests(unittest.TestCase):
         self.assertLess(source.index("scan_product_mismatch"), source.index("queue_backend_scan"))
         self.assertIn("КИЗ не соответствует товару текущей позиции", source)
 
+    def test_backend_sync_item_blocker_ignores_unrelated_poisoned_queue_event(self):
+        sync_result = {
+            "failed": 1,
+            "remaining": 1,
+            "blocked_events": [{
+                "type": "scan",
+                "payload": {"order_item_id": "old-item"},
+                "last_error": "Code already scanned in another order item",
+            }],
+        }
+        pending_events = [{
+            "type": "scan",
+            "payload": {"order_item_id": "old-item"},
+            "last_error": "Code already scanned in another order item",
+        }]
+
+        self.assertEqual(backend_sync_item_blocker(sync_result, "current-item", pending_events), "")
+        self.assertIn(
+            "Code already scanned",
+            backend_sync_item_blocker(sync_result, "old-item", pending_events),
+        )
+
+    def test_backend_sync_group_blocker_only_blocks_current_group_events(self):
+        sync_result = {
+            "failed": 1,
+            "remaining": 1,
+            "blocked_events": [{
+                "type": "scan",
+                "payload": {"order_item_id": "old-item"},
+                "last_error": "Scan product does not match order item",
+            }],
+        }
+        pending_events = [{
+            "type": "scan",
+            "payload": {"order_item_id": "old-item"},
+            "last_error": "Scan product does not match order item",
+        }]
+
+        self.assertEqual(
+            backend_sync_group_blocker(sync_result, {"current-item"}, {"current-order"}, pending_events),
+            "",
+        )
+        self.assertIn(
+            "does not match",
+            backend_sync_group_blocker(sync_result, {"old-item"}, set(), pending_events),
+        )
+
+    def test_first_incomplete_order_index_skips_completed_backend_positions(self):
+        orders = [
+            {
+                "Кол-во блок": 2,
+                "_existing_scanned_codes": ["01000000000000000001", "01000000000000000002"],
+            },
+            {
+                "Кол-во блок": 3,
+                "_existing_scanned_codes": ["01000000000000000003"],
+            },
+        ]
+
+        self.assertEqual(first_incomplete_order_index(orders), 1)
+
+    def test_select_legal_entity_starts_from_first_incomplete_position(self):
+        source = inspect.getsource(ScanningApp.select_legal_entity)
+
+        self.assertIn("first_incomplete_order_index", source)
+
     def test_desktop_errors_use_non_blocking_status_notice(self):
         source_root = Path(__file__).resolve().parents[1] / "src" / "taksklad"
         forbidden = ("messagebox.showerror", "messagebox.showwarning", "messagebox.showinfo")
@@ -96,6 +165,39 @@ class DesktopUiContractTests(unittest.TestCase):
         self.assertEqual(main_module.STATUS_NOTICE_TIMEOUT_MS, 5000)
         self.assertNotIn("messagebox", inspect.getsource(ScanningApp.show_error))
         self.assertIn("STATUS_NOTICE_TIMEOUT_MS", inspect.getsource(ScanningApp.show_status_notice))
+
+    def test_show_error_also_updates_visible_scan_message(self):
+        class FakeVar:
+            def __init__(self):
+                self.value = ""
+
+            def set(self, value):
+                self.value = value
+
+        class FakeLabel:
+            def __init__(self):
+                self.options = {}
+
+            def config(self, **kwargs):
+                self.options.update(kwargs)
+
+        fake = SimpleNamespace(
+            status_var=FakeVar(),
+            status_label=FakeLabel(),
+            last_code_label=FakeLabel(),
+            error_timer=None,
+            safe_config=lambda widget, **kwargs: widget.config(**kwargs),
+            after=lambda _timeout, _callback: "timer-1",
+            after_cancel=lambda _timer: None,
+            clear_error=lambda: None,
+        )
+        fake.show_status_notice = ScanningApp.show_status_notice.__get__(fake)
+
+        ScanningApp.show_error(fake, "КИЗ не соответствует товару текущей позиции")
+
+        self.assertIn("КИЗ не соответствует", fake.status_var.value)
+        self.assertIn("КИЗ не соответствует", fake.last_code_label.options["text"])
+        self.assertEqual(fake.last_code_label.options["fg"], ERROR_FG)
 
     def test_finish_requires_every_position_saved_and_fully_scanned(self):
         orders = [

@@ -103,6 +103,7 @@ from .telegram_service import (
 from .ui_widgets import AppButton
 from .logging_setup import configure_app_logging
 from .utils import (
+    normalize_kiz_code,
     normalize_text,
     parse_date_to_standard,
     parse_int_value,
@@ -199,6 +200,35 @@ def scanned_blocks_for_order(order, codes=None):
     return scanned_blocks_for_order_codes(order, codes if codes is not None else scanned_codes_for_order(order))
 
 
+def first_incomplete_order_index(orders):
+    for index, order in enumerate(orders):
+        plan_blocks = get_plan_blocks(order)
+        if plan_blocks <= 0:
+            return index
+        if scanned_blocks_for_order(order) < plan_blocks:
+            return index
+    return len(orders)
+
+
+def build_product_result(order, scanned_codes, product_catalog):
+    pieces_per_block = get_product_rule(order.get("Товары", ""), product_catalog)["pieces_per_block"]
+    plan_blocks = get_plan_blocks(order)
+    return {
+        "Дата отгрузки": get_order_date_value(order),
+        "Клиент": order.get("Клиент", ""),
+        "Адрес": order.get("Адрес", ""),
+        "Торговый представитель": order.get("Торговый представитель", ""),
+        "Товары": order.get("Товары", ""),
+        "Тип оплаты": order.get("Тип оплаты", ""),
+        "Кол-во ШТ в блоке": pieces_per_block,
+        "План": plan_blocks,
+        "Отсканировано": scanned_blocks_for_order(order, scanned_codes),
+        "Сумма позиции": parse_int_value(order.get("Сумма позиции")),
+        "Цена заказа": parse_int_value(order.get("Сумма позиции")),
+        "Коды": list(scanned_codes),
+    }
+
+
 def group_finish_blocker(orders, completed_products):
     if not orders:
         return "Нет строк заказа для завершения"
@@ -221,6 +251,66 @@ def is_terminal_scan_state(order):
 
 def order_uses_backend_scan_path(order):
     return bool(backend_enabled() and normalize_text(order.get("_backend_order_item_id")))
+
+
+def backend_event_matches_item(item, order_item_id):
+    order_item_id = normalize_text(order_item_id)
+    if not order_item_id or item.get("type") != "scan":
+        return False
+    return normalize_text((item.get("payload") or {}).get("order_item_id")) == order_item_id
+
+
+def backend_event_matches_group(item, order_item_ids, order_ids):
+    event_type = item.get("type")
+    payload = item.get("payload") or {}
+    if event_type == "scan":
+        return normalize_text(payload.get("order_item_id")) in order_item_ids
+    if event_type == "order_complete":
+        return normalize_text(payload.get("order_id")) in order_ids
+    return False
+
+
+def backend_event_error_message(item):
+    return normalize_text(item.get("last_error")) or "Backend не принял событие"
+
+
+def backend_sync_item_blocker(sync_result, order_item_id, pending_events):
+    for item in sync_result.get("blocked_events") or []:
+        if backend_event_matches_item(item, order_item_id):
+            return backend_event_error_message(item)
+    current_pending = [item for item in pending_events if backend_event_matches_item(item, order_item_id)]
+    if current_pending:
+        first_error = backend_event_error_message(current_pending[0])
+        return f"Backend не принял КИЗы текущей позиции. Осталось по позиции: {len(current_pending)}. {first_error}"
+    return ""
+
+
+def backend_sync_group_blocker(sync_result, order_item_ids, order_ids, pending_events):
+    order_item_ids = {normalize_text(item_id) for item_id in order_item_ids if normalize_text(item_id)}
+    order_ids = {normalize_text(order_id) for order_id in order_ids if normalize_text(order_id)}
+    for item in sync_result.get("blocked_events") or []:
+        if backend_event_matches_group(item, order_item_ids, order_ids):
+            return backend_event_error_message(item)
+    current_pending = [
+        item for item in pending_events
+        if backend_event_matches_group(item, order_item_ids, order_ids)
+    ]
+    if current_pending:
+        first_error = backend_event_error_message(current_pending[0])
+        return f"Backend не принял события текущего заказа. Осталось по заказу: {len(current_pending)}. {first_error}"
+    return ""
+
+
+def unsaved_backend_scan_codes(order, scanned_codes):
+    existing_codes = {
+        normalize_kiz_code(code)
+        for code in (order.get("_existing_scanned_codes") or [])
+        if normalize_kiz_code(code)
+    }
+    return [
+        code for code in scanned_codes
+        if normalize_kiz_code(code) and normalize_kiz_code(code) not in existing_codes
+    ]
 
 
 def is_backend_order_already_completed_error(exc):
@@ -771,6 +861,12 @@ class ScanningApp(
     def show_error(self, message, popup=True):
         logging.warning("Ошибка для пользователя: %s", message)
         self.show_status_notice(message, bg=ERROR_BG, fg=ERROR_FG, prefix="❌", log_level=None)
+        if hasattr(self, "last_code_label"):
+            self.safe_config(
+                self.last_code_label,
+                text=f"Ошибка: {normalize_text(message)}",
+                fg=ERROR_FG,
+            )
 
     def show_warning(self, message):
         self.show_status_notice(message, bg=WARNING, fg=FG_TEXT, prefix="⚠", log_level=logging.WARNING)
@@ -901,7 +997,7 @@ class ScanningApp(
 
         scanned_count = scanned_blocks_for_order(self.current_order, self.scanned_codes)
         self.progress_label.config(text=f"{scanned_count} / {plan_blocks}")
-        self.last_code_label.config(text=f"Отменён код: {removed_code[:40]}...")
+        self.last_code_label.config(text=f"Отменён код: {removed_code[:40]}...", fg=SUCCESS)
         self.status_var.set(f"↩️ Отменён последний код ({scanned_count}/{plan_blocks})")
 
         if scanned_count < plan_blocks:
@@ -1644,7 +1740,7 @@ class ScanningApp(
         self.next_product_btn.config(state="disabled")
         self.finish_btn.config(state="disabled")
         self.undo_btn.config(state="disabled")
-        self.last_code_label.config(text="")
+        self.last_code_label.config(text="", fg=SUCCESS)
 
     def refresh_from_sheet(self, initial=False):
         if not self.ensure_update_allowed():
@@ -1769,10 +1865,21 @@ class ScanningApp(
             if order_group_key(o) == selected_group
         ]
         self.current_legal_entity_orders.sort(key=lambda order: parse_int_value(order.get("_row_number")))
-        self.current_product_idx = 0
+        self.current_product_idx = first_incomplete_order_index(self.current_legal_entity_orders)
         self.scanned_codes = []
-        self.current_legal_entity_products = []
+        self.current_legal_entity_products = [
+            build_product_result(order, scanned_codes_for_order(order), self.product_catalog)
+            for order in self.current_legal_entity_orders[:self.current_product_idx]
+        ]
         self.update_party_summary_display()
+
+        if self.current_product_idx >= len(self.current_legal_entity_orders):
+            self.current_order = None
+            self.next_product_btn.config(state="disabled")
+            self.finish_btn.config(state="normal")
+            self.status_var.set(f"✅ Все позиции уже сохранены: {display_request_number} | {legal_entity}")
+            self.status_label.config(bg=BG_MAIN, fg=FG_MUTED)
+            return
 
         self.load_current_product()
 
@@ -1850,9 +1957,9 @@ class ScanningApp(
         self.undo_btn.config(state="normal")
         self.scan_entry.delete(0, tk.END)
         if existing_codes:
-            self.last_code_label.config(text=f"Уже записано: {scanned_blocks} блоков, {len(existing_codes)} кодов")
+            self.last_code_label.config(text=f"Уже записано: {scanned_blocks} блоков, {len(existing_codes)} кодов", fg=SUCCESS)
         else:
-            self.last_code_label.config(text="")
+            self.last_code_label.config(text="", fg=SUCCESS)
         if plan_blocks > 0 and scanned_blocks >= plan_blocks:
             if self.current_product_idx >= len(self.current_legal_entity_orders) - 1:
                 self.next_product_btn.config(state="disabled")
@@ -1945,10 +2052,10 @@ class ScanningApp(
 
         self.progress_label.config(text=f"{scanned_count} / {plan_blocks}")
         if scan_metadata["scan_type"] == SCAN_TYPE_AGGREGATE_BOX:
-            self.last_code_label.config(text=f"Последний код: короб +{block_quantity}: {code[:40]}...")
+            self.last_code_label.config(text=f"Последний код: короб +{block_quantity}: {code[:40]}...", fg=SUCCESS)
             self.status_var.set(f"✅ Отсканирован короб +{block_quantity} ({scanned_count}/{plan_blocks})")
         else:
-            self.last_code_label.config(text=f"Последний код: {code[:40]}...")
+            self.last_code_label.config(text=f"Последний код: {code[:40]}...", fg=SUCCESS)
             self.status_var.set(f"✅ Отсканирован код ({scanned_count}/{plan_blocks})")
         self.status_label.config(bg=BG_MAIN, fg=FG_MUTED)
         self.scan_entry.delete(0, tk.END)
@@ -1986,21 +2093,22 @@ class ScanningApp(
 
         order = self.current_order
         scanned_codes = self.scanned_codes.copy()
-        pieces_per_block = get_product_rule(order.get("Товары", ""), self.product_catalog)["pieces_per_block"]
         self.set_busy("⏳ Сохраняю КИЗы в VDS..." if finish_after_save else "⏳ Сохраняю КИЗы...")
         self.safe_config(self.next_product_btn, state="disabled")
         self.safe_config(self.finish_btn, state="disabled")
 
         def work():
             if order_uses_backend_scan_path(order):
-                for saved_code in scanned_codes:
+                for saved_code in unsaved_backend_scan_codes(order, scanned_codes):
                     queue_backend_scan(order, saved_code)
                 backend_sync_result = sync_pending_backend_events()
-                if backend_sync_result.get("failed") or backend_sync_result.get("remaining"):
-                    raise RuntimeError(
-                        "Backend не принял все КИЗы позиции. "
-                        f"Осталось в очереди: {backend_sync_result.get('remaining', 0)}"
-                    )
+                blocker = backend_sync_item_blocker(
+                    backend_sync_result,
+                    order.get("_backend_order_item_id"),
+                    load_pending_backend_events(),
+                )
+                if blocker:
+                    raise RuntimeError(blocker)
                 if not write_scan_backup("position_saved_backend", order, codes=scanned_codes):
                     raise RuntimeError("Коды сохранены в backend, но локальный backup позиции не создан")
                 return {"queued": False, "message": "backend_saved", "backend": True}
@@ -2023,20 +2131,7 @@ class ScanningApp(
             return {"queued": False, "message": message}
 
         def on_success(result):
-            product_result = {
-                "Дата отгрузки": get_order_date_value(order),
-                "Клиент": order.get('Клиент', ''),
-                "Адрес": order.get('Адрес', ''),
-                "Торговый представитель": order.get('Торговый представитель', ''),
-                "Товары": order.get('Товары', ''),
-                "Тип оплаты": order.get('Тип оплаты', ''),
-                "Кол-во ШТ в блоке": pieces_per_block,
-                "План": plan_blocks,
-                "Отсканировано": scanned_count,
-                "Сумма позиции": parse_int_value(order.get("Сумма позиции")),
-                "Цена заказа": parse_int_value(order.get("Сумма позиции")),
-                "Коды": scanned_codes.copy()
-            }
+            product_result = build_product_result(order, scanned_codes, self.product_catalog)
             self.current_legal_entity_products.append(product_result)
             order["Отсканированные коды"] = "\n".join(scanned_codes)
             order[STATUS_COLUMN] = get_order_status(order)
@@ -2184,10 +2279,21 @@ class ScanningApp(
 
             if uses_backend_finish:
                 backend_sync_result = sync_pending_backend_events()
-                if backend_sync_result.get("failed") or backend_sync_result.get("remaining"):
+                order_item_ids = {
+                    normalize_text(order.get("_backend_order_item_id"))
+                    for order in current_orders
+                    if normalize_text(order.get("_backend_order_item_id"))
+                }
+                blocker = backend_sync_group_blocker(
+                    backend_sync_result,
+                    order_item_ids,
+                    set(backend_order_ids),
+                    load_pending_backend_events(),
+                )
+                if blocker:
                     raise RuntimeError(
                         "Сводный лист напечатан, но backend не принял все КИЗы. "
-                        f"Осталось в очереди: {backend_sync_result.get('remaining', 0)}"
+                        f"{blocker}"
                     )
                 backend_complete_result = complete_backend_orders_or_raise(backend_order_ids)
 
