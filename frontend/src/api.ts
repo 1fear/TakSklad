@@ -264,7 +264,7 @@ export function listActiveOrders(config: ApiConfig) {
 }
 
 export function getAdminTable(config: ApiConfig) {
-  return apiRequest<AdminTable>(config, "/api/v1/admin/table");
+  return apiRequest<AdminTable>(config, "/api/v1/admin/table?limit=5000");
 }
 
 export function getAuthSession(config: ApiConfig) {

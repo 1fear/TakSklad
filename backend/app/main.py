@@ -240,7 +240,7 @@ def list_active_orders(db=Depends(get_db)) -> list[OrderRead]:
 
 
 @api.get("/admin/table", response_model=AdminTableRead)
-def admin_table(limit: int = 1000, activity_limit: int = 30, db=Depends(get_db)):
+def admin_table(limit: int = 5000, activity_limit: int = 30, db=Depends(get_db)):
     return build_admin_table(db, limit=limit, activity_limit=activity_limit)
 
 

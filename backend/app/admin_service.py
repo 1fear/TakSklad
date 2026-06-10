@@ -20,8 +20,8 @@ GOOGLE_EXPORT_EVENT_TYPE = "google_sheets_export"
 PENDING_STATUSES = ("pending", "failed")
 
 
-def build_admin_table(db: Session, limit=1000, activity_limit=30):
-    row_limit = max(1, min(int(limit or 1000), 5000))
+def build_admin_table(db: Session, limit=5000, activity_limit=30):
+    row_limit = max(1, min(int(limit or 5000), 5000))
     activity_row_limit = max(0, min(int(activity_limit or 30), 100))
     pending_by_entity, pending_total = pending_google_exports_by_entity(db)
 
