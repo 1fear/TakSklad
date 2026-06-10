@@ -11,6 +11,8 @@ from taksklad.app_day_end import build_backend_status
 from taksklad import backend_client
 from taksklad.main import (
     ScanningApp,
+    backend_blocked_scan_events_for_item,
+    format_backend_blocked_scan_message,
     backend_sync_group_blocker,
     backend_sync_item_blocker,
     complete_backend_orders_or_raise,
@@ -107,6 +109,33 @@ class DesktopUiContractTests(unittest.TestCase):
             backend_sync_item_blocker(sync_result, "old-item", pending_events),
         )
 
+    def test_backend_blocked_scan_events_filter_current_item(self):
+        sync_result = {
+            "blocked_events": [
+                {"type": "scan", "payload": {"order_item_id": "old-item", "code": "01000000000000000001"}},
+                {"type": "scan", "payload": {"order_item_id": "item-1", "code": "01000000000000000002"}},
+                {"type": "order_complete", "payload": {"order_id": "order-1"}},
+            ]
+        }
+
+        events = backend_blocked_scan_events_for_item(sync_result, "item-1")
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["payload"]["code"], "01000000000000000002")
+
+    def test_backend_blocked_scan_message_is_warehouse_friendly(self):
+        message = format_backend_blocked_scan_message([
+            {
+                "type": "scan",
+                "payload": {"code": "0104006396053978217abcdef"},
+                "last_error": "Backend HTTP 409: Code already scanned in another order item",
+            }
+        ])
+
+        self.assertIn("КИЗ уже использован в другой позиции", message)
+        self.assertIn("Сканируйте другой код", message)
+        self.assertNotIn("Backend HTTP", message)
+
     def test_backend_sync_group_blocker_only_blocks_current_group_events(self):
         sync_result = {
             "failed": 1,
@@ -198,6 +227,68 @@ class DesktopUiContractTests(unittest.TestCase):
         self.assertIn("КИЗ не соответствует", fake.status_var.value)
         self.assertIn("КИЗ не соответствует", fake.last_code_label.options["text"])
         self.assertEqual(fake.last_code_label.options["fg"], ERROR_FG)
+
+    def test_backend_blocked_scan_removes_code_and_keeps_position_open(self):
+        class FakeVar:
+            def __init__(self):
+                self.value = ""
+
+            def set(self, value):
+                self.value = value
+
+        class FakeWidget:
+            def __init__(self):
+                self.options = {}
+                self.focused = False
+
+            def config(self, **kwargs):
+                self.options.update(kwargs)
+
+            def focus_set(self):
+                self.focused = True
+
+        good_code = "0104006396053978217GOOD"
+        blocked_code = "0104006396053978217BAD"
+        fake = SimpleNamespace(
+            current_order={"Кол-во блок": 2, "_backend_order_item_id": "item-1"},
+            scanned_codes=[good_code, blocked_code],
+            all_existing_codes={good_code, blocked_code},
+            progress_label=FakeWidget(),
+            next_product_btn=FakeWidget(),
+            finish_btn=FakeWidget(),
+            last_code_label=FakeWidget(),
+            status_var=FakeVar(),
+            status_label=FakeWidget(),
+            scan_entry=FakeWidget(),
+            error_timer=None,
+            safe_config=lambda widget, **kwargs: widget.config(**kwargs),
+            after=lambda _timeout, _callback: "timer-1",
+            after_cancel=lambda _timer: None,
+            clear_error=lambda: None,
+            update_stats_display=lambda: None,
+        )
+        fake.show_status_notice = ScanningApp.show_status_notice.__get__(fake)
+        fake.show_error = ScanningApp.show_error.__get__(fake)
+
+        with mock.patch("taksklad.main.write_scan_backup", return_value=True) as write_backup:
+            applied = ScanningApp.apply_backend_blocked_scan_events(
+                fake,
+                [{
+                    "type": "scan",
+                    "payload": {"order_item_id": "item-1", "code": blocked_code},
+                    "last_error": "Backend HTTP 409: Code already scanned in another order item",
+                }],
+            )
+
+        self.assertTrue(applied)
+        self.assertEqual(fake.scanned_codes, [good_code])
+        self.assertEqual(fake.progress_label.options["text"], "1 / 2")
+        self.assertEqual(fake.next_product_btn.options["state"], "disabled")
+        self.assertEqual(fake.finish_btn.options["state"], "disabled")
+        self.assertIn("Сканируйте другой код", fake.status_var.value)
+        self.assertIn(blocked_code, fake.all_existing_codes)
+        self.assertTrue(fake.scan_entry.focused)
+        write_backup.assert_called_once()
 
     def test_finish_requires_every_position_saved_and_fully_scanned(self):
         orders = [

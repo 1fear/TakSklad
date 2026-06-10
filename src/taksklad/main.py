@@ -274,6 +274,31 @@ def backend_event_error_message(item):
     return normalize_text(item.get("last_error")) or "Backend не принял событие"
 
 
+def backend_blocked_scan_events_for_item(sync_result, order_item_id):
+    return [
+        item for item in (sync_result.get("blocked_events") or [])
+        if backend_event_matches_item(item, order_item_id)
+    ]
+
+
+def backend_blocked_scan_code(item):
+    return normalize_kiz_code((item.get("payload") or {}).get("code"))
+
+
+def format_backend_blocked_scan_message(blocked_events):
+    first_event = (blocked_events or [{}])[0]
+    code = backend_blocked_scan_code(first_event)
+    detail = backend_event_error_message(first_event).lower()
+    suffix = f": {code[:24]}..." if code else ""
+    if "already scanned in another order item" in detail or "already scanned for another order item" in detail:
+        return f"КИЗ уже использован в другой позиции. Сканируйте другой код{suffix}"
+    if "does not match order item" in detail:
+        return f"КИЗ не соответствует товару текущей позиции{suffix}"
+    if "exceeds remaining order item blocks" in detail:
+        return f"Код короба превышает остаток позиции{suffix}"
+    return f"Backend отклонил КИЗ. Сканируйте другой код{suffix}"
+
+
 def backend_sync_item_blocker(sync_result, order_item_id, pending_events):
     for item in sync_result.get("blocked_events") or []:
         if backend_event_matches_item(item, order_item_id):
@@ -663,6 +688,13 @@ class ScanningApp(
             remaining = result.get("remaining", 0) if isinstance(result, dict) else 0
             if remaining:
                 logging.info("Backend queue: осталось событий в очереди: %s", remaining)
+            if isinstance(result, dict) and self.current_order:
+                blocked_events = backend_blocked_scan_events_for_item(
+                    result,
+                    self.current_order.get("_backend_order_item_id"),
+                )
+                if blocked_events:
+                    self.apply_backend_blocked_scan_events(blocked_events)
             self.update_stats_display()
 
         def on_error(exc):
@@ -922,6 +954,52 @@ class ScanningApp(
     def validate_code(self, code):
         is_valid, error_msg, _normalized_code = validate_kiz_code(code)
         return is_valid, error_msg
+
+    def apply_backend_blocked_scan_events(self, blocked_events, order=None):
+        order = order or self.current_order
+        if not order:
+            return False
+        blocked_codes = [
+            code for code in (backend_blocked_scan_code(item) for item in blocked_events)
+            if code
+        ]
+        if not blocked_codes:
+            return False
+        blocked_set = set(blocked_codes)
+        kept_codes = [
+            code for code in self.scanned_codes
+            if normalize_kiz_code(code) not in blocked_set
+        ]
+        if len(kept_codes) == len(self.scanned_codes):
+            return False
+
+        self.scanned_codes = kept_codes
+        for item in blocked_events:
+            code = backend_blocked_scan_code(item)
+            detail = backend_event_error_message(item).lower()
+            if not code:
+                continue
+            if "already scanned in another order item" in detail or "already scanned for another order item" in detail:
+                self.all_existing_codes.add(code)
+            else:
+                self.all_existing_codes.discard(code)
+
+        order["_existing_scan_entries"] = scan_entries_for_order_codes(order, self.scanned_codes)
+        scanned_count = scanned_blocks_for_order(order, self.scanned_codes)
+        plan_blocks = get_plan_blocks(order)
+        self.safe_config(self.progress_label, text=f"{scanned_count} / {plan_blocks}")
+        if scanned_count < plan_blocks:
+            self.safe_config(self.next_product_btn, state="disabled")
+            self.safe_config(self.finish_btn, state="disabled")
+        if not write_scan_backup("backend_blocked_scan_removed", order, codes=self.scanned_codes):
+            logging.warning("Backend отклонил КИЗ, но локальный backup после удаления не создан")
+        self.show_error(format_backend_blocked_scan_message(blocked_events), popup=False)
+        try:
+            self.scan_entry.focus_set()
+        except tk.TclError:
+            pass
+        self.update_stats_display()
+        return True
 
     def undo_last_scan(self):
         if not self.ensure_update_allowed():
@@ -2102,6 +2180,12 @@ class ScanningApp(
                 for saved_code in unsaved_backend_scan_codes(order, scanned_codes):
                     queue_backend_scan(order, saved_code)
                 backend_sync_result = sync_pending_backend_events()
+                blocked_events = backend_blocked_scan_events_for_item(
+                    backend_sync_result,
+                    order.get("_backend_order_item_id"),
+                )
+                if blocked_events:
+                    return {"backend_blocked": True, "blocked_events": blocked_events, "backend": True}
                 blocker = backend_sync_item_blocker(
                     backend_sync_result,
                     order.get("_backend_order_item_id"),
@@ -2131,6 +2215,12 @@ class ScanningApp(
             return {"queued": False, "message": message}
 
         def on_success(result):
+            if result.get("backend_blocked"):
+                self.clear_busy()
+                if not self.apply_backend_blocked_scan_events(result.get("blocked_events") or [], order=order):
+                    self.show_error(format_backend_blocked_scan_message(result.get("blocked_events") or []), popup=False)
+                return
+
             product_result = build_product_result(order, scanned_codes, self.product_catalog)
             self.current_legal_entity_products.append(product_result)
             order["Отсканированные коды"] = "\n".join(scanned_codes)

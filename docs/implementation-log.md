@@ -5035,3 +5035,24 @@ cd /opt/taksklad/app
   - `python -m unittest tests.test_backend_bridge tests.test_desktop_ui_contract` - 41 tests OK;
   - `python -m unittest discover tests` - 408 tests OK;
   - `python -m compileall -q src backend tests` - OK.
+
+### Release 2.0.14 backend scan conflict rollback
+
+- Боевой симптом из лога `TakSklad (89).log`:
+  - после обновления до `2.0.13` старая backend-очередь очистилась;
+  - новый конфликт `Backend HTTP 409: Code already scanned in another order item` по текущей позиции показывался как критическая ошибка приложения `КИЗы не записаны`;
+  - спорный КИЗ уже оставался в локальном списке текущей позиции, поэтому повторное сохранение снова ловило тот же `409`.
+- Причина:
+  - backend мог обнаружить дубль позднее, чем desktop принял локальный скан;
+  - `blocked_events` удалялись из retry-очереди, но не откатывали текущий `scanned_codes`;
+  - `next_product()` превращал рабочий отказ backend в критическую ошибку с отправкой в Telegram.
+- Исправлено:
+  - `blocked_events` текущего `order_item_id` теперь обрабатываются как обычный отказ скана;
+  - конфликтный КИЗ удаляется из текущей позиции, прогресс уменьшается, кнопки перехода/завершения блокируются до досканирования;
+  - оператор видит понятное сообщение `КИЗ уже использован в другой позиции. Сканируйте другой код`;
+  - фоновая backend-синхронизация тоже откатывает конфликтный КИЗ, если поймала его до нажатия `Следующая позиция`;
+  - критическая Telegram-ошибка для этого штатного `409` больше не отправляется.
+- Проверено:
+  - `python -m unittest tests.test_desktop_ui_contract tests.test_backend_bridge` - 43 tests OK;
+  - `python -m unittest discover tests` - 411 tests OK;
+  - `python -m compileall -q src backend tests` - OK.
