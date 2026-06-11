@@ -208,6 +208,28 @@ class BackendGoogleSheetsExporterTests(unittest.TestCase):
         self.assertEqual(sheet.rows[1][header_idx["Отсканированные коды"]], "")
         self.assertEqual(sheet.rows[1][header_idx["Статус"]], "Не выполнено")
 
+    def test_delete_import_records_removes_matching_rows_from_data_sheet(self):
+        header = exporter.build_import_sheet_header()
+        sheet = FakeSheet("data", [
+            header.copy(),
+            self.make_row("import-1", "order-1"),
+            self.make_row("import-2", "order-2"),
+        ])
+        spreadsheet = FakeSpreadsheet({"data": sheet})
+
+        record = {
+            "ID заказа": "order-1",
+            "ID импорта": "import-1",
+        }
+        with mock.patch.object(exporter, "get_google_client", return_value=SimpleNamespace(open_by_key=lambda _key: spreadsheet)):
+            result = exporter.delete_import_records_from_google_sheets([record])
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["updated"], 1)
+        self.assertEqual(len(sheet.rows), 2)
+        header_idx = exporter.get_header_index(sheet.rows[0])
+        self.assertEqual(sheet.rows[1][header_idx["ID импорта"]], "import-2")
+
     def test_update_backend_orders_skladbot_rows_writes_request_fields(self):
         header = exporter.build_import_sheet_header()
         sheet = FakeSheet("data", [

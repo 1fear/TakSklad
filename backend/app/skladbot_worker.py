@@ -119,6 +119,35 @@ def normalize_text(value):
     return str(value or "").strip()
 
 
+def skladbot_response_error_text(response):
+    body = ""
+    try:
+        payload = response.json()
+    except Exception:
+        payload = None
+    if isinstance(payload, dict):
+        body_value = next(
+            (
+                payload.get(key)
+                for key in ("detail", "message", "error", "errors")
+                if payload.get(key)
+            ),
+            payload,
+        )
+    elif payload:
+        body_value = payload
+    else:
+        body_value = getattr(response, "text", "")
+    if isinstance(body_value, (dict, list)):
+        body = json.dumps(body_value, ensure_ascii=False)
+    else:
+        body = normalize_text(body_value)
+    status_code = normalize_text(getattr(response, "status_code", ""))
+    if body:
+        return sanitize_skladbot_error(f"SkladBot API HTTP {status_code}: {body}")
+    return sanitize_skladbot_error(f"SkladBot API HTTP {status_code}")
+
+
 def normalize_lookup_text(value):
     text = normalize_text(value).lower().replace("ё", "е")
     text = re.sub(r"[^0-9a-zа-я]+", " ", text)
@@ -586,7 +615,7 @@ class SkladBotClient:
                     )
                     if attempt + 1 < max_attempts and len(self.disabled_token_indexes) < len(self.tokens):
                         continue
-                    response.raise_for_status()
+                    raise RuntimeError(skladbot_response_error_text(response))
                 if response.status_code == 429 and attempt + 1 < max_attempts:
                     retry_after = parse_int(response.headers.get("Retry-After"))
                     sleep_for = retry_after if retry_after > 0 else max(1.0, self.request_delay * 4 * (attempt + 1))
@@ -617,10 +646,11 @@ class SkladBotClient:
                     )
                     self.retry_sleep(sleep_for)
                     continue
-                response.raise_for_status()
+                if response.status_code >= 400:
+                    raise RuntimeError(skladbot_response_error_text(response))
                 return response.json()
         if last_response is not None:
-            last_response.raise_for_status()
+            raise RuntimeError(skladbot_response_error_text(last_response))
         raise RuntimeError("SkladBot API request failed")
 
     def post(self, path, payload=None):
@@ -675,7 +705,8 @@ class SkladBotClient:
                     token_index + 1,
                     len(self.tokens),
                 )
-            response.raise_for_status()
+            if response.status_code >= 400:
+                raise RuntimeError(skladbot_response_error_text(response))
             return response.json()
 
     def list_requests(self, type_id=None):

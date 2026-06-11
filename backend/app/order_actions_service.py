@@ -43,6 +43,74 @@ def cancel_order(db: Session, order_id, payload):
     )
 
 
+def delete_active_order(db: Session, order_id, payload):
+    order = get_order_for_action(db, order_id, with_for_update=True)
+    if order.status in INACTIVE_ORDER_STATUSES:
+        raise ApiError(409, "Order is not active")
+
+    reason = normalize_text(getattr(payload, "reason", ""))
+    if not reason:
+        raise ApiError(422, "Reason is required")
+    ensure_expected_updated_at(order, getattr(payload, "expected_updated_at", ""))
+    ensure_order_has_no_scans(order)
+
+    order_id_text = str(order.id)
+    raw_payload = dict(order.raw_payload or {})
+    skladbot_request_number = normalize_text(raw_payload.get("skladbot_request_number"))
+    skladbot_request_id = normalize_text(raw_payload.get("skladbot_request_id"))
+    records = [order_item_to_sheet_record(order, item) for item in order.items]
+
+    if getattr(payload, "dry_run", False):
+        return {
+            "order_id": order_id_text,
+            "deleted": False,
+            "dry_run": True,
+            "google_delete_event_id": "",
+            "skladbot_request_number": skladbot_request_number,
+            "skladbot_request_id": skladbot_request_id,
+            "message": "Order can be deleted",
+        }
+
+    event = queue_google_sheets_export(
+        db,
+        "google_sheets_delete_import_records_export",
+        "order",
+        order_id_text,
+        result={"status": "queued", "updated": 0, "error": ""},
+        payload={
+            "records": records,
+            "reason": "manual_active_order_delete",
+        },
+    )
+    db.add(AuditLog(
+        action="order_deleted_from_active",
+        entity_type="order",
+        entity_id=order_id_text,
+        payload={
+            "reason": reason,
+            "actor": normalize_text(getattr(payload, "actor", "")) or "web",
+            "idempotency_key": normalize_text(getattr(payload, "idempotency_key", "")),
+            "items_count": len(order.items),
+            "google_records": len(records),
+            "google_delete_event_id": str(event.id) if event else "",
+            "skladbot_request_number": skladbot_request_number,
+            "skladbot_request_id": skladbot_request_id,
+            "skladbot_left_manual": bool(skladbot_request_number or skladbot_request_id),
+        },
+    ))
+    db.delete(order)
+    db.commit()
+    return {
+        "order_id": order_id_text,
+        "deleted": True,
+        "dry_run": False,
+        "google_delete_event_id": str(event.id) if event else "",
+        "skladbot_request_number": skladbot_request_number,
+        "skladbot_request_id": skladbot_request_id,
+        "message": "Order deleted from active backend and queued for Google Sheets deletion",
+    }
+
+
 def complete_orders_without_kiz(db: Session, payload):
     order_ids = unique_order_ids(getattr(payload, "order_ids", []))
     if not order_ids:

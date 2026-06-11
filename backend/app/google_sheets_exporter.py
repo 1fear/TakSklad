@@ -222,6 +222,36 @@ def restore_import_records_to_google_sheets(records):
     ).as_dict()
 
 
+def delete_import_records_from_google_sheets(records):
+    records = list(records or [])
+    if not records:
+        return GoogleSheetsExportResult(status="skipped").as_dict()
+
+    try:
+        client = get_google_client()
+    except GoogleSheetsExportDisabled as exc:
+        return GoogleSheetsExportResult(status="disabled", error=str(exc)).as_dict()
+
+    spreadsheet = client.open_by_key(SPREADSHEET_ID)
+    sheet = spreadsheet.worksheet(SHEET_NAME)
+    ensure_import_sheet_layout(sheet)
+    all_rows = sheet.get_all_values()
+
+    rows_to_delete = set()
+    for record in records:
+        row_number = find_record_row_number(all_rows, record)
+        if row_number:
+            rows_to_delete.add(row_number)
+
+    for row_number in sorted(rows_to_delete, reverse=True):
+        sheet.delete_rows(row_number)
+
+    return GoogleSheetsExportResult(
+        status="completed",
+        updated=len(rows_to_delete),
+    ).as_dict()
+
+
 def sync_backend_order_item_to_google_sheets(item):
     try:
         spreadsheet = get_google_client().open_by_key(SPREADSHEET_ID)

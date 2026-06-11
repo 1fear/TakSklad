@@ -12,6 +12,7 @@ from .google_sheets_exporter import (
     archive_backend_orders_to_google_sheets,
     archive_backend_order_without_kiz_to_google_sheets,
     cancel_backend_order_in_google_sheets,
+    delete_import_records_from_google_sheets,
     mark_backend_order_returned_in_google_sheets,
     restore_import_records_to_google_sheets,
     sync_backend_orders_skladbot_to_google_sheets,
@@ -544,6 +545,12 @@ def run_google_sheets_export_event(db: Session, event: PendingEvent):
         if not records:
             return {"status": "missing", "error": "restore records not found"}
         return restore_import_records_to_google_sheets(records)
+
+    if action == "google_sheets_delete_import_records_export":
+        records = payload.get("records") or []
+        if not records:
+            return {"status": "missing", "error": "delete records not found"}
+        return delete_import_records_from_google_sheets(records)
 
     if action == "google_sheets_skladbot_export":
         orders = load_skladbot_export_orders(db, payload)

@@ -516,6 +516,50 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertEqual(event.payload["entity_id"], order_id)
             self.assertEqual(event.last_error, "")
 
+    def test_delete_active_order_removes_unscanned_order_and_queues_google_delete(self):
+        order_id, item_id = self.seed_order(quantity_blocks=4)
+
+        response = self.client.post(
+            f"/api/v1/admin/orders/{order_id}/delete-active",
+            json={"reason": "Manual Telegram delete", "actor": "telegram"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["order_id"], order_id)
+        self.assertEqual(payload["deleted"], True)
+        self.assertEqual(payload["skladbot_request_number"], "")
+        with self.SessionLocal() as db:
+            self.assertIsNone(db.get(Order, uuid.UUID(order_id)))
+            self.assertEqual(
+                db.execute(select(OrderItem).where(OrderItem.id == uuid.UUID(item_id))).scalars().all(),
+                [],
+            )
+            event = db.execute(
+                select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")
+            ).scalar_one()
+            self.assertEqual(event.status, "pending")
+            self.assertEqual(event.payload["action"], "google_sheets_delete_import_records_export")
+            self.assertEqual(event.payload["entity_id"], order_id)
+            self.assertEqual(len(event.payload["records"]), 1)
+            self.assertEqual(event.payload["records"][0]["ID заказа"], order_id)
+            actions = [item.action for item in db.execute(select(AuditLog)).scalars()]
+            self.assertIn("order_deleted_from_active", actions)
+
+    def test_delete_active_order_rejects_order_with_scans(self):
+        order_id, _item_id = self.seed_order(quantity_blocks=4, scanned_blocks=1)
+
+        response = self.client.post(
+            f"/api/v1/admin/orders/{order_id}/delete-active",
+            json={"reason": "Manual Telegram delete", "actor": "telegram"},
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["detail"]["message"], "Order already has scanned KIZ codes")
+        with self.SessionLocal() as db:
+            self.assertIsNotNone(db.get(Order, uuid.UUID(order_id)))
+            self.assertEqual(db.execute(select(PendingEvent)).scalars().all(), [])
+
     def test_resync_google_for_active_order_pushes_items_without_archiving_order(self):
         order_id, item_id = self.seed_order(quantity_blocks=2)
 

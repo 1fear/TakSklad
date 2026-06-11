@@ -25,6 +25,7 @@ from .order_actions_service import (
     archive_order_without_kiz as archive_order_without_kiz_in_db,
     cancel_order as cancel_order_in_db,
     complete_orders_without_kiz as complete_orders_without_kiz_in_db,
+    delete_active_order as delete_active_order_in_db,
     reset_order_for_rescan as reset_order_for_rescan_in_db,
     restore_order as restore_order_in_db,
     resync_order_to_google as resync_order_to_google_in_db,
@@ -45,6 +46,7 @@ from .schemas import (
     AdminBulkOrderActionRequest,
     AdminBulkOrderActionResult,
     AdminTableRead,
+    ActiveOrderDeleteResult,
     AuthLoginRequest,
     AuthSessionRead,
     DayReportRead,
@@ -269,6 +271,14 @@ def archive_order_without_kiz(order_id: str, payload: AdminOrderActionRequest, d
 def cancel_order(order_id: str, payload: AdminOrderActionRequest, db=Depends(get_db)):
     try:
         return cancel_order_in_db(db, order_id, payload)
+    except ApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@api.post("/admin/orders/{order_id}/delete-active", response_model=ActiveOrderDeleteResult)
+def delete_active_order(order_id: str, payload: AdminOrderActionRequest, db=Depends(get_db)):
+    try:
+        return delete_active_order_in_db(db, order_id, payload)
     except ApiError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 

@@ -27,18 +27,38 @@ TELEGRAM_BUTTON_SHIPMENT_DATE = "Дата отгрузки"
 TELEGRAM_BUTTON_LOGISTICS_REPORT = "Отчёт логистики"
 TELEGRAM_BUTTON_KIZ_BY_FILES = "Выгрузка КИЗов"
 TELEGRAM_BUTTON_STATUS = "Статус"
+TELEGRAM_BUTTON_MENU = "Меню"
+TELEGRAM_BUTTON_IMPORTS = "Последние импорты"
+TELEGRAM_BUTTON_MANUAL = "Ручное управление"
 TELEGRAM_LOGISTICS_DATE_PREFIX = "Логистика "
 TELEGRAM_KIZ_FILE_PREFIX = "КИЗ файл "
 TELEGRAM_KIZ_DATE_PREFIX = "КИЗ дата "
+TELEGRAM_MENU_CALLBACK_PREFIX = "menu:"
+TELEGRAM_MANUAL_CALLBACK_PREFIX = "manual:"
 TELEGRAM_EXCEL_IMPORT_EVENT_TYPE = "telegram_excel_import"
+TELEGRAM_NOTIFICATION_EVENT_TYPE = "telegram_notification"
 TELEGRAM_EXCEL_IMPORT_WAITING_SHIPMENT_DATE_STATUS = "waiting_shipment_date"
 TELEGRAM_EXCEL_IMPORT_WAITING_DATE_CHOICE_STATUS = "waiting_date_choice"
 TELEGRAM_EXCEL_IMPORT_ACTIVE_STATUSES = ("pending",)
+TELEGRAM_NOTIFICATION_ACTIVE_STATUSES = ("pending", "failed")
 TELEGRAM_CHAT_STATE_EVENT_PREFIX = "telegram_chat_state:"
 TELEGRAM_EXCEL_DATE_CHOICE_USE_EXCEL_PREFIX = "excel_date:use_excel:"
 TELEGRAM_EXCEL_DATE_CHOICE_CANCEL_PREFIX = "excel_date:cancel:"
 SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE = "skladbot_daily_report_send"
+TELEGRAM_KIZ_MENU_RECENT_LIMIT = 7
+TELEGRAM_MANUAL_BLOCK_PRICE = 240000
+TELEGRAM_MANUAL_PIECES_PER_BLOCK = 10
+TELEGRAM_MANUAL_PRODUCTS = {
+    "brown": "Chapman Brown OP 20",
+    "red": "Chapman RED OP 20",
+    "gold": "Chapman Gold SSL 100`20",
+}
+TELEGRAM_MANUAL_PAYMENT_TYPES = {
+    "terminal": "Терминал",
+    "transfer": "Перечисление",
+}
 DATE_PATTERN = re.compile(r"(?<!\d)(\d{1,2})[._/-](\d{1,2})[._/-](\d{2,4})(?!\d)")
+COORDINATES_PATTERN = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*[,;]\s*(-?\d+(?:\.\d+)?)\s*$")
 
 
 def normalize_text(value):
@@ -91,15 +111,91 @@ def parse_bool_flag(value, default=False):
 
 def telegram_bot_commands():
     return [
-        {"command": "date", "description": TELEGRAM_BUTTON_SHIPMENT_DATE},
+        {"command": "menu", "description": "Меню TakSklad"},
         {"command": "logistics", "description": TELEGRAM_BUTTON_LOGISTICS_REPORT},
-        {"command": "kiz_files", "description": TELEGRAM_BUTTON_KIZ_BY_FILES},
+        {"command": "kiz", "description": TELEGRAM_BUTTON_KIZ_BY_FILES},
+        {"command": "date", "description": TELEGRAM_BUTTON_SHIPMENT_DATE},
         {"command": "status", "description": TELEGRAM_BUTTON_STATUS},
+        {"command": "imports", "description": TELEGRAM_BUTTON_IMPORTS},
     ]
 
 
 def telegram_inline_keyboard(button_rows):
     return {"inline_keyboard": button_rows}
+
+
+def telegram_remove_keyboard():
+    return {"remove_keyboard": True}
+
+
+def telegram_main_menu_keyboard():
+    return telegram_inline_keyboard([
+        [
+            {"text": TELEGRAM_BUTTON_LOGISTICS_REPORT, "callback_data": f"{TELEGRAM_MENU_CALLBACK_PREFIX}logistics"},
+            {"text": TELEGRAM_BUTTON_KIZ_BY_FILES, "callback_data": f"{TELEGRAM_MENU_CALLBACK_PREFIX}kiz"},
+        ],
+        [
+            {"text": TELEGRAM_BUTTON_STATUS, "callback_data": f"{TELEGRAM_MENU_CALLBACK_PREFIX}status"},
+            {"text": TELEGRAM_BUTTON_IMPORTS, "callback_data": f"{TELEGRAM_MENU_CALLBACK_PREFIX}imports"},
+        ],
+        [
+            {"text": TELEGRAM_BUTTON_SHIPMENT_DATE, "callback_data": f"{TELEGRAM_MENU_CALLBACK_PREFIX}date"},
+        ],
+        [
+            {"text": TELEGRAM_BUTTON_MANUAL, "callback_data": f"{TELEGRAM_MENU_CALLBACK_PREFIX}manual"},
+        ],
+    ])
+
+
+def telegram_manual_menu_keyboard():
+    return telegram_inline_keyboard([
+        [{"text": "Добавить заказ вручную", "callback_data": f"{TELEGRAM_MANUAL_CALLBACK_PREFIX}add"}],
+        [{"text": "Удалить активный заказ", "callback_data": f"{TELEGRAM_MANUAL_CALLBACK_PREFIX}delete"}],
+        [{"text": "Отмена", "callback_data": f"{TELEGRAM_MANUAL_CALLBACK_PREFIX}cancel"}],
+    ])
+
+
+def telegram_manual_payment_keyboard():
+    return telegram_inline_keyboard([
+        [{"text": label, "callback_data": f"{TELEGRAM_MANUAL_CALLBACK_PREFIX}payment:{key}"}]
+        for key, label in TELEGRAM_MANUAL_PAYMENT_TYPES.items()
+    ])
+
+
+def telegram_manual_product_keyboard():
+    rows = [
+        [{"text": label, "callback_data": f"{TELEGRAM_MANUAL_CALLBACK_PREFIX}product:{key}"}]
+        for key, label in TELEGRAM_MANUAL_PRODUCTS.items()
+    ]
+    rows.append([{"text": "Отмена", "callback_data": f"{TELEGRAM_MANUAL_CALLBACK_PREFIX}cancel"}])
+    return telegram_inline_keyboard(rows)
+
+
+def telegram_manual_add_next_keyboard():
+    return telegram_inline_keyboard([
+        [{"text": "Добавить ещё позицию", "callback_data": f"{TELEGRAM_MANUAL_CALLBACK_PREFIX}add_more"}],
+        [{"text": "Создать заказ", "callback_data": f"{TELEGRAM_MANUAL_CALLBACK_PREFIX}create"}],
+        [{"text": "Отмена", "callback_data": f"{TELEGRAM_MANUAL_CALLBACK_PREFIX}cancel"}],
+    ])
+
+
+def telegram_manual_delete_keyboard(orders):
+    rows = []
+    for index, order in enumerate(orders, start=1):
+        client = normalize_text(order.get("client")) or "без клиента"
+        text = f"{index}. {display_date(order.get('order_date')) or 'без даты'} | {client}"
+        if len(text) > 58:
+            text = text[:55] + "..."
+        rows.append([{"text": text, "callback_data": f"{TELEGRAM_MANUAL_CALLBACK_PREFIX}delete:{index}"}])
+    rows.append([{"text": "Отмена", "callback_data": f"{TELEGRAM_MANUAL_CALLBACK_PREFIX}cancel"}])
+    return telegram_inline_keyboard(rows)
+
+
+def telegram_manual_delete_confirm_keyboard(order_id):
+    return telegram_inline_keyboard([
+        [{"text": "Удалить из TakSklad", "callback_data": f"{TELEGRAM_MANUAL_CALLBACK_PREFIX}delete_confirm:{order_id}"}],
+        [{"text": "Отмена", "callback_data": f"{TELEGRAM_MANUAL_CALLBACK_PREFIX}cancel"}],
+    ])
 
 
 def telegram_import_date_choice_keyboard(event_id, excel_date):
@@ -189,6 +285,76 @@ def display_date(value):
     return parsed or text
 
 
+def manual_address_and_coordinates(value):
+    text = normalize_text(value)
+    match = COORDINATES_PATTERN.match(text)
+    if not match:
+        return text, ""
+    lat, lng = match.groups()
+    return "Адрес не указан", f"{lat}, {lng}"
+
+
+def order_scanned_blocks(order):
+    total = 0
+    for item in (order or {}).get("items") or []:
+        total += max(parse_int(item.get("scanned_blocks")), len(item.get("scan_codes") or []))
+    return total
+
+
+def order_planned_blocks(order):
+    return sum(parse_int(item.get("quantity_blocks")) for item in ((order or {}).get("items") or []))
+
+
+def manual_order_summary(flow):
+    data = (flow or {}).get("data") or {}
+    lines = [
+        "Проверьте ручной заказ:",
+        "",
+        f"Дата отгрузки: {data.get('order_date') or ''}",
+        f"Тип оплаты: {data.get('payment_type') or ''}",
+        f"Клиент: {data.get('client') or ''}",
+        f"Адрес: {data.get('address') or ''}",
+    ]
+    if data.get("coordinates"):
+        lines.append(f"Координаты: {data.get('coordinates')}")
+    lines.append(f"Торг.пред: {data.get('representative') or ''}")
+    lines.extend(["", "Позиции:"])
+    for item in data.get("items") or []:
+        lines.append(f"- {item.get('product')}: {item.get('blocks')} блок.")
+    return "\n".join(lines)
+
+
+def build_manual_import_payload(chat_id, flow):
+    data = (flow or {}).get("data") or {}
+    manual_id = normalize_text(data.get("manual_id")) or str(uuid.uuid4())
+    source_file = f"telegram-manual-{manual_id}.xlsx"
+    rows = []
+    for index, item in enumerate(data.get("items") or [], start=1):
+        blocks = parse_int(item.get("blocks"))
+        rows.append({
+            "Дата отгрузки": data.get("order_date") or "",
+            "Тип оплаты": data.get("payment_type") or "",
+            "Клиент": data.get("client") or "",
+            "Адрес": data.get("address") or "",
+            "Координаты": data.get("coordinates") or "",
+            "Торговый представитель": data.get("representative") or "",
+            "Товары": item.get("product") or "",
+            "Кол-во ШТ": blocks * TELEGRAM_MANUAL_PIECES_PER_BLOCK,
+            "Кол-во блок": blocks,
+            "Цена за блок": TELEGRAM_MANUAL_BLOCK_PRICE,
+            "Сумма позиции": blocks * TELEGRAM_MANUAL_BLOCK_PRICE,
+            "Источник файла": source_file,
+            "ID заказа": f"telegram-manual-{manual_id}",
+            "ID импорта": f"telegram-manual-{manual_id}:{index}",
+        })
+    return {
+        "source": "telegram_manual",
+        "filename": source_file,
+        "telegram_chat_id": normalize_text(chat_id),
+        "rows": rows,
+    }
+
+
 def command_date_or_today(text):
     dates = parse_dates_from_text(text)
     if dates:
@@ -220,6 +386,39 @@ def kiz_progress_completed(item):
     if "completed" in item:
         return bool(item.get("completed"))
     return parse_int(item.get("scanned_blocks")) >= parse_int(item.get("planned_blocks"))
+
+
+def recent_kiz_dates_for_menu(dates, limit=TELEGRAM_KIZ_MENU_RECENT_LIMIT):
+    dates = list(dates or [])
+    if len(dates) <= limit:
+        return dates
+    return sorted(
+        dates,
+        key=lambda item: iso_date_from_display((item or {}).get("date") or ""),
+    )[-limit:]
+
+
+def kiz_source_file_latest_date(item):
+    dates = [
+        iso_date_from_display(value)
+        for value in ((item or {}).get("dates") or [])
+        if iso_date_from_display(value)
+    ]
+    return max(dates) if dates else ""
+
+
+def recent_kiz_source_files_for_menu(files, limit=TELEGRAM_KIZ_MENU_RECENT_LIMIT):
+    files = list(files or [])
+    if len(files) <= limit:
+        return files
+    return sorted(
+        files,
+        key=lambda item: (
+            kiz_source_file_latest_date(item),
+            normalize_text((item or {}).get("source_file")),
+            normalize_text((item or {}).get("source_key")),
+        ),
+    )[-limit:]
 
 
 def backend_http_error_detail(exc):
@@ -285,10 +484,11 @@ class TelegramWorker:
         self.skladbot_daily_report_hour = max(0, min(23, parse_int(os.environ.get("SKLADBOT_DAILY_REPORT_HOUR") or "22")))
         self.skladbot_daily_report_minute = max(0, min(59, parse_int(os.environ.get("SKLADBOT_DAILY_REPORT_MINUTE") or "0")))
         self.skladbot_daily_report_retry_minutes = max(1, parse_int(os.environ.get("SKLADBOT_DAILY_REPORT_RETRY_MINUTES") or "15"))
+        self.manual_flow_cache = {}
 
     @property
     def configured(self):
-        return bool(self.token)
+        return bool(getattr(self, "token", ""))
 
     def telegram_request(self, method, payload=None, timeout=None):
         with httpx.Client(timeout=timeout or self.timeout) as client:
@@ -378,6 +578,31 @@ class TelegramWorker:
         except Exception:
             logging.warning("Telegram worker: failed to send message", exc_info=True)
             return None
+
+    def send_main_menu(self, chat_id, text=""):
+        self.safe_send_message(
+            chat_id,
+            "Старые нижние кнопки скрыты.",
+            reply_markup=telegram_remove_keyboard(),
+        )
+        lines = [
+            normalize_text(text) or "Меню TakSklad",
+            "",
+            "Excel-файл можно просто отправить в этот чат. Бот попросит дату отгрузки перед импортом.",
+        ]
+        self.safe_send_message(chat_id, "\n".join(lines), reply_markup=telegram_main_menu_keyboard())
+
+    def send_date_help(self, chat_id):
+        current_date = self.get_chat_shipment_date(chat_id)
+        self.safe_send_message(
+            chat_id,
+            "\n".join([
+                "Дата отгрузки задаётся после загрузки каждого Excel-файла.",
+                "Отправьте дату одним сообщением в формате ДД.ММ.ГГГГ.",
+                "Пример: 09.06.2026",
+                f"Сохранённая дата чата: {current_date or 'не задана'}",
+            ]),
+        )
 
     def answer_callback_query(self, callback_query_id, text=""):
         callback_query_id = normalize_text(callback_query_id)
@@ -700,6 +925,7 @@ class TelegramWorker:
     def show_kiz_dates(self, chat_id):
         dates = self.backend_get("/api/v1/reports/kiz/dates")
         dates = dates if isinstance(dates, list) else []
+        dates = recent_kiz_dates_for_menu(dates)
         if not dates:
             self.safe_send_message(chat_id, "Нет дат отгрузки с отсканированными КИЗами.")
             return
@@ -729,6 +955,7 @@ class TelegramWorker:
     def show_kiz_source_files(self, chat_id):
         files = self.backend_get("/api/v1/reports/kiz/source-files")
         files = files if isinstance(files, list) else []
+        files = recent_kiz_source_files_for_menu(files)
         if not files:
             self.safe_send_message(chat_id, "Нет загруженных Excel-файлов для выгрузки КИЗов.")
             return
@@ -745,16 +972,23 @@ class TelegramWorker:
         ]
         self.save_chat_state(chat_id, state)
 
-        lines = ["Загруженные Excel-файлы и готовность КИЗов:"]
+        ready_lines = []
+        pending_lines = []
         for index, item in enumerate(files, start=1):
             dates = ", ".join(display_date(value) for value in item.get("dates") or [])
             completed = kiz_progress_completed(item)
             status = "готов к выгрузке" if completed else f"не готов, осталось {item.get('remaining_blocks', 0)}"
             date_suffix = f" | даты: {dates}" if dates else ""
-            lines.append(
+            target = ready_lines if completed else pending_lines
+            target.append(
                 f"{index}. {item.get('source_file') or 'без файла'} - "
                 f"{item.get('scanned_blocks', 0)}/{item.get('planned_blocks', 0)} блоков, {status}{date_suffix}"
             )
+        lines = ["Загруженные Excel-файлы:"]
+        if ready_lines:
+            lines.extend(["", "Готово к выгрузке:", *ready_lines])
+        if pending_lines:
+            lines.extend(["", "Ещё не готово:", *pending_lines])
 
         keyboard = self.kiz_files_keyboard(files)
         self.safe_send_message(
@@ -848,6 +1082,23 @@ class TelegramWorker:
         )
         return True
 
+    def send_imports_report(self, chat_id):
+        payload = self.backend_get("/api/v1/imports")
+        imports = payload if isinstance(payload, list) else []
+        if not imports:
+            self.safe_send_message(chat_id, "История импортов пока пустая.")
+            return True
+        lines = ["Последние импорты TakSklad:"]
+        for index, item in enumerate(imports[:10], start=1):
+            raw_payload = item.get("raw_payload") or {}
+            filename = normalize_text(raw_payload.get("filename")) or "без файла"
+            lines.append(
+                f"{index}. {filename}: {item.get('status')} "
+                f"{item.get('rows_imported', 0)}/{item.get('rows_total', 0)}"
+            )
+        self.safe_send_message(chat_id, "\n".join(lines))
+        return True
+
     def send_status_report(self, chat_id):
         payload = self.backend_get("/api/v1/reports/day")
         active_orders = self.backend_get("/api/v1/orders/active")
@@ -900,6 +1151,350 @@ class TelegramWorker:
         ])
         self.safe_send_message(chat_id, "\n".join(lines))
         return True
+
+    def show_manual_menu(self, chat_id):
+        self.safe_send_message(
+            chat_id,
+            "\n".join([
+                "Ручное управление TakSklad",
+                "",
+                "Удалять можно только активные заказы без сканов КИЗов.",
+                "Если склад уже начал обрабатывать заказ, бот его не удалит.",
+            ]),
+            reply_markup=telegram_manual_menu_keyboard(),
+        )
+        return True
+
+    def clear_manual_flow(self, chat_id):
+        state = self.get_chat_state(chat_id)
+        state["manual_flow"] = {}
+        self.save_chat_state(chat_id, state)
+        cache = getattr(self, "manual_flow_cache", None)
+        if isinstance(cache, dict):
+            cache[str(chat_id)] = {}
+
+    def save_manual_flow(self, chat_id, flow):
+        state = self.get_chat_state(chat_id)
+        state["manual_flow"] = flow or {}
+        self.save_chat_state(chat_id, state)
+        cache = getattr(self, "manual_flow_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            self.manual_flow_cache = cache
+        cache[str(chat_id)] = flow or {}
+
+    def start_manual_add_order(self, chat_id):
+        flow = {
+            "mode": "add_order",
+            "step": "order_date",
+            "data": {
+                "manual_id": str(uuid.uuid4()),
+                "items": [],
+            },
+        }
+        self.save_manual_flow(chat_id, flow)
+        self.safe_send_message(
+            chat_id,
+            "Введите дату отгрузки в формате ДД.ММ.ГГГГ.",
+        )
+        return True
+
+    def handle_manual_text(self, chat_id, text):
+        cache = getattr(self, "manual_flow_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            self.manual_flow_cache = cache
+        flow = cache.get(str(chat_id)) or {}
+        if not flow and self.configured:
+            try:
+                state = self.get_chat_state(chat_id)
+            except Exception:
+                logging.warning("Telegram worker: failed to load manual flow state", exc_info=True)
+                state = {}
+            flow = (state.get("manual_flow") if isinstance(state, dict) else {}) or {}
+            if flow:
+                cache[str(chat_id)] = flow
+        if not flow:
+            return False
+        if text_matches(text, "/cancel", "отмена", "cancel"):
+            self.clear_manual_flow(chat_id)
+            self.safe_send_message(chat_id, "Ручное действие отменено.")
+            return True
+        if flow.get("mode") == "add_order":
+            return self.handle_manual_add_text(chat_id, text, flow)
+        self.clear_manual_flow(chat_id)
+        self.safe_send_message(chat_id, "Ручное действие устарело. Начните заново через меню.")
+        return True
+
+    def handle_manual_add_text(self, chat_id, text, flow):
+        data = flow.setdefault("data", {})
+        step = normalize_text(flow.get("step"))
+        if step == "order_date":
+            order_date = parse_date_from_text(text)
+            if not order_date:
+                self.safe_send_message(chat_id, "Дата не распознана. Введите дату в формате ДД.ММ.ГГГГ.")
+                return True
+            data["order_date"] = order_date
+            flow["step"] = "payment_type"
+            self.save_manual_flow(chat_id, flow)
+            self.safe_send_message(chat_id, "Выберите тип оплаты:", reply_markup=telegram_manual_payment_keyboard())
+            return True
+        if step == "payment_type":
+            payment_type = self.manual_payment_type_from_text(text)
+            if not payment_type:
+                self.safe_send_message(chat_id, "Выберите тип оплаты кнопкой.")
+                return True
+            data["payment_type"] = payment_type
+            flow["step"] = "client"
+            self.save_manual_flow(chat_id, flow)
+            self.safe_send_message(chat_id, "Введите юрлицо клиента.")
+            return True
+        if step == "client":
+            if not text:
+                self.safe_send_message(chat_id, "Юрлицо не может быть пустым.")
+                return True
+            data["client"] = text
+            flow["step"] = "address"
+            self.save_manual_flow(chat_id, flow)
+            self.safe_send_message(chat_id, "Введите адрес или координаты. Если самовывоз, напишите: Самовывоз со склада.")
+            return True
+        if step == "address":
+            if not text:
+                self.safe_send_message(chat_id, "Адрес не может быть пустым.")
+                return True
+            address, coordinates = manual_address_and_coordinates(text)
+            data["address"] = address
+            data["coordinates"] = coordinates
+            flow["step"] = "representative"
+            self.save_manual_flow(chat_id, flow)
+            self.safe_send_message(chat_id, "Введите торгового представителя.")
+            return True
+        if step == "representative":
+            if not text:
+                self.safe_send_message(chat_id, "Торговый представитель не может быть пустым.")
+                return True
+            data["representative"] = text
+            flow["step"] = "product"
+            self.save_manual_flow(chat_id, flow)
+            self.safe_send_message(chat_id, "Выберите SKU:", reply_markup=telegram_manual_product_keyboard())
+            return True
+        if step == "blocks":
+            blocks = parse_int(text)
+            if blocks <= 0:
+                self.safe_send_message(chat_id, "Введите количество блоков числом больше 0.")
+                return True
+            product_key = normalize_text(data.get("selected_product_key"))
+            product = TELEGRAM_MANUAL_PRODUCTS.get(product_key)
+            if not product:
+                flow["step"] = "product"
+                self.save_manual_flow(chat_id, flow)
+                self.safe_send_message(chat_id, "SKU не выбран. Выберите SKU:", reply_markup=telegram_manual_product_keyboard())
+                return True
+            data.setdefault("items", []).append({"product_key": product_key, "product": product, "blocks": blocks})
+            data.pop("selected_product_key", None)
+            flow["step"] = "review"
+            self.save_manual_flow(chat_id, flow)
+            self.safe_send_message(chat_id, manual_order_summary(flow), reply_markup=telegram_manual_add_next_keyboard())
+            return True
+        self.safe_send_message(chat_id, "Используйте кнопки под сообщением.")
+        return True
+
+    def manual_payment_type_from_text(self, value):
+        text = normalize_text(value).casefold()
+        for key, label in TELEGRAM_MANUAL_PAYMENT_TYPES.items():
+            if text in {key.casefold(), label.casefold()}:
+                return label
+        return ""
+
+    def set_manual_payment_type(self, chat_id, key):
+        state = self.get_chat_state(chat_id)
+        flow = state.get("manual_flow") or {}
+        if flow.get("mode") != "add_order" or flow.get("step") != "payment_type":
+            self.safe_send_message(chat_id, "Выбор типа оплаты устарел. Начните заново через меню.")
+            return False
+        payment_type = TELEGRAM_MANUAL_PAYMENT_TYPES.get(key)
+        if not payment_type:
+            self.safe_send_message(chat_id, "Неизвестный тип оплаты. Выберите заново.")
+            return False
+        flow.setdefault("data", {})["payment_type"] = payment_type
+        flow["step"] = "client"
+        self.save_manual_flow(chat_id, flow)
+        self.safe_send_message(chat_id, "Введите юрлицо клиента.")
+        return True
+
+    def set_manual_product(self, chat_id, key):
+        state = self.get_chat_state(chat_id)
+        flow = state.get("manual_flow") or {}
+        if flow.get("mode") != "add_order" or flow.get("step") not in {"product", "review"}:
+            self.safe_send_message(chat_id, "Выбор SKU устарел. Начните заново через меню.")
+            return False
+        product = TELEGRAM_MANUAL_PRODUCTS.get(key)
+        if not product:
+            self.safe_send_message(chat_id, "Неизвестный SKU. Выберите заново.")
+            return False
+        flow.setdefault("data", {})["selected_product_key"] = key
+        flow["step"] = "blocks"
+        self.save_manual_flow(chat_id, flow)
+        self.safe_send_message(chat_id, f"Введите количество блоков для {product}.")
+        return True
+
+    def show_manual_product_choice(self, chat_id):
+        state = self.get_chat_state(chat_id)
+        flow = state.get("manual_flow") or {}
+        if flow.get("mode") != "add_order":
+            self.safe_send_message(chat_id, "Ручной заказ не найден. Начните заново через меню.")
+            return False
+        flow["step"] = "product"
+        self.save_manual_flow(chat_id, flow)
+        self.safe_send_message(chat_id, "Выберите SKU:", reply_markup=telegram_manual_product_keyboard())
+        return True
+
+    def create_manual_order(self, chat_id):
+        state = self.get_chat_state(chat_id)
+        flow = state.get("manual_flow") or {}
+        data = flow.get("data") or {}
+        if flow.get("mode") != "add_order" or not data.get("items"):
+            self.safe_send_message(chat_id, "В ручном заказе нет позиций. Добавьте SKU и количество.")
+            return False
+        required_fields = ["order_date", "payment_type", "client", "address", "representative"]
+        missing = [field for field in required_fields if not normalize_text(data.get(field))]
+        if missing:
+            self.safe_send_message(chat_id, "Ручной заказ заполнен не полностью. Начните заново через меню.")
+            return False
+        payload = build_manual_import_payload(chat_id, flow)
+        try:
+            result = self.backend_post("/api/v1/imports", payload)
+        except httpx.HTTPStatusError as exc:
+            detail = backend_http_error_detail(exc)
+            self.safe_send_message(chat_id, f"Не удалось создать ручной заказ: {detail or exc}")
+            return False
+        except httpx.HTTPError as exc:
+            self.safe_send_message(chat_id, f"Не удалось создать ручной заказ: {exc.__class__.__name__}")
+            return False
+        self.clear_manual_flow(chat_id)
+        self.safe_send_message(
+            chat_id,
+            "\n".join([
+                "Заказ создан в TakSklad.",
+                f"Заказов добавлено: {result.get('orders_created', 0)}",
+                f"Позиций добавлено: {result.get('items_created', 0)}",
+                f"SkladBot: {result.get('skladbot_dry_run_status') or 'queued'}",
+            ]),
+        )
+        return True
+
+    def show_manual_delete_orders(self, chat_id):
+        if not self.ensure_admin_chat(chat_id):
+            return False
+        orders = self.backend_get("/api/v1/orders/active")
+        orders = orders if isinstance(orders, list) else []
+        state = self.get_chat_state(chat_id)
+        state["manual_delete_orders"] = orders[:20]
+        self.save_chat_state(chat_id, state)
+        if not orders:
+            self.safe_send_message(chat_id, "Активных заказов для удаления нет.")
+            return True
+        lines = [
+            "Выберите активный заказ для удаления.",
+            "",
+            "Важно: если в заказе есть хотя бы один скан КИЗа, удалить его через бот нельзя.",
+        ]
+        for index, order in enumerate(orders[:20], start=1):
+            lines.append(
+                f"{index}. {display_date(order.get('order_date')) or 'без даты'} | "
+                f"{normalize_text(order.get('client')) or 'без клиента'} | "
+                f"{order_scanned_blocks(order)}/{order_planned_blocks(order)} блок."
+            )
+        self.safe_send_message(chat_id, "\n".join(lines), reply_markup=telegram_manual_delete_keyboard(orders[:20]))
+        return True
+
+    def select_manual_delete_order(self, chat_id, index):
+        state = self.get_chat_state(chat_id)
+        orders = state.get("manual_delete_orders") or []
+        if index < 1 or index > len(orders):
+            self.safe_send_message(chat_id, "Заказ из списка не найден. Откройте список заново.")
+            return False
+        order = orders[index - 1]
+        if order_scanned_blocks(order) > 0:
+            self.safe_send_message(
+                chat_id,
+                "\n".join([
+                    "Склад уже начал обрабатывать заказ: есть сканы КИЗов.",
+                    "Через Telegram удалить нельзя, чтобы не потерять данные.",
+                ]),
+            )
+            return False
+        order_id = normalize_text(order.get("id"))
+        lines = [
+            "Подтвердите удаление активного заказа:",
+            "",
+            f"Дата: {display_date(order.get('order_date')) or 'без даты'}",
+            f"Клиент: {normalize_text(order.get('client')) or 'без клиента'}",
+            f"SkladBot: {normalize_text(order.get('skladbot_request_number')) or 'нет'}",
+            f"Блоков: {order_planned_blocks(order)}",
+            "",
+            "Из SkladBot бот удалить не может. Если заявка там создана, её нужно удалить вручную.",
+        ]
+        self.safe_send_message(chat_id, "\n".join(lines), reply_markup=telegram_manual_delete_confirm_keyboard(order_id))
+        return True
+
+    def confirm_manual_delete_order(self, chat_id, order_id):
+        order_id = normalize_text(order_id)
+        if not order_id:
+            self.safe_send_message(chat_id, "ID заказа не найден. Откройте список заново.")
+            return False
+        payload = {
+            "reason": "Удалено вручную через Telegram",
+            "actor": "telegram",
+        }
+        try:
+            result = self.backend_post(f"/api/v1/admin/orders/{order_id}/delete-active", payload)
+        except httpx.HTTPStatusError as exc:
+            detail = backend_http_error_detail(exc)
+            self.safe_send_message(chat_id, f"Заказ не удалён: {detail or exc}")
+            return False
+        except httpx.HTTPError as exc:
+            self.safe_send_message(chat_id, f"Заказ не удалён: {exc.__class__.__name__}")
+            return False
+        state = self.get_chat_state(chat_id)
+        state["manual_delete_orders"] = []
+        self.save_chat_state(chat_id, state)
+        lines = ["Заказ удалён из TakSklad и поставлен на удаление из Google Sheets."]
+        skladbot_number = normalize_text(result.get("skladbot_request_number"))
+        if skladbot_number:
+            lines.append(f"В SkladBot заявка {skladbot_number} осталась, её нужно удалить вручную.")
+        else:
+            lines.append("SkladBot-заявки у заказа не было.")
+        self.safe_send_message(chat_id, "\n".join(lines))
+        return True
+
+    def handle_manual_callback(self, chat_id, data):
+        action = normalize_text(data).replace(TELEGRAM_MANUAL_CALLBACK_PREFIX, "", 1)
+        if action == "cancel":
+            self.clear_manual_flow(chat_id)
+            state = self.get_chat_state(chat_id)
+            state["manual_delete_orders"] = []
+            self.save_chat_state(chat_id, state)
+            self.safe_send_message(chat_id, "Ручное действие отменено.")
+            return True
+        if action == "add":
+            return self.start_manual_add_order(chat_id)
+        if action == "delete":
+            return self.show_manual_delete_orders(chat_id)
+        if action.startswith("payment:"):
+            return self.set_manual_payment_type(chat_id, action.split(":", 1)[1])
+        if action.startswith("product:"):
+            return self.set_manual_product(chat_id, action.split(":", 1)[1])
+        if action == "add_more":
+            return self.show_manual_product_choice(chat_id)
+        if action == "create":
+            return self.create_manual_order(chat_id)
+        if action.startswith("delete_confirm:"):
+            return self.confirm_manual_delete_order(chat_id, action.split(":", 1)[1])
+        if action.startswith("delete:"):
+            return self.select_manual_delete_order(chat_id, parse_int(action.split(":", 1)[1]))
+        self.safe_send_message(chat_id, "Ручное действие устарело. Начните заново через меню.")
+        return False
 
     def send_skladbot_daily_report(self, chat_id, report_date=None, scheduled=False):
         report_date = coerce_report_date(report_date or skladbot_daily_report.business_today())
@@ -1099,6 +1694,7 @@ class TelegramWorker:
                 force_shipment_date=bool(parse_date_from_text(shipment_date)),
             )
             meta = import_payload.pop("meta", {})
+            import_payload["telegram_chat_id"] = normalize_text(chat_id)
             result = self.backend_post("/api/v1/imports", import_payload)
             warnings = meta.get("warnings") or []
             lines = [
@@ -1289,6 +1885,69 @@ class TelegramWorker:
             event.last_error = "" if success else normalize_text(error)
             db.commit()
 
+    def take_next_telegram_notification_event(self):
+        with SessionLocal() as db:
+            stmt = (
+                select(PendingEvent)
+                .where(PendingEvent.event_type == TELEGRAM_NOTIFICATION_EVENT_TYPE)
+                .where(PendingEvent.status.in_(TELEGRAM_NOTIFICATION_ACTIVE_STATUSES))
+                .order_by(PendingEvent.created_at, PendingEvent.id)
+            )
+            if db.bind.dialect.name == "postgresql":
+                stmt = stmt.with_for_update(skip_locked=True)
+            event = db.execute(stmt).scalars().first()
+            if event is None:
+                return None
+            event.status = "processing"
+            event.attempts = (event.attempts or 0) + 1
+            payload = event.payload or {}
+            event_id = event.id
+            db.commit()
+            return {"id": event_id, "payload": payload}
+
+    def finish_telegram_notification_event(self, event_id, success, error=""):
+        with SessionLocal() as db:
+            event = db.get(PendingEvent, event_id if isinstance(event_id, uuid.UUID) else uuid.UUID(str(event_id)))
+            if event is None:
+                return
+            event.status = "completed" if success else "failed"
+            event.last_error = "" if success else normalize_text(error)
+            db.commit()
+
+    def telegram_notification_targets(self, payload):
+        chat_id = normalize_text((payload or {}).get("chat_id"))
+        if chat_id:
+            return [chat_id]
+        fallback = sorted(getattr(self, "admin_chat_ids", set()) or getattr(self, "allowed_chat_ids", set()))
+        return [normalize_text(value) for value in fallback if normalize_text(value)]
+
+    def process_pending_telegram_notifications(self):
+        processed = 0
+        while True:
+            event = self.take_next_telegram_notification_event()
+            if not event:
+                break
+            payload = event.get("payload") or {}
+            text = normalize_text(payload.get("text"))
+            targets = self.telegram_notification_targets(payload)
+            if not text:
+                self.finish_telegram_notification_event(event["id"], False, "telegram notification text is empty")
+                processed += 1
+                continue
+            if not targets:
+                self.finish_telegram_notification_event(event["id"], False, "telegram notification target chat is empty")
+                processed += 1
+                continue
+            try:
+                for chat_id in targets:
+                    self.send_message(chat_id, text)
+                self.finish_telegram_notification_event(event["id"], True, "")
+            except Exception as exc:
+                logging.exception("Telegram worker: queued notification failed")
+                self.finish_telegram_notification_event(event["id"], False, str(exc))
+            processed += 1
+        return processed
+
     def process_queued_telegram_imports(self):
         processed = 0
         while True:
@@ -1340,6 +1999,7 @@ class TelegramWorker:
         if updates:
             self.save_offset()
         self.process_queued_telegram_imports()
+        self.process_pending_telegram_notifications()
         self.send_due_skladbot_daily_reports()
 
     def notify_update_error(self, update, exc):
@@ -1379,35 +2039,25 @@ class TelegramWorker:
             return
 
         text = normalize_text(message.get("text"))
-        if text_matches(text, "/start", "/help"):
-            self.send_message(
+        if text_matches(text, "/start", "/help", "/menu", TELEGRAM_BUTTON_MENU, "меню"):
+            self.send_main_menu(
                 chat_id,
                 "\n".join([
                     "TakSklad backend online.",
                     "",
-                    "Используйте нижнее меню Telegram:",
-                    f"- {TELEGRAM_BUTTON_SHIPMENT_DATE} - задать дату отгрузки для следующих Excel-файлов;",
-                    f"- {TELEGRAM_BUTTON_LOGISTICS_REPORT} - выгрузить общий файл для логистики по выбранной дате;",
-                    f"- {TELEGRAM_BUTTON_KIZ_BY_FILES} - выгрузить КИЗы по датам или загруженным Excel-файлам;",
-                    f"- {TELEGRAM_BUTTON_STATUS} - показать общий статус по заказам и КИЗам;",
-                    "",
-                    "Excel-файлы можно просто отправлять или пересылать в этот чат. Если отправить несколько файлов подряд, они попадут в очередь и обработаются по порядку.",
-                    "После каждого Excel-файла бот попросит дату отгрузки отдельным сообщением в формате ДД.ММ.ГГГГ.",
+                    "Выберите действие кнопкой ниже или командой Telegram.",
                 ]),
             )
+            return
+        if text_matches(text, TELEGRAM_BUTTON_MANUAL, "/manual"):
+            self.show_manual_menu(chat_id)
             return
         if text_matches(text, TELEGRAM_BUTTON_SHIPMENT_DATE, "/date"):
-            current_date = self.get_chat_shipment_date(chat_id)
-            self.send_message(
-                chat_id,
-                "\n".join([
-                    "Для Excel-импорта дата запрашивается после загрузки каждого файла.",
-                    "Если нужно сохранить дату в чате вручную, отправьте её сообщением в формате 29.05.2026.",
-                    f"Сохранённая дата: {current_date or 'не задана'}",
-                ]),
-            )
+            self.send_date_help(chat_id)
             return
         if text.startswith("/date ") or parse_date_from_text(text) == text:
+            if text and self.handle_manual_text(chat_id, text):
+                return
             shipment_date = parse_date_from_text(text)
             if shipment_date:
                 if self.confirm_waiting_telegram_import_shipment_date(chat_id, shipment_date):
@@ -1465,20 +2115,7 @@ class TelegramWorker:
         if text_matches(text, "/imports"):
             if not self.ensure_admin_chat(chat_id):
                 return
-            payload = self.backend_get("/api/v1/imports")
-            imports = payload if isinstance(payload, list) else []
-            if not imports:
-                self.send_message(chat_id, "История импортов пока пустая.")
-                return
-            lines = ["Последние импорты TakSklad:"]
-            for index, item in enumerate(imports[:10], start=1):
-                raw_payload = item.get("raw_payload") or {}
-                filename = normalize_text(raw_payload.get("filename")) or "без файла"
-                lines.append(
-                    f"{index}. {filename}: {item.get('status')} "
-                    f"{item.get('rows_imported', 0)}/{item.get('rows_total', 0)}"
-                )
-            self.send_message(chat_id, "\n".join(lines))
+            self.send_imports_report(chat_id)
             return
         if text_matches(text, "/logs"):
             if not self.ensure_admin_chat(chat_id):
@@ -1496,10 +2133,13 @@ class TelegramWorker:
             self.enqueue_telegram_document(chat_id, document, update_id=update.get("update_id"), shipment_date="")
             return
 
+        if text and self.handle_manual_text(chat_id, text):
+            return
+
         if text and self.confirm_waiting_telegram_import_shipment_date(chat_id, text):
             return
 
-        self.send_message(chat_id, "Команда не распознана. Используйте нижнее меню Telegram или отправьте Excel-файл.")
+        self.send_main_menu(chat_id, "Команда не распознана. Выберите действие в меню:")
 
     def handle_callback_query(self, callback_query):
         callback_id = normalize_text(callback_query.get("id"))
@@ -1513,6 +2153,32 @@ class TelegramWorker:
 
         data = normalize_text(callback_query.get("data"))
         self.answer_callback_query(callback_id)
+        if data == f"{TELEGRAM_MENU_CALLBACK_PREFIX}root":
+            self.send_main_menu(chat_id)
+            return
+        if data == f"{TELEGRAM_MENU_CALLBACK_PREFIX}date":
+            self.send_date_help(chat_id)
+            return
+        if data == f"{TELEGRAM_MENU_CALLBACK_PREFIX}logistics":
+            self.show_logistics_dates(chat_id)
+            return
+        if data == f"{TELEGRAM_MENU_CALLBACK_PREFIX}kiz":
+            self.show_kiz_export_menu(chat_id)
+            return
+        if data == f"{TELEGRAM_MENU_CALLBACK_PREFIX}status":
+            self.send_status_report(chat_id)
+            return
+        if data == f"{TELEGRAM_MENU_CALLBACK_PREFIX}imports":
+            if not self.ensure_admin_chat(chat_id):
+                return
+            self.send_imports_report(chat_id)
+            return
+        if data == f"{TELEGRAM_MENU_CALLBACK_PREFIX}manual":
+            self.show_manual_menu(chat_id)
+            return
+        if data.startswith(TELEGRAM_MANUAL_CALLBACK_PREFIX):
+            self.handle_manual_callback(chat_id, data)
+            return
         if data.startswith(TELEGRAM_EXCEL_DATE_CHOICE_USE_EXCEL_PREFIX):
             self.confirm_telegram_import_excel_date(
                 chat_id,
@@ -1540,7 +2206,7 @@ class TelegramWorker:
         if data.startswith("kiz_file:"):
             self.send_kiz_source_file_by_index(chat_id, data.split(":", 1)[1])
             return
-        self.safe_send_message(chat_id, "Кнопка устарела. Откройте меню Telegram и повторите действие.")
+        self.send_main_menu(chat_id, "Кнопка устарела. Выберите действие заново:")
 
     def load_offset(self):
         try:

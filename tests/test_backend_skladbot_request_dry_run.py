@@ -11,7 +11,7 @@ from sqlalchemy.pool import StaticPool
 
 from backend.app.db import get_db
 from backend.app.main import app, require_service_token
-from backend.app.models import AuditLog, Base, ImportJob, Order, OrderItem, PendingEvent
+from backend.app.models import AuditLog, Base, ImportJob, Order, OrderItem, PendingEvent, ScanCode
 from backend.app.skladbot_request_dry_run import (
     SKLADBOT_REQUEST_CREATE_EVENT_TYPE,
     SKLADBOT_REQUEST_DRY_RUN_EVENT_TYPE,
@@ -56,13 +56,19 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
         Base.metadata.drop_all(self.engine)
         self.engine.dispose()
 
-    def seed_import_order(self, *, products=None, linked=False, payment_type="Перечисление"):
+    def seed_import_order(self, *, products=None, linked=False, payment_type="Перечисление", telegram_chat_id=""):
         products = products or [
             ("Chapman RED OP 20", 2),
             ("Chapman Brown OP 20", 3),
         ]
         with self.SessionLocal() as db:
-            import_job = ImportJob(source="telegram", status="completed", rows_total=len(products), rows_imported=len(products))
+            import_job = ImportJob(
+                source="telegram",
+                status="completed",
+                rows_total=len(products),
+                rows_imported=len(products),
+                raw_payload={"telegram_chat_id": telegram_chat_id} if telegram_chat_id else {},
+            )
             db.add(import_job)
             db.flush()
             order = Order(
@@ -491,6 +497,94 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
         self.assertEqual(process_result["failed"], 1)
         self.assertEqual(order.raw_payload["skladbot_status"], "create_failed")
         self.assertNotIn("skladbot_request_number", {k: v for k, v in order.raw_payload.items() if v})
+
+    def test_stock_shortage_create_failure_removes_unscanned_order_and_queues_cleanup(self):
+        import_id, order_id = self.seed_import_order(telegram_chat_id="123")
+
+        class FakeSkladBotClient:
+            @property
+            def configured(self):
+                return True
+
+            def create_request(self, payload):
+                raise RuntimeError("Недостаточно товара на складе для создания заявки")
+
+            def list_requests(self):
+                return []
+
+        with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "enabled"}, clear=False):
+            with mock.patch("backend.app.skladbot_request_dry_run.SkladBotClient", return_value=FakeSkladBotClient()):
+                with self.SessionLocal() as db:
+                    summary = create_skladbot_dry_run_for_import(db, import_id)
+                    process_result = process_pending_skladbot_request_creates(db, client=FakeSkladBotClient())
+                    db.commit()
+                    order = db.get(Order, uuid.UUID(order_id))
+                    item_count = db.execute(select(OrderItem)).scalars().all()
+                    create_event = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
+                    ).scalar_one()
+                    google_events = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")
+                    ).scalars().all()
+                    telegram_event = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == "telegram_notification")
+                    ).scalar_one()
+
+        self.assertEqual(summary["queued"], 1)
+        self.assertEqual(process_result["stock_shortage_cancelled"], 1)
+        self.assertEqual(process_result["failed"], 0)
+        self.assertIsNone(order)
+        self.assertEqual(item_count, [])
+        self.assertEqual(create_event.status, "completed")
+        self.assertEqual(create_event.payload["create_status"], "cancelled_stock_shortage")
+        self.assertEqual(
+            sorted(event.payload["action"] for event in google_events),
+            ["google_sheets_delete_import_records_export"],
+        )
+        self.assertEqual(len(google_events[0].payload["records"]), 2)
+        self.assertEqual(telegram_event.payload["chat_id"], "123")
+        self.assertIn("Заказ отменён из-за недостатка товара", telegram_event.payload["text"])
+
+    def test_stock_shortage_create_failure_keeps_order_with_existing_scans(self):
+        import_id, order_id = self.seed_import_order(telegram_chat_id="123")
+
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            item = order.items[0]
+            item.scanned_blocks = 1
+            db.add(ScanCode(order_item_id=item.id, code="0104006396053947217TEST", source="desktop"))
+            db.commit()
+
+        class FakeSkladBotClient:
+            @property
+            def configured(self):
+                return True
+
+            def create_request(self, payload):
+                raise RuntimeError("Недостаточно товара на складе для создания заявки")
+
+            def list_requests(self):
+                return []
+
+        with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "enabled"}, clear=False):
+            with self.SessionLocal() as db:
+                create_skladbot_dry_run_for_import(db, import_id)
+                process_result = process_pending_skladbot_request_creates(db, client=FakeSkladBotClient())
+                db.commit()
+                order = db.get(Order, uuid.UUID(order_id))
+                google_events = db.execute(
+                    select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")
+                ).scalars().all()
+                telegram_events = db.execute(
+                    select(PendingEvent).where(PendingEvent.event_type == "telegram_notification")
+                ).scalars().all()
+
+        self.assertEqual(process_result["failed"], 1)
+        self.assertEqual(process_result["stock_shortage_cancelled"], 0)
+        self.assertIsNotNone(order)
+        self.assertEqual(order.raw_payload["skladbot_status"], "create_failed")
+        self.assertEqual(google_events, [])
+        self.assertEqual(telegram_events, [])
 
     def test_skladbot_client_post_uses_bearer_without_printing_token(self):
         captured = {}

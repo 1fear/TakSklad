@@ -14,8 +14,10 @@ from backend.app import excel_importer
 from backend.app.excel_importer import excel_file_to_import_payload
 from backend.app.models import Base, PendingEvent
 from backend.app.telegram_worker import (
+    TELEGRAM_BUTTON_IMPORTS,
     TELEGRAM_BUTTON_KIZ_BY_FILES,
     TELEGRAM_BUTTON_LOGISTICS_REPORT,
+    TELEGRAM_BUTTON_MENU,
     TELEGRAM_BUTTON_SHIPMENT_DATE,
     TELEGRAM_BUTTON_STATUS,
     TELEGRAM_KIZ_FILE_PREFIX,
@@ -23,6 +25,8 @@ from backend.app.telegram_worker import (
     display_date,
     summarize_active_orders_by_date,
     telegram_bot_commands,
+    telegram_main_menu_keyboard,
+    telegram_remove_keyboard,
 )
 
 
@@ -191,6 +195,7 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertEqual(calls["path"], "/api/v1/imports")
         self.assertEqual(calls["payload"]["source"], "telegram")
         self.assertEqual(calls["payload"]["filename"], "orders.xlsx")
+        self.assertEqual(calls["payload"]["telegram_chat_id"], "123")
         self.assertEqual(len(calls["payload"]["rows"]), 1)
         self.assertEqual(calls["payload"]["rows"][0]["Дата отгрузки"], "30.05.2026")
         self.assertEqual(messages[0][0], "123")
@@ -198,6 +203,46 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertIn("Excel импортирован через Telegram", messages[-1][1])
         self.assertIn("Адреса в backend обновлены: 0", messages[-1][1])
         self.assertIn("Google Sheets: записано 1, повторы 0, адреса обновлены 0", messages[-1][1])
+
+    def test_telegram_worker_sends_pending_notification_event(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        original_session_local = telegram_worker_module.SessionLocal
+        try:
+            with SessionLocal() as db:
+                event = PendingEvent(
+                    event_type=telegram_worker_module.TELEGRAM_NOTIFICATION_EVENT_TYPE,
+                    status="pending",
+                    payload={"chat_id": "123", "text": "Заказ отменён из-за недостатка товара"},
+                )
+                db.add(event)
+                db.commit()
+
+            sent = []
+            worker = TelegramWorker.__new__(TelegramWorker)
+            worker.allowed_chat_ids = set()
+            worker.admin_chat_ids = set()
+            worker.send_message = lambda chat_id, text: sent.append((chat_id, text))
+            telegram_worker_module.SessionLocal = SessionLocal
+
+            processed = worker.process_pending_telegram_notifications()
+
+            with SessionLocal() as db:
+                event = db.execute(select(PendingEvent)).scalar_one()
+
+            self.assertEqual(processed, 1)
+            self.assertEqual(sent, [("123", "Заказ отменён из-за недостатка товара")])
+            self.assertEqual(event.status, "completed")
+            self.assertEqual(event.last_error, "")
+        finally:
+            telegram_worker_module.SessionLocal = original_session_local
+            Base.metadata.drop_all(engine)
+            engine.dispose()
 
     def test_telegram_worker_send_message_does_not_force_keyboard_by_default(self):
         worker = TelegramWorker.__new__(TelegramWorker)
@@ -238,8 +283,10 @@ class BackendTelegramImportTests(unittest.TestCase):
         })
 
         self.assertEqual(calls[0][0], "123")
-        self.assertIn("Используйте нижнее меню Telegram", calls[0][1])
-        self.assertIsNone(calls[0][2])
+        self.assertEqual(calls[0][2], telegram_remove_keyboard())
+        self.assertEqual(calls[1][0], "123")
+        self.assertIn("TakSklad backend online", calls[1][1])
+        self.assertEqual(calls[1][2], telegram_main_menu_keyboard())
 
     def test_telegram_command_menu_contains_only_user_buttons(self):
         commands = telegram_bot_commands()
@@ -247,10 +294,12 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertEqual(
             commands,
             [
-                {"command": "date", "description": TELEGRAM_BUTTON_SHIPMENT_DATE},
+                {"command": "menu", "description": "Меню TakSklad"},
                 {"command": "logistics", "description": TELEGRAM_BUTTON_LOGISTICS_REPORT},
-                {"command": "kiz_files", "description": TELEGRAM_BUTTON_KIZ_BY_FILES},
+                {"command": "kiz", "description": TELEGRAM_BUTTON_KIZ_BY_FILES},
+                {"command": "date", "description": TELEGRAM_BUTTON_SHIPMENT_DATE},
                 {"command": "status", "description": TELEGRAM_BUTTON_STATUS},
+                {"command": "imports", "description": TELEGRAM_BUTTON_IMPORTS},
             ],
         )
 
@@ -328,10 +377,56 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertEqual(calls[1], ("setChatMenuButton", {"menu_button": {"type": "commands"}}))
         self.assertTrue(worker.bot_menu_ready)
         commands = [item["command"] for item in telegram_bot_commands()]
-        self.assertEqual(commands, ["date", "logistics", "kiz_files", "status"])
+        self.assertEqual(commands, ["menu", "logistics", "kiz", "date", "status", "imports"])
         self.assertNotIn("health", commands)
-        self.assertNotIn("imports", commands)
         self.assertNotIn("logs", commands)
+
+    def test_telegram_worker_menu_command_clears_old_keyboard_and_shows_inline_menu(self):
+        worker = TelegramWorker.__new__(TelegramWorker)
+        worker.allowed_chat_ids = set()
+        calls = []
+
+        def fake_send(chat_id, text, reply_markup=None):
+            calls.append((chat_id, text, reply_markup))
+
+        worker.send_message = fake_send
+
+        worker.handle_update({
+            "update_id": 11,
+            "message": {
+                "chat": {"id": 123},
+                "text": "/menu",
+            },
+        })
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0], ("123", "Старые нижние кнопки скрыты.", telegram_remove_keyboard()))
+        self.assertEqual(calls[1][0], "123")
+        self.assertIn("TakSklad backend online", calls[1][1])
+        self.assertEqual(calls[1][2], telegram_main_menu_keyboard())
+
+    def test_telegram_worker_unknown_text_opens_menu_instead_of_dead_button_error(self):
+        worker = TelegramWorker.__new__(TelegramWorker)
+        worker.allowed_chat_ids = set()
+        calls = []
+
+        def fake_send(chat_id, text, reply_markup=None):
+            calls.append((chat_id, text, reply_markup))
+
+        worker.send_message = fake_send
+        worker.confirm_waiting_telegram_import_shipment_date = lambda chat_id, text: False
+
+        worker.handle_update({
+            "update_id": 13,
+            "message": {
+                "chat": {"id": 123},
+                "text": "Старая неизвестная кнопка",
+            },
+        })
+
+        self.assertEqual(calls[0][2], telegram_remove_keyboard())
+        self.assertIn("Команда не распознана", calls[1][1])
+        self.assertEqual(calls[1][2], telegram_main_menu_keyboard())
 
     def test_telegram_worker_handles_bottom_logistics_button(self):
         worker = TelegramWorker.__new__(TelegramWorker)
@@ -529,6 +624,240 @@ class BackendTelegramImportTests(unittest.TestCase):
 
         self.assertEqual(answered, [("cb-3", "")])
         self.assertEqual(calls, [("123", "2026-05-30")])
+
+    def test_telegram_worker_handles_main_menu_callbacks(self):
+        worker = TelegramWorker.__new__(TelegramWorker)
+        worker.allowed_chat_ids = set()
+        answered = []
+        calls = []
+
+        worker.answer_callback_query = lambda callback_id, text="": answered.append((callback_id, text))
+        worker.send_date_help = lambda chat_id: calls.append(("date", chat_id))
+        worker.show_logistics_dates = lambda chat_id: calls.append(("logistics", chat_id))
+        worker.show_kiz_export_menu = lambda chat_id: calls.append(("kiz", chat_id))
+        worker.send_status_report = lambda chat_id: calls.append(("status", chat_id))
+        worker.send_imports_report = lambda chat_id: calls.append(("imports", chat_id))
+        worker.show_manual_menu = lambda chat_id: calls.append(("manual", chat_id))
+
+        for index, data in enumerate([
+            "menu:date",
+            "menu:logistics",
+            "menu:kiz",
+            "menu:status",
+            "menu:imports",
+            "menu:manual",
+        ], start=1):
+            worker.handle_update({
+                "update_id": 30 + index,
+                "callback_query": {
+                    "id": f"cb-menu-{index}",
+                    "data": data,
+                    "message": {"chat": {"id": 123}},
+                },
+            })
+
+        self.assertEqual(
+            answered,
+            [
+                ("cb-menu-1", ""),
+                ("cb-menu-2", ""),
+                ("cb-menu-3", ""),
+                ("cb-menu-4", ""),
+                ("cb-menu-5", ""),
+                ("cb-menu-6", ""),
+            ],
+        )
+        self.assertEqual(
+            calls,
+            [
+                ("date", "123"),
+                ("logistics", "123"),
+                ("kiz", "123"),
+                ("status", "123"),
+                ("imports", "123"),
+                ("manual", "123"),
+            ],
+        )
+
+    def test_telegram_worker_manual_add_order_imports_through_backend(self):
+        worker = TelegramWorker.__new__(TelegramWorker)
+        worker.allowed_chat_ids = set()
+        state = {}
+        messages = []
+        posts = []
+        answered = []
+
+        worker.answer_callback_query = lambda callback_id, text="": answered.append((callback_id, text))
+        worker.get_chat_state = lambda chat_id: dict(state)
+        worker.save_chat_state = lambda chat_id, payload: state.clear() or state.update(payload)
+        worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
+
+        def fake_backend_post(path, payload=None):
+            posts.append((path, payload))
+            return {
+                "id": "import-1",
+                "orders_created": 1,
+                "items_created": 1,
+                "skladbot_dry_run_status": "queued",
+            }
+
+        worker.backend_post = fake_backend_post
+
+        worker.handle_update({
+            "update_id": 101,
+            "callback_query": {"id": "cb-1", "data": "manual:add", "message": {"chat": {"id": 123}}},
+        })
+        worker.handle_update({"update_id": 102, "message": {"chat": {"id": 123}, "text": "12.06.2026"}})
+        worker.handle_update({
+            "update_id": 103,
+            "callback_query": {"id": "cb-2", "data": "manual:payment:terminal", "message": {"chat": {"id": 123}}},
+        })
+        worker.handle_update({"update_id": 104, "message": {"chat": {"id": 123}, "text": "ООО Ручной Клиент"}})
+        worker.handle_update({"update_id": 105, "message": {"chat": {"id": 123}, "text": "41.311081, 69.240562"}})
+        worker.handle_update({"update_id": 106, "message": {"chat": {"id": 123}, "text": "ТП1 Тест"}})
+        worker.handle_update({
+            "update_id": 107,
+            "callback_query": {"id": "cb-3", "data": "manual:product:brown", "message": {"chat": {"id": 123}}},
+        })
+        worker.handle_update({"update_id": 108, "message": {"chat": {"id": 123}, "text": "3"}})
+        worker.handle_update({
+            "update_id": 109,
+            "callback_query": {"id": "cb-4", "data": "manual:create", "message": {"chat": {"id": 123}}},
+        })
+
+        self.assertEqual([item[0] for item in answered], ["cb-1", "cb-2", "cb-3", "cb-4"])
+        self.assertEqual(posts[0][0], "/api/v1/imports")
+        payload = posts[0][1]
+        self.assertEqual(payload["source"], "telegram_manual")
+        self.assertEqual(payload["telegram_chat_id"], "123")
+        self.assertEqual(len(payload["rows"]), 1)
+        row = payload["rows"][0]
+        self.assertEqual(row["Дата отгрузки"], "12.06.2026")
+        self.assertEqual(row["Тип оплаты"], "Терминал")
+        self.assertEqual(row["Клиент"], "ООО Ручной Клиент")
+        self.assertEqual(row["Адрес"], "Адрес не указан")
+        self.assertEqual(row["Координаты"], "41.311081, 69.240562")
+        self.assertEqual(row["Торговый представитель"], "ТП1 Тест")
+        self.assertEqual(row["Товары"], "Chapman Brown OP 20")
+        self.assertEqual(row["Кол-во блок"], 3)
+        self.assertEqual(row["Кол-во ШТ"], 30)
+        self.assertEqual(state.get("manual_flow"), {})
+        self.assertIn("Заказ создан", messages[-1][1])
+
+    def test_telegram_worker_manual_delete_active_order_calls_safe_backend_endpoint(self):
+        worker = TelegramWorker.__new__(TelegramWorker)
+        worker.allowed_chat_ids = set()
+        worker.admin_chat_ids = set()
+        state = {}
+        messages = []
+        posts = []
+
+        active_order = {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "order_date": "2026-06-12",
+            "client": "Delete Client",
+            "payment_type": "Терминал",
+            "address": "Delete Address",
+            "skladbot_request_number": "WH-R-123",
+            "items": [{
+                "product": "Chapman Brown OP 20",
+                "quantity_blocks": 2,
+                "scanned_blocks": 0,
+                "scan_codes": [],
+            }],
+        }
+
+        worker.get_chat_state = lambda chat_id: dict(state)
+        worker.save_chat_state = lambda chat_id, payload: state.clear() or state.update(payload)
+        worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
+        worker.answer_callback_query = lambda callback_id, text="": None
+        worker.backend_get = lambda path, params=None: [active_order]
+
+        def fake_backend_post(path, payload=None):
+            posts.append((path, payload))
+            return {
+                "order_id": active_order["id"],
+                "deleted": True,
+                "skladbot_request_number": "WH-R-123",
+            }
+
+        worker.backend_post = fake_backend_post
+
+        worker.show_manual_delete_orders("123")
+        worker.handle_update({
+            "update_id": 201,
+            "callback_query": {"id": "cb-1", "data": "manual:delete:1", "message": {"chat": {"id": 123}}},
+        })
+        worker.handle_update({
+            "update_id": 202,
+            "callback_query": {
+                "id": "cb-2",
+                "data": f"manual:delete_confirm:{active_order['id']}",
+                "message": {"chat": {"id": 123}},
+            },
+        })
+
+        self.assertEqual(posts[0][0], f"/api/v1/admin/orders/{active_order['id']}/delete-active")
+        self.assertEqual(posts[0][1]["actor"], "telegram")
+        self.assertIn("Заказ удалён из TakSklad", messages[-1][1])
+        self.assertIn("WH-R-123", messages[-1][1])
+        self.assertIn("осталась", messages[-1][1])
+
+    def test_telegram_worker_manual_delete_refuses_started_order_before_backend_call(self):
+        worker = TelegramWorker.__new__(TelegramWorker)
+        worker.allowed_chat_ids = set()
+        worker.admin_chat_ids = set()
+        messages = []
+        posts = []
+        state = {
+            "manual_delete_orders": [{
+                "id": "11111111-1111-1111-1111-111111111111",
+                "client": "Started Client",
+                "items": [{
+                    "product": "Chapman Brown OP 20",
+                    "quantity_blocks": 2,
+                    "scanned_blocks": 1,
+                    "scan_codes": ["0101"],
+                }],
+            }],
+        }
+
+        worker.get_chat_state = lambda chat_id: dict(state)
+        worker.save_chat_state = lambda chat_id, payload: state.clear() or state.update(payload)
+        worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
+        worker.answer_callback_query = lambda callback_id, text="": None
+        worker.backend_post = lambda path, payload=None: posts.append((path, payload))
+
+        worker.handle_update({
+            "update_id": 203,
+            "callback_query": {"id": "cb-1", "data": "manual:delete:1", "message": {"chat": {"id": 123}}},
+        })
+
+        self.assertEqual(posts, [])
+        self.assertIn("уже начал обрабатывать", messages[-1][1])
+
+    def test_telegram_worker_unknown_inline_callback_opens_fresh_menu(self):
+        worker = TelegramWorker.__new__(TelegramWorker)
+        worker.allowed_chat_ids = set()
+        answered = []
+        messages = []
+
+        worker.answer_callback_query = lambda callback_id, text="": answered.append((callback_id, text))
+        worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
+
+        worker.handle_update({
+            "update_id": 36,
+            "callback_query": {
+                "id": "cb-old",
+                "data": "old:button",
+                "message": {"chat": {"id": 123}},
+            },
+        })
+
+        self.assertEqual(answered, [("cb-old", "")])
+        self.assertEqual(messages[0][2], telegram_remove_keyboard())
+        self.assertIn("Кнопка устарела", messages[1][1])
+        self.assertEqual(messages[1][2], telegram_main_menu_keyboard())
 
     def test_telegram_worker_reports_logistics_backend_error_to_user(self):
         worker = TelegramWorker.__new__(TelegramWorker)
@@ -825,6 +1154,7 @@ class BackendTelegramImportTests(unittest.TestCase):
 
         self.assertEqual(result, (True, ""))
         self.assertEqual(calls["path"], "/api/v1/imports")
+        self.assertEqual(calls["payload"]["telegram_chat_id"], "123")
         self.assertEqual(calls["payload"]["rows"][0]["Дата отгрузки"], "08.06.2026")
         self.assertIn("Дата отгрузки: 08.06.2026", messages[-1][1])
 
@@ -1044,6 +1374,58 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertEqual(messages[0][2]["inline_keyboard"][0][0]["callback_data"], "kiz_date:2026-05-29")
         self.assertEqual(states[0][1]["kiz_dates"][0]["date"], "2026-05-29")
 
+    def test_telegram_worker_limits_kiz_dates_menu_to_recent_seven_dates(self):
+        worker = TelegramWorker.__new__(TelegramWorker)
+        messages = []
+        states = []
+
+        def fake_backend_get(path, params=None):
+            self.assertEqual(path, "/api/v1/reports/kiz/dates")
+            return [
+                {
+                    "date": f"2026-06-{day:02d}",
+                    "planned_blocks": day,
+                    "scanned_blocks": day,
+                    "completed": True,
+                }
+                for day in range(1, 11)
+            ]
+
+        def fake_get_state(chat_id):
+            return {}
+
+        def fake_save_state(chat_id, payload):
+            states.append((chat_id, payload))
+
+        def fake_send(chat_id, text, reply_markup=None):
+            messages.append((chat_id, text, reply_markup))
+
+        worker.backend_get = fake_backend_get
+        worker.get_chat_state = fake_get_state
+        worker.save_chat_state = fake_save_state
+        worker.safe_send_message = fake_send
+
+        worker.show_kiz_dates("123")
+
+        self.assertNotIn("01.06.2026", messages[0][1])
+        self.assertNotIn("02.06.2026", messages[0][1])
+        self.assertNotIn("03.06.2026", messages[0][1])
+        self.assertIn("04.06.2026", messages[0][1])
+        self.assertIn("10.06.2026", messages[0][1])
+        keyboard = messages[0][2]["inline_keyboard"]
+        self.assertEqual(len(keyboard), 7)
+        self.assertEqual(keyboard[0][0]["callback_data"], "kiz_date:2026-06-04")
+        self.assertEqual(keyboard[-1][0]["callback_data"], "kiz_date:2026-06-10")
+        self.assertEqual([item["date"] for item in states[0][1]["kiz_dates"]], [
+            "2026-06-04",
+            "2026-06-05",
+            "2026-06-06",
+            "2026-06-07",
+            "2026-06-08",
+            "2026-06-09",
+            "2026-06-10",
+        ])
+
     def test_telegram_worker_shows_kiz_source_files_with_progress(self):
         worker = TelegramWorker.__new__(TelegramWorker)
         messages = []
@@ -1094,6 +1476,59 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertEqual(len(messages[0][2]["inline_keyboard"]), 1)
         self.assertEqual(states[0][1]["kiz_files"][0]["source_key"], "import:done")
         self.assertFalse(states[0][1]["kiz_files"][1]["completed"])
+
+    def test_telegram_worker_limits_kiz_source_files_menu_to_recent_seven_files(self):
+        worker = TelegramWorker.__new__(TelegramWorker)
+        messages = []
+        states = []
+
+        def fake_backend_get(path, params=None):
+            self.assertEqual(path, "/api/v1/reports/kiz/source-files")
+            return [
+                {
+                    "source_key": f"import:file-{day:02d}",
+                    "source_file": f"file-{day:02d}.xlsx",
+                    "planned_blocks": 1,
+                    "scanned_blocks": 1,
+                    "completed": True,
+                    "dates": [f"2026-06-{day:02d}"],
+                }
+                for day in range(1, 11)
+            ]
+
+        def fake_get_state(chat_id):
+            return {}
+
+        def fake_save_state(chat_id, payload):
+            states.append((chat_id, payload))
+
+        def fake_send(chat_id, text, reply_markup=None):
+            messages.append((chat_id, text, reply_markup))
+
+        worker.backend_get = fake_backend_get
+        worker.get_chat_state = fake_get_state
+        worker.save_chat_state = fake_save_state
+        worker.safe_send_message = fake_send
+
+        worker.show_kiz_source_files("123")
+
+        self.assertNotIn("file-01.xlsx", messages[0][1])
+        self.assertNotIn("file-02.xlsx", messages[0][1])
+        self.assertNotIn("file-03.xlsx", messages[0][1])
+        self.assertIn("file-04.xlsx", messages[0][1])
+        self.assertIn("file-10.xlsx", messages[0][1])
+        keyboard = messages[0][2]["inline_keyboard"]
+        self.assertEqual(len(keyboard), 7)
+        self.assertEqual(keyboard[0][0]["callback_data"], "kiz_file:1")
+        self.assertEqual([item["source_file"] for item in states[0][1]["kiz_files"]], [
+            "file-04.xlsx",
+            "file-05.xlsx",
+            "file-06.xlsx",
+            "file-07.xlsx",
+            "file-08.xlsx",
+            "file-09.xlsx",
+            "file-10.xlsx",
+        ])
 
     def test_telegram_worker_downloads_kiz_source_file_by_import_key(self):
         worker = TelegramWorker.__new__(TelegramWorker)
@@ -1196,6 +1631,7 @@ class BackendTelegramImportTests(unittest.TestCase):
         worker.enqueue_telegram_document = fake_enqueue
         worker.save_offset = fake_save_offset
         worker.process_queued_telegram_imports = lambda: 0
+        worker.process_pending_telegram_notifications = lambda: 0
 
         worker.poll_once()
 
@@ -1226,11 +1662,12 @@ class BackendTelegramImportTests(unittest.TestCase):
         worker.ensure_bot_menu = lambda: None
         worker.telegram_request = fake_telegram_request
         worker.process_queued_telegram_imports = lambda: calls.append("imports") or 0
+        worker.process_pending_telegram_notifications = lambda: calls.append("notifications") or 0
         worker.send_due_skladbot_daily_reports = lambda: calls.append("daily") or 0
 
         worker.poll_once()
 
-        self.assertEqual(calls, ["imports", "daily"])
+        self.assertEqual(calls, ["imports", "notifications", "daily"])
         self.assertEqual(worker.offset, 0)
 
     def test_telegram_worker_handles_hidden_logs_command(self):

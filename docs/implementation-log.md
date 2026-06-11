@@ -5056,3 +5056,63 @@ cd /opt/taksklad/app
   - `python -m unittest tests.test_desktop_ui_contract tests.test_backend_bridge` - 43 tests OK;
   - `python -m unittest discover tests` - 411 tests OK;
   - `python -m compileall -q src backend tests` - OK.
+
+### Telegram bot UX cleanup
+
+- Причина: у части пользователей в Telegram оставались старые нижние reply-кнопки, часть кнопок была навязчивой на телефоне, а на desktop-клиенте могла не отображаться.
+- Изменено:
+  - добавлена команда `/menu` с inline-меню основных действий;
+  - `/start`, `/help` и `/menu` явно скрывают старую нижнюю клавиатуру через `remove_keyboard`;
+  - основные действия вынесены в inline-кнопки: логистика, выгрузка КИЗов, статус, последние импорты, дата отгрузки;
+  - старые текстовые кнопки оставлены совместимыми, чтобы старые Telegram-клиенты не ломались;
+  - неизвестные сообщения и устаревшие callback-кнопки теперь открывают свежее меню вместо тупика.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_backend_telegram_import` - 49 tests OK;
+  - `.venv/bin/python -m unittest discover -s tests` - 415 tests OK;
+  - `.venv/bin/python -m compileall -q backend tests src taksklad main.py` - OK.
+
+### SkladBot shortage auto-cancel
+
+- Причина: если SkladBot отказывает в создании заявки из-за нехватки остатка, заказ уже успевал попасть в backend, Google mirror и приложение склада, хотя в WMS заявки нет.
+- Изменено:
+  - Telegram import сохраняет `telegram_chat_id` в `ImportJob.raw_payload`;
+  - при shortage-ошибке SkladBot unscanned-заказ удаляется из `orders/order_items`;
+  - pending Google import очищается до записи, а если строка уже попала в `data`, ставится `google_sheets_delete_import_records_export`;
+  - бот ставит queued Telegram-уведомление в чат импорта: заказ отменен из-за недостатка товара;
+  - если у заказа уже есть сканы, автодаление запрещено, заказ остается в статусе `create_failed` для ручной проверки;
+  - ошибки SkladBot HTTP 4xx/5xx теперь сохраняют текст ответа API, чтобы `422` с нехваткой товара распознавался как shortage, а не как общий HTTP-сбой.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_backend_skladbot_request_dry_run` - 23 tests OK;
+  - `.venv/bin/python -m unittest tests.test_backend_google_sheets_exporter tests.test_backend_google_sheets_pending` - 24 tests OK;
+  - `.venv/bin/python -m unittest tests.test_backend_telegram_import` - 50 tests OK;
+  - `.venv/bin/python -m unittest tests.test_backend_skladbot_worker tests.test_backend_skladbot_request_dry_run` - 72 tests OK;
+  - `.venv/bin/python -m unittest discover -s tests` - 420 tests OK;
+  - `.venv/bin/python -m compileall backend` - OK.
+
+### Telegram KIZ menu recent limit
+
+- Причина: в Telegram-меню выгрузки КИЗов копились старые даты и Excel-файлы, создавая визуальный шум.
+- Изменено:
+  - меню `Выгрузка КИЗов -> По датам отгрузки` показывает только 7 последних дат;
+  - меню `Выгрузка КИЗов -> По загруженным Excel-файлам` показывает только 7 последних файлов по датам отгрузки;
+  - старые данные из backend не удаляются, прямые команды `/kiz ДД.ММ.ГГГГ` и `/kiz ДД.ММ.ГГГГ ДД.ММ.ГГГГ` продолжают работать.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_backend_telegram_import` - 52 tests OK;
+  - `.venv/bin/python -m unittest discover -s tests` - 422 tests OK;
+  - `.venv/bin/python -m compileall backend` - OK.
+
+### Telegram manual order control
+
+- Причина: нужен ручной ввод заказа через Telegram и ручное удаление только активных заказов без риска потерять уже начатую складом обработку.
+- Изменено:
+  - добавлено меню `Ручное управление`;
+  - ручное создание заказа пошагово спрашивает дату отгрузки, тип оплаты, юрлицо, адрес/координаты, торгового представителя, SKU и блоки;
+  - ручной заказ отправляется в обычный backend import pipeline с `source=telegram_manual`, чтобы дальше работали Google mirror и SkladBot;
+  - добавлен backend endpoint `/api/v1/admin/orders/{order_id}/delete-active`;
+  - удаление активного заказа разрешено только если по нему нет сканов КИЗов;
+  - если склад уже начал обработку, Telegram блокирует удаление, а backend повторно проверяет это под транзакцией;
+  - при удалении backend удаляет заказ из активной БД и ставит событие удаления строк из Google Sheets; SkladBot-заявку нужно удалить вручную.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_backend_api_persistence.BackendApiPersistenceTests.test_delete_active_order_removes_unscanned_order_and_queues_google_delete tests.test_backend_api_persistence.BackendApiPersistenceTests.test_delete_active_order_rejects_order_with_scans tests.test_backend_telegram_import.BackendTelegramImportTests.test_telegram_worker_handles_main_menu_callbacks tests.test_backend_telegram_import.BackendTelegramImportTests.test_telegram_worker_manual_add_order_imports_through_backend tests.test_backend_telegram_import.BackendTelegramImportTests.test_telegram_worker_manual_delete_active_order_calls_safe_backend_endpoint tests.test_backend_telegram_import.BackendTelegramImportTests.test_telegram_worker_manual_delete_refuses_started_order_before_backend_call` - OK;
+  - `.venv/bin/python -m unittest discover -s tests` - 427 tests OK;
+  - `.venv/bin/python -m compileall backend src tests` - OK.

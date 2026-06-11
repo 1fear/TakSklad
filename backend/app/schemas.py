@@ -170,6 +170,16 @@ class AdminBulkOrderActionResult(BaseModel):
     dry_run: bool = False
 
 
+class ActiveOrderDeleteResult(BaseModel):
+    order_id: str
+    deleted: bool = False
+    dry_run: bool = False
+    google_delete_event_id: str = ""
+    skladbot_request_number: str = ""
+    skladbot_request_id: str = ""
+    message: str = ""
+
+
 class ScanCreate(BaseModel):
     order_item_id: str
     code: str = Field(min_length=1)
@@ -221,6 +231,7 @@ class ImportCreate(BaseModel):
     source: str = "excel"
     filename: str | None = None
     sha256: str | None = None
+    telegram_chat_id: str | None = None
     rows: list[dict[str, Any]] = Field(default_factory=list)
 
 

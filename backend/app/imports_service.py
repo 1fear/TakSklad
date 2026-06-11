@@ -81,6 +81,7 @@ def create_import(db: Session, payload: ImportCreate):
         raw_payload={
             "filename": payload.filename,
             "sha256": normalize_text(payload.sha256).lower(),
+            "telegram_chat_id": normalize_text(payload.telegram_chat_id),
             "orders_created": 0,
             "items_created": 0,
             "duplicate_rows": 0,

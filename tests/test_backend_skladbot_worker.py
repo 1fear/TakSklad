@@ -83,6 +83,39 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
         self.assertNotIn("secret-token-b", sanitized)
         self.assertIn("Bearer ***", sanitized)
 
+    def test_skladbot_post_error_includes_response_body(self):
+        class FakeResponse:
+            status_code = 422
+            headers = {}
+            text = '{"detail":"Недостаточно товара на складе"}'
+
+            def json(self):
+                return {"detail": "Недостаточно товара на складе"}
+
+            def raise_for_status(self):
+                raise RuntimeError("generic 422")
+
+        class FakeHttpClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def post(self, url, json=None, headers=None):
+                return FakeResponse()
+
+        with mock.patch.dict("os.environ", {
+            "SKLADBOT_API_TOKEN": "token-a",
+            "SKLADBOT_API_TOKENS": "",
+            "SKLADBOT_REQUEST_DELAY_SECONDS": "0",
+        }, clear=True), mock.patch("backend.app.skladbot_worker.httpx.Client", FakeHttpClient):
+            with self.assertRaisesRegex(RuntimeError, "Недостаточно товара"):
+                SkladBotClient().create_request({"customer_id": 6211})
+
     def test_skladbot_client_rotates_token_on_429_without_multiplying_retries(self):
         calls = []
 

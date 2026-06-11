@@ -8,8 +8,9 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from .google_sheets_exporter import make_sheet_record
 from .google_sheets_pending import queue_google_sheets_export
-from .models import AuditLog, Order, PendingEvent
+from .models import AuditLog, ImportJob, Order, OrderItem, PendingEvent
 from .skladbot_worker import (
     SkladBotClient,
     env_int,
@@ -31,6 +32,8 @@ SKLADBOT_CUSTOMER_ID = 6211
 SKLADBOT_REQUEST_TYPE_ID = 3389
 SKLADBOT_REQUEST_CREATE_LIMIT_ENV = "SKLADBOT_REQUEST_CREATE_LIMIT"
 STALE_SKLADBOT_CREATE_TIMEOUT = timedelta(minutes=10)
+GOOGLE_DELETE_IMPORT_RECORDS_ACTION = "google_sheets_delete_import_records_export"
+TELEGRAM_NOTIFICATION_EVENT_TYPE = "telegram_notification"
 
 SKU_MAPPING = {
     "red:op": {
@@ -527,6 +530,7 @@ def default_create_processing_result(status: str = "completed") -> dict[str, Any
         "recovered": 0,
         "already_linked": 0,
         "blocked": 0,
+        "stock_shortage_cancelled": 0,
         "failed": 0,
         "remaining": 0,
         "errors": [],
@@ -585,6 +589,258 @@ def count_pending_skladbot_create_events(db: Session) -> int:
     ).scalars().all())
 
 
+def is_skladbot_stock_shortage_error(error: str) -> bool:
+    text = normalize_text(error).casefold().replace("ё", "е")
+    if not text:
+        return False
+    direct_phrases = (
+        "не хватает",
+        "не хватило",
+        "недостаточно",
+        "insufficient stock",
+        "not enough stock",
+        "not enough quantity",
+        "not enough products",
+    )
+    if any(phrase in text for phrase in direct_phrases):
+        return True
+    if "недостат" in text and any(word in text for word in ("товар", "остат", "склад", "количеств")):
+        return True
+    if "остат" in text and "меньш" in text and any(word in text for word in ("товар", "количеств", "заявк")):
+        return True
+    return False
+
+
+def order_has_scans(order: Order) -> bool:
+    for item in order.items or []:
+        if int(item.scanned_blocks or 0) > 0:
+            return True
+        if getattr(item, "scan_codes", None):
+            return True
+    return False
+
+
+def build_order_google_delete_records(order: Order) -> list[dict[str, Any]]:
+    records = []
+    order_raw = dict(order.raw_payload or {})
+    for item in order.items or []:
+        item_raw = dict(item.raw_payload or {})
+        item_key = (
+            normalize_text(item_raw.get("item_key"))
+            or normalize_text(item_raw.get("source_import_id"))
+            or str(item.id)
+        )
+        source_file = normalize_text(item_raw.get("source_file"))
+        row = {
+            "order_date": order.order_date,
+            "payment_type": order.payment_type,
+            "client": order.client,
+            "address": order.address,
+            "representative": order.representative,
+            "product": item.product,
+            "quantity_pieces": item.quantity_pieces,
+            "quantity_blocks": item.quantity_blocks,
+            "status": item.status,
+            "source_order_id": normalize_text(item_raw.get("source_order_id")),
+            "source_import_id": normalize_text(item_raw.get("source_import_id")),
+            "source_file": source_file,
+            "source_row": item_raw.get("source_row"),
+            "skladbot_request_number": normalize_text(order_raw.get("skladbot_request_number")),
+            "skladbot_request_id": normalize_text(order_raw.get("skladbot_request_id")),
+        }
+        records.append(make_sheet_record(row, item_key=item_key, filename=source_file))
+    return records
+
+
+def record_matches_google_targets(record: dict[str, Any], import_ids: set[str], order_ids: set[str]) -> bool:
+    import_id = normalize_text(record.get("ID импорта"))
+    order_id = normalize_text(record.get("ID заказа"))
+    return bool((import_id and import_id in import_ids) or (order_id and order_id in order_ids))
+
+
+def remove_records_from_pending_google_import_exports(db: Session, records: list[dict[str, Any]]) -> dict[str, int]:
+    import_ids = {normalize_text(record.get("ID импорта")) for record in records if normalize_text(record.get("ID импорта"))}
+    order_ids = {normalize_text(record.get("ID заказа")) for record in records if normalize_text(record.get("ID заказа"))}
+    if not import_ids and not order_ids:
+        return {"removed": 0, "completed_events": 0}
+
+    removed = 0
+    completed_events = 0
+    events = db.execute(
+        select(PendingEvent)
+        .where(PendingEvent.event_type == "google_sheets_export")
+        .where(PendingEvent.status.in_(("pending", "failed")))
+    ).scalars().all()
+    for pending_event in events:
+        payload = dict(pending_event.payload or {})
+        if payload.get("action") != "google_sheets_import_export":
+            continue
+        original_records = list(payload.get("records") or [])
+        if not original_records:
+            continue
+        kept_records = [
+            record
+            for record in original_records
+            if not record_matches_google_targets(record, import_ids, order_ids)
+        ]
+        if len(kept_records) == len(original_records):
+            continue
+        removed += len(original_records) - len(kept_records)
+        payload["records"] = kept_records
+        payload["stock_shortage_removed_records"] = removed
+        pending_event.payload = payload
+        if not kept_records:
+            pending_event.status = "completed"
+            pending_event.last_error = ""
+            completed_events += 1
+        db.add(pending_event)
+    return {"removed": removed, "completed_events": completed_events}
+
+
+def order_import_job(db: Session, order: Order, event: PendingEvent) -> ImportJob | None:
+    import_uuid = parse_uuid((event.payload or {}).get("import_id"))
+    if import_uuid is None:
+        for item in order.items or []:
+            import_uuid = parse_uuid((item.raw_payload or {}).get("backend_import_id"))
+            if import_uuid is not None:
+                break
+    if import_uuid is None:
+        return None
+    return db.get(ImportJob, import_uuid)
+
+
+def format_order_date_for_message(value: Any) -> str:
+    if hasattr(value, "strftime"):
+        return value.strftime("%d.%m.%Y")
+    return normalize_text(value)
+
+
+def first_order_source_file(order: Order) -> str:
+    for item in order.items or []:
+        source_file = normalize_text((item.raw_payload or {}).get("source_file"))
+        if source_file:
+            return source_file
+    return ""
+
+
+def build_stock_shortage_notification_text(order: Order, error: str) -> str:
+    lines = [
+        "Заказ отменён из-за недостатка товара",
+        "",
+        f"Клиент: {order.client}",
+        f"Дата отгрузки: {format_order_date_for_message(order.order_date) or 'не указана'}",
+        f"Тип оплаты: {order.payment_type}",
+        f"Адрес: {order.address}",
+    ]
+    source_file = first_order_source_file(order)
+    if source_file:
+        lines.append(f"Файл: {source_file}")
+    lines.extend([
+        "",
+        "Позиции:",
+        *[
+            f"- {item.product}: {int(item.quantity_blocks or 0)} блок."
+            for item in order.items or []
+        ],
+        "",
+        f"Причина SkladBot: {normalize_text(error)}",
+        "",
+        "SkladBot заявку не создал. Заказ удалён из активной БД и поставлено удаление из Google Sheets.",
+    ])
+    return "\n".join(lines)
+
+
+def queue_stock_shortage_notification(
+    db: Session,
+    order: Order,
+    event: PendingEvent,
+    import_job: ImportJob | None,
+    error: str,
+) -> PendingEvent:
+    chat_id = normalize_text((import_job.raw_payload or {}).get("telegram_chat_id")) if import_job else ""
+    idempotency_key = f"telegram:notification:v1:skladbot_stock_shortage:{event.id}"
+    existing = db.execute(
+        select(PendingEvent).where(PendingEvent.idempotency_key == idempotency_key)
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+    notification = PendingEvent(
+        event_type=TELEGRAM_NOTIFICATION_EVENT_TYPE,
+        status="pending",
+        idempotency_key=idempotency_key,
+        payload={
+            "kind": "skladbot_stock_shortage_cancelled_order",
+            "chat_id": chat_id,
+            "order_id": str(order.id),
+            "import_id": str(import_job.id) if import_job else normalize_text((event.payload or {}).get("import_id")),
+            "text": build_stock_shortage_notification_text(order, error),
+            "error": normalize_text(error),
+        },
+    )
+    db.add(notification)
+    db.flush()
+    return notification
+
+
+def cancel_unscanned_order_after_skladbot_stock_shortage(
+    db: Session,
+    order: Order,
+    event: PendingEvent,
+    error: str,
+) -> dict[str, Any]:
+    if order_has_scans(order):
+        guarded_error = f"{normalize_text(error)}; автоотмена пропущена, потому что у заказа уже есть сканы"
+        mark_order_skladbot_create_failed(order, event, guarded_error)
+        return {"status": "create_failed", "error": guarded_error, "order_id": str(order.id)}
+
+    import_job = order_import_job(db, order, event)
+    records = build_order_google_delete_records(order)
+    pending_google_cleanup = remove_records_from_pending_google_import_exports(db, records)
+    google_event = queue_google_sheets_export(
+        db,
+        GOOGLE_DELETE_IMPORT_RECORDS_ACTION,
+        "order",
+        str(order.id),
+        result={"status": "queued", "updated": 0, "error": ""},
+        payload={
+            "records": records,
+            "reason": "skladbot_stock_shortage",
+        },
+    )
+    notification_event = queue_stock_shortage_notification(db, order, event, import_job, error)
+    update_event_payload(event, {
+        "create_status": "cancelled_stock_shortage",
+        "error": normalize_text(error),
+        "stock_shortage_cancelled_at": datetime.now(timezone.utc).isoformat(),
+        "google_delete_event_id": str(google_event.id) if google_event else "",
+        "telegram_notification_event_id": str(notification_event.id) if notification_event else "",
+        "pending_google_cleanup": pending_google_cleanup,
+    })
+    order_id = str(order.id)
+    db.add(AuditLog(
+        action="skladbot_stock_shortage_order_cancelled",
+        entity_type="order",
+        entity_id=order_id,
+        payload={
+            "order_id": order_id,
+            "import_id": str(import_job.id) if import_job else normalize_text((event.payload or {}).get("import_id")),
+            "error": normalize_text(error),
+            "google_records": len(records),
+            "google_delete_event_id": str(google_event.id) if google_event else "",
+            "telegram_notification_event_id": str(notification_event.id) if notification_event else "",
+        },
+    ))
+    db.delete(order)
+    return {
+        "status": "cancelled_stock_shortage",
+        "order_id": order_id,
+        "error": normalize_text(error),
+        "google_delete_event_id": str(google_event.id) if google_event else "",
+        "telegram_notification_event_id": str(notification_event.id) if notification_event else "",
+        "records": len(records),
+    }
+
+
 def process_skladbot_create_event(db: Session, event: PendingEvent, client: Any) -> dict[str, Any]:
     payload = event.payload or {}
     order_uuid = parse_uuid(payload.get("order_id"))
@@ -593,7 +849,7 @@ def process_skladbot_create_event(db: Session, event: PendingEvent, client: Any)
 
     order = db.execute(
         select(Order)
-        .options(selectinload(Order.items))
+        .options(selectinload(Order.items).selectinload(OrderItem.scan_codes))
         .where(Order.id == order_uuid)
     ).scalars().unique().one_or_none()
     if order is None:
@@ -655,6 +911,8 @@ def process_skladbot_create_event(db: Session, event: PendingEvent, client: Any)
                 status="created_recovered",
             )
         error = sanitize_skladbot_error(exc)
+        if is_skladbot_stock_shortage_error(error):
+            return cancel_unscanned_order_after_skladbot_stock_shortage(db, order, event, error)
         mark_order_skladbot_create_failed(order, event, error)
         return {"status": "create_failed", "error": error, "order_id": str(order.id)}
 
@@ -847,6 +1105,10 @@ def finish_skladbot_create_event(
         event.status = "blocked"
         event.last_error = normalize_text(event_result.get("error"))
         result["blocked"] += 1
+    elif status == "cancelled_stock_shortage":
+        event.status = "completed"
+        event.last_error = ""
+        result["stock_shortage_cancelled"] += 1
     else:
         event.status = "failed"
         event.last_error = normalize_text(event_result.get("error")) or "SkladBot request create failed"

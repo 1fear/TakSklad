@@ -18,10 +18,12 @@ import urllib.request
 
 
 expected_commands = [
-    {"command": "date", "description": "Дата отгрузки"},
+    {"command": "menu", "description": "Меню TakSklad"},
     {"command": "logistics", "description": "Отчёт логистики"},
-    {"command": "kiz_files", "description": "Выгрузка КИЗов"},
+    {"command": "kiz", "description": "Выгрузка КИЗов"},
+    {"command": "date", "description": "Дата отгрузки"},
     {"command": "status", "description": "Статус"},
+    {"command": "imports", "description": "Последние импорты"},
 ]
 
 token = os.environ.get("TELEGRAM_BOT_TOKEN")
