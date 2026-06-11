@@ -19,6 +19,7 @@ import urllib.request
 
 expected_commands = [
     {"command": "menu", "description": "Меню TakSklad"},
+    {"command": "buttons", "description": "Призвать кнопки"},
     {"command": "logistics", "description": "Отчёт логистики"},
     {"command": "kiz", "description": "Выгрузка КИЗов"},
     {"command": "date", "description": "Дата отгрузки"},

@@ -5116,3 +5116,11 @@ cd /opt/taksklad/app
   - `.venv/bin/python -m unittest tests.test_backend_api_persistence.BackendApiPersistenceTests.test_delete_active_order_removes_unscanned_order_and_queues_google_delete tests.test_backend_api_persistence.BackendApiPersistenceTests.test_delete_active_order_rejects_order_with_scans tests.test_backend_telegram_import.BackendTelegramImportTests.test_telegram_worker_handles_main_menu_callbacks tests.test_backend_telegram_import.BackendTelegramImportTests.test_telegram_worker_manual_add_order_imports_through_backend tests.test_backend_telegram_import.BackendTelegramImportTests.test_telegram_worker_manual_delete_active_order_calls_safe_backend_endpoint tests.test_backend_telegram_import.BackendTelegramImportTests.test_telegram_worker_manual_delete_refuses_started_order_before_backend_call` - OK;
   - `.venv/bin/python -m unittest discover -s tests` - 427 tests OK;
   - `.venv/bin/python -m compileall backend src tests` - OK.
+
+### Telegram summon buttons command
+
+- Причина: в Telegram нужна отдельная понятная команда, которая просто призывает актуальные кнопки меню.
+- Изменено:
+  - добавлена команда `/buttons` с описанием `Призвать кнопки`;
+  - текст `Призвать кнопки` и `Кнопки` открывает то же inline-меню, что `/menu`;
+  - live verifier Telegram menu обновлен под новую команду.
