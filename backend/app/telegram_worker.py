@@ -28,7 +28,6 @@ TELEGRAM_BUTTON_LOGISTICS_REPORT = "Отчёт логистики"
 TELEGRAM_BUTTON_KIZ_BY_FILES = "Выгрузка КИЗов"
 TELEGRAM_BUTTON_STATUS = "Статус"
 TELEGRAM_BUTTON_MENU = "Меню"
-TELEGRAM_BUTTON_SUMMON = "Призвать кнопки"
 TELEGRAM_BUTTON_IMPORTS = "Последние импорты"
 TELEGRAM_BUTTON_MANUAL = "Ручное управление"
 TELEGRAM_LOGISTICS_DATE_PREFIX = "Логистика "
@@ -113,7 +112,6 @@ def parse_bool_flag(value, default=False):
 def telegram_bot_commands():
     return [
         {"command": "menu", "description": "Меню TakSklad"},
-        {"command": "buttons", "description": TELEGRAM_BUTTON_SUMMON},
         {"command": "logistics", "description": TELEGRAM_BUTTON_LOGISTICS_REPORT},
         {"command": "kiz", "description": TELEGRAM_BUTTON_KIZ_BY_FILES},
         {"command": "date", "description": TELEGRAM_BUTTON_SHIPMENT_DATE},
@@ -2041,7 +2039,7 @@ class TelegramWorker:
             return
 
         text = normalize_text(message.get("text"))
-        if text_matches(text, "/start", "/help", "/menu", "/buttons", TELEGRAM_BUTTON_MENU, TELEGRAM_BUTTON_SUMMON, "меню", "кнопки"):
+        if text_matches(text, "/start", "/help", "/menu", TELEGRAM_BUTTON_MENU, "меню"):
             self.send_main_menu(
                 chat_id,
                 "\n".join([

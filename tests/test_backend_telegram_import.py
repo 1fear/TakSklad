@@ -20,7 +20,6 @@ from backend.app.telegram_worker import (
     TELEGRAM_BUTTON_MENU,
     TELEGRAM_BUTTON_SHIPMENT_DATE,
     TELEGRAM_BUTTON_STATUS,
-    TELEGRAM_BUTTON_SUMMON,
     TELEGRAM_KIZ_FILE_PREFIX,
     TelegramWorker,
     display_date,
@@ -296,7 +295,6 @@ class BackendTelegramImportTests(unittest.TestCase):
             commands,
             [
                 {"command": "menu", "description": "Меню TakSklad"},
-                {"command": "buttons", "description": TELEGRAM_BUTTON_SUMMON},
                 {"command": "logistics", "description": TELEGRAM_BUTTON_LOGISTICS_REPORT},
                 {"command": "kiz", "description": TELEGRAM_BUTTON_KIZ_BY_FILES},
                 {"command": "date", "description": TELEGRAM_BUTTON_SHIPMENT_DATE},
@@ -379,7 +377,7 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertEqual(calls[1], ("setChatMenuButton", {"menu_button": {"type": "commands"}}))
         self.assertTrue(worker.bot_menu_ready)
         commands = [item["command"] for item in telegram_bot_commands()]
-        self.assertEqual(commands, ["menu", "buttons", "logistics", "kiz", "date", "status", "imports"])
+        self.assertEqual(commands, ["menu", "logistics", "kiz", "date", "status", "imports"])
         self.assertNotIn("health", commands)
         self.assertNotIn("logs", commands)
 
@@ -405,24 +403,6 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertEqual(calls[0], ("123", "Старые нижние кнопки скрыты.", telegram_remove_keyboard()))
         self.assertEqual(calls[1][0], "123")
         self.assertIn("TakSklad backend online", calls[1][1])
-        self.assertEqual(calls[1][2], telegram_main_menu_keyboard())
-
-    def test_telegram_worker_buttons_command_opens_inline_menu(self):
-        worker = TelegramWorker.__new__(TelegramWorker)
-        worker.allowed_chat_ids = set()
-        calls = []
-
-        worker.send_message = lambda chat_id, text, reply_markup=None: calls.append((chat_id, text, reply_markup))
-
-        worker.handle_update({
-            "update_id": 12,
-            "message": {
-                "chat": {"id": 123},
-                "text": TELEGRAM_BUTTON_SUMMON,
-            },
-        })
-
-        self.assertEqual(calls[0], ("123", "Старые нижние кнопки скрыты.", telegram_remove_keyboard()))
         self.assertEqual(calls[1][2], telegram_main_menu_keyboard())
 
     def test_telegram_worker_unknown_text_opens_menu_instead_of_dead_button_error(self):

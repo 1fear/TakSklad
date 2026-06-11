@@ -5117,10 +5117,10 @@ cd /opt/taksklad/app
   - `.venv/bin/python -m unittest discover -s tests` - 427 tests OK;
   - `.venv/bin/python -m compileall backend src tests` - OK.
 
-### Telegram summon buttons command
+### Telegram system menu button
 
-- Причина: в Telegram нужна отдельная понятная команда, которая просто призывает актуальные кнопки меню.
+- Причина: в Telegram нужна штатная кнопка меню рядом с полем ввода, а не отдельная текстовая команда `Призвать кнопки`.
 - Изменено:
-  - добавлена команда `/buttons` с описанием `Призвать кнопки`;
-  - текст `Призвать кнопки` и `Кнопки` открывает то же inline-меню, что `/menu`;
-  - live verifier Telegram menu обновлен под новую команду.
+  - команда `/buttons` удалена;
+  - системная кнопка Telegram остается через `setChatMenuButton` с `type=commands`;
+  - live verifier Telegram menu снова проверяет только реальные команды TakSklad.
