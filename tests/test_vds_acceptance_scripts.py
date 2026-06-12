@@ -66,8 +66,8 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
             self.assertIn("*ACCEPTANCE*|*WEB_UI_SMOKE*|*SMOKE_MVP*", script)
             self.assertIn("Refusing unsafe marker", script)
 
-        self.assertIn("Выгрузка КИЗов", telegram_menu_script)
-        self.assertIn("Telegram commands do not match expected TakSklad menu", telegram_menu_script)
+        self.assertIn("expected_commands = []", telegram_menu_script)
+        self.assertIn("Telegram public commands must be empty", telegram_menu_script)
         self.assertIn('"status": "failed" if errors else "ok"', telegram_menu_script)
         self.assertIn("getMyCommands", telegram_menu_script)
         self.assertIn("getChatMenuButton", telegram_menu_script)

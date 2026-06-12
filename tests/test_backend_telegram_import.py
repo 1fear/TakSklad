@@ -24,7 +24,6 @@ from backend.app.telegram_worker import (
     TelegramWorker,
     display_date,
     summarize_active_orders_by_date,
-    telegram_bot_commands,
     telegram_main_reply_keyboard,
 )
 
@@ -355,7 +354,7 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertNotIn("reply_markup", captured["data"])
         self.assertEqual(captured["files"]["document"][0], "orders.xlsx")
 
-    def test_telegram_worker_configures_public_command_menu_once(self):
+    def test_telegram_worker_clears_public_command_menu_once(self):
         worker = TelegramWorker.__new__(TelegramWorker)
         calls = []
 
@@ -369,8 +368,8 @@ class BackendTelegramImportTests(unittest.TestCase):
         worker.ensure_bot_menu()
 
         self.assertEqual(len(calls), 2)
-        self.assertEqual(calls[0], ("setMyCommands", {"commands": telegram_bot_commands()}))
-        self.assertEqual(calls[1], ("setChatMenuButton", {"menu_button": {"type": "commands"}}))
+        self.assertEqual(calls[0], ("deleteMyCommands", {}))
+        self.assertEqual(calls[1], ("setChatMenuButton", {"menu_button": {"type": "default"}}))
         self.assertTrue(worker.bot_menu_ready)
 
     def test_telegram_worker_menu_command_shows_hideable_reply_keyboard(self):
