@@ -17,7 +17,14 @@ import sys
 import urllib.request
 
 
-expected_commands = []
+expected_commands = [
+    {"command": "menu", "description": "Меню TakSklad"},
+    {"command": "logistics", "description": "Отчёт логистики"},
+    {"command": "kiz", "description": "Выгрузка КИЗов"},
+    {"command": "date", "description": "Дата отгрузки"},
+    {"command": "status", "description": "Статус"},
+    {"command": "imports", "description": "Последние импорты"},
+]
 
 token = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not token:
@@ -54,9 +61,9 @@ except Exception as exc:
     sys.exit(1)
 
 if commands != expected_commands:
-    errors.append("Telegram public commands must be empty so the reply-keyboard toggle is shown")
-if not isinstance(menu_button, dict):
-    errors.append("Telegram chat menu button response must be an object")
+    errors.append("Telegram commands do not match expected TakSklad menu")
+if not isinstance(menu_button, dict) or menu_button.get("type") != "commands":
+    errors.append("Telegram chat menu button must be type=commands")
 
 print(json.dumps({
     "status": "failed" if errors else "ok",

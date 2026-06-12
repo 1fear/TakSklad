@@ -109,6 +109,17 @@ def parse_bool_flag(value, default=False):
     return text in {"1", "true", "yes", "on", "да"}
 
 
+def telegram_bot_commands():
+    return [
+        {"command": "menu", "description": "Меню TakSklad"},
+        {"command": "logistics", "description": TELEGRAM_BUTTON_LOGISTICS_REPORT},
+        {"command": "kiz", "description": TELEGRAM_BUTTON_KIZ_BY_FILES},
+        {"command": "date", "description": TELEGRAM_BUTTON_SHIPMENT_DATE},
+        {"command": "status", "description": TELEGRAM_BUTTON_STATUS},
+        {"command": "imports", "description": TELEGRAM_BUTTON_IMPORTS},
+    ]
+
+
 def telegram_inline_keyboard(button_rows):
     return {"inline_keyboard": button_rows}
 
@@ -130,7 +141,6 @@ def telegram_main_reply_keyboard():
             ],
         ],
         "resize_keyboard": True,
-        "is_persistent": True,
     }
 
 
@@ -496,8 +506,8 @@ class TelegramWorker:
         if getattr(self, "bot_menu_ready", False):
             return
         try:
-            self.telegram_request("deleteMyCommands", {})
-            self.telegram_request("setChatMenuButton", {"menu_button": {"type": "default"}})
+            self.telegram_request("setMyCommands", {"commands": telegram_bot_commands()})
+            self.telegram_request("setChatMenuButton", {"menu_button": {"type": "commands"}})
             self.bot_menu_ready = True
         except Exception:
             logging.warning("Telegram worker: failed to configure bot menu", exc_info=True)

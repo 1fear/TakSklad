@@ -24,6 +24,7 @@ from backend.app.telegram_worker import (
     TelegramWorker,
     display_date,
     summarize_active_orders_by_date,
+    telegram_bot_commands,
     telegram_main_reply_keyboard,
 )
 
@@ -262,7 +263,7 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertEqual(payload["text"], "hello")
         self.assertNotIn("reply_markup", payload)
 
-    def test_telegram_worker_start_message_uses_persistent_reply_keyboard(self):
+    def test_telegram_worker_start_message_uses_hideable_reply_keyboard(self):
         worker = TelegramWorker.__new__(TelegramWorker)
         worker.allowed_chat_ids = set()
         calls = []
@@ -296,7 +297,7 @@ class BackendTelegramImportTests(unittest.TestCase):
             ],
         )
         self.assertTrue(keyboard["resize_keyboard"])
-        self.assertTrue(keyboard["is_persistent"])
+        self.assertNotIn("is_persistent", keyboard)
 
     def test_telegram_date_buttons_are_user_friendly(self):
         worker = TelegramWorker.__new__(TelegramWorker)
@@ -354,7 +355,7 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertNotIn("reply_markup", captured["data"])
         self.assertEqual(captured["files"]["document"][0], "orders.xlsx")
 
-    def test_telegram_worker_clears_public_command_menu_once(self):
+    def test_telegram_worker_configures_public_command_menu_once(self):
         worker = TelegramWorker.__new__(TelegramWorker)
         calls = []
 
@@ -368,11 +369,11 @@ class BackendTelegramImportTests(unittest.TestCase):
         worker.ensure_bot_menu()
 
         self.assertEqual(len(calls), 2)
-        self.assertEqual(calls[0], ("deleteMyCommands", {}))
-        self.assertEqual(calls[1], ("setChatMenuButton", {"menu_button": {"type": "default"}}))
+        self.assertEqual(calls[0], ("setMyCommands", {"commands": telegram_bot_commands()}))
+        self.assertEqual(calls[1], ("setChatMenuButton", {"menu_button": {"type": "commands"}}))
         self.assertTrue(worker.bot_menu_ready)
 
-    def test_telegram_worker_menu_command_shows_persistent_reply_keyboard(self):
+    def test_telegram_worker_menu_command_shows_hideable_reply_keyboard(self):
         worker = TelegramWorker.__new__(TelegramWorker)
         worker.allowed_chat_ids = set()
         calls = []
