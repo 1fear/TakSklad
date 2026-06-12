@@ -62,8 +62,8 @@ except Exception as exc:
 
 if commands != expected_commands:
     errors.append("Telegram commands do not match expected TakSklad menu")
-if not isinstance(menu_button, dict) or menu_button.get("type") != "commands":
-    errors.append("Telegram chat menu button must be type=commands")
+if not isinstance(menu_button, dict) or menu_button.get("type") != "default":
+    errors.append("Telegram chat menu button must be type=default")
 
 print(json.dumps({
     "status": "failed" if errors else "ok",

@@ -124,27 +124,25 @@ def telegram_inline_keyboard(button_rows):
     return {"inline_keyboard": button_rows}
 
 
-def telegram_remove_keyboard():
-    return {"remove_keyboard": True}
-
-
-def telegram_main_menu_keyboard():
-    return telegram_inline_keyboard([
-        [
-            {"text": TELEGRAM_BUTTON_LOGISTICS_REPORT, "callback_data": f"{TELEGRAM_MENU_CALLBACK_PREFIX}logistics"},
-            {"text": TELEGRAM_BUTTON_KIZ_BY_FILES, "callback_data": f"{TELEGRAM_MENU_CALLBACK_PREFIX}kiz"},
+def telegram_main_reply_keyboard():
+    return {
+        "keyboard": [
+            [
+                {"text": TELEGRAM_BUTTON_LOGISTICS_REPORT},
+                {"text": TELEGRAM_BUTTON_KIZ_BY_FILES},
+            ],
+            [
+                {"text": TELEGRAM_BUTTON_STATUS},
+                {"text": TELEGRAM_BUTTON_IMPORTS},
+            ],
+            [
+                {"text": TELEGRAM_BUTTON_SHIPMENT_DATE},
+                {"text": TELEGRAM_BUTTON_MANUAL},
+            ],
         ],
-        [
-            {"text": TELEGRAM_BUTTON_STATUS, "callback_data": f"{TELEGRAM_MENU_CALLBACK_PREFIX}status"},
-            {"text": TELEGRAM_BUTTON_IMPORTS, "callback_data": f"{TELEGRAM_MENU_CALLBACK_PREFIX}imports"},
-        ],
-        [
-            {"text": TELEGRAM_BUTTON_SHIPMENT_DATE, "callback_data": f"{TELEGRAM_MENU_CALLBACK_PREFIX}date"},
-        ],
-        [
-            {"text": TELEGRAM_BUTTON_MANUAL, "callback_data": f"{TELEGRAM_MENU_CALLBACK_PREFIX}manual"},
-        ],
-    ])
+        "resize_keyboard": True,
+        "is_persistent": True,
+    }
 
 
 def telegram_manual_menu_keyboard():
@@ -510,7 +508,7 @@ class TelegramWorker:
             return
         try:
             self.telegram_request("setMyCommands", {"commands": telegram_bot_commands()})
-            self.telegram_request("setChatMenuButton", {"menu_button": {"type": "commands"}})
+            self.telegram_request("setChatMenuButton", {"menu_button": {"type": "default"}})
             self.bot_menu_ready = True
         except Exception:
             logging.warning("Telegram worker: failed to configure bot menu", exc_info=True)
@@ -580,17 +578,12 @@ class TelegramWorker:
             return None
 
     def send_main_menu(self, chat_id, text=""):
-        self.safe_send_message(
-            chat_id,
-            "Старые нижние кнопки скрыты.",
-            reply_markup=telegram_remove_keyboard(),
-        )
         lines = [
             normalize_text(text) or "Меню TakSklad",
             "",
             "Excel-файл можно просто отправить в этот чат. Бот попросит дату отгрузки перед импортом.",
         ]
-        self.safe_send_message(chat_id, "\n".join(lines), reply_markup=telegram_main_menu_keyboard())
+        self.safe_send_message(chat_id, "\n".join(lines), reply_markup=telegram_main_reply_keyboard())
 
     def send_date_help(self, chat_id):
         current_date = self.get_chat_shipment_date(chat_id)

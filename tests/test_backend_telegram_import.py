@@ -17,7 +17,6 @@ from backend.app.telegram_worker import (
     TELEGRAM_BUTTON_IMPORTS,
     TELEGRAM_BUTTON_KIZ_BY_FILES,
     TELEGRAM_BUTTON_LOGISTICS_REPORT,
-    TELEGRAM_BUTTON_MENU,
     TELEGRAM_BUTTON_SHIPMENT_DATE,
     TELEGRAM_BUTTON_STATUS,
     TELEGRAM_KIZ_FILE_PREFIX,
@@ -25,8 +24,7 @@ from backend.app.telegram_worker import (
     display_date,
     summarize_active_orders_by_date,
     telegram_bot_commands,
-    telegram_main_menu_keyboard,
-    telegram_remove_keyboard,
+    telegram_main_reply_keyboard,
 )
 
 
@@ -264,7 +262,7 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertEqual(payload["text"], "hello")
         self.assertNotIn("reply_markup", payload)
 
-    def test_telegram_worker_start_message_uses_command_menu_without_reply_keyboard(self):
+    def test_telegram_worker_start_message_uses_persistent_reply_keyboard(self):
         worker = TelegramWorker.__new__(TelegramWorker)
         worker.allowed_chat_ids = set()
         calls = []
@@ -283,10 +281,8 @@ class BackendTelegramImportTests(unittest.TestCase):
         })
 
         self.assertEqual(calls[0][0], "123")
-        self.assertEqual(calls[0][2], telegram_remove_keyboard())
-        self.assertEqual(calls[1][0], "123")
-        self.assertIn("TakSklad backend online", calls[1][1])
-        self.assertEqual(calls[1][2], telegram_main_menu_keyboard())
+        self.assertIn("TakSklad backend online", calls[0][1])
+        self.assertEqual(calls[0][2], telegram_main_reply_keyboard())
 
     def test_telegram_command_menu_contains_only_user_buttons(self):
         commands = telegram_bot_commands()
@@ -374,14 +370,14 @@ class BackendTelegramImportTests(unittest.TestCase):
 
         self.assertEqual(len(calls), 2)
         self.assertEqual(calls[0], ("setMyCommands", {"commands": telegram_bot_commands()}))
-        self.assertEqual(calls[1], ("setChatMenuButton", {"menu_button": {"type": "commands"}}))
+        self.assertEqual(calls[1], ("setChatMenuButton", {"menu_button": {"type": "default"}}))
         self.assertTrue(worker.bot_menu_ready)
         commands = [item["command"] for item in telegram_bot_commands()]
         self.assertEqual(commands, ["menu", "logistics", "kiz", "date", "status", "imports"])
         self.assertNotIn("health", commands)
         self.assertNotIn("logs", commands)
 
-    def test_telegram_worker_menu_command_clears_old_keyboard_and_shows_inline_menu(self):
+    def test_telegram_worker_menu_command_shows_persistent_reply_keyboard(self):
         worker = TelegramWorker.__new__(TelegramWorker)
         worker.allowed_chat_ids = set()
         calls = []
@@ -399,11 +395,10 @@ class BackendTelegramImportTests(unittest.TestCase):
             },
         })
 
-        self.assertEqual(len(calls), 2)
-        self.assertEqual(calls[0], ("123", "Старые нижние кнопки скрыты.", telegram_remove_keyboard()))
-        self.assertEqual(calls[1][0], "123")
-        self.assertIn("TakSklad backend online", calls[1][1])
-        self.assertEqual(calls[1][2], telegram_main_menu_keyboard())
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "123")
+        self.assertIn("TakSklad backend online", calls[0][1])
+        self.assertEqual(calls[0][2], telegram_main_reply_keyboard())
 
     def test_telegram_worker_unknown_text_opens_menu_instead_of_dead_button_error(self):
         worker = TelegramWorker.__new__(TelegramWorker)
@@ -424,9 +419,8 @@ class BackendTelegramImportTests(unittest.TestCase):
             },
         })
 
-        self.assertEqual(calls[0][2], telegram_remove_keyboard())
-        self.assertIn("Команда не распознана", calls[1][1])
-        self.assertEqual(calls[1][2], telegram_main_menu_keyboard())
+        self.assertIn("Команда не распознана", calls[0][1])
+        self.assertEqual(calls[0][2], telegram_main_reply_keyboard())
 
     def test_telegram_worker_handles_bottom_logistics_button(self):
         worker = TelegramWorker.__new__(TelegramWorker)
@@ -855,9 +849,8 @@ class BackendTelegramImportTests(unittest.TestCase):
         })
 
         self.assertEqual(answered, [("cb-old", "")])
-        self.assertEqual(messages[0][2], telegram_remove_keyboard())
-        self.assertIn("Кнопка устарела", messages[1][1])
-        self.assertEqual(messages[1][2], telegram_main_menu_keyboard())
+        self.assertIn("Кнопка устарела", messages[0][1])
+        self.assertEqual(messages[0][2], telegram_main_reply_keyboard())
 
     def test_telegram_worker_reports_logistics_backend_error_to_user(self):
         worker = TelegramWorker.__new__(TelegramWorker)
