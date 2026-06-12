@@ -17,13 +17,13 @@ from backend.app.telegram_worker import (
     TELEGRAM_BUTTON_IMPORTS,
     TELEGRAM_BUTTON_KIZ_BY_FILES,
     TELEGRAM_BUTTON_LOGISTICS_REPORT,
+    TELEGRAM_BUTTON_MANUAL,
     TELEGRAM_BUTTON_SHIPMENT_DATE,
     TELEGRAM_BUTTON_STATUS,
     TELEGRAM_KIZ_FILE_PREFIX,
     TelegramWorker,
     display_date,
     summarize_active_orders_by_date,
-    telegram_bot_commands,
     telegram_main_reply_keyboard,
 )
 
@@ -284,20 +284,19 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertIn("TakSklad backend online", calls[0][1])
         self.assertEqual(calls[0][2], telegram_main_reply_keyboard())
 
-    def test_telegram_command_menu_contains_only_user_buttons(self):
-        commands = telegram_bot_commands()
-
+    def test_telegram_main_reply_keyboard_contains_user_buttons(self):
+        keyboard = telegram_main_reply_keyboard()
+        rows = keyboard["keyboard"]
         self.assertEqual(
-            commands,
+            rows,
             [
-                {"command": "menu", "description": "Меню TakSklad"},
-                {"command": "logistics", "description": TELEGRAM_BUTTON_LOGISTICS_REPORT},
-                {"command": "kiz", "description": TELEGRAM_BUTTON_KIZ_BY_FILES},
-                {"command": "date", "description": TELEGRAM_BUTTON_SHIPMENT_DATE},
-                {"command": "status", "description": TELEGRAM_BUTTON_STATUS},
-                {"command": "imports", "description": TELEGRAM_BUTTON_IMPORTS},
+                [{"text": TELEGRAM_BUTTON_LOGISTICS_REPORT}, {"text": TELEGRAM_BUTTON_KIZ_BY_FILES}],
+                [{"text": TELEGRAM_BUTTON_STATUS}, {"text": TELEGRAM_BUTTON_IMPORTS}],
+                [{"text": TELEGRAM_BUTTON_SHIPMENT_DATE}, {"text": TELEGRAM_BUTTON_MANUAL}],
             ],
         )
+        self.assertTrue(keyboard["resize_keyboard"])
+        self.assertTrue(keyboard["is_persistent"])
 
     def test_telegram_date_buttons_are_user_friendly(self):
         worker = TelegramWorker.__new__(TelegramWorker)
@@ -355,7 +354,7 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertNotIn("reply_markup", captured["data"])
         self.assertEqual(captured["files"]["document"][0], "orders.xlsx")
 
-    def test_telegram_worker_configures_telegram_command_menu_once(self):
+    def test_telegram_worker_clears_public_command_menu_once(self):
         worker = TelegramWorker.__new__(TelegramWorker)
         calls = []
 
@@ -369,13 +368,9 @@ class BackendTelegramImportTests(unittest.TestCase):
         worker.ensure_bot_menu()
 
         self.assertEqual(len(calls), 2)
-        self.assertEqual(calls[0], ("setMyCommands", {"commands": telegram_bot_commands()}))
+        self.assertEqual(calls[0], ("deleteMyCommands", {}))
         self.assertEqual(calls[1], ("setChatMenuButton", {"menu_button": {"type": "default"}}))
         self.assertTrue(worker.bot_menu_ready)
-        commands = [item["command"] for item in telegram_bot_commands()]
-        self.assertEqual(commands, ["menu", "logistics", "kiz", "date", "status", "imports"])
-        self.assertNotIn("health", commands)
-        self.assertNotIn("logs", commands)
 
     def test_telegram_worker_menu_command_shows_persistent_reply_keyboard(self):
         worker = TelegramWorker.__new__(TelegramWorker)

@@ -5122,7 +5122,8 @@ cd /opt/taksklad/app
 - Причина: в Telegram нужна штатная кнопка меню рядом с полем ввода, а не отдельная текстовая команда `Призвать кнопки`.
 - Изменено:
   - команда `/buttons` удалена;
-  - `setChatMenuButton` переведен в `type=default`, чтобы не показывать синюю command-menu кнопку `Меню`;
+  - публичные команды Telegram очищаются через `deleteMyCommands`, потому что при опубликованных slash-командах Telegram продолжает показывать синюю command-menu кнопку `Меню`;
+  - `setChatMenuButton` оставлен в `type=default`;
   - `/menu` и `/start` отправляют persistent reply-keyboard с основными действиями TakSklad;
   - в клиентах Telegram это дает кнопку показа/скрытия bot-keyboard рядом с полем ввода;
-  - live verifier Telegram menu проверяет реальные команды TakSklad и `menu_button=default`.
+  - live verifier Telegram menu проверяет, что публичных команд нет, а ответ `getChatMenuButton` валидный.
