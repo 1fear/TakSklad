@@ -1,12 +1,12 @@
 {
-  "latest_version": "2.0.14",
-  "min_supported_version": "2.0.14",
+  "latest_version": "2.0.15",
+  "min_supported_version": "2.0.15",
   "mandatory": true,
   "package_type": "onefile_exe",
   "entrypoint": "TakSklad.exe",
-  "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.14/TakSklad.exe",
-  "sha256": "a4867c9c51fdf9cbc242a8b814b9e37b93d3f5abb19a8e3955bafb9e41861d5b",
-  "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.14/TakSklad-windows-x64.zip",
-  "sha256_onedir": "4a3b395b9f77302d96d35f65e85b2bb69cbe00dadd6cfe562d2a65f666ca91eb",
-  "message": "TakSklad 2.0.14: обязательное обновление. Backend-конфликт занятого КИЗа теперь откатывает спорный код из текущей позиции и просит отсканировать замену без критической ошибки приложения."
+  "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.15/TakSklad.exe",
+  "sha256": "eab15e74150f07993759b47f2561d44d8ce348b0cee4d12968b7963c0f49190d",
+  "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.15/TakSklad-windows-x64.zip",
+  "sha256_onedir": "7ed43cd566e86f7b7857b0319bb05ad2bc118c9e644387c2e7b57125526a4de9",
+  "message": "TakSklad 2.0.15: обязательное обновление. Ошибки сканирования теперь показываются полным красным уведомлением; дубликат КИЗа показывает юрлицо, дату отгрузки, товар и номер SkladBot."
 }

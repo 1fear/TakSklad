@@ -90,7 +90,7 @@ def build_readme(manifest):
     kiz_codes = "\n".join(f"- `{code}`" for code in manifest["test_kiz_codes"])
     return f"""# TakSklad Acceptance Kit
 
-Назначение: ручная проверка Telegram import и Windows desktop acceptance после публикации 2.0.14 manifest. Обновления через `version.json` разрешены; текущая линия 2.0.14 переведена в forced rollout.
+Назначение: ручная проверка Telegram import и Windows desktop acceptance после публикации 2.0.15 manifest. Обновления через `version.json` разрешены; текущая линия 2.0.15 переведена в forced rollout.
 
 ## Состав
 
@@ -260,7 +260,7 @@ cd /opt/taksklad/app
 ## Чего Не Делать
 
 - Не откатывать `mandatory=true` без отдельного решения Антона.
-- Не публиковать новый Windows release поверх 2.0.14 без повторной проверки.
+- Не публиковать новый Windows release поверх 2.0.15 без повторной проверки.
 - Не создавать реальную заявку SkladBot без отдельного подтверждения.
 """
 
@@ -290,7 +290,7 @@ SHA-256 Excel: `{manifest["excel_sha256"]}`
 ## 1. Preflight
 
 - [ ] `.venv/bin/python tools/release_preflight.py` вернул `status=ok`.
-- [ ] `version.json` указывает на `2.0.14`, `mandatory=true`, ссылки и SHA заполнены.
+- [ ] `version.json` указывает на `2.0.15`, `mandatory=true`, ссылки и SHA заполнены.
 - [ ] В Git нет tracked runtime/secret-файлов.
 
 ## 2. Telegram Import
@@ -400,7 +400,7 @@ SHA-256 Excel: `{manifest["excel_sha256"]}`
 ## 1. Preflight
 
 - [ ] `.venv/bin/python tools/release_preflight.py` вернул `status=ok`.
-- [ ] `version.json` указывает на `2.0.14`, `mandatory=true`, ссылки и SHA заполнены.
+- [ ] `version.json` указывает на `2.0.15`, `mandatory=true`, ссылки и SHA заполнены.
 - [ ] В Git нет tracked runtime/secret-файлов.
 
 Заметки:

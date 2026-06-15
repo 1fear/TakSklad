@@ -58,10 +58,10 @@ WINDOWS_TEST_BUILD_REQUIRED_FRAGMENTS = [
     "ACCEPTANCE_RESULTS.md",
     "Assert-TestPackageDoesNotContainLocalSecrets",
     "version.json has local changes",
-    "forced 2.0.14 rollout manifest",
+    "forced 2.0.15 rollout manifest",
 ]
-EXPECTED_RELEASE_VERSION = "2.0.14"
-EXPECTED_MIN_SUPPORTED_VERSION = "2.0.14"
+EXPECTED_RELEASE_VERSION = "2.0.15"
+EXPECTED_MIN_SUPPORTED_VERSION = "2.0.15"
 EXPECTED_PACKAGE_TYPE = "onefile_exe"
 EXPECTED_RELEASE_TAG = f"v{EXPECTED_RELEASE_VERSION}"
 

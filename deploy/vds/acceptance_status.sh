@@ -285,10 +285,10 @@ except Exception:
 errors = []
 if sha_status != "ok":
     errors.append("acceptance Excel SHA mismatch")
-if version_info.get("latest_version") != "2.0.14":
-    errors.append("version.json latest_version must be 2.0.14")
-if version_info.get("min_supported_version") != "2.0.14":
-    errors.append("version.json min_supported_version must be 2.0.14 for forced rollout")
+if version_info.get("latest_version") != "2.0.15":
+    errors.append("version.json latest_version must be 2.0.15")
+if version_info.get("min_supported_version") != "2.0.15":
+    errors.append("version.json min_supported_version must be 2.0.15 for forced rollout")
 if version_info.get("mandatory") is not True:
     errors.append("version.json mandatory must be true during forced rollout")
 if version_info.get("package_type") != "onefile_exe":
