@@ -643,23 +643,28 @@ class BackendApiPersistenceTests(unittest.TestCase):
         start_skladbot.assert_called_once()
 
     def test_scan_create_is_idempotent_for_same_item_and_rejects_cross_order_duplicate(self):
-        _, item_id = self.seed_order()
-        _, other_item_id = self.seed_order()
+        order_id, item_id = self.seed_order(product="Chapman RED OP 20")
+        _, other_item_id = self.seed_order(product="Chapman RED OP 20")
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            order.client = "OOO Busy Client"
+            order.raw_payload = {"skladbot_request_number": "WH-R-100500"}
+            db.commit()
 
         response = self.client.post(
             "/api/v1/scans",
-            json={"order_item_id": item_id, "code": "  010123456789  ", "workstation_id": "pc-1"},
+            json={"order_item_id": item_id, "code": "  0104006396053947217ABCDEF  ", "workstation_id": "pc-1"},
         )
 
         self.assertEqual(response.status_code, 201)
         payload = response.json()
-        self.assertEqual(payload["code"], "010123456789")
+        self.assertEqual(payload["code"], "0104006396053947217ABCDEF")
         self.assertEqual(payload["scanned_blocks"], 1)
         self.assertEqual(payload["item_status"], "not_completed")
 
         same_item_duplicate = self.client.post(
             "/api/v1/scans",
-            json={"order_item_id": item_id, "code": "010123456789", "workstation_id": "pc-2"},
+            json={"order_item_id": item_id, "code": "0104006396053947217ABCDEF", "workstation_id": "pc-2"},
         )
         self.assertEqual(same_item_duplicate.status_code, 201)
         self.assertEqual(same_item_duplicate.json()["order_item_id"], item_id)
@@ -667,13 +672,15 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
         other_item_duplicate = self.client.post(
             "/api/v1/scans",
-            json={"order_item_id": other_item_id, "code": "010123456789", "workstation_id": "pc-2"},
+            json={"order_item_id": other_item_id, "code": "0104006396053947217ABCDEF", "workstation_id": "pc-2"},
         )
         self.assertEqual(other_item_duplicate.status_code, 409)
-        self.assertEqual(
-            other_item_duplicate.json()["detail"]["message"],
-            "Code already scanned in another order item",
-        )
+        detail = other_item_duplicate.json()["detail"]
+        self.assertEqual(detail["message"], "Code already scanned in another order item")
+        self.assertEqual(detail["existing_order"]["client"], "OOO Busy Client")
+        self.assertEqual(detail["existing_order"]["order_date_display"], "30.05.2026")
+        self.assertEqual(detail["existing_order"]["product"], "Chapman RED OP 20")
+        self.assertEqual(detail["existing_order"]["skladbot_request_number"], "WH-R-100500")
 
         with self.SessionLocal() as db:
             self.assertEqual(len(db.execute(select(ScanCode)).scalars().all()), 1)

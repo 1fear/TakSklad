@@ -100,7 +100,7 @@ from .telegram_service import (
     collect_operational_documents,
     telegram_single_listener_lock_enabled,
 )
-from .ui_widgets import AppButton
+from .ui_widgets import AppButton, RoundedNotice
 from .logging_setup import configure_app_logging
 from .utils import (
     normalize_kiz_code,
@@ -274,6 +274,11 @@ def backend_event_error_message(item):
     return normalize_text(item.get("last_error")) or "Backend не принял событие"
 
 
+def backend_event_error_detail(item):
+    detail = item.get("last_error_detail")
+    return detail if isinstance(detail, dict) else {}
+
+
 def backend_blocked_scan_events_for_item(sync_result, order_item_id):
     return [
         item for item in (sync_result.get("blocked_events") or [])
@@ -285,13 +290,62 @@ def backend_blocked_scan_code(item):
     return normalize_kiz_code((item.get("payload") or {}).get("code"))
 
 
+def format_duplicate_scan_message(code, existing_order=None):
+    code = normalize_kiz_code(code)
+    existing_order = existing_order if isinstance(existing_order, dict) else {}
+    client = normalize_text(existing_order.get("client") or existing_order.get("Клиент"))
+    order_date = normalize_text(
+        existing_order.get("order_date_display")
+        or existing_order.get("order_date")
+        or existing_order.get("Дата отгрузки")
+    )
+    product = normalize_text(existing_order.get("product") or existing_order.get("Товары"))
+    request_number = normalize_text(
+        existing_order.get("skladbot_request_number")
+        or existing_order.get("№ SkladBot")
+        or existing_order.get("SkladBot")
+    )
+    lines = ["КИЗ уже отсканирован в другом заказе."]
+    if client:
+        lines.append(f"Заказ: {client}")
+    if order_date:
+        lines.append(f"Дата отгрузки: {order_date}")
+    if product:
+        lines.append(f"Товар: {product}")
+    if request_number:
+        lines.append(f"SkladBot: {request_number}")
+    if code:
+        lines.append(f"Код: {code}")
+    lines.append("Сканируйте другой КИЗ.")
+    return "\n".join(lines)
+
+
+def find_code_owner_in_orders(code, orders):
+    code = normalize_kiz_code(code)
+    if not code:
+        return {}
+    for order in orders or []:
+        order_codes = {normalize_kiz_code(value) for value in scanned_codes_for_order(order)}
+        if code not in order_codes:
+            continue
+        return {
+            "client": order.get("Клиент", ""),
+            "order_date_display": get_order_date_value(order) or "",
+            "product": order.get("Товары", ""),
+            "skladbot_request_number": order.get(SKLADBOT_REQUEST_NUMBER_COLUMN, ""),
+        }
+    return {}
+
+
 def format_backend_blocked_scan_message(blocked_events):
     first_event = (blocked_events or [{}])[0]
     code = backend_blocked_scan_code(first_event)
-    detail = backend_event_error_message(first_event).lower()
+    detail_payload = backend_event_error_detail(first_event)
+    detail_message = normalize_text(detail_payload.get("message")) or backend_event_error_message(first_event)
+    detail = detail_message.lower()
     suffix = f": {code[:24]}..." if code else ""
     if "already scanned in another order item" in detail or "already scanned for another order item" in detail:
-        return f"КИЗ уже использован в другой позиции. Сканируйте другой код{suffix}"
+        return format_duplicate_scan_message(code, detail_payload.get("existing_order"))
     if "does not match order item" in detail:
         return f"КИЗ не соответствует товару текущей позиции{suffix}"
     if "exceeds remaining order item blocks" in detail:
@@ -614,6 +668,7 @@ class ScanningApp(
         self.current_legal_entity_products = []
         self.last_completed_summary = None
         self.error_timer = None
+        self.toast_visible = False
         self.visible_order_groups = []
         self.current_group_key = None
         self.operation_in_progress = False
@@ -890,9 +945,30 @@ class ScanningApp(
                 pass
         self.error_timer = self.after(STATUS_NOTICE_TIMEOUT_MS, self.clear_error)
 
+    def show_error_toast(self, message):
+        if not hasattr(self, "error_toast"):
+            return
+        text = normalize_text(message)
+        self.error_toast.set_text(text)
+        if not self.toast_visible:
+            self.error_toast.pack(fill="x", pady=(0, 8))
+            self.toast_visible = True
+
+    def hide_error_toast(self):
+        if not hasattr(self, "error_toast") or not self.toast_visible:
+            return
+        try:
+            self.error_toast.pack_forget()
+        except tk.TclError:
+            pass
+        self.toast_visible = False
+
     def show_error(self, message, popup=True):
         logging.warning("Ошибка для пользователя: %s", message)
         self.show_status_notice(message, bg=ERROR_BG, fg=ERROR_FG, prefix="❌", log_level=None)
+        show_toast = getattr(self, "show_error_toast", None)
+        if callable(show_toast) and hasattr(self, "error_toast"):
+            show_toast(message)
         if hasattr(self, "last_code_label"):
             self.safe_config(
                 self.last_code_label,
@@ -937,6 +1013,7 @@ class ScanningApp(
             pass
 
     def clear_error(self):
+        self.hide_error_toast()
         if self.update_required:
             self.status_var.set("⛔ Требуется обновление приложения")
             self.safe_config(self.status_label, bg=ERROR_BG, fg=ERROR_FG)
@@ -1303,6 +1380,16 @@ class ScanningApp(
 
         status_frame = tk.Frame(main, bg=BG_MAIN)
         status_frame.pack(fill="x", pady=(20, 0))
+
+        self.error_toast = RoundedNotice(
+            status_frame,
+            bg=DANGER,
+            fg="white",
+            font=("Segoe UI", 10, "bold"),
+            radius=24,
+            padx=18,
+            pady=12,
+        )
 
         self.status_var = tk.StringVar(value="✅ Готов к работе")
         self.status_label = tk.Label(status_frame, textvariable=self.status_var,
@@ -2106,7 +2193,8 @@ class ScanningApp(
             return
 
         if code in self.all_existing_codes:
-            self.show_error(f"Код {code[:20]}... уже существует в Google Sheets!")
+            existing_order = find_code_owner_in_orders(code, self.today_orders)
+            self.show_error(format_duplicate_scan_message(code, existing_order))
             self.log_duplicate_code_async(code)
             self.scan_entry.delete(0, tk.END)
             return

@@ -1,4 +1,5 @@
 import logging
+import json
 import socket
 from datetime import datetime
 
@@ -159,6 +160,17 @@ def is_non_retryable_scan_conflict(exc):
     )
 
 
+def backend_error_detail_payload(exc):
+    detail = getattr(exc, "detail", "")
+    if isinstance(detail, (dict, list, str, int, float, bool)) or detail is None:
+        try:
+            json.dumps(detail, ensure_ascii=False)
+            return detail
+        except (TypeError, ValueError):
+            pass
+    return normalize_text(detail)
+
+
 def is_stale_backend_event_ack(item, exc):
     if not isinstance(exc, BackendApiError) or exc.retryable:
         return False
@@ -215,6 +227,7 @@ def sync_pending_backend_events():
                 blocked_item = dict(item)
                 blocked_item["attempts"] = int(blocked_item.get("attempts") or 0) + 1
                 blocked_item["last_error"] = str(exc)
+                blocked_item["last_error_detail"] = backend_error_detail_payload(exc)
                 blocked_item["updated_at"] = datetime.now().astimezone().isoformat()
                 blocked_events.append(blocked_item)
                 logging.warning(
@@ -237,6 +250,7 @@ def sync_pending_backend_events():
                 blocked_item = dict(item)
                 blocked_item["attempts"] = int(blocked_item.get("attempts") or 0) + 1
                 blocked_item["last_error"] = str(exc)
+                blocked_item["last_error_detail"] = backend_error_detail_payload(exc)
                 blocked_item["updated_at"] = datetime.now().astimezone().isoformat()
                 blocked_events.append(blocked_item)
                 logging.warning(

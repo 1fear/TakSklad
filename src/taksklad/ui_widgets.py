@@ -188,3 +188,78 @@ class AppButton(tk.Frame):
         if key == "text":
             return self._text
         return tk.Frame.cget(self, key)
+
+
+class RoundedNotice(tk.Frame):
+    def __init__(
+        self,
+        parent,
+        bg,
+        fg,
+        font=("Segoe UI", 10, "bold"),
+        radius=22,
+        padx=18,
+        pady=12,
+        **kwargs
+    ):
+        super().__init__(parent, bg=parent.cget("bg") if hasattr(parent, "cget") else bg, bd=0, highlightthickness=0)
+        self._notice_bg = bg
+        self._notice_fg = fg
+        self._radius = radius
+        self._padx = padx
+        self._pady = pady
+        self.canvas = tk.Canvas(self, bg=self.cget("bg"), highlightthickness=0, bd=0, height=64, **kwargs)
+        self.canvas.pack(fill="x", expand=True)
+        self.label = tk.Label(
+            self.canvas,
+            text="",
+            bg=bg,
+            fg=fg,
+            font=font,
+            justify="left",
+            anchor="w",
+        )
+        self._label_window = self.canvas.create_window(padx, pady, anchor="nw", window=self.label)
+        self.canvas.bind("<Configure>", lambda _event: self._refresh())
+
+    def set_text(self, text):
+        self.label.config(text=text)
+        self.after_idle(self._resize_to_text)
+
+    def _resize_to_text(self):
+        width = max(260, self.canvas.winfo_width() or self.winfo_width() or 900)
+        wrap = max(220, width - self._padx * 2)
+        self.label.config(wraplength=wrap)
+        self.update_idletasks()
+        height = max(58, self.label.winfo_reqheight() + self._pady * 2)
+        self.canvas.config(height=height)
+        self._refresh()
+
+    def _refresh(self):
+        width = max(1, self.canvas.winfo_width())
+        height = max(1, self.canvas.winfo_height())
+        wrap = max(220, width - self._padx * 2)
+        self.label.config(wraplength=wrap)
+        self.canvas.coords(self._label_window, self._padx, self._pady)
+        self.canvas.itemconfig(self._label_window, width=wrap)
+        self.canvas.delete("notice_bg")
+        self._rounded_rect(1, 1, width - 1, height - 1, self._radius, fill=self._notice_bg, outline=self._notice_bg)
+        self.canvas.tag_lower("notice_bg")
+
+    def _rounded_rect(self, x1, y1, x2, y2, radius, **kwargs):
+        radius = max(0, min(radius, int((x2 - x1) / 2), int((y2 - y1) / 2)))
+        points = [
+            x1 + radius, y1,
+            x2 - radius, y1,
+            x2, y1,
+            x2, y1 + radius,
+            x2, y2 - radius,
+            x2, y2,
+            x2 - radius, y2,
+            x1 + radius, y2,
+            x1, y2,
+            x1, y2 - radius,
+            x1, y1 + radius,
+            x1, y1,
+        ]
+        return self.canvas.create_polygon(points, smooth=True, tags=("notice_bg",), **kwargs)

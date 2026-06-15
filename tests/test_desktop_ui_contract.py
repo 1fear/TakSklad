@@ -6,7 +6,8 @@ from unittest import mock
 
 from taksklad import app_day_end
 from taksklad import main as main_module
-from taksklad.config import ACCENT, BG_MAIN, ERROR_FG, FG_MUTED, FG_TEXT, WARNING
+from taksklad.config import ACCENT, BG_MAIN, DANGER, ERROR_FG, FG_MUTED, FG_TEXT, WARNING
+from taksklad.config import SKLADBOT_REQUEST_NUMBER_COLUMN
 from taksklad.app_day_end import build_backend_status
 from taksklad import backend_client
 from taksklad.main import (
@@ -17,6 +18,8 @@ from taksklad.main import (
     backend_sync_item_blocker,
     complete_backend_orders_or_raise,
     format_print_failure_after_backend_complete,
+    find_code_owner_in_orders,
+    format_duplicate_scan_message,
     first_incomplete_order_index,
     group_finish_blocker,
     is_terminal_scan_state,
@@ -129,12 +132,44 @@ class DesktopUiContractTests(unittest.TestCase):
                 "type": "scan",
                 "payload": {"code": "0104006396053978217abcdef"},
                 "last_error": "Backend HTTP 409: Code already scanned in another order item",
+                "last_error_detail": {
+                    "message": "Code already scanned in another order item",
+                    "existing_order": {
+                        "client": "OOO Busy Client",
+                        "order_date_display": "30.05.2026",
+                        "product": "Chapman Brown OP 20",
+                        "skladbot_request_number": "WH-R-100500",
+                    },
+                },
             }
         ])
 
-        self.assertIn("КИЗ уже использован в другой позиции", message)
-        self.assertIn("Сканируйте другой код", message)
+        self.assertIn("КИЗ уже отсканирован в другом заказе", message)
+        self.assertIn("OOO Busy Client", message)
+        self.assertIn("30.05.2026", message)
+        self.assertIn("Chapman Brown OP 20", message)
+        self.assertIn("WH-R-100500", message)
+        self.assertIn("Сканируйте другой КИЗ", message)
         self.assertNotIn("Backend HTTP", message)
+
+    def test_local_duplicate_scan_message_uses_current_loaded_order_context(self):
+        code = "0104006396053978217abcdef"
+        owner = find_code_owner_in_orders(code, [
+            {
+                "Клиент": "OOO Local Client",
+                "Дата отгрузки": "31.05.2026",
+                "Товары": "Chapman Brown OP 20",
+                SKLADBOT_REQUEST_NUMBER_COLUMN: "WH-R-101",
+                "_existing_scanned_codes": [code],
+            }
+        ])
+
+        message = format_duplicate_scan_message(code, owner)
+
+        self.assertIn("OOO Local Client", message)
+        self.assertIn("31.05.2026", message)
+        self.assertIn("Chapman Brown OP 20", message)
+        self.assertIn("WH-R-101", message)
 
     def test_backend_sync_group_blocker_only_blocks_current_group_events(self):
         sync_result = {
@@ -210,10 +245,23 @@ class DesktopUiContractTests(unittest.TestCase):
             def config(self, **kwargs):
                 self.options.update(kwargs)
 
+        class FakeToast:
+            def __init__(self):
+                self.text = ""
+                self.packed = False
+
+            def set_text(self, value):
+                self.text = value
+
+            def pack(self, **_kwargs):
+                self.packed = True
+
         fake = SimpleNamespace(
             status_var=FakeVar(),
             status_label=FakeLabel(),
             last_code_label=FakeLabel(),
+            error_toast=FakeToast(),
+            toast_visible=False,
             error_timer=None,
             safe_config=lambda widget, **kwargs: widget.config(**kwargs),
             after=lambda _timeout, _callback: "timer-1",
@@ -221,12 +269,17 @@ class DesktopUiContractTests(unittest.TestCase):
             clear_error=lambda: None,
         )
         fake.show_status_notice = ScanningApp.show_status_notice.__get__(fake)
+        fake.show_error_toast = ScanningApp.show_error_toast.__get__(fake)
 
-        ScanningApp.show_error(fake, "КИЗ не соответствует товару текущей позиции")
+        full_message = "КИЗ уже отсканирован в другом заказе.\nЗаказ: OOO Busy Client\nДата отгрузки: 30.05.2026"
+        ScanningApp.show_error(fake, full_message)
 
-        self.assertIn("КИЗ не соответствует", fake.status_var.value)
-        self.assertIn("КИЗ не соответствует", fake.last_code_label.options["text"])
+        self.assertIn("OOO Busy Client", fake.status_var.value)
+        self.assertIn("OOO Busy Client", fake.last_code_label.options["text"])
         self.assertEqual(fake.last_code_label.options["fg"], ERROR_FG)
+        self.assertEqual(fake.error_toast.text, full_message)
+        self.assertTrue(fake.error_toast.packed)
+        self.assertTrue(fake.toast_visible)
 
     def test_backend_blocked_scan_removes_code_and_keeps_position_open(self):
         class FakeVar:
@@ -285,7 +338,7 @@ class DesktopUiContractTests(unittest.TestCase):
         self.assertEqual(fake.progress_label.options["text"], "1 / 2")
         self.assertEqual(fake.next_product_btn.options["state"], "disabled")
         self.assertEqual(fake.finish_btn.options["state"], "disabled")
-        self.assertIn("Сканируйте другой код", fake.status_var.value)
+        self.assertIn("Сканируйте другой КИЗ", fake.status_var.value)
         self.assertIn(blocked_code, fake.all_existing_codes)
         self.assertTrue(fake.scan_entry.focused)
         write_backup.assert_called_once()

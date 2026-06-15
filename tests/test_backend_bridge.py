@@ -66,7 +66,13 @@ class BackendBridgeTests(unittest.TestCase):
                 side_effect=backend_client.BackendApiError(
                     "Backend HTTP 409: Code already scanned in another order item",
                     status_code=409,
-                    detail={"message": "Code already scanned in another order item"},
+                    detail={
+                        "message": "Code already scanned in another order item",
+                        "existing_order": {
+                            "client": "OOO Busy Client",
+                            "order_date_display": "30.05.2026",
+                        },
+                    },
                 ),
             ),
         ):
@@ -81,6 +87,10 @@ class BackendBridgeTests(unittest.TestCase):
         self.assertEqual(len(result["blocked_events"]), 1)
         self.assertEqual(result["blocked_events"][0]["payload"]["order_item_id"], "item-1")
         self.assertIn("another order item", result["blocked_events"][0]["last_error"])
+        self.assertEqual(
+            result["blocked_events"][0]["last_error_detail"]["existing_order"]["client"],
+            "OOO Busy Client",
+        )
 
     def test_backend_queue_drops_non_retryable_wrong_sku_scan_conflict(self):
         pending = [{

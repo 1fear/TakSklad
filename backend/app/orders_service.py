@@ -103,15 +103,11 @@ def create_scan(db: Session, payload: ScanCreate):
     other_item_scan = find_other_item_scan(db, code=code, order_item_id=item.id)
     latest_movement = latest_kiz_movement(db, code)
     if other_item_scan is not None and latest_movement is None:
-        return existing_scan_response_or_error(other_item_scan, item)
+        return existing_scan_response_or_error(db, other_item_scan, item)
     if other_item_scan is not None and not kiz_is_available_for_outbound(latest_movement):
-        return existing_scan_response_or_error(other_item_scan, item)
+        return existing_scan_response_or_error(db, other_item_scan, item)
     if other_item_scan is None and latest_movement is not None and not kiz_is_available_for_outbound(latest_movement):
-        raise ApiError(409, {
-            "message": "Code already scanned in another order item",
-            "existing_order_item_id": str(latest_movement.order_item_id or ""),
-            "order_item_id": str(item.id),
-        })
+        raise ApiError(409, scan_conflict_detail(db, latest_movement.order_item_id, item))
     movement_type = outbound_movement_type_for(latest_movement)
 
     if item.status in COMPLETED_STATUSES or (
@@ -221,7 +217,7 @@ def create_scan(db: Session, payload: ScanCreate):
                 return scan_to_read(same_item_scan, item)
             other_item_scan = find_other_item_scan(db, code=code, order_item_id=item.id)
             if other_item_scan is not None:
-                return existing_scan_response_or_error(other_item_scan, item)
+                return existing_scan_response_or_error(db, other_item_scan, item)
         raise ApiError(409, "Code already scanned") from exc
 
     db.refresh(scan)
@@ -326,14 +322,48 @@ def undo_scan(db: Session, payload: ScanUndo):
     return response
 
 
-def existing_scan_response_or_error(existing_scan, item):
+def existing_scan_response_or_error(db: Session, existing_scan, item):
     if existing_scan.order_item_id == item.id:
         return scan_to_read(existing_scan, item)
-    raise ApiError(409, {
+    raise ApiError(409, scan_conflict_detail(db, existing_scan.order_item_id, item))
+
+
+def scan_conflict_detail(db: Session, existing_order_item_id, item):
+    detail = {
         "message": "Code already scanned in another order item",
-        "existing_order_item_id": str(existing_scan.order_item_id),
+        "existing_order_item_id": str(existing_order_item_id or ""),
         "order_item_id": str(item.id),
-    })
+    }
+    existing_item = None
+    if existing_order_item_id:
+        existing_item = db.execute(
+            select(OrderItem)
+            .options(selectinload(OrderItem.order))
+            .where(OrderItem.id == existing_order_item_id)
+        ).scalar_one_or_none()
+    if existing_item is not None and existing_item.order is not None:
+        order = existing_item.order
+        raw_payload = order.raw_payload or {}
+        detail["existing_order"] = {
+            "id": str(order.id),
+            "order_item_id": str(existing_item.id),
+            "order_date": str(order.order_date or ""),
+            "order_date_display": format_order_date_display(order.order_date),
+            "client": order.client,
+            "payment_type": order.payment_type,
+            "address": order.address,
+            "representative": order.representative or "",
+            "product": existing_item.product,
+            "skladbot_request_number": raw_payload.get("skladbot_request_number") or "",
+            "skladbot_request_id": raw_payload.get("skladbot_request_id") or "",
+        }
+    return detail
+
+
+def format_order_date_display(value):
+    if hasattr(value, "strftime"):
+        return value.strftime("%d.%m.%Y")
+    return str(value or "")
 
 
 def scan_to_read(scan, item):
