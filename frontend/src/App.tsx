@@ -849,15 +849,9 @@ function buildActionState(selectedOrderIds: string[], selectedRows: AdminTableRo
   if (!canRestore) {
     disabledReason.restore = "Доступно только для отмененных заказов или архива без КИЗов";
   }
-  const hasPartiallyScannedRows = selectedRows.some(
-    (row) => (row.scanned_blocks > 0 || row.scan_codes_count > 0) && row.scanned_blocks < row.quantity_blocks,
-  );
   if (scannedBlocks > 0 || scanCodes > 0) {
     disabledReason.archive = "В заказе уже есть отсканированные КИЗы";
     disabledReason.cancel = "В заказе уже есть отсканированные КИЗы";
-  }
-  if (hasPartiallyScannedRows) {
-    disabledReason.completeWithoutKiz = "Есть частично отсканированные позиции";
   }
   if (selectedRows.some((row) => row.status_bucket === "removed_from_google")) {
     disabledReason.resync = "Заказ удален из Google";

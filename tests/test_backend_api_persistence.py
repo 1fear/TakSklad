@@ -454,9 +454,9 @@ class BackendApiPersistenceTests(unittest.TestCase):
             order = db.get(Order, uuid.UUID(order_id))
             self.assertEqual(order.status, "completed")
 
-    def test_bulk_complete_without_kiz_rejects_partially_scanned_order_without_partial_changes(self):
+    def test_bulk_complete_without_kiz_allows_partially_scanned_order_and_preserves_scans(self):
         clean_order_id, _clean_item_id = self.seed_order(quantity_blocks=3)
-        scanned_order_id, _scanned_item_id = self.seed_order(quantity_blocks=3, scanned_blocks=1)
+        scanned_order_id, scanned_item_id = self.seed_order(quantity_blocks=3, scanned_blocks=1)
 
         response = self.client.post(
             "/api/v1/admin/orders/bulk/complete-without-kiz",
@@ -467,15 +467,21 @@ class BackendApiPersistenceTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.json()["detail"]["message"], "Bulk complete without KIZ rejected")
-        self.assertEqual(response.json()["detail"]["errors"][0]["message"], "Order has partially scanned KIZ codes")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["completed"], 2)
         with self.SessionLocal() as db:
             clean_order = db.get(Order, uuid.UUID(clean_order_id))
             scanned_order = db.get(Order, uuid.UUID(scanned_order_id))
-            self.assertEqual(clean_order.status, "not_completed")
-            self.assertEqual(scanned_order.status, "not_completed")
-            self.assertEqual(db.execute(select(PendingEvent)).scalars().all(), [])
+            scanned_item = db.get(OrderItem, uuid.UUID(scanned_item_id))
+            self.assertEqual(clean_order.status, "completed")
+            self.assertEqual(scanned_order.status, "completed")
+            self.assertEqual(scanned_item.status, "completed")
+            self.assertEqual(scanned_item.scanned_blocks, 1)
+            events = db.execute(
+                select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")
+            ).scalars().all()
+            self.assertEqual(len(events), 2)
+            self.assertEqual({event.payload["action"] for event in events}, {"google_sheets_archive_export"})
 
     def test_bulk_complete_without_kiz_allows_fully_scanned_order(self):
         order_id, _item_id = self.seed_order(quantity_blocks=2, scanned_blocks=2)

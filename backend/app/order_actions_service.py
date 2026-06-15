@@ -553,17 +553,6 @@ def validate_complete_without_kiz_order(db: Session, order, payload):
         ensure_expected_updated_at(order, expected_by_order.get(order_id, ""))
     except ApiError as exc:
         errors.append({"order_id": order_id, "message": str(exc.detail)})
-    partially_scanned_items = [
-        item
-        for item in order.items
-        if (int(item.scanned_blocks or 0) > 0 or len(item.scan_codes or []) > 0)
-        and int(item.scanned_blocks or 0) < int(item.quantity_blocks or 0)
-    ]
-    if partially_scanned_items:
-        errors.append({
-            "order_id": order_id,
-            "message": "Order has partially scanned KIZ codes",
-        })
     if pending_google_export_exists(db, order):
         errors.append({"order_id": order_id, "message": "Order has pending Google export"})
     return errors
