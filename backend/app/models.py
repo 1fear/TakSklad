@@ -147,6 +147,40 @@ class PendingEvent(Base):
     updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
+class Incident(Base):
+    __tablename__ = "incidents"
+    __table_args__ = (
+        Index("idx_incidents_status_severity", "status", "severity"),
+        Index("idx_incidents_source", "source"),
+        Index("idx_incidents_entity_type", "entity_type"),
+        Index("idx_incidents_created_at", "created_at"),
+        Index("idx_incidents_pending_event_id", "pending_event_id"),
+        Index("idx_incidents_order_id", "order_id"),
+        Index("idx_incidents_order_item_id", "order_item_id"),
+        Index("idx_incidents_import_id", "import_id"),
+        Index("idx_incidents_scan_code_id", "scan_code_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    source: Mapped[str] = mapped_column(String(80), nullable=False)
+    severity: Mapped[str] = mapped_column(String(40), nullable=False, default="warning")
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="open")
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    message: Mapped[str | None] = mapped_column(Text)
+    entity_type: Mapped[str | None] = mapped_column(String(80))
+    entity_id: Mapped[str | None] = mapped_column(String(120))
+    pending_event_id: Mapped[uuid.UUID | None] = mapped_column(UUID_TYPE, ForeignKey("pending_events.id", ondelete="SET NULL"))
+    order_id: Mapped[uuid.UUID | None] = mapped_column(UUID_TYPE, ForeignKey("orders.id", ondelete="SET NULL"))
+    order_item_id: Mapped[uuid.UUID | None] = mapped_column(UUID_TYPE, ForeignKey("order_items.id", ondelete="SET NULL"))
+    import_id: Mapped[uuid.UUID | None] = mapped_column(UUID_TYPE, ForeignKey("imports.id", ondelete="SET NULL"))
+    scan_code_id: Mapped[uuid.UUID | None] = mapped_column(UUID_TYPE, ForeignKey("scan_codes.id", ondelete="SET NULL"))
+    external_ref: Mapped[str | None] = mapped_column(String(180))
+    raw_payload: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    resolved_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+
+
 class User(Base):
     __tablename__ = "users"
 

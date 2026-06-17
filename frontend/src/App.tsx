@@ -26,22 +26,30 @@ import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
+  AdminIncident,
   AdminActivity,
+  AdminIncidentsResponse,
   AdminTable,
   AdminTableRow,
   ApiConfig,
   ApiRequestError,
   DayReport,
+  EventQueueDiagnostics,
+  EventQueueEvent,
   ImportRecord,
+  ReadinessResponse,
   SkladBotDryRun,
   archiveOrderWithoutKiz,
   cancelOrder,
   completeOrdersWithoutKiz,
   defaultApiUrl,
   downloadDiagnosticsLog,
+  getAdminEvents,
+  getAdminIncidents,
   getAdminTable,
   getAuthSession,
   getDayReport,
+  getReadiness,
   listImports,
   listSkladBotDryRuns,
   loginWeb,
@@ -51,16 +59,20 @@ import {
   restoreOrder,
   resyncGoogleOrder,
   resyncSkladBotOrder,
+  retryAdminEvent,
   retryPendingGoogle,
   syncSources,
+  updateIncidentStatus,
 } from "./api";
 import "./styles.css";
 
-type Tab = "table" | "report" | "imports" | "skladbotDryRun" | "activity";
+type Tab = "table" | "report" | "imports" | "skladbotDryRun" | "incidents" | "activity";
 type StatusFilter = "all" | "active" | "archive" | "archive_no_kiz" | "cancelled" | "returned" | "removed_from_google";
 type ScanFilter = "all" | "not_started" | "in_progress" | "completed" | "over_scanned" | "no_plan";
 type SkladBotFilter = "all" | "found" | "missing" | "problem";
 type GoogleFilter = "all" | "synced" | "pending" | "removed_from_google" | "unknown";
+type IncidentStatusFilter = "all" | "open" | "in_progress" | "manual_review" | "resolved" | "ignored" | "cancelled";
+type IncidentSeverityFilter = "all" | "info" | "warning" | "critical";
 type OrderActionKind = "resync" | "archive" | "completeWithoutKiz" | "cancel" | "resetRescan" | "restore" | "resyncSkladBot";
 type ActionState = {
   selectedCount: number;
@@ -85,16 +97,27 @@ function App() {
   const [adminTable, setAdminTable] = useState<AdminTable | null>(null);
   const [imports, setImports] = useState<ImportRecord[]>([]);
   const [dryRuns, setDryRuns] = useState<SkladBotDryRun[]>([]);
+  const [readiness, setReadiness] = useState<ReadinessResponse | null>(null);
+  const [eventQueue, setEventQueue] = useState<EventQueueDiagnostics | null>(null);
+  const [incidents, setIncidents] = useState<AdminIncident[]>([]);
+  const [incidentSummary, setIncidentSummary] = useState<Record<string, unknown>>({});
   const [report, setReport] = useState<DayReport | null>(null);
   const [reportDate, setReportDate] = useState(todayIso());
   const [shipmentDateFilter, setShipmentDateFilter] = useState("");
   const [search, setSearch] = useState("");
+  const [incidentSearch, setIncidentSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("active");
   const [scanFilter, setScanFilter] = useState<ScanFilter>("all");
   const [skladbotFilter, setSkladbotFilter] = useState<SkladBotFilter>("all");
   const [googleFilter, setGoogleFilter] = useState<GoogleFilter>("all");
+  const [incidentStatusFilter, setIncidentStatusFilter] = useState<IncidentStatusFilter>("all");
+  const [incidentSeverityFilter, setIncidentSeverityFilter] = useState<IncidentSeverityFilter>("all");
+  const [incidentSourceFilter, setIncidentSourceFilter] = useState("all");
   const [tab, setTab] = useState<Tab>("table");
   const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([]);
+  const [selectedIncidentId, setSelectedIncidentId] = useState("");
+  const [selectedEventId, setSelectedEventId] = useState("");
+  const [adminActionReason, setAdminActionReason] = useState("");
   const [busyAction, setBusyAction] = useState("");
   const [loading, setLoading] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
@@ -146,22 +169,58 @@ function App() {
     () => buildActionState(selectedOrderIds, selectedRows),
     [selectedOrderIds, selectedRows],
   );
+  const filteredIncidents = useMemo(
+    () => filterIncidents(incidents, {
+      status: incidentStatusFilter,
+      severity: incidentSeverityFilter,
+      source: incidentSourceFilter,
+      search: incidentSearch,
+    }),
+    [incidents, incidentStatusFilter, incidentSeverityFilter, incidentSourceFilter, incidentSearch],
+  );
+  const sourceOptions = useMemo(
+    () => Array.from(new Set(incidents.map((item) => item.source).filter(Boolean))).sort(),
+    [incidents],
+  );
+  const actionableEvents = useMemo(
+    () => (eventQueue?.recent_events ?? [])
+      .filter((event) => ["failed", "pending", "processing", "blocked"].includes(event.status))
+      .slice(0, 100),
+    [eventQueue],
+  );
+  const selectedIncident = useMemo(
+    () => incidents.find((item) => item.id === selectedIncidentId) ?? filteredIncidents[0],
+    [incidents, selectedIncidentId, filteredIncidents],
+  );
+  const selectedEvent = useMemo(
+    () => actionableEvents.find((event) => event.id === selectedEventId) ?? actionableEvents[0],
+    [actionableEvents, selectedEventId],
+  );
 
   async function refreshAll(activeConfig = config, showNotice = true) {
     setLoading(true);
     setError("");
     if (showNotice) setNotice("");
     try {
-      const [nextAdminTable, nextReport, nextImports] = await Promise.all([
+      const [nextAdminTable, nextReport, nextImports, nextReadiness, nextEventQueue, nextIncidents] = await Promise.all([
         getAdminTable(activeConfig),
         getDayReport(activeConfig, reportDate),
         listImports(activeConfig),
+        getReadiness(activeConfig).catch(() => null),
+        getAdminEvents(activeConfig).catch(() => null),
+        getAdminIncidents(activeConfig).catch(() => ({ items: [], summary: {} }) as AdminIncidentsResponse),
       ]);
       setAdminTable(nextAdminTable);
       setReport(nextReport);
       setImports(nextImports);
+      setReadiness(nextReadiness);
+      setEventQueue(nextEventQueue);
+      setIncidents(nextIncidents.items);
+      setIncidentSummary(nextIncidents.summary);
       void refreshDryRuns(activeConfig);
       setSelectedOrderIds((current) => current.filter((id) => nextAdminTable.rows.some((row) => row.order_id === id)));
+      setSelectedIncidentId((current) => current && nextIncidents.items.some((item) => item.id === current) ? current : "");
+      setSelectedEventId((current) => current && nextEventQueue?.recent_events.some((event) => event.id === current) ? current : "");
       if (showNotice) {
         setNotice(`Обновлено: ${new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}`);
       }
@@ -247,8 +306,15 @@ function App() {
       setAdminTable(null);
       setImports([]);
       setDryRuns([]);
+      setReadiness(null);
+      setEventQueue(null);
+      setIncidents([]);
+      setIncidentSummary({});
       setReport(null);
       setSelectedOrderIds([]);
+      setSelectedIncidentId("");
+      setSelectedEventId("");
+      setAdminActionReason("");
     }
   }
 
@@ -341,6 +407,62 @@ function App() {
     }
   }
 
+  async function runIncidentStatusAction(incident: AdminIncident, status: "resolved" | "ignored") {
+    const reason = adminActionReason.trim();
+    if (!reason) {
+      setError("Укажите причину действия");
+      return;
+    }
+    setBusyAction(`incident:${status}:${incident.id}`);
+    setError("");
+    setNotice("");
+    try {
+      await updateIncidentStatus(config, incident.id, {
+        status,
+        reason,
+        actor: "web",
+        source: "web",
+      });
+      setAdminActionReason("");
+      await refreshAll(config, false);
+      setNotice(status === "resolved" ? "Инцидент закрыт" : "Инцидент проигнорирован");
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "Не удалось обновить инцидент");
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  async function runEventRetry(event: EventQueueEvent) {
+    const reason = adminActionReason.trim();
+    if (!reason) {
+      setError("Укажите причину действия");
+      return;
+    }
+    if (!event.retryable) {
+      setError("Это событие нельзя повторить вручную");
+      return;
+    }
+    setBusyAction(`event-retry:${event.id}`);
+    setError("");
+    setNotice("");
+    try {
+      await retryAdminEvent(config, event.id, {
+        reason,
+        actor: "web",
+        source: "web",
+        idempotency_key: makeIdempotencyKey(),
+      });
+      setAdminActionReason("");
+      await refreshAll(config, false);
+      setNotice("Событие возвращено в очередь");
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "Не удалось повторить событие");
+    } finally {
+      setBusyAction("");
+    }
+  }
+
   async function runOrderAction(kind: OrderActionKind) {
     const primaryRow = selectedOrder ?? selectedRows[0];
     if (!primaryRow) return;
@@ -370,7 +492,11 @@ function App() {
       const payload = {
         reason: reason.trim() || defaultReason,
         actor: "web",
+        source: "web",
         idempotency_key: makeIdempotencyKey(),
+        ...(kind === "completeWithoutKiz"
+          ? { expected_updated_at_by_order: selectedUpdatedAtByOrder(selectedRows) }
+          : { expected_updated_at: primaryRow.updated_at || "" }),
       };
       if (kind === "resync") {
         await resyncGoogleOrder(config, primaryRow.order_id, payload);
@@ -442,6 +568,10 @@ function App() {
           <button className={tab === "skladbotDryRun" ? "active" : ""} onClick={() => setTab("skladbotDryRun")}>
             <SquareCode size={18} />
             SkladBot dry-run
+          </button>
+          <button className={tab === "incidents" ? "active" : ""} onClick={() => setTab("incidents")}>
+            <AlertCircle size={18} />
+            Инциденты
           </button>
           <button className={tab === "activity" ? "active" : ""} onClick={() => setTab("activity")}>
             <History size={18} />
@@ -640,7 +770,7 @@ function App() {
               <h2>История импортов</h2>
             </div>
             <DataTable
-              headers={["Дата", "Источник", "Статус", "Строк", "Импортировано", "SkladBot dry-run"]}
+              headers={["Дата", "Источник", "Статус", "Строк", "Импортировано", "SkladBot dry-run", "Ошибки"]}
               rows={imports.map((item) => [
                 new Date(item.created_at).toLocaleString("ru-RU"),
                 item.source,
@@ -648,6 +778,7 @@ function App() {
                 String(item.rows_total),
                 String(item.rows_imported),
                 importDryRunSummaryText(item),
+                importIssuesText(item),
               ])}
             />
           </section>
@@ -662,6 +793,36 @@ function App() {
           />
         )}
 
+        {tab === "incidents" && (
+          <AdminCenterPanel
+            incidents={filteredIncidents}
+            allIncidents={incidents}
+            incidentSummary={incidentSummary}
+            sourceOptions={sourceOptions}
+            events={actionableEvents}
+            selectedIncident={selectedIncident}
+            selectedEvent={selectedEvent}
+            selectedIncidentId={selectedIncidentId}
+            selectedEventId={selectedEventId}
+            incidentSearch={incidentSearch}
+            incidentStatusFilter={incidentStatusFilter}
+            incidentSeverityFilter={incidentSeverityFilter}
+            incidentSourceFilter={incidentSourceFilter}
+            actionReason={adminActionReason}
+            busyAction={busyAction}
+            onSearchChange={setIncidentSearch}
+            onStatusFilterChange={(value) => setIncidentStatusFilter(value as IncidentStatusFilter)}
+            onSeverityFilterChange={(value) => setIncidentSeverityFilter(value as IncidentSeverityFilter)}
+            onSourceFilterChange={setIncidentSourceFilter}
+            onSelectIncident={setSelectedIncidentId}
+            onSelectEvent={setSelectedEventId}
+            onReasonChange={setAdminActionReason}
+            onResolveIncident={(incident) => void runIncidentStatusAction(incident, "resolved")}
+            onIgnoreIncident={(incident) => void runIncidentStatusAction(incident, "ignored")}
+            onRetryEvent={(event) => void runEventRetry(event)}
+          />
+        )}
+
         {tab === "activity" && (
           <section className="table-panel">
             <div className="panel-header">
@@ -671,6 +832,7 @@ function App() {
                 Audit log
               </button>
             </div>
+            <SystemDiagnosticsPanel readiness={readiness} eventQueue={eventQueue} />
             <ActivityList items={adminTable?.recent_activity ?? []} />
           </section>
         )}
@@ -872,6 +1034,28 @@ function actionDisabledReasons(reason: string): Record<OrderActionKind, string> 
   };
 }
 
+function firstVisibleActionBlockReason(reasons: Record<OrderActionKind, string>) {
+  return [
+    reasons.archive,
+    reasons.cancel,
+    reasons.resetRescan,
+    reasons.restore,
+    reasons.resyncSkladBot,
+    reasons.resync,
+    reasons.completeWithoutKiz,
+  ].find((reason, index, list) => reason && list.indexOf(reason) === index) || "";
+}
+
+function selectedUpdatedAtByOrder(rows: AdminTableRow[]) {
+  const values: Record<string, string> = {};
+  for (const row of rows) {
+    if (row.order_id && row.updated_at && !values[row.order_id]) {
+      values[row.order_id] = row.updated_at;
+    }
+  }
+  return values;
+}
+
 function ActionBar({
   selectedRows,
   state,
@@ -899,6 +1083,7 @@ function ActionBar({
 }) {
   const firstRow = selectedRows[0];
   const isBusy = Boolean(busyAction);
+  const visibleBlockReason = firstVisibleActionBlockReason(state.disabledReason);
 
   return (
     <div className="action-bar">
@@ -910,6 +1095,12 @@ function ActionBar({
             : `${state.selectedCount} заказов`}
           {state.pendingGoogleExports > 0 ? `, Google очередь ${state.pendingGoogleExports}` : ""}
         </span>
+        {visibleBlockReason && (
+          <span className="action-warning">
+            <AlertCircle size={14} />
+            {visibleBlockReason}
+          </span>
+        )}
       </div>
       <div className="action-buttons">
         <button
@@ -1107,6 +1298,12 @@ function AdminRowsTable({
                 <td>
                   <strong className="cell-title">{row.skladbot_request_number || "-"}</strong>
                   <span className="table-muted cell-sub">{skladbotStatusLabel(row)}</span>
+                  {row.status_bucket === "returned" && (
+                    <span className="table-muted cell-sub">
+                      Возврат: {row.skladbot_return_request_number || "не создан"} ·{" "}
+                      {returnSkladBotStatusLabel(row.skladbot_return_status)}
+                    </span>
+                  )}
                 </td>
                 <td>
                   <span className={`status-badge google-${row.google_sheet_status}`}>
@@ -1262,6 +1459,414 @@ function SkladBotDryRunPanel({
   );
 }
 
+function AdminCenterPanel({
+  incidents,
+  allIncidents,
+  incidentSummary,
+  sourceOptions,
+  events,
+  selectedIncident,
+  selectedEvent,
+  selectedIncidentId,
+  selectedEventId,
+  incidentSearch,
+  incidentStatusFilter,
+  incidentSeverityFilter,
+  incidentSourceFilter,
+  actionReason,
+  busyAction,
+  onSearchChange,
+  onStatusFilterChange,
+  onSeverityFilterChange,
+  onSourceFilterChange,
+  onSelectIncident,
+  onSelectEvent,
+  onReasonChange,
+  onResolveIncident,
+  onIgnoreIncident,
+  onRetryEvent,
+}: {
+  incidents: AdminIncident[];
+  allIncidents: AdminIncident[];
+  incidentSummary: Record<string, unknown>;
+  sourceOptions: string[];
+  events: EventQueueEvent[];
+  selectedIncident: AdminIncident | undefined;
+  selectedEvent: EventQueueEvent | undefined;
+  selectedIncidentId: string;
+  selectedEventId: string;
+  incidentSearch: string;
+  incidentStatusFilter: IncidentStatusFilter;
+  incidentSeverityFilter: IncidentSeverityFilter;
+  incidentSourceFilter: string;
+  actionReason: string;
+  busyAction: string;
+  onSearchChange: (value: string) => void;
+  onStatusFilterChange: (value: string) => void;
+  onSeverityFilterChange: (value: string) => void;
+  onSourceFilterChange: (value: string) => void;
+  onSelectIncident: (value: string) => void;
+  onSelectEvent: (value: string) => void;
+  onReasonChange: (value: string) => void;
+  onResolveIncident: (incident: AdminIncident) => void;
+  onIgnoreIncident: (incident: AdminIncident) => void;
+  onRetryEvent: (event: EventQueueEvent) => void;
+}) {
+  const activeIncidentStatuses = ["open", "in_progress", "manual_review"];
+  const openIncidents = allIncidents.filter((item) => activeIncidentStatuses.includes(item.status)).length;
+  const criticalIncidents = allIncidents.filter((item) => item.severity === "critical" && activeIncidentStatuses.includes(item.status)).length;
+  const retryableEvents = events.filter((event) => event.retryable).length;
+  const selectedIncidentTerminal = Boolean(selectedIncident && ["resolved", "ignored", "cancelled"].includes(selectedIncident.status));
+
+  return (
+    <section className="table-panel">
+      <div className="panel-header table-panel-header">
+        <div>
+          <h2>Инциденты и очередь</h2>
+          <span className="panel-subtitle">Показано {incidents.length} инцидентов и {events.length} событий очереди</span>
+        </div>
+        <label className="search-box">
+          <Search size={16} />
+          <input value={incidentSearch} onChange={(event) => onSearchChange(event.target.value)} placeholder="Поиск" />
+        </label>
+      </div>
+
+      <section className="stats-row compact">
+        <Metric icon={<AlertCircle size={20} />} label="Открыто" value={openIncidents} tone={openIncidents ? "warn" : undefined} />
+        <Metric icon={<ShieldCheck size={20} />} label="Critical" value={criticalIncidents} tone={criticalIncidents ? "warn" : undefined} />
+        <Metric icon={<Activity size={20} />} label="Retryable" value={retryableEvents} tone={retryableEvents ? "warn" : undefined} />
+        <Metric icon={<Database size={20} />} label="Всего" value={numberField(incidentSummary, "total")} />
+      </section>
+
+      <div className="filters-bar">
+        <SelectFilter value={incidentStatusFilter} onChange={onStatusFilterChange}>
+          <option value="all">Все статусы</option>
+          <option value="open">Открытые</option>
+          <option value="in_progress">В работе</option>
+          <option value="manual_review">Ручная проверка</option>
+          <option value="resolved">Закрытые</option>
+          <option value="ignored">Игнор</option>
+          <option value="cancelled">Отменены</option>
+        </SelectFilter>
+        <SelectFilter value={incidentSeverityFilter} onChange={onSeverityFilterChange}>
+          <option value="all">Все уровни</option>
+          <option value="critical">Critical</option>
+          <option value="warning">Warning</option>
+          <option value="info">Info</option>
+        </SelectFilter>
+        <SelectFilter value={incidentSourceFilter} onChange={onSourceFilterChange}>
+          <option value="all">Все источники</option>
+          {sourceOptions.map((source) => <option key={source} value={source}>{source}</option>)}
+        </SelectFilter>
+      </div>
+
+      <div className="admin-center-layout">
+        <div className="admin-center-main">
+          <div className="data-table-wrap admin-center-table-wrap">
+            <table className="data-table admin-center-table">
+              <thead>
+                <tr>
+                  <th>Статус</th>
+                  <th>Источник</th>
+                  <th>Сущность</th>
+                  <th>Ошибка</th>
+                  <th>Возраст</th>
+                </tr>
+              </thead>
+              <tbody>
+                {incidents.map((incident) => (
+                  <tr
+                    key={incident.id}
+                    className={(selectedIncidentId || selectedIncident?.id) === incident.id ? "selected-row" : ""}
+                    onClick={() => onSelectIncident(incident.id)}
+                  >
+                    <td>
+                      <span className={`status-badge incident-${incident.status}`}>{incidentStatusLabel(incident.status)}</span>
+                      <span className={`status-badge severity-${incident.severity}`}>{incident.severity}</span>
+                    </td>
+                    <td>
+                      <strong className="cell-title">{incident.source}</strong>
+                      <span className="table-muted cell-sub">{formatDateTime(incident.updated_at || incident.created_at)}</span>
+                    </td>
+                    <td>
+                      <strong className="cell-title">{linkedIncidentText(incident)}</strong>
+                      <span className="table-muted cell-sub">{incident.external_ref || shortId(incident.id)}</span>
+                    </td>
+                    <td>
+                      <strong className="cell-title">{incident.title}</strong>
+                      <span className="table-muted cell-sub clamp-text">{incident.message || "-"}</span>
+                    </td>
+                    <td>{formatAgeSeconds(ageFromDate(incident.updated_at || incident.created_at))}</td>
+                  </tr>
+                ))}
+                {incidents.length === 0 && (
+                  <tr>
+                    <td colSpan={5}>Инцидентов нет</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="data-table-wrap admin-center-table-wrap">
+            <table className="data-table admin-center-table">
+              <thead>
+                <tr>
+                  <th>Очередь</th>
+                  <th>Связь</th>
+                  <th>Ошибка</th>
+                  <th>Возраст</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {events.map((event) => {
+                  const retryAction = `event-retry:${event.id}`;
+                  return (
+                    <tr
+                      key={event.id}
+                      className={(selectedEventId || selectedEvent?.id) === event.id ? "selected-row" : ""}
+                      onClick={() => onSelectEvent(event.id)}
+                    >
+                      <td>
+                        <strong className="cell-title">{event.event_type}</strong>
+                        <span className={`status-badge queue-${event.status}`}>{eventStatusLabel(event.status)}</span>
+                        <span className="table-muted cell-sub">попыток {event.attempts}</span>
+                      </td>
+                      <td>
+                        <strong className="cell-title">{linkedEventText(event)}</strong>
+                        <span className="table-muted cell-sub">{compactId(event.idempotency_key || event.id)}</span>
+                      </td>
+                      <td>
+                        <span className="table-muted cell-sub clamp-text">{event.last_error || event.payload_status || "-"}</span>
+                      </td>
+                      <td>{formatAgeSeconds(event.age_seconds)}</td>
+                      <td>
+                        {event.retryable ? (
+                          <button className="ghost-button" onClick={(click) => { click.stopPropagation(); onRetryEvent(event); }} disabled={Boolean(busyAction)}>
+                            {busyAction === retryAction ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
+                            Retry
+                          </button>
+                        ) : (
+                          <span className="table-muted">-</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+                {events.length === 0 && (
+                  <tr>
+                    <td colSpan={5}>Событий очереди нет</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <aside className="admin-detail-panel">
+          <label className="admin-reason-field">
+            <span>Причина действия</span>
+            <textarea
+              value={actionReason}
+              onChange={(event) => onReasonChange(event.target.value)}
+              placeholder="Например: проверил импорт, можно повторить"
+              rows={3}
+            />
+          </label>
+
+          <section className="admin-detail-section">
+            <div className="detail-head compact">
+              <div>
+                <h3>Инцидент</h3>
+                <span>{selectedIncident ? shortId(selectedIncident.id) : "-"}</span>
+              </div>
+              {selectedIncident && (
+                <div className="action-buttons">
+                  <button
+                    className="ghost-button"
+                    onClick={() => onResolveIncident(selectedIncident)}
+                    disabled={Boolean(busyAction) || selectedIncidentTerminal}
+                  >
+                    {busyAction === `incident:resolved:${selectedIncident.id}` ? <Loader2 className="spin" size={16} /> : <CheckCircle2 size={16} />}
+                    Resolve
+                  </button>
+                  <button
+                    className="ghost-button"
+                    onClick={() => onIgnoreIncident(selectedIncident)}
+                    disabled={Boolean(busyAction) || selectedIncidentTerminal}
+                  >
+                    {busyAction === `incident:ignored:${selectedIncident.id}` ? <Loader2 className="spin" size={16} /> : <Undo2 size={16} />}
+                    Ignore
+                  </button>
+                </div>
+              )}
+            </div>
+            {selectedIncident ? (
+              <>
+                <dl className="detail-list">
+                  <div><dt>Статус</dt><dd>{incidentStatusLabel(selectedIncident.status)} / {selectedIncident.severity}</dd></div>
+                  <div><dt>Источник</dt><dd>{selectedIncident.source}</dd></div>
+                  <div><dt>Связь</dt><dd>{linkedIncidentText(selectedIncident)}</dd></div>
+                  <div><dt>Создан</dt><dd>{formatDateTime(selectedIncident.created_at)}</dd></div>
+                </dl>
+                <strong className="admin-detail-title">{selectedIncident.title}</strong>
+                <pre className="admin-long-text">{selectedIncident.message || "-"}</pre>
+                <details className="json-preview wide">
+                  <summary>Payload</summary>
+                  <pre>{JSON.stringify(selectedIncident.raw_payload, null, 2)}</pre>
+                </details>
+              </>
+            ) : (
+              <div className="empty-state">Выберите инцидент</div>
+            )}
+          </section>
+
+          <section className="admin-detail-section">
+            <div className="detail-head compact">
+              <div>
+                <h3>Событие очереди</h3>
+                <span>{selectedEvent ? shortId(selectedEvent.id) : "-"}</span>
+              </div>
+              {selectedEvent?.retryable && (
+                <button className="ghost-button" onClick={() => onRetryEvent(selectedEvent)} disabled={Boolean(busyAction)}>
+                  {busyAction === `event-retry:${selectedEvent.id}` ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
+                  Retry
+                </button>
+              )}
+            </div>
+            {selectedEvent ? (
+              <>
+                <dl className="detail-list">
+                  <div><dt>Тип</dt><dd>{selectedEvent.event_type}</dd></div>
+                  <div><dt>Статус</dt><dd>{eventStatusLabel(selectedEvent.status)}</dd></div>
+                  <div><dt>Связь</dt><dd>{linkedEventText(selectedEvent)}</dd></div>
+                  <div><dt>Возраст</dt><dd>{formatAgeSeconds(selectedEvent.age_seconds)}</dd></div>
+                </dl>
+                <pre className="admin-long-text">{selectedEvent.last_error || "-"}</pre>
+                <details className="json-preview wide" open>
+                  <summary>Payload</summary>
+                  <pre>{JSON.stringify(selectedEvent.raw_payload, null, 2)}</pre>
+                </details>
+              </>
+            ) : (
+              <div className="empty-state">Выберите событие</div>
+            )}
+          </section>
+        </aside>
+      </div>
+    </section>
+  );
+}
+
+function SystemDiagnosticsPanel({
+  readiness,
+  eventQueue,
+}: {
+  readiness: ReadinessResponse | null;
+  eventQueue: EventQueueDiagnostics | null;
+}) {
+  const queueSummary = eventQueue?.summary ?? readiness?.queue?.summary ?? {};
+  const activeQueue = numberField(queueSummary, "active");
+  const failedEvents = (eventQueue?.recent_events ?? [])
+    .filter((event) => ["failed", "error", "blocked", "processing", "pending"].includes(event.status))
+    .slice(0, 6);
+  const staleEvents = eventQueue?.stale_processing ?? recordArray(readiness?.queue?.stale_processing);
+  const queueErrors = recordArray(readiness?.queue?.last_errors);
+  const importErrors = recordArray(readiness?.imports?.recent_errors);
+
+  return (
+    <section className="diagnostics-panel" aria-label="Диагностика backend">
+      <div className="diagnostics-grid">
+        <DiagnosticCard
+          label="Readiness"
+          value={readiness?.status || "недоступно"}
+          detail={readiness ? `${readiness.service} ${readiness.version}, ${readiness.environment}` : "endpoint не ответил"}
+          tone={readiness?.status === "ok" ? "ok" : "warn"}
+        />
+        <DiagnosticCard
+          label="Миграции"
+          value={stringField(readiness?.migrations, "status") || "-"}
+          detail={stringField(readiness?.migrations, "current_revision") || stringField(readiness?.migrations, "error") || "нет данных"}
+          tone={stringField(readiness?.migrations, "status") === "ok" ? "ok" : "warn"}
+        />
+        <DiagnosticCard
+          label="Очередь events"
+          value={`${activeQueue} активных`}
+          detail={`total ${numberField(queueSummary, "total")}, terminal ${numberField(queueSummary, "terminal")}`}
+          tone={activeQueue === 0 && failedEvents.length === 0 && staleEvents.length === 0 ? "ok" : "warn"}
+        />
+        <DiagnosticCard
+          label="Импорты"
+          value={`${importErrors.length} проблем`}
+          detail={importErrors.length ? "последние ошибки видны ниже" : "критичных ошибок нет"}
+          tone={importErrors.length ? "warn" : "ok"}
+        />
+      </div>
+
+      {(failedEvents.length > 0 || staleEvents.length > 0 || queueErrors.length > 0 || importErrors.length > 0) && (
+        <div className="diagnostics-details">
+          {staleEvents.length > 0 && (
+            <DiagnosticList
+              title="Зависшие processing"
+              items={staleEvents.map((event) => diagnosticEventText(event))}
+            />
+          )}
+          {queueErrors.length > 0 && (
+            <DiagnosticList
+              title="Ошибки очереди"
+              items={queueErrors.map((event) => diagnosticEventText(event))}
+            />
+          )}
+          {failedEvents.length > 0 && (
+            <DiagnosticList
+              title="Pending/failed события"
+              items={failedEvents.map((event) => diagnosticEventText(event))}
+            />
+          )}
+          {importErrors.length > 0 && (
+            <DiagnosticList
+              title="Ошибки импортов"
+              items={importErrors.map((item) => diagnosticImportText(item))}
+            />
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function DiagnosticCard({
+  label,
+  value,
+  detail,
+  tone,
+}: {
+  label: string;
+  value: string;
+  detail: string;
+  tone: "ok" | "warn";
+}) {
+  return (
+    <div className={`diagnostic-card ${tone}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <em>{detail}</em>
+    </div>
+  );
+}
+
+function DiagnosticList({ title, items }: { title: string; items: string[] }) {
+  return (
+    <div className="diagnostics-list">
+      <strong>{title}</strong>
+      <ul>
+        {items.map((item, index) => <li key={`${title}-${index}`}>{item}</li>)}
+      </ul>
+    </div>
+  );
+}
+
 function ActivityList({ items }: { items: AdminActivity[] }) {
   return (
     <div className="activity-list">
@@ -1271,11 +1876,27 @@ function ActivityList({ items }: { items: AdminActivity[] }) {
           <div>
             <strong>{item.action}</strong>
             <span>{[item.entity_type, shortId(item.entity_id)].filter(Boolean).join(" / ") || "-"}</span>
+            <ActivityPayload payload={item.payload} />
           </div>
           <time>{formatDateTime(item.created_at)}</time>
         </div>
       ))}
       {items.length === 0 && <div className="empty-state">Активности нет</div>}
+    </div>
+  );
+}
+
+function ActivityPayload({ payload }: { payload: Record<string, unknown> }) {
+  const chips = auditPayloadChips(payload);
+  if (chips.length === 0) return null;
+  return (
+    <div className="activity-details">
+      {chips.map((chip) => (
+        <span className="activity-chip" key={chip.label}>
+          <strong>{chip.label}</strong>
+          {chip.value}
+        </span>
+      ))}
     </div>
   );
 }
@@ -1302,6 +1923,79 @@ function DataTable({ headers, rows }: { headers: string[]; rows: string[][] }) {
       </table>
     </div>
   );
+}
+
+function filterIncidents(
+  incidents: AdminIncident[],
+  filters: {
+    status: IncidentStatusFilter;
+    severity: IncidentSeverityFilter;
+    source: string;
+    search: string;
+  },
+) {
+  const query = filters.search.trim().toLowerCase();
+  return incidents.filter((incident) => {
+    if (filters.status !== "all" && incident.status !== filters.status) return false;
+    if (filters.severity !== "all" && incident.severity !== filters.severity) return false;
+    if (filters.source !== "all" && incident.source !== filters.source) return false;
+    if (!query) return true;
+    return [
+      incident.source,
+      incident.severity,
+      incident.status,
+      incident.title,
+      incident.message,
+      incident.entity_type,
+      incident.entity_id,
+      incident.pending_event_id,
+      incident.order_id,
+      incident.order_item_id,
+      incident.import_id,
+      incident.external_ref,
+    ].some((value) => value.toLowerCase().includes(query));
+  });
+}
+
+function linkedIncidentText(incident: AdminIncident) {
+  const parts = [
+    incident.order_id ? `order ${shortId(incident.order_id)}` : "",
+    incident.order_item_id ? `item ${shortId(incident.order_item_id)}` : "",
+    incident.import_id ? `import ${shortId(incident.import_id)}` : "",
+    incident.pending_event_id ? `event ${shortId(incident.pending_event_id)}` : "",
+    incident.entity_type && incident.entity_id ? `${incident.entity_type} ${shortId(incident.entity_id)}` : "",
+  ].filter(Boolean);
+  return parts.join(" / ") || "-";
+}
+
+function linkedEventText(event: EventQueueEvent) {
+  const parts = [
+    event.linked_order_id ? `order ${compactId(event.linked_order_id)}` : "",
+    event.linked_import_id ? `import ${compactId(event.linked_import_id)}` : "",
+    event.linked_entity_type && event.linked_entity_id ? `${event.linked_entity_type} ${compactId(event.linked_entity_id)}` : "",
+  ].filter(Boolean);
+  return parts.join(" / ") || "-";
+}
+
+function incidentStatusLabel(value: string) {
+  if (value === "open") return "Открыт";
+  if (value === "in_progress") return "В работе";
+  if (value === "manual_review") return "Ручная проверка";
+  if (value === "resolved") return "Закрыт";
+  if (value === "ignored") return "Игнор";
+  if (value === "cancelled") return "Отменен";
+  return value || "-";
+}
+
+function eventStatusLabel(value: string) {
+  if (value === "pending") return "В очереди";
+  if (value === "processing") return "В работе";
+  if (value === "failed") return "Ошибка";
+  if (value === "blocked") return "Блок";
+  if (value === "completed") return "Готово";
+  if (value === "cancelled") return "Отменено";
+  if (value === "dead") return "Dead";
+  return value || "-";
 }
 
 function matchesSkladBotFilter(row: AdminTableRow, filter: SkladBotFilter) {
@@ -1394,6 +2088,15 @@ function skladbotStatusLabel(row: AdminTableRow) {
   return "Без номера";
 }
 
+function returnSkladBotStatusLabel(value: string) {
+  if (value === "queued") return "В очереди";
+  if (value === "created") return "Создано";
+  if (value === "created_recovered") return "Восстановлено";
+  if (value === "blocked") return "Заблокировано";
+  if (value === "create_failed") return "Ошибка создания";
+  return value || "нет статуса";
+}
+
 function dryRunStatusLabel(value: string) {
   if (value === "ready") return "Ready";
   if (value === "queued") return "В очереди";
@@ -1419,11 +2122,105 @@ function importDryRunSummaryText(item: ImportRecord) {
   return `${mode}: ready ${ready}, queued ${queued}, created ${created + recovered}, blocked ${blocked + failed}, WH-R ${alreadyLinked}`;
 }
 
+function importIssuesText(item: ImportRecord) {
+  const issues: string[] = [];
+  const raw = item.raw_payload || {};
+  const errors = stringArray(raw.errors);
+  const invalidRows = numberField(raw, "invalid_rows");
+  const duplicateRows = numberField(raw, "duplicate_rows");
+  const googleError = stringField(raw, "google_sheets_error");
+  const summary = readImportDryRunSummary(item);
+  const blocked = summary ? numberField(summary, "blocked") + numberField(summary, "create_failed") : 0;
+  if (invalidRows > 0) issues.push(`ошибочных строк ${invalidRows}`);
+  if (duplicateRows > 0) issues.push(`повторов ${duplicateRows}`);
+  if (googleError) issues.push(`Google: ${googleError}`);
+  if (blocked > 0) issues.push(`SkladBot blocked ${blocked}`);
+  issues.push(...errors.slice(0, 3));
+  return issues.length ? issues.join("; ") : "-";
+}
+
 function readImportDryRunSummary(item: ImportRecord): Record<string, unknown> | null {
   const summary = item.raw_payload?.skladbot_dry_run;
   return summary && typeof summary === "object" && !Array.isArray(summary)
     ? summary as Record<string, unknown>
     : null;
+}
+
+function auditPayloadChips(payload: Record<string, unknown>) {
+  const affectedOrderIds = stringArray(payload.affected_order_ids);
+  const affectedItemIds = stringArray(payload.affected_item_ids);
+  const chips = [
+    { label: "Причина", value: stringField(payload, "reason") },
+    { label: "Кто", value: stringField(payload, "actor") },
+    { label: "Источник", value: stringField(payload, "source") },
+    { label: "Idempotency", value: compactId(stringField(payload, "idempotency_key")) },
+    { label: "Заказов", value: affectedOrderIds.length ? String(affectedOrderIds.length) : "" },
+    { label: "Позиций", value: affectedItemIds.length ? String(affectedItemIds.length) : "" },
+  ];
+  return chips.filter((chip) => chip.value);
+}
+
+function diagnosticEventText(event: unknown) {
+  const record = isRecord(event) ? event : {};
+  const type = stringField(record, "event_type") || "event";
+  const status = stringField(record, "status") || "-";
+  const attempts = numberField(record, "attempts");
+  const age = numberField(record, "age_seconds");
+  const error = stringField(record, "last_error");
+  return `${type}: ${status}, попыток ${attempts}, возраст ${age}s${error ? `, ${error}` : ""}`;
+}
+
+function diagnosticImportText(item: unknown) {
+  const record = isRecord(item) ? item : {};
+  const source = stringField(record, "filename") || stringField(record, "source") || "import";
+  const status = stringField(record, "status") || "-";
+  const rows = stringField(record, "rows");
+  const errors = stringArray(record.errors).slice(0, 3);
+  return `${source}: ${status}${rows ? `, ${rows}` : ""}${errors.length ? `, ${errors.join("; ")}` : ""}`;
+}
+
+function ageFromDate(value: string | null) {
+  if (!value) return 0;
+  const timestamp = new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) return 0;
+  return Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+}
+
+function formatAgeSeconds(value: number) {
+  const seconds = Math.max(0, Math.floor(value || 0));
+  if (seconds < 60) return `${seconds} сек`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} мин`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} ч`;
+  return `${Math.floor(hours / 24)} д`;
+}
+
+function recordArray(value: unknown) {
+  return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+function stringArray(value: unknown) {
+  return Array.isArray(value)
+    ? value.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+}
+
+function stringField(record: unknown, key: string) {
+  if (!isRecord(record)) return "";
+  const value = record[key];
+  return typeof value === "string" || typeof value === "number" ? String(value) : "";
+}
+
+function numberField(record: unknown, key: string) {
+  if (!isRecord(record)) return 0;
+  const value = record[key];
+  const number = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function googleStatusLabel(value: string) {
@@ -1455,6 +2252,11 @@ function formatMoney(value: number) {
 
 function shortId(value: string) {
   return value.length > 8 ? value.slice(0, 8) : value;
+}
+
+function compactId(value: string) {
+  if (value.length <= 18) return value;
+  return `${value.slice(0, 10)}...${value.slice(-6)}`;
 }
 
 function maskLogin(value: string) {

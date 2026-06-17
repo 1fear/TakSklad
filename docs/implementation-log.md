@@ -2,6 +2,30 @@
 
 Документ фиксирует ход работ: что сделано, что не сделано, какие ошибки найдены, какие решения приняты и что требует проверки. Новые записи добавляются сверху.
 
+## 2026-06-16
+
+### Production hardening roadmap 2.0.x
+
+- Выполнен полный supergoal hardening без deploy/push в production.
+- Добавлены server-side readiness checks: `/health` остается легким, `/ready` и `/api/v1/readiness` проверяют DB, Alembic, event queue и import errors.
+- Добавлен Alembic baseline и runbook миграций. Production baseline stamp перед первым `upgrade head` обязателен, если схема уже создана старым SQL.
+- Ужесточены DB-инварианты КИЗов: per-KIZ advisory lock, audit movements, payload-idempotency для Google mirror событий, preflight SQL перед будущими уникальными ограничениями.
+- Event queue получила lifecycle-диагностику, stale-processing reset и retry/cooldown для Google 429.
+- Admin/web/Telegram ручные действия теперь требуют reason, пишут actor/source/idempotency и защищены от stale повторов.
+- Web panel показывает readiness, event queue/import diagnostics, sanitized audit details и disabled reasons.
+- Telegram ручное управление admin-gated, stale delete-confirm заново проверяет активный заказ и сканы, ошибки отчетов стали короткими и actionable.
+- Отчеты зафиксированы как DB-first там, где source of truth TakSklad: day report, logistics, KIZ date/source-file. Ежедневный SkladBot report берет данные из SkladBot API, Google не участвует.
+- Исправлены edge cases отчетов: `acceptedAmount=0` не заменяется планом, плохая дата `/skladbot_daily` больше не подставляет сегодня, самовывоз-варианты исключаются из логистики.
+- Rollback: откат к предыдущему good commit + `docker compose up -d --build`, при необходимости `alembic downgrade` только по отдельному плану и после backup/restore drill.
+
+Проверено:
+
+- `./.venv/bin/python -m unittest discover -s tests` - 455 tests OK.
+- `./.venv/bin/python -m unittest tests.test_daily_report tests.test_skladbot_daily_report tests.test_backend_api_persistence tests.test_backend_google_sheets_exporter tests.test_backend_telegram_import` - 160 tests OK.
+- `./.venv/bin/python -m compileall -q backend/app src/taksklad tests tools` - OK.
+- `npm --prefix frontend run build` - OK.
+- `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK.
+
 ## 2026-06-09
 
 ### План и факт в списке заявок ежедневного SkladBot отчета
@@ -5150,3 +5174,74 @@ cd /opt/taksklad/app
   - `setChatMenuButton` оставлен в `type=default`;
   - `/menu` и `/start` отправляют обычный reply-keyboard с основными действиями TakSklad без `is_persistent`, чтобы Telegram показывал кнопку скрытия клавиатуры;
   - live verifier Telegram menu проверяет, что публичных команд нет.
+
+### Failed import incident control
+
+- Причина: кривой Telegram/Excel import должен быть виден оператору, закрываться с причиной и не держать `/ready` в degraded после ручной проверки.
+- Изменено:
+  - backend import со статусом `failed` или `completed_with_errors` автоматически создает linked incident;
+  - Telegram import передает `telegram_event_id` в backend, чтобы incident связывался с исходным pending event;
+  - failed `telegram_excel_import` без созданного import тоже получает incident по pending event;
+  - `/ready` игнорирует failed import/event, если по нему есть terminal incident `resolved`, `ignored` или `cancelled`;
+  - retry `telegram_excel_import` запрещен, если в событии нет исходного `document.file_id`;
+  - Telegram failure message показывает файл, причину и следующее действие, с редактированием секретов.
+
+### SkladBot create failure incidents
+
+- Причина: отказ SkladBot при создании заявки, особенно из-за недостатка остатка, должен быть виден в админке и не попадать на склад как обычный активный заказ.
+- Изменено:
+  - failures `skladbot_request_create` создают linked incident с order/import/event/source file/SKU;
+  - shortage без сканов продолжает удалять заказ из активной БД, ставит Google cleanup и Telegram notification;
+  - shortage со сканами не удаляется автоматически, получает incident `manual_review` и остается для ручного решения;
+  - логистический отчет явно исключает shortage/create_failed заказы, даже если заказ остался в БД;
+  - admin retry для failed `skladbot_request_create` остается через event queue и не требует Telegram source file.
+
+### Return flow hardening
+
+- Причина: возврат должен быть проверяемым путем повторного использования КИЗа, а оператору нужно видеть исходную отгрузку и заявку возврата SkladBot в админке.
+- Изменено:
+  - admin table API теперь отдает `skladbot_return_request_number`, `skladbot_return_request_id`, `skladbot_return_status`;
+  - web-panel в колонке SkladBot для возвратов показывает исходную WH-R и отдельную строку по заявке возврата;
+  - return smoke test закрепляет lookup по WH-R/request id, duplicate-return rejection, отчетные поля `/returns` и очередь заявки возврата;
+  - отдельный admin test проверяет, что returned-order виден с linked order, количеством КИЗов и статусом return-заявки SkladBot.
+- Не изменено:
+  - старые исторические возвраты не backfill-ятся автоматически;
+  - исходные `scan_codes` и audit history отгрузки остаются историей, а повторная отгрузка разрешается только через `return` movement.
+
+### Daily reconciliation and deduped alerts
+
+- Причина: расхождения DB, Google mirror и SkladBot должны находиться системой до того, как склад или оператор заметит их вручную.
+- Изменено:
+  - добавлен DB-first reconciliation service для ежедневной сверки по дате отгрузки;
+  - endpoint `/api/v1/reports/reconciliation/day` возвращает сверку из Postgres как source of truth;
+  - Google-only rows, DB-only active items, status mismatch и WH-R mismatch считаются отдельными счетчиками;
+  - SkladBot gaps агрегируются по заказам без usable WH-R/status, без per-row Telegram spam;
+  - critical incidents ставят deduped Telegram notification events с idempotency по incident/date/source/chat;
+  - Google failure записывается как mirror issue и не переводит DB workflow в failed;
+  - scheduled 22:00 SkladBot daily report запускает reconciliation для того же конфигурируемого чата.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_reconciliation_service tests.test_backend_api_persistence.BackendApiPersistenceTests.test_reconciliation_report_endpoint_is_db_first_and_does_not_alert tests.test_backend_api_persistence.BackendApiPersistenceTests.test_reconciliation_report_endpoint_records_google_down_as_mirror_issue tests.test_skladbot_daily_report.SkladBotDailyReportTests.test_scheduled_report_runs_reconciliation_for_configured_chat` - 6 tests OK.
+
+### Release dependency hardening
+
+- Причина: `npm audit --audit-level=high` показывал high vulnerability в `esbuild 0.27.x`, который попадал через frontend build chain.
+- Изменено:
+  - frontend обновлен до `vite 8.0.16`;
+  - `esbuild 0.28.1` закреплен как dev dependency, совместимый с optional peer range Vite 8;
+  - production build остается через `node:22-alpine` в Dockerfile.
+- Проверено:
+  - `npm --prefix frontend audit --audit-level=high` - 0 vulnerabilities;
+  - `npm --prefix frontend run build` - OK.
+
+### Release GO/NO-GO status
+
+- Automated release gates: GO.
+- Production deploy status: NO-GO до заполнения ручного `outputs/taksklad_acceptance/ACCEPTANCE_RESULTS.md`.
+- Версионность:
+  - `TakSklad 2.0.16 Operations Control` - имя текущего roadmap/update cycle;
+  - `version.json` пока остается на `2.0.15`, потому новый Windows rollout artifact не выпускался в этом проходе;
+  - переключать manifest на новую desktop-версию можно только после отдельной сборки, SHA-проверки и ручной acceptance.
+- Причина NO-GO:
+  - `tools/release_go_no_go.py` требует подтвержденные чекбоксы Telegram Import, SkladBot Matching и Windows Desktop Acceptance;
+  - файл acceptance results сейчас оставлен в состоянии NO-GO, чтобы случайно не выдать production deploy без ручной приемки.
+- Это не блокирует кодовый release candidate, но блокирует честный production deploy без отдельного acceptance прохода.

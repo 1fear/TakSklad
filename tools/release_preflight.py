@@ -64,6 +64,8 @@ EXPECTED_RELEASE_VERSION = "2.0.15"
 EXPECTED_MIN_SUPPORTED_VERSION = "2.0.15"
 EXPECTED_PACKAGE_TYPE = "onefile_exe"
 EXPECTED_RELEASE_TAG = f"v{EXPECTED_RELEASE_VERSION}"
+EXPECTED_RELEASE_HOST = "github.com"
+EXPECTED_RELEASE_REPO_PATH = f"/1fear/TakSklad/releases/download/{EXPECTED_RELEASE_TAG}/"
 
 
 def sha256_file(path):
@@ -169,7 +171,9 @@ def valid_release_download_url(url):
         return False
     if parsed.username or parsed.password:
         return False
-    return f"/releases/download/{EXPECTED_RELEASE_TAG}/" in parsed.path
+    if parsed.netloc.lower() != EXPECTED_RELEASE_HOST:
+        return False
+    return parsed.path.startswith(EXPECTED_RELEASE_REPO_PATH)
 
 
 def sha256_url(url, timeout_seconds):

@@ -1,38 +1,28 @@
 import json
-import re
 from datetime import datetime, timezone
 
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
-from .models import AuditLog, ImportJob, PendingEvent
+from .event_queue_service import list_event_queue_diagnostics
+from .models import AuditLog, ImportJob
+from .redaction import redact_secrets
 
 
-SECRET_PATTERNS = [
-    re.compile(r"(bot\d+:[A-Za-z0-9_-]+)"),
-    re.compile(r"(Bearer\s+)[A-Za-z0-9._~+/=-]+", re.IGNORECASE),
-    re.compile(r"(token|password|secret|authorization)([\"'=:\s]+)([^\"'\s,}]+)", re.IGNORECASE),
-]
 DIAGNOSTIC_AUDIT_ACTIONS = {
     "orders_imported",
     "skladbot_worker_sync",
     "skladbot_google_sheets_export",
     "order_returned",
+    "order_archived_without_kiz",
+    "order_cancelled",
+    "order_deleted_from_active",
+    "order_completed_without_kiz",
+    "order_reset_for_rescan",
+    "order_restored",
+    "order_google_resync_requested",
+    "order_skladbot_resync_requested",
 }
-
-
-def redact_secrets(value):
-    text = str(value or "")
-    for pattern in SECRET_PATTERNS:
-        if pattern.groups >= 3:
-            text = pattern.sub(r"\1\2***", text)
-        elif pattern.groups == 2:
-            text = pattern.sub(r"\1***", text)
-        elif pattern.groups == 1:
-            text = pattern.sub(r"\1***", text)
-        else:
-            text = pattern.sub("***", text)
-    return text
 
 
 def compact_json(value):
@@ -45,30 +35,70 @@ def compact_json(value):
 def build_backend_diagnostics_log(db: Session, limit=100):
     limit = max(1, min(int(limit or 100), 500))
     now = datetime.now(timezone.utc)
+    queue_diagnostics = list_event_queue_diagnostics(db, limit=limit)
     lines = [
         "TakSklad backend diagnostics",
         f"Generated at: {now.isoformat()}",
         "",
+        "Event Queue Summary",
+        "-------------------",
+    ]
+    summary = queue_diagnostics.get("summary") or {}
+    by_type = summary.get("by_type") or {}
+    if not by_type:
+        lines.append("none")
+    for event_type, statuses in sorted(by_type.items()):
+        status_text = ", ".join(f"{status}={count}" for status, count in sorted((statuses or {}).items()))
+        lines.append(f"{event_type}: {status_text}")
+    lines.extend([
+        f"total={summary.get('total', 0)} active={summary.get('active', 0)} terminal={summary.get('terminal', 0)}",
+        "",
         "Failed/Pending Events",
         "---------------------",
-    ]
+    ])
 
-    failed_events = db.execute(
-        select(PendingEvent)
-        .where(PendingEvent.status.in_(("failed", "error")))
-        .order_by(desc(PendingEvent.updated_at), desc(PendingEvent.created_at))
-        .limit(limit)
-    ).scalars().all()
-    if not failed_events:
+    visible_statuses = {
+        "pending",
+        "processing",
+        "failed",
+        "error",
+        "blocked",
+        "waiting_shipment_date",
+        "waiting_date_choice",
+    }
+    events = [
+        event
+        for event in queue_diagnostics.get("recent_events") or []
+        if str(event.get("status") or "") in visible_statuses
+    ]
+    if not events:
         lines.append("none")
-    for event in failed_events:
+    for event in events:
         lines.append(
             " | ".join([
-                str(event.updated_at or event.created_at or ""),
-                f"type={event.event_type}",
-                f"status={event.status}",
-                f"attempts={event.attempts}",
-                f"error={redact_secrets(event.last_error)}",
+                str(event.get("updated_at") or event.get("created_at") or ""),
+                f"type={event.get('event_type') or ''}",
+                f"status={event.get('status') or ''}",
+                f"attempts={event.get('attempts', 0)}",
+                f"idempotency_key={redact_secrets(event.get('idempotency_key') or '')}",
+                f"next_attempt_at={event.get('next_attempt_at') or ''}",
+                f"age_seconds={event.get('age_seconds', 0)}",
+                f"error={redact_secrets(event.get('last_error') or '')}",
+            ])
+        )
+    stale_events = queue_diagnostics.get("stale_processing") or []
+    lines.extend(["", "Stale Processing Events", "-----------------------"])
+    if not stale_events:
+        lines.append("none")
+    for event in stale_events:
+        lines.append(
+            " | ".join([
+                str(event.get("updated_at") or event.get("created_at") or ""),
+                f"type={event.get('event_type') or ''}",
+                f"attempts={event.get('attempts', 0)}",
+                f"idempotency_key={redact_secrets(event.get('idempotency_key') or '')}",
+                f"age_seconds={event.get('age_seconds', 0)}",
+                f"error={redact_secrets(event.get('last_error') or '')}",
             ])
         )
     lines.extend(["", "Import Errors", "-------------"])

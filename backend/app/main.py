@@ -9,8 +9,22 @@ from fastapi.middleware.cors import CORSMiddleware
 from .admin_service import build_admin_table
 from .db import get_db
 from .diagnostics_service import build_backend_diagnostics_log
+from .event_queue_service import (
+    EventQueueApiError,
+    get_event_queue_detail as get_event_queue_detail_from_db,
+    list_event_queue_diagnostics,
+    retry_event_queue_event as retry_event_queue_event_in_db,
+)
 from .google_sheets_sync_worker import sync_google_sheet_to_backend
 from .google_sheets_pending import process_pending_google_sheets_exports
+from .health_service import build_readiness_report
+from .incidents_service import (
+    IncidentApiError,
+    create_incident as create_incident_in_db,
+    get_incident as get_incident_from_db,
+    list_incidents as list_incidents_in_db,
+    update_incident_status as update_incident_status_in_db,
+)
 from .imports_service import create_import as create_import_in_db
 from .imports_service import list_imports as list_imports_in_db
 from .kiz_reports_service import (
@@ -38,6 +52,7 @@ from .orders_service import list_returned_orders as list_returned_orders_in_db
 from .orders_service import lookup_return_order as lookup_return_order_in_db
 from .orders_service import mark_order_returned as mark_order_returned_in_db
 from .orders_service import undo_scan as undo_scan_in_db
+from .reconciliation_service import ReconciliationError, run_daily_reconciliation
 from .reports_service import build_day_report
 from .skladbot_request_dry_run import list_skladbot_dry_runs, rebuild_skladbot_dry_run
 from .skladbot_worker import update_orders_from_skladbot
@@ -50,11 +65,19 @@ from .schemas import (
     AuthLoginRequest,
     AuthSessionRead,
     DayReportRead,
+    EventQueueDiagnosticsRead,
+    EventQueueActionRequest,
+    EventQueueEventRead,
     HealthResponse,
     ImportCreate,
     ImportRead,
     ImportResult,
+    IncidentCreate,
+    IncidentListRead,
+    IncidentRead,
+    IncidentStatusUpdate,
     OrderRead,
+    ReadinessResponse,
     ReturnMarkRequest,
     ScanCreate,
     ScanRead,
@@ -132,6 +155,11 @@ def health():
         "version": APP_VERSION,
         "environment": settings.environment,
     }
+
+
+@app.get("/ready", response_model=ReadinessResponse)
+def readiness(db=Depends(get_db)):
+    return build_readiness_report(db, settings)
 
 
 auth_api = APIRouter(prefix="/api/v1/auth")
@@ -249,6 +277,82 @@ def admin_table(limit: int = 5000, activity_limit: int = 30, db=Depends(get_db))
 @api.post("/admin/google/pending/retry")
 def retry_pending_google_exports(limit: int = 50, db=Depends(get_db)):
     return process_pending_google_sheets_exports(db, limit=limit)
+
+
+@api.get("/admin/events", response_model=EventQueueDiagnosticsRead)
+def admin_event_queue(limit: int = 100, db=Depends(get_db)):
+    return list_event_queue_diagnostics(db, limit=limit)
+
+
+@api.get("/admin/events/{event_id}", response_model=EventQueueEventRead)
+def admin_event_queue_detail(event_id: str, db=Depends(get_db)):
+    try:
+        return get_event_queue_detail_from_db(db, event_id)
+    except EventQueueApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@api.post("/admin/events/{event_id}/retry", response_model=EventQueueEventRead)
+def admin_event_queue_retry(event_id: str, payload: EventQueueActionRequest, db=Depends(get_db)):
+    try:
+        return retry_event_queue_event_in_db(db, event_id, payload)
+    except EventQueueApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@api.post("/admin/incidents", response_model=IncidentRead, status_code=status.HTTP_201_CREATED)
+def admin_create_incident(payload: IncidentCreate, db=Depends(get_db)):
+    try:
+        return create_incident_in_db(db, payload)
+    except IncidentApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@api.get("/admin/incidents", response_model=IncidentListRead)
+def admin_incidents(
+    status: str | None = None,
+    severity: str | None = None,
+    source: str | None = None,
+    entity_type: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    limit: int = 100,
+    db=Depends(get_db),
+):
+    try:
+        return list_incidents_in_db(
+            db,
+            status=status,
+            severity=severity,
+            source=source,
+            entity_type=entity_type,
+            date_from=date_from,
+            date_to=date_to,
+            limit=limit,
+        )
+    except IncidentApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@api.get("/admin/incidents/{incident_id}", response_model=IncidentRead)
+def admin_incident_detail(incident_id: str, db=Depends(get_db)):
+    try:
+        return get_incident_from_db(db, incident_id)
+    except IncidentApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@api.post("/admin/incidents/{incident_id}/status", response_model=IncidentRead)
+def admin_update_incident_status(incident_id: str, payload: IncidentStatusUpdate, db=Depends(get_db)):
+    try:
+        return update_incident_status_in_db(db, incident_id, payload)
+    except IncidentApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@api.get("/readiness", response_model=ReadinessResponse)
+def api_readiness(db=Depends(get_db)):
+    return build_readiness_report(db, settings)
 
 
 @api.post("/admin/orders/bulk/complete-without-kiz", response_model=AdminBulkOrderActionResult)
@@ -462,6 +566,14 @@ def day_report(report_date: str | None = None, db=Depends(get_db)):
     try:
         return build_day_report(db, report_date)
     except ApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@api.get("/reports/reconciliation/day")
+def reconciliation_day_report(report_date: str | None = None, db=Depends(get_db)):
+    try:
+        return run_daily_reconciliation(db=db, report_date=report_date, alert_chat_ids=[])
+    except ReconciliationError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 

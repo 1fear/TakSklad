@@ -1,6 +1,7 @@
+import hashlib
 from datetime import datetime, timezone
 
-from sqlalchemy import desc, select
+from sqlalchemy import desc, select, text
 from sqlalchemy.orm import Session
 
 from .models import KizCode, KizMovement, ScanCode
@@ -16,6 +17,31 @@ AVAILABLE_FOR_OUTBOUND_MOVEMENTS = {MOVEMENT_RETURN, MOVEMENT_UNDO, MOVEMENT_RES
 
 def normalize_kiz_code(code):
     return str(code or "").strip(" \t\r\n")
+
+
+def lock_kiz_code_for_transaction(db: Session, code):
+    normalized = normalize_kiz_code(code)
+    if not normalized:
+        return False
+    if getattr(getattr(db, "bind", None), "dialect", None) is None:
+        return False
+    if db.bind.dialect.name != "postgresql":
+        return False
+    first, second = advisory_lock_keys(normalized)
+    db.execute(text("SELECT pg_advisory_xact_lock(:first, :second)"), {"first": first, "second": second})
+    return True
+
+
+def advisory_lock_keys(value):
+    digest = hashlib.sha256(normalize_kiz_code(value).encode("utf-8")).digest()
+    return signed_int32(digest[:4]), signed_int32(digest[4:8])
+
+
+def signed_int32(chunk):
+    value = int.from_bytes(chunk, byteorder="big", signed=False)
+    if value >= 2**31:
+        value -= 2**32
+    return value
 
 
 def ensure_kiz_code(db: Session, code):

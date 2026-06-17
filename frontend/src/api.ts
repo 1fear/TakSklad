@@ -140,6 +140,9 @@ export type AdminTableRow = {
   skladbot_request_number: string;
   skladbot_request_id: string;
   skladbot_status: string;
+  skladbot_return_request_number: string;
+  skladbot_return_request_id: string;
+  skladbot_return_status: string;
   source_file: string;
   google_sheet_status: string;
   google_sheet_row_number: number | null;
@@ -159,6 +162,71 @@ export type AdminActivity = {
   entity_id: string;
   payload: Record<string, unknown>;
   created_at: string | null;
+};
+
+export type EventQueueEvent = {
+  id: string;
+  event_type: string;
+  status: string;
+  attempts: number;
+  last_error: string;
+  idempotency_key: string;
+  next_attempt_at: string;
+  payload_status: string;
+  retryable: boolean;
+  linked_order_id: string;
+  linked_import_id: string;
+  linked_entity_type: string;
+  linked_entity_id: string;
+  raw_payload: Record<string, unknown>;
+  age_seconds: number;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+export type EventQueueDiagnostics = {
+  generated_at: string;
+  summary: Record<string, unknown>;
+  stale_processing: EventQueueEvent[];
+  recent_events: EventQueueEvent[];
+};
+
+export type AdminIncident = {
+  id: string;
+  source: string;
+  severity: string;
+  status: string;
+  title: string;
+  message: string;
+  entity_type: string;
+  entity_id: string;
+  pending_event_id: string;
+  order_id: string;
+  order_item_id: string;
+  import_id: string;
+  scan_code_id: string;
+  external_ref: string;
+  raw_payload: Record<string, unknown>;
+  created_at: string | null;
+  updated_at: string | null;
+  resolved_at: string | null;
+};
+
+export type AdminIncidentsResponse = {
+  items: AdminIncident[];
+  summary: Record<string, unknown>;
+};
+
+export type ReadinessResponse = {
+  generated_at: string;
+  status: string;
+  service: string;
+  version: string;
+  environment: string;
+  database: Record<string, unknown>;
+  migrations: Record<string, unknown>;
+  queue: Record<string, unknown>;
+  imports: Record<string, unknown>;
 };
 
 export type AdminTable = {
@@ -200,7 +268,10 @@ export class ApiRequestError extends Error {
 export type AdminActionPayload = {
   reason?: string;
   actor?: string;
+  source?: string;
   idempotency_key?: string;
+  expected_updated_at?: string;
+  expected_updated_at_by_order?: Record<string, string>;
 };
 
 export type AdminBulkActionResult = {
@@ -209,6 +280,13 @@ export type AdminBulkActionResult = {
   failed: number;
   errors: Array<{ order_id: string; message: string }>;
   dry_run: boolean;
+};
+
+export type EventQueueActionPayload = {
+  reason: string;
+  actor?: string;
+  source?: string;
+  idempotency_key?: string;
 };
 
 export type SyncSourcesResult = {
@@ -265,6 +343,33 @@ export function listActiveOrders(config: ApiConfig) {
 
 export function getAdminTable(config: ApiConfig) {
   return apiRequest<AdminTable>(config, "/api/v1/admin/table?limit=5000");
+}
+
+export function getAdminEvents(config: ApiConfig) {
+  return apiRequest<EventQueueDiagnostics>(config, "/api/v1/admin/events?limit=100");
+}
+
+export function getAdminIncidents(config: ApiConfig, params: Record<string, string> = {}) {
+  const query = new URLSearchParams({ limit: "200", ...params });
+  return apiRequest<AdminIncidentsResponse>(config, `/api/v1/admin/incidents?${query.toString()}`);
+}
+
+export function updateIncidentStatus(config: ApiConfig, incidentId: string, payload: EventQueueActionPayload & { status: string }) {
+  return apiRequest<AdminIncident>(config, `/api/v1/admin/incidents/${encodeURIComponent(incidentId)}/status`, {
+    method: "POST",
+    body: payload,
+  });
+}
+
+export function retryAdminEvent(config: ApiConfig, eventId: string, payload: EventQueueActionPayload) {
+  return apiRequest<EventQueueEvent>(config, `/api/v1/admin/events/${encodeURIComponent(eventId)}/retry`, {
+    method: "POST",
+    body: payload,
+  });
+}
+
+export function getReadiness(config: ApiConfig) {
+  return apiRequest<ReadinessResponse>(config, "/api/v1/readiness");
 }
 
 export function getAuthSession(config: ApiConfig) {

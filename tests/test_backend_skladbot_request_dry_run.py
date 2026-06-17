@@ -11,7 +11,7 @@ from sqlalchemy.pool import StaticPool
 
 from backend.app.db import get_db
 from backend.app.main import app, require_service_token
-from backend.app.models import AuditLog, Base, ImportJob, Order, OrderItem, PendingEvent, ScanCode
+from backend.app.models import AuditLog, Base, ImportJob, Incident, Order, OrderItem, PendingEvent, ScanCode
 from backend.app.skladbot_request_dry_run import (
     SKLADBOT_REQUEST_CREATE_EVENT_TYPE,
     SKLADBOT_REQUEST_DRY_RUN_EVENT_TYPE,
@@ -529,6 +529,7 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
                     telegram_event = db.execute(
                         select(PendingEvent).where(PendingEvent.event_type == "telegram_notification")
                     ).scalar_one()
+                    incident = db.execute(select(Incident).where(Incident.source == "skladbot_create")).scalar_one()
 
         self.assertEqual(summary["queued"], 1)
         self.assertEqual(process_result["stock_shortage_cancelled"], 1)
@@ -544,6 +545,12 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
         self.assertEqual(len(google_events[0].payload["records"]), 2)
         self.assertEqual(telegram_event.payload["chat_id"], "123")
         self.assertIn("Заказ отменён из-за недостатка товара", telegram_event.payload["text"])
+        self.assertEqual(incident.status, "open")
+        self.assertEqual(incident.pending_event_id, create_event.id)
+        self.assertEqual(str(incident.import_id), import_id)
+        self.assertEqual(incident.raw_payload["source_file"], "orders.xlsx")
+        self.assertEqual(incident.raw_payload["products"][0]["sku"], "red:op")
+        self.assertEqual(incident.raw_payload["products"][1]["sku"], "brown:op")
 
     def test_stock_shortage_create_failure_keeps_order_with_existing_scans(self):
         import_id, order_id = self.seed_import_order(telegram_chat_id="123")
@@ -578,6 +585,10 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
                 telegram_events = db.execute(
                     select(PendingEvent).where(PendingEvent.event_type == "telegram_notification")
                 ).scalars().all()
+                incident = db.execute(select(Incident).where(Incident.source == "skladbot_create")).scalar_one()
+                create_event = db.execute(
+                    select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
+                ).scalar_one()
 
         self.assertEqual(process_result["failed"], 1)
         self.assertEqual(process_result["stock_shortage_cancelled"], 0)
@@ -585,6 +596,31 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
         self.assertEqual(order.raw_payload["skladbot_status"], "create_failed")
         self.assertEqual(google_events, [])
         self.assertEqual(telegram_events, [])
+        self.assertEqual(create_event.status, "failed")
+        self.assertEqual(incident.status, "manual_review")
+        self.assertEqual(incident.pending_event_id, create_event.id)
+        self.assertEqual(str(incident.order_id), order_id)
+        self.assertIn("автоотмена пропущена", incident.message)
+
+    def test_logistics_report_excludes_stock_shortage_blocked_order(self):
+        _import_id, order_id = self.seed_import_order()
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            order.raw_payload = {
+                **(order.raw_payload or {}),
+                "coordinates": "41.31,69.27",
+                "skladbot_status": "create_failed",
+                "skladbot_error": "Недостаточно товара на складе для создания заявки",
+            }
+            db.commit()
+
+        dates = self.client.get("/api/v1/logistics/dates")
+        report = self.client.get("/api/v1/logistics/report?shipment_date=2026-06-05")
+
+        self.assertEqual(dates.status_code, 200)
+        self.assertEqual(dates.json(), [])
+        self.assertEqual(report.status_code, 404)
+        self.assertIn("No logistics delivery orders", report.json()["detail"])
 
     def test_skladbot_client_post_uses_bearer_without_printing_token(self):
         captured = {}

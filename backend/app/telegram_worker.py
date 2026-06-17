@@ -14,8 +14,11 @@ from sqlalchemy import select
 
 from . import skladbot_daily_report
 from .db import SessionLocal
+from .event_queue_service import reset_stale_processing_events
 from .excel_importer import ExcelDateConflictError, excel_file_to_import_payload, is_supported_excel_file_name
-from .models import PendingEvent
+from .models import AuditLog, Incident, PendingEvent
+from .redaction import redact_secrets
+from .reconciliation_service import run_daily_reconciliation
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -63,6 +66,63 @@ COORDINATES_PATTERN = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*[,;]\s*(-?\d+(?:\.\d+
 
 def normalize_text(value):
     return str(value or "").strip()
+
+
+def telegram_import_failure_message(file_name, reason):
+    reason_text = redact_secrets(normalize_text(reason)) or "неизвестная ошибка"
+    return "\n".join([
+        "Не удалось импортировать Excel-файл.",
+        "",
+        f"Файл: {normalize_text(file_name) or 'telegram_import.xlsx'}",
+        f"Причина: {reason_text}",
+        "",
+        "Что сделать: исправьте файл и отправьте его заново. Если файл уже в очереди, проверьте Инциденты в web-панели.",
+        "Заказы и заявки SkladBot не созданы.",
+    ])
+
+
+def ensure_telegram_import_event_incident(db, event, error):
+    if event.event_type != TELEGRAM_EXCEL_IMPORT_EVENT_TYPE:
+        return None
+    existing = db.execute(
+        select(Incident).where(Incident.pending_event_id == event.id)
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+
+    payload = dict(event.payload or {})
+    document = payload.get("document") if isinstance(payload.get("document"), dict) else {}
+    file_name = normalize_text(payload.get("file_name")) or normalize_text(document.get("file_name")) or "telegram_import.xlsx"
+    incident = Incident(
+        source="telegram_import",
+        severity="critical",
+        status="open",
+        title="Telegram Excel import failed",
+        message=normalize_text(error),
+        entity_type="pending_event",
+        entity_id=str(event.id),
+        pending_event_id=event.id,
+        raw_payload={
+            "event_type": event.event_type,
+            "event_status": event.status,
+            "file_name": file_name,
+            "attempts": int(event.attempts or 0),
+            "error": normalize_text(error),
+        },
+    )
+    db.add(incident)
+    db.add(AuditLog(
+        action="telegram_import_incident_created",
+        entity_type="pending_event",
+        entity_id=str(event.id),
+        payload={
+            "event_type": event.event_type,
+            "status": event.status,
+            "file_name": file_name,
+            "attempts": int(event.attempts or 0),
+        },
+    ))
+    return incident
 
 
 def find_existing_telegram_import_event(db, document, update_id=None):
@@ -410,15 +470,26 @@ def recent_kiz_source_files_for_menu(files, limit=TELEGRAM_KIZ_MENU_RECENT_LIMIT
 def backend_http_error_detail(exc):
     response = getattr(exc, "response", None)
     if response is None:
-        return normalize_text(exc)
+        return redact_secrets(normalize_text(exc))[:300]
     try:
         payload = response.json()
     except Exception:
         payload = {}
     if isinstance(payload, dict) and normalize_text(payload.get("detail")):
-        return normalize_text(payload.get("detail"))
-    text = normalize_text(getattr(response, "text", ""))
+        return redact_secrets(normalize_text(payload.get("detail")))[:300]
+    text = redact_secrets(normalize_text(getattr(response, "text", "")))
     return text[:300] or f"HTTP {getattr(response, 'status_code', '')}".strip()
+
+
+def backend_failure_message(action, exc):
+    action = normalize_text(action) or "Действие не выполнено"
+    if isinstance(exc, httpx.HTTPStatusError):
+        detail = backend_http_error_detail(exc)
+        return f"{action}: {detail or 'backend вернул ошибку'}"
+    if isinstance(exc, httpx.HTTPError):
+        return f"{action}: backend временно недоступен ({exc.__class__.__name__})"
+    detail = redact_secrets(normalize_text(exc))[:300]
+    return f"{action}: {detail or exc.__class__.__name__}"
 
 
 def json_dumps(value):
@@ -470,6 +541,7 @@ class TelegramWorker:
         self.skladbot_daily_report_hour = max(0, min(23, parse_int(os.environ.get("SKLADBOT_DAILY_REPORT_HOUR") or "22")))
         self.skladbot_daily_report_minute = max(0, min(59, parse_int(os.environ.get("SKLADBOT_DAILY_REPORT_MINUTE") or "0")))
         self.skladbot_daily_report_retry_minutes = max(1, parse_int(os.environ.get("SKLADBOT_DAILY_REPORT_RETRY_MINUTES") or "15"))
+        self.daily_reconciliation_enabled = parse_bool_flag(os.environ.get("TAKSKLAD_DAILY_RECONCILIATION_ENABLED"), default=True)
         self.manual_flow_cache = {}
 
     @property
@@ -482,13 +554,13 @@ class TelegramWorker:
                 response = client.post(f"https://api.telegram.org/bot{self.token}/{method}", json=payload or {})
                 response.raise_for_status()
             except httpx.HTTPStatusError as exc:
-                detail = exc.response.text[:300] if exc.response is not None else ""
+                detail = redact_secrets(exc.response.text[:300] if exc.response is not None else "")
                 raise RuntimeError(f"Telegram API request failed: {method}: HTTP {exc.response.status_code} {detail}") from None
             except httpx.HTTPError as exc:
                 raise RuntimeError(f"Telegram API request failed: {method}: {exc.__class__.__name__}") from None
             data = response.json()
             if not data.get("ok"):
-                raise RuntimeError(data)
+                raise RuntimeError(redact_secrets(data))
             return data.get("result")
 
     def ensure_bot_menu(self):
@@ -541,18 +613,25 @@ class TelegramWorker:
         with httpx.Client(timeout=self.file_timeout) as client:
             files = {"document": (filename, content)}
             data = {"chat_id": chat_id, "caption": caption[:1000]}
-            response = client.post(f"https://api.telegram.org/bot{self.token}/sendDocument", data=data, files=files)
-            response.raise_for_status()
+            try:
+                response = client.post(f"https://api.telegram.org/bot{self.token}/sendDocument", data=data, files=files)
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                status_code = exc.response.status_code if exc.response is not None else ""
+                detail = redact_secrets(exc.response.text[:300] if exc.response is not None else "")
+                raise RuntimeError(f"Telegram API request failed: sendDocument: HTTP {status_code} {detail}") from None
+            except httpx.HTTPError as exc:
+                raise RuntimeError(f"Telegram API request failed: sendDocument: {exc.__class__.__name__}") from None
             payload = response.json()
             if not payload.get("ok"):
-                raise RuntimeError(payload)
+                raise RuntimeError(redact_secrets(payload))
             return payload.get("result")
 
     def safe_send_document(self, chat_id, content, filename, caption=""):
         try:
             return self.send_document(chat_id, content, filename, caption=caption)
-        except Exception:
-            logging.warning("Telegram worker: failed to send document", exc_info=True)
+        except Exception as exc:
+            logging.warning("Telegram worker: failed to send document: %s", redact_secrets(exc))
             self.safe_send_message(chat_id, f"Не удалось отправить файл: {filename}")
             return None
 
@@ -886,7 +965,11 @@ class TelegramWorker:
         return True
 
     def show_logistics_dates(self, chat_id):
-        dates = self.backend_get("/api/v1/logistics/dates")
+        try:
+            dates = self.backend_get("/api/v1/logistics/dates")
+        except (httpx.HTTPError, Exception) as exc:
+            self.safe_send_message(chat_id, backend_failure_message("Не удалось получить даты логистики", exc))
+            return
         dates = dates if isinstance(dates, list) else []
         if not dates:
             self.safe_send_message(chat_id, "Нет доступных дат отгрузки для отчёта логистики.")
@@ -904,7 +987,11 @@ class TelegramWorker:
         )
 
     def show_kiz_dates(self, chat_id):
-        dates = self.backend_get("/api/v1/reports/kiz/dates")
+        try:
+            dates = self.backend_get("/api/v1/reports/kiz/dates")
+        except (httpx.HTTPError, Exception) as exc:
+            self.safe_send_message(chat_id, backend_failure_message("Не удалось получить даты КИЗов", exc))
+            return
         dates = dates if isinstance(dates, list) else []
         dates = recent_kiz_dates_for_menu(dates)
         if not dates:
@@ -934,7 +1021,11 @@ class TelegramWorker:
         self.safe_send_message(chat_id, "\n".join(lines), reply_markup=self.kiz_dates_keyboard(dates))
 
     def show_kiz_source_files(self, chat_id):
-        files = self.backend_get("/api/v1/reports/kiz/source-files")
+        try:
+            files = self.backend_get("/api/v1/reports/kiz/source-files")
+        except (httpx.HTTPError, Exception) as exc:
+            self.safe_send_message(chat_id, backend_failure_message("Не удалось получить список Excel-файлов для КИЗов", exc))
+            return
         files = files if isinstance(files, list) else []
         files = recent_kiz_source_files_for_menu(files)
         if not files:
@@ -1052,7 +1143,11 @@ class TelegramWorker:
         params = {"source_file": source_file}
         if source_key:
             params["source_key"] = source_key
-        content, headers = self.backend_get_bytes("/api/v1/reports/kiz/source-file", params=params)
+        try:
+            content, headers = self.backend_get_bytes("/api/v1/reports/kiz/source-file", params=params)
+        except (httpx.HTTPError, Exception) as exc:
+            self.safe_send_message(chat_id, backend_failure_message(f"Не удалось выгрузить КИЗы по файлу {source_file}", exc))
+            return False
         filename_header = urllib.parse.unquote(headers.get("X-TakSklad-Filename") or "")
         filename = filename_header or f"TakSklad_КИЗ_{source_file}.xlsx"
         self.safe_send_document(
@@ -1064,7 +1159,11 @@ class TelegramWorker:
         return True
 
     def send_imports_report(self, chat_id):
-        payload = self.backend_get("/api/v1/imports")
+        try:
+            payload = self.backend_get("/api/v1/imports")
+        except (httpx.HTTPError, Exception) as exc:
+            self.safe_send_message(chat_id, backend_failure_message("Не удалось получить историю импортов", exc))
+            return False
         imports = payload if isinstance(payload, list) else []
         if not imports:
             self.safe_send_message(chat_id, "История импортов пока пустая.")
@@ -1081,8 +1180,12 @@ class TelegramWorker:
         return True
 
     def send_status_report(self, chat_id):
-        payload = self.backend_get("/api/v1/reports/day")
-        active_orders = self.backend_get("/api/v1/orders/active")
+        try:
+            payload = self.backend_get("/api/v1/reports/day")
+            active_orders = self.backend_get("/api/v1/orders/active")
+        except (httpx.HTTPError, Exception) as exc:
+            self.safe_send_message(chat_id, backend_failure_message("Не удалось получить статус TakSklad", exc))
+            return False
         totals = payload.get("totals") or {}
         report_date = display_date(payload.get("report_date")) or "сегодня"
         active_summary = summarize_active_orders_by_date(active_orders if isinstance(active_orders, list) else [])
@@ -1134,6 +1237,8 @@ class TelegramWorker:
         return True
 
     def show_manual_menu(self, chat_id):
+        if not self.ensure_admin_chat(chat_id):
+            return False
         self.safe_send_message(
             chat_id,
             "\n".join([
@@ -1165,6 +1270,8 @@ class TelegramWorker:
         cache[str(chat_id)] = flow or {}
 
     def start_manual_add_order(self, chat_id):
+        if not self.ensure_admin_chat(chat_id):
+            return False
         flow = {
             "mode": "add_order",
             "step": "order_date",
@@ -1197,6 +1304,9 @@ class TelegramWorker:
                 cache[str(chat_id)] = flow
         if not flow:
             return False
+        if flow.get("mode") == "add_order" and not self.ensure_admin_chat(chat_id):
+            self.clear_manual_flow(chat_id)
+            return True
         if text_matches(text, "/cancel", "отмена", "cancel"):
             self.clear_manual_flow(chat_id)
             self.safe_send_message(chat_id, "Ручное действие отменено.")
@@ -1331,6 +1441,8 @@ class TelegramWorker:
         return True
 
     def create_manual_order(self, chat_id):
+        if not self.ensure_admin_chat(chat_id):
+            return False
         state = self.get_chat_state(chat_id)
         flow = state.get("manual_flow") or {}
         data = flow.get("data") or {}
@@ -1420,13 +1532,30 @@ class TelegramWorker:
         return True
 
     def confirm_manual_delete_order(self, chat_id, order_id):
+        if not self.ensure_admin_chat(chat_id):
+            return False
         order_id = normalize_text(order_id)
         if not order_id:
             self.safe_send_message(chat_id, "ID заказа не найден. Откройте список заново.")
             return False
+        order, error = self.find_manual_delete_order_for_confirmation(chat_id, order_id)
+        if error:
+            self.safe_send_message(chat_id, error)
+            return False
+        if order and order_scanned_blocks(order) > 0:
+            self.safe_send_message(
+                chat_id,
+                "\n".join([
+                    "Склад уже начал обрабатывать заказ: есть сканы КИЗов.",
+                    "Через Telegram удалить нельзя, чтобы не потерять данные.",
+                ]),
+            )
+            return False
         payload = {
             "reason": "Удалено вручную через Telegram",
             "actor": "telegram",
+            "source": "telegram",
+            "idempotency_key": f"telegram:manual_delete:{chat_id}:{order_id}",
         }
         try:
             result = self.backend_post(f"/api/v1/admin/orders/{order_id}/delete-active", payload)
@@ -1449,6 +1578,21 @@ class TelegramWorker:
         self.safe_send_message(chat_id, "\n".join(lines))
         return True
 
+    def find_manual_delete_order_for_confirmation(self, chat_id, order_id):
+        state = self.get_chat_state(chat_id)
+        orders = state.get("manual_delete_orders") or []
+        for order in orders:
+            if normalize_text(order.get("id")) == order_id:
+                return order, ""
+        try:
+            active_orders = self.backend_get("/api/v1/orders/active")
+        except (httpx.HTTPError, Exception) as exc:
+            return None, backend_failure_message("Не удалось проверить заказ перед удалением", exc)
+        for order in active_orders if isinstance(active_orders, list) else []:
+            if normalize_text(order.get("id")) == order_id:
+                return order, ""
+        return None, "Список удаления устарел. Откройте активные заказы заново."
+
     def handle_manual_callback(self, chat_id, data):
         action = normalize_text(data).replace(TELEGRAM_MANUAL_CALLBACK_PREFIX, "", 1)
         if action == "cancel":
@@ -1458,6 +1602,8 @@ class TelegramWorker:
             self.save_chat_state(chat_id, state)
             self.safe_send_message(chat_id, "Ручное действие отменено.")
             return True
+        if not self.ensure_admin_chat(chat_id):
+            return False
         if action == "add":
             return self.start_manual_add_order(chat_id)
         if action == "delete":
@@ -1513,6 +1659,13 @@ class TelegramWorker:
         now_utc = ensure_aware_utc(now.astimezone(timezone.utc) if now.tzinfo else now)
         idempotency_key = self.skladbot_daily_report_idempotency_key(chat_id, report_date)
         with SessionLocal() as db:
+            reset_stale_processing_events(
+                db,
+                event_types=(SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE,),
+                action="skladbot_daily_report_stale_reset",
+                last_error="stale SkladBot daily report reset",
+                now=now_utc,
+            )
             event = db.execute(
                 select(PendingEvent).where(PendingEvent.idempotency_key == idempotency_key)
             ).scalars().first()
@@ -1564,6 +1717,18 @@ class TelegramWorker:
             event.payload = payload
             db.commit()
 
+    def run_scheduled_daily_reconciliation(self, chat_id, report_date):
+        if not getattr(self, "daily_reconciliation_enabled", False):
+            return None
+        try:
+            return run_daily_reconciliation(report_date=report_date, alert_chat_ids=[chat_id])
+        except Exception as exc:
+            logging.exception("Telegram worker: scheduled daily reconciliation failed")
+            return {
+                "status": "failed",
+                "error": normalize_text(exc) or exc.__class__.__name__,
+            }
+
     def send_due_skladbot_daily_reports(self, now=None):
         now = now or datetime.now(skladbot_daily_report.business_timezone())
         if not self.scheduled_skladbot_daily_report_is_due(now):
@@ -1584,6 +1749,7 @@ class TelegramWorker:
                 continue
             self.finish_scheduled_skladbot_daily_report(event_id, success, "" if success else "telegram_send_failed")
             if success:
+                self.run_scheduled_daily_reconciliation(chat_id, report_date)
                 sent += 1
         return sent
 
@@ -1675,15 +1841,26 @@ class TelegramWorker:
                 force_shipment_date=bool(parse_date_from_text(shipment_date)),
             )
             meta = import_payload.pop("meta", {})
+            rows = import_payload.get("rows") or []
+            imported_blocks = sum(parse_int(row.get("Кол-во блок")) for row in rows if isinstance(row, dict))
             import_payload["telegram_chat_id"] = normalize_text(chat_id)
+            if event_id:
+                import_payload["telegram_event_id"] = normalize_text(event_id)
             result = self.backend_post("/api/v1/imports", import_payload)
+            result_status = normalize_text(result.get("status"))
+            if result_status == "failed":
+                errors = result.get("errors") or []
+                reason = normalize_text(errors[0] if errors else "") or "backend import status failed"
+                self.safe_send_message(chat_id, telegram_import_failure_message(file_name, reason))
+                return False, reason
             warnings = meta.get("warnings") or []
             lines = [
                 "TakSklad: Excel импортирован через Telegram",
                 "",
                 f"Файл: {file_name}",
                 f"Строк в файле: {meta.get('source_rows_count', 0)}",
-                f"Строк отправлено в backend: {len(import_payload.get('rows') or [])}",
+                f"Строк отправлено в backend: {len(rows)}",
+                f"Блоков импортировано: {imported_blocks}",
                 f"Дата отгрузки: {meta.get('shipment_date') or shipment_date or 'не задана'}",
                 f"Позиции добавлены: {result.get('items_created', 0)}",
                 f"Заказы добавлены: {result.get('orders_created', 0)}",
@@ -1721,29 +1898,12 @@ class TelegramWorker:
                 return None, "date_choice_required"
             self.safe_send_message(
                 chat_id,
-                "\n".join([
-                    "Не удалось импортировать Excel-файл.",
-                    "",
-                    f"Файл: {file_name}",
-                    f"Причина: {exc}",
-                    "",
-                    "Заказы и заявки SkladBot не созданы.",
-                ]),
+                telegram_import_failure_message(file_name, exc),
             )
             return False, str(exc)
         except Exception as exc:
             logging.exception("Telegram worker: Excel import failed")
-            self.safe_send_message(
-                chat_id,
-                "\n".join([
-                    "Не удалось импортировать Excel-файл.",
-                    "",
-                    f"Файл: {file_name}",
-                    f"Причина: {exc}",
-                    "",
-                    "Подробности записаны в лог Telegram worker.",
-                ]),
-            )
+            self.safe_send_message(chat_id, telegram_import_failure_message(file_name, exc))
             return False, str(exc)
         finally:
             try:
@@ -1864,6 +2024,8 @@ class TelegramWorker:
                 return
             event.status = "completed" if success else "failed"
             event.last_error = "" if success else normalize_text(error)
+            if not success:
+                ensure_telegram_import_event_incident(db, event, error)
             db.commit()
 
     def take_next_telegram_notification_event(self):
@@ -1895,6 +2057,15 @@ class TelegramWorker:
             event.last_error = "" if success else normalize_text(error)
             db.commit()
 
+    def reset_stale_telegram_notification_events(self):
+        with SessionLocal() as db:
+            return reset_stale_processing_events(
+                db,
+                event_types=(TELEGRAM_NOTIFICATION_EVENT_TYPE,),
+                action="telegram_notification_stale_reset",
+                last_error="stale Telegram notification reset",
+            )
+
     def telegram_notification_targets(self, payload):
         chat_id = normalize_text((payload or {}).get("chat_id"))
         if chat_id:
@@ -1903,6 +2074,7 @@ class TelegramWorker:
         return [normalize_text(value) for value in fallback if normalize_text(value)]
 
     def process_pending_telegram_notifications(self):
+        self.reset_stale_telegram_notification_events()
         processed = 0
         while True:
             event = self.take_next_telegram_notification_event()
@@ -1929,7 +2101,17 @@ class TelegramWorker:
             processed += 1
         return processed
 
+    def reset_stale_telegram_import_events(self):
+        with SessionLocal() as db:
+            return reset_stale_processing_events(
+                db,
+                event_types=(TELEGRAM_EXCEL_IMPORT_EVENT_TYPE,),
+                action="telegram_excel_import_stale_reset",
+                last_error="stale Telegram Excel import reset",
+            )
+
     def process_queued_telegram_imports(self):
+        self.reset_stale_telegram_import_events()
         processed = 0
         while True:
             event = self.take_next_telegram_import_event()
@@ -1992,7 +2174,7 @@ class TelegramWorker:
             return
         if self.allowed_chat_ids and chat_id not in self.allowed_chat_ids:
             return
-        reason = normalize_text(exc)
+        reason = redact_secrets(normalize_text(exc))
         if len(reason) > 500:
             reason = reason[:500] + "..."
         self.safe_send_message(
@@ -2105,6 +2287,10 @@ class TelegramWorker:
             return
         if normalize_text(text).casefold().startswith(("/skladbot_daily", "/skladbot_report")):
             if not self.ensure_admin_chat(chat_id):
+                return
+            command_parts = normalize_text(text).split(maxsplit=1)
+            if len(command_parts) > 1 and not parse_dates_from_text(command_parts[1]):
+                self.safe_send_message(chat_id, "Неверная дата отчета. Используйте формат ДД.ММ.ГГГГ, например 09.06.2026.")
                 return
             self.send_skladbot_daily_report(chat_id, report_date=command_date_or_today(text))
             return

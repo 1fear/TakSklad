@@ -11,12 +11,51 @@ from backend.app.google_sheets_pending import (
     acquire_google_sheets_export_lock,
     load_skladbot_export_orders,
     process_pending_google_sheets_exports,
+    queue_google_sheets_export,
     release_google_sheets_export_lock,
 )
 from backend.app.models import Base, Order, OrderItem, PendingEvent
 
 
 class GoogleSheetsPendingLockTests(unittest.TestCase):
+    def test_payload_based_google_export_uses_deterministic_idempotency_key(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        try:
+            records = [{"ID заказа": "order-1", "Клиент": "Client"}]
+            with SessionLocal() as db:
+                first = queue_google_sheets_export(
+                    db,
+                    "google_sheets_import_export",
+                    "import",
+                    "import-1",
+                    result={"status": "queued"},
+                    payload={"records": records},
+                )
+                second = queue_google_sheets_export(
+                    db,
+                    "google_sheets_import_export",
+                    "import",
+                    "import-1",
+                    result={"status": "queued"},
+                    payload={"records": records},
+                )
+                db.commit()
+                events = db.execute(select(PendingEvent)).scalars().all()
+
+            self.assertEqual(str(first.id), str(second.id))
+            self.assertEqual(len(events), 1)
+            self.assertTrue(events[0].idempotency_key.startswith("google_sheets:google_sheets_import_export:import:import-1:"))
+            self.assertEqual(events[0].payload["idempotency_key"], events[0].idempotency_key)
+        finally:
+            Base.metadata.drop_all(engine)
+            engine.dispose()
+
     def test_postgres_lock_does_not_use_session_level_advisory_lock(self):
         db = mock.Mock()
         db.bind.dialect.name = "postgresql"
@@ -68,7 +107,56 @@ class GoogleSheetsPendingLockTests(unittest.TestCase):
             self.assertEqual([event.status for event in events], ["pending", "pending"])
             self.assertEqual(events[0].attempts, 1)
             self.assertIn("429", events[0].last_error)
+            self.assertTrue((events[0].payload or {}).get("next_attempt_at"))
             self.assertEqual(events[1].attempts, 0)
+        finally:
+            Base.metadata.drop_all(engine)
+            engine.dispose()
+
+    def test_bad_event_does_not_block_newer_valid_event(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        try:
+            with SessionLocal() as db:
+                db.add(PendingEvent(
+                    event_type=GOOGLE_SHEETS_EXPORT_EVENT_TYPE,
+                    status="pending",
+                    payload={"action": "unknown_google_action", "entity_id": "bad-1"},
+                ))
+                db.add(PendingEvent(
+                    event_type=GOOGLE_SHEETS_EXPORT_EVENT_TYPE,
+                    status="pending",
+                    payload={
+                        "action": "google_sheets_import_export",
+                        "entity_id": "import-1",
+                        "records": [{"ID заказа": "order-1"}],
+                    },
+                ))
+                db.commit()
+
+                with mock.patch(
+                    "backend.app.google_sheets_pending.append_import_records_to_google_sheets",
+                    return_value={"status": "completed", "appended": 1},
+                ) as append_mock:
+                    result = process_pending_google_sheets_exports(db, limit=50)
+
+                events = db.execute(select(PendingEvent)).scalars().all()
+                events_by_entity_id = {
+                    str((event.payload or {}).get("entity_id") or ""): event
+                    for event in events
+                }
+
+            self.assertEqual(result["status"], "completed_with_errors")
+            self.assertEqual(result["failed"], 1)
+            self.assertEqual(result["synced"], 1)
+            self.assertEqual(events_by_entity_id["bad-1"].status, "failed")
+            self.assertEqual(events_by_entity_id["import-1"].status, "completed")
+            append_mock.assert_called_once()
         finally:
             Base.metadata.drop_all(engine)
             engine.dispose()

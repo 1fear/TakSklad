@@ -96,10 +96,27 @@ def select_update_download(update_info):
         normalize_text(update_info.get("sha256")).lower(),
     )
 
+def validate_update_download_url(download_url):
+    parsed_url = urllib.parse.urlparse(download_url)
+    if parsed_url.scheme != "https" or parsed_url.netloc.lower() != "github.com":
+        raise ValueError("download_url обновления должен быть HTTPS-ссылкой GitHub Releases")
+    if parsed_url.username or parsed_url.password:
+        raise ValueError("download_url обновления не должен содержать логин или пароль")
+    if not parsed_url.path.startswith("/1fear/TakSklad/releases/download/"):
+        raise ValueError("download_url обновления должен вести на release 1fear/TakSklad")
+
+def validate_update_sha256(expected_sha256):
+    if not expected_sha256:
+        return
+    if len(expected_sha256) != 64 or any(char not in "0123456789abcdef" for char in expected_sha256):
+        raise ValueError("SHA256 обновления в version.json должен быть lowercase hex digest")
+
 def download_update_file(update_info):
     download_url, expected_sha256 = select_update_download(update_info)
     if not download_url:
         raise ValueError("В version.json не указан download_url для обновления")
+    validate_update_download_url(download_url)
+    validate_update_sha256(expected_sha256)
 
     parsed_url = urllib.parse.urlparse(download_url)
     suffix = os.path.splitext(parsed_url.path)[1] or ".exe"
@@ -410,4 +427,3 @@ exit /b 0
     creationflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
     subprocess.Popen(["cmd", "/c", updater_path], creationflags=creationflags)
     return True
-

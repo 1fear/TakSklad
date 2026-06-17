@@ -14,6 +14,7 @@ from .orders_service import (
     parse_int,
 )
 from .schemas import AdminActivityRead, AdminTableRead, AdminTableRow, AdminTableTotals
+from .redaction import redact_secrets
 
 
 GOOGLE_EXPORT_EVENT_TYPE = "google_sheets_export"
@@ -92,6 +93,9 @@ def order_item_to_admin_row(order: Order, item: OrderItem, pending_by_entity):
         skladbot_request_number=normalize_text(order_raw.get("skladbot_request_number")),
         skladbot_request_id=normalize_text(order_raw.get("skladbot_request_id")),
         skladbot_status=normalize_text(order_raw.get("skladbot_status")),
+        skladbot_return_request_number=normalize_text(order_raw.get("skladbot_return_request_number")),
+        skladbot_return_request_id=normalize_text(order_raw.get("skladbot_return_request_id")),
+        skladbot_return_status=normalize_text(order_raw.get("skladbot_return_request_status")),
         source_file=normalize_text(item_raw.get("source_file")),
         google_sheet_status=google_sheet_status(item, pending_count),
         google_sheet_row_number=parse_optional_int(item_raw.get("google_sheet_row_number")),
@@ -165,7 +169,7 @@ def list_recent_activity(db: Session, limit):
             action=row.action,
             entity_type=row.entity_type or "",
             entity_id=row.entity_id or "",
-            payload={},
+            payload=sanitize_payload(row.payload),
             created_at=row.created_at,
         )
         for row in rows
@@ -184,3 +188,13 @@ def parse_optional_int(value):
 
 def normalize_text(value):
     return str(value or "").strip()
+
+
+def sanitize_payload(value):
+    if isinstance(value, dict):
+        return {str(key): sanitize_payload(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [sanitize_payload(item) for item in value]
+    if isinstance(value, str):
+        return redact_secrets(value)
+    return value

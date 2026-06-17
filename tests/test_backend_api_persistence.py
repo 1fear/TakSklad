@@ -1,19 +1,19 @@
 import unittest
 import uuid
 from io import BytesIO
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from unittest import mock
 
 import openpyxl
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.app.db import get_db
 from backend.app.google_sheets_exporter import update_missing_sheet_addresses
 from backend.app.main import app, require_service_token
-from backend.app.models import AuditLog, Base, ImportJob, KizCode, KizMovement, Order, OrderItem, PendingEvent, ScanCode
+from backend.app.models import AuditLog, Base, ImportFile, ImportJob, Incident, KizCode, KizMovement, Order, OrderItem, PendingEvent, ScanCode
 from backend.app.skladbot_return_requests import SKLADBOT_RETURN_REQUEST_CREATE_EVENT_TYPE
 from backend.app.settings import load_settings
 from backend.app.web_auth import SESSION_COOKIE_NAME, hash_password
@@ -176,6 +176,64 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(row["skladbot_request_number"], "SB-77")
         self.assertEqual(row["line_total"], 720000)
         self.assertEqual(payload["recent_activity"][0]["action"], "admin_test_activity")
+        self.assertEqual(payload["recent_activity"][0]["payload"]["client"], "Admin Client")
+
+    def test_admin_table_shows_return_link_and_skladbot_return_status(self):
+        with self.SessionLocal() as db:
+            order = Order(
+                payment_type="terminal",
+                client="Return Client",
+                address="Return Address",
+                representative="Return Rep",
+                order_date=date(2026, 6, 10),
+                status="returned",
+                raw_payload={
+                    "skladbot_request_number": "WH-R-OUT-1",
+                    "skladbot_request_id": "190001",
+                    "return_status": "returned",
+                    "returned_at": "2026-06-10T12:00:00+00:00",
+                    "return_reference": "WH-R-OUT-1",
+                    "skladbot_return_request_number": "WH-R-RET-1",
+                    "skladbot_return_request_id": "190777",
+                    "skladbot_return_request_status": "created",
+                },
+            )
+            item = OrderItem(
+                order=order,
+                product="Chapman Brown OP 20",
+                quantity_pieces=20,
+                quantity_blocks=2,
+                pieces_per_block=10,
+                scanned_blocks=2,
+                status="completed",
+                raw_payload={"source_file": "return-smoke.xlsx"},
+            )
+            db.add(order)
+            db.flush()
+            db.add_all([
+                ScanCode(order_item_id=item.id, code="0104006396053978217RETURN001", source="desktop"),
+                ScanCode(order_item_id=item.id, code="0104006396053978217RETURN002", source="desktop"),
+            ])
+            db.commit()
+            order_id = str(order.id)
+            item_id = str(item.id)
+
+        response = self.client.get("/api/v1/admin/table")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["totals"]["returned_orders"], 1)
+        row = payload["rows"][0]
+        self.assertEqual(row["order_id"], order_id)
+        self.assertEqual(row["item_id"], item_id)
+        self.assertEqual(row["status_bucket"], "returned")
+        self.assertEqual(row["scan_codes_count"], 2)
+        self.assertEqual(row["return_reference"], "WH-R-OUT-1")
+        self.assertEqual(row["return_status"], "returned")
+        self.assertEqual(row["skladbot_request_number"], "WH-R-OUT-1")
+        self.assertEqual(row["skladbot_return_request_number"], "WH-R-RET-1")
+        self.assertEqual(row["skladbot_return_request_id"], "190777")
+        self.assertEqual(row["skladbot_return_status"], "created")
 
     def test_admin_table_totals_are_not_limited_by_row_limit(self):
         first_order_id, _first_item_id = self.seed_order(quantity_blocks=3)
@@ -250,6 +308,8 @@ class BackendApiPersistenceTests(unittest.TestCase):
         with mock.patch("backend.app.main.settings", auth_settings):
             unauthorized = self.client.get("/api/v1/admin/table")
             self.assertEqual(unauthorized.status_code, 401)
+            unauthorized_events = self.client.get("/api/v1/admin/events")
+            self.assertEqual(unauthorized_events.status_code, 401)
 
             login = self.client.post(
                 "/api/v1/auth/login",
@@ -260,6 +320,8 @@ class BackendApiPersistenceTests(unittest.TestCase):
             admin = self.client.get("/api/v1/admin/table")
             self.assertEqual(admin.status_code, 200)
             self.assertEqual(len(admin.json()["rows"]), 1)
+            events = self.client.get("/api/v1/admin/events")
+            self.assertEqual(events.status_code, 200)
 
     def test_reset_order_for_rescan_clears_scans_and_keeps_order_active(self):
         order_id, item_id = self.seed_order(quantity_blocks=2, scanned_blocks=2, item_status="completed")
@@ -275,7 +337,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
         response = self.client.post(
             f"/api/v1/admin/orders/{order_id}/reset-rescan",
-            json={"actor": "anton"},
+            json={"reason": "Wrong scan batch", "actor": "anton"},
         )
 
         self.assertEqual(response.status_code, 200)
@@ -351,6 +413,33 @@ class BackendApiPersistenceTests(unittest.TestCase):
             actions = [row.action for row in db.execute(select(AuditLog)).scalars().all()]
             self.assertIn("order_skladbot_resync_requested", actions)
 
+    def test_admin_state_changing_actions_require_reason(self):
+        archive_id, _ = self.seed_order()
+        cancel_id, _ = self.seed_order()
+        delete_id, _ = self.seed_order()
+        reset_id, _ = self.seed_order()
+        restore_id, _ = self.seed_order(status="cancelled", item_status="cancelled")
+        resync_google_id, _ = self.seed_order()
+        resync_skladbot_id, _ = self.seed_order()
+        bulk_id, _ = self.seed_order()
+
+        checks = [
+            ("post", f"/api/v1/admin/orders/{archive_id}/archive-without-kiz", {"actor": "anton"}),
+            ("post", f"/api/v1/admin/orders/{cancel_id}/cancel", {"actor": "anton"}),
+            ("post", f"/api/v1/admin/orders/{delete_id}/delete-active", {"actor": "anton"}),
+            ("post", f"/api/v1/admin/orders/{reset_id}/reset-rescan", {"actor": "anton"}),
+            ("post", f"/api/v1/admin/orders/{restore_id}/restore", {"actor": "anton"}),
+            ("post", f"/api/v1/admin/orders/{resync_google_id}/resync-google", {"actor": "anton"}),
+            ("post", f"/api/v1/admin/orders/{resync_skladbot_id}/resync-skladbot", {"actor": "anton"}),
+            ("post", "/api/v1/admin/orders/bulk/complete-without-kiz", {"order_ids": [bulk_id], "actor": "anton"}),
+        ]
+
+        for _method, path, body in checks:
+            with self.subTest(path=path):
+                response = self.client.post(path, json=body)
+                self.assertEqual(response.status_code, 422)
+                self.assertEqual(response.json()["detail"], "Reason is required")
+
     def test_archive_without_kiz_moves_unscanned_order_out_of_active_without_marking_completed(self):
         order_id, item_id = self.seed_order(quantity_blocks=3)
 
@@ -378,6 +467,17 @@ class BackendApiPersistenceTests(unittest.TestCase):
             actions = [row.action for row in db.execute(select(AuditLog)).scalars().all()]
             self.assertIn("order_archived_without_kiz", actions)
             self.assertNotIn("order_completed", actions)
+            audit = db.execute(
+                select(AuditLog).where(AuditLog.action == "order_archived_without_kiz")
+            ).scalar_one()
+            self.assertEqual(audit.payload["action"], "order_archived_without_kiz")
+            self.assertEqual(audit.payload["actor"], "anton")
+            self.assertEqual(audit.payload["source"], "anton")
+            self.assertEqual(audit.payload["reason"], "Emergency close")
+            self.assertEqual(audit.payload["affected_order_ids"], [order_id])
+            self.assertEqual(audit.payload["affected_item_ids"], [item_id])
+            self.assertTrue(audit.payload["timestamp"])
+            self.assertEqual(audit.payload["raw_context"]["order_status"], "archived_no_kiz")
             event = db.execute(select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")).scalar_one()
             self.assertEqual(event.status, "pending")
             self.assertEqual(event.payload["action"], "google_sheets_archive_no_kiz_export")
@@ -401,6 +501,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             "/api/v1/admin/orders/bulk/complete-without-kiz",
             json={
                 "order_ids": [first_order_id, second_order_id],
+                "reason": "Manual close without scans",
                 "actor": "anton",
             },
         )
@@ -444,6 +545,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             "/api/v1/admin/orders/bulk/complete-without-kiz",
             json={
                 "order_ids": [order_id],
+                "reason": "Manual close without scans",
                 "actor": "anton",
             },
         )
@@ -490,6 +592,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             "/api/v1/admin/orders/bulk/complete-without-kiz",
             json={
                 "order_ids": [order_id],
+                "reason": "Manual close completed order",
                 "actor": "anton",
             },
         )
@@ -552,6 +655,31 @@ class BackendApiPersistenceTests(unittest.TestCase):
             actions = [item.action for item in db.execute(select(AuditLog)).scalars()]
             self.assertIn("order_deleted_from_active", actions)
 
+    def test_delete_active_order_idempotency_prevents_duplicate_audit_and_export(self):
+        order_id, _item_id = self.seed_order(quantity_blocks=4)
+        body = {
+            "reason": "Manual Telegram delete",
+            "actor": "telegram",
+            "source": "telegram",
+            "idempotency_key": "delete-active-key",
+        }
+
+        first = self.client.post(f"/api/v1/admin/orders/{order_id}/delete-active", json=body)
+        second = self.client.post(f"/api/v1/admin/orders/{order_id}/delete-active", json=body)
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.json()["message"], "Order delete already processed for this idempotency key")
+        with self.SessionLocal() as db:
+            self.assertEqual(
+                len(db.execute(select(AuditLog).where(AuditLog.action == "order_deleted_from_active")).scalars().all()),
+                1,
+            )
+            self.assertEqual(
+                len(db.execute(select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")).scalars().all()),
+                1,
+            )
+
     def test_delete_active_order_rejects_order_with_scans(self):
         order_id, _item_id = self.seed_order(quantity_blocks=4, scanned_blocks=1)
 
@@ -585,6 +713,30 @@ class BackendApiPersistenceTests(unittest.TestCase):
             event = db.execute(select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")).scalar_one()
             self.assertEqual(event.payload["action"], "google_sheets_scan_export")
             self.assertEqual(event.payload["entity_id"], item_id)
+
+    def test_bulk_complete_without_kiz_idempotency_prevents_duplicate_audit_and_export(self):
+        order_id, _item_id = self.seed_order(quantity_blocks=2)
+        body = {
+            "order_ids": [order_id],
+            "reason": "Manual close",
+            "actor": "anton",
+            "idempotency_key": "bulk-complete-key",
+        }
+
+        first = self.client.post("/api/v1/admin/orders/bulk/complete-without-kiz", json=body)
+        second = self.client.post("/api/v1/admin/orders/bulk/complete-without-kiz", json=body)
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        with self.SessionLocal() as db:
+            self.assertEqual(
+                len(db.execute(select(AuditLog).where(AuditLog.action == "order_completed_without_kiz")).scalars().all()),
+                1,
+            )
+            self.assertEqual(
+                len(db.execute(select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")).scalars().all()),
+                1,
+            )
 
     def test_sync_sources_runs_google_sheet_sync_then_skladbot_sync(self):
         with mock.patch("backend.app.main.sync_google_sheet_to_backend") as google_sync, mock.patch(
@@ -684,6 +836,12 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
         with self.SessionLocal() as db:
             self.assertEqual(len(db.execute(select(ScanCode)).scalars().all()), 1)
+            movements = db.execute(
+                select(KizMovement)
+                .join(KizCode, KizMovement.kiz_id == KizCode.id)
+                .where(KizCode.code == "0104006396053947217ABCDEF")
+            ).scalars().all()
+            self.assertEqual([movement.movement_type for movement in movements], ["outbound"])
             item = db.get(OrderItem, uuid.UUID(item_id))
             self.assertEqual(item.scanned_blocks, 1)
             other_item = db.get(OrderItem, uuid.UUID(other_item_id))
@@ -829,6 +987,8 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertEqual(item.scanned_blocks, 0)
             self.assertEqual(item.status, "not_completed")
             self.assertEqual(db.execute(select(ScanCode)).scalars().all(), [])
+            self.assertEqual(db.execute(select(KizCode)).scalars().all(), [])
+            self.assertEqual(db.execute(select(KizMovement)).scalars().all(), [])
 
     def test_scan_undo_subtracts_aggregate_box_block_quantity(self):
         _, item_id = self.seed_order(quantity_blocks=51, product="Chapman Gold SSL 100`20")
@@ -1043,21 +1203,21 @@ class BackendApiPersistenceTests(unittest.TestCase):
         with self.SessionLocal() as db:
             order = db.get(Order, uuid.UUID(order_id))
             order.raw_payload = {
-                "skladbot_request_number": "WR-RETURN-100",
+                "skladbot_request_number": "WH-R-RETURN-100",
                 "skladbot_request_id": "100500",
             }
             db.commit()
 
-        lookup = self.client.get("/api/v1/returns/lookup", params={"lookup": " WR-RETURN-100 "})
+        lookup = self.client.get("/api/v1/returns/lookup", params={"lookup": " WH-R-RETURN-100 "})
 
         self.assertEqual(lookup.status_code, 200)
         self.assertEqual(lookup.json()["id"], order_id)
-        self.assertEqual(lookup.json()["skladbot_request_number"], "WR-RETURN-100")
+        self.assertEqual(lookup.json()["skladbot_request_number"], "WH-R-RETURN-100")
 
         returned = self.client.post(
             f"/api/v1/returns/{order_id}",
             json={
-                "return_reference": "WR-RETURN-100",
+                "return_reference": "WH-R-RETURN-100",
                 "returned_by": "test",
                 "confirmed_items": self.confirmed_return_items(item_id),
             },
@@ -1066,18 +1226,26 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(returned.status_code, 200)
         self.assertEqual(returned.json()["status"], "returned")
         self.assertEqual(returned.json()["return_status"], "returned")
-        self.assertEqual(returned.json()["return_reference"], "WR-RETURN-100")
+        self.assertEqual(returned.json()["return_reference"], "WH-R-RETURN-100")
+        self.assertEqual(returned.json()["skladbot_request_number"], "WH-R-RETURN-100")
+        self.assertEqual(returned.json()["skladbot_return_status"], "queued")
         self.assertTrue(returned.json()["returned_at"])
 
         returns = self.client.get("/api/v1/returns")
         self.assertEqual(returns.status_code, 200)
         self.assertEqual(len(returns.json()), 1)
         self.assertEqual(returns.json()[0]["id"], order_id)
-        self.assertEqual(returns.json()[0]["return_reference"], "WR-RETURN-100")
+        self.assertEqual(returns.json()[0]["client"], "Test Client")
+        self.assertEqual(returns.json()[0]["order_date"], "2026-05-30")
+        self.assertEqual(returns.json()[0]["items"][0]["product"], "Test Product")
+        self.assertEqual(returns.json()[0]["skladbot_request_number"], "WH-R-RETURN-100")
+        self.assertEqual(returns.json()[0]["return_reference"], "WH-R-RETURN-100")
+        self.assertEqual(returns.json()[0]["return_status"], "returned")
+        self.assertEqual(returns.json()[0]["skladbot_return_status"], "queued")
 
         duplicate_return = self.client.post(
             f"/api/v1/returns/{order_id}",
-            json={"return_reference": "WR-RETURN-100", "returned_by": "test"},
+            json={"return_reference": "WH-R-RETURN-100", "returned_by": "test"},
         )
         self.assertEqual(duplicate_return.status_code, 409)
         self.assertEqual(duplicate_return.json()["detail"], "Order is already returned")
@@ -1085,7 +1253,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         lookup_after_return = self.client.get("/api/v1/returns/lookup", params={"lookup": "100500"})
         self.assertEqual(lookup_after_return.status_code, 200)
         self.assertEqual(lookup_after_return.json()["status"], "returned")
-        self.assertEqual(lookup_after_return.json()["return_reference"], "WR-RETURN-100")
+        self.assertEqual(lookup_after_return.json()["return_reference"], "WH-R-RETURN-100")
 
         active = self.client.get("/api/v1/orders/active")
         self.assertEqual(active.status_code, 200)
@@ -1094,7 +1262,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         with self.SessionLocal() as db:
             order = db.get(Order, uuid.UUID(order_id))
             self.assertEqual(order.raw_payload["return_status"], "returned")
-            self.assertEqual(order.raw_payload["return_reference"], "WR-RETURN-100")
+            self.assertEqual(order.raw_payload["return_reference"], "WH-R-RETURN-100")
             self.assertEqual(order.raw_payload["skladbot_return_confirmed_items"][0]["item_id"], item_id)
             event = db.execute(
                 select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_RETURN_REQUEST_CREATE_EVENT_TYPE)
@@ -1401,6 +1569,98 @@ class BackendApiPersistenceTests(unittest.TestCase):
             ).scalars().all()
             self.assertEqual(len(events), 2)
             self.assertEqual(events[-1].payload["records"][0]["ID импорта"], "backfill-import")
+
+    def test_retrying_same_import_payload_does_not_duplicate_backend_records(self):
+        row = {
+            "Дата отгрузки": "30.05.2026",
+            "Тип оплаты": "cash",
+            "Клиент": "Retry Client",
+            "Адрес": "Retry Address",
+            "Товары": "Product One",
+            "Кол-во ШТ": "20",
+            "Кол-во блок": "2",
+            "ID заказа": "retry-order",
+            "ID импорта": "retry-import-row",
+        }
+        payload = {
+            "source": "telegram",
+            "filename": "retry.xlsx",
+            "sha256": "a" * 64,
+            "rows": [row],
+        }
+
+        first = self.client.post("/api/v1/imports", json=payload)
+        second = self.client.post("/api/v1/imports", json=payload)
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201)
+        self.assertEqual(first.json()["orders_created"], 1)
+        self.assertEqual(first.json()["items_created"], 1)
+        self.assertEqual(second.json()["orders_created"], 0)
+        self.assertEqual(second.json()["items_created"], 0)
+        self.assertEqual(second.json()["duplicate_rows"], 1)
+        with self.SessionLocal() as db:
+            self.assertEqual(len(db.execute(select(Order)).scalars().all()), 1)
+            self.assertEqual(len(db.execute(select(OrderItem)).scalars().all()), 1)
+            self.assertEqual(len(db.execute(select(ImportFile)).scalars().all()), 1)
+            self.assertEqual(len(db.execute(select(ScanCode)).scalars().all()), 0)
+
+    def test_failed_import_creates_linked_incident_and_resolve_removes_readiness_blocker(self):
+        with self.SessionLocal() as db:
+            db.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
+            db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260617_0002')"))
+            event = PendingEvent(
+                event_type="telegram_excel_import",
+                status="processing",
+                attempts=1,
+                payload={"document": {"file_name": "broken.xlsx", "file_id": "file-1"}},
+            )
+            db.add(event)
+            db.commit()
+            event_id = str(event.id)
+
+        import_response = self.client.post(
+            "/api/v1/imports",
+            json={
+                "source": "telegram",
+                "filename": "broken.xlsx",
+                "sha256": "b" * 64,
+                "telegram_event_id": event_id,
+                "rows": [{"Тип оплаты": "cash", "Клиент": "", "Товары": "", "Кол-во блок": "0"}],
+            },
+        )
+
+        self.assertEqual(import_response.status_code, 201)
+        self.assertEqual(import_response.json()["status"], "failed")
+        import_id = import_response.json()["id"]
+        with self.SessionLocal() as db:
+            incidents = db.execute(select(Incident)).scalars().all()
+            self.assertEqual(len(incidents), 1)
+            self.assertEqual(incidents[0].source, "excel_import")
+            self.assertEqual(str(incidents[0].import_id), import_id)
+            self.assertEqual(str(incidents[0].pending_event_id), event_id)
+            incident_id = str(incidents[0].id)
+
+        before = self.client.get("/ready").json()
+        self.assertEqual(before["status"], "degraded")
+        self.assertEqual(before["imports"]["recent_errors"][0]["filename"], "broken.xlsx")
+
+        status_response = self.client.post(
+            f"/api/v1/admin/incidents/{incident_id}/status",
+            json={"status": "resolved", "actor": "anton", "source": "web", "reason": "Malformed file reviewed"},
+        )
+        self.assertEqual(status_response.status_code, 200)
+
+        after = self.client.get("/ready").json()
+        self.assertEqual(after["status"], "ok")
+        self.assertEqual(after["imports"]["recent_errors"], [])
+        with self.SessionLocal() as db:
+            import_job = db.get(ImportJob, uuid.UUID(import_id))
+            self.assertEqual(import_job.status, "failed")
+            audits = db.execute(
+                select(AuditLog).where(AuditLog.action == "incident_status_changed")
+            ).scalars().all()
+            self.assertEqual(len(audits), 1)
 
     def test_changed_address_with_same_source_import_id_does_not_create_backend_duplicate(self):
         first_row = {
@@ -1864,6 +2124,17 @@ class BackendApiPersistenceTests(unittest.TestCase):
             {
                 "Дата отгрузки": "2026-05-30",
                 "Тип оплаты": "Терминал",
+                "Клиент": "Pickup Variant Client",
+                "Адрес": "Самовывоз: склад",
+                "Координаты": "41.33, 69.29",
+                "Товары": "Chapman RED OP 20",
+                "Кол-во ШТ": "10",
+                "Кол-во блок": "1",
+                "ID заказа": "pickup-variant-order",
+            },
+            {
+                "Дата отгрузки": "2026-05-30",
+                "Тип оплаты": "Терминал",
                 "Клиент": "Invalid Coordinates Client",
                 "Адрес": "Invalid Coordinates Address",
                 "Координаты": "999, 999",
@@ -2129,6 +2400,72 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         self.assertIn("Invalid report_date", response.json()["detail"])
 
+    def test_reconciliation_report_endpoint_is_db_first_and_does_not_alert(self):
+        with mock.patch("backend.app.main.run_daily_reconciliation") as reconcile:
+            reconcile.return_value = {
+                "source": "postgres",
+                "status": "ok",
+                "report_date": "2026-06-10",
+                "alerts": [],
+            }
+
+            response = self.client.get("/api/v1/reports/reconciliation/day?report_date=2026-06-10")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["source"], "postgres")
+        self.assertEqual(response.json()["alerts"], [])
+        reconcile.assert_called_once()
+        self.assertEqual(reconcile.call_args.kwargs["report_date"], "2026-06-10")
+        self.assertEqual(reconcile.call_args.kwargs["alert_chat_ids"], [])
+
+    def test_reconciliation_report_endpoint_records_google_down_as_mirror_issue(self):
+        with self.SessionLocal() as db:
+            order = Order(
+                payment_type="terminal",
+                client="Mirror Client",
+                address="Mirror Address",
+                representative="Mirror Rep",
+                order_date=date(2026, 6, 10),
+                status="not_completed",
+                raw_payload={
+                    "skladbot_request_number": "WH-R-MIRROR",
+                    "skladbot_request_id": "1001",
+                    "skladbot_status": "found",
+                },
+            )
+            db.add(OrderItem(
+                order=order,
+                product="Chapman RED OP 20",
+                quantity_pieces=10,
+                quantity_blocks=1,
+                pieces_per_block=10,
+                scanned_blocks=0,
+                status="not_completed",
+                raw_payload={"source_import_id": "mirror-import", "source_order_id": "mirror-order"},
+            ))
+            db.commit()
+
+        with mock.patch("backend.app.reconciliation_service.load_google_sheet_records", side_effect=RuntimeError("Google timeout")):
+            response = self.client.get("/api/v1/reports/reconciliation/day?report_date=2026-06-10")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["source"], "postgres")
+        self.assertEqual(payload["status"], "mirror_issue")
+        self.assertEqual(payload["google"]["status"], "error")
+        self.assertEqual(payload["skladbot"]["missing_request_orders"], 0)
+        self.assertEqual(payload["skladbot"]["problem_status_orders"], 0)
+        self.assertEqual(payload["alerts"], [])
+
+        with self.SessionLocal() as db:
+            incidents = db.execute(select(Incident).where(Incident.source == "daily_reconciliation")).scalars().all()
+            notifications = db.execute(select(PendingEvent).where(PendingEvent.event_type == "telegram_notification")).scalars().all()
+
+        self.assertEqual(len(incidents), 1)
+        self.assertEqual(incidents[0].severity, "warning")
+        self.assertEqual(incidents[0].external_ref, "reconciliation:2026-06-10:google_mirror_unavailable")
+        self.assertEqual(notifications, [])
+
     def test_diagnostics_logs_include_failed_events_import_errors_and_redact_secrets(self):
         with self.SessionLocal() as db:
             db.add(PendingEvent(
@@ -2137,6 +2474,22 @@ class BackendApiPersistenceTests(unittest.TestCase):
                 attempts=2,
                 payload={},
                 last_error="Bearer secret-service-token failed",
+            ))
+            db.add(PendingEvent(
+                event_type="google_sheets_export",
+                idempotency_key="google:test:key",
+                status="pending",
+                attempts=1,
+                payload={"next_attempt_at": "2026-06-16T12:01:00+00:00"},
+                last_error="APIError: [429]: quota exceeded",
+            ))
+            db.add(PendingEvent(
+                event_type="telegram_notification",
+                status="processing",
+                attempts=3,
+                payload={},
+                last_error="old processing",
+                updated_at=datetime.now(timezone.utc) - timedelta(minutes=30),
             ))
             db.add(ImportJob(
                 source="telegram",
@@ -2170,6 +2523,11 @@ class BackendApiPersistenceTests(unittest.TestCase):
         text = response.content.decode("utf-8")
         self.assertIn("Failed/Pending Events", text)
         self.assertIn("telegram_excel_import", text)
+        self.assertIn("google_sheets_export", text)
+        self.assertIn("status=pending", text)
+        self.assertIn("idempotency_key=google:test:key", text)
+        self.assertIn("next_attempt_at=2026-06-16T12:01:00+00:00", text)
+        self.assertIn("Stale Processing Events", text)
         self.assertIn("broken.xlsx", text)
         self.assertIn("row 1: missing client", text)
         self.assertIn("skladbot_worker_sync", text)
@@ -2177,6 +2535,462 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertIn('"token": "***"', text)
         self.assertNotIn("secret-service-token", text)
         self.assertNotIn("010-secret-code", text)
+
+    def test_admin_events_exposes_queue_diagnostics(self):
+        with self.SessionLocal() as db:
+            db.add(PendingEvent(
+                event_type="google_sheets_export",
+                idempotency_key="google:event:1",
+                status="pending",
+                attempts=2,
+                payload={"next_attempt_at": "2026-06-16T12:01:00+00:00"},
+                last_error="quota",
+            ))
+            db.add(PendingEvent(
+                event_type="telegram_notification",
+                status="processing",
+                attempts=1,
+                payload={},
+                updated_at=datetime.now(timezone.utc) - timedelta(minutes=30),
+                last_error="Bearer secret-token failed for 0104006396053978217ABCDE12345678901234567890",
+            ))
+            db.commit()
+
+        response = self.client.get("/api/v1/admin/events")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["summary"]["active"], 2)
+        self.assertEqual(payload["summary"]["by_type"]["google_sheets_export"]["pending"], 1)
+        self.assertEqual(payload["summary"]["by_type"]["telegram_notification"]["processing"], 1)
+        self.assertEqual(len(payload["stale_processing"]), 1)
+        recent = {event["idempotency_key"]: event for event in payload["recent_events"] if event.get("idempotency_key")}
+        self.assertEqual(recent["google:event:1"]["attempts"], 2)
+        self.assertEqual(recent["google:event:1"]["next_attempt_at"], "2026-06-16T12:01:00+00:00")
+        dumped = str(payload)
+        self.assertIn("Bearer ***", dumped)
+        self.assertNotIn("secret-token", dumped)
+        self.assertNotIn("0104006396053978217ABCDE12345678901234567890", dumped)
+
+    def test_admin_event_detail_retry_redacts_payload_and_writes_audit(self):
+        order_id, item_id = self.seed_order()
+        with self.SessionLocal() as db:
+            import_job = ImportJob(
+                source="telegram",
+                status="failed",
+                rows_total=1,
+                rows_imported=0,
+                raw_payload={"filename": "failed.xlsx"},
+            )
+            db.add(import_job)
+            db.commit()
+            retryable = PendingEvent(
+                event_type="telegram_excel_import",
+                idempotency_key="telegram:import:failed",
+                status="failed",
+                attempts=3,
+                payload={
+                    "order_id": order_id,
+                    "import_id": str(import_job.id),
+                    "entity_type": "order_item",
+                    "entity_id": item_id,
+                    "document": {"file_name": "failed.xlsx", "file_id": "telegram-file-1"},
+                    "authorization": "secret-token",
+                    "nested": {"bot_token": "telegram-secret"},
+                    "next_attempt_at": "2026-06-16T12:01:00+00:00",
+                },
+                last_error="Bearer secret-token failed for 0104006396053978217ABCDE12345678901234567890",
+            )
+            terminal = PendingEvent(
+                event_type="telegram_excel_import",
+                status="completed",
+                attempts=1,
+                payload={},
+            )
+            state_event = PendingEvent(
+                event_type="telegram_worker_state",
+                status="failed",
+                attempts=1,
+                payload={},
+            )
+            db.add_all([retryable, terminal, state_event])
+            db.commit()
+            import_id = str(import_job.id)
+            retryable_id = str(retryable.id)
+            terminal_id = str(terminal.id)
+            state_event_id = str(state_event.id)
+
+        list_response = self.client.get("/api/v1/admin/events")
+        self.assertEqual(list_response.status_code, 200)
+        listed = {
+            event["id"]: event
+            for event in list_response.json()["recent_events"]
+        }
+        self.assertTrue(listed[retryable_id]["retryable"])
+        self.assertEqual(listed[retryable_id]["linked_order_id"], order_id)
+        self.assertEqual(listed[retryable_id]["linked_import_id"], import_id)
+        self.assertEqual(listed[retryable_id]["raw_payload"]["authorization"], "***")
+        self.assertEqual(listed[retryable_id]["raw_payload"]["nested"]["bot_token"], "***")
+        dumped_list = str(list_response.json())
+        self.assertIn("Bearer ***", dumped_list)
+        self.assertNotIn("secret-token", dumped_list)
+        self.assertNotIn("telegram-secret", dumped_list)
+        self.assertNotIn("0104006396053978217ABCDE12345678901234567890", dumped_list)
+
+        detail_response = self.client.get(f"/api/v1/admin/events/{retryable_id}")
+        self.assertEqual(detail_response.status_code, 200)
+        detail = detail_response.json()
+        self.assertEqual(detail["id"], retryable_id)
+        self.assertTrue(detail["retryable"])
+        self.assertEqual(detail["raw_payload"]["authorization"], "***")
+
+        missing_reason = self.client.post(
+            f"/api/v1/admin/events/{retryable_id}/retry",
+            json={"actor": "anton"},
+        )
+        self.assertEqual(missing_reason.status_code, 422)
+        self.assertEqual(missing_reason.json()["detail"], "reason is required")
+
+        retry_response = self.client.post(
+            f"/api/v1/admin/events/{retryable_id}/retry",
+            json={
+                "reason": "Manual retry after operator review",
+                "actor": "anton",
+                "source": "web",
+                "idempotency_key": "retry-1",
+            },
+        )
+        self.assertEqual(retry_response.status_code, 200)
+        retry_payload = retry_response.json()
+        self.assertEqual(retry_payload["status"], "pending")
+        self.assertEqual(retry_payload["last_error"], "")
+        self.assertEqual(retry_payload["next_attempt_at"], "")
+        self.assertTrue(retry_payload["retryable"])
+        self.assertEqual(retry_payload["raw_payload"]["authorization"], "***")
+        self.assertEqual(retry_payload["raw_payload"]["manual_retry_actor"], "anton")
+
+        completed_retry = self.client.post(
+            f"/api/v1/admin/events/{terminal_id}/retry",
+            json={"reason": "Should not retry terminal", "actor": "anton"},
+        )
+        self.assertEqual(completed_retry.status_code, 409)
+        state_retry = self.client.post(
+            f"/api/v1/admin/events/{state_event_id}/retry",
+            json={"reason": "Should not retry state event", "actor": "anton"},
+        )
+        self.assertEqual(state_retry.status_code, 409)
+
+        with self.SessionLocal() as db:
+            event = db.get(PendingEvent, uuid.UUID(retryable_id))
+            self.assertEqual(event.status, "pending")
+            self.assertEqual(event.last_error, "")
+            self.assertNotIn("next_attempt_at", event.payload)
+            audit = db.execute(
+                select(AuditLog).where(AuditLog.action == "pending_event_retry_requested")
+            ).scalar_one()
+            self.assertEqual(audit.entity_type, "pending_event")
+            self.assertEqual(audit.entity_id, retryable_id)
+            self.assertEqual(audit.payload["old_status"], "failed")
+            self.assertEqual(audit.payload["new_status"], "pending")
+            self.assertEqual(audit.payload["actor"], "anton")
+            self.assertEqual(audit.payload["source"], "web")
+            self.assertEqual(audit.payload["reason"], "Manual retry after operator review")
+
+    def test_admin_event_retry_rejects_telegram_import_when_original_file_is_unavailable(self):
+        with self.SessionLocal() as db:
+            event = PendingEvent(
+                event_type="telegram_excel_import",
+                status="failed",
+                attempts=2,
+                payload={"document": {"file_name": "missing.xlsx"}},
+                last_error="download failed",
+            )
+            db.add(event)
+            db.commit()
+            event_id = str(event.id)
+
+        response = self.client.post(
+            f"/api/v1/admin/events/{event_id}/retry",
+            json={"reason": "Try again after operator review", "actor": "anton"},
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["detail"]["message"], "Original Telegram file is unavailable for retry")
+        with self.SessionLocal() as db:
+            event = db.get(PendingEvent, uuid.UUID(event_id))
+            self.assertEqual(event.status, "failed")
+            self.assertEqual(event.last_error, "download failed")
+
+    def test_admin_event_retry_accepts_failed_skladbot_create_event(self):
+        order_id, _item_id = self.seed_order()
+        with self.SessionLocal() as db:
+            event = PendingEvent(
+                event_type="skladbot_request_create",
+                status="failed",
+                attempts=1,
+                payload={
+                    "order_id": order_id,
+                    "create_status": "create_failed",
+                    "next_attempt_at": "2026-06-16T12:01:00+00:00",
+                },
+                last_error="Недостаточно товара на складе",
+            )
+            db.add(event)
+            db.commit()
+            event_id = str(event.id)
+
+        response = self.client.post(
+            f"/api/v1/admin/events/{event_id}/retry",
+            json={"reason": "Stock replenished, retry SkladBot create", "actor": "anton", "source": "web"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "pending")
+        self.assertEqual(payload["last_error"], "")
+        self.assertEqual(payload["linked_order_id"], order_id)
+        self.assertEqual(payload["raw_payload"]["manual_retry_actor"], "anton")
+        with self.SessionLocal() as db:
+            event = db.get(PendingEvent, uuid.UUID(event_id))
+            self.assertEqual(event.status, "pending")
+            self.assertNotIn("next_attempt_at", event.payload)
+
+    def test_admin_incidents_link_filter_redact_and_change_status_with_audit(self):
+        order_id, item_id = self.seed_order()
+        with self.SessionLocal() as db:
+            import_job = ImportJob(
+                source="telegram",
+                status="failed",
+                rows_total=1,
+                rows_imported=0,
+                raw_payload={"filename": "broken.xlsx"},
+            )
+            pending_event = PendingEvent(
+                event_type="telegram_excel_import",
+                status="failed",
+                attempts=2,
+                payload={"file": "broken.xlsx"},
+                last_error="Bearer secret-token failed",
+            )
+            scan_code = ScanCode(
+                order_item_id=uuid.UUID(item_id),
+                code="0104006396053978217SECRETKIZVALUE",
+                raw_payload={},
+            )
+            db.add_all([import_job, pending_event, scan_code])
+            db.commit()
+            import_id = str(import_job.id)
+            event_id = str(pending_event.id)
+            scan_id = str(scan_code.id)
+
+        create_response = self.client.post(
+            "/api/v1/admin/incidents",
+            json={
+                "source": "telegram_import",
+                "severity": "critical",
+                "status": "open",
+                "title": "Import failed",
+                "message": "Bearer secret-token failed for 0104006396053978217SECRETKIZVALUE",
+                "entity_type": "pending_event",
+                "entity_id": event_id,
+                "pending_event_id": event_id,
+                "order_id": order_id,
+                "order_item_id": item_id,
+                "import_id": import_id,
+                "scan_code_id": scan_id,
+                "external_ref": "WH-R-INCIDENT",
+                "raw_payload": {
+                    "authorization": "super-secret",
+                    "nested": ["0104006396053978217SECRETKIZVALUE"],
+                },
+            },
+        )
+
+        self.assertEqual(create_response.status_code, 201)
+        incident = create_response.json()
+        incident_id = incident["id"]
+        self.assertEqual(incident["status"], "open")
+        self.assertEqual(incident["severity"], "critical")
+        self.assertEqual(incident["source"], "telegram_import")
+        self.assertEqual(incident["entity_type"], "pending_event")
+        self.assertEqual(incident["entity_id"], event_id)
+        self.assertEqual(incident["pending_event_id"], event_id)
+        self.assertEqual(incident["order_id"], order_id)
+        self.assertEqual(incident["order_item_id"], item_id)
+        self.assertEqual(incident["import_id"], import_id)
+        self.assertEqual(incident["scan_code_id"], scan_id)
+        self.assertEqual(incident["external_ref"], "WH-R-INCIDENT")
+        dumped = str(incident)
+        self.assertIn("Bearer ***", dumped)
+        self.assertIn("'authorization': '***'", dumped)
+        self.assertNotIn("secret-token", dumped)
+        self.assertNotIn("super-secret", dumped)
+        self.assertNotIn("0104006396053978217SECRETKIZVALUE", dumped)
+
+        list_response = self.client.get(
+            "/api/v1/admin/incidents",
+            params={
+                "status": "open",
+                "severity": "critical",
+                "source": "telegram_import",
+                "entity_type": "pending_event",
+                "date_from": "2000-01-01",
+                "date_to": "2999-01-01",
+            },
+        )
+
+        self.assertEqual(list_response.status_code, 200)
+        list_payload = list_response.json()
+        self.assertEqual(len(list_payload["items"]), 1)
+        self.assertEqual(list_payload["items"][0]["id"], incident_id)
+        self.assertEqual(list_payload["summary"]["by_status"]["open"], 1)
+        self.assertEqual(list_payload["summary"]["by_severity"]["critical"], 1)
+
+        detail_response = self.client.get(f"/api/v1/admin/incidents/{incident_id}")
+        self.assertEqual(detail_response.status_code, 200)
+        self.assertEqual(detail_response.json()["id"], incident_id)
+
+        status_response = self.client.post(
+            f"/api/v1/admin/incidents/{incident_id}/status",
+            json={
+                "status": "resolved",
+                "actor": "anton",
+                "source": "web",
+                "reason": "Checked and fixed import",
+            },
+        )
+
+        self.assertEqual(status_response.status_code, 200)
+        self.assertEqual(status_response.json()["status"], "resolved")
+        self.assertTrue(status_response.json()["resolved_at"])
+        with self.SessionLocal() as db:
+            audit = db.execute(
+                select(AuditLog).where(AuditLog.action == "incident_status_changed")
+            ).scalar_one()
+            self.assertEqual(audit.entity_type, "incident")
+            self.assertEqual(audit.entity_id, incident_id)
+            self.assertEqual(audit.payload["old_status"], "open")
+            self.assertEqual(audit.payload["new_status"], "resolved")
+            self.assertEqual(audit.payload["actor"], "anton")
+            self.assertEqual(audit.payload["source"], "web")
+            self.assertEqual(audit.payload["reason"], "Checked and fixed import")
+
+    def test_admin_incident_accepts_every_status_severity_and_external_ref(self):
+        created_ids = []
+        for index, incident_status in enumerate(["open", "in_progress", "manual_review", "resolved", "ignored", "cancelled"]):
+            response = self.client.post(
+                "/api/v1/admin/incidents",
+                json={
+                    "source": "manual",
+                    "severity": ["info", "warning", "critical"][index % 3],
+                    "status": incident_status,
+                    "title": f"External incident {index}",
+                    "entity_type": "external",
+                    "external_ref": f"EXT-{index}",
+                },
+            )
+            self.assertEqual(response.status_code, 201)
+            created_ids.append(response.json()["id"])
+
+        self.assertEqual(len(set(created_ids)), 6)
+        with self.SessionLocal() as db:
+            self.assertEqual(len(db.execute(select(Incident)).scalars().all()), 6)
+
+    def test_health_is_lightweight_and_readiness_reports_sanitized_db_queue_status(self):
+        with self.SessionLocal() as db:
+            db.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
+            db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260616_0001')"))
+            db.add(PendingEvent(
+                event_type="google_sheets_export",
+                idempotency_key="google:event:pending",
+                status="pending",
+                attempts=1,
+                payload={"next_attempt_at": "2026-06-16T12:01:00+00:00"},
+                created_at=datetime.now(timezone.utc) - timedelta(minutes=20),
+                last_error="APIError: [429]: quota exceeded",
+            ))
+            db.add(PendingEvent(
+                event_type="telegram_notification",
+                status="failed",
+                attempts=2,
+                payload={},
+                last_error="Bearer secret-token failed for 0104006396053978217ABCDE12345678901234567890",
+            ))
+            db.add(ImportJob(
+                source="telegram",
+                status="failed",
+                rows_total=1,
+                rows_imported=0,
+                raw_payload={
+                    "filename": "broken.xlsx",
+                    "errors": ["authorization token=super-secret failed"],
+                },
+            ))
+            db.commit()
+
+        health = self.client.get("/health")
+        readiness = self.client.get("/ready")
+        api_readiness = self.client.get("/api/v1/readiness")
+
+        self.assertEqual(health.status_code, 200)
+        self.assertEqual(health.json()["status"], "ok")
+        self.assertNotIn("database", health.json())
+        self.assertNotIn("queue", health.json())
+
+        self.assertEqual(readiness.status_code, 200)
+        payload = readiness.json()
+        self.assertEqual(payload["status"], "degraded")
+        self.assertEqual(payload["database"]["status"], "ok")
+        self.assertEqual(payload["migrations"]["status"], "ok")
+        self.assertEqual(payload["migrations"]["current_revision"], "20260616_0001")
+        self.assertEqual(payload["queue"]["summary"]["by_type"]["google_sheets_export"]["pending"], 1)
+        self.assertGreaterEqual(payload["queue"]["oldest_pending_age_seconds"], 60)
+        self.assertEqual(payload["queue"]["stale_processing_count"], 0)
+        dumped = str(payload)
+        self.assertIn("Bearer ***", dumped)
+        self.assertIn("authorization ***", dumped)
+        self.assertNotIn("secret-token", dumped)
+        self.assertNotIn("super-secret", dumped)
+        self.assertNotIn("0104006396053978217ABCDE", dumped)
+        self.assertEqual(api_readiness.status_code, 200)
+
+    def test_readiness_accepts_incident_schema_head_revision(self):
+        with self.SessionLocal() as db:
+            db.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
+            db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260617_0002')"))
+            db.commit()
+
+        response = self.client.get("/ready")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["migrations"]["status"], "ok")
+        self.assertEqual(payload["migrations"]["expected_baseline"], "20260616_0001")
+        self.assertEqual(payload["migrations"]["expected_head"], "20260617_0002")
+        self.assertEqual(payload["migrations"]["current_revision"], "20260617_0002")
+
+    def test_readiness_degrades_when_migration_state_is_missing_or_wrong(self):
+        response = self.client.get("/ready")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["database"]["status"], "ok")
+        self.assertEqual(payload["status"], "degraded")
+        self.assertEqual(payload["migrations"]["status"], "not_configured")
+
+        with self.SessionLocal() as db:
+            db.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
+            db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('old_revision')"))
+            db.commit()
+
+        response = self.client.get("/ready")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "degraded")
+        self.assertEqual(payload["migrations"]["status"], "revision_mismatch")
+        self.assertEqual(payload["migrations"]["current_revision"], "old_revision")
 
 
 if __name__ == "__main__":

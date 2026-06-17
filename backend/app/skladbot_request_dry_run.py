@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from .google_sheets_exporter import make_sheet_record
 from .google_sheets_pending import queue_google_sheets_export
-from .models import AuditLog, ImportJob, Order, OrderItem, PendingEvent
+from .models import AuditLog, ImportJob, Incident, Order, OrderItem, PendingEvent
 from .skladbot_worker import (
     SkladBotClient,
     env_int,
@@ -782,6 +782,79 @@ def queue_stock_shortage_notification(
     return notification
 
 
+def ensure_skladbot_create_incident(
+    db: Session,
+    order: Order,
+    event: PendingEvent,
+    error: str,
+    *,
+    status: str = "open",
+) -> Incident:
+    existing = db.execute(
+        select(Incident).where(Incident.pending_event_id == event.id).where(Incident.source == "skladbot_create")
+    ).scalar_one_or_none()
+    import_job = order_import_job(db, order, event)
+    products = [
+        {
+            "item_id": str(item.id),
+            "product": item.product,
+            "sku": product_sku_key(item.product),
+            "quantity_blocks": int(item.quantity_blocks or 0),
+            "source_file": normalize_text((item.raw_payload or {}).get("source_file")),
+        }
+        for item in order.items or []
+    ]
+    raw_payload = {
+        "order_id": str(order.id),
+        "import_id": str(import_job.id) if import_job else normalize_text((event.payload or {}).get("import_id")),
+        "source_file": first_order_source_file(order),
+        "client": order.client,
+        "order_date": order.order_date.isoformat() if order.order_date else "",
+        "payment_type": order.payment_type,
+        "skladbot_event_id": str(event.id),
+        "skladbot_create_status": status,
+        "error": normalize_text(error),
+        "products": products,
+    }
+    if existing is not None:
+        existing.status = status
+        existing.severity = "critical"
+        existing.message = normalize_text(error)
+        existing.raw_payload = {**(existing.raw_payload or {}), **raw_payload}
+        return existing
+
+    incident = Incident(
+        source="skladbot_create",
+        severity="critical",
+        status=status,
+        title="SkladBot request create failed",
+        message=normalize_text(error),
+        entity_type="order",
+        entity_id=str(order.id),
+        pending_event_id=event.id,
+        order_id=order.id,
+        import_id=import_job.id if import_job else parse_uuid((event.payload or {}).get("import_id")),
+        external_ref=first_order_source_file(order),
+        raw_payload=raw_payload,
+    )
+    db.add(incident)
+    db.add(AuditLog(
+        action="skladbot_create_incident_created",
+        entity_type="order",
+        entity_id=str(order.id),
+        payload={
+            "incident_source": incident.source,
+            "status": status,
+            "event_id": str(event.id),
+            "import_id": raw_payload["import_id"],
+            "source_file": raw_payload["source_file"],
+            "error": normalize_text(error),
+        },
+    ))
+    db.flush()
+    return incident
+
+
 def cancel_unscanned_order_after_skladbot_stock_shortage(
     db: Session,
     order: Order,
@@ -791,9 +864,11 @@ def cancel_unscanned_order_after_skladbot_stock_shortage(
     if order_has_scans(order):
         guarded_error = f"{normalize_text(error)}; автоотмена пропущена, потому что у заказа уже есть сканы"
         mark_order_skladbot_create_failed(order, event, guarded_error)
+        ensure_skladbot_create_incident(db, order, event, guarded_error, status="manual_review")
         return {"status": "create_failed", "error": guarded_error, "order_id": str(order.id)}
 
     import_job = order_import_job(db, order, event)
+    incident = ensure_skladbot_create_incident(db, order, event, error, status="open")
     records = build_order_google_delete_records(order)
     pending_google_cleanup = remove_records_from_pending_google_import_exports(db, records)
     google_event = queue_google_sheets_export(
@@ -828,6 +903,7 @@ def cancel_unscanned_order_after_skladbot_stock_shortage(
             "google_records": len(records),
             "google_delete_event_id": str(google_event.id) if google_event else "",
             "telegram_notification_event_id": str(notification_event.id) if notification_event else "",
+            "incident_id": str(incident.id) if incident.id else "",
         },
     ))
     db.delete(order)
@@ -837,6 +913,7 @@ def cancel_unscanned_order_after_skladbot_stock_shortage(
         "error": normalize_text(error),
         "google_delete_event_id": str(google_event.id) if google_event else "",
         "telegram_notification_event_id": str(notification_event.id) if notification_event else "",
+        "incident_id": str(incident.id) if incident.id else "",
         "records": len(records),
     }
 
@@ -914,6 +991,7 @@ def process_skladbot_create_event(db: Session, event: PendingEvent, client: Any)
         if is_skladbot_stock_shortage_error(error):
             return cancel_unscanned_order_after_skladbot_stock_shortage(db, order, event, error)
         mark_order_skladbot_create_failed(order, event, error)
+        ensure_skladbot_create_incident(db, order, event, error, status="open")
         return {"status": "create_failed", "error": error, "order_id": str(order.id)}
 
     response_request = normalize_created_request_response(response)
@@ -931,6 +1009,7 @@ def process_skladbot_create_event(db: Session, event: PendingEvent, client: Any)
             )
         error = "SkladBot create response did not include request id"
         mark_order_skladbot_create_failed(order, event, error)
+        ensure_skladbot_create_incident(db, order, event, error, status="open")
         return {"status": "create_failed", "error": error, "order_id": str(order.id)}
 
     try:
@@ -948,6 +1027,7 @@ def process_skladbot_create_event(db: Session, event: PendingEvent, client: Any)
             )
         error = f"SkladBot created request {request_id}, but canonical detail failed: {sanitize_skladbot_error(exc)}"
         mark_order_skladbot_create_failed(order, event, error)
+        ensure_skladbot_create_incident(db, order, event, error, status="open")
         return {"status": "create_failed", "error": error, "order_id": str(order.id)}
 
     request = normalize_request_payload({"id": request_id}, detail)
@@ -965,6 +1045,7 @@ def process_skladbot_create_event(db: Session, event: PendingEvent, client: Any)
             )
         error = f"SkladBot created request {request_id}, but canonical WH-R is empty"
         mark_order_skladbot_create_failed(order, event, error)
+        ensure_skladbot_create_incident(db, order, event, error, status="open")
         return {"status": "create_failed", "error": error, "order_id": str(order.id)}
 
     return save_skladbot_create_result(

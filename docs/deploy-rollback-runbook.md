@@ -73,10 +73,15 @@ rsync -az --exclude '.env' deploy/vds/ root@135.181.245.84:/opt/taksklad/app/dep
 
 ```bash
 cd /opt/taksklad/app
-./deploy/vds/apply_schema.sh
+./deploy/vds/backup_postgres.sh
+docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml run --rm backend-api \
+  alembic -c alembic.ini upgrade head
 docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml up -d --build backend-api
 curl -fsS https://api.taksklad.uz/health
+curl -fsS https://api.taksklad.uz/ready
 ```
+
+Если VDS database еще не stamped на baseline `20260616_0001`, сначала пройти `docs/database-migrations-runbook.md`. `deploy/vds/apply_schema.sh` не использовать для обычных production upgrades после baseline stamp; он остается только для legacy/bootstrap сценариев пустой БД.
 
 Если DNS временно недоступен, fallback-проверка:
 
@@ -139,6 +144,29 @@ docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml up -d
 ```
 
 Если код на VDS доставлялся через `rsync`, rollback делается повторным `rsync` из локального checkout предыдущего хорошего коммита.
+
+### Rollback После Production Hardening 2.0.x
+
+Перед откатом:
+
+```bash
+cd /opt/taksklad/app
+./deploy/vds/backup_postgres.sh
+docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml ps
+curl -fsS https://api.taksklad.uz/health
+```
+
+Откат к предыдущему good commit:
+
+```bash
+cd /opt/taksklad/app
+git fetch --all
+git checkout <previous-good-commit>
+docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml up -d --build backend-api telegram-worker google-sheets-sync-worker skladbot-worker frontend
+curl -fsS https://api.taksklad.uz/health
+```
+
+Если после релиза уже применялись Alembic migrations, downgrade БД нельзя делать автоматически вместе с кодом. Сначала выполнить backup, затем отдельно проверить конкретный migration downgrade plan. Если сомневаешься, откатывать только код, а БД оставлять на текущей схеме до ручного решения.
 
 ## 7. Release Safety
 

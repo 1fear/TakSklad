@@ -752,6 +752,7 @@ def normalize_request_payload(list_item, detail):
                 "barcode": normalize_text(product.get("barcode")),
                 "amount": parse_int(product.get("amount")),
                 "accepted_amount": parse_int(product.get("acceptedAmount") or product.get("accepted_amount")),
+                "accepted_amount_present": "acceptedAmount" in product or "accepted_amount" in product,
             }
             for product in products
             if isinstance(product, dict)

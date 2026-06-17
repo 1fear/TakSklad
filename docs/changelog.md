@@ -2,6 +2,62 @@
 
 Здесь фиксируются все правки в коде TakSklad: что менялось, в каком файле, зачем, и какие тесты это покрывают. Записи идут от новых к старым.
 
+## 2026-06-17
+
+### Operations control hardening продолжение
+
+**Файлы:** `backend/app/reconciliation_service.py`, `backend/app/telegram_worker.py`, `backend/app/admin_service.py`, `backend/app/schemas.py`, `frontend/package*.json`, `tests/*`, `docs/*`.
+
+**Что стало:**
+
+- Добавлена ежедневная DB-first сверка Postgres/Google mirror/SkladBot с отдельными счетчиками Google-only, DB-only active, status mismatch, WH-R mismatch и SkladBot gaps.
+- Critical reconciliation alerts дедупятся по incident/date/source/chat и содержат следующее действие.
+- Google-down по сверке считается mirror issue, а не падением DB workflow.
+- Админка показывает заявку возврата SkladBot рядом с исходной WH-R для returned-заказов.
+- Frontend build dependency обновлен до Vite 8.0.16 и esbuild 0.28.1, `npm audit --audit-level=high` показывает 0 vulnerabilities.
+
+**Проверки:**
+
+- `./.venv/bin/python -m unittest discover -s tests` - 475 tests OK.
+- `./.venv/bin/python -m compileall -q backend/app src/taksklad tests tools` - OK.
+- `npm --prefix frontend run build` - OK.
+- `npm --prefix frontend audit --audit-level=high` - 0 vulnerabilities.
+- `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK.
+- `./.venv/bin/python tools/release_preflight.py --skip-network` - OK.
+- `git diff --check` - OK.
+
+## 2026-06-16
+
+### Production hardening supergoal
+
+**Файлы:** `backend/*`, `src/taksklad/*`, `frontend/src/*`, `deploy/vds/*`, `tools/release_preflight.py`, `tests/*`, `docs/*`, `.supergoal/*`.
+
+**Что стало:**
+
+- Desktop forced-update guard блокирует обычную работу, если обязательное обновление не применено, и показывает понятный recovery path.
+- Backend получил Alembic baseline, readiness endpoints, event queue diagnostics и sanitized diagnostics log.
+- Операции с КИЗами усилены per-KIZ advisory lock и idempotency, чтобы снизить риск дублей при конкурентных scan/undo/return/reset.
+- Admin actions в API, web и Telegram требуют reason/source/actor/idempotency и защищены от stale повторов.
+- Web panel показывает readiness, import/event errors, audit details и причины заблокированных действий.
+- Telegram ops стали строже: admin-gated manual controls, безопасное удаление только не начатых активных заказов, actionable ошибки отчетов.
+- Report rules зафиксированы: day/logistics/KIZ reports читают TakSklad DB, ежедневный SkladBot report читает SkladBot API, Google остается mirror/export.
+- Исправлены отчетные edge cases: `acceptedAmount=0`, плохая дата `/skladbot_daily`, маскирование секретов в Telegram/backend ошибках, варианты самовывоза в логистике.
+
+**Rollback:**
+
+- Код откатывать к предыдущему good commit и пересобирать затронутые контейнеры.
+- Перед любым production rollback делать Postgres backup. Если уже применялись Alembic migrations, DB downgrade выполнять только отдельным осознанным шагом по runbook.
+- Desktop rollout откатывать через release manifest/update URL, не меняя данные в БД.
+
+**Проверки:**
+
+- `./.venv/bin/python -m unittest discover -s tests` - 455 tests OK.
+- `./.venv/bin/python -m compileall -q backend/app src/taksklad tests tools` - OK.
+- `npm --prefix frontend run build` - OK.
+- `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK.
+- `./.venv/bin/python tools/release_preflight.py --skip-network` - OK.
+- `git diff --check` - OK.
+
 ## 2026-06-09
 
 ### План и факт в списке заявок SkladBot daily report

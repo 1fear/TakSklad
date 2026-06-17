@@ -1,11 +1,13 @@
+import hashlib
+import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import desc, select
 from sqlalchemy.orm import Session, selectinload
 
 from .google_sheets_pending import queue_google_sheets_export
 from .google_sheets_exporter import make_sheet_record
-from .kiz_movements_service import MOVEMENT_RESET, record_kiz_movement
+from .kiz_movements_service import MOVEMENT_RESET, lock_kiz_code_for_transaction, record_kiz_movement
 from .models import AuditLog, Order, OrderItem, PendingEvent
 from .orders_service import (
     ApiError,
@@ -22,10 +24,12 @@ from .orders_service import (
 
 
 def archive_order_without_kiz(db: Session, order_id, payload):
+    context = admin_action_context("order_archived_without_kiz", [str(order_id)], payload)
     return apply_terminal_no_kiz_action(
         db,
         order_id,
         payload,
+        context,
         target_status=STATUS_ARCHIVED_NO_KIZ,
         audit_action="order_archived_without_kiz",
         google_action="google_sheets_archive_no_kiz_export",
@@ -33,10 +37,12 @@ def archive_order_without_kiz(db: Session, order_id, payload):
 
 
 def cancel_order(db: Session, order_id, payload):
+    context = admin_action_context("order_cancelled", [str(order_id)], payload)
     return apply_terminal_no_kiz_action(
         db,
         order_id,
         payload,
+        context,
         target_status=STATUS_CANCELLED,
         audit_action="order_cancelled",
         google_action="google_sheets_cancel_export",
@@ -44,17 +50,28 @@ def cancel_order(db: Session, order_id, payload):
 
 
 def delete_active_order(db: Session, order_id, payload):
+    order_id_text = str(parse_uuid(order_id, "order_id"))
+    context = admin_action_context("order_deleted_from_active", [order_id_text], payload)
+    existing = find_admin_action_audit(db, "order_deleted_from_active", "order", order_id_text, context["idempotency_key"])
+    if existing is not None:
+        existing_payload = existing.payload or {}
+        return {
+            "order_id": order_id_text,
+            "deleted": True,
+            "dry_run": False,
+            "google_delete_event_id": normalize_text(existing_payload.get("google_delete_event_id")),
+            "skladbot_request_number": normalize_text(existing_payload.get("skladbot_request_number")),
+            "skladbot_request_id": normalize_text(existing_payload.get("skladbot_request_id")),
+            "message": "Order delete already processed for this idempotency key",
+        }
+
     order = get_order_for_action(db, order_id, with_for_update=True)
     if order.status in INACTIVE_ORDER_STATUSES:
         raise ApiError(409, "Order is not active")
 
-    reason = normalize_text(getattr(payload, "reason", ""))
-    if not reason:
-        raise ApiError(422, "Reason is required")
     ensure_expected_updated_at(order, getattr(payload, "expected_updated_at", ""))
     ensure_order_has_no_scans(order)
 
-    order_id_text = str(order.id)
     raw_payload = dict(order.raw_payload or {})
     skladbot_request_number = normalize_text(raw_payload.get("skladbot_request_number"))
     skladbot_request_id = normalize_text(raw_payload.get("skladbot_request_id"))
@@ -79,24 +96,29 @@ def delete_active_order(db: Session, order_id, payload):
         result={"status": "queued", "updated": 0, "error": ""},
         payload={
             "records": records,
-            "reason": "manual_active_order_delete",
+            "reason": context["reason"],
+            "actor": context["actor"],
+            "source": context["source"],
+            "idempotency_key": child_admin_idempotency_key(context, "google_delete"),
         },
     )
     db.add(AuditLog(
         action="order_deleted_from_active",
         entity_type="order",
         entity_id=order_id_text,
-        payload={
-            "reason": reason,
-            "actor": normalize_text(getattr(payload, "actor", "")) or "web",
-            "idempotency_key": normalize_text(getattr(payload, "idempotency_key", "")),
-            "items_count": len(order.items),
-            "google_records": len(records),
-            "google_delete_event_id": str(event.id) if event else "",
-            "skladbot_request_number": skladbot_request_number,
-            "skladbot_request_id": skladbot_request_id,
-            "skladbot_left_manual": bool(skladbot_request_number or skladbot_request_id),
-        },
+        payload=admin_audit_payload(
+            "order_deleted_from_active",
+            context,
+            order=order,
+            extra={
+                "items_count": len(order.items),
+                "google_records": len(records),
+                "google_delete_event_id": str(event.id) if event else "",
+                "skladbot_request_number": skladbot_request_number,
+                "skladbot_request_id": skladbot_request_id,
+                "skladbot_left_manual": bool(skladbot_request_number or skladbot_request_id),
+            },
+        ),
     ))
     db.delete(order)
     db.commit()
@@ -115,7 +137,8 @@ def complete_orders_without_kiz(db: Session, payload):
     order_ids = unique_order_ids(getattr(payload, "order_ids", []))
     if not order_ids:
         raise ApiError(422, "Order ids are required")
-    reason = normalize_text(getattr(payload, "reason", "")) or "Ручное закрытие как выполнено"
+    context = admin_action_context("order_completed_without_kiz", order_ids, payload)
+    reason = context["reason"]
 
     parsed_ids = [parse_uuid(order_id, "order_id") for order_id in order_ids]
     stmt = (
@@ -126,12 +149,20 @@ def complete_orders_without_kiz(db: Session, payload):
     )
     orders = db.execute(stmt).scalars().all()
     orders_by_id = {str(order.id): order for order in orders}
+    duplicate_ids = {
+        order_id
+        for order_id in order_ids
+        if find_admin_action_audit(db, "order_completed_without_kiz", "order", order_id, context["idempotency_key"])
+        is not None
+    }
     errors = []
 
     for order_id in order_ids:
         order = orders_by_id.get(order_id)
         if order is None:
             errors.append({"order_id": order_id, "message": "Order not found"})
+            continue
+        if order_id in duplicate_ids:
             continue
         errors.extend(validate_complete_without_kiz_order(db, order, payload))
 
@@ -148,10 +179,12 @@ def complete_orders_without_kiz(db: Session, payload):
         }
 
     now = datetime.now(timezone.utc)
-    actor = normalize_text(getattr(payload, "actor", "")) or "web"
-    idempotency_key = normalize_text(getattr(payload, "idempotency_key", ""))
+    actor = context["actor"]
+    idempotency_key = context["idempotency_key"]
     export_result = {"status": "queued", "queued": True, "error": ""}
     for order_id in order_ids:
+        if order_id in duplicate_ids:
+            continue
         order = orders_by_id[order_id]
         raw_payload = dict(order.raw_payload or {})
         raw_payload.update({
@@ -179,12 +212,15 @@ def complete_orders_without_kiz(db: Session, payload):
             action="order_completed_without_kiz",
             entity_type="order",
             entity_id=str(order.id),
-            payload={
-                "reason": reason,
-                "actor": actor,
-                "idempotency_key": idempotency_key,
-                "items_count": len(order.items),
-            },
+            payload=admin_audit_payload(
+                "order_completed_without_kiz",
+                context,
+                order=order,
+                timestamp=now,
+                extra={
+                    "items_count": len(order.items),
+                },
+            ),
         ))
         event = queue_google_sheets_export(
             db,
@@ -192,6 +228,7 @@ def complete_orders_without_kiz(db: Session, payload):
             "order",
             str(order.id),
             result=export_result,
+            payload={"idempotency_key": child_admin_idempotency_key(context, f"google_archive:{order.id}")},
         )
         db.add(AuditLog(
             action="google_sheets_archive_export",
@@ -212,7 +249,11 @@ def complete_orders_without_kiz(db: Session, payload):
 
 def reset_order_for_rescan(db: Session, order_id, payload):
     order = get_order_for_action(db, order_id, with_for_update=True)
-    reason = normalize_text(getattr(payload, "reason", "")) or "Сброс заказа на пересканирование"
+    context = admin_action_context("order_reset_for_rescan", [str(order.id)], payload)
+    existing = find_admin_action_audit(db, "order_reset_for_rescan", "order", str(order.id), context["idempotency_key"])
+    if existing is not None:
+        return order_to_read(order)
+    reason = context["reason"]
     ensure_expected_updated_at(order, getattr(payload, "expected_updated_at", ""))
     if order.status == STATUS_RETURNED:
         raise ApiError(409, "Returned orders cannot be reset for rescan")
@@ -221,7 +262,7 @@ def reset_order_for_rescan(db: Session, order_id, payload):
         return order_to_read(order)
 
     now = datetime.now(timezone.utc)
-    actor = normalize_text(getattr(payload, "actor", "")) or "web"
+    actor = context["actor"]
     reset_counts = []
     for item in order.items:
         scan_codes = list(item.scan_codes or [])
@@ -232,6 +273,7 @@ def reset_order_for_rescan(db: Session, order_id, payload):
             "scan_codes": len(scan_codes),
         })
         for scan in scan_codes:
+            lock_kiz_code_for_transaction(db, scan.code)
             record_kiz_movement(
                 db,
                 code=scan.code,
@@ -262,7 +304,7 @@ def reset_order_for_rescan(db: Session, order_id, payload):
         "web_action_reason": reason,
         "web_action_actor": actor,
         "web_action_at": now.isoformat(),
-        "web_action_idempotency_key": normalize_text(getattr(payload, "idempotency_key", "")),
+        "web_action_idempotency_key": context["idempotency_key"],
         "reset_from_status": order.status,
     })
     order.raw_payload = raw_payload
@@ -272,11 +314,15 @@ def reset_order_for_rescan(db: Session, order_id, payload):
         action="order_reset_for_rescan",
         entity_type="order",
         entity_id=str(order.id),
-        payload={
-            "reason": reason,
-            "actor": actor,
-            "items": reset_counts,
-        },
+        payload=admin_audit_payload(
+            "order_reset_for_rescan",
+            context,
+            order=order,
+            timestamp=now,
+            extra={
+                "items": reset_counts,
+            },
+        ),
     ))
     db.commit()
     db.refresh(order)
@@ -287,9 +333,11 @@ def reset_order_for_rescan(db: Session, order_id, payload):
 
 def restore_order(db: Session, order_id, payload):
     order = get_order_for_action(db, order_id, with_for_update=True)
-    reason = normalize_text(getattr(payload, "reason", ""))
-    if not reason:
-        raise ApiError(422, "Reason is required")
+    context = admin_action_context("order_restored", [str(order.id)], payload)
+    existing = find_admin_action_audit(db, "order_restored", "order", str(order.id), context["idempotency_key"])
+    if existing is not None:
+        return order_to_read(order)
+    reason = context["reason"]
     ensure_expected_updated_at(order, getattr(payload, "expected_updated_at", ""))
     if order.status not in (STATUS_ARCHIVED_NO_KIZ, STATUS_CANCELLED):
         raise ApiError(409, "Only cancelled or archive-without-KIZ orders can be restored")
@@ -298,7 +346,7 @@ def restore_order(db: Session, order_id, payload):
         return order_to_read(order)
 
     now = datetime.now(timezone.utc)
-    actor = normalize_text(getattr(payload, "actor", "")) or "web"
+    actor = context["actor"]
     previous_status = order.status
     order.status = STATUS_NOT_COMPLETED
     raw_payload = dict(order.raw_payload or {})
@@ -307,7 +355,7 @@ def restore_order(db: Session, order_id, payload):
         "web_action_reason": reason,
         "web_action_actor": actor,
         "web_action_at": now.isoformat(),
-        "web_action_idempotency_key": normalize_text(getattr(payload, "idempotency_key", "")),
+        "web_action_idempotency_key": context["idempotency_key"],
         "restored_from_status": previous_status,
     })
     order.raw_payload = raw_payload
@@ -319,12 +367,16 @@ def restore_order(db: Session, order_id, payload):
         action="order_restored",
         entity_type="order",
         entity_id=str(order.id),
-        payload={
-            "reason": reason,
-            "actor": actor,
-            "previous_status": previous_status,
-            "items_count": len(order.items),
-        },
+        payload=admin_audit_payload(
+            "order_restored",
+            context,
+            order=order,
+            timestamp=now,
+            extra={
+                "previous_status": previous_status,
+                "items_count": len(order.items),
+            },
+        ),
     ))
     db.commit()
     db.refresh(order)
@@ -335,21 +387,24 @@ def restore_order(db: Session, order_id, payload):
 
 def resync_order_skladbot(db: Session, order_id, payload=None):
     order = get_order_for_action(db, order_id, with_for_update=True)
-    reason = normalize_text(getattr(payload, "reason", "")) if payload else ""
-    if payload is not None and not reason:
-        raise ApiError(422, "Reason is required")
+    context = admin_action_context("order_skladbot_resync_requested", [str(order.id)], payload)
+    existing = find_admin_action_audit(db, "order_skladbot_resync_requested", "order", str(order.id), context["idempotency_key"])
+    if existing is not None:
+        return order_to_read(order)
+    reason = context["reason"]
     ensure_expected_updated_at(order, getattr(payload, "expected_updated_at", "") if payload else "")
 
     raw_payload = dict(order.raw_payload or {})
     raw_payload["skladbot_resync_requested_at"] = datetime.now(timezone.utc).isoformat()
-    raw_payload["skladbot_resync_actor"] = normalize_text(getattr(payload, "actor", "")) if payload else "web"
+    raw_payload["skladbot_resync_actor"] = context["actor"]
     raw_payload["skladbot_resync_reason"] = reason
+    raw_payload["skladbot_resync_idempotency_key"] = context["idempotency_key"]
     order.raw_payload = raw_payload
     db.add(AuditLog(
         action="order_skladbot_resync_requested",
         entity_type="order",
         entity_id=str(order.id),
-        payload=safe_action_payload(payload),
+        payload=admin_audit_payload("order_skladbot_resync_requested", context, order=order),
     ))
     db.commit()
 
@@ -363,11 +418,15 @@ def resync_order_skladbot(db: Session, order_id, payload=None):
 
 def resync_order_to_google(db: Session, order_id, payload=None):
     order = get_order_for_action(db, order_id)
+    context = admin_action_context("order_google_resync_requested", [str(order.id)], payload)
+    existing = find_admin_action_audit(db, "order_google_resync_requested", "order", str(order.id), context["idempotency_key"])
+    if existing is not None:
+        return order_to_read(order)
     db.add(AuditLog(
         action="order_google_resync_requested",
         entity_type="order",
         entity_id=str(order.id),
-        payload=safe_action_payload(payload),
+        payload=admin_audit_payload("order_google_resync_requested", context, order=order),
     ))
     db.commit()
 
@@ -453,16 +512,17 @@ def order_item_to_sheet_record(order, item):
     return make_sheet_record(row, item_key=(item.raw_payload or {}).get("item_key") or str(item.id))
 
 
-def apply_terminal_no_kiz_action(db: Session, order_id, payload, target_status, audit_action, google_action):
+def apply_terminal_no_kiz_action(db: Session, order_id, payload, context, target_status, audit_action, google_action):
     order = get_order_for_action(db, order_id, with_for_update=True)
+    existing = find_admin_action_audit(db, audit_action, "order", str(order.id), context["idempotency_key"])
+    if existing is not None:
+        return order_to_read(order)
     if order.status == target_status:
         return order_to_read(order)
     if order.status in INACTIVE_ORDER_STATUSES:
         raise ApiError(409, "Order is not active")
 
-    reason = normalize_text(getattr(payload, "reason", ""))
-    if not reason:
-        raise ApiError(422, "Reason is required")
+    reason = context["reason"]
     ensure_expected_updated_at(order, getattr(payload, "expected_updated_at", ""))
     ensure_order_has_no_scans(order)
 
@@ -474,9 +534,9 @@ def apply_terminal_no_kiz_action(db: Session, order_id, payload, target_status, 
     raw_payload.update({
         "web_action": audit_action,
         "web_action_reason": reason,
-        "web_action_actor": normalize_text(getattr(payload, "actor", "")) or "web",
+        "web_action_actor": context["actor"],
         "web_action_at": now.isoformat(),
-        "web_action_idempotency_key": normalize_text(getattr(payload, "idempotency_key", "")),
+        "web_action_idempotency_key": context["idempotency_key"],
     })
     order.raw_payload = raw_payload
     order.status = target_status
@@ -487,12 +547,15 @@ def apply_terminal_no_kiz_action(db: Session, order_id, payload, target_status, 
         action=audit_action,
         entity_type="order",
         entity_id=str(order.id),
-        payload={
-            "reason": reason,
-            "actor": raw_payload["web_action_actor"],
-            "idempotency_key": raw_payload["web_action_idempotency_key"],
-            "items_count": len(order.items),
-        },
+        payload=admin_audit_payload(
+            audit_action,
+            context,
+            order=order,
+            timestamp=now,
+            extra={
+                "items_count": len(order.items),
+            },
+        ),
     ))
     db.commit()
     db.refresh(order)
@@ -602,12 +665,100 @@ def ensure_expected_updated_at(order, expected_updated_at):
         })
 
 
+def admin_action_context(action, order_ids, payload):
+    reason = normalize_text(getattr(payload, "reason", "") if payload is not None else "")
+    if not reason:
+        raise ApiError(422, "Reason is required")
+    actor = normalize_text(getattr(payload, "actor", "") if payload is not None else "") or "web"
+    source = normalize_text(getattr(payload, "source", "") if payload is not None else "") or actor
+    affected_order_ids = [normalize_text(order_id) for order_id in (order_ids or []) if normalize_text(order_id)]
+    explicit_key = normalize_text(getattr(payload, "idempotency_key", "") if payload is not None else "")
+    return {
+        "action": action,
+        "reason": reason,
+        "actor": actor,
+        "source": source,
+        "idempotency_key": normalize_admin_idempotency_key(action, explicit_key),
+        "affected_order_ids": affected_order_ids,
+    }
+
+
+def normalize_admin_idempotency_key(action, key):
+    key = normalize_text(key)
+    if key and len(key) <= 120:
+        return key
+    seed = key or uuid.uuid4().hex
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
+    return f"admin:{normalize_text(action)[:48]}:{digest}"[:180]
+
+
+def child_admin_idempotency_key(context, suffix):
+    parent = normalize_text((context or {}).get("idempotency_key"))
+    suffix = normalize_text(suffix)
+    key = f"{parent}:{suffix}" if suffix else parent
+    if len(key) <= 180:
+        return key
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
+    return f"{parent[:120]}:{digest}"[:180]
+
+
+def find_admin_action_audit(db: Session, action, entity_type, entity_id, idempotency_key):
+    key = normalize_text(idempotency_key)
+    if not key:
+        return None
+    rows = db.execute(
+        select(AuditLog)
+        .where(AuditLog.action == action)
+        .where(AuditLog.entity_type == entity_type)
+        .where(AuditLog.entity_id == entity_id)
+        .order_by(desc(AuditLog.created_at), desc(AuditLog.id))
+        .limit(50)
+    ).scalars().all()
+    for row in rows:
+        if normalize_text((row.payload or {}).get("idempotency_key")) == key:
+            return row
+    return None
+
+
+def admin_audit_payload(action, context, order=None, timestamp=None, extra=None):
+    timestamp = timestamp or datetime.now(timezone.utc)
+    affected_order_ids = list((context or {}).get("affected_order_ids") or [])
+    affected_item_ids = []
+    raw_context = {}
+    if order is not None:
+        order_id = str(order.id)
+        if order_id not in affected_order_ids:
+            affected_order_ids.append(order_id)
+        affected_item_ids = [str(item.id) for item in (order.items or [])]
+        order_raw = order.raw_payload or {}
+        raw_context = {
+            "order_status": order.status,
+            "items_count": len(order.items or []),
+            "skladbot_request_number": normalize_text(order_raw.get("skladbot_request_number")),
+            "skladbot_request_id": normalize_text(order_raw.get("skladbot_request_id")),
+        }
+    payload = {
+        "action": action,
+        "actor": normalize_text((context or {}).get("actor")) or "web",
+        "source": normalize_text((context or {}).get("source")) or normalize_text((context or {}).get("actor")) or "web",
+        "reason": normalize_text((context or {}).get("reason")),
+        "idempotency_key": normalize_text((context or {}).get("idempotency_key")),
+        "affected_order_ids": affected_order_ids,
+        "affected_item_ids": affected_item_ids,
+        "timestamp": timestamp.isoformat(),
+        "raw_context": raw_context,
+    }
+    payload.update(extra or {})
+    return payload
+
+
 def safe_action_payload(payload):
     if payload is None:
         return {}
     return {
         "reason": normalize_text(getattr(payload, "reason", "")),
         "actor": normalize_text(getattr(payload, "actor", "")) or "web",
+        "source": normalize_text(getattr(payload, "source", "")) or normalize_text(getattr(payload, "actor", "")) or "web",
         "idempotency_key": normalize_text(getattr(payload, "idempotency_key", "")),
     }
 

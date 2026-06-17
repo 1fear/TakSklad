@@ -14,6 +14,7 @@ from .kiz_movements_service import (
     find_same_item_scan,
     kiz_is_available_for_outbound,
     latest_kiz_movement,
+    lock_kiz_code_for_transaction,
     outbound_movement_type_for,
     record_kiz_movement,
 )
@@ -96,6 +97,7 @@ def create_scan(db: Session, payload: ScanCreate):
     if item is None:
         raise ApiError(404, "Order item not found")
 
+    lock_kiz_code_for_transaction(db, code)
     same_item_scan = find_same_item_scan(db, code=code, order_item_id=item.id)
     if same_item_scan is not None:
         return scan_to_read(same_item_scan, item)
@@ -244,6 +246,7 @@ def undo_scan(db: Session, payload: ScanUndo):
     if item.order.status in INACTIVE_ORDER_STATUSES:
         raise ApiError(409, "Cannot undo scan for inactive order")
 
+    lock_kiz_code_for_transaction(db, code)
     scan = db.execute(
         select(ScanCode)
         .where(ScanCode.order_item_id == item.id)
@@ -508,6 +511,7 @@ def mark_order_returned(db: Session, order_id, return_reference="", returned_by=
     return_movements = []
     for item in order.items:
         for scan in item.scan_codes or []:
+            lock_kiz_code_for_transaction(db, scan.code)
             movement = record_kiz_movement(
                 db,
                 code=scan.code,

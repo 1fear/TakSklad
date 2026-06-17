@@ -159,14 +159,28 @@ def format_coordinate(value):
 
 
 def is_logistics_delivery_order(order):
+    if is_skladbot_stock_shortage_blocked_order(order):
+        return False
     if is_pickup_address(order.address):
         return False
     return bool(normalize_coordinates((order.raw_payload or {}).get("coordinates")))
 
 
+def is_skladbot_stock_shortage_blocked_order(order):
+    raw_payload = order.raw_payload or {}
+    skladbot_status = str(raw_payload.get("skladbot_status") or "").strip()
+    if skladbot_status == "cancelled_stock_shortage":
+        return True
+    if skladbot_status == "create_failed" and "автоотмена пропущена" in str(raw_payload.get("skladbot_error") or ""):
+        return True
+    if skladbot_status == "create_failed" and "недостат" in str(raw_payload.get("skladbot_error") or "").casefold():
+        return True
+    return False
+
+
 def is_pickup_address(value):
     text = normalize_lookup_text(value)
-    return text in {normalize_lookup_text(PICKUP_ADDRESS), "самовывоз"}
+    return text == normalize_lookup_text(PICKUP_ADDRESS) or text.startswith("самовывоз")
 
 
 def normalize_lookup_text(value):

@@ -539,6 +539,8 @@ def request_report_blocks(request: dict[str, Any]) -> int:
 def report_product_blocks(product: dict[str, Any], category: str) -> int:
     if normalize_text(category) == "Приемка":
         accepted_amount = parse_int(product.get("accepted_amount"))
+        if product.get("accepted_amount_present"):
+            return accepted_amount
         if accepted_amount > 0:
             return accepted_amount
     return parse_int(product.get("amount"))

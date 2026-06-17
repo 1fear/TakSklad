@@ -14,11 +14,32 @@ from .config import (
     ERROR_FG,
     FG_MUTED,
     UPDATE_INFO_URL,
+    UPDATE_LOG_FILE,
     UPDATE_RETRY_COOLDOWN_SECONDS,
 )
 from .storage import load_data_section, save_data_section
 from .update_service import compare_versions, fetch_update_info, package_transition_required, prepare_update_installer
 from .utils import normalize_text, parse_int_value
+
+
+def manifest_bool(value):
+    if isinstance(value, bool):
+        return value
+    return normalize_text(value).lower() in {"1", "true", "yes", "on", "да"}
+
+
+def format_update_recovery_message(reason=""):
+    lines = []
+    reason_text = normalize_text(reason)
+    if reason_text:
+        lines.append(reason_text)
+        lines.append("")
+    lines.append(f"Лог обновления: {UPDATE_LOG_FILE}")
+    lines.append(
+        "Безопасное действие: закройте TakSklad, установите свежий Windows-архив "
+        "и запускайте только новый TakSklad.exe. Старую версию для сканирования не используйте."
+    )
+    return "\n".join(lines)
 
 
 class UpdateMixin:
@@ -49,6 +70,14 @@ class UpdateMixin:
             if button:
                 self.safe_config(button, state="disabled")
 
+    def show_update_recovery(self, reason):
+        message = format_update_recovery_message(reason)
+        show_error = getattr(self, "show_error", None)
+        if callable(show_error):
+            show_error(message, popup=False)
+        else:
+            self.status_var.set(f"⛔ {message}")
+
     def start_auto_update(self, update_info):
         self.status_var.set("⏳ Скачиваю обновление...")
         self.status_label.config(bg=BG_MAIN, fg=FG_MUTED)
@@ -59,7 +88,13 @@ class UpdateMixin:
             except Exception as exc:
                 logging.exception("Не удалось подготовить автообновление")
                 try:
-                    self.after(0, lambda exc=exc: self.show_critical_error("Не удалось обновить приложение автоматически", exc))
+                    self.after(
+                        0,
+                        lambda exc=exc: self.show_critical_error(
+                            "Не удалось обновить приложение автоматически",
+                            format_update_recovery_message(str(exc)),
+                        ),
+                    )
                 except tk.TclError:
                     pass
                 return
@@ -112,6 +147,7 @@ class UpdateMixin:
         update_available = bool(latest_version) and compare_versions(APP_VERSION, latest_version) < 0
         below_min_version = bool(min_supported_version) and compare_versions(APP_VERSION, min_supported_version) < 0
         package_update_required = package_transition_required(update_info)
+        forced_update = below_min_version or manifest_bool(update_info.get("mandatory"))
 
         if not update_available and not below_min_version and not package_update_required:
             return
@@ -151,10 +187,18 @@ class UpdateMixin:
                 latest_version,
             )
             self.update_info = update_info
-            self.update_required = False
-            self.status_var.set(
-                f"ℹ Доступно обновление {latest_version}. Откладываю до перезапуска."
-            )
+            if forced_update:
+                self.update_required = True
+                self.apply_required_update_lock()
+                self.show_update_recovery(
+                    f"Обязательное обновление {latest_version} уже пытались установить. "
+                    f"Повторная автоустановка будет доступна через {remaining} сек."
+                )
+            else:
+                self.update_required = False
+                self.status_var.set(
+                    f"ℹ Доступно обновление {latest_version}. Откладываю до перезапуска."
+                )
             return
 
         # Спрашиваем пользователя перед установкой — без этого автообновление
@@ -165,6 +209,8 @@ class UpdateMixin:
             prompt_lines.append("Требуется переход на новый формат сборки (onedir).")
         if below_min_version:
             prompt_lines.append("Текущая версия больше не поддерживается.")
+        if forced_update and not below_min_version:
+            prompt_lines.append("Это обязательное обновление.")
         if message:
             prompt_lines.append("")
             prompt_lines.append(message)
@@ -185,10 +231,17 @@ class UpdateMixin:
 
         if not user_confirmed:
             self.update_info = update_info
-            self.update_required = False
-            self.status_var.set(
-                f"ℹ Обновление {latest_version} отложено. Будет предложено снова через час."
-            )
+            if forced_update:
+                self.update_required = True
+                self.apply_required_update_lock()
+                self.show_update_recovery(
+                    f"Обязательное обновление {latest_version} отклонено. Работа на этой версии заблокирована."
+                )
+            else:
+                self.update_required = False
+                self.status_var.set(
+                    f"ℹ Обновление {latest_version} отложено. Будет предложено снова через час."
+                )
             logging.info("Автообновление отклонено пользователем (версия %s)", latest_version)
             return
 

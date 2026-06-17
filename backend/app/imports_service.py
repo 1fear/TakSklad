@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+import uuid
 from datetime import date, datetime
 
 from sqlalchemy import select
@@ -10,7 +11,7 @@ from .google_sheets_exporter import make_sheet_record
 from .google_sheets_pending import (
     queue_google_sheets_export,
 )
-from .models import AuditLog, ImportFile, ImportJob, Order, OrderItem
+from .models import AuditLog, ImportFile, ImportJob, Incident, Order, OrderItem
 from .orders_service import STATUS_COMPLETED, STATUS_NOT_COMPLETED
 from .schemas import ImportCreate, ImportRead, ImportResult
 from .skladbot_request_dry_run import create_skladbot_dry_run_for_import
@@ -82,6 +83,7 @@ def create_import(db: Session, payload: ImportCreate):
             "filename": payload.filename,
             "sha256": normalize_text(payload.sha256).lower(),
             "telegram_chat_id": normalize_text(payload.telegram_chat_id),
+            "telegram_event_id": normalize_text(payload.telegram_event_id),
             "orders_created": 0,
             "items_created": 0,
             "duplicate_rows": 0,
@@ -198,6 +200,7 @@ def create_import(db: Session, payload: ImportCreate):
         "backend_address_updates": backend_address_updates,
         "errors": errors,
     }
+    ensure_import_incident(db, import_job)
     db.add(AuditLog(
         action="orders_imported",
         entity_type="import",
@@ -279,6 +282,54 @@ def create_import(db: Session, payload: ImportCreate):
         skladbot_dry_run_already_linked=skladbot_dry_run_result.get("already_linked", 0),
         skladbot_dry_run_event_id=skladbot_dry_run_result.get("event_id", ""),
     )
+
+
+def ensure_import_incident(db: Session, import_job: ImportJob):
+    if import_job.status not in ("failed", "completed_with_errors"):
+        return None
+    existing = db.execute(
+        select(Incident).where(Incident.import_id == import_job.id).where(Incident.source == "excel_import")
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+
+    raw_payload = dict(import_job.raw_payload or {})
+    errors = list(raw_payload.get("errors") or [])
+    severity = "critical" if import_job.status == "failed" else "warning"
+    title = "Excel import failed" if import_job.status == "failed" else "Excel import completed with errors"
+    incident = Incident(
+        source="excel_import",
+        severity=severity,
+        status="open",
+        title=title,
+        message="\n".join(str(error) for error in errors[:5]),
+        entity_type="import",
+        entity_id=str(import_job.id),
+        pending_event_id=parse_optional_uuid(raw_payload.get("telegram_event_id")),
+        import_id=import_job.id,
+        raw_payload={
+            "filename": normalize_text(raw_payload.get("filename")),
+            "status": import_job.status,
+            "rows_total": import_job.rows_total,
+            "rows_imported": import_job.rows_imported,
+            "invalid_rows": raw_payload.get("invalid_rows", 0),
+            "duplicate_rows": raw_payload.get("duplicate_rows", 0),
+            "errors": errors[:5],
+        },
+    )
+    db.add(incident)
+    db.add(AuditLog(
+        action="import_incident_created",
+        entity_type="import",
+        entity_id=str(import_job.id),
+        payload={
+            "status": import_job.status,
+            "incident_source": incident.source,
+            "severity": incident.severity,
+            "filename": normalize_text(raw_payload.get("filename")),
+        },
+    ))
+    return incident
 
 
 def export_import_records_to_google_sheets(db: Session, records, import_job_id=""):
@@ -474,6 +525,16 @@ def normalize_text(value):
     if value is None:
         return ""
     return str(value).strip()
+
+
+def parse_optional_uuid(value):
+    text = normalize_text(value)
+    if not text:
+        return None
+    try:
+        return uuid.UUID(text)
+    except (TypeError, ValueError):
+        return None
 
 
 def normalize_lookup_text(value):

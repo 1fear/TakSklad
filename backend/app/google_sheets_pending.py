@@ -1,4 +1,7 @@
+import hashlib
+import json
 import logging
+import re
 from threading import Lock
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -45,6 +48,11 @@ SCAN_EXPORT_TERMINAL_STATUSES = {
 LOCAL_EXPORT_LOCK = Lock()
 STALE_PROCESSING_EXPORT_TIMEOUT = timedelta(minutes=10)
 logger = logging.getLogger(__name__)
+PAYLOAD_IDEMPOTENT_EXPORT_ACTIONS = {
+    "google_sheets_import_export",
+    "google_sheets_restore_order_export",
+    "google_sheets_delete_import_records_export",
+}
 
 
 def should_queue_google_sheets_export(result):
@@ -66,6 +74,19 @@ def queue_google_sheets_export(db: Session, action, entity_type, entity_id, resu
         "last_result": result or {},
         **(payload or {}),
     }
+    idempotency_key = google_sheets_export_idempotency_key(action, entity_type, entity_id, payload)
+    if idempotency_key:
+        event_payload["idempotency_key"] = idempotency_key
+        existing_by_key = db.execute(
+            select(PendingEvent).where(PendingEvent.idempotency_key == idempotency_key)
+        ).scalar_one_or_none()
+        if existing_by_key is not None:
+            if existing_by_key.status in ("pending", "failed"):
+                existing_by_key.payload = {**(existing_by_key.payload or {}), **event_payload}
+                existing_by_key.status = "pending"
+                existing_by_key.last_error = format_export_error(result)
+            return existing_by_key
+
     candidate_events = db.execute(
         select(PendingEvent)
         .where(PendingEvent.event_type == GOOGLE_SHEETS_EXPORT_EVENT_TYPE)
@@ -88,6 +109,7 @@ def queue_google_sheets_export(db: Session, action, entity_type, entity_id, resu
 
     event = PendingEvent(
         event_type=GOOGLE_SHEETS_EXPORT_EVENT_TYPE,
+        idempotency_key=idempotency_key or None,
         status="pending",
         attempts=0,
         payload=event_payload,
@@ -96,6 +118,22 @@ def queue_google_sheets_export(db: Session, action, entity_type, entity_id, resu
     db.add(event)
     db.flush()
     return event
+
+
+def google_sheets_export_idempotency_key(action, entity_type, entity_id, payload):
+    payload = payload or {}
+    explicit = str(payload.get("idempotency_key") or "").strip()
+    if explicit:
+        return explicit
+    if action not in PAYLOAD_IDEMPOTENT_EXPORT_ACTIONS:
+        return ""
+    payload_hash = stable_payload_hash(payload)
+    return f"google_sheets:{action}:{entity_type}:{entity_id}:{payload_hash}"
+
+
+def stable_payload_hash(payload):
+    encoded = json.dumps(payload or {}, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def mark_google_sheets_export_synced(db: Session, action, entity_id, result=None):
@@ -165,7 +203,7 @@ def process_pending_google_sheets_exports(db: Session, limit=50):
                     export_result = {"status": "rate_limited", "error": str(exc)}
                     event.status = "pending"
                     event.last_error = format_export_error(export_result)
-                    event.payload = {**(event.payload or {}), "last_result": export_result}
+                    event.payload = with_retry_after_payload(event.payload, exc, export_result)
                     result["errors"].append({
                         "id": str(event.id),
                         "action": (event.payload or {}).get("action") or "",
@@ -190,7 +228,7 @@ def process_pending_google_sheets_exports(db: Session, limit=50):
                 export_result = {"status": "error", "error": str(exc)}
 
             status = str(export_result.get("status") or "").strip().lower()
-            event.payload = {**(event.payload or {}), "last_result": export_result}
+            event.payload = without_retry_after_payload({**(event.payload or {}), "last_result": export_result})
             if status in SUCCESS_EXPORT_STATUSES:
                 event.status = "completed"
                 event.last_error = ""
@@ -283,7 +321,7 @@ def process_scan_export_events_batch(db: Session, events, result):
             for event in found_events:
                 event.status = "pending"
                 event.last_error = format_export_error(export_result)
-                event.payload = {**(event.payload or {}), "last_result": export_result}
+                event.payload = with_retry_after_payload(event.payload, exc, export_result)
                 add_export_audit(db, event, "google_sheets_pending_export_rate_limited", export_result)
             db.commit()
             return {"remaining_events": remaining_events, "paused": True}
@@ -361,7 +399,7 @@ def process_archive_export_events_batch(db: Session, events, result):
             for event in found_events:
                 event.status = "pending"
                 event.last_error = format_export_error(export_result)
-                event.payload = {**(event.payload or {}), "last_result": export_result}
+                event.payload = with_retry_after_payload(event.payload, exc, export_result)
                 add_export_audit(db, event, "google_sheets_pending_export_rate_limited", export_result)
             db.commit()
             return {"remaining_events": remaining_events, "paused": True}
@@ -378,7 +416,7 @@ def process_archive_export_events_batch(db: Session, events, result):
 
 def finish_export_event(db: Session, event: PendingEvent, export_result, result):
     status = str((export_result or {}).get("status") or "").strip().lower()
-    event.payload = {**(event.payload or {}), "last_result": export_result or {}}
+    event.payload = without_retry_after_payload({**(event.payload or {}), "last_result": export_result or {}})
     if status in SUCCESS_EXPORT_STATUSES:
         event.status = "completed"
         event.last_error = ""
@@ -607,6 +645,29 @@ def format_export_error(result):
 def is_google_rate_limit_error(exc):
     message = str(exc or "").casefold()
     return "429" in message or "quota" in message or "rate limit" in message or "rate_limit" in message
+
+
+def with_retry_after_payload(payload, exc, export_result):
+    next_attempt_at = datetime.now(timezone.utc) + timedelta(seconds=retry_after_seconds_from_error(exc))
+    return {
+        **(payload or {}),
+        "last_result": export_result,
+        "next_attempt_at": next_attempt_at.isoformat(),
+    }
+
+
+def without_retry_after_payload(payload):
+    payload = dict(payload or {})
+    payload.pop("next_attempt_at", None)
+    return payload
+
+
+def retry_after_seconds_from_error(exc, default=60):
+    text = str(exc or "")
+    match = re.search(r"retry-after\s*[:=]\s*(\d+)", text, re.IGNORECASE)
+    if match:
+        return max(1, int(match.group(1)))
+    return default
 
 
 def parse_uuid(value):

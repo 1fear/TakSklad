@@ -11,6 +11,18 @@ class HealthResponse(BaseModel):
     environment: str
 
 
+class ReadinessResponse(BaseModel):
+    generated_at: datetime
+    status: str
+    service: str
+    version: str
+    environment: str
+    database: dict[str, Any] = Field(default_factory=dict)
+    migrations: dict[str, Any] = Field(default_factory=dict)
+    queue: dict[str, Any] = Field(default_factory=dict)
+    imports: dict[str, Any] = Field(default_factory=dict)
+
+
 class AuthLoginRequest(BaseModel):
     login: str = Field(min_length=1)
     password: str = Field(min_length=1)
@@ -112,6 +124,9 @@ class AdminTableRow(BaseModel):
     skladbot_request_number: str = ""
     skladbot_request_id: str = ""
     skladbot_status: str = ""
+    skladbot_return_request_number: str = ""
+    skladbot_return_request_id: str = ""
+    skladbot_return_status: str = ""
     source_file: str = ""
     google_sheet_status: str = ""
     google_sheet_row_number: int | None = None
@@ -143,6 +158,7 @@ class AdminTableRead(BaseModel):
 class AdminOrderActionRequest(BaseModel):
     reason: str = ""
     actor: str = "web"
+    source: str = ""
     idempotency_key: str = ""
     expected_updated_at: str = ""
     dry_run: bool = False
@@ -152,6 +168,7 @@ class AdminBulkOrderActionRequest(BaseModel):
     order_ids: list[str] = Field(min_length=1, max_length=500)
     reason: str = ""
     actor: str = "web"
+    source: str = ""
     idempotency_key: str = ""
     expected_updated_at_by_order: dict[str, str] = Field(default_factory=dict)
     dry_run: bool = False
@@ -178,6 +195,90 @@ class ActiveOrderDeleteResult(BaseModel):
     skladbot_request_number: str = ""
     skladbot_request_id: str = ""
     message: str = ""
+
+
+class EventQueueEventRead(BaseModel):
+    id: str
+    event_type: str
+    status: str
+    attempts: int
+    last_error: str = ""
+    idempotency_key: str = ""
+    next_attempt_at: str = ""
+    payload_status: str = ""
+    retryable: bool = False
+    linked_order_id: str = ""
+    linked_import_id: str = ""
+    linked_entity_type: str = ""
+    linked_entity_id: str = ""
+    raw_payload: dict[str, Any] = Field(default_factory=dict)
+    age_seconds: int = 0
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class EventQueueActionRequest(BaseModel):
+    reason: str = ""
+    actor: str = "web"
+    source: str = ""
+    idempotency_key: str = ""
+
+
+class EventQueueDiagnosticsRead(BaseModel):
+    generated_at: datetime
+    summary: dict[str, Any] = Field(default_factory=dict)
+    stale_processing: list[EventQueueEventRead] = Field(default_factory=list)
+    recent_events: list[EventQueueEventRead] = Field(default_factory=list)
+
+
+class IncidentCreate(BaseModel):
+    source: str = Field(min_length=1)
+    severity: str = "warning"
+    status: str = "open"
+    title: str = Field(min_length=1)
+    message: str = ""
+    entity_type: str = ""
+    entity_id: str = ""
+    pending_event_id: str = ""
+    order_id: str = ""
+    order_item_id: str = ""
+    import_id: str = ""
+    scan_code_id: str = ""
+    external_ref: str = ""
+    raw_payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class IncidentStatusUpdate(BaseModel):
+    status: str = Field(min_length=1)
+    actor: str = "web"
+    source: str = ""
+    reason: str = Field(min_length=1)
+
+
+class IncidentRead(BaseModel):
+    id: str
+    source: str
+    severity: str
+    status: str
+    title: str
+    message: str = ""
+    entity_type: str = ""
+    entity_id: str = ""
+    pending_event_id: str = ""
+    order_id: str = ""
+    order_item_id: str = ""
+    import_id: str = ""
+    scan_code_id: str = ""
+    external_ref: str = ""
+    raw_payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    resolved_at: datetime | None = None
+
+
+class IncidentListRead(BaseModel):
+    items: list[IncidentRead] = Field(default_factory=list)
+    summary: dict[str, Any] = Field(default_factory=dict)
 
 
 class ScanCreate(BaseModel):
@@ -232,6 +333,7 @@ class ImportCreate(BaseModel):
     filename: str | None = None
     sha256: str | None = None
     telegram_chat_id: str | None = None
+    telegram_event_id: str | None = None
     rows: list[dict[str, Any]] = Field(default_factory=list)
 
 

@@ -24,6 +24,7 @@ from .kiz_movements_service import (
     find_same_item_scan,
     kiz_is_available_for_outbound,
     latest_kiz_movement,
+    lock_kiz_code_for_transaction,
     outbound_movement_type_for,
     record_kiz_movement,
 )
@@ -447,6 +448,7 @@ def update_item_scans_from_record(db: Session, item: OrderItem, record, conflict
     existing_for_item = {scan.code for scan in item.scan_codes}
     changed = False
     for code in scanned_codes:
+        lock_kiz_code_for_transaction(db, code)
         if code in existing_for_item:
             continue
         same_item_scan = find_same_item_scan(db, code=code, order_item_id=item.id)

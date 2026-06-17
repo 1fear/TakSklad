@@ -1,6 +1,6 @@
 import os
 import unittest
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from io import BytesIO
 from zoneinfo import ZoneInfo
 
@@ -472,6 +472,27 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["inbound"], 1750)
 
+    def test_daily_report_uses_zero_accepted_amount_for_receiving_when_skladbot_sent_it(self):
+        report = {
+            "stock": {"rows": []},
+            "requests": [{
+                "category": "Приемка",
+                "products": [{
+                    "name": "Chapman Brown OP 20",
+                    "vendor_code": "130400353",
+                    "barcode": "4006396053978",
+                    "amount": 1,
+                    "accepted_amount": 0,
+                    "accepted_amount_present": True,
+                }],
+            }],
+        }
+
+        rows = product_breakdown_for_summary(report)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["inbound"], 0)
+
     def test_telegram_manual_command_sends_skladbot_daily_report(self):
         worker = TelegramWorker.__new__(TelegramWorker)
         worker.allowed_chat_ids = set()
@@ -521,6 +542,25 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(documents[0][2], "daily.xlsx")
         self.assertEqual(documents[0][3], "SkladBot отчет за 08.06.2026")
 
+    def test_telegram_manual_skladbot_daily_rejects_invalid_date(self):
+        worker = TelegramWorker.__new__(TelegramWorker)
+        worker.allowed_chat_ids = set()
+        worker.admin_chat_ids = set()
+        messages = []
+        sends = []
+
+        worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text))
+        worker.send_skladbot_daily_report = lambda *args, **kwargs: sends.append((args, kwargs))
+
+        worker.handle_update({
+            "update_id": 1,
+            "message": {"chat": {"id": 123}, "text": "/skladbot_daily bad-date"},
+        })
+
+        self.assertEqual(sends, [])
+        self.assertEqual(messages[0][0], "123")
+        self.assertIn("Неверная дата отчета", messages[0][1])
+
     def test_scheduled_report_is_sent_once_per_chat_and_date(self):
         engine = create_engine(
             "sqlite+pysqlite:///:memory:",
@@ -552,6 +592,129 @@ class SkladBotDailyReportTests(unittest.TestCase):
             self.assertEqual(events[0].event_type, SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE)
             self.assertEqual(events[0].status, "completed")
             self.assertEqual(sends, [("123", date(2026, 6, 8), True)])
+        finally:
+            telegram_worker_module.SessionLocal = original_session_local
+
+    def test_scheduled_report_runs_reconciliation_for_configured_chat(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        original_session_local = telegram_worker_module.SessionLocal
+        original_reconciliation = telegram_worker_module.run_daily_reconciliation
+        try:
+            telegram_worker_module.SessionLocal = SessionLocal
+            reconciliations = []
+            telegram_worker_module.run_daily_reconciliation = (
+                lambda report_date=None, alert_chat_ids=None: reconciliations.append((report_date, list(alert_chat_ids or []))) or {"status": "ok"}
+            )
+            worker = TelegramWorker.__new__(TelegramWorker)
+            worker.skladbot_daily_report_enabled = True
+            worker.skladbot_daily_report_chat_ids = {"-5271267499"}
+            worker.skladbot_daily_report_hour = 22
+            worker.skladbot_daily_report_minute = 0
+            worker.skladbot_daily_report_retry_minutes = 15
+            worker.daily_reconciliation_enabled = True
+            sends = []
+            worker.send_skladbot_daily_report = lambda chat_id, report_date=None, scheduled=False: sends.append((chat_id, report_date, scheduled)) or True
+
+            now = datetime(2026, 6, 8, 22, 5, tzinfo=ZoneInfo("Asia/Tashkent"))
+            self.assertEqual(worker.send_due_skladbot_daily_reports(now=now), 1)
+
+            self.assertEqual(sends, [("-5271267499", date(2026, 6, 8), True)])
+            self.assertEqual(reconciliations, [(date(2026, 6, 8), ["-5271267499"])])
+        finally:
+            telegram_worker_module.SessionLocal = original_session_local
+            telegram_worker_module.run_daily_reconciliation = original_reconciliation
+
+    def test_scheduled_report_resets_stale_processing_claim(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        original_session_local = telegram_worker_module.SessionLocal
+        try:
+            telegram_worker_module.SessionLocal = SessionLocal
+            worker = TelegramWorker.__new__(TelegramWorker)
+            worker.skladbot_daily_report_hour = 22
+            worker.skladbot_daily_report_minute = 0
+            worker.skladbot_daily_report_retry_minutes = 15
+            report_date = date(2026, 6, 8)
+            key = worker.skladbot_daily_report_idempotency_key("123", report_date)
+            now = datetime(2026, 6, 8, 22, 5, tzinfo=ZoneInfo("Asia/Tashkent"))
+            now_utc = now.astimezone(timezone.utc)
+            with SessionLocal() as db:
+                db.add(PendingEvent(
+                    event_type=SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE,
+                    idempotency_key=key,
+                    status="processing",
+                    attempts=1,
+                    payload={"chat_id": "123", "report_date": report_date.isoformat()},
+                    updated_at=now_utc - timedelta(minutes=30),
+                    last_error="worker died",
+                ))
+                db.commit()
+
+            event_id = worker.claim_scheduled_skladbot_daily_report("123", report_date, now=now)
+
+            with SessionLocal() as db:
+                event = db.execute(select(PendingEvent)).scalar_one()
+
+            self.assertTrue(event_id)
+            self.assertEqual(event.status, "processing")
+            self.assertEqual(event.attempts, 2)
+            self.assertEqual(event.last_error, None)
+            self.assertEqual((event.payload or {}).get("reset_reason"), "stale SkladBot daily report reset")
+        finally:
+            telegram_worker_module.SessionLocal = original_session_local
+
+    def test_scheduled_report_failed_claim_respects_retry_window(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        original_session_local = telegram_worker_module.SessionLocal
+        try:
+            telegram_worker_module.SessionLocal = SessionLocal
+            worker = TelegramWorker.__new__(TelegramWorker)
+            worker.skladbot_daily_report_hour = 22
+            worker.skladbot_daily_report_minute = 0
+            worker.skladbot_daily_report_retry_minutes = 15
+            report_date = date(2026, 6, 8)
+            key = worker.skladbot_daily_report_idempotency_key("123", report_date)
+            now = datetime(2026, 6, 8, 22, 5, tzinfo=ZoneInfo("Asia/Tashkent"))
+            now_utc = now.astimezone(timezone.utc)
+            with SessionLocal() as db:
+                db.add(PendingEvent(
+                    event_type=SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE,
+                    idempotency_key=key,
+                    status="failed",
+                    attempts=1,
+                    payload={"chat_id": "123", "report_date": report_date.isoformat()},
+                    updated_at=now_utc - timedelta(minutes=5),
+                    last_error="telegram_send_failed",
+                ))
+                db.commit()
+
+            self.assertEqual(worker.claim_scheduled_skladbot_daily_report("123", report_date, now=now), "")
+
+            retry_now = now + timedelta(minutes=16)
+            event_id = worker.claim_scheduled_skladbot_daily_report("123", report_date, now=retry_now)
+            self.assertTrue(event_id)
+            with SessionLocal() as db:
+                event = db.execute(select(PendingEvent)).scalar_one()
+            self.assertEqual(event.status, "processing")
+            self.assertEqual(event.attempts, 2)
+            self.assertEqual(event.last_error, None)
         finally:
             telegram_worker_module.SessionLocal = original_session_local
 

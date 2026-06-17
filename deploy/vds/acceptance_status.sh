@@ -195,6 +195,15 @@ PY
     sleep "$HEALTH_RETRY_DELAY_SECONDS"
   fi
 done
+READINESS_OUTPUT="$(
+  docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T backend-api \
+    python - <<'PY' 2>&1
+import sys
+from urllib.request import urlopen
+sys.stdout.write(urlopen("http://127.0.0.1:8000/ready", timeout=5).read().decode())
+PY
+)"
+READINESS_STATUS="$?"
 COMPOSE_OUTPUT="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps --format json 2>&1)"
 COMPOSE_STATUS="$?"
 if ((${#VERIFY_ARGS[@]})); then
@@ -213,7 +222,7 @@ GO_NO_GO_OUTPUT="$(python3 "$GO_NO_GO_SCRIPT" --results "$RESULTS_FILE" 2>&1)"
 GO_NO_GO_STATUS="$?"
 set -e
 
-python3 - "$MANIFEST_INFO" "$VERSION_INFO" "$SHA_STATUS" "$ACTUAL_SHA" "$EXPECTED_SHA" "$HEALTH_STATUS" "$HEALTH_OUTPUT" "$COMPOSE_STATUS" "$COMPOSE_OUTPUT" "$VERIFY_STATUS" "$VERIFY_OUTPUT" "$TELEGRAM_MENU_STATUS" "$TELEGRAM_MENU_OUTPUT" "$GOOGLE_SYNC_STATUS" "$GOOGLE_SYNC_OUTPUT" "$SKLADBOT_COVERAGE_STATUS" "$SKLADBOT_COVERAGE_OUTPUT" "$GO_NO_GO_STATUS" "$GO_NO_GO_OUTPUT" "$REQUIRE_GO" <<'PY'
+python3 - "$MANIFEST_INFO" "$VERSION_INFO" "$SHA_STATUS" "$ACTUAL_SHA" "$EXPECTED_SHA" "$HEALTH_STATUS" "$HEALTH_OUTPUT" "$READINESS_STATUS" "$READINESS_OUTPUT" "$COMPOSE_STATUS" "$COMPOSE_OUTPUT" "$VERIFY_STATUS" "$VERIFY_OUTPUT" "$TELEGRAM_MENU_STATUS" "$TELEGRAM_MENU_OUTPUT" "$GOOGLE_SYNC_STATUS" "$GOOGLE_SYNC_OUTPUT" "$SKLADBOT_COVERAGE_STATUS" "$SKLADBOT_COVERAGE_OUTPUT" "$GO_NO_GO_STATUS" "$GO_NO_GO_OUTPUT" "$REQUIRE_GO" <<'PY'
 import json
 import sys
 
@@ -224,24 +233,30 @@ actual_sha = sys.argv[4]
 expected_sha = sys.argv[5]
 health_status = int(sys.argv[6])
 health_output = sys.argv[7].strip()
-compose_status = int(sys.argv[8])
-compose_output = sys.argv[9].strip()
-verify_status = int(sys.argv[10])
-verify_output = sys.argv[11].strip()
-telegram_menu_status = int(sys.argv[12])
-telegram_menu_output = sys.argv[13].strip()
-google_sync_status = int(sys.argv[14])
-google_sync_output = sys.argv[15].strip()
-skladbot_coverage_status = int(sys.argv[16])
-skladbot_coverage_output = sys.argv[17].strip()
-go_no_go_status = int(sys.argv[18])
-go_no_go_output = sys.argv[19].strip()
-require_go = sys.argv[20] == "1"
+readiness_status = int(sys.argv[8])
+readiness_output = sys.argv[9].strip()
+compose_status = int(sys.argv[10])
+compose_output = sys.argv[11].strip()
+verify_status = int(sys.argv[12])
+verify_output = sys.argv[13].strip()
+telegram_menu_status = int(sys.argv[14])
+telegram_menu_output = sys.argv[15].strip()
+google_sync_status = int(sys.argv[16])
+google_sync_output = sys.argv[17].strip()
+skladbot_coverage_status = int(sys.argv[18])
+skladbot_coverage_output = sys.argv[19].strip()
+go_no_go_status = int(sys.argv[20])
+go_no_go_output = sys.argv[21].strip()
+require_go = sys.argv[22] == "1"
 
 try:
     health = json.loads(health_output)
 except Exception:
     health = {"raw": health_output}
+try:
+    readiness = json.loads(readiness_output)
+except Exception:
+    readiness = {"raw": readiness_output}
 
 services = []
 if compose_status == 0 and compose_output:
@@ -305,6 +320,10 @@ if safety.get("contains_secrets") is not False:
     errors.append("manifest safety.contains_secrets must be false")
 if health_status != 0:
     errors.append(f"backend health failed with exit {health_status}")
+if readiness_status != 0:
+    errors.append(f"backend readiness failed with exit {readiness_status}")
+if readiness.get("status") != "ok":
+    errors.append(f"backend readiness status is not ok: {readiness.get('status') or 'unknown'}")
 if compose_status != 0:
     errors.append(f"docker compose ps failed with exit {compose_status}")
 if verify_status != 0:
@@ -332,6 +351,10 @@ summary = {
     "backend_health": {
         "exit_code": health_status,
         "response": health,
+    },
+    "backend_readiness": {
+        "exit_code": readiness_status,
+        "response": readiness,
     },
     "compose": {
         "exit_code": compose_status,

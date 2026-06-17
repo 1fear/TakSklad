@@ -1,6 +1,7 @@
 import shutil
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import openpyxl
@@ -12,7 +13,7 @@ from sqlalchemy.pool import StaticPool
 from backend.app import telegram_worker as telegram_worker_module
 from backend.app import excel_importer
 from backend.app.excel_importer import excel_file_to_import_payload
-from backend.app.models import Base, PendingEvent
+from backend.app.models import AuditLog, Base, Incident, PendingEvent
 from backend.app.telegram_worker import (
     TELEGRAM_BUTTON_IMPORTS,
     TELEGRAM_BUTTON_KIZ_BY_FILES,
@@ -199,6 +200,7 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertEqual(messages[0][0], "123")
         self.assertIn("Начинаю импорт", messages[0][1])
         self.assertIn("Excel импортирован через Telegram", messages[-1][1])
+        self.assertIn("Блоков импортировано: 2", messages[-1][1])
         self.assertIn("Адреса в backend обновлены: 0", messages[-1][1])
         self.assertIn("Google Sheets: записано 1, повторы 0, адреса обновлены 0", messages[-1][1])
 
@@ -733,6 +735,31 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertEqual(state.get("manual_flow"), {})
         self.assertIn("Заказ создан", messages[-1][1])
 
+    def test_telegram_worker_manual_controls_are_admin_only_when_configured(self):
+        worker = TelegramWorker.__new__(TelegramWorker)
+        worker.allowed_chat_ids = set()
+        worker.admin_chat_ids = {"999"}
+        answered = []
+        messages = []
+
+        worker.answer_callback_query = lambda callback_id, text="": answered.append((callback_id, text))
+        worker.send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
+        worker.start_manual_add_order = lambda chat_id: self.fail("manual add must not start for non-admin")
+        worker.show_manual_delete_orders = lambda chat_id: self.fail("manual delete must not start for non-admin")
+
+        worker.handle_update({
+            "update_id": 110,
+            "callback_query": {"id": "cb-add", "data": "manual:add", "message": {"chat": {"id": 123}}},
+        })
+        worker.handle_update({
+            "update_id": 111,
+            "callback_query": {"id": "cb-delete", "data": "manual:delete", "message": {"chat": {"id": 123}}},
+        })
+
+        self.assertEqual([item[0] for item in answered], ["cb-add", "cb-delete"])
+        self.assertEqual(len(messages), 2)
+        self.assertTrue(all("только администратору" in item[1] for item in messages))
+
     def test_telegram_worker_manual_delete_active_order_calls_safe_backend_endpoint(self):
         worker = TelegramWorker.__new__(TelegramWorker)
         worker.allowed_chat_ids = set()
@@ -788,6 +815,8 @@ class BackendTelegramImportTests(unittest.TestCase):
 
         self.assertEqual(posts[0][0], f"/api/v1/admin/orders/{active_order['id']}/delete-active")
         self.assertEqual(posts[0][1]["actor"], "telegram")
+        self.assertEqual(posts[0][1]["source"], "telegram")
+        self.assertEqual(posts[0][1]["idempotency_key"], f"telegram:manual_delete:123:{active_order['id']}")
         self.assertIn("Заказ удалён из TakSklad", messages[-1][1])
         self.assertIn("WH-R-123", messages[-1][1])
         self.assertIn("осталась", messages[-1][1])
@@ -820,6 +849,14 @@ class BackendTelegramImportTests(unittest.TestCase):
         worker.handle_update({
             "update_id": 203,
             "callback_query": {"id": "cb-1", "data": "manual:delete:1", "message": {"chat": {"id": 123}}},
+        })
+        worker.handle_update({
+            "update_id": 204,
+            "callback_query": {
+                "id": "cb-2",
+                "data": "manual:delete_confirm:11111111-1111-1111-1111-111111111111",
+                "message": {"chat": {"id": 123}},
+            },
         })
 
         self.assertEqual(posts, [])
@@ -1090,12 +1127,267 @@ class BackendTelegramImportTests(unittest.TestCase):
         worker.take_next_telegram_import_event = fake_take_next
         worker.import_telegram_document = fake_import
         worker.finish_telegram_import_event = fake_finish
+        worker.reset_stale_telegram_import_events = lambda: 0
 
         processed = worker.process_queued_telegram_imports()
 
         self.assertEqual(processed, 2)
         self.assertEqual(imported, [("123", "a.xlsx", ""), ("123", "b.xlsx", "")])
         self.assertEqual(finished, [("event-1", True, ""), ("event-2", True, "")])
+
+    def test_telegram_worker_failed_backend_import_returns_failed_and_sends_actionable_redacted_message(self):
+        worker = TelegramWorker.__new__(TelegramWorker)
+        messages = []
+        backend_payloads = []
+        event_id = "11111111-1111-1111-1111-111111111111"
+
+        def fake_backend_post(path, payload):
+            backend_payloads.append((path, payload))
+            return {
+                "status": "failed",
+                "errors": ["Bearer secret-service-token failed for 0104006396053978217SECRETKIZVALUE"],
+            }
+
+        original_excel_to_payload = telegram_worker_module.excel_file_to_import_payload
+        try:
+            worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
+            worker.download_telegram_document = lambda document, temp_path: Path(temp_path).write_bytes(b"xlsx")
+            worker.backend_post = fake_backend_post
+            telegram_worker_module.excel_file_to_import_payload = lambda *args, **kwargs: {
+                "rows": [{"Клиент": "Broken"}],
+                "meta": {"source_rows_count": 1, "shipment_date": "09.06.2026"},
+            }
+
+            result = worker.import_telegram_document(
+                "123",
+                {"file_name": "broken.xlsx", "file_id": "file-1"},
+                shipment_date="09.06.2026",
+                event_id=event_id,
+            )
+        finally:
+            telegram_worker_module.excel_file_to_import_payload = original_excel_to_payload
+
+        self.assertEqual(result[0], False)
+        self.assertEqual(backend_payloads[0][0], "/api/v1/imports")
+        self.assertEqual(backend_payloads[0][1]["telegram_event_id"], event_id)
+        text = messages[1][1]
+        self.assertIn("Файл: broken.xlsx", text)
+        self.assertIn("Причина: Bearer ***", text)
+        self.assertIn("Что сделать:", text)
+        self.assertIn("Заказы и заявки SkladBot не созданы.", text)
+        self.assertNotIn("secret-service-token", text)
+        self.assertNotIn("0104006396053978217SECRETKIZVALUE", text)
+
+    def test_telegram_worker_failed_import_event_creates_one_linked_incident(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        original_session_local = telegram_worker_module.SessionLocal
+        try:
+            with SessionLocal() as db:
+                event = PendingEvent(
+                    event_type=telegram_worker_module.TELEGRAM_EXCEL_IMPORT_EVENT_TYPE,
+                    status="processing",
+                    attempts=1,
+                    payload={
+                        "chat_id": "123",
+                        "file_name": "broken.xlsx",
+                        "document": {"file_name": "broken.xlsx", "file_id": "file-1"},
+                    },
+                    last_error="",
+                )
+                db.add(event)
+                db.commit()
+                event_id = str(event.id)
+
+            worker = TelegramWorker.__new__(TelegramWorker)
+            telegram_worker_module.SessionLocal = SessionLocal
+
+            worker.finish_telegram_import_event(event_id, False, "parser failed")
+            worker.finish_telegram_import_event(event_id, False, "parser failed again")
+
+            with SessionLocal() as db:
+                event = db.execute(select(PendingEvent)).scalar_one()
+                incidents = db.execute(select(Incident)).scalars().all()
+                audits = db.execute(
+                    select(AuditLog).where(AuditLog.action == "telegram_import_incident_created")
+                ).scalars().all()
+
+            self.assertEqual(event.status, "failed")
+            self.assertEqual(event.last_error, "parser failed again")
+            self.assertEqual(len(incidents), 1)
+            self.assertEqual(incidents[0].source, "telegram_import")
+            self.assertEqual(str(incidents[0].pending_event_id), event_id)
+            self.assertEqual(len(audits), 1)
+        finally:
+            telegram_worker_module.SessionLocal = original_session_local
+            Base.metadata.drop_all(engine)
+            engine.dispose()
+
+    def test_old_failed_excel_import_does_not_block_next_pending_import(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        original_session_local = telegram_worker_module.SessionLocal
+        try:
+            now = datetime.now(timezone.utc)
+            with SessionLocal() as db:
+                failed_event = PendingEvent(
+                    event_type=telegram_worker_module.TELEGRAM_EXCEL_IMPORT_EVENT_TYPE,
+                    status="failed",
+                    attempts=3,
+                    payload={
+                        "chat_id": "123",
+                        "document": {"file_name": "broken.xlsx", "file_id": "old-file"},
+                        "shipment_date": "09.06.2026",
+                    },
+                    last_error="old broken import",
+                    created_at=now - timedelta(days=2),
+                    updated_at=now - timedelta(days=2),
+                )
+                pending_event = PendingEvent(
+                    event_type=telegram_worker_module.TELEGRAM_EXCEL_IMPORT_EVENT_TYPE,
+                    status="pending",
+                    attempts=0,
+                    payload={
+                        "chat_id": "123",
+                        "document": {"file_name": "valid.xlsx", "file_id": "new-file"},
+                        "shipment_date": "10.06.2026",
+                    },
+                    created_at=now - timedelta(minutes=5),
+                    updated_at=now - timedelta(minutes=5),
+                )
+                db.add_all([failed_event, pending_event])
+                db.commit()
+                failed_id = failed_event.id
+                pending_id = pending_event.id
+
+            imported = []
+            worker = TelegramWorker.__new__(TelegramWorker)
+            worker.import_telegram_document = lambda chat_id, document, shipment_date="", event_id="": imported.append(
+                (chat_id, document["file_name"], shipment_date, event_id)
+            ) or (True, "")
+            telegram_worker_module.SessionLocal = SessionLocal
+
+            processed = worker.process_queued_telegram_imports()
+
+            with SessionLocal() as db:
+                failed_event = db.get(PendingEvent, failed_id)
+                pending_event = db.get(PendingEvent, pending_id)
+
+            self.assertEqual(processed, 1)
+            self.assertEqual(imported[0][1:3], ("valid.xlsx", "10.06.2026"))
+            self.assertEqual(failed_event.status, "failed")
+            self.assertEqual(failed_event.last_error, "old broken import")
+            self.assertEqual(pending_event.status, "completed")
+            self.assertEqual(pending_event.attempts, 1)
+        finally:
+            telegram_worker_module.SessionLocal = original_session_local
+            Base.metadata.drop_all(engine)
+            engine.dispose()
+
+    def test_telegram_worker_resets_stale_processing_import_before_processing(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        original_session_local = telegram_worker_module.SessionLocal
+        try:
+            with SessionLocal() as db:
+                db.add(PendingEvent(
+                    event_type=telegram_worker_module.TELEGRAM_EXCEL_IMPORT_EVENT_TYPE,
+                    status="processing",
+                    attempts=2,
+                    payload={
+                        "chat_id": "123",
+                        "file_name": "orders.xlsx",
+                        "document": {"file_name": "orders.xlsx", "file_id": "file-1"},
+                        "shipment_date": "09.06.2026",
+                    },
+                    last_error="worker died",
+                    updated_at=datetime.now(timezone.utc) - timedelta(minutes=30),
+                ))
+                db.commit()
+
+            import_calls = []
+            worker = TelegramWorker.__new__(TelegramWorker)
+            worker.import_telegram_document = (
+                lambda chat_id, document, shipment_date="", event_id="":
+                import_calls.append((chat_id, shipment_date, event_id)) or (True, "")
+            )
+            telegram_worker_module.SessionLocal = SessionLocal
+
+            processed = worker.process_queued_telegram_imports()
+
+            with SessionLocal() as db:
+                event = db.execute(select(PendingEvent)).scalar_one()
+
+            self.assertEqual(processed, 1)
+            self.assertEqual(event.status, "completed")
+            self.assertEqual(event.attempts, 3)
+            self.assertEqual(event.last_error, "")
+            self.assertEqual((event.payload or {}).get("reset_reason"), "stale Telegram Excel import reset")
+            self.assertEqual(import_calls[0][0], "123")
+            self.assertEqual(import_calls[0][1], "09.06.2026")
+        finally:
+            telegram_worker_module.SessionLocal = original_session_local
+            Base.metadata.drop_all(engine)
+            engine.dispose()
+
+    def test_telegram_worker_resets_stale_processing_notification_before_processing(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        original_session_local = telegram_worker_module.SessionLocal
+        try:
+            with SessionLocal() as db:
+                db.add(PendingEvent(
+                    event_type=telegram_worker_module.TELEGRAM_NOTIFICATION_EVENT_TYPE,
+                    status="processing",
+                    attempts=2,
+                    payload={"chat_id": "123", "text": "hello"},
+                    last_error="worker died",
+                    updated_at=datetime.now(timezone.utc) - timedelta(minutes=30),
+                ))
+                db.commit()
+
+            sent = []
+            worker = TelegramWorker.__new__(TelegramWorker)
+            worker.admin_chat_ids = set()
+            worker.allowed_chat_ids = set()
+            worker.send_message = lambda chat_id, text: sent.append((chat_id, text))
+            telegram_worker_module.SessionLocal = SessionLocal
+
+            processed = worker.process_pending_telegram_notifications()
+
+            with SessionLocal() as db:
+                event = db.execute(select(PendingEvent)).scalar_one()
+
+            self.assertEqual(processed, 1)
+            self.assertEqual(sent, [("123", "hello")])
+            self.assertEqual(event.status, "completed")
+            self.assertEqual(event.attempts, 3)
+            self.assertEqual(event.last_error, "")
+            self.assertEqual((event.payload or {}).get("reset_reason"), "stale Telegram notification reset")
+        finally:
+            telegram_worker_module.SessionLocal = original_session_local
+            Base.metadata.drop_all(engine)
+            engine.dispose()
 
     def test_telegram_worker_manual_shipment_date_overrides_excel_date(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1168,6 +1460,7 @@ class BackendTelegramImportTests(unittest.TestCase):
         worker.take_next_telegram_import_event = fake_take_next
         worker.import_telegram_document = fake_import
         worker.finish_telegram_import_event = lambda *args: finished.append(args)
+        worker.reset_stale_telegram_import_events = lambda: 0
 
         processed = worker.process_queued_telegram_imports()
 
@@ -1541,6 +1834,48 @@ class BackendTelegramImportTests(unittest.TestCase):
             {"source_file": "same-name.xlsx", "source_key": "import:first"},
         ))
         self.assertEqual(sent[0][2], "TakSklad_KIZ.xlsx")
+
+    def test_telegram_worker_kiz_source_file_backend_failure_is_actionable(self):
+        worker = TelegramWorker.__new__(TelegramWorker)
+        messages = []
+
+        def fake_backend_get_bytes(path, params=None):
+            raise telegram_worker_module.httpx.ConnectError("backend down")
+
+        worker.backend_get_bytes = fake_backend_get_bytes
+        worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
+
+        result = worker.send_kiz_source_file_report("123", "orders.xlsx", "import:first")
+
+        self.assertFalse(result)
+        self.assertIn("Не удалось выгрузить КИЗы по файлу orders.xlsx", messages[0][1])
+        self.assertIn("backend временно недоступен", messages[0][1])
+
+    def test_telegram_worker_redacts_backend_error_details_for_kiz_report(self):
+        worker = TelegramWorker.__new__(TelegramWorker)
+        messages = []
+
+        def fake_backend_get_bytes(path, params=None):
+            request = httpx.Request("GET", "http://backend-api/api/v1/reports/kiz/source-file")
+            response = httpx.Response(
+                409,
+                json={
+                    "detail": "Bearer secret-service-token failed for 0104006396053978217SECRETKIZVALUE",
+                },
+                request=request,
+            )
+            raise httpx.HTTPStatusError("backend rejected report", request=request, response=response)
+
+        worker.backend_get_bytes = fake_backend_get_bytes
+        worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
+
+        result = worker.send_kiz_source_file_report("123", "orders.xlsx", "import:first")
+
+        self.assertFalse(result)
+        self.assertIn("Не удалось выгрузить КИЗы по файлу orders.xlsx", messages[0][1])
+        self.assertNotIn("secret-service-token", messages[0][1])
+        self.assertNotIn("0104006396053978217SECRETKIZVALUE", messages[0][1])
+        self.assertIn("Bearer ***", messages[0][1])
 
     def test_telegram_worker_keeps_kiz_source_key_when_file_selected_by_index(self):
         worker = TelegramWorker.__new__(TelegramWorker)

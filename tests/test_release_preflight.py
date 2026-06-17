@@ -145,6 +145,30 @@ class ReleasePreflightTests(unittest.TestCase):
         self.assertIn("sha256 must be a lowercase SHA256 hex digest", check["problems"])
         self.assertIn("sha256_onedir must be a lowercase SHA256 hex digest", check["problems"])
 
+    def test_version_json_rejects_release_url_from_wrong_host(self):
+        tmp_dir, root = self.make_root()
+        with tmp_dir:
+            (root / VERSION_JSON).write_text(
+                json.dumps(
+                    {
+                        "latest_version": "2.0.15",
+                        "min_supported_version": "2.0.15",
+                        "mandatory": True,
+                        "package_type": "onefile_exe",
+                        "download_url": "https://mirror.example.com/1fear/TakSklad/releases/download/v2.0.15/TakSklad.exe",
+                        "sha256": "a" * 64,
+                        "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.15/TakSklad-windows-x64.zip",
+                        "sha256_onedir": "b" * 64,
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            check = check_version_json(root)
+
+        self.assertFalse(check["ok"])
+        self.assertIn("download_url must be an HTTPS release URL for v2.0.15", check["problems"])
+
     def test_version_json_rejects_non_forced_or_incomplete_rollout_manifest(self):
         tmp_dir, root = self.make_root()
         with tmp_dir:
