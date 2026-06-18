@@ -542,6 +542,7 @@ class TelegramWorker:
         self.skladbot_daily_report_minute = max(0, min(59, parse_int(os.environ.get("SKLADBOT_DAILY_REPORT_MINUTE") or "0")))
         self.skladbot_daily_report_retry_minutes = max(1, parse_int(os.environ.get("SKLADBOT_DAILY_REPORT_RETRY_MINUTES") or "15"))
         self.daily_reconciliation_enabled = parse_bool_flag(os.environ.get("TAKSKLAD_DAILY_RECONCILIATION_ENABLED"), default=True)
+        self.daily_reconciliation_chat_ids = parse_chat_ids(os.environ.get("TAKSKLAD_DAILY_RECONCILIATION_CHAT_IDS"))
         self.manual_flow_cache = {}
 
     @property
@@ -1720,8 +1721,9 @@ class TelegramWorker:
     def run_scheduled_daily_reconciliation(self, chat_id, report_date):
         if not getattr(self, "daily_reconciliation_enabled", False):
             return None
+        alert_chat_ids = sorted(getattr(self, "daily_reconciliation_chat_ids", set()) or {str(chat_id)})
         try:
-            return run_daily_reconciliation(report_date=report_date, alert_chat_ids=[chat_id])
+            return run_daily_reconciliation(report_date=report_date, alert_chat_ids=alert_chat_ids)
         except Exception as exc:
             logging.exception("Telegram worker: scheduled daily reconciliation failed")
             return {

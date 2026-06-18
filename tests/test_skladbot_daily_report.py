@@ -618,6 +618,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
             worker.skladbot_daily_report_minute = 0
             worker.skladbot_daily_report_retry_minutes = 15
             worker.daily_reconciliation_enabled = True
+            worker.daily_reconciliation_chat_ids = set()
             sends = []
             worker.send_skladbot_daily_report = lambda chat_id, report_date=None, scheduled=False: sends.append((chat_id, report_date, scheduled)) or True
 
@@ -626,6 +627,42 @@ class SkladBotDailyReportTests(unittest.TestCase):
 
             self.assertEqual(sends, [("-5271267499", date(2026, 6, 8), True)])
             self.assertEqual(reconciliations, [(date(2026, 6, 8), ["-5271267499"])])
+        finally:
+            telegram_worker_module.SessionLocal = original_session_local
+            telegram_worker_module.run_daily_reconciliation = original_reconciliation
+
+    def test_scheduled_report_sends_reconciliation_to_configured_private_chat(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        original_session_local = telegram_worker_module.SessionLocal
+        original_reconciliation = telegram_worker_module.run_daily_reconciliation
+        try:
+            telegram_worker_module.SessionLocal = SessionLocal
+            reconciliations = []
+            telegram_worker_module.run_daily_reconciliation = (
+                lambda report_date=None, alert_chat_ids=None: reconciliations.append((report_date, list(alert_chat_ids or []))) or {"status": "ok"}
+            )
+            worker = TelegramWorker.__new__(TelegramWorker)
+            worker.skladbot_daily_report_enabled = True
+            worker.skladbot_daily_report_chat_ids = {"-5271267499"}
+            worker.skladbot_daily_report_hour = 22
+            worker.skladbot_daily_report_minute = 0
+            worker.skladbot_daily_report_retry_minutes = 15
+            worker.daily_reconciliation_enabled = True
+            worker.daily_reconciliation_chat_ids = {"999"}
+            sends = []
+            worker.send_skladbot_daily_report = lambda chat_id, report_date=None, scheduled=False: sends.append((chat_id, report_date, scheduled)) or True
+
+            now = datetime(2026, 6, 8, 22, 5, tzinfo=ZoneInfo("Asia/Tashkent"))
+            self.assertEqual(worker.send_due_skladbot_daily_reports(now=now), 1)
+
+            self.assertEqual(sends, [("-5271267499", date(2026, 6, 8), True)])
+            self.assertEqual(reconciliations, [(date(2026, 6, 8), ["999"])])
         finally:
             telegram_worker_module.SessionLocal = original_session_local
             telegram_worker_module.run_daily_reconciliation = original_reconciliation

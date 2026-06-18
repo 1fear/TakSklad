@@ -2,6 +2,25 @@
 
 Здесь фиксируются все правки в коде TakSklad: что менялось, в каком файле, зачем, и какие тесты это покрывают. Записи идут от новых к старым.
 
+## 2026-06-18
+
+### Reconciliation alerts вынесены из рабочей группы
+
+**Файлы:** `backend/app/telegram_worker.py`, `deploy/vds/docker-compose.yml`, `deploy/vds/.env.example`, `tests/test_skladbot_daily_report.py`.
+
+**Что стало:**
+
+- Добавлена настройка `TAKSKLAD_DAILY_RECONCILIATION_CHAT_IDS` для отдельных получателей daily reconciliation alerts.
+- Ежедневный SkladBot отчет продолжает уходить в `SKLADBOT_DAILY_REPORT_CHAT_IDS`.
+- Если отдельный список alert-чата не задан, сохраняется старое поведение: сверка отправляет уведомления туда же, куда ушел ежедневный отчет.
+
+**Проверки:**
+
+- `./.venv/bin/python -m unittest tests.test_skladbot_daily_report tests.test_reconciliation_service` - 16 tests OK.
+- `./.venv/bin/python -m unittest tests.test_backend_api_persistence.BackendApiPersistenceTests` - 81 tests OK.
+- `./.venv/bin/python -m unittest discover tests` - 476 tests OK.
+- `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK.
+
 ## 2026-06-17
 
 ### Operations control hardening продолжение
