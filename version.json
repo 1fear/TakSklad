@@ -1,12 +1,12 @@
 {
-  "latest_version": "2.0.19",
-  "min_supported_version": "2.0.19",
+  "latest_version": "2.0.20",
+  "min_supported_version": "2.0.20",
   "mandatory": true,
   "package_type": "onefile_exe",
   "entrypoint": "TakSklad.exe",
-  "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.19/TakSklad.exe",
-  "sha256": "4a437edbe6e05e4a3f23efd2b01f53e6f9194104a3385fb4549a5a83ef717844",
-  "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.19/TakSklad-windows-x64.zip",
-  "sha256_onedir": "dcb7eb9acd55904d74b9405b3c633c2a836a3341f7380efed8929e348c99ea6f",
-  "message": "TakSklad 2.0.19: обязательное обновление. Подполирован экран сканирования: ровная статистика, компактный прогресс позиции, мягкие кнопки и улучшенные сообщения об ошибках."
+  "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.20/TakSklad.exe",
+  "sha256": "09c93c31ece89835ecb9ad21e1639c01b3108a14cfc5d40b11eadfc0bafb3a46",
+  "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.20/TakSklad-windows-x64.zip",
+  "sha256_onedir": "7d03547fb718acdc079e3bfbeebd283be86c3c85bbcf9b479c3bc6d952437d7f",
+  "message": "TakSklad 2.0.20: обязательное обновление. Код desktop приведен к модульной структуре, сохранена совместимость старых точек входа и добавлены guard-тесты против разрастания main.py."
 }
