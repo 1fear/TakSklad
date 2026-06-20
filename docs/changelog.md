@@ -4,6 +4,20 @@
 
 ## 2026-06-20
 
+### Принудительное обновление 2.0.17 с диагностикой wrong-SKU
+
+**Файлы:** `src/taksklad/main.py`, `src/taksklad/config.py`, `backend/app/settings.py`, `tools/*`, `deploy/vds/acceptance_status.sh`, `tests/*`.
+
+**Что стало:**
+
+- При ошибке `КИЗ не соответствует товару текущей позиции` desktop показывает не только общий текст, а диагностические данные: товар позиции, ожидаемый SKU, распознанный SKU КИЗа, префикс КИЗа и версию приложения.
+- `APP_VERSION` поднят до `2.0.17`, чтобы складские ПК получили новое обязательное обновление и старые копии приложения не продолжали работать молча.
+- Релизные guard-скрипты и тесты переведены на ожидаемый forced rollout `2.0.17`.
+
+**Проверки:**
+
+- Будут зафиксированы после релизного прогона.
+
 ### Расширение Chapman SKU для SkladBot и КИЗов
 
 **Файлы:** `backend/app/skladbot_request_dry_run.py`, `backend/app/skladbot_worker.py`, `backend/app/scan_quantities.py`, `backend/app/telegram_worker.py`, `src/taksklad/scan_quantities.py`, `src/taksklad/skladbot.py`, `src/taksklad/config.py`, `tests/*`.

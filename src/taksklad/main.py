@@ -73,6 +73,8 @@ from .reports import (
 from .scan_quantities import (
     SCAN_TYPE_AGGREGATE_BOX,
     aggregate_product_mismatch,
+    product_key_from_name,
+    scan_code_product_key,
     scan_entries_for_order_codes,
     scan_metadata_for_code,
     scan_product_mismatch,
@@ -337,6 +339,40 @@ def find_code_owner_in_orders(code, orders):
     return {}
 
 
+PRODUCT_KEY_LABELS = {
+    "brown:op": "Brown OP",
+    "red:op": "RED OP",
+    "gold:ssl": "Gold SSL",
+    "brown:ssl": "Brown SSL",
+    "red:ssl": "RED SSL",
+    "green:op": "Green OP",
+}
+
+
+def format_product_key_label(product_key):
+    key = normalize_text(product_key)
+    if not key:
+        return "не распознан"
+    return PRODUCT_KEY_LABELS.get(key, key)
+
+
+def format_scan_product_mismatch_message(code, product, expected_product_key="", scan_product_key=""):
+    code = normalize_kiz_code(code)
+    expected_key = normalize_text(expected_product_key) or product_key_from_name(product)
+    actual_key = normalize_text(scan_product_key) or scan_code_product_key(code)
+    prefix = code[:18] + ("..." if len(code) > 18 else "")
+    product_text = normalize_text(product) or "товар не указан"
+    return "\n".join([
+        "КИЗ не соответствует товару текущей позиции.",
+        f"Позиция: {product_text}",
+        f"Ожидалось: {format_product_key_label(expected_key)}",
+        f"КИЗ распознан как: {format_product_key_label(actual_key)}",
+        f"Префикс КИЗа: {prefix}",
+        f"Версия приложения: {APP_VERSION}",
+        "Если SKU на блоке верный, закройте приложение и запустите обновленный TakSklad.exe.",
+    ])
+
+
 def format_backend_blocked_scan_message(blocked_events):
     first_event = (blocked_events or [{}])[0]
     code = backend_blocked_scan_code(first_event)
@@ -347,7 +383,12 @@ def format_backend_blocked_scan_message(blocked_events):
     if "already scanned in another order item" in detail or "already scanned for another order item" in detail:
         return format_duplicate_scan_message(code, detail_payload.get("existing_order"))
     if "does not match order item" in detail:
-        return f"КИЗ не соответствует товару текущей позиции{suffix}"
+        return format_scan_product_mismatch_message(
+            code,
+            detail_payload.get("product") or "",
+            expected_product_key=detail_payload.get("expected_product_key") or "",
+            scan_product_key=detail_payload.get("scan_product_key") or "",
+        )
     if "exceeds remaining order item blocks" in detail:
         return f"Код короба превышает остаток позиции{suffix}"
     return f"Backend отклонил КИЗ. Сканируйте другой код{suffix}"
@@ -2172,12 +2213,19 @@ class ScanningApp(
 
         scan_metadata = scan_metadata_for_code(code)
         block_quantity = scan_metadata["block_quantity"]
-        if scan_product_mismatch(code, self.current_order.get("Товары", "")):
-            self.show_error("КИЗ не соответствует товару текущей позиции")
+        product_name = self.current_order.get("Товары", "")
+        if scan_product_mismatch(code, product_name):
+            self.show_error(
+                format_scan_product_mismatch_message(
+                    code,
+                    product_name,
+                    scan_product_key=scan_metadata.get("product_key") or "",
+                )
+            )
             self.scan_entry.delete(0, tk.END)
             return
         if scan_metadata["scan_type"] == SCAN_TYPE_AGGREGATE_BOX:
-            if aggregate_product_mismatch(code, self.current_order.get("Товары", "")):
+            if aggregate_product_mismatch(code, product_name):
                 self.show_error("Код короба не соответствует товару текущей позиции")
                 self.scan_entry.delete(0, tk.END)
                 return

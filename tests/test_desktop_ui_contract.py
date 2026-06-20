@@ -20,6 +20,7 @@ from taksklad.main import (
     format_print_failure_after_backend_complete,
     find_code_owner_in_orders,
     format_duplicate_scan_message,
+    format_scan_product_mismatch_message,
     first_incomplete_order_index,
     group_finish_blocker,
     is_terminal_scan_state,
@@ -88,7 +89,7 @@ class DesktopUiContractTests(unittest.TestCase):
         self.assertIn("scan_product_mismatch", source)
         self.assertLess(source.index("scan_product_mismatch"), source.index("write_scan_backup"))
         self.assertLess(source.index("scan_product_mismatch"), source.index("queue_backend_scan"))
-        self.assertIn("КИЗ не соответствует товару текущей позиции", source)
+        self.assertIn("format_scan_product_mismatch_message", source)
 
     def test_backend_sync_item_blocker_ignores_unrelated_poisoned_queue_event(self):
         sync_result = {
@@ -150,6 +151,38 @@ class DesktopUiContractTests(unittest.TestCase):
         self.assertIn("Chapman Brown OP 20", message)
         self.assertIn("WH-R-100500", message)
         self.assertIn("Сканируйте другой КИЗ", message)
+        self.assertNotIn("Backend HTTP", message)
+
+    def test_scan_product_mismatch_message_includes_runtime_diagnostics(self):
+        message = format_scan_product_mismatch_message(
+            "01040063960540672171Zs<C,939y-AKO2z0",
+            "Chapman RED SSL 100`20",
+        )
+
+        self.assertIn("КИЗ не соответствует товару текущей позиции", message)
+        self.assertIn("Позиция: Chapman RED SSL 100`20", message)
+        self.assertIn("Ожидалось: RED SSL", message)
+        self.assertIn("КИЗ распознан как: Brown SSL", message)
+        self.assertIn("Префикс КИЗа: 0104006396054067", message)
+        self.assertIn(main_module.APP_VERSION, message)
+
+    def test_backend_wrong_sku_message_uses_backend_detail(self):
+        message = format_backend_blocked_scan_message([
+            {
+                "type": "scan",
+                "payload": {"code": "01040063960540672171Zs<C,939y-AKO2z0"},
+                "last_error": "Backend HTTP 409: Scan product does not match order item",
+                "last_error_detail": {
+                    "message": "Scan product does not match order item",
+                    "product": "Chapman RED SSL 100`20",
+                    "expected_product_key": "red:ssl",
+                    "scan_product_key": "brown:ssl",
+                },
+            }
+        ])
+
+        self.assertIn("Ожидалось: RED SSL", message)
+        self.assertIn("КИЗ распознан как: Brown SSL", message)
         self.assertNotIn("Backend HTTP", message)
 
     def test_local_duplicate_scan_message_uses_current_loaded_order_context(self):
