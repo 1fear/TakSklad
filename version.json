@@ -1,12 +1,12 @@
 {
-  "latest_version": "2.0.18",
-  "min_supported_version": "2.0.18",
+  "latest_version": "2.0.19",
+  "min_supported_version": "2.0.19",
   "mandatory": true,
   "package_type": "onefile_exe",
   "entrypoint": "TakSklad.exe",
-  "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.18/TakSklad.exe",
-  "sha256": "cfac1864e8a843fcbd56409dfd8a6359a05603698c99e75c30b31307561b1d57",
-  "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.18/TakSklad-windows-x64.zip",
-  "sha256_onedir": "db52cd35c19dfceed89d3d2706fdd12584a0826dd58b25fb28a77ec428358e2d",
-  "message": "TakSklad 2.0.18: обязательное обновление. В экран сканирования добавлены фото товара и GTIN для рабочих Chapman SKU, визуально обновлена карточка текущей позиции."
+  "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.19/TakSklad.exe",
+  "sha256": "4a437edbe6e05e4a3f23efd2b01f53e6f9194104a3385fb4549a5a83ef717844",
+  "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.19/TakSklad-windows-x64.zip",
+  "sha256_onedir": "dcb7eb9acd55904d74b9405b3c633c2a836a3341f7380efed8929e348c99ea6f",
+  "message": "TakSklad 2.0.19: обязательное обновление. Подполирован экран сканирования: ровная статистика, компактный прогресс позиции, мягкие кнопки и улучшенные сообщения об ошибках."
 }
