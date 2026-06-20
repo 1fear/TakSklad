@@ -6,7 +6,7 @@
 
 ### Расширение Chapman SKU для SkladBot и КИЗов
 
-**Файлы:** `backend/app/skladbot_request_dry_run.py`, `backend/app/skladbot_worker.py`, `backend/app/scan_quantities.py`, `backend/app/telegram_worker.py`, `src/taksklad/scan_quantities.py`, `src/taksklad/skladbot.py`, `tests/*`.
+**Файлы:** `backend/app/skladbot_request_dry_run.py`, `backend/app/skladbot_worker.py`, `backend/app/scan_quantities.py`, `backend/app/telegram_worker.py`, `src/taksklad/scan_quantities.py`, `src/taksklad/skladbot.py`, `src/taksklad/config.py`, `tests/*`.
 
 **Что стало:**
 
@@ -14,6 +14,7 @@
 - КИЗ-проверка теперь различает не только цвет, но и формат SKU: `brown:op`, `brown:ssl`, `red:op`, `red:ssl`, `gold:ssl`, `green:op`.
 - Ручной Telegram-заказ получил отдельные кнопки по новым SKU.
 - После live-create SkladBot номер заявки явно фиксируется в JSONB DB, а входящая Google mirror sync больше не откатывает существующий WH-R в `Проверяется`, если зеркало еще не успело обновиться.
+- Desktop `APP_VERSION` поднят до `2.0.16` для принудительного обновления складских ПК с локальной проверкой новых SKU.
 
 **Проверки:**
 
