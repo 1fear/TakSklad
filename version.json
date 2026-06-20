@@ -1,12 +1,12 @@
 {
-  "latest_version": "2.0.17",
-  "min_supported_version": "2.0.17",
+  "latest_version": "2.0.18",
+  "min_supported_version": "2.0.18",
   "mandatory": true,
   "package_type": "onefile_exe",
   "entrypoint": "TakSklad.exe",
-  "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.17/TakSklad.exe",
-  "sha256": "fe8f1502584e7e3b865608a96a126cdca4225fd629fc4fea10866e7f4dc9e4da",
-  "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.17/TakSklad-windows-x64.zip",
-  "sha256_onedir": "3ced1eb0e044c2096ae80efc321beb8fd7bd636d769b526283580dfa683e5960",
-  "message": "TakSklad 2.0.17: обязательное обновление. Добавлена диагностика ошибки SKU: приложение показывает ожидаемый SKU, распознанный SKU КИЗа, префикс кода и версию приложения."
+  "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.18/TakSklad.exe",
+  "sha256": "cfac1864e8a843fcbd56409dfd8a6359a05603698c99e75c30b31307561b1d57",
+  "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.18/TakSklad-windows-x64.zip",
+  "sha256_onedir": "db52cd35c19dfceed89d3d2706fdd12584a0826dd58b25fb28a77ec428358e2d",
+  "message": "TakSklad 2.0.18: обязательное обновление. В экран сканирования добавлены фото товара и GTIN для рабочих Chapman SKU, визуально обновлена карточка текущей позиции."
 }
