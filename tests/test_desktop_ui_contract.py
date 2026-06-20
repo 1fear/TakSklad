@@ -26,7 +26,7 @@ from taksklad.main import (
     is_terminal_scan_state,
 )
 from taksklad.startup_check import format_app_version_label
-from taksklad.ui_widgets import AppButton
+from taksklad.ui_widgets import AppButton, fade_hex
 
 
 class DesktopUiContractTests(unittest.TestCase):
@@ -57,6 +57,16 @@ class DesktopUiContractTests(unittest.TestCase):
         self.assertIn("self.product_photo_caption_label", build_source)
         self.assertIn("self.update_product_photo(product_text)", load_source)
         self.assertIn("self.update_product_photo(\"\")", reset_source)
+
+    def test_scan_screen_typography_stays_compact(self):
+        module_source = inspect.getsource(main_module)
+        build_source = inspect.getsource(ScanningApp._build_ui)
+
+        self.assertIn("PRIMARY_LABEL_FONT = (UI_FONT, 15", module_source)
+        self.assertIn("PRODUCT_LABEL_FONT = (UI_FONT, 15", module_source)
+        self.assertNotIn("PRIMARY_LABEL_FONT = (UI_FONT, 18", module_source)
+        self.assertNotIn("PRODUCT_LABEL_FONT = (UI_FONT, 17", module_source)
+        self.assertIn("fg=FG_MUTED,\n            font=BODY_FONT", build_source)
 
     def test_main_warehouse_screen_does_not_show_legacy_admin_buttons(self):
         source = inspect.getsource(ScanningApp._build_ui)
@@ -634,20 +644,37 @@ class DesktopUiContractTests(unittest.TestCase):
 
         signature = inspect.signature(AppButton.__init__)
         self.assertIn("radius", signature.parameters)
-        self.assertGreaterEqual(signature.parameters["radius"].default, 8)
+        self.assertGreaterEqual(signature.parameters["radius"].default, 16)
 
         build_source = inspect.getsource(ScanningApp._build_ui)
         self.assertIn("bg=WARNING, fg=FG_TEXT", build_source)
         self.assertIn("radius=8", build_source)
+
+        widget_source = inspect.getsource(AppButton)
+        self.assertIn("fade_hex", widget_source)
+        self.assertLess(int(ACCENT[1:3], 16), int(fade_hex(ACCENT)[1:3], 16))
+
+    def test_error_toast_is_visually_separated_from_version_label(self):
+        show_toast_source = inspect.getsource(ScanningApp.show_error_toast)
+        build_source = inspect.getsource(ScanningApp._build_ui)
+
+        self.assertIn("before=self.status_label", show_toast_source)
+        self.assertIn("pady=(0, 12)", show_toast_source)
+        self.assertIn("version_frame.pack(fill=\"x\", pady=(10, 0))", build_source)
 
     def test_backend_status_is_visible_on_warehouse_screen(self):
         build_source = inspect.getsource(ScanningApp._build_ui)
         stats_source = inspect.getsource(app_day_end.DayEndActionsMixin.update_stats_display)
 
         self.assertIn("self.backend_status_label", build_source)
+        self.assertIn("make_stat_tile", build_source)
+        self.assertIn("self.sync_caption_label", build_source)
+        self.assertIn("font=KPI_FONT", build_source)
+        self.assertNotIn("Выполнено: 0", build_source)
         self.assertNotIn("Backend: ожидает проверки", build_source)
         self.assertIn("build_backend_status", stats_source)
-        self.assertIn("Синхронизация: OK", stats_source)
+        self.assertIn('self.pending_saves_label.config(text="OK"', stats_source)
+        self.assertIn('sync_caption.config(text="Синхронизация")', stats_source)
 
     def test_backend_status_text_covers_disabled_online_pending_and_error(self):
         with mock.patch.object(app_day_end, "backend_enabled", return_value=False):

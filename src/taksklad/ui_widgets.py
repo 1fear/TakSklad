@@ -20,6 +20,24 @@ def darken_hex(color, factor=0.9):
     )
 
 
+def fade_hex(color, amount=0.10):
+    color = color.lstrip("#")
+    if len(color) != 6:
+        return "#" + color
+    try:
+        red = int(color[0:2], 16)
+        green = int(color[2:4], 16)
+        blue = int(color[4:6], 16)
+    except ValueError:
+        return "#" + color
+    amount = max(0.0, min(1.0, amount))
+    return "#{:02x}{:02x}{:02x}".format(
+        min(255, int(red + (255 - red) * amount)),
+        min(255, int(green + (255 - green) * amount)),
+        min(255, int(blue + (255 - blue) * amount)),
+    )
+
+
 class AppButton(tk.Frame):
     def __init__(
         self,
@@ -35,7 +53,9 @@ class AppButton(tk.Frame):
         cursor="hand2",
         disabled_bg=DISABLED_BG,
         disabled_fg=DISABLED_FG,
-        radius=10,
+        radius=16,
+        hover_bg=None,
+        hover_fade=0.10,
         **kwargs
     ):
         frame_kwargs = {
@@ -51,7 +71,9 @@ class AppButton(tk.Frame):
         self._text = text
         self._normal_bg = bg
         self._normal_fg = fg
-        self._active_bg = darken_hex(bg, 0.92)
+        self._hover_bg = hover_bg
+        self._hover_fade = hover_fade
+        self._active_bg = hover_bg or fade_hex(bg, hover_fade)
         self._disabled_bg = disabled_bg
         self._disabled_fg = disabled_fg
         self._command = command
@@ -67,7 +89,7 @@ class AppButton(tk.Frame):
             bg=parent.cget("bg") if hasattr(parent, "cget") else bg,
             highlightthickness=0,
             bd=0,
-            height=max(34, pady * 2 + 18),
+            height=max(38, pady * 2 + 20),
         )
         self.canvas.pack(fill="both", expand=True)
         self.canvas.bind("<Configure>", lambda _event: self._refresh_style())
@@ -124,7 +146,10 @@ class AppButton(tk.Frame):
             x1, y1 + radius,
             x1, y1,
         ]
-        return self.canvas.create_polygon(points, smooth=True, **kwargs)
+        return self.canvas.create_polygon(points, smooth=True, splinesteps=18, **kwargs)
+
+    def _refresh_active_bg(self):
+        self._active_bg = self._hover_bg or fade_hex(self._normal_bg, self._hover_fade)
 
     def _refresh_style(self):
         if self._state == "normal":
@@ -150,10 +175,10 @@ class AppButton(tk.Frame):
             self._command = options.pop("command")
         if "bg" in options:
             self._normal_bg = options.pop("bg")
-            self._active_bg = darken_hex(self._normal_bg, 0.92)
+            self._refresh_active_bg()
         if "background" in options:
             self._normal_bg = options.pop("background")
-            self._active_bg = darken_hex(self._normal_bg, 0.92)
+            self._refresh_active_bg()
         if "fg" in options:
             self._normal_fg = options.pop("fg")
         if "foreground" in options:
@@ -164,9 +189,17 @@ class AppButton(tk.Frame):
             self._cursor = options.pop("cursor")
         if "pady" in options:
             self._pady = options.pop("pady")
-            self.canvas.configure(height=max(34, self._pady * 2 + 18))
+            self.canvas.configure(height=max(38, self._pady * 2 + 20))
         if "padx" in options:
             self._padx = options.pop("padx")
+        if "radius" in options:
+            self._radius = options.pop("radius")
+        if "hover_bg" in options:
+            self._hover_bg = options.pop("hover_bg")
+            self._refresh_active_bg()
+        if "hover_fade" in options:
+            self._hover_fade = options.pop("hover_fade")
+            self._refresh_active_bg()
 
         ignored = {
             "relief", "activebackground", "activeforeground",

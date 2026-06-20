@@ -2,6 +2,29 @@
 
 Здесь фиксируются все правки в коде TakSklad: что менялось, в каком файле, зачем, и какие тесты это покрывают. Записи идут от новых к старым.
 
+## 2026-06-21
+
+### UI polish сканирования и принудительный rollout 2.0.19
+
+**Файлы:** `src/taksklad/ui_widgets.py`, `src/taksklad/main.py`, `src/taksklad/app_day_end.py`, `src/taksklad/config.py`, `backend/app/settings.py`, `tools/release_preflight.py`, `tools/build_windows_test_archive.ps1`, `deploy/vds/acceptance_status.sh`, `tests/*`.
+
+**Что стало:**
+
+- Кнопки получили более мягкий радиус по умолчанию и сглаженные углы.
+- Hover теперь слегка осветляет кнопку, а не затемняет ее.
+- В карточке текущей позиции уменьшены слишком крупные шрифты юрлица/товара.
+- Прогресс текущей позиции вынесен в отдельный компактный блок.
+- Статистика перешла на KPI-плитки: значения и подписи больше не съезжают относительно друг друга.
+- Служебные строки текущей позиции стали приглушенными, чтобы не спорить с главным SKU.
+- Toast ошибок оставлен прямоугольным с `radius=8` и автоскрытием через 5 секунд.
+- `APP_VERSION` desktop/backend и release guard подняты до `2.0.19` для нового forced rollout.
+
+**Проверки:**
+
+- `PYTHONDONTWRITEBYTECODE=1 ./.venv/bin/python -m unittest tests.test_desktop_ui_contract tests.test_product_images tests.test_scan_quantities tests.test_release_preflight tests.test_vds_acceptance_scripts tests.test_windows_test_build_helper` - 64 tests OK.
+- `PYTHONDONTWRITEBYTECODE=1 ./.venv/bin/python -m compileall -q src/taksklad/main.py src/taksklad/ui_widgets.py src/taksklad/app_day_end.py src/taksklad/config.py backend/app/settings.py tools/release_preflight.py` - OK.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src /tmp/taksklad-venv312/bin/python -m unittest discover -s tests` - 493 tests OK.
+
 ## 2026-06-20
 
 ### Фото товара в экране сканирования

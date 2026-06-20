@@ -2,7 +2,7 @@ from datetime import datetime
 import tkinter as tk
 from tkinter import messagebox
 
-from .config import DANGER, ERROR_FG, FG_MUTED, SHEET_NAME, SPREADSHEET_ID
+from .config import DANGER, ERROR_FG, FG_MUTED, FG_TEXT, SHEET_NAME, SPREADSHEET_ID, SUCCESS, WARNING
 from .backend_client import backend_configured, backend_enabled
 from .backend_events import load_pending_backend_events
 from .orders import order_group_key
@@ -52,17 +52,22 @@ class DayEndActionsMixin:
             return
         completed = len(self.completed_orders)
         total_blocks = sum(o.get("Отсканировано", 0) for o in self.completed_orders)
-        self.completed_count_label.config(text=f"Выполнено: {completed}")
-        self.total_blocks_label.config(text=f"Блоков: {total_blocks}")
+        self.completed_count_label.config(text=str(completed), fg=FG_TEXT)
+        self.total_blocks_label.config(text=str(total_blocks), fg=FG_TEXT)
         active_groups = len({order_group_key(order) for order in self.today_orders})
         pending_saves = len(load_pending_saves())
         pending_backend = len(load_pending_backend_events())
-        self.active_orders_label.config(text=f"Активных заказов: {active_groups}")
+        self.active_orders_label.config(text=str(active_groups), fg=FG_TEXT)
         pending_total = pending_saves + pending_backend
+        sync_caption = getattr(self, "sync_caption_label", None)
         if pending_total:
-            self.pending_saves_label.config(text="Синхронизация: ожидает отправки")
+            self.pending_saves_label.config(text=str(pending_total), fg=WARNING)
+            if sync_caption:
+                sync_caption.config(text="В очереди")
         else:
-            self.pending_saves_label.config(text="Синхронизация: OK")
+            self.pending_saves_label.config(text="OK", fg=SUCCESS)
+            if sync_caption:
+                sync_caption.config(text="Синхронизация")
         if hasattr(self, "backend_status_label"):
             backend_status_text, backend_status_color = build_backend_status(
                 getattr(self, "last_sync_result", {}),
