@@ -123,7 +123,7 @@ TELEGRAM_SETTINGS_FILE = os.path.join(APP_DIR, "telegram_settings.json")
 YANDEX_GEOCODER_KEY_FILE = os.path.join(APP_DIR, "yandex_geocoder_key.txt")
 YANDEX_GEOCODER_ENV_VAR = "YANDEX_GEOCODER_API_KEY"
 
-APP_VERSION = "2.0.17"
+APP_VERSION = "2.0.18"
 APP_BUILD_LABEL = os.environ.get("TAKSKLAD_BUILD_LABEL", "MVP 2.0").strip()
 UPDATE_INFO_URL = os.environ.get(
     "TAKSKLAD_UPDATE_INFO_URL",
@@ -261,19 +261,19 @@ LABEL_DPI = 203
 KIZ_MIN_LENGTH = 20
 KIZ_MAX_LENGTH = 120
 
-BG_MAIN = "#f7f5df"
-BG_CARD = "#ffffff"
-FG_TEXT = "#111111"
-FG_MUTED = "#5f5f5f"
-ACCENT = "#111111"
-SUCCESS = "#111111"
-INFO = "#111111"
-WARNING = "#F0E68C"
-DANGER = "#8b1e1e"
-ERROR_BG = "#fee2e2"
-ERROR_FG = "#dc2626"
-BORDER = "#d8d1a1"
-DISABLED_BG = "#d9d6bf"
-DISABLED_FG = "#8a8774"
+BG_MAIN = "#f4f1e8"
+BG_CARD = "#fffdf7"
+FG_TEXT = "#2e2c28"
+FG_MUTED = "#777066"
+ACCENT = "#b28224"
+SUCCESS = "#2f8a4a"
+INFO = "#3a6b8f"
+WARNING = "#d8b64c"
+DANGER = "#b7483c"
+ERROR_BG = "#f8ded9"
+ERROR_FG = "#b7483c"
+BORDER = "#d8d0bf"
+DISABLED_BG = "#e0d7b9"
+DISABLED_FG = "#8f8878"
 
 __all__ = [name for name in globals() if name.isupper()] + ["get_app_dir"]

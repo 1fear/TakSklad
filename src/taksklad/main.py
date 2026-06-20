@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 import tkinter as tk
 from tkinter import messagebox
 
+from PIL import Image, ImageTk
 
 from .catalog import (
     get_product_rule,
@@ -64,6 +65,7 @@ from .pending_store import (
     write_scan_backup,
 )
 from .printing import print_summary
+from .product_images import product_image_gtin, product_image_path
 from .reports import (
     build_summary_products_from_gsheet,
     create_day_report_excel,
@@ -116,6 +118,9 @@ from .utils import (
 configure_app_logging(LOG_FILE, LOG_MAX_BYTES, LOG_BACKUP_COUNT)
 
 STATUS_NOTICE_TIMEOUT_MS = 5000
+PRODUCT_PHOTO_SIZE = 170
+PRODUCT_PHOTO_BG = "#fffaf0"
+PRODUCT_PHOTO_SHELL_BG = "#f3ead8"
 
 def format_exception_message(title, exc):
     return (
@@ -354,6 +359,24 @@ def format_product_key_label(product_key):
     if not key:
         return "не распознан"
     return PRODUCT_KEY_LABELS.get(key, key)
+
+
+def make_product_photo_image(product, size=PRODUCT_PHOTO_SIZE):
+    path = product_image_path(product)
+    if not path:
+        return None
+    try:
+        image = Image.open(path).convert("RGBA")
+        resampling = getattr(Image, "Resampling", Image)
+        image.thumbnail((size, size), resampling.LANCZOS)
+        canvas = Image.new("RGBA", (size, size), (255, 250, 240, 0))
+        x = (size - image.width) // 2
+        y = (size - image.height) // 2
+        canvas.alpha_composite(image, (x, y))
+        return ImageTk.PhotoImage(canvas)
+    except Exception as exc:
+        logging.warning("Не удалось загрузить фото товара %s: %s", product, exc)
+        return None
 
 
 def format_scan_product_mismatch_message(code, product, expected_product_key="", scan_product_key=""):
@@ -731,6 +754,7 @@ class ScanningApp(
         self.skladbot_sync_running = False
         self.backend_sync_running = False
         self.return_lookup_result = None
+        self.product_photo_image = None
         self.last_sync_result = {"synced": 0, "failed": 0, "remaining": 0}
         self.product_catalog = load_product_catalog()
         os.makedirs(BACKUP_DIR, exist_ok=True)
@@ -1287,17 +1311,72 @@ class ScanningApp(
         tk.Label(info_card, text="📋 ТЕКУЩАЯ ПОЗИЦИЯ",
                 bg=BG_CARD, fg=ACCENT, font=("Segoe UI", 12, "bold")).pack(anchor="w", padx=20, pady=(15, 10))
 
-        self.current_info = tk.Label(info_card, text="Не выбрано",
-                                    bg=BG_CARD, fg=FG_TEXT, font=("Segoe UI", 11),
-                                    wraplength=400, justify="left")
-        self.current_info.pack(anchor="w", padx=20, pady=(0, 10))
+        current_body = tk.Frame(info_card, bg=BG_CARD)
+        current_body.pack(fill="x", padx=20, pady=(0, 12))
+
+        current_text = tk.Frame(current_body, bg=BG_CARD)
+        current_text.pack(side="left", fill="both", expand=True, padx=(0, 16))
+
+        self.current_info = tk.Label(
+            current_text,
+            text="Не выбрано",
+            bg=BG_CARD,
+            fg=FG_TEXT,
+            font=("Segoe UI", 10),
+            wraplength=460,
+            justify="left",
+            anchor="nw",
+        )
+        self.current_info.pack(anchor="w", fill="x")
+
+        product_photo_shell = tk.Frame(
+            current_body,
+            bg=PRODUCT_PHOTO_SHELL_BG,
+            bd=1,
+            highlightthickness=1,
+            highlightbackground=BORDER,
+            padx=7,
+            pady=7,
+        )
+        product_photo_shell.pack(side="right", anchor="n")
+
+        self.product_photo_canvas = tk.Canvas(
+            product_photo_shell,
+            width=PRODUCT_PHOTO_SIZE,
+            height=PRODUCT_PHOTO_SIZE,
+            bg=PRODUCT_PHOTO_BG,
+            highlightthickness=1,
+            highlightbackground=BORDER,
+            bd=0,
+        )
+        self.product_photo_canvas.pack()
+
+        self.product_photo_gtin_label = tk.Label(
+            product_photo_shell,
+            text="GTIN",
+            bg=FG_TEXT,
+            fg="#fff7df",
+            font=("Segoe UI", 9, "bold"),
+            padx=8,
+            pady=6,
+        )
+        self.product_photo_gtin_label.pack(fill="x", pady=(8, 0))
+
+        self.product_photo_caption_label = tk.Label(
+            product_photo_shell,
+            text="Фото товара",
+            bg=PRODUCT_PHOTO_SHELL_BG,
+            fg=FG_MUTED,
+            font=("Segoe UI", 9),
+        )
+        self.product_photo_caption_label.pack(fill="x", pady=(6, 0))
 
         self.current_client_label = tk.Label(
             info_card,
             text="",
             bg=BG_CARD,
             fg=FG_TEXT,
-            font=("Segoe UI", 16, "bold"),
+            font=("Segoe UI", 18, "bold"),
             wraplength=620,
             justify="left",
             anchor="w",
@@ -1309,7 +1388,7 @@ class ScanningApp(
             text="",
             bg=BG_CARD,
             fg=ACCENT,
-            font=("Segoe UI", 15, "bold"),
+            font=("Segoe UI", 17, "bold"),
             wraplength=620,
             justify="left",
             anchor="w",
@@ -1321,8 +1400,8 @@ class ScanningApp(
             text="Партия не выбрана",
             bg=BG_CARD,
             fg=FG_MUTED,
-            font=("Segoe UI", 10, "bold"),
-            wraplength=420,
+            font=("Segoe UI", 10),
+            wraplength=620,
             justify="left",
         )
         self.party_summary_label.pack(anchor="w", padx=20, pady=(0, 10))
@@ -1427,9 +1506,9 @@ class ScanningApp(
             bg=DANGER,
             fg="white",
             font=("Segoe UI", 10, "bold"),
-            radius=24,
+            radius=8,
             padx=18,
-            pady=12,
+            pady=14,
         )
 
         self.status_var = tk.StringVar(value="✅ Готов к работе")
@@ -1940,6 +2019,7 @@ class ScanningApp(
         self.current_info.config(text="Не выбрано")
         self.current_client_label.config(text="")
         self.current_product_label.config(text="")
+        self.update_product_photo("")
         self.party_summary_label.config(text="Партия не выбрана")
         self.position_label.config(text="")
         self.progress_label.config(text="0 / 0")
@@ -2147,6 +2227,7 @@ class ScanningApp(
         self.current_info.config(text=info_text)
         self.current_client_label.config(text=f"🏢 {client_text}")
         self.current_product_label.config(text=f"📦 {product_text}")
+        self.update_product_photo(product_text)
 
         total_products = len(self.current_legal_entity_orders)
         self.position_label.config(text=f"Позиция {self.current_product_idx + 1} из {total_products}")
@@ -2174,6 +2255,50 @@ class ScanningApp(
                 self.next_product_btn.config(state="normal")
                 self.finish_btn.config(state="disabled")
         self.scan_entry.focus_set()
+
+    def update_product_photo(self, product_name):
+        self.product_photo_canvas.delete("all")
+        self.product_photo_canvas.create_rectangle(
+            0,
+            0,
+            PRODUCT_PHOTO_SIZE,
+            PRODUCT_PHOTO_SIZE,
+            fill=PRODUCT_PHOTO_BG,
+            outline=BORDER,
+        )
+        photo = make_product_photo_image(product_name)
+        gtin = product_image_gtin(product_name)
+        if photo is not None:
+            self.product_photo_image = photo
+            self.product_photo_canvas.create_image(
+                PRODUCT_PHOTO_SIZE // 2,
+                PRODUCT_PHOTO_SIZE // 2,
+                image=self.product_photo_image,
+                anchor="center",
+            )
+            self.product_photo_gtin_label.config(
+                text=f"GTIN {gtin}" if gtin else "GTIN не указан",
+                bg=FG_TEXT,
+                fg="#fff7df",
+            )
+            self.product_photo_caption_label.config(text="Фото товара")
+            return
+
+        self.product_photo_image = None
+        self.product_photo_canvas.create_text(
+            PRODUCT_PHOTO_SIZE // 2,
+            PRODUCT_PHOTO_SIZE // 2,
+            text="Фото\nне найдено",
+            fill=FG_MUTED,
+            font=("Segoe UI", 12, "bold"),
+            justify="center",
+        )
+        self.product_photo_gtin_label.config(
+            text=f"GTIN {gtin}" if gtin else "SKU без фото",
+            bg=DISABLED_BG,
+            fg=DISABLED_FG,
+        )
+        self.product_photo_caption_label.config(text="Можно сканировать без фото")
 
     def on_scan(self, event=None):
         if not self.ensure_update_allowed():

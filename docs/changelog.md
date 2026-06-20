@@ -4,6 +4,25 @@
 
 ## 2026-06-20
 
+### Фото товара в экране сканирования
+
+**Файлы:** `src/taksklad/main.py`, `src/taksklad/product_images.py`, `src/taksklad/config.py`, `assets/product_images/*`, `.github/workflows/build-windows-release.yml`, `tools/build_windows_test_archive.ps1`, `tests/*`.
+
+**Что стало:**
+
+- В карточке текущей позиции desktop теперь есть фото товара и GTIN рядом с реквизитами заказа.
+- Поддержаны 6 рабочих Chapman SKU: Brown OP, Brown SSL, Gold SSL, Green OP, RED OP, RED SSL.
+- Если фото не найдено, экран показывает заглушку и не блокирует сканирование.
+- Палитра и отступы склада подогнаны под теплый макет: мягкий фон, золотой акцент, зеленый прогресс, красный toast.
+- Windows release/test build теперь упаковывает `assets/product_images`, чтобы фото были доступны в собранном `TakSklad.exe`.
+- `APP_VERSION` desktop/backend и release guard подняты до `2.0.18` для нового forced rollout.
+
+**Проверки:**
+
+- `PYTHONDONTWRITEBYTECODE=1 ./.venv/bin/python -m unittest tests.test_product_images tests.test_desktop_ui_contract tests.test_windows_release_workflow tests.test_windows_test_build_helper tests.test_scan_quantities` - 48 tests OK.
+- `PYTHONDONTWRITEBYTECODE=1 ./.venv/bin/python -m compileall -q src/taksklad/product_images.py src/taksklad/main.py tests/test_product_images.py tests/test_desktop_ui_contract.py` - OK.
+- `PYTHONDONTWRITEBYTECODE=1 ./.venv/bin/python -m unittest discover -s tests` - 491 tests OK.
+
 ### Принудительное обновление 2.0.17 с диагностикой wrong-SKU
 
 **Файлы:** `src/taksklad/main.py`, `src/taksklad/config.py`, `backend/app/settings.py`, `tools/*`, `deploy/vds/acceptance_status.sh`, `tests/*`.

@@ -3,7 +3,7 @@ param(
     [string]$OutputDir = "outputs\windows_test_build",
     [string]$BuildDir = "build\windows_test",
     [string]$Python = "python",
-    [string]$MinAppVersion = "2.0.17",
+    [string]$MinAppVersion = "2.0.18",
     [string]$ExpectedBuildLabel = "MVP 2.0",
     [switch]$InstallDependencies,
     [switch]$SkipTests,
@@ -145,7 +145,7 @@ function Assert-VersionJsonSafeForTestBuild {
             $Manifest.sha256_onedir
         )
         if (-not $IsStablePinned -and -not $IsSafeRollout) {
-            throw "Public version.json is neither stable 1.1.7 nor forced 2.0.17 rollout manifest."
+            throw "Public version.json is neither stable 1.1.7 nor forced 2.0.18 rollout manifest."
         }
     }
 }
@@ -248,6 +248,8 @@ Invoke-CheckedCommand -FilePath $Python -Arguments @(
     "--windowed",
     "--paths",
     "src",
+    "--add-data",
+    "assets\product_images;assets\product_images",
     "--name",
     "TakSklad",
     "--icon",

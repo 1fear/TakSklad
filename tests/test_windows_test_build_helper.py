@@ -11,6 +11,8 @@ class WindowsTestBuildHelperTest(unittest.TestCase):
 
         self.assertIn("PyInstaller", script)
         self.assertIn("--onedir", script)
+        self.assertIn("--add-data", script)
+        self.assertIn("assets\\product_images;assets\\product_images", script)
         self.assertIn("TakSklad-test-$AppVersion-windows-x64", script)
         self.assertIn("windows_test_onedir_zip", script)
         self.assertIn('$ExpectedBuildLabel = "MVP 2.0"', script)
@@ -18,7 +20,7 @@ class WindowsTestBuildHelperTest(unittest.TestCase):
         self.assertIn("app_build_label = $AppBuildLabel", script)
         self.assertIn("Build label: $AppBuildLabel", script)
         self.assertIn("version.json has local changes", script)
-        self.assertIn("forced 2.0.17 rollout manifest", script)
+        self.assertIn("forced 2.0.18 rollout manifest", script)
         self.assertIn("public_version_json_changed = $false", script)
         self.assertIn("windows_backend_acceptance.ps1", script)
         self.assertIn("release_go_no_go.py", script)

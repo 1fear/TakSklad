@@ -60,7 +60,7 @@ jobs:
       - name: Build legacy onefile transition app
         shell: pwsh
         run: |
-          pyinstaller --clean --onefile --windowed --paths src --collect-submodules=taksklad --name TakSklad --icon assets\TakSklad.ico --distpath dist\transition pyinstaller_entry.py
+          pyinstaller --clean --onefile --windowed --paths src --collect-submodules=taksklad --add-data "assets\product_images;assets\product_images" --name TakSklad --icon assets\TakSklad.ico --distpath dist\transition pyinstaller_entry.py
 
       - name: Smoke test transition exe imports from clean directory
         shell: pwsh
@@ -88,7 +88,7 @@ jobs:
       - name: Build onedir app
         shell: pwsh
         run: |
-          pyinstaller --clean --onedir --windowed --paths src --collect-submodules=taksklad --name TakSklad --icon assets\TakSklad.ico --distpath dist\onedir pyinstaller_entry.py
+          pyinstaller --clean --onedir --windowed --paths src --collect-submodules=taksklad --add-data "assets\product_images;assets\product_images" --name TakSklad --icon assets\TakSklad.ico --distpath dist\onedir pyinstaller_entry.py
           $smokeDir = Join-Path $env:RUNNER_TEMP "taksklad-smoke-onedir"
           if (Test-Path $smokeDir) {
             Remove-Item $smokeDir -Recurse -Force

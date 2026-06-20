@@ -12,6 +12,7 @@ class WindowsReleaseWorkflowTests(unittest.TestCase):
         )
 
         self.assertIn("--collect-submodules=taksklad", workflow)
+        self.assertIn('--add-data "assets\\product_images;assets\\product_images"', workflow)
         self.assertIn("pyinstaller_entry.py", workflow)
         self.assertIn("$env:PYTHONPATH = $srcPath", workflow)
         self.assertIn("PYTHONPATH=$srcPath", workflow)

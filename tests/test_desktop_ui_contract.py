@@ -47,6 +47,17 @@ class DesktopUiContractTests(unittest.TestCase):
         self.assertIn("format_app_version_label", source)
         self.assertIn("MVP 2.0", format_app_version_label())
 
+    def test_scan_screen_shows_product_photo_for_current_position(self):
+        build_source = inspect.getsource(ScanningApp._build_ui)
+        load_source = inspect.getsource(ScanningApp.load_current_product)
+        reset_source = inspect.getsource(ScanningApp.reset_current_selection)
+
+        self.assertIn("self.product_photo_canvas", build_source)
+        self.assertIn("self.product_photo_gtin_label", build_source)
+        self.assertIn("self.product_photo_caption_label", build_source)
+        self.assertIn("self.update_product_photo(product_text)", load_source)
+        self.assertIn("self.update_product_photo(\"\")", reset_source)
+
     def test_main_warehouse_screen_does_not_show_legacy_admin_buttons(self):
         source = inspect.getsource(ScanningApp._build_ui)
 
@@ -616,10 +627,10 @@ class DesktopUiContractTests(unittest.TestCase):
         self.assertIn("Партия не выбрана", reset_source)
 
     def test_taksklad_palette_and_rounded_buttons_are_locked(self):
-        self.assertEqual(WARNING.lower(), "#f0e68c")
-        self.assertEqual(ACCENT.lower(), "#111111")
-        self.assertEqual(FG_TEXT.lower(), "#111111")
-        self.assertEqual(BG_MAIN.lower(), "#f7f5df")
+        self.assertEqual(WARNING.lower(), "#d8b64c")
+        self.assertEqual(ACCENT.lower(), "#b28224")
+        self.assertEqual(FG_TEXT.lower(), "#2e2c28")
+        self.assertEqual(BG_MAIN.lower(), "#f4f1e8")
 
         signature = inspect.signature(AppButton.__init__)
         self.assertIn("radius", signature.parameters)
@@ -627,6 +638,7 @@ class DesktopUiContractTests(unittest.TestCase):
 
         build_source = inspect.getsource(ScanningApp._build_ui)
         self.assertIn("bg=WARNING, fg=FG_TEXT", build_source)
+        self.assertIn("radius=8", build_source)
 
     def test_backend_status_is_visible_on_warehouse_screen(self):
         build_source = inspect.getsource(ScanningApp._build_ui)
