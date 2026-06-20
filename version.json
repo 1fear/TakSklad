@@ -1,12 +1,12 @@
 {
-  "latest_version": "2.0.16",
-  "min_supported_version": "2.0.16",
+  "latest_version": "2.0.17",
+  "min_supported_version": "2.0.17",
   "mandatory": true,
   "package_type": "onefile_exe",
   "entrypoint": "TakSklad.exe",
-  "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.16/TakSklad.exe",
-  "sha256": "6a88e26ad22ff424e36e43145228530c557219eec55f1935c3d8d87bade95765",
-  "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.16/TakSklad-windows-x64.zip",
-  "sha256_onedir": "159186952211990c2a0193814e99e7e37cffbca9c11760d8b4b9d35000f1717a",
-  "message": "TakSklad 2.0.16: обязательное обновление. Добавлена поддержка Chapman Brown SSL, Chapman Red SSL и Chapman Green OP; проверка КИЗов теперь различает цвет и формат SKU."
+  "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.17/TakSklad.exe",
+  "sha256": "fe8f1502584e7e3b865608a96a126cdca4225fd629fc4fea10866e7f4dc9e4da",
+  "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.17/TakSklad-windows-x64.zip",
+  "sha256_onedir": "3ced1eb0e044c2096ae80efc321beb8fd7bd636d769b526283580dfa683e5960",
+  "message": "TakSklad 2.0.17: обязательное обновление. Добавлена диагностика ошибки SKU: приложение показывает ожидаемый SKU, распознанный SKU КИЗа, префикс кода и версию приложения."
 }

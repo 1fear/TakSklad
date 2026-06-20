@@ -16,7 +16,10 @@
 
 **Проверки:**
 
-- Будут зафиксированы после релизного прогона.
+- `PYTHONDONTWRITEBYTECODE=1 ./.venv/bin/python -m unittest tests.test_desktop_ui_contract tests.test_scan_quantities tests.test_release_preflight tests.test_vds_acceptance_scripts tests.test_windows_test_build_helper tests.test_release_go_no_go` - 67 tests OK.
+- `PYTHONDONTWRITEBYTECODE=1 ./.venv/bin/python -m unittest discover tests` - 481 tests OK.
+- `PYTHONDONTWRITEBYTECODE=1 ./.venv/bin/python -m compileall -q src/taksklad backend/app tests tools main.py` - OK.
+- GitHub Actions `Build Windows Release` для `v2.0.17` - success.
 
 ### Расширение Chapman SKU для SkladBot и КИЗов
 
