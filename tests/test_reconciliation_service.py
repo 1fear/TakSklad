@@ -192,6 +192,36 @@ class ReconciliationServiceTests(unittest.TestCase):
         self.assertNotIn("secret", dumped)
         self.assertNotIn("0104006396053978217SECRETKIZVALUE", dumped)
 
+    def test_returned_order_with_completed_google_status_is_not_status_mismatch(self):
+        with self.SessionLocal() as db:
+            self.add_order(
+                db,
+                status="returned",
+                source_import_id="import-returned",
+                source_order_id="order-returned",
+            )
+            db.commit()
+
+            result = run_daily_reconciliation(
+                db=db,
+                report_date=date(2026, 6, 10),
+                google_records=[
+                    self.google_record(
+                        source_import_id="import-returned",
+                        source_order_id="order-returned",
+                        status="Выполнено",
+                    ),
+                ],
+                alert_chat_ids=["123"],
+            )
+            incidents = db.execute(select(Incident).where(Incident.source == "daily_reconciliation")).scalars().all()
+            notifications = db.execute(select(PendingEvent).where(PendingEvent.event_type == "telegram_notification")).scalars().all()
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["google"]["status_mismatches"], 0)
+        self.assertEqual(incidents, [])
+        self.assertEqual(notifications, [])
+
     def test_reconciliation_aggregates_skladbot_problem_status_without_row_spam(self):
         with self.SessionLocal() as db:
             self.add_order(

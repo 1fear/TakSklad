@@ -58,10 +58,10 @@ WINDOWS_TEST_BUILD_REQUIRED_FRAGMENTS = [
     "ACCEPTANCE_RESULTS.md",
     "Assert-TestPackageDoesNotContainLocalSecrets",
     "version.json has local changes",
-    "forced 2.0.19 rollout manifest",
+    "forced 2.0.20 rollout manifest",
 ]
-EXPECTED_RELEASE_VERSION = "2.0.19"
-EXPECTED_MIN_SUPPORTED_VERSION = "2.0.19"
+EXPECTED_RELEASE_VERSION = "2.0.20"
+EXPECTED_MIN_SUPPORTED_VERSION = "2.0.20"
 EXPECTED_PACKAGE_TYPE = "onefile_exe"
 EXPECTED_RELEASE_TAG = f"v{EXPECTED_RELEASE_VERSION}"
 EXPECTED_RELEASE_HOST = "github.com"

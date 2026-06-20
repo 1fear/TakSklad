@@ -2,6 +2,35 @@
 
 Документ фиксирует ход работ: что сделано, что не сделано, какие ошибки найдены, какие решения приняты и что требует проверки. Новые записи добавляются сверху.
 
+## 2026-06-20
+
+### Ежедневный SkladBot отчет по факту закрытия заявок
+
+- Симптом: приемка на `10 000` блоков была видна через прирост остатков между отчетами `19.06.2026` и `20.06.2026`, но строка `Приемка` оставалась `0`, потому что заявка была создана раньше, а выполнена позже.
+- Причина: daily report включал заявку по `created_at`, `updated_at` или `unloading_date`; если SkladBot не обновлял эти даты при проведении, закрытая приемка могла не попасть ни во вчерашний, ни в сегодняшний отчет.
+- Решение:
+  - daily report теперь включает только заявки, которые одновременно `Выполнена` и `В архиве`;
+  - если SkladBot отдает дату закрытия/архивации, она используется как дата факта с учетом cutoff отчета `22:00`;
+  - заявки, закрытые после cutoff, относятся к следующему отчетному дню;
+  - если SkladBot не отдает дату факта, закрытая заявка из текущего/предыдущего отчетного окна включается как `впервые найдена выполненной`;
+  - для приемочных типов detail проверяется даже при старой list-дате, потому что `completedAt`/`acceptedAmount` могут быть доступны только в карточке заявки;
+  - после успешной плановой отправки Telegram worker записывает request registry в `pending_events`, чтобы та же закрытая заявка не повторялась в следующих daily reports;
+  - ручная команда `/skladbot_daily` не пишет в registry, чтобы тестовые отправки в ЛС не ломали будущий рабочий отчет.
+- Проверено без Telegram-отправок:
+  - `./.venv/bin/python -m unittest tests.test_skladbot_daily_report` - 19 tests OK;
+  - `./.venv/bin/python -m unittest tests.test_backend_telegram_import` - 63 tests OK;
+  - `./.venv/bin/python -m compileall -q backend/app/skladbot_daily_report.py backend/app/skladbot_worker.py backend/app/telegram_worker.py tests/test_skladbot_daily_report.py` - OK.
+- VDS deploy:
+  - из-за грязного локального worktree на VDS доставлены только runtime-файлы `backend/app/skladbot_daily_report.py`, `backend/app/skladbot_worker.py`, `backend/app/telegram_worker.py`;
+  - restore point: `/opt/taksklad/restore_points/pre-daily-report-fact-date-20260620T191024Z`;
+  - Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260620T191024Z.sql.gz`;
+  - пересобраны и перезапущены `backend-api`, `telegram-worker`, `skladbot-worker`;
+  - VDS in-container `compileall` по обновленным runtime-файлам - OK;
+  - `https://api.taksklad.uz/health` - OK, `https://api.taksklad.uz/ready` - OK, Alembic `current_revision=20260617_0002`;
+  - VDS `./deploy/vds/acceptance_status.sh` - общий `status=ok`;
+  - свежие логи `backend-api`, `telegram-worker`, `skladbot-worker` - без `ERROR/Traceback/Exception`;
+  - тестовые Telegram-отправки не выполнялись.
+
 ## 2026-06-16
 
 ### Production hardening roadmap 2.0.x
@@ -5164,6 +5193,16 @@ cd /opt/taksklad/app
   - `.venv/bin/python -m unittest tests.test_backend_api_persistence.BackendApiPersistenceTests.test_delete_active_order_removes_unscanned_order_and_queues_google_delete tests.test_backend_api_persistence.BackendApiPersistenceTests.test_delete_active_order_rejects_order_with_scans tests.test_backend_telegram_import.BackendTelegramImportTests.test_telegram_worker_handles_main_menu_callbacks tests.test_backend_telegram_import.BackendTelegramImportTests.test_telegram_worker_manual_add_order_imports_through_backend tests.test_backend_telegram_import.BackendTelegramImportTests.test_telegram_worker_manual_delete_active_order_calls_safe_backend_endpoint tests.test_backend_telegram_import.BackendTelegramImportTests.test_telegram_worker_manual_delete_refuses_started_order_before_backend_call` - OK;
   - `.venv/bin/python -m unittest discover -s tests` - 427 tests OK;
   - `.venv/bin/python -m compileall backend src tests` - OK.
+
+### Desktop main.py modular refactor
+
+- Причина: `src/taksklad/main.py` снова вырос до нескольких тысяч строк после UI/складских доработок, хотя приложение уже дробили на owner-модули.
+- Изменено:
+  - `main.py` оставлен для сборки приложения, startup wiring и `ScanningApp.__init__`;
+  - display, scan, finish, layout, refresh, runtime и returns workflow разнесены по `app_*`, `desktop_*` и `backend_flow.py`;
+  - добавлен guard `tests/test_code_organization.py`, который ограничивает `main.py` 500 строками и запрещает возвращать workflow-методы прямо в `ScanningApp`;
+  - финальная карта ownership записана в `docs/main-refactor-inventory.md`.
+- Правило на будущее: существенную новую workflow-логику не добавлять в `main.py` без отдельного documented extraction rationale.
 
 ### Telegram system menu button
 

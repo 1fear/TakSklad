@@ -1,6 +1,7 @@
 import unittest
 
 from taksklad import main
+from taksklad import desktop_refresh_service as refresh_service
 
 
 class RefreshFallbackTests(unittest.TestCase):
@@ -8,9 +9,9 @@ class RefreshFallbackTests(unittest.TestCase):
         self.assertTrue(callable(main.ScanningApp.on_close.__globals__["telegram_single_listener_lock_enabled"]))
 
     def test_initial_load_does_not_require_skladbot_number(self):
-        original_get_today_orders = main.get_today_orders
-        original_get_all_existing_codes = main.get_all_existing_codes
-        original_get_pending_codes = main.get_pending_codes
+        original_get_today_orders = refresh_service.get_today_orders
+        original_get_all_existing_codes = refresh_service.get_all_existing_codes
+        original_get_pending_codes = refresh_service.get_pending_codes
         try:
             calls = []
             sheet = object()
@@ -22,25 +23,25 @@ class RefreshFallbackTests(unittest.TestCase):
                     return google_orders, sheet, []
                 return google_orders, sheet
 
-            main.get_today_orders = fake_get_today_orders
-            main.get_all_existing_codes = lambda sheet, all_rows=None: set()
-            main.get_pending_codes = lambda: set()
+            refresh_service.get_today_orders = fake_get_today_orders
+            refresh_service.get_all_existing_codes = lambda sheet, all_rows=None: set()
+            refresh_service.get_pending_codes = lambda: set()
 
             orders, _, _ = main.fetch_sheet_data()
 
             self.assertEqual(orders, google_orders)
             self.assertEqual(calls, [False])
         finally:
-            main.get_today_orders = original_get_today_orders
-            main.get_all_existing_codes = original_get_all_existing_codes
-            main.get_pending_codes = original_get_pending_codes
+            refresh_service.get_today_orders = original_get_today_orders
+            refresh_service.get_all_existing_codes = original_get_all_existing_codes
+            refresh_service.get_pending_codes = original_get_pending_codes
 
     def test_returns_google_orders_when_skladbot_sync_fails(self):
-        original_get_today_orders = main.get_today_orders
-        original_sync_pending_saves = main.sync_pending_saves
-        original_sync_skladbot_request_numbers = main.sync_skladbot_request_numbers
-        original_get_all_existing_codes = main.get_all_existing_codes
-        original_get_pending_codes = main.get_pending_codes
+        original_get_today_orders = refresh_service.get_today_orders
+        original_sync_pending_saves = refresh_service.sync_pending_saves
+        original_sync_skladbot_request_numbers = refresh_service.sync_skladbot_request_numbers
+        original_get_all_existing_codes = refresh_service.get_all_existing_codes
+        original_get_pending_codes = refresh_service.get_pending_codes
         try:
             calls = []
             sheet = object()
@@ -56,9 +57,9 @@ class RefreshFallbackTests(unittest.TestCase):
                     return [], sheet, []
                 return [], sheet
 
-            main.get_today_orders = fake_get_today_orders
-            main.sync_pending_saves = lambda sheet=None: {"synced": 0, "failed": 0, "remaining": 0}
-            main.sync_skladbot_request_numbers = lambda sheet: {
+            refresh_service.get_today_orders = fake_get_today_orders
+            refresh_service.sync_pending_saves = lambda sheet=None: {"synced": 0, "failed": 0, "remaining": 0}
+            refresh_service.sync_skladbot_request_numbers = lambda sheet: {
                 "enabled": True,
                 "updated": 2,
                 "matched": 0,
@@ -67,8 +68,8 @@ class RefreshFallbackTests(unittest.TestCase):
                 "errors": 1,
                 "message": "timeout",
             }
-            main.get_all_existing_codes = lambda sheet, all_rows=None: set()
-            main.get_pending_codes = lambda: set()
+            refresh_service.get_all_existing_codes = lambda sheet, all_rows=None: set()
+            refresh_service.get_pending_codes = lambda: set()
 
             orders, _, _, sync_result = main.fetch_sheet_data_with_sync()
 
@@ -76,18 +77,18 @@ class RefreshFallbackTests(unittest.TestCase):
             self.assertEqual(calls, [False])
             self.assertEqual(sync_result["skladbot"]["errors"], 1)
         finally:
-            main.get_today_orders = original_get_today_orders
-            main.sync_pending_saves = original_sync_pending_saves
-            main.sync_skladbot_request_numbers = original_sync_skladbot_request_numbers
-            main.get_all_existing_codes = original_get_all_existing_codes
-            main.get_pending_codes = original_get_pending_codes
+            refresh_service.get_today_orders = original_get_today_orders
+            refresh_service.sync_pending_saves = original_sync_pending_saves
+            refresh_service.sync_skladbot_request_numbers = original_sync_skladbot_request_numbers
+            refresh_service.get_all_existing_codes = original_get_all_existing_codes
+            refresh_service.get_pending_codes = original_get_pending_codes
 
     def test_keeps_google_orders_without_skladbot_number_after_successful_sync(self):
-        original_get_today_orders = main.get_today_orders
-        original_sync_pending_saves = main.sync_pending_saves
-        original_sync_skladbot_request_numbers = main.sync_skladbot_request_numbers
-        original_get_all_existing_codes = main.get_all_existing_codes
-        original_get_pending_codes = main.get_pending_codes
+        original_get_today_orders = refresh_service.get_today_orders
+        original_sync_pending_saves = refresh_service.sync_pending_saves
+        original_sync_skladbot_request_numbers = refresh_service.sync_skladbot_request_numbers
+        original_get_all_existing_codes = refresh_service.get_all_existing_codes
+        original_get_pending_codes = refresh_service.get_pending_codes
         try:
             calls = []
             sheet = object()
@@ -106,9 +107,9 @@ class RefreshFallbackTests(unittest.TestCase):
                     return google_orders, sheet, []
                 return google_orders, sheet
 
-            main.get_today_orders = fake_get_today_orders
-            main.sync_pending_saves = lambda sheet=None: {"synced": 0, "failed": 0, "remaining": 0}
-            main.sync_skladbot_request_numbers = lambda sheet: {
+            refresh_service.get_today_orders = fake_get_today_orders
+            refresh_service.sync_pending_saves = lambda sheet=None: {"synced": 0, "failed": 0, "remaining": 0}
+            refresh_service.sync_skladbot_request_numbers = lambda sheet: {
                 "enabled": True,
                 "updated": 1,
                 "matched": 1,
@@ -117,8 +118,8 @@ class RefreshFallbackTests(unittest.TestCase):
                 "errors": 0,
                 "message": "",
             }
-            main.get_all_existing_codes = lambda sheet, all_rows=None: set()
-            main.get_pending_codes = lambda: set()
+            refresh_service.get_all_existing_codes = lambda sheet, all_rows=None: set()
+            refresh_service.get_pending_codes = lambda: set()
 
             orders, _, _, sync_result = main.fetch_sheet_data_with_sync()
 
@@ -126,18 +127,18 @@ class RefreshFallbackTests(unittest.TestCase):
             self.assertEqual(calls, [False, False])
             self.assertEqual(sync_result["skladbot"]["not_found"], 1)
         finally:
-            main.get_today_orders = original_get_today_orders
-            main.sync_pending_saves = original_sync_pending_saves
-            main.sync_skladbot_request_numbers = original_sync_skladbot_request_numbers
-            main.get_all_existing_codes = original_get_all_existing_codes
-            main.get_pending_codes = original_get_pending_codes
+            refresh_service.get_today_orders = original_get_today_orders
+            refresh_service.sync_pending_saves = original_sync_pending_saves
+            refresh_service.sync_skladbot_request_numbers = original_sync_skladbot_request_numbers
+            refresh_service.get_all_existing_codes = original_get_all_existing_codes
+            refresh_service.get_pending_codes = original_get_pending_codes
 
     def test_can_refresh_without_blocking_on_skladbot_sync(self):
-        original_get_today_orders = main.get_today_orders
-        original_sync_pending_saves = main.sync_pending_saves
-        original_sync_skladbot_request_numbers = main.sync_skladbot_request_numbers
-        original_get_all_existing_codes = main.get_all_existing_codes
-        original_get_pending_codes = main.get_pending_codes
+        original_get_today_orders = refresh_service.get_today_orders
+        original_sync_pending_saves = refresh_service.sync_pending_saves
+        original_sync_skladbot_request_numbers = refresh_service.sync_skladbot_request_numbers
+        original_get_all_existing_codes = refresh_service.get_all_existing_codes
+        original_get_pending_codes = refresh_service.get_pending_codes
         try:
             calls = []
             sheet = object()
@@ -152,11 +153,11 @@ class RefreshFallbackTests(unittest.TestCase):
                     return google_orders, sheet, []
                 return google_orders, sheet
 
-            main.get_today_orders = fake_get_today_orders
-            main.sync_pending_saves = lambda sheet=None: {"synced": 0, "failed": 0, "remaining": 0}
-            main.sync_skladbot_request_numbers = fail_skladbot_sync
-            main.get_all_existing_codes = lambda sheet, all_rows=None: set()
-            main.get_pending_codes = lambda: set()
+            refresh_service.get_today_orders = fake_get_today_orders
+            refresh_service.sync_pending_saves = lambda sheet=None: {"synced": 0, "failed": 0, "remaining": 0}
+            refresh_service.sync_skladbot_request_numbers = fail_skladbot_sync
+            refresh_service.get_all_existing_codes = lambda sheet, all_rows=None: set()
+            refresh_service.get_pending_codes = lambda: set()
 
             orders, _, _, sync_result = main.fetch_sheet_data_with_sync(sync_skladbot=False)
 
@@ -164,21 +165,21 @@ class RefreshFallbackTests(unittest.TestCase):
             self.assertEqual(calls, [False])
             self.assertEqual(sync_result["skladbot"]["enabled"], False)
         finally:
-            main.get_today_orders = original_get_today_orders
-            main.sync_pending_saves = original_sync_pending_saves
-            main.sync_skladbot_request_numbers = original_sync_skladbot_request_numbers
-            main.get_all_existing_codes = original_get_all_existing_codes
-            main.get_pending_codes = original_get_pending_codes
+            refresh_service.get_today_orders = original_get_today_orders
+            refresh_service.sync_pending_saves = original_sync_pending_saves
+            refresh_service.sync_skladbot_request_numbers = original_sync_skladbot_request_numbers
+            refresh_service.get_all_existing_codes = original_get_all_existing_codes
+            refresh_service.get_pending_codes = original_get_pending_codes
 
     def test_backend_refresh_loads_backend_orders_as_primary_source(self):
-        original_backend_read_orders_enabled = main.backend_read_orders_enabled
-        original_sync_pending_backend_events = main.sync_pending_backend_events
-        original_sync_backend_sources = main.sync_backend_sources
-        original_fetch_backend_sheet_data = main.fetch_backend_sheet_data
-        original_get_today_orders = main.get_today_orders
-        original_get_all_existing_codes = main.get_all_existing_codes
-        original_get_pending_codes = main.get_pending_codes
-        original_get_pending_backend_codes = main.get_pending_backend_codes
+        original_backend_read_orders_enabled = refresh_service.backend_read_orders_enabled
+        original_sync_pending_backend_events = refresh_service.sync_pending_backend_events
+        original_sync_backend_sources = refresh_service.sync_backend_sources
+        original_fetch_backend_sheet_data = refresh_service.fetch_backend_sheet_data
+        original_get_today_orders = refresh_service.get_today_orders
+        original_get_all_existing_codes = refresh_service.get_all_existing_codes
+        original_get_pending_codes = refresh_service.get_pending_codes
+        original_get_pending_backend_codes = refresh_service.get_pending_backend_codes
         try:
             calls = []
             backend_orders = [{"Клиент": "Backend Client", "Кол-во блок": 1}]
@@ -201,14 +202,14 @@ class RefreshFallbackTests(unittest.TestCase):
                     },
                 }
 
-            main.backend_read_orders_enabled = lambda: True
-            main.sync_pending_backend_events = lambda: {"enabled": True, "remaining": 0}
-            main.sync_backend_sources = fake_sync_backend_sources
-            main.fetch_backend_sheet_data = lambda: (backend_orders, None, set())
-            main.get_today_orders = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("Google should not be primary in backend mode"))
-            main.get_all_existing_codes = lambda sheet, all_rows=None: set()
-            main.get_pending_codes = lambda: set()
-            main.get_pending_backend_codes = lambda: set()
+            refresh_service.backend_read_orders_enabled = lambda: True
+            refresh_service.sync_pending_backend_events = lambda: {"enabled": True, "remaining": 0}
+            refresh_service.sync_backend_sources = fake_sync_backend_sources
+            refresh_service.fetch_backend_sheet_data = lambda: (backend_orders, None, set())
+            refresh_service.get_today_orders = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("Google should not be primary in backend mode"))
+            refresh_service.get_all_existing_codes = lambda sheet, all_rows=None: set()
+            refresh_service.get_pending_codes = lambda: set()
+            refresh_service.get_pending_backend_codes = lambda: set()
 
             orders, _, _, sync_result = main.fetch_sheet_data_with_sync(sync_skladbot=True)
 
@@ -218,56 +219,56 @@ class RefreshFallbackTests(unittest.TestCase):
             self.assertEqual(sync_result["skladbot"]["matched"], 1)
             self.assertEqual(sync_result["primary_source"], "backend")
         finally:
-            main.backend_read_orders_enabled = original_backend_read_orders_enabled
-            main.sync_pending_backend_events = original_sync_pending_backend_events
-            main.sync_backend_sources = original_sync_backend_sources
-            main.fetch_backend_sheet_data = original_fetch_backend_sheet_data
-            main.get_today_orders = original_get_today_orders
-            main.get_all_existing_codes = original_get_all_existing_codes
-            main.get_pending_codes = original_get_pending_codes
-            main.get_pending_backend_codes = original_get_pending_backend_codes
+            refresh_service.backend_read_orders_enabled = original_backend_read_orders_enabled
+            refresh_service.sync_pending_backend_events = original_sync_pending_backend_events
+            refresh_service.sync_backend_sources = original_sync_backend_sources
+            refresh_service.fetch_backend_sheet_data = original_fetch_backend_sheet_data
+            refresh_service.get_today_orders = original_get_today_orders
+            refresh_service.get_all_existing_codes = original_get_all_existing_codes
+            refresh_service.get_pending_codes = original_get_pending_codes
+            refresh_service.get_pending_backend_codes = original_get_pending_backend_codes
 
     def test_backend_refresh_falls_back_to_google_when_backend_primary_fails(self):
-        original_backend_read_orders_enabled = main.backend_read_orders_enabled
-        original_sync_pending_backend_events = main.sync_pending_backend_events
-        original_sync_backend_sources = main.sync_backend_sources
-        original_fetch_backend_sheet_data = main.fetch_backend_sheet_data
-        original_get_today_orders = main.get_today_orders
-        original_get_all_existing_codes = main.get_all_existing_codes
-        original_get_pending_codes = main.get_pending_codes
-        original_get_pending_backend_codes = main.get_pending_backend_codes
+        original_backend_read_orders_enabled = refresh_service.backend_read_orders_enabled
+        original_sync_pending_backend_events = refresh_service.sync_pending_backend_events
+        original_sync_backend_sources = refresh_service.sync_backend_sources
+        original_fetch_backend_sheet_data = refresh_service.fetch_backend_sheet_data
+        original_get_today_orders = refresh_service.get_today_orders
+        original_get_all_existing_codes = refresh_service.get_all_existing_codes
+        original_get_pending_codes = refresh_service.get_pending_codes
+        original_get_pending_backend_codes = refresh_service.get_pending_backend_codes
         try:
             google_orders = [{"Клиент": "Google Client", "Кол-во блок": 1}]
             sheet = object()
 
-            main.backend_read_orders_enabled = lambda: True
-            main.sync_pending_backend_events = lambda: {"enabled": True, "remaining": 0}
-            main.sync_backend_sources = lambda sync_skladbot=True, wait_skladbot=True: {
+            refresh_service.backend_read_orders_enabled = lambda: True
+            refresh_service.sync_pending_backend_events = lambda: {"enabled": True, "remaining": 0}
+            refresh_service.sync_backend_sources = lambda sync_skladbot=True, wait_skladbot=True: {
                 "status": "completed",
                 "google_sheets": {"status": "completed"},
                 "skladbot": {"status": "skipped"},
             }
-            main.get_today_orders = lambda apply_skladbot_filter=None, include_rows=False: (
+            refresh_service.get_today_orders = lambda apply_skladbot_filter=None, include_rows=False: (
                 (google_orders, sheet, []) if include_rows else (google_orders, sheet)
             )
-            main.get_all_existing_codes = lambda sheet, all_rows=None: set()
-            main.get_pending_codes = lambda: set()
-            main.fetch_backend_sheet_data = lambda: (_ for _ in ()).throw(RuntimeError("Backend down"))
-            main.get_pending_backend_codes = lambda: set()
+            refresh_service.get_all_existing_codes = lambda sheet, all_rows=None: set()
+            refresh_service.get_pending_codes = lambda: set()
+            refresh_service.fetch_backend_sheet_data = lambda: (_ for _ in ()).throw(RuntimeError("Backend down"))
+            refresh_service.get_pending_backend_codes = lambda: set()
 
             orders, _, _, sync_result = main.fetch_sheet_data_with_sync(sync_skladbot=False)
 
             self.assertEqual(orders, google_orders)
             self.assertEqual(sync_result["primary_source"], "google_fallback")
         finally:
-            main.backend_read_orders_enabled = original_backend_read_orders_enabled
-            main.sync_pending_backend_events = original_sync_pending_backend_events
-            main.sync_backend_sources = original_sync_backend_sources
-            main.fetch_backend_sheet_data = original_fetch_backend_sheet_data
-            main.get_today_orders = original_get_today_orders
-            main.get_all_existing_codes = original_get_all_existing_codes
-            main.get_pending_codes = original_get_pending_codes
-            main.get_pending_backend_codes = original_get_pending_backend_codes
+            refresh_service.backend_read_orders_enabled = original_backend_read_orders_enabled
+            refresh_service.sync_pending_backend_events = original_sync_pending_backend_events
+            refresh_service.sync_backend_sources = original_sync_backend_sources
+            refresh_service.fetch_backend_sheet_data = original_fetch_backend_sheet_data
+            refresh_service.get_today_orders = original_get_today_orders
+            refresh_service.get_all_existing_codes = original_get_all_existing_codes
+            refresh_service.get_pending_codes = original_get_pending_codes
+            refresh_service.get_pending_backend_codes = original_get_pending_backend_codes
 
     def test_refresh_error_message_keeps_cached_orders(self):
         message = main.format_refresh_error_message(

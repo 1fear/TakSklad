@@ -205,7 +205,7 @@ class FakeSkladBotDailyReportClient:
             "delivery_number": number,
             "type": request_type,
             "isCompleted": True,
-            "archived": False,
+            "archived": True,
             "createdAt": created_at,
             "updatedAt": updated_at,
             "customer": {"name": "ООО Bastion Import Chapman MCHJ"},
@@ -229,6 +229,153 @@ class TransientRateLimitDailyReportClient(FakeSkladBotDailyReportClient):
         if request_id == 101 and self.detail_calls[request_id] == 1:
             raise RuntimeError("429 Too Many Requests")
         return super().get_request_detail(request_id)
+
+
+class PreviousDayReceivingCompletedTodayClient(FakeSkladBotDailyReportClient):
+    request_id = 404
+
+    def get(self, path, params=None):
+        params = params or {}
+        if path == "/requests/filter/fields":
+            return {"data": {"types": [{"id": 3391, "name": "Приемка с услугами"}]}}
+        if path == "/requests" and params.get("type_id") == 3391:
+            return {"data": [{
+                "id": self.request_id,
+                "delivery_number": "WH-R-404",
+                "type": "Приемка с услугами",
+                "created_at": "2026-06-19T18:00:00+05:00",
+                "archived": True,
+                "isCompleted": True,
+            }]}
+        return {"data": []}
+
+    def get_request_detail(self, request_id):
+        if request_id != self.request_id:
+            raise AssertionError(request_id)
+        return self.request_detail(
+            self.request_id,
+            "WH-R-404",
+            "Приемка с услугами",
+            "2026-06-19T18:00:00+05:00",
+            "",
+            "2026-06-19",
+            "BASTION IMPORT",
+            "Склад",
+            "Приемка",
+            [{"name": "Chapman Green OP 20", "vendorCode": "CHPMGreenOP20UZ", "barcode": "4006396104441", "amount": 1, "acceptedAmount": 10000}],
+        )
+
+
+class CompletedAfterCutoffReceivingClient(PreviousDayReceivingCompletedTodayClient):
+    request_id = 405
+
+    def get(self, path, params=None):
+        params = params or {}
+        if path == "/requests/filter/fields":
+            return {"data": {"types": [{"id": 3391, "name": "Приемка с услугами"}]}}
+        if path == "/requests" and params.get("type_id") == 3391:
+            return {"data": [{
+                "id": self.request_id,
+                "delivery_number": "WH-R-405",
+                "type": "Приемка с услугами",
+                "created_at": "2026-06-20T18:00:00+05:00",
+                "archived": True,
+                "isCompleted": True,
+            }]}
+        return {"data": []}
+
+    def get_request_detail(self, request_id):
+        if request_id != self.request_id:
+            raise AssertionError(request_id)
+        detail = self.request_detail(
+            self.request_id,
+            "WH-R-405",
+            "Приемка с услугами",
+            "2026-06-20T18:00:00+05:00",
+            "",
+            "2026-06-20",
+            "BASTION IMPORT",
+            "Склад",
+            "Приемка",
+            [{"name": "Chapman Green OP 20", "vendorCode": "CHPMGreenOP20UZ", "barcode": "4006396104441", "amount": 1, "acceptedAmount": 500}],
+        )
+        detail["completedAt"] = "2026-06-20T23:10:00+05:00"
+        return detail
+
+
+class OldListDateReceivingCompletedTodayClient(PreviousDayReceivingCompletedTodayClient):
+    request_id = 406
+
+    def get(self, path, params=None):
+        params = params or {}
+        if path == "/requests/filter/fields":
+            return {"data": {"types": [{"id": 3391, "name": "Приемка с услугами"}]}}
+        if path == "/requests" and params.get("type_id") == 3391:
+            return {"data": [{
+                "id": self.request_id,
+                "delivery_number": "WH-R-406",
+                "type": "Приемка с услугами",
+                "created_at": "2026-06-10T18:00:00+05:00",
+                "archived": True,
+                "isCompleted": True,
+            }]}
+        return {"data": []}
+
+    def get_request_detail(self, request_id):
+        if request_id != self.request_id:
+            raise AssertionError(request_id)
+        detail = self.request_detail(
+            self.request_id,
+            "WH-R-406",
+            "Приемка с услугами",
+            "2026-06-10T18:00:00+05:00",
+            "",
+            "2026-06-10",
+            "BASTION IMPORT",
+            "Склад",
+            "Приемка",
+            [{"name": "Chapman Green OP 20", "vendorCode": "CHPMGreenOP20UZ", "barcode": "4006396104441", "amount": 1, "acceptedAmount": 700}],
+        )
+        detail["completedAt"] = "2026-06-20T12:10:00+05:00"
+        return detail
+
+
+class ArchivedAfterCutoffReceivingClient(CompletedAfterCutoffReceivingClient):
+    request_id = 407
+
+    def get(self, path, params=None):
+        params = params or {}
+        if path == "/requests/filter/fields":
+            return {"data": {"types": [{"id": 3391, "name": "Приемка с услугами"}]}}
+        if path == "/requests" and params.get("type_id") == 3391:
+            return {"data": [{
+                "id": self.request_id,
+                "delivery_number": "WH-R-407",
+                "type": "Приемка с услугами",
+                "created_at": "2026-06-20T18:00:00+05:00",
+                "archived": True,
+                "isCompleted": True,
+            }]}
+        return {"data": []}
+
+    def get_request_detail(self, request_id):
+        if request_id != self.request_id:
+            raise AssertionError(request_id)
+        detail = self.request_detail(
+            self.request_id,
+            "WH-R-407",
+            "Приемка с услугами",
+            "2026-06-20T18:00:00+05:00",
+            "",
+            "2026-06-20",
+            "BASTION IMPORT",
+            "Склад",
+            "Приемка",
+            [{"name": "Chapman Green OP 20", "vendorCode": "CHPMGreenOP20UZ", "barcode": "4006396104441", "amount": 1, "acceptedAmount": 900}],
+        )
+        detail["completedAt"] = "2026-06-20T20:10:00+05:00"
+        detail["archivedAt"] = "2026-06-20T23:10:00+05:00"
+        return detail
 
 
 class SkladBotDailyReportTests(unittest.TestCase):
@@ -424,6 +571,113 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(report["errors"], [])
         self.assertEqual(report["summary"]["requests_total"], 3)
 
+    def test_daily_report_includes_receiving_created_yesterday_when_first_seen_completed_today(self):
+        original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
+        try:
+            os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = "0"
+            report = collect_skladbot_daily_report(
+                report_date=date(2026, 6, 20),
+                client=PreviousDayReceivingCompletedTodayClient(),
+                reported_request_ids=set(),
+            )
+        finally:
+            if original_delay is None:
+                os.environ.pop("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS", None)
+            else:
+                os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = original_delay
+
+        self.assertEqual(report["summary"]["requests_total"], 1)
+        self.assertEqual(report["summary"]["category_counts"]["Приемка"], 1)
+        self.assertEqual(report["summary"]["request_blocks_by_category"]["Приемка"], 10000)
+        self.assertEqual(report["requests"][0]["include_reasons"], ["впервые найдена выполненной"])
+
+    def test_daily_report_skips_completed_request_reported_before_report_date(self):
+        original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
+        try:
+            os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = "0"
+            report = collect_skladbot_daily_report(
+                report_date=date(2026, 6, 21),
+                client=PreviousDayReceivingCompletedTodayClient(),
+                reported_request_ids={PreviousDayReceivingCompletedTodayClient.request_id},
+            )
+        finally:
+            if original_delay is None:
+                os.environ.pop("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS", None)
+            else:
+                os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = original_delay
+
+        self.assertEqual(report["summary"]["requests_total"], 0)
+        self.assertEqual(report["summary"]["request_blocks_by_category"]["Приемка"], 0)
+
+    def test_daily_report_moves_completed_after_cutoff_to_next_report(self):
+        original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
+        try:
+            os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = "0"
+            report_20 = collect_skladbot_daily_report(
+                report_date=date(2026, 6, 20),
+                client=CompletedAfterCutoffReceivingClient(),
+                reported_request_ids=set(),
+            )
+            report_21 = collect_skladbot_daily_report(
+                report_date=date(2026, 6, 21),
+                client=CompletedAfterCutoffReceivingClient(),
+                reported_request_ids=set(),
+            )
+        finally:
+            if original_delay is None:
+                os.environ.pop("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS", None)
+            else:
+                os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = original_delay
+
+        self.assertEqual(report_20["summary"]["requests_total"], 0)
+        self.assertEqual(report_21["summary"]["requests_total"], 1)
+        self.assertEqual(report_21["summary"]["request_blocks_by_category"]["Приемка"], 500)
+        self.assertEqual(report_21["requests"][0]["include_reasons"], ["выполнена"])
+
+    def test_daily_report_checks_receiving_detail_when_list_date_is_stale(self):
+        original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
+        try:
+            os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = "0"
+            report = collect_skladbot_daily_report(
+                report_date=date(2026, 6, 20),
+                client=OldListDateReceivingCompletedTodayClient(),
+                reported_request_ids=set(),
+            )
+        finally:
+            if original_delay is None:
+                os.environ.pop("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS", None)
+            else:
+                os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = original_delay
+
+        self.assertEqual(report["summary"]["requests_total"], 1)
+        self.assertEqual(report["summary"]["request_blocks_by_category"]["Приемка"], 700)
+        self.assertEqual(report["requests"][0]["include_reasons"], ["выполнена"])
+
+    def test_daily_report_uses_later_archive_time_as_completed_archived_fact(self):
+        original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
+        try:
+            os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = "0"
+            report_20 = collect_skladbot_daily_report(
+                report_date=date(2026, 6, 20),
+                client=ArchivedAfterCutoffReceivingClient(),
+                reported_request_ids=set(),
+            )
+            report_21 = collect_skladbot_daily_report(
+                report_date=date(2026, 6, 21),
+                client=ArchivedAfterCutoffReceivingClient(),
+                reported_request_ids=set(),
+            )
+        finally:
+            if original_delay is None:
+                os.environ.pop("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS", None)
+            else:
+                os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = original_delay
+
+        self.assertEqual(report_20["summary"]["requests_total"], 0)
+        self.assertEqual(report_21["summary"]["requests_total"], 1)
+        self.assertEqual(report_21["summary"]["request_blocks_by_category"]["Приемка"], 900)
+        self.assertEqual(report_21["requests"][0]["include_reasons"], ["архив"])
+
     def test_daily_report_product_breakdown_merges_stock_and_request_aliases(self):
         report = {
             "stock": {
@@ -501,7 +755,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
         documents = []
         captured = {}
 
-        def fake_collect(report_date=None):
+        def fake_collect(report_date=None, reported_request_ids=None):
             captured["report_date"] = report_date
             return {
                 "report_date": report_date,
@@ -541,6 +795,74 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(messages[0], ("123", "Собираю SkladBot отчет за 08.06.2026."))
         self.assertEqual(documents[0][2], "daily.xlsx")
         self.assertEqual(documents[0][3], "SkladBot отчет за 08.06.2026")
+
+    def test_scheduled_report_marks_reported_requests_after_success(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        original_session_local = telegram_worker_module.SessionLocal
+        original_collect = telegram_worker_module.skladbot_daily_report.collect_skladbot_daily_report
+        original_build_xlsx = telegram_worker_module.skladbot_daily_report.build_skladbot_daily_report_xlsx
+        try:
+            telegram_worker_module.SessionLocal = SessionLocal
+
+            def fake_collect(report_date=None, reported_request_ids=None):
+                self.assertEqual(reported_request_ids, set())
+                return {
+                    "report_date": report_date,
+                    "generated_at": datetime(2026, 6, 20, 22, 0),
+                    "customer_id": 6211,
+                    "requests": [{
+                        "id": 404,
+                        "number": "WH-R-404",
+                        "category": "Приемка",
+                        "include_reasons": ["впервые найдена выполненной"],
+                        "products": [],
+                    }],
+                    "movements": [],
+                    "stock": {"total": 0, "rows": []},
+                    "errors": [],
+                    "summary": {
+                        "requests_total": 1,
+                        "category_counts": {"Отгрузка": 0, "Возврат": 0, "Приемка": 1, "Прочее": 0},
+                        "request_blocks_by_category": {"Отгрузка": 0, "Возврат": 0, "Приемка": 0, "Прочее": 0},
+                        "movement_in_amount": 0,
+                        "movement_out_amount": 0,
+                        "stock_total": 0,
+                    },
+                }
+
+            telegram_worker_module.skladbot_daily_report.collect_skladbot_daily_report = fake_collect
+            telegram_worker_module.skladbot_daily_report.build_skladbot_daily_report_xlsx = lambda report: (b"xlsx", "daily.xlsx")
+
+            worker = TelegramWorker.__new__(TelegramWorker)
+            worker.safe_send_message = lambda chat_id, text, reply_markup=None: True
+            worker.safe_send_document = lambda chat_id, content, filename, caption="": {"message_id": 1}
+
+            self.assertTrue(worker.send_skladbot_daily_report("123", report_date=date(2026, 6, 20), scheduled=True))
+
+            with SessionLocal() as db:
+                events = db.execute(select(PendingEvent)).scalars().all()
+
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0].event_type, telegram_worker_module.SKLADBOT_DAILY_REPORTED_REQUEST_EVENT_TYPE)
+            self.assertEqual((events[0].payload or {}).get("request_id"), 404)
+            self.assertEqual(
+                telegram_worker_module.load_skladbot_daily_reported_request_ids_before(date(2026, 6, 20)),
+                set(),
+            )
+            self.assertEqual(
+                telegram_worker_module.load_skladbot_daily_reported_request_ids_before(date(2026, 6, 21)),
+                {404},
+            )
+        finally:
+            telegram_worker_module.SessionLocal = original_session_local
+            telegram_worker_module.skladbot_daily_report.collect_skladbot_daily_report = original_collect
+            telegram_worker_module.skladbot_daily_report.build_skladbot_daily_report_xlsx = original_build_xlsx
 
     def test_telegram_manual_skladbot_daily_rejects_invalid_date(self):
         worker = TelegramWorker.__new__(TelegramWorker)

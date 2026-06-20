@@ -46,3 +46,9 @@ frontend/tsconfig.tsbuildinfo
 outputs/*
 !outputs/taksklad_acceptance/
 !outputs/taksklad_acceptance/**
+
+graphify-out/
+graphify-out
+.graphify_*
+
+generated/

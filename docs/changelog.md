@@ -4,6 +4,29 @@
 
 ## 2026-06-21
 
+### Модульный desktop и принудительный rollout 2.0.20
+
+**Файлы:** `src/taksklad/main.py`, `src/taksklad/app_data_loading.py`, `src/taksklad/app_finish.py`, `src/taksklad/app_layout.py`, `src/taksklad/app_order_display.py`, `src/taksklad/app_returns.py`, `src/taksklad/app_runtime.py`, `src/taksklad/app_scanning.py`, `src/taksklad/backend_flow.py`, `src/taksklad/desktop_refresh_service.py`, `src/taksklad/desktop_scan_rules.py`, `src/taksklad/config.py`, `backend/app/settings.py`, `tools/*`, `deploy/vds/acceptance_status.sh`, `tests/*`.
+
+**Что стало:**
+
+- `main.py` снова приведен к роли entrypoint/wiring: startup, `ScanningApp.__init__`, mixin composition.
+- Workflow сканирования, отображения заказа, finish, refresh, runtime, returns и backend blockers вынесены в отдельные owner-модули.
+- Старые публичные экспорты `taksklad.main` сохранены там, где тесты и внешние вызовы еще используют прежнюю точку входа.
+- Добавлен guard на размер `main.py`, чтобы workflow-логика не возвращалась обратно в entrypoint.
+- `APP_VERSION` desktop/backend и release guard подняты до `2.0.20` для нового forced rollout.
+
+**Проверки:**
+
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:. /tmp/taksklad-fulltest-codex-venv/bin/python -m unittest discover -s tests` - 502 tests OK.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:. /tmp/taksklad-fulltest-codex-venv/bin/python -m compileall -q main.py sitecustomize.py taksklad src/taksklad backend/app tests tools` - OK.
+- `npm --prefix frontend run build` - OK.
+- `npm --prefix frontend audit --audit-level=high` - 0 vulnerabilities.
+- `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK.
+- `docker compose --env-file deploy/traefik/.env.example -f deploy/traefik/docker-compose.yml config` - OK.
+- `for f in deploy/vds/*.sh; do bash -n "$f"; done` - OK.
+- `git diff --check` - OK.
+
 ### UI polish сканирования и принудительный rollout 2.0.19
 
 **Файлы:** `src/taksklad/ui_widgets.py`, `src/taksklad/main.py`, `src/taksklad/app_day_end.py`, `src/taksklad/config.py`, `backend/app/settings.py`, `tools/release_preflight.py`, `tools/build_windows_test_archive.ps1`, `deploy/vds/acceptance_status.sh`, `tests/*`.
@@ -45,6 +68,20 @@
 - `PYTHONDONTWRITEBYTECODE=1 ./.venv/bin/python -m unittest tests.test_product_images tests.test_desktop_ui_contract tests.test_windows_release_workflow tests.test_windows_test_build_helper tests.test_scan_quantities` - 48 tests OK.
 - `PYTHONDONTWRITEBYTECODE=1 ./.venv/bin/python -m compileall -q src/taksklad/product_images.py src/taksklad/main.py tests/test_product_images.py tests/test_desktop_ui_contract.py` - OK.
 - `PYTHONDONTWRITEBYTECODE=1 ./.venv/bin/python -m unittest discover -s tests` - 491 tests OK.
+
+### Daily reconciliation: returned больше не считается Google drift
+
+**Файлы:** `backend/app/google_sheets_exporter.py`, `tests/test_reconciliation_service.py`.
+
+**Что стало:**
+
+- `returned` теперь мапится в Google-статус `Выполнено` при сверке DB/Google mirror.
+- Это убирает ложный `google_mirror_mismatch`, когда заказ уже возвращен в DB, а Google корректно хранит основной статус `Выполнено` и отдельные return-колонки.
+
+**Проверки:**
+
+- `PYTHONDONTWRITEBYTECODE=1 ./.venv/bin/python -m unittest tests.test_reconciliation_service` - 4 tests OK.
+- `PYTHONDONTWRITEBYTECODE=1 ./.venv/bin/python -m compileall -q backend/app/google_sheets_exporter.py tests/test_reconciliation_service.py` - OK.
 
 ### Принудительное обновление 2.0.17 с диагностикой wrong-SKU
 

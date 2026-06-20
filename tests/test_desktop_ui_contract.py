@@ -377,7 +377,7 @@ class DesktopUiContractTests(unittest.TestCase):
         fake.show_status_notice = ScanningApp.show_status_notice.__get__(fake)
         fake.show_error = ScanningApp.show_error.__get__(fake)
 
-        with mock.patch("taksklad.main.write_scan_backup", return_value=True) as write_backup:
+        with mock.patch("taksklad.app_scanning.write_scan_backup", return_value=True) as write_backup:
             applied = ScanningApp.apply_backend_blocked_scan_events(
                 fake,
                 [{
@@ -449,8 +449,8 @@ class DesktopUiContractTests(unittest.TestCase):
             completed.append(order_id)
 
         with (
-            mock.patch("taksklad.main.backend_configured", return_value=True),
-            mock.patch("taksklad.main.complete_order", side_effect=fake_complete),
+            mock.patch("taksklad.backend_flow.backend_configured", return_value=True),
+            mock.patch("taksklad.backend_flow.complete_order", side_effect=fake_complete),
         ):
             result = complete_backend_orders_or_raise(["order-new", "order-done"])
 
@@ -467,8 +467,8 @@ class DesktopUiContractTests(unittest.TestCase):
             "quantity_pieces": 20,
         }]
         with (
-            mock.patch("taksklad.main.backend_read_orders_enabled", return_value=True),
-            mock.patch("taksklad.main.mark_order_returned", return_value={"status": "returned"}) as mark_returned,
+            mock.patch("taksklad.app_returns.backend_read_orders_enabled", return_value=True),
+            mock.patch("taksklad.app_returns.mark_order_returned", return_value={"status": "returned"}) as mark_returned,
         ):
             result = ScanningApp.mark_return_for_display(
                 fake_app,
@@ -489,9 +489,9 @@ class DesktopUiContractTests(unittest.TestCase):
         fake_app = SimpleNamespace()
 
         with (
-            mock.patch("taksklad.main.backend_read_orders_enabled", return_value=True),
-            mock.patch("taksklad.main.fetch_returned_orders", return_value=[{"id": "order-1"}]) as fetch_backend,
-            mock.patch("taksklad.main.fetch_returned_orders_from_gsheet") as fetch_google,
+            mock.patch("taksklad.app_returns.backend_read_orders_enabled", return_value=True),
+            mock.patch("taksklad.app_returns.fetch_returned_orders", return_value=[{"id": "order-1"}]) as fetch_backend,
+            mock.patch("taksklad.app_returns.fetch_returned_orders_from_gsheet") as fetch_google,
         ):
             result = ScanningApp.fetch_returns_for_display(fake_app, limit=25)
 
@@ -503,9 +503,9 @@ class DesktopUiContractTests(unittest.TestCase):
         fake_app = SimpleNamespace()
 
         with (
-            mock.patch("taksklad.main.backend_read_orders_enabled", return_value=True),
-            mock.patch("taksklad.main.lookup_return_order", return_value={"id": "order-1"}) as lookup_backend,
-            mock.patch("taksklad.main.lookup_return_order_in_gsheet") as lookup_google,
+            mock.patch("taksklad.app_returns.backend_read_orders_enabled", return_value=True),
+            mock.patch("taksklad.app_returns.lookup_return_order", return_value={"id": "order-1"}) as lookup_backend,
+            mock.patch("taksklad.app_returns.lookup_return_order_in_gsheet") as lookup_google,
         ):
             result = ScanningApp.lookup_return_for_display(fake_app, "WH-R-100")
 
@@ -522,9 +522,9 @@ class DesktopUiContractTests(unittest.TestCase):
         }
 
         with (
-            mock.patch("taksklad.main.backend_read_orders_enabled", return_value=True),
-            mock.patch("taksklad.main.mark_return_order_in_gsheet") as mark_gsheet_return,
-            mock.patch("taksklad.main.mark_order_returned") as mark_backend_return,
+            mock.patch("taksklad.app_returns.backend_read_orders_enabled", return_value=True),
+            mock.patch("taksklad.app_returns.mark_return_order_in_gsheet") as mark_gsheet_return,
+            mock.patch("taksklad.app_returns.mark_order_returned") as mark_backend_return,
         ):
             with self.assertRaisesRegex(RuntimeError, "backend/order id"):
                 ScanningApp.mark_return_for_display(
@@ -548,9 +548,9 @@ class DesktopUiContractTests(unittest.TestCase):
         }
 
         with (
-            mock.patch("taksklad.main.backend_read_orders_enabled", return_value=True),
-            mock.patch("taksklad.main.mark_return_order_in_gsheet") as mark_gsheet_return,
-            mock.patch("taksklad.main.mark_order_returned", return_value={"status": "returned"}) as mark_backend_return,
+            mock.patch("taksklad.app_returns.backend_read_orders_enabled", return_value=True),
+            mock.patch("taksklad.app_returns.mark_return_order_in_gsheet") as mark_gsheet_return,
+            mock.patch("taksklad.app_returns.mark_order_returned", return_value={"status": "returned"}) as mark_backend_return,
         ):
             result = ScanningApp.mark_return_for_display(
                 fake_app,
@@ -578,9 +578,9 @@ class DesktopUiContractTests(unittest.TestCase):
         updated_order = {**google_order, "status": "returned"}
 
         with (
-            mock.patch("taksklad.main.backend_read_orders_enabled", return_value=False),
-            mock.patch("taksklad.main.mark_return_order_in_gsheet", return_value=updated_order) as mark_gsheet_return,
-            mock.patch("taksklad.main.mark_order_returned") as mark_backend_return,
+            mock.patch("taksklad.app_returns.backend_read_orders_enabled", return_value=False),
+            mock.patch("taksklad.app_returns.mark_return_order_in_gsheet", return_value=updated_order) as mark_gsheet_return,
+            mock.patch("taksklad.app_returns.mark_order_returned") as mark_backend_return,
         ):
             result = ScanningApp.mark_return_for_display(fake_app, google_order, "WH-R-101")
 

@@ -487,6 +487,17 @@ def request_list_value(item, *keys):
     return ""
 
 
+def request_value(detail, list_item, *keys):
+    for key in keys:
+        value = detail.get(key) if isinstance(detail, dict) else None
+        if value not in (None, ""):
+            return value
+        value = request_list_value(list_item, key) if isinstance(list_item, dict) else ""
+        if value not in (None, ""):
+            return value
+    return ""
+
+
 class SkladBotClient:
     def __init__(self):
         self.tokens = parse_skladbot_api_tokens()
@@ -741,6 +752,30 @@ def normalize_request_payload(list_item, detail):
         "archived": parse_bool(detail.get("archived") or request_list_value(list_item, "archived")),
         "created_at": normalize_text(detail.get("createdAt") or request_list_value(list_item, "created_at")),
         "updated_at": normalize_text(detail.get("updatedAt") or request_list_value(list_item, "updated_at")),
+        "completed_at": normalize_text(request_value(
+            detail,
+            list_item,
+            "completedAt",
+            "completed_at",
+            "closedAt",
+            "closed_at",
+            "doneAt",
+            "done_at",
+            "finishedAt",
+            "finished_at",
+            "processedAt",
+            "processed_at",
+            "acceptedAt",
+            "accepted_at",
+        )),
+        "archived_at": normalize_text(request_value(
+            detail,
+            list_item,
+            "archivedAt",
+            "archived_at",
+            "archiveAt",
+            "archive_at",
+        )),
         "unloading_date": normalize_text(get_field(fields, "unloading_date", "Дата выгрузки")),
         "recipient": normalize_text(get_field(fields, "company_name", "Название компании/Имя человека") or detail.get("company_name")),
         "address": normalize_text(get_field(fields, "address", "Адрес") or detail.get("address") or logistic.get("address")),

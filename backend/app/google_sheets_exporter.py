@@ -937,7 +937,7 @@ def make_sheet_record(row, import_id="", item_key="", filename=""):
 
 def backend_status_to_sheet_status(value):
     text = normalize_text(value).casefold()
-    if text in {"completed", "done", "closed", "выполнено", "готово"}:
+    if text in {"completed", "done", "closed", "returned", "выполнено", "готово"}:
         return STATUS_COMPLETED
     return STATUS_NOT_COMPLETED
 

@@ -48,6 +48,7 @@ TELEGRAM_CHAT_STATE_EVENT_PREFIX = "telegram_chat_state:"
 TELEGRAM_EXCEL_DATE_CHOICE_USE_EXCEL_PREFIX = "excel_date:use_excel:"
 TELEGRAM_EXCEL_DATE_CHOICE_CANCEL_PREFIX = "excel_date:cancel:"
 SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE = "skladbot_daily_report_send"
+SKLADBOT_DAILY_REPORTED_REQUEST_EVENT_TYPE = "skladbot_daily_reported_request"
 TELEGRAM_KIZ_MENU_RECENT_LIMIT = 7
 TELEGRAM_MANUAL_BLOCK_PRICE = 240000
 TELEGRAM_MANUAL_PIECES_PER_BLOCK = 10
@@ -422,12 +423,80 @@ def coerce_report_date(value):
     return command_date_or_today(str(value))
 
 
+def parse_iso_date(value):
+    text = normalize_text(value)
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        return None
+
+
 def ensure_aware_utc(value):
     if value is None:
         return None
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def skladbot_reported_request_key(request_id):
+    return f"skladbot_daily_reported_request:{parse_int(request_id)}"
+
+
+def load_skladbot_daily_reported_request_ids_before(report_date):
+    report_date = coerce_report_date(report_date)
+    result = set()
+    with SessionLocal() as db:
+        events = db.execute(
+            select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_DAILY_REPORTED_REQUEST_EVENT_TYPE)
+        ).scalars().all()
+    for event in events:
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        request_id = parse_int(payload.get("request_id"))
+        reported_date = parse_iso_date(payload.get("reported_date"))
+        if request_id > 0 and reported_date and reported_date < report_date:
+            result.add(request_id)
+    return result
+
+
+def mark_skladbot_daily_report_requests_reported(report, chat_id=None):
+    report_date = coerce_report_date(report.get("report_date") or skladbot_daily_report.business_today())
+    rows = []
+    for request in report.get("requests") or []:
+        request_id = parse_int(request.get("id"))
+        if request_id <= 0:
+            continue
+        rows.append({
+            "request_id": request_id,
+            "request_number": normalize_text(request.get("number")),
+            "category": normalize_text(request.get("category")),
+            "reported_date": report_date.isoformat(),
+            "chat_id": normalize_text(chat_id),
+            "include_reasons": list(request.get("include_reasons") or []),
+        })
+    if not rows:
+        return 0
+    saved = 0
+    with SessionLocal() as db:
+        for row in rows:
+            key = skladbot_reported_request_key(row["request_id"])
+            existing = db.execute(
+                select(PendingEvent).where(PendingEvent.idempotency_key == key)
+            ).scalar_one_or_none()
+            if existing is not None:
+                continue
+            db.add(PendingEvent(
+                event_type=SKLADBOT_DAILY_REPORTED_REQUEST_EVENT_TYPE,
+                idempotency_key=key,
+                status="completed",
+                attempts=1,
+                payload=row,
+            ))
+            saved += 1
+        db.commit()
+    return saved
 
 
 def kiz_progress_completed(item):
@@ -1632,7 +1701,15 @@ class TelegramWorker:
         report_date_text = report_date.strftime("%d.%m.%Y")
         if not scheduled:
             self.safe_send_message(chat_id, f"Собираю SkladBot отчет за {report_date_text}.")
-        report = skladbot_daily_report.collect_skladbot_daily_report(report_date=report_date)
+        reported_request_ids = (
+            load_skladbot_daily_reported_request_ids_before(report_date)
+            if scheduled
+            else set()
+        )
+        report = skladbot_daily_report.collect_skladbot_daily_report(
+            report_date=report_date,
+            reported_request_ids=reported_request_ids,
+        )
         content, filename = skladbot_daily_report.build_skladbot_daily_report_xlsx(report)
         self.safe_send_message(chat_id, skladbot_daily_report.build_skladbot_daily_report_message(report))
         document = self.safe_send_document(
@@ -1641,6 +1718,8 @@ class TelegramWorker:
             filename,
             caption=f"SkladBot отчет за {report_date_text}",
         )
+        if document is not None and scheduled:
+            mark_skladbot_daily_report_requests_reported(report, chat_id=chat_id)
         return document is not None
 
     def scheduled_skladbot_daily_report_is_due(self, now=None):
