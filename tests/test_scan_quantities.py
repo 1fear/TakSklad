@@ -27,9 +27,17 @@ class ScanQuantitiesTests(unittest.TestCase):
         self.assertEqual(scan_metadata_for_code(code)["scan_type"], SCAN_TYPE_AGGREGATE_BOX)
 
     def test_desktop_identifies_unit_kiz_product_key(self):
-        self.assertEqual(scan_code_product_key("0104006396053978217KDAUbG93OVvXgs6C"), "brown")
-        self.assertEqual(scan_code_product_key("0104006396053947217p-30o933ZXHZKjx"), "red")
-        self.assertEqual(scan_code_product_key("010400639605400521UNIT"), "gold")
+        self.assertEqual(scan_code_product_key("0104006396053978217KDAUbG93OVvXgs6C"), "brown:op")
+        self.assertEqual(scan_code_product_key("0104006396053947217p-30o933ZXHZKjx"), "red:op")
+        self.assertEqual(scan_code_product_key("010400639605400521UNIT"), "gold:ssl")
+        self.assertEqual(scan_code_product_key("0104006396054067217KDAUbG93OVvXgs6C"), "brown:ssl")
+        self.assertEqual(scan_code_product_key("0104006396054036217p-30o933ZXHZKjx"), "red:ssl")
+        self.assertEqual(scan_code_product_key("0104006396104441217GREEN"), "green:op")
+
+    def test_desktop_identifies_aggregate_box_product_key(self):
+        self.assertEqual(scan_code_product_key("010400639605407421BOX"), "brown:ssl")
+        self.assertEqual(scan_code_product_key("010400639605404321BOX"), "red:ssl")
+        self.assertEqual(scan_code_product_key("010400639610444821BOX"), "green:op")
 
     def test_desktop_rejects_unit_kiz_for_wrong_chapman_product(self):
         self.assertTrue(
@@ -38,10 +46,28 @@ class ScanQuantitiesTests(unittest.TestCase):
                 "Chapman Gold SSL 100`20",
             )
         )
+        self.assertTrue(
+            scan_product_mismatch(
+                "0104006396053978217KDAUbG93OVvXgs6C",
+                "Chapman Brown SSL 100`20",
+            )
+        )
+        self.assertTrue(
+            scan_product_mismatch(
+                "010400639605404321BOX",
+                "Chapman RED OP 20",
+            )
+        )
         self.assertFalse(
             scan_product_mismatch(
                 "0104006396053978217KDAUbG93OVvXgs6C",
                 "Chapman Brown OP 20",
+            )
+        )
+        self.assertFalse(
+            scan_product_mismatch(
+                "0104006396104441217GREEN",
+                "Chapman Green OP 20",
             )
         )
 

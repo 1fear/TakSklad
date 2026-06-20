@@ -22,7 +22,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 NOISE_COMPANY_TOKENS = {"ooo", "ооо", "mchj", "мчж", "ip", "ип", "sp", "сп", "склад", "склади"}
 NOISE_PRODUCT_TOKENS = {"uz", "kingsize", "king", "size", "superslim", "super", "slim"}
 RETURN_REQUEST_TOKENS = {"возврат", "возврата", "return", "returned"}
-PRODUCT_COLORS = ("brown", "red", "gold")
+PRODUCT_COLORS = ("brown", "red", "gold", "green")
 PRODUCT_FORMATS = ("op", "ssl")
 SKLADBOT_SYNC_LOCK_KEY = 22052631
 SKLADBOT_COMPLETED_BACKFILL_STATUSES = ("completed", "done", "closed")

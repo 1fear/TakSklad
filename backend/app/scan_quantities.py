@@ -3,22 +3,25 @@ SCAN_TYPE_AGGREGATE_BOX = "aggregate_box"
 AGGREGATE_BOX_BLOCK_QUANTITY = 50
 
 AGGREGATE_BOX_PRODUCT_PREFIXES = {
-    "010400639605401221": "gold",
-    "010400639605398521": "brown",
-    "010400639605395421": "red",
+    "010400639605401221": "gold:ssl",
+    "010400639605398521": "brown:op",
+    "010400639605395421": "red:op",
+    "010400639605407421": "brown:ssl",
+    "010400639605404321": "red:ssl",
+    "010400639610444821": "green:op",
 }
 
 UNIT_PRODUCT_PREFIXES = {
-    "0104006396054005": "gold",
-    "0104006396053978": "brown",
-    "0104006396053947": "red",
+    "0104006396054005": "gold:ssl",
+    "0104006396053978": "brown:op",
+    "0104006396053947": "red:op",
+    "0104006396054067": "brown:ssl",
+    "0104006396054036": "red:ssl",
+    "0104006396104441": "green:op",
 }
 
-PRODUCT_KEY_MARKERS = {
-    "gold": ("gold",),
-    "brown": ("brown",),
-    "red": ("red",),
-}
+PRODUCT_COLORS = ("brown", "red", "gold", "green")
+PRODUCT_FORMATS = ("op", "ssl")
 
 
 def aggregate_box_product_key(code):
@@ -43,9 +46,16 @@ def scan_code_product_key(code):
 
 def product_key_from_name(product):
     text = normalize_text(product).casefold()
-    for product_key, markers in PRODUCT_KEY_MARKERS.items():
-        if any(marker in text for marker in markers):
-            return product_key
+    tokens = text.replace("`", " ").replace('"', " ").replace("'", " ").split()
+    compact = "".join(tokens)
+    color = next((item for item in PRODUCT_COLORS if item in tokens or item in compact), "")
+    product_format = next((
+        item
+        for item in PRODUCT_FORMATS
+        if item in tokens or (color and f"{color}{item}" in compact)
+    ), "")
+    if color and product_format:
+        return f"{color}:{product_format}"
     return ""
 
 

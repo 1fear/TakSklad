@@ -46,9 +46,24 @@ SKU_MAPPING = {
         "barcode": "4006396053978",
         "is_main_barcode": False,
     },
+    "brown:ssl": {
+        "product_data_id": 2189392,
+        "barcode": "4006396054067",
+        "is_main_barcode": False,
+    },
     "gold:ssl": {
         "product_data_id": 2189394,
         "barcode": "4006396054005",
+        "is_main_barcode": False,
+    },
+    "green:op": {
+        "product_data_id": 2430805,
+        "barcode": "4006396104441",
+        "is_main_barcode": False,
+    },
+    "red:ssl": {
+        "product_data_id": 2189393,
+        "barcode": "4006396054036",
         "is_main_barcode": False,
     },
 }

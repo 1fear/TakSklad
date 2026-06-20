@@ -52,9 +52,12 @@ TELEGRAM_KIZ_MENU_RECENT_LIMIT = 7
 TELEGRAM_MANUAL_BLOCK_PRICE = 240000
 TELEGRAM_MANUAL_PIECES_PER_BLOCK = 10
 TELEGRAM_MANUAL_PRODUCTS = {
-    "brown": "Chapman Brown OP 20",
-    "red": "Chapman RED OP 20",
-    "gold": "Chapman Gold SSL 100`20",
+    "brown_op": "Chapman Brown OP 20",
+    "brown_ssl": "Chapman Brown SSL 100`20",
+    "red_op": "Chapman RED OP 20",
+    "red_ssl": "Chapman RED SSL 100 20",
+    "gold_ssl": "Chapman Gold SSL 100`20",
+    "green_op": "Chapman Green OP 20",
 }
 TELEGRAM_MANUAL_PAYMENT_TYPES = {
     "terminal": "Терминал",

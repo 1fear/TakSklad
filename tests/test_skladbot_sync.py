@@ -130,8 +130,12 @@ def request(number="WH-R-189337", request_id=189337):
 class SkladBotSyncTests(unittest.TestCase):
     def test_product_match_accepts_concatenated_vendor_code(self):
         self.assertTrue(product_names_match("Chapman Brown OP 20", {"vendor_code": "CHPMBrownOP20UZ"}))
+        self.assertTrue(product_names_match("Chapman Brown SSL 100`20", {"vendor_code": "CHPMBrownSSL20UZ"}))
         self.assertTrue(product_names_match("Chapman Gold SSL 100`20", {"vendor_code": "CHPMGoldSSL20UZ"}))
+        self.assertTrue(product_names_match("Chapman Green OP 20", {"vendor_code": "CHPMGreenOP20UZ"}))
+        self.assertTrue(product_names_match("Chapman RED SSL 100 20", {"vendor_code": "CHPMRedSSL20UZ"}))
         self.assertFalse(product_names_match("Chapman Brown OP 20", {"vendor_code": "CHPMRedOP20UZ"}))
+        self.assertFalse(product_names_match("Chapman Brown SSL 100`20", {"vendor_code": "CHPMBrownOP20UZ"}))
 
     def test_writes_request_number_when_one_exact_match_exists(self):
         sheet = FakeSheet([

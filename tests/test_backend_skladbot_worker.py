@@ -401,8 +401,12 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
 
     def test_product_match_accepts_concatenated_vendor_code(self):
         self.assertTrue(product_matches("Chapman Brown OP 20", "CHPMBrownOP20UZ"))
+        self.assertTrue(product_matches("Chapman Brown SSL 100`20", "CHPMBrownSSL20UZ"))
         self.assertTrue(product_matches("Chapman Gold SSL 100`20", "CHPMGoldSSL20UZ"))
+        self.assertTrue(product_matches("Chapman Green OP 20", "CHPMGreenOP20UZ"))
+        self.assertTrue(product_matches("Chapman RED SSL 100 20", "CHPMRedSSL20UZ"))
         self.assertFalse(product_matches("Chapman Brown OP 20", "CHPMRedOP20UZ"))
+        self.assertFalse(product_matches("Chapman Brown SSL 100`20", "CHPMBrownOP20UZ"))
 
     def test_request_matches_order_by_date_payment_client_products_and_blocks(self):
         order = Order(

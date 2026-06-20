@@ -148,6 +148,36 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
             [2, 3],
         )
 
+    def test_builds_payload_for_extended_chapman_sku(self):
+        import_id, order_id = self.seed_import_order(products=[
+            ("Chapman Brown SSL 100`20", 20),
+            ("Chapman Green OP 20", 10),
+            ("Chapman RED SSL 100 20", 15),
+        ])
+
+        with self.SessionLocal() as db:
+            summary = create_skladbot_dry_run_for_import(db, import_id)
+            db.commit()
+            dry_runs = list_skladbot_dry_runs(db, import_id)
+
+        self.assertEqual(summary["ready"], 1)
+        row = dry_runs[0]
+        self.assertEqual(row["order_id"], order_id)
+        self.assertEqual(row["status"], "ready")
+        self.assertEqual(row["blocks"], 45)
+        self.assertEqual(
+            [product["product_data_id"] for product in row["payload"]["products"]],
+            [2189392, 2430805, 2189393],
+        )
+        self.assertEqual(
+            [product["barcode"] for product in row["payload"]["products"]],
+            ["4006396054067", "4006396104441", "4006396054036"],
+        )
+        self.assertEqual(
+            [product["amount"] for product in row["payload"]["products"]],
+            [20, 10, 15],
+        )
+
     def test_terminal_payment_payload_uses_payment_type_as_comment(self):
         import_id, _order_id = self.seed_import_order(payment_type="Терминал")
 

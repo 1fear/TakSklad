@@ -708,7 +708,7 @@ class BackendTelegramImportTests(unittest.TestCase):
         worker.handle_update({"update_id": 106, "message": {"chat": {"id": 123}, "text": "ТП1 Тест"}})
         worker.handle_update({
             "update_id": 107,
-            "callback_query": {"id": "cb-3", "data": "manual:product:brown", "message": {"chat": {"id": 123}}},
+            "callback_query": {"id": "cb-3", "data": "manual:product:brown_op", "message": {"chat": {"id": 123}}},
         })
         worker.handle_update({"update_id": 108, "message": {"chat": {"id": 123}, "text": "3"}})
         worker.handle_update({
