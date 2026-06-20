@@ -335,15 +335,21 @@ def update_order_fields(order: Order, record, apply_returns=True):
 
 
 def apply_skladbot_fields(raw_payload, record):
-    field_map = {
-        "skladbot_request_number": "skladbot_request_number",
-        "skladbot_request_id": "skladbot_request_id",
-        "skladbot_status": "skladbot_status",
-    }
-    for record_field, payload_field in field_map.items():
-        value = normalize_text(record.get(record_field))
-        if value:
-            raw_payload[payload_field] = value
+    incoming_number = normalize_text(record.get("skladbot_request_number"))
+    incoming_id = normalize_text(record.get("skladbot_request_id"))
+    incoming_status = normalize_text(record.get("skladbot_status"))
+    existing_has_link = bool(
+        normalize_text(raw_payload.get("skladbot_request_number"))
+        or normalize_text(raw_payload.get("skladbot_request_id"))
+    )
+    incoming_has_link = bool(incoming_number or incoming_id)
+
+    if incoming_number:
+        raw_payload["skladbot_request_number"] = incoming_number
+    if incoming_id:
+        raw_payload["skladbot_request_id"] = incoming_id
+    if incoming_status and (incoming_has_link or not existing_has_link):
+        raw_payload["skladbot_status"] = incoming_status
 
 
 def apply_return_fields(raw_payload, record):

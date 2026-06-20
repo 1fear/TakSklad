@@ -182,6 +182,42 @@ class GoogleSheetsSyncWorkerTests(unittest.TestCase):
             self.assertEqual(item.raw_payload["source_file"], "orders.xlsx")
             self.assertTrue(item.raw_payload["google_sheet_synced_at"])
 
+    def test_sync_does_not_downgrade_existing_skladbot_link_from_stale_google_mirror(self):
+        order_id, _item_id = self.seed_order()
+
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            order.raw_payload = {
+                **order.raw_payload,
+                "skladbot_request_number": "WH-R-199186",
+                "skladbot_request_id": "199186",
+                "skladbot_status": "created",
+                "skladbot_created_by_taksklad": True,
+            }
+            db.commit()
+
+        with self.SessionLocal() as db:
+            result = sync_google_sheet_to_backend(
+                db,
+                sheet=self.make_sheet(
+                    **{
+                        "Товары": "Chapman Brown OP 20",
+                        "Кол-во ШТ": 150,
+                        "Кол-во блок": 15,
+                        "Номер заявки SkladBot": "",
+                        "ID заявки SkladBot": "",
+                        "Статус SkladBot": "Проверяется",
+                    }
+                ),
+            )
+
+        self.assertEqual(result["matched"], 1)
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            self.assertEqual(order.raw_payload["skladbot_request_number"], "WH-R-199186")
+            self.assertEqual(order.raw_payload["skladbot_request_id"], "199186")
+            self.assertEqual(order.raw_payload["skladbot_status"], "created")
+
     def test_sync_recalculates_line_total_when_google_blocks_change(self):
         _, item_id = self.seed_order()
 

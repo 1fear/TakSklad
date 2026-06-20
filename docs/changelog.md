@@ -13,11 +13,12 @@
 - Добавлены SKU `Chapman Brown SSL 100\`20`, `Chapman Green OP 20`, `Chapman RED SSL 100 20` для создания заявок SkladBot.
 - КИЗ-проверка теперь различает не только цвет, но и формат SKU: `brown:op`, `brown:ssl`, `red:op`, `red:ssl`, `gold:ssl`, `green:op`.
 - Ручной Telegram-заказ получил отдельные кнопки по новым SKU.
+- После live-create SkladBot номер заявки явно фиксируется в JSONB DB, а входящая Google mirror sync больше не откатывает существующий WH-R в `Проверяется`, если зеркало еще не успело обновиться.
 
 **Проверки:**
 
 - `PYTHONDONTWRITEBYTECODE=1 ./.venv/bin/python -m unittest tests.test_skladbot_sync tests.test_backend_skladbot_worker tests.test_backend_skladbot_request_dry_run tests.test_scan_quantities tests.test_backend_api_persistence tests.test_backend_telegram_import` - 246 tests OK.
-- `PYTHONDONTWRITEBYTECODE=1 ./.venv/bin/python -m unittest discover tests` - 478 tests OK.
+- `PYTHONDONTWRITEBYTECODE=1 ./.venv/bin/python -m unittest discover tests` - 479 tests OK.
 - `PYTHONDONTWRITEBYTECODE=1 ./.venv/bin/python -m compileall -q backend/app src/taksklad tests tools main.py` - OK.
 - `npm --prefix frontend run build` - OK.
 - `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK.

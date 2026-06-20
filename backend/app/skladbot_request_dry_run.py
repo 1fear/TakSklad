@@ -7,6 +7,7 @@ from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm.attributes import flag_modified
 
 from .google_sheets_exporter import make_sheet_record
 from .google_sheets_pending import queue_google_sheets_export
@@ -1139,6 +1140,8 @@ def save_skladbot_create_result(
     })
     raw_payload.pop("skladbot_error", None)
     order.raw_payload = raw_payload
+    flag_modified(order, "raw_payload")
+    db.add(order)
     queue_google_sheets_export(
         db,
         "google_sheets_skladbot_export",
@@ -1174,6 +1177,7 @@ def mark_order_skladbot_create_failed(order: Order, event: PendingEvent, error: 
     raw_payload["skladbot_create_event_id"] = str(event.id)
     raw_payload["skladbot_create_idempotency_key"] = event.idempotency_key or ""
     order.raw_payload = raw_payload
+    flag_modified(order, "raw_payload")
     update_event_payload(event, {
         "create_status": "create_failed",
         "error": normalize_text(error),
