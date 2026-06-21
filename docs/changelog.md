@@ -30,6 +30,10 @@
 - `git diff --check` - OK.
 - GitHub Actions `Build Windows Release` для `v2.0.21`, run `27909016791` - success.
 - Release assets: `TakSklad.exe` SHA256 `a10e31e73b282ac4b3056fb3d2c60cad5e957412d82df4a60634a5d2939c1c77`; `TakSklad-windows-x64.zip` SHA256 `3385bb24dae1b4a0b7a923700ac730b87c7a06db8f83a9bcfd873823148131b5`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:. /tmp/taksklad-fulltest-codex-venv/bin/python tools/release_preflight.py --verify-downloads --timeout 120` - OK, GitHub assets скачаны и SHA совпали, backend health `2.0.21`.
+- VDS backup перед deploy: `/opt/taksklad/backups/postgres/taksklad-postgres-20260621T153654Z.sql.gz`.
+- VDS deploy: пересобраны `backend-api`, `telegram-worker`, `google-sheets-sync-worker`, `skladbot-worker`; `https://api.taksklad.uz/health` и `/ready` вернули `version=2.0.21`, `status=ok`.
+- VDS `./deploy/vds/acceptance_status.sh` - общий `status=ok`, manifest `2.0.21`, services running; свежие логи backend/workers без `error|exception|traceback|critical|failed`.
 
 ### Модульный desktop и принудительный rollout 2.0.20
 
