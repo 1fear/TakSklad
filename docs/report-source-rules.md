@@ -1,6 +1,6 @@
 # Report Source Rules
 
-Актуально на: 16.06.2026
+Актуально на: 21.06.2026
 
 Цель документа: зафиксировать, откуда отчеты берут данные и как должны вести себя при ошибках. Главное правило: Google Sheets не является source of truth для отчетов, он остается зеркалом/export.
 
@@ -12,7 +12,7 @@
 | Логистика | `GET /api/v1/logistics/report` | Postgres: `orders`, `order_items`, `raw_payload.coordinates` | Не используется | Самовывоз и заказы без валидных координат исключаются. Пустая дата или отсутствие маршрутизируемых заказов возвращает понятную ошибку. |
 | КИЗы по дате | `GET /api/v1/reports/kiz/date` | Postgres: `order_items.scan_codes`, `orders`, import metadata | Не используется | Выгружаются только КИЗы, записанные в backend. Частичная дата разрешена: выгружается то, что реально отпикано. |
 | КИЗы по файлу | `GET /api/v1/reports/kiz/source-file` | Postgres: `source_file`, `backend_import_id`, `scan_codes` | Не используется | Один filename может иметь несколько `source_key`. По файлу требуется завершенность выбранной партии, иначе backend возвращает ошибку. |
-| Ежедневный SkladBot отчет | `/skladbot_daily ДД.ММ.ГГГГ`, schedule `22:00` | SkladBot API: requests/detail, transactions, products/stock | Не используется | В итог попадают только заявки `Выполнена` + `В архиве`. Дата факта берется из даты закрытия/архивации, если SkladBot ее отдал; иначе закрытая заявка попадает в ближайший отчет как впервые найденная выполненной и затем защищается registry от повторной отправки. Фактическая приемка берется из `acceptedAmount`, значение уже в блоках. |
+| Ежедневный SkladBot отчет | `/skladbot_daily ДД.ММ.ГГГГ`, schedule `22:00` | SkladBot API: requests/detail, transactions, products/stock | Не используется | В итог попадают только заявки `Выполнена` + `В архиве`, у которых `created_at`/`createdAt` в бизнес-таймзоне равен дате отчета. Даты выполнения, архивации и выгрузки не переносят заявку между daily reports. Registry `pending_events` остается защитой от повторной плановой отправки уже отправленных заявок. Фактическая приемка берется из `acceptedAmount`, значение уже в блоках. |
 | Ежедневная сверка | `GET /api/v1/reports/reconciliation/day`, schedule после SkladBot daily | Postgres: `orders`, `order_items`, SkladBot metadata в `raw_payload` | Только зеркало для сравнения | Основной статус считается по DB. Google-only, DB-only active, status mismatch и WH-R mismatch считаются отдельно. При падении Google создается mirror issue, но DB workflow не считается упавшим. |
 
 ## Ошибки И Edge Cases

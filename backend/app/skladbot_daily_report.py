@@ -1,6 +1,6 @@
 import os
 import time
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from io import BytesIO
 from typing import Any
 
@@ -18,7 +18,6 @@ from .skladbot_worker import (
     normalize_request_payload,
     normalize_text,
     parse_date,
-    parse_datetime_value,
     parse_int,
     request_list_value,
     sanitize_skladbot_error,
@@ -27,7 +26,6 @@ from .skladbot_worker import (
 
 DEFAULT_DAILY_REPORT_REQUEST_TYPE_IDS = (3387, 3388, 3389, 3391, 3403)
 SKLADBOT_DAILY_REPORT_REQUEST_TYPE_IDS_ENV = "SKLADBOT_DAILY_REPORT_REQUEST_TYPE_IDS"
-SKLADBOT_DAILY_REPORT_COMPLETED_LOOKBACK_DAYS_ENV = "SKLADBOT_DAILY_REPORT_COMPLETED_LOOKBACK_DAYS"
 
 REQUEST_HEADERS = [
     "ID",
@@ -203,7 +201,6 @@ def fetch_daily_requests(
     limit = max(1, env_int("SKLADBOT_DAILY_REPORT_REQUESTS_LIMIT", getattr(client, "limit", 500) or 500))
     detail_limit = max(1, env_int("SKLADBOT_DAILY_REPORT_DETAIL_LIMIT", 250))
     request_delay = max(0.0, env_float("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS", 3.0))
-    completed_lookback_days = max(0, env_int(SKLADBOT_DAILY_REPORT_COMPLETED_LOOKBACK_DAYS_ENV, 1))
     reported_request_ids = reported_request_ids or set()
     result = []
     seen_ids = set()
@@ -231,18 +228,7 @@ def fetch_daily_requests(
             request_id = parse_int(request_list_value(list_item, "id"))
             if request_id <= 0 or request_id in seen_ids:
                 continue
-            reasons = list_request_inclusion_reasons(list_item, report_date)
-            if (
-                not reasons
-                and has_reliable_list_dates(list_item)
-                and not should_fetch_completed_request_detail(
-                    list_item,
-                    request_type,
-                    report_date,
-                    completed_lookback_days,
-                    reported_request_ids,
-                )
-            ):
+            if request_has_created_date(list_item) and not request_created_on_report_date(list_item, report_date):
                 continue
             try:
                 detail = get_daily_request_detail(client, request_id, request_delay)
@@ -258,7 +244,6 @@ def fetch_daily_requests(
                 request,
                 report_date,
                 reported_request_ids=reported_request_ids,
-                completed_lookback_days=completed_lookback_days,
             )
             if not reasons:
                 continue
@@ -292,201 +277,32 @@ def is_skladbot_rate_limit_error(exc: Exception) -> bool:
     return "429" in text or "too many requests" in text
 
 
-def has_reliable_list_dates(list_item: Any) -> bool:
-    if not isinstance(list_item, dict):
-        return False
-    return any(parse_date(request_list_value(list_item, key)) for key in (
-        "created_at",
-        "createdAt",
-        "updated_at",
-        "updatedAt",
-        "completed_at",
-        "completedAt",
-        "closed_at",
-        "closedAt",
-        "archived_at",
-        "archivedAt",
-        "unloading_date",
-        "unloadingDate",
-    ))
-
-
-def should_fetch_completed_request_detail(
-    list_item: Any,
-    request_type: dict[str, Any],
-    report_date: date,
-    completed_lookback_days: int,
-    reported_request_ids: set[int],
-) -> bool:
-    if not isinstance(list_item, dict):
-        return False
-    request_id = parse_int(request_list_value(list_item, "id"))
-    if request_id > 0 and request_id in reported_request_ids:
-        return False
-    if is_receiving_request_type(list_item, request_type):
-        return True
-    return request_has_recent_activity_date(list_item, report_date, completed_lookback_days)
-
-
-def is_receiving_request_type(list_item: dict[str, Any], request_type: dict[str, Any]) -> bool:
-    type_text = (
-        request_list_value(list_item, "type", "request_type", "requestType")
-        or normalize_text(request_type.get("name"))
-    )
-    if categorize_request_type(type_text) == "Приемка":
-        return True
-    return parse_int(request_type.get("id")) == 3391
-
-
-def list_request_inclusion_reasons(list_item: Any, report_date: date) -> list[str]:
-    if not isinstance(list_item, dict):
-        return []
-    return request_inclusion_reasons({
-        "created_at": request_list_value(list_item, "created_at", "createdAt"),
-        "updated_at": request_list_value(list_item, "updated_at", "updatedAt"),
-        "completed_at": request_list_value(
-            list_item,
-            "completed_at",
-            "completedAt",
-            "closed_at",
-            "closedAt",
-            "done_at",
-            "doneAt",
-            "finished_at",
-            "finishedAt",
-            "processed_at",
-            "processedAt",
-            "accepted_at",
-            "acceptedAt",
-        ),
-        "archived_at": request_list_value(list_item, "archived_at", "archivedAt", "archive_at", "archiveAt"),
-        "unloading_date": request_list_value(list_item, "unloading_date", "unloadingDate"),
-    }, report_date)
-
-
 def request_inclusion_reasons(
     request: dict[str, Any],
     report_date: date,
     reported_request_ids: set[int] | None = None,
-    completed_lookback_days: int | None = None,
 ) -> list[str]:
     reported_request_ids = reported_request_ids or set()
-    completed_lookback_days = (
-        max(0, env_int(SKLADBOT_DAILY_REPORT_COMPLETED_LOOKBACK_DAYS_ENV, 1))
-        if completed_lookback_days is None
-        else max(0, completed_lookback_days)
-    )
     request_id = parse_int(request.get("id"))
     if request_id > 0 and request_id in reported_request_ids:
         return []
     if not request_is_completed_and_archived(request):
         return []
-    reasons = request_fact_inclusion_reasons(request, report_date)
-    if reasons:
-        return reasons
-    if request_has_fact_date(request):
-        return []
-    if request_has_recent_activity_date(request, report_date, completed_lookback_days):
-        reasons.append("впервые найдена выполненной")
-    return reasons
+    if request_created_on_report_date(request, report_date):
+        return ["создана"]
+    return []
 
 
 def request_is_completed_and_archived(request: dict[str, Any]) -> bool:
     return bool(request.get("is_completed") and request.get("archived"))
 
 
-def request_has_fact_date(request: dict[str, Any]) -> bool:
-    return bool(parse_date(request.get("completed_at")) or parse_date(request.get("archived_at")))
+def request_has_created_date(request: dict[str, Any]) -> bool:
+    return parse_date(request_list_value(request, "created_at", "createdAt")) is not None
 
 
-def request_fact_inclusion_reasons(request: dict[str, Any], report_date: date) -> list[str]:
-    fact_values = [
-        ("выполнена", request.get("completed_at")),
-        ("архив", request.get("archived_at")),
-    ]
-    parsed_datetimes = [
-        (label, parsed)
-        for label, value in fact_values
-        for parsed in [parse_report_datetime(value)]
-        if parsed is not None
-    ]
-    if parsed_datetimes:
-        label, fact_datetime = max(parsed_datetimes, key=lambda item: item[1])
-        start, end = report_window_bounds(report_date)
-        return [label] if start < fact_datetime <= end else []
-    parsed_dates = [
-        (label, parsed)
-        for label, value in fact_values
-        for parsed in [parse_date(value)]
-        if parsed is not None
-    ]
-    if parsed_dates:
-        label, fact_date = max(parsed_dates, key=lambda item: item[1])
-        return [label] if fact_date == report_date else []
-    return []
-
-
-def report_cutoff_parts() -> tuple[int, int]:
-    hour = max(0, min(23, env_int("SKLADBOT_DAILY_REPORT_HOUR", 22)))
-    minute = max(0, min(59, env_int("SKLADBOT_DAILY_REPORT_MINUTE", 0)))
-    return hour, minute
-
-
-def report_window_bounds(report_date: date) -> tuple[datetime, datetime]:
-    timezone_info = business_timezone()
-    hour, minute = report_cutoff_parts()
-    start = datetime.combine(report_date - timedelta(days=1), datetime.min.time()).replace(
-        hour=hour,
-        minute=minute,
-        tzinfo=timezone_info,
-    )
-    end = datetime.combine(report_date, datetime.min.time()).replace(
-        hour=hour,
-        minute=minute,
-        tzinfo=timezone_info,
-    )
-    return start, end
-
-
-def parse_report_datetime(value: Any) -> datetime | None:
-    parsed = parse_datetime_value(value)
-    if parsed is None:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=business_timezone())
-    return parsed.astimezone(business_timezone())
-
-
-def value_matches_report_window(value: Any, report_date: date) -> bool:
-    parsed_datetime = parse_report_datetime(value)
-    if parsed_datetime is not None:
-        start, end = report_window_bounds(report_date)
-        return start < parsed_datetime <= end
-    return date_matches(value, report_date)
-
-
-def request_has_recent_activity_date(request: dict[str, Any], report_date: date, lookback_days: int) -> bool:
-    earliest = report_date - timedelta(days=lookback_days)
-    for keys in (
-        ("created_at", "createdAt"),
-        ("updated_at", "updatedAt"),
-        ("completed_at", "completedAt", "closed_at", "closedAt", "done_at", "doneAt", "finished_at", "finishedAt", "processed_at", "processedAt", "accepted_at", "acceptedAt"),
-        ("archived_at", "archivedAt", "archive_at", "archiveAt"),
-        ("unloading_date", "unloadingDate"),
-    ):
-        value = request_list_value(request, *keys)
-        parsed_datetime = parse_report_datetime(value)
-        if parsed_datetime is not None:
-            start, end = report_window_bounds(report_date)
-            if start < parsed_datetime <= end:
-                return True
-            if earliest <= parsed_datetime.date() <= report_date:
-                return True
-            continue
-        parsed_date = parse_date(value)
-        if parsed_date and earliest <= parsed_date <= report_date:
-            return True
-    return False
+def request_created_on_report_date(request: dict[str, Any], report_date: date) -> bool:
+    return date_matches(request_list_value(request, "created_at", "createdAt"), report_date)
 
 
 def date_matches(value: Any, expected: date) -> bool:

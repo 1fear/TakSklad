@@ -4,6 +4,28 @@
 
 ## 2026-06-21
 
+### Ежедневный SkladBot отчет теперь фильтруется по дате создания заявки
+
+**Файлы:** `backend/app/skladbot_daily_report.py`, `tests/test_skladbot_daily_report.py`, `docs/report-source-rules.md`, `docs/implementation-log.md`, `docs/changelog.md`.
+
+**Что стало:**
+
+- В daily report попадают только заявки `Выполнена` + `В архиве`, у которых `created_at`/`createdAt` равен дате отчета в бизнес-таймзоне.
+- `completedAt`, `archivedAt`, `updatedAt` и `Дата выгрузки` больше не переносят заявку в отчет другого дня.
+- В XLSX причина включения стала `создана`; старый fallback `впервые найдена выполненной` удален из правила отбора.
+- Registry `pending_events` сохранен как защита от повторной плановой отправки.
+
+**Проверки:**
+
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:. /tmp/taksklad-fulltest-codex-venv/bin/python -m unittest tests.test_skladbot_daily_report` - 19 tests OK.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:. /tmp/taksklad-fulltest-codex-venv/bin/python -m unittest tests.test_skladbot_daily_report tests.test_backend_telegram_import` - 82 tests OK.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:. /tmp/taksklad-fulltest-codex-venv/bin/python -m compileall -q backend/app/skladbot_daily_report.py tests/test_skladbot_daily_report.py` - OK.
+- `git diff --check` - OK.
+- VDS restore point: `/opt/taksklad/restore_points/pre-daily-report-created-date-20260621T175350Z`.
+- VDS Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260621T175350Z.sql.gz`.
+- VDS selective deploy: пересобран и перезапущен `telegram-worker`; `https://api.taksklad.uz/health` и `/ready` вернули `version=2.0.21`, `status=ok`.
+- VDS `./deploy/vds/acceptance_status.sh` - общий `status=ok`; свежие логи `telegram-worker` и `backend-api` без `ERROR/Traceback/Exception/CRITICAL/failed`.
+
 ### Карточный список заказов по макету и forced rollout 2.0.21
 
 **Файлы:** `src/taksklad/order_list_models.py`, `src/taksklad/order_list_widgets.py`, `src/taksklad/app_layout.py`, `src/taksklad/app_order_display.py`, `src/taksklad/config.py`, `backend/app/settings.py`, `tools/release_preflight.py`, `tools/build_windows_test_archive.ps1`, `deploy/vds/acceptance_status.sh`, `tests/test_order_list_models.py`, `tests/test_order_list_ui_contract.py`, `tests/test_desktop_ui_contract.py`, `tests/test_code_organization.py`, `tests/test_release_preflight.py`, `tests/test_vds_acceptance_scripts.py`, `tests/test_windows_test_build_helper.py`, `docs/user-business-process-guide.md`.

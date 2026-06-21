@@ -67,6 +67,7 @@ class FakeSkladBotDailyReportClient:
                         "id": 202,
                         "delivery_number": "WH-R-202",
                         "type": "Возврат 3PL",
+                        "created_at": "2026-06-08T10:00:00+05:00",
                         "updated_at": "2026-06-08T14:00:00+05:00",
                     },
                 ]}
@@ -100,7 +101,7 @@ class FakeSkladBotDailyReportClient:
                 202,
                 "WH-R-202",
                 "Возврат 3PL",
-                "2026-06-07T10:00:00+05:00",
+                "2026-06-08T10:00:00+05:00",
                 "2026-06-08T14:00:00+05:00",
                 "2026-06-08",
                 "THE BIG RICH RAKAT",
@@ -571,7 +572,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(report["errors"], [])
         self.assertEqual(report["summary"]["requests_total"], 3)
 
-    def test_daily_report_includes_receiving_created_yesterday_when_first_seen_completed_today(self):
+    def test_daily_report_skips_request_created_before_report_date(self):
         original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
         try:
             os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = "0"
@@ -586,10 +587,9 @@ class SkladBotDailyReportTests(unittest.TestCase):
             else:
                 os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = original_delay
 
-        self.assertEqual(report["summary"]["requests_total"], 1)
-        self.assertEqual(report["summary"]["category_counts"]["Приемка"], 1)
-        self.assertEqual(report["summary"]["request_blocks_by_category"]["Приемка"], 10000)
-        self.assertEqual(report["requests"][0]["include_reasons"], ["впервые найдена выполненной"])
+        self.assertEqual(report["summary"]["requests_total"], 0)
+        self.assertEqual(report["summary"]["category_counts"]["Приемка"], 0)
+        self.assertEqual(report["summary"]["request_blocks_by_category"]["Приемка"], 0)
 
     def test_daily_report_skips_completed_request_reported_before_report_date(self):
         original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
@@ -609,7 +609,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(report["summary"]["requests_total"], 0)
         self.assertEqual(report["summary"]["request_blocks_by_category"]["Приемка"], 0)
 
-    def test_daily_report_moves_completed_after_cutoff_to_next_report(self):
+    def test_daily_report_uses_created_date_not_completion_cutoff(self):
         original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
         try:
             os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = "0"
@@ -629,12 +629,13 @@ class SkladBotDailyReportTests(unittest.TestCase):
             else:
                 os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = original_delay
 
-        self.assertEqual(report_20["summary"]["requests_total"], 0)
-        self.assertEqual(report_21["summary"]["requests_total"], 1)
-        self.assertEqual(report_21["summary"]["request_blocks_by_category"]["Приемка"], 500)
-        self.assertEqual(report_21["requests"][0]["include_reasons"], ["выполнена"])
+        self.assertEqual(report_20["summary"]["requests_total"], 1)
+        self.assertEqual(report_20["summary"]["request_blocks_by_category"]["Приемка"], 500)
+        self.assertEqual(report_20["requests"][0]["include_reasons"], ["создана"])
+        self.assertEqual(report_21["summary"]["requests_total"], 0)
+        self.assertEqual(report_21["summary"]["request_blocks_by_category"]["Приемка"], 0)
 
-    def test_daily_report_checks_receiving_detail_when_list_date_is_stale(self):
+    def test_daily_report_skips_completed_request_when_created_date_is_stale(self):
         original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
         try:
             os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = "0"
@@ -649,11 +650,10 @@ class SkladBotDailyReportTests(unittest.TestCase):
             else:
                 os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = original_delay
 
-        self.assertEqual(report["summary"]["requests_total"], 1)
-        self.assertEqual(report["summary"]["request_blocks_by_category"]["Приемка"], 700)
-        self.assertEqual(report["requests"][0]["include_reasons"], ["выполнена"])
+        self.assertEqual(report["summary"]["requests_total"], 0)
+        self.assertEqual(report["summary"]["request_blocks_by_category"]["Приемка"], 0)
 
-    def test_daily_report_uses_later_archive_time_as_completed_archived_fact(self):
+    def test_daily_report_ignores_archive_cutoff_when_created_on_report_date(self):
         original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
         try:
             os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = "0"
@@ -673,10 +673,11 @@ class SkladBotDailyReportTests(unittest.TestCase):
             else:
                 os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = original_delay
 
-        self.assertEqual(report_20["summary"]["requests_total"], 0)
-        self.assertEqual(report_21["summary"]["requests_total"], 1)
-        self.assertEqual(report_21["summary"]["request_blocks_by_category"]["Приемка"], 900)
-        self.assertEqual(report_21["requests"][0]["include_reasons"], ["архив"])
+        self.assertEqual(report_20["summary"]["requests_total"], 1)
+        self.assertEqual(report_20["summary"]["request_blocks_by_category"]["Приемка"], 900)
+        self.assertEqual(report_20["requests"][0]["include_reasons"], ["создана"])
+        self.assertEqual(report_21["summary"]["requests_total"], 0)
+        self.assertEqual(report_21["summary"]["request_blocks_by_category"]["Приемка"], 0)
 
     def test_daily_report_product_breakdown_merges_stock_and_request_aliases(self):
         report = {
@@ -820,7 +821,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
                         "id": 404,
                         "number": "WH-R-404",
                         "category": "Приемка",
-                        "include_reasons": ["впервые найдена выполненной"],
+                        "include_reasons": ["создана"],
                         "products": [],
                     }],
                     "movements": [],

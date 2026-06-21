@@ -2,6 +2,33 @@
 
 Документ фиксирует ход работ: что сделано, что не сделано, какие ошибки найдены, какие решения приняты и что требует проверки. Новые записи добавляются сверху.
 
+## 2026-06-21
+
+### Ежедневный SkladBot отчет по дате создания заявки
+
+- Симптом: отчет за `21.06.2026` включил заявки с `Дата создания = 20.06.2026`, потому что прежняя логика относила закрытые заявки к дню выполнения/архивации или первому обнаружению.
+- Решение:
+  - daily report теперь включает только заявки, которые одновременно `Выполнена` и `В архиве`;
+  - дата попадания заявки в отчет берется из `created_at`/`createdAt` в бизнес-таймзоне;
+  - `completedAt`, `archivedAt`, `updatedAt` и `Дата выгрузки` больше не переносят заявку между daily reports;
+  - причина включения в XLSX теперь `создана`;
+  - registry `pending_events` сохранен как антидубль плановой отправки, но не определяет отчетную дату заявки.
+- Риск нового правила: заявка, созданная в один день и закрытая позже, не попадет в отчет за день закрытия. Это осознанно принято в пользу правила по дате создания.
+- Проверено:
+  - `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:. /tmp/taksklad-fulltest-codex-venv/bin/python -m unittest tests.test_skladbot_daily_report` - 19 tests OK.
+  - `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:. /tmp/taksklad-fulltest-codex-venv/bin/python -m unittest tests.test_skladbot_daily_report tests.test_backend_telegram_import` - 82 tests OK.
+  - `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:. /tmp/taksklad-fulltest-codex-venv/bin/python -m compileall -q backend/app/skladbot_daily_report.py tests/test_skladbot_daily_report.py` - OK.
+  - `git diff --check` - OK.
+- VDS deploy:
+  - restore point: `/opt/taksklad/restore_points/pre-daily-report-created-date-20260621T175350Z`;
+  - Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260621T175350Z.sql.gz`;
+  - selective sync: `backend/app/skladbot_daily_report.py`, `tests/test_skladbot_daily_report.py`, `docs/report-source-rules.md`, `docs/implementation-log.md`, `docs/changelog.md`;
+  - пересобран и перезапущен только `telegram-worker`, потому что daily report импортируется из `backend/app/telegram_worker.py`;
+  - VDS `telegram-worker` compileall по `app/skladbot_daily_report.py` и `app/telegram_worker.py` - OK;
+  - `https://api.taksklad.uz/health` - OK, `https://api.taksklad.uz/ready` - OK, Alembic `current_revision=20260617_0002`;
+  - VDS `./deploy/vds/acceptance_status.sh` - общий `status=ok`;
+  - свежие логи `telegram-worker` и `backend-api` за 10 минут - без `ERROR/Traceback/Exception/CRITICAL/failed`.
+
 ## 2026-06-20
 
 ### Ежедневный SkladBot отчет по факту закрытия заявок
