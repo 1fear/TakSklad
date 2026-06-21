@@ -14,6 +14,7 @@ from .config import (
     WARNING,
 )
 from .startup_check import format_app_version_label
+from .order_list_widgets import OrderCardList, PlaceholderEntry
 from .ui_widgets import AppButton, RoundedNotice
 
 
@@ -24,7 +25,7 @@ UI_FONT = "Segoe UI"
 TITLE_FONT = (UI_FONT, 22, "bold")
 DATE_FONT = (UI_FONT, 11)
 CARD_TITLE_FONT = (UI_FONT, 11, "bold")
-LIST_TITLE_FONT = (UI_FONT, 13, "bold")
+LIST_TITLE_FONT = (UI_FONT, 16, "bold")
 BODY_FONT = (UI_FONT, 10)
 BODY_FONT_BOLD = (UI_FONT, 10, "bold")
 SMALL_FONT = (UI_FONT, 9)
@@ -62,46 +63,63 @@ class LayoutMixin:
         list_card.pack(fill="both", expand=True)
 
         list_header = tk.Frame(list_card, bg=BG_CARD)
-        list_header.pack(fill="x", padx=20, pady=(15, 10))
+        list_header.pack(fill="x", padx=28, pady=(24, 6))
 
-        tk.Label(list_header, text="🏢 Заказы для КИЗов",
+        tk.Label(list_header, text="Заказы для КИЗов",
                 bg=BG_CARD, fg=FG_TEXT, font=LIST_TITLE_FONT).pack(side="left")
 
-        self.refresh_btn = AppButton(list_header, text="🔄 ОБНОВИТЬ",
+        self.refresh_btn = AppButton(list_header, text="↻ ОБНОВИТЬ",
                                      bg=INFO, fg="white", font=SMALL_FONT_BOLD,
-                                     command=self.refresh_from_sheet, relief="flat", cursor="hand2")
+                                     command=self.refresh_from_sheet, relief="flat", cursor="hand2",
+                                     radius=16, pady=7)
         self.refresh_btn.pack(side="right")
+
+        self.order_list_subtitle_label = tk.Label(
+            list_card,
+            text="0 активных заказов · список листается вниз",
+            bg=BG_CARD,
+            fg=FG_MUTED,
+            font=(UI_FONT, 10, "bold"),
+            anchor="w",
+        )
+        self.order_list_subtitle_label.pack(fill="x", padx=28, pady=(0, 22))
 
         self.search_var = tk.StringVar()
         self.search_var.trace_add("write", lambda *_: self.refresh_legal_list())
-        self.search_entry = tk.Entry(list_card, textvariable=self.search_var, bg=BG_MAIN, fg=FG_TEXT,
-                                     font=(UI_FONT, 10), relief="flat", bd=0,
-                                     highlightbackground=BORDER, highlightcolor=ACCENT,
-                                     highlightthickness=1, insertbackground=FG_TEXT)
-        self.search_entry.pack(fill="x", padx=15, pady=(0, 10))
+        self.search_entry = PlaceholderEntry(
+            list_card,
+            textvariable=self.search_var,
+            placeholder="Поиск клиента, адреса или заявки",
+            font=(UI_FONT, 12),
+        )
+        self.search_entry.pack(fill="x", padx=28, pady=(0, 22))
 
         self.import_btn = None
         self.catalog_btn = None
         self.control_btn = None
 
         list_container = tk.Frame(list_card, bg=BG_CARD)
-        list_container.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+        list_container.pack(fill="both", expand=True, padx=28, pady=(0, 0))
 
-        self.legal_listbox = tk.Listbox(list_container, bg=BG_CARD, fg=FG_TEXT,
-                                        font=BODY_FONT, selectmode=tk.SINGLE,
-                                        relief="flat", selectbackground=ACCENT, selectforeground="white")
-        self.legal_listbox.pack(side="left", fill="both", expand=True)
+        self.order_card_list = OrderCardList(list_container, on_activate=self.select_legal_entity)
+        self.order_card_list.pack(fill="both", expand=True)
 
-        scrollbar = tk.Scrollbar(list_container, orient="vertical", command=self.legal_listbox.yview)
-        scrollbar.pack(side="right", fill="y")
-        self.legal_listbox.config(yscrollcommand=scrollbar.set)
+        self.order_list_counter_label = tk.Label(
+            list_card,
+            text="Показаны 0 из 0",
+            bg=BG_CARD,
+            fg=FG_MUTED,
+            font=(UI_FONT, 9, "bold"),
+            anchor="w",
+        )
+        self.order_list_counter_label.pack(fill="x", padx=32, pady=(8, 22))
 
         self.refresh_legal_list()
 
         self.select_btn = AppButton(left_panel, text="✅ ВЫБРАТЬ ЗАКАЗ",
                                    bg=ACCENT, fg="white", font=PRIMARY_BUTTON_FONT,
                                    command=self.select_legal_entity, relief="flat", pady=12,
-                                   cursor="hand2")
+                                   cursor="hand2", radius=22)
         self.select_btn.pack(pady=(15, 0), fill="x")
 
         self.returns_btn = AppButton(left_panel, text="↩ ВОЗВРАТЫ",

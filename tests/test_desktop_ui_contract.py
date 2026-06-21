@@ -44,6 +44,11 @@ class DesktopUiContractTests(unittest.TestCase):
         ]
         for label in expected_labels:
             self.assertIn(label, source)
+        self.assertIn("OrderCardList", source)
+        self.assertIn("PlaceholderEntry", source)
+        self.assertIn("order_list_counter_label", source)
+        self.assertNotIn("legal_listbox", source)
+        self.assertNotIn("tk.Listbox", source)
         self.assertIn("format_app_version_label", source)
         self.assertIn("MVP 2.0", format_app_version_label())
 

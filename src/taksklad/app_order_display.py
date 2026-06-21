@@ -26,8 +26,9 @@ from .desktop_scan_rules import (
     scanned_codes_for_order,
 )
 from .orders import get_order_date_value, get_plan_blocks, order_group_key
+from .order_list_models import build_order_list_model, is_date_separator_key
 from .product_images import product_image_gtin, product_image_path
-from .reports import order_group_display_sort_key, unpack_order_group_key
+from .reports import unpack_order_group_key
 from .scan_quantities import scan_entries_for_order_codes
 from .utils import normalize_text, parse_date_to_standard, parse_int_value
 
@@ -54,83 +55,32 @@ def make_product_photo_image(product, size=PRODUCT_PHOTO_SIZE):
         return None
 
 
-def is_date_separator(value):
-    return isinstance(value, tuple) and len(value) == 2 and value[0] == "__date__"
-
-
 class OrderDisplayMixin:
     def refresh_legal_list(self):
-        self.legal_listbox.delete(0, tk.END)
-        self.visible_order_groups = []
-        grouped_orders = {}
-        group_dates = {}
-        search_text = normalize_text(self.search_var.get()).lower() if hasattr(self, "search_var") else ""
+        search_text = self.search_var.get() if hasattr(self, "search_var") else ""
+        model = build_order_list_model(self.today_orders, search_text=search_text)
+        self.order_list_model = model
+        self.visible_order_groups = list(model.visible_order_groups)
 
-        for order in self.today_orders:
-            key = order_group_key(order)
-            request_number, client, payment_type, address = unpack_order_group_key(key)
-            display_request_number = request_number or "Без номера SkladBot"
-            client = client or "Клиент не указан"
-            payment_type = payment_type or "Оплата не указана"
-            address = address or "Адрес не указан"
-            search_area = " ".join([
-                display_request_number,
-                client,
-                payment_type,
-                address,
-                normalize_text(order.get("Торговый представитель")),
-                normalize_text(order.get("Товары")),
-            ]).lower()
-            if search_text and search_text not in search_area:
-                continue
-            grouped_orders.setdefault((request_number, client, payment_type, address), []).append(order)
-            group_dates.setdefault(
-                (request_number, client, payment_type, address),
-                parse_date_to_standard(get_order_date_value(order)) or "Без даты",
-            )
-
-        date_groups = {}
-        for key in grouped_orders:
-            date_groups.setdefault(group_dates.get(key, "Без даты"), []).append(key)
-
-        for date_value in sorted(date_groups.keys(), key=date_sort_key):
-            header_index = self.legal_listbox.size()
-            self.visible_order_groups.append(("__date__", date_value))
-            self.legal_listbox.insert(tk.END, f"  {format_order_date_header(date_value).upper()}")
-            try:
-                self.legal_listbox.itemconfig(header_index, fg=FG_MUTED, bg=BG_MAIN, selectbackground=BG_MAIN)
-            except tk.TclError:
-                pass
-
-            for key in sorted(date_groups[date_value], key=order_group_display_sort_key):
-                request_number, client, payment_type, address = unpack_order_group_key(key)
-                display_request_number = request_number or "Без номера SkladBot"
-                count = len(grouped_orders[key])
-                self.visible_order_groups.append(key)
-                self.legal_listbox.insert(
-                    tk.END,
-                    f"  {display_request_number} | {client} | {payment_type} | {count} поз. | {address}",
-                )
+        if hasattr(self, "order_list_subtitle_label"):
+            self.order_list_subtitle_label.config(text=model.subtitle_text)
+        if hasattr(self, "order_list_counter_label"):
+            self.order_list_counter_label.config(text=model.counter_text)
+        if hasattr(self, "order_card_list"):
+            selected_key = self.current_group_key if getattr(self, "current_group_key", None) else None
+            self.order_card_list.set_rows(model.rows, selected_key=selected_key)
         self.update_stats_display()
 
     def _select_first_real_order(self):
-        for index, group in enumerate(self.visible_order_groups):
-            if not is_date_separator(group):
-                self.legal_listbox.selection_clear(0, tk.END)
-                self.legal_listbox.selection_set(index)
-                self.legal_listbox.activate(index)
-                return True
+        if hasattr(self, "order_card_list"):
+            return self.order_card_list.select_first_card()
         return False
 
     def _selected_order_group(self):
-        selection = self.legal_listbox.curselection()
-        if not selection:
+        selected_group = self.order_card_list.selected_key() if hasattr(self, "order_card_list") else None
+        if not selected_group:
             return None
-        selected_index = selection[0]
-        if selected_index >= len(self.visible_order_groups):
-            return None
-        selected_group = self.visible_order_groups[selected_index]
-        if is_date_separator(selected_group):
+        if is_date_separator_key(selected_group):
             self.show_error("Выберите заказ под датой, а не заголовок даты", popup=False)
             return None
         return selected_group
@@ -144,6 +94,8 @@ class OrderDisplayMixin:
         self.scanned_codes = []
         self.saved_codes_count = 0
         self.current_legal_entity_products = []
+        if hasattr(self, "order_card_list"):
+            self.order_card_list.clear_selection()
         self.current_info.config(text="Не выбрано")
         self.current_client_label.config(text="")
         self.current_product_label.config(text="")

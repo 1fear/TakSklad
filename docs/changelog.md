@@ -4,6 +4,31 @@
 
 ## 2026-06-21
 
+### Карточный список заказов по макету и forced rollout 2.0.21
+
+**Файлы:** `src/taksklad/order_list_models.py`, `src/taksklad/order_list_widgets.py`, `src/taksklad/app_layout.py`, `src/taksklad/app_order_display.py`, `src/taksklad/config.py`, `backend/app/settings.py`, `tools/release_preflight.py`, `tools/build_windows_test_archive.ps1`, `deploy/vds/acceptance_status.sh`, `tests/test_order_list_models.py`, `tests/test_order_list_ui_contract.py`, `tests/test_desktop_ui_contract.py`, `tests/test_code_organization.py`, `tests/test_release_preflight.py`, `tests/test_vds_acceptance_scripts.py`, `tests/test_windows_test_build_helper.py`, `docs/user-business-process-guide.md`.
+
+**Что стало:**
+
+- Левая панель `Заказы для КИЗов` переведена со старого `Listbox` на карточный прокручиваемый список в стиле утвержденного макета.
+- Каждая карточка показывает юрлицо, номер заявки SkladBot, дату отгрузки, количество SKU и план блоков.
+- Поиск сохранил фильтрацию по клиенту, адресу, оплате, заявке, торговому представителю и товару.
+- Выбор карточки хранит реальный `group_key` заказа, поэтому сканирование, завершение, печать и переход к первой незавершенной позиции не меняют бизнес-логику.
+- Заголовки дат остаются визуальными разделителями и не могут быть выбраны как заказ.
+- Добавлены отдельные model/widget модули, чтобы логика списка не возвращалась в `main.py`.
+- `APP_VERSION` desktop/backend и release guard подняты до `2.0.21` для нового обязательного обновления складских ПК.
+
+**Проверки:**
+
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:. /tmp/taksklad-fulltest-codex-venv/bin/python -m unittest tests.test_order_list_models tests.test_order_list_ui_contract tests.test_desktop_ui_contract tests.test_main_refactor_contract tests.test_code_organization` - 53 tests OK.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:. /tmp/taksklad-fulltest-codex-venv/bin/python -m compileall -q src/taksklad/order_list_models.py src/taksklad/order_list_widgets.py src/taksklad/app_layout.py src/taksklad/app_order_display.py tests/test_order_list_models.py tests/test_order_list_ui_contract.py tests/test_desktop_ui_contract.py tests/test_code_organization.py` - OK.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:. /tmp/taksklad-fulltest-codex-venv/bin/python -m unittest discover -s tests` - 509 tests OK.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:. /tmp/taksklad-fulltest-codex-venv/bin/python -m compileall -q main.py sitecustomize.py taksklad src/taksklad backend/app tests tools` - OK.
+- `npm --prefix frontend run build` - OK.
+- `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK.
+- `docker compose --env-file deploy/traefik/.env.example -f deploy/traefik/docker-compose.yml config` - OK.
+- `git diff --check` - OK.
+
 ### Модульный desktop и принудительный rollout 2.0.20
 
 **Файлы:** `src/taksklad/main.py`, `src/taksklad/app_data_loading.py`, `src/taksklad/app_finish.py`, `src/taksklad/app_layout.py`, `src/taksklad/app_order_display.py`, `src/taksklad/app_returns.py`, `src/taksklad/app_runtime.py`, `src/taksklad/app_scanning.py`, `src/taksklad/backend_flow.py`, `src/taksklad/desktop_refresh_service.py`, `src/taksklad/desktop_scan_rules.py`, `src/taksklad/config.py`, `backend/app/settings.py`, `tools/*`, `deploy/vds/acceptance_status.sh`, `tests/*`.

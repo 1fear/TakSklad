@@ -19,6 +19,8 @@ EXTRACTED_MODULES = [
     "taksklad.backend_flow",
     "taksklad.desktop_refresh_service",
     "taksklad.desktop_scan_rules",
+    "taksklad.order_list_models",
+    "taksklad.order_list_widgets",
 ]
 
 FORBIDDEN_MAIN_METHODS = [

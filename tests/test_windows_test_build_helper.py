@@ -20,7 +20,7 @@ class WindowsTestBuildHelperTest(unittest.TestCase):
         self.assertIn("app_build_label = $AppBuildLabel", script)
         self.assertIn("Build label: $AppBuildLabel", script)
         self.assertIn("version.json has local changes", script)
-        self.assertIn("forced 2.0.20 rollout manifest", script)
+        self.assertIn("forced 2.0.21 rollout manifest", script)
         self.assertIn("public_version_json_changed = $false", script)
         self.assertIn("windows_backend_acceptance.ps1", script)
         self.assertIn("release_go_no_go.py", script)
