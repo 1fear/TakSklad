@@ -28,6 +28,8 @@
 - `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK.
 - `docker compose --env-file deploy/traefik/.env.example -f deploy/traefik/docker-compose.yml config` - OK.
 - `git diff --check` - OK.
+- GitHub Actions `Build Windows Release` для `v2.0.21`, run `27909016791` - success.
+- Release assets: `TakSklad.exe` SHA256 `a10e31e73b282ac4b3056fb3d2c60cad5e957412d82df4a60634a5d2939c1c77`; `TakSklad-windows-x64.zip` SHA256 `3385bb24dae1b4a0b7a923700ac730b87c7a06db8f83a9bcfd873823148131b5`.
 
 ### Модульный desktop и принудительный rollout 2.0.20
 
