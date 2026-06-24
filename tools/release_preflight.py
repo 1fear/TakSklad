@@ -58,7 +58,7 @@ WINDOWS_TEST_BUILD_REQUIRED_FRAGMENTS = [
     "ACCEPTANCE_RESULTS.md",
     "Assert-TestPackageDoesNotContainLocalSecrets",
     "version.json has local changes",
-    "forced 2.0.23 rollout manifest",
+    "paused 1.1.7 nor forced 2.0.23 rollout manifest",
 ]
 EXPECTED_RELEASE_VERSION = "2.0.23"
 EXPECTED_MIN_SUPPORTED_VERSION = "2.0.23"
@@ -66,6 +66,7 @@ EXPECTED_PACKAGE_TYPE = "onefile_exe"
 EXPECTED_RELEASE_TAG = f"v{EXPECTED_RELEASE_VERSION}"
 EXPECTED_RELEASE_HOST = "github.com"
 EXPECTED_RELEASE_REPO_PATH = f"/1fear/TakSklad/releases/download/{EXPECTED_RELEASE_TAG}/"
+PAUSED_ROLLOUT_VERSION = "1.1.7"
 
 
 def sha256_file(path):
@@ -99,26 +100,39 @@ def check_version_json(root):
         return result("version_json", False, error=f"invalid json: {exc}")
 
     problems = []
-    if payload.get("latest_version") != EXPECTED_RELEASE_VERSION:
-        problems.append(f"latest_version must be {EXPECTED_RELEASE_VERSION}")
-    if payload.get("min_supported_version") != EXPECTED_MIN_SUPPORTED_VERSION:
-        problems.append(f"min_supported_version must be {EXPECTED_MIN_SUPPORTED_VERSION} for forced rollout")
-    if payload.get("mandatory") is not True:
-        problems.append("mandatory must be true during forced rollout")
-    if payload.get("package_type") != EXPECTED_PACKAGE_TYPE:
-        problems.append(f"package_type must be {EXPECTED_PACKAGE_TYPE}")
-    if not payload.get("download_url") or not payload.get("sha256"):
-        problems.append("onefile download_url and sha256 must be set")
-    if not payload.get("download_url_onedir") or not payload.get("sha256_onedir"):
-        problems.append("onedir download_url_onedir and sha256_onedir must be set")
-    for field_name in ("download_url", "download_url_onedir"):
-        url = str(payload.get(field_name) or "")
-        if url and not valid_release_download_url(url):
-            problems.append(f"{field_name} must be an HTTPS release URL for {EXPECTED_RELEASE_TAG}")
-    for field_name in ("sha256", "sha256_onedir"):
-        checksum = str(payload.get(field_name) or "")
-        if checksum and not valid_sha256(checksum):
-            problems.append(f"{field_name} must be a lowercase SHA256 hex digest")
+    paused_rollout = (
+        payload.get("latest_version") == PAUSED_ROLLOUT_VERSION
+        and payload.get("min_supported_version") == PAUSED_ROLLOUT_VERSION
+        and payload.get("mandatory") is False
+        and not payload.get("download_url")
+        and not payload.get("download_url_onedir")
+    )
+    forced_rollout = (
+        payload.get("latest_version") == EXPECTED_RELEASE_VERSION
+        and payload.get("min_supported_version") == EXPECTED_MIN_SUPPORTED_VERSION
+        and payload.get("mandatory") is True
+    )
+    rollout_state = "paused" if paused_rollout else "forced" if forced_rollout else "invalid"
+
+    if rollout_state == "invalid":
+        problems.append(
+            f"version.json must be either paused {PAUSED_ROLLOUT_VERSION} rollout or forced {EXPECTED_RELEASE_VERSION} rollout"
+        )
+    if rollout_state == "forced":
+        if payload.get("package_type") != EXPECTED_PACKAGE_TYPE:
+            problems.append(f"package_type must be {EXPECTED_PACKAGE_TYPE}")
+        if not payload.get("download_url") or not payload.get("sha256"):
+            problems.append("onefile download_url and sha256 must be set")
+        if not payload.get("download_url_onedir") or not payload.get("sha256_onedir"):
+            problems.append("onedir download_url_onedir and sha256_onedir must be set")
+        for field_name in ("download_url", "download_url_onedir"):
+            url = str(payload.get(field_name) or "")
+            if url and not valid_release_download_url(url):
+                problems.append(f"{field_name} must be an HTTPS release URL for {EXPECTED_RELEASE_TAG}")
+        for field_name in ("sha256", "sha256_onedir"):
+            checksum = str(payload.get(field_name) or "")
+            if checksum and not valid_sha256(checksum):
+                problems.append(f"{field_name} must be a lowercase SHA256 hex digest")
 
     git_clean = None
     git = shutil.which("git")
@@ -152,6 +166,7 @@ def check_version_json(root):
         latest_version=payload.get("latest_version"),
         min_supported_version=payload.get("min_supported_version"),
         mandatory=payload.get("mandatory"),
+        rollout_state=rollout_state,
         package_type=payload.get("package_type"),
         download_url_set=bool(payload.get("download_url")),
         download_url_onedir_set=bool(payload.get("download_url_onedir")),

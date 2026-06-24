@@ -89,12 +89,15 @@ class AppUpdatesTest(unittest.TestCase):
     def test_forced_update_decline_locks_scanning_with_recovery_message(self):
         app = _WindowsUpdateApp()
 
-        with mock.patch("taksklad.app_updates.messagebox.askyesno", return_value=False):
+        with mock.patch("taksklad.app_updates.load_data_section", return_value={}), \
+                mock.patch("taksklad.app_updates.save_data_section"), \
+                mock.patch("taksklad.app_updates.messagebox.askyesno", return_value=False):
             app.handle_update_info(
                 {
                     "latest_version": "9.9.9",
                     "min_supported_version": "9.9.9",
                     "mandatory": True,
+                    "block_workflow": True,
                     "package_type": "onefile_exe",
                     "download_url": "https://example.com/TakSklad.exe",
                 }
@@ -119,6 +122,7 @@ class AppUpdatesTest(unittest.TestCase):
                     "latest_version": "9.9.9",
                     "min_supported_version": "9.9.9",
                     "mandatory": True,
+                    "block_workflow": True,
                     "package_type": "onefile_exe",
                     "download_url": "https://example.com/TakSklad.exe",
                 }
@@ -145,6 +149,7 @@ class AppUpdatesTest(unittest.TestCase):
                     "latest_version": "9.9.9",
                     "min_supported_version": "9.9.9",
                     "mandatory": True,
+                    "block_workflow": True,
                     "package_type": "onefile_exe",
                     "download_url": "https://example.com/TakSklad.exe",
                 }
@@ -154,6 +159,71 @@ class AppUpdatesTest(unittest.TestCase):
         self.assertTrue(app.started_update)
         self.assertEqual(app.refresh_btn.options["state"], "disabled")
         save_section.assert_called_once()
+
+    def test_mandatory_update_without_workflow_block_decline_keeps_scanning_available(self):
+        app = _WindowsUpdateApp()
+
+        with mock.patch("taksklad.app_updates.messagebox.askyesno", return_value=False):
+            app.handle_update_info(
+                {
+                    "latest_version": "9.9.9",
+                    "min_supported_version": "9.9.9",
+                    "mandatory": True,
+                    "package_type": "onefile_exe",
+                    "download_url": "https://example.com/TakSklad.exe",
+                }
+            )
+
+        self.assertFalse(app.update_required)
+        self.assertFalse(app.started_update)
+        self.assertNotEqual(app.refresh_btn.options.get("state"), "disabled")
+        self.assertIn("отложено", app.status_var.value.lower())
+
+    def test_mandatory_update_without_workflow_block_accept_starts_update_without_lock(self):
+        app = _WindowsUpdateApp()
+
+        with mock.patch("taksklad.app_updates.load_data_section", return_value={}), \
+                mock.patch("taksklad.app_updates.save_data_section"), \
+                mock.patch("taksklad.app_updates.messagebox.askyesno", return_value=True):
+            app.handle_update_info(
+                {
+                    "latest_version": "9.9.9",
+                    "min_supported_version": "9.9.9",
+                    "mandatory": True,
+                    "package_type": "onefile_exe",
+                    "download_url": "https://example.com/TakSklad.exe",
+                }
+            )
+
+        self.assertFalse(app.update_required)
+        self.assertTrue(app.started_update)
+        self.assertNotEqual(app.refresh_btn.options.get("state"), "disabled")
+
+    def test_mandatory_update_without_workflow_block_cooldown_keeps_scanning_available(self):
+        app = _WindowsUpdateApp()
+
+        with mock.patch("taksklad.app_updates.time.time", return_value=1_000_100), \
+                mock.patch("taksklad.app_updates.load_data_section", return_value={
+                    "last_attempt_ts": 1_000_000,
+                    "last_attempt_version": "9.9.9",
+                    "last_user_action": "declined",
+                }), \
+                mock.patch("taksklad.app_updates.messagebox.askyesno") as askyesno:
+            app.handle_update_info(
+                {
+                    "latest_version": "9.9.9",
+                    "min_supported_version": "9.9.9",
+                    "mandatory": True,
+                    "package_type": "onefile_exe",
+                    "download_url": "https://example.com/TakSklad.exe",
+                }
+            )
+
+        self.assertFalse(app.update_required)
+        self.assertFalse(app.started_update)
+        self.assertNotEqual(app.refresh_btn.options.get("state"), "disabled")
+        self.assertIn("Откладываю до перезапуска", app.status_var.value)
+        askyesno.assert_not_called()
 
     def test_current_forced_version_with_stale_cooldown_does_not_lock(self):
         app = _WindowsUpdateApp()

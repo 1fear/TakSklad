@@ -90,7 +90,7 @@ class ReleasePreflightTests(unittest.TestCase):
                 "ACCEPTANCE_RESULTS.md\n"
                 "Assert-TestPackageDoesNotContainLocalSecrets\n"
                 "version.json has local changes\n"
-                "forced 2.0.23 rollout manifest\n"
+                "paused 1.1.7 nor forced 2.0.23 rollout manifest\n"
             )
         return "ok"
 
@@ -117,6 +117,14 @@ class ReleasePreflightTests(unittest.TestCase):
 
         self.assertEqual(summary["status"], "ok")
         self.assertTrue(all(check["ok"] for check in summary["checks"]))
+
+    def test_version_json_accepts_paused_rollout_manifest(self):
+        tmp_dir, root = self.make_root()
+        with tmp_dir:
+            check = check_version_json(root)
+
+        self.assertTrue(check["ok"])
+        self.assertEqual(check["rollout_state"], "paused")
 
     def test_version_json_rejects_bad_url_and_sha_format(self):
         tmp_dir, root = self.make_root()
@@ -169,7 +177,7 @@ class ReleasePreflightTests(unittest.TestCase):
         self.assertFalse(check["ok"])
         self.assertIn("download_url must be an HTTPS release URL for v2.0.23", check["problems"])
 
-    def test_version_json_rejects_non_forced_or_incomplete_rollout_manifest(self):
+    def test_version_json_rejects_invalid_rollout_manifest(self):
         tmp_dir, root = self.make_root()
         with tmp_dir:
             (root / VERSION_JSON).write_text(
@@ -187,10 +195,8 @@ class ReleasePreflightTests(unittest.TestCase):
             check = check_version_json(root)
 
         self.assertFalse(check["ok"])
-        self.assertIn("min_supported_version must be 2.0.23 for forced rollout", check["problems"])
-        self.assertIn("mandatory must be true during forced rollout", check["problems"])
-        self.assertIn("onefile download_url and sha256 must be set", check["problems"])
-        self.assertIn("onedir download_url_onedir and sha256_onedir must be set", check["problems"])
+        self.assertIn("version.json must be either paused 1.1.7 rollout or forced 2.0.23 rollout", check["problems"])
+        self.assertEqual(check["rollout_state"], "invalid")
 
     def test_verify_downloads_hashes_update_artifacts(self):
         tmp_dir, root = self.make_root()

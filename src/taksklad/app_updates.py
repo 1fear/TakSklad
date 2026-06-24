@@ -28,6 +28,10 @@ def manifest_bool(value):
     return normalize_text(value).lower() in {"1", "true", "yes", "on", "да"}
 
 
+def manifest_blocks_workflow(update_info):
+    return manifest_bool((update_info or {}).get("block_workflow"))
+
+
 def format_update_recovery_message(reason=""):
     lines = []
     reason_text = normalize_text(reason)
@@ -157,7 +161,8 @@ class UpdateMixin:
         below_min_version = bool(min_supported_version) and compare_versions(APP_VERSION, min_supported_version) < 0
         package_update_required = package_transition_required(update_info)
         mandatory_update = manifest_bool(update_info.get("mandatory"))
-        blocking_forced_update = below_min_version or (mandatory_update and update_available)
+        workflow_lock_allowed = manifest_blocks_workflow(update_info)
+        blocking_forced_update = workflow_lock_allowed and (below_min_version or (mandatory_update and update_available))
 
         if not update_available and not below_min_version and not package_update_required:
             return
@@ -220,10 +225,14 @@ class UpdateMixin:
         prompt_lines = [f"Доступно обновление до версии {latest_version}."]
         if package_update_required:
             prompt_lines.append("Требуется переход на новый формат сборки (onedir).")
-        if below_min_version:
+        if below_min_version and workflow_lock_allowed:
             prompt_lines.append("Текущая версия больше не поддерживается.")
+        elif below_min_version:
+            prompt_lines.append("Текущая версия ниже рекомендуемой, но работа не блокируется.")
         if blocking_forced_update and not below_min_version:
             prompt_lines.append("Это обязательное обновление.")
+        elif mandatory_update:
+            prompt_lines.append("Обновление помечено обязательным, но складская работа не блокируется.")
         if message:
             prompt_lines.append("")
             prompt_lines.append(message)
@@ -259,8 +268,9 @@ class UpdateMixin:
             return
 
         self.update_info = update_info
-        self.update_required = True
-        self.apply_required_update_lock()
+        self.update_required = bool(blocking_forced_update)
+        if blocking_forced_update:
+            self.apply_required_update_lock()
 
         self.status_var.set("⏳ Найдено обновление, начинаю установку...")
         logging.info(

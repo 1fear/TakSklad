@@ -300,18 +300,27 @@ except Exception:
 errors = []
 if sha_status != "ok":
     errors.append("acceptance Excel SHA mismatch")
-if version_info.get("latest_version") != "2.0.23":
-    errors.append("version.json latest_version must be 2.0.23")
-if version_info.get("min_supported_version") != "2.0.23":
-    errors.append("version.json min_supported_version must be 2.0.23 for forced rollout")
-if version_info.get("mandatory") is not True:
-    errors.append("version.json mandatory must be true during forced rollout")
-if version_info.get("package_type") != "onefile_exe":
-    errors.append("version.json package_type must be onefile_exe")
-if not version_info.get("download_url_set") or not version_info.get("sha256_set"):
-    errors.append("version.json onefile download_url and sha256 must be set")
-if not version_info.get("download_url_onedir_set") or not version_info.get("sha256_onedir_set"):
-    errors.append("version.json onedir download_url_onedir and sha256_onedir must be set")
+paused_rollout = (
+    version_info.get("latest_version") == "1.1.7"
+    and version_info.get("min_supported_version") == "1.1.7"
+    and version_info.get("mandatory") is False
+    and not version_info.get("download_url_set")
+    and not version_info.get("download_url_onedir_set")
+)
+forced_rollout = (
+    version_info.get("latest_version") == "2.0.23"
+    and version_info.get("min_supported_version") == "2.0.23"
+    and version_info.get("mandatory") is True
+)
+if not paused_rollout and not forced_rollout:
+    errors.append("version.json must be paused 1.1.7 rollout or forced 2.0.23 rollout")
+if forced_rollout:
+    if version_info.get("package_type") != "onefile_exe":
+        errors.append("version.json package_type must be onefile_exe")
+    if not version_info.get("download_url_set") or not version_info.get("sha256_set"):
+        errors.append("version.json onefile download_url and sha256 must be set")
+    if not version_info.get("download_url_onedir_set") or not version_info.get("sha256_onedir_set"):
+        errors.append("version.json onedir download_url_onedir and sha256_onedir must be set")
 safety = manifest_info.get("safety") or {}
 for key in ("version_json_staged_rollout", "github_release_published", "push_notifications_allowed", "mandatory_update_enabled"):
     if safety.get(key) is not True:

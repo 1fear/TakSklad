@@ -14,9 +14,7 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
             "result_file",
             "Acceptance result template not found",
             "Acceptance result file not found",
-            "version.json latest_version must be 2.0.23",
-            "version.json min_supported_version must be 2.0.23 for forced rollout",
-            "version.json mandatory must be true during forced rollout",
+            "version.json must be paused 1.1.7 rollout or forced 2.0.23 rollout",
             "version.json onefile download_url and sha256 must be set",
             "version.json onedir download_url_onedir and sha256_onedir must be set",
             '"version_json_staged_rollout", "github_release_published", "push_notifications_allowed", "mandatory_update_enabled"',
@@ -99,6 +97,7 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         self.assertIn("TAKSKLAD_DEFAULT_BLOCK_PRICE: ${TAKSKLAD_DEFAULT_BLOCK_PRICE:-240000}", compose)
         self.assertIn("SKLADBOT_WORKER_INTERVAL_SECONDS: ${SKLADBOT_WORKER_INTERVAL_SECONDS:-60}", compose)
         self.assertIn("SKLADBOT_REQUEST_DELAY_SECONDS: ${SKLADBOT_REQUEST_DELAY_SECONDS:-2}", compose)
+        self.assertIn("SKLADBOT_SKU_MAPPING_JSON: ${SKLADBOT_SKU_MAPPING_JSON:-}", compose)
         self.assertIn("SKLADBOT_SYNC_MAX_LOOKBACK_DAYS: ${SKLADBOT_SYNC_MAX_LOOKBACK_DAYS:-7}", compose)
         self.assertIn("SKLADBOT_ORDER_CREATE_LEAD_DAYS: ${SKLADBOT_ORDER_CREATE_LEAD_DAYS:-3}", compose)
         self.assertIn("SKLADBOT_DETAIL_LIMIT: ${SKLADBOT_DETAIL_LIMIT:-10}", compose)
@@ -112,6 +111,7 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         self.assertIn("TAKSKLAD_DEFAULT_BLOCK_PRICE=240000", env_example)
         self.assertIn("SKLADBOT_WORKER_INTERVAL_SECONDS=60", env_example)
         self.assertIn("SKLADBOT_REQUEST_DELAY_SECONDS=2", env_example)
+        self.assertIn("SKLADBOT_SKU_MAPPING_JSON=", env_example)
         self.assertIn("SKLADBOT_SYNC_MAX_LOOKBACK_DAYS=7", env_example)
         self.assertIn("SKLADBOT_ORDER_CREATE_LEAD_DAYS=3", env_example)
         self.assertIn("SKLADBOT_DETAIL_LIMIT=10", env_example)
@@ -148,6 +148,33 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         self.assertNotIn("proxy_set_header X-Forwarded-Proto $scheme;", nginx)
         self.assertEqual(nginx.count("proxy_set_header X-Forwarded-Proto https;"), 4)
         self.assertNotIn("VITE_TAKSKLAD_API_URL", compose)
+
+    def test_frontend_uses_same_origin_api_proxy_contract(self):
+        compose = (PROJECT_ROOT / "deploy" / "vds" / "docker-compose.yml").read_text(encoding="utf-8")
+        nginx = (PROJECT_ROOT / "frontend" / "nginx.conf.template").read_text(encoding="utf-8")
+        api_source = (PROJECT_ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
+        vite_config = (PROJECT_ROOT / "frontend" / "vite.config.ts").read_text(encoding="utf-8")
+
+        self.assertIn("export function defaultApiUrl()", api_source)
+        self.assertIn('return "";', api_source)
+        self.assertNotIn("VITE_TAKSKLAD_API_URL", api_source)
+        self.assertIn("const response = await fetch(`${apiUrl}${path}`", api_source)
+        self.assertIn('downloadDiagnosticsLog(config: ApiConfig)', api_source)
+        self.assertIn('fetch(`${apiUrl}/api/v1/diagnostics/logs`', api_source)
+
+        self.assertIn("location /api/ {", nginx)
+        self.assertIn("auth_request /_taksklad_auth_check;", nginx)
+        self.assertNotIn('proxy_set_header Authorization "Bearer ${TAKSKLAD_API_TOKEN}";', nginx)
+        self.assertIn('proxy_set_header Authorization "";', nginx)
+        self.assertIn("proxy_pass $taksklad_backend;", nginx)
+        self.assertIn("connect-src 'self'", nginx)
+
+        self.assertIn("TAKSKLAD_BACKEND_INTERNAL_URL: http://backend-api:8000", compose)
+        self.assertIn("taksklad-internal", compose)
+        self.assertNotIn("VITE_TAKSKLAD_API_URL", compose)
+
+        self.assertIn("VITE_TAKSKLAD_DEV_API_URL", vite_config)
+        self.assertIn('"/api"', vite_config)
 
 
 if __name__ == "__main__":

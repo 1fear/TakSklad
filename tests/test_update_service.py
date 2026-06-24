@@ -1,7 +1,12 @@
 import unittest
 from unittest import mock
 
-from taksklad.update_service import package_transition_required, validate_update_download_url, validate_update_sha256
+from taksklad.update_service import (
+    package_transition_required,
+    select_update_download,
+    validate_update_download_url,
+    validate_update_sha256,
+)
 
 
 class UpdateServiceTests(unittest.TestCase):
@@ -53,6 +58,25 @@ class UpdateServiceTests(unittest.TestCase):
         with mock.patch("taksklad.update_service.sys.frozen", False, create=True), \
                 mock.patch("taksklad.update_service.get_runtime_package_type", return_value="onefile"):
             self.assertFalse(package_transition_required(update_info))
+
+    def test_select_update_download_uses_package_specific_url(self):
+        update_info = {
+            "package_type": "onefile_exe",
+            "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.23/TakSklad.exe",
+            "sha256": "a" * 64,
+            "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.23/TakSklad-windows-x64.zip",
+            "sha256_onedir": "b" * 64,
+        }
+
+        self.assertEqual(
+            select_update_download(update_info),
+            ("https://github.com/1fear/TakSklad/releases/download/v2.0.23/TakSklad.exe", "a" * 64),
+        )
+
+        self.assertEqual(
+            select_update_download({**update_info, "package_type": "onedir_zip"}),
+            ("https://github.com/1fear/TakSklad/releases/download/v2.0.23/TakSklad-windows-x64.zip", "b" * 64),
+        )
 
 
 if __name__ == "__main__":

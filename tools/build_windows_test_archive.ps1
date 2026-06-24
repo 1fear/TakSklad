@@ -145,7 +145,7 @@ function Assert-VersionJsonSafeForTestBuild {
             $Manifest.sha256_onedir
         )
         if (-not $IsStablePinned -and -not $IsSafeRollout) {
-            throw "Public version.json is neither stable 1.1.7 nor forced 2.0.23 rollout manifest."
+            throw "Public version.json is neither paused 1.1.7 nor forced 2.0.23 rollout manifest."
         }
     }
 }
