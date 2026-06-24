@@ -1,12 +1,12 @@
 {
-  "latest_version": "2.0.22",
-  "min_supported_version": "2.0.22",
+  "latest_version": "2.0.23",
+  "min_supported_version": "2.0.23",
   "mandatory": true,
   "package_type": "onefile_exe",
   "entrypoint": "TakSklad.exe",
-  "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.22/TakSklad.exe",
-  "sha256": "666032f9af585736b4cc9b253f088b1e5cb5ce46c952733be89e516154389f32",
-  "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.22/TakSklad-windows-x64.zip",
-  "sha256_onedir": "80c1587c4a0db2a88c9e124ba404bce3cb60b1f00f93d62a563bee4ad71b9ede",
-  "message": "TakSklad 2.0.22: обязательное обновление. Исправлено сканирование коробов новых Chapman SKU: короб снова засчитывается как 50 блоков с проверкой SKU и остатка позиции."
+  "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.23/TakSklad.exe",
+  "sha256": "72740494cf7342624e98a1cb4d19130882cd346fe9b363840db11f84f3b6e7d7",
+  "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.23/TakSklad-windows-x64.zip",
+  "sha256_onedir": "e2ab0dc3ad46ab203161210389508543451cb3f42cf9d3b658af3373df7e998a",
+  "message": "TakSklad 2.0.23: обязательное обновление. Исправлен Green OP короб новых этикеток FALCON и повторная установка автообновления после неудачной принятой попытки."
 }
