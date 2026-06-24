@@ -1,12 +1,12 @@
 {
-  "latest_version": "2.0.21",
-  "min_supported_version": "2.0.21",
+  "latest_version": "2.0.22",
+  "min_supported_version": "2.0.22",
   "mandatory": true,
   "package_type": "onefile_exe",
   "entrypoint": "TakSklad.exe",
-  "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.21/TakSklad.exe",
-  "sha256": "a10e31e73b282ac4b3056fb3d2c60cad5e957412d82df4a60634a5d2939c1c77",
-  "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.21/TakSklad-windows-x64.zip",
-  "sha256_onedir": "3385bb24dae1b4a0b7a923700ac730b87c7a06db8f83a9bcfd873823148131b5",
-  "message": "TakSklad 2.0.21: обязательное обновление. Левая панель заказов для КИЗов переведена на карточный список по макету, с поиском, SKU, блоками и сохранением реального выбора заказа."
+  "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.22/TakSklad.exe",
+  "sha256": "666032f9af585736b4cc9b253f088b1e5cb5ce46c952733be89e516154389f32",
+  "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.22/TakSklad-windows-x64.zip",
+  "sha256_onedir": "80c1587c4a0db2a88c9e124ba404bce3cb60b1f00f93d62a563bee4ad71b9ede",
+  "message": "TakSklad 2.0.22: обязательное обновление. Исправлено сканирование коробов новых Chapman SKU: короб снова засчитывается как 50 блоков с проверкой SKU и остатка позиции."
 }
