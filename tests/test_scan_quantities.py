@@ -44,6 +44,7 @@ class ScanQuantitiesTests(unittest.TestCase):
         self.assertEqual(scan_code_product_key("010400639605407421BOX"), "brown:ssl")
         self.assertEqual(scan_code_product_key("010400639605404321BOX"), "red:ssl")
         self.assertEqual(scan_code_product_key("010400639610444821BOX"), "green:op")
+        self.assertEqual(scan_code_product_key("010400639610445821BOX"), "green:op")
 
     def test_aggregate_box_detection_uses_box_gtin_not_next_ai(self):
         cases = [
@@ -53,6 +54,7 @@ class ScanQuantitiesTests(unittest.TestCase):
             ("Chapman Brown SSL 100`20", "010400639605407410BATCH21BOX"),
             ("Chapman RED SSL 100 20", "01040063960540431726062510BATCH"),
             ("Chapman Green OP 20", "010400639610444810BATCH21BOX"),
+            ("Chapman Green OP 20", "010400639610445821UZ1112042611906223124013040030510ZIG1233389310000"),
         ]
 
         for product, code in cases:

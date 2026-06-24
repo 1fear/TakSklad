@@ -9,6 +9,7 @@ AGGREGATE_BOX_PRODUCT_PREFIXES = {
     "0104006396054074": "brown:ssl",
     "0104006396054043": "red:ssl",
     "0104006396104448": "green:op",
+    "0104006396104458": "green:op",
 }
 
 UNIT_PRODUCT_PREFIXES = {

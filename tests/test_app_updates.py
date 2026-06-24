@@ -2,6 +2,7 @@ import unittest
 from unittest import mock
 
 from taksklad.app_updates import UpdateMixin, format_update_recovery_message
+from taksklad.config import APP_VERSION
 
 
 class _StatusVar:
@@ -42,7 +43,9 @@ class _WindowsUpdateApp(UpdateMixin):
         self.status_label = _Button()
         self.refresh_btn = _Button()
         self.errors = []
+        self.critical_errors = []
         self.started_update = False
+        self.destroyed = False
 
     def auto_update_supported(self):
         return True
@@ -54,8 +57,15 @@ class _WindowsUpdateApp(UpdateMixin):
         self.errors.append(message)
         self.status_var.set(message)
 
+    def show_critical_error(self, title, message):
+        self.critical_errors.append((title, message))
+        self.status_var.set(f"{title}: {message}")
+
     def start_auto_update(self, update_info):
         self.started_update = True
+
+    def destroy(self):
+        self.destroyed = True
 
 
 class AppUpdatesTest(unittest.TestCase):
@@ -119,12 +129,134 @@ class AppUpdatesTest(unittest.TestCase):
         self.assertEqual(app.refresh_btn.options["state"], "disabled")
         self.assertIn("TakSklad_update.log", app.status_var.value)
 
+    def test_forced_update_after_accepted_attempt_can_retry_without_cooldown_lock(self):
+        app = _WindowsUpdateApp()
+
+        with mock.patch("taksklad.app_updates.time.time", return_value=1_000_100), \
+                mock.patch("taksklad.app_updates.load_data_section", return_value={
+                    "last_attempt_ts": 1_000_000,
+                    "last_attempt_version": "9.9.9",
+                    "last_user_action": "accepted",
+                }), \
+                mock.patch("taksklad.app_updates.save_data_section") as save_section, \
+                mock.patch("taksklad.app_updates.messagebox.askyesno", return_value=True):
+            app.handle_update_info(
+                {
+                    "latest_version": "9.9.9",
+                    "min_supported_version": "9.9.9",
+                    "mandatory": True,
+                    "package_type": "onefile_exe",
+                    "download_url": "https://example.com/TakSklad.exe",
+                }
+            )
+
+        self.assertTrue(app.update_required)
+        self.assertTrue(app.started_update)
+        self.assertEqual(app.refresh_btn.options["state"], "disabled")
+        save_section.assert_called_once()
+
+    def test_current_forced_version_with_stale_cooldown_does_not_lock(self):
+        app = _WindowsUpdateApp()
+
+        with mock.patch("taksklad.app_updates.load_data_section") as load_section, \
+                mock.patch("taksklad.app_updates.messagebox.askyesno") as askyesno:
+            app.handle_update_info(
+                {
+                    "latest_version": APP_VERSION,
+                    "min_supported_version": APP_VERSION,
+                    "mandatory": True,
+                    "package_type": "onefile_exe",
+                    "download_url": "https://example.com/TakSklad.exe",
+                }
+            )
+
+        self.assertFalse(app.update_required)
+        self.assertFalse(app.started_update)
+        self.assertIsNone(app.update_info)
+        load_section.assert_not_called()
+        askyesno.assert_not_called()
+
+    def test_current_version_package_transition_cooldown_is_non_blocking(self):
+        app = _WindowsUpdateApp()
+
+        with mock.patch("taksklad.app_updates.package_transition_required", return_value=True), \
+                mock.patch("taksklad.app_updates.time.time", return_value=1_000_100), \
+                mock.patch("taksklad.app_updates.load_data_section", return_value={
+                    "last_attempt_ts": 1_000_000,
+                    "last_attempt_version": APP_VERSION,
+                    "last_user_action": "declined",
+                }), \
+                mock.patch("taksklad.app_updates.messagebox.askyesno") as askyesno:
+            app.handle_update_info(
+                {
+                    "latest_version": APP_VERSION,
+                    "min_supported_version": APP_VERSION,
+                    "mandatory": True,
+                    "package_type": "onedir_zip",
+                    "download_url_onedir": "https://example.com/TakSklad.zip",
+                }
+            )
+
+        self.assertFalse(app.update_required)
+        self.assertFalse(app.started_update)
+        self.assertNotEqual(app.refresh_btn.options.get("state"), "disabled")
+        self.assertIn("Откладываю до перезапуска", app.status_var.value)
+        askyesno.assert_not_called()
+
+    def test_current_version_package_transition_decline_does_not_lock(self):
+        app = _WindowsUpdateApp()
+
+        with mock.patch("taksklad.app_updates.package_transition_required", return_value=True), \
+                mock.patch("taksklad.app_updates.messagebox.askyesno", return_value=False):
+            app.handle_update_info(
+                {
+                    "latest_version": APP_VERSION,
+                    "min_supported_version": APP_VERSION,
+                    "mandatory": True,
+                    "package_type": "onedir_zip",
+                    "download_url_onedir": "https://example.com/TakSklad.zip",
+                }
+            )
+
+        self.assertFalse(app.update_required)
+        self.assertFalse(app.started_update)
+        self.assertNotEqual(app.refresh_btn.options.get("state"), "disabled")
+        self.assertIn("отложено", app.status_var.value)
+
     def test_update_recovery_message_points_to_update_log_and_safe_action(self):
         message = format_update_recovery_message("download failed")
 
         self.assertIn("download failed", message)
         self.assertIn("TakSklad_update.log", message)
         self.assertIn("установите свежий Windows-архив", message)
+
+    def test_run_update_installer_starts_powershell_script_and_closes_app(self):
+        app = _WindowsUpdateApp()
+
+        with mock.patch("taksklad.app_updates.subprocess.Popen") as popen:
+            result = app.run_update_installer("C:\\Temp\\TakSklad_updater.ps1")
+
+        self.assertTrue(result)
+        self.assertTrue(app.destroyed)
+        popen.assert_called_once()
+        command = popen.call_args.args[0]
+        self.assertEqual(command[:4], ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass"])
+        self.assertEqual(command[-1], "C:\\Temp\\TakSklad_updater.ps1")
+
+    def test_run_update_installer_failure_keeps_app_open_with_recovery_message(self):
+        app = _WindowsUpdateApp()
+
+        with mock.patch("taksklad.app_updates.subprocess.Popen", side_effect=OSError("powershell missing")), \
+                mock.patch("taksklad.app_updates.logging.exception") as log_exception:
+            result = app.run_update_installer("C:\\Temp\\TakSklad_updater.ps1")
+
+        self.assertFalse(result)
+        self.assertFalse(app.destroyed)
+        log_exception.assert_called_once_with("Не удалось запустить установщик обновления")
+        self.assertEqual(app.critical_errors[0][0], "Не удалось запустить установщик обновления")
+        self.assertIn("powershell missing", app.critical_errors[0][1])
+        self.assertIn("TakSklad_update.log", app.critical_errors[0][1])
+        self.assertIn("Старую версию для сканирования не используйте", app.critical_errors[0][1])
 
 
 if __name__ == "__main__":

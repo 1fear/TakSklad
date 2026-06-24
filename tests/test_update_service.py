@@ -1,6 +1,7 @@
 import unittest
+from unittest import mock
 
-from taksklad.update_service import validate_update_download_url, validate_update_sha256
+from taksklad.update_service import package_transition_required, validate_update_download_url, validate_update_sha256
 
 
 class UpdateServiceTests(unittest.TestCase):
@@ -32,6 +33,26 @@ class UpdateServiceTests(unittest.TestCase):
                 else:
                     with self.assertRaises(ValueError):
                         validate_update_sha256(checksum)
+
+    def test_package_transition_required_only_for_frozen_onefile_to_onedir(self):
+        update_info = {
+            "package_type": "onedir_zip",
+            "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.23/TakSklad.zip",
+        }
+
+        with mock.patch("taksklad.update_service.sys.frozen", True, create=True), \
+                mock.patch("taksklad.update_service.get_runtime_package_type", return_value="onefile"):
+            self.assertTrue(package_transition_required(update_info))
+            self.assertFalse(package_transition_required({"package_type": "onefile_exe"}))
+            self.assertFalse(package_transition_required({"package_type": "onedir_zip"}))
+
+        with mock.patch("taksklad.update_service.sys.frozen", True, create=True), \
+                mock.patch("taksklad.update_service.get_runtime_package_type", return_value="onedir"):
+            self.assertFalse(package_transition_required(update_info))
+
+        with mock.patch("taksklad.update_service.sys.frozen", False, create=True), \
+                mock.patch("taksklad.update_service.get_runtime_package_type", return_value="onefile"):
+            self.assertFalse(package_transition_required(update_info))
 
 
 if __name__ == "__main__":

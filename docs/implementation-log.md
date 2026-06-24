@@ -4,6 +4,24 @@
 
 ## 2026-06-24
 
+### Hotfix 2.0.23: Green короб и автообновление
+
+- Симптом 1: короб Green OP с кодом `010400639610445821...` отклонялся как wrong-SKU/не распознанный, хотя позиция была `Chapman Green OP 20`.
+- Причина 1: в mapping коробов был Green GTIN `0104006396104448`, но новые этикетки FALCON пришли с коробочным GTIN `0104006396104458`.
+- Решение 1:
+  - новый GTIN `0104006396104458` добавлен в desktop/backend mapping как `green:op`;
+  - старый GTIN оставлен;
+  - добавлены regression tests на живой Green-код из FALCON.
+- Симптом 2: после неудачной принятой попытки обязательного автообновления повторный запуск старого exe попадал в cooldown-блок и склад был вынужден вручную ставить архив с GitHub.
+- Решение 2:
+  - если последняя попытка обязательного обновления была принята пользователем (`last_user_action=accepted`), cooldown больше не блокирует повторную установку той же версии;
+  - mandatory lock теперь включается только для реально устаревшей версии, а package-only переход на onedir при той же версии не блокирует сканирование;
+  - отказ пользователя от mandatory update и неизвестное старое состояние по-прежнему блокируют работу старой версии, чтобы не сканировать устаревшим exe.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_app_updates tests.test_update_service` - 14 tests OK;
+  - `.venv/bin/python -m unittest tests.test_scan_quantities tests.test_backend_api_persistence.BackendApiPersistenceTests.test_scan_create_accepts_live_green_aggregate_box_gtin tests.test_backend_api_persistence.BackendApiPersistenceTests.test_scan_create_accepts_aggregate_box_when_next_ai_is_not_serial tests.test_backend_api_persistence.BackendApiPersistenceTests.test_scan_create_rejects_aggregate_box_for_wrong_product` - 12 tests OK;
+  - `.venv/bin/python -m unittest tests.test_release_preflight tests.test_windows_test_build_helper tests.test_vds_acceptance_scripts` - 19 tests OK.
+
 ### Aggregate box scan hotfix for new Chapman SKU
 
 - Симптом: в приложении не пикаются короба новых SKU, хотя короб должен закрывать `50` блоков.

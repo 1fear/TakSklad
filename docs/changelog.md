@@ -4,6 +4,23 @@
 
 ## 2026-06-24
 
+### Hotfix 2.0.23: Green короб и retry автообновления
+
+**Файлы:** `src/taksklad/scan_quantities.py`, `backend/app/scan_quantities.py`, `src/taksklad/app_updates.py`, `src/taksklad/update_service.py`, `tests/test_scan_quantities.py`, `tests/test_backend_api_persistence.py`, `tests/test_app_updates.py`, `tests/test_update_service.py`.
+
+**Что стало:**
+
+- Добавлен новый коробочный GTIN Green OP `0104006396104458`; такие короба распознаются как `green:op` и дают `+50` блоков.
+- Старый Green GTIN `0104006396104448` сохранен для обратной совместимости.
+- После уже принятой попытки обязательного автообновления перезапуск старого exe больше не упирается в часовой cooldown-блок, а может сразу предложить повторить установку.
+- Если версия приложения уже равна версии манифеста, package-only переход на onedir больше не блокирует сканирование как mandatory update.
+
+**Проверки:**
+
+- `.venv/bin/python -m unittest tests.test_app_updates tests.test_update_service` - 14 tests OK.
+- `.venv/bin/python -m unittest tests.test_scan_quantities tests.test_backend_api_persistence.BackendApiPersistenceTests.test_scan_create_accepts_live_green_aggregate_box_gtin tests.test_backend_api_persistence.BackendApiPersistenceTests.test_scan_create_accepts_aggregate_box_when_next_ai_is_not_serial tests.test_backend_api_persistence.BackendApiPersistenceTests.test_scan_create_rejects_aggregate_box_for_wrong_product` - 12 tests OK.
+- `.venv/bin/python -m unittest tests.test_release_preflight tests.test_windows_test_build_helper tests.test_vds_acceptance_scripts` - 19 tests OK.
+
 ### Короба новых Chapman SKU распознаются по GTIN короба
 
 **Файлы:** `src/taksklad/scan_quantities.py`, `backend/app/scan_quantities.py`, `tests/test_scan_quantities.py`, `tests/test_backend_api_persistence.py`, `docs/implementation-log.md`, `docs/changelog.md`.

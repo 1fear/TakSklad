@@ -110,14 +110,23 @@ class UpdateMixin:
         self.status_var.set("⏳ Устанавливаю обновление...")
         self.status_label.config(bg=BG_MAIN, fg=FG_MUTED)
         creationflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
-        if updater_path.lower().endswith(".ps1"):
-            subprocess.Popen(
-                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", updater_path],
-                creationflags=creationflags,
+        try:
+            if updater_path.lower().endswith(".ps1"):
+                subprocess.Popen(
+                    ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", updater_path],
+                    creationflags=creationflags,
+                )
+            else:
+                subprocess.Popen(["cmd", "/c", updater_path], creationflags=creationflags)
+        except Exception as exc:
+            logging.exception("Не удалось запустить установщик обновления")
+            self.show_critical_error(
+                "Не удалось запустить установщик обновления",
+                format_update_recovery_message(str(exc)),
             )
-        else:
-            subprocess.Popen(["cmd", "/c", updater_path], creationflags=creationflags)
+            return False
         self.destroy()
+        return True
 
     def check_for_updates(self):
         if not UPDATE_INFO_URL:
@@ -147,7 +156,8 @@ class UpdateMixin:
         update_available = bool(latest_version) and compare_versions(APP_VERSION, latest_version) < 0
         below_min_version = bool(min_supported_version) and compare_versions(APP_VERSION, min_supported_version) < 0
         package_update_required = package_transition_required(update_info)
-        forced_update = below_min_version or manifest_bool(update_info.get("mandatory"))
+        mandatory_update = manifest_bool(update_info.get("mandatory"))
+        blocking_forced_update = below_min_version or (mandatory_update and update_available)
 
         if not update_available and not below_min_version and not package_update_required:
             return
@@ -174,11 +184,14 @@ class UpdateMixin:
             skip_state = {}
         last_attempt_ts = parse_int_value(skip_state.get("last_attempt_ts"))
         last_attempt_version = normalize_text(skip_state.get("last_attempt_version"))
+        last_user_action = normalize_text(skip_state.get("last_user_action"))
         now_ts = int(time.time())
+        retry_after_accepted_forced_update = blocking_forced_update and last_user_action == "accepted"
         if (
             last_attempt_ts > 0
             and now_ts - last_attempt_ts < UPDATE_RETRY_COOLDOWN_SECONDS
             and last_attempt_version == latest_version
+            and not retry_after_accepted_forced_update
         ):
             remaining = UPDATE_RETRY_COOLDOWN_SECONDS - (now_ts - last_attempt_ts)
             logging.info(
@@ -187,7 +200,7 @@ class UpdateMixin:
                 latest_version,
             )
             self.update_info = update_info
-            if forced_update:
+            if blocking_forced_update:
                 self.update_required = True
                 self.apply_required_update_lock()
                 self.show_update_recovery(
@@ -209,7 +222,7 @@ class UpdateMixin:
             prompt_lines.append("Требуется переход на новый формат сборки (onedir).")
         if below_min_version:
             prompt_lines.append("Текущая версия больше не поддерживается.")
-        if forced_update and not below_min_version:
+        if blocking_forced_update and not below_min_version:
             prompt_lines.append("Это обязательное обновление.")
         if message:
             prompt_lines.append("")
@@ -231,7 +244,7 @@ class UpdateMixin:
 
         if not user_confirmed:
             self.update_info = update_info
-            if forced_update:
+            if blocking_forced_update:
                 self.update_required = True
                 self.apply_required_update_lock()
                 self.show_update_recovery(
