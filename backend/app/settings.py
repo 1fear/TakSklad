@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from urllib.parse import urlsplit, urlunsplit
 
 
-APP_VERSION = "2.0.21"
+APP_VERSION = "2.0.22"
 
 
 @dataclass(frozen=True)
