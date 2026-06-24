@@ -1,9 +1,15 @@
 import unittest
 
-from backend.app.scan_quantities import scanned_blocks_for_scans
+from backend.app.scan_quantities import (
+    AGGREGATE_BOX_PRODUCT_PREFIXES as BACKEND_AGGREGATE_BOX_PRODUCT_PREFIXES,
+    scanned_blocks_for_scans,
+)
 from taksklad.scan_quantities import (
+    AGGREGATE_BOX_PRODUCT_PREFIXES,
     SCAN_TYPE_AGGREGATE_BOX,
+    aggregate_product_mismatch,
     block_quantity_for_code,
+    product_key_from_name,
     scan_code_product_key,
     scan_metadata_for_code,
     scan_product_mismatch,
@@ -38,6 +44,29 @@ class ScanQuantitiesTests(unittest.TestCase):
         self.assertEqual(scan_code_product_key("010400639605407421BOX"), "brown:ssl")
         self.assertEqual(scan_code_product_key("010400639605404321BOX"), "red:ssl")
         self.assertEqual(scan_code_product_key("010400639610444821BOX"), "green:op")
+
+    def test_aggregate_box_detection_uses_box_gtin_not_next_ai(self):
+        cases = [
+            ("Chapman Brown OP 20", "010400639605398510BATCH21BOX"),
+            ("Chapman RED OP 20", "01040063960539541726062510BATCH"),
+            ("Chapman Gold SSL 100`20", "010400639605401221BOX"),
+            ("Chapman Brown SSL 100`20", "010400639605407410BATCH21BOX"),
+            ("Chapman RED SSL 100 20", "01040063960540431726062510BATCH"),
+            ("Chapman Green OP 20", "010400639610444810BATCH21BOX"),
+        ]
+
+        for product, code in cases:
+            with self.subTest(product=product, code=code):
+                product_key = product_key_from_name(product)
+                self.assertTrue(product_key)
+                self.assertEqual(scan_code_product_key(code), product_key)
+                self.assertEqual(block_quantity_for_code(code), 50)
+                self.assertEqual(scan_metadata_for_code(code)["scan_type"], SCAN_TYPE_AGGREGATE_BOX)
+                self.assertFalse(scan_product_mismatch(code, product))
+                self.assertFalse(aggregate_product_mismatch(code, product))
+
+    def test_desktop_and_backend_aggregate_box_prefixes_match(self):
+        self.assertEqual(AGGREGATE_BOX_PRODUCT_PREFIXES, BACKEND_AGGREGATE_BOX_PRODUCT_PREFIXES)
 
     def test_desktop_rejects_unit_kiz_for_wrong_chapman_product(self):
         self.assertTrue(

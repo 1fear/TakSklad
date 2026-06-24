@@ -2,6 +2,28 @@
 
 Документ фиксирует ход работ: что сделано, что не сделано, какие ошибки найдены, какие решения приняты и что требует проверки. Новые записи добавляются сверху.
 
+## 2026-06-24
+
+### Aggregate box scan hotfix for new Chapman SKU
+
+- Симптом: в приложении не пикаются короба новых SKU, хотя короб должен закрывать `50` блоков.
+- Причина: короб распознавался по префиксу `01 + GTIN короба + 21`. Для новых этикеток после GTIN короба может идти другой GS1 AI, например `10` или `17`, поэтому код не классифицировался как `aggregate_box` и дальше отклонялся как неизвестный/wrong-SKU для известной Chapman-позиции.
+- Решение:
+  - desktop `src/taksklad/scan_quantities.py` распознает короб по `01 + GTIN короба`;
+  - backend `backend/app/scan_quantities.py` использует тот же mapping;
+  - добавлен тест синхронности desktop/backend mapping;
+  - добавлен backend regression test, где Brown SSL короб после GTIN содержит `10...21...` и все равно засчитывается как `+50`.
+- Инварианты:
+  - короб по-прежнему засчитывается только как `50` блоков;
+  - wrong-SKU остается заблокирован;
+  - короб больше остатка позиции остается заблокирован;
+  - обычные unit-КИЗы продолжают распознаваться по unit GTIN.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_scan_quantities` - 9 tests OK;
+  - `.venv/bin/python -m unittest tests.test_backend_api_persistence.BackendApiPersistenceTests.test_scan_create_counts_aggregate_box_as_fifty_blocks tests.test_backend_api_persistence.BackendApiPersistenceTests.test_scan_create_accepts_aggregate_box_when_next_ai_is_not_serial tests.test_backend_api_persistence.BackendApiPersistenceTests.test_scan_create_rejects_aggregate_box_when_remaining_blocks_are_less_than_fifty tests.test_backend_api_persistence.BackendApiPersistenceTests.test_scan_create_rejects_aggregate_box_for_wrong_product tests.test_backend_api_persistence.BackendApiPersistenceTests.test_scan_undo_subtracts_aggregate_box_block_quantity tests.test_backend_api_persistence.BackendApiPersistenceTests.test_scan_create_rejects_unit_kiz_for_wrong_chapman_product` - 15 tests OK;
+  - `.venv/bin/python -m unittest tests.test_backend_api_persistence` - 94 tests OK;
+  - `.venv/bin/python -m compileall -q src/taksklad backend/app tests/test_scan_quantities.py tests/test_backend_api_persistence.py` - OK.
+
 ## 2026-06-21
 
 ### Ежедневный SkladBot отчет по дате создания заявки

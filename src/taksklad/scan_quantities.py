@@ -3,12 +3,12 @@ SCAN_TYPE_AGGREGATE_BOX = "aggregate_box"
 AGGREGATE_BOX_BLOCK_QUANTITY = 50
 
 AGGREGATE_BOX_PRODUCT_PREFIXES = {
-    "010400639605401221": "gold:ssl",
-    "010400639605398521": "brown:op",
-    "010400639605395421": "red:op",
-    "010400639605407421": "brown:ssl",
-    "010400639605404321": "red:ssl",
-    "010400639610444821": "green:op",
+    "0104006396054012": "gold:ssl",
+    "0104006396053985": "brown:op",
+    "0104006396053954": "red:op",
+    "0104006396054074": "brown:ssl",
+    "0104006396054043": "red:ssl",
+    "0104006396104448": "green:op",
 }
 
 UNIT_PRODUCT_PREFIXES = {

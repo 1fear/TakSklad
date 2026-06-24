@@ -2,6 +2,25 @@
 
 Здесь фиксируются все правки в коде TakSklad: что менялось, в каком файле, зачем, и какие тесты это покрывают. Записи идут от новых к старым.
 
+## 2026-06-24
+
+### Короба новых Chapman SKU распознаются по GTIN короба
+
+**Файлы:** `src/taksklad/scan_quantities.py`, `backend/app/scan_quantities.py`, `tests/test_scan_quantities.py`, `tests/test_backend_api_persistence.py`, `docs/implementation-log.md`, `docs/changelog.md`.
+
+**Что стало:**
+
+- Агрегационный короб распознается по `01 + GTIN короба`, без требования, чтобы сразу после GTIN шел AI `21`.
+- Короба Brown OP, RED OP, Gold SSL, Brown SSL, RED SSL и Green OP продолжают считаться как `+50` блоков.
+- Desktop и backend держат одинаковый mapping коробных префиксов.
+- Wrong-SKU и проверка остатка позиции сохранены.
+
+**Проверки:**
+
+- `.venv/bin/python -m unittest tests.test_scan_quantities` - 9 tests OK.
+- `.venv/bin/python -m unittest tests.test_backend_api_persistence` - 94 tests OK.
+- `.venv/bin/python -m compileall -q src/taksklad backend/app tests/test_scan_quantities.py tests/test_backend_api_persistence.py` - OK.
+
 ## 2026-06-21
 
 ### Ежедневный SkladBot отчет теперь фильтруется по дате создания заявки

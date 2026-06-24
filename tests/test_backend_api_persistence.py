@@ -933,6 +933,30 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertEqual(audit.payload["scan_type"], "aggregate_box")
             self.assertEqual(audit.payload["block_quantity"], 50)
 
+    def test_scan_create_accepts_aggregate_box_when_next_ai_is_not_serial(self):
+        _, item_id = self.seed_order(quantity_blocks=100, product="Chapman Brown SSL 100`20")
+
+        response = self.client.post(
+            "/api/v1/scans",
+            json={
+                "order_item_id": item_id,
+                "code": "010400639605407410BATCH21BOX",
+                "workstation_id": "pc-1",
+            },
+        )
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        self.assertEqual(payload["scanned_blocks"], 50)
+        self.assertEqual(payload["item_status"], "not_completed")
+        with self.SessionLocal() as db:
+            item = db.get(OrderItem, uuid.UUID(item_id))
+            scan = db.execute(select(ScanCode)).scalar_one()
+            self.assertEqual(item.scanned_blocks, 50)
+            self.assertEqual(scan.raw_payload["scan_type"], "aggregate_box")
+            self.assertEqual(scan.raw_payload["block_quantity"], 50)
+            self.assertEqual(scan.raw_payload["product_key"], "brown:ssl")
+
     def test_scan_create_rejects_aggregate_box_when_remaining_blocks_are_less_than_fifty(self):
         _, item_id = self.seed_order(quantity_blocks=30, product="Chapman Gold SSL 100`20")
 
