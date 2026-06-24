@@ -21,6 +21,18 @@
   - `.venv/bin/python -m unittest tests.test_app_updates tests.test_update_service` - 14 tests OK;
   - `.venv/bin/python -m unittest tests.test_scan_quantities tests.test_backend_api_persistence.BackendApiPersistenceTests.test_scan_create_accepts_live_green_aggregate_box_gtin tests.test_backend_api_persistence.BackendApiPersistenceTests.test_scan_create_accepts_aggregate_box_when_next_ai_is_not_serial tests.test_backend_api_persistence.BackendApiPersistenceTests.test_scan_create_rejects_aggregate_box_for_wrong_product` - 12 tests OK;
   - `.venv/bin/python -m unittest tests.test_release_preflight tests.test_windows_test_build_helper tests.test_vds_acceptance_scripts` - 19 tests OK.
+- Релиз/deploy:
+  - GitHub release `v2.0.23` опубликован; workflow `28090484689` собрал `TakSklad.exe` и `TakSklad-windows-x64.zip`;
+  - public `version.json` на GitHub показывает `latest_version=min_supported_version=2.0.23`, `mandatory=true`, `package_type=onefile_exe`;
+  - SHA `TakSklad.exe`: `72740494cf7342624e98a1cb4d19130882cd346fe9b363840db11f84f3b6e7d7`;
+  - SHA `TakSklad-windows-x64.zip`: `e2ab0dc3ad46ab203161210389508543451cb3f42cf9d3b658af3373df7e998a`;
+  - перед VDS deploy создан restore point `/opt/taksklad/restore_points/pre-2023-green-box-updater-20260624T100252Z`;
+  - создан Postgres backup `/opt/taksklad/backups/postgres/taksklad-postgres-20260624T100252Z.sql.gz`;
+  - на VDS синхронизированы только hotfix/runtime файлы и пересобран `backend-api`;
+  - container smoke: `APP_VERSION=2.0.23`, live Green-код распознан как `green:op`, `block_quantity=50`;
+  - `https://api.taksklad.uz/health` - OK, `version=2.0.23`;
+  - `/ready` остается `degraded` из-за старого failed `telegram_excel_import`, не из-за hotfix;
+  - `./deploy/vds/acceptance_status.sh` подтвердил `version_json`, Google/backend sync и SkladBot coverage OK, общий status `failed` только из-за known readiness/manual GO-NO-GO.
 
 ### Aggregate box scan hotfix for new Chapman SKU
 

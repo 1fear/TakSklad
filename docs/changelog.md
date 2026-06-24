@@ -21,6 +21,14 @@
 - `.venv/bin/python -m unittest tests.test_scan_quantities tests.test_backend_api_persistence.BackendApiPersistenceTests.test_scan_create_accepts_live_green_aggregate_box_gtin tests.test_backend_api_persistence.BackendApiPersistenceTests.test_scan_create_accepts_aggregate_box_when_next_ai_is_not_serial tests.test_backend_api_persistence.BackendApiPersistenceTests.test_scan_create_rejects_aggregate_box_for_wrong_product` - 12 tests OK.
 - `.venv/bin/python -m unittest tests.test_release_preflight tests.test_windows_test_build_helper tests.test_vds_acceptance_scripts` - 19 tests OK.
 
+**Релиз/deploy:**
+
+- GitHub release `v2.0.23` опубликован, Windows workflow `28090484689` завершился успешно.
+- Public `version.json` переведен на forced `2.0.23`, package type `onefile_exe`; SHA `TakSklad.exe` = `72740494cf7342624e98a1cb4d19130882cd346fe9b363840db11f84f3b6e7d7`, SHA ZIP = `e2ab0dc3ad46ab203161210389508543451cb3f42cf9d3b658af3373df7e998a`.
+- VDS targeted deploy: пересобран только `backend-api`; restore point `/opt/taksklad/restore_points/pre-2023-green-box-updater-20260624T100252Z`, Postgres backup `/opt/taksklad/backups/postgres/taksklad-postgres-20260624T100252Z.sql.gz`.
+- `https://api.taksklad.uz/health` вернул `version=2.0.23`; backend container распознал live Green-код как `green:op`, `block_quantity=50`.
+- `./deploy/vds/acceptance_status.sh` остался `failed` только из-за старого `/ready=degraded` по `telegram_excel_import` и незакрытых ручных GO/NO-GO чекбоксов; version_json, Google/backend sync и SkladBot coverage OK.
+
 ### Короба новых Chapman SKU распознаются по GTIN короба
 
 **Файлы:** `src/taksklad/scan_quantities.py`, `backend/app/scan_quantities.py`, `tests/test_scan_quantities.py`, `tests/test_backend_api_persistence.py`, `docs/implementation-log.md`, `docs/changelog.md`.
