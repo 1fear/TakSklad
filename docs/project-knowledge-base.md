@@ -240,7 +240,10 @@ SkladBot нужен для подтягивания номеров заявок 
 
 ## 9. Telegram
 
-Telegram сейчас работает внутри desktop-приложения, а не как отдельный сервер.
+Основной Telegram import сейчас должен выполнять серверный `telegram-worker` через backend.
+Legacy polling внутри desktop-приложения остаётся fallback-режимом и по умолчанию выключается,
+если desktop запущен с включённым backend (`TAKSKLAD_BACKEND_ENABLED=true`).
+Для аварийного возврата к старому desktop-polling нужно явно задать `TELEGRAM_DESKTOP_POLLING_ENABLED=true`.
 
 Функции:
 
@@ -258,9 +261,10 @@ Telegram сейчас работает внутри desktop-приложения
 - неизвестные chat_id логируются и игнорируются;
 - реальные chat_id и bot token не должны попадать в git.
 
-Проблема двух компьютеров:
+Проблема нескольких poller:
 
 - если оба вызывают `getUpdates`, Telegram отдаёт `HTTP 409 Conflict`;
+- если desktop и серверный worker читают одного бота, один слой может создать заказ, а второй отправить ложную ошибку по тому же файлу;
 - добавлен Google Sheets lock `telegram_poll`;
 - владелец lock слушает Telegram;
 - второй компьютер пропускает polling и пробует позже.
@@ -270,6 +274,7 @@ Telegram сейчас работает внутри desktop-приложения
 - общий `last_update_id` хранится в `_TakSklad_System`;
 - это защищает от двойной обработки одного Excel-файла при гонке lock;
 - локальный `telegram_state` остаётся fallback, если Google недоступен.
+- если серверный worker теряет ответ `/api/v1/imports` по timeout, он должен сначала проверить историю импортов по `telegram_event_id`; нельзя писать пользователю, что заказы и заявки SkladBot не созданы, пока это не подтверждено.
 
 Временность решения: Telegram-lock в Google Sheets - рабочий компромисс, но не финальная архитектура. Правильное решение - отдельный Telegram worker на сервере.
 

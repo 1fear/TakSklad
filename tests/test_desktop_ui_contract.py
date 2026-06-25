@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from taksklad import app_day_end, app_returns, app_runtime
+from taksklad import app_day_end, app_returns, app_runtime, app_telegram
 from taksklad import main as main_module
 from taksklad.config import ACCENT, BG_MAIN, DANGER, ERROR_FG, FG_MUTED, FG_TEXT, WARNING
 from taksklad.config import SKLADBOT_REQUEST_NUMBER_COLUMN
@@ -30,6 +30,24 @@ from taksklad.ui_widgets import AppButton, fade_hex
 
 
 class DesktopUiContractTests(unittest.TestCase):
+    def test_desktop_telegram_polling_is_disabled_by_config_even_when_bot_is_configured(self):
+        settings = {
+            "enabled": True,
+            "bot_token": "telegram-token",
+            "chat_ids": ["123"],
+        }
+        with mock.patch("taksklad.app_telegram.TELEGRAM_DESKTOP_POLLING_ENABLED", False):
+            self.assertFalse(app_telegram.desktop_telegram_polling_enabled(settings))
+
+    def test_desktop_telegram_polling_can_still_be_enabled_as_legacy_fallback(self):
+        settings = {
+            "enabled": True,
+            "bot_token": "telegram-token",
+            "chat_ids": ["123"],
+        }
+        with mock.patch("taksklad.app_telegram.TELEGRAM_DESKTOP_POLLING_ENABLED", True):
+            self.assertTrue(app_telegram.desktop_telegram_polling_enabled(settings))
+
     def test_main_warehouse_screen_uses_2_0_labels(self):
         source = inspect.getsource(ScanningApp._build_ui)
 

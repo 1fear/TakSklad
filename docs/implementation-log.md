@@ -6114,3 +6114,27 @@ cd /opt/taksklad/app
 - Проверено:
   - `.venv/bin/python -m py_compile src/taksklad/app_telegram.py` - OK;
   - `.venv/bin/python -m unittest tests.test_desktop_ui_contract` - 46 tests OK.
+
+### Desktop Telegram polling disabled in backend mode
+
+- Причина: после перехода Telegram Excel import на серверный `telegram-worker` legacy polling внутри desktop-клиента мог прочитать тот же Telegram-документ. В результате backend уже создавал заказ, web-panel и SkladBot показывали созданную заявку, а desktop после сетевого timeout отправлял ложное сообщение `Не удалось импортировать Excel-файл`.
+- Изменено:
+  - добавлен флаг `TELEGRAM_DESKTOP_POLLING_ENABLED`;
+  - default: desktop Telegram polling выключен, если включен `TAKSKLAD_BACKEND_ENABLED`;
+  - `src/taksklad/app_telegram.py` больше не запускает `getUpdates`, когда desktop polling отключен;
+  - legacy fallback можно вернуть явно через `TELEGRAM_DESKTOP_POLLING_ENABLED=true`.
+- Инвариант: импорт заказов, backend `/api/v1/imports`, SkladBot create и данные заказов не менялись.
+
+### Telegram worker import timeout confirmation
+
+- Причина: серверный `telegram-worker` мог получить read timeout после `POST /api/v1/imports`, хотя backend уже успел закоммитить импорт, создать заказы и поставить SkladBot create event. Старый текст ошибки в таком случае ложно писал, что заказы и заявки SkladBot не созданы.
+- Изменено:
+  - добавлен `TELEGRAM_WORKER_IMPORT_TIMEOUT_SECONDS` с default 120 секунд для `/api/v1/imports`;
+  - при timeout после backend import worker делает read-back через `/api/v1/imports` и ищет импорт по `telegram_event_id`;
+  - если импорт найден, Telegram получает обычное успешное сообщение с пометкой, что результат подтверждён через историю импортов;
+  - если импорт не найден или read-back недоступен, Telegram получает сообщение `Не удалось подтвердить импорт`, без утверждения, что заказы не созданы, и с указанием не отправлять файл повторно до проверки web-панели.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_backend_telegram_import` - 67 tests OK;
+  - `.venv/bin/python -m unittest tests.test_desktop_ui_contract` - 48 tests OK;
+  - `.venv/bin/python -m py_compile backend/app/telegram_worker.py tests/test_backend_telegram_import.py` - OK;
+  - `git diff --check` - OK.

@@ -1293,6 +1293,105 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertNotIn("secret-service-token", text)
         self.assertNotIn("0104006396053978217SECRETKIZVALUE", text)
 
+    def test_telegram_worker_recovers_completed_import_after_backend_post_timeout(self):
+        worker = TelegramWorker.__new__(TelegramWorker)
+        worker.timeout = 20
+        worker.import_timeout = 120
+        messages = []
+        event_id = "11111111-1111-1111-1111-111111111111"
+
+        def fake_backend_post(path, payload):
+            self.assertEqual(path, "/api/v1/imports")
+            self.assertEqual(payload["telegram_event_id"], event_id)
+            raise httpx.ReadTimeout("response timed out")
+
+        def fake_backend_get(path, params=None):
+            self.assertEqual(path, "/api/v1/imports")
+            return [{
+                "id": "import-1",
+                "source": "telegram",
+                "status": "completed",
+                "rows_total": 1,
+                "rows_imported": 1,
+                "raw_payload": {
+                    "filename": "orders.xlsx",
+                    "telegram_event_id": event_id,
+                    "orders_created": 1,
+                    "items_created": 1,
+                    "duplicate_rows": 0,
+                    "invalid_rows": 0,
+                    "backend_address_updates": 0,
+                    "errors": [],
+                    "google_sheets": {"status": "disabled"},
+                },
+            }]
+
+        original_excel_to_payload = telegram_worker_module.excel_file_to_import_payload
+        try:
+            worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
+            worker.download_telegram_document = lambda document, temp_path: Path(temp_path).write_bytes(b"xlsx")
+            worker.backend_post = fake_backend_post
+            worker.backend_get = fake_backend_get
+            telegram_worker_module.excel_file_to_import_payload = lambda *args, **kwargs: {
+                "rows": [{"Клиент": "Client", "Кол-во блок": 2}],
+                "meta": {"source_rows_count": 1, "shipment_date": "09.06.2026"},
+            }
+
+            result = worker.import_telegram_document(
+                "123",
+                {"file_name": "orders.xlsx", "file_id": "file-1"},
+                shipment_date="09.06.2026",
+                event_id=event_id,
+            )
+        finally:
+            telegram_worker_module.excel_file_to_import_payload = original_excel_to_payload
+
+        self.assertEqual(result, (True, ""))
+        text = messages[-1][1]
+        self.assertIn("Excel импортирован через Telegram", text)
+        self.assertIn("Позиции добавлены: 1", text)
+        self.assertIn("Заказы добавлены: 1", text)
+        self.assertIn("результат подтверждён через историю импортов", text)
+        self.assertNotIn("Заказы и заявки SkladBot не созданы", text)
+
+    def test_telegram_worker_import_timeout_without_readback_uses_unconfirmed_message(self):
+        worker = TelegramWorker.__new__(TelegramWorker)
+        worker.timeout = 20
+        worker.import_timeout = 120
+        messages = []
+
+        def fake_backend_post(path, payload):
+            raise httpx.ReadTimeout("response timed out")
+
+        def fake_backend_get(path, params=None):
+            return []
+
+        original_excel_to_payload = telegram_worker_module.excel_file_to_import_payload
+        try:
+            worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
+            worker.download_telegram_document = lambda document, temp_path: Path(temp_path).write_bytes(b"xlsx")
+            worker.backend_post = fake_backend_post
+            worker.backend_get = fake_backend_get
+            telegram_worker_module.excel_file_to_import_payload = lambda *args, **kwargs: {
+                "rows": [{"Клиент": "Client", "Кол-во блок": 2}],
+                "meta": {"source_rows_count": 1, "shipment_date": "09.06.2026"},
+            }
+
+            result = worker.import_telegram_document(
+                "123",
+                {"file_name": "orders.xlsx", "file_id": "file-1"},
+                shipment_date="09.06.2026",
+                event_id="11111111-1111-1111-1111-111111111111",
+            )
+        finally:
+            telegram_worker_module.excel_file_to_import_payload = original_excel_to_payload
+
+        self.assertFalse(result[0])
+        text = messages[-1][1]
+        self.assertIn("Не удалось подтвердить импорт Excel-файла", text)
+        self.assertIn("не отправляйте файл повторно", text)
+        self.assertNotIn("Заказы и заявки SkladBot не созданы", text)
+
     def test_telegram_worker_failed_import_event_creates_one_linked_incident(self):
         engine = create_engine(
             "sqlite+pysqlite:///:memory:",

@@ -17,6 +17,7 @@ from .config import (
     TELEGRAM_LOCK_REFRESH_SECONDS,
     TELEGRAM_LOCK_RETRY_SECONDS,
     TELEGRAM_LOCK_TTL_SECONDS,
+    TELEGRAM_DESKTOP_POLLING_ENABLED,
 )
 from .duplicate_codes import find_code_details_in_pending_saves, format_duplicate_code_details
 from .excel_import import append_import_records, find_successful_import_by_file_hash, prepare_excel_import
@@ -64,6 +65,10 @@ from .telegram_service import (
     telegram_single_listener_lock_enabled,
 )
 from .utils import file_sha256, normalize_text, parse_int_value
+
+
+def desktop_telegram_polling_enabled(settings=None):
+    return bool(TELEGRAM_DESKTOP_POLLING_ENABLED and telegram_is_configured(settings))
 
 
 class TelegramActionsMixin:
@@ -650,11 +655,12 @@ class TelegramActionsMixin:
 
     def poll_telegram_bot_async(self):
         settings = load_telegram_settings()
-        delay_ms = 5000 if telegram_is_configured(settings) else 15000
+        polling_enabled = desktop_telegram_polling_enabled(settings)
+        delay_ms = 5000 if polling_enabled else 15000
         if self.telegram_poll_running:
             self.after(delay_ms, self.poll_telegram_bot_async)
             return
-        if not telegram_is_configured(settings):
+        if not polling_enabled:
             self.after(delay_ms, self.poll_telegram_bot_async)
             return
 

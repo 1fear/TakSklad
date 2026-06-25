@@ -85,6 +85,18 @@ def telegram_import_failure_message(file_name, reason):
     ])
 
 
+def telegram_import_unconfirmed_message(file_name, reason):
+    reason_text = redact_secrets(normalize_text(reason)) or "backend не ответил вовремя"
+    return "\n".join([
+        "Не удалось подтвердить импорт Excel-файла.",
+        "",
+        f"Файл: {normalize_text(file_name) or 'telegram_import.xlsx'}",
+        f"Причина: {reason_text}",
+        "",
+        "Что сделать: проверьте web-панель и Последние импорты. До проверки не отправляйте файл повторно, потому что заказ мог уже создаться.",
+    ])
+
+
 def ensure_telegram_import_event_incident(db, event, error):
     if event.event_type != TELEGRAM_EXCEL_IMPORT_EVENT_TYPE:
         return None
@@ -603,6 +615,7 @@ class TelegramWorker:
         self.backend_url = normalize_text(os.environ.get("TAKSKLAD_BACKEND_INTERNAL_URL")) or "http://backend-api:8000"
         self.backend_token = normalize_text(os.environ.get("TAKSKLAD_API_TOKEN"))
         self.timeout = int(os.environ.get("TELEGRAM_WORKER_TIMEOUT_SECONDS", "20") or "20")
+        self.import_timeout = int(os.environ.get("TELEGRAM_WORKER_IMPORT_TIMEOUT_SECONDS", "120") or "120")
         self.file_timeout = int(os.environ.get("TELEGRAM_WORKER_FILE_TIMEOUT_SECONDS", "120") or "120")
         self.poll_timeout = int(os.environ.get("TELEGRAM_WORKER_POLL_TIMEOUT_SECONDS", "15") or "15")
         self.max_file_size = int(os.environ.get("TELEGRAM_WORKER_MAX_FILE_BYTES", str(20 * 1024 * 1024)) or 0)
@@ -668,7 +681,8 @@ class TelegramWorker:
         headers = {}
         if self.backend_token:
             headers["Authorization"] = f"Bearer {self.backend_token}"
-        with httpx.Client(timeout=self.timeout) as client:
+        timeout = getattr(self, "import_timeout", self.timeout) if path == "/api/v1/imports" else self.timeout
+        with httpx.Client(timeout=timeout) as client:
             response = client.post(f"{self.backend_url}{path}", json=payload or {}, headers=headers)
             response.raise_for_status()
             return response.json()
@@ -1953,7 +1967,21 @@ class TelegramWorker:
             import_payload["telegram_chat_id"] = normalize_text(chat_id)
             if event_id:
                 import_payload["telegram_event_id"] = normalize_text(event_id)
-            result = self.backend_post("/api/v1/imports", import_payload)
+            recovered_after_timeout = False
+            try:
+                result = self.backend_post("/api/v1/imports", import_payload)
+            except httpx.TimeoutException as exc:
+                recovered = None
+                try:
+                    recovered = self.find_backend_import_by_telegram_event_id(event_id)
+                except Exception:
+                    logging.exception("Telegram worker: import timeout read-back failed")
+                if not recovered:
+                    reason = f"backend import response timeout: {exc}"
+                    self.safe_send_message(chat_id, telegram_import_unconfirmed_message(file_name, reason))
+                    return False, reason
+                result = recovered
+                recovered_after_timeout = True
             result_status = normalize_text(result.get("status"))
             if result_status == "failed":
                 errors = result.get("errors") or []
@@ -1995,6 +2023,8 @@ class TelegramWorker:
                 lines.extend(["", "Предупреждения:", "\n".join(warnings[:5])])
             if errors:
                 lines.extend(["", "Ошибки:", "\n".join(errors[:5])])
+            if recovered_after_timeout:
+                lines.extend(["", "Ответ backend потерялся по timeout, результат подтверждён через историю импортов."])
             self.safe_send_message(chat_id, "\n".join(lines))
             return True, ""
         except ExcelDateConflictError as exc:
@@ -2017,6 +2047,39 @@ class TelegramWorker:
                 os.remove(temp_path)
             except OSError:
                 pass
+
+    def find_backend_import_by_telegram_event_id(self, event_id):
+        event_id = normalize_text(event_id)
+        if not event_id:
+            return None
+        payload = self.backend_get("/api/v1/imports")
+        imports = payload if isinstance(payload, list) else []
+        for item in imports:
+            if not isinstance(item, dict):
+                continue
+            raw_payload = item.get("raw_payload") or {}
+            if normalize_text(raw_payload.get("telegram_event_id")) != event_id:
+                continue
+            google_sheets = raw_payload.get("google_sheets") if isinstance(raw_payload.get("google_sheets"), dict) else {}
+            return {
+                "id": item.get("id") or "",
+                "source": item.get("source") or raw_payload.get("source") or "telegram",
+                "status": item.get("status") or raw_payload.get("status") or "",
+                "rows_total": item.get("rows_total", 0),
+                "rows_imported": item.get("rows_imported", 0),
+                "orders_created": raw_payload.get("orders_created", 0),
+                "items_created": raw_payload.get("items_created", item.get("rows_imported", 0)),
+                "duplicate_rows": raw_payload.get("duplicate_rows", 0),
+                "invalid_rows": raw_payload.get("invalid_rows", 0),
+                "errors": raw_payload.get("errors") or [],
+                "backend_address_updates": raw_payload.get("backend_address_updates", 0),
+                "google_sheets_status": google_sheets.get("status", ""),
+                "google_sheets_imported": google_sheets.get("imported", 0),
+                "google_sheets_duplicates": google_sheets.get("duplicates", 0),
+                "google_sheets_updated": google_sheets.get("updated", 0),
+                "google_sheets_error": google_sheets.get("error", ""),
+            }
+        return None
 
     def enqueue_telegram_document(self, chat_id, document, update_id=None, shipment_date=""):
         file_name = normalize_text(document.get("file_name")) or "telegram_import.xlsx"
