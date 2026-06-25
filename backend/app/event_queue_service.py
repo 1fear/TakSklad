@@ -30,16 +30,18 @@ class EventQueueApiError(Exception):
         self.detail = detail
 
 
-def list_event_queue_diagnostics(db: Session, limit=100):
-    limit = max(1, min(int(limit or 100), 500))
+def list_event_queue_diagnostics(db: Session, limit=None):
+    row_limit = None if limit is None else max(1, int(limit))
     now = datetime.now(timezone.utc)
     summary = build_event_queue_summary(db)
-    stale_processing = list_stale_processing_events(db, now=now, limit=limit)
-    recent_events = db.execute(
+    stale_processing = list_stale_processing_events(db, now=now, limit=row_limit)
+    recent_stmt = (
         select(PendingEvent)
         .order_by(desc(PendingEvent.updated_at), desc(PendingEvent.created_at), desc(PendingEvent.id))
-        .limit(limit)
-    ).scalars().all()
+    )
+    if row_limit is not None:
+        recent_stmt = recent_stmt.limit(row_limit)
+    recent_events = db.execute(recent_stmt).scalars().all()
     return {
         "generated_at": now.isoformat(),
         "summary": summary,
@@ -71,16 +73,18 @@ def build_event_queue_summary(db: Session):
     }
 
 
-def list_stale_processing_events(db: Session, now=None, limit=100):
+def list_stale_processing_events(db: Session, now=None, limit=None):
     now = now or datetime.now(timezone.utc)
     cutoff = now - STALE_PROCESSING_TIMEOUT
-    return db.execute(
+    stmt = (
         select(PendingEvent)
         .where(PendingEvent.status == "processing")
         .where(PendingEvent.updated_at < cutoff)
         .order_by(PendingEvent.updated_at, PendingEvent.created_at)
-        .limit(limit)
-    ).scalars().all()
+    )
+    if limit is not None:
+        stmt = stmt.limit(max(1, int(limit)))
+    return db.execute(stmt).scalars().all()
 
 
 def reset_stale_processing_events(

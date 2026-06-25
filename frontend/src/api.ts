@@ -436,10 +436,10 @@ export function listActiveOrders(config: ApiConfig) {
 
 export function getAdminTable(config: ApiConfig, options: AdminTableRequest = {}) {
   const query = new URLSearchParams({
-    limit: String(options.limit ?? 5000),
     offset: String(options.offset ?? 0),
     activity_limit: String(options.activityLimit ?? 30),
   });
+  if (options.limit !== undefined) query.set("limit", String(options.limit));
   return apiRequest<AdminTable>(config, `/api/v1/admin/table?${query.toString()}`);
 }
 
@@ -449,18 +449,17 @@ export function getDashboardDaySummary(config: ApiConfig, reportDate: string) {
 }
 
 export function getAdminEvents(config: ApiConfig) {
-  return apiRequest<EventQueueDiagnostics>(config, "/api/v1/admin/events?limit=100");
+  return apiRequest<EventQueueDiagnostics>(config, "/api/v1/admin/events");
 }
 
 export function getAdminIncidents(config: ApiConfig, params: Record<string, string> = {}) {
-  const query = new URLSearchParams({ limit: "200", ...params });
+  const query = new URLSearchParams(params);
   return apiRequest<AdminIncidentsResponse>(config, `/api/v1/admin/incidents?${query.toString()}`);
 }
 
 export function listClientPoints(config: ApiConfig, params: { query?: string; customTimeslot?: boolean; limit?: number } = {}) {
-  const query = new URLSearchParams({
-    limit: String(params.limit ?? 1000),
-  });
+  const query = new URLSearchParams();
+  if (params.limit !== undefined) query.set("limit", String(params.limit));
   if (params.query) query.set("query", params.query);
   if (params.customTimeslot !== undefined) query.set("custom_timeslot", params.customTimeslot ? "true" : "false");
   return apiRequest<ClientPoint[]>(config, `/api/v1/admin/client-points?${query.toString()}`);

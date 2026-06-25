@@ -61,9 +61,8 @@ def list_incidents(
     entity_type=None,
     date_from=None,
     date_to=None,
-    limit=100,
+    limit=None,
 ):
-    limit = max(1, min(int(limit or 100), 500))
     stmt = select(Incident)
     if normalize_text(status):
         stmt = stmt.where(Incident.status == validate_choice(status, INCIDENT_STATUSES, "status"))
@@ -79,9 +78,10 @@ def list_incidents(
         stmt = stmt.where(Incident.created_at >= from_dt)
     if to_dt is not None:
         stmt = stmt.where(Incident.created_at <= to_dt)
-    incidents = db.execute(
-        stmt.order_by(desc(Incident.updated_at), desc(Incident.created_at), desc(Incident.id)).limit(limit)
-    ).scalars().all()
+    stmt = stmt.order_by(desc(Incident.updated_at), desc(Incident.created_at), desc(Incident.id))
+    if limit is not None:
+        stmt = stmt.limit(max(1, int(limit)))
+    incidents = db.execute(stmt).scalars().all()
     return {
         "items": [incident_to_read(incident) for incident in incidents],
         "summary": build_incident_summary(db),

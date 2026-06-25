@@ -351,6 +351,30 @@ class BackendApiPersistenceTests(unittest.TestCase):
             ).scalar_one()
             self.assertEqual(audit.entity_id, str(point.id))
 
+    def test_admin_client_points_default_response_is_not_capped(self):
+        with self.SessionLocal() as db:
+            db.add_all([
+                ClientPoint(
+                    client_name=f"Client {index:04d}",
+                    address=f"Address {index:04d}",
+                    normalized_client=f"client {index:04d}",
+                    normalized_address=f"address {index:04d}",
+                    delivery_from="10:00",
+                    delivery_to="18:00",
+                    raw_payload={},
+                )
+                for index in range(1001)
+            ])
+            db.commit()
+
+        response = self.client.get("/api/v1/admin/client-points")
+        limited_response = self.client.get("/api/v1/admin/client-points?limit=3")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()), 1001)
+        self.assertEqual(limited_response.status_code, 200)
+        self.assertEqual(len(limited_response.json()), 3)
+
     def test_admin_client_point_order_summary_groups_dates_and_products(self):
         with self.SessionLocal() as db:
             older_order = Order(
@@ -3443,6 +3467,28 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertNotIn("secret-token", dumped)
         self.assertNotIn("0104006396053978217ABCDE12345678901234567890", dumped)
 
+    def test_admin_events_default_response_is_not_capped(self):
+        with self.SessionLocal() as db:
+            db.add_all([
+                PendingEvent(
+                    event_type="google_sheets_export",
+                    idempotency_key=f"google:event:{index}",
+                    status="completed",
+                    attempts=1,
+                    payload={},
+                )
+                for index in range(101)
+            ])
+            db.commit()
+
+        response = self.client.get("/api/v1/admin/events")
+        limited_response = self.client.get("/api/v1/admin/events?limit=3")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()["recent_events"]), 101)
+        self.assertEqual(limited_response.status_code, 200)
+        self.assertEqual(len(limited_response.json()["recent_events"]), 3)
+
     def test_admin_event_detail_retry_redacts_payload_and_writes_audit(self):
         order_id, item_id = self.seed_order()
         with self.SessionLocal() as db:
@@ -3716,6 +3762,26 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(list_payload["items"][0]["id"], incident_id)
         self.assertEqual(list_payload["summary"]["by_status"]["open"], 1)
         self.assertEqual(list_payload["summary"]["by_severity"]["critical"], 1)
+
+        with self.SessionLocal() as db:
+            db.add_all([
+                Incident(
+                    source="bulk",
+                    severity="warning",
+                    status="open",
+                    title=f"Bulk incident {index}",
+                    raw_payload={},
+                )
+                for index in range(101)
+            ])
+            db.commit()
+
+        uncapped_response = self.client.get("/api/v1/admin/incidents")
+        limited_response = self.client.get("/api/v1/admin/incidents?limit=3")
+        self.assertEqual(uncapped_response.status_code, 200)
+        self.assertEqual(len(uncapped_response.json()["items"]), 102)
+        self.assertEqual(limited_response.status_code, 200)
+        self.assertEqual(len(limited_response.json()["items"]), 3)
 
         detail_response = self.client.get(f"/api/v1/admin/incidents/{incident_id}")
         self.assertEqual(detail_response.status_code, 200)

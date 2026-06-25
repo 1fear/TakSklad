@@ -21,8 +21,8 @@ GOOGLE_EXPORT_EVENT_TYPE = "google_sheets_export"
 PENDING_STATUSES = ("pending", "failed")
 
 
-def build_admin_table(db: Session, limit=5000, offset=0, activity_limit=30):
-    row_limit = max(1, min(int(limit or 5000), 5000))
+def build_admin_table(db: Session, limit=None, offset=0, activity_limit=30):
+    row_limit = None if limit is None else max(1, int(limit))
     row_offset = max(0, int(offset or 0))
     activity_row_limit = max(0, min(int(activity_limit or 30), 100))
     pending_by_entity, pending_total = pending_google_exports_by_entity(db)
@@ -38,14 +38,14 @@ def build_admin_table(db: Session, limit=5000, offset=0, activity_limit=30):
         for item in sorted(order.items, key=lambda value: (str(value.created_at or ""), str(value.id))):
             all_rows.append(order_item_to_admin_row(order, item, pending_by_entity))
     total_rows = len(all_rows)
-    rows = all_rows[row_offset:row_offset + row_limit]
+    rows = all_rows[row_offset:] if row_limit is None else all_rows[row_offset:row_offset + row_limit]
 
     return AdminTableRead(
         generated_at=datetime.now(timezone.utc),
         totals=build_totals(all_rows, pending_total),
         rows=rows,
         recent_activity=list_recent_activity(db, activity_row_limit),
-        limit=row_limit,
+        limit=row_limit if row_limit is not None else len(rows),
         offset=row_offset,
         row_count=len(rows),
         total_rows=total_rows,

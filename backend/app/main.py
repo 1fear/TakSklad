@@ -339,7 +339,7 @@ def list_active_orders(db=Depends(get_db)) -> list[OrderRead]:
 
 
 @api.get("/admin/table", response_model=AdminTableRead)
-def admin_table(limit: int = 5000, offset: int = 0, activity_limit: int = 30, db=Depends(get_db)):
+def admin_table(limit: int | None = None, offset: int = 0, activity_limit: int = 30, db=Depends(get_db)):
     return build_admin_table(db, limit=limit, offset=offset, activity_limit=activity_limit)
 
 
@@ -355,7 +355,7 @@ def admin_dashboard_day_summary(report_date: str | None = None, db=Depends(get_d
 def admin_client_points(
     query: str = "",
     custom_timeslot: bool | None = None,
-    limit: int = 1000,
+    limit: int | None = None,
     db=Depends(get_db),
 ):
     return list_client_points_in_db(db, query=query, custom_timeslot=custom_timeslot, limit=limit)
@@ -392,7 +392,7 @@ def retry_pending_google_exports(limit: int = 50, db=Depends(get_db)):
 
 
 @api.get("/admin/events", response_model=EventQueueDiagnosticsRead)
-def admin_event_queue(limit: int = 100, db=Depends(get_db)):
+def admin_event_queue(limit: int | None = None, db=Depends(get_db)):
     return list_event_queue_diagnostics(db, limit=limit)
 
 
@@ -437,7 +437,7 @@ def admin_incidents(
     entity_type: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
-    limit: int = 100,
+    limit: int | None = None,
     db=Depends(get_db),
 ):
     try:

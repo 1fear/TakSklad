@@ -4,6 +4,22 @@
 
 ## 2026-06-25
 
+### Web/admin больше не режет рабочие цифры лимитами
+
+**Файлы:** `backend/app/admin_service.py`, `backend/app/client_points_service.py`, `backend/app/event_queue_service.py`, `backend/app/incidents_service.py`, `backend/app/main.py`, `frontend/src/api.ts`, `frontend/src/App.tsx`, `tests/test_backend_api_persistence.py`, `docs/changelog.md`.
+
+**Что стало:**
+
+- Web-панель больше не подставляет скрытые лимиты `5000`, `1000`, `200` и `100` для основной таблицы, клиентских точек, инцидентов и очереди.
+- Backend admin endpoints без `limit` возвращают полный набор строк; явный `limit` оставлен только как диагностический параметр.
+- Счетчики `Сохранено`, `Показано`, инциденты и события очереди считаются по всем загруженным данным, а не по первой пачке.
+
+**Проверки:**
+
+- `python3 -m py_compile backend/app/admin_service.py backend/app/client_points_service.py backend/app/event_queue_service.py backend/app/incidents_service.py backend/app/main.py` - OK.
+- `cd frontend && npm run build` - OK.
+- `.venv/bin/python -m unittest tests.test_backend_api_persistence.BackendApiPersistenceTests.test_admin_table_totals_are_not_limited_by_row_limit tests.test_backend_api_persistence.BackendApiPersistenceTests.test_admin_table_supports_offset_pagination_metadata tests.test_backend_api_persistence.BackendApiPersistenceTests.test_admin_client_points_lists_order_points_and_updates_timeslot tests.test_backend_api_persistence.BackendApiPersistenceTests.test_admin_client_points_default_response_is_not_capped tests.test_backend_api_persistence.BackendApiPersistenceTests.test_admin_events_exposes_queue_diagnostics tests.test_backend_api_persistence.BackendApiPersistenceTests.test_admin_events_default_response_is_not_capped tests.test_backend_api_persistence.BackendApiPersistenceTests.test_admin_incidents_link_filter_redact_and_change_status_with_audit` - 7 tests OK.
+
 ### Telegram Excel import не подхватывает старый файл
 
 **Файлы:** `backend/app/telegram_worker.py`, `backend/app/imports_service.py`, `tests/test_backend_telegram_import.py`, `tests/test_backend_api_persistence.py`, `docs/implementation-log.md`, `docs/changelog.md`.

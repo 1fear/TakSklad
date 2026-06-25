@@ -19,8 +19,8 @@ class ClientPointApiError(Exception):
         self.detail = detail
 
 
-def list_client_points(db: Session, query="", custom_timeslot=None, limit=1000):
-    row_limit = max(1, min(int(limit or 1000), 5000))
+def list_client_points(db: Session, query="", custom_timeslot=None, limit=None):
+    row_limit = None if limit is None else max(1, int(limit))
     order_meta = build_order_point_meta(db)
     saved_points = db.execute(
         select(ClientPoint).order_by(ClientPoint.client_name.asc(), ClientPoint.address.asc(), ClientPoint.id.asc())
@@ -58,7 +58,7 @@ def list_client_points(db: Session, query="", custom_timeslot=None, limit=1000):
         row["client_name"].casefold(),
         row["address"].casefold(),
     ))
-    return rows[:row_limit]
+    return rows if row_limit is None else rows[:row_limit]
 
 
 def update_client_point_timeslot(db: Session, payload):

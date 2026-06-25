@@ -104,7 +104,6 @@ type ActionState = {
 };
 
 const SAME_ORIGIN_API_LABEL = "same-origin /api";
-const ADMIN_TABLE_PAGE_SIZE = 5000;
 
 function defaultClientPointDraft(): ClientPointFormDraft {
   return {
@@ -164,7 +163,6 @@ function App() {
   const [adminActionReason, setAdminActionReason] = useState("");
   const [busyAction, setBusyAction] = useState("");
   const [loading, setLoading] = useState(false);
-  const [loadingMoreRows, setLoadingMoreRows] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
   const [authUser, setAuthUser] = useState("");
@@ -244,8 +242,7 @@ function App() {
   );
   const actionableEvents = useMemo(
     () => (eventQueue?.recent_events ?? [])
-      .filter((event) => ["failed", "pending", "processing", "blocked"].includes(event.status))
-      .slice(0, 100),
+      .filter((event) => ["failed", "pending", "processing", "blocked"].includes(event.status)),
     [eventQueue],
   );
   const selectedIncident = useMemo(
@@ -257,7 +254,6 @@ function App() {
     [actionableEvents, selectedEventId],
   );
   const totalAdminRows = adminTable?.total_rows ?? rows.length;
-  const hasMoreAdminRows = Boolean(adminTable?.has_more) || rows.length < totalAdminRows;
   const canAdminWrite = authPermissions.includes("admin:write");
   const canEditClientPoints = authPermissions.includes("client_points:write");
   const dayTotals = dashboardSummary?.totals;
@@ -268,7 +264,7 @@ function App() {
     if (showNotice) setNotice("");
     try {
       const [nextAdminTable, nextDashboardSummary, nextReport, nextImports, nextClientPoints, nextReadiness, nextEventQueue, nextIncidents] = await Promise.all([
-        getAdminTable(activeConfig, { limit: ADMIN_TABLE_PAGE_SIZE, offset: 0 }),
+        getAdminTable(activeConfig, { offset: 0 }),
         getDashboardDaySummary(activeConfig, reportDate),
         getDayReport(activeConfig, reportDate),
         listImports(activeConfig),
@@ -306,32 +302,6 @@ function App() {
       }
     } finally {
       setLoading(false);
-    }
-  }
-
-  async function loadMoreAdminRows() {
-    if (!adminTable || loadingMoreRows || loading || !hasMoreAdminRows) return;
-    setLoadingMoreRows(true);
-    setError("");
-    try {
-      const nextPage = await getAdminTable(config, {
-        limit: ADMIN_TABLE_PAGE_SIZE,
-        offset: rows.length,
-        activityLimit: 0,
-      });
-      setAdminTable((current) => current ? mergeAdminTables(current, nextPage) : nextPage);
-      setNotice(`Догружено: ${Math.min(rows.length + nextPage.rows.length, nextPage.total_rows)} из ${nextPage.total_rows}`);
-    } catch (loadError) {
-      const message = loadError instanceof Error ? loadError.message : "Не удалось догрузить строки";
-      if (loadError instanceof ApiRequestError && loadError.status === 401) {
-        setAuthenticated(false);
-        setAuthUser("");
-        setLoginError("Сессия закончилась. Войдите снова.");
-      } else {
-        setError(message);
-      }
-    } finally {
-      setLoadingMoreRows(false);
     }
   }
 
@@ -906,7 +876,7 @@ function App() {
               <div>
                 <h2>Позиции заказов</h2>
                 <span className="panel-subtitle">
-                  {adminTablePageSummary(filteredRows.length, rows.length, totalAdminRows, hasMoreAdminRows)}
+                  {adminTablePageSummary(filteredRows.length, rows.length, totalAdminRows)}
                 </span>
               </div>
               <label className="search-box">
@@ -997,18 +967,6 @@ function App() {
               onToggleVisible={toggleVisibleOrderSelection}
               onToggleOrder={toggleOrderSelection}
             />
-            {hasMoreAdminRows && (
-              <div className="table-pagination">
-                <span>
-                  Загружено <strong>{formatNumber(rows.length)}</strong> из <strong>{formatNumber(totalAdminRows)}</strong>.
-                  Фильтры применяются к загруженным строкам.
-                </span>
-                <button className="ghost-button" onClick={() => void loadMoreAdminRows()} disabled={loadingMoreRows || loading}>
-                  {loadingMoreRows ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
-                  Загрузить еще
-                </button>
-              </div>
-            )}
           </section>
         )}
 
@@ -1547,23 +1505,8 @@ function SelectFilter({
   );
 }
 
-function mergeAdminTables(current: AdminTable, nextPage: AdminTable): AdminTable {
-  const rowsById = new Map(current.rows.map((row) => [row.item_id, row]));
-  nextPage.rows.forEach((row) => rowsById.set(row.item_id, row));
-  const rows = Array.from(rowsById.values());
-  return {
-    ...nextPage,
-    rows,
-    offset: 0,
-    row_count: rows.length,
-    has_more: nextPage.has_more && rows.length < nextPage.total_rows,
-  };
-}
-
-function adminTablePageSummary(filteredCount: number, loadedCount: number, totalCount: number, hasMore: boolean) {
-  if (hasMore || loadedCount < totalCount) {
-    return `Показано ${formatNumber(filteredCount)} из ${formatNumber(loadedCount)} загруженных · всего ${formatNumber(totalCount)}`;
-  }
+function adminTablePageSummary(filteredCount: number, loadedCount: number, totalCount: number) {
+  if (loadedCount !== totalCount) return `Показано ${formatNumber(filteredCount)} из ${formatNumber(loadedCount)} · всего ${formatNumber(totalCount)}`;
   return `Показано ${formatNumber(filteredCount)} из ${formatNumber(loadedCount)}`;
 }
 
