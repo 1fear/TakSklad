@@ -462,6 +462,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             "quantity_pieces": 100,
         })
         self.assertEqual([row["shipment_date"] for row in payload["dates"]], ["2026-06-21", "2026-06-20"])
+        self.assertEqual([row["payment_type"] for row in payload["dates"]], ["cash", "cash"])
         self.assertEqual(payload["dates"][0]["orders_count"], 1)
         self.assertEqual(payload["dates"][0]["positions_count"], 1)
         self.assertEqual(payload["dates"][0]["products"], [{

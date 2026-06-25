@@ -256,12 +256,16 @@ def get_client_point_order_summary(
         date_key = order.order_date.isoformat() if order.order_date else ""
         date_row = dates_by_key.setdefault(date_key, {
             "shipment_date": order.order_date,
+            "payment_types": set(),
             "orders_count": 0,
             "positions_count": 0,
             "quantity_blocks": 0,
             "quantity_pieces": 0,
             "products_by_name": {},
         })
+        payment_type = normalize_text(order.payment_type)
+        if payment_type:
+            date_row["payment_types"].add(payment_type)
         totals["orders_count"] += 1
         date_row["orders_count"] += 1
         for item in sorted(order.items, key=lambda value: (normalize_text(value.product).casefold(), str(value.id))):
@@ -296,6 +300,7 @@ def get_client_point_order_summary(
         "dates": [
             {
                 "shipment_date": row.get("shipment_date"),
+                "payment_type": ", ".join(sorted(row.get("payment_types") or [], key=str.casefold)),
                 "orders_count": int(row.get("orders_count") or 0),
                 "positions_count": int(row.get("positions_count") or 0),
                 "quantity_blocks": int(row.get("quantity_blocks") or 0),

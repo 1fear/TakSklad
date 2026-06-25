@@ -297,6 +297,7 @@ class ClientPointOrderProductRead(BaseModel):
 
 class ClientPointOrderDateRead(BaseModel):
     shipment_date: date | None = None
+    payment_type: str = ""
     orders_count: int = 0
     positions_count: int = 0
     quantity_blocks: int = 0

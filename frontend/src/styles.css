@@ -1345,6 +1345,11 @@ summary:focus-visible {
   flex-wrap: wrap;
 }
 
+.client-order-date-meta {
+  display: grid;
+  gap: 4px;
+}
+
 .client-order-date-head span {
   color: #6d7168;
   font-size: 13px;

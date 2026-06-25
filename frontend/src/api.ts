@@ -259,6 +259,7 @@ export type ClientPointOrderSummaryTotals = {
 
 export type ClientPointOrderSummaryDate = {
   shipment_date: string | null;
+  payment_type: string;
   orders_count: number;
   positions_count: number;
   quantity_blocks: number;

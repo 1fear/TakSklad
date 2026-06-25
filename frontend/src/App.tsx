@@ -1928,7 +1928,10 @@ function ClientOrderHistory({ point, summary, loading }: { point: ClientPoint; s
       {history.map((entry) => (
         <section className="client-order-date-card" key={entry.shipment_date || "no-date"}>
           <div className="client-order-date-head">
-            <strong>{formatDate(entry.shipment_date)}</strong>
+            <div className="client-order-date-meta">
+              <strong>{formatDate(entry.shipment_date)}</strong>
+              <span>Тип оплаты: {entry.payment_type || "-"}</span>
+            </div>
             <span>
               {formatNumber(entry.orders_count)} заказов · {formatNumber(entry.positions_count)} позиций · {formatClientProductQuantity(entry.quantity_blocks, entry.quantity_pieces)}
             </span>

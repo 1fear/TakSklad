@@ -4,6 +4,21 @@
 
 ## 2026-06-25
 
+### Тип оплаты в истории клиента
+
+**Файлы:** `backend/app/client_points_service.py`, `backend/app/schemas.py`, `frontend/src/api.ts`, `frontend/src/App.tsx`, `frontend/src/styles.css`, `tests/test_backend_api_persistence.py`, `docs/changelog.md`.
+
+**Что стало:**
+
+- В раскрытой истории заказов клиента показывается `Тип оплаты` по каждой дате отгрузки.
+- Если за одну дату у клиента несколько типов оплаты, backend возвращает уникальные типы через запятую.
+
+**Проверки:**
+
+- `python3 -m py_compile backend/app/client_points_service.py backend/app/schemas.py backend/app/main.py` - OK.
+- `cd frontend && npm run build` - OK.
+- `.venv/bin/python -m unittest tests.test_backend_api_persistence.BackendApiPersistenceTests.test_admin_client_point_order_summary_groups_dates_and_products` - OK.
+
 ### Web/admin больше не режет рабочие цифры лимитами
 
 **Файлы:** `backend/app/admin_service.py`, `backend/app/client_points_service.py`, `backend/app/event_queue_service.py`, `backend/app/incidents_service.py`, `backend/app/main.py`, `frontend/src/api.ts`, `frontend/src/App.tsx`, `tests/test_backend_api_persistence.py`, `docs/changelog.md`.
