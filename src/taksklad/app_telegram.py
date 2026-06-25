@@ -9,7 +9,9 @@ import tkinter as tk
 from .catalog import load_product_catalog
 from .config import (
     APP_NAME,
+    BG_MAIN,
     DAILY_REPORT_CHECK_INTERVAL_MS,
+    FG_MUTED,
     SHEET_NAME,
     SPREADSHEET_ID,
     TELEGRAM_LOCK_REFRESH_SECONDS,

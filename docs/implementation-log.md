@@ -6105,3 +6105,12 @@ cd /opt/taksklad/app
   - live `GET /api/v1/orders/active` вернул 1 активный заказ `POYTAXT SPECIAL TRADE MCHJ Ozbekfilm`, 55 блоков, 0 отсканировано;
   - новый frontend asset: `/assets/index-yntfbHmQ.js`;
   - `acceptance_status.sh` остался `failed` из-за старого readiness `degraded` и незакрытых ручных GO/NO-GO чекбоксов, не из-за dashboard deploy.
+
+### Desktop Telegram UI theme import fix
+
+- Причина: Telegram import UI в desktop-клиенте использовал `BG_MAIN` и `FG_MUTED` в `src/taksklad/app_telegram.py`, но модуль не импортировал эти константы из `config.py`. Из-за этого Windows-клиент отправлял Telegram alert `name 'BG_MAIN' is not defined`.
+- Изменено:
+  - в `src/taksklad/app_telegram.py` добавлены недостающие импорты `BG_MAIN` и `FG_MUTED`.
+- Проверено:
+  - `.venv/bin/python -m py_compile src/taksklad/app_telegram.py` - OK;
+  - `.venv/bin/python -m unittest tests.test_desktop_ui_contract` - 46 tests OK.
