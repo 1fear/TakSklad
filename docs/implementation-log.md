@@ -6046,3 +6046,13 @@ cd /opt/taksklad/app
   - `.venv/bin/python -m unittest tests.test_backend_api_persistence` - 99 tests OK;
   - `.venv/bin/python -m unittest tests.test_backend_skladbot_request_dry_run` - 27 tests OK;
   - `.venv/bin/python -m py_compile backend/app/imports_service.py backend/app/logistics_service.py tests/test_backend_api_persistence.py` - OK.
+- VDS deploy:
+  - restore point: `/opt/taksklad/restore_points/pre-returned-import-isolation-20260625T092756Z`;
+  - Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260625T092756Z.sql.gz`;
+  - на VDS синхронизированы только `backend/app/imports_service.py` и `backend/app/logistics_service.py`;
+  - выполнен `docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml up -d --build backend-api`;
+  - VDS `backend-api` compileall - OK;
+  - `https://api.taksklad.uz/health` - OK, backend `2.0.23`;
+  - `https://api.taksklad.uz/ready` - DB/migrations OK, общий `degraded` из-за старых queue events;
+  - production preview того же кейса вернул `rows_importable=6`, `orders_new=2`, `items_new=6`, `duplicate_rows=0`;
+  - `acceptance_status.sh` остался `failed` из-за старого Google/backend sync mismatch по `ASADBEK GOLD BIZNES / Chapman RED OP 20` и незакрытых ручных GO/NO-GO чекбоксов, не из-за deploy health.
