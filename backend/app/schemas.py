@@ -536,3 +536,10 @@ class DayReportRead(BaseModel):
     totals: DayReportTotals
     payment_groups: list[DayReportPaymentGroup] = Field(default_factory=list)
     orders: list[DayReportOrder] = Field(default_factory=list)
+
+
+class DashboardDaySummaryRead(BaseModel):
+    report_date: date
+    source: str
+    generated_at: datetime
+    totals: DayReportTotals

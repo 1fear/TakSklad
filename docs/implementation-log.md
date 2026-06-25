@@ -6073,3 +6073,23 @@ cd /opt/taksklad/app
   - в Google Sheets совпадений по source file/import id = 0;
   - старые returned-заказы остались как архив возврата: `WH-R-200667` и `WH-R-200666`, по 3 исходные позиции в каждом;
   - прямой Google/backend sync по активным позициям после удаления: `status=ok`, `backend_active_items=96`, `backend_missing_sheet=[]`, `sheet_missing_backend=[]`.
+
+### Web dashboard loaded-day metrics
+
+- Причина: верхние карточки `Информация за день` брали данные из `GET /api/v1/reports/day`, а этот endpoint считает отчет по дате отгрузки плюс заказы, сканированные в выбранный день. Для оператора web-панели это смешивало загруженные сегодня заказы с заказами другой даты.
+- Изменено:
+  - добавлен read-only endpoint `GET /api/v1/admin/dashboard/day-summary`;
+  - верхние карточки web-панели теперь берут summary из нового endpoint;
+  - `Всего заказов` считает уникальные операционные заказы, у которых есть позиции, загруженные в выбранный день;
+  - `Всего блоков` считает все блоки в загруженных в этот день позициях, включая готовые и активные;
+  - `Отскан. блоков` считает текущий прогресс сканирования по этим же позициям;
+  - возвраты, отмены, archive-without-KIZ и `removed_from_google_sheet` строки не попадают в dashboard summary.
+- Не изменено:
+  - `GET /api/v1/reports/day` оставлен в старой семантике для отчетов и Telegram status;
+  - вкладка `Отчет` продолжает использовать старый day report.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_backend_api_persistence.BackendApiPersistenceTests.test_dashboard_day_summary_counts_loaded_items_not_shipment_or_scan_date tests.test_backend_api_persistence.BackendApiPersistenceTests.test_day_report_counts_scan_by_business_timezone tests.test_backend_api_persistence.BackendApiPersistenceTests.test_complete_order_requires_required_blocks_and_closes_order` - 3 tests OK;
+  - `.venv/bin/python -m unittest tests.test_backend_api_persistence` - 100 tests OK;
+  - `.venv/bin/python -m unittest tests.test_backend_telegram_import` - 65 tests OK;
+  - `.venv/bin/python -m py_compile backend/app/reports_service.py backend/app/main.py backend/app/schemas.py` - OK;
+  - `npm --prefix frontend run build` - OK.

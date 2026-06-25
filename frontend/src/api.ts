@@ -67,6 +67,13 @@ export type DayReport = {
   }>;
 };
 
+export type DashboardDaySummary = {
+  report_date: string;
+  source: string;
+  generated_at: string;
+  totals: DayReport["totals"];
+};
+
 export type ImportRecord = {
   id: string;
   source: string;
@@ -434,6 +441,11 @@ export function getAdminTable(config: ApiConfig, options: AdminTableRequest = {}
     activity_limit: String(options.activityLimit ?? 30),
   });
   return apiRequest<AdminTable>(config, `/api/v1/admin/table?${query.toString()}`);
+}
+
+export function getDashboardDaySummary(config: ApiConfig, reportDate: string) {
+  const query = reportDate ? `?report_date=${encodeURIComponent(reportDate)}` : "";
+  return apiRequest<DashboardDaySummary>(config, `/api/v1/admin/dashboard/day-summary${query}`);
 }
 
 export function getAdminEvents(config: ApiConfig) {

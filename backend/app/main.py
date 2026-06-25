@@ -61,7 +61,7 @@ from .orders_service import lookup_return_order as lookup_return_order_in_db
 from .orders_service import mark_order_returned as mark_order_returned_in_db
 from .orders_service import undo_scan as undo_scan_in_db
 from .reconciliation_service import ReconciliationError, run_daily_reconciliation
-from .reports_service import build_day_report
+from .reports_service import build_dashboard_day_summary, build_day_report
 from .skladbot_request_dry_run import list_skladbot_dry_runs, rebuild_skladbot_dry_run
 from .skladbot_worker import update_orders_from_skladbot
 from .schemas import (
@@ -75,6 +75,7 @@ from .schemas import (
     ClientPointOrderSummaryRead,
     ClientPointRead,
     ClientPointTimeslotUpdate,
+    DashboardDaySummaryRead,
     DayReportRead,
     EventQueueDiagnosticsRead,
     EventQueueActionRequest,
@@ -340,6 +341,14 @@ def list_active_orders(db=Depends(get_db)) -> list[OrderRead]:
 @api.get("/admin/table", response_model=AdminTableRead)
 def admin_table(limit: int = 5000, offset: int = 0, activity_limit: int = 30, db=Depends(get_db)):
     return build_admin_table(db, limit=limit, offset=offset, activity_limit=activity_limit)
+
+
+@api.get("/admin/dashboard/day-summary", response_model=DashboardDaySummaryRead)
+def admin_dashboard_day_summary(report_date: str | None = None, db=Depends(get_db)):
+    try:
+        return build_dashboard_day_summary(db, report_date)
+    except ApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 @api.get("/admin/client-points", response_model=list[ClientPointRead])

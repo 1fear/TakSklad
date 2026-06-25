@@ -39,6 +39,7 @@ import {
   ApiRequestError,
   ClientPoint,
   ClientPointOrderSummary,
+  DashboardDaySummary,
   DayReport,
   EventQueueDiagnostics,
   EventQueueEvent,
@@ -56,6 +57,7 @@ import {
   getAdminTable,
   getAuthSession,
   getClientPointOrderSummary,
+  getDashboardDaySummary,
   getDayReport,
   getReadiness,
   listClientPoints,
@@ -134,6 +136,7 @@ function App() {
   const [incidents, setIncidents] = useState<AdminIncident[]>([]);
   const [incidentSummary, setIncidentSummary] = useState<Record<string, unknown>>({});
   const [report, setReport] = useState<DayReport | null>(null);
+  const [dashboardSummary, setDashboardSummary] = useState<DashboardDaySummary | null>(null);
   const [reportDate, setReportDate] = useState(todayIso());
   const [shipmentDateFilter, setShipmentDateFilter] = useState("");
   const [search, setSearch] = useState("");
@@ -257,15 +260,16 @@ function App() {
   const hasMoreAdminRows = Boolean(adminTable?.has_more) || rows.length < totalAdminRows;
   const canAdminWrite = authPermissions.includes("admin:write");
   const canEditClientPoints = authPermissions.includes("client_points:write");
-  const dayTotals = report?.totals;
+  const dayTotals = dashboardSummary?.totals;
 
   async function refreshAll(activeConfig = config, showNotice = true) {
     setLoading(true);
     setError("");
     if (showNotice) setNotice("");
     try {
-      const [nextAdminTable, nextReport, nextImports, nextClientPoints, nextReadiness, nextEventQueue, nextIncidents] = await Promise.all([
+      const [nextAdminTable, nextDashboardSummary, nextReport, nextImports, nextClientPoints, nextReadiness, nextEventQueue, nextIncidents] = await Promise.all([
         getAdminTable(activeConfig, { limit: ADMIN_TABLE_PAGE_SIZE, offset: 0 }),
+        getDashboardDaySummary(activeConfig, reportDate),
         getDayReport(activeConfig, reportDate),
         listImports(activeConfig),
         listClientPoints(activeConfig).catch(() => []),
@@ -274,6 +278,7 @@ function App() {
         getAdminIncidents(activeConfig).catch(() => ({ items: [], summary: {} }) as AdminIncidentsResponse),
       ]);
       setAdminTable(nextAdminTable);
+      setDashboardSummary(nextDashboardSummary);
       setReport(nextReport);
       setImports(nextImports);
       setClientPoints(nextClientPoints);
@@ -412,6 +417,7 @@ function App() {
       setIncidents([]);
       setIncidentSummary({});
       setReport(null);
+      setDashboardSummary(null);
       setSelectedOrderIds([]);
       setSelectedIncidentId("");
       setSelectedEventId("");
@@ -884,7 +890,7 @@ function App() {
         <section className="stats-section" aria-label="Информация за день">
           <div className="stats-section-head">
             <h2>Информация за день</h2>
-            <span>{formatDate(report?.report_date ?? reportDate)}</span>
+            <span>{formatDate(dashboardSummary?.report_date ?? reportDate)}</span>
           </div>
           <div className="stats-row">
             <Metric icon={<ClipboardList size={20} />} label="Акт. заказы" value={dayTotals?.active_orders ?? 0} />

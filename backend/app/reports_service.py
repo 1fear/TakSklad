@@ -4,10 +4,18 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from .models import Order, OrderItem
-from .orders_service import ApiError, COMPLETED_STATUSES
+from .models import ImportJob, Order, OrderItem
+from .orders_service import (
+    ApiError,
+    COMPLETED_STATUSES,
+    STATUS_ARCHIVED_NO_KIZ,
+    STATUS_CANCELLED,
+    STATUS_REMOVED_FROM_GOOGLE,
+    STATUS_RETURNED,
+)
 from .scan_quantities import scan_block_quantity
 from .schemas import (
+    DashboardDaySummaryRead,
     DayReportOrder,
     DayReportPaymentGroup,
     DayReportRead,
@@ -84,6 +92,52 @@ def build_day_report(db: Session, report_date: str | None = None):
     )
 
 
+def build_dashboard_day_summary(db: Session, report_date: str | None = None):
+    parsed_date = parse_report_date(report_date)
+    import_dates = {
+        str(row.id): business_date(row.created_at)
+        for row in db.execute(select(ImportJob)).scalars().all()
+    }
+    orders = db.execute(
+        select(Order)
+        .options(selectinload(Order.items).selectinload(OrderItem.scan_codes))
+        .order_by(Order.created_at.asc(), Order.id.asc())
+    ).scalars().all()
+
+    totals = {
+        "orders": 0,
+        "completed_orders": 0,
+        "active_orders": 0,
+        "items": 0,
+        "completed_items": 0,
+        "planned_blocks": 0,
+        "scanned_blocks": 0,
+        "scanned_today": 0,
+        "remaining_blocks": 0,
+        "scan_codes": 0,
+        "total_price": 0,
+    }
+
+    for order in orders:
+        if is_dashboard_excluded_order(order):
+            continue
+        loaded_items = [
+            item for item in order.items
+            if item.status != STATUS_REMOVED_FROM_GOOGLE
+            and dashboard_item_loaded_date(item, import_dates) == parsed_date
+        ]
+        if not loaded_items:
+            continue
+        add_totals(totals, summarize_items(loaded_items, parsed_date), order.status)
+
+    return DashboardDaySummaryRead(
+        report_date=parsed_date,
+        source="postgres_loaded_items",
+        generated_at=datetime.now(report_timezone()),
+        totals=DayReportTotals(**totals),
+    )
+
+
 def parse_report_date(value: str | None):
     if not value:
         return datetime.now(report_timezone()).date()
@@ -96,6 +150,29 @@ def parse_report_date(value: str | None):
     raise ApiError(422, "Invalid report_date. Use YYYY-MM-DD or DD.MM.YYYY")
 
 
+def business_date(value):
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(report_timezone()).date()
+    if isinstance(value, date):
+        return value
+    return None
+
+
+def is_dashboard_excluded_order(order: Order):
+    status = str(order.status or "").strip().lower()
+    return status in {STATUS_RETURNED, STATUS_ARCHIVED_NO_KIZ, STATUS_CANCELLED}
+
+
+def dashboard_item_loaded_date(item: OrderItem, import_dates: dict[str, date | None]):
+    raw_payload = item.raw_payload or {}
+    import_id = str(raw_payload.get("backend_import_id") or "")
+    return import_dates.get(import_id) or business_date(item.created_at)
+
+
 def should_include_order(order: Order, report_date: date):
     if order.order_date == report_date:
         return True
@@ -103,7 +180,10 @@ def should_include_order(order: Order, report_date: date):
 
 
 def summarize_order(order: Order, report_date: date):
-    items = list(order.items)
+    return summarize_items(list(order.items), report_date)
+
+
+def summarize_items(items: list[OrderItem], report_date: date):
     planned_blocks = sum(max(0, item.quantity_blocks or 0) for item in items)
     scanned_blocks = sum(max(0, item.scanned_blocks or 0) for item in items)
     scanned_today = sum(

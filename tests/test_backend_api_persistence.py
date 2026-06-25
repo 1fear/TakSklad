@@ -1587,6 +1587,105 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertEqual(actions.count("scan_code_created"), 2)
             self.assertIn("order_completed", actions)
 
+    def test_dashboard_day_summary_counts_loaded_items_not_shipment_or_scan_date(self):
+        loaded_at = datetime(2026, 5, 30, 9, 0, tzinfo=timezone.utc)
+        old_loaded_at = datetime(2026, 5, 29, 9, 0, tzinfo=timezone.utc)
+        with self.SessionLocal() as db:
+            import_job = ImportJob(
+                source="excel",
+                status="completed",
+                rows_total=1,
+                rows_imported=1,
+                created_at=loaded_at,
+                raw_payload={"source": "test"},
+            )
+            db.add(import_job)
+            db.flush()
+            active_order = Order(
+                payment_type="cash",
+                client="Loaded Active",
+                address="Address",
+                representative="Rep",
+                order_date=date(2026, 5, 31),
+                status="not_completed",
+                created_at=loaded_at,
+                raw_payload={"source": "test"},
+            )
+            active_item = OrderItem(
+                order=active_order,
+                product="Product A",
+                quantity_pieces=50,
+                quantity_blocks=5,
+                scanned_blocks=2,
+                status="not_completed",
+                created_at=old_loaded_at,
+                raw_payload={"backend_import_id": str(import_job.id), "line_total": 1200000},
+            )
+            completed_order = Order(
+                payment_type="cash",
+                client="Loaded Completed",
+                address="Address",
+                representative="Rep",
+                order_date=date(2026, 5, 30),
+                status="completed",
+                created_at=loaded_at,
+                raw_payload={"source": "test"},
+            )
+            completed_item = OrderItem(
+                order=completed_order,
+                product="Product B",
+                quantity_pieces=30,
+                quantity_blocks=3,
+                scanned_blocks=3,
+                status="completed",
+                created_at=loaded_at,
+                raw_payload={"line_total": 720000},
+            )
+            old_order = Order(
+                payment_type="cash",
+                client="Old Loaded",
+                address="Address",
+                representative="Rep",
+                order_date=date(2026, 5, 30),
+                status="not_completed",
+                created_at=old_loaded_at,
+                raw_payload={"source": "test"},
+            )
+            old_item = OrderItem(
+                order=old_order,
+                product="Product C",
+                quantity_pieces=20,
+                quantity_blocks=2,
+                scanned_blocks=1,
+                status="not_completed",
+                created_at=old_loaded_at,
+                raw_payload={"line_total": 480000},
+            )
+            db.add_all([active_order, active_item, completed_order, completed_item, old_order, old_item])
+            db.flush()
+            db.add(ScanCode(
+                order_item_id=old_item.id,
+                code="0104006396053978217OLDLOAD001",
+                scanned_at=loaded_at,
+                raw_payload={"scanned_at": loaded_at.isoformat()},
+            ))
+            db.commit()
+
+        response = self.client.get("/api/v1/admin/dashboard/day-summary?report_date=2026-05-30")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["report_date"], "2026-05-30")
+        self.assertEqual(payload["source"], "postgres_loaded_items")
+        self.assertEqual(payload["totals"]["orders"], 2)
+        self.assertEqual(payload["totals"]["completed_orders"], 1)
+        self.assertEqual(payload["totals"]["active_orders"], 1)
+        self.assertEqual(payload["totals"]["planned_blocks"], 8)
+        self.assertEqual(payload["totals"]["scanned_blocks"], 5)
+        self.assertEqual(payload["totals"]["scanned_today"], 0)
+        self.assertEqual(payload["totals"]["remaining_blocks"], 3)
+        self.assertEqual(payload["totals"]["total_price"], 1920000)
+
     def test_complete_order_exports_archive_to_google_sheets_best_effort(self):
         order_id, item_id = self.seed_order()
         for code in ["010000000001", "010000000002"]:
