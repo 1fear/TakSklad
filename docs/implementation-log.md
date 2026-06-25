@@ -6032,3 +6032,17 @@ cd /opt/taksklad/app
   - `tools/release_go_no_go.py` требует подтвержденные чекбоксы Telegram Import, SkladBot Matching и Windows Desktop Acceptance;
   - файл acceptance results сейчас оставлен в состоянии NO-GO, чтобы случайно не выдать production deploy без ручной приемки.
 - Это не блокирует кодовый release candidate, но блокирует честный production deploy без отдельного acceptance прохода.
+
+### Returned orders import and logistics isolation
+
+- Причина: если ошибочный заказ уже собрали, затем провели через `Возврат`, повторная загрузка исправленного Excel должна создать новую активную сборку, а не приклеиваться к старому returned-заказу и не считаться дублем.
+- Изменено:
+  - backend import больше не использует `returned` orders/items/source_import_id как существующие ключи дедупликации;
+  - повторный import после возврата создает новый активный заказ и новую позицию при том же бизнес-ключе;
+  - логистический отчет и список дат логистики явно исключают `returned`-заказы, включая случаи до выгрузки отчета;
+  - старый returned-заказ остается в БД/архиве как история возврата и не участвует в новой операционной реальности склада.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_backend_api_persistence.BackendApiPersistenceTests.test_import_after_return_creates_new_active_order_instead_of_duplicate tests.test_backend_api_persistence.BackendApiPersistenceTests.test_duplicate_backend_import_still_can_backfill_google_sheets tests.test_backend_api_persistence.BackendApiPersistenceTests.test_logistics_report_excludes_returned_orders tests.test_backend_api_persistence.BackendApiPersistenceTests.test_logistics_report_uses_shipment_date_coordinates_and_prices` - 4 tests OK;
+  - `.venv/bin/python -m unittest tests.test_backend_api_persistence` - 99 tests OK;
+  - `.venv/bin/python -m unittest tests.test_backend_skladbot_request_dry_run` - 27 tests OK;
+  - `.venv/bin/python -m py_compile backend/app/imports_service.py backend/app/logistics_service.py tests/test_backend_api_persistence.py` - OK.

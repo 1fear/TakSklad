@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from .client_points_service import client_point_delivery_slot_map, delivery_slot_for_order
 from .models import Order, OrderItem
-from .orders_service import ApiError
+from .orders_service import ApiError, STATUS_RETURNED
 from .reports_service import parse_report_date
 
 
@@ -198,11 +198,21 @@ def is_logistics_delivery_order(order):
 
 
 def is_logistics_candidate_order(order):
+    if is_returned_order(order):
+        return False
     if is_skladbot_stock_shortage_blocked_order(order):
         return False
     if is_pickup_address(order.address):
         return False
     return True
+
+
+def is_returned_order(order):
+    raw_payload = order.raw_payload or {}
+    return (
+        str(order.status or "").strip().casefold() == STATUS_RETURNED
+        or str(raw_payload.get("return_status") or "").strip().casefold() in {"returned", "return", "возврат"}
+    )
 
 
 def logistics_coordinate_problem_reason(order):

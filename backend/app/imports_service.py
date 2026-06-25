@@ -13,7 +13,7 @@ from .google_sheets_pending import (
     queue_google_sheets_export,
 )
 from .models import AuditLog, ImportFile, ImportJob, Incident, Order, OrderItem
-from .orders_service import STATUS_COMPLETED, STATUS_NOT_COMPLETED
+from .orders_service import STATUS_COMPLETED, STATUS_NOT_COMPLETED, STATUS_RETURNED
 from .schemas import ImportCreate, ImportPreviewResult, ImportRead, ImportResult
 from .skladbot_request_dry_run import create_skladbot_dry_run_for_import
 
@@ -527,6 +527,8 @@ def load_existing_import_keys(db: Session):
         "source_import_id": {},
     }
     for order in orders:
+        if is_returned_order(order):
+            continue
         order_key = (order.raw_payload or {}).get("order_key") or order.external_id
         if order_key:
             order_by_key[order_key] = order
@@ -541,6 +543,14 @@ def load_existing_import_keys(db: Session):
                 source_import_ids.add(source_import_id)
                 existing_items["source_import_id"].setdefault(source_import_id, item)
     return order_by_key, item_keys, source_import_ids, existing_items
+
+
+def is_returned_order(order):
+    raw_payload = order.raw_payload or {}
+    return (
+        normalize_text(order.status).casefold() == STATUS_RETURNED
+        or normalize_text(raw_payload.get("return_status")).casefold() in {"returned", "return", "возврат"}
+    )
 
 
 def find_existing_item_for_row(row, existing_items):

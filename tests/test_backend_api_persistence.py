@@ -2060,6 +2060,52 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertEqual(len(events), 2)
             self.assertEqual(events[-1].payload["records"][0]["ID импорта"], "backfill-import")
 
+    def test_import_after_return_creates_new_active_order_instead_of_duplicate(self):
+        row = {
+            "Дата отгрузки": "30.05.2026",
+            "Тип оплаты": "cash",
+            "Клиент": "Returned Reissue Client",
+            "Адрес": "Returned Reissue Address",
+            "Координаты": "41.31,69.27",
+            "Товары": "Product One",
+            "Кол-во ШТ": "20",
+            "Кол-во блок": "2",
+            "ID заказа": "returned-reissue-order",
+            "ID импорта": "returned-reissue-import",
+        }
+
+        first = self.client.post("/api/v1/imports", json={"source": "excel", "filename": "orders.xlsx", "rows": [row]})
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(first.json()["items_created"], 1)
+        with self.SessionLocal() as db:
+            order = db.execute(select(Order)).scalar_one()
+            order.status = "returned"
+            order.raw_payload = {
+                **(order.raw_payload or {}),
+                "return_status": "returned",
+                "return_reference": "WH-R-RETURN",
+            }
+            db.commit()
+
+        second = self.client.post("/api/v1/imports", json={"source": "excel", "filename": "orders.xlsx", "rows": [row]})
+
+        self.assertEqual(second.status_code, 201)
+        payload = second.json()
+        self.assertEqual(payload["orders_created"], 1)
+        self.assertEqual(payload["items_created"], 1)
+        self.assertEqual(payload["duplicate_rows"], 0)
+        active = self.client.get("/api/v1/orders/active")
+        self.assertEqual(active.status_code, 200)
+        self.assertEqual(len(active.json()), 1)
+        self.assertEqual(active.json()[0]["client"], "Returned Reissue Client")
+        with self.SessionLocal() as db:
+            orders = db.execute(select(Order)).scalars().all()
+            items = db.execute(select(OrderItem)).scalars().all()
+            self.assertEqual(len(orders), 2)
+            self.assertEqual(len(items), 2)
+            self.assertEqual([order.status for order in orders].count("returned"), 1)
+            self.assertEqual([order.status for order in orders].count("not_completed"), 1)
+
     def test_import_preview_reports_duplicates_invalid_rows_and_does_not_write(self):
         existing_row = {
             "Дата отгрузки": "30.05.2026",
@@ -2885,6 +2931,40 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
         report = self.client.get("/api/v1/logistics/report?shipment_date=2026-05-30")
 
+        self.assertEqual(report.status_code, 404)
+        self.assertIn("No logistics delivery orders", report.json()["detail"])
+
+    def test_logistics_report_excludes_returned_orders(self):
+        rows = [
+            {
+                "Дата отгрузки": "2026-05-30",
+                "Тип оплаты": "Терминал",
+                "Клиент": "Returned Logistics Client",
+                "Адрес": "Returned Logistics Address",
+                "Координаты": "41.31, 69.27",
+                "Товары": "Chapman Brown OP 20",
+                "Кол-во ШТ": "20",
+                "Кол-во блок": "2",
+                "ID заказа": "returned-logistics-order",
+            },
+        ]
+        imported = self.client.post("/api/v1/imports", json={"source": "excel", "filename": "orders.xlsx", "rows": rows})
+        self.assertEqual(imported.status_code, 201)
+        with self.SessionLocal() as db:
+            order = db.execute(select(Order)).scalar_one()
+            order.status = "returned"
+            order.raw_payload = {
+                **(order.raw_payload or {}),
+                "return_status": "returned",
+                "return_reference": "WH-R-RETURN",
+            }
+            db.commit()
+
+        dates = self.client.get("/api/v1/logistics/dates")
+        report = self.client.get("/api/v1/logistics/report?shipment_date=2026-05-30")
+
+        self.assertEqual(dates.status_code, 200)
+        self.assertEqual(dates.json(), [])
         self.assertEqual(report.status_code, 404)
         self.assertIn("No logistics delivery orders", report.json()["detail"])
 
