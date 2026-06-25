@@ -6138,3 +6138,15 @@ cd /opt/taksklad/app
   - `.venv/bin/python -m unittest tests.test_desktop_ui_contract` - 48 tests OK;
   - `.venv/bin/python -m py_compile backend/app/telegram_worker.py tests/test_backend_telegram_import.py` - OK;
   - `git diff --check` - OK.
+- VDS deploy:
+  - commit: `c937b9b Fix Telegram import timeout false failures`;
+  - Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260625T111244Z.sql.gz`;
+  - restore point: `/opt/taksklad/restore_points/pre-telegram-import-timeout-fix-20260625T111304Z`;
+  - synced runtime file: `backend/app/telegram_worker.py`, SHA256 `4f2818d55c72371fc5fabebcbf12affe7119d90953d42291b261ac3ac70ab2a7`;
+  - `docker compose up -d --build telegram-worker` пересобрал и пересоздал `telegram-worker`; `backend-api` также был пересоздан compose-зависимостью;
+  - VDS containers: `backend-api`, `telegram-worker`, `postgres`, `frontend`, `google-sheets-sync-worker`, `skladbot-worker` running;
+  - `https://api.taksklad.uz/health` - OK, backend `2.0.23`;
+  - `https://api.taksklad.uz/ready` - DB/migrations OK, общий `degraded` из-за старых failed queue events;
+  - in-container `python -m py_compile /app/app/telegram_worker.py` - OK;
+  - fresh `backend-api`/`telegram-worker` logs since deploy - no `error|traceback|exception|critical|failed`;
+  - `./deploy/vds/acceptance_status.sh` остался `failed` из-за старого readiness `degraded` и незакрытых ручных GO/NO-GO чекбоксов, не из-за этого deploy.
