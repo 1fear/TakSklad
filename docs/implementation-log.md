@@ -6056,3 +6056,20 @@ cd /opt/taksklad/app
   - `https://api.taksklad.uz/ready` - DB/migrations OK, общий `degraded` из-за старых queue events;
   - production preview того же кейса вернул `rows_importable=6`, `orders_new=2`, `items_new=6`, `duplicate_rows=0`;
   - `acceptance_status.sh` остался `failed` из-за старого Google/backend sync mismatch по `ASADBEK GOLD BIZNES / Chapman RED OP 20` и незакрытых ручных GO/NO-GO чекбоксов, не из-за deploy health.
+
+### Erroneous returned-order import cleanup
+
+- Причина: до фикса `returned`-заказы участвовали в дедупликации, поэтому Telegram import `afc07b59-d2e1-47d6-9a3e-e9c692c2cab3` добавил 5 позиций в 2 старых `returned`-заказа вместо создания новой активной сборки.
+- Перед удалением:
+  - restore point: `/opt/taksklad/restore_points/pre-delete-second-import-20260625T093332Z`;
+  - Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260625T093332Z.sql.gz`;
+  - проверено, что по этим 5 позициям нет `scan_codes`, `kiz_movements` и incidents.
+- Удалено:
+  - 5 `order_items`, созданных import `afc07b59-d2e1-47d6-9a3e-e9c692c2cab3`;
+  - import row, linked `import_files`, 3 linked `pending_events`, related `audit_log`;
+  - 6 строк Google Sheets: 1 строка из `data` и 5 строк из `Архив`.
+- Проверено после удаления:
+  - `order_items`, `imports`, `import_files`, linked `pending_events` по второму import = 0;
+  - в Google Sheets совпадений по source file/import id = 0;
+  - старые returned-заказы остались как архив возврата: `WH-R-200667` и `WH-R-200666`, по 3 исходные позиции в каждом;
+  - прямой Google/backend sync по активным позициям после удаления: `status=ok`, `backend_active_items=96`, `backend_missing_sheet=[]`, `sheet_missing_backend=[]`.
