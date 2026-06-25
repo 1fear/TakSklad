@@ -2,6 +2,7 @@ import {
   Activity,
   AlertCircle,
   BarChart3,
+  Building2,
   Box,
   CheckCircle2,
   ClipboardList,
@@ -14,17 +15,20 @@ import {
   Loader2,
   PackageCheck,
   Phone,
+  Plus,
   RefreshCw,
   RotateCcw,
+  Save,
   Search,
   Server,
   ShieldCheck,
   SquareCode,
+  Trash2,
   Undo2,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { Fragment, FormEvent, useEffect, useMemo, useState } from "react";
 import {
   AdminIncident,
   AdminActivity,
@@ -33,6 +37,8 @@ import {
   AdminTableRow,
   ApiConfig,
   ApiRequestError,
+  ClientPoint,
+  ClientPointOrderSummary,
   DayReport,
   EventQueueDiagnostics,
   EventQueueEvent,
@@ -43,13 +49,16 @@ import {
   cancelOrder,
   completeOrdersWithoutKiz,
   defaultApiUrl,
+  deleteActiveOrder,
   downloadDiagnosticsLog,
   getAdminEvents,
   getAdminIncidents,
   getAdminTable,
   getAuthSession,
+  getClientPointOrderSummary,
   getDayReport,
   getReadiness,
+  listClientPoints,
   listImports,
   listSkladBotDryRuns,
   loginWeb,
@@ -62,18 +71,28 @@ import {
   retryAdminEvent,
   retryPendingGoogle,
   syncSources,
+  updateClientPointTimeslot,
   updateIncidentStatus,
 } from "./api";
 import "./styles.css";
 
-type Tab = "table" | "report" | "imports" | "skladbotDryRun" | "incidents" | "activity";
+type Tab = "table" | "clients" | "report" | "imports" | "skladbotDryRun" | "incidents" | "activity";
 type StatusFilter = "all" | "active" | "archive" | "archive_no_kiz" | "cancelled" | "returned" | "removed_from_google";
 type ScanFilter = "all" | "not_started" | "in_progress" | "completed" | "over_scanned" | "no_plan";
 type SkladBotFilter = "all" | "found" | "missing" | "problem";
 type GoogleFilter = "all" | "synced" | "pending" | "removed_from_google" | "unknown";
+type ClientTimeslotFilter = "all" | "custom" | "default";
 type IncidentStatusFilter = "all" | "open" | "in_progress" | "manual_review" | "resolved" | "ignored" | "cancelled";
 type IncidentSeverityFilter = "all" | "info" | "warning" | "critical";
-type OrderActionKind = "resync" | "archive" | "completeWithoutKiz" | "cancel" | "resetRescan" | "restore" | "resyncSkladBot";
+type OrderActionKind = "resync" | "archive" | "completeWithoutKiz" | "cancel" | "deleteActive" | "resetRescan" | "restore" | "resyncSkladBot";
+type ClientPointFormDraft = {
+  clientName: string;
+  address: string;
+  coordinates: string;
+  representative: string;
+  deliveryFrom: string;
+  deliveryTo: string;
+};
 type ActionState = {
   selectedCount: number;
   disabledReason: Record<OrderActionKind, string>;
@@ -83,6 +102,18 @@ type ActionState = {
 };
 
 const SAME_ORIGIN_API_LABEL = "same-origin /api";
+const ADMIN_TABLE_PAGE_SIZE = 5000;
+
+function defaultClientPointDraft(): ClientPointFormDraft {
+  return {
+    clientName: "",
+    address: "",
+    coordinates: "",
+    representative: "",
+    deliveryFrom: "10:00",
+    deliveryTo: "18:00",
+  };
+}
 
 function loadConfig(): ApiConfig {
   return { apiUrl: defaultApiUrl(), token: "" };
@@ -97,6 +128,7 @@ function App() {
   const [adminTable, setAdminTable] = useState<AdminTable | null>(null);
   const [imports, setImports] = useState<ImportRecord[]>([]);
   const [dryRuns, setDryRuns] = useState<SkladBotDryRun[]>([]);
+  const [clientPoints, setClientPoints] = useState<ClientPoint[]>([]);
   const [readiness, setReadiness] = useState<ReadinessResponse | null>(null);
   const [eventQueue, setEventQueue] = useState<EventQueueDiagnostics | null>(null);
   const [incidents, setIncidents] = useState<AdminIncident[]>([]);
@@ -105,11 +137,13 @@ function App() {
   const [reportDate, setReportDate] = useState(todayIso());
   const [shipmentDateFilter, setShipmentDateFilter] = useState("");
   const [search, setSearch] = useState("");
+  const [clientSearch, setClientSearch] = useState("");
   const [incidentSearch, setIncidentSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("active");
   const [scanFilter, setScanFilter] = useState<ScanFilter>("all");
   const [skladbotFilter, setSkladbotFilter] = useState<SkladBotFilter>("all");
   const [googleFilter, setGoogleFilter] = useState<GoogleFilter>("all");
+  const [clientTimeslotFilter, setClientTimeslotFilter] = useState<ClientTimeslotFilter>("all");
   const [incidentStatusFilter, setIncidentStatusFilter] = useState<IncidentStatusFilter>("all");
   const [incidentSeverityFilter, setIncidentSeverityFilter] = useState<IncidentSeverityFilter>("all");
   const [incidentSourceFilter, setIncidentSourceFilter] = useState("all");
@@ -117,12 +151,22 @@ function App() {
   const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([]);
   const [selectedIncidentId, setSelectedIncidentId] = useState("");
   const [selectedEventId, setSelectedEventId] = useState("");
+  const [editingClientPointId, setEditingClientPointId] = useState("");
+  const [expandedClientPointId, setExpandedClientPointId] = useState("");
+  const [clientOrderSummaries, setClientOrderSummaries] = useState<Record<string, ClientPointOrderSummary>>({});
+  const [clientOrderSummaryLoadingId, setClientOrderSummaryLoadingId] = useState("");
+  const [clientSlotDraft, setClientSlotDraft] = useState({ deliveryFrom: "", deliveryTo: "" });
+  const [clientPointCreateOpen, setClientPointCreateOpen] = useState(false);
+  const [newClientPointDraft, setNewClientPointDraft] = useState<ClientPointFormDraft>(() => defaultClientPointDraft());
   const [adminActionReason, setAdminActionReason] = useState("");
   const [busyAction, setBusyAction] = useState("");
   const [loading, setLoading] = useState(false);
+  const [loadingMoreRows, setLoadingMoreRows] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
   const [authUser, setAuthUser] = useState("");
+  const [authRole, setAuthRole] = useState("");
+  const [authPermissions, setAuthPermissions] = useState<string[]>([]);
   const [loginPhone, setLoginPhone] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [loginLoading, setLoginLoading] = useState(false);
@@ -178,6 +222,19 @@ function App() {
     }),
     [incidents, incidentStatusFilter, incidentSeverityFilter, incidentSourceFilter, incidentSearch],
   );
+  const filteredClientPoints = useMemo(
+    () => filterClientPoints(clientPoints, clientSearch, clientTimeslotFilter),
+    [clientPoints, clientSearch, clientTimeslotFilter],
+  );
+  const clientPointSummary = useMemo(
+    () => ({
+      total: clientPoints.length,
+      saved: clientPoints.filter((point) => point.is_saved).length,
+      custom: clientPoints.filter((point) => point.has_custom_timeslot).length,
+      default: clientPoints.filter((point) => !point.has_custom_timeslot).length,
+    }),
+    [clientPoints],
+  );
   const sourceOptions = useMemo(
     () => Array.from(new Set(incidents.map((item) => item.source).filter(Boolean))).sort(),
     [incidents],
@@ -196,16 +253,22 @@ function App() {
     () => actionableEvents.find((event) => event.id === selectedEventId) ?? actionableEvents[0],
     [actionableEvents, selectedEventId],
   );
+  const totalAdminRows = adminTable?.total_rows ?? rows.length;
+  const hasMoreAdminRows = Boolean(adminTable?.has_more) || rows.length < totalAdminRows;
+  const canAdminWrite = authPermissions.includes("admin:write");
+  const canEditClientPoints = authPermissions.includes("client_points:write");
+  const dayTotals = report?.totals;
 
   async function refreshAll(activeConfig = config, showNotice = true) {
     setLoading(true);
     setError("");
     if (showNotice) setNotice("");
     try {
-      const [nextAdminTable, nextReport, nextImports, nextReadiness, nextEventQueue, nextIncidents] = await Promise.all([
-        getAdminTable(activeConfig),
+      const [nextAdminTable, nextReport, nextImports, nextClientPoints, nextReadiness, nextEventQueue, nextIncidents] = await Promise.all([
+        getAdminTable(activeConfig, { limit: ADMIN_TABLE_PAGE_SIZE, offset: 0 }),
         getDayReport(activeConfig, reportDate),
         listImports(activeConfig),
+        listClientPoints(activeConfig).catch(() => []),
         getReadiness(activeConfig).catch(() => null),
         getAdminEvents(activeConfig).catch(() => null),
         getAdminIncidents(activeConfig).catch(() => ({ items: [], summary: {} }) as AdminIncidentsResponse),
@@ -213,6 +276,9 @@ function App() {
       setAdminTable(nextAdminTable);
       setReport(nextReport);
       setImports(nextImports);
+      setClientPoints(nextClientPoints);
+      setExpandedClientPointId("");
+      setClientOrderSummaries({});
       setReadiness(nextReadiness);
       setEventQueue(nextEventQueue);
       setIncidents(nextIncidents.items);
@@ -238,6 +304,32 @@ function App() {
     }
   }
 
+  async function loadMoreAdminRows() {
+    if (!adminTable || loadingMoreRows || loading || !hasMoreAdminRows) return;
+    setLoadingMoreRows(true);
+    setError("");
+    try {
+      const nextPage = await getAdminTable(config, {
+        limit: ADMIN_TABLE_PAGE_SIZE,
+        offset: rows.length,
+        activityLimit: 0,
+      });
+      setAdminTable((current) => current ? mergeAdminTables(current, nextPage) : nextPage);
+      setNotice(`Догружено: ${Math.min(rows.length + nextPage.rows.length, nextPage.total_rows)} из ${nextPage.total_rows}`);
+    } catch (loadError) {
+      const message = loadError instanceof Error ? loadError.message : "Не удалось догрузить строки";
+      if (loadError instanceof ApiRequestError && loadError.status === 401) {
+        setAuthenticated(false);
+        setAuthUser("");
+        setLoginError("Сессия закончилась. Войдите снова.");
+      } else {
+        setError(message);
+      }
+    } finally {
+      setLoadingMoreRows(false);
+    }
+  }
+
   async function refreshDryRuns(activeConfig = config) {
     try {
       setDryRuns(await listSkladBotDryRuns(activeConfig));
@@ -258,12 +350,16 @@ function App() {
       const session = await getAuthSession(config);
       setAuthenticated(session.authenticated);
       setAuthUser(session.login || "");
+      setAuthRole(session.role || "");
+      setAuthPermissions(session.permissions ?? []);
       if (session.authenticated) {
         await refreshAll(config, false);
       }
     } catch {
       setAuthenticated(false);
       setAuthUser("");
+      setAuthRole("");
+      setAuthPermissions([]);
     } finally {
       setAuthChecked(true);
     }
@@ -284,6 +380,8 @@ function App() {
       setLoginPassword("");
       setAuthenticated(session.authenticated);
       setAuthUser(session.login || normalizedPhone);
+      setAuthRole(session.role || "");
+      setAuthPermissions(session.permissions ?? []);
       await refreshAll(config, false);
     } catch (loginFailure) {
       const message = loginFailure instanceof Error ? loginFailure.message : "";
@@ -303,9 +401,12 @@ function App() {
       setBusyAction("");
       setAuthenticated(false);
       setAuthUser("");
+      setAuthRole("");
+      setAuthPermissions([]);
       setAdminTable(null);
       setImports([]);
       setDryRuns([]);
+      setClientPoints([]);
       setReadiness(null);
       setEventQueue(null);
       setIncidents([]);
@@ -314,11 +415,14 @@ function App() {
       setSelectedOrderIds([]);
       setSelectedIncidentId("");
       setSelectedEventId("");
+      setEditingClientPointId("");
+      setClientSlotDraft({ deliveryFrom: "", deliveryTo: "" });
       setAdminActionReason("");
     }
   }
 
   function toggleOrderSelection(orderId: string) {
+    if (!canAdminWrite) return;
     setSelectedOrderIds((current) => (
       current.includes(orderId)
         ? current.filter((value) => value !== orderId)
@@ -327,6 +431,7 @@ function App() {
   }
 
   function toggleVisibleOrderSelection() {
+    if (!canAdminWrite) return;
     setSelectedOrderIds((current) => {
       const visible = new Set(visibleOrderIds);
       if (visible.size === 0) return current;
@@ -364,6 +469,146 @@ function App() {
       setNotice(`Источники обновлены: ${status}, SkladBot ${skladbotStatus}`);
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : "Не удалось обновить Google/SkladBot");
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  function startClientPointEdit(point: ClientPoint) {
+    setEditingClientPointId(point.id);
+    setClientSlotDraft({
+      deliveryFrom: point.delivery_from || "10:00",
+      deliveryTo: point.delivery_to || "18:00",
+    });
+  }
+
+  function cancelClientPointEdit() {
+    setEditingClientPointId("");
+    setClientSlotDraft({ deliveryFrom: "", deliveryTo: "" });
+  }
+
+  async function toggleClientPointOrderHistory(point: ClientPoint) {
+    if (expandedClientPointId === point.id) {
+      setExpandedClientPointId("");
+      return;
+    }
+    setExpandedClientPointId(point.id);
+    if (point.orders_count <= 0 || clientOrderSummaries[point.id]) {
+      return;
+    }
+    setClientOrderSummaryLoadingId(point.id);
+    setError("");
+    try {
+      const summary = await getClientPointOrderSummary(config, point.client_name);
+      setClientOrderSummaries((current) => ({ ...current, [point.id]: summary }));
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "Не удалось загрузить историю заказов клиента");
+    } finally {
+      setClientOrderSummaryLoadingId("");
+    }
+  }
+
+  async function saveClientPointTimeslot(point: ClientPoint) {
+    const deliveryFrom = clientSlotDraft.deliveryFrom || point.delivery_from;
+    const deliveryTo = clientSlotDraft.deliveryTo || point.delivery_to;
+    if (!deliveryFrom || !deliveryTo) {
+      setError("Укажите время с и до");
+      return;
+    }
+    setBusyAction(`client-slot:${point.id}`);
+    setError("");
+    setNotice("");
+    try {
+      await updateClientPointTimeslot(config, {
+        client_name: point.client_name,
+        address: point.address,
+        point_name: point.point_name,
+        coordinates: point.coordinates,
+        representative: point.representative,
+        delivery_from: deliveryFrom,
+        delivery_to: deliveryTo,
+        is_active: point.is_active,
+        actor: "web",
+        reason: "Изменение таймслота точки в web-панели",
+      });
+      const nextClientPoints = await listClientPoints(config).catch(() => []);
+      setClientPoints(nextClientPoints);
+      setExpandedClientPointId("");
+      setClientOrderSummaries({});
+      setEditingClientPointId("");
+      setClientSlotDraft({ deliveryFrom: "", deliveryTo: "" });
+      setNotice("Таймслот сохранен");
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "Не удалось сохранить таймслот");
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  async function saveNewClientPoint() {
+    const clientName = newClientPointDraft.clientName.trim();
+    const address = newClientPointDraft.address.trim();
+    const deliveryFrom = newClientPointDraft.deliveryFrom || "10:00";
+    const deliveryTo = newClientPointDraft.deliveryTo || "18:00";
+    if (!clientName || !address) {
+      setError("Укажите юрлицо и адрес точки");
+      return;
+    }
+    setBusyAction("client-slot:new");
+    setError("");
+    setNotice("");
+    try {
+      await updateClientPointTimeslot(config, {
+        client_name: clientName,
+        address,
+        coordinates: newClientPointDraft.coordinates.trim(),
+        representative: newClientPointDraft.representative.trim(),
+        delivery_from: deliveryFrom,
+        delivery_to: deliveryTo,
+        is_active: true,
+        actor: "web",
+        reason: "Ручное добавление точки в web-панели",
+      });
+      const nextClientPoints = await listClientPoints(config).catch(() => []);
+      setClientPoints(nextClientPoints);
+      setExpandedClientPointId("");
+      setClientOrderSummaries({});
+      setNewClientPointDraft(defaultClientPointDraft());
+      setClientPointCreateOpen(false);
+      setNotice("Точка добавлена");
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "Не удалось добавить точку");
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  async function resetClientPointTimeslot(point: ClientPoint) {
+    setBusyAction(`client-slot-reset:${point.id}`);
+    setError("");
+    setNotice("");
+    try {
+      await updateClientPointTimeslot(config, {
+        client_name: point.client_name,
+        address: point.address,
+        point_name: point.point_name,
+        coordinates: point.coordinates,
+        representative: point.representative,
+        delivery_from: "10:00",
+        delivery_to: "18:00",
+        is_active: point.is_active,
+        actor: "web",
+        reason: "Сброс таймслота точки до значения по умолчанию",
+      });
+      const nextClientPoints = await listClientPoints(config).catch(() => []);
+      setClientPoints(nextClientPoints);
+      setExpandedClientPointId("");
+      setClientOrderSummaries({});
+      setEditingClientPointId("");
+      setClientSlotDraft({ deliveryFrom: "", deliveryTo: "" });
+      setNotice("Таймслот сброшен до 10:00-18:00");
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "Не удалось сбросить таймслот");
     } finally {
       setBusyAction("");
     }
@@ -478,7 +723,9 @@ function App() {
         ? "Ручное закрытие выполненных заказов без сканирования КИЗов"
         : kind === "resetRescan"
           ? "Сброс заказа на пересканирование"
-          : "";
+          : kind === "deleteActive"
+            ? "Удаление ошибочно созданного активного заказа без КИЗов"
+            : "";
     const reason = kind === "resetRescan"
       ? defaultReason
       : window.prompt(actionPrompt(kind, primaryRow, selectedOrderIds.length), defaultReason);
@@ -506,6 +753,8 @@ function App() {
         await completeOrdersWithoutKiz(config, selectedOrderIds, payload);
       } else if (kind === "cancel") {
         await cancelOrder(config, primaryRow.order_id, payload);
+      } else if (kind === "deleteActive") {
+        await deleteActiveOrder(config, primaryRow.order_id, payload);
       } else if (kind === "resetRescan") {
         await resetOrderForRescan(config, primaryRow.order_id, payload);
       } else if (kind === "restore") {
@@ -549,31 +798,35 @@ function App() {
           <img src="/taksklad.png" alt="" />
           <div>
             <strong>TakSklad</strong>
-            <span>web panel</span>
+            <span>веб-панель</span>
           </div>
         </div>
-        <nav className="nav-tabs">
-          <button className={tab === "table" ? "active" : ""} onClick={() => setTab("table")}>
+        <nav className="nav-tabs" aria-label="Разделы панели">
+          <button className={tab === "table" ? "active" : ""} onClick={() => setTab("table")} aria-current={tab === "table" ? "page" : undefined}>
             <ClipboardList size={18} />
             Таблица
           </button>
-          <button className={tab === "report" ? "active" : ""} onClick={() => setTab("report")}>
+          <button className={tab === "clients" ? "active" : ""} onClick={() => setTab("clients")} aria-current={tab === "clients" ? "page" : undefined}>
+            <Building2 size={18} />
+            Клиенты
+          </button>
+          <button className={tab === "report" ? "active" : ""} onClick={() => setTab("report")} aria-current={tab === "report" ? "page" : undefined}>
             <BarChart3 size={18} />
             Отчет
           </button>
-          <button className={tab === "imports" ? "active" : ""} onClick={() => setTab("imports")}>
+          <button className={tab === "imports" ? "active" : ""} onClick={() => setTab("imports")} aria-current={tab === "imports" ? "page" : undefined}>
             <FileSpreadsheet size={18} />
             Импорты
           </button>
-          <button className={tab === "skladbotDryRun" ? "active" : ""} onClick={() => setTab("skladbotDryRun")}>
+          <button className={tab === "skladbotDryRun" ? "active" : ""} onClick={() => setTab("skladbotDryRun")} aria-current={tab === "skladbotDryRun" ? "page" : undefined}>
             <SquareCode size={18} />
             SkladBot dry-run
           </button>
-          <button className={tab === "incidents" ? "active" : ""} onClick={() => setTab("incidents")}>
+          <button className={tab === "incidents" ? "active" : ""} onClick={() => setTab("incidents")} aria-current={tab === "incidents" ? "page" : undefined}>
             <AlertCircle size={18} />
             Инциденты
           </button>
-          <button className={tab === "activity" ? "active" : ""} onClick={() => setTab("activity")}>
+          <button className={tab === "activity" ? "active" : ""} onClick={() => setTab("activity")} aria-current={tab === "activity" ? "page" : undefined}>
             <History size={18} />
             Активность
           </button>
@@ -593,19 +846,23 @@ function App() {
             <p>Web-панель</p>
             <h1>Заказы, синхронизация и активность</h1>
           </div>
-          <div className="topbar-actions">
+          <div className="topbar-actions" aria-label="Действия панели">
             <div className="user-pill" title={authUser ? `Пользователь ${maskLogin(authUser)}` : "Пользователь"}>
               <ShieldCheck size={17} />
-              {authUser ? maskLogin(authUser) : "Вход выполнен"}
+              {authUser ? `${maskLogin(authUser)} · ${roleLabel(authRole)}` : "Вход выполнен"}
             </div>
-            <button className="ghost-button" onClick={() => void retryGoogleQueue()} disabled={Boolean(busyAction)} title="Повторить Google-очередь">
-              {busyAction === "retry-google" ? <Loader2 className="spin" size={18} /> : <Database size={18} />}
-              Google очередь
-            </button>
-            <button className="ghost-button" onClick={() => void syncExternalSources()} disabled={Boolean(busyAction)} title="Обновить Google Sheets и SkladBot через backend">
-              {busyAction === "sync-sources" ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
-              Google/SkladBot
-            </button>
+            {canAdminWrite && (
+              <>
+                <button className="ghost-button" onClick={() => void retryGoogleQueue()} disabled={Boolean(busyAction)} title="Повторить Google-очередь">
+                  {busyAction === "retry-google" ? <Loader2 className="spin" size={18} /> : <Database size={18} />}
+                  Google очередь
+                </button>
+                <button className="ghost-button" onClick={() => void syncExternalSources()} disabled={Boolean(busyAction)} title="Обновить Google Sheets и SkladBot через backend">
+                  {busyAction === "sync-sources" ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
+                  Google/SkladBot
+                </button>
+              </>
+            )}
             <button className="icon-button" onClick={() => void refreshAll()} disabled={loading} title="Обновить">
               {loading ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
               Обновить
@@ -618,22 +875,23 @@ function App() {
         </header>
 
         {(error || notice) && (
-          <div className={error ? "message error" : "message success"}>
+            <div className={error ? "message error" : "message success"} role="status" aria-live="polite">
             {error ? <AlertCircle size={18} /> : <CheckCircle2 size={18} />}
             <span>{error || notice}</span>
           </div>
         )}
 
-        <section className="stats-row">
-          <Metric icon={<ClipboardList size={20} />} label="Активных заказов" value={adminTable?.totals.active_orders ?? 0} />
-          <Metric icon={<Box size={20} />} label="Позиции" value={adminTable?.totals.items ?? 0} />
-          <Metric icon={<PackageCheck size={20} />} label="Сканировано" value={adminTable?.totals.scanned_blocks ?? 0} />
-          <Metric
-            icon={<Activity size={20} />}
-            label="Google очередь"
-            value={adminTable?.totals.pending_google_exports ?? 0}
-            tone={(adminTable?.totals.pending_google_exports ?? 0) > 0 ? "warn" : undefined}
-          />
+        <section className="stats-section" aria-label="Информация за день">
+          <div className="stats-section-head">
+            <h2>Информация за день</h2>
+            <span>{formatDate(report?.report_date ?? reportDate)}</span>
+          </div>
+          <div className="stats-row">
+            <Metric icon={<ClipboardList size={20} />} label="Акт. заказы" value={dayTotals?.active_orders ?? 0} />
+            <Metric icon={<PackageCheck size={20} />} label="Отскан. блоков" value={dayTotals?.scanned_blocks ?? 0} />
+            <Metric icon={<Box size={20} />} label="Всего блоков" value={dayTotals?.planned_blocks ?? 0} />
+            <Metric icon={<Activity size={20} />} label="Всего заказов" value={dayTotals?.orders ?? 0} />
+          </div>
         </section>
 
         {tab === "table" && (
@@ -641,11 +899,13 @@ function App() {
             <div className="panel-header table-panel-header">
               <div>
                 <h2>Позиции заказов</h2>
-                <span className="panel-subtitle">Показано {filteredRows.length} из {rows.length}</span>
+                <span className="panel-subtitle">
+                  {adminTablePageSummary(filteredRows.length, rows.length, totalAdminRows, hasMoreAdminRows)}
+                </span>
               </div>
               <label className="search-box">
                 <Search size={16} />
-                <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Поиск" />
+                <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Поиск" aria-label="Поиск заказов" />
               </label>
             </div>
 
@@ -656,8 +916,9 @@ function App() {
                 value={shipmentDateFilter}
                 onChange={(event) => setShipmentDateFilter(event.target.value)}
                 title="Дата отгрузки"
+                aria-label="Дата отгрузки"
               />
-              <SelectFilter value={statusFilter} onChange={(value) => setStatusFilter(value as StatusFilter)}>
+              <SelectFilter value={statusFilter} onChange={(value) => setStatusFilter(value as StatusFilter)} ariaLabel="Фильтр статуса заказа">
                 <option value="all">Все статусы</option>
                 <option value="active">Активные</option>
                 <option value="archive">Архив</option>
@@ -666,7 +927,7 @@ function App() {
                 <option value="returned">Возвраты</option>
                 <option value="removed_from_google">Удалены из Google</option>
               </SelectFilter>
-              <SelectFilter value={scanFilter} onChange={(value) => setScanFilter(value as ScanFilter)}>
+              <SelectFilter value={scanFilter} onChange={(value) => setScanFilter(value as ScanFilter)} ariaLabel="Фильтр сканирования">
                 <option value="all">Все сканы</option>
                 <option value="not_started">Не начато</option>
                 <option value="in_progress">В работе</option>
@@ -674,36 +935,38 @@ function App() {
                 <option value="over_scanned">Перескан</option>
                 <option value="no_plan">Нет плана</option>
               </SelectFilter>
-              <SelectFilter value={skladbotFilter} onChange={(value) => setSkladbotFilter(value as SkladBotFilter)}>
+              <SelectFilter value={skladbotFilter} onChange={(value) => setSkladbotFilter(value as SkladBotFilter)} ariaLabel="Фильтр SkladBot">
                 <option value="all">SkladBot: все</option>
                 <option value="found">Найдено</option>
                 <option value="missing">Без номера</option>
                 <option value="problem">Проблема</option>
               </SelectFilter>
-              <SelectFilter value={googleFilter} onChange={(value) => setGoogleFilter(value as GoogleFilter)}>
+              <SelectFilter value={googleFilter} onChange={(value) => setGoogleFilter(value as GoogleFilter)} ariaLabel="Фильтр Google">
                 <option value="all">Google: все</option>
                 <option value="synced">Синхронизировано</option>
                 <option value="pending">Очередь</option>
                 <option value="removed_from_google">Удалено</option>
                 <option value="unknown">Неизвестно</option>
               </SelectFilter>
-              <button
-                className="ghost-button"
-                onClick={toggleVisibleOrderSelection}
-                disabled={visibleOrderIds.length === 0}
-                title="Выбрать все заказы, которые сейчас видны после фильтров"
-              >
-                <ClipboardList size={16} />
-                {allVisibleSelected ? "Снять видимые" : "Выделить все"}
-              </button>
+              {canAdminWrite && (
+                <button
+                  className="ghost-button"
+                  onClick={toggleVisibleOrderSelection}
+                  disabled={visibleOrderIds.length === 0}
+                  title="Выбрать все заказы, которые сейчас видны после фильтров"
+                >
+                  <ClipboardList size={16} />
+                  {allVisibleSelected ? "Снять видимые" : "Выделить все"}
+                </button>
+              )}
               {shipmentDateFilter && (
-                <button className="ghost-button" onClick={() => setShipmentDateFilter("")}>
+                <button className="ghost-button" onClick={() => setShipmentDateFilter("")} aria-label="Сбросить фильтр даты отгрузки">
                   Сбросить дату
                 </button>
               )}
             </div>
 
-            {selectedOrderIds.length > 0 && (
+            {canAdminWrite && selectedOrderIds.length > 0 && (
               <ActionBar
                 selectedRows={selectedRows}
                 state={selectedActionState}
@@ -714,6 +977,7 @@ function App() {
                 onCompleteWithoutKiz={() => void runOrderAction("completeWithoutKiz")}
                 onArchive={() => void runOrderAction("archive")}
                 onCancel={() => void runOrderAction("cancel")}
+                onDeleteActive={() => void runOrderAction("deleteActive")}
                 onRestore={() => void runOrderAction("restore")}
                 onResyncSkladBot={() => void runOrderAction("resyncSkladBot")}
               />
@@ -723,10 +987,52 @@ function App() {
               rows={filteredRows}
               selectedOrderIds={selectedOrderIds}
               allVisibleSelected={allVisibleSelected}
+              canSelect={canAdminWrite}
               onToggleVisible={toggleVisibleOrderSelection}
               onToggleOrder={toggleOrderSelection}
             />
+            {hasMoreAdminRows && (
+              <div className="table-pagination">
+                <span>
+                  Загружено <strong>{formatNumber(rows.length)}</strong> из <strong>{formatNumber(totalAdminRows)}</strong>.
+                  Фильтры применяются к загруженным строкам.
+                </span>
+                <button className="ghost-button" onClick={() => void loadMoreAdminRows()} disabled={loadingMoreRows || loading}>
+                  {loadingMoreRows ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
+                  Загрузить еще
+                </button>
+              </div>
+            )}
           </section>
+        )}
+
+        {tab === "clients" && (
+          <ClientsPanel
+            points={filteredClientPoints}
+            summary={clientPointSummary}
+            search={clientSearch}
+            timeslotFilter={clientTimeslotFilter}
+            editingPointId={editingClientPointId}
+            expandedPointId={expandedClientPointId}
+            orderSummaries={clientOrderSummaries}
+            loadingOrderSummaryId={clientOrderSummaryLoadingId}
+            draft={clientSlotDraft}
+            createOpen={clientPointCreateOpen}
+            newPointDraft={newClientPointDraft}
+            busyAction={busyAction}
+            canEdit={canEditClientPoints}
+            onSearchChange={setClientSearch}
+            onTimeslotFilterChange={(value) => setClientTimeslotFilter(value as ClientTimeslotFilter)}
+            onDraftChange={setClientSlotDraft}
+            onNewPointDraftChange={setNewClientPointDraft}
+            onEdit={startClientPointEdit}
+            onToggleOrderHistory={(point) => void toggleClientPointOrderHistory(point)}
+            onCancel={cancelClientPointEdit}
+            onSave={(point) => void saveClientPointTimeslot(point)}
+            onToggleCreate={() => setClientPointCreateOpen((current) => !current)}
+            onCreate={() => void saveNewClientPoint()}
+            onReset={(point) => void resetClientPointTimeslot(point)}
+          />
         )}
 
         {tab === "report" && (
@@ -739,6 +1045,7 @@ function App() {
                 value={reportDate}
                 onChange={(event) => setReportDate(event.target.value)}
                 onBlur={() => void refreshAll()}
+                aria-label="Дата дневного отчета"
               />
             </div>
             {report && (
@@ -789,6 +1096,7 @@ function App() {
             dryRuns={dryRuns}
             imports={imports}
             busyAction={busyAction}
+            canAdminWrite={canAdminWrite}
             onRebuild={(eventId) => void rebuildDryRun(eventId)}
           />
         )}
@@ -810,6 +1118,7 @@ function App() {
             incidentSourceFilter={incidentSourceFilter}
             actionReason={adminActionReason}
             busyAction={busyAction}
+            canAdminWrite={canAdminWrite}
             onSearchChange={setIncidentSearch}
             onStatusFilterChange={(value) => setIncidentStatusFilter(value as IncidentStatusFilter)}
             onSeverityFilterChange={(value) => setIncidentSeverityFilter(value as IncidentSeverityFilter)}
@@ -827,10 +1136,12 @@ function App() {
           <section className="table-panel">
             <div className="panel-header">
               <h2>Последняя активность</h2>
-              <button className="ghost-button" onClick={() => void downloadAuditLog()} disabled={Boolean(busyAction)} title="Скачать backend diagnostics log с audit-событиями">
-                {busyAction === "audit-log" ? <Loader2 className="spin" size={16} /> : <History size={16} />}
-                Audit log
-              </button>
+              {canAdminWrite && (
+                <button className="ghost-button" onClick={() => void downloadAuditLog()} disabled={Boolean(busyAction)} title="Скачать backend diagnostics log с audit-событиями">
+                  {busyAction === "audit-log" ? <Loader2 className="spin" size={16} /> : <History size={16} />}
+                  Audit log
+                </button>
+              )}
             </div>
             <SystemDiagnosticsPanel readiness={readiness} eventQueue={eventQueue} />
             <ActivityList items={adminTable?.recent_activity ?? []} />
@@ -949,6 +1260,7 @@ function buildActionState(selectedOrderIds: string[], selectedRows: AdminTableRo
     archive: "",
     completeWithoutKiz: "",
     cancel: "",
+    deleteActive: "",
     resetRescan: "",
     restore: "",
     resyncSkladBot: "",
@@ -984,6 +1296,7 @@ function buildActionState(selectedOrderIds: string[], selectedRows: AdminTableRo
     disabledReason.archive = "Сначала обработайте Google очередь";
     disabledReason.completeWithoutKiz = "Сначала обработайте Google очередь";
     disabledReason.cancel = "Сначала обработайте Google очередь";
+    disabledReason.deleteActive = "Сначала обработайте Google очередь";
     disabledReason.resetRescan = "Сначала обработайте Google очередь";
     disabledReason.restore = "Сначала обработайте Google очередь";
     disabledReason.resyncSkladBot = "Сначала обработайте Google очередь";
@@ -993,6 +1306,7 @@ function buildActionState(selectedOrderIds: string[], selectedRows: AdminTableRo
     disabledReason.archive = "Доступно только для активного заказа";
     disabledReason.completeWithoutKiz = "Доступно только для активных заказов";
     disabledReason.cancel = "Доступно только для активного заказа";
+    disabledReason.deleteActive = "Доступно только для активного заказа";
     disabledReason.resyncSkladBot = "Доступно только для активного заказа";
   }
   if (selectedCount > 1) {
@@ -1000,6 +1314,7 @@ function buildActionState(selectedOrderIds: string[], selectedRows: AdminTableRo
     disabledReason.resync = reason;
     disabledReason.archive = reason;
     disabledReason.cancel = reason;
+    disabledReason.deleteActive = reason;
     disabledReason.resetRescan = reason;
     disabledReason.restore = reason;
     disabledReason.resyncSkladBot = reason;
@@ -1014,6 +1329,7 @@ function buildActionState(selectedOrderIds: string[], selectedRows: AdminTableRo
   if (scannedBlocks > 0 || scanCodes > 0) {
     disabledReason.archive = "В заказе уже есть отсканированные КИЗы";
     disabledReason.cancel = "В заказе уже есть отсканированные КИЗы";
+    disabledReason.deleteActive = "В заказе уже есть отсканированные КИЗы";
   }
   if (selectedRows.some((row) => row.status_bucket === "removed_from_google")) {
     disabledReason.resync = "Заказ удален из Google";
@@ -1028,6 +1344,7 @@ function actionDisabledReasons(reason: string): Record<OrderActionKind, string> 
     archive: reason,
     completeWithoutKiz: reason,
     cancel: reason,
+    deleteActive: reason,
     resetRescan: reason,
     restore: reason,
     resyncSkladBot: reason,
@@ -1038,6 +1355,7 @@ function firstVisibleActionBlockReason(reasons: Record<OrderActionKind, string>)
   return [
     reasons.archive,
     reasons.cancel,
+    reasons.deleteActive,
     reasons.resetRescan,
     reasons.restore,
     reasons.resyncSkladBot,
@@ -1066,6 +1384,7 @@ function ActionBar({
   onCompleteWithoutKiz,
   onArchive,
   onCancel,
+  onDeleteActive,
   onRestore,
   onResyncSkladBot,
 }: {
@@ -1078,6 +1397,7 @@ function ActionBar({
   onCompleteWithoutKiz: () => void;
   onArchive: () => void;
   onCancel: () => void;
+  onDeleteActive: () => void;
   onRestore: () => void;
   onResyncSkladBot: () => void;
 }) {
@@ -1149,6 +1469,15 @@ function ActionBar({
           Отменить
         </button>
         <button
+          className="ghost-button danger-button"
+          onClick={onDeleteActive}
+          disabled={isBusy || Boolean(state.disabledReason.deleteActive)}
+          title={state.disabledReason.deleteActive || "Удалить ошибочно созданный активный заказ без КИЗов; SkladBot не удаляется автоматически"}
+        >
+          {busyAction === "deleteActive" ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />}
+          Удалить из активных
+        </button>
+        <button
           className="ghost-button"
           onClick={onRestore}
           disabled={isBusy || Boolean(state.disabledReason.restore)}
@@ -1197,29 +1526,53 @@ function Metric({
 function SelectFilter({
   value,
   onChange,
+  ariaLabel,
   children,
 }: {
   value: string;
   onChange: (value: string) => void;
+  ariaLabel: string;
   children: ReactNode;
 }) {
   return (
-    <select className="filter-select" value={value} onChange={(event) => onChange(event.target.value)}>
+    <select className="filter-select" value={value} onChange={(event) => onChange(event.target.value)} aria-label={ariaLabel}>
       {children}
     </select>
   );
+}
+
+function mergeAdminTables(current: AdminTable, nextPage: AdminTable): AdminTable {
+  const rowsById = new Map(current.rows.map((row) => [row.item_id, row]));
+  nextPage.rows.forEach((row) => rowsById.set(row.item_id, row));
+  const rows = Array.from(rowsById.values());
+  return {
+    ...nextPage,
+    rows,
+    offset: 0,
+    row_count: rows.length,
+    has_more: nextPage.has_more && rows.length < nextPage.total_rows,
+  };
+}
+
+function adminTablePageSummary(filteredCount: number, loadedCount: number, totalCount: number, hasMore: boolean) {
+  if (hasMore || loadedCount < totalCount) {
+    return `Показано ${formatNumber(filteredCount)} из ${formatNumber(loadedCount)} загруженных · всего ${formatNumber(totalCount)}`;
+  }
+  return `Показано ${formatNumber(filteredCount)} из ${formatNumber(loadedCount)}`;
 }
 
 function AdminRowsTable({
   rows,
   selectedOrderIds,
   allVisibleSelected,
+  canSelect,
   onToggleVisible,
   onToggleOrder,
 }: {
   rows: AdminTableRow[];
   selectedOrderIds: string[];
   allVisibleSelected: boolean;
+  canSelect: boolean;
   onToggleVisible: () => void;
   onToggleOrder: (orderId: string) => void;
 }) {
@@ -1244,7 +1597,7 @@ function AdminRowsTable({
                 type="checkbox"
                 checked={allVisibleSelected}
                 onChange={onToggleVisible}
-                disabled={rows.length === 0}
+                disabled={rows.length === 0 || !canSelect}
                 aria-label="Выбрать видимые заказы"
               />
             </th>
@@ -1268,6 +1621,7 @@ function AdminRowsTable({
                     type="checkbox"
                     checked={selected}
                     onChange={() => onToggleOrder(row.order_id)}
+                    disabled={!canSelect}
                     aria-label={`Выбрать заказ ${row.client}`}
                   />
                 </td>
@@ -1276,13 +1630,13 @@ function AdminRowsTable({
                   <span className="table-muted">{row.payment_type}</span>
                 </td>
                 <td className="client-cell">
-                  <strong className="cell-title">{row.client}</strong>
-                  <span className="table-muted cell-sub">{row.address}</span>
-                  {row.representative && <span className="table-muted cell-sub">{row.representative}</span>}
+                  <strong className="cell-title" title={row.client}>{row.client}</strong>
+                  <span className="table-muted cell-sub" title={row.address}>{row.address}</span>
+                  {row.representative && <span className="table-muted cell-sub" title={row.representative}>{row.representative}</span>}
                 </td>
                 <td className="product-cell">
-                  <strong className="cell-title">{row.product}</strong>
-                  <span className="table-muted cell-sub">{row.source_file || "-"}</span>
+                  <strong className="cell-title" title={row.product}>{row.product}</strong>
+                  <span className="table-muted cell-sub" title={row.source_file || "-"}>{row.source_file || "-"}</span>
                 </td>
                 <td className="blocks-cell">
                   <strong>{row.scanned_blocks}/{row.quantity_blocks}</strong>
@@ -1328,15 +1682,335 @@ function AdminRowsTable({
   );
 }
 
+function ClientsPanel({
+  points,
+  summary,
+  search,
+  timeslotFilter,
+  editingPointId,
+  expandedPointId,
+  orderSummaries,
+  loadingOrderSummaryId,
+  draft,
+  createOpen,
+  newPointDraft,
+  busyAction,
+  canEdit,
+  onSearchChange,
+  onTimeslotFilterChange,
+  onDraftChange,
+  onNewPointDraftChange,
+  onEdit,
+  onToggleOrderHistory,
+  onCancel,
+  onSave,
+  onToggleCreate,
+  onCreate,
+  onReset,
+}: {
+  points: ClientPoint[];
+  summary: { total: number; saved: number; custom: number; default: number };
+  search: string;
+  timeslotFilter: ClientTimeslotFilter;
+  editingPointId: string;
+  expandedPointId: string;
+  orderSummaries: Record<string, ClientPointOrderSummary>;
+  loadingOrderSummaryId: string;
+  draft: { deliveryFrom: string; deliveryTo: string };
+  createOpen: boolean;
+  newPointDraft: ClientPointFormDraft;
+  busyAction: string;
+  canEdit: boolean;
+  onSearchChange: (value: string) => void;
+  onTimeslotFilterChange: (value: string) => void;
+  onDraftChange: (value: { deliveryFrom: string; deliveryTo: string }) => void;
+  onNewPointDraftChange: (value: ClientPointFormDraft) => void;
+  onEdit: (point: ClientPoint) => void;
+  onToggleOrderHistory: (point: ClientPoint) => void;
+  onCancel: () => void;
+  onSave: (point: ClientPoint) => void;
+  onToggleCreate: () => void;
+  onCreate: () => void;
+  onReset: (point: ClientPoint) => void;
+}) {
+  const creating = busyAction === "client-slot:new";
+  return (
+    <section className="table-panel">
+      <div className="panel-header table-panel-header">
+        <div>
+          <h2>Клиенты и таймслоты</h2>
+          <span className="panel-subtitle">Показано {formatNumber(points.length)} из {formatNumber(summary.total)}</span>
+        </div>
+        <label className="search-box">
+          <Search size={16} />
+          <input type="search" value={search} onChange={(event) => onSearchChange(event.target.value)} placeholder="Поиск клиентов" aria-label="Поиск клиентов" />
+        </label>
+        {canEdit && (
+          <button className="primary-button client-create-toggle" onClick={onToggleCreate} aria-expanded={createOpen} aria-controls="client-point-create-form">
+            <Plus size={16} />
+            Создать точку
+          </button>
+        )}
+      </div>
+
+      <section className="stats-row compact">
+        <Metric icon={<Building2 size={20} />} label="Точек" value={summary.total} />
+        <Metric icon={<Database size={20} />} label="Сохранено" value={summary.saved} />
+        <Metric icon={<Save size={20} />} label="Свой слот" value={summary.custom} tone={summary.custom ? "warn" : undefined} />
+        <Metric icon={<ClipboardList size={20} />} label="10-18" value={summary.default} />
+      </section>
+
+      {canEdit && createOpen && (
+        <section className="client-point-form" id="client-point-create-form" aria-label="Создать точку">
+          <h3>Создать точку</h3>
+          <div className="client-point-form-grid">
+            <label>
+              <span>Клиент / юрлицо</span>
+              <input
+                className="client-text-input"
+                value={newPointDraft.clientName}
+                onChange={(event) => onNewPointDraftChange({ ...newPointDraft, clientName: event.target.value })}
+                autoComplete="organization"
+              />
+            </label>
+            <label>
+              <span>Адрес</span>
+              <input
+                className="client-text-input"
+                value={newPointDraft.address}
+                onChange={(event) => onNewPointDraftChange({ ...newPointDraft, address: event.target.value })}
+                autoComplete="street-address"
+              />
+            </label>
+            <label>
+              <span>ТП</span>
+              <input
+                className="client-text-input"
+                value={newPointDraft.representative}
+                onChange={(event) => onNewPointDraftChange({ ...newPointDraft, representative: event.target.value })}
+                autoComplete="name"
+              />
+            </label>
+            <label>
+              <span>С</span>
+              <input
+                className="time-input"
+                type="time"
+                value={newPointDraft.deliveryFrom}
+                onChange={(event) => onNewPointDraftChange({ ...newPointDraft, deliveryFrom: event.target.value })}
+              />
+            </label>
+            <label>
+              <span>До</span>
+              <input
+                className="time-input"
+                type="time"
+                value={newPointDraft.deliveryTo}
+                onChange={(event) => onNewPointDraftChange({ ...newPointDraft, deliveryTo: event.target.value })}
+              />
+            </label>
+            <label>
+              <span>Координаты</span>
+              <input
+                className="client-text-input"
+                value={newPointDraft.coordinates}
+                onChange={(event) => onNewPointDraftChange({ ...newPointDraft, coordinates: event.target.value })}
+                inputMode="decimal"
+              />
+            </label>
+            <button className="ghost-button client-point-add-button" onClick={onCreate} disabled={Boolean(busyAction)} aria-busy={creating}>
+              {creating ? <Loader2 className="spin" size={16} /> : <Plus size={16} />}
+              Добавить
+            </button>
+          </div>
+        </section>
+      )}
+
+      <div className="filters-bar">
+        <SelectFilter value={timeslotFilter} onChange={onTimeslotFilterChange} ariaLabel="Фильтр таймслотов">
+          <option value="all">Все таймслоты</option>
+          <option value="custom">Уникальный слот</option>
+          <option value="default">По умолчанию 10-18</option>
+        </SelectFilter>
+      </div>
+
+      <div className="data-table-wrap client-points-table-wrap">
+        <table className="data-table client-points-table">
+          <thead>
+            <tr>
+              <th>Юрлицо</th>
+              <th>Адрес</th>
+              <th>Таймслот</th>
+              <th>Заказы</th>
+              <th>Статус</th>
+              <th className="actions-col">Действия</th>
+            </tr>
+          </thead>
+          <tbody>
+            {points.map((point) => {
+              const editing = editingPointId === point.id;
+              const expanded = expandedPointId === point.id;
+              const busy = busyAction === `client-slot:${point.id}`;
+              const resetting = busyAction === `client-slot-reset:${point.id}`;
+              return (
+                <Fragment key={point.id}>
+                  <tr>
+                    <td>
+                      <strong className="cell-title" title={point.client_name}>{point.client_name}</strong>
+                      {point.representative && <span className="table-muted cell-sub" title={point.representative}>{point.representative}</span>}
+                    </td>
+                    <td>
+                      <strong className="cell-title" title={point.point_name || point.address}>{point.point_name || point.address}</strong>
+                      {point.point_name && <span className="table-muted cell-sub" title={point.address}>{point.address}</span>}
+                      {point.coordinates && <span className="table-muted cell-sub" title={point.coordinates}>{point.coordinates}</span>}
+                    </td>
+                    <td>
+                      {editing ? (
+                        <div className="slot-edit-row">
+                          <input
+                            className="time-input"
+                            type="time"
+                            value={draft.deliveryFrom}
+                            onChange={(event) => onDraftChange({ ...draft, deliveryFrom: event.target.value })}
+                            aria-label="Доставка с"
+                          />
+                          <input
+                            className="time-input"
+                            type="time"
+                            value={draft.deliveryTo}
+                            onChange={(event) => onDraftChange({ ...draft, deliveryTo: event.target.value })}
+                            aria-label="Доставка до"
+                          />
+                        </div>
+                      ) : (
+                        <>
+                          <strong className="cell-title">{point.delivery_from}-{point.delivery_to}</strong>
+                          <span className="table-muted cell-sub">{point.has_custom_timeslot ? "уникальный" : "по умолчанию"}</span>
+                        </>
+                      )}
+                    </td>
+                    <td>
+                      <button
+                        className="client-orders-toggle"
+                        onClick={() => onToggleOrderHistory(point)}
+                        disabled={point.orders_count <= 0}
+                        aria-expanded={expanded}
+                        aria-controls={`client-orders-${point.id}`}
+                      >
+                        <strong className="cell-title">{formatNumber(point.orders_count)}</strong>
+                      </button>
+                      <span className="table-muted cell-sub">{formatDate(point.last_order_date)}</span>
+                    </td>
+                    <td>
+                      <span className={`status-badge ${point.has_custom_timeslot ? "client-custom" : "client-default"}`}>
+                        {point.has_custom_timeslot ? "Свой слот" : "10-18"}
+                      </span>
+                      <span className="table-muted cell-sub">{point.is_saved ? "сохранено" : "из заказов"}</span>
+                    </td>
+                    <td>
+                      {canEdit && editing ? (
+                        <div className="client-row-actions">
+                          <button className="ghost-button" onClick={() => onSave(point)} disabled={Boolean(busyAction)} aria-busy={busy}>
+                            {busy ? <Loader2 className="spin" size={16} /> : <Save size={16} />}
+                            Сохранить
+                          </button>
+                          <button className="ghost-button quiet-button" onClick={onCancel} disabled={Boolean(busyAction)}>
+                            Отмена
+                          </button>
+                        </div>
+                      ) : canEdit ? (
+                        <div className="client-row-actions">
+                          <button className="ghost-button" onClick={() => onEdit(point)} disabled={Boolean(busyAction)}>
+                            Редактировать
+                          </button>
+                          {point.has_custom_timeslot && (
+                            <button className="ghost-button quiet-button" onClick={() => onReset(point)} disabled={Boolean(busyAction)}>
+                              {resetting ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />}
+                              Сбросить
+                            </button>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="table-muted">read-only</span>
+                      )}
+                    </td>
+                  </tr>
+                  {expanded && (
+                    <tr className="client-orders-detail-row">
+                      <td colSpan={6}>
+                        <ClientOrderHistory
+                          point={point}
+                          summary={orderSummaries[point.id]}
+                          loading={loadingOrderSummaryId === point.id}
+                        />
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
+            {points.length === 0 && (
+              <tr>
+                <td colSpan={6}>Нет данных</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function ClientOrderHistory({ point, summary, loading }: { point: ClientPoint; summary?: ClientPointOrderSummary; loading: boolean }) {
+  if (loading) {
+    return (
+      <div className="client-orders-empty" id={`client-orders-${point.id}`}>
+        <Loader2 className="spin" size={16} />
+        Загрузка истории заказов...
+      </div>
+    );
+  }
+  const history = summary?.dates ?? [];
+  if (!summary || history.length === 0) {
+    return <div className="client-orders-empty" id={`client-orders-${point.id}`}>По этому юрлицу нет заказов в базе.</div>;
+  }
+  return (
+    <div className="client-orders-detail" id={`client-orders-${point.id}`}>
+      {history.map((entry) => (
+        <section className="client-order-date-card" key={entry.shipment_date || "no-date"}>
+          <div className="client-order-date-head">
+            <strong>{formatDate(entry.shipment_date)}</strong>
+            <span>
+              {formatNumber(entry.orders_count)} заказов · {formatNumber(entry.positions_count)} позиций · {formatClientProductQuantity(entry.quantity_blocks, entry.quantity_pieces)}
+            </span>
+          </div>
+          <ul className="client-order-products">
+            {entry.products.map((product) => (
+              <li key={product.product}>
+                <span title={product.product}>{product.product}</span>
+                <strong title={`${formatNumber(product.positions_count)} позиций`}>
+                  {formatClientProductQuantity(product.quantity_blocks, product.quantity_pieces)}
+                </strong>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ))}
+    </div>
+  );
+}
+
 function SkladBotDryRunPanel({
   dryRuns,
   imports,
   busyAction,
+  canAdminWrite,
   onRebuild,
 }: {
   dryRuns: SkladBotDryRun[];
   imports: ImportRecord[];
   busyAction: string;
+  canAdminWrite: boolean;
   onRebuild: (eventId: string) => void;
 }) {
   const [importFilter, setImportFilter] = useState("");
@@ -1365,7 +2039,7 @@ function SkladBotDryRunPanel({
           <h2>SkladBot dry-run</h2>
           <span className="panel-subtitle">Preview и очередь автосоздания заявок SkladBot</span>
         </div>
-        <SelectFilter value={importFilter} onChange={setImportFilter}>
+        <SelectFilter value={importFilter} onChange={setImportFilter} ariaLabel="Фильтр импорта SkladBot dry-run">
           <option value="">Все импорты</option>
           {imports.map((item) => (
             <option key={item.id} value={item.id}>
@@ -1439,10 +2113,14 @@ function SkladBotDryRunPanel({
                     </details>
                   </td>
                   <td>
-                    <button className="ghost-button" onClick={() => onRebuild(item.event_id)} disabled={Boolean(busyAction)}>
-                      {busyAction === rebuildAction ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
-                      Пересобрать
-                    </button>
+                    {canAdminWrite ? (
+                      <button className="ghost-button" onClick={() => onRebuild(item.event_id)} disabled={Boolean(busyAction)}>
+                        {busyAction === rebuildAction ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
+                        Пересобрать
+                      </button>
+                    ) : (
+                      <span className="table-muted">read-only</span>
+                    )}
                   </td>
                 </tr>
               );
@@ -1475,6 +2153,7 @@ function AdminCenterPanel({
   incidentSourceFilter,
   actionReason,
   busyAction,
+  canAdminWrite,
   onSearchChange,
   onStatusFilterChange,
   onSeverityFilterChange,
@@ -1501,6 +2180,7 @@ function AdminCenterPanel({
   incidentSourceFilter: string;
   actionReason: string;
   busyAction: string;
+  canAdminWrite: boolean;
   onSearchChange: (value: string) => void;
   onStatusFilterChange: (value: string) => void;
   onSeverityFilterChange: (value: string) => void;
@@ -1527,7 +2207,7 @@ function AdminCenterPanel({
         </div>
         <label className="search-box">
           <Search size={16} />
-          <input value={incidentSearch} onChange={(event) => onSearchChange(event.target.value)} placeholder="Поиск" />
+          <input type="search" value={incidentSearch} onChange={(event) => onSearchChange(event.target.value)} placeholder="Поиск" aria-label="Поиск инцидентов и очереди" />
         </label>
       </div>
 
@@ -1539,7 +2219,7 @@ function AdminCenterPanel({
       </section>
 
       <div className="filters-bar">
-        <SelectFilter value={incidentStatusFilter} onChange={onStatusFilterChange}>
+        <SelectFilter value={incidentStatusFilter} onChange={onStatusFilterChange} ariaLabel="Фильтр статуса инцидента">
           <option value="all">Все статусы</option>
           <option value="open">Открытые</option>
           <option value="in_progress">В работе</option>
@@ -1548,13 +2228,13 @@ function AdminCenterPanel({
           <option value="ignored">Игнор</option>
           <option value="cancelled">Отменены</option>
         </SelectFilter>
-        <SelectFilter value={incidentSeverityFilter} onChange={onSeverityFilterChange}>
+        <SelectFilter value={incidentSeverityFilter} onChange={onSeverityFilterChange} ariaLabel="Фильтр уровня инцидента">
           <option value="all">Все уровни</option>
           <option value="critical">Critical</option>
           <option value="warning">Warning</option>
           <option value="info">Info</option>
         </SelectFilter>
-        <SelectFilter value={incidentSourceFilter} onChange={onSourceFilterChange}>
+        <SelectFilter value={incidentSourceFilter} onChange={onSourceFilterChange} ariaLabel="Фильтр источника инцидента">
           <option value="all">Все источники</option>
           {sourceOptions.map((source) => <option key={source} value={source}>{source}</option>)}
         </SelectFilter>
@@ -1579,6 +2259,15 @@ function AdminCenterPanel({
                     key={incident.id}
                     className={(selectedIncidentId || selectedIncident?.id) === incident.id ? "selected-row" : ""}
                     onClick={() => onSelectIncident(incident.id)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        onSelectIncident(incident.id);
+                      }
+                    }}
+                    tabIndex={0}
+                    role="button"
+                    aria-selected={(selectedIncidentId || selectedIncident?.id) === incident.id}
                   >
                     <td>
                       <span className={`status-badge incident-${incident.status}`}>{incidentStatusLabel(incident.status)}</span>
@@ -1627,6 +2316,15 @@ function AdminCenterPanel({
                       key={event.id}
                       className={(selectedEventId || selectedEvent?.id) === event.id ? "selected-row" : ""}
                       onClick={() => onSelectEvent(event.id)}
+                      onKeyDown={(keyboardEvent) => {
+                        if (keyboardEvent.key === "Enter" || keyboardEvent.key === " ") {
+                          keyboardEvent.preventDefault();
+                          onSelectEvent(event.id);
+                        }
+                      }}
+                      tabIndex={0}
+                      role="button"
+                      aria-selected={(selectedEventId || selectedEvent?.id) === event.id}
                     >
                       <td>
                         <strong className="cell-title">{event.event_type}</strong>
@@ -1642,7 +2340,7 @@ function AdminCenterPanel({
                       </td>
                       <td>{formatAgeSeconds(event.age_seconds)}</td>
                       <td>
-                        {event.retryable ? (
+                        {canAdminWrite && event.retryable ? (
                           <button className="ghost-button" onClick={(click) => { click.stopPropagation(); onRetryEvent(event); }} disabled={Boolean(busyAction)}>
                             {busyAction === retryAction ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
                             Retry
@@ -1665,15 +2363,17 @@ function AdminCenterPanel({
         </div>
 
         <aside className="admin-detail-panel">
-          <label className="admin-reason-field">
-            <span>Причина действия</span>
-            <textarea
-              value={actionReason}
-              onChange={(event) => onReasonChange(event.target.value)}
-              placeholder="Например: проверил импорт, можно повторить"
-              rows={3}
-            />
-          </label>
+          {canAdminWrite && (
+            <label className="admin-reason-field">
+              <span>Причина действия</span>
+              <textarea
+                value={actionReason}
+                onChange={(event) => onReasonChange(event.target.value)}
+                placeholder="Например: проверил импорт, можно повторить"
+                rows={3}
+              />
+            </label>
+          )}
 
           <section className="admin-detail-section">
             <div className="detail-head compact">
@@ -1681,7 +2381,7 @@ function AdminCenterPanel({
                 <h3>Инцидент</h3>
                 <span>{selectedIncident ? shortId(selectedIncident.id) : "-"}</span>
               </div>
-              {selectedIncident && (
+              {canAdminWrite && selectedIncident && (
                 <div className="action-buttons">
                   <button
                     className="ghost-button"
@@ -1728,7 +2428,7 @@ function AdminCenterPanel({
                 <h3>Событие очереди</h3>
                 <span>{selectedEvent ? shortId(selectedEvent.id) : "-"}</span>
               </div>
-              {selectedEvent?.retryable && (
+              {canAdminWrite && selectedEvent?.retryable && (
                 <button className="ghost-button" onClick={() => onRetryEvent(selectedEvent)} disabled={Boolean(busyAction)}>
                   {busyAction === `event-retry:${selectedEvent.id}` ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
                   Retry
@@ -1957,6 +2657,24 @@ function filterIncidents(
   });
 }
 
+function filterClientPoints(points: ClientPoint[], search: string, timeslotFilter: ClientTimeslotFilter) {
+  const query = search.trim().toLowerCase();
+  return points.filter((point) => {
+    if (timeslotFilter === "custom" && !point.has_custom_timeslot) return false;
+    if (timeslotFilter === "default" && point.has_custom_timeslot) return false;
+    if (!query) return true;
+    return [
+      point.client_name,
+      point.point_name,
+      point.address,
+      point.coordinates,
+      point.representative,
+      point.delivery_from,
+      point.delivery_to,
+    ].some((value) => value.toLowerCase().includes(query));
+  });
+}
+
 function linkedIncidentText(incident: AdminIncident) {
   const parts = [
     incident.order_id ? `order ${shortId(incident.order_id)}` : "",
@@ -2036,6 +2754,7 @@ function actionPrompt(kind: OrderActionKind, row: AdminTableRow, selectedCount =
     ? `Причина закрытия ${selectedCount} заказов как выполненных без КИЗов`
     : `Причина закрытия заказа ${row.client} как выполненного без КИЗов`;
   if (kind === "archive") return `Причина переноса без КИЗов для заказа ${row.client}`;
+  if (kind === "deleteActive") return `Причина удаления активного заказа ${row.client}`;
   if (kind === "restore") return `Причина восстановления заказа ${row.client}`;
   if (kind === "resyncSkladBot") return `Причина повторной проверки SkladBot для заказа ${row.client}`;
   return `Причина отмены заказа ${row.client}`;
@@ -2048,6 +2767,7 @@ function actionConfirmText(kind: OrderActionKind, row: AdminTableRow, selectedCo
     ? `Закрыть ${selectedCount} выбранных заказов как выполненные и перенести их в архив?`
     : `Закрыть заказ ${row.client} как выполненный и перенести его в архив?`;
   if (kind === "archive") return `Перенести заказ ${row.client} в архив без КИЗов?`;
+  if (kind === "deleteActive") return `Удалить заказ ${row.client} из активных TakSklad? Заказ и позиции будут удалены из backend, строки Google будут поставлены в очередь на удаление. Если есть SkladBot-заявка, удалите ее вручную.`;
   if (kind === "restore") return `Восстановить заказ ${row.client} в активные?`;
   if (kind === "resyncSkladBot") return `Повторно подтянуть SkladBot номер для заказа ${row.client}?`;
   return `Отменить заказ ${row.client}?`;
@@ -2058,6 +2778,7 @@ function actionSuccessText(kind: OrderActionKind) {
   if (kind === "resetRescan") return "Заказ сброшен на пересканирование";
   if (kind === "completeWithoutKiz") return "Выбранные заказы закрыты как выполненные и отправлены в архив";
   if (kind === "archive") return "Заказ перенесен в архив без КИЗов";
+  if (kind === "deleteActive") return "Активный заказ удален, строки Google поставлены в очередь на удаление";
   if (kind === "restore") return "Заказ восстановлен";
   if (kind === "resyncSkladBot") return "SkladBot проверка запущена";
   return "Заказ отменен";
@@ -2246,6 +2967,13 @@ function formatNumber(value: number) {
   return new Intl.NumberFormat("ru-RU").format(value);
 }
 
+function formatClientProductQuantity(blocks: number, pieces: number) {
+  const parts = [];
+  if (blocks) parts.push(`${formatNumber(blocks)} блоков`);
+  if (pieces) parts.push(`${formatNumber(pieces)} шт.`);
+  return parts.length ? parts.join(" · ") : "-";
+}
+
 function formatMoney(value: number) {
   return value ? formatNumber(value) : "-";
 }
@@ -2263,6 +2991,12 @@ function maskLogin(value: string) {
   const digits = value.replace(/\D/g, "");
   if (digits.length <= 4) return value;
   return `+${digits.slice(0, 3)} ... ${digits.slice(-4)}`;
+}
+
+function roleLabel(value: string) {
+  if (value === "admin") return "admin";
+  if (value === "logistics_slots") return "логистика";
+  return "read-only";
 }
 
 function loginFailureMessage(message: string) {

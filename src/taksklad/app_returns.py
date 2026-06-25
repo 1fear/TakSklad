@@ -16,6 +16,22 @@ from .ui_widgets import AppButton
 from .utils import normalize_text, parse_int_value
 
 
+def return_item_blocks(item):
+    return parse_int_value(item.get("quantity_blocks") or item.get("Кол-во блок"))
+
+
+def return_item_line_total(item):
+    return parse_int_value(item.get("line_total") or item.get("Сумма") or item.get("Сумма заказа"))
+
+
+def return_order_total_blocks(order):
+    return sum(return_item_blocks(item) for item in order.get("items") or [])
+
+
+def return_order_total_price(order):
+    return sum(return_item_line_total(item) for item in order.get("items") or [])
+
+
 class ReturnsActionsMixin:
     def show_returns_window(self):
         dialog = tk.Toplevel(self)
@@ -121,8 +137,8 @@ class ReturnsActionsMixin:
 
         def show_order(order):
             self.return_lookup_result = order
-            total_blocks = sum(parse_int_value(item.get("quantity_blocks")) for item in order.get("items") or [])
-            total_price = sum(parse_int_value(item.get("line_total")) for item in order.get("items") or [])
+            total_blocks = return_order_total_blocks(order)
+            total_price = return_order_total_price(order)
             already_returned = (
                 normalize_text(order.get("status")).lower() == "returned"
                 or normalize_text(order.get("return_status")).lower() == "returned"
@@ -140,7 +156,7 @@ class ReturnsActionsMixin:
                 f"Сумма заказа: {total_price:,} сум".replace(",", " "),
             ]
             sku_lines = [
-                f"- {item.get('product') or item.get('Товары') or 'SKU не указан'}: {parse_int_value(item.get('quantity_blocks') or item.get('Кол-во блок'))} блок."
+                f"- {item.get('product') or item.get('Товары') or 'SKU не указан'}: {return_item_blocks(item)} блок."
                 for item in order.get("items") or []
             ]
             if sku_lines:
@@ -161,7 +177,7 @@ class ReturnsActionsMixin:
             returned_at = normalize_text(order.get("returned_at"))
             returned_date = returned_at[:10] if returned_at else ""
             request_number = order.get("skladbot_request_number") or order.get("skladbot_request_id") or "без номера"
-            total_blocks = sum(parse_int_value(item.get("quantity_blocks")) for item in order.get("items") or [])
+            total_blocks = return_order_total_blocks(order)
             return " | ".join([
                 returned_date or "без даты",
                 request_number,

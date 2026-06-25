@@ -3,6 +3,7 @@ from datetime import datetime
 
 from .catalog import calculate_blocks, load_product_catalog, save_product_catalog
 from .config import (
+    EXCEL_IMPORT_EXTENSIONS,
     ORDER_DATE_COLUMN,
     SHEET_NAME,
     SPREADSHEET_ID,
@@ -157,6 +158,11 @@ def parse_excel_order_files(file_paths, source_names=None):
 
     for file_path in file_paths:
         file_name = source_names_by_path.get(os.path.abspath(file_path)) or clean_file_name(os.path.basename(file_path))
+        extension = os.path.splitext(file_name)[1].lower()
+        if extension not in EXCEL_IMPORT_EXTENSIONS:
+            allowed = ", ".join(sorted(EXCEL_IMPORT_EXTENSIONS))
+            errors.append(f"{file_name}: неподдерживаемый формат файла (разрешены {allowed})")
+            continue
         try:
             workbook = openpyxl.load_workbook(file_path, data_only=True, read_only=True)
         except Exception as exc:
@@ -260,6 +266,7 @@ def parse_excel_order_files(file_paths, source_names=None):
             "Тип оплаты": item["payment"],
             "Клиент": item["client"],
             "Адрес": item["address"],
+            "Координаты": item["coords"],
             "Торговый представитель": item["representative"],
             "Товары": item["product"],
             "Кол-во ШТ": item["quantity"],

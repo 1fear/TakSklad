@@ -181,11 +181,36 @@ class Incident(Base):
     resolved_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
 
 
+class ClientPoint(Base):
+    __tablename__ = "client_points"
+    __table_args__ = (
+        UniqueConstraint("normalized_client", "normalized_address", name="uq_client_points_normalized"),
+        Index("idx_client_points_normalized", "normalized_client", "normalized_address"),
+        Index("idx_client_points_timeslot", "delivery_from", "delivery_to"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    client_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    point_name: Mapped[str | None] = mapped_column(String(255))
+    address: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_client: Mapped[str] = mapped_column(String(255), nullable=False)
+    normalized_address: Mapped[str] = mapped_column(Text, nullable=False)
+    coordinates: Mapped[str | None] = mapped_column(Text)
+    representative: Mapped[str | None] = mapped_column(String(255))
+    delivery_from: Mapped[str] = mapped_column(String(5), nullable=False, default="10:00")
+    delivery_to: Mapped[str] = mapped_column(String(5), nullable=False, default="18:00")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    raw_payload: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class User(Base):
     __tablename__ = "users"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
     username: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+    password_hash: Mapped[str | None] = mapped_column(String(255))
     role: Mapped[str] = mapped_column(String(40), nullable=False, default="operator")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())

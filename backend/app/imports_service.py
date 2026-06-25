@@ -7,13 +7,14 @@ from datetime import date, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from .client_points_service import sync_client_point_from_import_row
 from .google_sheets_exporter import make_sheet_record
 from .google_sheets_pending import (
     queue_google_sheets_export,
 )
 from .models import AuditLog, ImportFile, ImportJob, Incident, Order, OrderItem
 from .orders_service import STATUS_COMPLETED, STATUS_NOT_COMPLETED
-from .schemas import ImportCreate, ImportRead, ImportResult
+from .schemas import ImportCreate, ImportPreviewResult, ImportRead, ImportResult
 from .skladbot_request_dry_run import create_skladbot_dry_run_for_import
 
 
@@ -106,6 +107,8 @@ def create_import(db: Session, payload: ImportCreate):
             ))
 
     order_by_key, item_keys, source_import_ids, existing_items = load_existing_import_keys(db)
+    current_import_item_keys = set()
+    current_import_source_import_ids = set()
     for index, raw_row in enumerate(payload.rows, start=1):
         try:
             row = normalize_import_row(raw_row)
@@ -114,6 +117,16 @@ def create_import(db: Session, payload: ImportCreate):
             errors.append(f"row {index}: {exc}")
             continue
 
+        if (
+            row["source_import_id"] and row["source_import_id"] in current_import_source_import_ids
+        ) or (
+            row["item_key"] and row["item_key"] in current_import_item_keys
+        ):
+            duplicate_rows += 1
+            continue
+
+        sync_client_point_from_import_row(db, row)
+
         google_sheets_records.append(
             make_sheet_record(
                 row,
@@ -121,6 +134,10 @@ def create_import(db: Session, payload: ImportCreate):
                 filename=payload.filename or "",
             )
         )
+        if row["item_key"]:
+            current_import_item_keys.add(row["item_key"])
+        if row["source_import_id"]:
+            current_import_source_import_ids.add(row["source_import_id"])
 
         existing_item = find_existing_item_for_row(row, existing_items)
         if existing_item is not None:
@@ -284,6 +301,71 @@ def create_import(db: Session, payload: ImportCreate):
     )
 
 
+def preview_import(db: Session, payload: ImportCreate):
+    rows_total = len(payload.rows)
+    errors = []
+    duplicate_row_numbers = []
+    invalid_row_numbers = []
+    orders_new = 0
+    items_new = 0
+    backend_address_updates = 0
+
+    order_by_key, item_keys, source_import_ids, existing_items = load_existing_import_keys(db)
+    preview_order_keys = set(order_by_key.keys())
+    preview_item_keys = set(item_keys)
+    preview_source_import_ids = set(source_import_ids)
+
+    for index, raw_row in enumerate(payload.rows, start=1):
+        try:
+            row = normalize_import_row(raw_row)
+        except ImportRowError as exc:
+            invalid_row_numbers.append(index)
+            errors.append(f"row {index}: {exc}")
+            continue
+
+        existing_item = find_existing_item_for_row(row, existing_items)
+        duplicate = existing_item is not None
+        if row["source_import_id"] and row["source_import_id"] in preview_source_import_ids:
+            duplicate = True
+        if row["item_key"] and row["item_key"] in preview_item_keys:
+            duplicate = True
+
+        if duplicate:
+            duplicate_row_numbers.append(index)
+            if existing_item is not None and should_update_existing_order_address(existing_item.order, row):
+                backend_address_updates += 1
+            continue
+
+        if row["order_key"] not in preview_order_keys:
+            orders_new += 1
+            preview_order_keys.add(row["order_key"])
+        preview_item_keys.add(row["item_key"])
+        if row["source_import_id"]:
+            preview_source_import_ids.add(row["source_import_id"])
+        items_new += 1
+
+    status = "ok"
+    if invalid_row_numbers and items_new:
+        status = "ok_with_errors"
+    elif invalid_row_numbers and not items_new:
+        status = "failed"
+
+    return ImportPreviewResult(
+        source=normalize_text(payload.source) or "excel",
+        status=status,
+        rows_total=rows_total,
+        rows_importable=items_new,
+        orders_new=orders_new,
+        items_new=items_new,
+        duplicate_rows=len(duplicate_row_numbers),
+        invalid_rows=len(invalid_row_numbers),
+        duplicate_row_numbers=duplicate_row_numbers,
+        invalid_row_numbers=invalid_row_numbers,
+        errors=errors,
+        backend_address_updates=backend_address_updates,
+    )
+
+
 def ensure_import_incident(db: Session, import_job: ImportJob):
     if import_job.status not in ("failed", "completed_with_errors"):
         return None
@@ -349,15 +431,74 @@ def export_import_records_to_google_sheets(db: Session, records, import_job_id="
         "error": "",
         "queued": True,
     }
-    event = queue_google_sheets_export(
-        db,
-        "google_sheets_import_export",
-        "import",
-        import_job_id,
-        result=result,
-        payload={"records": records},
-    )
-    return {**result, "pending_event_id": str(event.id) if event else ""}
+    try:
+        event = queue_google_sheets_export(
+            db,
+            "google_sheets_import_export",
+            "import",
+            import_job_id,
+            result=result,
+            payload={"records": records},
+        )
+        return {**result, "pending_event_id": str(event.id) if event else ""}
+    except Exception as exc:
+        logger.exception("Failed to queue Google Sheets import export for import %s", import_job_id)
+        db.rollback()
+        error = normalize_text(exc)[:500] or exc.__class__.__name__
+        record_google_sheets_import_export_failure(db, import_job_id, error, len(records))
+        return {
+            "status": "error",
+            "imported": 0,
+            "duplicates": 0,
+            "updated": 0,
+            "error": error,
+            "queued": False,
+            "pending_event_id": "",
+        }
+
+
+def record_google_sheets_import_export_failure(db: Session, import_job_id, error, records_count):
+    import_uuid = parse_optional_uuid(import_job_id)
+    entity_id = normalize_text(import_job_id)
+    try:
+        existing_incident = None
+        if import_uuid is not None:
+            existing_incident = db.execute(
+                select(Incident)
+                .where(Incident.import_id == import_uuid)
+                .where(Incident.source == "google_sheets_import_export")
+                .where(Incident.status == "open")
+            ).scalar_one_or_none()
+        if existing_incident is None:
+            db.add(Incident(
+                source="google_sheets_import_export",
+                severity="warning",
+                status="open",
+                title="Google Sheets import export failed",
+                message=error,
+                entity_type="import",
+                entity_id=entity_id,
+                import_id=import_uuid,
+                raw_payload={
+                    "import_id": entity_id,
+                    "records_count": records_count,
+                    "error": error,
+                },
+            ))
+        db.add(AuditLog(
+            action="google_sheets_import_export_failed",
+            entity_type="import",
+            entity_id=entity_id,
+            payload={
+                "status": "error",
+                "records_count": records_count,
+                "error": error,
+            },
+        ))
+        db.commit()
+    except Exception:
+        logger.exception("Failed to record Google Sheets import export failure for import %s", import_job_id)
+        db.rollback()
 
 
 def list_imports(db: Session):
@@ -415,10 +556,8 @@ def find_existing_item_for_row(row, existing_items):
 
 
 def update_existing_order_address(order, row):
-    if order is None:
-        return False
     new_address = normalize_text(row.get("address"))
-    if not is_real_address(new_address) or not is_missing_address(order.address):
+    if not should_update_existing_order_address(order, row):
         return False
 
     order.address = new_address
@@ -429,6 +568,13 @@ def update_existing_order_address(order, row):
     raw_payload["address_backfill_source"] = normalize_text(row.get("source_file")) or "import"
     order.raw_payload = raw_payload
     return True
+
+
+def should_update_existing_order_address(order, row):
+    if order is None:
+        return False
+    new_address = normalize_text(row.get("address"))
+    return is_real_address(new_address) and is_missing_address(order.address)
 
 
 def normalize_import_row(raw_row):

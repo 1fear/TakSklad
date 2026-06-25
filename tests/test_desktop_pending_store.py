@@ -66,6 +66,44 @@ class DesktopPendingStoreTests(unittest.TestCase):
         self.assertTrue(updated)
         self.assertEqual(saved, [[]])
 
+    def test_undo_updates_only_matching_pending_save(self):
+        target_order = {"ID заказа": "order-1", "ID импорта": "import-1", "_row_number": 2}
+        other_order = {"ID заказа": "order-2", "ID импорта": "import-2", "_row_number": 3}
+        target_codes = ["01012345678901234567A", "01012345678901234567B"]
+        other_codes = ["01012345678901234567C", "01012345678901234567D"]
+        pending = [
+            {
+                "id": pending_store.make_pending_save_id(target_order, target_codes),
+                "order": target_order.copy(),
+                "codes": target_codes.copy(),
+                "last_error": "timeout",
+            },
+            {
+                "id": pending_store.make_pending_save_id(other_order, other_codes),
+                "order": other_order.copy(),
+                "codes": other_codes.copy(),
+                "last_error": "other timeout",
+            },
+        ]
+        saved = []
+
+        with (
+            mock.patch.object(pending_store, "load_pending_saves", return_value=pending),
+            mock.patch.object(pending_store, "save_pending_saves", side_effect=lambda value: saved.append(value)),
+        ):
+            updated = pending_store.update_pending_save_codes_for_undo(
+                target_order,
+                target_codes,
+                ["01012345678901234567A"],
+                "undo",
+            )
+
+        self.assertTrue(updated)
+        self.assertEqual(saved[0][0]["codes"], ["01012345678901234567A"])
+        self.assertEqual(saved[0][1]["id"], pending[1]["id"])
+        self.assertEqual(saved[0][1]["codes"], other_codes)
+        self.assertEqual(saved[0][1]["last_error"], "other timeout")
+
 
 if __name__ == "__main__":
     unittest.main()

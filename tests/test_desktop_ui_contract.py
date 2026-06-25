@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from taksklad import app_day_end
+from taksklad import app_day_end, app_returns, app_runtime
 from taksklad import main as main_module
 from taksklad.config import ACCENT, BG_MAIN, DANGER, ERROR_FG, FG_MUTED, FG_TEXT, WARNING
 from taksklad.config import SKLADBOT_REQUEST_NUMBER_COLUMN
@@ -93,7 +93,7 @@ class DesktopUiContractTests(unittest.TestCase):
         self.assertNotIn("ПЕЧАТАТЬ", build_source)
         self.assertNotIn("Печать сводного листа", build_source)
         self.assertIn("self.confirm_print_settings()", finish_source)
-        self.assertIn("print_summary(address, summary_products)", finish_source)
+        self.assertIn("print_summary(address, summary_products, print_settings=selected_print_settings)", finish_source)
 
     def test_final_position_guides_warehouse_to_finish_order(self):
         load_source = inspect.getsource(ScanningApp.load_current_product)
@@ -109,6 +109,76 @@ class DesktopUiContractTests(unittest.TestCase):
         self.assertIn("finish_legal_entity(from_next_product=True)", next_source)
         self.assertIn("Все позиции сохранены", next_source)
 
+    def test_next_product_hard_error_keeps_final_position_actions_consistent(self):
+        class FakeVar:
+            def __init__(self):
+                self.value = ""
+
+            def set(self, value):
+                self.value = value
+
+        class FakeWidget:
+            def __init__(self):
+                self.options = {}
+
+            def config(self, **kwargs):
+                self.options.update(kwargs)
+
+        def run_background(_title, work, on_success=None, on_error=None):
+            try:
+                result = work()
+            except Exception as exc:
+                if on_error:
+                    on_error(exc)
+            else:
+                if on_success:
+                    on_success(result)
+
+        first_code = "01040063960540670001"
+        second_code = "01040063960540670002"
+        order = {
+            "Кол-во блок": 2,
+            "Товары": "Chapman Brown SSL",
+            "Отсканированные коды": "",
+        }
+        fake = SimpleNamespace(
+            ensure_update_allowed=lambda: True,
+            operation_in_progress=False,
+            current_order=order,
+            current_product_idx=0,
+            current_legal_entity_orders=[order],
+            current_legal_entity_products=[],
+            completed_orders=[],
+            scanned_codes=[first_code, second_code],
+            sheet=object(),
+            product_catalog={},
+            next_product_btn=FakeWidget(),
+            finish_btn=FakeWidget(),
+            status_var=FakeVar(),
+            status_label=FakeWidget(),
+            safe_config=lambda widget, **kwargs: widget.config(**kwargs),
+            set_busy=lambda message: setattr(fake, "operation_in_progress", True) or fake.status_var.set(message),
+            clear_busy=lambda: setattr(fake, "operation_in_progress", False),
+            show_critical_error=mock.Mock(),
+            run_background=run_background,
+        )
+
+        with (
+            mock.patch("taksklad.app_scanning.order_uses_backend_scan_path", return_value=False),
+            mock.patch("taksklad.app_scanning.update_scanned_codes_to_gsheet", return_value=(False, "fatal")),
+            mock.patch("taksklad.app_scanning.is_retryable_save_error", return_value=False),
+        ):
+            ScanningApp.next_product(fake, finish_after_save=True)
+
+        self.assertIs(fake.current_order, order)
+        self.assertEqual(fake.current_product_idx, 0)
+        self.assertEqual(fake.current_legal_entity_products, [])
+        self.assertEqual(fake.completed_orders, [])
+        self.assertFalse(fake.operation_in_progress)
+        self.assertEqual(fake.next_product_btn.options["state"], "disabled")
+        self.assertEqual(fake.finish_btn.options["state"], "normal")
+        fake.show_critical_error.assert_called_once()
+
     def test_scan_rejects_wrong_sku_before_local_backup_and_backend_queue(self):
         source = inspect.getsource(ScanningApp.on_scan)
 
@@ -116,6 +186,25 @@ class DesktopUiContractTests(unittest.TestCase):
         self.assertLess(source.index("scan_product_mismatch"), source.index("write_scan_backup"))
         self.assertLess(source.index("scan_product_mismatch"), source.index("queue_backend_scan"))
         self.assertIn("format_scan_product_mismatch_message", source)
+
+    def test_scan_rejects_duplicates_before_local_backup_and_backend_queue(self):
+        source = inspect.getsource(ScanningApp.on_scan)
+
+        backup_idx = source.index("write_scan_backup")
+        backend_queue_idx = source.index("queue_backend_scan")
+        duplicate_guards = [
+            "if code in self.scanned_codes:",
+            "if code in self.all_existing_codes:",
+            "for completed in self.completed_orders:",
+        ]
+
+        for guard in duplicate_guards:
+            self.assertIn(guard, source)
+            self.assertLess(source.index(guard), backup_idx)
+            self.assertLess(source.index(guard), backend_queue_idx)
+
+        self.assertIn("format_duplicate_scan_message", source)
+        self.assertIn("log_duplicate_code_async", source)
 
     def test_backend_sync_item_blocker_ignores_unrelated_poisoned_queue_event(self):
         sync_result = {
@@ -340,6 +429,68 @@ class DesktopUiContractTests(unittest.TestCase):
         self.assertTrue(fake.error_toast.packed)
         self.assertTrue(fake.toast_visible)
 
+    def test_warning_and_info_use_non_blocking_status_notice(self):
+        class FakeVar:
+            def __init__(self):
+                self.value = ""
+
+            def set(self, value):
+                self.value = value
+
+        class FakeLabel:
+            def __init__(self):
+                self.options = {}
+
+            def config(self, **kwargs):
+                self.options.update(kwargs)
+
+        fake = SimpleNamespace(
+            status_var=FakeVar(),
+            status_label=FakeLabel(),
+            error_timer=None,
+            safe_config=lambda widget, **kwargs: widget.config(**kwargs),
+            after=lambda _timeout, _callback: "timer-1",
+            after_cancel=lambda _timer: None,
+            clear_error=lambda: None,
+        )
+        fake.show_status_notice = ScanningApp.show_status_notice.__get__(fake)
+
+        ScanningApp.show_warning(fake, "Проверьте очередь")
+        self.assertIn("Проверьте очередь", fake.status_var.value)
+        self.assertEqual(fake.status_label.options["bg"], WARNING)
+        self.assertEqual(fake.status_label.options["fg"], FG_TEXT)
+
+        ScanningApp.show_info(fake, "Готово")
+        self.assertIn("Готово", fake.status_var.value)
+        self.assertEqual(fake.status_label.options["bg"], BG_MAIN)
+        self.assertEqual(fake.status_label.options["fg"], FG_MUTED)
+
+    def test_critical_errors_send_alert_without_operational_documents(self):
+        fake = SimpleNamespace(
+            show_error=mock.Mock(),
+            send_telegram_alert_async=mock.Mock(),
+            send_telegram_documents_async=mock.Mock(),
+        )
+
+        ScanningApp.show_critical_error(fake, "Не удалось завершить заказ", RuntimeError("backend down"))
+
+        fake.show_error.assert_called_once()
+        fake.send_telegram_alert_async.assert_called_once()
+        fake.send_telegram_documents_async.assert_not_called()
+        self.assertIn("backend down", fake.send_telegram_alert_async.call_args.args[0])
+
+        fake.show_error.reset_mock()
+        fake.send_telegram_alert_async.reset_mock()
+        ScanningApp.report_callback_exception(fake, RuntimeError, RuntimeError("ui down"), None)
+
+        fake.show_error.assert_called_once()
+        fake.send_telegram_alert_async.assert_called_once()
+        fake.send_telegram_documents_async.assert_not_called()
+        self.assertIn("ui down", fake.send_telegram_alert_async.call_args.args[0])
+
+        self.assertNotIn("collect_operational_documents", inspect.getsource(app_runtime.AppRuntimeMixin.show_critical_error))
+        self.assertNotIn("collect_operational_documents", inspect.getsource(app_runtime.AppRuntimeMixin.report_callback_exception))
+
     def test_backend_blocked_scan_removes_code_and_keeps_position_open(self):
         class FakeVar:
             def __init__(self):
@@ -422,6 +573,182 @@ class DesktopUiContractTests(unittest.TestCase):
         self.assertNotIn("Нельзя отменить коды, уже записанные в Google Sheets", source)
         self.assertIn("self.finish_btn.config(state=\"disabled\")", source)
 
+    def test_undo_saved_pending_save_keeps_state_consistent_without_google_or_backend(self):
+        class FakeVar:
+            def __init__(self):
+                self.value = ""
+
+            def set(self, value):
+                self.value = value
+
+        class FakeWidget:
+            def __init__(self):
+                self.options = {}
+                self.focused = False
+
+            def config(self, **kwargs):
+                self.options.update(kwargs)
+
+            def focus_set(self):
+                self.focused = True
+
+        first_code = "01040063960540670001"
+        removed_code = "01040063960540670002"
+        order = {
+            "Кол-во блок": 2,
+            "Товары": "Chapman Brown SSL",
+            "Отсканированные коды": f"{first_code}\n{removed_code}",
+        }
+        fake = SimpleNamespace(
+            ensure_update_allowed=lambda: True,
+            operation_in_progress=False,
+            current_order=order,
+            scanned_codes=[first_code, removed_code],
+            saved_codes_count=2,
+            sheet=None,
+            current_product_idx=0,
+            current_legal_entity_orders=[order],
+            all_existing_codes={first_code, removed_code},
+            progress_label=FakeWidget(),
+            next_product_btn=FakeWidget(),
+            finish_btn=FakeWidget(),
+            last_code_label=FakeWidget(),
+            status_var=FakeVar(),
+            scan_entry=FakeWidget(),
+            show_error=mock.Mock(),
+        )
+
+        with (
+            mock.patch("taksklad.app_scanning.write_scan_backup", return_value=True) as write_backup,
+            mock.patch("taksklad.app_scanning.update_pending_save_codes_for_undo", return_value=True) as update_pending,
+            mock.patch("taksklad.app_scanning.order_uses_backend_scan_path", return_value=False),
+            mock.patch("taksklad.app_scanning.undo_backend_scan") as undo_backend,
+            mock.patch("taksklad.app_scanning.update_scanned_codes_to_gsheet") as update_google,
+            mock.patch("taksklad.app_scanning.remove_pending_backend_scan") as remove_pending_backend,
+        ):
+            ScanningApp.undo_last_scan(fake)
+
+        self.assertEqual(fake.scanned_codes, [first_code])
+        self.assertEqual(fake.current_order["Отсканированные коды"], first_code)
+        self.assertEqual(fake.current_order["_existing_scanned_codes"], [first_code])
+        self.assertEqual(fake.saved_codes_count, 1)
+        self.assertEqual(fake.progress_label.options["text"], "1 / 2")
+        self.assertEqual(fake.next_product_btn.options["state"], "disabled")
+        self.assertEqual(fake.finish_btn.options["state"], "disabled")
+        self.assertNotIn(removed_code, fake.all_existing_codes)
+        self.assertTrue(fake.scan_entry.focused)
+        self.assertIn("(1/2)", fake.status_var.value)
+        write_backup.assert_called_once()
+        update_pending.assert_called_once()
+        undo_backend.assert_not_called()
+        update_google.assert_not_called()
+        remove_pending_backend.assert_called_once_with(order, removed_code)
+        fake.show_error.assert_not_called()
+
+    def test_undo_saved_backend_failure_restores_local_state(self):
+        class FakeWidget:
+            def __init__(self):
+                self.options = {}
+
+            def config(self, **kwargs):
+                self.options.update(kwargs)
+
+        first_code = "01040063960540670001"
+        removed_code = "01040063960540670002"
+        order = {
+            "_backend_order_item_id": "item-1",
+            "Кол-во блок": 2,
+            "Товары": "Chapman Brown SSL",
+            "Отсканированные коды": f"{first_code}\n{removed_code}",
+        }
+        fake = SimpleNamespace(
+            ensure_update_allowed=lambda: True,
+            operation_in_progress=False,
+            current_order=order,
+            scanned_codes=[first_code, removed_code],
+            saved_codes_count=2,
+            sheet=None,
+            all_existing_codes={first_code, removed_code},
+            progress_label=FakeWidget(),
+            next_product_btn=FakeWidget(),
+            finish_btn=FakeWidget(),
+            last_code_label=FakeWidget(),
+            show_error=mock.Mock(),
+        )
+
+        with (
+            mock.patch("taksklad.app_scanning.write_scan_backup", return_value=True),
+            mock.patch("taksklad.app_scanning.update_pending_save_codes_for_undo", return_value=False),
+            mock.patch("taksklad.app_scanning.order_uses_backend_scan_path", return_value=True),
+            mock.patch("taksklad.app_scanning.undo_backend_scan", side_effect=RuntimeError("backend down")),
+            mock.patch("taksklad.app_scanning.update_scanned_codes_to_gsheet") as update_google,
+            mock.patch("taksklad.app_scanning.remove_pending_backend_scan") as remove_pending_backend,
+        ):
+            ScanningApp.undo_last_scan(fake)
+
+        self.assertEqual(fake.scanned_codes, [first_code, removed_code])
+        self.assertEqual(fake.saved_codes_count, 2)
+        self.assertEqual(fake.current_order["Отсканированные коды"], f"{first_code}\n{removed_code}")
+        self.assertIn(removed_code, fake.all_existing_codes)
+        self.assertEqual(fake.progress_label.options, {})
+        self.assertEqual(fake.finish_btn.options, {})
+        fake.show_error.assert_called_once()
+        self.assertIn("Не удалось отменить код в VDS", fake.show_error.call_args.args[0])
+        update_google.assert_not_called()
+        remove_pending_backend.assert_not_called()
+
+    def test_undo_saved_google_failure_restores_local_state(self):
+        class FakeWidget:
+            def __init__(self):
+                self.options = {}
+
+            def config(self, **kwargs):
+                self.options.update(kwargs)
+
+        first_code = "01040063960540670001"
+        removed_code = "01040063960540670002"
+        order = {
+            "Кол-во блок": 2,
+            "Товары": "Chapman Brown SSL",
+            "Отсканированные коды": f"{first_code}\n{removed_code}",
+        }
+        fake = SimpleNamespace(
+            ensure_update_allowed=lambda: True,
+            operation_in_progress=False,
+            current_order=order,
+            scanned_codes=[first_code, removed_code],
+            saved_codes_count=2,
+            sheet=object(),
+            all_existing_codes={first_code, removed_code},
+            progress_label=FakeWidget(),
+            next_product_btn=FakeWidget(),
+            finish_btn=FakeWidget(),
+            last_code_label=FakeWidget(),
+            show_error=mock.Mock(),
+        )
+
+        with (
+            mock.patch("taksklad.app_scanning.write_scan_backup", return_value=True),
+            mock.patch("taksklad.app_scanning.update_pending_save_codes_for_undo", return_value=False),
+            mock.patch("taksklad.app_scanning.order_uses_backend_scan_path", return_value=False),
+            mock.patch("taksklad.app_scanning.update_scanned_codes_to_gsheet", return_value=(False, "quota")) as update_google,
+            mock.patch("taksklad.app_scanning.undo_backend_scan") as undo_backend,
+            mock.patch("taksklad.app_scanning.remove_pending_backend_scan") as remove_pending_backend,
+        ):
+            ScanningApp.undo_last_scan(fake)
+
+        self.assertEqual(fake.scanned_codes, [first_code, removed_code])
+        self.assertEqual(fake.saved_codes_count, 2)
+        self.assertEqual(fake.current_order["Отсканированные коды"], f"{first_code}\n{removed_code}")
+        self.assertIn(removed_code, fake.all_existing_codes)
+        self.assertEqual(fake.progress_label.options, {})
+        self.assertEqual(fake.finish_btn.options, {})
+        update_google.assert_called_once_with(fake.sheet, order, [first_code], allow_empty=True)
+        fake.show_error.assert_called_once()
+        self.assertIn("Не удалось отменить код в Google Sheets: quota", fake.show_error.call_args.args[0])
+        undo_backend.assert_not_called()
+        remove_pending_backend.assert_not_called()
+
     def test_undo_terminal_state_guard_does_not_block_completed_active_position(self):
         self.assertTrue(is_terminal_scan_state({"Статус": "Архив без КИЗ"}))
         self.assertTrue(is_terminal_scan_state({"Статус": "Возврат"}))
@@ -429,8 +756,9 @@ class DesktopUiContractTests(unittest.TestCase):
 
     def test_finish_prints_before_backend_complete_and_skips_direct_google_archive_in_backend_mode(self):
         source = inspect.getsource(ScanningApp.finish_legal_entity)
+        print_call = "print_summary(address, summary_products, print_settings=selected_print_settings)"
 
-        self.assertLess(source.index("print_summary(address, summary_products)"), source.index("complete_backend_orders_or_raise"))
+        self.assertLess(source.index(print_call), source.index("complete_backend_orders_or_raise"))
         self.assertIn("Заказ не завершён в backend", source)
         self.assertIn("not (backend_order_ids and backend_enabled())", source)
         self.assertIn("self.sheet and not uses_backend_finish", source)
@@ -440,6 +768,16 @@ class DesktopUiContractTests(unittest.TestCase):
             "                backend_sync_result = sync_pending_backend_events()",
             source,
         )
+
+    def test_finish_requires_confirmed_pending_print_queue_updates(self):
+        source = inspect.getsource(ScanningApp.finish_legal_entity)
+        print_call = "print_summary(address, summary_products, print_settings=selected_print_settings)"
+
+        self.assertIn("if not pending_print_id", source)
+        self.assertIn("if not remove_pending_print(pending_print_id)", source)
+        self.assertLess(source.index("if not pending_print_id"), source.index(print_call))
+        self.assertLess(source.index("if not remove_pending_print(pending_print_id)"), source.index("complete_backend_orders_or_raise"))
+        self.assertLess(source.index("if not remove_pending_print(pending_print_id)"), source.index("archive_order_group_to_gsheet"))
 
     def test_backend_complete_accepts_already_completed_order_for_repeat_print(self):
         completed = []
@@ -618,6 +956,25 @@ class DesktopUiContractTests(unittest.TestCase):
             "quantity_blocks": 2,
             "quantity_pieces": 20,
         }])
+
+    def test_return_totals_support_backend_and_google_item_shapes(self):
+        order = {
+            "items": [
+                {
+                    "product": "Chapman RED OP 20",
+                    "quantity_blocks": 2,
+                    "line_total": 480000,
+                },
+                {
+                    "Товары": "Chapman Brown SSL 20",
+                    "Кол-во блок": "3",
+                    "Сумма": "720 000",
+                },
+            ]
+        }
+
+        self.assertEqual(app_returns.return_order_total_blocks(order), 5)
+        self.assertEqual(app_returns.return_order_total_price(order), 1_200_000)
 
     def test_print_failure_after_backend_complete_keeps_repeat_print_message(self):
         message = format_print_failure_after_backend_complete(

@@ -12,8 +12,13 @@ from sqlalchemy.pool import StaticPool
 
 from backend.app.db import get_db
 from backend.app.google_sheets_exporter import update_missing_sheet_addresses
-from backend.app.main import app, require_service_token
-from backend.app.models import AuditLog, Base, ImportFile, ImportJob, Incident, KizCode, KizMovement, Order, OrderItem, PendingEvent, ScanCode
+from backend.app.main import (
+    app,
+    require_admin_write_permission,
+    require_client_points_write_permission,
+    require_service_token,
+)
+from backend.app.models import AuditLog, Base, ClientPoint, ImportFile, ImportJob, Incident, KizCode, KizMovement, Order, OrderItem, PendingEvent, ScanCode, User
 from backend.app.skladbot_return_requests import SKLADBOT_RETURN_REQUEST_CREATE_EVENT_TYPE
 from backend.app.settings import load_settings
 from backend.app.web_auth import SESSION_COOKIE_NAME, hash_password
@@ -38,6 +43,8 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
         app.dependency_overrides[get_db] = override_get_db
         app.dependency_overrides[require_service_token] = lambda: None
+        app.dependency_overrides[require_admin_write_permission] = lambda: None
+        app.dependency_overrides[require_client_points_write_permission] = lambda: None
         self.client = TestClient(app)
 
     def tearDown(self):
@@ -249,6 +256,254 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(payload["totals"]["planned_blocks"], 7)
         self.assertEqual({first_order_id, second_order_id}, {row["order_id"] for row in self.client.get("/api/v1/admin/table").json()["rows"]})
 
+    def test_admin_table_supports_offset_pagination_metadata(self):
+        created_at_base = datetime(2026, 6, 1, 8, 0, tzinfo=timezone.utc)
+        with self.SessionLocal() as db:
+            for index, client in enumerate(("Alpha", "Bravo", "Charlie")):
+                order = Order(
+                    payment_type="cash",
+                    client=client,
+                    address=f"{client} Address",
+                    representative="Admin Rep",
+                    order_date=date(2026, 6, 2),
+                    status="not_completed",
+                    created_at=created_at_base + timedelta(minutes=index),
+                    raw_payload={"source": "pagination-test"},
+                )
+                item = OrderItem(
+                    order=order,
+                    product=f"{client} Product",
+                    quantity_pieces=10,
+                    quantity_blocks=index + 1,
+                    pieces_per_block=10,
+                    scanned_blocks=0,
+                    status="not_completed",
+                    created_at=created_at_base + timedelta(minutes=index),
+                    raw_payload={"line_total": 1000 * (index + 1)},
+                )
+                db.add(item)
+            db.commit()
+
+        response = self.client.get("/api/v1/admin/table?limit=1&offset=1")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["limit"], 1)
+        self.assertEqual(payload["offset"], 1)
+        self.assertEqual(payload["row_count"], 1)
+        self.assertEqual(payload["total_rows"], 3)
+        self.assertTrue(payload["has_more"])
+        self.assertEqual(payload["rows"][0]["client"], "Bravo")
+        self.assertEqual(payload["totals"]["orders"], 3)
+        self.assertEqual(payload["totals"]["items"], 3)
+        self.assertEqual(payload["totals"]["planned_blocks"], 6)
+
+        tail = self.client.get("/api/v1/admin/table?limit=2&offset=2")
+        self.assertEqual(tail.status_code, 200)
+        tail_payload = tail.json()
+        self.assertEqual(tail_payload["offset"], 2)
+        self.assertEqual(tail_payload["row_count"], 1)
+        self.assertFalse(tail_payload["has_more"])
+        self.assertEqual(tail_payload["rows"][0]["client"], "Charlie")
+
+    def test_admin_client_points_lists_order_points_and_updates_timeslot(self):
+        self.seed_order()
+
+        initial = self.client.get("/api/v1/admin/client-points")
+
+        self.assertEqual(initial.status_code, 200)
+        points = initial.json()
+        self.assertEqual(len(points), 1)
+        self.assertEqual(points[0]["client_name"], "Test Client")
+        self.assertEqual(points[0]["address"], "Test Address")
+        self.assertEqual(points[0]["delivery_from"], "10:00")
+        self.assertEqual(points[0]["delivery_to"], "18:00")
+        self.assertFalse(points[0]["is_saved"])
+        self.assertFalse(points[0]["has_custom_timeslot"])
+
+        updated = self.client.post(
+            "/api/v1/admin/client-points/timeslot",
+            json={
+                "client_name": "Test Client",
+                "address": "Test Address",
+                "delivery_from": "09:30",
+                "delivery_to": "12:00",
+                "actor": "web",
+                "reason": "точка принимает до обеда",
+            },
+        )
+
+        self.assertEqual(updated.status_code, 200)
+        payload = updated.json()
+        self.assertEqual(payload["delivery_from"], "09:30")
+        self.assertEqual(payload["delivery_to"], "12:00")
+        self.assertTrue(payload["is_saved"])
+        self.assertTrue(payload["has_custom_timeslot"])
+        custom = self.client.get("/api/v1/admin/client-points?custom_timeslot=true")
+        self.assertEqual(custom.status_code, 200)
+        self.assertEqual(len(custom.json()), 1)
+        with self.SessionLocal() as db:
+            point = db.execute(select(ClientPoint)).scalar_one()
+            self.assertEqual(point.delivery_from, "09:30")
+            self.assertEqual(point.delivery_to, "12:00")
+            audit = db.execute(
+                select(AuditLog).where(AuditLog.action == "client_point_timeslot_updated")
+            ).scalar_one()
+            self.assertEqual(audit.entity_id, str(point.id))
+
+    def test_admin_client_point_order_summary_groups_dates_and_products(self):
+        with self.SessionLocal() as db:
+            older_order = Order(
+                payment_type="cash",
+                client="History Client",
+                address="History Address",
+                representative="Rep",
+                order_date=date(2026, 6, 20),
+                status="not_completed",
+                raw_payload={"source": "test"},
+            )
+            newer_order = Order(
+                payment_type="cash",
+                client="History Client",
+                address="Changed Address",
+                representative="Rep",
+                order_date=date(2026, 6, 21),
+                status="not_completed",
+                raw_payload={"source": "test"},
+            )
+            other_client_order = Order(
+                payment_type="cash",
+                client="Other Client",
+                address="Other Address",
+                representative="Rep",
+                order_date=date(2026, 6, 21),
+                status="not_completed",
+                raw_payload={"source": "test"},
+            )
+            db.add_all([
+                older_order,
+                newer_order,
+                other_client_order,
+                OrderItem(
+                    order=older_order,
+                    product="Chapman Green OP 20",
+                    quantity_pieces=30,
+                    quantity_blocks=3,
+                    pieces_per_block=10,
+                    status="not_completed",
+                    raw_payload={"source": "test"},
+                ),
+                OrderItem(
+                    order=older_order,
+                    product="Chapman Brown SSL 100`20",
+                    quantity_pieces=20,
+                    quantity_blocks=2,
+                    pieces_per_block=10,
+                    status="not_completed",
+                    raw_payload={"source": "test"},
+                ),
+                OrderItem(
+                    order=newer_order,
+                    product="Chapman Green OP 20",
+                    quantity_pieces=50,
+                    quantity_blocks=5,
+                    pieces_per_block=10,
+                    status="not_completed",
+                    raw_payload={"source": "test"},
+                ),
+                OrderItem(
+                    order=other_client_order,
+                    product="Ignored Product",
+                    quantity_pieces=90,
+                    quantity_blocks=9,
+                    pieces_per_block=10,
+                    status="not_completed",
+                    raw_payload={"source": "test"},
+                ),
+            ])
+            db.commit()
+
+        response = self.client.get(
+            "/api/v1/admin/client-points/order-summary",
+            params={"client_name": "history client"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["client_name"], "History Client")
+        self.assertEqual(payload["totals"], {
+            "orders_count": 2,
+            "positions_count": 3,
+            "quantity_blocks": 10,
+            "quantity_pieces": 100,
+        })
+        self.assertEqual([row["shipment_date"] for row in payload["dates"]], ["2026-06-21", "2026-06-20"])
+        self.assertEqual(payload["dates"][0]["orders_count"], 1)
+        self.assertEqual(payload["dates"][0]["positions_count"], 1)
+        self.assertEqual(payload["dates"][0]["products"], [{
+            "product": "Chapman Green OP 20",
+            "positions_count": 1,
+            "quantity_blocks": 5,
+            "quantity_pieces": 50,
+        }])
+        self.assertEqual(payload["dates"][1]["orders_count"], 1)
+        self.assertEqual(payload["dates"][1]["positions_count"], 2)
+        self.assertEqual(
+            {product["product"]: product["quantity_blocks"] for product in payload["dates"][1]["products"]},
+            {
+                "Chapman Brown SSL 100`20": 2,
+                "Chapman Green OP 20": 3,
+            },
+        )
+
+    def test_admin_client_points_rejects_invalid_timeslot_order(self):
+        response = self.client.post(
+            "/api/v1/admin/client-points/timeslot",
+            json={
+                "client_name": "Client",
+                "address": "Address",
+                "delivery_from": "18:00",
+                "delivery_to": "10:00",
+            },
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("delivery_from must be earlier", response.json()["detail"])
+
+    def test_admin_client_points_use_client_identity_when_address_changes(self):
+        first = self.client.post(
+            "/api/v1/admin/client-points/timeslot",
+            json={
+                "client_name": "Point Client",
+                "address": "Old Address",
+                "delivery_from": "08:30",
+                "delivery_to": "11:45",
+                "actor": "web",
+            },
+        )
+        self.assertEqual(first.status_code, 200)
+
+        second = self.client.post(
+            "/api/v1/admin/client-points/timeslot",
+            json={
+                "client_name": "Point Client",
+                "address": "New Address",
+                "delivery_from": "09:00",
+                "delivery_to": "12:00",
+                "actor": "web",
+            },
+        )
+
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.json()["id"], first.json()["id"])
+        self.assertEqual(second.json()["address"], "New Address")
+        with self.SessionLocal() as db:
+            points = db.execute(select(ClientPoint)).scalars().all()
+            self.assertEqual(len(points), 1)
+            self.assertEqual(points[0].client_name, "Point Client")
+            self.assertEqual(points[0].address, "New Address")
+            self.assertEqual(points[0].delivery_from, "09:00")
+
     def test_web_auth_login_sets_cookie_and_check_accepts_session(self):
         auth_settings = load_settings({
             "TAKSKLAD_ENV": "local",
@@ -322,6 +577,110 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertEqual(len(admin.json()["rows"]), 1)
             events = self.client.get("/api/v1/admin/events")
             self.assertEqual(events.status_code, 200)
+
+    def test_web_auth_configured_without_service_token_still_requires_session(self):
+        app.dependency_overrides.pop(require_service_token, None)
+        self.seed_order()
+        auth_settings = load_settings({
+            "TAKSKLAD_ENV": "local",
+            "TAKSKLAD_API_TOKEN": "",
+            "TAKSKLAD_WEB_LOGIN": "998000000000",
+            "TAKSKLAD_WEB_PASSWORD_HASH": hash_password("test-password", salt="test-salt", iterations=1000),
+            "TAKSKLAD_WEB_SESSION_SECRET": "test-session-secret",
+            "TAKSKLAD_WEB_COOKIE_SECURE": "false",
+        })
+
+        with mock.patch("backend.app.main.settings", auth_settings):
+            unauthorized = self.client.get("/api/v1/admin/table")
+            self.assertEqual(unauthorized.status_code, 401)
+
+            login = self.client.post(
+                "/api/v1/auth/login",
+                json={"login": "998000000000", "password": "test-password"},
+            )
+            self.assertEqual(login.status_code, 200)
+
+            admin = self.client.get("/api/v1/admin/table")
+            self.assertEqual(admin.status_code, 200)
+            self.assertEqual(len(admin.json()["rows"]), 1)
+
+    def test_logistics_slots_user_can_write_only_client_point_timeslots(self):
+        app.dependency_overrides.pop(require_service_token, None)
+        app.dependency_overrides.pop(require_admin_write_permission, None)
+        app.dependency_overrides.pop(require_client_points_write_permission, None)
+        order_id, _item_id = self.seed_order()
+        with self.SessionLocal() as db:
+            db.add(User(
+                username="998933456753",
+                password_hash=hash_password("limited-password", salt="limited-salt", iterations=1000),
+                role="logistics_slots",
+                is_active=True,
+            ))
+            db.commit()
+        auth_settings = load_settings({
+            "TAKSKLAD_ENV": "local",
+            "TAKSKLAD_API_TOKEN": "service-token",
+            "TAKSKLAD_WEB_LOGIN": "998000000000",
+            "TAKSKLAD_WEB_PASSWORD_HASH": hash_password("admin-password", salt="admin-salt", iterations=1000),
+            "TAKSKLAD_WEB_SESSION_SECRET": "test-session-secret",
+            "TAKSKLAD_WEB_COOKIE_SECURE": "false",
+        })
+
+        with mock.patch("backend.app.main.settings", auth_settings):
+            login = self.client.post(
+                "/api/v1/auth/login",
+                json={"login": "998933456753", "password": "limited-password"},
+            )
+            self.assertEqual(login.status_code, 200)
+            login_payload = login.json()
+            self.assertTrue(login_payload["authenticated"])
+            self.assertEqual(login_payload["login"], "998933456753")
+            self.assertEqual(login_payload["role"], "logistics_slots")
+            self.assertEqual(login_payload["permissions"], ["client_points:write"])
+
+            table = self.client.get("/api/v1/admin/table")
+            self.assertEqual(table.status_code, 200)
+
+            timeslot = self.client.post(
+                "/api/v1/admin/client-points/timeslot",
+                json={
+                    "client_name": "Test Client",
+                    "address": "Test Address",
+                    "delivery_from": "09:00",
+                    "delivery_to": "12:00",
+                    "actor": "web",
+                    "reason": "limited user update",
+                },
+            )
+            self.assertEqual(timeslot.status_code, 200)
+            self.assertEqual(timeslot.json()["delivery_from"], "09:00")
+
+            cancel = self.client.post(
+                f"/api/v1/admin/orders/{order_id}/cancel",
+                json={"reason": "should be forbidden", "actor": "web"},
+            )
+            self.assertEqual(cancel.status_code, 403)
+
+            import_create = self.client.post("/api/v1/imports", json={"source": "excel", "rows": []})
+            self.assertEqual(import_create.status_code, 403)
+
+            reconciliation = self.client.get("/api/v1/reports/reconciliation/day?report_date=2026-06-10")
+            self.assertEqual(reconciliation.status_code, 403)
+
+    def test_api_allows_local_no_auth_only_when_no_auth_is_configured(self):
+        app.dependency_overrides.pop(require_service_token, None)
+        self.seed_order()
+        auth_settings = load_settings({
+            "TAKSKLAD_ENV": "local",
+            "TAKSKLAD_API_TOKEN": "",
+            "TAKSKLAD_WEB_LOGIN": "",
+            "TAKSKLAD_WEB_PASSWORD_HASH": "",
+        })
+
+        with mock.patch("backend.app.main.settings", auth_settings):
+            admin = self.client.get("/api/v1/admin/table")
+            self.assertEqual(admin.status_code, 200)
+            self.assertEqual(len(admin.json()["rows"]), 1)
 
     def test_reset_order_for_rescan_clears_scans_and_keeps_order_active(self):
         order_id, item_id = self.seed_order(quantity_blocks=2, scanned_blocks=2, item_status="completed")
@@ -1552,6 +1911,37 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertEqual(sheet_records[0]["Клиент"], "Import Client")
             self.assertEqual(sheet_records[0]["ID импорта"], "import-row-1")
 
+    def test_import_skips_duplicate_rows_inside_same_payload(self):
+        row = {
+            "Дата отгрузки": "30.05.2026",
+            "Тип оплаты": "cash",
+            "Клиент": "Payload Duplicate Client",
+            "Адрес": "Payload Duplicate Address",
+            "Товары": "Product One",
+            "Кол-во ШТ": "20",
+            "Кол-во блок": "2",
+            "ID заказа": "payload-duplicate-order",
+            "ID импорта": "payload-duplicate-import",
+        }
+
+        response = self.client.post(
+            "/api/v1/imports",
+            json={"source": "telegram", "filename": "orders.xlsx", "rows": [row, dict(row)]},
+        )
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        self.assertEqual(payload["status"], "completed")
+        self.assertEqual(payload["orders_created"], 1)
+        self.assertEqual(payload["items_created"], 1)
+        self.assertEqual(payload["duplicate_rows"], 1)
+        with self.SessionLocal() as db:
+            self.assertEqual(len(db.execute(select(Order)).scalars().all()), 1)
+            self.assertEqual(len(db.execute(select(OrderItem)).scalars().all()), 1)
+            event = db.execute(select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")).scalar_one()
+            self.assertEqual(len(event.payload["records"]), 1)
+            self.assertEqual(event.payload["records"][0]["ID импорта"], "payload-duplicate-import")
+
     def test_import_keeps_backend_data_when_google_sheets_export_fails(self):
         rows = [
             {
@@ -1587,6 +1977,58 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertEqual(event.payload["action"], "google_sheets_import_export")
             self.assertEqual(len(event.payload["records"]), 1)
 
+    def test_import_reports_google_queue_failure_without_rolling_back_backend_data(self):
+        rows = [
+            {
+                "Дата отгрузки": "30.05.2026",
+                "Тип оплаты": "cash",
+                "Клиент": "Google Queue Failure Client",
+                "Адрес": "Import Address",
+                "Товары": "Product One",
+                "Кол-во ШТ": "20",
+                "Кол-во блок": "2",
+                "ID заказа": "google-queue-failure-order",
+                "ID импорта": "google-queue-failure-import",
+            },
+        ]
+
+        with mock.patch(
+            "backend.app.imports_service.queue_google_sheets_export",
+            side_effect=RuntimeError("Google queue storage failed"),
+        ):
+            response = self.client.post(
+                "/api/v1/imports",
+                json={"source": "excel", "filename": "orders.xlsx", "rows": rows},
+            )
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        self.assertEqual(payload["status"], "completed")
+        self.assertEqual(payload["items_created"], 1)
+        self.assertEqual(payload["google_sheets_status"], "error")
+        self.assertIn("Google queue storage failed", payload["google_sheets_error"])
+
+        active = self.client.get("/api/v1/orders/active")
+        self.assertEqual(active.status_code, 200)
+        self.assertEqual(active.json()[0]["client"], "Google Queue Failure Client")
+        with self.SessionLocal() as db:
+            google_events = db.execute(
+                select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")
+            ).scalars().all()
+            self.assertEqual(google_events, [])
+            import_job = db.execute(select(ImportJob)).scalar_one()
+            self.assertEqual(import_job.rows_imported, 1)
+            self.assertEqual(import_job.raw_payload["google_sheets"]["status"], "error")
+            incident = db.execute(
+                select(Incident).where(Incident.source == "google_sheets_import_export")
+            ).scalar_one()
+            self.assertEqual(incident.import_id, import_job.id)
+            self.assertIn("Google queue storage failed", incident.message)
+            audit = db.execute(
+                select(AuditLog).where(AuditLog.action == "google_sheets_import_export_failed")
+            ).scalar_one()
+            self.assertEqual(audit.entity_id, str(import_job.id))
+
     def test_duplicate_backend_import_still_can_backfill_google_sheets(self):
         row = {
             "Дата отгрузки": "30.05.2026",
@@ -1617,6 +2059,55 @@ class BackendApiPersistenceTests(unittest.TestCase):
             ).scalars().all()
             self.assertEqual(len(events), 2)
             self.assertEqual(events[-1].payload["records"][0]["ID импорта"], "backfill-import")
+
+    def test_import_preview_reports_duplicates_invalid_rows_and_does_not_write(self):
+        existing_row = {
+            "Дата отгрузки": "30.05.2026",
+            "Тип оплаты": "cash",
+            "Клиент": "Preview Client",
+            "Адрес": "Preview Address",
+            "Товары": "Product One",
+            "Кол-во ШТ": "20",
+            "Кол-во блок": "2",
+            "ID заказа": "preview-order",
+            "ID импорта": "preview-import",
+        }
+        created = self.client.post("/api/v1/imports", json={"source": "excel", "filename": "orders.xlsx", "rows": [existing_row]})
+        self.assertEqual(created.status_code, 201)
+        with self.SessionLocal() as db:
+            pending_events_before_preview = len(db.execute(select(PendingEvent)).scalars().all())
+        new_row = {
+            "Дата отгрузки": "30.05.2026",
+            "Тип оплаты": "cash",
+            "Клиент": "Preview Client",
+            "Адрес": "Preview Address",
+            "Товары": "Product Two",
+            "Кол-во ШТ": "10",
+            "Кол-во блок": "1",
+            "ID заказа": "preview-order-2",
+            "ID импорта": "preview-import-2",
+        }
+
+        preview = self.client.post(
+            "/api/v1/imports/preview",
+            json={"source": "excel", "filename": "orders.xlsx", "rows": [existing_row, new_row, {"Клиент": "Broken"}]},
+        )
+
+        self.assertEqual(preview.status_code, 200)
+        payload = preview.json()
+        self.assertEqual(payload["rows_total"], 3)
+        self.assertEqual(payload["rows_importable"], 1)
+        self.assertEqual(payload["items_new"], 1)
+        self.assertEqual(payload["duplicate_rows"], 1)
+        self.assertEqual(payload["invalid_rows"], 1)
+        self.assertEqual(payload["duplicate_row_numbers"], [1])
+        self.assertEqual(payload["invalid_row_numbers"], [3])
+        self.assertIn("row 3:", payload["errors"][0])
+        with self.SessionLocal() as db:
+            self.assertEqual(len(db.execute(select(Order)).scalars().all()), 1)
+            self.assertEqual(len(db.execute(select(OrderItem)).scalars().all()), 1)
+            self.assertEqual(len(db.execute(select(ImportJob)).scalars().all()), 1)
+            self.assertEqual(len(db.execute(select(PendingEvent)).scalars().all()), pending_events_before_preview)
 
     def test_retrying_same_import_payload_does_not_duplicate_backend_records(self):
         row = {
@@ -1656,7 +2147,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
     def test_failed_import_creates_linked_incident_and_resolve_removes_readiness_blocker(self):
         with self.SessionLocal() as db:
             db.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
-            db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260617_0002')"))
+            db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260623_0004')"))
             event = PendingEvent(
                 event_type="telegram_excel_import",
                 status="processing",
@@ -2126,6 +2617,8 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(sheet["C2"].value, "Logistics Client")
         self.assertEqual(sheet["G2"].value, "41.31,69.27")
         self.assertEqual(sheet["J2"].value, "30.05.2026")
+        self.assertEqual(sheet["K2"].value, "10:00")
+        self.assertEqual(sheet["L2"].value, "18:00")
         self.assertEqual(sheet["R2"].value, "Chapman Brown OP 20")
         self.assertEqual(sheet["S2"].value, 20)
         self.assertEqual(sheet["V2"].value, 240000)
@@ -2135,7 +2628,115 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(sheet["AG2"].value, "69.27")
         workbook.close()
 
-    def test_logistics_report_skips_pickup_and_orders_without_coordinates(self):
+    def test_logistics_report_uses_saved_client_point_timeslot(self):
+        rows = [
+            {
+                "Дата отгрузки": "2026-05-30",
+                "Тип оплаты": "Терминал",
+                "Клиент": "Timeslot Legal Entity",
+                "Адрес": "Timeslot Address",
+                "Координаты": "41.31, 69.27",
+                "Торговый представитель": "Rep One",
+                "Товары": "Chapman Brown OP 20",
+                "Кол-во ШТ": "20",
+                "Кол-во блок": "2",
+                "ID заказа": "timeslot-source-order",
+            },
+        ]
+        imported = self.client.post("/api/v1/imports", json={"source": "excel", "filename": "orders.xlsx", "rows": rows})
+        self.assertEqual(imported.status_code, 201)
+        updated = self.client.post(
+            "/api/v1/admin/client-points/timeslot",
+            json={
+                "client_name": "Timeslot Legal Entity",
+                "address": "Timeslot Address",
+                "delivery_from": "08:30",
+                "delivery_to": "11:45",
+                "actor": "web",
+                "reason": "точка принимает утром",
+            },
+        )
+        self.assertEqual(updated.status_code, 200)
+
+        report = self.client.get("/api/v1/logistics/report?shipment_date=2026-05-30")
+
+        self.assertEqual(report.status_code, 200)
+        workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
+        sheet = workbook["Заявки"]
+        self.assertEqual(sheet["C2"].value, "Timeslot Legal Entity")
+        self.assertEqual(sheet["K2"].value, "08:30")
+        self.assertEqual(sheet["L2"].value, "11:45")
+        workbook.close()
+
+    def test_import_updates_client_point_address_and_keeps_timeslot_by_client(self):
+        first_rows = [
+            {
+                "Дата отгрузки": "2026-05-30",
+                "Тип оплаты": "Терминал",
+                "Клиент": "Timeslot Legal Entity",
+                "Адрес": "Old Timeslot Address",
+                "Координаты": "41.31, 69.27",
+                "Торговый представитель": "Rep One",
+                "Товары": "Chapman Brown OP 20",
+                "Кол-во ШТ": "20",
+                "Кол-во блок": "2",
+                "ID заказа": "timeslot-source-order-old",
+            },
+        ]
+        first_import = self.client.post("/api/v1/imports", json={"source": "excel", "filename": "old.xlsx", "rows": first_rows})
+        self.assertEqual(first_import.status_code, 201)
+        updated = self.client.post(
+            "/api/v1/admin/client-points/timeslot",
+            json={
+                "client_name": "Timeslot Legal Entity",
+                "address": "Old Timeslot Address",
+                "delivery_from": "08:30",
+                "delivery_to": "11:45",
+                "actor": "web",
+                "reason": "точка принимает утром",
+            },
+        )
+        self.assertEqual(updated.status_code, 200)
+
+        second_rows = [
+            {
+                "Дата отгрузки": "2026-05-31",
+                "Тип оплаты": "Терминал",
+                "Клиент": "Timeslot Legal Entity",
+                "Адрес": "New Timeslot Address",
+                "Координаты": "41.32, 69.28",
+                "Торговый представитель": "Rep Two",
+                "Товары": "Chapman Brown OP 20",
+                "Кол-во ШТ": "20",
+                "Кол-во блок": "2",
+                "ID заказа": "timeslot-source-order-new",
+            },
+        ]
+        second_import = self.client.post("/api/v1/imports", json={"source": "excel", "filename": "new.xlsx", "rows": second_rows})
+        self.assertEqual(second_import.status_code, 201)
+
+        with self.SessionLocal() as db:
+            points = db.execute(select(ClientPoint)).scalars().all()
+            self.assertEqual(len(points), 1)
+            self.assertEqual(points[0].client_name, "Timeslot Legal Entity")
+            self.assertEqual(points[0].address, "New Timeslot Address")
+            self.assertEqual(points[0].coordinates, "41.32, 69.28")
+            self.assertEqual(points[0].representative, "Rep Two")
+            self.assertEqual(points[0].delivery_from, "08:30")
+            self.assertEqual(points[0].delivery_to, "11:45")
+
+        report = self.client.get("/api/v1/logistics/report?shipment_date=2026-05-31")
+
+        self.assertEqual(report.status_code, 200)
+        workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
+        sheet = workbook["Заявки"]
+        self.assertEqual(sheet["C2"].value, "Timeslot Legal Entity")
+        self.assertEqual(sheet["F2"].value, "New Timeslot Address")
+        self.assertEqual(sheet["K2"].value, "08:30")
+        self.assertEqual(sheet["L2"].value, "11:45")
+        workbook.close()
+
+    def test_logistics_report_keeps_unrouteable_orders_on_separate_sheet(self):
         rows = [
             {
                 "Дата отгрузки": "2026-05-30",
@@ -2203,13 +2804,24 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(report.status_code, 200)
         workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
         sheet = workbook["Заявки"]
+        problems = workbook["Требуют координаты"]
 
         self.assertEqual(sheet.max_row, 2)
         self.assertEqual(sheet["C2"].value, "Route Client")
+        self.assertEqual(sheet["F2"].value, "Tashkent Address")
         self.assertEqual(sheet["R2"].value, "Chapman Brown OP 20")
+        self.assertEqual(problems.max_row, 3)
+        problem_rows = {
+            row[0]: row
+            for row in problems.iter_rows(min_row=2, values_only=True)
+        }
+        self.assertEqual(problem_rows["No Coordinates Client"][1], "Tashkent Address Without Coordinates")
+        self.assertEqual(problem_rows["No Coordinates Client"][3], "Нет координат")
+        self.assertEqual(problem_rows["Invalid Coordinates Client"][1], "Invalid Coordinates Address")
+        self.assertEqual(problem_rows["Invalid Coordinates Client"][3], "Невалидные координаты")
         workbook.close()
 
-    def test_logistics_report_404_when_date_has_only_pickup_or_unrouteable_orders(self):
+    def test_logistics_report_returns_unrouteable_sheet_when_date_has_no_routeable_orders(self):
         rows = [
             {
                 "Дата отгрузки": "2026-05-30",
@@ -2230,6 +2842,38 @@ class BackendApiPersistenceTests(unittest.TestCase):
                 "Кол-во ШТ": "10",
                 "Кол-во блок": "1",
                 "ID заказа": "no-coordinates-only-order",
+            },
+        ]
+        imported = self.client.post("/api/v1/imports", json={"source": "excel", "filename": "orders.xlsx", "rows": rows})
+        self.assertEqual(imported.status_code, 201)
+
+        dates = self.client.get("/api/v1/logistics/dates")
+        self.assertEqual(dates.status_code, 200)
+        self.assertEqual(dates.json(), ["2026-05-30"])
+
+        report = self.client.get("/api/v1/logistics/report?shipment_date=2026-05-30")
+
+        self.assertEqual(report.status_code, 200)
+        workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
+        sheet = workbook["Заявки"]
+        problems = workbook["Требуют координаты"]
+
+        self.assertEqual(sheet.max_row, 1)
+        self.assertEqual(problems.max_row, 2)
+        self.assertEqual(problems["A2"].value, "No Coordinates Client")
+        workbook.close()
+
+    def test_logistics_report_404_when_date_has_only_pickup_orders(self):
+        rows = [
+            {
+                "Дата отгрузки": "2026-05-30",
+                "Тип оплаты": "Терминал",
+                "Клиент": "Pickup Client",
+                "Адрес": "Самовывоз со склада",
+                "Товары": "Chapman Brown OP 20",
+                "Кол-во ШТ": "20",
+                "Кол-во блок": "2",
+                "ID заказа": "pickup-only-order",
             },
         ]
         imported = self.client.post("/api/v1/imports", json={"source": "excel", "filename": "orders.xlsx", "rows": rows})
@@ -2964,6 +3608,12 @@ class BackendApiPersistenceTests(unittest.TestCase):
                 payload={},
                 last_error="Bearer secret-token failed for 0104006396053978217ABCDE12345678901234567890",
             ))
+            db.add(PendingEvent(
+                event_type="telegram_chat_state:123456789",
+                status="pending",
+                attempts=0,
+                payload={"chat_id": "123456789"},
+            ))
             db.add(ImportJob(
                 source="telegram",
                 status="failed",
@@ -2992,6 +3642,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(payload["migrations"]["status"], "ok")
         self.assertEqual(payload["migrations"]["current_revision"], "20260616_0001")
         self.assertEqual(payload["queue"]["summary"]["by_type"]["google_sheets_export"]["pending"], 1)
+        self.assertEqual(payload["queue"]["summary"]["by_type"]["telegram_chat_state:*"]["pending"], 1)
         self.assertGreaterEqual(payload["queue"]["oldest_pending_age_seconds"], 60)
         self.assertEqual(payload["queue"]["stale_processing_count"], 0)
         dumped = str(payload)
@@ -3000,12 +3651,14 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertNotIn("secret-token", dumped)
         self.assertNotIn("super-secret", dumped)
         self.assertNotIn("0104006396053978217ABCDE", dumped)
+        self.assertNotIn("telegram_chat_state:123456789", dumped)
+        self.assertNotIn("'chat_id': '123456789'", dumped)
         self.assertEqual(api_readiness.status_code, 200)
 
-    def test_readiness_accepts_incident_schema_head_revision(self):
+    def test_readiness_accepts_user_password_hash_schema_head_revision(self):
         with self.SessionLocal() as db:
             db.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
-            db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260617_0002')"))
+            db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260623_0004')"))
             db.commit()
 
         response = self.client.get("/ready")
@@ -3015,8 +3668,8 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(payload["status"], "ok")
         self.assertEqual(payload["migrations"]["status"], "ok")
         self.assertEqual(payload["migrations"]["expected_baseline"], "20260616_0001")
-        self.assertEqual(payload["migrations"]["expected_head"], "20260617_0002")
-        self.assertEqual(payload["migrations"]["current_revision"], "20260617_0002")
+        self.assertEqual(payload["migrations"]["expected_head"], "20260623_0004")
+        self.assertEqual(payload["migrations"]["current_revision"], "20260623_0004")
 
     def test_readiness_degrades_when_migration_state_is_missing_or_wrong(self):
         response = self.client.get("/ready")

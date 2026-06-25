@@ -18,20 +18,32 @@ TakSklad uses `pending_events` as the durable queue for side effects that must s
 
 ## Claiming And Locking
 
-Workers claim active queue events with `FOR UPDATE SKIP LOCKED` when the database is PostgreSQL. SQLite/local tests use process-local execution and the same lifecycle rules.
+Workers claim active queue events with `FOR UPDATE SKIP LOCKED` when the database is PostgreSQL. Google Sheets pending exports also use a process-local lock on non-Postgres databases, so SQLite/local runs return `busy` instead of processing the same queue twice in one process. SQLite/local tests use the same lifecycle rules.
 
 ## Retry And Rate Limits
 
-Google Sheets export pauses the batch on rate-limit errors such as `429`, `quota`, or `rate limit`, keeps the event `pending`, records `last_error`, and writes `payload.next_attempt_at` for diagnostics. SkladBot API calls respect `Retry-After` in their client retry loop.
+Google Sheets export pauses the batch on rate-limit errors such as `429`, `quota`, or `rate limit`, keeps the event `pending`, records `last_error`, and writes `payload.next_attempt_at`. Pending exports whose `next_attempt_at` is in the future are skipped until cooldown expires, but they do not block newer ready exports. SkladBot API calls respect `Retry-After` in their client retry loop.
+
+If backend import succeeds but queuing the Google Sheets import export fails, the import remains committed in PostgreSQL. The API returns the import result with `google_sheets_status=error`, writes `google_sheets_import_export_failed` audit, and opens a `google_sheets_import_export` incident for operator review.
+
+Manual admin retry is allowed only for retryable event types in `failed` or `pending` state. The request must include a non-empty reason, clears `next_attempt_at`, stores retry metadata in the event payload, and writes `pending_event_retry_requested` to audit.
+
+Telegram Excel import retry requires the original Telegram document source in `payload.document.file_id`. If the file id is missing, the API returns `409` and leaves the event unchanged, because the worker cannot redownload the original file safely.
+
+Telegram notification events with malformed payload are blocked, not failed: missing `payload.text` or missing resolved target chat moves the event to `blocked`, records `last_error`, and writes `telegram_notification_blocked` to audit. Real Telegram send exceptions remain `failed` and retryable.
 
 ## Diagnostics
 
 `/api/v1/admin/events` exposes queue status, attempts, idempotency key, next attempt, last error, and stale processing events.
 
+Authenticated event diagnostics expose `raw_payload` for operator review only after backend redaction. Secret-like keys such as token/password/secret/authorization are masked, and secret-looking strings inside `last_error` or payload values are redacted before they reach the web UI.
+
 `/api/v1/diagnostics/logs` includes the same active queue fields in the downloadable support log with secret redaction.
+
+Public `/ready` uses a narrower view than authenticated admin diagnostics: queue `event_type` suffixes after `:` are aggregated as `prefix:*`, and compact error rows omit raw payloads, idempotency keys, and linked entity fields.
 
 ## Safety Rules
 
 - Bad Google export events are marked `failed` and do not stop newer valid events in the same batch.
 - Stale Telegram import, Telegram notification, and scheduled report events are reset from `processing` to `pending`.
-- State-store events such as chat state may appear in queue summaries, but only active queue statuses are shown in the failed/pending diagnostics section.
+- State-store events such as chat state may appear in authenticated queue summaries, but public readiness must expose only aggregated type/status counts.

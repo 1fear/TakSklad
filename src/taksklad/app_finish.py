@@ -73,6 +73,7 @@ class FinishActionsMixin:
             self.show_error("Печать сводного листа отменена")
             self.finish_btn.config(state="normal")
             return
+        selected_print_settings = getattr(self, "_selected_print_settings", None)
 
         self.set_busy("⏳ Печатаю сводный лист и завершаю заказ...")
         self.safe_config(self.finish_btn, state="disabled")
@@ -95,9 +96,14 @@ class FinishActionsMixin:
                     address = first_product.get('Адрес', address)
 
             pending_print_id = add_pending_print(address, summary_products)
+            if not pending_print_id:
+                raise RuntimeError(
+                    "Не удалось поставить сводный лист в очередь печати. "
+                    "Заказ не завершён в backend."
+                )
 
             try:
-                printed_files = print_summary(address, summary_products)
+                printed_files = print_summary(address, summary_products, print_settings=selected_print_settings)
                 if not printed_files:
                     raise RuntimeError("Сводочный лист не создан или не отправлен на печать")
             except Exception as exc:
@@ -105,7 +111,11 @@ class FinishActionsMixin:
                     f"Сводный лист не напечатался. Заказ не завершён в backend. Причина: {exc}"
                 ) from exc
 
-            remove_pending_print(pending_print_id)
+            if not remove_pending_print(pending_print_id):
+                raise RuntimeError(
+                    "Сводный лист напечатан, но очередь печати не обновилась. "
+                    "Заказ не завершён в backend."
+                )
 
             if uses_backend_finish:
                 backend_sync_result = sync_pending_backend_events()

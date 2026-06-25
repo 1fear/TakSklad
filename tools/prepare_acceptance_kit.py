@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -25,6 +26,15 @@ TEST_KIZ_CODES = [
 ]
 
 
+def current_app_version():
+    config_path = PROJECT_ROOT / "src" / "taksklad" / "config.py"
+    text = config_path.read_text(encoding="utf-8")
+    match = re.search(r'APP_VERSION\s*=\s*"([^"]+)"', text)
+    if not match:
+        raise RuntimeError(f"APP_VERSION not found in {config_path}")
+    return match.group(1)
+
+
 def sha256_file(path):
     digest = hashlib.sha256()
     with Path(path).open("rb") as file:
@@ -43,6 +53,7 @@ def build_manifest(output_dir=DEFAULT_OUTPUT_DIR, marker=DEFAULT_MARKER, shipmen
         "excel_file": EXCEL_NAME,
         "result_template": RESULT_TEMPLATE_NAME,
         "result_file": RESULT_FILE_NAME,
+        "app_version": current_app_version(),
         "excel_sha256": sha256_file(excel_path),
         "excel_bytes": excel_path.stat().st_size,
         "expected": {
@@ -88,9 +99,10 @@ def build_manifest(output_dir=DEFAULT_OUTPUT_DIR, marker=DEFAULT_MARKER, shipmen
 
 def build_readme(manifest):
     kiz_codes = "\n".join(f"- `{code}`" for code in manifest["test_kiz_codes"])
+    app_version = manifest["app_version"]
     return f"""# TakSklad Acceptance Kit
 
-Назначение: ручная проверка Telegram import и Windows desktop acceptance после публикации 2.0.15 manifest. Обновления через `version.json` разрешены; текущая линия 2.0.15 переведена в forced rollout.
+Назначение: ручная проверка Telegram import и Windows desktop acceptance после публикации {app_version} manifest. Обновления через `version.json` разрешены; текущая линия {app_version} переведена в forced rollout.
 
 ## Состав
 
@@ -260,13 +272,14 @@ cd /opt/taksklad/app
 ## Чего Не Делать
 
 - Не откатывать `mandatory=true` без отдельного решения Антона.
-- Не публиковать новый Windows release поверх 2.0.15 без повторной проверки.
+- Не публиковать новый Windows release поверх {app_version} без повторной проверки.
 - Не создавать реальную заявку SkladBot без отдельного подтверждения.
 """
 
 
 def build_initial_result_file(manifest):
     kiz_codes = "\n".join(f"- [ ] `{code}`" for code in manifest["test_kiz_codes"])
+    app_version = manifest["app_version"]
     return f"""# TakSklad 2.0 Acceptance Results
 
 Дата проверки:
@@ -290,7 +303,7 @@ SHA-256 Excel: `{manifest["excel_sha256"]}`
 ## 1. Preflight
 
 - [ ] `.venv/bin/python tools/release_preflight.py` вернул `status=ok`.
-- [ ] `version.json` указывает на `2.0.15`, `mandatory=true`, ссылки и SHA заполнены.
+- [ ] `version.json` указывает на `{app_version}`, `mandatory=true`, ссылки и SHA заполнены.
 - [ ] В Git нет tracked runtime/secret-файлов.
 
 ## 2. Telegram Import
@@ -377,6 +390,7 @@ SHA-256 Excel: `{manifest["excel_sha256"]}`
 
 def build_result_template(manifest):
     kiz_codes = "\n".join(f"- [ ] `{code}`" for code in manifest["test_kiz_codes"])
+    app_version = manifest["app_version"]
     return f"""# TakSklad 2.0 Acceptance Results
 
 Дата проверки:
@@ -400,7 +414,7 @@ SHA-256 Excel: `{manifest["excel_sha256"]}`
 ## 1. Preflight
 
 - [ ] `.venv/bin/python tools/release_preflight.py` вернул `status=ok`.
-- [ ] `version.json` указывает на `2.0.15`, `mandatory=true`, ссылки и SHA заполнены.
+- [ ] `version.json` указывает на `{app_version}`, `mandatory=true`, ссылки и SHA заполнены.
 - [ ] В Git нет tracked runtime/secret-файлов.
 
 Заметки:

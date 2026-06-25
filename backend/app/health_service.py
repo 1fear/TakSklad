@@ -16,7 +16,7 @@ from .settings import APP_VERSION
 
 
 EXPECTED_BASELINE_REVISION = "20260616_0001"
-EXPECTED_HEAD_REVISION = "20260617_0002"
+EXPECTED_HEAD_REVISION = "20260623_0004"
 OK_MIGRATION_REVISIONS = {EXPECTED_BASELINE_REVISION, EXPECTED_HEAD_REVISION}
 TERMINAL_INCIDENT_STATUSES = ("resolved", "ignored", "cancelled")
 
@@ -97,7 +97,7 @@ def read_migration_status(db: Session):
 
 def build_queue_readiness(db: Session, now=None):
     now = now or datetime.now(timezone.utc)
-    summary = build_event_queue_summary(db)
+    summary = sanitize_queue_summary(build_event_queue_summary(db))
     stale_processing = list_stale_processing_events(db, now=now, limit=20)
     oldest_pending = db.execute(
         select(PendingEvent)
@@ -136,8 +136,39 @@ def last_event_errors(db: Session, now=None, limit=10):
 
 def compact_event_error(event):
     event = dict(event or {})
-    event["last_error"] = redact_secrets(event.get("last_error") or "")
-    return event
+    return {
+        "id": event.get("id") or "",
+        "event_type": sanitize_readiness_event_type(event.get("event_type")),
+        "status": event.get("status") or "",
+        "attempts": int(event.get("attempts") or 0),
+        "last_error": redact_secrets(event.get("last_error") or ""),
+        "payload_status": event.get("payload_status") or "",
+        "retryable": bool(event.get("retryable")),
+        "age_seconds": int(event.get("age_seconds") or 0),
+        "created_at": event.get("created_at"),
+        "updated_at": event.get("updated_at"),
+    }
+
+
+def sanitize_queue_summary(summary):
+    summary = dict(summary or {})
+    by_type = summary.get("by_type") or {}
+    sanitized_by_type = {}
+    for event_type, statuses in by_type.items():
+        safe_type = sanitize_readiness_event_type(event_type)
+        target = sanitized_by_type.setdefault(safe_type, {})
+        for status, count in dict(statuses or {}).items():
+            target[status] = int(target.get(status) or 0) + int(count or 0)
+    summary["by_type"] = dict(sorted(sanitized_by_type.items()))
+    return summary
+
+
+def sanitize_readiness_event_type(event_type):
+    text_value = redact_secrets(str(event_type or ""))
+    if ":" not in text_value:
+        return text_value
+    prefix = text_value.split(":", 1)[0].strip() or "event"
+    return f"{prefix}:*"
 
 
 def event_age_seconds(event, now, field="updated_at"):

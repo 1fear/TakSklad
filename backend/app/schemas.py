@@ -31,6 +31,8 @@ class AuthLoginRequest(BaseModel):
 class AuthSessionRead(BaseModel):
     authenticated: bool
     login: str = ""
+    role: str = ""
+    permissions: list[str] = Field(default_factory=list)
     expires_at: datetime | None = None
 
 
@@ -153,6 +155,11 @@ class AdminTableRead(BaseModel):
     totals: AdminTableTotals
     rows: list[AdminTableRow] = Field(default_factory=list)
     recent_activity: list[AdminActivityRead] = Field(default_factory=list)
+    limit: int = 5000
+    offset: int = 0
+    row_count: int = 0
+    total_rows: int = 0
+    has_more: bool = False
 
 
 class AdminOrderActionRequest(BaseModel):
@@ -281,6 +288,68 @@ class IncidentListRead(BaseModel):
     summary: dict[str, Any] = Field(default_factory=dict)
 
 
+class ClientPointOrderProductRead(BaseModel):
+    product: str
+    positions_count: int = 0
+    quantity_blocks: int = 0
+    quantity_pieces: int = 0
+
+
+class ClientPointOrderDateRead(BaseModel):
+    shipment_date: date | None = None
+    orders_count: int = 0
+    positions_count: int = 0
+    quantity_blocks: int = 0
+    quantity_pieces: int = 0
+    products: list[ClientPointOrderProductRead] = Field(default_factory=list)
+
+
+class ClientPointOrderSummaryTotalsRead(BaseModel):
+    orders_count: int = 0
+    positions_count: int = 0
+    quantity_blocks: int = 0
+    quantity_pieces: int = 0
+
+
+class ClientPointOrderSummaryRead(BaseModel):
+    client_name: str
+    normalized_client: str = ""
+    totals: ClientPointOrderSummaryTotalsRead
+    dates: list[ClientPointOrderDateRead] = Field(default_factory=list)
+
+
+class ClientPointRead(BaseModel):
+    id: str
+    client_name: str
+    point_name: str = ""
+    address: str
+    coordinates: str = ""
+    representative: str = ""
+    delivery_from: str = "10:00"
+    delivery_to: str = "18:00"
+    is_active: bool = True
+    is_saved: bool = False
+    source: str = ""
+    has_custom_timeslot: bool = False
+    orders_count: int = 0
+    last_order_date: date | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class ClientPointTimeslotUpdate(BaseModel):
+    client_name: str = Field(min_length=1)
+    address: str = Field(min_length=1)
+    point_name: str = ""
+    coordinates: str = ""
+    representative: str = ""
+    delivery_from: str = "10:00"
+    delivery_to: str = "18:00"
+    is_active: bool = True
+    actor: str = "web"
+    reason: str = ""
+
+
 class ScanCreate(BaseModel):
     order_item_id: str
     code: str = Field(min_length=1)
@@ -369,6 +438,21 @@ class ImportResult(BaseModel):
     skladbot_dry_run_blocked: int = 0
     skladbot_dry_run_already_linked: int = 0
     skladbot_dry_run_event_id: str = ""
+
+
+class ImportPreviewResult(BaseModel):
+    source: str
+    status: str
+    rows_total: int
+    rows_importable: int
+    orders_new: int
+    items_new: int
+    duplicate_rows: int
+    invalid_rows: int
+    duplicate_row_numbers: list[int] = Field(default_factory=list)
+    invalid_row_numbers: list[int] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    backend_address_updates: int = 0
 
 
 class SkladBotDryRunProductRead(BaseModel):

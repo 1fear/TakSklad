@@ -122,14 +122,16 @@ class PrintingActionsMixin:
                 return
             result["print"] = True
             label_width, label_height = parse_label_size_text(size_var.get())
+            selected_settings = {
+                "printer_name": normalize_text(printer_var.get()) or "Термопринтер",
+                "label_width_mm": label_width,
+                "label_height_mm": label_height,
+                "dpi": LABEL_DPI,
+                "scale": "100%",
+            }
+            self._selected_print_settings = selected_settings
             if save_var.get():
-                save_print_settings({
-                    "printer_name": normalize_text(printer_var.get()) or "Термопринтер",
-                    "label_width_mm": label_width,
-                    "label_height_mm": label_height,
-                    "dpi": LABEL_DPI,
-                    "scale": "100%",
-                })
+                save_print_settings(selected_settings)
             close_dialog()
 
         def cancel():
@@ -195,16 +197,22 @@ class PrintingActionsMixin:
 
         if not self.confirm_print_settings():
             return
+        selected_print_settings = getattr(self, "_selected_print_settings", None)
 
         self.set_busy("⏳ Печатаю сводки из очереди...")
 
         def work():
             printed_count = 0
             for item in pending[:]:
-                printed_files = print_summary(item.get("address", "Адрес не указан"), item.get("products", []))
+                printed_files = print_summary(
+                    item.get("address", "Адрес не указан"),
+                    item.get("products", []),
+                    print_settings=selected_print_settings,
+                )
                 if not printed_files:
                     raise RuntimeError("Не удалось напечатать сводку из очереди")
-                remove_pending_print(item.get("id"))
+                if not remove_pending_print(item.get("id")):
+                    raise RuntimeError("Сводка напечатана, но не удалена из очереди печати")
                 printed_count += 1
             return printed_count
 

@@ -106,7 +106,7 @@ def build_order_list_model(orders, search_text=""):
         visible_order_groups.append(separator.group_key)
 
         for key in sorted(date_groups[date_value], key=order_group_display_sort_key):
-            group_orders = visible_grouped_orders[key]
+            group_orders = all_grouped_orders[key]
             row = _build_order_card_row(key, group_orders, group_dates.get(key, "Без даты"))
             rows.append(row)
             visible_order_groups.append(key)

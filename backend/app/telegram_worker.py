@@ -793,7 +793,7 @@ class TelegramWorker:
                 select(PendingEvent)
                 .where(PendingEvent.event_type == TELEGRAM_EXCEL_IMPORT_EVENT_TYPE)
                 .where(PendingEvent.status == TELEGRAM_EXCEL_IMPORT_WAITING_SHIPMENT_DATE_STATUS)
-                .order_by(PendingEvent.created_at, PendingEvent.id)
+                .order_by(PendingEvent.created_at.desc(), PendingEvent.id.desc())
             )
             events = db.execute(stmt).scalars().all()
             for event in events:
@@ -801,6 +801,29 @@ class TelegramWorker:
                 if normalize_text(payload.get("chat_id")) == normalize_text(chat_id):
                     return str(event.id), dict(payload)
         return "", {}
+
+    def cancel_waiting_telegram_imports_for_chat(self, db, chat_id):
+        normalized_chat_id = normalize_text(chat_id)
+        events = db.execute(
+            select(PendingEvent)
+            .where(PendingEvent.event_type == TELEGRAM_EXCEL_IMPORT_EVENT_TYPE)
+            .where(PendingEvent.status.in_((
+                TELEGRAM_EXCEL_IMPORT_WAITING_SHIPMENT_DATE_STATUS,
+                TELEGRAM_EXCEL_IMPORT_WAITING_DATE_CHOICE_STATUS,
+            )))
+        ).scalars().all()
+        cancelled = 0
+        for event in events:
+            payload = dict(event.payload or {})
+            if normalize_text(payload.get("chat_id")) != normalized_chat_id:
+                continue
+            payload["superseded_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            payload["superseded_reason"] = "new_telegram_excel_file"
+            event.payload = payload
+            event.status = "cancelled"
+            event.last_error = "superseded_by_new_telegram_excel_file"
+            cancelled += 1
+        return cancelled
 
     def confirm_waiting_telegram_import_shipment_date(self, chat_id, shipment_date):
         parsed_date = parse_date_from_text(shipment_date)
@@ -2051,6 +2074,7 @@ class TelegramWorker:
                 )
                 return True
 
+            self.cancel_waiting_telegram_imports_for_chat(db, chat_id)
             event = PendingEvent(
                 event_type=TELEGRAM_EXCEL_IMPORT_EVENT_TYPE,
                 status=TELEGRAM_EXCEL_IMPORT_WAITING_SHIPMENT_DATE_STATUS,
@@ -2132,13 +2156,25 @@ class TelegramWorker:
             db.commit()
             return {"id": event_id, "payload": payload}
 
-    def finish_telegram_notification_event(self, event_id, success, error=""):
+    def finish_telegram_notification_event(self, event_id, success, error="", failure_status="failed"):
         with SessionLocal() as db:
             event = db.get(PendingEvent, event_id if isinstance(event_id, uuid.UUID) else uuid.UUID(str(event_id)))
             if event is None:
                 return
-            event.status = "completed" if success else "failed"
+            status = "completed" if success else normalize_text(failure_status) or "failed"
+            event.status = status
             event.last_error = "" if success else normalize_text(error)
+            if not success and status == "blocked":
+                db.add(AuditLog(
+                    action="telegram_notification_blocked",
+                    entity_type="pending_event",
+                    entity_id=str(event.id),
+                    payload={
+                        "event_type": event.event_type,
+                        "reason": event.last_error,
+                        "attempts": int(event.attempts or 0),
+                    },
+                ))
             db.commit()
 
     def reset_stale_telegram_notification_events(self):
@@ -2168,11 +2204,21 @@ class TelegramWorker:
             text = normalize_text(payload.get("text"))
             targets = self.telegram_notification_targets(payload)
             if not text:
-                self.finish_telegram_notification_event(event["id"], False, "telegram notification text is empty")
+                self.finish_telegram_notification_event(
+                    event["id"],
+                    False,
+                    "telegram notification text is empty",
+                    failure_status="blocked",
+                )
                 processed += 1
                 continue
             if not targets:
-                self.finish_telegram_notification_event(event["id"], False, "telegram notification target chat is empty")
+                self.finish_telegram_notification_event(
+                    event["id"],
+                    False,
+                    "telegram notification target chat is empty",
+                    failure_status="blocked",
+                )
                 processed += 1
                 continue
             try:

@@ -1,3 +1,4 @@
+import json
 import unittest
 import uuid
 from datetime import date
@@ -177,6 +178,62 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
             [product["amount"] for product in row["payload"]["products"]],
             [20, 10, 15],
         )
+
+    def test_sku_mapping_can_be_overridden_from_env_json(self):
+        import_id, _order_id = self.seed_import_order(products=[("Chapman RED OP 20", 2)])
+        mapping_override = json.dumps({
+            "red:op": {
+                "product_data_id": 999001,
+                "barcode": "OVERRIDE-RED-OP",
+                "is_main_barcode": True,
+            }
+        })
+
+        with mock.patch.dict("os.environ", {"SKLADBOT_SKU_MAPPING_JSON": mapping_override}, clear=False):
+            with self.SessionLocal() as db:
+                summary = create_skladbot_dry_run_for_import(db, import_id)
+                db.commit()
+                row = list_skladbot_dry_runs(db, import_id)[0]
+
+        self.assertEqual(summary["ready"], 1)
+        product = row["payload"]["products"][0]
+        self.assertEqual(product["product_data_id"], 999001)
+        self.assertEqual(product["barcode"], "OVERRIDE-RED-OP")
+        self.assertIs(product["is_main_barcode"], True)
+
+    def test_invalid_sku_mapping_blocks_dry_run_without_create_event(self):
+        import_id, _order_id = self.seed_import_order(products=[("Chapman RED OP 20", 2)])
+        broken_mapping = json.dumps({
+            "red:op": {
+                "product_data_id": "broken",
+                "barcode": "4006396053947",
+                "is_main_barcode": False,
+            }
+        })
+
+        with mock.patch.dict(
+            "os.environ",
+            {
+                "SKLADBOT_CREATE_REQUESTS_MODE": "enabled",
+                "SKLADBOT_SKU_MAPPING_JSON": broken_mapping,
+            },
+            clear=False,
+        ):
+            with self.SessionLocal() as db:
+                summary = create_skladbot_dry_run_for_import(db, import_id)
+                db.commit()
+                row = list_skladbot_dry_runs(db, import_id)[0]
+                create_events = db.execute(
+                    select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
+                ).scalars().all()
+
+        self.assertEqual(summary["blocked"], 1)
+        self.assertEqual(summary["queued"], 0)
+        self.assertEqual(row["status"], "blocked")
+        self.assertIn("Ошибка настройки SKU mapping", row["error"])
+        self.assertIn("SKLADBOT_SKU_MAPPING_JSON.red:op.product_data_id", row["error"])
+        self.assertEqual(row["payload"], {})
+        self.assertEqual(create_events, [])
 
     def test_terminal_payment_payload_uses_payment_type_as_comment(self):
         import_id, _order_id = self.seed_import_order(payment_type="Терминал")

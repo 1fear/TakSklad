@@ -1,10 +1,15 @@
 import unittest
+from pathlib import Path
 
 from taksklad.product_images import (
     PRODUCT_IMAGE_ASSETS,
     product_image_gtin,
     product_image_path,
 )
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PRODUCT_IMAGE_DIR = PROJECT_ROOT / "assets" / "product_images"
 
 
 class ProductImagesTests(unittest.TestCase):
@@ -29,6 +34,16 @@ class ProductImagesTests(unittest.TestCase):
     def test_product_images_do_not_depend_on_generated_work_folder(self):
         for asset in PRODUCT_IMAGE_ASSETS.values():
             self.assertNotIn("generated", asset["filename"])
+
+    def test_configured_product_image_assets_exist_on_disk(self):
+        filenames = {asset["filename"] for asset in PRODUCT_IMAGE_ASSETS.values()}
+
+        self.assertEqual(len(filenames), 6)
+        for filename in filenames:
+            with self.subTest(filename=filename):
+                path = PRODUCT_IMAGE_DIR / filename
+                self.assertTrue(path.exists(), filename)
+                self.assertGreater(path.stat().st_size, 1024, filename)
 
 
 if __name__ == "__main__":

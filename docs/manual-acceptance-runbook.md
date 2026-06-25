@@ -51,7 +51,7 @@ cd /Users/anton/Documents/work/TakSklad
 Он проверяет:
 
 - публичный `https://api.taksklad.uz/health`;
-- что `version.json` указывает на текущий forced rollout `2.0.15`, `mandatory=true`, ссылки GitHub Releases и SHA заполнены;
+- что `version.json` указывает на текущий forced rollout `2.0.21`, `mandatory=true`, ссылки GitHub Releases и SHA заполнены;
 - checksum acceptance Excel;
 - наличие acceptance/runbook/helper-файлов;
 - отсутствие tracked runtime/secret-файлов.
@@ -75,6 +75,16 @@ cd /Users/anton/Documents/work/TakSklad
 
 Результат ручной приёмки фиксировать не в шаблоне, а в `ACCEPTANCE_RESULTS.md`: заполнить фактический вывод Telegram/VDS/Windows, список дефектов и итог `GO/NO-GO`, затем запустить `tools/release_go_no_go.py`.
 Текущий файл уже может быть создан со статусом `NO-GO`; его нужно обновлять по факту проверок, а не удалять.
+
+Отдельный контроль полного реестра функций:
+
+```bash
+cd /Users/anton/Documents/work/TakSklad
+.venv/bin/python tools/feature_acceptance_status.py
+.venv/bin/python tools/feature_acceptance_status.py --require-manual-complete --require-no-open-errors
+```
+
+`feature_acceptance_status.py` проверяет только `docs/taksklad-feature-user-stories.xlsx`: наличие всех manual-строк, обязательные колонки, неизвестные статусы и открытые ошибки. Это не production release `GO/NO-GO`; релизный канон остается `tools/release_go_no_go.py` + `outputs/taksklad_acceptance/ACCEPTANCE_RESULTS.md`.
 
 ### Действия В Telegram
 
@@ -341,7 +351,7 @@ cd /opt/taksklad/app
 ## 4. Что Не Делать Во Время Acceptance
 
 - Не менять `version.json` вручную и не переключать rollout без release checklist.
-- Не публиковать новый GitHub Release поверх `v2.0.15` без повторной проверки.
+- Не публиковать новый GitHub Release поверх `v2.0.21` без повторной проверки.
 - Не запускать Windows release workflow.
 - Не проверять на реальных заказах без отдельного подтверждения.
 

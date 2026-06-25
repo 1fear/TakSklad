@@ -1,7 +1,7 @@
 # TakSklad: суть приложения, логика, структура и стек
 
-Актуально на: 15.06.2026
-Текущая версия по коду и release manifest: `2.0.15`
+Актуально на: 22.06.2026
+Текущая версия по коду и release manifest: `2.0.21`
 Репозиторий: `1fear/TakSklad`
 Назначение файла: один общий обзор проекта для передачи разработчику, интегратору, техподдержке или внутренней команде.
 
@@ -93,7 +93,7 @@ Telegram-сценарий:
 
 Количество приводится к блокам. Для Chapman один блок = 10 штук. Цена блока по текущему процессу = `240 000 сум`, если в файле нет готовой суммы.
 
-Если адрес пустой или технический, backend записывает `Самовывоз со склада`. Такие заказы не попадают в логистический отчет, если нет валидных координат.
+Если адрес пустой или технический, backend записывает `Самовывоз со склада`. Самовывоз не попадает в логистику. Delivery-заказы без валидных координат остаются в логистическом XLSX отдельным листом `Требуют координаты`, а не попадают в маршрутный лист.
 
 ### 3.3 Группировка заказов
 
@@ -152,7 +152,7 @@ SkladBot API имеет rate limit. В коде есть задержки меж
 10. backend пишет `scan_codes`, `kiz_codes`, `kiz_movements`, `audit_log`;
 11. Google Sheets обновляется через mirror/export.
 
-Последнее улучшение `2.0.15`: если КИЗ уже отсканирован в другом заказе, desktop показывает красное toast-уведомление снизу с полным текстом:
+С версии `2.0.15`: если КИЗ уже отсканирован в другом заказе, desktop показывает красное toast-уведомление снизу с полным текстом:
 
 - в каком заказе занят КИЗ;
 - юрлицо;
@@ -342,7 +342,9 @@ Auth endpoints web panel:
 
 Admin/web endpoints:
 
-- `GET /api/v1/admin/table` - таблица web-панели;
+- `GET /api/v1/admin/table` - таблица web-панели с `limit`, `offset`, `row_count`, `total_rows`, `has_more`; totals считаются по всем строкам, а `rows` возвращаются страницей;
+- `GET /api/v1/admin/client-points` - сохраненные точки клиентов и уникальные `юрлицо + адрес`, уже встречавшиеся в заказах;
+- `POST /api/v1/admin/client-points/timeslot` - создать/обновить таймслот точки для логистического XLSX;
 - `POST /api/v1/admin/google/pending/retry` - повторить pending Google exports;
 - `POST /api/v1/admin/orders/bulk/complete-without-kiz` - массово закрыть без КИЗов;
 - `POST /api/v1/admin/orders/{order_id}/archive-without-kiz`;
@@ -356,10 +358,18 @@ Admin/web endpoints:
 - `POST /api/v1/admin/skladbot/dry-runs/{dry_run_id}/rebuild`;
 - `POST /api/v1/sync/sources`.
 
+Web action bar показывает `delete-active` как опасное действие `Удалить из активных` только для одного активного заказа без КИЗов и без pending Google exports. Backend повторно проверяет статус, сканы, `expected_updated_at`, idempotency, audit и постановку Google delete export в очередь.
+
+Web admin table не должна молча обрезать большой список: первый запрос грузит страницу, UI показывает `загружено/всего`, предупреждает что фильтры применяются к загруженным строкам и дает догрузить следующую страницу.
+
+Web client points page показывает все юрлица/точки из сохраненного справочника и из уже импортированных заказов. Поиск работает по текущему списку клиентов; создание точки открывается отдельной кнопкой. Таймслот фиксируется по `client_name`, потому в этом процессе клиент/юрлицо является названием точки; адрес, координаты и ТП обновляются из новых импортов. Логистический XLSX использует этот слот в колонках `Доставка С/ПО`, fallback остается `10:00-18:00`.
+
 Авторизация:
 
 - `/health` открыт;
 - `/api/v1/*` защищены Bearer token или web session cookie;
+- пустой `TAKSKLAD_API_TOKEN` отключает только Bearer token path и не открывает `/api/v1/*`, если настроена web-auth;
+- no-auth режим допустим только локально/тестово, когда не настроены ни service token, ни web-auth;
 - web login имеет lockout по неудачным попыткам.
 
 ## 8. База данных
@@ -383,6 +393,7 @@ ORM-модели: `backend/app/models.py`.
 | `imports` | история импортов |
 | `import_files` | файлы импорта и SHA256 |
 | `pending_events` | очередь событий workers |
+| `client_points` | справочник юрлиц/точек и их логистических таймслотов |
 | `audit_log` | аудит действий |
 | `users` | web/admin users |
 
@@ -554,6 +565,8 @@ Google API rate limit был реальной проблемой, поэтому
 - request create для нужных сценариев;
 - delay и retry на rate limit.
 
+SKU mapping для create/return payload по умолчанию берется из встроенного Chapman mapping в `backend/app/skladbot_request_dry_run.py`. Для VDS можно задать `SKLADBOT_SKU_MAPPING_JSON` как JSON object с ключами вида `red:op` и полями `product_data_id`, `barcode`, `is_main_barcode`. Пустое значение использует default. Невалидный JSON или неверное поле блокирует dry-run по этой заявке и не ставит create event, чтобы не отправить неправильный товар в SkladBot.
+
 Старый аудит SkladBot API фиксировал, что публичный API выглядел read/reporting-first и create/update не были подтверждены. В текущем коде уже есть интеграция создания нужных заявок, но это нужно считать конкретной реализованной интеграцией под доступный API, а не общим правом менять любые WMS-данные.
 
 ## 15. Автообновление Windows
@@ -569,8 +582,8 @@ Google API rate limit был реальной проблемой, поэтому
 
 Текущий manifest:
 
-- `latest_version`: `2.0.15`;
-- `min_supported_version`: `2.0.15`;
+- `latest_version`: `2.0.21`;
+- `min_supported_version`: `2.0.21`;
 - `mandatory`: `true`;
 - package: onefile `TakSklad.exe`;
 - release assets: `TakSklad.exe`, `TakSklad-windows-x64.zip`, SHA256 files.
@@ -607,9 +620,9 @@ VDS deploy:
 
 Windows release:
 
-- GitHub Release tag `v2.0.15`;
+- GitHub Release tag `v2.0.21`;
 - GitHub Actions собирает onefile и onedir;
-- smoke test release assets;
+- smoke test release assets: `--smoke-import` и `--smoke-gui` из clean temp dirs; `--smoke-gui` проверяет semantic snapshot главного desktop-экрана;
 - upload assets и SHA.
 
 ## 17. Тесты и проверки
@@ -648,7 +661,7 @@ docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.y
 - VDS scripts;
 - Windows release workflow.
 
-По последнему production-релизу `2.0.15` полный suite проходил: `428 tests OK`.
+По текущей линии `2.0.21` локальный regression фиксируется в `docs/changelog.md` и `docs/implementation-log.md`; перед release/deploy сверять свежий полный `unittest discover`, frontend build, preflight и acceptance gates.
 
 ## 18. Структура проекта
 
@@ -745,7 +758,7 @@ TakSklad/
 
 ## 20. Известные ограничения и места внимания
 
-1. Часть старых docs датирована 30-31.05 и описывает staging `2.0.0`; текущий код уже `2.0.15`.
+1. Часть старых docs датирована 30-31.05 и описывает staging `2.0.0`; текущий код уже `2.0.21`.
 2. `vds-release-readiness.md` полезен как исторический runbook, но часть статусов устарела.
 3. Alembic baseline есть, но первый production rollout требует дисциплины: backup, проверка текущей схемы и baseline stamp перед `upgrade head`, если БД уже создана старым SQL.
 4. Google Sheets API может ловить quota/rate limit, поэтому нельзя возвращать Google как единственный источник.

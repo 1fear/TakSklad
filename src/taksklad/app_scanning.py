@@ -131,6 +131,8 @@ class ScanningActionsMixin:
             remaining_codes,
             "Откат последнего КИЗа в desktop",
         )
+        if was_saved and pending_updated:
+            self.saved_codes_count = len(remaining_codes)
 
         if was_saved and order_uses_backend_scan_path(self.current_order) and not pending_updated:
             try:
@@ -412,7 +414,22 @@ class ScanningActionsMixin:
         def on_error(exc):
             self.show_critical_error("КИЗы не записаны", exc)
             self.clear_busy()
-            self.safe_config(self.next_product_btn, state="normal")
+            current_plan_blocks = get_plan_blocks(self.current_order) if self.current_order else 0
+            current_scanned_count = (
+                scanned_blocks_for_order(self.current_order, self.scanned_codes)
+                if self.current_order
+                else 0
+            )
+            if self.current_order and current_scanned_count == current_plan_blocks:
+                if self.current_product_idx >= len(self.current_legal_entity_orders) - 1:
+                    self.safe_config(self.next_product_btn, state="disabled")
+                    self.safe_config(self.finish_btn, state="normal")
+                else:
+                    self.safe_config(self.next_product_btn, state="normal")
+                    self.safe_config(self.finish_btn, state="disabled")
+            else:
+                self.safe_config(self.next_product_btn, state="disabled")
+                self.safe_config(self.finish_btn, state="disabled")
 
         self.run_background(
             "Не удалось сохранить позицию",

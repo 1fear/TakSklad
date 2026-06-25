@@ -19,6 +19,7 @@
 5. `changelog.md` - журнал пользовательских и релизных изменений.
 6. `local-development-setup.md` - локальная среда и проверочные команды.
 7. `../README.txt` - инструкция для Windows onedir-сборки; это не дубль `README.md`.
+8. `taksklad-feature-user-stories.xlsx` - канонический реестр функций, user stories, ожидаемого поведения, статуса тестирования и ошибок.
 
 ## ACTIVE Runbook И Проверки
 
@@ -31,6 +32,7 @@
 | `windows-backend-acceptance.md` | Windows acceptance для backend flags. |
 | `local-development-setup.md` | Локальная Python/Docker/VDS-compose среда разработки. |
 | `restore-points.md` | Reference по restore/checkpoint; не отправлять наружу без проверки локальных путей и содержимого snapshot. |
+| `taksklad-feature-user-stories.xlsx` | Канонический spreadsheet для полного цикла: user stories, Test Loop, Errors, Sources. |
 
 ## HISTORY Evidence И Аудиты
 
@@ -44,7 +46,7 @@
 
 | Файл | Статус |
 |---|---|
-| `taksklad-system-stack-overview.md` | `ACTIVE`: текущий общий обзор, версия по коду/release manifest `2.0.15` на 15.06.2026. |
+| `taksklad-system-stack-overview.md` | `ACTIVE`: текущий общий обзор, версия по коду/release manifest `2.0.21` на 22.06.2026. |
 | `report-source-rules.md` | `ACTIVE`: DB-first правила отчетов и источников. |
 | `user-business-process-guide.md` | `ACTIVE`/`REFERENCE`: пользовательская инструкция и бизнес-процесс, сверять точечные детали с кодом. |
 | `project-overview.md` | `UPDATE`: обзор продукта, useful background, не source of truth по текущей архитектуре. |

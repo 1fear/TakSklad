@@ -1,7 +1,96 @@
 import unittest
 
 from taksklad import main
+from taksklad import app_data_loading
 from taksklad import desktop_refresh_service as refresh_service
+
+
+class DummyStatusVar:
+    def __init__(self):
+        self.value = ""
+
+    def set(self, value):
+        self.value = value
+
+
+class DummyStatusLabel:
+    def __init__(self):
+        self.configs = []
+
+    def config(self, **kwargs):
+        self.configs.append(kwargs)
+
+
+class FakeRefreshApp(app_data_loading.DataLoadingMixin):
+    def __init__(self):
+        self.current_order = {"ID заказа": "order-1", "Товары": "Chapman Brown OP 20"}
+        self.today_orders = [self.current_order]
+        self.sheet = None
+        self.all_existing_codes = set()
+        self.last_sync_result = {}
+        self.operation_in_progress = False
+        self.refresh_in_progress = False
+        self.refresh_btn = object()
+        self.import_btn = object()
+        self.status_var = DummyStatusVar()
+        self.status_label = DummyStatusLabel()
+        self.reset_calls = 0
+        self.refresh_list_calls = 0
+        self.config_calls = []
+        self.errors = []
+        self.refresh_messages = []
+        self.after_calls = []
+
+    def ensure_update_allowed(self):
+        return True
+
+    def show_busy_error(self):
+        self.errors.append("busy")
+
+    def show_refresh_busy_error(self):
+        self.errors.append("refresh_busy")
+
+    def set_refresh_in_progress(self, message):
+        self.refresh_in_progress = True
+        self.refresh_messages.append(message)
+
+    def clear_refresh_in_progress(self):
+        self.refresh_in_progress = False
+
+    def safe_config(self, widget, **kwargs):
+        self.config_calls.append((widget, kwargs))
+
+    def apply_loaded_data(self, result, show_empty_warning):
+        self.today_orders, self.sheet, self.all_existing_codes, self.last_sync_result = result
+
+    def reset_current_selection(self):
+        self.reset_calls += 1
+        self.current_order = None
+
+    def refresh_legal_list(self):
+        self.refresh_list_calls += 1
+
+    def show_error(self, message, popup=False):
+        self.errors.append((message, popup))
+
+    def after(self, delay, callback):
+        self.after_calls.append((delay, callback))
+
+    def sync_skladbot_async(self):
+        self.after_calls.append(("sync_skladbot_async", None))
+
+    def run_background(self, _title, work, on_success=None, on_error=None, on_finally=None):
+        try:
+            result = work()
+        except Exception as exc:
+            if on_error:
+                on_error(exc)
+        else:
+            if on_success:
+                on_success(result)
+        finally:
+            if on_finally:
+                on_finally()
 
 
 class RefreshFallbackTests(unittest.TestCase):
@@ -12,6 +101,7 @@ class RefreshFallbackTests(unittest.TestCase):
         original_get_today_orders = refresh_service.get_today_orders
         original_get_all_existing_codes = refresh_service.get_all_existing_codes
         original_get_pending_codes = refresh_service.get_pending_codes
+        original_get_pending_backend_codes = refresh_service.get_pending_backend_codes
         try:
             calls = []
             sheet = object()
@@ -26,6 +116,7 @@ class RefreshFallbackTests(unittest.TestCase):
             refresh_service.get_today_orders = fake_get_today_orders
             refresh_service.get_all_existing_codes = lambda sheet, all_rows=None: set()
             refresh_service.get_pending_codes = lambda: set()
+            refresh_service.get_pending_backend_codes = lambda: set()
 
             orders, _, _ = main.fetch_sheet_data()
 
@@ -35,6 +126,42 @@ class RefreshFallbackTests(unittest.TestCase):
             refresh_service.get_today_orders = original_get_today_orders
             refresh_service.get_all_existing_codes = original_get_all_existing_codes
             refresh_service.get_pending_codes = original_get_pending_codes
+            refresh_service.get_pending_backend_codes = original_get_pending_backend_codes
+
+    def test_refresh_exposes_pending_backend_codes_as_known_duplicates(self):
+        original_backend_read_orders_enabled = refresh_service.backend_read_orders_enabled
+        original_get_today_orders = refresh_service.get_today_orders
+        original_get_all_existing_codes = refresh_service.get_all_existing_codes
+        original_get_pending_codes = refresh_service.get_pending_codes
+        original_get_pending_backend_codes = refresh_service.get_pending_backend_codes
+        try:
+            sheet = object()
+            google_orders = [{"Клиент": "Test Client"}]
+
+            refresh_service.backend_read_orders_enabled = lambda: False
+            refresh_service.get_today_orders = lambda apply_skladbot_filter=None, include_rows=False: (
+                (google_orders, sheet, []) if include_rows else (google_orders, sheet)
+            )
+            refresh_service.get_all_existing_codes = lambda sheet, all_rows=None: {"01000000000000000001"}
+            refresh_service.get_pending_codes = lambda: {"01000000000000000002"}
+            refresh_service.get_pending_backend_codes = lambda: {"01000000000000000003"}
+
+            _orders, _sheet, all_existing_codes = main.fetch_sheet_data()
+
+            self.assertEqual(
+                all_existing_codes,
+                {
+                    "01000000000000000001",
+                    "01000000000000000002",
+                    "01000000000000000003",
+                },
+            )
+        finally:
+            refresh_service.backend_read_orders_enabled = original_backend_read_orders_enabled
+            refresh_service.get_today_orders = original_get_today_orders
+            refresh_service.get_all_existing_codes = original_get_all_existing_codes
+            refresh_service.get_pending_codes = original_get_pending_codes
+            refresh_service.get_pending_backend_codes = original_get_pending_backend_codes
 
     def test_returns_google_orders_when_skladbot_sync_fails(self):
         original_get_today_orders = refresh_service.get_today_orders
@@ -269,6 +396,38 @@ class RefreshFallbackTests(unittest.TestCase):
             refresh_service.get_all_existing_codes = original_get_all_existing_codes
             refresh_service.get_pending_codes = original_get_pending_codes
             refresh_service.get_pending_backend_codes = original_get_pending_backend_codes
+
+    def test_refresh_from_sheet_preserves_current_position(self):
+        original_fetch_sheet_data_with_sync = app_data_loading.fetch_sheet_data_with_sync
+        original_backend_read_orders_enabled = app_data_loading.backend_read_orders_enabled
+        try:
+            loaded_orders = [{"ID заказа": "order-1", "Товары": "Chapman Brown OP 20"}]
+            app_data_loading.fetch_sheet_data_with_sync = lambda sync_skladbot=True: (
+                loaded_orders,
+                None,
+                {"01012345678901234567ABC"},
+                {
+                    "backend": {"enabled": True, "remaining": 0},
+                    "google_sheets": {"orders_updated": 0, "items_updated": 0},
+                    "skladbot": {"enabled": False},
+                    "primary_source": "backend",
+                },
+            )
+            app_data_loading.backend_read_orders_enabled = lambda: True
+            app = FakeRefreshApp()
+            original_order = app.current_order
+
+            app.refresh_from_sheet(initial=False)
+
+            self.assertIs(app.current_order, original_order)
+            self.assertEqual(app.reset_calls, 0)
+            self.assertEqual(app.refresh_list_calls, 1)
+            self.assertIn("сканирование доступно", app.refresh_messages[0])
+            self.assertIn("текущая позиция сохранена", app.status_var.value)
+            self.assertFalse(app.refresh_in_progress)
+        finally:
+            app_data_loading.fetch_sheet_data_with_sync = original_fetch_sheet_data_with_sync
+            app_data_loading.backend_read_orders_enabled = original_backend_read_orders_enabled
 
     def test_refresh_error_message_keeps_cached_orders(self):
         message = main.format_refresh_error_message(

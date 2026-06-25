@@ -74,6 +74,7 @@ jobs:
           Push-Location $smokeDir
           try {
             & .\TakSklad.exe --smoke-import
+            & .\TakSklad.exe --smoke-gui
           } finally {
             Pop-Location
           }
@@ -98,6 +99,7 @@ jobs:
           Push-Location $smokeDir
           try {
             & .\TakSklad\TakSklad.exe --smoke-import
+            & .\TakSklad\TakSklad.exe --smoke-gui
           } finally {
             Pop-Location
           }

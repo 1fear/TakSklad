@@ -1,12 +1,19 @@
 import time
+from dataclasses import dataclass
 from urllib.parse import quote
 from threading import Lock, Thread
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from .admin_service import build_admin_table
+from .client_points_service import (
+    ClientPointApiError,
+    get_client_point_order_summary,
+    list_client_points as list_client_points_in_db,
+    update_client_point_timeslot as update_client_point_timeslot_in_db,
+)
 from .db import get_db
 from .diagnostics_service import build_backend_diagnostics_log
 from .event_queue_service import (
@@ -27,6 +34,7 @@ from .incidents_service import (
 )
 from .imports_service import create_import as create_import_in_db
 from .imports_service import list_imports as list_imports_in_db
+from .imports_service import preview_import as preview_import_in_db
 from .kiz_reports_service import (
     build_kiz_date_range_report_xlsx,
     build_kiz_date_report_xlsx,
@@ -64,12 +72,16 @@ from .schemas import (
     ActiveOrderDeleteResult,
     AuthLoginRequest,
     AuthSessionRead,
+    ClientPointOrderSummaryRead,
+    ClientPointRead,
+    ClientPointTimeslotUpdate,
     DayReportRead,
     EventQueueDiagnosticsRead,
     EventQueueActionRequest,
     EventQueueEventRead,
     HealthResponse,
     ImportCreate,
+    ImportPreviewResult,
     ImportRead,
     ImportResult,
     IncidentCreate,
@@ -86,10 +98,15 @@ from .schemas import (
 )
 from .settings import APP_VERSION, load_settings
 from .web_auth import (
+    PERMISSION_ADMIN_WRITE,
+    PERMISSION_CLIENT_POINTS_WRITE,
+    ROLE_ADMIN,
     SESSION_COOKIE_NAME,
     WebAuthError,
     authenticate_web_user,
     create_session_token,
+    normalize_role,
+    role_permissions,
     verify_session_token,
 )
 
@@ -126,25 +143,69 @@ configure_cors(app, settings)
 
 def is_valid_service_token(authorization: str | None) -> bool:
     if not settings.api_auth_enabled:
-        return True
+        return False
     expected = f"Bearer {settings.api_token}"
     return authorization == expected
 
 
-def require_service_token(request: Request, authorization: str | None = Header(default=None)):
+@dataclass(frozen=True)
+class AuthContext:
+    login: str
+    role: str
+    permissions: tuple[str, ...]
+    source: str
+
+
+def read_auth_context(request: Request, authorization: str | None = None):
     if is_valid_service_token(authorization):
-        return
-    try:
-        read_web_session(request)
-        return
-    except WebAuthError:
-        pass
-    if not settings.api_auth_enabled:
-        return
+        return AuthContext(
+            login="service-token",
+            role=ROLE_ADMIN,
+            permissions=role_permissions(ROLE_ADMIN),
+            source="service-token",
+        )
+    if settings.web_auth_enabled:
+        try:
+            payload = read_web_session(request)
+            role = normalize_role(payload.get("role"))
+            return AuthContext(
+                login=payload.get("sub") or "",
+                role=role,
+                permissions=role_permissions(role),
+                source="web-session",
+            )
+        except WebAuthError:
+            pass
+    if not settings.api_auth_enabled and not settings.web_auth_enabled:
+        return AuthContext(
+            login="local-dev",
+            role=ROLE_ADMIN,
+            permissions=role_permissions(ROLE_ADMIN),
+            source="local-dev",
+        )
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid service token or web session",
     )
+
+
+def require_service_token(request: Request, authorization: str | None = Header(default=None)):
+    return read_auth_context(request, authorization)
+
+
+def require_permission(permission: str, request: Request, authorization: str | None = Header(default=None)):
+    auth_context = read_auth_context(request, authorization)
+    if permission not in auth_context.permissions:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permissions")
+    return auth_context
+
+
+def require_admin_write_permission(request: Request, authorization: str | None = Header(default=None)):
+    return require_permission(PERMISSION_ADMIN_WRITE, request, authorization)
+
+
+def require_client_points_write_permission(request: Request, authorization: str | None = Header(default=None)):
+    return require_permission(PERMISSION_CLIENT_POINTS_WRITE, request, authorization)
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -167,7 +228,14 @@ auth_api = APIRouter(prefix="/api/v1/auth")
 
 def auth_session_read(payload):
     expires_at = datetime.fromtimestamp(int(payload.get("exp") or 0), timezone.utc)
-    return AuthSessionRead(authenticated=True, login=payload.get("sub") or "", expires_at=expires_at)
+    role = normalize_role(payload.get("role"))
+    return AuthSessionRead(
+        authenticated=True,
+        login=payload.get("sub") or "",
+        role=role,
+        permissions=list(role_permissions(role)),
+        expires_at=expires_at,
+    )
 
 
 def read_web_session(request: Request):
@@ -175,12 +243,12 @@ def read_web_session(request: Request):
 
 
 @auth_api.post("/login", response_model=AuthSessionRead)
-def web_login(payload: AuthLoginRequest, request: Request, response: Response):
+def web_login(payload: AuthLoginRequest, request: Request, response: Response, db=Depends(get_db)):
     login_key = login_attempt_key(request, payload.login)
     ensure_login_not_locked(login_key)
     try:
-        login = authenticate_web_user(settings, payload.login, payload.password)
-        token = create_session_token(settings, login)
+        identity = authenticate_web_user(settings, payload.login, payload.password, db=db)
+        token = create_session_token(settings, identity.login, role=identity.role)
         session_payload = verify_session_token(settings, token)
     except WebAuthError as exc:
         register_login_failure(login_key)
@@ -270,11 +338,46 @@ def list_active_orders(db=Depends(get_db)) -> list[OrderRead]:
 
 
 @api.get("/admin/table", response_model=AdminTableRead)
-def admin_table(limit: int = 5000, activity_limit: int = 30, db=Depends(get_db)):
-    return build_admin_table(db, limit=limit, activity_limit=activity_limit)
+def admin_table(limit: int = 5000, offset: int = 0, activity_limit: int = 30, db=Depends(get_db)):
+    return build_admin_table(db, limit=limit, offset=offset, activity_limit=activity_limit)
 
 
-@api.post("/admin/google/pending/retry")
+@api.get("/admin/client-points", response_model=list[ClientPointRead])
+def admin_client_points(
+    query: str = "",
+    custom_timeslot: bool | None = None,
+    limit: int = 1000,
+    db=Depends(get_db),
+):
+    return list_client_points_in_db(db, query=query, custom_timeslot=custom_timeslot, limit=limit)
+
+
+@api.get("/admin/client-points/order-summary", response_model=ClientPointOrderSummaryRead)
+def admin_client_point_order_summary(
+    client_name: str,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    db=Depends(get_db),
+):
+    try:
+        return get_client_point_order_summary(db, client_name=client_name, date_from=date_from, date_to=date_to)
+    except ClientPointApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@api.post(
+    "/admin/client-points/timeslot",
+    response_model=ClientPointRead,
+    dependencies=[Depends(require_client_points_write_permission)],
+)
+def admin_update_client_point_timeslot(payload: ClientPointTimeslotUpdate, db=Depends(get_db)):
+    try:
+        return update_client_point_timeslot_in_db(db, payload)
+    except ClientPointApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@api.post("/admin/google/pending/retry", dependencies=[Depends(require_admin_write_permission)])
 def retry_pending_google_exports(limit: int = 50, db=Depends(get_db)):
     return process_pending_google_sheets_exports(db, limit=limit)
 
@@ -292,7 +395,11 @@ def admin_event_queue_detail(event_id: str, db=Depends(get_db)):
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
-@api.post("/admin/events/{event_id}/retry", response_model=EventQueueEventRead)
+@api.post(
+    "/admin/events/{event_id}/retry",
+    response_model=EventQueueEventRead,
+    dependencies=[Depends(require_admin_write_permission)],
+)
 def admin_event_queue_retry(event_id: str, payload: EventQueueActionRequest, db=Depends(get_db)):
     try:
         return retry_event_queue_event_in_db(db, event_id, payload)
@@ -300,7 +407,12 @@ def admin_event_queue_retry(event_id: str, payload: EventQueueActionRequest, db=
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
-@api.post("/admin/incidents", response_model=IncidentRead, status_code=status.HTTP_201_CREATED)
+@api.post(
+    "/admin/incidents",
+    response_model=IncidentRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_admin_write_permission)],
+)
 def admin_create_incident(payload: IncidentCreate, db=Depends(get_db)):
     try:
         return create_incident_in_db(db, payload)
@@ -342,7 +454,11 @@ def admin_incident_detail(incident_id: str, db=Depends(get_db)):
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
-@api.post("/admin/incidents/{incident_id}/status", response_model=IncidentRead)
+@api.post(
+    "/admin/incidents/{incident_id}/status",
+    response_model=IncidentRead,
+    dependencies=[Depends(require_admin_write_permission)],
+)
 def admin_update_incident_status(incident_id: str, payload: IncidentStatusUpdate, db=Depends(get_db)):
     try:
         return update_incident_status_in_db(db, incident_id, payload)
@@ -355,7 +471,11 @@ def api_readiness(db=Depends(get_db)):
     return build_readiness_report(db, settings)
 
 
-@api.post("/admin/orders/bulk/complete-without-kiz", response_model=AdminBulkOrderActionResult)
+@api.post(
+    "/admin/orders/bulk/complete-without-kiz",
+    response_model=AdminBulkOrderActionResult,
+    dependencies=[Depends(require_admin_write_permission)],
+)
 def complete_orders_without_kiz(payload: AdminBulkOrderActionRequest, db=Depends(get_db)):
     try:
         return complete_orders_without_kiz_in_db(db, payload)
@@ -363,7 +483,11 @@ def complete_orders_without_kiz(payload: AdminBulkOrderActionRequest, db=Depends
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
-@api.post("/admin/orders/{order_id}/archive-without-kiz", response_model=OrderRead)
+@api.post(
+    "/admin/orders/{order_id}/archive-without-kiz",
+    response_model=OrderRead,
+    dependencies=[Depends(require_admin_write_permission)],
+)
 def archive_order_without_kiz(order_id: str, payload: AdminOrderActionRequest, db=Depends(get_db)):
     try:
         return archive_order_without_kiz_in_db(db, order_id, payload)
@@ -371,7 +495,11 @@ def archive_order_without_kiz(order_id: str, payload: AdminOrderActionRequest, d
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
-@api.post("/admin/orders/{order_id}/cancel", response_model=OrderRead)
+@api.post(
+    "/admin/orders/{order_id}/cancel",
+    response_model=OrderRead,
+    dependencies=[Depends(require_admin_write_permission)],
+)
 def cancel_order(order_id: str, payload: AdminOrderActionRequest, db=Depends(get_db)):
     try:
         return cancel_order_in_db(db, order_id, payload)
@@ -379,7 +507,11 @@ def cancel_order(order_id: str, payload: AdminOrderActionRequest, db=Depends(get
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
-@api.post("/admin/orders/{order_id}/delete-active", response_model=ActiveOrderDeleteResult)
+@api.post(
+    "/admin/orders/{order_id}/delete-active",
+    response_model=ActiveOrderDeleteResult,
+    dependencies=[Depends(require_admin_write_permission)],
+)
 def delete_active_order(order_id: str, payload: AdminOrderActionRequest, db=Depends(get_db)):
     try:
         return delete_active_order_in_db(db, order_id, payload)
@@ -387,7 +519,11 @@ def delete_active_order(order_id: str, payload: AdminOrderActionRequest, db=Depe
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
-@api.post("/admin/orders/{order_id}/resync-google", response_model=OrderRead)
+@api.post(
+    "/admin/orders/{order_id}/resync-google",
+    response_model=OrderRead,
+    dependencies=[Depends(require_admin_write_permission)],
+)
 def resync_order_to_google(order_id: str, payload: AdminOrderActionRequest | None = None, db=Depends(get_db)):
     try:
         return resync_order_to_google_in_db(db, order_id, payload)
@@ -395,7 +531,11 @@ def resync_order_to_google(order_id: str, payload: AdminOrderActionRequest | Non
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
-@api.post("/admin/orders/{order_id}/reset-rescan", response_model=OrderRead)
+@api.post(
+    "/admin/orders/{order_id}/reset-rescan",
+    response_model=OrderRead,
+    dependencies=[Depends(require_admin_write_permission)],
+)
 def reset_order_for_rescan(order_id: str, payload: AdminOrderActionRequest, db=Depends(get_db)):
     try:
         return reset_order_for_rescan_in_db(db, order_id, payload)
@@ -403,7 +543,11 @@ def reset_order_for_rescan(order_id: str, payload: AdminOrderActionRequest, db=D
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
-@api.post("/admin/orders/{order_id}/restore", response_model=OrderRead)
+@api.post(
+    "/admin/orders/{order_id}/restore",
+    response_model=OrderRead,
+    dependencies=[Depends(require_admin_write_permission)],
+)
 def restore_order(order_id: str, payload: AdminOrderActionRequest, db=Depends(get_db)):
     try:
         return restore_order_in_db(db, order_id, payload)
@@ -411,7 +555,11 @@ def restore_order(order_id: str, payload: AdminOrderActionRequest, db=Depends(ge
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
-@api.post("/admin/orders/{order_id}/resync-skladbot", response_model=OrderRead)
+@api.post(
+    "/admin/orders/{order_id}/resync-skladbot",
+    response_model=OrderRead,
+    dependencies=[Depends(require_admin_write_permission)],
+)
 def resync_order_skladbot(order_id: str, payload: AdminOrderActionRequest, db=Depends(get_db)):
     try:
         return resync_order_skladbot_in_db(db, order_id, payload)
@@ -424,7 +572,11 @@ def admin_skladbot_dry_runs(import_id: str | None = None, db=Depends(get_db)):
     return list_skladbot_dry_runs(db, import_id=import_id)
 
 
-@api.post("/admin/skladbot/dry-runs/{dry_run_id}/rebuild", response_model=list[SkladBotDryRunRead])
+@api.post(
+    "/admin/skladbot/dry-runs/{dry_run_id}/rebuild",
+    response_model=list[SkladBotDryRunRead],
+    dependencies=[Depends(require_admin_write_permission)],
+)
 def admin_rebuild_skladbot_dry_run(dry_run_id: str, db=Depends(get_db)):
     try:
         return rebuild_skladbot_dry_run(db, dry_run_id)
@@ -432,7 +584,7 @@ def admin_rebuild_skladbot_dry_run(dry_run_id: str, db=Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
-@api.post("/sync/sources")
+@api.post("/sync/sources", dependencies=[Depends(require_admin_write_permission)])
 def sync_sources(skladbot: bool = True, wait_skladbot: bool = False, db=Depends(get_db)):
     if not sync_sources_lock.acquire(blocking=False):
         return {
@@ -505,7 +657,12 @@ def list_returns(limit: int = 50, db=Depends(get_db)):
     return list_returned_orders_in_db(db, limit=limit)
 
 
-@api.post("/scans", response_model=ScanRead, status_code=status.HTTP_201_CREATED)
+@api.post(
+    "/scans",
+    response_model=ScanRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_admin_write_permission)],
+)
 def create_scan(payload: ScanCreate, db=Depends(get_db)):
     try:
         return create_scan_in_db(db, payload)
@@ -513,7 +670,7 @@ def create_scan(payload: ScanCreate, db=Depends(get_db)):
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
-@api.post("/scans/undo", response_model=ScanRead)
+@api.post("/scans/undo", response_model=ScanRead, dependencies=[Depends(require_admin_write_permission)])
 def undo_scan(payload: ScanUndo, db=Depends(get_db)):
     try:
         return undo_scan_in_db(db, payload)
@@ -521,7 +678,7 @@ def undo_scan(payload: ScanUndo, db=Depends(get_db)):
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
-@api.post("/orders/{order_id}/complete", response_model=OrderRead)
+@api.post("/orders/{order_id}/complete", response_model=OrderRead, dependencies=[Depends(require_admin_write_permission)])
 def complete_order(order_id: str, db=Depends(get_db)):
     try:
         return complete_order_in_db(db, order_id)
@@ -537,7 +694,7 @@ def lookup_return(lookup: str, db=Depends(get_db)):
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
-@api.post("/returns/{order_id}", response_model=OrderRead)
+@api.post("/returns/{order_id}", response_model=OrderRead, dependencies=[Depends(require_admin_write_permission)])
 def mark_return(order_id: str, payload: ReturnMarkRequest, db=Depends(get_db)):
     try:
         return mark_order_returned_in_db(
@@ -551,9 +708,19 @@ def mark_return(order_id: str, payload: ReturnMarkRequest, db=Depends(get_db)):
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
-@api.post("/imports", response_model=ImportResult, status_code=status.HTTP_201_CREATED)
+@api.post(
+    "/imports",
+    response_model=ImportResult,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_admin_write_permission)],
+)
 def create_import(payload: ImportCreate, db=Depends(get_db)):
     return create_import_in_db(db, payload)
+
+
+@api.post("/imports/preview", response_model=ImportPreviewResult, dependencies=[Depends(require_admin_write_permission)])
+def preview_import(payload: ImportCreate, db=Depends(get_db)):
+    return preview_import_in_db(db, payload)
 
 
 @api.get("/imports", response_model=list[ImportRead])
@@ -569,7 +736,7 @@ def day_report(report_date: str | None = None, db=Depends(get_db)):
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
-@api.get("/reports/reconciliation/day")
+@api.get("/reports/reconciliation/day", dependencies=[Depends(require_admin_write_permission)])
 def reconciliation_day_report(report_date: str | None = None, db=Depends(get_db)):
     try:
         return run_daily_reconciliation(db=db, report_date=report_date, alert_chat_ids=[])

@@ -2,7 +2,75 @@
 
 Документ фиксирует ход работ: что сделано, что не сделано, какие ошибки найдены, какие решения приняты и что требует проверки. Новые записи добавляются сверху.
 
+## 2026-06-25
+
+### Telegram Excel import: stale waiting file and same-payload duplicates
+
+- Симптом: бот показывал, что получил новый Excel, но после ввода даты ставил в очередь другой файл. По факту дата могла привязаться к старому `waiting_shipment_date` событию этого же чата.
+- Причина:
+  - выбор ожидающего Excel шел по старейшему pending event, а не по последнему загруженному файлу;
+  - старые ожидания даты не закрывались при отправке нового Excel в том же чате;
+  - `create_import()` не отсекал повторные строки внутри одного payload до создания backend-позиции и постановки строки в Google export queue.
+- Решение:
+  - новый Excel в чате переводит старые `waiting_shipment_date` / `waiting_date_choice` события этого чата в `cancelled`;
+  - ручной ввод даты берет последний ожидающий Excel этого чата;
+  - повторные строки внутри одного import payload пропускаются по `ID импорта` или `item_key` до создания позиции и до Google export queue.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_backend_telegram_import` - 65 tests OK;
+  - `.venv/bin/python -m unittest tests.test_backend_api_persistence` - 97 tests OK;
+  - `.venv/bin/python -m py_compile backend/app/telegram_worker.py backend/app/imports_service.py tests/test_backend_telegram_import.py tests/test_backend_api_persistence.py` - OK.
+
 ## 2026-06-24
+
+### Emergency pause forced desktop auto-update
+
+- Симптом: рабочие Windows-клиенты после публикации forced `2.0.23` попадали в состояние `Требуется обновить приложение перед работой`, не могли пикать заказы, а автообновление не завершалось.
+- Причина:
+  - публичный `version.json` был `latest_version=2.0.23`, `min_supported_version=2.0.23`, `mandatory=true`;
+  - старые клиенты считали это hard-block через `below_min_version`;
+  - lock включался до доказанной успешной установки, поэтому отказ, cooldown или падение updater оставляли склад без рабочего приложения.
+- Срочное решение:
+  - `version.json` переведен в paused rollout: `latest_version=1.1.7`, `min_supported_version=1.1.7`, `mandatory=false`;
+  - download URL/SHA очищены, чтобы случайный запуск обновления не стартовал сломанную установку;
+  - `mandatory=true` в desktop updater больше не блокирует workflow сам по себе;
+  - hard-block теперь возможен только при отдельном явном флаге manifest `block_workflow=true`.
+- Release guards:
+  - `release_preflight`, VDS acceptance и Windows test helper принимают только два явных состояния manifest: paused `1.1.7` или forced `2.0.23`.
+- Проверено:
+  - `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m unittest tests.test_app_updates` - 13 tests OK;
+  - `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:. .venv/bin/python -m unittest tests.test_update_service tests.test_release_preflight tests.test_vds_acceptance_scripts tests.test_windows_test_build_helper` - 25 tests OK;
+  - `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:. .venv/bin/python -m compileall -q src/taksklad/app_updates.py src/taksklad/update_service.py tools/release_preflight.py` - OK;
+  - `git diff --check -- version.json src/taksklad/app_updates.py tests/test_app_updates.py src/taksklad/update_service.py tests/test_update_service.py tools/release_preflight.py tests/test_release_preflight.py deploy/vds/acceptance_status.sh tests/test_vds_acceptance_scripts.py tools/build_windows_test_archive.ps1 tests/test_windows_test_build_helper.py` - OK.
+
+### WEB daily top metrics
+
+- Причина: верхние KPI web-панели показывали общие цифры по базе, а оператору нужна краткая информация за день.
+- Решение:
+  - верхняя строка теперь подписана как `Информация за день`;
+  - метрики берутся из уже существующего `DayReport`, а не из частично загруженной admin-таблицы;
+  - показываются `Акт. заказы`, `Отскан. блоков`, `Всего блоков`, `Всего заказов`;
+  - дата рядом с заголовком соответствует `report_date`.
+- Проверено:
+  - `npm --prefix frontend run build` - OK;
+  - `git diff --check -- frontend/src/App.tsx frontend/src/styles.css docs/implementation-log.md` - OK.
+
+### WEB client points order history drilldown
+
+- Причина: в панели `Клиенты и таймслоты` число в колонке `Заказы` показывало только общий счетчик и последнюю дату, но менеджеру нужно быстро открыть юрлицо и увидеть даты отгрузок, сколько было позиций и какие товары.
+- Решение:
+  - добавлен read-only endpoint `GET /api/v1/admin/client-points/order-summary`;
+  - endpoint группирует заказы по нормализованному `client_name`, затем по дате отгрузки и товару;
+  - общий список `GET /api/v1/admin/client-points` остался легким и не тянет товарную историю на все 600+ юрлиц;
+  - web UI лениво грузит историю только по клику на число заказов конкретного юрлица;
+  - в раскрытой строке показаны дата, количество заказов, количество позиций, товары, блоки и штуки.
+- Ограничения:
+  - endpoint не раскрывает КИЗы, scan codes, raw payload и внутренние order id;
+  - группировка идет по юрлицу, а не по адресу, потому текущий контракт точек хранит таймслот за `client_name`.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_backend_api_persistence.BackendApiPersistenceTests.test_admin_client_point_order_summary_groups_dates_and_products tests.test_backend_api_persistence.BackendApiPersistenceTests.test_admin_client_points_lists_order_points_and_updates_timeslot` - 2 tests OK;
+  - `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m compileall -q backend/app` - OK;
+  - `npm --prefix frontend run build` - OK;
+  - `git diff --check -- backend/app/client_points_service.py backend/app/schemas.py backend/app/main.py frontend/src/api.ts frontend/src/App.tsx frontend/src/styles.css tests/test_backend_api_persistence.py` - OK.
 
 ### Hotfix 2.0.23: Green короб и автообновление
 
@@ -53,6 +121,592 @@
   - `.venv/bin/python -m unittest tests.test_backend_api_persistence.BackendApiPersistenceTests.test_scan_create_counts_aggregate_box_as_fifty_blocks tests.test_backend_api_persistence.BackendApiPersistenceTests.test_scan_create_accepts_aggregate_box_when_next_ai_is_not_serial tests.test_backend_api_persistence.BackendApiPersistenceTests.test_scan_create_rejects_aggregate_box_when_remaining_blocks_are_less_than_fifty tests.test_backend_api_persistence.BackendApiPersistenceTests.test_scan_create_rejects_aggregate_box_for_wrong_product tests.test_backend_api_persistence.BackendApiPersistenceTests.test_scan_undo_subtracts_aggregate_box_block_quantity tests.test_backend_api_persistence.BackendApiPersistenceTests.test_scan_create_rejects_unit_kiz_for_wrong_chapman_product` - 15 tests OK;
   - `.venv/bin/python -m unittest tests.test_backend_api_persistence` - 94 tests OK;
   - `.venv/bin/python -m compileall -q src/taksklad backend/app tests/test_scan_quantities.py tests/test_backend_api_persistence.py` - OK.
+
+## 2026-06-23
+
+### Отдельная строка `Отгрузка в браке` в SkladBot daily report
+
+- Симптом: заявка SkladBot типа `Отгрузка в браке` попадала в общую строку `Отгрузка`, поэтому в рабочем Telegram-уведомлении брак не был виден без открытия XLSX.
+- Причина: `categorize_request_type()` классифицировал любой тип с подстрокой `отгруз` как обычную `Отгрузка`.
+- Решение:
+  - добавлена категория `Отгрузка в браке`;
+  - проверка `брак + отгруз/расход` выполняется до общей отгрузки;
+  - Telegram daily message выводит отдельную строку `Отгрузка в браке`;
+  - XLSX-лист `Сводка` получил отдельную строку брака, а формула начального остатка учитывает ее как отрицательный расход;
+  - обычная строка `Отгрузка` больше не включает такие заявки.
+- Source of truth:
+  - SkladBot API остается источником для daily report;
+  - Google Sheets не используется.
+- Проверено:
+  - `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:. .venv/bin/python -m unittest tests.test_skladbot_daily_report` - 20 tests OK;
+  - `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:. .venv/bin/python -m unittest tests.test_skladbot_daily_report tests.test_backend_telegram_import` - 84 tests OK;
+  - `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:. .venv/bin/python -m compileall -q backend/app/skladbot_daily_report.py tests/test_skladbot_daily_report.py` - OK.
+  - `git diff --check -- backend/app/skladbot_daily_report.py tests/test_skladbot_daily_report.py docs/report-source-rules.md docs/changelog.md docs/implementation-log.md` - OK.
+- VDS deploy:
+  - перед заменой создан restore point `/opt/taksklad/restore_points/pre-defect-shipment-daily-20260623T174716Z`;
+  - создан Postgres backup `/opt/taksklad/backups/postgres/taksklad-postgres-20260623T174716Z.sql.gz`;
+  - перед рестартом проверен антидубль: `pending_events` для `skladbot_daily_report:2026-06-23:*` имел `completed=1`;
+  - синхронизирован только runtime-файл `backend/app/skladbot_daily_report.py`;
+  - SHA локального и серверного файла совпал: `00cb0e42c16ebea649a304bb935da5e477c9199771e0a580e14346a1071f65c4`;
+  - выполнен `docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml up -d --build telegram-worker`;
+  - compose также пересоздал `backend-api` как зависимость `telegram-worker`;
+  - VDS `telegram-worker` compileall по `app/skladbot_daily_report.py` и `app/telegram_worker.py` - OK;
+  - production smoke внутри `telegram-worker` подтвердил отдельные строки `Отгрузка` и `Отгрузка в браке` без Telegram-send;
+  - `https://api.taksklad.uz/health` - OK, `version=2.0.21`;
+  - `https://api.taksklad.uz/ready` - БД и миграции OK, общий статус `degraded` из-за старой failed `telegram_excel_import`;
+  - VDS `./deploy/vds/acceptance_status.sh` - marker/google/skladbot/menu OK, общий `status=failed` только из-за `ready=degraded` и незакрытого GO/NO-GO чеклиста;
+  - после рестарта anti-duplicate count остался `completed=1`, новой отправки daily report не появилось;
+  - свежие логи `telegram-worker` и `backend-api` после деплоя - без `ERROR/Traceback/Exception/CRITICAL/failed` и без повторной отправки `SkladBot отчет`.
+- Telegram:
+  - реальные сообщения в рабочую группу не отправлялись;
+  - проверка выполнена через unit-тесты с fake worker/client.
+
+### WEB/LOG client identity for logistics points
+
+- Уточнен контракт справочника точек:
+  - `client_name` является названием точки, юрлицом и клиентом;
+  - таймслот хранится за `client_name`;
+  - адрес, координаты и ТП считаются изменяемыми деталями и обновляются из новых импортов.
+- Backend:
+  - `client_points_service` группирует derived/saved точки по нормализованному клиенту;
+  - повторный импорт с тем же клиентом и новым адресом обновляет существующую точку, но не сбрасывает `delivery_from/delivery_to`;
+  - логистический XLSX ищет таймслот по клиенту, поэтому изменение адреса не возвращает точку к `10:00-18:00`.
+- Web UI:
+  - поиск теперь явно подписан как поиск по текущим клиентам;
+  - создание точки вынесено в отдельный раскрываемый блок по кнопке `Создать точку`;
+  - отдельное поле `Название точки` убрано, потому название точки равно клиенту/юрлицу.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_backend_api_persistence.BackendApiPersistenceTests.test_admin_client_points_lists_order_points_and_updates_timeslot tests.test_backend_api_persistence.BackendApiPersistenceTests.test_admin_client_points_use_client_identity_when_address_changes tests.test_backend_api_persistence.BackendApiPersistenceTests.test_import_updates_client_point_address_and_keeps_timeslot_by_client tests.test_backend_api_persistence.BackendApiPersistenceTests.test_logistics_report_uses_saved_client_point_timeslot tests.test_backend_api_persistence.BackendApiPersistenceTests.test_readiness_accepts_user_password_hash_schema_head_revision tests.test_backend_skeleton.BackendSkeletonTests.test_initial_schema_contains_mvp_tables_and_constraints tests.test_backend_skeleton.BackendSkeletonTests.test_sql_bootstrap_and_alembic_migrations_keep_forward_only_contract` - 7 tests OK;
+  - `npm --prefix frontend run build` - OK.
+- Production deploy:
+  - деплой сделан targeted bundle из VDS remote-base, без соседних локальных изменений;
+  - изменены только `backend/app/client_points_service.py`, `frontend/src/App.tsx`, `frontend/src/styles.css`;
+  - VDS restore point: `/opt/taksklad/restore_points/pre-client-identity-timeslots-20260623T102546Z`;
+  - VDS Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260623T102544Z.sql.gz`;
+  - rebuilt services: `backend-api`, `frontend`;
+  - Alembic current остается `20260623_0004`, новой миграции нет;
+  - `https://api.taksklad.uz/health` - OK;
+  - `https://api.taksklad.uz/ready` - migrations OK, общий статус остается degraded из-за старой очереди `telegram_excel_import`;
+  - `https://taksklad.uz/` отдает frontend asset `index-U-lmCpOW.js` / `index-afgwTo0A.css`;
+  - live rollback smoke подтвердил: один тестовый `client_points` по клиенту, адрес обновляется, слот `08:31-09:32` попадает в логистический XLSX, после rollback тестовые `client_points/orders` не сохранены.
+
+### WEB/RBAC logistics slots limited user
+
+- Добавлена DB-backed auth-модель поверх существующего env-admin:
+  - `users.password_hash` добавляется миграцией `20260623_0004_user_password_hash`;
+  - env login остается `admin`;
+  - DB user с ролью `logistics_slots` получает permission `client_points:write`.
+- Session payload теперь возвращает web UI поля `role` и `permissions`.
+- Backend RBAC:
+  - read endpoints остаются за обычной auth/session защитой;
+  - warehouse/admin write endpoints требуют `admin:write`;
+  - `POST /api/v1/admin/client-points/timeslot` требует `client_points:write`;
+  - `GET /api/v1/reports/reconciliation/day` закрыт как write-like endpoint, потому что создает audit/incidents.
+- Frontend proxy:
+  - `/api/` больше не подставляет `Bearer ${TAKSKLAD_API_TOKEN}` после `auth_request`;
+  - browser-запросы доходят до backend с cookie, поэтому role checks применяются к реальному web-пользователю;
+  - service token остается для прямых backend/service вызовов, не для web proxy.
+- Web UI:
+  - для non-admin скрыты кнопки Google queue, Google/SkladBot sync, order actions, dry-run rebuild, incident retry/resolve/ignore и audit-log download;
+  - вкладка `Клиенты` остается доступной для role `logistics_slots`;
+  - добавлен сброс кастомного таймслота до `10:00-18:00`, что является безопасным удалением индивидуального времени без удаления точки.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_backend_api_persistence.BackendApiPersistenceTests.test_web_auth_login_sets_cookie_and_check_accepts_session tests.test_backend_api_persistence.BackendApiPersistenceTests.test_web_auth_session_allows_admin_api_without_service_token tests.test_backend_api_persistence.BackendApiPersistenceTests.test_web_auth_configured_without_service_token_still_requires_session tests.test_backend_api_persistence.BackendApiPersistenceTests.test_logistics_slots_user_can_write_only_client_point_timeslots tests.test_backend_api_persistence.BackendApiPersistenceTests.test_admin_client_points_lists_order_points_and_updates_timeslot tests.test_backend_api_persistence.BackendApiPersistenceTests.test_admin_client_points_rejects_invalid_timeslot_order` - OK;
+  - `.venv/bin/python -m unittest tests.test_backend_api_persistence` - 91 tests OK;
+  - `.venv/bin/python -m unittest tests.test_vds_acceptance_scripts.VdsAcceptanceScriptsTests.test_frontend_uses_same_origin_api_proxy_contract` - OK;
+  - `npm --prefix frontend run build` - OK.
+- Production deploy:
+  - деплой сделан targeted bundle из VDS remote-base, без локальных незадеплоенных фич;
+  - VDS restore point: `/opt/taksklad/restore_points/pre-web-rbac-logistics-user-20260623T092150Z`;
+  - VDS Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260623T092149Z.sql.gz`;
+  - rebuilt services: `backend-api`, `frontend`;
+  - Alembic current после deploy: `20260623_0004`;
+  - `https://api.taksklad.uz/health` - OK;
+  - `https://api.taksklad.uz/ready` - migrations OK, общий статус остается degraded из-за старой очереди `telegram_excel_import`, не из-за RBAC-миграции;
+  - `https://taksklad.uz/` отдает новый frontend asset `index-BvJQTIug.js` / `index-hs_2yKGM.css`;
+  - live RBAC smoke через same-origin `/api`: `998933456753` получает `role=logistics_slots`, `permissions=["client_points:write"]`, `GET /api/v1/admin/table` - 200, admin-write endpoints - 403, `POST /api/v1/admin/client-points/timeslot` проходит auth и на пустом payload возвращает validation `422`.
+
+### WEB/LOG client points and logistics time slots
+
+- Добавлен минимальный справочник точек клиентов без переписывания `orders`:
+  - `client_points` хранит `client_name`, `address`, optional point metadata и `delivery_from/delivery_to`;
+  - уникальный ключ: нормализованные `client_name + address`;
+  - default window сохранен как `10:00-18:00`.
+- Backend API:
+  - `GET /api/v1/admin/client-points` возвращает сохраненные точки и derived-точки из уже существующих заказов;
+  - `POST /api/v1/admin/client-points/timeslot` создает/обновляет точку и пишет audit `client_point_timeslot_updated`.
+- Импорт новых Excel-заказов теперь синхронизирует точку в `client_points`, но не меняет order key и не влияет на дедупликацию заказов.
+- `backend/app/logistics_service.py` больше не хардкодит `10:00/18:00` для всех: если по `client + address` есть активная сохраненная точка, XLSX получает ее `Доставка С/ПО`; иначе остается fallback.
+- Web UI:
+  - добавлена вкладка `Клиенты`;
+  - добавлена ручная форма создания точки с юрлицом, адресом, названием точки, ТП, координатами и окном доставки;
+  - поиск по юрлицу/точке/адресу/ТП;
+  - фильтр `Уникальный слот` / `По умолчанию 10-18`;
+  - inline-редактирование таймслотов.
+- Migration/readiness:
+  - добавлена forward-only миграция `20260623_0003_client_points`;
+  - `/ready` ожидает новый head `20260623_0003`, чтобы код без примененной таблицы не считался здоровым.
+- Проверено:
+  - `.venv/bin/python -m py_compile backend/app/client_points_service.py backend/app/models.py backend/app/schemas.py backend/app/main.py backend/app/imports_service.py backend/app/logistics_service.py backend/app/health_service.py tests/test_backend_api_persistence.py tests/test_backend_skeleton.py` - OK;
+  - `.venv/bin/python -m unittest tests.test_backend_api_persistence tests.test_backend_skeleton` - 99 tests OK;
+  - `npm run build` в `frontend/` - OK;
+  - `git diff --check` - OK;
+  - локальный demo smoke: SQLite backend на `127.0.0.1:8008`, Vite proxy на `127.0.0.1:5173`, `/api/v1/auth/session` отвечает через frontend proxy.
+- Production deploy:
+  - деплой сделан targeted bundle из remote-base, без соседних локальных изменений `delete-active`, pagination и import-preview;
+  - VDS restore point: `/opt/taksklad/restore_points/pre-client-points-timeslots-20260623T082754Z`;
+  - VDS Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260623T082754Z.sql.gz`;
+  - rebuilt services: `backend-api`, `frontend`;
+  - Alembic current после deploy: `20260623_0003 (head)`;
+  - `https://api.taksklad.uz/health` - OK;
+  - `https://api.taksklad.uz/ready` - migrations OK, общий статус остается degraded из-за старой очереди `telegram_excel_import`, не из-за этой миграции;
+  - `GET /api/v1/admin/client-points?limit=3` внутри `backend-api` с service token - 200;
+  - `https://taksklad.uz/` отдает новый frontend asset `index-BV8dEOlv.js` / `index-hs_2yKGM.css`;
+  - logistics smoke в rollback-транзакции подтвердил подстановку `08:31-09:32` в XLSX и отсутствие сохраненной тестовой записи после rollback.
+- Осталось после deploy:
+  - manual browser smoke вкладки `Клиенты` после входа в web UI.
+
+## 2026-06-22
+
+### WEB-03 same-origin API proxy contract
+
+- По `WEB-03/GAP-026` проверен web reports/activity diagnostics transport contract:
+  - frontend `defaultApiUrl()` возвращает пустую базу и ходит в relative `/api/v1/*`;
+  - `frontend/nginx.conf.template` проксирует `/api/` в backend container;
+  - `/api/` защищен `auth_request` и внутренним Bearer service token;
+  - CSP держит `connect-src 'self'`;
+  - локальная Vite-разработка использует отдельный явный proxy env `VITE_TAKSKLAD_DEV_API_URL`.
+- Runtime-код не менялся: текущая реализация уже соответствовала contract, но canonical register держал gap как `needs_validation`.
+- Исправлено:
+  - `tests/test_vds_acceptance_scripts.py` добавил регрессионный тест `test_frontend_uses_same_origin_api_proxy_contract`;
+  - `docs/taksklad-feature-user-stories.xlsx` перевел `GAP-026` в `fixed_retested`;
+  - manual browser smoke для `WEB-03` оставлен `pending`, потому реальный web UI/VDS экран не проходил в этом цикле.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_vds_acceptance_scripts.VdsAcceptanceScriptsTests.test_frontend_uses_same_origin_api_proxy_contract` - 1 test OK.
+
+### API-09 configurable SkladBot SKU mapping
+
+- По `API-09/GAP-029` проверен SkladBot dry-run/create flow:
+  - default режим `SKLADBOT_CREATE_REQUESTS_MODE=dry_run` не делает live POST;
+  - `enabled` ставит durable `skladbot_request_create` events только для `ready` dry-runs;
+  - unknown SKU и zero blocks блокируют dry-run без падения import;
+  - текущий Chapman mapping покрывает 6 SKU.
+- Найден архитектурный риск: mapping был только hardcoded в `backend/app/skladbot_request_dry_run.py`, из-за чего новые/измененные SkladBot `product_data_id` нельзя было безопасно прокинуть через VDS config.
+- Исправлено:
+  - добавлен `SKLADBOT_SKU_MAPPING_JSON` как override/extension поверх текущего default mapping;
+  - `load_sku_mapping()` валидирует `product_data_id`, `barcode`, `is_main_barcode`;
+  - невалидный mapping блокирует dry-run заказа и не создает `skladbot_request_create`;
+  - переменная добавлена в `deploy/vds/docker-compose.yml` и `deploy/vds/.env.example`;
+  - docs описывают формат и safe failure.
+- `GAP-029` закрыт как `fixed_retested` по локальному/config contract. Live SkladBot API/tokens acceptance остается pending.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_backend_skladbot_request_dry_run tests.test_backend_skladbot_worker` - 76 tests OK;
+  - `.venv/bin/python -m unittest tests.test_vds_acceptance_scripts tests.test_backend_skeleton` - 14 tests OK;
+  - `.venv/bin/python -m py_compile backend/app/skladbot_request_dry_run.py tests/test_backend_skladbot_request_dry_run.py tests/test_vds_acceptance_scripts.py` - OK.
+
+### API-08 Google export retry cooldown
+
+- По `API-08/GAP-028` проверен backend Google mirror/export pending flow:
+  - Google `429` / `quota` оставляет событие в `pending`;
+  - `payload.next_attempt_at` задает следующий момент retry;
+  - готовые события очереди не должны блокироваться более старым событием на cooldown.
+- Найден дефект: `select_pending_export_events()` записывал `next_attempt_at`, но не учитывал его при следующем выборе pending events. В итоге один и тот же Google export мог немедленно повториться после 429.
+- Исправлено:
+  - `backend/app/google_sheets_pending.py` фильтрует pending exports по `next_attempt_at`;
+  - future retry events остаются в `pending`;
+  - более новые ready events продолжают обрабатываться;
+  - при отсутствии ready events `remaining` показывает количество pending/deferred exports.
+- `GAP-028` закрыт как `fixed_retested`. Live Google credentials/quota и фактическая mirror drift acceptance остаются pending.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_backend_google_sheets_pending.GoogleSheetsPendingLockTests.test_future_retry_after_event_does_not_block_newer_ready_event tests.test_backend_google_sheets_pending.GoogleSheetsPendingLockTests.test_rate_limit_keeps_event_pending_and_stops_batch tests.test_backend_google_sheets_pending.GoogleSheetsPendingLockTests.test_postgres_pending_selection_uses_skip_locked_row_lock tests.test_backend_google_sheets_pending.GoogleSheetsPendingLockTests.test_bad_event_does_not_block_newer_valid_event` - 4 tests OK;
+  - `.venv/bin/python -m py_compile backend/app/google_sheets_pending.py tests/test_backend_google_sheets_pending.py` - OK.
+
+### API-06 import Google export failure isolation
+
+- По `API-06/GAP-023` проверен backend Excel import:
+  - Postgres `ImportJob`, `Order`, `OrderItem` создаются до Google mirror/export;
+  - Google export queue является post-commit side effect и не должен превращать успешный import в 500;
+  - частичный сбой должен быть виден оператору через `google_sheets_status`, incident и audit.
+- Найден дефект: если `queue_google_sheets_export()` падал после Postgres commit, backend-данные оставались, но API отдавал exception вместо `201` с понятным Google status.
+- Исправлено:
+  - `backend/app/imports_service.py` ловит сбой постановки import records в Google export queue;
+  - возвращает `google_sheets_status=error` и `google_sheets_error`;
+  - пишет incident `google_sheets_import_export` и audit `google_sheets_import_export_failed`;
+  - не откатывает уже созданные Postgres orders/items.
+- `GAP-023` закрыт как `fixed_retested`. Ручная проверка реального Excel import через desktop/Telegram и live Google credentials остается pending.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_backend_api_persistence.BackendApiPersistenceTests.test_import_reports_google_queue_failure_without_rolling_back_backend_data tests.test_backend_api_persistence.BackendApiPersistenceTests.test_import_keeps_backend_data_when_google_sheets_export_fails tests.test_backend_api_persistence.BackendApiPersistenceTests.test_duplicate_backend_import_still_can_backfill_google_sheets tests.test_backend_api_persistence.BackendApiPersistenceTests.test_import_preview_reports_duplicates_invalid_rows_and_does_not_write` - 4 tests OK;
+  - `.venv/bin/python -m py_compile backend/app/imports_service.py tests/test_backend_api_persistence.py` - OK.
+
+### API-04 scan Google export local lock coverage
+
+- По `API-04/GAP-021` проверен backend scan/undo контракт:
+  - scan API пишет `scan_codes`, audit и durable Google export event;
+  - Google export queue failure не блокирует успешный scan;
+  - Google pending export на PostgreSQL использует row locking через `FOR UPDATE SKIP LOCKED`;
+  - non-Postgres/local path защищен process-local lock и возвращает `busy`, не трогая события, если обработчик уже запущен.
+- Runtime-код не менялся: существующая реализация `backend/app/google_sheets_pending.py` уже использовала `LOCAL_EXPORT_LOCK`, но это не было закреплено отдельным тестом в canonical register.
+- Исправлено:
+  - `tests/test_backend_google_sheets_pending.py`: добавлен контракт `test_non_postgres_export_lock_returns_busy_without_processing`;
+  - `docs/taksklad-feature-user-stories.xlsx`: `GAP-021` переведен в `fixed_retested`, manual operator/UI acceptance оставлен `pending`;
+  - `docs/event-queue-lifecycle.md`: уточнен local/SQLite lock для Google exports.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_backend_google_sheets_pending.GoogleSheetsPendingLockTests.test_non_postgres_export_lock_returns_busy_without_processing tests.test_backend_google_sheets_pending.GoogleSheetsPendingLockTests.test_rate_limit_keeps_event_pending_and_stops_batch tests.test_backend_api_persistence.BackendApiPersistenceTests.test_scan_create_queues_google_sheets_export_when_google_is_down tests.test_backend_api_persistence.BackendApiPersistenceTests.test_scan_create_exports_scan_state_to_google_sheets_best_effort` - 4 tests OK;
+  - `.venv/bin/python -m py_compile backend/app/google_sheets_pending.py tests/test_backend_google_sheets_pending.py tests/test_backend_api_persistence.py` - OK.
+
+### API-01 empty service-token auth guard
+
+- По `API-01/GAP-018` проверен auth guard для `/api/v1/*`.
+- Подтвержден риск: прежняя логика считала любой запрос авторизованным, если `TAKSKLAD_API_TOKEN` пустой, даже когда web-auth уже настроен. Это могло открыть admin API без web-session в ошибочной конфигурации.
+- Исправлено:
+  - `backend/app/main.py`: Bearer token path валиден только при непустом configured service token;
+  - если web-auth настроен, guard проверяет session cookie;
+  - local no-auth fallback разрешен только когда не настроены ни service token, ни web-auth.
+- Закреплено тестами:
+  - настроенный service token без session требует Bearer или web login;
+  - пустой service token + настроенная web-auth возвращает `401` до login;
+  - после login session cookie допускает admin API;
+  - пустой service token + пустая web-auth остается local no-auth режимом.
+- `GAP-018` закрыт как `fixed_retested`. Browser login/session/CORS smoke на реальном frontend/proxy остается manual pending.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_backend_api_persistence.BackendApiPersistenceTests.test_web_auth_login_sets_cookie_and_check_accepts_session tests.test_backend_api_persistence.BackendApiPersistenceTests.test_web_auth_session_allows_admin_api_without_service_token tests.test_backend_api_persistence.BackendApiPersistenceTests.test_web_auth_configured_without_service_token_still_requires_session tests.test_backend_api_persistence.BackendApiPersistenceTests.test_api_allows_local_no_auth_only_when_no_auth_is_configured tests.test_backend_cors` - 5 tests OK;
+  - `.venv/bin/python -m py_compile backend/app/main.py tests/test_backend_api_persistence.py tests/test_backend_cors.py` - OK.
+
+### WEB-02 admin event retry and payload redaction
+
+- По `WEB-02/GAP-025` проверен backend-контракт центра incidents/events:
+  - `/api/v1/admin/events` показывает retryable events, linked order/import/entity fields и redacted payload;
+  - `/api/v1/admin/events/{event_id}` возвращает тот же redacted view для детали;
+  - retry требует `reason`, переводит событие в `pending`, очищает `last_error` и пишет audit;
+  - completed/state events не retryable;
+  - `telegram_excel_import` нельзя поставить на retry, если в payload нет исходного `document.file_id`.
+- Runtime-код в этом цикле не менялся: существующая реализация уже соответствовала безопасному контракту, но canonical spreadsheet ещё держал `GAP-025` как `needs_validation`.
+- Обновлено:
+  - `docs/taksklad-feature-user-stories.xlsx`: `GAP-025` -> `fixed_retested`, `WEB-02` manual browser acceptance оставлен `pending`;
+  - `docs/event-queue-lifecycle.md`: добавлено правило manual retry и redaction;
+  - `docs/changelog.md` и этот журнал получили evidence.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_backend_api_persistence.BackendApiPersistenceTests.test_admin_event_detail_retry_redacts_payload_and_writes_audit tests.test_backend_api_persistence.BackendApiPersistenceTests.test_admin_event_retry_rejects_telegram_import_when_original_file_is_unavailable` - 2 tests OK;
+  - `.venv/bin/python -m py_compile backend/app/event_queue_service.py tests/test_backend_api_persistence.py` - OK.
+
+### TS-TG-002 invalid Telegram notification queue handling
+
+- По `TS-TG-002/GAP-034` проверен worker queue flow:
+  - `getUpdates` 409 не останавливает scheduled imports/notifications/daily reports;
+  - stale `telegram_notification` в `processing` сбрасывается в `pending`;
+  - валидное queued notification отправляется и завершается `completed`.
+- Найден локальный UX/ops gap: `telegram_notification` без текста или без получателя попадал в `failed`, хотя повтор не мог исправить payload. В admin events это выглядело как временный retryable сбой.
+- Исправлено:
+  - `backend/app/telegram_worker.py` переводит notification без `text` или без target chat в `blocked`;
+  - для таких событий пишется audit `telegram_notification_blocked`;
+  - реальные исключения отправки Telegram остаются `failed`, чтобы их можно было retry после восстановления внешнего канала.
+- `GAP-034` закрыт как `fixed_retested` по локальной части. Ручная проверка real allowed/admin chats и доставки уведомлений остается pending.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_backend_telegram_import.BackendTelegramImportTests.test_telegram_worker_sends_pending_notification_event tests.test_backend_telegram_import.BackendTelegramImportTests.test_telegram_worker_blocks_invalid_notification_events_without_retry tests.test_backend_telegram_import.BackendTelegramImportTests.test_telegram_worker_resets_stale_processing_notification_before_processing tests.test_backend_telegram_import.BackendTelegramImportTests.test_telegram_worker_runs_scheduled_jobs_after_getupdates_conflict` - 4 tests OK;
+  - `.venv/bin/python -m py_compile backend/app/telegram_worker.py tests/test_backend_telegram_import.py` - OK.
+
+### DESK-14 return totals display for legacy Google rows
+
+- По `DESK-14/GAP-014` проверен локальный UX возвратов:
+  - backend mode отправляет `confirmed_items` в backend;
+  - backend list/lookup не читает Google fallback;
+  - Google-only order без `_backend_order_id` отклоняется в backend mode;
+  - legacy Google fallback сохранен только вне backend mode.
+- Найден UX-дефект отображения: окно `Возвраты` считало общий блок/сумму только по backend-полям `quantity_blocks` и `line_total`. Для старых Google fallback-заявок состав мог быть валидным, но оператор видел `0 блоков` и `0 сум`.
+- Исправлено:
+  - `src/taksklad/app_returns.py` добавил helper'ы `return_item_blocks()`, `return_item_line_total()`, `return_order_total_blocks()`, `return_order_total_price()`;
+  - окно найденного возврата и список последних возвратов используют эти helper'ы;
+  - backend и legacy Google item shapes оба покрыты тестом.
+- Бизнес-правила не менялись: возврат в backend по-прежнему требует строгие `confirmed_items`; успешный return пишет movement `return`, неуспешный return не освобождает КИЗ.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_desktop_ui_contract.DesktopUiContractTests.test_return_mark_sends_confirmed_items_to_backend tests.test_desktop_ui_contract.DesktopUiContractTests.test_backend_returns_list_reads_backend_without_google_fallback tests.test_desktop_ui_contract.DesktopUiContractTests.test_backend_return_lookup_reads_backend_without_google_fallback tests.test_desktop_ui_contract.DesktopUiContractTests.test_backend_return_rejects_google_order_without_backend_id tests.test_desktop_ui_contract.DesktopUiContractTests.test_backend_return_uses_backend_id_for_google_order tests.test_desktop_ui_contract.DesktopUiContractTests.test_legacy_return_keeps_google_write_fallback_for_google_order tests.test_desktop_ui_contract.DesktopUiContractTests.test_return_confirmed_items_are_built_from_backend_items tests.test_desktop_ui_contract.DesktopUiContractTests.test_return_totals_support_backend_and_google_item_shapes tests.test_backend_api_persistence.BackendApiPersistenceTests.test_return_lookup_and_mark_returned_excludes_order_from_active_list tests.test_backend_api_persistence.BackendApiPersistenceTests.test_return_releases_kiz_for_new_outbound_scan_with_history tests.test_backend_api_persistence.BackendApiPersistenceTests.test_failed_return_does_not_release_kiz_for_new_order tests.test_backend_api_persistence.BackendApiPersistenceTests.test_mark_return_exports_archive_and_returns_to_google_sheets_best_effort tests.test_backend_api_persistence.BackendApiPersistenceTests.test_mark_return_rejects_mismatched_confirmed_items_without_side_effects` - 13 tests OK;
+  - `.venv/bin/python -m py_compile src/taksklad/app_returns.py tests/test_desktop_ui_contract.py backend/app/orders_service.py tests/test_backend_api_persistence.py` - OK.
+
+### DESK-16 day-end Telegram result clarity
+
+- По `DESK-16/GAP-016` проверен локальный закрывающий сценарий смены:
+  - отчет строится из scan backup;
+  - undo учитывается;
+  - сменные XLSX делятся по датам отгрузки и частям;
+  - итоговое окно показывает результат отправки каждого файла.
+- Найден UX gap: при `queued` или `failed` оператор видел только общий статус `в очереди Telegram` / `не отправлен`, но не видел причину. При внешней проблеме Telegram это оставляло неясность: отчет сохранен, не настроен бот, упала сеть или файл поставлен в очередь.
+- Исправлено:
+  - `src/taksklad/app_day_end.py` добавил `format_day_end_telegram_status()` и `format_day_end_report_line()`;
+  - для `queued` и `failed` итог закрытия смены показывает причину Telegram-результата;
+  - длинные причины обрезаются, чтобы не раздувать UI;
+  - `sent` остается коротким статусом без технического сообщения.
+- `GAP-016` не закрыт полностью: реальная доставка Telegram, chat permissions, сеть и retry `pending_telegram` остаются ручной validation.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_daily_report tests.test_desktop_ui_contract` - 50 tests OK;
+  - `.venv/bin/python -m py_compile src/taksklad/app_day_end.py src/taksklad/reports.py src/taksklad/telegram_service.py tests/test_daily_report.py` - OK.
+
+### DESK-15 updater launch recovery
+
+- По `DESK-15/GAP-015` проверена локальная часть запуска installer:
+  - успешный `.ps1` запускается через `powershell -NoProfile -ExecutionPolicy Bypass -File ...`;
+  - после успешного `Popen` приложение закрывается, как раньше;
+  - failure path не должен закрывать приложение и должен показывать recovery.
+- Найден локальный UX/reliability gap: `run_update_installer()` не ловил ошибку `subprocess.Popen`. Если PowerShell/cmd не стартовал, ошибка могла выйти из Tkinter callback, а оператор не получал нормальный текст восстановления.
+- Исправлено:
+  - `src/taksklad/app_updates.py` ловит exception запуска installer;
+  - показывает `show_critical_error()` с причиной, `TakSklad_update.log` и инструкцией не использовать старую версию для сканирования;
+  - возвращает `False` при ошибке и не вызывает `destroy()`;
+  - возвращает `True` и закрывает приложение только после успешного запуска updater.
+- `GAP-015` не закрыт полностью: фактический copy flow, замена файлов, shortcut/restart и работа опубликованного GitHub release updater остаются ручной Windows validation.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_app_updates tests.test_update_service tests.test_windows_release_workflow tests.test_startup_check` - 14 tests OK;
+  - `.venv/bin/python -m py_compile src/taksklad/app_updates.py tests/test_app_updates.py src/taksklad/update_service.py tests/test_update_service.py` - OK.
+
+### DESK-13 desktop Excel backend preview and coordinates
+
+- По `DESK-13/GAP-013` проверен desktop import flow:
+  - file dialog показывает `.xlsx/.xlsm`;
+  - preview собирает файлы, source rows, новые позиции, дубли, warnings/errors, geocoding counters;
+  - commit идет в backend или legacy Google sheet.
+- Найдены локальные дефекты:
+  - при выборе неподдерживаемого файла через `All files` parser сразу передавал путь в `openpyxl`, из-за чего оператор получал низкоуровневую ошибку открытия файла вместо понятного ограничения формата;
+  - в backend-mode desktop preview считал все parsed records новыми и принудительно ставил `duplicate_records=[]`, хотя backend затем отбрасывал дубли только после подтверждения;
+  - desktop parser находил координаты в Excel, но не передавал поле `Координаты` в итоговый record для backend import, из-за чего логистика могла потерять маршрутные данные.
+- Исправлено:
+  - `src/taksklad/excel_import.py` проверяет расширение до `openpyxl.load_workbook`;
+  - разрешены только расширения из `EXCEL_IMPORT_EXTENSIONS`: `.xlsx`, `.xlsm`;
+  - неподдерживаемый файл добавляет понятную ошибку в preview и не создает records.
+  - `backend/app/imports_service.py` добавил read-only preview import без записи в БД, Google queue и SkladBot dry-run;
+  - `backend/app/main.py` открыл `POST /api/v1/imports/preview`;
+  - `src/taksklad/app_imports.py` использует backend preview для расчета новых/дублей/invalid rows до подтверждения;
+  - `src/taksklad/excel_import.py` сохраняет `Координаты` в record;
+  - docs приведены к правилу: пустой адрес без координат = `Самовывоз со склада`, координаты сохраняются отдельно.
+- `GAP-013` не закрыт полностью: полный Tkinter e2e, реальные `.xlsx/.xlsm`, backend/Google commit и внешний геокодинг остаются ручной acceptance на Windows.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_excel_normalizer tests.test_app_imports tests.test_backend_bridge tests.test_backend_api_persistence.BackendApiPersistenceTests.test_import_preview_reports_duplicates_invalid_rows_and_does_not_write tests.test_backend_api_persistence.BackendApiPersistenceTests.test_import_stores_coordinates_blocks_and_prices tests.test_backend_api_persistence.BackendApiPersistenceTests.test_import_marks_missing_address_as_pickup` - 27 tests OK;
+  - `.venv/bin/python -m py_compile backend/app/imports_service.py backend/app/main.py backend/app/schemas.py src/taksklad/backend_client.py src/taksklad/app_imports.py src/taksklad/excel_import.py tests/test_app_imports.py tests/test_excel_normalizer.py tests/test_backend_bridge.py tests/test_backend_api_persistence.py` - OK;
+  - `.venv/bin/python -m unittest tests.test_backend_api_persistence tests.test_excel_normalizer tests.test_app_imports tests.test_backend_bridge tests.test_feature_user_stories_register tests.test_feature_acceptance_status` - 122 tests OK;
+  - `.venv/bin/python tools/feature_acceptance_status.py` - `status=ok`, `manual_complete=false`, `no_open_errors=false`;
+  - `.venv/bin/python -m unittest discover -s tests` - 558 tests OK;
+  - `.venv/bin/python -m py_compile main.py sitecustomize.py taksklad/__init__.py src/taksklad/*.py tests/*.py backend/app/*.py tools/feature_acceptance_status.py tools/release_preflight.py` - OK;
+  - `.venv/bin/python tools/release_preflight.py --skip-network` - `status=ok`;
+  - `git diff --check` - OK.
+
+### DESK-12 current print settings flow
+
+- По `DESK-12/GAP-012` проверена локальная часть настроек и очереди печати:
+  - поддержанные размеры `100x100`, `100x150`, `75x50`, `58x40`;
+  - сохраненный принтер не заменяется первым найденным;
+  - pending-сводки предлагаются при запуске;
+  - Windows-путь проверяет `PrinterSettings.IsValid` и логирует stdout/stderr.
+- Найден локальный UX-дефект: диалог позволял выбрать принтер/размер, но `print_summary()` затем заново читал настройки из storage. Если оператор не сохранял параметры или запись настроек не проходила, текущая печать могла уйти со старыми параметрами.
+- Исправлено:
+  - `src/taksklad/printing.py` принимает явные `print_settings` для текущей печати и нормализует их отдельно от сохраненного storage;
+  - `src/taksklad/app_printing.py` сохраняет выбранные настройки в памяти приложения сразу после подтверждения диалога;
+  - `src/taksklad/app_finish.py` и `src/taksklad/app_printing.py` передают выбранные настройки в `print_summary()` для finish и pending retry.
+- `GAP-012` не закрыт полностью: физическая печать, Windows-драйвер, custom paper size, поля, масштаб и читаемость этикеток остаются ручной acceptance.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_printing tests.test_pending_store tests.test_main_refactor_contract tests.test_desktop_ui_contract` - 62 tests OK;
+  - `.venv/bin/python -m unittest discover -s tests` - 552 tests OK;
+  - `.venv/bin/python -m py_compile src/taksklad/printing.py src/taksklad/app_printing.py src/taksklad/app_finish.py tests/test_printing.py tests/test_main_refactor_contract.py tests/test_desktop_ui_contract.py` - OK;
+  - `.venv/bin/python -m py_compile main.py sitecustomize.py taksklad/__init__.py src/taksklad/*.py tests/*.py backend/app/*.py tools/feature_acceptance_status.py tools/release_preflight.py` - OK;
+  - `.venv/bin/python -m unittest tests.test_feature_user_stories_register tests.test_feature_acceptance_status` - 14 tests OK;
+  - `.venv/bin/python tools/feature_acceptance_status.py` - `status=ok`, `manual_complete=false`, `no_open_errors=false`;
+  - `.venv/bin/python tools/release_preflight.py --skip-network` - `status=ok`;
+  - `git diff --check` - OK.
+
+### DESK-11 pending print queue safety
+
+- По `DESK-11/GAP-011` проверен локальный finish/print flow:
+  - `add_pending_print` вызывается до печати;
+  - `print_summary` идет до backend complete и Google archive;
+  - pending print удаляется после успешной печати;
+  - физическая Windows-печать остается manual validation из-за зависимости от драйвера и принтера.
+- Найден локальный reliability gap: код не проверял результат записи/удаления `pending_prints`. При сбое локального storage успешная печать могла продолжить backend complete/archive, оставив сводку в очереди и создавая риск повторной печати.
+- Исправлено:
+  - `src/taksklad/pending_store.py` теперь возвращает явный результат для `add_pending_print` и `remove_pending_print`;
+  - `src/taksklad/app_finish.py` не печатает без подтвержденной pending-записи и не завершает заказ без подтвержденного удаления pending после печати;
+  - `src/taksklad/app_printing.py` при ручной допечатке pending-сводок проверяет удаление из очереди и сообщает ошибку при сбое.
+- `GAP-011` не закрыт полностью: нужна ручная Windows acceptance с реальным принтером, подтверждением физической печати, очистки pending queue и закрытия заказа только после успешной печати.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_pending_store tests.test_printing tests.test_main_refactor_contract tests.test_desktop_ui_contract` - 60 tests OK;
+  - `.venv/bin/python -m unittest discover -s tests` - 550 tests OK;
+  - `.venv/bin/python -m py_compile src/taksklad/pending_store.py src/taksklad/app_finish.py src/taksklad/app_printing.py tests/test_pending_store.py tests/test_printing.py tests/test_desktop_ui_contract.py` - OK;
+  - `.venv/bin/python -m py_compile main.py sitecustomize.py taksklad/__init__.py src/taksklad/*.py tests/*.py backend/app/*.py tools/feature_acceptance_status.py tools/release_preflight.py` - OK;
+  - `.venv/bin/python -m unittest tests.test_feature_user_stories_register tests.test_feature_acceptance_status` - 14 tests OK;
+  - `.venv/bin/python tools/feature_acceptance_status.py` - `status=ok`, `manual_complete=false`, `no_open_errors=false`;
+  - `.venv/bin/python tools/release_preflight.py --skip-network` - `status=ok`;
+  - `git diff --check` - OK.
+
+### DESK-10 hard-error position action recovery
+
+- По `DESK-10/GAP-010` найден подтвержденный локальный UX-дефект: при hard error во время сохранения последней позиции `next_product(finish_after_save=True)` оставлял оператора на текущей позиции, но включал кнопку `Следующая позиция`, хотя следующей позиции нет.
+- Последствие дефекта: оператор мог видеть неправильное доступное действие после ошибки сохранения/finish retry, что выглядит как переход к несуществующей позиции.
+- Исправлено:
+  - `src/taksklad/app_scanning.py` теперь после ошибки восстанавливает кнопки по фактическому состоянию текущей позиции;
+  - на последней полной позиции после ошибки `Следующая позиция` остается disabled, а `ЗАВЕРШИТЬ ЗАКАЗ` снова normal для повторной попытки;
+  - на неполной позиции обе action-кнопки остаются disabled.
+- `GAP-010` не закрыт полностью: локальная логика покрыта тестом, но видимый Windows UI сценарий сохранения/ошибки/повторной попытки остается в ручной acceptance.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_desktop_ui_contract.DesktopUiContractTests.test_next_product_hard_error_keeps_final_position_actions_consistent` - OK;
+  - `.venv/bin/python -m unittest tests.test_desktop_ui_contract tests.test_desktop_pending_store tests.test_backend_bridge` - 59 tests OK;
+  - `.venv/bin/python -m unittest discover -s tests` - 546 tests OK;
+  - `.venv/bin/python -m py_compile main.py sitecustomize.py taksklad/__init__.py src/taksklad/*.py tests/*.py backend/app/*.py tools/feature_acceptance_status.py tools/release_preflight.py` - OK.
+  - `.venv/bin/python -m unittest tests.test_feature_user_stories_register tests.test_feature_acceptance_status` - 14 tests OK;
+  - `.venv/bin/python tools/feature_acceptance_status.py` - `status=ok`, `manual_complete=false`, `no_open_errors=false`, 27 open validation gaps;
+  - `.venv/bin/python tools/release_preflight.py --skip-network` - `status=ok`;
+  - `git diff --check` - OK.
+
+### DESK-09 pending-save undo state consistency
+
+- По `DESK-09/GAP-009` найден подтвержденный локальный UX/logistics дефект: если оператор откатывал уже сохраненный КИЗ, который еще лежал в `pending_saves`, приложение обновляло pending-запись, но оставляло `saved_codes_count` прежним.
+- Последствие дефекта: UI мог считать больше КИЗов сохраненными, чем фактически осталось после отката. Это влияло на следующий undo/save/finish state без необходимости ходить в Google Sheets или backend.
+- Исправлено:
+  - `src/taksklad/app_scanning.py` теперь уменьшает `saved_codes_count` до `len(remaining_codes)`, когда saved-код успешно откатан через локальную pending-save запись;
+  - добавлен app-level regression test, что pending-save undo работает без Google/backend, обновляет active row, блокирует finish при неполном плане и не вызывает live sync.
+- `GAP-009` не закрыт полностью: откат уже синхронизированного saved-кода без pending-записи всё еще требует доступного backend или Google и ручной Windows validation.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_desktop_ui_contract.DesktopUiContractTests.test_undo_saved_pending_save_keeps_state_consistent_without_google_or_backend` - OK;
+  - `.venv/bin/python -m unittest tests.test_desktop_ui_contract tests.test_desktop_pending_store tests.test_backend_bridge` - 58 tests OK;
+  - `.venv/bin/python -m unittest discover -s tests` - 545 tests OK;
+  - `.venv/bin/python -m py_compile main.py sitecustomize.py taksklad/__init__.py src/taksklad/*.py tests/*.py backend/app/*.py tools/feature_acceptance_status.py tools/release_preflight.py` - OK.
+  - `.venv/bin/python -m unittest tests.test_feature_user_stories_register tests.test_feature_acceptance_status` - 14 tests OK;
+  - `.venv/bin/python tools/feature_acceptance_status.py` - `status=ok`, `manual_complete=false`, `no_open_errors=false`, 27 open validation gaps;
+  - `.venv/bin/python tools/release_preflight.py --skip-network` - `status=ok`;
+  - `git diff --check` - OK.
+
+### DESK-08 duplicate/backend conflict guard coverage
+
+- По `DESK-08/GAP-008` усилена автоматическая проверка локальной части двух-PC защиты:
+  - duplicate в текущей позиции, уже известных кодах и completed orders проверяется до локального backup и до постановки backend scan event;
+  - pending backend scan codes попадают в `all_existing_codes` при refresh, чтобы локальная очередь backend не позволяла повторно принять тот же КИЗ до синхронизации;
+  - уже существующие backend/API tests продолжают проверять `409 Code already scanned in another order item`, сохранение `existing_order` и откат локально принятого backend-blocked кода из текущей позиции.
+- `GAP-008` не закрыт полностью: финальная cross-PC гарантия всё равно требует live backend sync и ручной Windows acceptance на двух рабочих местах.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_desktop_ui_contract.DesktopUiContractTests.test_scan_rejects_duplicates_before_local_backup_and_backend_queue tests.test_desktop_ui_contract.DesktopUiContractTests.test_backend_blocked_scan_removes_code_and_keeps_position_open tests.test_refresh_fallback.RefreshFallbackTests.test_refresh_exposes_pending_backend_codes_as_known_duplicates tests.test_backend_bridge.BackendBridgeTests.test_backend_queue_drops_non_retryable_duplicate_scan_conflict tests.test_backend_api_persistence.BackendApiPersistenceTests.test_scan_create_is_idempotent_for_same_item_and_rejects_cross_order_duplicate` - 5 tests OK;
+  - `.venv/bin/python -m unittest tests.test_refresh_fallback tests.test_desktop_ui_contract` - 50 tests OK;
+  - `.venv/bin/python -m unittest discover -s tests` - 541 tests OK;
+  - `.venv/bin/python -m py_compile main.py sitecustomize.py taksklad/__init__.py src/taksklad/*.py tests/*.py backend/app/*.py tools/feature_acceptance_status.py tools/release_preflight.py` - OK;
+  - `.venv/bin/python tools/feature_acceptance_status.py` - `status=ok`, `manual_complete=false`, `no_open_errors=false`;
+  - `.venv/bin/python tools/release_preflight.py --skip-network` - `status=ok`;
+  - `git diff --check` - OK.
+
+### Readiness redaction and DESK-03 backend live evidence
+
+- По `DESK-03/GAP-003` добавлена фактическая live-проверка безопасной части refresh-интеграции:
+  - `.venv/bin/python tools/release_preflight.py` - `status=ok`, public backend health `version=2.0.21`;
+  - `curl -fsS https://api.taksklad.uz/health` - `status=ok`, `version=2.0.21`;
+  - `curl -fsS https://api.taksklad.uz/ready` - `status=ok`, PostgreSQL/Alembic ready.
+- `GAP-003` не закрыт полностью: live SkladBot API без токена и ручной Windows refresh остаются `Manual Acceptance`.
+- При live-проверке обнаружен риск публичной диагностики: `/ready` показывал queue `event_type` с dynamic suffix после `:`, например state-store ключи.
+- Исправлено:
+  - `backend/app/health_service.py` санитизирует readiness queue summary: `event_type` с suffix после `:` агрегируется как `prefix:*`;
+  - compact readiness errors больше не отдают raw payload, idempotency key и linked fields;
+  - `tests/test_refresh_fallback.py` получил прямой regression test, что `refresh_from_sheet(initial=False)` сохраняет выбранную текущую позицию и показывает статус `текущая позиция сохранена`;
+  - admin `/api/v1/admin/events` не менялся, потому он находится за обычной auth/session защитой.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_refresh_fallback` - 9 tests OK;
+  - `.venv/bin/python -m unittest tests.test_backend_api_persistence.BackendApiPersistenceTests.test_health_is_lightweight_and_readiness_reports_sanitized_db_queue_status` - OK;
+  - `.venv/bin/python -m unittest discover -s tests` - 539 tests OK;
+  - `.venv/bin/python -m py_compile main.py sitecustomize.py taksklad/__init__.py src/taksklad/*.py tests/*.py backend/app/*.py tools/feature_acceptance_status.py tools/release_preflight.py` - OK;
+  - `.venv/bin/python tools/feature_acceptance_status.py` - `status=ok`, `manual_complete=false`, `no_open_errors=false`;
+  - `.venv/bin/python tools/release_preflight.py --skip-network` - `status=ok`;
+  - `git diff --check` - OK.
+
+### Full feature register and first automated test/fix loop
+
+- Создан канонический реестр `docs/taksklad-feature-user-stories.xlsx`:
+  - 47 user stories из desktop, backend, web/admin, Telegram, Google Sheets, SkladBot, reports, reconciliation, deploy/runtime;
+  - expected behaviour сформулирован по текущему коду, docs и тестам;
+  - добавлены листы `Test Loop`, `Errors`, `Sources`, `Manual Acceptance`;
+  - auto/manual/live статус разделен, чтобы не выдавать unit coverage за ручную приемку склада.
+- Добавлен тест `tests/test_feature_user_stories_register.py`, который валидирует workbook как единственный канонический tracker: обязательные листы/колонки, уникальность Feature ID, соответствие `Test Loop`/`Manual Acceptance`, отсутствие `pytest`-команд и существование evidence files.
+- Добавлен `tools/feature_acceptance_status.py` как машинный статусный gate для этого tracker:
+  - JSON output с `scope=feature_register_status`;
+  - обязательные колонки проверяются внутри CLI;
+  - `Manual Acceptance` должен иметь точный набор строк по manual/auto+manual user stories, поэтому удаление строк не может сделать gate зеленым;
+  - неизвестные manual/error статусы считаются проблемой;
+  - `--require-manual-complete` падает с exit `3`, пока manual rows не приняты;
+  - `--require-no-open-errors` падает с exit `4`, пока в `Errors` есть открытые строки.
+- Явно разведены два gate:
+  - `feature_acceptance_status.py` - статус полного реестра функций и user stories;
+  - `tools/release_go_no_go.py` + `outputs/taksklad_acceptance/ACCEPTANCE_RESULTS.md` - production release GO/NO-GO.
+- Исправлена классификация `DESK-07` и `DESK-17`: они имели auto coverage, но требуют ручной Windows UI acceptance, поэтому `Manual Result=pending`.
+- `tools/prepare_acceptance_kit.py` больше не хранит текущую версию текстом `2.0.15`; version labels в acceptance kit берутся из `src/taksklad/config.py`.
+- Закрыты два локально проверяемых gaps без live-доступа:
+  - `GAP-004`: добавлен large-list contract/performance тест для карточного списка заказов на 2000 групп;
+  - `GAP-005`: добавлен asset-level тест, что все configured product image files существуют и не пустые, а packaging add-data остается под existing Windows workflow/helper tests.
+- После отдельного auto-closable selector run закрыты уже покрытые локальными тестами gaps:
+  - `GAP-006`, `GAP-007`, `GAP-019`, `GAP-030`, `GAP-040`, `GAP-042`, `GAP-043`;
+  - это закрывает строки `Errors/GAP`, но не заменяет ручную Windows/Telegram/Google/SkladBot/VDS acceptance там, где она указана в `Manual Acceptance`.
+- Найдены и исправлены 3 подтвержденные ошибки:
+  - daily reconciliation ошибочно считал mismatch, когда активный multi-SKU заказ имел одну уже выполненную позицию и Google row `Выполнено`;
+  - reconciliation endpoint без `report_date` выбирал UTC-день, а не складской день `Asia/Tashkent`;
+  - desktop search показывал в карточке multi-SKU заказа только найденную SKU и занижал план блоков, хотя выбор открывал полный заказ.
+- Исправлены логистические gaps `GAP-027` и `GAP-044`:
+  - delivery-заказы без координат больше не исчезают из логистического XLSX;
+  - основной лист `Заявки` остается только для маршрутизируемых строк;
+  - no/invalid coordinates попадают в отдельный лист `Требуют координаты`;
+  - если на дату есть только delivery без координат, backend возвращает XLSX с листом проблем вместо `404`;
+  - pickup-only и stock-shortage blocked заказы по-прежнему исключаются из логистики.
+- Закрыты локально проверяемые return gaps `GAP-014` и `GAP-022`:
+  - backend `/api/v1/returns/{order_id}` остается source of truth для возврата;
+  - desktop в backend mode отправляет confirmed items в backend и не пишет Google-only возврат без backend order id;
+  - successful return пишет return movement, освобождает КИЗ для будущего `re_outbound`, ставит Google mirror/export в очередь и создает `skladbot_return_request_create`;
+  - failed return не меняет заказ, не освобождает КИЗ и не создает pending events.
+- Закрыт локально проверяемый Google queue gap `GAP-046`:
+  - PostgreSQL branch у `acquire_google_sheets_export_lock()` намеренно не берет session-level advisory lock;
+  - внешняя гарантия параллельной обработки находится в `select_pending_export_events()` через `FOR UPDATE SKIP LOCKED`;
+  - добавлен contract test, чтобы это не выглядело как непроверенный no-op.
+- Закрыт локально проверяемый migration gap `GAP-031`:
+  - `001_initial_schema.sql` и Alembic baseline проверяются на одинаковый набор core tables/indexes;
+  - incident migration проверяется как head `20260617_0002` после baseline `20260616_0001`;
+  - downgrade posture остается forward-only: restore backup или forward repair migration.
+- Закрыт локально проверяемый web/admin gap `GAP-024`:
+  - frontend action bar теперь показывает действие `Удалить из активных`;
+  - действие доступно только для одного активного заказа без отсканированных КИЗов и без pending Google exports;
+  - UI отправляет `reason`, `idempotency_key` и `expected_updated_at`;
+  - backend остается source of truth для удаления, audit и постановки Google delete export в очередь;
+  - ручной browser/web smoke по-прежнему pending в `Manual Acceptance`.
+- Закрыт локально проверяемый desktop/runtime gap `GAP-017`:
+  - `show_critical_error()` и `report_callback_exception()` больше не отправляют operational documents/error log автоматически;
+  - аварийный путь оставляет non-blocking UI status/toast и короткий Telegram alert с текстом ошибки;
+  - лог остается локальным диагностическим артефактом, а отправка документов выполняется только отдельными отчетными/операторскими сценариями.
+- Закрыт локально проверяемый desktop/startup gap `GAP-001`:
+  - добавлен `src/taksklad/desktop_smoke.py` с безопасным `run_tk_app_smoke()`;
+  - entrypoints `main.py` и `pyinstaller_entry.py` получили `--smoke-gui`;
+  - Windows release workflow запускает `--smoke-import` и `--smoke-gui` для onefile и onedir из clean temp dirs;
+  - обычный startup, credentials/backend-read guard и ручной Windows UI acceptance не подменялись.
+- Закрыт локально проверяемый desktop/UI gap `GAP-002`:
+  - `--smoke-gui` теперь не только строит окно, но и проверяет semantic snapshot главного складского экрана;
+  - smoke проверяет наличие order list/search/current position/photo/GTIN/scan/actions/stats/backend status/status toast widgets;
+  - начальные состояния undo/next/finish остаются disabled, product photo canvas остается 170x170, order list обязан иметь canvas+scrollbar;
+  - ручной Windows UI acceptance остается pending отдельно.
+- Дополнительно зафиксированы ошибки качества самого test register:
+  - старый `.venv` проекта на Python 3.9 не подходил для текущего backend-кода;
+  - `.venv` пересобрана на Python 3.12.13 с `requirements.txt` и `backend/requirements.txt`, старая среда сохранена как `archive/local-venv-backups/.venv.py39-backup-20260622T1408`;
+  - первичная таблица ошибочно использовала pytest-style команды, хотя проектный runbook использует `unittest`;
+  - live VDS acceptance отделен от локальной unittest-команды.
+- Проверено:
+  - `/tmp/taksklad-test-py312/bin/python -m unittest tests.test_order_list_models tests.test_reconciliation_service` - 10 tests OK;
+  - targeted logistics retest по routeable/no-coordinate/pickup-only/stock-shortage сценариям - 6 tests OK;
+  - targeted returns retest по backend source-of-truth, desktop backend-mode, KIZ return/re_outbound и Google best-effort export - 12 tests OK;
+  - targeted Google pending lock/rate-limit retest - 3 tests OK;
+  - targeted migration contract retest - 4 tests OK;
+  - targeted web delete-active retest по backend reason/idempotency/no-scan/Google delete queue/Telegram safe path - 6 tests OK;
+  - targeted desktop critical-error retest по alert-without-documents, warning/info status notice, non-blocking status notice и diagnostic summary - 4 tests OK;
+  - targeted desktop startup/release/semantic GUI smoke retest - 12 tests OK;
+  - `/tmp/taksklad-test-py312/bin/python -m unittest tests.test_order_list_models tests.test_product_images` - 8 tests OK;
+  - auto-closable selector run по scan quantities, readiness, reconciliation, SkladBot daily, day report и KIZ reports - 17 tests OK;
+  - `/tmp/taksklad-test-py312/bin/python -m unittest tests.test_acceptance_excel_generator tests.test_feature_acceptance_status tests.test_feature_user_stories_register` - 19 tests OK;
+  - 28/28 уникальных локальных команд из `Test Loop` - OK;
+  - `.venv/bin/python -m unittest discover -s tests` - 538 tests OK;
+  - `.venv/bin/python -m py_compile main.py sitecustomize.py taksklad/__init__.py src/taksklad/*.py tests/*.py backend/app/*.py tools/feature_acceptance_status.py` - OK;
+  - `.venv/bin/python tools/feature_acceptance_status.py` - `status=ok`, `manual_complete=false`, `no_open_errors=false`;
+  - `.venv/bin/python tools/feature_acceptance_status.py --require-manual-complete` - exit `3`, потому 45 manual rows pending;
+  - `.venv/bin/python tools/feature_acceptance_status.py --require-no-open-errors` - exit `4`, потому 27 open Errors rows remain;
+  - `.venv/bin/python tools/release_preflight.py --skip-network` - `status=ok`;
+  - `npm run build` в `frontend` - OK;
+  - `docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config` - OK;
+  - `bash -n deploy/vds/*.sh` - OK;
+  - `npm audit --audit-level=high` в `frontend` - 0 vulnerabilities.
+- Не закрыто:
+  - ручная приемка Windows UI, принтера, updater, live Telegram/Google/SkladBot и VDS acceptance. Эти сценарии вынесены в лист `Manual Acceptance` и остаются обязательными перед утверждением цели как полностью завершенной.
 
 ## 2026-06-21
 
@@ -128,7 +782,7 @@
 
 Проверено:
 
-- `./.venv/bin/python -m unittest discover -s tests` - 455 tests OK.
+- `./.venv/bin/python -m unittest discover -s tests` - 458 tests OK.
 - `./.venv/bin/python -m unittest tests.test_daily_report tests.test_skladbot_daily_report tests.test_backend_api_persistence tests.test_backend_google_sheets_exporter tests.test_backend_telegram_import` - 160 tests OK.
 - `./.venv/bin/python -m compileall -q backend/app src/taksklad tests tools` - OK.
 - `npm --prefix frontend run build` - OK.
@@ -231,7 +885,8 @@
   - явные варианты `Самовывоз` и `Самовывоз со склада` приводятся к одному значению;
   - Telegram/desktop строки с координатами остаются доставкой: адрес берется reverse geocode по координатам, либо пишется `Координаты: ...`;
   - `backend/app/imports_service.py` сохраняет `Самовывоз со склада` как backend-норму для прямого API import без реального адреса;
-  - `backend/app/logistics_service.py` строит даты и XLSX только по заказам, где адрес не самовывоз и координаты валидны;
+  - `backend/app/logistics_service.py` строит даты по delivery-заказам, где адрес не самовывоз и заказ не заблокирован stock-shortage;
+  - delivery-заказы с валидными координатами попадают в основной маршрутный лист, а без валидных координат выводятся отдельным листом `Требуют координаты`;
   - координаты для логистики теперь проверяются по диапазонам широты/долготы, поэтому `999,999` не считается маршрутом;
   - `backend/app/google_sheets_exporter.py` пишет в mirror/export такой же fallback `Самовывоз со склада`.
 - Source of truth:
@@ -5303,6 +5958,20 @@ cd /opt/taksklad/app
   - `/ready` игнорирует failed import/event, если по нему есть terminal incident `resolved`, `ignored` или `cancelled`;
   - retry `telegram_excel_import` запрещен, если в событии нет исходного `document.file_id`;
   - Telegram failure message показывает файл, причину и следующее действие, с редактированием секретов.
+
+### Admin table pagination for large order volume
+
+- Причина: web/admin UI запрашивал `admin/table?limit=5000` и не показывал оператору, что список может быть больше загруженных строк.
+- Изменено:
+  - backend `/api/v1/admin/table` принимает `offset` вместе с `limit`;
+  - response содержит `limit`, `offset`, `row_count`, `total_rows`, `has_more`;
+  - `totals` по-прежнему считаются по всей таблице, а `rows` возвращаются страницей;
+  - frontend показывает `Показано X из Y загруженных · всего Z` и кнопку `Загрузить еще`;
+  - пока все страницы не загружены, UI явно сообщает, что фильтры применяются к загруженным строкам.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_backend_api_persistence.BackendApiPersistenceTests.test_admin_table_totals_are_not_limited_by_row_limit tests.test_backend_api_persistence.BackendApiPersistenceTests.test_admin_table_supports_offset_pagination_metadata` - 2 tests OK;
+  - `.venv/bin/python -m py_compile backend/app/admin_service.py backend/app/main.py backend/app/schemas.py` - OK;
+  - `npm run build` в `frontend` - OK.
 
 ### SkladBot create failure incidents
 

@@ -5,11 +5,12 @@ from sqlalchemy.orm import Session, selectinload
 
 from .db import SessionLocal
 from .google_backend_sync_diagnostic import item_source_key, record_source_key
-from .google_sheets_exporter import backend_status_to_sheet_status, format_skladbot_status, normalize_text
+from .google_sheets_exporter import STATUS_COMPLETED as SHEET_STATUS_COMPLETED, backend_item_sheet_status, format_skladbot_status, normalize_text
 from .google_sheets_sync_worker import load_google_sheet_records
 from .models import AuditLog, Incident, Order, OrderItem, PendingEvent
 from .orders_service import COMPLETED_STATUSES, STATUS_ARCHIVED_NO_KIZ, STATUS_CANCELLED, STATUS_REMOVED_FROM_GOOGLE
 from .redaction import redact_secrets
+from .reports_service import report_timezone
 
 
 RECONCILIATION_SOURCE = "daily_reconciliation"
@@ -445,7 +446,10 @@ def build_unique_index(values, key_func):
 
 
 def compare_status(item: OrderItem, record: dict) -> dict | None:
-    backend_status = backend_status_to_sheet_status(item.order.status)
+    if normalize_text(item.order.status).casefold() == "returned":
+        backend_status = SHEET_STATUS_COMPLETED
+    else:
+        backend_status = backend_item_sheet_status(item)
     google_status = normalize_text(record.get("status"))
     if google_status and normalize_text(backend_status).casefold() != google_status.casefold():
         return {
@@ -529,7 +533,7 @@ def incident_to_summary(incident: Incident) -> dict:
 
 def parse_report_date(value) -> date:
     if value is None or value == "":
-        return datetime.now(timezone.utc).date()
+        return datetime.now(report_timezone()).date()
     if isinstance(value, date) and not isinstance(value, datetime):
         return value
     text = normalize_text(value)

@@ -19,6 +19,7 @@ EXTRACTED_MODULES = [
     "taksklad.backend_flow",
     "taksklad.desktop_refresh_service",
     "taksklad.desktop_scan_rules",
+    "taksklad.desktop_smoke",
     "taksklad.order_list_models",
     "taksklad.order_list_widgets",
 ]

@@ -244,6 +244,60 @@ class BackendTelegramImportTests(unittest.TestCase):
             Base.metadata.drop_all(engine)
             engine.dispose()
 
+    def test_telegram_worker_blocks_invalid_notification_events_without_retry(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        original_session_local = telegram_worker_module.SessionLocal
+        try:
+            with SessionLocal() as db:
+                db.add_all([
+                    PendingEvent(
+                        event_type=telegram_worker_module.TELEGRAM_NOTIFICATION_EVENT_TYPE,
+                        status="pending",
+                        payload={"chat_id": "123", "text": ""},
+                    ),
+                    PendingEvent(
+                        event_type=telegram_worker_module.TELEGRAM_NOTIFICATION_EVENT_TYPE,
+                        status="pending",
+                        payload={"text": "Нет адресата"},
+                    ),
+                ])
+                db.commit()
+
+            sent = []
+            worker = TelegramWorker.__new__(TelegramWorker)
+            worker.allowed_chat_ids = set()
+            worker.admin_chat_ids = set()
+            worker.send_message = lambda chat_id, text: sent.append((chat_id, text))
+            telegram_worker_module.SessionLocal = SessionLocal
+
+            processed = worker.process_pending_telegram_notifications()
+
+            with SessionLocal() as db:
+                events = db.execute(
+                    select(PendingEvent).order_by(PendingEvent.created_at, PendingEvent.id)
+                ).scalars().all()
+                audits = db.execute(select(AuditLog)).scalars().all()
+
+            self.assertEqual(processed, 2)
+            self.assertEqual(sent, [])
+            self.assertEqual({event.status for event in events}, {"blocked"})
+            self.assertEqual([event.attempts for event in events], [1, 1])
+            blocked_by_error = {event.last_error: event for event in events}
+            self.assertIn("telegram notification text is empty", blocked_by_error)
+            self.assertIn("telegram notification target chat is empty", blocked_by_error)
+            self.assertEqual([audit.action for audit in audits], ["telegram_notification_blocked", "telegram_notification_blocked"])
+            self.assertEqual({audit.entity_id for audit in audits}, {str(event.id) for event in events})
+        finally:
+            telegram_worker_module.SessionLocal = original_session_local
+            Base.metadata.drop_all(engine)
+            engine.dispose()
+
     def test_telegram_worker_send_message_does_not_force_keyboard_by_default(self):
         worker = TelegramWorker.__new__(TelegramWorker)
         worker.token = "telegram-token"
@@ -1048,6 +1102,67 @@ class BackendTelegramImportTests(unittest.TestCase):
             self.assertEqual(payload["shipment_date_source"], "telegram_manual_input")
             self.assertEqual(processed, [True])
             self.assertIn("Дата принята", messages[0][1])
+        finally:
+            telegram_worker_module.SessionLocal = original_session_local
+            Base.metadata.drop_all(engine)
+            engine.dispose()
+
+    def test_telegram_worker_new_excel_supersedes_old_waiting_import_for_chat(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        original_session_local = telegram_worker_module.SessionLocal
+        try:
+            now = datetime.now(timezone.utc)
+            with SessionLocal() as db:
+                old_event = PendingEvent(
+                    event_type=telegram_worker_module.TELEGRAM_EXCEL_IMPORT_EVENT_TYPE,
+                    status=telegram_worker_module.TELEGRAM_EXCEL_IMPORT_WAITING_SHIPMENT_DATE_STATUS,
+                    payload={
+                        "chat_id": "123",
+                        "file_name": "old.xlsx",
+                        "document": {"file_name": "old.xlsx", "file_id": "old-file"},
+                        "shipment_date": "",
+                    },
+                    created_at=now - timedelta(minutes=10),
+                    updated_at=now - timedelta(minutes=10),
+                )
+                db.add(old_event)
+                db.commit()
+                old_event_id = old_event.id
+
+            messages = []
+            processed = []
+            worker = TelegramWorker.__new__(TelegramWorker)
+            worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
+            worker.process_queued_telegram_imports = lambda: processed.append(True)
+            telegram_worker_module.SessionLocal = SessionLocal
+
+            worker.enqueue_telegram_document(
+                "123",
+                {"file_name": "new.xlsx", "file_id": "new-file"},
+                update_id=80,
+            )
+            worker.confirm_waiting_telegram_import_shipment_date("123", "26.06.2026")
+
+            with SessionLocal() as db:
+                old_event = db.get(PendingEvent, old_event_id)
+                events = db.execute(
+                    select(PendingEvent).order_by(PendingEvent.created_at, PendingEvent.id)
+                ).scalars().all()
+                new_event = next(event for event in events if (event.payload or {}).get("file_name") == "new.xlsx")
+
+            self.assertEqual(old_event.status, "cancelled")
+            self.assertEqual(old_event.last_error, "superseded_by_new_telegram_excel_file")
+            self.assertEqual(new_event.status, "pending")
+            self.assertEqual(new_event.payload["shipment_date"], "26.06.2026")
+            self.assertEqual(processed, [True])
+            self.assertIn("Файл: new.xlsx", messages[-1][1])
+            self.assertNotIn("Файл: old.xlsx", messages[-1][1])
         finally:
             telegram_worker_module.SessionLocal = original_session_local
             Base.metadata.drop_all(engine)

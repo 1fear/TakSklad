@@ -139,6 +139,18 @@ def import_orders(records, filename=None, source="excel"):
     )
 
 
+def preview_import_orders(records, filename=None, source="excel"):
+    return backend_request(
+        "POST",
+        "/api/v1/imports/preview",
+        {
+            "source": source,
+            "filename": filename,
+            "rows": records,
+        },
+    )
+
+
 def create_scan(order_item_id, code, workstation_id=None, scanned_at=None):
     payload = {
         "order_item_id": order_item_id,

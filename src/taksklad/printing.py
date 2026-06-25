@@ -76,7 +76,7 @@ def list_available_printers():
     return []
 
 
-def load_print_settings():
+def normalize_print_settings(settings=None):
     defaults = {
         "printer_name": "Термопринтер",
         "label_width_mm": LABEL_WIDTH_MM,
@@ -84,10 +84,21 @@ def load_print_settings():
         "dpi": LABEL_DPI,
         "scale": "100%",
     }
-    settings = load_data_section("print_settings", {})
     if isinstance(settings, dict):
         defaults.update({key: value for key, value in settings.items() if value not in (None, "")})
+    label_width, label_height = normalize_label_size(
+        defaults.get("label_width_mm"),
+        defaults.get("label_height_mm"),
+    )
+    defaults["printer_name"] = normalize_text(defaults.get("printer_name")) or "Термопринтер"
+    defaults["label_width_mm"] = label_width
+    defaults["label_height_mm"] = label_height
+    defaults["dpi"] = parse_int_value(defaults.get("dpi")) or LABEL_DPI
+    defaults["scale"] = normalize_text(defaults.get("scale")) or "100%"
     return defaults
+
+def load_print_settings():
+    return normalize_print_settings(load_data_section("print_settings", {}))
 
 def save_print_settings(settings):
     return save_data_section("print_settings", settings)
@@ -242,18 +253,16 @@ def send_image_to_printer(file_path, printer_name="", label_width_mm=None, label
         logging.exception("Не удалось отправить сводку напрямую на печать")
         return False
 
-def print_summary(address, all_products):
+def print_summary(address, all_products, print_settings=None):
     try:
         if not all_products:
             return None
 
-        print_settings = load_print_settings()
-        label_width_mm, label_height_mm = normalize_label_size(
-            print_settings.get("label_width_mm"),
-            print_settings.get("label_height_mm"),
-        )
-        dpi = parse_int_value(print_settings.get("dpi")) or LABEL_DPI
-        printer_name = normalize_text(print_settings.get("printer_name"))
+        print_settings = normalize_print_settings(print_settings) if print_settings is not None else load_print_settings()
+        label_width_mm = print_settings["label_width_mm"]
+        label_height_mm = print_settings["label_height_mm"]
+        dpi = print_settings["dpi"]
+        printer_name = print_settings["printer_name"]
 
         width_px = mm_to_px(label_width_mm, dpi=dpi)
         height_px = mm_to_px(label_height_mm, dpi=dpi)

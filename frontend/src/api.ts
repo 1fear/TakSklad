@@ -217,6 +217,68 @@ export type AdminIncidentsResponse = {
   summary: Record<string, unknown>;
 };
 
+export type ClientPoint = {
+  id: string;
+  client_name: string;
+  point_name: string;
+  address: string;
+  coordinates: string;
+  representative: string;
+  delivery_from: string;
+  delivery_to: string;
+  is_active: boolean;
+  is_saved: boolean;
+  source: string;
+  has_custom_timeslot: boolean;
+  orders_count: number;
+  last_order_date: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+export type ClientPointOrderSummary = {
+  client_name: string;
+  normalized_client: string;
+  totals: ClientPointOrderSummaryTotals;
+  dates: ClientPointOrderSummaryDate[];
+};
+
+export type ClientPointOrderSummaryTotals = {
+  orders_count: number;
+  positions_count: number;
+  quantity_blocks: number;
+  quantity_pieces: number;
+};
+
+export type ClientPointOrderSummaryDate = {
+  shipment_date: string | null;
+  orders_count: number;
+  positions_count: number;
+  quantity_blocks: number;
+  quantity_pieces: number;
+  products: ClientPointOrderSummaryProduct[];
+};
+
+export type ClientPointOrderSummaryProduct = {
+  product: string;
+  positions_count: number;
+  quantity_blocks: number;
+  quantity_pieces: number;
+};
+
+export type ClientPointTimeslotPayload = {
+  client_name: string;
+  address: string;
+  point_name?: string;
+  coordinates?: string;
+  representative?: string;
+  delivery_from: string;
+  delivery_to: string;
+  is_active?: boolean;
+  actor?: string;
+  reason?: string;
+};
+
 export type ReadinessResponse = {
   generated_at: string;
   status: string;
@@ -234,6 +296,11 @@ export type AdminTable = {
   totals: AdminTableTotals;
   rows: AdminTableRow[];
   recent_activity: AdminActivity[];
+  limit: number;
+  offset: number;
+  row_count: number;
+  total_rows: number;
+  has_more: boolean;
 };
 
 export type ApiConfig = {
@@ -241,9 +308,17 @@ export type ApiConfig = {
   token: string;
 };
 
+export type AdminTableRequest = {
+  limit?: number;
+  offset?: number;
+  activityLimit?: number;
+};
+
 export type AuthSession = {
   authenticated: boolean;
   login: string;
+  role: string;
+  permissions: string[];
   expires_at: string | null;
 };
 
@@ -282,6 +357,16 @@ export type AdminBulkActionResult = {
   dry_run: boolean;
 };
 
+export type ActiveOrderDeleteResult = {
+  order_id: string;
+  deleted: boolean;
+  dry_run: boolean;
+  google_delete_event_id: string;
+  skladbot_request_number: string;
+  skladbot_request_id: string;
+  message: string;
+};
+
 export type EventQueueActionPayload = {
   reason: string;
   actor?: string;
@@ -298,6 +383,7 @@ export type SyncSourcesResult = {
 };
 
 export const plannedAdminActionEndpoints = {
+  deleteActive: "/api/v1/admin/orders/{order_id}/delete-active",
   resetRescan: "/api/v1/admin/orders/{order_id}/reset-rescan",
   restore: "/api/v1/admin/orders/{order_id}/restore",
   resyncSkladBot: "/api/v1/admin/orders/{order_id}/resync-skladbot",
@@ -341,8 +427,13 @@ export function listActiveOrders(config: ApiConfig) {
   return apiRequest<Order[]>(config, "/api/v1/orders/active");
 }
 
-export function getAdminTable(config: ApiConfig) {
-  return apiRequest<AdminTable>(config, "/api/v1/admin/table?limit=5000");
+export function getAdminTable(config: ApiConfig, options: AdminTableRequest = {}) {
+  const query = new URLSearchParams({
+    limit: String(options.limit ?? 5000),
+    offset: String(options.offset ?? 0),
+    activity_limit: String(options.activityLimit ?? 30),
+  });
+  return apiRequest<AdminTable>(config, `/api/v1/admin/table?${query.toString()}`);
 }
 
 export function getAdminEvents(config: ApiConfig) {
@@ -352,6 +443,27 @@ export function getAdminEvents(config: ApiConfig) {
 export function getAdminIncidents(config: ApiConfig, params: Record<string, string> = {}) {
   const query = new URLSearchParams({ limit: "200", ...params });
   return apiRequest<AdminIncidentsResponse>(config, `/api/v1/admin/incidents?${query.toString()}`);
+}
+
+export function listClientPoints(config: ApiConfig, params: { query?: string; customTimeslot?: boolean; limit?: number } = {}) {
+  const query = new URLSearchParams({
+    limit: String(params.limit ?? 1000),
+  });
+  if (params.query) query.set("query", params.query);
+  if (params.customTimeslot !== undefined) query.set("custom_timeslot", params.customTimeslot ? "true" : "false");
+  return apiRequest<ClientPoint[]>(config, `/api/v1/admin/client-points?${query.toString()}`);
+}
+
+export function getClientPointOrderSummary(config: ApiConfig, clientName: string) {
+  const query = new URLSearchParams({ client_name: clientName });
+  return apiRequest<ClientPointOrderSummary>(config, `/api/v1/admin/client-points/order-summary?${query.toString()}`);
+}
+
+export function updateClientPointTimeslot(config: ApiConfig, payload: ClientPointTimeslotPayload) {
+  return apiRequest<ClientPoint>(config, "/api/v1/admin/client-points/timeslot", {
+    method: "POST",
+    body: payload,
+  });
 }
 
 export function updateIncidentStatus(config: ApiConfig, incidentId: string, payload: EventQueueActionPayload & { status: string }) {
@@ -411,6 +523,13 @@ export function archiveOrderWithoutKiz(config: ApiConfig, orderId: string, paylo
 
 export function cancelOrder(config: ApiConfig, orderId: string, payload: AdminActionPayload) {
   return apiRequest<Order>(config, `/api/v1/admin/orders/${orderId}/cancel`, {
+    method: "POST",
+    body: payload,
+  });
+}
+
+export function deleteActiveOrder(config: ApiConfig, orderId: string, payload: AdminActionPayload) {
+  return apiRequest<ActiveOrderDeleteResult>(config, `/api/v1/admin/orders/${orderId}/delete-active`, {
     method: "POST",
     body: payload,
   });

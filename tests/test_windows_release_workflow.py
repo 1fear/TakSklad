@@ -21,7 +21,9 @@ class WindowsReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("Smoke test transition exe imports from clean directory", workflow)
         self.assertIn("RUNNER_TEMP", workflow)
         self.assertIn(".\\TakSklad.exe --smoke-import", workflow)
+        self.assertIn(".\\TakSklad.exe --smoke-gui", workflow)
         self.assertIn(".\\TakSklad\\TakSklad.exe --smoke-import", workflow)
+        self.assertIn(".\\TakSklad\\TakSklad.exe --smoke-gui", workflow)
 
     def test_windows_release_does_not_smoke_test_from_checkout_root(self):
         workflow = (PROJECT_ROOT / ".github" / "workflows" / "build-windows-release.yml").read_text(

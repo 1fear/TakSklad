@@ -103,6 +103,22 @@ class ExcelNormalizerTests(unittest.TestCase):
         self.assertEqual(record["Товары"], "Chapman Brown OP 20")
         self.assertEqual(record["Кол-во ШТ"], 20)
         self.assertEqual(record["Адрес"], "Адрес 41.373879, 69.322741")
+        self.assertEqual(record["Координаты"], "41.373879, 69.322741")
+
+    def test_desktop_import_rejects_unsupported_file_extension_before_openpyxl(self):
+        excel_import = import_excel_import()
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "legacy_orders.xls"
+            path.write_text("not a supported xlsx file", encoding="utf-8")
+            result = excel_import.parse_excel_order_files([str(path)])
+
+        self.assertEqual(result["records"], [])
+        self.assertEqual(result["source_rows_count"], 0)
+        self.assertEqual(result["files_count"], 1)
+        self.assertIn("legacy_orders.xls: неподдерживаемый формат файла", result["errors"][0])
+        self.assertIn(".xlsm", result["errors"][0])
+        self.assertIn(".xlsx", result["errors"][0])
 
     def test_desktop_import_marks_missing_address_as_pickup(self):
         excel_import = import_excel_import()
@@ -140,6 +156,7 @@ class ExcelNormalizerTests(unittest.TestCase):
         self.assertEqual(calls, [])
         self.assertEqual(result["errors"], [])
         self.assertEqual(result["records"][0]["Адрес"], "Самовывоз со склада")
+        self.assertEqual(result["records"][0]["Координаты"], "")
 
     def test_parses_delivery_date_from_upper_header(self):
         excel_import = import_excel_import()
@@ -232,6 +249,41 @@ class ExcelNormalizerTests(unittest.TestCase):
         self.assertEqual(calls, ["41.325658539017745, 69.23166364431383"])
         self.assertEqual(result["errors"], [])
         self.assertEqual(result["records"][0]["Адрес"], "Ташкент, Юнусабадский район")
+        self.assertEqual(result["records"][0]["Координаты"], "41.325658539017745, 69.23166364431383")
+
+    def test_desktop_import_keeps_coordinates_when_reverse_geocode_fails(self):
+        excel_import = import_excel_import()
+        excel_import.reverse_geocode_yandex = lambda coords, cache=None: ("", "timeout")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "coordinates_without_address.xlsx"
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.title = "Заявки"
+            worksheet.append([
+                "Клиент",
+                "Тип оплаты",
+                "Товары",
+                "Кол-во ШТ",
+                "Адрес",
+                "Координаты",
+            ])
+            worksheet.append([
+                "Delivery Client",
+                "Терминал",
+                "Chapman Brown OP 20",
+                20,
+                "",
+                "41.31, 69.27",
+            ])
+            workbook.save(path)
+
+            result = excel_import.parse_excel_order_files([str(path)])
+
+        self.assertEqual(result["geocode_failed_count"], 1)
+        self.assertIn("адрес по координатам не получен", result["warnings"][0])
+        self.assertEqual(result["records"][0]["Адрес"], "Координаты: 41.31, 69.27")
+        self.assertEqual(result["records"][0]["Координаты"], "41.31, 69.27")
 
     def test_summary_rows_are_skipped(self):
         row = ["ИТОГО", "ИТОГО", "ИТОГО", "ИТОГО", "ИТОГО", "ИТОГО", 20]

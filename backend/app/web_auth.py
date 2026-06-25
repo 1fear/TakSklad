@@ -4,30 +4,65 @@ import hmac
 import json
 import secrets
 import time
+from dataclasses import dataclass
+
+from sqlalchemy import select
 
 
 SESSION_COOKIE_NAME = "taksklad_web_session"
+ROLE_ADMIN = "admin"
+ROLE_LOGISTICS_SLOTS = "logistics_slots"
+ROLE_OPERATOR = "operator"
+PERMISSION_ADMIN_WRITE = "admin:write"
+PERMISSION_CLIENT_POINTS_WRITE = "client_points:write"
+
+
+@dataclass(frozen=True)
+class AuthIdentity:
+    login: str
+    role: str
 
 
 class WebAuthError(Exception):
     pass
 
 
-def authenticate_web_user(settings, login, password):
-    if not settings.web_auth_enabled:
+def authenticate_web_user(settings, login, password, db=None):
+    normalized_login = normalize_login(login)
+    if not normalized_login:
+        raise WebAuthError("invalid credentials")
+
+    if settings.web_login and settings.web_password_hash and constant_time_equals(normalized_login, settings.web_login):
+        if not verify_password(str(password or ""), settings.web_password_hash):
+            raise WebAuthError("invalid credentials")
+        return AuthIdentity(login=settings.web_login, role=ROLE_ADMIN)
+
+    if db is not None:
+        user = find_active_db_user(db, normalized_login)
+        if user and user.password_hash and verify_password(str(password or ""), user.password_hash):
+            return AuthIdentity(login=user.username, role=normalize_role(user.role))
+
+    if not settings.web_auth_enabled and db is None:
         raise WebAuthError("web auth is not configured")
-    if not constant_time_equals(normalize_login(login), settings.web_login):
-        raise WebAuthError("invalid credentials")
-    if not verify_password(str(password or ""), settings.web_password_hash):
-        raise WebAuthError("invalid credentials")
-    return settings.web_login
+    raise WebAuthError("invalid credentials")
 
 
-def create_session_token(settings, login, now=None):
+def find_active_db_user(db, login):
+    from .models import User
+
+    return db.execute(
+        select(User)
+        .where(User.username == login)
+        .where(User.is_active.is_(True))
+    ).scalar_one_or_none()
+
+
+def create_session_token(settings, login, role=ROLE_ADMIN, now=None):
     secret = session_secret(settings)
     now = int(now or time.time())
     payload = {
         "sub": normalize_login(login),
+        "role": normalize_role(role),
         "iat": now,
         "exp": now + int(settings.web_session_ttl_seconds),
         "nonce": secrets.token_urlsafe(12),
@@ -54,8 +89,10 @@ def verify_session_token(settings, token, now=None):
     if int(payload.get("exp") or 0) < now:
         raise WebAuthError("session expired")
     login = normalize_login(payload.get("sub"))
-    if not login or login != settings.web_login:
+    if not login:
         raise WebAuthError("invalid session subject")
+    payload["sub"] = login
+    payload["role"] = normalize_session_role(settings, payload)
     return payload
 
 
@@ -82,6 +119,33 @@ def base64url_decode(value):
 
 def normalize_login(value):
     return "".join(ch for ch in str(value or "").strip() if ch.isdigit() or ch == "+")
+
+
+def normalize_session_role(settings, payload):
+    role = normalize_role(payload.get("role"))
+    if role != ROLE_OPERATOR:
+        return role
+    if constant_time_equals(normalize_login(payload.get("sub")), settings.web_login):
+        return ROLE_ADMIN
+    return role
+
+
+def normalize_role(value):
+    role = str(value or "").strip().casefold().replace("-", "_")
+    if role in {"admin", "administrator", "owner"}:
+        return ROLE_ADMIN
+    if role in {"logistics_slots", "logistics", "logistic_slots", "client_points"}:
+        return ROLE_LOGISTICS_SLOTS
+    return role or ROLE_OPERATOR
+
+
+def role_permissions(role):
+    normalized_role = normalize_role(role)
+    if normalized_role == ROLE_ADMIN:
+        return (PERMISSION_ADMIN_WRITE, PERMISSION_CLIENT_POINTS_WRITE)
+    if normalized_role == ROLE_LOGISTICS_SLOTS:
+        return (PERMISSION_CLIENT_POINTS_WRITE,)
+    return ()
 
 
 def constant_time_equals(left, right):

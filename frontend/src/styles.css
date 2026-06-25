@@ -1,4 +1,13 @@
 :root {
+  --color-text: #202326;
+  --color-muted: #6d7168;
+  --color-surface: #ffffff;
+  --color-surface-soft: #fbfcfa;
+  --color-border: #d7dad1;
+  --color-border-soft: #e0e2dc;
+  --color-primary: #16635b;
+  --color-primary-soft: #f0f4ee;
+  --focus-ring: 0 0 0 3px rgba(22, 99, 91, 0.18);
   color: #202326;
   background: #f4f5f3;
   font-family:
@@ -28,6 +37,29 @@ textarea {
 
 button {
   border: 0;
+  touch-action: manipulation;
+}
+
+button,
+input,
+select,
+textarea,
+summary {
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    background-color 160ms ease,
+    color 160ms ease,
+    opacity 160ms ease;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible {
+  outline: 0;
+  box-shadow: var(--focus-ring);
 }
 
 .app-shell {
@@ -269,6 +301,7 @@ button {
   display: flex;
   align-items: center;
   gap: 12px;
+  min-width: 0;
 }
 
 .brand img {
@@ -280,9 +313,14 @@ button {
 .brand strong,
 .brand span {
   display: block;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .brand strong {
+  line-height: 1.05;
   font-size: 18px;
 }
 
@@ -311,6 +349,7 @@ button {
 }
 
 .nav-tabs button {
+  min-height: 44px;
   cursor: pointer;
 }
 
@@ -348,6 +387,10 @@ button {
   margin-bottom: 18px;
 }
 
+.topbar > div:first-child {
+  min-width: 280px;
+}
+
 .topbar-actions {
   display: flex;
   flex-wrap: wrap;
@@ -359,7 +402,7 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  min-height: 40px;
+  min-height: 44px;
   border: 1px solid #d7dad1;
   border-radius: 8px;
   padding: 0 12px;
@@ -381,13 +424,14 @@ button {
 }
 
 .icon-button,
+.primary-button,
 .connection-bar button,
 .ghost-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-height: 40px;
+  min-height: 44px;
   border-radius: 8px;
   padding: 0 14px;
   background: #16635b;
@@ -402,7 +446,25 @@ button {
   color: #31524e;
 }
 
+.icon-button:hover:not(:disabled),
+.primary-button:hover:not(:disabled) {
+  background: #12534d;
+}
+
+.ghost-button:hover:not(:disabled),
+.connection-bar button:hover:not(:disabled) {
+  border-color: #b9c1b5;
+  background: #f7faf8;
+}
+
+.ghost-button:active:not(:disabled),
+.icon-button:active:not(:disabled),
+.primary-button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
 .icon-button:disabled,
+.primary-button:disabled,
 .ghost-button:disabled {
   cursor: not-allowed;
   opacity: 0.64;
@@ -420,12 +482,18 @@ button {
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 40px;
+  min-height: 44px;
   border: 1px solid #d7dad1;
   border-radius: 8px;
   padding: 0 12px;
   background: #ffffff;
   color: #6d7168;
+}
+
+.search-box:focus-within,
+.connection-bar label:focus-within {
+  border-color: var(--color-primary);
+  box-shadow: var(--focus-ring);
 }
 
 .connection-bar input,
@@ -458,11 +526,41 @@ button {
   color: #1d6b3a;
 }
 
+.stats-section {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.stats-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.stats-section-head h2 {
+  margin: 0;
+  color: #202326;
+  font-size: 16px;
+  line-height: 1.2;
+}
+
+.stats-section-head span {
+  color: #6d7168;
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .stats-row {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
   margin-bottom: 16px;
+}
+
+.stats-section .stats-row {
+  margin-bottom: 0;
 }
 
 .stats-row.compact {
@@ -528,11 +626,17 @@ button {
 
 .panel-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   border-bottom: 1px solid #eceee8;
   padding: 14px;
+}
+
+.panel-header > div:first-child {
+  flex: 1 1 260px;
+  min-width: 0;
 }
 
 .panel-header h2,
@@ -546,7 +650,14 @@ button {
 }
 
 .search-box {
-  max-width: 260px;
+  flex: 0 1 340px;
+  width: min(100%, 340px);
+  max-width: 340px;
+  min-width: 240px;
+}
+
+.client-create-toggle {
+  flex: 0 0 auto;
 }
 
 .orders-list {
@@ -735,6 +846,25 @@ button {
   padding: 12px 14px;
 }
 
+.table-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid #eceee8;
+  padding: 12px 14px 4px;
+  color: #6d7168;
+  font-size: 13px;
+}
+
+.table-pagination span {
+  overflow-wrap: anywhere;
+}
+
+.table-pagination strong {
+  color: #202326;
+}
+
 .action-bar {
   display: flex;
   align-items: center;
@@ -796,7 +926,7 @@ button {
 }
 
 .filter-select {
-  min-height: 40px;
+  min-height: 44px;
   border: 1px solid #d7dad1;
   border-radius: 8px;
   padding: 0 32px 0 10px;
@@ -804,7 +934,18 @@ button {
   color: #202326;
 }
 
+.date-input:focus,
+.filter-select:focus,
+.client-text-input:focus,
+.time-input:focus,
+.admin-reason-field textarea:focus {
+  border-color: var(--color-primary);
+  box-shadow: var(--focus-ring);
+  outline: 0;
+}
+
 .data-table-wrap {
+  position: relative;
   overflow: auto;
   padding: 0 14px 14px;
 }
@@ -1046,6 +1187,194 @@ button {
   color: #8a2f22;
 }
 
+.client-points-table-wrap {
+  max-height: calc(100vh - 430px);
+}
+
+.client-points-table {
+  min-width: 980px;
+}
+
+.client-points-table td:last-child,
+.client-points-table .actions-col {
+  width: 190px;
+}
+
+.client-point-form {
+  display: grid;
+  gap: 10px;
+  border-bottom: 1px solid #eceee8;
+  padding: 12px 14px;
+  background: #f7faf8;
+}
+
+.client-point-form h3 {
+  margin: 0;
+  color: #202326;
+  font-size: 15px;
+  line-height: 1.2;
+}
+
+.client-point-form-grid {
+  display: grid;
+  grid-template-columns:
+    minmax(180px, 1.15fr)
+    minmax(220px, 1.45fr)
+    minmax(120px, 0.8fr)
+    minmax(96px, 0.55fr)
+    minmax(96px, 0.55fr)
+    minmax(150px, 1fr)
+    auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.client-point-form label,
+.client-point-form label > span {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.client-point-form label > span {
+  color: #6d7168;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.client-text-input {
+  min-height: 44px;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #d7dad1;
+  border-radius: 8px;
+  padding: 0 10px;
+  background: #ffffff;
+  color: #202326;
+}
+
+.client-point-add-button {
+  align-self: end;
+}
+
+.slot-edit-row,
+.client-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.time-input {
+  width: 100%;
+  min-width: 96px;
+  min-height: 44px;
+  border: 1px solid #d7dad1;
+  border-radius: 8px;
+  padding: 0 8px;
+  background: #ffffff;
+  color: #202326;
+}
+
+.status-badge.client-custom {
+  background: #fff2d7;
+  color: #8a5300;
+}
+
+.status-badge.client-default {
+  background: #e9f3ef;
+  color: #16635b;
+}
+
+.client-orders-toggle {
+  display: grid;
+  gap: 2px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.client-orders-toggle:disabled {
+  cursor: default;
+}
+
+.client-orders-toggle:not(:disabled) .cell-title {
+  color: #16635b;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.client-orders-detail-row td {
+  padding: 0;
+  background: #f7faf8;
+}
+
+.client-orders-detail,
+.client-orders-empty {
+  padding: 12px 14px;
+}
+
+.client-orders-detail {
+  display: grid;
+  gap: 10px;
+}
+
+.client-orders-empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #6d7168;
+}
+
+.client-order-date-card {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #dfe5dc;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 10px 12px;
+}
+
+.client-order-date-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.client-order-date-head span {
+  color: #6d7168;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.client-order-products {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.client-order-products li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+}
+
+.client-order-products span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.client-order-products strong {
+  white-space: nowrap;
+}
+
 .json-preview {
   max-width: 360px;
 }
@@ -1100,8 +1429,14 @@ button {
   cursor: pointer;
 }
 
-.admin-center-table tr:hover {
+.admin-center-table tr:hover,
+.admin-center-table tr:focus-visible {
   background: #f7faf8;
+}
+
+.admin-center-table tr:focus-visible {
+  outline: 0;
+  box-shadow: inset 3px 0 0 var(--color-primary);
 }
 
 .admin-detail-panel {
@@ -1482,9 +1817,11 @@ button {
   .nav-tabs {
     display: flex;
     overflow-x: auto;
+    scrollbar-width: thin;
   }
 
   .nav-tabs button {
+    flex: 0 0 auto;
     width: auto;
   }
 
@@ -1512,6 +1849,14 @@ button {
 
   .diagnostics-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .client-point-form-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .client-point-add-button {
+    justify-self: start;
   }
 }
 
@@ -1544,6 +1889,7 @@ button {
   .connection-bar,
   .stats-row,
   .items-grid,
+  .client-point-form-grid,
   .filters-bar {
     grid-template-columns: 1fr;
   }
@@ -1553,12 +1899,23 @@ button {
   }
 
   .search-box {
+    flex-basis: 100%;
     max-width: none;
+    min-width: 0;
   }
 
   .topbar-actions,
   .action-buttons {
     justify-content: stretch;
+  }
+
+  .topbar > div:first-child,
+  .topbar-actions,
+  .topbar-actions .user-pill,
+  .topbar-actions button,
+  .client-create-toggle {
+    width: 100%;
+    min-width: 0;
   }
 
   .diagnostics-grid,
@@ -1570,5 +1927,26 @@ button {
   .topbar-actions button,
   .action-buttons button {
     flex: 1 1 auto;
+  }
+
+  .action-buttons .danger-button {
+    flex-basis: 100%;
+  }
+
+  .data-table-wrap {
+    background:
+      linear-gradient(90deg, rgba(255, 255, 255, 0), #ffffff 70%) right / 24px 100% no-repeat,
+      #ffffff;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
   }
 }

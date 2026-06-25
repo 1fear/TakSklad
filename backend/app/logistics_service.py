@@ -8,6 +8,7 @@ from openpyxl.utils import get_column_letter
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from .client_points_service import client_point_delivery_slot_map, delivery_slot_for_order
 from .models import Order, OrderItem
 from .orders_service import ApiError
 from .reports_service import parse_report_date
@@ -55,6 +56,17 @@ LOGISTICS_HEADERS = [
     "Теги заявок",
 ]
 
+LOGISTICS_COORDINATE_PROBLEM_HEADERS = [
+    "Клиент",
+    "Адрес",
+    "Id заявки",
+    "Причина",
+    "Товары",
+    "Тип оплаты",
+    "Дата отгрузки",
+    "Складская заявка",
+]
+
 DEFAULT_BLOCK_PRICE = 240000
 PICKUP_ADDRESS = "Самовывоз со склада"
 
@@ -67,7 +79,7 @@ def list_logistics_dates(db: Session):
     ).scalars().all()
     dates = []
     for order in orders:
-        if not order.order_date or not is_logistics_delivery_order(order):
+        if not order.order_date or not is_logistics_candidate_order(order):
             continue
         value = order.order_date.isoformat()
         if value not in dates:
@@ -85,9 +97,12 @@ def build_logistics_report_xlsx(db: Session, shipment_date: str):
     ).scalars().all()
     if not orders:
         raise ApiError(404, f"No orders for shipment date {report_date.isoformat()}")
-    delivery_orders = [order for order in orders if is_logistics_delivery_order(order)]
-    if not delivery_orders:
+    candidate_orders = [order for order in orders if is_logistics_candidate_order(order)]
+    if not candidate_orders:
         raise ApiError(404, f"No logistics delivery orders for shipment date {report_date.isoformat()}")
+    delivery_orders = [order for order in candidate_orders if is_logistics_delivery_order(order)]
+    coordinate_problem_orders = [order for order in candidate_orders if not is_logistics_delivery_order(order)]
+    delivery_slots = client_point_delivery_slot_map(db, delivery_orders)
 
     workbook = Workbook()
     sheet = workbook.active
@@ -98,6 +113,7 @@ def build_logistics_report_xlsx(db: Session, shipment_date: str):
     for order in delivery_orders:
         coordinates = normalize_coordinates((order.raw_payload or {}).get("coordinates"))
         latitude, longitude = split_coordinates(coordinates)
+        delivery_from, delivery_to = delivery_slot_for_order(order, delivery_slots)
         for item in sorted(order.items, key=lambda value: (value.product, str(value.id))):
             quantity_blocks = item_quantity_blocks(item)
             line_total = parse_int((item.raw_payload or {}).get("line_total"))
@@ -108,11 +124,12 @@ def build_logistics_report_xlsx(db: Session, shipment_date: str):
             set_cell(row, 1, "Доставка")
             set_cell(row, 3, order.client)
             set_cell(row, 5, order.representative or "")
+            set_cell(row, 6, order.address)
             set_cell(row, 7, coordinates)
             set_cell(row, 9, order.payment_type)
             set_cell(row, 10, report_date.strftime("%d.%m.%Y"))
-            set_cell(row, 11, "10:00")
-            set_cell(row, 12, "18:00")
+            set_cell(row, 11, delivery_from)
+            set_cell(row, 12, delivery_to)
             set_cell(row, 18, item.product)
             set_cell(row, 19, quantity_blocks)
             set_cell(row, 22, block_price)
@@ -124,6 +141,22 @@ def build_logistics_report_xlsx(db: Session, shipment_date: str):
             sheet.append(row)
 
     autosize_columns(sheet)
+    if coordinate_problem_orders:
+        problem_sheet = workbook.create_sheet("Требуют координаты")
+        problem_sheet.append(LOGISTICS_COORDINATE_PROBLEM_HEADERS)
+        apply_header_style(problem_sheet)
+        for order in coordinate_problem_orders:
+            problem_sheet.append([
+                order.client,
+                order.address,
+                (order.raw_payload or {}).get("source_order_id") or "",
+                logistics_coordinate_problem_reason(order),
+                order_product_summary(order),
+                order.payment_type,
+                report_date.strftime("%d.%m.%Y"),
+                (order.raw_payload or {}).get("skladbot_request_number") or "",
+            ])
+        autosize_columns(problem_sheet)
     buffer = BytesIO()
     workbook.save(buffer)
     return buffer.getvalue(), logistics_report_filename(report_date)
@@ -159,11 +192,33 @@ def format_coordinate(value):
 
 
 def is_logistics_delivery_order(order):
+    if not is_logistics_candidate_order(order):
+        return False
+    return bool(normalize_coordinates((order.raw_payload or {}).get("coordinates")))
+
+
+def is_logistics_candidate_order(order):
     if is_skladbot_stock_shortage_blocked_order(order):
         return False
     if is_pickup_address(order.address):
         return False
-    return bool(normalize_coordinates((order.raw_payload or {}).get("coordinates")))
+    return True
+
+
+def logistics_coordinate_problem_reason(order):
+    raw_coordinates = str((order.raw_payload or {}).get("coordinates") or "").strip()
+    if raw_coordinates:
+        return "Невалидные координаты"
+    return "Нет координат"
+
+
+def order_product_summary(order):
+    parts = []
+    for item in sorted(order.items, key=lambda value: (value.product, str(value.id))):
+        quantity = item_quantity_blocks(item)
+        suffix = f" - {quantity} блоков" if quantity else ""
+        parts.append(f"{item.product}{suffix}")
+    return "; ".join(parts)
 
 
 def is_skladbot_stock_shortage_blocked_order(order):

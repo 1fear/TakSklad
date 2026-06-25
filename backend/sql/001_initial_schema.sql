@@ -3,6 +3,7 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE TABLE IF NOT EXISTS users (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     username varchar(120) NOT NULL UNIQUE,
+    password_hash varchar(255),
     role varchar(40) NOT NULL DEFAULT 'operator',
     is_active boolean NOT NULL DEFAULT true,
     created_at timestamptz NOT NULL DEFAULT now()
@@ -105,6 +106,24 @@ CREATE TABLE IF NOT EXISTS pending_events (
 
 ALTER TABLE pending_events ADD COLUMN IF NOT EXISTS idempotency_key varchar(180);
 
+CREATE TABLE IF NOT EXISTS client_points (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    client_name varchar(255) NOT NULL,
+    point_name varchar(255),
+    address text NOT NULL,
+    normalized_client varchar(255) NOT NULL,
+    normalized_address text NOT NULL,
+    coordinates text,
+    representative varchar(255),
+    delivery_from varchar(5) NOT NULL DEFAULT '10:00',
+    delivery_to varchar(5) NOT NULL DEFAULT '18:00',
+    is_active boolean NOT NULL DEFAULT true,
+    raw_payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT uq_client_points_normalized UNIQUE (normalized_client, normalized_address)
+);
+
 CREATE TABLE IF NOT EXISTS audit_log (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     actor_user_id uuid REFERENCES users(id) ON DELETE SET NULL,
@@ -127,4 +146,6 @@ CREATE INDEX IF NOT EXISTS idx_kiz_movements_scan_code_id ON kiz_movements(scan_
 CREATE INDEX IF NOT EXISTS idx_import_files_sha256 ON import_files(sha256);
 CREATE INDEX IF NOT EXISTS idx_pending_events_status ON pending_events(status);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_pending_events_idempotency_key ON pending_events(idempotency_key);
+CREATE INDEX IF NOT EXISTS idx_client_points_normalized ON client_points(normalized_client, normalized_address);
+CREATE INDEX IF NOT EXISTS idx_client_points_timeslot ON client_points(delivery_from, delivery_to);
 CREATE INDEX IF NOT EXISTS idx_audit_log_created_at ON audit_log(created_at);

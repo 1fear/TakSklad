@@ -1,12 +1,13 @@
 import unittest
-from datetime import date
+from datetime import date, datetime, timezone
+from unittest.mock import patch
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.app.models import Base, Incident, Order, OrderItem, PendingEvent
-from backend.app.reconciliation_service import run_daily_reconciliation
+from backend.app.reconciliation_service import parse_report_date, run_daily_reconciliation
 
 
 class ReconciliationServiceTests(unittest.TestCase):
@@ -221,6 +222,68 @@ class ReconciliationServiceTests(unittest.TestCase):
         self.assertEqual(result["google"]["status_mismatches"], 0)
         self.assertEqual(incidents, [])
         self.assertEqual(notifications, [])
+
+    def test_completed_item_in_active_multi_sku_order_matches_completed_google_row(self):
+        with self.SessionLocal() as db:
+            order, completed_item = self.add_order(
+                db,
+                source_import_id="import-completed",
+                source_order_id="order-completed",
+            )
+            completed_item.status = "completed"
+            completed_item.scanned_blocks = 1
+            open_item = OrderItem(
+                order=order,
+                product="Chapman Brown SSL 100`20",
+                quantity_pieces=10,
+                quantity_blocks=1,
+                pieces_per_block=10,
+                scanned_blocks=0,
+                status="not_completed",
+                raw_payload={
+                    "source_import_id": "import-open",
+                    "source_order_id": "order-open",
+                    "block_price": 240000,
+                    "line_total": 240000,
+                },
+            )
+            db.add(open_item)
+            db.commit()
+
+            result = run_daily_reconciliation(
+                db=db,
+                report_date=date(2026, 6, 10),
+                google_records=[
+                    self.google_record(
+                        source_import_id="import-completed",
+                        source_order_id="order-completed",
+                        status="Выполнено",
+                    ),
+                    self.google_record(
+                        row_number=3,
+                        source_import_id="import-open",
+                        source_order_id="order-open",
+                        product="Chapman Brown SSL 100`20",
+                        status="Не выполнено",
+                    ),
+                ],
+                alert_chat_ids=["123"],
+            )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["google"]["status_mismatches"], 0)
+        self.assertEqual(result["google"]["db_only_active_items"], 0)
+        self.assertEqual(result["google"]["google_only_rows"], 0)
+
+    def test_default_reconciliation_report_date_uses_business_timezone(self):
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                value = cls(2026, 6, 21, 20, 30, tzinfo=timezone.utc)
+                return value.astimezone(tz) if tz else value.replace(tzinfo=None)
+
+        with patch("backend.app.reconciliation_service.datetime", FixedDateTime):
+            self.assertEqual(parse_report_date(None), date(2026, 6, 22))
 
     def test_reconciliation_aggregates_skladbot_problem_status_without_row_spam(self):
         with self.SessionLocal() as db:

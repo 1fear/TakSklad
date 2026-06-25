@@ -9,6 +9,7 @@ from tools.prepare_acceptance_kit import (
     README_NAME,
     RESULT_FILE_NAME,
     RESULT_TEMPLATE_NAME,
+    current_app_version,
     prepare_acceptance_kit,
 )
 
@@ -44,7 +45,9 @@ class AcceptanceExcelGeneratorTests(unittest.TestCase):
             result_template_text = (output_dir / RESULT_TEMPLATE_NAME).read_text(encoding="utf-8")
             result_file_text = (output_dir / RESULT_FILE_NAME).read_text(encoding="utf-8")
 
+        app_version = current_app_version()
         self.assertIn('"marker": "ACCEPTANCE TELEGRAM 20260531"', manifest_text)
+        self.assertIn(f'"app_version": "{app_version}"', manifest_text)
         self.assertIn(f'"result_template": "{RESULT_TEMPLATE_NAME}"', manifest_text)
         self.assertIn(f'"result_file": "{RESULT_FILE_NAME}"', manifest_text)
         self.assertIn('"local_preflight"', manifest_text)
@@ -63,12 +66,14 @@ class AcceptanceExcelGeneratorTests(unittest.TestCase):
         self.assertIn("release_preflight.py", readme_text)
         self.assertIn("-UsePython", readme_text)
         self.assertIn("api.taksklad.uz", readme_text)
+        self.assertIn(f"текущая линия {app_version} переведена в forced rollout", readme_text)
         self.assertIn("acceptance_status.sh", readme_text)
         self.assertIn("acceptance_status.sh --require-go", readme_text)
         self.assertIn('"vds_status"', manifest_text)
         self.assertIn('"telegram_status"', manifest_text)
         self.assertIn('"windows_status"', manifest_text)
         self.assertIn("GO к подготовке release 2.0", result_template_text)
+        self.assertIn(f"`version.json` указывает на `{app_version}`", result_template_text)
         self.assertIn("SkladBot Matching", result_template_text)
         self.assertIn("WIN-KIZ-ACCEPT-001", result_template_text)
         self.assertIn("NO-GO, релиз откладывается.", result_file_text)

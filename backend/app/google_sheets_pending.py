@@ -178,6 +178,7 @@ def process_pending_google_sheets_exports(db: Session, limit=50):
         events = select_pending_export_events(db, limit)
         result["checked"] = len(events)
         if not events:
+            result["remaining"] = count_pending_export_events(db)
             return result
         batch_result = process_scan_export_events_batch(db, events, result)
         if batch_result.get("paused"):
@@ -456,16 +457,38 @@ def is_terminal_scan_export_item(item):
 
 
 def select_pending_export_events(db: Session, limit):
+    query_limit = min(max(limit * 5, limit), 1000)
     stmt = (
         select(PendingEvent)
         .where(PendingEvent.event_type == GOOGLE_SHEETS_EXPORT_EVENT_TYPE)
         .where(PendingEvent.status.in_(("pending", "failed")))
         .order_by(PendingEvent.created_at, PendingEvent.id)
-        .limit(limit)
+        .limit(query_limit)
     )
     if db.bind.dialect.name == "postgresql":
         stmt = stmt.with_for_update(skip_locked=True)
-    return db.execute(stmt).scalars().all()
+    now = datetime.now(timezone.utc)
+    ready_events = [
+        event
+        for event in db.execute(stmt).scalars().all()
+        if google_sheets_export_event_ready(event, now=now)
+    ]
+    return ready_events[:limit]
+
+
+def google_sheets_export_event_ready(event: PendingEvent, now=None):
+    payload = event.payload or {}
+    next_attempt_at = str(payload.get("next_attempt_at") or "").strip()
+    if not next_attempt_at:
+        return True
+    now = now or datetime.now(timezone.utc)
+    try:
+        next_attempt = datetime.fromisoformat(next_attempt_at)
+    except ValueError:
+        return True
+    if next_attempt.tzinfo is None:
+        next_attempt = next_attempt.replace(tzinfo=timezone.utc)
+    return next_attempt <= now
 
 
 def reset_stale_processing_export_events(db: Session):

@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-ENV_FILE="$SCRIPT_DIR/.env"
+ENV_FILE="${TAKSKLAD_ENV_FILE:-$SCRIPT_DIR/.env}"
 SQL_DIR="$APP_DIR/backend/sql"
 
 if [[ ! -f "$ENV_FILE" ]]; then

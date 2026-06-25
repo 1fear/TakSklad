@@ -3,6 +3,7 @@ from datetime import date, datetime, timedelta, timezone
 from unittest import mock
 
 from sqlalchemy import create_engine, select
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -13,6 +14,7 @@ from backend.app.google_sheets_pending import (
     process_pending_google_sheets_exports,
     queue_google_sheets_export,
     release_google_sheets_export_lock,
+    select_pending_export_events,
 )
 from backend.app.models import Base, Order, OrderItem, PendingEvent
 
@@ -65,6 +67,34 @@ class GoogleSheetsPendingLockTests(unittest.TestCase):
 
         db.execute.assert_not_called()
 
+    def test_non_postgres_export_lock_returns_busy_without_processing(self):
+        db = mock.Mock()
+        db.bind.dialect.name = "sqlite"
+
+        self.assertTrue(acquire_google_sheets_export_lock(db))
+        try:
+            result = process_pending_google_sheets_exports(db, limit=50)
+        finally:
+            release_google_sheets_export_lock(db)
+
+        self.assertEqual(result["status"], "busy")
+        self.assertEqual(result["checked"], 0)
+        self.assertEqual(result["synced"], 0)
+        self.assertEqual(result["failed"], 0)
+        db.execute.assert_not_called()
+
+    def test_postgres_pending_selection_uses_skip_locked_row_lock(self):
+        db = mock.Mock()
+        db.bind.dialect.name = "postgresql"
+        db.execute.return_value.scalars.return_value.all.return_value = []
+
+        result = select_pending_export_events(db, limit=25)
+
+        self.assertEqual(result, [])
+        stmt = db.execute.call_args.args[0]
+        compiled = str(stmt.compile(dialect=postgresql.dialect()))
+        self.assertIn("FOR UPDATE SKIP LOCKED", compiled)
+
     def test_rate_limit_keeps_event_pending_and_stops_batch(self):
         engine = create_engine(
             "sqlite+pysqlite:///:memory:",
@@ -109,6 +139,74 @@ class GoogleSheetsPendingLockTests(unittest.TestCase):
             self.assertIn("429", events[0].last_error)
             self.assertTrue((events[0].payload or {}).get("next_attempt_at"))
             self.assertEqual(events[1].attempts, 0)
+        finally:
+            Base.metadata.drop_all(engine)
+            engine.dispose()
+
+    def test_future_retry_after_event_does_not_block_newer_ready_event(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        try:
+            with SessionLocal() as db:
+                db.add(PendingEvent(
+                    event_type=GOOGLE_SHEETS_EXPORT_EVENT_TYPE,
+                    status="pending",
+                    attempts=2,
+                    payload={
+                        "action": "google_sheets_import_export",
+                        "entity_id": "future-retry",
+                        "records": [{"ID заказа": "future-retry"}],
+                        "next_attempt_at": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+                    },
+                    last_error="APIError: [429]: quota exceeded",
+                ))
+                db.add(PendingEvent(
+                    event_type=GOOGLE_SHEETS_EXPORT_EVENT_TYPE,
+                    status="pending",
+                    attempts=0,
+                    payload={
+                        "action": "google_sheets_import_export",
+                        "entity_id": "ready-import",
+                        "records": [{"ID заказа": "ready-import"}],
+                    },
+                ))
+                db.commit()
+
+                captured_records = []
+
+                def fake_append(records):
+                    captured_records.extend(records)
+                    return {"status": "completed", "appended": len(records)}
+
+                with mock.patch(
+                    "backend.app.google_sheets_pending.append_import_records_to_google_sheets",
+                    side_effect=fake_append,
+                ):
+                    result = process_pending_google_sheets_exports(db, limit=50)
+
+                events = db.execute(
+                    select(PendingEvent).order_by(PendingEvent.created_at, PendingEvent.id)
+                ).scalars().all()
+                events_by_entity_id = {
+                    str((event.payload or {}).get("entity_id") or ""): event
+                    for event in events
+                }
+
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["checked"], 1)
+            self.assertEqual(result["synced"], 1)
+            self.assertEqual(result["remaining"], 1)
+            self.assertEqual(captured_records, [{"ID заказа": "ready-import"}])
+            self.assertEqual(events_by_entity_id["future-retry"].status, "pending")
+            self.assertEqual(events_by_entity_id["future-retry"].attempts, 2)
+            self.assertTrue((events_by_entity_id["future-retry"].payload or {}).get("next_attempt_at"))
+            self.assertEqual(events_by_entity_id["ready-import"].status, "completed")
+            self.assertEqual(events_by_entity_id["ready-import"].attempts, 1)
         finally:
             Base.metadata.drop_all(engine)
             engine.dispose()

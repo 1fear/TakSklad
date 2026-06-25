@@ -35,14 +35,15 @@ class MainRefactorContractTests(unittest.TestCase):
 
     def test_finish_prints_before_backend_complete_and_google_archive(self):
         source = inspect.getsource(ScanningApp.finish_legal_entity)
+        print_call = "print_summary(address, summary_products, print_settings=selected_print_settings)"
 
         self.assertIn("add_pending_print", source)
-        self.assertIn("print_summary(address, summary_products)", source)
+        self.assertIn(print_call, source)
         self.assertIn("remove_pending_print", source)
-        self.assertLess(source.index("add_pending_print"), source.index("print_summary(address, summary_products)"))
-        self.assertLess(source.index("print_summary(address, summary_products)"), source.index("remove_pending_print"))
-        self.assertLess(source.index("print_summary(address, summary_products)"), source.index("complete_backend_orders_or_raise"))
-        self.assertLess(source.index("print_summary(address, summary_products)"), source.index("archive_order_group_to_gsheet"))
+        self.assertLess(source.index("add_pending_print"), source.index(print_call))
+        self.assertLess(source.index(print_call), source.index("remove_pending_print"))
+        self.assertLess(source.index(print_call), source.index("complete_backend_orders_or_raise"))
+        self.assertLess(source.index(print_call), source.index("archive_order_group_to_gsheet"))
 
     def test_return_flow_keeps_backend_first_and_google_legacy_fallback(self):
         source = inspect.getsource(ScanningApp.mark_return_for_display)

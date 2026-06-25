@@ -51,6 +51,8 @@ Implemented now:
 - `POST /api/v1/imports`
 - `GET /api/v1/imports`
 - `GET /api/v1/reports/day`
+- `GET /api/v1/admin/client-points`
+- `POST /api/v1/admin/client-points/timeslot`
 
 No contract placeholders remain in the backend API MVP.
 
@@ -58,9 +60,29 @@ No contract placeholders remain in the backend API MVP.
 
 `GET /health` is lightweight liveness. It does not touch PostgreSQL, Google Sheets, SkladBot, or Telegram.
 
-`GET /ready` is internal readiness for VDS checks. It pings PostgreSQL and reports Alembic revision, queue backlog by type/status, oldest pending age, stale processing count, and sanitized recent errors.
+`GET /ready` is internal readiness for VDS checks. It pings PostgreSQL and reports Alembic revision, queue backlog by type/status, oldest pending age, stale processing count, and sanitized recent errors. Queue event types with dynamic suffixes are aggregated as `prefix:*`, and compact error rows do not expose raw payloads, idempotency keys, or linked entity fields.
 
 `GET /api/v1/readiness` returns the same readiness payload behind the normal API auth/session guard.
+
+## API Auth
+
+`GET /health` remains public. Protected `/api/v1/*` endpoints accept either a configured Bearer service token or a valid web session cookie.
+
+An empty `TAKSKLAD_API_TOKEN` disables only the Bearer-token path. It does not open protected API routes when web auth is configured. Local no-auth mode is allowed only when neither `TAKSKLAD_API_TOKEN` nor web auth credentials are configured.
+
+Web sessions include `role` and `permissions`. The env-configured web login is treated as `admin`; DB-backed `users` rows with role `logistics_slots` can read the web UI and write only client-point delivery slots. State-changing warehouse/admin endpoints require `admin:write`; `POST /api/v1/admin/client-points/timeslot` requires `client_points:write`.
+
+The frontend same-origin `/api/` proxy must forward browser cookies without injecting the internal service token. Otherwise web sessions would be upgraded to service/admin at the proxy layer.
+
+## SkladBot SKU Mapping
+
+SkladBot request/return payloads use the built-in Chapman SKU mapping by default. On VDS, `SKLADBOT_SKU_MAPPING_JSON` can override or add SKU keys such as `red:op`:
+
+```json
+{"red:op":{"product_data_id":2189390,"barcode":"4006396053947","is_main_barcode":false}}
+```
+
+If this JSON is invalid or an entry misses `product_data_id`, `barcode`, or boolean `is_main_barcode`, the dry-run blocks the affected order and no SkladBot create event is queued.
 
 ## Day Report
 
@@ -73,3 +95,13 @@ Builds a PostgreSQL-based day summary:
 - planned/scanned/remaining blocks;
 - payment groups;
 - SkladBot request number if imported with the order.
+
+## Client Points And Logistics Slots
+
+`GET /api/v1/admin/client-points` returns saved delivery points plus legal entities already seen in orders.
+
+`POST /api/v1/admin/client-points/timeslot` creates or updates a saved point by `client_name`. In this flow the client/legal entity name is the point identity; address, coordinates and representative are mutable details refreshed from newer imports.
+
+The web `Клиенты` tab uses the same endpoint for manual point creation, inline delivery-window edits, and resetting a custom slot back to `10:00-18:00`.
+
+The logistics XLSX keeps the default `10:00-18:00` window for unknown clients and uses the saved `client_points.delivery_from/delivery_to` values when a matching client exists.

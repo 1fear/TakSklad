@@ -34,6 +34,7 @@ from .desktop_refresh_service import (
     format_refresh_error_message,
     backend_skladbot_sync_result,
 )
+from .desktop_smoke import run_tk_app_smoke
 from .backend_flow import (
     backend_blocked_scan_events_for_item,
     backend_sync_group_blocker,
@@ -184,6 +185,10 @@ def run_app():
         app = ScanningApp()
         app.mainloop()
     return 0
+
+
+def run_gui_smoke():
+    return run_tk_app_smoke(ScanningApp)
 
 
 if __name__ == "__main__":

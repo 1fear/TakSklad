@@ -32,11 +32,12 @@ SKLADBOT_CREATE_REQUESTS_DEFAULT_MODE = "dry_run"
 SKLADBOT_CUSTOMER_ID = 6211
 SKLADBOT_REQUEST_TYPE_ID = 3389
 SKLADBOT_REQUEST_CREATE_LIMIT_ENV = "SKLADBOT_REQUEST_CREATE_LIMIT"
+SKLADBOT_SKU_MAPPING_JSON_ENV = "SKLADBOT_SKU_MAPPING_JSON"
 STALE_SKLADBOT_CREATE_TIMEOUT = timedelta(minutes=10)
 GOOGLE_DELETE_IMPORT_RECORDS_ACTION = "google_sheets_delete_import_records_export"
 TELEGRAM_NOTIFICATION_EVENT_TYPE = "telegram_notification"
 
-SKU_MAPPING = {
+DEFAULT_SKU_MAPPING = {
     "red:op": {
         "product_data_id": 2189390,
         "barcode": "4006396053947",
@@ -68,6 +69,7 @@ SKU_MAPPING = {
         "is_main_barcode": False,
     },
 }
+SKU_MAPPING = DEFAULT_SKU_MAPPING
 
 
 def skladbot_create_requests_mode(environ: dict[str, str] | None = None) -> str:
@@ -76,6 +78,47 @@ def skladbot_create_requests_mode(environ: dict[str, str] | None = None) -> str:
     if mode in {"dry_run", "enabled", "disabled"}:
         return mode
     return SKLADBOT_CREATE_REQUESTS_DEFAULT_MODE
+
+
+def load_sku_mapping(environ: dict[str, str] | None = None) -> dict[str, dict[str, Any]]:
+    environ = environ or os.environ
+    raw_mapping = normalize_text(environ.get(SKLADBOT_SKU_MAPPING_JSON_ENV))
+    mapping = {key: dict(value) for key, value in DEFAULT_SKU_MAPPING.items()}
+    if not raw_mapping:
+        return mapping
+
+    try:
+        overrides = json.loads(raw_mapping)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{SKLADBOT_SKU_MAPPING_JSON_ENV} содержит невалидный JSON") from exc
+    if not isinstance(overrides, dict):
+        raise ValueError(f"{SKLADBOT_SKU_MAPPING_JSON_ENV} должен быть JSON object")
+
+    for raw_key, raw_value in overrides.items():
+        sku_key = normalize_text(raw_key).lower()
+        if not sku_key:
+            raise ValueError(f"{SKLADBOT_SKU_MAPPING_JSON_ENV} содержит пустой SKU key")
+        mapping[sku_key] = validate_sku_mapping_entry(sku_key, raw_value)
+    return mapping
+
+
+def validate_sku_mapping_entry(sku_key: str, value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{SKLADBOT_SKU_MAPPING_JSON_ENV}.{sku_key} должен быть object")
+    product_data_id = parse_int(value.get("product_data_id"))
+    barcode = normalize_text(value.get("barcode"))
+    is_main_barcode = value.get("is_main_barcode")
+    if product_data_id <= 0:
+        raise ValueError(f"{SKLADBOT_SKU_MAPPING_JSON_ENV}.{sku_key}.product_data_id должен быть positive integer")
+    if not barcode:
+        raise ValueError(f"{SKLADBOT_SKU_MAPPING_JSON_ENV}.{sku_key}.barcode обязателен")
+    if not isinstance(is_main_barcode, bool):
+        raise ValueError(f"{SKLADBOT_SKU_MAPPING_JSON_ENV}.{sku_key}.is_main_barcode должен быть boolean")
+    return {
+        "product_data_id": product_data_id,
+        "barcode": barcode,
+        "is_main_barcode": is_main_barcode,
+    }
 
 
 def create_skladbot_dry_run_for_import(db: Session, import_id: str, rebuild: bool = False) -> dict[str, Any]:
@@ -349,7 +392,16 @@ def build_order_dry_run(order: Order, items: list[Any], import_id: str, index: i
     raw_payload = order.raw_payload or {}
     linked_number = normalize_text(raw_payload.get("skladbot_request_number"))
     linked_id = normalize_text(raw_payload.get("skladbot_request_id"))
-    products = [build_product_dry_run(item.product, item.quantity_blocks) for item in items]
+    try:
+        sku_mapping = load_sku_mapping()
+        sku_mapping_error = ""
+    except ValueError as exc:
+        sku_mapping = {}
+        sku_mapping_error = str(exc)
+    products = [
+        build_product_dry_run(item.product, item.quantity_blocks, sku_mapping=sku_mapping, sku_mapping_error=sku_mapping_error)
+        for item in items
+    ]
     blocks = sum(int(product.get("quantity_blocks") or 0) for product in products)
     status = "ready"
     error = ""
@@ -383,9 +435,23 @@ def build_order_dry_run(order: Order, items: list[Any], import_id: str, index: i
     }
 
 
-def build_product_dry_run(product: str, quantity_blocks: int) -> dict[str, Any]:
+def build_product_dry_run(
+    product: str,
+    quantity_blocks: int,
+    *,
+    sku_mapping: dict[str, dict[str, Any]] | None = None,
+    sku_mapping_error: str = "",
+) -> dict[str, Any]:
     sku_key = product_sku_key(product)
-    mapping = SKU_MAPPING.get(sku_key)
+    effective_mapping = sku_mapping
+    effective_mapping_error = sku_mapping_error
+    if effective_mapping is None:
+        try:
+            effective_mapping = load_sku_mapping()
+        except ValueError as exc:
+            effective_mapping = {}
+            effective_mapping_error = str(exc)
+    mapping = effective_mapping.get(sku_key)
     blocks = int(quantity_blocks or 0)
     if blocks <= 0:
         return {
@@ -396,6 +462,16 @@ def build_product_dry_run(product: str, quantity_blocks: int) -> dict[str, Any]:
             "is_main_barcode": False,
             "status": "blocked",
             "error": f"Некорректное количество блоков для {product}: {blocks}",
+        }
+    if effective_mapping_error:
+        return {
+            "product": product,
+            "quantity_blocks": blocks,
+            "product_data_id": None,
+            "barcode": "",
+            "is_main_barcode": False,
+            "status": "blocked",
+            "error": f"Ошибка настройки SKU mapping: {effective_mapping_error}",
         }
     if not mapping:
         return {

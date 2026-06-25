@@ -18,8 +18,10 @@ from backend.app.skladbot_daily_report import (
     STOCK_HEADERS,
     build_skladbot_daily_report_message,
     build_skladbot_daily_report_xlsx,
+    categorize_request_type,
     collect_skladbot_daily_report,
     product_breakdown_for_summary,
+    summarize_daily_report,
 )
 from backend.app.telegram_worker import (
     SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE,
@@ -397,6 +399,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
         summary = report["summary"]
         self.assertEqual(summary["requests_total"], 3)
         self.assertEqual(summary["category_counts"]["Отгрузка"], 1)
+        self.assertEqual(summary["category_counts"]["Отгрузка в браке"], 0)
         self.assertEqual(summary["category_counts"]["Возврат"], 1)
         self.assertEqual(summary["category_counts"]["Приемка"], 1)
         self.assertEqual(summary["request_blocks_by_category"]["Приемка"], 500)
@@ -420,10 +423,10 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(summary_sheet["E7"].value, "Chapman RED OP 20")
         self.assertEqual(summary_sheet["F7"].value, "Заявок")
         self.assertEqual(summary_sheet["A8"].value, "Остаток на начало дня ")
-        self.assertEqual(summary_sheet["B8"].value, "=B12-B9-B10-B11")
-        self.assertEqual(summary_sheet["C8"].value, "=C12-C9-C10-C11")
-        self.assertEqual(summary_sheet["D8"].value, "=D12-D9-D10-D11")
-        self.assertEqual(summary_sheet["E8"].value, "=E12-E9-E10-E11")
+        self.assertEqual(summary_sheet["B8"].value, "=B13-B9-B10-B11-B12")
+        self.assertEqual(summary_sheet["C8"].value, "=C13-C9-C10-C11-C12")
+        self.assertEqual(summary_sheet["D8"].value, "=D13-D9-D10-D11-D12")
+        self.assertEqual(summary_sheet["E8"].value, "=E13-E9-E10-E11-E12")
         self.assertEqual(summary_sheet["A9"].value, "Приемка")
         self.assertEqual(summary_sheet["B9"].value, 500)
         self.assertEqual(summary_sheet["C9"].value, 0)
@@ -436,20 +439,26 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(summary_sheet["D10"].value, 0)
         self.assertEqual(summary_sheet["E10"].value, 0)
         self.assertEqual(summary_sheet["F10"].value, 1)
-        self.assertEqual(summary_sheet["A11"].value, "Возврат")
-        self.assertEqual(summary_sheet["B11"].value, 2)
+        self.assertEqual(summary_sheet["A11"].value, "Отгрузка в браке")
+        self.assertEqual(summary_sheet["B11"].value, 0)
         self.assertEqual(summary_sheet["C11"].value, 0)
         self.assertEqual(summary_sheet["D11"].value, 0)
-        self.assertEqual(summary_sheet["E11"].value, 2)
-        self.assertEqual(summary_sheet["F11"].value, 1)
-        self.assertEqual(summary_sheet["A12"].value, "Остаток на конец дня")
-        self.assertEqual(summary_sheet["B12"].value, 544)
-        self.assertEqual(summary_sheet["C12"].value, 42)
-        self.assertEqual(summary_sheet["D12"].value, 500)
+        self.assertEqual(summary_sheet["E11"].value, 0)
+        self.assertEqual(summary_sheet["F11"].value, 0)
+        self.assertEqual(summary_sheet["A12"].value, "Возврат")
+        self.assertEqual(summary_sheet["B12"].value, 2)
+        self.assertEqual(summary_sheet["C12"].value, 0)
+        self.assertEqual(summary_sheet["D12"].value, 0)
         self.assertEqual(summary_sheet["E12"].value, 2)
+        self.assertEqual(summary_sheet["F12"].value, 1)
+        self.assertEqual(summary_sheet["A13"].value, "Остаток на конец дня")
+        self.assertEqual(summary_sheet["B13"].value, 544)
+        self.assertEqual(summary_sheet["C13"].value, 42)
+        self.assertEqual(summary_sheet["D13"].value, 500)
+        self.assertEqual(summary_sheet["E13"].value, 2)
         self.assertEqual(summary_sheet.freeze_panes, "A2")
         self.assertEqual(summary_sheet["A8"].border.left.style, "thin")
-        self.assertEqual(summary_sheet["F12"].border.right.style, "thin")
+        self.assertEqual(summary_sheet["F13"].border.right.style, "thin")
         self.assertEqual(summary_sheet.column_dimensions["A"].width, 28)
         self.assertEqual(summary_sheet.column_dimensions["B"].width, 21)
 
@@ -522,9 +531,9 @@ class SkladBotDailyReportTests(unittest.TestCase):
             "errors": ["Не удалось получить остаток SkladBot"],
             "summary": {
                 "requests_total": 0,
-                "category_counts": {"Отгрузка": 0, "Возврат": 0, "Приемка": 0, "Прочее": 0},
+                "category_counts": {"Отгрузка": 0, "Отгрузка в браке": 0, "Возврат": 0, "Приемка": 0, "Прочее": 0},
                 "type_counts": {},
-                "request_blocks_by_category": {"Отгрузка": 0, "Возврат": 0, "Приемка": 0, "Прочее": 0},
+                "request_blocks_by_category": {"Отгрузка": 0, "Отгрузка в браке": 0, "Возврат": 0, "Приемка": 0, "Прочее": 0},
                 "movements_total": 0,
                 "movement_in_rows": 0,
                 "movement_out_rows": 0,
@@ -543,6 +552,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(workbook["Сводка"]["B10"].value, 0)
         self.assertEqual(workbook["Сводка"]["B11"].value, 0)
         self.assertEqual(workbook["Сводка"]["B12"].value, 0)
+        self.assertEqual(workbook["Сводка"]["B13"].value, 0)
         self.assertEqual(workbook["Остатки"].max_row, 2)
         self.assertEqual(workbook["Остатки"]["E2"].value, 0)
         self.assertEqual(workbook["Ошибки"]["A2"].value, "Не удалось получить остаток SkladBot")
@@ -748,6 +758,77 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["inbound"], 0)
 
+    def test_daily_report_separates_defect_shipments_in_message_and_summary_sheet(self):
+        self.assertEqual(categorize_request_type("Отгрузка 3PL"), "Отгрузка")
+        self.assertEqual(categorize_request_type("Отгрузка в браке"), "Отгрузка в браке")
+
+        report = {
+            "report_date": date(2026, 6, 23),
+            "generated_at": datetime(2026, 6, 23, 22, 0),
+            "customer_id": 6211,
+            "requests": [
+                {
+                    "id": 101,
+                    "number": "WH-R-101",
+                    "category": categorize_request_type("Отгрузка 3PL"),
+                    "type": "Отгрузка 3PL",
+                    "products": [{
+                        "name": "Chapman Brown OP 20",
+                        "vendor_code": "130400353",
+                        "barcode": "4006396053978",
+                        "amount": 10,
+                    }],
+                },
+                {
+                    "id": 102,
+                    "number": "WH-R-102",
+                    "category": categorize_request_type("Отгрузка в браке"),
+                    "type": "Отгрузка в браке",
+                    "products": [{
+                        "name": "Chapman Brown OP 20",
+                        "vendor_code": "130400353",
+                        "barcode": "4006396053978",
+                        "amount": 3,
+                    }],
+                },
+            ],
+            "movements": [],
+            "stock": {
+                "total": 42,
+                "rows": [{
+                    "product": "Chapman Brown OP 20",
+                    "vendor_code": "130400353",
+                    "barcode": "4006396053978",
+                    "stock": 42,
+                }],
+            },
+            "errors": [],
+        }
+        report["summary"] = summarize_daily_report(report)
+
+        summary = report["summary"]
+        self.assertEqual(summary["category_counts"]["Отгрузка"], 1)
+        self.assertEqual(summary["category_counts"]["Отгрузка в браке"], 1)
+        self.assertEqual(summary["request_blocks_by_category"]["Отгрузка"], 10)
+        self.assertEqual(summary["request_blocks_by_category"]["Отгрузка в браке"], 3)
+
+        message = build_skladbot_daily_report_message(report)
+        self.assertIn("Отгрузка: 1 заявок, 10 блоков", message)
+        self.assertIn("Отгрузка в браке: 1 заявок, 3 блоков", message)
+        self.assertNotIn("Отгрузка: 2 заявок", message)
+
+        content, _filename = build_skladbot_daily_report_xlsx(report)
+        workbook = openpyxl.load_workbook(BytesIO(content), data_only=False)
+        summary_sheet = workbook["Сводка"]
+
+        self.assertEqual(summary_sheet["A10"].value, "Отгрузка")
+        self.assertEqual(summary_sheet["B10"].value, -10)
+        self.assertEqual(summary_sheet["C10"].value, -10)
+        self.assertEqual(summary_sheet["A11"].value, "Отгрузка в браке")
+        self.assertEqual(summary_sheet["B11"].value, -3)
+        self.assertEqual(summary_sheet["C11"].value, -3)
+        self.assertEqual(summary_sheet["B8"].value, "=B13-B9-B10-B11-B12")
+
     def test_telegram_manual_command_sends_skladbot_daily_report(self):
         worker = TelegramWorker.__new__(TelegramWorker)
         worker.allowed_chat_ids = set()
@@ -768,8 +849,8 @@ class SkladBotDailyReportTests(unittest.TestCase):
                 "errors": [],
                 "summary": {
                     "requests_total": 0,
-                    "category_counts": {"Отгрузка": 0, "Возврат": 0, "Приемка": 0, "Прочее": 0},
-                    "request_blocks_by_category": {"Отгрузка": 0, "Возврат": 0, "Приемка": 0, "Прочее": 0},
+                    "category_counts": {"Отгрузка": 0, "Отгрузка в браке": 0, "Возврат": 0, "Приемка": 0, "Прочее": 0},
+                    "request_blocks_by_category": {"Отгрузка": 0, "Отгрузка в браке": 0, "Возврат": 0, "Приемка": 0, "Прочее": 0},
                     "movement_in_amount": 0,
                     "movement_out_amount": 0,
                     "stock_total": 0,
@@ -829,8 +910,8 @@ class SkladBotDailyReportTests(unittest.TestCase):
                     "errors": [],
                     "summary": {
                         "requests_total": 1,
-                        "category_counts": {"Отгрузка": 0, "Возврат": 0, "Приемка": 1, "Прочее": 0},
-                        "request_blocks_by_category": {"Отгрузка": 0, "Возврат": 0, "Приемка": 0, "Прочее": 0},
+                        "category_counts": {"Отгрузка": 0, "Отгрузка в браке": 0, "Возврат": 0, "Приемка": 1, "Прочее": 0},
+                        "request_blocks_by_category": {"Отгрузка": 0, "Отгрузка в браке": 0, "Возврат": 0, "Приемка": 0, "Прочее": 0},
                         "movement_in_amount": 0,
                         "movement_out_amount": 0,
                         "stock_total": 0,

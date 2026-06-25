@@ -1,10 +1,54 @@
 from tkinter import filedialog, messagebox
 
-from .backend_client import backend_enabled, import_orders
+from .backend_client import backend_enabled, import_orders, preview_import_orders
 from .catalog import load_product_catalog
 from .config import APP_NAME, BG_MAIN, FG_MUTED
 from .excel_import import append_import_records, parse_excel_order_files, prepare_excel_import
 from .utils import parse_int_value
+
+
+def source_filename_for_records(records):
+    imported_sources = sorted({record.get("Источник файла", "") for record in records if record.get("Источник файла")})
+    return ", ".join(imported_sources[:5])
+
+
+def apply_backend_import_preview(parsed, preview_result):
+    records = parsed.get("records", [])
+    duplicate_numbers = {
+        parse_int_value(number)
+        for number in preview_result.get("duplicate_row_numbers", [])
+        if parse_int_value(number) > 0
+    }
+    invalid_numbers = {
+        parse_int_value(number)
+        for number in preview_result.get("invalid_row_numbers", [])
+        if parse_int_value(number) > 0
+    }
+    blocked_numbers = duplicate_numbers | invalid_numbers
+    new_records = []
+    duplicate_records = []
+
+    for index, record in enumerate(records, start=1):
+        if index in duplicate_numbers:
+            duplicate_records.append(record)
+        elif index not in blocked_numbers:
+            new_records.append(record)
+
+    errors = list(parsed.get("errors", []))
+    for error in preview_result.get("errors", []):
+        errors.append(f"backend preview: {error}")
+
+    parsed["errors"] = errors
+    parsed["new_records"] = new_records
+    parsed["duplicate_records"] = duplicate_records
+    parsed["clients_count"] = len({record.get("Клиент") for record in new_records})
+    parsed["products_count"] = len({record.get("Товары") for record in new_records})
+    parsed["blocks_count"] = sum(parse_int_value(record.get("Кол-во блок")) for record in new_records)
+    parsed["quantity_count"] = sum(parse_int_value(record.get("Кол-во ШТ")) for record in new_records)
+    parsed["backend_import"] = True
+    parsed["backend_preview"] = preview_result
+    parsed["backend_invalid_rows_count"] = len(invalid_numbers)
+    return parsed
 
 
 class ImportActionsMixin:
@@ -34,14 +78,8 @@ class ImportActionsMixin:
             if backend_enabled():
                 parsed = parse_excel_order_files(list(file_paths))
                 records = parsed.get("records", [])
-                parsed["new_records"] = records
-                parsed["duplicate_records"] = []
-                parsed["clients_count"] = len({record.get("Клиент") for record in records})
-                parsed["products_count"] = len({record.get("Товары") for record in records})
-                parsed["blocks_count"] = sum(parse_int_value(record.get("Кол-во блок")) for record in records)
-                parsed["quantity_count"] = sum(parse_int_value(record.get("Кол-во ШТ")) for record in records)
-                parsed["backend_import"] = True
-                return parsed
+                preview_result = preview_import_orders(records, filename=source_filename_for_records(records))
+                return apply_backend_import_preview(parsed, preview_result)
             return prepare_excel_import(list(file_paths))
 
         def on_success(preview):
@@ -54,6 +92,7 @@ class ImportActionsMixin:
             new_records = preview.get("new_records", [])
             duplicate_records = preview.get("duplicate_records", [])
             source_duplicate_rows = preview.get("source_duplicate_rows_count", 0)
+            backend_invalid_rows = preview.get("backend_invalid_rows_count", 0)
 
             if not new_records:
                 details = [
@@ -63,6 +102,7 @@ class ImportActionsMixin:
                     f"Координат без адреса: {preview.get('geocode_failed_count', 0)}",
                     f"Повторных строк в Excel: {source_duplicate_rows}",
                     f"Дублей в таблице найдено: {len(duplicate_records)}",
+                    f"Строк не принято backend: {backend_invalid_rows}",
                 ]
                 if errors:
                     details.append("\nОшибки:\n" + "\n".join(errors[:6]))
@@ -85,6 +125,7 @@ class ImportActionsMixin:
                 f"Координат без адреса: {preview.get('geocode_failed_count', 0)}",
                 f"Повторных строк в Excel пропущено: {source_duplicate_rows}",
                 f"Повторных позиций в таблице пропущено: {len(duplicate_records)}",
+                f"Строк не принято backend: {backend_invalid_rows}",
             ]
             if errors:
                 message_lines.extend(["", "Ошибки в отдельных файлах:", "\n".join(errors[:5])])
@@ -123,8 +164,7 @@ class ImportActionsMixin:
 
         def work():
             if backend_enabled():
-                imported_sources = sorted({record.get("Источник файла", "") for record in records if record.get("Источник файла")})
-                result = import_orders(records, filename=", ".join(imported_sources[:5]))
+                result = import_orders(records, filename=source_filename_for_records(records))
                 result = {
                     "imported": result.get("rows_imported", 0),
                     "duplicates": result.get("duplicate_rows", 0),

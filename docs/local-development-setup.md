@@ -44,11 +44,20 @@ Docker Compose plugin подключен через `~/.docker/config.json`:
 
 ## Python
 
-Проектная среда:
+Проектная среда требует Python 3.10+; рекомендуемая версия для backend-тестов - Python 3.12. Если старая `.venv` создана системным Python 3.9, backend-тесты будут падать на синтаксисе `str | None` и отсутствии `psycopg`.
 
 ```bash
 cd /Users/anton/Documents/work/TakSklad
+python3.12 -m venv .venv
 .venv/bin/python --version
+.venv/bin/python -m pip install -r requirements.txt -r backend/requirements.txt
+```
+
+Если `.venv/bin/python --version` показывает Python 3.9, пересобери локальную среду перед backend-проверками:
+
+```bash
+rm -rf .venv
+python3.12 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt -r backend/requirements.txt
 ```
 

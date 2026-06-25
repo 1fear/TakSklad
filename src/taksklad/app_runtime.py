@@ -11,13 +11,12 @@ from .config import (
     ERROR_BG,
     ERROR_FG,
     FG_MUTED,
+    FG_TEXT,
     LOG_FILE,
+    WARNING,
 )
 from .sheets import release_telegram_poll_lock
-from .telegram_service import (
-    collect_operational_documents,
-    telegram_single_listener_lock_enabled,
-)
+from .telegram_service import telegram_single_listener_lock_enabled
 from .utils import normalize_text
 
 
@@ -295,7 +294,6 @@ class AppRuntimeMixin:
 
         self.show_error(f"{title}: {message}", popup=False)
         self.send_telegram_alert_async(f"{APP_NAME}: ошибка приложения\n\n" + detail[:3800])
-        self.send_telegram_documents_async(collect_operational_documents(include_error_log=True))
 
 
     def report_callback_exception(self, exc_type, exc_value, exc_traceback):
@@ -307,7 +305,6 @@ class AppRuntimeMixin:
             self.show_error(f"Ошибка в интерфейсе: {exc_value}", popup=False)
             detail = format_exception_message("Ошибка в интерфейсе", exc_value)
             self.send_telegram_alert_async(f"{APP_NAME}: ошибка интерфейса\n\n" + detail[:3800])
-            self.send_telegram_documents_async(collect_operational_documents(include_error_log=True))
         except Exception:
             pass
 

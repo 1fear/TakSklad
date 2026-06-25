@@ -3,10 +3,61 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from taksklad import main, reports
+from taksklad import app_day_end, main, reports
 
 
 class DailyReportTests(unittest.TestCase):
+    def test_day_end_report_line_shows_telegram_failure_reason(self):
+        line = app_day_end.format_day_end_report_line(
+            {
+                "shipment_date_display": "22.06.2026",
+                "part_number": 2,
+                "total_report_rows": 17,
+            },
+            {
+                "status": "failed",
+                "message": "Telegram не настроен",
+            },
+        )
+
+        self.assertEqual(
+            line,
+            "- 22.06.2026, ч2: 17 КИЗ, не отправлен: Telegram не настроен",
+        )
+
+    def test_day_end_report_line_shows_queued_reason_without_huge_text(self):
+        long_message = "network down " * 30
+
+        line = app_day_end.format_day_end_report_line(
+            {
+                "shipment_date_display": "22.06.2026",
+                "total_report_rows": 5,
+                "already_exists": True,
+            },
+            {
+                "status": "queued",
+                "message": long_message,
+            },
+        )
+
+        self.assertIn("в очереди Telegram: network down", line)
+        self.assertIn("уже был сформирован", line)
+        self.assertLessEqual(len(line), 210)
+
+    def test_day_end_report_line_keeps_sent_status_clean(self):
+        line = app_day_end.format_day_end_report_line(
+            {
+                "shipment_date_display": "22.06.2026",
+                "total_report_rows": 5,
+            },
+            {
+                "status": "sent",
+                "message": "Отправлено получателям: 1",
+            },
+        )
+
+        self.assertEqual(line, "- 22.06.2026: 5 КИЗ, отправлен")
+
     def test_report_uses_scan_backup_and_respects_undo(self):
         original_backup_dir = main.BACKUP_DIR
         original_reports_dir = main.REPORTS_DIR

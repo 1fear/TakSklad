@@ -76,15 +76,19 @@ def add_pending_print(address, products):
         "address": address,
         "products": products,
     })
-    save_pending_prints(pending)
-    return pending_id
+    if save_pending_prints(pending):
+        return pending_id
+    return ""
 
 
 def remove_pending_print(pending_id):
+    if not pending_id:
+        return False
     pending = load_pending_prints()
     new_pending = [item for item in pending if item.get("id") != pending_id]
     if len(new_pending) != len(pending):
-        save_pending_prints(new_pending)
+        return save_pending_prints(new_pending)
+    return True
 
 
 def load_pending_saves():

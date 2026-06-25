@@ -7,9 +7,10 @@ from .backend_client import backend_configured, backend_enabled
 from .backend_events import load_pending_backend_events
 from .orders import order_group_key
 from .pending_store import load_pending_saves
-from .reports import create_shift_report_excels_by_order_date
+from .reports import create_shift_report_excels_by_order_date, truncate_middle
 from .sheets import get_google_client
 from .telegram_service import send_daily_report_result_to_telegram
+from .utils import normalize_text
 
 
 def build_backend_status(sync_result=None, pending_backend=0):
@@ -44,6 +45,34 @@ def parse_count(value):
         return int(value or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def format_day_end_telegram_status(telegram_result):
+    if not telegram_result:
+        return "Telegram: статус неизвестен"
+    status = normalize_text(telegram_result.get("status"))
+    message = normalize_text(telegram_result.get("message"))
+    label = {
+        "sent": "отправлен",
+        "queued": "в очереди Telegram",
+        "failed": "не отправлен",
+    }.get(status, "не отправлен")
+    if status in {"queued", "failed"} and message:
+        return f"{label}: {truncate_middle(message, 140)}"
+    return label
+
+
+def format_day_end_report_line(report, telegram_result=None):
+    shipment_date = report.get("shipment_date_display") or report.get("report_date_display")
+    part = report.get("part_number")
+    part_text = f", ч{part}" if part else ""
+    parts = [f"- {shipment_date}{part_text}: {report.get('total_report_rows', 0)} КИЗ"]
+    telegram_status = format_day_end_telegram_status(telegram_result)
+    if telegram_status:
+        parts.append(telegram_status)
+    if report.get("already_exists"):
+        parts.append("уже был сформирован")
+    return ", ".join(parts)
 
 
 class DayEndActionsMixin:
@@ -128,20 +157,8 @@ class DayEndActionsMixin:
             telegram_results = result.get("telegram_results") or []
             report_lines = []
             for index, report in enumerate(reports, start=1):
-                status = ""
-                if index <= len(telegram_results):
-                    status = {
-                        "sent": "отправлен",
-                        "queued": "в очереди Telegram",
-                        "failed": "не отправлен",
-                    }.get(telegram_results[index - 1].get("status"), "не отправлен")
-                shipment_date = report.get("shipment_date_display") or report.get("report_date_display")
-                part = report.get("part_number")
-                part_text = f", ч{part}" if part else ""
-                repeat_text = ", уже был сформирован" if report.get("already_exists") else ""
-                report_lines.append(
-                    f"- {shipment_date}{part_text}: {report.get('total_report_rows', 0)} КИЗ, {status}{repeat_text}"
-                )
+                telegram_result = telegram_results[index - 1] if index <= len(telegram_results) else None
+                report_lines.append(format_day_end_report_line(report, telegram_result))
             self.show_info(
                 f"📊 Отчётов сохранено: {len(reports)}\n\n"
                 f"━━━━━━━━━━━━━━━━━━━━\n"

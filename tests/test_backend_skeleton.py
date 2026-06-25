@@ -30,6 +30,8 @@ class BackendSkeletonTests(unittest.TestCase):
             "backend/migrations/env.py",
             "backend/migrations/script.py.mako",
             "backend/migrations/versions/20260616_0001_baseline.py",
+            "backend/migrations/versions/20260623_0003_client_points.py",
+            "backend/migrations/versions/20260623_0004_user_password_hash.py",
             "docs/database-migrations-runbook.md",
             "deploy/vds/docker-compose.yml",
             "deploy/vds/.env.example",
@@ -72,6 +74,7 @@ class BackendSkeletonTests(unittest.TestCase):
             "imports",
             "import_files",
             "pending_events",
+            "client_points",
             "users",
             "audit_log",
         ]:
@@ -80,6 +83,7 @@ class BackendSkeletonTests(unittest.TestCase):
         self.assertIn("constraint uq_kiz_codes_code unique (code)", schema_sql)
         self.assertNotIn("constraint uq_scan_codes_code unique (code)", schema_sql)
         self.assertIn("sha256 varchar(64) not null unique", schema_sql)
+        self.assertIn("password_hash varchar(255)", schema_sql)
         self.assertIn("jsonb", schema_sql)
 
     def test_alembic_baseline_covers_current_schema_without_secrets(self):
@@ -106,6 +110,53 @@ class BackendSkeletonTests(unittest.TestCase):
         self.assertIn("stamp 20260616_0001", runbook)
         self.assertIn("deploy/vds/apply_schema.sh", runbook)
         self.assertIn("restore a PostgreSQL backup", runbook)
+
+    def test_sql_bootstrap_and_alembic_migrations_keep_forward_only_contract(self):
+        schema_sql = (ROOT_DIR / "backend/sql/001_initial_schema.sql").read_text(encoding="utf-8").lower()
+        baseline = (ROOT_DIR / "backend/migrations/versions/20260616_0001_baseline.py").read_text(encoding="utf-8").lower()
+        incidents = (ROOT_DIR / "backend/migrations/versions/20260617_0002_incidents.py").read_text(encoding="utf-8").lower()
+        client_points = (ROOT_DIR / "backend/migrations/versions/20260623_0003_client_points.py").read_text(encoding="utf-8").lower()
+        user_password_hash = (ROOT_DIR / "backend/migrations/versions/20260623_0004_user_password_hash.py").read_text(encoding="utf-8").lower()
+
+        for table_name in [
+            "orders",
+            "order_items",
+            "scan_codes",
+            "kiz_codes",
+            "kiz_movements",
+            "imports",
+            "import_files",
+            "pending_events",
+            "users",
+            "audit_log",
+        ]:
+            self.assertIn(f"create table if not exists {table_name}", schema_sql)
+            self.assertIn(f'"{table_name}"', baseline)
+        self.assertIn("create table if not exists client_points", schema_sql)
+
+        for index_name in [
+            "idx_orders_status_date",
+            "idx_scan_codes_code_order_item_id",
+            "idx_kiz_movements_kiz_id_occurred_at",
+            "uq_pending_events_idempotency_key",
+        ]:
+            self.assertIn(index_name, schema_sql)
+            self.assertIn(index_name, baseline)
+
+        self.assertIn('"incidents"', incidents)
+        self.assertIn("revision = \"20260617_0002\"", incidents)
+        self.assertIn("down_revision = \"20260616_0001\"", incidents)
+        self.assertIn('"client_points"', client_points)
+        self.assertIn("revision = \"20260623_0003\"", client_points)
+        self.assertIn("down_revision = \"20260617_0002\"", client_points)
+        self.assertIn('"users"', user_password_hash)
+        self.assertIn('"password_hash"', user_password_hash)
+        self.assertIn("revision = \"20260623_0004\"", user_password_hash)
+        self.assertIn("down_revision = \"20260623_0003\"", user_password_hash)
+        self.assertIn("baseline migration is irreversible", baseline)
+        self.assertIn("incident migration is forward-only", incidents)
+        self.assertIn("client points migration is forward-only", client_points)
+        self.assertIn("user password migration is forward-only", user_password_hash)
 
     def test_deploy_runbook_uses_alembic_for_normal_production_upgrades(self):
         runbook = (ROOT_DIR / "docs/deploy-rollback-runbook.md").read_text(encoding="utf-8")

@@ -26,6 +26,18 @@ from .skladbot_worker import (
 
 DEFAULT_DAILY_REPORT_REQUEST_TYPE_IDS = (3387, 3388, 3389, 3391, 3403)
 SKLADBOT_DAILY_REPORT_REQUEST_TYPE_IDS_ENV = "SKLADBOT_DAILY_REPORT_REQUEST_TYPE_IDS"
+REQUEST_CATEGORY_SHIPMENT = "Отгрузка"
+REQUEST_CATEGORY_DEFECT_SHIPMENT = "Отгрузка в браке"
+REQUEST_CATEGORY_RETURN = "Возврат"
+REQUEST_CATEGORY_RECEIVING = "Приемка"
+REQUEST_CATEGORY_OTHER = "Прочее"
+REQUEST_CATEGORIES = (
+    REQUEST_CATEGORY_SHIPMENT,
+    REQUEST_CATEGORY_DEFECT_SHIPMENT,
+    REQUEST_CATEGORY_RETURN,
+    REQUEST_CATEGORY_RECEIVING,
+    REQUEST_CATEGORY_OTHER,
+)
 
 REQUEST_HEADERS = [
     "ID",
@@ -312,17 +324,20 @@ def date_matches(value: Any, expected: date) -> bool:
 
 def categorize_request_type(value: Any) -> str:
     text = normalize_text(value).lower().replace("ё", "е")
+    is_outbound = "отгруз" in text or "расход" in text
+    if is_outbound and "брак" in text:
+        return REQUEST_CATEGORY_DEFECT_SHIPMENT
     if "возврат" in text:
-        return "Возврат"
-    if "отгруз" in text or "расход" in text:
-        return "Отгрузка"
+        return REQUEST_CATEGORY_RETURN
+    if is_outbound:
+        return REQUEST_CATEGORY_SHIPMENT
     if "прием" in text or "приемка" in text:
-        return "Приемка"
-    return "Прочее"
+        return REQUEST_CATEGORY_RECEIVING
+    return REQUEST_CATEGORY_OTHER
 
 
 def category_sort_key(value: Any) -> int:
-    return {"Отгрузка": 1, "Возврат": 2, "Приемка": 3, "Прочее": 4}.get(normalize_text(value), 9)
+    return {category: index for index, category in enumerate(REQUEST_CATEGORIES, start=1)}.get(normalize_text(value), 9)
 
 
 def fetch_daily_movements(client: Any, report_date: date, errors: list[str]) -> list[dict[str, Any]]:
@@ -509,11 +524,11 @@ def first_int(item: Any, *keys: str) -> int:
 def summarize_daily_report(report: dict[str, Any]) -> dict[str, Any]:
     requests = report.get("requests") or []
     movements = report.get("movements") or []
-    category_counts = {"Отгрузка": 0, "Возврат": 0, "Приемка": 0, "Прочее": 0}
+    category_counts = {category: 0 for category in REQUEST_CATEGORIES}
     type_counts: dict[str, int] = {}
-    request_blocks_by_category = {"Отгрузка": 0, "Возврат": 0, "Приемка": 0, "Прочее": 0}
+    request_blocks_by_category = {category: 0 for category in REQUEST_CATEGORIES}
     for request in requests:
-        category = normalize_text(request.get("category")) or "Прочее"
+        category = normalize_text(request.get("category")) or REQUEST_CATEGORY_OTHER
         category_counts[category] = category_counts.get(category, 0) + 1
         type_name = normalize_text(request.get("type")) or "Без типа"
         type_counts[type_name] = type_counts.get(type_name, 0) + 1
@@ -541,12 +556,12 @@ def request_blocks(request: dict[str, Any]) -> int:
 
 
 def request_report_blocks(request: dict[str, Any]) -> int:
-    category = normalize_text(request.get("category")) or "Прочее"
+    category = normalize_text(request.get("category")) or REQUEST_CATEGORY_OTHER
     return sum(report_product_blocks(product, category) for product in request.get("products") or [])
 
 
 def report_product_blocks(product: dict[str, Any], category: str) -> int:
-    if normalize_text(category) == "Приемка":
+    if normalize_text(category) == REQUEST_CATEGORY_RECEIVING:
         accepted_amount = parse_int(product.get("accepted_amount"))
         if product.get("accepted_amount_present"):
             return accepted_amount
@@ -605,6 +620,7 @@ def product_breakdown_for_summary(report: dict[str, Any]) -> list[dict[str, Any]
                 "ending_stock": 0,
                 "inbound": 0,
                 "outbound": 0,
+                "defect_outbound": 0,
                 "returns": 0,
             }
         elif normalize_text(name) and not normalize_text(products[key].get("name")):
@@ -618,7 +634,7 @@ def product_breakdown_for_summary(report: dict[str, Any]) -> list[dict[str, Any]
         product["ending_stock"] += parse_int(row.get("stock"))
 
     for request in report.get("requests") or []:
-        category = normalize_text(request.get("category")) or "Прочее"
+        category = normalize_text(request.get("category")) or REQUEST_CATEGORY_OTHER
         for request_product in request.get("products") or []:
             product = ensure_product(
                 request_product.get("name"),
@@ -626,11 +642,13 @@ def product_breakdown_for_summary(report: dict[str, Any]) -> list[dict[str, Any]
                 request_product.get("barcode"),
             )
             amount = report_product_blocks(request_product, category)
-            if category == "Приемка":
+            if category == REQUEST_CATEGORY_RECEIVING:
                 product["inbound"] += amount
-            elif category == "Отгрузка":
+            elif category == REQUEST_CATEGORY_SHIPMENT:
                 product["outbound"] += amount
-            elif category == "Возврат":
+            elif category == REQUEST_CATEGORY_DEFECT_SHIPMENT:
+                product["defect_outbound"] += amount
+            elif category == REQUEST_CATEGORY_RETURN:
                 product["returns"] += amount
 
     result = list(products.values())
@@ -662,9 +680,10 @@ def write_summary_sheet(sheet, report: dict[str, Any]) -> None:
     generated_at = report.get("generated_at")
     category_counts = summary.get("category_counts") or {}
     blocks = summary.get("request_blocks_by_category") or {}
-    inbound_blocks = parse_int(blocks.get("Приемка"))
-    outbound_blocks = parse_int(blocks.get("Отгрузка"))
-    return_blocks = parse_int(blocks.get("Возврат"))
+    inbound_blocks = parse_int(blocks.get(REQUEST_CATEGORY_RECEIVING))
+    outbound_blocks = parse_int(blocks.get(REQUEST_CATEGORY_SHIPMENT))
+    defect_outbound_blocks = parse_int(blocks.get(REQUEST_CATEGORY_DEFECT_SHIPMENT))
+    return_blocks = parse_int(blocks.get(REQUEST_CATEGORY_RETURN))
     stock_total_value = parse_int(summary.get("stock_total"))
     product_rows = product_breakdown_for_summary(report)
     if not product_rows:
@@ -673,6 +692,7 @@ def write_summary_sheet(sheet, report: dict[str, Any]) -> None:
             "ending_stock": stock_total_value,
             "inbound": 0,
             "outbound": 0,
+            "defect_outbound": 0,
             "returns": 0,
         }]
     request_column = 3 + len(product_rows)
@@ -685,13 +705,14 @@ def write_summary_sheet(sheet, report: dict[str, Any]) -> None:
     sheet.append(["Отчет о движении остатков за день"] + [None] * (request_column - 1))
     sheet.append([None, "Всего блоков"] + [item["name"] for item in product_rows] + ["Заявок"])
     sheet.append(
-        ["Остаток на начало дня ", "=B12-B9-B10-B11"]
+        ["Остаток на начало дня ", "=B13-B9-B10-B11-B12"]
         + [
             (
-                f"={get_column_letter(index)}12"
+                f"={get_column_letter(index)}13"
                 f"-{get_column_letter(index)}9"
                 f"-{get_column_letter(index)}10"
                 f"-{get_column_letter(index)}11"
+                f"-{get_column_letter(index)}12"
             )
             for index in range(3, request_column)
         ]
@@ -700,17 +721,22 @@ def write_summary_sheet(sheet, report: dict[str, Any]) -> None:
     sheet.append(
         ["Приемка", inbound_blocks]
         + [item["inbound"] for item in product_rows]
-        + [category_counts.get("Приемка", 0)]
+        + [category_counts.get(REQUEST_CATEGORY_RECEIVING, 0)]
     )
     sheet.append(
         ["Отгрузка", -outbound_blocks]
         + [-item["outbound"] for item in product_rows]
-        + [category_counts.get("Отгрузка", 0)]
+        + [category_counts.get(REQUEST_CATEGORY_SHIPMENT, 0)]
+    )
+    sheet.append(
+        ["Отгрузка в браке", -defect_outbound_blocks]
+        + [-item["defect_outbound"] for item in product_rows]
+        + [category_counts.get(REQUEST_CATEGORY_DEFECT_SHIPMENT, 0)]
     )
     sheet.append(
         ["Возврат", return_blocks]
         + [item["returns"] for item in product_rows]
-        + [category_counts.get("Возврат", 0)]
+        + [category_counts.get(REQUEST_CATEGORY_RETURN, 0)]
     )
     sheet.append(
         ["Остаток на конец дня", stock_total_value]
@@ -718,12 +744,12 @@ def write_summary_sheet(sheet, report: dict[str, Any]) -> None:
         + [None]
     )
     apply_header_style(sheet)
-    for cell in ("A6", "A8", "B8", "A12", "B12"):
+    for cell in ("A6", "A8", "B8", "A13", "B13"):
         sheet[cell].font = Font(bold=True)
     for index in range(3, request_column):
-        for row in (8, 12):
+        for row in (8, 13):
             sheet.cell(row=row, column=index).font = Font(bold=True)
-    apply_thin_border(sheet, f"A8:{request_column_letter}12")
+    apply_thin_border(sheet, f"A8:{request_column_letter}13")
 
 
 def write_requests_sheet(sheet, requests: list[dict[str, Any]]) -> None:
@@ -757,7 +783,7 @@ def write_requests_sheet(sheet, requests: list[dict[str, Any]]) -> None:
 def write_request_products_sheet(sheet, requests: list[dict[str, Any]]) -> None:
     sheet.append(REQUEST_PRODUCT_HEADERS)
     for request in requests:
-        category = normalize_text(request.get("category")) or "Прочее"
+        category = normalize_text(request.get("category")) or REQUEST_CATEGORY_OTHER
         for product in request.get("products") or []:
             planned_blocks = parse_int(product.get("amount"))
             actual_blocks = report_product_blocks(product, category)
@@ -844,10 +870,11 @@ def build_skladbot_daily_report_message(report: dict[str, Any]) -> str:
         f"SkladBot отчет за {report_date}",
         "",
         f"Заявок всего: {summary.get('requests_total', 0)}",
-        f"Отгрузка: {category_counts.get('Отгрузка', 0)} заявок, {blocks.get('Отгрузка', 0)} блоков",
-        f"Возврат: {category_counts.get('Возврат', 0)} заявок, {blocks.get('Возврат', 0)} блоков",
-        f"Приемка: {category_counts.get('Приемка', 0)} заявок, {blocks.get('Приемка', 0)} блоков",
-        f"Прочее: {category_counts.get('Прочее', 0)} заявок, {blocks.get('Прочее', 0)} блоков",
+        f"Отгрузка: {category_counts.get(REQUEST_CATEGORY_SHIPMENT, 0)} заявок, {blocks.get(REQUEST_CATEGORY_SHIPMENT, 0)} блоков",
+        f"Отгрузка в браке: {category_counts.get(REQUEST_CATEGORY_DEFECT_SHIPMENT, 0)} заявок, {blocks.get(REQUEST_CATEGORY_DEFECT_SHIPMENT, 0)} блоков",
+        f"Возврат: {category_counts.get(REQUEST_CATEGORY_RETURN, 0)} заявок, {blocks.get(REQUEST_CATEGORY_RETURN, 0)} блоков",
+        f"Приемка: {category_counts.get(REQUEST_CATEGORY_RECEIVING, 0)} заявок, {blocks.get(REQUEST_CATEGORY_RECEIVING, 0)} блоков",
+        f"Прочее: {category_counts.get(REQUEST_CATEGORY_OTHER, 0)} заявок, {blocks.get(REQUEST_CATEGORY_OTHER, 0)} блоков",
         "",
         f"Движения: приход {summary.get('movement_in_amount', 0)}, расход {summary.get('movement_out_amount', 0)}",
         f"Актуальный остаток: {summary.get('stock_total', 0)}",
