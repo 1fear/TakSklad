@@ -6093,3 +6093,15 @@ cd /opt/taksklad/app
   - `.venv/bin/python -m unittest tests.test_backend_telegram_import` - 65 tests OK;
   - `.venv/bin/python -m py_compile backend/app/reports_service.py backend/app/main.py backend/app/schemas.py` - OK;
   - `npm --prefix frontend run build` - OK.
+- VDS deploy:
+  - restore point: `/opt/taksklad/restore_points/pre-dashboard-loaded-day-metrics-20260625T100959Z`;
+  - Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260625T100959Z.sql.gz`;
+  - синхронизированы `backend/app/main.py`, `backend/app/reports_service.py`, `backend/app/schemas.py`, `frontend/src/App.tsx`, `frontend/src/api.ts` и docs;
+  - выполнен `docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml up -d --build backend-api frontend`;
+  - VDS `backend-api` compileall - OK;
+  - `https://api.taksklad.uz/health` - OK, backend `2.0.23`;
+  - `https://api.taksklad.uz/ready` - DB/migrations OK, общий `degraded` из-за старых queue events;
+  - live `GET /api/v1/admin/dashboard/day-summary?report_date=2026-06-25` вернул `source=postgres_loaded_items`, `orders=69`, `active_orders=1`, `planned_blocks=668`, `scanned_blocks=613`;
+  - live `GET /api/v1/orders/active` вернул 1 активный заказ `POYTAXT SPECIAL TRADE MCHJ Ozbekfilm`, 55 блоков, 0 отсканировано;
+  - новый frontend asset: `/assets/index-yntfbHmQ.js`;
+  - `acceptance_status.sh` остался `failed` из-за старого readiness `degraded` и незакрытых ручных GO/NO-GO чекбоксов, не из-за dashboard deploy.
