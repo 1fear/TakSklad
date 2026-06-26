@@ -397,6 +397,109 @@ class RefreshFallbackTests(unittest.TestCase):
             refresh_service.get_pending_codes = original_get_pending_codes
             refresh_service.get_pending_backend_codes = original_get_pending_backend_codes
 
+    def test_backend_only_initial_load_does_not_fallback_to_google_when_backend_fails(self):
+        original_backend_read_orders_enabled = refresh_service.backend_read_orders_enabled
+        original_backend_google_fallback_enabled = refresh_service.backend_google_fallback_enabled
+        original_fetch_backend_sheet_data = refresh_service.fetch_backend_sheet_data
+        original_get_today_orders = refresh_service.get_today_orders
+        try:
+            refresh_service.backend_read_orders_enabled = lambda: True
+            refresh_service.backend_google_fallback_enabled = lambda: False
+            refresh_service.fetch_backend_sheet_data = lambda: (_ for _ in ()).throw(RuntimeError("Backend down"))
+            refresh_service.get_today_orders = lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("Initial backend-only load must not read Google")
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "Backend refresh недоступен"):
+                main.fetch_sheet_data()
+        finally:
+            refresh_service.backend_read_orders_enabled = original_backend_read_orders_enabled
+            refresh_service.backend_google_fallback_enabled = original_backend_google_fallback_enabled
+            refresh_service.fetch_backend_sheet_data = original_fetch_backend_sheet_data
+            refresh_service.get_today_orders = original_get_today_orders
+
+    def test_backend_only_refresh_does_not_fallback_to_google_when_backend_primary_fails(self):
+        original_backend_read_orders_enabled = refresh_service.backend_read_orders_enabled
+        original_backend_google_fallback_enabled = refresh_service.backend_google_fallback_enabled
+        original_sync_pending_backend_events = refresh_service.sync_pending_backend_events
+        original_sync_backend_sources = refresh_service.sync_backend_sources
+        original_fetch_backend_sheet_data = refresh_service.fetch_backend_sheet_data
+        original_get_today_orders = refresh_service.get_today_orders
+        original_get_pending_backend_codes = refresh_service.get_pending_backend_codes
+        try:
+            refresh_service.backend_read_orders_enabled = lambda: True
+            refresh_service.backend_google_fallback_enabled = lambda: False
+            refresh_service.sync_pending_backend_events = lambda: {"enabled": True, "remaining": 0}
+            refresh_service.sync_backend_sources = lambda sync_skladbot=True, wait_skladbot=True: {
+                "status": "completed",
+                "google_sheets": {"status": "skipped"},
+                "skladbot": {"status": "skipped"},
+            }
+            refresh_service.fetch_backend_sheet_data = lambda: (_ for _ in ()).throw(RuntimeError("Backend down"))
+            refresh_service.get_today_orders = lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("Google fallback must be explicit in backend-only mode")
+            )
+            refresh_service.get_pending_backend_codes = lambda: set()
+
+            with self.assertRaisesRegex(RuntimeError, "Backend refresh недоступен"):
+                main.fetch_sheet_data_with_sync(sync_skladbot=False)
+        finally:
+            refresh_service.backend_read_orders_enabled = original_backend_read_orders_enabled
+            refresh_service.backend_google_fallback_enabled = original_backend_google_fallback_enabled
+            refresh_service.sync_pending_backend_events = original_sync_pending_backend_events
+            refresh_service.sync_backend_sources = original_sync_backend_sources
+            refresh_service.fetch_backend_sheet_data = original_fetch_backend_sheet_data
+            refresh_service.get_today_orders = original_get_today_orders
+            refresh_service.get_pending_backend_codes = original_get_pending_backend_codes
+
+    def test_backend_only_refresh_allows_explicit_emergency_google_fallback(self):
+        original_backend_read_orders_enabled = refresh_service.backend_read_orders_enabled
+        original_backend_only_refresh_enabled = refresh_service.backend_only_refresh_enabled
+        original_backend_google_fallback_enabled = refresh_service.backend_google_fallback_enabled
+        original_sync_pending_backend_events = refresh_service.sync_pending_backend_events
+        original_sync_backend_sources = refresh_service.sync_backend_sources
+        original_fetch_backend_sheet_data = refresh_service.fetch_backend_sheet_data
+        original_get_today_orders = refresh_service.get_today_orders
+        original_get_all_existing_codes = refresh_service.get_all_existing_codes
+        original_get_pending_codes = refresh_service.get_pending_codes
+        original_get_pending_backend_codes = refresh_service.get_pending_backend_codes
+        try:
+            google_orders = [{"Клиент": "Emergency Google Client", "Кол-во блок": 1}]
+            sheet = object()
+
+            refresh_service.backend_read_orders_enabled = lambda: True
+            refresh_service.backend_only_refresh_enabled = lambda: True
+            refresh_service.backend_google_fallback_enabled = lambda: True
+            refresh_service.sync_pending_backend_events = lambda: {"enabled": True, "remaining": 0}
+            refresh_service.sync_backend_sources = lambda sync_skladbot=True, wait_skladbot=True: {
+                "status": "completed",
+                "google_sheets": {"status": "completed"},
+                "skladbot": {"status": "skipped"},
+            }
+            refresh_service.fetch_backend_sheet_data = lambda: (_ for _ in ()).throw(RuntimeError("Backend down"))
+            refresh_service.get_today_orders = lambda apply_skladbot_filter=None, include_rows=False: (
+                (google_orders, sheet, []) if include_rows else (google_orders, sheet)
+            )
+            refresh_service.get_all_existing_codes = lambda sheet, all_rows=None: set()
+            refresh_service.get_pending_codes = lambda: set()
+            refresh_service.get_pending_backend_codes = lambda: set()
+
+            orders, _, _, sync_result = main.fetch_sheet_data_with_sync(sync_skladbot=False)
+
+            self.assertEqual(orders, google_orders)
+            self.assertEqual(sync_result["primary_source"], "google_emergency_fallback")
+        finally:
+            refresh_service.backend_read_orders_enabled = original_backend_read_orders_enabled
+            refresh_service.backend_only_refresh_enabled = original_backend_only_refresh_enabled
+            refresh_service.backend_google_fallback_enabled = original_backend_google_fallback_enabled
+            refresh_service.sync_pending_backend_events = original_sync_pending_backend_events
+            refresh_service.sync_backend_sources = original_sync_backend_sources
+            refresh_service.fetch_backend_sheet_data = original_fetch_backend_sheet_data
+            refresh_service.get_today_orders = original_get_today_orders
+            refresh_service.get_all_existing_codes = original_get_all_existing_codes
+            refresh_service.get_pending_codes = original_get_pending_codes
+            refresh_service.get_pending_backend_codes = original_get_pending_backend_codes
+
     def test_refresh_from_sheet_preserves_current_position(self):
         original_fetch_sheet_data_with_sync = app_data_loading.fetch_sheet_data_with_sync
         original_backend_read_orders_enabled = app_data_loading.backend_read_orders_enabled
@@ -429,6 +532,52 @@ class RefreshFallbackTests(unittest.TestCase):
             app_data_loading.fetch_sheet_data_with_sync = original_fetch_sheet_data_with_sync
             app_data_loading.backend_read_orders_enabled = original_backend_read_orders_enabled
 
+    def test_refresh_error_with_cached_backend_orders_preserves_current_position(self):
+        original_fetch_sheet_data_with_sync = app_data_loading.fetch_sheet_data_with_sync
+        original_backend_read_orders_enabled = app_data_loading.backend_read_orders_enabled
+        try:
+            app_data_loading.fetch_sheet_data_with_sync = lambda sync_skladbot=True: (
+                _ for _ in ()
+            ).throw(RuntimeError("Backend refresh недоступен: timeout"))
+            app_data_loading.backend_read_orders_enabled = lambda: True
+            app = FakeRefreshApp()
+            original_order = app.current_order
+
+            app.refresh_from_sheet(initial=False)
+
+            self.assertIs(app.current_order, original_order)
+            self.assertEqual(app.reset_calls, 0)
+            self.assertEqual(app.refresh_list_calls, 0)
+            self.assertEqual(len(app.errors), 1)
+            self.assertIn("последним загруженным списком", app.errors[0][0])
+            self.assertFalse(app.refresh_in_progress)
+        finally:
+            app_data_loading.fetch_sheet_data_with_sync = original_fetch_sheet_data_with_sync
+            app_data_loading.backend_read_orders_enabled = original_backend_read_orders_enabled
+
+    def test_refresh_error_without_cached_backend_orders_reports_backend_connectivity(self):
+        original_fetch_sheet_data_with_sync = app_data_loading.fetch_sheet_data_with_sync
+        original_backend_read_orders_enabled = app_data_loading.backend_read_orders_enabled
+        try:
+            app_data_loading.fetch_sheet_data_with_sync = lambda sync_skladbot=True: (
+                _ for _ in ()
+            ).throw(RuntimeError("Backend refresh недоступен: timeout"))
+            app_data_loading.backend_read_orders_enabled = lambda: True
+            app = FakeRefreshApp()
+            app.today_orders = []
+            app.current_order = None
+
+            app.refresh_from_sheet(initial=True)
+
+            self.assertIsNone(app.current_order)
+            self.assertEqual(app.reset_calls, 0)
+            self.assertEqual(len(app.errors), 1)
+            self.assertIn("Проверьте связь с backend", app.errors[0][0])
+            self.assertFalse(app.refresh_in_progress)
+        finally:
+            app_data_loading.fetch_sheet_data_with_sync = original_fetch_sheet_data_with_sync
+            app_data_loading.backend_read_orders_enabled = original_backend_read_orders_enabled
+
     def test_refresh_error_message_keeps_cached_orders(self):
         message = main.format_refresh_error_message(
             RuntimeError("Google Sheets временно ограничил запросы"),
@@ -437,6 +586,15 @@ class RefreshFallbackTests(unittest.TestCase):
 
         self.assertIn("последним загруженным списком", message)
         self.assertIn("повторите обновление позже", message)
+
+    def test_refresh_error_message_points_to_backend_when_backend_refresh_failed_without_cache(self):
+        message = main.format_refresh_error_message(
+            RuntimeError("Backend refresh недоступен: timeout"),
+            has_cached_orders=False,
+        )
+
+        self.assertIn("Проверьте связь с backend", message)
+        self.assertNotIn("Google Sheets", message)
 
 
 if __name__ == "__main__":

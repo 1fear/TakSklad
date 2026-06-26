@@ -10,6 +10,7 @@ from .event_queue_service import (
     event_to_queue_read,
     list_stale_processing_events,
 )
+from .google_sheets_pending import GOOGLE_SHEETS_EXPORT_EVENT_TYPE
 from .models import ImportJob, Incident, PendingEvent
 from .redaction import redact_secrets
 from .settings import APP_VERSION
@@ -43,6 +44,14 @@ def build_readiness_report(db: Session, app_settings):
             "last_errors": [],
         },
         "imports": {"recent_errors": []},
+        "google_mirror": {
+            "status": "unknown",
+            "summary": {},
+            "oldest_pending_age_seconds": 0,
+            "paused": False,
+            "next_attempt_at": "",
+            "last_errors": [],
+        },
     }
 
     try:
@@ -58,11 +67,12 @@ def build_readiness_report(db: Session, app_settings):
 
     report["migrations"] = read_migration_status(db)
     report["queue"] = build_queue_readiness(db, now=now)
+    report["google_mirror"] = build_google_mirror_readiness(db, now=now)
     report["imports"] = build_import_error_readiness(db)
     if (
         report["migrations"].get("status") != "ok"
-        or report["queue"]["stale_processing_count"]
-        or report["queue"]["last_errors"]
+        or report["queue"]["hot_path_stale_processing_count"]
+        or report["queue"]["hot_path_last_errors"]
         or report["imports"]["recent_errors"]
     ):
         report["status"] = "degraded"
@@ -99,27 +109,38 @@ def build_queue_readiness(db: Session, now=None):
     now = now or datetime.now(timezone.utc)
     summary = sanitize_queue_summary(build_event_queue_summary(db))
     stale_processing = list_stale_processing_events(db, now=now, limit=20)
+    hot_path_stale_processing = [
+        event for event in stale_processing
+        if event.event_type != GOOGLE_SHEETS_EXPORT_EVENT_TYPE
+    ]
     oldest_pending = db.execute(
         select(PendingEvent)
         .where(PendingEvent.status.in_(("pending", "failed")))
         .order_by(PendingEvent.created_at, PendingEvent.id)
         .limit(1)
     ).scalars().first()
+    errors = last_event_errors(db, now=now)
+    hot_path_errors = [
+        event for event in errors
+        if event.get("event_type") != GOOGLE_SHEETS_EXPORT_EVENT_TYPE
+    ]
     return {
         "summary": summary,
         "oldest_pending_age_seconds": event_age_seconds(oldest_pending, now, field="created_at"),
         "stale_processing_count": len(stale_processing),
+        "hot_path_stale_processing_count": len(hot_path_stale_processing),
         "stale_processing": [
             compact_event_error(event_to_queue_read(event, now=now))
             for event in stale_processing[:10]
         ],
-        "last_errors": last_event_errors(db, now=now),
+        "last_errors": errors,
+        "hot_path_last_errors": hot_path_errors,
     }
 
 
-def last_event_errors(db: Session, now=None, limit=10):
+def last_event_errors(db: Session, now=None, limit=10, event_type=None):
     now = now or datetime.now(timezone.utc)
-    events = db.execute(
+    stmt = (
         select(PendingEvent)
         .where(PendingEvent.status.in_(("failed", "error", "blocked")))
         .where(PendingEvent.last_error.is_not(None))
@@ -128,9 +149,11 @@ def last_event_errors(db: Session, now=None, limit=10):
             .where(Incident.pending_event_id.is_not(None))
             .where(Incident.status.in_(TERMINAL_INCIDENT_STATUSES))
         ))
-        .order_by(PendingEvent.updated_at.desc(), PendingEvent.created_at.desc(), PendingEvent.id.desc())
-        .limit(limit)
-    ).scalars().all()
+    )
+    if event_type:
+        stmt = stmt.where(PendingEvent.event_type == event_type)
+    stmt = stmt.order_by(PendingEvent.updated_at.desc(), PendingEvent.created_at.desc(), PendingEvent.id.desc()).limit(limit)
+    events = db.execute(stmt).scalars().all()
     return [compact_event_error(event_to_queue_read(event, now=now)) for event in events]
 
 
@@ -169,6 +192,59 @@ def sanitize_readiness_event_type(event_type):
         return text_value
     prefix = text_value.split(":", 1)[0].strip() or "event"
     return f"{prefix}:*"
+
+
+def build_google_mirror_readiness(db: Session, now=None):
+    now = now or datetime.now(timezone.utc)
+    events = db.execute(
+        select(PendingEvent)
+        .where(PendingEvent.event_type == GOOGLE_SHEETS_EXPORT_EVENT_TYPE)
+        .where(PendingEvent.status.in_(("pending", "failed", "processing")))
+        .order_by(PendingEvent.created_at, PendingEvent.id)
+    ).scalars().all()
+    summary = {}
+    for event in events:
+        status = str(event.status or "unknown")
+        summary[status] = int(summary.get(status) or 0) + 1
+    oldest_pending = next(
+        (event for event in events if event.status in ("pending", "failed")),
+        None,
+    )
+    next_attempt_at = min_next_attempt_at(events, now=now)
+    return {
+        "status": "degraded" if events else "ok",
+        "role": "mirror_export",
+        "event_type": GOOGLE_SHEETS_EXPORT_EVENT_TYPE,
+        "summary": dict(sorted(summary.items())),
+        "oldest_pending_age_seconds": event_age_seconds(oldest_pending, now, field="created_at"),
+        "paused": bool(next_attempt_at),
+        "next_attempt_at": next_attempt_at.isoformat() if next_attempt_at else "",
+        "last_errors": last_event_errors(
+            db,
+            now=now,
+            event_type=GOOGLE_SHEETS_EXPORT_EVENT_TYPE,
+        ),
+    }
+
+
+def min_next_attempt_at(events, now=None):
+    now = now or datetime.now(timezone.utc)
+    attempts = []
+    for event in events:
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        next_attempt_raw = str(payload.get("next_attempt_at") or "").strip()
+        if not next_attempt_raw:
+            continue
+        try:
+            next_attempt = datetime.fromisoformat(next_attempt_raw)
+        except ValueError:
+            continue
+        next_attempt = ensure_aware_utc(next_attempt)
+        if next_attempt and next_attempt > now:
+            attempts.append(next_attempt)
+    if not attempts:
+        return None
+    return min(attempts)
 
 
 def event_age_seconds(event, now, field="updated_at"):

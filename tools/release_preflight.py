@@ -27,6 +27,12 @@ SECRET_FILE_NAMES = {
     ".env",
 }
 REQUIRED_FILES = [
+    Path("src/taksklad/config.py"),
+    Path("src/taksklad/startup_check.py"),
+    Path("src/taksklad/desktop_refresh_service.py"),
+    Path("src/taksklad/app_runtime.py"),
+    Path("src/taksklad/desktop_diagnostics.py"),
+    Path("backend/app/operations_service.py"),
     Path("tools/windows_backend_acceptance.ps1"),
     Path("tools/build_windows_test_archive.ps1"),
     Path("tools/release_go_no_go.py"),
@@ -37,6 +43,7 @@ REQUIRED_FILES = [
     Path("deploy/vds/verify_skladbot_coverage.sh"),
     Path("docs/windows-backend-acceptance.md"),
     Path("docs/manual-acceptance-runbook.md"),
+    Path("docs/deploy-rollback-runbook.md"),
 ]
 WINDOWS_ACCEPTANCE_HELPER_REQUIRED_FRAGMENTS = [
     "build_manifest.json",
@@ -48,6 +55,9 @@ WINDOWS_ACCEPTANCE_HELPER_REQUIRED_FRAGMENTS = [
     "Compare-TakSkladVersion",
     "TAKSKLAD_BACKEND_ENABLED",
     "TAKSKLAD_BACKEND_READ_ORDERS_ENABLED",
+    "TAKSKLAD_BACKEND_ONLY_REFRESH",
+    "TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED",
+    "TELEGRAM_DESKTOP_POLLING_ENABLED",
 ]
 WINDOWS_TEST_BUILD_REQUIRED_FRAGMENTS = [
     "build_manifest.json",
@@ -67,6 +77,70 @@ EXPECTED_RELEASE_TAG = f"v{EXPECTED_RELEASE_VERSION}"
 EXPECTED_RELEASE_HOST = "github.com"
 EXPECTED_RELEASE_REPO_PATH = f"/1fear/TakSklad/releases/download/{EXPECTED_RELEASE_TAG}/"
 PAUSED_ROLLOUT_VERSION = "1.1.7"
+BACKEND_ONLY_CONTRACT_FRAGMENTS = {
+    Path("src/taksklad/config.py"): [
+        "TAKSKLAD_BACKEND_ONLY_REFRESH",
+        "TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED",
+        "TELEGRAM_DESKTOP_POLLING_ENABLED",
+        "default=False",
+    ],
+    Path("src/taksklad/startup_check.py"): [
+        "telegram_desktop_polling",
+        "backend_only_refresh",
+        "backend_emergency_google_fallback",
+    ],
+    Path("src/taksklad/desktop_refresh_service.py"): [
+        "def backend_only_refresh_enabled",
+        "def backend_google_fallback_enabled",
+        "TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED",
+        "Backend refresh недоступен",
+        "google_emergency_fallback",
+    ],
+    Path("src/taksklad/app_runtime.py"): [
+        "telegram_lock_owned_until\", 0) > time.time()",
+        "release_telegram_poll_lock",
+    ],
+    Path("src/taksklad/desktop_diagnostics.py"): [
+        "primary_source",
+        "backend_only_refresh",
+        "emergency_google_fallback",
+        "google_mirror_pending_exports",
+    ],
+    Path("backend/app/operations_service.py"): [
+        "shadow_diagnostics",
+        "backend_active_orders_source",
+        "google_mirror_lag_seconds",
+        "hot_path_stale_processing",
+        "telegram_worker_state",
+    ],
+}
+DEPLOY_RUNBOOK_REQUIRED_FRAGMENTS = {
+    Path("docs/windows-backend-acceptance.md"): [
+        "TAKSKLAD_BACKEND_ONLY_REFRESH = \"1\"",
+        "TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED = \"0\"",
+        "TELEGRAM_DESKTOP_POLLING_ENABLED = \"0\"",
+        "pending_backend_events",
+        "pending_saves",
+        "pending_prints",
+        "pending_telegram",
+        "/api/v1/admin/operations",
+    ],
+    Path("docs/deploy-rollback-runbook.md"): [
+        "restore point",
+        "git status --short",
+        "Do not run broad rsync from a dirty tree",
+        "selective deploy",
+        "pending events",
+        "/api/v1/admin/operations",
+    ],
+    Path("docs/manual-acceptance-runbook.md"): [
+        "startup diagnostics",
+        "backend refresh",
+        "network timeout",
+        "Google 429",
+        "dirty tree",
+    ],
+}
 
 
 def sha256_file(path):
@@ -357,6 +431,37 @@ def check_windows_acceptance_flow(root):
     return result("windows_acceptance_flow", not problems, problems=problems)
 
 
+def check_text_fragment_contract(root, name, mapping):
+    problems = []
+    for path, fragments in mapping.items():
+        file_path = root / path
+        try:
+            text = file_path.read_text(encoding="utf-8")
+        except Exception as exc:
+            problems.append(f"{path}: cannot read: {exc}")
+            continue
+        for fragment in fragments:
+            if fragment not in text:
+                problems.append(f"{path}: missing fragment: {fragment}")
+    return result(name, not problems, problems=problems)
+
+
+def check_backend_only_hot_path_contract(root):
+    return check_text_fragment_contract(
+        root,
+        "backend_only_hot_path_contract",
+        BACKEND_ONLY_CONTRACT_FRAGMENTS,
+    )
+
+
+def check_deploy_runbook_contract(root):
+    return check_text_fragment_contract(
+        root,
+        "deploy_runbook_contract",
+        DEPLOY_RUNBOOK_REQUIRED_FRAGMENTS,
+    )
+
+
 def check_public_backend_health(url, timeout_seconds):
     request = urllib.request.Request(url, headers={"User-Agent": "TakSklad-release-preflight/1.0"})
     try:
@@ -384,6 +489,8 @@ def run_checks(root, health_url, timeout_seconds, skip_network=False, verify_dow
         check_version_json(root),
         check_acceptance_kit(root),
         check_windows_acceptance_flow(root),
+        check_backend_only_hot_path_contract(root),
+        check_deploy_runbook_contract(root),
         check_tracked_secrets(root),
     ]
     if verify_downloads:

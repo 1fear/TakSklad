@@ -79,6 +79,9 @@ class ReleasePreflightTests(unittest.TestCase):
                 "Compare-TakSkladVersion\n"
                 "TAKSKLAD_BACKEND_ENABLED\n"
                 "TAKSKLAD_BACKEND_READ_ORDERS_ENABLED\n"
+                "TAKSKLAD_BACKEND_ONLY_REFRESH\n"
+                "TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED\n"
+                "TELEGRAM_DESKTOP_POLLING_ENABLED\n"
             )
         if path_text.endswith("build_windows_test_archive.ps1"):
             return (
@@ -92,6 +95,46 @@ class ReleasePreflightTests(unittest.TestCase):
                 "version.json has local changes\n"
                 "paused 1.1.7 nor forced 2.0.23 rollout manifest\n"
             )
+        if path_text.endswith("src/taksklad/config.py"):
+            return (
+                "TAKSKLAD_BACKEND_ONLY_REFRESH = _bool_setting(RUNTIME_CONFIG, \"TAKSKLAD_BACKEND_ONLY_REFRESH\", default=False)\n"
+                "TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED = _bool_setting(RUNTIME_CONFIG, \"TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED\", default=False)\n"
+                "TELEGRAM_DESKTOP_POLLING_ENABLED = _bool_setting(RUNTIME_CONFIG, \"TELEGRAM_DESKTOP_POLLING_ENABLED\", default=False)\n"
+            )
+        if path_text.endswith("src/taksklad/startup_check.py"):
+            return "telegram_desktop_polling backend_only_refresh backend_emergency_google_fallback\n"
+        if path_text.endswith("src/taksklad/desktop_refresh_service.py"):
+            return (
+                "def backend_only_refresh_enabled(): pass\n"
+                "def backend_google_fallback_enabled(): pass\n"
+                "TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED\n"
+                "Backend refresh недоступен\n"
+                "google_emergency_fallback\n"
+            )
+        if path_text.endswith("src/taksklad/app_runtime.py"):
+            return "if getattr(self, \"telegram_lock_owned_until\", 0) > time.time(): release_telegram_poll_lock()\n"
+        if path_text.endswith("src/taksklad/desktop_diagnostics.py"):
+            return "primary_source backend_only_refresh emergency_google_fallback google_mirror_pending_exports\n"
+        if path_text.endswith("backend/app/operations_service.py"):
+            return "shadow_diagnostics backend_active_orders_source google_mirror_lag_seconds hot_path_stale_processing telegram_worker_state\n"
+        if path_text.endswith("docs/windows-backend-acceptance.md"):
+            return (
+                'TAKSKLAD_BACKEND_ONLY_REFRESH = "1"\n'
+                'TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED = "0"\n'
+                'TELEGRAM_DESKTOP_POLLING_ENABLED = "0"\n'
+                "pending_backend_events pending_saves pending_prints pending_telegram /api/v1/admin/operations\n"
+            )
+        if path_text.endswith("docs/deploy-rollback-runbook.md"):
+            return (
+                "restore point\n"
+                "git status --short\n"
+                "Do not run broad rsync from a dirty tree\n"
+                "selective deploy\n"
+                "pending events\n"
+                "/api/v1/admin/operations\n"
+            )
+        if path_text.endswith("docs/manual-acceptance-runbook.md"):
+            return "startup diagnostics backend refresh network timeout Google 429 dirty tree\n"
         return "ok"
 
     def test_preflight_passes_without_network_for_valid_fixture(self):
@@ -340,6 +383,41 @@ class ReleasePreflightTests(unittest.TestCase):
         self.assertIn(
             "windows acceptance helper missing fragment: build_manifest.json",
             check["problems"],
+        )
+
+    def test_backend_only_contract_rejects_missing_emergency_guard(self):
+        tmp_dir, root = self.make_root()
+        with tmp_dir:
+            (root / "src/taksklad/desktop_refresh_service.py").write_text(
+                "def backend_only_refresh_enabled(): pass\n"
+                "Backend refresh недоступен\n",
+                encoding="utf-8",
+            )
+            summary = run_checks(root, health_url="https://example.invalid/health", timeout_seconds=1, skip_network=True)
+
+        backend_contract = next(check for check in summary["checks"] if check["name"] == "backend_only_hot_path_contract")
+        self.assertFalse(backend_contract["ok"])
+        self.assertIn(
+            "src/taksklad/desktop_refresh_service.py: missing fragment: TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED",
+            backend_contract["problems"],
+        )
+
+    def test_deploy_runbook_contract_rejects_dirty_tree_broad_deploy_gap(self):
+        tmp_dir, root = self.make_root()
+        with tmp_dir:
+            (root / "docs/deploy-rollback-runbook.md").write_text(
+                "restore point\n"
+                "pending events\n"
+                "/api/v1/admin/operations\n",
+                encoding="utf-8",
+            )
+            summary = run_checks(root, health_url="https://example.invalid/health", timeout_seconds=1, skip_network=True)
+
+        deploy_contract = next(check for check in summary["checks"] if check["name"] == "deploy_runbook_contract")
+        self.assertFalse(deploy_contract["ok"])
+        self.assertIn(
+            "docs/deploy-rollback-runbook.md: missing fragment: Do not run broad rsync from a dirty tree",
+            deploy_contract["problems"],
         )
 
     def test_windows_acceptance_flow_passes_for_current_scripts(self):

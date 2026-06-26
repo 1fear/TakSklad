@@ -333,7 +333,10 @@ class AppRuntimeMixin:
                 "Есть несохранённые сканы по текущей позиции.\n\nЗакрыть программу без завершения позиции?"
             ):
                 return
-        if telegram_single_listener_lock_enabled():
+        if (
+            getattr(self, "telegram_lock_owned_until", 0) > time.time()
+            and telegram_single_listener_lock_enabled()
+        ):
             try:
                 release_telegram_poll_lock(self.telegram_lock_owner_id)
             except Exception:

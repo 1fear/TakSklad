@@ -53,6 +53,7 @@ from .order_actions_service import (
     resync_order_to_google as resync_order_to_google_in_db,
     resync_order_skladbot as resync_order_skladbot_in_db,
 )
+from .operations_service import build_operations_attention
 from .orders_service import ApiError, complete_order as complete_order_in_db
 from .orders_service import create_scan as create_scan_in_db
 from .orders_service import list_active_orders as list_active_orders_in_db
@@ -90,6 +91,7 @@ from .schemas import (
     IncidentRead,
     IncidentStatusUpdate,
     OrderRead,
+    OperationsAttentionRead,
     ReadinessResponse,
     ReturnMarkRequest,
     ScanCreate,
@@ -394,6 +396,11 @@ def retry_pending_google_exports(limit: int = 50, db=Depends(get_db)):
 @api.get("/admin/events", response_model=EventQueueDiagnosticsRead)
 def admin_event_queue(limit: int | None = None, db=Depends(get_db)):
     return list_event_queue_diagnostics(db, limit=limit)
+
+
+@api.get("/admin/operations", response_model=OperationsAttentionRead)
+def admin_operations(db=Depends(get_db)):
+    return build_operations_attention(db, settings)
 
 
 @api.get("/admin/events/{event_id}", response_model=EventQueueEventRead)

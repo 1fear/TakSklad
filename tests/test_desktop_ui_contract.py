@@ -30,6 +30,22 @@ from taksklad.ui_widgets import AppButton, fade_hex
 
 
 class DesktopUiContractTests(unittest.TestCase):
+    def make_runtime_app_for_close(self, lock_owned_until=0):
+        class FakeRuntimeApp:
+            current_order = None
+            scanned_codes = []
+            saved_codes_count = 0
+            telegram_lock_owner_id = "desktop-test"
+            telegram_lock_owned_until = lock_owned_until
+
+            def __init__(self):
+                self.destroyed = False
+
+            def destroy(self):
+                self.destroyed = True
+
+        return FakeRuntimeApp()
+
     def test_desktop_telegram_polling_is_disabled_by_config_even_when_bot_is_configured(self):
         settings = {
             "enabled": True,
@@ -47,6 +63,65 @@ class DesktopUiContractTests(unittest.TestCase):
         }
         with mock.patch("taksklad.app_telegram.TELEGRAM_DESKTOP_POLLING_ENABLED", True):
             self.assertTrue(app_telegram.desktop_telegram_polling_enabled(settings))
+
+    def test_disabled_desktop_telegram_polling_does_not_touch_lock_or_state_path(self):
+        class FakeTelegramApp:
+            telegram_poll_running = False
+
+            def __init__(self):
+                self.after_calls = []
+
+            def after(self, delay, callback):
+                self.after_calls.append((delay, callback))
+
+            def poll_telegram_bot_async(self):
+                self.after_calls.append(("rescheduled", None))
+
+            def ensure_telegram_poll_lock(self, settings):
+                raise AssertionError("desktop polling should not acquire Google lock")
+
+            def process_telegram_updates(self, settings):
+                raise AssertionError("desktop polling should not process updates")
+
+        app = FakeTelegramApp()
+        settings = {
+            "enabled": True,
+            "bot_token": "telegram-token",
+            "chat_ids": ["123"],
+        }
+
+        with (
+            mock.patch("taksklad.app_telegram.TELEGRAM_DESKTOP_POLLING_ENABLED", False),
+            mock.patch("taksklad.app_telegram.load_telegram_settings", return_value=settings),
+        ):
+            app_telegram.TelegramActionsMixin.poll_telegram_bot_async(app)
+
+        self.assertEqual(len(app.after_calls), 1)
+        self.assertEqual(app.after_calls[0][0], 15000)
+
+    def test_close_does_not_release_telegram_lock_when_desktop_never_owned_it(self):
+        app = self.make_runtime_app_for_close(lock_owned_until=0)
+
+        with (
+            mock.patch("taksklad.app_runtime.telegram_single_listener_lock_enabled", return_value=True),
+            mock.patch("taksklad.app_runtime.release_telegram_poll_lock") as release_lock,
+        ):
+            app_runtime.AppRuntimeMixin.on_close(app)
+
+        release_lock.assert_not_called()
+        self.assertTrue(app.destroyed)
+
+    def test_close_releases_telegram_lock_when_desktop_owns_it(self):
+        app = self.make_runtime_app_for_close(lock_owned_until=10**12)
+
+        with (
+            mock.patch("taksklad.app_runtime.telegram_single_listener_lock_enabled", return_value=True),
+            mock.patch("taksklad.app_runtime.release_telegram_poll_lock") as release_lock,
+        ):
+            app_runtime.AppRuntimeMixin.on_close(app)
+
+        release_lock.assert_called_once_with("desktop-test")
+        self.assertTrue(app.destroyed)
 
     def test_main_warehouse_screen_uses_2_0_labels(self):
         source = inspect.getsource(ScanningApp._build_ui)

@@ -1585,6 +1585,55 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertEqual(event.status, "completed")
             self.assertEqual(event.last_error, "")
 
+    def test_pending_google_export_malformed_event_does_not_block_newer_scan_export(self):
+        _, item_id = self.seed_order()
+        from backend.app.google_sheets_pending import process_pending_google_sheets_exports
+
+        with self.SessionLocal() as db:
+            invalid = PendingEvent(
+                event_type="google_sheets_export",
+                status="pending",
+                attempts=0,
+                payload={
+                    "action": "google_sheets_scan_export",
+                    "entity_type": "order_item",
+                    "entity_id": "not-a-uuid",
+                },
+                created_at=datetime.now(timezone.utc) - timedelta(minutes=10),
+            )
+            valid = PendingEvent(
+                event_type="google_sheets_export",
+                status="pending",
+                attempts=0,
+                payload={
+                    "action": "google_sheets_scan_export",
+                    "entity_type": "order_item",
+                    "entity_id": item_id,
+                },
+                created_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+            )
+            db.add_all([invalid, valid])
+            db.commit()
+            invalid_id = invalid.id
+            valid_id = valid.id
+
+            with mock.patch(
+                "backend.app.google_sheets_pending.sync_backend_order_items_to_google_sheets",
+                return_value={"status": "completed", "updated": 1},
+            ):
+                result = process_pending_google_sheets_exports(db, limit=10)
+
+            invalid = db.get(PendingEvent, invalid_id)
+            valid = db.get(PendingEvent, valid_id)
+
+        self.assertEqual(result["status"], "completed_with_errors")
+        self.assertEqual(result["synced"], 1)
+        self.assertEqual(result["failed"], 1)
+        self.assertEqual(invalid.status, "failed")
+        self.assertIn("invalid order item id", invalid.last_error)
+        self.assertEqual(valid.status, "completed")
+        self.assertEqual(valid.last_error, "")
+
     def test_complete_order_requires_required_blocks_and_closes_order(self):
         order_id, item_id = self.seed_order()
 
@@ -3468,6 +3517,90 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertNotIn("secret-token", dumped)
         self.assertNotIn("0104006396053978217ABCDE12345678901234567890", dumped)
 
+    def test_admin_operations_summarizes_attention_without_raw_payload_or_telegram_spam(self):
+        with self.SessionLocal() as db:
+            db.add(PendingEvent(
+                event_type="google_sheets_export",
+                idempotency_key="google:event:ops",
+                status="failed",
+                attempts=2,
+                payload={
+                    "action": "google_sheets_scan_export",
+                    "entity_type": "order_item",
+                    "entity_id": str(uuid.uuid4()),
+                    "authorization": "secret-token",
+                    "next_attempt_at": "2026-06-16T12:01:00+00:00",
+                },
+                last_error="APIError: [429] token=secret 0104006396053978217SECRETKIZVALUE",
+            ))
+            db.add(PendingEvent(
+                event_type="telegram_notification",
+                status="failed",
+                attempts=1,
+                payload={"chat_id": "123456789", "bot_token": "telegram-secret"},
+                last_error="Bearer telegram-secret failed",
+            ))
+            stale_time = datetime.now(timezone.utc) - timedelta(minutes=20)
+            db.add(PendingEvent(
+                event_type="telegram_excel_import",
+                status="processing",
+                attempts=1,
+                payload={"filename": "secret-client.xlsx", "chat_id": "987654321"},
+                last_error="processing timeout",
+                created_at=stale_time,
+                updated_at=stale_time,
+            ))
+            db.add(Incident(
+                source="telegram_import",
+                severity="critical",
+                status="open",
+                title="Bearer secret-token incident",
+                message="token=secret 0104006396053978217SECRETKIZVALUE",
+            ))
+            db.add(ImportJob(
+                source="telegram",
+                status="failed",
+                rows_total=1,
+                rows_imported=0,
+                raw_payload={"filename": "broken.xlsx", "token": "secret-token"},
+            ))
+            db.commit()
+            notifications_before = len(db.execute(select(PendingEvent).where(PendingEvent.event_type == "telegram_notification")).scalars().all())
+
+        response = self.client.get("/api/v1/admin/operations")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "requires_attention")
+        self.assertEqual(payload["summary"]["mirror"], 1)
+        self.assertGreaterEqual(payload["summary"]["hot_path"], 3)
+        categories = {item["category"] for item in payload["items"]}
+        self.assertIn("google_mirror", categories)
+        self.assertIn("telegram", categories)
+        self.assertIn("incident", categories)
+        self.assertIn("import", categories)
+        shadow = payload["shadow_diagnostics"]
+        self.assertEqual(shadow["backend_active_orders_source"], "postgres_backend")
+        self.assertEqual(shadow["google_mirror_status"], "degraded")
+        self.assertEqual(shadow["google_mirror_failed_exports"], 1)
+        self.assertEqual(shadow["hot_path_stale_processing"], 1)
+        self.assertEqual(shadow["telegram_worker_state"], "requires_attention")
+        self.assertGreaterEqual(shadow["telegram_pending_events"], 2)
+        self.assertIn("TakSklad: требуется внимание", payload["telegram_summary"])
+        self.assertIn("retry", str(payload["items"]))
+        dumped = str(payload)
+        self.assertIn("error=present", dumped)
+        self.assertNotIn("secret-token", dumped)
+        self.assertNotIn("telegram-secret", dumped)
+        self.assertNotIn("123456789", dumped)
+        self.assertNotIn("987654321", dumped)
+        self.assertNotIn("secret-client.xlsx", dumped)
+        self.assertNotIn("broken.xlsx", dumped)
+        self.assertNotIn("0104006396053978217SECRETKIZVALUE", dumped)
+        with self.SessionLocal() as db:
+            notifications_after = len(db.execute(select(PendingEvent).where(PendingEvent.event_type == "telegram_notification")).scalars().all())
+        self.assertEqual(notifications_after, notifications_before)
+
     def test_admin_events_default_response_is_not_capped(self):
         with self.SessionLocal() as db:
             db.add_all([
@@ -3889,6 +4022,9 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(payload["migrations"]["current_revision"], "20260616_0001")
         self.assertEqual(payload["queue"]["summary"]["by_type"]["google_sheets_export"]["pending"], 1)
         self.assertEqual(payload["queue"]["summary"]["by_type"]["telegram_chat_state:*"]["pending"], 1)
+        self.assertEqual(payload["google_mirror"]["status"], "degraded")
+        self.assertEqual(payload["google_mirror"]["role"], "mirror_export")
+        self.assertEqual(payload["google_mirror"]["summary"]["pending"], 1)
         self.assertGreaterEqual(payload["queue"]["oldest_pending_age_seconds"], 60)
         self.assertEqual(payload["queue"]["stale_processing_count"], 0)
         dumped = str(payload)
@@ -3900,6 +4036,49 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertNotIn("telegram_chat_state:123456789", dumped)
         self.assertNotIn("'chat_id': '123456789'", dumped)
         self.assertEqual(api_readiness.status_code, 200)
+
+    def test_readiness_keeps_hot_path_ok_when_only_google_mirror_is_degraded(self):
+        next_attempt_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+        with self.SessionLocal() as db:
+            db.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
+            db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260616_0001')"))
+            db.add(PendingEvent(
+                event_type="google_sheets_export",
+                idempotency_key="google:event:rate-limited",
+                status="failed",
+                attempts=3,
+                payload={
+                    "action": "google_sheets_scan_export",
+                    "entity_type": "order_item",
+                    "entity_id": str(uuid.uuid4()),
+                    "next_attempt_at": next_attempt_at.isoformat(),
+                    "last_result": {
+                        "status": "rate_limited",
+                        "error": "APIError: [429] token=secret 0104006396053978217SECRETKIZVALUE",
+                    },
+                },
+                created_at=datetime.now(timezone.utc) - timedelta(minutes=10),
+                last_error="APIError: [429] token=secret 0104006396053978217SECRETKIZVALUE",
+            ))
+            db.commit()
+
+        response = self.client.get("/ready")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["queue"]["hot_path_last_errors"], [])
+        self.assertEqual(payload["queue"]["hot_path_stale_processing_count"], 0)
+        self.assertEqual(payload["google_mirror"]["status"], "degraded")
+        self.assertEqual(payload["google_mirror"]["role"], "mirror_export")
+        self.assertEqual(payload["google_mirror"]["event_type"], "google_sheets_export")
+        self.assertEqual(payload["google_mirror"]["summary"]["failed"], 1)
+        self.assertTrue(payload["google_mirror"]["paused"])
+        self.assertEqual(payload["google_mirror"]["last_errors"][0]["event_type"], "google_sheets_export")
+        dumped = str(payload)
+        self.assertIn("token=***", dumped)
+        self.assertNotIn("secret", dumped)
+        self.assertNotIn("0104006396053978217SECRETKIZVALUE", dumped)
 
     def test_readiness_accepts_user_password_hash_schema_head_revision(self):
         with self.SessionLocal() as db:

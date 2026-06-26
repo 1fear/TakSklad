@@ -94,9 +94,57 @@ $env:TAKSKLAD_BACKEND_READ_ORDERS_ENABLED = "1"
 $env:TAKSKLAD_BACKEND_BASE_URL = "https://api.taksklad.uz"
 $env:TAKSKLAD_BACKEND_API_TOKEN = "<service-token-from-local-secret-storage>"
 $env:TAKSKLAD_BACKEND_TIMEOUT_SECONDS = "8"
+$env:TAKSKLAD_BACKEND_ONLY_REFRESH = "0"
+$env:TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED = "0"
+$env:TELEGRAM_DESKTOP_POLLING_ENABLED = "0"
 ```
 
 Сервисный токен не хранить в документации, чате, скриншотах и Git.
+
+### 3.1 Shadow Backend-only На Одном ПК
+
+Для Phase 7 backend-only включается только на одном тестовом профиле/ПК. Не раскатывать эти значения на все рабочие места:
+
+```powershell
+$env:TAKSKLAD_BACKEND_ENABLED = "1"
+$env:TAKSKLAD_BACKEND_READ_ORDERS_ENABLED = "1"
+$env:TAKSKLAD_BACKEND_BASE_URL = "https://api.taksklad.uz"
+$env:TAKSKLAD_BACKEND_API_TOKEN = "<service-token-from-local-secret-storage>"
+$env:TAKSKLAD_BACKEND_TIMEOUT_SECONDS = "8"
+$env:TAKSKLAD_BACKEND_ONLY_REFRESH = "1"
+$env:TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED = "0"
+$env:TELEGRAM_DESKTOP_POLLING_ENABLED = "0"
+```
+
+Ожидаемые строки в логах:
+
+- `Startup self-check: ... telegram_desktop_polling=no ... backend_only_refresh=yes ... backend_emergency_google_fallback=no ...`;
+- `Refresh diagnostic summary: source=backend primary_source=backend backend_only_refresh=True emergency_google_fallback=False ...`;
+- при backend timeout без кэша: понятная ошибка `Backend refresh недоступен`, без чтения Google;
+- при backend timeout с уже загруженным списком: текущая позиция сохраняется, автоматического Google fallback нет.
+
+Backend shadow-срез:
+
+```powershell
+Invoke-RestMethod `
+  -Headers @{ Authorization = "Bearer <service-token-from-local-secret-storage>" } `
+  -Uri "https://api.taksklad.uz/api/v1/admin/operations" |
+  Select-Object -ExpandProperty shadow_diagnostics
+```
+
+Ожидаемые поля: `backend_active_orders_source=postgres_backend`, `google_mirror_status`, `google_mirror_lag_seconds`, `google_mirror_pending_exports`, `google_mirror_failed_exports`, `queue_stale_processing`, `hot_path_stale_processing`, `telegram_worker_state`, `telegram_pending_events`.
+
+Аварийный Google fallback разрешён только вручную и временно:
+
+```powershell
+$env:TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED = "1"
+```
+
+После проверки вернуть:
+
+```powershell
+$env:TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED = "0"
+```
 
 ## 4. Быстрый Rollback
 
@@ -114,9 +162,27 @@ Remove-Item Env:\TAKSKLAD_BACKEND_READ_ORDERS_ENABLED -ErrorAction SilentlyConti
 Remove-Item Env:\TAKSKLAD_BACKEND_BASE_URL -ErrorAction SilentlyContinue
 Remove-Item Env:\TAKSKLAD_BACKEND_API_TOKEN -ErrorAction SilentlyContinue
 Remove-Item Env:\TAKSKLAD_BACKEND_TIMEOUT_SECONDS -ErrorAction SilentlyContinue
+Remove-Item Env:\TAKSKLAD_BACKEND_ONLY_REFRESH -ErrorAction SilentlyContinue
+Remove-Item Env:\TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED -ErrorAction SilentlyContinue
+Remove-Item Env:\TELEGRAM_DESKTOP_POLLING_ENABLED -ErrorAction SilentlyContinue
 ```
 
-Критерий rollback: приложение снова работает как текущая стабильная desktop-линия.
+Rollback не должен очищать локальные очереди. Перед rollback записать counts из последней строки `Startup self-check` или `Refresh diagnostic summary`:
+
+- `pending_backend_events`;
+- `pending_saves`;
+- `pending_prints`;
+- `pending_telegram`.
+
+После rollback снова запустить приложение, дождаться новой строки self-check и сверить counts. Допустимо только уменьшение count после успешной синхронизации; недопустимо внезапное обнуление без фактического sync/audit. На backend дополнительно проверить:
+
+```powershell
+Invoke-RestMethod `
+  -Headers @{ Authorization = "Bearer <service-token-from-local-secret-storage>" } `
+  -Uri "https://api.taksklad.uz/api/v1/admin/events"
+```
+
+Критерий rollback: приложение снова работает как текущая стабильная desktop-линия, pending events не потеряны, `/api/v1/admin/events` и `/api/v1/admin/operations` не показывают новый hot-path blocker.
 
 ## 5. Сценарии Приёмки
 

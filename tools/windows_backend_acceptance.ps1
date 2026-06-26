@@ -7,6 +7,9 @@ param(
     [string]$MinAppVersion = "2.0.0",
     [string]$ExpectedAppVersion = "",
     [string]$ExpectedBuildLabel = "MVP 2.0",
+    [switch]$BackendOnlyRefresh,
+    [switch]$EmergencyGoogleFallback,
+    [switch]$EnableDesktopTelegramPolling,
     [switch]$UsePython,
     [switch]$CheckOnly,
     [switch]$Clear,
@@ -22,7 +25,10 @@ $BackendEnvNames = @(
     "TAKSKLAD_BACKEND_READ_ORDERS_ENABLED",
     "TAKSKLAD_BACKEND_BASE_URL",
     "TAKSKLAD_BACKEND_API_TOKEN",
-    "TAKSKLAD_BACKEND_TIMEOUT_SECONDS"
+    "TAKSKLAD_BACKEND_TIMEOUT_SECONDS",
+    "TAKSKLAD_BACKEND_ONLY_REFRESH",
+    "TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED",
+    "TELEGRAM_DESKTOP_POLLING_ENABLED"
 )
 
 function Show-TakSkladHelp {
@@ -32,11 +38,13 @@ function Show-TakSkladHelp {
     Write-Host '  .\tools\windows_backend_acceptance.ps1 -CheckOnly -Token "<service-token>"'
     Write-Host '  .\tools\windows_backend_acceptance.ps1 -Token "<service-token>" -AppPath ".\TakSklad.exe"'
     Write-Host '  .\tools\windows_backend_acceptance.ps1 -Token "<service-token>" -AppPath ".\main.py"'
+    Write-Host '  .\tools\windows_backend_acceptance.ps1 -Token "<service-token>" -BackendOnlyRefresh -AppPath ".\TakSklad.exe"'
     Write-Host '  .\tools\windows_backend_acceptance.ps1 -Token "<service-token>" -UsePython'
     Write-Host '  .\tools\windows_backend_acceptance.ps1 -Clear'
     Write-Host ""
     Write-Host "The token is used only for this process and child app launch. It is not saved to disk."
     Write-Host "By default the helper verifies APP_VERSION and APP_BUILD_LABEL so old 1.1.7 shortcuts cannot pass 2.0 acceptance."
+    Write-Host "Backend-only shadow mode is workstation-local: -BackendOnlyRefresh sets TAKSKLAD_BACKEND_ONLY_REFRESH=1 only for this child app."
 }
 
 function Clear-TakSkladBackendEnv {
@@ -333,6 +341,13 @@ $env:TAKSKLAD_BACKEND_READ_ORDERS_ENABLED = "1"
 $env:TAKSKLAD_BACKEND_BASE_URL = $BackendUrl
 $env:TAKSKLAD_BACKEND_API_TOKEN = $Token
 $env:TAKSKLAD_BACKEND_TIMEOUT_SECONDS = [string]$TimeoutSeconds
+$env:TAKSKLAD_BACKEND_ONLY_REFRESH = if ($BackendOnlyRefresh) { "1" } else { "0" }
+$env:TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED = if ($EmergencyGoogleFallback) { "1" } else { "0" }
+$env:TELEGRAM_DESKTOP_POLLING_ENABLED = if ($EnableDesktopTelegramPolling) { "1" } else { "0" }
+
+Write-Host "Backend-only refresh: $env:TAKSKLAD_BACKEND_ONLY_REFRESH"
+Write-Host "Emergency Google fallback: $env:TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED"
+Write-Host "Desktop Telegram polling: $env:TELEGRAM_DESKTOP_POLLING_ENABLED"
 
 if ($CheckOnly) {
     Write-Host "CheckOnly finished. No app was launched."

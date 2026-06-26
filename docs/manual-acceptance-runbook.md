@@ -51,7 +51,7 @@ cd /Users/anton/Documents/work/TakSklad
 Он проверяет:
 
 - публичный `https://api.taksklad.uz/health`;
-- что `version.json` указывает на текущий forced rollout `2.0.21`, `mandatory=true`, ссылки GitHub Releases и SHA заполнены;
+- что `version.json` находится в одном из двух допустимых состояний: paused `1.1.7` или forced `2.0.23`, `mandatory=true`, ссылки GitHub Releases и SHA заполнены;
 - checksum acceptance Excel;
 - наличие acceptance/runbook/helper-файлов;
 - отсутствие tracked runtime/secret-файлов.
@@ -244,6 +244,18 @@ cd /Users/anton/Documents/work/TakSklad
 .\tools\windows_backend_acceptance.ps1 -CheckOnly -Token "<service-token>"
 ```
 
+Shadow backend-only запуск только на одном тестовом ПК:
+
+```powershell
+.\tools\windows_backend_acceptance.ps1 -Token "<service-token>" -BackendOnlyRefresh -AppPath ".\TakSklad\TakSklad.exe"
+```
+
+В startup diagnostics должны быть видны:
+
+- `telegram_desktop_polling=no`;
+- `backend_only_refresh=yes`;
+- `backend_emergency_google_fallback=no`.
+
 Запустить тестовую копию:
 
 ```powershell
@@ -284,11 +296,13 @@ Helper по умолчанию смотрит на `https://api.taksklad.uz`, п
 11. Проверить, что заказ ушёл из активных.
 12. Проверить завершение смены.
 13. Отдельно проверить: обновление списка во время сканирования не блокирует ввод КИЗов.
-14. Открыть `Возвраты`.
-15. Найти завершённую заявку по ШК/номеру SkladBot.
-16. Нажать `Принять возврат`.
-17. Проверить, что заявка появилась в `Последние возвраты`.
-18. Повторно найти эту же заявку и убедиться, что повторное принятие заблокировано.
+14. Проверить backend refresh после временного network timeout: с загруженным списком текущая позиция сохраняется, без загруженного списка показывается backend connectivity error.
+15. Проверить Google 429 simulation через backend diagnostics: Google mirror может быть degraded, но скан/finish/Telegram worker не блокируются.
+16. Открыть `Возвраты`.
+17. Найти завершённую заявку по ШК/номеру SkladBot.
+18. Нажать `Принять возврат`.
+19. Проверить, что заявка появилась в `Последние возвраты`.
+20. Повторно найти эту же заявку и убедиться, что повторное принятие заблокировано.
 
 ### Ожидаемый Результат
 
@@ -351,9 +365,10 @@ cd /opt/taksklad/app
 ## 4. Что Не Делать Во Время Acceptance
 
 - Не менять `version.json` вручную и не переключать rollout без release checklist.
-- Не публиковать новый GitHub Release поверх `v2.0.21` без повторной проверки.
+- Не публиковать новый GitHub Release поверх `v2.0.23` без повторной проверки.
 - Не запускать Windows release workflow.
 - Не проверять на реальных заказах без отдельного подтверждения.
+- Не делать deploy из dirty tree широким `rsync`; только selective deploy проверенных файлов после restore point.
 
 Для быстрого отката тестового запуска:
 

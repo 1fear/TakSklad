@@ -20,6 +20,7 @@ class ReadinessResponse(BaseModel):
     database: dict[str, Any] = Field(default_factory=dict)
     migrations: dict[str, Any] = Field(default_factory=dict)
     queue: dict[str, Any] = Field(default_factory=dict)
+    google_mirror: dict[str, Any] = Field(default_factory=dict)
     imports: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -236,6 +237,28 @@ class EventQueueDiagnosticsRead(BaseModel):
     summary: dict[str, Any] = Field(default_factory=dict)
     stale_processing: list[EventQueueEventRead] = Field(default_factory=list)
     recent_events: list[EventQueueEventRead] = Field(default_factory=list)
+
+
+class OperationsAttentionItemRead(BaseModel):
+    category: str
+    impact: str
+    severity: str
+    title: str
+    count: int = 0
+    oldest_age_seconds: int = 0
+    next_action: str = ""
+    details: list[str] = Field(default_factory=list)
+
+
+class OperationsAttentionRead(BaseModel):
+    generated_at: datetime
+    status: str
+    summary: dict[str, Any] = Field(default_factory=dict)
+    items: list[OperationsAttentionItemRead] = Field(default_factory=list)
+    readiness_status: str = ""
+    google_mirror_status: str = ""
+    shadow_diagnostics: dict[str, Any] = Field(default_factory=dict)
+    telegram_summary: str = ""
 
 
 class IncidentCreate(BaseModel):

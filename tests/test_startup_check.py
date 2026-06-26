@@ -20,8 +20,11 @@ class StartupCheckTests(unittest.TestCase):
         self.original_credentials_file = storage.CREDENTIALS_FILE
         self.original_backend_enabled = startup_check.TAKSKLAD_BACKEND_ENABLED
         self.original_backend_read = startup_check.TAKSKLAD_BACKEND_READ_ORDERS_ENABLED
+        self.original_backend_only_refresh = startup_check.TAKSKLAD_BACKEND_ONLY_REFRESH
+        self.original_backend_emergency_google_fallback = startup_check.TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED
         self.original_backend_url = startup_check.TAKSKLAD_BACKEND_BASE_URL
         self.original_backend_token = startup_check.TAKSKLAD_BACKEND_API_TOKEN
+        self.original_telegram_desktop_polling = startup_check.TELEGRAM_DESKTOP_POLLING_ENABLED
         self.original_geocoder_loader = startup_check.load_yandex_geocoder_key
 
     def tearDown(self):
@@ -29,8 +32,11 @@ class StartupCheckTests(unittest.TestCase):
         storage.CREDENTIALS_FILE = self.original_credentials_file
         startup_check.TAKSKLAD_BACKEND_ENABLED = self.original_backend_enabled
         startup_check.TAKSKLAD_BACKEND_READ_ORDERS_ENABLED = self.original_backend_read
+        startup_check.TAKSKLAD_BACKEND_ONLY_REFRESH = self.original_backend_only_refresh
+        startup_check.TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED = self.original_backend_emergency_google_fallback
         startup_check.TAKSKLAD_BACKEND_BASE_URL = self.original_backend_url
         startup_check.TAKSKLAD_BACKEND_API_TOKEN = self.original_backend_token
+        startup_check.TELEGRAM_DESKTOP_POLLING_ENABLED = self.original_telegram_desktop_polling
         startup_check.load_yandex_geocoder_key = self.original_geocoder_loader
 
     def test_build_startup_self_check_redacts_runtime_secrets(self):
@@ -57,8 +63,11 @@ class StartupCheckTests(unittest.TestCase):
             )
             startup_check.TAKSKLAD_BACKEND_ENABLED = True
             startup_check.TAKSKLAD_BACKEND_READ_ORDERS_ENABLED = True
+            startup_check.TAKSKLAD_BACKEND_ONLY_REFRESH = True
+            startup_check.TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED = False
             startup_check.TAKSKLAD_BACKEND_BASE_URL = "https://api.taksklad.uz/path"
             startup_check.TAKSKLAD_BACKEND_API_TOKEN = "backend-token"
+            startup_check.TELEGRAM_DESKTOP_POLLING_ENABLED = False
             startup_check.load_yandex_geocoder_key = lambda: "geocoder-key"
 
             check = startup_check.build_startup_self_check()
@@ -69,10 +78,16 @@ class StartupCheckTests(unittest.TestCase):
             self.assertEqual(check["telegram_enabled"], "yes")
             self.assertEqual(check["telegram_token"], "yes")
             self.assertEqual(check["telegram_chats"], "2")
+            self.assertEqual(check["telegram_desktop_polling"], "no")
+            self.assertEqual(check["backend_only_refresh"], "yes")
+            self.assertEqual(check["backend_emergency_google_fallback"], "no")
             self.assertEqual(check["backend_origin"], "https://api.taksklad.uz")
             self.assertEqual(check["backend_token"], "yes")
             self.assertEqual(check["geocoder_key"], "yes")
             self.assertEqual(check["pending_backend_events"], "2")
+            self.assertIn("telegram_desktop_polling=no", formatted)
+            self.assertIn("backend_only_refresh=yes", formatted)
+            self.assertIn("backend_emergency_google_fallback=no", formatted)
             self.assertNotIn("telegram-token", formatted)
             self.assertNotIn("backend-token", formatted)
             self.assertNotIn("geocoder-key", formatted)

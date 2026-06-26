@@ -62,6 +62,26 @@ https://api.135.181.245.84.sslip.io/health
 
 ## 2. Deploy Backend
 
+Перед любым production deploy:
+
+```bash
+cd /Users/anton/Documents/work/TakSklad
+git status --short
+git diff --name-only
+```
+
+Do not run broad rsync from a dirty tree. Если worktree грязный, deploy должен быть selective deploy: отправлять только проверенные файлы из конкретного reviewed diff/commit. Нельзя копировать весь проект, `outputs/`, локальные runtime JSON, `.env`, credentials, backup-файлы и старые артефакты сборки.
+
+На VDS перед заменой кода создать restore point:
+
+```bash
+cd /opt/taksklad/app
+restore_id="pre-backend-only-hot-path-$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "/opt/taksklad/restore_points/$restore_id"
+cp -a backend deploy docs tools version.json "/opt/taksklad/restore_points/$restore_id/"
+./deploy/vds/backup_postgres.sh
+```
+
 Локально:
 
 ```bash
@@ -79,6 +99,8 @@ docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml run -
 docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml up -d --build backend-api
 curl -fsS https://api.taksklad.uz/health
 curl -fsS https://api.taksklad.uz/ready
+curl -fsS -H "Authorization: Bearer <service-token-from-secret-storage>" \
+  https://api.taksklad.uz/api/v1/admin/operations
 ```
 
 Если VDS database еще не stamped на baseline `20260616_0001`, сначала пройти `docs/database-migrations-runbook.md`. `deploy/vds/apply_schema.sh` не использовать для обычных production upgrades после baseline stamp; он остается только для legacy/bootstrap сценариев пустой БД.
@@ -145,6 +167,18 @@ docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml up -d
 
 Если код на VDS доставлялся через `rsync`, rollback делается повторным `rsync` из локального checkout предыдущего хорошего коммита.
 
+Rollback после backend-only hot path не должен удалять pending events. До rollback сохранить:
+
+```bash
+curl -fsS https://api.taksklad.uz/ready > /tmp/taksklad-ready-before-rollback.json
+curl -fsS -H "Authorization: Bearer <service-token-from-secret-storage>" \
+  https://api.taksklad.uz/api/v1/admin/events > /tmp/taksklad-events-before-rollback.json
+curl -fsS -H "Authorization: Bearer <service-token-from-secret-storage>" \
+  https://api.taksklad.uz/api/v1/admin/operations > /tmp/taksklad-operations-before-rollback.json
+```
+
+После rollback повторить эти же три проверки. Допустимо уменьшение pending events только если есть audit/sync evidence. Недопустимо внезапное исчезновение `google_sheets_export`, `telegram_excel_import`, scan/order-complete events или open incidents без понятной причины.
+
 ### Rollback После Production Hardening 2.0.x
 
 Перед откатом:
@@ -178,6 +212,14 @@ curl -fsS https://api.taksklad.uz/health
 - удалять desktop fallback на Google/local режим.
 
 Для включения backend в desktop используются feature flags, а не принудительный переход.
+
+Release guard для backend-only:
+
+- `TAKSKLAD_BACKEND_ONLY_REFRESH=1` включать сначала только на одном Windows workstation/test profile;
+- `TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED=0` должен быть default;
+- `TELEGRAM_DESKTOP_POLLING_ENABLED=0` должен оставаться default, нормальный Telegram listener - backend worker;
+- Windows startup diagnostics должны показать `telegram_desktop_polling=no`, `backend_only_refresh=yes`, `backend_emergency_google_fallback=no`;
+- backend `/api/v1/admin/operations` должен показать `shadow_diagnostics` без hot-path blocker перед расширением rollout.
 
 ## 8. Acceptance Cleanup
 
