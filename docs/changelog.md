@@ -15,6 +15,8 @@
 - Добавлены regression tests на реальные сегодняшние коробочные КИЗы:
   - Green OP `010400639610445821...`, 2 короба по 50 блоков;
   - Brown SSL `010400639605407421...`, 2 короба по 50 блоков.
+- Public `version.json` переведен на forced `2.0.24` с `block_workflow=true`.
+- GitHub Release `v2.0.24`: `TakSklad.exe` SHA `7fa3b0b9c9526a3833e55b6d41a916edc433d0ecb775407713fad3ebfdd61973`, ZIP SHA `c0446e6293f477975347b1ac8fc426e9d41a6f5fc33420688fd6be87c2b6d94b`.
 
 **Причина:**
 

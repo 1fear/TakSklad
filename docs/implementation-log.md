@@ -21,6 +21,11 @@
   - `APP_VERSION` desktop/backend поднят до `2.0.24`;
   - release/preflight/VDS guards переключены на forced `2.0.24`;
   - tests покрывают реальные Green/Brown SSL КИЗы из инцидента.
+- Release:
+  - GitHub workflow `28231545689` собрал `TakSklad.exe` и `TakSklad-windows-x64.zip`;
+  - `version.json` переведен на forced `2.0.24`, `mandatory=true`, `block_workflow=true`;
+  - SHA `TakSklad.exe`: `7fa3b0b9c9526a3833e55b6d41a916edc433d0ecb775407713fad3ebfdd61973`;
+  - SHA `TakSklad-windows-x64.zip`: `c0446e6293f477975347b1ac8fc426e9d41a6f5fc33420688fd6be87c2b6d94b`.
 
 ## 2026-06-25
 

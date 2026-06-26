@@ -1,12 +1,13 @@
 {
-  "latest_version": "1.1.7",
-  "min_supported_version": "1.1.7",
-  "mandatory": false,
+  "latest_version": "2.0.24",
+  "min_supported_version": "2.0.24",
+  "mandatory": true,
+  "block_workflow": true,
   "package_type": "onefile_exe",
   "entrypoint": "TakSklad.exe",
-  "download_url": "",
-  "sha256": "",
-  "download_url_onedir": "",
-  "sha256_onedir": "",
-  "message": "TakSklad: обязательное автообновление временно остановлено. До ручной приемки Windows-обновления рабочие ПК не блокируются."
+  "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.24/TakSklad.exe",
+  "sha256": "7fa3b0b9c9526a3833e55b6d41a916edc433d0ecb775407713fad3ebfdd61973",
+  "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.24/TakSklad-windows-x64.zip",
+  "sha256_onedir": "c0446e6293f477975347b1ac8fc426e9d41a6f5fc33420688fd6be87c2b6d94b",
+  "message": "TakSklad 2.0.24: обязательное обновление. Исправляет распознавание Green OP/Brown SSL коробов и не дает старой 2.0.22 продолжать сканирование."
 }
