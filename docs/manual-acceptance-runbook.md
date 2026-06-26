@@ -51,7 +51,7 @@ cd /Users/anton/Documents/work/TakSklad
 Он проверяет:
 
 - публичный `https://api.taksklad.uz/health`;
-- что `version.json` находится в одном из двух допустимых состояний: paused `1.1.7` или forced `2.0.23`, `mandatory=true`, ссылки GitHub Releases и SHA заполнены;
+- что `version.json` находится в одном из двух допустимых состояний: paused `1.1.7` или forced `2.0.24`, `mandatory=true`, ссылки GitHub Releases и SHA заполнены;
 - checksum acceptance Excel;
 - наличие acceptance/runbook/helper-файлов;
 - отсутствие tracked runtime/secret-файлов.
@@ -365,7 +365,7 @@ cd /opt/taksklad/app
 ## 4. Что Не Делать Во Время Acceptance
 
 - Не менять `version.json` вручную и не переключать rollout без release checklist.
-- Не публиковать новый GitHub Release поверх `v2.0.23` без повторной проверки.
+- Не публиковать новый GitHub Release поверх `v2.0.24` без повторной проверки.
 - Не запускать Windows release workflow.
 - Не проверять на реальных заказах без отдельного подтверждения.
 - Не делать deploy из dirty tree широким `rsync`; только selective deploy проверенных файлов после restore point.

@@ -1344,26 +1344,74 @@ class BackendApiPersistenceTests(unittest.TestCase):
     def test_scan_create_accepts_live_green_aggregate_box_gtin(self):
         _, item_id = self.seed_order(quantity_blocks=100, product="Chapman Green OP 20")
 
-        response = self.client.post(
+        first = self.client.post(
             "/api/v1/scans",
             json={
                 "order_item_id": item_id,
-                "code": "010400639610445821UZ1112042611906223124013040030510ZIG1233389310000",
+                "code": "010400639610445821UZ1112042611905354024013040030510ZIG1233389310000",
+                "workstation_id": "pc-1",
+            },
+        )
+        second = self.client.post(
+            "/api/v1/scans",
+            json={
+                "order_item_id": item_id,
+                "code": "010400639610445821UZ1112042611909232924013040030510ZIG1233389310000",
                 "workstation_id": "pc-1",
             },
         )
 
-        self.assertEqual(response.status_code, 201)
-        payload = response.json()
-        self.assertEqual(payload["scanned_blocks"], 50)
-        self.assertEqual(payload["item_status"], "not_completed")
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201)
+        self.assertEqual(first.json()["scanned_blocks"], 50)
+        self.assertEqual(first.json()["item_status"], "not_completed")
+        self.assertEqual(second.json()["scanned_blocks"], 100)
+        self.assertEqual(second.json()["item_status"], "completed")
         with self.SessionLocal() as db:
             item = db.get(OrderItem, uuid.UUID(item_id))
-            scan = db.execute(select(ScanCode)).scalar_one()
-            self.assertEqual(item.scanned_blocks, 50)
-            self.assertEqual(scan.raw_payload["scan_type"], "aggregate_box")
-            self.assertEqual(scan.raw_payload["block_quantity"], 50)
-            self.assertEqual(scan.raw_payload["product_key"], "green:op")
+            scans = db.execute(select(ScanCode).order_by(ScanCode.scanned_at, ScanCode.id)).scalars().all()
+            self.assertEqual(item.scanned_blocks, 100)
+            self.assertEqual(item.status, "completed")
+            self.assertEqual(len(scans), 2)
+            self.assertEqual({scan.raw_payload["scan_type"] for scan in scans}, {"aggregate_box"})
+            self.assertEqual({scan.raw_payload["block_quantity"] for scan in scans}, {50})
+            self.assertEqual({scan.raw_payload["product_key"] for scan in scans}, {"green:op"})
+
+    def test_scan_create_accepts_live_brown_ssl_aggregate_box_gtin(self):
+        _, item_id = self.seed_order(quantity_blocks=100, product="Chapman Brown SSL 100`20")
+
+        first = self.client.post(
+            "/api/v1/scans",
+            json={
+                "order_item_id": item_id,
+                "code": "010400639605407421UZ1112022612417151624013040046310ZIG1231569310000",
+                "workstation_id": "pc-1",
+            },
+        )
+        second = self.client.post(
+            "/api/v1/scans",
+            json={
+                "order_item_id": item_id,
+                "code": "010400639605407421UZ1112022612416594224013040046310ZIG1231569310000",
+                "workstation_id": "pc-1",
+            },
+        )
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201)
+        self.assertEqual(first.json()["scanned_blocks"], 50)
+        self.assertEqual(first.json()["item_status"], "not_completed")
+        self.assertEqual(second.json()["scanned_blocks"], 100)
+        self.assertEqual(second.json()["item_status"], "completed")
+        with self.SessionLocal() as db:
+            item = db.get(OrderItem, uuid.UUID(item_id))
+            scans = db.execute(select(ScanCode).order_by(ScanCode.scanned_at, ScanCode.id)).scalars().all()
+            self.assertEqual(item.scanned_blocks, 100)
+            self.assertEqual(item.status, "completed")
+            self.assertEqual(len(scans), 2)
+            self.assertEqual({scan.raw_payload["scan_type"] for scan in scans}, {"aggregate_box"})
+            self.assertEqual({scan.raw_payload["block_quantity"] for scan in scans}, {50})
+            self.assertEqual({scan.raw_payload["product_key"] for scan in scans}, {"brown:ssl"})
 
     def test_scan_create_rejects_aggregate_box_when_remaining_blocks_are_less_than_fifty(self):
         _, item_id = self.seed_order(quantity_blocks=30, product="Chapman Gold SSL 100`20")

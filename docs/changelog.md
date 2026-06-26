@@ -2,6 +2,24 @@
 
 Здесь фиксируются все правки в коде TakSklad: что менялось, в каком файле, зачем, и какие тесты это покрывают. Записи идут от новых к старым.
 
+## 2026-06-26
+
+### Hotfix 2.0.24: forced update для Green/Brown коробов
+
+**Файлы:** `src/taksklad/config.py`, `backend/app/settings.py`, `tests/test_scan_quantities.py`, `tests/test_backend_api_persistence.py`, `tools/release_preflight.py`, `tools/build_windows_test_archive.ps1`, `deploy/vds/acceptance_status.sh`.
+
+**Что стало:**
+
+- Версия desktop/backend поднята до `2.0.24`, чтобы рабочие ПК на `2.0.22` получили новый обязательный update.
+- Release/preflight/VDS guards переключены с forced `2.0.23` на forced `2.0.24`.
+- Добавлены regression tests на реальные сегодняшние коробочные КИЗы:
+  - Green OP `010400639610445821...`, 2 короба по 50 блоков;
+  - Brown SSL `010400639605407421...`, 2 короба по 50 блоков.
+
+**Причина:**
+
+- Mapping `0104006396104458 -> green:op` уже был в коде `2.0.23`, но публичный `version.json` был paused на `1.1.7`; из-за этого рабочий ПК остался на `2.0.22` и продолжил показывать `КИЗ распознан как: не распознан`.
+
 ## 2026-06-25
 
 ### Тип оплаты в истории клиента
