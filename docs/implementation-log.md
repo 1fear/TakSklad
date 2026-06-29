@@ -2,6 +2,31 @@
 
 Документ фиксирует ход работ: что сделано, что не сделано, какие ошибки найдены, какие решения приняты и что требует проверки. Новые записи добавляются сверху.
 
+## 2026-06-26
+
+### Hotfix 2.0.24 forced desktop update
+
+- Симптом: рабочий ПК показал `Версия приложения: 2.0.22` и отклонил Green OP короб `010400639610445821...` как `КИЗ распознан как: не распознан`.
+- Причина:
+  - текущий HEAD уже содержит mapping `0104006396104458 -> green:op`;
+  - public `version.json` был paused на `1.1.7`, поэтому ПК на `2.0.22` не получил hotfix `2.0.23`;
+  - это не ошибка дедупликации и не ручной конфликт КИЗа, а stale desktop build.
+- Ручная production-правка:
+  - перед записью создан backup Postgres `taksklad-postgres-20260626T095159Z.sql.gz`;
+  - в заказ `WH-R-201125` добавлены 4 коробочных КИЗа через backend `create_scan`;
+  - `Chapman Green OP 20`: 2 короба, стало `100/100 completed`;
+  - `Chapman Brown SSL 100\`20`: 2 короба, стало `100/100 completed`;
+  - коды не существовали в `scan_codes` до записи, backend создал scan/audit/KIZ movement и Google mirror export queue.
+- Release guard:
+  - `APP_VERSION` desktop/backend поднят до `2.0.24`;
+  - release/preflight/VDS guards переключены на forced `2.0.24`;
+  - tests покрывают реальные Green/Brown SSL КИЗы из инцидента.
+- Release:
+  - GitHub workflow `28231545689` собрал `TakSklad.exe` и `TakSklad-windows-x64.zip`;
+  - `version.json` переведен на forced `2.0.24`, `mandatory=true`, `block_workflow=true`;
+  - SHA `TakSklad.exe`: `7fa3b0b9c9526a3833e55b6d41a916edc433d0ecb775407713fad3ebfdd61973`;
+  - SHA `TakSklad-windows-x64.zip`: `c0446e6293f477975347b1ac8fc426e9d41a6f5fc33420688fd6be87c2b6d94b`.
+
 ## 2026-06-25
 
 ### Telegram Excel import: stale waiting file and same-payload duplicates
