@@ -435,16 +435,6 @@ def coerce_report_date(value):
     return command_date_or_today(str(value))
 
 
-def parse_iso_date(value):
-    text = normalize_text(value)
-    if not text:
-        return None
-    try:
-        return date.fromisoformat(text)
-    except ValueError:
-        return None
-
-
 def ensure_aware_utc(value):
     if value is None:
         return None
@@ -455,22 +445,6 @@ def ensure_aware_utc(value):
 
 def skladbot_reported_request_key(request_id):
     return f"skladbot_daily_reported_request:{parse_int(request_id)}"
-
-
-def load_skladbot_daily_reported_request_ids_before(report_date):
-    report_date = coerce_report_date(report_date)
-    result = set()
-    with SessionLocal() as db:
-        events = db.execute(
-            select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_DAILY_REPORTED_REQUEST_EVENT_TYPE)
-        ).scalars().all()
-    for event in events:
-        payload = event.payload if isinstance(event.payload, dict) else {}
-        request_id = parse_int(payload.get("request_id"))
-        reported_date = parse_iso_date(payload.get("reported_date"))
-        if request_id > 0 and reported_date and reported_date < report_date:
-            result.add(request_id)
-    return result
 
 
 def mark_skladbot_daily_report_requests_reported(report, chat_id=None):
@@ -1746,14 +1720,8 @@ class TelegramWorker:
         report_date_text = report_date.strftime("%d.%m.%Y")
         if not scheduled:
             self.safe_send_message(chat_id, f"Собираю SkladBot отчет за {report_date_text}.")
-        reported_request_ids = (
-            load_skladbot_daily_reported_request_ids_before(report_date)
-            if scheduled
-            else set()
-        )
         report = skladbot_daily_report.collect_skladbot_daily_report(
             report_date=report_date,
-            reported_request_ids=reported_request_ids,
         )
         content, filename = skladbot_daily_report.build_skladbot_daily_report_xlsx(report)
         self.safe_send_message(chat_id, skladbot_daily_report.build_skladbot_daily_report_message(report))
