@@ -328,7 +328,8 @@ function App() {
       setAuthRole(session.role || "");
       setAuthPermissions(session.permissions ?? []);
       if (session.authenticated) {
-        await refreshAll(config, false);
+        setAuthChecked(true);
+        void refreshAll(config, false);
       }
     } catch {
       setAuthenticated(false);

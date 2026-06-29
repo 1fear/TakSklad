@@ -38,6 +38,25 @@
 
 - После возврата/отмены КИЗ мог оставаться в локальном `all_existing_codes` или Google fallback cache, хотя backend уже считал его свободным для повторного сканирования.
 
+## 2026-06-29
+
+### Web-admin: быстрый старт после проверки доступа
+
+**Файлы:** `frontend/src/App.tsx`, `frontend/src/api.ts`, `docs/changelog.md`.
+
+**Что стало:**
+
+- Экран `Загружаем доступ...` больше не ждёт полную загрузку admin-таблиц и диагностик после успешной проверки сессии.
+- Основной интерфейс открывается сразу после `/api/v1/auth/session`, а `refreshAll()` продолжает загрузку данных фоном.
+- Для обычных frontend API-запросов добавлен timeout 15 секунд, чтобы зависший request не держал интерфейс бесконечно.
+- Для ручного `syncSources` оставлен увеличенный timeout 45 секунд.
+
+**Проверки:**
+
+- `cd frontend && npx tsc -b --pretty false` - OK.
+- `cd frontend && npm run build` - OK.
+- `git diff --cached --check` - OK.
+
 ## 2026-06-26
 
 ### Hotfix 2.0.24: forced update для Green/Brown коробов

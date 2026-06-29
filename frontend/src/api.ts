@@ -333,6 +333,7 @@ export type AuthSession = {
 type RequestOptions = {
   method?: string;
   body?: unknown;
+  timeoutMs?: number;
 };
 
 export class ApiRequestError extends Error {
@@ -401,21 +402,39 @@ export function defaultApiUrl() {
   return "";
 }
 
+const DEFAULT_REQUEST_TIMEOUT_MS = 15000;
+const LONG_REQUEST_TIMEOUT_MS = 45000;
+
 export async function apiRequest<T>(
   config: ApiConfig,
   path: string,
   options: RequestOptions = {},
 ): Promise<T> {
   const apiUrl = config.apiUrl.replace(/\/$/, "");
-  const response = await fetch(`${apiUrl}${path}`, {
-    method: options.method ?? "GET",
-    credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-      ...(config.token ? { Authorization: `Bearer ${config.token}` } : {}),
-    },
-    body: options.body ? JSON.stringify(options.body) : undefined,
-  });
+  const timeoutMs = options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  const controller = timeoutMs > 0 ? new AbortController() : undefined;
+  const timeoutId = controller ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
+  let response: Response;
+
+  try {
+    response = await fetch(`${apiUrl}${path}`, {
+      method: options.method ?? "GET",
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+        ...(config.token ? { Authorization: `Bearer ${config.token}` } : {}),
+      },
+      body: options.body ? JSON.stringify(options.body) : undefined,
+      signal: controller?.signal,
+    });
+  } catch (error) {
+    if (isAbortError(error)) {
+      throw new Error(`Запрос ${path} не ответил за ${Math.round(timeoutMs / 1000)} сек.`);
+    }
+    throw error;
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+  }
 
   if (!response.ok) {
     let detail = `${response.status} ${response.statusText}`;
@@ -429,6 +448,10 @@ export async function apiRequest<T>(
   }
 
   return response.json() as Promise<T>;
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof DOMException && error.name === "AbortError";
 }
 
 export function listActiveOrders(config: ApiConfig) {
@@ -585,6 +608,7 @@ export function syncSources(config: ApiConfig, options: { skladbot?: boolean; wa
   });
   return apiRequest<SyncSourcesResult>(config, `/api/v1/sync/sources?${params.toString()}`, {
     method: "POST",
+    timeoutMs: LONG_REQUEST_TIMEOUT_MS,
   });
 }
 
