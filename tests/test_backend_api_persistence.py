@@ -18,8 +18,9 @@ from backend.app.main import (
     require_client_points_write_permission,
     require_service_token,
 )
-from backend.app.models import AuditLog, Base, ClientPoint, ImportFile, ImportJob, Incident, KizCode, KizMovement, Order, OrderItem, PendingEvent, ScanCode, User
+from backend.app.models import AuditLog, Base, ClientPoint, ImportFile, ImportJob, Incident, KizCode, KizMovement, LogisticsCalendarDay, Order, OrderItem, PendingEvent, ScanCode, User
 from backend.app.skladbot_return_requests import SKLADBOT_RETURN_REQUEST_CREATE_EVENT_TYPE
+from backend.app.smartup_auto_import import SMARTUP_AUTO_IMPORT_EVENT_TYPE
 from backend.app.settings import load_settings
 from backend.app.web_auth import SESSION_COOKIE_NAME, hash_password
 
@@ -528,6 +529,70 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertEqual(points[0].client_name, "Point Client")
             self.assertEqual(points[0].address, "New Address")
             self.assertEqual(points[0].delivery_from, "09:00")
+
+    def test_admin_logistics_calendar_lists_orders_and_saves_non_working_day(self):
+        with self.SessionLocal() as db:
+            order = Order(
+                payment_type="terminal",
+                client="Calendar Client",
+                address="Calendar Address",
+                representative="Calendar Rep",
+                order_date=date(2026, 6, 29),
+                status="not_completed",
+                raw_payload={"source": "calendar-test"},
+            )
+            db.add(OrderItem(
+                order=order,
+                product="Calendar Product",
+                quantity_pieces=40,
+                quantity_blocks=4,
+                pieces_per_block=10,
+                status="not_completed",
+                raw_payload={"source": "calendar-test"},
+            ))
+            db.commit()
+
+        response = self.client.get("/api/v1/admin/logistics-calendar?month=2026-06")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["month"], "2026-06")
+        days = {day["date"]: day for day in payload["days"]}
+        self.assertTrue(days["2026-06-27"]["is_weekend"])
+        self.assertTrue(days["2026-06-27"]["is_non_working"])
+        self.assertEqual(days["2026-06-29"]["orders_count"], 1)
+        self.assertEqual(days["2026-06-29"]["active_orders"], 1)
+        self.assertEqual(days["2026-06-29"]["planned_blocks"], 4)
+        self.assertEqual(days["2026-06-29"]["clients"], ["Calendar Client"])
+
+        updated = self.client.post(
+            "/api/v1/admin/logistics-calendar/day",
+            json={
+                "service_date": "2026-06-29",
+                "is_non_working": True,
+                "reason": "Праздник",
+                "actor": "web",
+                "source": "web",
+            },
+        )
+
+        self.assertEqual(updated.status_code, 200)
+        updated_day = updated.json()
+        self.assertTrue(updated_day["is_non_working"])
+        self.assertTrue(updated_day["is_manual"])
+        self.assertEqual(updated_day["reason"], "Праздник")
+        self.assertEqual(updated_day["orders_count"], 1)
+
+        refreshed = self.client.get("/api/v1/admin/logistics-calendar?month=2026-06")
+        refreshed_days = {day["date"]: day for day in refreshed.json()["days"]}
+        self.assertTrue(refreshed_days["2026-06-29"]["is_non_working"])
+        self.assertTrue(refreshed_days["2026-06-29"]["is_manual"])
+        with self.SessionLocal() as db:
+            self.assertEqual(db.execute(select(LogisticsCalendarDay)).scalar_one().reason, "Праздник")
+            audit = db.execute(
+                select(AuditLog).where(AuditLog.action == "logistics_calendar_day_updated")
+            ).scalar_one()
+            self.assertEqual(audit.entity_id, "2026-06-29")
 
     def test_web_auth_login_sets_cookie_and_check_accepts_session(self):
         auth_settings = load_settings({
@@ -2414,7 +2479,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
     def test_failed_import_creates_linked_incident_and_resolve_removes_readiness_blocker(self):
         with self.SessionLocal() as db:
             db.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
-            db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260623_0004')"))
+            db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260626_0005')"))
             event = PendingEvent(
                 event_type="telegram_excel_import",
                 status="processing",
@@ -3671,6 +3736,54 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(limited_response.status_code, 200)
         self.assertEqual(len(limited_response.json()["recent_events"]), 3)
 
+    def test_admin_smartup_history_exposes_runs_and_audit(self):
+        with self.SessionLocal() as db:
+            db.add(PendingEvent(
+                event_type=SMARTUP_AUTO_IMPORT_EVENT_TYPE,
+                idempotency_key="smartup:auto_import:v1:2026-06-25:12:00",
+                status="completed",
+                attempts=1,
+                payload={
+                    "export_date": "2026-06-25",
+                    "slot": "12:00",
+                    "completed_at": "2026-06-25T07:01:00+00:00",
+                    "result": {
+                        "status": "completed",
+                        "export_date": "2026-06-25",
+                        "slot": "12:00",
+                        "part": 1,
+                        "filename": "Терминал 25.06.2026 Часть 1.xlsx",
+                        "export_path": "outputs/smartup_exports/2026-06-25/Терминал 25.06.2026 Часть 1.xlsx",
+                        "selected_orders": 35,
+                        "rows": 35,
+                        "delivery_dates": ["2026-06-26"],
+                        "imports": [{"orders_created": 35, "items_created": 35, "duplicate_rows": 0}],
+                        "status_change": {"submitted": 35},
+                        "skladbot_processing": {"status": "completed"},
+                        "logistics_reports": [{"status": "sent", "delivery_date": "2026-06-26"}],
+                    },
+                },
+            ))
+            db.add(AuditLog(
+                action="smartup_auto_import_completed",
+                entity_type="smartup_auto_import",
+                entity_id="2026-06-25",
+                payload={"telegram_bot_token": "secret-token", "filename": "Терминал 25.06.2026 Часть 1.xlsx"},
+            ))
+            db.commit()
+
+        response = self.client.get("/api/v1/admin/smartup-auto-imports/history?limit=5")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["summary"]["total"], 1)
+        self.assertEqual(payload["summary"]["orders_created"], 35)
+        self.assertEqual(payload["runs"][0]["selected_orders"], 35)
+        self.assertEqual(payload["runs"][0]["orders_created"], 35)
+        self.assertEqual(payload["runs"][0]["delivery_dates"], ["2026-06-26"])
+        self.assertEqual(payload["runs"][0]["status_change_submitted"], 35)
+        self.assertEqual(payload["audit"][0]["payload"]["telegram_bot_token"], "***")
+
     def test_admin_event_detail_retry_redacts_payload_and_writes_audit(self):
         order_id, item_id = self.seed_order()
         with self.SessionLocal() as db:
@@ -4128,10 +4241,10 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertNotIn("secret", dumped)
         self.assertNotIn("0104006396053978217SECRETKIZVALUE", dumped)
 
-    def test_readiness_accepts_user_password_hash_schema_head_revision(self):
+    def test_readiness_accepts_logistics_calendar_schema_head_revision(self):
         with self.SessionLocal() as db:
             db.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
-            db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260623_0004')"))
+            db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260626_0005')"))
             db.commit()
 
         response = self.client.get("/ready")
@@ -4141,8 +4254,8 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(payload["status"], "ok")
         self.assertEqual(payload["migrations"]["status"], "ok")
         self.assertEqual(payload["migrations"]["expected_baseline"], "20260616_0001")
-        self.assertEqual(payload["migrations"]["expected_head"], "20260623_0004")
-        self.assertEqual(payload["migrations"]["current_revision"], "20260623_0004")
+        self.assertEqual(payload["migrations"]["expected_head"], "20260626_0005")
+        self.assertEqual(payload["migrations"]["current_revision"], "20260626_0005")
 
     def test_readiness_degrades_when_migration_state_is_missing_or_wrong(self):
         response = self.client.get("/ready")

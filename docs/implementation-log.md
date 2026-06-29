@@ -27,6 +27,216 @@
   - SHA `TakSklad.exe`: `7fa3b0b9c9526a3833e55b6d41a916edc433d0ecb775407713fad3ebfdd61973`;
   - SHA `TakSklad-windows-x64.zip`: `c0446e6293f477975347b1ac8fc426e9d41a6f5fc33420688fd6be87c2b6d94b`.
 
+### Backend-only hot path Phase 9 final hardening
+
+- Причина: финально replay-нуть инцидент 2026-06-25 и убедиться, что улучшения не вернули Google/Telegram timeout в складской hot path и не ухудшили логику.
+- Incident replay matrix:
+
+| Сценарий | Ожидаемое поведение | Evidence |
+| --- | --- | --- |
+| Google 429/quota | Backend scan/complete/import остаются committed в Postgres, Google уходит в mirror queue/backoff | `tests.test_backend_api_persistence`, `tests.test_backend_google_sheets_pending`, readiness `google_mirror` split |
+| Backend timeout на desktop refresh | В backend-only shadow нет скрытого Google fallback; есть кэш или явная backend error | `tests.test_refresh_fallback`, refresh source `backend`/`google_emergency_fallback` |
+| Telegram send/import timeout | Событие остаётся retryable/visible в `pending_events`, order completion не портится | `tests.test_backend_telegram_import`, operations `telegram_worker_state` |
+| App close во время Google backoff | Desktop не освобождает Google Telegram lock, если не владел свежим lock | `tests.test_desktop_ui_contract`, `tests.test_telegram_lock` |
+| Stale desktop/release drift | Helper блокирует старый exe без manifest; preflight проверяет version contract и backend-only guardrails | `tests.test_release_preflight`, `tests.test_windows_test_build_helper` |
+
+- Security/log review:
+  - startup self-check выводит только hashes/origin/yes-no/counts;
+  - refresh diagnostics выводит counts/source/flags, но не payload, клиентов, адреса, токены или КИЗы;
+  - operations summary больше не выводит raw `last_error` и filenames, только `error=present`/counts/next action;
+  - `rg` по runtime/docs на fake secret/token/full-KIZ patterns не нашёл утечек; тестовые fake secrets остаются только в tests и assert-ах redaction.
+- Docs changed:
+  - `docs/project-knowledge-base.md` - Postgres/backend hot path, Google mirror/export/legacy fallback;
+  - `docs/user-business-process-guide.md` - backend-mode vs legacy Google-line;
+  - `docs/project-architecture.md` - desktop + backend architecture instead of old Google-primary snapshot;
+  - `docs/report-source-rules.md` - backend/Postgres source-of-truth rule;
+  - `docs/taksklad-system-stack-overview.md` - current version/paused manifest;
+  - `docs/deploy-rollback-runbook.md`, `docs/windows-backend-acceptance.md`, `docs/manual-acceptance-runbook.md` - shadow rollout, rollback and dirty-tree deploy guards.
+- Final recommendation:
+  - code is ready for controlled shadow rollout on one Windows workstation/test profile;
+  - do not broad-rollout backend-only to all PCs until Windows physical smoke passes;
+  - keep emergency Google fallback off by default and enable it only manually/temporarily;
+  - production deploy must be selective from reviewed diff/commit with restore point and `/ready` + `/api/v1/admin/operations` checks.
+- Проверено:
+  - `.venv/bin/python -m unittest discover -s tests` - 639 tests OK;
+  - `npm --prefix frontend run build` - OK;
+  - `.venv/bin/python -m compileall src/taksklad backend/app` - OK;
+  - `.venv/bin/python tools/release_preflight.py` - `status=ok`, `backend_only_hot_path_contract=ok`, `deploy_runbook_contract=ok`, public backend `/health` OK `version=2.0.23`;
+  - `git diff --check` - OK.
+
+### Backend-only hot path Phase 8 release guards
+
+- Причина: backend-only hot path нельзя выпускать из частично обновлённого desktop/helper/runbook или широким deploy из dirty tree.
+- Изменено:
+  - `tools/windows_backend_acceptance.ps1` получил workstation-local switches `-BackendOnlyRefresh`, `-EmergencyGoogleFallback`, `-EnableDesktopTelegramPolling`;
+  - helper теперь задаёт и очищает `TAKSKLAD_BACKEND_ONLY_REFRESH`, `TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED`, `TELEGRAM_DESKTOP_POLLING_ENABLED`;
+  - readiness expected Alembic head обновлён до `20260626_0005`, чтобы deploy с logistics calendar migration не переводил `/ready` в ложный `degraded`;
+  - `tools/release_preflight.py` получил checks `backend_only_hot_path_contract` и `deploy_runbook_contract`;
+  - preflight падает, если пропали startup diagnostics, explicit emergency fallback, guarded Telegram lock release, refresh source diagnostics, `/admin/operations shadow_diagnostics`, dirty-tree deploy запрет или pending-preservation rollback;
+  - `docs/deploy-rollback-runbook.md` теперь требует `git status --short`, restore point, selective deploy и запрещает broad rsync из dirty tree;
+  - `docs/manual-acceptance-runbook.md` добавил Windows shadow smoke: startup diagnostics, backend refresh, network timeout, Google 429 simulation.
+- Version contract:
+  - `version.json` не менялся;
+  - preflight подтвердил допустимое состояние `paused`: `latest_version=1.1.7`, `min_supported_version=1.1.7`, `mandatory=false`;
+  - forced rollout `2.0.23` остаётся допустим только при заполненных GitHub Release URLs и SHA.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_backend_api_persistence.BackendApiPersistenceTests.test_readiness_accepts_logistics_calendar_schema_head_revision tests.test_backend_skeleton.BackendSkeletonTests.test_sql_bootstrap_and_alembic_migrations_keep_forward_only_contract` - OK;
+  - `.venv/bin/python -m unittest tests.test_release_preflight tests.test_windows_test_build_helper tests.test_vds_acceptance_scripts` - 22 tests OK;
+  - `.venv/bin/python tools/release_preflight.py` - `status=ok`, `backend_only_hot_path_contract=ok`, `deploy_runbook_contract=ok`, public backend `/health` OK `version=2.0.23`;
+  - `.venv/bin/python -m compileall src/taksklad backend/app` - OK;
+  - `git diff --check` - OK.
+
+### Backend-only hot path Phase 7 shadow cutover
+
+- Причина: backend-only нельзя включать сразу на все ПК. Сначала нужен один workstation/test profile, видимые флаги режима, shadow diagnostics и проверяемый rollback без потери локальных очередей.
+- Изменено:
+  - startup self-check теперь показывает `backend_only_refresh=yes/no` и `backend_emergency_google_fallback=yes/no`;
+  - desktop refresh diagnostics использует фактический `primary_source`, поэтому emergency fallback не маскируется как `source=backend`;
+  - `fetch_sheet_data_with_sync()` передаёт в diagnostics флаги `backend_only_refresh`, `emergency_google_fallback` и `google_sheets_pending`;
+  - `/api/v1/admin/operations` получил `shadow_diagnostics` с backend source, Google mirror lag/pending/failed/processing exports, stale processing и Telegram worker state;
+  - Windows acceptance runbook получил отдельный Phase 7 shadow profile для одного ПК и rollback с pending-preservation checks.
+- Feature flags:
+  - `TAKSKLAD_BACKEND_ONLY_REFRESH`: default `false`, на одном shadow ПК ставить `1`;
+  - `TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED`: default `false`, временно ставить `1` только вручную;
+  - `TELEGRAM_DESKTOP_POLLING_ENABLED`: default `false`, в backend-mode оставлять `0`.
+- Sanitized samples:
+  - desktop: `Startup self-check: ... telegram_desktop_polling=no backend_only_refresh=yes backend_emergency_google_fallback=no ...`;
+  - refresh: `Refresh diagnostic summary: source=google_emergency_fallback primary_source=google_emergency_fallback backend_only_refresh=True emergency_google_fallback=True ... google_mirror_pending_exports=4 ...`;
+  - backend: `shadow_diagnostics.backend_active_orders_source=postgres_backend`, `google_mirror_status=degraded`, `hot_path_stale_processing=1`, `telegram_worker_state=requires_attention`.
+- Rollback proof:
+  - rollback flips/removes only env flags;
+  - pending counts `pending_backend_events`, `pending_saves`, `pending_prints`, `pending_telegram` must be recorded before rollback and rechecked after restart;
+  - допустимо только уменьшение count после успешного sync/audit, внезапное обнуление без evidence запрещено.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_startup_check tests.test_desktop_diagnostics` - 4 tests OK;
+  - `.venv/bin/python -m unittest tests.test_refresh_fallback` - 16 tests OK;
+  - `.venv/bin/python -m unittest tests.test_backend_api_persistence.BackendApiPersistenceTests.test_admin_operations_summarizes_attention_without_raw_payload_or_telegram_spam` - OK;
+  - `.venv/bin/python -m unittest tests.test_refresh_fallback tests.test_backend_api_persistence tests.test_backend_telegram_import` - 190 tests OK;
+  - `.venv/bin/python -m compileall src/taksklad backend/app` - OK;
+  - `git diff --check` - OK.
+
+### Backend-only hot path Phase 6 operations attention summary
+
+- Причина: операторам и поддержке нужен короткий ответ "что требует внимания", без чтения сырого лога и без смешивания hot-path проблем с mirror-only lag.
+- Изменено:
+  - добавлен backend endpoint `/api/v1/admin/operations`;
+  - endpoint возвращает `status`, `summary`, `items`, `readiness_status`, `google_mirror_status`, `telegram_summary`;
+  - категории: `google_mirror`, `telegram`, `skladbot`, `queue`, `incident`, `import`;
+  - каждый item содержит `impact`, `severity`, `count`, `oldest_age_seconds`, `next_action`, sanitized `details`;
+  - web-admin диагностика показывает карточку `Требует внимания` и список next actions;
+  - `telegram_summary` только возвращается текстом, автоматически в чат не отправляется.
+- Sanitized sample:
+  - API: `status=requires_attention`, `summary.hot_path=3`, `summary.mirror=1`, `items[].next_action=...`;
+  - Telegram text: `TakSklad: требуется внимание` + краткие строки по категориям; тест подтверждает, что новых `telegram_notification` events endpoint не создаёт.
+- Инварианты:
+  - raw payload, chat_id, токены, Authorization, полные КИЗы и клиентские payload не выводятся;
+  - mirror-only Google lag отделён от hot-path blockers;
+  - UI использует существующие diagnostics styles с `overflow-wrap:anywhere`.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_backend_api_persistence tests.test_backend_telegram_import` - 174 tests OK;
+  - `npm --prefix frontend run build` - OK;
+  - `.venv/bin/python -m compileall backend/app` - OK;
+  - `git diff --check` - OK.
+
+### Backend-only hot path Phase 5 Google mirror readiness split
+
+- Причина: Google Sheets export является зеркалом, но readiness смешивал mirror-only ошибки с общей queue degradation. Из-за этого backend hot path мог выглядеть сломанным только из-за Google mirror lag/429.
+- Изменено:
+  - `/ready` и `/api/v1/readiness` получили отдельный блок `google_mirror`;
+  - `google_mirror.role = mirror_export`, `event_type = google_sheets_export`;
+  - в `google_mirror` выводятся `summary`, `oldest_pending_age_seconds`, `paused`, `next_attempt_at`, `last_errors`;
+  - общий `status` больше не становится `degraded`, если сломан только Google mirror/export;
+  - `queue` получила hot-path поля `hot_path_stale_processing_count` и `hot_path_last_errors`;
+  - malformed `google_sheets_export` с invalid entity id не блокирует следующий валидный export.
+- Sanitized readiness sample:
+  - `status=ok`, `google_mirror.status=degraded`, `google_mirror.role=mirror_export`, `google_mirror.paused=true`, `queue.hot_path_last_errors=[]`.
+- Инварианты:
+  - DB commit и создание backend scan/order/import остаются независимыми от Google export;
+  - Google 429 остаётся retryable mirror pause через `next_attempt_at`;
+  - секреты и КИЗы в readiness редактируются через `redact_secrets`.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_backend_api_persistence tests.test_reconciliation_service` - 112 tests OK;
+  - `.venv/bin/python -m compileall backend/app` - OK;
+  - `git diff --check` - OK.
+
+### Backend-only hot path Phase 4 desktop outbox diagnostics
+
+- Причина: desktop diagnostics показывал только общий `pending_backend_events`, без разреза по scan/order_complete, ошибочным событиям и попыткам. Для разбора timeout/idempotency это слишком грубо.
+- Изменено:
+  - `src/taksklad/desktop_diagnostics.py` добавляет агрегаты `pending_backend_scan_events`, `pending_backend_order_complete_events`, `pending_backend_other_events`, `pending_backend_failed_events`, `pending_backend_attempted_events`, `pending_backend_max_attempts`;
+  - diagnostics по-прежнему не выводит payload, КИЗы, клиентов, адреса, `Authorization`, токены или raw errors;
+  - `tests/test_desktop_diagnostics.py` проверяет новые агрегаты и отсутствие секретных/сырьевых значений в строке диагностики.
+- Инварианты:
+  - deterministic backend event ID и duplicate scan ack не менялись;
+  - already-completed backend order complete остаётся acknowledged retry;
+  - wrong-SKU и duplicate-other-order остаются blocked/visible;
+  - print-before-complete и pending print queue checks сохранены.
+- Sanitized diagnostic example:
+  - `Refresh diagnostic summary: source=backend orders=12 groups=7 order_dates=2 known_codes=300 pending_saves=0 pending_prints=1 pending_backend_events=4 pending_backend_scan_events=2 pending_backend_order_complete_events=1 pending_backend_other_events=1 pending_backend_failed_events=2 pending_backend_attempted_events=3 pending_backend_max_attempts=3 pending_telegram=0 sync_synced=0 sync_failed=0 sync_remaining=0 backend_enabled=True backend_synced=1 backend_failed=1 backend_remaining=4 skladbot_enabled=True skladbot_matched=5 skladbot_not_found=0 skladbot_multiple=0 skladbot_errors=0`
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_desktop_ui_contract tests.test_backend_api_persistence tests.test_desktop_diagnostics` - 156 tests OK;
+  - `.venv/bin/python -m compileall src/taksklad backend/app` - OK;
+  - `git diff --check` - OK.
+
+### Backend-only hot path Phase 3 backend-only refresh flag
+
+- Причина: в backend-mode refresh скрыто падал обратно на Google Sheets при ошибке backend. Это сохраняло работоспособность, но возвращало Google в складской hot path и маскировало backend outage.
+- Изменено:
+  - добавлен флаг `TAKSKLAD_BACKEND_ONLY_REFRESH`, default `false`;
+  - добавлен аварийный явный флаг `TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED`, default `false`;
+  - при `TAKSKLAD_BACKEND_ONLY_REFRESH=true` desktop не вызывает `get_today_orders()` после backend refresh failure, если emergency fallback не включён явно;
+  - при явном emergency fallback source маркируется как `google_emergency_fallback`, а не обычный `google_fallback`;
+  - error copy без кэша теперь говорит проверить связь с backend, а не Google Sheets;
+  - Windows backend acceptance runbook получил оба новых env-флага.
+- Инварианты:
+  - default-поведение не меняет production без включения нового флага;
+  - legacy non-backend mode продолжает читать Google;
+  - при ошибке refresh с уже загруженными заказами текущая позиция сохраняется;
+  - без загруженного списка scanning остаётся без текущей позиции и получает понятную backend connectivity ошибку.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_refresh_fallback tests.test_desktop_ui_contract` - 67 tests OK;
+  - `.venv/bin/python -m compileall src/taksklad backend/app` - OK;
+  - `git diff --check` - OK.
+
+### Backend-only hot path Phase 2 Telegram authority
+
+- Причина: в backend-mode desktop polling уже выключен по умолчанию, но `on_close` всё ещё мог вызвать Google-backed `release_telegram_poll_lock()` даже если desktop не владел lock. Это оставляло лишний Google-запрос при закрытии клиента.
+- Изменено:
+  - `src/taksklad/app_runtime.py` освобождает Telegram lock только если desktop реально владеет свежим lock;
+  - `src/taksklad/startup_check.py` пишет безопасный self-check флаг `telegram_desktop_polling=yes/no`, чтобы emergency fallback был виден в логах без токенов и chat IDs;
+  - `tests/test_desktop_ui_contract.py` проверяет, что выключенный desktop polling не заходит в lock/state path и close без lock не трогает Google;
+  - `tests/test_startup_check.py` проверяет self-check поле и отсутствие секретов в форматированном startup log.
+- Инварианты:
+  - штатный backend-mode Telegram listener остаётся `backend/app/telegram_worker.py`;
+  - legacy desktop polling включается только явно через `TELEGRAM_DESKTOP_POLLING_ENABLED=true`;
+  - Telegram admin gating и idempotency backend worker не менялись.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_telegram_lock tests.test_backend_telegram_import tests.test_desktop_ui_contract tests.test_startup_check` - 129 tests OK;
+  - `.venv/bin/python -m compileall src/taksklad backend/app` - OK;
+  - `git diff --check` - OK.
+
+### Web-admin календарь логистики и Smartup delivery_date policy
+
+- Причина: Smartup-агенты могут ставить `delivery_date` на субботу, воскресенье или праздник, хотя логистика в эти дни не работает. Нужен управляемый календарь, чтобы не закреплять жесткое правило "пятница всегда на понедельник", а опираться на дату отгрузки из Smartup и календарь рабочих дней.
+- Решение:
+  - отдельная вкладка `Отчет` убрана из web-admin;
+  - `Импорты`, `SkladBot dry-run`, `Инциденты`, `Активность` перенесены в нижнюю раскрывающую группу `История действий`;
+  - добавлена вкладка `Календарь` с заказами, блоками, клиентами, выходными и ручными нерабочими днями;
+  - добавлена таблица `logistics_calendar_days` и Alembic migration `20260626_0005_logistics_calendar`;
+  - Smartup import сохраняет исходный `delivery_date`, effective-дата попадает в `Дата отгрузки`, а перенос фиксируется в audit/export metadata;
+  - финальный отчет логистики пропускается для нерабочих дат.
+- Инварианты:
+  - источник даты остается Smartup `delivery_date`;
+  - перенос идет только вперед до ближайшего рабочего дня;
+  - суббота/воскресенье не являются единственным правилом, ручные праздники/нерабочие дни имеют приоритет;
+  - write-действие календаря доступно только через admin write permission.
+- Проверено:
+  - `.venv/bin/python -m py_compile backend/app/logistics_calendar_service.py backend/app/smartup_auto_import.py backend/app/main.py backend/app/schemas.py tests/test_smartup_auto_import.py tests/test_backend_api_persistence.py tests/test_backend_skeleton.py` - OK;
+  - `.venv/bin/python -m unittest tests.test_smartup_auto_import tests.test_backend_api_persistence.BackendApiPersistenceTests.test_admin_logistics_calendar_lists_orders_and_saves_non_working_day tests.test_backend_skeleton.BackendSkeletonTests.test_required_backend_files_exist tests.test_backend_skeleton.BackendSkeletonTests.test_initial_schema_contains_mvp_tables_and_constraints tests.test_backend_skeleton.BackendSkeletonTests.test_sql_bootstrap_and_alembic_migrations_keep_forward_only_contract` - OK;
+  - `cd frontend && npm run build` - OK;
+  - `docker compose -f deploy/vds/docker-compose.yml --env-file deploy/vds/.env.example config` - OK;
+  - `git diff --check` - OK.
+
 ## 2026-06-25
 
 ### Telegram Excel import: stale waiting file and same-payload duplicates
@@ -6175,3 +6385,66 @@ cd /opt/taksklad/app
   - in-container `python -m py_compile /app/app/telegram_worker.py` - OK;
   - fresh `backend-api`/`telegram-worker` logs since deploy - no `error|traceback|exception|critical|failed`;
   - `./deploy/vds/acceptance_status.sh` остался `failed` из-за старого readiness `degraded` и незакрытых ручных GO/NO-GO чекбоксов, не из-за этого deploy.
+
+### Smartup terminal auto import worker
+
+- Причина: ручной процесс Smartup должен стать серверной автоматизацией по слотам `12:00`, `15:00`, `17:50`: выгрузка `Новые + Терминал`, перевод заказов в `В ожидании`, создание заказов TakSklad по `delivery_date`, постановка SkladBot-заявок и финальный логистический отчёт.
+- Изменено:
+  - добавлен `backend/app/smartup_auto_import.py` с Smartup client, локальным XLSX/audit export, backend preview, safety-gates, status change, import grouping by `delivery_date`, SkladBot queue hook и отправкой logistics report;
+  - добавлен `backend/app/smartup_auto_import_worker.py` с расписанием и idempotency через `pending_events`;
+  - добавлен compose service `smartup-auto-import-worker`, выключенный по умолчанию;
+  - добавлены env-флаги `SMARTUP_AUTO_IMPORT_*`;
+  - добавлены unit-тесты `tests/test_smartup_auto_import.py`.
+- Инварианты:
+  - по умолчанию worker не запускает автоматизацию;
+  - backend import невозможен без включённого Smartup status change gate;
+  - дата создания заказов TakSklad берётся из Smartup `delivery_date`;
+  - имя файла выгрузки использует сегодняшнюю дату заказа/выгрузки: `Терминал ДД.ММ.ГГГГ Часть N.xlsx`;
+  - реальные SkladBot-заявки по-прежнему зависят от `SKLADBOT_CREATE_REQUESTS_MODE=enabled`.
+
+### Smartup auto import hardening
+
+- Причина: после первого боевого теста нужен безопасный повторяемый контур эксплуатации: защита от параллельных workers, ручной запуск конкретного слота, Telegram alert при падении и видимость истории в web-admin.
+- Изменено:
+  - `run_scheduled_smartup_auto_import_slot` теперь берёт Postgres advisory lock на пару `export_date + slot` через отдельное DB connection и сохраняет существующий idempotency через `pending_events`;
+  - добавлен `python -m app.smartup_auto_import_worker run-once --date YYYY-MM-DD --slot HH:MM`;
+  - при ошибке слота событие помечается `failed`, пишется audit и отправляется Telegram alert в `SMARTUP_AUTO_IMPORT_ALERT_CHAT_ID` или logistics chat;
+  - добавлен read-only endpoint `/api/v1/admin/smartup-auto-imports/history`;
+  - в web-admin добавлена вкладка `Smartup` с последними запусками, файлами, ошибками, количеством созданных заказов, SkladBot/logistics статусами.
+- Инварианты:
+  - `run-once` использует тот же claim/lock путь, что и worker;
+  - history endpoint не показывает Smartup/Telegram секреты;
+  - сама обработка заказов осталась в прежнем `run_smartup_auto_import_once`.
+
+### Smartup auto import weekend guard
+
+- Причина: Smartup/складской процесс не работает в субботу и воскресенье, автоматические слоты не должны выгружать заказы в эти дни.
+- Изменено:
+  - добавлен `SMARTUP_AUTO_IMPORT_DISABLED_WEEKDAYS`, default `5,6`;
+  - `run_due_smartup_auto_imports` возвращает `idle / weekday_disabled` до проверки слотов и не создаёт `PendingEvent`;
+  - `run-once` оставлен доступным как ручной override.
+
+### Backend-only hot path Phase 1 baseline
+
+- Цель этапа: зафиксировать текущее поведение перед переводом складского hot path с Google Sheets на backend/Postgres как основной источник.
+- Изменения этапа: только тесты, документация и Supergoal-артефакты; runtime-логика приложения не менялась.
+- Инцидент 2026-06-25 вечером:
+  - `ERROR`: 25;
+  - `WARNING`: 38;
+  - traceback-записи: 35;
+  - основные сигнатуры: Google Sheets `429 Quota exceeded`, backend SSL/handshake/read/write timeout, Telegram document send timeout;
+  - 11 предупреждений по КИЗам являются бизнес-валидацией несоответствий, а не системной аварией;
+  - отдельный desktop-баг установленного клиента `2.0.22`: `NameError: name 'WARNING' is not defined`; локальный код `2.0.23` уже содержит исправленный импорт.
+- Dirty-tree на старте Phase 1:
+  - in-scope: `docs/implementation-log.md`, `tests/test_backend_events.py`, `.supergoal/taksklad-backend-only-hot-path-productio-gyoopS/*`;
+  - existing out-of-scope: `AGENTS.md`, `backend/app/main.py`, `backend/app/models.py`, `backend/app/schemas.py`, `backend/sql/001_initial_schema.sql`, `deploy/vds/.env.example`, `deploy/vds/docker-compose.yml`, `docs/changelog.md`, `docs/taksklad-system-stack-overview.md`, `docs/user-business-process-guide.md`, `frontend/src/App.tsx`, `frontend/src/api.ts`, `frontend/src/styles.css`, `tests/test_backend_api_persistence.py`, `tests/test_backend_skeleton.py`, `backend/app/logistics_calendar_service.py`, `backend/app/smartup_auto_import.py`, `backend/app/smartup_auto_import_history_service.py`, `backend/app/smartup_auto_import_worker.py`, `backend/migrations/versions/20260626_0005_logistics_calendar.py`, `tests/test_smartup_auto_import.py`.
+- Инварианты, которые нельзя ломать следующими этапами:
+  - backend/Postgres является source of truth для backend-mode заказов, сканов, завершений и очередей;
+  - Google Sheets в backend-mode должен быть зеркалом/экспортом, а не скрытым fallback для складского сканирования;
+  - Google `429` не должен блокировать сканирование, завершение заказа, Telegram import или backend read, но должен давать видимый mirror-lag/error;
+  - Telegram import в штатном backend-mode должен иметь одного владельца: server worker; desktop polling допустим только как явный emergency fallback;
+  - retryable backend timeout по scan/order_complete остается в pending-очереди и повторяется;
+  - duplicate scan ack от backend считается идемпотентным успехом;
+  - wrong-SKU, duplicate-other-order и переполнение агрегата остаются blocked/visible, не автопрячутся;
+  - при refresh error desktop сохраняет текущую загруженную позицию, если она уже была безопасно загружена;
+  - секреты, chat IDs, полные КИЗ-списки и клиентские payload не должны попадать в diagnostics/docs/log summaries.

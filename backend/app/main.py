@@ -43,6 +43,10 @@ from .kiz_reports_service import (
     list_completed_kiz_source_files,
 )
 from .logistics_service import build_logistics_report_xlsx, list_logistics_dates
+from .logistics_calendar_service import (
+    list_logistics_calendar as list_logistics_calendar_in_db,
+    set_logistics_calendar_day as set_logistics_calendar_day_in_db,
+)
 from .order_actions_service import (
     archive_order_without_kiz as archive_order_without_kiz_in_db,
     cancel_order as cancel_order_in_db,
@@ -65,6 +69,7 @@ from .reconciliation_service import ReconciliationError, run_daily_reconciliatio
 from .reports_service import build_dashboard_day_summary, build_day_report
 from .skladbot_request_dry_run import list_skladbot_dry_runs, rebuild_skladbot_dry_run
 from .skladbot_worker import update_orders_from_skladbot
+from .smartup_auto_import_history_service import list_smartup_auto_import_history
 from .schemas import (
     AdminOrderActionRequest,
     AdminBulkOrderActionRequest,
@@ -90,6 +95,9 @@ from .schemas import (
     IncidentListRead,
     IncidentRead,
     IncidentStatusUpdate,
+    LogisticsCalendarDayRead,
+    LogisticsCalendarDayUpdate,
+    LogisticsCalendarRead,
     OrderRead,
     OperationsAttentionRead,
     ReadinessResponse,
@@ -98,6 +106,7 @@ from .schemas import (
     ScanRead,
     ScanUndo,
     SkladBotDryRunRead,
+    SmartupAutoImportHistoryRead,
 )
 from .settings import APP_VERSION, load_settings
 from .web_auth import (
@@ -376,6 +385,23 @@ def admin_client_point_order_summary(
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
+@api.get("/admin/logistics-calendar", response_model=LogisticsCalendarRead)
+def admin_logistics_calendar(month: str | None = None, db=Depends(get_db)):
+    try:
+        return list_logistics_calendar_in_db(db, month=month)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@api.post(
+    "/admin/logistics-calendar/day",
+    response_model=LogisticsCalendarDayRead,
+    dependencies=[Depends(require_admin_write_permission)],
+)
+def admin_update_logistics_calendar_day(payload: LogisticsCalendarDayUpdate, db=Depends(get_db)):
+    return set_logistics_calendar_day_in_db(db, payload)
+
+
 @api.post(
     "/admin/client-points/timeslot",
     response_model=ClientPointRead,
@@ -401,6 +427,11 @@ def admin_event_queue(limit: int | None = None, db=Depends(get_db)):
 @api.get("/admin/operations", response_model=OperationsAttentionRead)
 def admin_operations(db=Depends(get_db)):
     return build_operations_attention(db, settings)
+
+
+@api.get("/admin/smartup-auto-imports/history", response_model=SmartupAutoImportHistoryRead)
+def admin_smartup_auto_import_history(limit: int | None = None, db=Depends(get_db)):
+    return list_smartup_auto_import_history(db, limit=limit)
 
 
 @api.get("/admin/events/{event_id}", response_model=EventQueueEventRead)

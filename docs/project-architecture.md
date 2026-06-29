@@ -16,15 +16,15 @@
 
 ## 2. Project Overview
 
-**Что делает.** TakSklad — локальное desktop-приложение (Python/Tkinter) для складской обработки заказов и маркировки КИЗ: импорт Excel → нормализация → запись в Google Sheets → сканирование КИЗ → контроль дублей/недосканов → печать сводных листов → дневной отчёт → уведомления в Telegram. Репозиторий обновлений: `1fear/TakSklad`.
+**Что делает.** TakSklad — desktop + backend система для складской обработки заказов и маркировки КИЗ: импорт Excel → нормализация → запись в backend/PostgreSQL → Google mirror/export → сканирование КИЗ → контроль дублей/недосканов → печать сводных листов → дневной отчёт → уведомления в Telegram. Репозиторий обновлений: `1fear/TakSklad`.
 
 **Для кого.** Оператор склада (сканирование, печать, отчёт), руководитель/админ (отчёты в Telegram, в будущем веб-панель), разработчик/эксплуатант (credentials, релизы, два ПК, разбор логов).
 
 **Проблема.** Ручная и ошибкоопасная работа с маркировкой в таблицах. Приложение централизует процесс, защищает от дублей КИЗ, потери сканов и сбоев сети/печати.
 
-**Ключевые бизнес-сценарии.** Импорт (UI/Telegram) → группировка заказов → сканирование с локальным backup → запись в Google Sheets → печать сводки → завершение дня и отчёт. Дополнительно: подтягивание номеров заявок SkladBot, автообновление через GitHub Releases.
+**Ключевые бизнес-сценарии.** Импорт (UI/Telegram) → группировка заказов → сканирование с локальным backup → запись в backend/PostgreSQL → server-side Google mirror/export → печать сводки → завершение дня и отчёт. Дополнительно: подтягивание номеров заявок SkladBot, автообновление через GitHub Releases.
 
-**Характеристика.** Сейчас это локальная точка управления складом, **не WMS/не backend**. Направление — складская экосистема (desktop + backend + PostgreSQL + воркеры + веб-панель) при стабильном локальном сканировании на каждом шаге.
+**Характеристика.** Сейчас это переходная складская экосистема: desktop остаётся основным интерфейсом склада, backend/PostgreSQL становится hot-path source of truth, Google Sheets остаётся mirror/export и legacy fallback. Широкий backend-only rollout требует Windows-приёмки.
 
 ---
 
@@ -32,7 +32,7 @@
 
 ### Implemented Features
 
-Импорт Excel (`.xlsx/.xlsm`, гибкий нормализатор шаблонов, алиасы колонок) из UI и Telegram; нормализация строк, дедупликация, геокодирование адреса по координатам; запись только в лист `data` (служебные колонки с `AA`); группировка заказов (`номер SkladBot + клиент + оплата + адрес`); подтягивание номеров SkladBot со статусами `Найдено/Не найдено/Несколько совпадений`; сканирование КИЗ с многоуровневой валидацией и контролем дублей, локальный backup до принятия кода; запись сканов в Google Sheets; печать PNG-сводок (Windows PowerShell / `lp`); очереди `pending_saves/prints/telegram` и `scan_backups/`; дневной и подокументный Excel-отчёт, автоотправка (23:55); Telegram-бот (whitelist `chat_ids`, запрет отправки секретов); координация двух ПК (Telegram lock + общий `last_update_id` в `_TakSklad_System`); автообновление с SHA256, подтверждением и cooldown; регрессионные тесты в `tests/` (8 файлов).
+Импорт Excel (`.xlsx/.xlsm`, гибкий нормализатор шаблонов, алиасы колонок) из UI и Telegram; нормализация строк, дедупликация, геокодирование адреса по координатам; запись в backend/PostgreSQL с Google mirror/export; группировка заказов (`номер SkladBot + клиент + оплата + адрес`); подтягивание номеров SkladBot со статусами `Найдено/Не найдено/Несколько совпадений`; сканирование КИЗ с многоуровневой валидацией и контролем дублей, локальный backup до принятия кода; запись сканов в backend с server-side Google export; печать PNG-сводок (Windows PowerShell / `lp`); очереди `pending_backend_events/pending_saves/prints/telegram` и `scan_backups/`; дневной и подокументный Excel-отчёт, автоотправка (23:55); Telegram-бот (whitelist `chat_ids`, запрет отправки секретов); server-side Telegram worker как нормальный listener; автообновление с SHA256, подтверждением и cooldown; регрессионные тесты в `tests/`.
 
 ### Planned Features
 
@@ -86,7 +86,7 @@
 - **GitHub** — контроль версий и командная работа.
 - **VS Code remote** к VPS + интеграция **Claude Code**.
 
-**Важный нюанс (Inference):** инфраструктура готова, но само приложение TakSklad на ней ещё не развёрнуто — desktop по-прежнему работает напрямую с Google Sheets; backend/воркеров пока нет. То есть «сервер готов» ≠ «приложение мигрировано». Эта база покрывает большую часть roadmap-этапа «Поднять VPS и базовую инфраструктуру»; остаётся backup-том/политика и проверка восстановления.
+**Важный нюанс:** backend/воркеры уже существуют, но backend-only desktop rollout должен идти по staged/shadow процедуре. Legacy desktop без backend flags может работать напрямую с Google Sheets; это не целевой hot path.
 
 ### Known Constraints
 
@@ -137,15 +137,15 @@ main ◄ почти все модули
 
 `config`/`utils` — изолированный фундамент. `main.py` зависит почти от всего (кандидат на декомпозицию). `sheets`→`orders`: доступ к данным знает о бизнес-статусах — развязать **(Inference)**.
 
-**Интеграции.** Google Sheets (`gspread`/`oauth2client`) — operational store + координация; Telegram Bot API (`urllib`, polling); SkladBot API (`urllib`, чтение); Яндекс Геокодер; GitHub Releases/`version.json` (TLS через `certifi`).
+**Интеграции.** Backend/PostgreSQL — operational store; Google Sheets (`gspread`/`oauth2client`) — mirror/export и legacy fallback; Telegram Bot API через backend worker; SkladBot API (`urllib`, чтение/создание через worker); Яндекс Геокодер; GitHub Releases/`version.json` (TLS через `certifi`).
 
 **Точки входа.** `TakSklad.exe` (`main.py`); Telegram-команды/файлы от whitelisted чатов; кнопки UI; GitHub Actions (сборка по тегу).
 
-**Хранилища.** Google Sheets (`data`, `Архив`, `Возвраты`, `_TakSklad_System`); `TakSklad_data.json` (секции credentials/telegram/skladbot/daily_report/pending_*/telegram_state/product_catalog/import_history/print_settings); legacy JSON (миграция); `scan_backups/*.jsonl`; `reports/`; `docs/*.log`.
+**Хранилища.** PostgreSQL (`orders`, `order_items`, `scan_codes`, `pending_events`, audit/import tables); Google Sheets (`data`, `Архив`, `Возвраты`, `_TakSklad_System`) как mirror/legacy; `TakSklad_data.json` (настройки и локальные очереди); legacy JSON (миграция); `scan_backups/*.jsonl`; `reports/`; `docs/*.log`.
 
-**Ключевые потоки.** Импорт: Excel→normalizer→import→sheets(`data`)→import_history. Скан: группа→КИЗ→валидация/дубли→backup→sheets или `pending_saves`. SkladBot (фон ~10 мин): список→детали по `unloading_date` (окно 14 дн.)→матчинг→номера в `data`. Telegram: `getUpdates` под lock→команда/файл→импорт/отчёт. Отчёт: Sheets+`pending_saves`→Excel→Telegram(23:55). Обновление: `version.json`→сравнение→(подтверждение)→ZIP/SHA256→PowerShell→перезапуск.
+**Ключевые потоки.** Импорт: Excel→normalizer→backend import→Postgres→Google mirror/export. Скан: группа→КИЗ→валидация/дубли→локальный backup→backend scan или `pending_backend_events`. SkladBot worker: список/детали→матчинг/создание→Postgres→Google mirror/export. Telegram: backend worker→`pending_events`→import/report/notification. Отчёт: Postgres/SkladBot→Excel→Telegram. Обновление: `version.json`→сравнение→(подтверждение)→ZIP/SHA256→PowerShell→перезапуск.
 
-**Деплой сейчас.** Desktop распространяется как Windows-сборка через GitHub Releases (PyInstaller `--onedir`, переходный `onefile`); серверного деплоя приложения нет. Серверная инфраструктура (Docker/Traefik/Postgres) развёрнута, но пока не обслуживает сервисы TakSklad **(infra context + Inference)**.
+**Деплой сейчас.** Desktop распространяется как Windows-сборка через GitHub Releases (PyInstaller `--onedir`, переходный `onefile`). Backend и workers доставляются на VDS через Docker/Compose; production deploy требует restore point, selective deploy и readiness/operations checks.
 
 ---
 

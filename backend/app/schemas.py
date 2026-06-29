@@ -261,6 +261,40 @@ class OperationsAttentionRead(BaseModel):
     telegram_summary: str = ""
 
 
+class SmartupAutoImportRunRead(BaseModel):
+    id: str
+    status: str
+    export_date: str = ""
+    slot: str = ""
+    part: int | None = None
+    filename: str = ""
+    export_path: str = ""
+    audit_path: str = ""
+    selected_orders: int = 0
+    rows: int = 0
+    delivery_dates: list[str] = Field(default_factory=list)
+    imports_count: int = 0
+    orders_created: int = 0
+    items_created: int = 0
+    duplicate_rows: int = 0
+    status_change_submitted: int = 0
+    skladbot_status: str = ""
+    logistics_reports: list[dict[str, Any]] = Field(default_factory=list)
+    error: str = ""
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    completed_at: str = ""
+    failed_at: str = ""
+
+
+class SmartupAutoImportHistoryRead(BaseModel):
+    generated_at: datetime
+    summary: dict[str, Any] = Field(default_factory=dict)
+    runs: list[SmartupAutoImportRunRead] = Field(default_factory=list)
+    events: list[EventQueueEventRead] = Field(default_factory=list)
+    audit: list[AdminActivityRead] = Field(default_factory=list)
+
+
 class IncidentCreate(BaseModel):
     source: str = Field(min_length=1)
     severity: str = "warning"
@@ -567,3 +601,33 @@ class DashboardDaySummaryRead(BaseModel):
     source: str
     generated_at: datetime
     totals: DayReportTotals
+
+
+class LogisticsCalendarDayRead(BaseModel):
+    date: date
+    weekday: int
+    is_weekend: bool = False
+    is_non_working: bool = False
+    is_manual: bool = False
+    reason: str = ""
+    source: str = ""
+    orders_count: int = 0
+    active_orders: int = 0
+    completed_orders: int = 0
+    planned_blocks: int = 0
+    clients: list[str] = Field(default_factory=list)
+
+
+class LogisticsCalendarRead(BaseModel):
+    generated_at: datetime
+    month: str
+    default_non_working_weekdays: list[int] = Field(default_factory=list)
+    days: list[LogisticsCalendarDayRead] = Field(default_factory=list)
+
+
+class LogisticsCalendarDayUpdate(BaseModel):
+    service_date: date
+    is_non_working: bool = True
+    reason: str = ""
+    actor: str = "web"
+    source: str = "web"
