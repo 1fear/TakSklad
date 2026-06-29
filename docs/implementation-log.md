@@ -6448,3 +6448,22 @@ cd /opt/taksklad/app
   - wrong-SKU, duplicate-other-order и переполнение агрегата остаются blocked/visible, не автопрячутся;
   - при refresh error desktop сохраняет текущую загруженную позицию, если она уже была безопасно загружена;
   - секреты, chat IDs, полные КИЗ-списки и клиентские payload не должны попадать в diagnostics/docs/log summaries.
+
+### SkladBot daily report completeness by movement date
+
+- Причина: daily-отчет пропускал SkladBot-заявки, созданные раньше даты отчета, хотя по ним была выгрузка, завершение, архивирование или складское движение в отчетный день. Пример расследования: заявка `WH-R-200655` по Alcaber/Alkabir.
+- Изменено:
+  - daily сначала собирает `warehouse/transactions` за дату отчета и использует WH-R из движений как причину включения `движение склада`;
+  - убран ранний отбор по `created_at` из списка заявок до загрузки detail;
+  - заявки с движением склада проверяются первыми, чтобы старые записи в списке не съедали detail-limit;
+  - выполненные архивные заявки включаются по `created_at`, `updated_at`, `unloading_date`, `completed_at`, `archived_at`;
+  - старые выполненные архивные заявки без дат перехода включаются один раз как `впервые найдена выполненной`, если их еще нет в `pending_events` registry;
+  - новое движение склада за дату отчета включает WH-R даже тогда, когда эта заявка уже попадала в старый daily.
+- Инварианты:
+  - SkladBot API используется read-only;
+  - SkladBot, складские остатки и Google Sheets не изменяются;
+  - `pending_events` продолжает защищать плановые отправки от повторов старых заявок без нового движения или новой отчетной даты события.
+- Проверено:
+  - `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_skladbot_daily_report` - 23 tests OK;
+  - `./.venv/bin/python -m py_compile backend/app/skladbot_daily_report.py tests/test_skladbot_daily_report.py` - OK;
+  - `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_daily_report tests.test_skladbot_daily_report` остановился на импорте `tkinter`: текущий Python без модуля `_tkinter`.

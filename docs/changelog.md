@@ -4,6 +4,27 @@
 
 ## 2026-06-29
 
+### SkladBot daily: полнота по движениям склада
+
+**Файлы:** `backend/app/skladbot_daily_report.py`, `tests/test_skladbot_daily_report.py`, `docs/report-source-rules.md`, `docs/implementation-log.md`, `docs/changelog.md`.
+
+**Что стало:**
+
+- Daily больше не отбрасывает SkladBot-заявки только потому, что они созданы раньше даты отчета.
+- Заявка попадает в daily, если по ней есть складское движение за дату отчета.
+- Заявки с движением склада проверяются первыми, чтобы старые записи в списке не съедали detail-limit.
+- Выполненная архивная заявка попадает по датам `created_at`, `updated_at`, `unloading_date`, `completed_at`, `archived_at`.
+- Старые выполненные архивные заявки без дат перехода включаются один раз как `впервые найдена выполненной`, если их еще нет в registry.
+- Новое движение склада за дату отчета включает WH-R даже тогда, когда эта заявка уже была в старом daily.
+
+**Проверки:**
+
+- `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_skladbot_daily_report` - 23 tests OK.
+- `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_backend_telegram_import` - 70 tests OK.
+- `./.venv/bin/python -m py_compile backend/app/skladbot_daily_report.py tests/test_skladbot_daily_report.py` - OK.
+- `git diff --check` - OK.
+- `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_daily_report tests.test_skladbot_daily_report` не завершился из-за отсутствующего `_tkinter` в текущем Python; SkladBot daily часть в этом запуске прошла.
+
 ### Web-admin: быстрый старт после проверки доступа
 
 **Файлы:** `frontend/src/App.tsx`, `frontend/src/api.ts`, `docs/changelog.md`.
