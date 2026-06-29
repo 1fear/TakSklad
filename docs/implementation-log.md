@@ -30,18 +30,26 @@
   - старые заявки не тормозят scheduled-рассылку и не могут съесть `SKLADBOT_DAILY_REPORT_DETAIL_LIMIT`;
   - добавлен тест, который падает, если старая заявка попадает в detail-запрос;
   - тест с сегодняшней заявкой после старых строк теперь проверяет, что не появляется ошибка лимита.
+- Ручная отправка правильного отчета:
+  - в ЛС и в настроенную группу отправлен `TakSklad_SkladBot_daily_29.06.2026.xlsx`;
+  - сводка: `85` заявок, отгрузка `76/328`, возврат `9/36`, приемка `0/0`, движения `0/0`, остаток `7572`, ошибок сбора `0`;
+  - сегодняшняя групповая отправка отмечена `completed`, чтобы schedule не продублировал файл за `29.06.2026`.
 - VDS deploy:
   - commit: `e256bab Fix SkladBot daily report date filters`;
+  - hardening commit: `3dfd21b Avoid stale SkladBot daily request details`;
   - runtime host: `api.taksklad.uz`, app path `/opt/stacks/taksklad/app`;
   - restore point: `/opt/stacks/taksklad/restore_points/pre-skladbot-daily-date-filter-20260629T175417Z`;
+  - hardening restore point: `/opt/stacks/taksklad/restore_points/pre-skladbot-daily-early-filter-20260629T183045Z`;
   - Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260629T175417Z.sql.gz`;
+  - hardening Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260629T183045Z.sql.gz`;
   - selective sync: `backend/app/skladbot_daily_report.py`, `backend/app/telegram_worker.py`, `tests/test_skladbot_daily_report.py`, `docs/changelog.md`, `docs/implementation-log.md`, `docs/report-source-rules.md`;
-  - deployed SHA256: `backend/app/skladbot_daily_report.py` = `712cbaa571e3108e43c122d758a9f7500b460293eb1fc45ca801488fcef2892c`, `backend/app/telegram_worker.py` = `14f087a5bd44072e880547ec869e20d3f64c75da6071ddef710dda56cb0f5906`;
+  - deployed SHA256: `backend/app/skladbot_daily_report.py` = `712cbaa571e3108e43c122d758a9f7500b460293eb1fc45ca801488fcef2892c`, hardening SHA256 = `7cff95c270c67cfe1cbc21f485748e800b276d63e532022c393a00eea9586798`, `backend/app/telegram_worker.py` = `14f087a5bd44072e880547ec869e20d3f64c75da6071ddef710dda56cb0f5906`;
   - `docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml up -d --build telegram-worker` пересобрал `telegram-worker` и пересоздал `backend-api` как compose-зависимость;
   - VDS `telegram-worker` compileall по `app/skladbot_daily_report.py` и `app/telegram_worker.py` - OK;
   - `https://api.taksklad.uz/health` - OK, backend `2.0.24`;
   - `https://api.taksklad.uz/ready` - DB/migrations OK, общий `degraded` из-за старых `telegram_excel_import` и одного pending `google_sheets_export`, не из-за daily report deploy;
   - свежие логи `telegram-worker`/`backend-api` после рестарта - без `ERROR`, `Traceback`, `Exception`, `CRITICAL`, `failed`;
+  - schedule включен, настроен `1` чат, время `22:00`, сегодняшнее событие daily для настроенного чата в статусе `completed`;
   - `deploy/vds/acceptance_status.sh` на текущем сервере не прошел из-за отсутствующего `/opt/stacks/taksklad/app/outputs/taksklad_acceptance/acceptance_manifest.json`, это отдельный missing acceptance artifact, не runtime daily report failure.
 
 ## 2026-06-26

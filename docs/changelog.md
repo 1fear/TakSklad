@@ -30,14 +30,19 @@
 **VDS deploy:**
 
 - commit: `e256bab Fix SkladBot daily report date filters`;
+- hardening commit: `3dfd21b Avoid stale SkladBot daily request details`;
 - runtime host: `api.taksklad.uz`, app path `/opt/stacks/taksklad/app`;
 - restore point: `/opt/stacks/taksklad/restore_points/pre-skladbot-daily-date-filter-20260629T175417Z`;
+- hardening restore point: `/opt/stacks/taksklad/restore_points/pre-skladbot-daily-early-filter-20260629T183045Z`;
 - Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260629T175417Z.sql.gz`;
+- hardening Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260629T183045Z.sql.gz`;
 - selective sync: `backend/app/skladbot_daily_report.py`, `backend/app/telegram_worker.py`, `tests/test_skladbot_daily_report.py`, `docs/changelog.md`, `docs/implementation-log.md`, `docs/report-source-rules.md`;
+- hardening deployed SHA256: `backend/app/skladbot_daily_report.py` = `7cff95c270c67cfe1cbc21f485748e800b276d63e532022c393a00eea9586798`;
 - VDS `telegram-worker` compileall по `app/skladbot_daily_report.py` и `app/telegram_worker.py` - OK;
 - `https://api.taksklad.uz/health` - OK, backend `2.0.24`;
 - `https://api.taksklad.uz/ready` - DB/migrations OK, общий `degraded` из-за старых failed/pending events, не из-за daily report deploy;
 - свежие логи `telegram-worker`/`backend-api` после рестарта - без `ERROR`, `Traceback`, `Exception`, `CRITICAL`, `failed`;
+- schedule `SKLADBOT_DAILY_REPORT_ENABLED` включен, настроен `1` чат, время `22:00`, сегодняшняя ручная отправка в группу помечена `completed`;
 - `deploy/vds/acceptance_status.sh` не прошел из-за отсутствующего `outputs/taksklad_acceptance/acceptance_manifest.json` на текущем сервере.
 
 ### SkladBot daily: полнота по движениям склада
