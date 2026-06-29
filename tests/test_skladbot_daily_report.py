@@ -99,6 +99,22 @@ class FakeSkladBotDailyReportClient:
                 "Терминал",
                 [{"name": "Chapman Brown OP 20", "vendorCode": "130400353", "barcode": "4006396053978", "amount": 4}],
             ),
+            999: {
+                **self.request_detail(
+                    999,
+                    "WH-R-999",
+                    "Отгрузка 3PL",
+                    "2026-06-01T10:00:00+05:00",
+                    "2026-06-01T11:00:00+05:00",
+                    "2026-06-01",
+                    "OLD REQUEST",
+                    "Ташкент",
+                    "Терминал",
+                    [{"name": "Chapman Brown OP 20", "vendorCode": "130400353", "barcode": "4006396053978", "amount": 1}],
+                ),
+                "completedAt": "2026-06-01T11:00:00+05:00",
+                "archivedAt": "2026-06-01T12:00:00+05:00",
+            },
             202: self.request_detail(
                 202,
                 "WH-R-202",
@@ -381,6 +397,127 @@ class ArchivedAfterCutoffReceivingClient(CompletedAfterCutoffReceivingClient):
         return detail
 
 
+class OldCreatedUnloadingTodayClient(PreviousDayReceivingCompletedTodayClient):
+    request_id = 408
+
+    def get(self, path, params=None):
+        params = params or {}
+        if path == "/requests/filter/fields":
+            return {"data": {"types": [{"id": 3389, "name": "Отгрузка 3PL"}]}}
+        if path == "/requests" and params.get("type_id") == 3389:
+            return {"data": [{
+                "id": self.request_id,
+                "delivery_number": "WH-R-408",
+                "type": "Отгрузка 3PL",
+                "created_at": "2026-06-19T18:00:00+05:00",
+                "archived": True,
+                "isCompleted": True,
+            }]}
+        return {"data": []}
+
+    def get_request_detail(self, request_id):
+        if request_id != self.request_id:
+            raise AssertionError(request_id)
+        detail = self.request_detail(
+            self.request_id,
+            "WH-R-408",
+            "Отгрузка 3PL",
+            "2026-06-19T18:00:00+05:00",
+            "",
+            "2026-06-20",
+            "OLD CREATED UNLOADING TODAY",
+            "Ташкент",
+            "Терминал",
+            [{"name": "Chapman RED OP 20", "vendorCode": "CHPMRedOP20UZ", "barcode": "4006396053947", "amount": 11}],
+        )
+        return detail
+
+
+class MovementTodayRequestClient(PreviousDayReceivingCompletedTodayClient):
+    request_id = 409
+
+    def get(self, path, params=None):
+        params = params or {}
+        if path == "/requests/filter/fields":
+            return {"data": {"types": [{"id": 3389, "name": "Отгрузка 3PL"}]}}
+        if path == "/requests" and params.get("type_id") == 3389:
+            return {"data": [{
+                "id": self.request_id,
+                "delivery_number": "WH-R-409",
+                "type": "Отгрузка 3PL",
+                "created_at": "2026-06-19T18:00:00+05:00",
+                "archived": False,
+                "isCompleted": False,
+            }]}
+        return {"data": []}
+
+    def get_request_detail(self, request_id):
+        if request_id != self.request_id:
+            raise AssertionError(request_id)
+        detail = self.request_detail(
+            self.request_id,
+            "WH-R-409",
+            "Отгрузка 3PL",
+            "2026-06-19T18:00:00+05:00",
+            "",
+            "2026-06-19",
+            "MOVEMENT TODAY",
+            "Ташкент",
+            "Терминал",
+            [{"name": "Chapman Brown OP 20", "vendorCode": "CHPMBrownOP20UZ", "barcode": "4006396053978", "amount": 5}],
+        )
+        detail["isCompleted"] = False
+        detail["archived"] = False
+        return detail
+
+    def post(self, path, payload=None):
+        payload = payload or {}
+        if path == "/warehouse/transactions":
+            if payload.get("type") == "out":
+                return {"data": [{
+                    "date": "2026-06-20 12:00:00",
+                    "delivery_number": "WH-R-409",
+                    "type": "out",
+                    "product": {"name": "Chapman Brown OP 20", "vendorCode": "CHPMBrownOP20UZ", "barcode": "4006396053978"},
+                    "amount": 5,
+                    "customer": {"name": "ООО Bastion Import Chapman MCHJ"},
+                }]}
+            return {"data": []}
+        return super().post(path, payload)
+
+
+class MovementTodayRequestAfterStaleListItemsClient(MovementTodayRequestClient):
+    def get(self, path, params=None):
+        params = params or {}
+        if path == "/requests/filter/fields":
+            return {"data": {"types": [{"id": 3389, "name": "Отгрузка 3PL"}]}}
+        if path == "/requests" and params.get("type_id") == 3389:
+            return {"data": [
+                {
+                    "id": 999,
+                    "delivery_number": "WH-R-999",
+                    "type": "Отгрузка 3PL",
+                    "created_at": "2026-06-01T18:00:00+05:00",
+                    "archived": True,
+                    "isCompleted": True,
+                },
+                {
+                    "id": self.request_id,
+                    "delivery_number": "WH-R-409",
+                    "type": "Отгрузка 3PL",
+                    "created_at": "2026-06-19T18:00:00+05:00",
+                    "archived": False,
+                    "isCompleted": False,
+                },
+            ]}
+        return {"data": []}
+
+    def get_request_detail(self, request_id):
+        if request_id == 999:
+            raise AssertionError("stale request should not consume movement-priority detail limit")
+        return super().get_request_detail(request_id)
+
+
 class SkladBotDailyReportTests(unittest.TestCase):
     def test_collects_requests_movements_stock_and_builds_xlsx(self):
         original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
@@ -582,7 +719,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(report["errors"], [])
         self.assertEqual(report["summary"]["requests_total"], 3)
 
-    def test_daily_report_skips_request_created_before_report_date(self):
+    def test_daily_report_includes_first_seen_completed_request_created_before_report_date(self):
         original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
         try:
             os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = "0"
@@ -597,9 +734,10 @@ class SkladBotDailyReportTests(unittest.TestCase):
             else:
                 os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = original_delay
 
-        self.assertEqual(report["summary"]["requests_total"], 0)
-        self.assertEqual(report["summary"]["category_counts"]["Приемка"], 0)
-        self.assertEqual(report["summary"]["request_blocks_by_category"]["Приемка"], 0)
+        self.assertEqual(report["summary"]["requests_total"], 1)
+        self.assertEqual(report["summary"]["category_counts"]["Приемка"], 1)
+        self.assertEqual(report["summary"]["request_blocks_by_category"]["Приемка"], 10000)
+        self.assertEqual(report["requests"][0]["include_reasons"], ["впервые найдена выполненной"])
 
     def test_daily_report_skips_completed_request_reported_before_report_date(self):
         original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
@@ -619,7 +757,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(report["summary"]["requests_total"], 0)
         self.assertEqual(report["summary"]["request_blocks_by_category"]["Приемка"], 0)
 
-    def test_daily_report_uses_created_date_not_completion_cutoff(self):
+    def test_daily_report_includes_created_and_completed_today_request(self):
         original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
         try:
             os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = "0"
@@ -641,11 +779,12 @@ class SkladBotDailyReportTests(unittest.TestCase):
 
         self.assertEqual(report_20["summary"]["requests_total"], 1)
         self.assertEqual(report_20["summary"]["request_blocks_by_category"]["Приемка"], 500)
-        self.assertEqual(report_20["requests"][0]["include_reasons"], ["создана"])
+        self.assertIn("создана", report_20["requests"][0]["include_reasons"])
+        self.assertIn("выполнена", report_20["requests"][0]["include_reasons"])
         self.assertEqual(report_21["summary"]["requests_total"], 0)
         self.assertEqual(report_21["summary"]["request_blocks_by_category"]["Приемка"], 0)
 
-    def test_daily_report_skips_completed_request_when_created_date_is_stale(self):
+    def test_daily_report_includes_completed_today_request_when_created_date_is_stale(self):
         original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
         try:
             os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = "0"
@@ -660,8 +799,9 @@ class SkladBotDailyReportTests(unittest.TestCase):
             else:
                 os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = original_delay
 
-        self.assertEqual(report["summary"]["requests_total"], 0)
-        self.assertEqual(report["summary"]["request_blocks_by_category"]["Приемка"], 0)
+        self.assertEqual(report["summary"]["requests_total"], 1)
+        self.assertEqual(report["summary"]["request_blocks_by_category"]["Приемка"], 700)
+        self.assertEqual(report["requests"][0]["include_reasons"], ["выполнена"])
 
     def test_daily_report_ignores_archive_cutoff_when_created_on_report_date(self):
         original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
@@ -685,9 +825,77 @@ class SkladBotDailyReportTests(unittest.TestCase):
 
         self.assertEqual(report_20["summary"]["requests_total"], 1)
         self.assertEqual(report_20["summary"]["request_blocks_by_category"]["Приемка"], 900)
-        self.assertEqual(report_20["requests"][0]["include_reasons"], ["создана"])
+        self.assertIn("создана", report_20["requests"][0]["include_reasons"])
+        self.assertIn("выполнена", report_20["requests"][0]["include_reasons"])
+        self.assertIn("архивирована", report_20["requests"][0]["include_reasons"])
         self.assertEqual(report_21["summary"]["requests_total"], 0)
         self.assertEqual(report_21["summary"]["request_blocks_by_category"]["Приемка"], 0)
+
+    def test_daily_report_includes_request_by_unloading_date_even_when_created_before_report_date(self):
+        original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
+        try:
+            os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = "0"
+            report = collect_skladbot_daily_report(
+                report_date=date(2026, 6, 20),
+                client=OldCreatedUnloadingTodayClient(),
+                reported_request_ids=set(),
+            )
+        finally:
+            if original_delay is None:
+                os.environ.pop("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS", None)
+            else:
+                os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = original_delay
+
+        self.assertEqual(report["summary"]["requests_total"], 1)
+        self.assertEqual(report["summary"]["category_counts"]["Отгрузка"], 1)
+        self.assertEqual(report["summary"]["request_blocks_by_category"]["Отгрузка"], 11)
+        self.assertEqual(report["requests"][0]["include_reasons"], ["дата выгрузки"])
+
+    def test_daily_report_includes_request_with_warehouse_movement_even_when_not_completed(self):
+        original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
+        try:
+            os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = "0"
+            report = collect_skladbot_daily_report(
+                report_date=date(2026, 6, 20),
+                client=MovementTodayRequestClient(),
+                reported_request_ids={MovementTodayRequestClient.request_id},
+            )
+        finally:
+            if original_delay is None:
+                os.environ.pop("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS", None)
+            else:
+                os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = original_delay
+
+        self.assertEqual(report["summary"]["requests_total"], 1)
+        self.assertEqual(report["summary"]["category_counts"]["Отгрузка"], 1)
+        self.assertEqual(report["summary"]["request_blocks_by_category"]["Отгрузка"], 5)
+        self.assertEqual(report["summary"]["movement_out_amount"], 5)
+        self.assertEqual(report["requests"][0]["include_reasons"], ["движение склада"])
+
+    def test_daily_report_prioritizes_warehouse_movement_request_before_stale_list_items(self):
+        original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
+        original_detail_limit = os.environ.get("SKLADBOT_DAILY_REPORT_DETAIL_LIMIT")
+        try:
+            os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = "0"
+            os.environ["SKLADBOT_DAILY_REPORT_DETAIL_LIMIT"] = "1"
+            report = collect_skladbot_daily_report(
+                report_date=date(2026, 6, 20),
+                client=MovementTodayRequestAfterStaleListItemsClient(),
+                reported_request_ids=set(),
+            )
+        finally:
+            if original_delay is None:
+                os.environ.pop("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS", None)
+            else:
+                os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = original_delay
+            if original_detail_limit is None:
+                os.environ.pop("SKLADBOT_DAILY_REPORT_DETAIL_LIMIT", None)
+            else:
+                os.environ["SKLADBOT_DAILY_REPORT_DETAIL_LIMIT"] = original_detail_limit
+
+        self.assertEqual(report["summary"]["requests_total"], 1)
+        self.assertEqual(report["requests"][0]["number"], "WH-R-409")
+        self.assertEqual(report["requests"][0]["include_reasons"], ["движение склада"])
 
     def test_daily_report_product_breakdown_merges_stock_and_request_aliases(self):
         report = {

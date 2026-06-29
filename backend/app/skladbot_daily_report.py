@@ -137,15 +137,17 @@ def collect_skladbot_daily_report(
         return result
 
     request_types = load_request_types(client, result["errors"])
+    movements = fetch_daily_movements(client, report_date, result["errors"])
+    result["movements"] = movements
     requests = fetch_daily_requests(
         client,
         report_date,
         request_types,
         result["errors"],
         reported_request_ids=reported_request_ids,
+        movement_request_numbers=movement_request_numbers(movements),
     )
     result["requests"] = requests
-    result["movements"] = fetch_daily_movements(client, report_date, result["errors"])
     result["stock"] = fetch_current_stock(client, result["errors"])
     result["summary"] = summarize_daily_report(result)
     return result
@@ -209,11 +211,14 @@ def fetch_daily_requests(
     request_types: list[dict[str, Any]],
     errors: list[str],
     reported_request_ids: set[int] | None = None,
+    movement_request_numbers: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     limit = max(1, env_int("SKLADBOT_DAILY_REPORT_REQUESTS_LIMIT", getattr(client, "limit", 500) or 500))
-    detail_limit = max(1, env_int("SKLADBOT_DAILY_REPORT_DETAIL_LIMIT", 250))
+    default_detail_limit = max(250, limit * max(1, len(request_types)))
+    detail_limit = max(1, env_int("SKLADBOT_DAILY_REPORT_DETAIL_LIMIT", default_detail_limit))
     request_delay = max(0.0, env_float("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS", 3.0))
     reported_request_ids = reported_request_ids or set()
+    movement_request_numbers = movement_request_numbers or set()
     result = []
     seen_ids = set()
     checked_details = 0
@@ -233,14 +238,12 @@ def fetch_daily_requests(
         except Exception as exc:
             errors.append(f"Не удалось получить список заявок type_id={type_id}: {sanitize_skladbot_error(exc)}")
             continue
-        for list_item in list_items:
+        for list_item in prioritize_request_list_items(list_items, movement_request_numbers):
             if checked_details >= detail_limit:
                 errors.append(f"Лимит детализации заявок достигнут: {detail_limit}")
                 return result
             request_id = parse_int(request_list_value(list_item, "id"))
             if request_id <= 0 or request_id in seen_ids:
-                continue
-            if request_has_created_date(list_item) and not request_created_on_report_date(list_item, report_date):
                 continue
             try:
                 detail = get_daily_request_detail(client, request_id, request_delay)
@@ -256,6 +259,7 @@ def fetch_daily_requests(
                 request,
                 report_date,
                 reported_request_ids=reported_request_ids,
+                movement_request_numbers=movement_request_numbers,
             )
             if not reasons:
                 continue
@@ -284,6 +288,20 @@ def get_daily_request_detail(client: Any, request_id: int, request_delay: float)
     raise RuntimeError(f"Не удалось получить заявку {request_id}")
 
 
+def prioritize_request_list_items(list_items: list[Any], movement_request_numbers: set[str]) -> list[Any]:
+    if not movement_request_numbers:
+        return list_items
+    return sorted(list_items, key=lambda item: (
+        0 if request_list_request_number(item) in movement_request_numbers else 1,
+    ))
+
+
+def request_list_request_number(item: Any) -> str:
+    if not isinstance(item, dict):
+        return ""
+    return normalize_text(request_list_value(item, "number", "delivery_number", "request_number", "deliveryNumber"))
+
+
 def is_skladbot_rate_limit_error(exc: Exception) -> bool:
     text = sanitize_skladbot_error(exc).lower()
     return "429" in text or "too many requests" in text
@@ -293,15 +311,33 @@ def request_inclusion_reasons(
     request: dict[str, Any],
     report_date: date,
     reported_request_ids: set[int] | None = None,
+    movement_request_numbers: set[str] | None = None,
 ) -> list[str]:
     reported_request_ids = reported_request_ids or set()
+    movement_request_numbers = movement_request_numbers or set()
     request_id = parse_int(request.get("id"))
+    reasons = []
+    request_number = normalize_text(request.get("number"))
+    if request_number and request_number in movement_request_numbers:
+        reasons.append("движение склада")
+    if not request_is_completed_and_archived(request):
+        return reasons
+    if request_created_on_report_date(request, report_date):
+        reasons.append("создана")
+    if request_updated_on_report_date(request, report_date):
+        reasons.append("обновлена")
+    if request_unloading_on_report_date(request, report_date):
+        reasons.append("дата выгрузки")
+    if request_completed_on_report_date(request, report_date):
+        reasons.append("выполнена")
+    if request_archived_on_report_date(request, report_date):
+        reasons.append("архивирована")
+    if reasons:
+        return unique_reasons(reasons)
     if request_id > 0 and request_id in reported_request_ids:
         return []
-    if not request_is_completed_and_archived(request):
-        return []
-    if request_created_on_report_date(request, report_date):
-        return ["создана"]
+    if not request_has_status_transition_date(request):
+        return ["впервые найдена выполненной"]
     return []
 
 
@@ -315,6 +351,37 @@ def request_has_created_date(request: dict[str, Any]) -> bool:
 
 def request_created_on_report_date(request: dict[str, Any], report_date: date) -> bool:
     return date_matches(request_list_value(request, "created_at", "createdAt"), report_date)
+
+
+def request_updated_on_report_date(request: dict[str, Any], report_date: date) -> bool:
+    return date_matches(request.get("updated_at"), report_date)
+
+
+def request_unloading_on_report_date(request: dict[str, Any], report_date: date) -> bool:
+    return date_matches(request.get("unloading_date"), report_date)
+
+
+def request_completed_on_report_date(request: dict[str, Any], report_date: date) -> bool:
+    return date_matches(request.get("completed_at"), report_date)
+
+
+def request_archived_on_report_date(request: dict[str, Any], report_date: date) -> bool:
+    return date_matches(request.get("archived_at"), report_date)
+
+
+def request_has_status_transition_date(request: dict[str, Any]) -> bool:
+    return any(
+        parse_date(request.get(key))
+        for key in ("updated_at", "completed_at", "archived_at")
+    )
+
+
+def unique_reasons(reasons: list[str]) -> list[str]:
+    result = []
+    for reason in reasons:
+        if reason not in result:
+            result.append(reason)
+    return result
 
 
 def date_matches(value: Any, expected: date) -> bool:
@@ -380,6 +447,14 @@ def normalize_movement(item: dict[str, Any], direction: str) -> dict[str, Any]:
         "box": nested_text(box, "name", "number", "title") or first_text(item, "box"),
         "cell": nested_text(cell, "name", "title", "code") or first_text(item, "cell", "place", "location"),
         "raw": item,
+    }
+
+
+def movement_request_numbers(movements: list[dict[str, Any]]) -> set[str]:
+    return {
+        normalize_text(item.get("request_number"))
+        for item in movements
+        if normalize_text(item.get("request_number"))
     }
 
 
