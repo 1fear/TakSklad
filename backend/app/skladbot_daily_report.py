@@ -231,7 +231,7 @@ def fetch_daily_requests(
         except Exception as exc:
             errors.append(f"Не удалось получить список заявок type_id={type_id}: {sanitize_skladbot_error(exc)}")
             continue
-        for list_item in prioritize_request_list_items(list_items, report_date):
+        for list_item in report_date_request_list_items(list_items, report_date):
             if checked_details >= detail_limit:
                 errors.append(f"Лимит детализации заявок достигнут: {detail_limit}")
                 return result
@@ -283,6 +283,14 @@ def prioritize_request_list_items(list_items: list[Any], report_date: date) -> l
     return sorted(list_items, key=lambda item: (
         0 if date_matches(request_list_value(item, "created_at", "createdAt"), report_date) else 1,
     ))
+
+
+def report_date_request_list_items(list_items: list[Any], report_date: date) -> list[Any]:
+    return [
+        item
+        for item in prioritize_request_list_items(list_items, report_date)
+        if date_matches(request_list_value(item, "created_at", "createdAt"), report_date)
+    ]
 
 
 def is_skladbot_rate_limit_error(exc: Exception) -> bool:

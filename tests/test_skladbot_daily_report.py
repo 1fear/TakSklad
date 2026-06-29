@@ -285,6 +285,11 @@ class PreviousDayReceivingCompletedTodayClient(FakeSkladBotDailyReportClient):
         )
 
 
+class StaleRequestDetailShouldNotBeCalledClient(PreviousDayReceivingCompletedTodayClient):
+    def get_request_detail(self, request_id):
+        raise AssertionError("stale request should not be detailed")
+
+
 class CompletedAfterCutoffReceivingClient(PreviousDayReceivingCompletedTodayClient):
     request_id = 405
 
@@ -808,6 +813,23 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(report["summary"]["category_counts"]["Приемка"], 0)
         self.assertEqual(report["summary"]["request_blocks_by_category"]["Приемка"], 0)
 
+    def test_daily_report_does_not_detail_stale_created_requests(self):
+        original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
+        try:
+            os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = "0"
+            report = collect_skladbot_daily_report(
+                report_date=date(2026, 6, 20),
+                client=StaleRequestDetailShouldNotBeCalledClient(),
+            )
+        finally:
+            if original_delay is None:
+                os.environ.pop("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS", None)
+            else:
+                os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = original_delay
+
+        self.assertEqual(report["summary"]["requests_total"], 0)
+        self.assertEqual(report["errors"], [])
+
     def test_daily_report_skips_completed_request_created_before_report_date(self):
         original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
         try:
@@ -986,6 +1008,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(report["summary"]["requests_total"], 1)
         self.assertEqual(report["requests"][0]["number"], "WH-R-409")
         self.assertEqual(report["requests"][0]["include_reasons"], ["создана"])
+        self.assertEqual(report["errors"], [])
         self.assertEqual(report["summary"]["movement_out_amount"], 5)
 
     def test_daily_report_product_breakdown_merges_stock_and_request_aliases(self):
