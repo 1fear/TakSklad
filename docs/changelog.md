@@ -26,6 +26,19 @@
 
 - `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_skladbot_daily_report` - 25 tests OK.
 
+**VDS deploy:**
+
+- commit: `e256bab Fix SkladBot daily report date filters`;
+- runtime host: `api.taksklad.uz`, app path `/opt/stacks/taksklad/app`;
+- restore point: `/opt/stacks/taksklad/restore_points/pre-skladbot-daily-date-filter-20260629T175417Z`;
+- Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260629T175417Z.sql.gz`;
+- selective sync: `backend/app/skladbot_daily_report.py`, `backend/app/telegram_worker.py`, `tests/test_skladbot_daily_report.py`, `docs/changelog.md`, `docs/implementation-log.md`, `docs/report-source-rules.md`;
+- VDS `telegram-worker` compileall по `app/skladbot_daily_report.py` и `app/telegram_worker.py` - OK;
+- `https://api.taksklad.uz/health` - OK, backend `2.0.24`;
+- `https://api.taksklad.uz/ready` - DB/migrations OK, общий `degraded` из-за старых failed/pending events, не из-за daily report deploy;
+- свежие логи `telegram-worker`/`backend-api` после рестарта - без `ERROR`, `Traceback`, `Exception`, `CRITICAL`, `failed`;
+- `deploy/vds/acceptance_status.sh` не прошел из-за отсутствующего `outputs/taksklad_acceptance/acceptance_manifest.json` на текущем сервере.
+
 ### SkladBot daily: полнота по движениям склада
 
 **Файлы:** `backend/app/skladbot_daily_report.py`, `tests/test_skladbot_daily_report.py`, `docs/report-source-rules.md`, `docs/implementation-log.md`, `docs/changelog.md`.
