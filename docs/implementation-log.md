@@ -6467,3 +6467,15 @@ cd /opt/taksklad/app
   - `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_skladbot_daily_report` - 23 tests OK;
   - `./.venv/bin/python -m py_compile backend/app/skladbot_daily_report.py tests/test_skladbot_daily_report.py` - OK;
   - `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_daily_report tests.test_skladbot_daily_report` остановился на импорте `tkinter`: текущий Python без модуля `_tkinter`.
+- VDS deploy:
+  - commit: `acd2bd1 Fix SkladBot daily movement completeness`;
+  - новый production host `api.taksklad.uz` указывает на `159.195.138.95`, старый `135.181.245.84` по SSH недоступен из текущей сети;
+  - app path: `/opt/stacks/taksklad/app`;
+  - restore point: `/opt/stacks/taksklad/restore_points/pre-skladbot-daily-completeness-20260629T102222Z`;
+  - Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260629T102222Z.sql.gz`;
+  - selective sync: `backend/app/skladbot_daily_report.py`, SHA256 `763bccea32dfd1cfc62c88945413596a458743034ef6a6914935902af2505734`;
+  - `docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml up -d --build telegram-worker` пересобрал `telegram-worker` и пересоздал `backend-api` как compose-зависимость;
+  - VDS `telegram-worker` py_compile по `app/skladbot_daily_report.py` и `app/telegram_worker.py` - OK;
+  - `https://api.taksklad.uz/health` - OK, backend `2.0.24`;
+  - `https://api.taksklad.uz/ready` - DB/migrations OK, общий `degraded` из-за старых failed import events и Google mirror processing, не из-за deploy;
+  - свежие логи `telegram-worker`/`backend-api` после рестарта - без traceback/error.
