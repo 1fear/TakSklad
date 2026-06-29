@@ -24,7 +24,12 @@
   - SkladBot-остатки, статусы, Google Sheets и Postgres-данные не изменяются;
   - исправление меняет только сбор/отображение daily report.
 - Проверено локально:
-  - `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_skladbot_daily_report` - 25 tests OK.
+  - `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_skladbot_daily_report` - 26 tests OK.
+- Дополнительное hardening-исправление после ручной отправки правильного отчета:
+  - `fetch_daily_requests` теперь отсекает старые list items до `get_request_detail`;
+  - старые заявки не тормозят scheduled-рассылку и не могут съесть `SKLADBOT_DAILY_REPORT_DETAIL_LIMIT`;
+  - добавлен тест, который падает, если старая заявка попадает в detail-запрос;
+  - тест с сегодняшней заявкой после старых строк теперь проверяет, что не появляется ошибка лимита.
 - VDS deploy:
   - commit: `e256bab Fix SkladBot daily report date filters`;
   - runtime host: `api.taksklad.uz`, app path `/opt/stacks/taksklad/app`;

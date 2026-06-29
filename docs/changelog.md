@@ -16,6 +16,7 @@
 **Что стало:**
 
 - В `Заявки` и Telegram-счетчики SkladBot daily попадают только заявки `Выполнена` + `В архиве` с `created_at`/`createdAt` на дату отчета.
+- Старые строки списка заявок отсекаются до загрузки detail, поэтому не тормозят ежедневную отправку и не могут съесть `SKLADBOT_DAILY_REPORT_DETAIL_LIMIT`.
 - `updated_at`, `unloading_date`, `completed_at`, `archived_at` и `впервые найдена выполненной` больше не включают старые заявки в сегодняшний отчет.
 - Scheduled-отправка больше не передает `reported_request_ids` в сборщик daily, чтобы registry не участвовал в определении отчетной даты.
 - Складские движения остаются отдельным источником: `/warehouse/transactions` берется только за дату отчета и выводится в лист `Движения`.
@@ -24,7 +25,7 @@
 
 **Проверки:**
 
-- `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_skladbot_daily_report` - 25 tests OK.
+- `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_skladbot_daily_report` - 26 tests OK.
 
 **VDS deploy:**
 
