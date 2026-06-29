@@ -486,6 +486,64 @@ class MovementTodayRequestClient(PreviousDayReceivingCompletedTodayClient):
         return super().post(path, payload)
 
 
+class CompletedArchivedMovementTodayRequestClient(MovementTodayRequestClient):
+    def get(self, path, params=None):
+        params = params or {}
+        if path == "/requests/filter/fields":
+            return {"data": {"types": [{"id": 3389, "name": "Отгрузка 3PL"}]}}
+        if path == "/requests" and params.get("type_id") == 3389:
+            return {"data": [{
+                "id": self.request_id,
+                "delivery_number": "WH-R-409",
+                "type": "Отгрузка 3PL",
+                "created_at": "2026-06-19T18:00:00+05:00",
+                "archived": True,
+                "isCompleted": True,
+            }]}
+        return {"data": []}
+
+    def get_request_detail(self, request_id):
+        detail = super().get_request_detail(request_id)
+        detail["isCompleted"] = True
+        detail["archived"] = True
+        return detail
+
+
+class MixedDateMovementsClient(MovementTodayRequestClient):
+    def post(self, path, payload=None):
+        payload = payload or {}
+        if path == "/warehouse/transactions":
+            if payload.get("type") == "out":
+                return {"data": [
+                    {
+                        "date": "2026-06-19 23:59:00",
+                        "delivery_number": "WH-R-OLD",
+                        "type": "out",
+                        "product": {"name": "Chapman Brown OP 20", "vendorCode": "CHPMBrownOP20UZ", "barcode": "4006396053978"},
+                        "amount": 99,
+                        "customer": {"name": "ООО Bastion Import Chapman MCHJ"},
+                    },
+                    {
+                        "date": "2026-06-20 12:00:00",
+                        "delivery_number": "WH-R-409",
+                        "type": "out",
+                        "product": {"name": "Chapman Brown OP 20", "vendorCode": "CHPMBrownOP20UZ", "barcode": "4006396053978"},
+                        "amount": 5,
+                        "customer": {"name": "ООО Bastion Import Chapman MCHJ"},
+                    },
+                    {
+                        "date": "",
+                        "delivery_number": "WH-R-NO-DATE",
+                        "type": "out",
+                        "product": {"name": "Chapman Brown OP 20", "vendorCode": "CHPMBrownOP20UZ", "barcode": "4006396053978"},
+                        "amount": 7,
+                        "customer": {"name": "ООО Bastion Import Chapman MCHJ"},
+                    },
+                ]}
+            return {"data": []}
+        return super().post(path, payload)
+
+
 class MovementTodayRequestAfterStaleListItemsClient(MovementTodayRequestClient):
     def get(self, path, params=None):
         params = params or {}
@@ -505,17 +563,30 @@ class MovementTodayRequestAfterStaleListItemsClient(MovementTodayRequestClient):
                     "id": self.request_id,
                     "delivery_number": "WH-R-409",
                     "type": "Отгрузка 3PL",
-                    "created_at": "2026-06-19T18:00:00+05:00",
-                    "archived": False,
-                    "isCompleted": False,
+                    "created_at": "2026-06-20T18:00:00+05:00",
+                    "archived": True,
+                    "isCompleted": True,
                 },
             ]}
         return {"data": []}
 
     def get_request_detail(self, request_id):
         if request_id == 999:
-            raise AssertionError("stale request should not consume movement-priority detail limit")
-        return super().get_request_detail(request_id)
+            raise AssertionError("stale request should not consume today's request detail limit")
+        if request_id != self.request_id:
+            raise AssertionError(request_id)
+        return self.request_detail(
+            self.request_id,
+            "WH-R-409",
+            "Отгрузка 3PL",
+            "2026-06-20T18:00:00+05:00",
+            "",
+            "2026-06-20",
+            "MOVEMENT TODAY",
+            "Ташкент",
+            "Терминал",
+            [{"name": "Chapman Brown OP 20", "vendorCode": "CHPMBrownOP20UZ", "barcode": "4006396053978", "amount": 5}],
+        )
 
 
 class SkladBotDailyReportTests(unittest.TestCase):
@@ -719,14 +790,13 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(report["errors"], [])
         self.assertEqual(report["summary"]["requests_total"], 3)
 
-    def test_daily_report_includes_first_seen_completed_request_created_before_report_date(self):
+    def test_daily_report_skips_completed_request_when_created_date_is_stale(self):
         original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
         try:
             os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = "0"
             report = collect_skladbot_daily_report(
                 report_date=date(2026, 6, 20),
                 client=PreviousDayReceivingCompletedTodayClient(),
-                reported_request_ids=set(),
             )
         finally:
             if original_delay is None:
@@ -734,19 +804,17 @@ class SkladBotDailyReportTests(unittest.TestCase):
             else:
                 os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = original_delay
 
-        self.assertEqual(report["summary"]["requests_total"], 1)
-        self.assertEqual(report["summary"]["category_counts"]["Приемка"], 1)
-        self.assertEqual(report["summary"]["request_blocks_by_category"]["Приемка"], 10000)
-        self.assertEqual(report["requests"][0]["include_reasons"], ["впервые найдена выполненной"])
+        self.assertEqual(report["summary"]["requests_total"], 0)
+        self.assertEqual(report["summary"]["category_counts"]["Приемка"], 0)
+        self.assertEqual(report["summary"]["request_blocks_by_category"]["Приемка"], 0)
 
-    def test_daily_report_skips_completed_request_reported_before_report_date(self):
+    def test_daily_report_skips_completed_request_created_before_report_date(self):
         original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
         try:
             os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = "0"
             report = collect_skladbot_daily_report(
                 report_date=date(2026, 6, 21),
                 client=PreviousDayReceivingCompletedTodayClient(),
-                reported_request_ids={PreviousDayReceivingCompletedTodayClient.request_id},
             )
         finally:
             if original_delay is None:
@@ -764,12 +832,10 @@ class SkladBotDailyReportTests(unittest.TestCase):
             report_20 = collect_skladbot_daily_report(
                 report_date=date(2026, 6, 20),
                 client=CompletedAfterCutoffReceivingClient(),
-                reported_request_ids=set(),
             )
             report_21 = collect_skladbot_daily_report(
                 report_date=date(2026, 6, 21),
                 client=CompletedAfterCutoffReceivingClient(),
-                reported_request_ids=set(),
             )
         finally:
             if original_delay is None:
@@ -779,19 +845,17 @@ class SkladBotDailyReportTests(unittest.TestCase):
 
         self.assertEqual(report_20["summary"]["requests_total"], 1)
         self.assertEqual(report_20["summary"]["request_blocks_by_category"]["Приемка"], 500)
-        self.assertIn("создана", report_20["requests"][0]["include_reasons"])
-        self.assertIn("выполнена", report_20["requests"][0]["include_reasons"])
+        self.assertEqual(report_20["requests"][0]["include_reasons"], ["создана"])
         self.assertEqual(report_21["summary"]["requests_total"], 0)
         self.assertEqual(report_21["summary"]["request_blocks_by_category"]["Приемка"], 0)
 
-    def test_daily_report_includes_completed_today_request_when_created_date_is_stale(self):
+    def test_daily_report_skips_completed_today_request_when_created_date_is_stale(self):
         original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
         try:
             os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = "0"
             report = collect_skladbot_daily_report(
                 report_date=date(2026, 6, 20),
                 client=OldListDateReceivingCompletedTodayClient(),
-                reported_request_ids=set(),
             )
         finally:
             if original_delay is None:
@@ -799,9 +863,8 @@ class SkladBotDailyReportTests(unittest.TestCase):
             else:
                 os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = original_delay
 
-        self.assertEqual(report["summary"]["requests_total"], 1)
-        self.assertEqual(report["summary"]["request_blocks_by_category"]["Приемка"], 700)
-        self.assertEqual(report["requests"][0]["include_reasons"], ["выполнена"])
+        self.assertEqual(report["summary"]["requests_total"], 0)
+        self.assertEqual(report["summary"]["request_blocks_by_category"]["Приемка"], 0)
 
     def test_daily_report_ignores_archive_cutoff_when_created_on_report_date(self):
         original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
@@ -810,12 +873,10 @@ class SkladBotDailyReportTests(unittest.TestCase):
             report_20 = collect_skladbot_daily_report(
                 report_date=date(2026, 6, 20),
                 client=ArchivedAfterCutoffReceivingClient(),
-                reported_request_ids=set(),
             )
             report_21 = collect_skladbot_daily_report(
                 report_date=date(2026, 6, 21),
                 client=ArchivedAfterCutoffReceivingClient(),
-                reported_request_ids=set(),
             )
         finally:
             if original_delay is None:
@@ -825,20 +886,17 @@ class SkladBotDailyReportTests(unittest.TestCase):
 
         self.assertEqual(report_20["summary"]["requests_total"], 1)
         self.assertEqual(report_20["summary"]["request_blocks_by_category"]["Приемка"], 900)
-        self.assertIn("создана", report_20["requests"][0]["include_reasons"])
-        self.assertIn("выполнена", report_20["requests"][0]["include_reasons"])
-        self.assertIn("архивирована", report_20["requests"][0]["include_reasons"])
+        self.assertEqual(report_20["requests"][0]["include_reasons"], ["создана"])
         self.assertEqual(report_21["summary"]["requests_total"], 0)
         self.assertEqual(report_21["summary"]["request_blocks_by_category"]["Приемка"], 0)
 
-    def test_daily_report_includes_request_by_unloading_date_even_when_created_before_report_date(self):
+    def test_daily_report_skips_request_by_unloading_date_when_created_before_report_date(self):
         original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
         try:
             os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = "0"
             report = collect_skladbot_daily_report(
                 report_date=date(2026, 6, 20),
                 client=OldCreatedUnloadingTodayClient(),
-                reported_request_ids=set(),
             )
         finally:
             if original_delay is None:
@@ -846,19 +904,17 @@ class SkladBotDailyReportTests(unittest.TestCase):
             else:
                 os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = original_delay
 
-        self.assertEqual(report["summary"]["requests_total"], 1)
-        self.assertEqual(report["summary"]["category_counts"]["Отгрузка"], 1)
-        self.assertEqual(report["summary"]["request_blocks_by_category"]["Отгрузка"], 11)
-        self.assertEqual(report["requests"][0]["include_reasons"], ["дата выгрузки"])
+        self.assertEqual(report["summary"]["requests_total"], 0)
+        self.assertEqual(report["summary"]["category_counts"]["Отгрузка"], 0)
+        self.assertEqual(report["summary"]["request_blocks_by_category"]["Отгрузка"], 0)
 
-    def test_daily_report_includes_request_with_warehouse_movement_even_when_not_completed(self):
+    def test_daily_report_records_warehouse_movement_without_including_stale_request(self):
         original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
         try:
             os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = "0"
             report = collect_skladbot_daily_report(
                 report_date=date(2026, 6, 20),
                 client=MovementTodayRequestClient(),
-                reported_request_ids={MovementTodayRequestClient.request_id},
             )
         finally:
             if original_delay is None:
@@ -866,13 +922,48 @@ class SkladBotDailyReportTests(unittest.TestCase):
             else:
                 os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = original_delay
 
-        self.assertEqual(report["summary"]["requests_total"], 1)
-        self.assertEqual(report["summary"]["category_counts"]["Отгрузка"], 1)
-        self.assertEqual(report["summary"]["request_blocks_by_category"]["Отгрузка"], 5)
+        self.assertEqual(report["summary"]["requests_total"], 0)
+        self.assertEqual(report["summary"]["category_counts"]["Отгрузка"], 0)
+        self.assertEqual(report["summary"]["request_blocks_by_category"]["Отгрузка"], 0)
         self.assertEqual(report["summary"]["movement_out_amount"], 5)
-        self.assertEqual(report["requests"][0]["include_reasons"], ["движение склада"])
 
-    def test_daily_report_prioritizes_warehouse_movement_request_before_stale_list_items(self):
+    def test_daily_report_records_movement_without_including_old_completed_request(self):
+        original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
+        try:
+            os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = "0"
+            report = collect_skladbot_daily_report(
+                report_date=date(2026, 6, 20),
+                client=CompletedArchivedMovementTodayRequestClient(),
+            )
+        finally:
+            if original_delay is None:
+                os.environ.pop("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS", None)
+            else:
+                os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = original_delay
+
+        self.assertEqual(report["summary"]["requests_total"], 0)
+        self.assertEqual(report["summary"]["category_counts"]["Отгрузка"], 0)
+        self.assertEqual(report["summary"]["request_blocks_by_category"]["Отгрузка"], 0)
+        self.assertEqual(report["summary"]["movement_out_amount"], 5)
+
+    def test_daily_report_keeps_only_report_date_movements(self):
+        original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
+        try:
+            os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = "0"
+            report = collect_skladbot_daily_report(
+                report_date=date(2026, 6, 20),
+                client=MixedDateMovementsClient(),
+            )
+        finally:
+            if original_delay is None:
+                os.environ.pop("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS", None)
+            else:
+                os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = original_delay
+
+        self.assertEqual(report["summary"]["movement_out_amount"], 5)
+        self.assertEqual([item["request_number"] for item in report["movements"]], ["WH-R-409"])
+
+    def test_daily_report_prioritizes_today_created_request_before_stale_list_items(self):
         original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
         original_detail_limit = os.environ.get("SKLADBOT_DAILY_REPORT_DETAIL_LIMIT")
         try:
@@ -881,7 +972,6 @@ class SkladBotDailyReportTests(unittest.TestCase):
             report = collect_skladbot_daily_report(
                 report_date=date(2026, 6, 20),
                 client=MovementTodayRequestAfterStaleListItemsClient(),
-                reported_request_ids=set(),
             )
         finally:
             if original_delay is None:
@@ -895,7 +985,8 @@ class SkladBotDailyReportTests(unittest.TestCase):
 
         self.assertEqual(report["summary"]["requests_total"], 1)
         self.assertEqual(report["requests"][0]["number"], "WH-R-409")
-        self.assertEqual(report["requests"][0]["include_reasons"], ["движение склада"])
+        self.assertEqual(report["requests"][0]["include_reasons"], ["создана"])
+        self.assertEqual(report["summary"]["movement_out_amount"], 5)
 
     def test_daily_report_product_breakdown_merges_stock_and_request_aliases(self):
         report = {
@@ -1045,7 +1136,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
         documents = []
         captured = {}
 
-        def fake_collect(report_date=None, reported_request_ids=None):
+        def fake_collect(report_date=None):
             captured["report_date"] = report_date
             return {
                 "report_date": report_date,
@@ -1100,8 +1191,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
         try:
             telegram_worker_module.SessionLocal = SessionLocal
 
-            def fake_collect(report_date=None, reported_request_ids=None):
-                self.assertEqual(reported_request_ids, set())
+            def fake_collect(report_date=None):
                 return {
                     "report_date": report_date,
                     "generated_at": datetime(2026, 6, 20, 22, 0),
@@ -1141,14 +1231,6 @@ class SkladBotDailyReportTests(unittest.TestCase):
             self.assertEqual(len(events), 1)
             self.assertEqual(events[0].event_type, telegram_worker_module.SKLADBOT_DAILY_REPORTED_REQUEST_EVENT_TYPE)
             self.assertEqual((events[0].payload or {}).get("request_id"), 404)
-            self.assertEqual(
-                telegram_worker_module.load_skladbot_daily_reported_request_ids_before(date(2026, 6, 20)),
-                set(),
-            )
-            self.assertEqual(
-                telegram_worker_module.load_skladbot_daily_reported_request_ids_before(date(2026, 6, 21)),
-                {404},
-            )
         finally:
             telegram_worker_module.SessionLocal = original_session_local
             telegram_worker_module.skladbot_daily_report.collect_skladbot_daily_report = original_collect

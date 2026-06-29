@@ -140,6 +140,28 @@
 
 ## 2026-06-29
 
+### SkladBot daily: жесткий фильтр сегодняшних заявок
+
+**Файлы:** `backend/app/skladbot_daily_report.py`, `backend/app/telegram_worker.py`, `tests/test_skladbot_daily_report.py`, `docs/report-source-rules.md`, `docs/implementation-log.md`, `docs/changelog.md`.
+
+**Почему:**
+
+- Отчет `TakSklad_SkladBot_daily_29.06.2026.xlsx` отправил в клиентский чат старые приемки как сегодняшнюю приемку: `13` заявок, `29173` блоков.
+- Все эти приемки были созданы раньше `29.06.2026`, а причина включения была `впервые найдена выполненной`.
+
+**Что стало:**
+
+- В `Заявки` и Telegram-счетчики SkladBot daily попадают только заявки `Выполнена` + `В архиве` с `created_at`/`createdAt` на дату отчета.
+- `updated_at`, `unloading_date`, `completed_at`, `archived_at` и `впервые найдена выполненной` больше не включают старые заявки в сегодняшний отчет.
+- Scheduled-отправка больше не передает `reported_request_ids` в сборщик daily, чтобы registry не участвовал в определении отчетной даты.
+- Складские движения остаются отдельным источником: `/warehouse/transactions` берется только за дату отчета и выводится в лист `Движения`.
+- Строки `Движений` дополнительно фильтруются по дате внутри ответа SkladBot, чтобы в отчет не прошли строки вне выбранного дня.
+- Старый WH-R с сегодняшним движением не считается сегодняшней заявкой, если он создан не сегодня.
+
+**Проверки:**
+
+- `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_skladbot_daily_report` - 25 tests OK.
+
 ### SkladBot daily: полнота по движениям склада
 
 **Файлы:** `backend/app/skladbot_daily_report.py`, `tests/test_skladbot_daily_report.py`, `docs/report-source-rules.md`, `docs/implementation-log.md`, `docs/changelog.md`.
