@@ -28,7 +28,7 @@
   - Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260630T143801Z.sql.gz`;
   - `backend-api` rebuilt and restarted with version `2.0.25`;
   - `https://api.taksklad.uz/health` вернул `status=ok`, backend `2.0.25`;
-  - `https://api.taksklad.uz/ready` показал DB/migrations OK at `20260626_0005`; общий `degraded` держат старые `telegram_excel_import` failures;
+  - `https://api.taksklad.uz/ready` показал DB/migrations OK at `20260626_0005`; общий `degraded` держат старые `telegram_excel_import` failures и текущие Google mirror pending events;
   - live availability check для проблемного КИЗа вернул `available=true`, `latest_movement_type=return`.
 
 ## 2026-06-26
