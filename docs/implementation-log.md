@@ -26,6 +26,19 @@
   - `git diff --check` - OK;
   - `TAKSKLAD_ENV_FILE=.env.example docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config --quiet` - OK;
   - `deploy/vds/verify_smartup_automation.sh` - source checks OK, local runtime skipped because local compose service is not running.
+- VDS deploy:
+  - актуальный сервер: `159.195.138.95`, app path `/opt/stacks/taksklad/app`;
+  - restore point: `/opt/stacks/taksklad/restore_points/pre-smartup-audit-followup-20260630T165654Z`;
+  - DB backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260630T165654Z.sql.gz`;
+  - selective rsync: `backend/app/smartup_auto_import.py`, `deploy/vds/docker-compose.yml`, `deploy/vds/verify_smartup_automation.sh`, Smartup/VDS tests and docs;
+  - rebuilt/recreated: `backend-api`, `smartup-auto-import-worker`.
+- VDS verification:
+  - `SMARTUP_AUTOMATION_RUNTIME_REQUIRED=1 ./deploy/vds/verify_smartup_automation.sh` - `status=ok`, runtime status `ok`, pending SkladBot creates `0`;
+  - `python -m app.smartup_auto_import_worker status --json` in container - `ok`, `enabled=True`, pending SkladBot creates `0`;
+  - public `/health` - `ok`, version `2.0.25`;
+  - public `/ready` - `degraded` only because of old `telegram_excel_import` failed events; DB and migrations `ok`;
+  - fresh `backend-api`/`smartup-auto-import-worker` logs since deploy - no `error|traceback|exception|critical|failed`;
+  - `acceptance_status.sh` did not produce JSON because `/opt/stacks/taksklad/app/outputs/taksklad_acceptance/acceptance_manifest.json` is missing on this server.
 
 ### Smartup automation deploy/status guard
 

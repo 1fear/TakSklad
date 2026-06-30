@@ -1,6 +1,6 @@
 # Deploy And Rollback Runbook
 
-Дата фиксации: 2026-05-30.
+Дата фиксации: 2026-06-30.
 
 Документ описывает минимальную эксплуатационную процедуру TakSklad 2.0 на VDS. Секреты, пароли, токены и backup-файлы в Git не хранятся.
 
@@ -9,7 +9,7 @@
 Целевой домен backend:
 
 ```text
-api.taksklad.uz -> 135.181.245.84
+api.taksklad.uz -> 159.195.138.95
 ```
 
 На стороне DNS-регистратора нужна A-запись:
@@ -17,15 +17,15 @@ api.taksklad.uz -> 135.181.245.84
 ```text
 type: A
 name: api
-value: 135.181.245.84
+value: 159.195.138.95
 ttl: 300
 ```
 
-Текущий статус на 2026-05-30:
+Текущий статус на 2026-06-30:
 
-- в PowerVPS есть только VDS, DNS-зона `taksklad.uz` там не управляется;
-- WHOIS `.uz` отвечает, что `taksklad.uz` не найден в базе;
-- значит, сначала нужно зарегистрировать домен у `.uz`-регистратора, а уже потом добавить A-запись.
+- `api.taksklad.uz` и `taksklad.uz` резолвятся в `159.195.138.95`;
+- production app path на сервере: `/opt/stacks/taksklad/app`;
+- старый путь `/opt/taksklad/app` и старый IP `135.181.245.84` не использовать для новых deploy.
 
 После обновления DNS на VDS в `deploy/vds/.env` должно быть:
 
@@ -36,14 +36,14 @@ TAKSKLAD_BACKEND_HOST=api.taksklad.uz
 Для переключения после готового DNS на VDS:
 
 ```bash
-cd /opt/taksklad/app
+cd /opt/stacks/taksklad/app
 ./deploy/vds/switch_backend_host.sh api.taksklad.uz
 ```
 
 Если нужно открыть Adminer через отдельный домен:
 
 ```bash
-cd /opt/taksklad/app
+cd /opt/stacks/taksklad/app
 ./deploy/vds/switch_backend_host.sh api.taksklad.uz adminer.taksklad.uz
 ```
 
@@ -54,10 +54,10 @@ dig +short api.taksklad.uz
 curl -fsS https://api.taksklad.uz/health
 ```
 
-Временный staging URL до переключения DNS:
+Fallback-проверка по текущему IP:
 
 ```text
-https://api.135.181.245.84.sslip.io/health
+https://api.159.195.138.95.sslip.io/health
 ```
 
 ## 2. Deploy Backend
@@ -75,24 +75,24 @@ Do not run broad rsync from a dirty tree. Если worktree грязный, depl
 На VDS перед заменой кода создать restore point:
 
 ```bash
-cd /opt/taksklad/app
+cd /opt/stacks/taksklad/app
 restore_id="pre-backend-only-hot-path-$(date -u +%Y%m%dT%H%M%SZ)"
-mkdir -p "/opt/taksklad/restore_points/$restore_id"
-cp -a backend deploy docs tools version.json "/opt/taksklad/restore_points/$restore_id/"
+mkdir -p "/opt/stacks/taksklad/restore_points/$restore_id"
+cp -a backend deploy docs tools version.json "/opt/stacks/taksklad/restore_points/$restore_id/"
 ./deploy/vds/backup_postgres.sh
 ```
 
 Локально:
 
 ```bash
-rsync -az backend root@135.181.245.84:/opt/taksklad/app/
-rsync -az --exclude '.env' deploy/vds/ root@135.181.245.84:/opt/taksklad/app/deploy/vds/
+rsync -az backend root@159.195.138.95:/opt/stacks/taksklad/app/
+rsync -az --exclude '.env' deploy/vds/ root@159.195.138.95:/opt/stacks/taksklad/app/deploy/vds/
 ```
 
 На VDS:
 
 ```bash
-cd /opt/taksklad/app
+cd /opt/stacks/taksklad/app
 ./deploy/vds/backup_postgres.sh
 docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml run --rm backend-api \
   alembic -c alembic.ini upgrade head
@@ -108,7 +108,7 @@ curl -fsS -H "Authorization: Bearer <service-token-from-secret-storage>" \
 Если DNS временно недоступен, fallback-проверка:
 
 ```bash
-curl -fsS https://api.135.181.245.84.sslip.io/health
+curl -fsS https://api.159.195.138.95.sslip.io/health
 ```
 
 ## 3. Backup
@@ -116,7 +116,7 @@ curl -fsS https://api.135.181.245.84.sslip.io/health
 Ручной backup:
 
 ```bash
-cd /opt/taksklad/app
+cd /opt/stacks/taksklad/app
 ./deploy/vds/backup_postgres.sh
 ```
 
@@ -132,7 +132,7 @@ systemctl status taksklad-postgres-backup.timer
 Restore-drill всегда выполняется в отдельную временную БД и не трогает production database.
 
 ```bash
-cd /opt/taksklad/app
+cd /opt/stacks/taksklad/app
 latest="$(ls -t /opt/taksklad/backups/postgres/taksklad-postgres-*.sql.gz | head -1)"
 ./deploy/vds/restore_drill.sh "$latest"
 ```
@@ -144,7 +144,7 @@ latest="$(ls -t /opt/taksklad/backups/postgres/taksklad-postgres-*.sql.gz | head
 Production restore перезаписывает текущую БД. Запускать только при осознанном откате данных.
 
 ```bash
-cd /opt/taksklad/app
+cd /opt/stacks/taksklad/app
 CONFIRM_RESTORE=YES ./deploy/vds/restore_postgres.sh /opt/taksklad/backups/postgres/taksklad-postgres-YYYYmmddTHHMMSSZ.sql.gz
 ```
 
@@ -159,7 +159,7 @@ curl -fsS https://api.taksklad.uz/health
 Rollback к предыдущему Git-коммиту:
 
 ```bash
-cd /opt/taksklad/app
+cd /opt/stacks/taksklad/app
 git fetch --all
 git checkout <previous-good-commit>
 docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml up -d --build backend-api
@@ -184,7 +184,7 @@ curl -fsS -H "Authorization: Bearer <service-token-from-secret-storage>" \
 Перед откатом:
 
 ```bash
-cd /opt/taksklad/app
+cd /opt/stacks/taksklad/app
 ./deploy/vds/backup_postgres.sh
 docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml ps
 curl -fsS https://api.taksklad.uz/health
@@ -193,7 +193,7 @@ curl -fsS https://api.taksklad.uz/health
 Откат к предыдущему good commit:
 
 ```bash
-cd /opt/taksklad/app
+cd /opt/stacks/taksklad/app
 git fetch --all
 git checkout <previous-good-commit>
 docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml up -d --build backend-api telegram-worker google-sheets-sync-worker skladbot-worker frontend
@@ -228,14 +228,14 @@ Release guard для backend-only:
 Dry-run:
 
 ```bash
-cd /opt/taksklad/app
+cd /opt/stacks/taksklad/app
 ./deploy/vds/cleanup_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531"
 ```
 
 Удаление:
 
 ```bash
-cd /opt/taksklad/app
+cd /opt/stacks/taksklad/app
 ./deploy/vds/cleanup_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --apply
 ```
 

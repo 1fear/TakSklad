@@ -27,6 +27,15 @@
 - `TAKSKLAD_ENV_FILE=.env.example docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config --quiet` - OK.
 - `deploy/vds/verify_smartup_automation.sh` - source checks OK, local runtime skipped because local compose service is not running.
 
+**Production deploy:**
+
+- Сервер `159.195.138.95`, app path `/opt/stacks/taksklad/app`.
+- Restore point: `/opt/stacks/taksklad/restore_points/pre-smartup-audit-followup-20260630T165654Z`.
+- DB backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260630T165654Z.sql.gz`.
+- Пересобраны `backend-api` и `smartup-auto-import-worker`.
+- VDS `verify_smartup_automation.sh` с `SMARTUP_AUTOMATION_RUNTIME_REQUIRED=1` вернул `status=ok`; worker status `ok`, automation enabled, pending SkladBot creates `0`.
+- `/health` OK, `/ready` остается `degraded` из-за старых `telegram_excel_import` failed events, не из-за Smartup.
+
 ### Smartup automation deploy/status guard
 
 **Файлы:** `backend/app/smartup_auto_import.py`, `backend/app/smartup_auto_import_worker.py`, `deploy/vds/verify_smartup_automation.sh`, `deploy/vds/acceptance_status.sh`, `tests/test_smartup_auto_import.py`, `tests/test_vds_acceptance_scripts.py`, `docs/implementation-log.md`, `docs/changelog.md`.
