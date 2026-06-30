@@ -2568,6 +2568,51 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertEqual(orders[0].address, "Ташкент, Чиланзарский район, 10")
             self.assertEqual(orders[0].raw_payload["address_backfill_source"], "import")
 
+    def test_gps_address_with_same_source_import_id_is_backfilled(self):
+        with self.SessionLocal() as db:
+            order = Order(
+                payment_type="cash",
+                client="GPS Backfill Client",
+                address="GPS: 41.311081,69.240562",
+                representative="Test Rep",
+                order_date=date(2026, 5, 30),
+                status="not_completed",
+                raw_payload={"source": "test", "coordinates": "41.311081,69.240562"},
+            )
+            item = OrderItem(
+                order=order,
+                product="Product One",
+                quantity_pieces=20,
+                quantity_blocks=2,
+                pieces_per_block=10,
+                status="not_completed",
+                raw_payload={"source_import_id": "gps-import"},
+            )
+            db.add(item)
+            db.commit()
+
+        row = {
+            "Дата отгрузки": "30.05.2026",
+            "Тип оплаты": "cash",
+            "Клиент": "GPS Backfill Client",
+            "Адрес": "Ташкент, геокодированный адрес 1",
+            "Товары": "Product One",
+            "Кол-во ШТ": "20",
+            "Кол-во блок": "2",
+            "ID заказа": "gps-order",
+            "ID импорта": "gps-import",
+        }
+        response = self.client.post("/api/v1/imports", json={"source": "excel", "filename": "orders.xlsx", "rows": [row]})
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["items_created"], 0)
+        self.assertEqual(response.json()["duplicate_rows"], 1)
+        self.assertEqual(response.json()["backend_address_updates"], 1)
+        with self.SessionLocal() as db:
+            order = db.execute(select(Order)).scalar_one()
+            self.assertEqual(order.address, "Ташкент, геокодированный адрес 1")
+            self.assertEqual(order.raw_payload["address_backfill_source"], "import")
+
     def test_google_sheets_export_updates_missing_address_for_existing_import_id(self):
         class FakeSheet:
             def __init__(self):
@@ -2580,6 +2625,32 @@ class BackendApiPersistenceTests(unittest.TestCase):
         rows = [
             ["Дата отгрузки", "Тип оплаты", "Клиент", "Адрес"] + [""] * 22 + ["ID заказа", "ID импорта"],
             ["30.05.2026", "cash", "Backfill Client", "Адрес не указан"] + [""] * 22 + ["order-1", "import-1"],
+        ]
+        records = [{
+            "ID заказа": "order-1",
+            "ID импорта": "import-1",
+            "Адрес": "Ташкент, Чиланзарский район, 10",
+        }]
+        sheet = FakeSheet()
+
+        updated = update_missing_sheet_addresses(sheet, rows, records)
+
+        self.assertEqual(updated, 1)
+        self.assertEqual(sheet.updates, [{"range": "D2", "values": [["Ташкент, Чиланзарский район, 10"]]}])
+        self.assertEqual(sheet.value_input_option, "USER_ENTERED")
+
+    def test_google_sheets_export_updates_gps_address_for_existing_import_id(self):
+        class FakeSheet:
+            def __init__(self):
+                self.updates = []
+
+            def batch_update(self, updates, value_input_option=None):
+                self.updates.extend(updates)
+                self.value_input_option = value_input_option
+
+        rows = [
+            ["Дата отгрузки", "Тип оплаты", "Клиент", "Адрес"] + [""] * 22 + ["ID заказа", "ID импорта"],
+            ["30.05.2026", "cash", "Backfill Client", "GPS: 41.311081,69.240562"] + [""] * 22 + ["order-1", "import-1"],
         ]
         records = [{
             "ID заказа": "order-1",

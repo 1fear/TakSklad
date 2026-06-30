@@ -282,6 +282,21 @@ class SmartupAutoImportTests(unittest.TestCase):
         self.assertEqual(rows[0]["Адрес"], "GPS: 41.311081,69.240562")
         self.assertEqual(rows[0]["Координаты"], "41.311081,69.240562")
 
+    def test_build_import_rows_keeps_gps_fallback_when_reverse_geocode_raises(self):
+        config = self.config("/tmp")
+        order = sample_order(delivery_address_full="", delivery_address_short="")
+
+        with mock.patch("backend.app.smartup_auto_import.reverse_geocode_yandex", side_effect=RuntimeError("timeout")):
+            rows = build_import_rows(
+                [order],
+                datetime(2026, 6, 25).date(),
+                "Терминал 25.06.2026 Часть 1.xlsx",
+                config,
+            )
+
+        self.assertEqual(rows[0]["Адрес"], "GPS: 41.311081,69.240562")
+        self.assertEqual(rows[0]["Координаты"], "41.311081,69.240562")
+
     def test_shadow_preview_writes_export_but_does_not_change_status_or_import(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             fake = FakeSmartupClient([sample_order()])
@@ -324,6 +339,39 @@ class SmartupAutoImportTests(unittest.TestCase):
             self.assertEqual(orders[0].payment_type, "Терминал")
             self.assertEqual(len(imports), 1)
             self.assertEqual((imports[0].raw_payload["smartup_auto"]["delivery_dates"]), ["2026-06-26"])
+
+    def test_full_flow_sends_smartup_file_to_client_but_not_logistics_before_final_slot(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            fake = FakeSmartupClient([sample_order()])
+            sender = FakeTelegramSender()
+            config = self.config(
+                tmp_dir,
+                backend_import_enabled=True,
+                change_status_enabled=True,
+                client_chat_id="-5271267499",
+                logistics_chat_id="-1003515369435",
+            )
+            with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "dry_run"}, clear=False):
+                with self.SessionLocal() as db:
+                    result = run_smartup_auto_import_once(
+                        db,
+                        config,
+                        now=datetime(2026, 6, 25, 16, 1, tzinfo=ZoneInfo("Asia/Tashkent")),
+                        slot_label="16:01",
+                        smartup_client=fake,
+                        telegram_sender=sender,
+                    )
+                    imports = db.execute(select(ImportJob)).scalars().all()
+
+        self.assertEqual(result["client_export"]["status"], "sent")
+        self.assertEqual(result["logistics_reports"], [])
+        self.assertEqual(len(sender.documents), 1)
+        chat_id, content, filename, caption = sender.documents[0]
+        self.assertEqual(chat_id, "-5271267499")
+        self.assertTrue(content)
+        self.assertEqual(filename, "Терминал 25.06.2026 Часть 1.xlsx")
+        self.assertIn("Smartup выгрузка за 25.06.2026", caption)
+        self.assertEqual(imports[0].raw_payload["telegram_chat_id"], "-5271267499")
 
     def test_full_flow_queues_skladbot_create_after_smartup_status_change(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

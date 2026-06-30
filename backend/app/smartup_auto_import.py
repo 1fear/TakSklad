@@ -107,6 +107,7 @@ class SmartupAutoImportConfig:
     terminal_payment_code: str = TERMINAL_PAYMENT_CODE
     pieces_per_block: int = 10
     default_block_price: int = 240000
+    client_chat_id: str = ""
     logistics_chat_id: str = ""
     alert_chat_id: str = ""
     telegram_bot_token: str = ""
@@ -290,6 +291,7 @@ def load_smartup_auto_import_config(environ: dict[str, str] | None = None) -> Sm
         or TERMINAL_PAYMENT_CODE,
         pieces_per_block=max(1, parse_int(environ.get("TAKSKLAD_DEFAULT_PIECES_PER_BLOCK"), 10)),
         default_block_price=max(1, parse_int(environ.get("TAKSKLAD_DEFAULT_BLOCK_PRICE"), 240000)),
+        client_chat_id=normalize_text(environ.get("SMARTUP_AUTO_IMPORT_CLIENT_CHAT_ID")),
         logistics_chat_id=normalize_text(environ.get("SMARTUP_AUTO_IMPORT_LOGISTICS_CHAT_ID")),
         alert_chat_id=normalize_text(environ.get("SMARTUP_AUTO_IMPORT_ALERT_CHAT_ID")),
         telegram_bot_token=normalize_text(environ.get("TELEGRAM_BOT_TOKEN")),
@@ -478,10 +480,23 @@ def run_smartup_auto_import_once(
         export_date=export_date,
         part=part,
         slot_label=slot_label,
-        logistics_chat_id=config.logistics_chat_id,
+        source_chat_id=config.client_chat_id,
     )
     status_change = client.change_status(unique_deal_ids(selected_orders), config.waiting_status_code)
     imports = queue_skladbot_after_smartup_status(db, imports)
+    client_export = send_smartup_export_to_client(
+        db,
+        config,
+        export_path=export_path,
+        filename=filename,
+        export_date=export_date,
+        slot_label=slot_label,
+        part=part,
+        selected_orders=len(selected_orders),
+        rows=len(import_rows),
+        delivery_dates=delivery_dates,
+        telegram_sender=telegram_sender,
+    )
 
     skladbot_processing = {"status": "skipped"}
     if config.process_skladbot_now:
@@ -502,6 +517,7 @@ def run_smartup_auto_import_once(
         "status": "completed",
         "imports": imports,
         "status_change": status_change,
+        "client_export": client_export,
         "skladbot_processing": skladbot_processing,
         "logistics_reports": logistics_reports,
     }
@@ -519,7 +535,7 @@ def create_delivery_group_imports(
     export_date: date,
     part: int,
     slot_label: str,
-    logistics_chat_id: str,
+    source_chat_id: str,
 ) -> list[dict[str, Any]]:
     results = []
     for delivery_date, rows in sorted(grouped_rows.items()):
@@ -527,7 +543,7 @@ def create_delivery_group_imports(
             source=SMARTUP_AUTO_IMPORT_SOURCE,
             filename=filename,
             sha256=sha256,
-            telegram_chat_id=logistics_chat_id,
+            telegram_chat_id=source_chat_id,
             telegram_event_id=f"smartup-auto:{export_date.isoformat()}:{slot_label}:{delivery_date}:part-{part}",
             rows=rows,
         )
@@ -615,6 +631,75 @@ def attach_smartup_metadata_to_import(db: Session, import_id: str, metadata: dic
         entity_type="import",
         entity_id=import_id,
         payload=metadata,
+    ))
+    db.commit()
+
+
+def send_smartup_export_to_client(
+    db: Session,
+    config: SmartupAutoImportConfig,
+    *,
+    export_path: Path,
+    filename: str,
+    export_date: date,
+    slot_label: str,
+    part: int,
+    selected_orders: int,
+    rows: int,
+    delivery_dates: list[str],
+    telegram_sender: Any | None = None,
+) -> dict[str, Any]:
+    if not config.client_chat_id:
+        result = {"status": "skipped", "reason": "SMARTUP_AUTO_IMPORT_CLIENT_CHAT_ID is empty"}
+        record_smartup_client_export_audit(db, export_date, filename, result)
+        return result
+    sender = telegram_sender or TelegramDocumentSender(config.telegram_bot_token, config.telegram_timeout_seconds)
+    if not getattr(sender, "configured", True):
+        result = {"status": "skipped", "reason": "TELEGRAM_BOT_TOKEN is empty"}
+        record_smartup_client_export_audit(db, export_date, filename, result)
+        return result
+    try:
+        content = Path(export_path).read_bytes()
+        sender.send_document(
+            config.client_chat_id,
+            content,
+            filename,
+            caption=smartup_export_caption(export_date, slot_label, part, selected_orders, rows, delivery_dates),
+        )
+        result = {"status": "sent", "filename": filename, "export_date": export_date.isoformat(), "part": part}
+    except Exception as exc:
+        result = {"status": "failed", "filename": filename, "error": str(exc)[:500]}
+    record_smartup_client_export_audit(db, export_date, filename, result)
+    return result
+
+
+def smartup_export_caption(
+    export_date: date,
+    slot_label: str,
+    part: int,
+    selected_orders: int,
+    rows: int,
+    delivery_dates: list[str],
+) -> str:
+    delivery_display = ", ".join(display_date_from_any(value) for value in delivery_dates if value) or "-"
+    return (
+        f"Smartup выгрузка за {format_display_date(export_date)}, слот {normalize_text(slot_label) or '-'}, "
+        f"часть {part}. Терминал. Заказов: {selected_orders}, строк: {rows}. "
+        f"Даты отгрузки: {delivery_display}."
+    )
+
+
+def record_smartup_client_export_audit(
+    db: Session,
+    export_date: date,
+    filename: str,
+    result: dict[str, Any],
+) -> None:
+    db.add(AuditLog(
+        action="smartup_auto_import_client_export_file",
+        entity_type="smartup_export",
+        entity_id=f"{export_date.isoformat()}:{filename}",
+        payload=result,
     ))
     db.commit()
 
@@ -889,7 +974,11 @@ def smartup_address(
     if address:
         return address
     if coordinates:
-        geocoded_address, _ = reverse_geocode_yandex(coordinates, cache=geocode_cache)
+        try:
+            geocoded_address, _ = reverse_geocode_yandex(coordinates, cache=geocode_cache)
+        except Exception as exc:
+            logger.warning("Smartup reverse geocode failed: %s", exc)
+            geocoded_address = ""
         if geocoded_address:
             return geocoded_address
         return f"GPS: {coordinates}"

@@ -182,6 +182,32 @@ class GoogleSheetsSyncWorkerTests(unittest.TestCase):
             self.assertEqual(item.raw_payload["source_file"], "orders.xlsx")
             self.assertTrue(item.raw_payload["google_sheet_synced_at"])
 
+    def test_sync_does_not_replace_real_backend_address_with_gps_from_google_sheet(self):
+        order_id, _item_id = self.seed_order()
+
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            order.address = "Ташкент, геокодированный адрес 1"
+            db.commit()
+
+        with self.SessionLocal() as db:
+            result = sync_google_sheet_to_backend(
+                db,
+                sheet=self.make_sheet(
+                    **{
+                        "Адрес": "GPS: 41.311081,69.240562",
+                        "Товары": "Chapman Brown OP 20",
+                        "Кол-во ШТ": 150,
+                        "Кол-во блок": 15,
+                    }
+                ),
+            )
+
+        self.assertEqual(result["matched"], 1)
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            self.assertEqual(order.address, "Ташкент, геокодированный адрес 1")
+
     def test_sync_does_not_downgrade_existing_skladbot_link_from_stale_google_mirror(self):
         order_id, _item_id = self.seed_order()
 

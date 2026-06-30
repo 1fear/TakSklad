@@ -703,7 +703,7 @@ def normalize_lookup_text(value):
 
 def is_missing_address(value):
     text = normalize_lookup_text(value)
-    return not text or text in MISSING_ADDRESS_MARKERS or text.startswith("координаты")
+    return not text or text in MISSING_ADDRESS_MARKERS or text.startswith(("координаты", "gps"))
 
 
 def is_real_address(value):

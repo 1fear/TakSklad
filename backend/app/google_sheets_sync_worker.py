@@ -314,7 +314,6 @@ def update_order_fields(order: Order, record, apply_returns=True):
         ("order_date", record.get("order_date")),
         ("payment_type", record.get("payment_type")),
         ("client", record.get("client")),
-        ("address", record.get("address")),
         ("representative", record.get("representative")),
     ):
         if value in (None, ""):
@@ -322,6 +321,11 @@ def update_order_fields(order: Order, record, apply_returns=True):
         if getattr(order, field_name) != value:
             setattr(order, field_name, value)
             changed = True
+
+    incoming_address = record.get("address")
+    if should_update_address_from_google(order.address, incoming_address):
+        order.address = incoming_address
+        changed = True
 
     raw_payload = dict(order.raw_payload or {})
     before = dict(raw_payload)
@@ -332,6 +336,33 @@ def update_order_fields(order: Order, record, apply_returns=True):
         order.raw_payload = raw_payload
         changed = True
     return changed
+
+
+def should_update_address_from_google(current_address, incoming_address):
+    incoming = normalize_text(incoming_address)
+    if not incoming:
+        return False
+    incoming_missing = is_missing_sheet_address(incoming)
+    if incoming_missing:
+        return False
+    return normalize_text(current_address) != incoming
+
+
+def is_missing_sheet_address(value):
+    text = normalize_text(value).casefold().replace("ё", "е")
+    return (
+        not text
+        or text in {
+            "адрес не указан",
+            "адрес не найден",
+            "адреса не найдены",
+            "адрес не определен",
+            "адрес отсутствует",
+            "самовывоз",
+            "самовывоз со склада",
+        }
+        or text.startswith(("координаты", "gps"))
+    )
 
 
 def apply_skladbot_fields(raw_payload, record):
