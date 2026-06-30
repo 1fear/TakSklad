@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from datetime import date, datetime, timedelta, timezone
@@ -14,6 +15,7 @@ from backend.app.smartup_auto_import import (
     SmartupAutoImportConfig,
     SmartupAutoImportError,
     SMARTUP_AUTO_IMPORT_EVENT_TYPE,
+    build_smartup_auto_import_status,
     build_import_rows,
     delivery_dates_for_export_date,
     filter_smartup_orders,
@@ -487,6 +489,74 @@ class SmartupAutoImportTests(unittest.TestCase):
                     dates = delivery_dates_for_export_date(db, datetime(2026, 6, 25).date())
 
             self.assertEqual(dates, ["2026-06-26"])
+
+    def test_status_summary_does_not_leak_secret_or_chat_values(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = self.config(
+                tmp_dir,
+                backend_import_enabled=True,
+                change_status_enabled=True,
+                smartup_username="raw-user",
+                smartup_password="secret-pass",
+                client_chat_id="-5271267499",
+                logistics_chat_id="-1003515369435",
+                alert_chat_id="-1003515369435",
+                telegram_bot_token="bot123:secret-token",
+            )
+            with self.SessionLocal() as db:
+                db.add(PendingEvent(
+                    event_type=SMARTUP_AUTO_IMPORT_EVENT_TYPE,
+                    idempotency_key="smartup:auto_import:v1:2026-06-30:16:01:delivery:2026-07-01",
+                    status="completed",
+                    attempts=2,
+                    payload={
+                        "export_date": "2026-06-30",
+                        "target_delivery_date": "2026-07-01",
+                        "slot": "16:01",
+                        "result": {
+                            "status": "completed",
+                            "export_date": "2026-06-30",
+                            "target_delivery_date": "2026-07-01",
+                            "slot": "16:01",
+                            "raw_orders": 45,
+                            "selected_orders": 42,
+                            "rows": 98,
+                            "delivery_dates": ["2026-07-01"],
+                            "imports": [{"import_id": "import-1"}],
+                            "status_change": {"status": "B#W"},
+                            "skladbot_processing": {"status": "skipped"},
+                            "logistics_reports": [{"status": "sent"}],
+                            "client_export": {"chat_id": "-5271267499", "status": "sent"},
+                        },
+                    },
+                    last_error="password=secret-pass token=bot123:secret-token",
+                ))
+                db.add(PendingEvent(
+                    event_type=SKLADBOT_REQUEST_CREATE_EVENT_TYPE,
+                    idempotency_key="skladbot:create:order-1",
+                    status="pending",
+                    attempts=0,
+                    payload={
+                        "import_id": "import-1",
+                        "request_payload": {"address": "Ташкент"},
+                    },
+                ))
+                db.commit()
+
+                status = build_smartup_auto_import_status(db, config, limit=3)
+
+            rendered = json.dumps(status, ensure_ascii=False, sort_keys=True)
+            self.assertEqual(status["status"], "ok")
+            self.assertTrue(status["configuration"]["smartup_auth_configured"])
+            self.assertTrue(status["configuration"]["client_chat_configured"])
+            self.assertEqual(status["queues"]["pending_skladbot_request_creates"], 1)
+            self.assertEqual(status["last_events"][0]["selected_orders"], 42)
+            self.assertEqual(status["last_events"][0]["status_change"], "B#W")
+            self.assertIn("password=***", status["last_events"][0]["last_error"])
+            self.assertNotIn("raw-user", rendered)
+            self.assertNotIn("secret-pass", rendered)
+            self.assertNotIn("bot123:secret-token", rendered)
+            self.assertNotIn("-5271267499", rendered)
 
     def test_backend_import_requires_smartup_status_change_gate(self):
         config = self.config("/tmp", backend_import_enabled=True, change_status_enabled=False)

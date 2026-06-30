@@ -4,6 +4,24 @@
 
 ## 2026-06-30
 
+### Smartup automation deploy/status guard
+
+- Цель: перед включением/деплоем Smartup automation иметь быстрый read-only guard, который показывает безопасную конфигурацию и ловит регрессии по ключевым инцидентным местам.
+- Изменено:
+  - добавлен `build_smartup_auto_import_status()` без вывода секретов и chat_id;
+  - `smartup_auto_import_worker` получил команду `status --json`;
+  - добавлен `deploy/vds/verify_smartup_automation.sh` со статическими проверками порядка операций, geocoder, Telegram routing, delivery-date guard, SkladBot-after-status queue, `source_import_id` dedupe и repriced totals;
+  - `acceptance_status.sh` запускает Smartup verifier с обязательным runtime-check на VDS.
+- Инварианты:
+  - status не вызывает Smartup API и не пишет в БД;
+  - локально verifier может пропустить runtime, если compose service не запущен;
+  - в VDS acceptance runtime-check обязателен через `SMARTUP_AUTOMATION_RUNTIME_REQUIRED=1`.
+- Проверено:
+  - `.venv/bin/python -m py_compile backend/app/smartup_auto_import.py backend/app/smartup_auto_import_worker.py` - OK.
+  - `bash -n deploy/vds/verify_smartup_automation.sh deploy/vds/acceptance_status.sh` - OK.
+  - `.venv/bin/python -m unittest tests.test_smartup_auto_import tests.test_google_sheets_sync_worker tests.test_vds_acceptance_scripts` - 47 tests OK.
+  - `deploy/vds/verify_smartup_automation.sh` - source checks `ok`, local runtime `skipped`, потому что локальный `smartup-auto-import-worker` не запущен.
+
 ### Smartup delivery-date guard for controlled runs
 
 - Причина: controlled `run-once` должен ограничивать не только дату Smartup export, статус `Новые` и оплату `Терминал`, но и исходный Smartup `delivery_date`, чтобы в текущую выгрузку не попали будущие даты отгрузки.

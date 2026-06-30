@@ -18,7 +18,7 @@ import httpx
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -28,7 +28,12 @@ from .logistics_calendar_service import is_logistics_non_working_day, resolve_ef
 from .logistics_service import build_logistics_report_xlsx
 from .models import AuditLog, ImportJob, PendingEvent
 from .schemas import ImportCreate
-from .skladbot_request_dry_run import create_skladbot_dry_run_for_import, process_pending_skladbot_request_creates
+from .redaction import redact_secrets
+from .skladbot_request_dry_run import (
+    SKLADBOT_REQUEST_CREATE_EVENT_TYPE,
+    create_skladbot_dry_run_for_import,
+    process_pending_skladbot_request_creates,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -1417,6 +1422,117 @@ def mark_smartup_slot_failed(db: Session, event_id: uuid.UUID, exc: Exception) -
         payload={"error": str(exc)[:1000], "event_id": str(event.id)},
     ))
     db.commit()
+
+
+def build_smartup_auto_import_status(
+    db: Session,
+    config: SmartupAutoImportConfig,
+    *,
+    limit: int = 5,
+) -> dict[str, Any]:
+    event_limit = max(1, min(int(limit or 5), 50))
+    validation_errors, validation_warnings = smartup_auto_import_status_findings(config)
+    last_events = db.execute(
+        select(PendingEvent)
+        .where(PendingEvent.event_type == SMARTUP_AUTO_IMPORT_EVENT_TYPE)
+        .order_by(PendingEvent.created_at.desc(), PendingEvent.id.desc())
+        .limit(event_limit)
+    ).scalars().all()
+    pending_skladbot_creates = db.execute(
+        select(func.count(PendingEvent.id))
+        .where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
+        .where(PendingEvent.status.in_(("pending", "processing", "failed")))
+    ).scalar_one()
+    return {
+        "status": "failed" if validation_errors else "ok",
+        "configuration": {
+            "enabled": config.enabled,
+            "backend_import_enabled": config.backend_import_enabled,
+            "change_status_enabled": config.change_status_enabled,
+            "process_skladbot_now": config.process_skladbot_now,
+            "schedule_times": list(config.schedule_times),
+            "disabled_weekdays": list(config.disabled_weekdays),
+            "final_time": config.final_time,
+            "slot_grace_minutes": config.slot_grace_minutes,
+            "poll_seconds": config.poll_seconds,
+            "timezone": config.timezone_name,
+            "output_dir": str(config.output_dir),
+            "smartup_base_url_configured": bool(config.smartup_base_url),
+            "smartup_auth_configured": bool(config.smartup_username and config.smartup_password),
+            "smartup_project_configured": bool(config.smartup_project_code),
+            "smartup_filial_configured": bool(config.smartup_filial_id or config.smartup_filial_code),
+            "client_chat_configured": bool(config.client_chat_id),
+            "logistics_chat_configured": bool(config.logistics_chat_id),
+            "alert_chat_configured": bool(config.alert_chat_id),
+            "telegram_bot_configured": bool(config.telegram_bot_token),
+            "new_status_code_configured": bool(config.new_status_code),
+            "waiting_status_code_configured": bool(config.waiting_status_code),
+        },
+        "validation": {
+            "errors": validation_errors,
+            "warnings": validation_warnings,
+        },
+        "queues": {
+            "pending_skladbot_request_creates": int(pending_skladbot_creates or 0),
+        },
+        "last_events": [summarize_smartup_auto_import_event(event) for event in last_events],
+    }
+
+
+def smartup_auto_import_status_findings(config: SmartupAutoImportConfig) -> tuple[list[str], list[str]]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    if config.backend_import_enabled and not config.change_status_enabled:
+        errors.append(
+            "SMARTUP_AUTO_IMPORT_BACKEND_IMPORT_ENABLED=true требует "
+            "SMARTUP_AUTO_IMPORT_CHANGE_STATUS_ENABLED=true"
+        )
+    if config.change_status_enabled and not config.waiting_status_code:
+        errors.append("SMARTUP_AUTO_IMPORT_CHANGE_STATUS_ENABLED=true требует статус ожидания")
+    if config.enabled and not (config.smartup_username and config.smartup_password):
+        errors.append("SMARTUP_AUTO_IMPORT_ENABLED=true требует Smartup auth")
+    if (config.enabled or config.backend_import_enabled or config.change_status_enabled) and not config.telegram_bot_token:
+        warnings.append("TELEGRAM_BOT_TOKEN не задан: файлы/alerts в Telegram будут пропущены")
+    if config.enabled and not config.client_chat_id:
+        warnings.append("SMARTUP_AUTO_IMPORT_CLIENT_CHAT_ID не задан: export-файл клиенту не отправится")
+    if config.enabled and not config.logistics_chat_id:
+        warnings.append("SMARTUP_AUTO_IMPORT_LOGISTICS_CHAT_ID не задан: финальный отчет логистики не отправится")
+    if config.process_skladbot_now:
+        warnings.append("SMARTUP_AUTO_IMPORT_PROCESS_SKLADBOT_NOW=true: SkladBot create queue обрабатывается сразу")
+    return errors, warnings
+
+
+def summarize_smartup_auto_import_event(event: PendingEvent) -> dict[str, Any]:
+    payload = event.payload or {}
+    result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+    status_change = result.get("status_change") if isinstance(result.get("status_change"), dict) else {}
+    skladbot_processing = (
+        result.get("skladbot_processing") if isinstance(result.get("skladbot_processing"), dict) else {}
+    )
+    imports = result.get("imports") if isinstance(result.get("imports"), list) else []
+    logistics_reports = result.get("logistics_reports") if isinstance(result.get("logistics_reports"), list) else []
+    return {
+        "id": str(event.id),
+        "status": event.status,
+        "attempts": int(event.attempts or 0),
+        "idempotency_key": event.idempotency_key or "",
+        "export_date": normalize_text(result.get("export_date") or payload.get("export_date")),
+        "target_delivery_date": normalize_text(
+            result.get("target_delivery_date") or payload.get("target_delivery_date")
+        ),
+        "slot": normalize_text(result.get("slot") or payload.get("slot")),
+        "raw_orders": int(result.get("raw_orders") or 0),
+        "selected_orders": int(result.get("selected_orders") or 0),
+        "rows": int(result.get("rows") or 0),
+        "delivery_dates": list(result.get("delivery_dates") or []),
+        "imports": len(imports),
+        "status_change": normalize_text(status_change.get("status")),
+        "skladbot_processing": normalize_text(skladbot_processing.get("status")),
+        "logistics_reports": len(logistics_reports),
+        "last_error": redact_secrets(event.last_error or "")[:500],
+        "created_at": event.created_at.isoformat() if isinstance(event.created_at, datetime) else "",
+        "updated_at": event.updated_at.isoformat() if isinstance(event.updated_at, datetime) else "",
+    }
 
 
 def smartup_slot_idempotency_key(

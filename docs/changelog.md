@@ -4,6 +4,25 @@
 
 ## 2026-06-30
 
+### Smartup automation deploy/status guard
+
+**Файлы:** `backend/app/smartup_auto_import.py`, `backend/app/smartup_auto_import_worker.py`, `deploy/vds/verify_smartup_automation.sh`, `deploy/vds/acceptance_status.sh`, `tests/test_smartup_auto_import.py`, `tests/test_vds_acceptance_scripts.py`, `docs/implementation-log.md`, `docs/changelog.md`.
+
+**Что стало:**
+
+- Добавлена read-only команда `python -m app.smartup_auto_import_worker status --json`.
+- Статус показывает Smartup-флаги, наличие обязательной конфигурации, последние Smartup события и количество незавершенных SkladBot create events.
+- Статус не выводит логин, пароль, Telegram token и реальные chat_id.
+- Добавлен VDS verifier `deploy/vds/verify_smartup_automation.sh`.
+- `acceptance_status.sh` теперь валит acceptance, если Smartup automation guard не проходит на VDS.
+
+**Проверки:**
+
+- `.venv/bin/python -m py_compile backend/app/smartup_auto_import.py backend/app/smartup_auto_import_worker.py` - OK.
+- `bash -n deploy/vds/verify_smartup_automation.sh deploy/vds/acceptance_status.sh` - OK.
+- `.venv/bin/python -m unittest tests.test_smartup_auto_import tests.test_google_sheets_sync_worker tests.test_vds_acceptance_scripts` - 47 tests OK.
+- `deploy/vds/verify_smartup_automation.sh` - source checks `ok`, local runtime `skipped`, because local Smartup compose service is not running.
+
 ### Smartup prod recovery перед включением automation
 
 **Файлы:** `backend/app/smartup_auto_import.py`, `tests/test_smartup_auto_import.py`, `docs/user-business-process-guide.md`, `docs/taksklad-system-stack-overview.md`, `docs/implementation-log.md`, `docs/changelog.md`.

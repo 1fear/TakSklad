@@ -5,6 +5,7 @@ from datetime import datetime
 
 from .db import SessionLocal
 from .smartup_auto_import import (
+    build_smartup_auto_import_status,
     load_smartup_auto_import_config,
     parse_slot_time,
     parse_smartup_date,
@@ -22,6 +23,8 @@ def main(argv: list[str] | None = None) -> int:
     config = load_smartup_auto_import_config()
     if args.command == "run-once":
         return run_once(args, config)
+    if args.command == "status":
+        return run_status(args, config)
 
     disabled_logged = False
     while True:
@@ -53,6 +56,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="",
         help="Optional Smartup delivery_date filter, YYYY-MM-DD or DD.MM.YYYY.",
     )
+    status_parser = subparsers.add_parser("status", help="Print read-only Smartup automation status")
+    status_parser.add_argument("--limit", type=int, default=5, help="Number of recent Smartup events to include")
+    status_parser.add_argument("--json", action="store_true", help="Compatibility flag; output is always JSON")
     return parser.parse_args(argv)
 
 
@@ -78,6 +84,13 @@ def run_once(args: argparse.Namespace, config) -> int:
         logging.exception("Smartup auto import run-once failed")
         print(json.dumps({"status": "failed", "error": str(exc)}, ensure_ascii=False, indent=2))
         return 1
+    print(json.dumps(result, ensure_ascii=False, default=str, indent=2))
+    return 0
+
+
+def run_status(args: argparse.Namespace, config) -> int:
+    with SessionLocal() as db:
+        result = build_smartup_auto_import_status(db, config, limit=args.limit)
     print(json.dumps(result, ensure_ascii=False, default=str, indent=2))
     return 0
 

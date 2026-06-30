@@ -30,6 +30,10 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
             "verify_skladbot_coverage.sh",
             "skladbot coverage verifier failed",
             '"skladbot_coverage"',
+            "verify_smartup_automation.sh",
+            "SMARTUP_AUTOMATION_RUNTIME_REQUIRED=1",
+            "smartup automation verifier failed",
+            '"smartup_automation"',
             "ACCEPTANCE_HEALTH_ATTEMPTS",
             "ACCEPTANCE_HEALTH_RETRY_DELAY_SECONDS",
             "health_attempt",
@@ -64,6 +68,9 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         skladbot_coverage_script = (PROJECT_ROOT / "deploy" / "vds" / "verify_skladbot_coverage.sh").read_text(
             encoding="utf-8"
         )
+        smartup_automation_script = (PROJECT_ROOT / "deploy" / "vds" / "verify_smartup_automation.sh").read_text(
+            encoding="utf-8"
+        )
 
         for script in (verify_script, cleanup_script):
             self.assertIn("*ACCEPTANCE*|*WEB_UI_SMOKE*|*SMOKE_MVP*", script)
@@ -85,6 +92,17 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         self.assertIn("app.skladbot_coverage_diagnostic", skladbot_coverage_script)
         self.assertIn("--marker", skladbot_coverage_script)
         self.assertIn("--detail-limit", skladbot_coverage_script)
+
+        self.assertIn("app.smartup_auto_import_worker status", smartup_automation_script)
+        self.assertIn("SMARTUP_AUTO_IMPORT_BACKEND_IMPORT_ENABLED", smartup_automation_script)
+        self.assertIn('skladbot_create_mode="dry_run"', smartup_automation_script)
+        self.assertIn("client.change_status", smartup_automation_script)
+        self.assertIn("target_delivery_date", smartup_automation_script)
+        self.assertIn("reverse_geocode_yandex", smartup_automation_script)
+        self.assertIn("imported_line_total > 0", smartup_automation_script)
+        self.assertIn("explicit * quantity_blocks == line_total", smartup_automation_script)
+        self.assertIn("Smartup runtime status is required but skipped", smartup_automation_script)
+        self.assertIn('"status": "failed" if errors else "ok"', smartup_automation_script)
 
     def test_vds_compose_passes_geocoder_and_block_price_to_import_worker(self):
         compose = (PROJECT_ROOT / "deploy" / "vds" / "docker-compose.yml").read_text(encoding="utf-8")
