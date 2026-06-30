@@ -36,6 +36,7 @@ TELEGRAM_BUTTON_MANUAL = "Ручное управление"
 TELEGRAM_LOGISTICS_DATE_PREFIX = "Логистика "
 TELEGRAM_KIZ_FILE_PREFIX = "КИЗ файл "
 TELEGRAM_KIZ_DATE_PREFIX = "КИЗ дата "
+TELEGRAM_KIZ_RANGE_CALLBACK_PREFIX = "kiz_range:"
 TELEGRAM_MENU_CALLBACK_PREFIX = "menu:"
 TELEGRAM_MANUAL_CALLBACK_PREFIX = "manual:"
 TELEGRAM_EXCEL_IMPORT_EVENT_TYPE = "telegram_excel_import"
@@ -502,14 +503,22 @@ def recent_logistics_dates_for_menu(dates, limit=TELEGRAM_DATE_MENU_RECENT_LIMIT
     )[-limit:]
 
 
-def recent_kiz_dates_for_menu(dates, limit=TELEGRAM_DATE_MENU_RECENT_LIMIT):
-    dates = list(dates or [])
-    if len(dates) <= limit:
-        return dates
+def kiz_dates_for_menu(dates):
     return sorted(
-        dates,
+        list(dates or []),
         key=lambda item: iso_date_from_display((item or {}).get("date") or ""),
-    )[-limit:]
+    )
+
+
+def kiz_date_range_for_menu(dates):
+    iso_dates = [
+        iso_date_from_display((item or {}).get("date") or "")
+        for item in dates or []
+        if iso_date_from_display((item or {}).get("date") or "")
+    ]
+    if len(iso_dates) < 2:
+        return "", ""
+    return iso_dates[0], iso_dates[-1]
 
 
 def kiz_source_file_latest_date(item):
@@ -1012,6 +1021,12 @@ class TelegramWorker:
 
     def kiz_dates_keyboard(self, dates):
         rows = []
+        start_date, end_date = kiz_date_range_for_menu(dates)
+        if start_date and end_date:
+            rows.append([{
+                "text": f"Выгрузить все даты ({display_date(start_date)}-{display_date(end_date)})",
+                "callback_data": f"{TELEGRAM_KIZ_RANGE_CALLBACK_PREFIX}{start_date}:{end_date}",
+            }])
         for index, item in enumerate(dates, start=1):
             date_value = normalize_text(item.get("date"))
             iso_date = iso_date_from_display(date_value)
@@ -1085,7 +1100,7 @@ class TelegramWorker:
             self.safe_send_message(chat_id, backend_failure_message("Не удалось получить даты КИЗов", exc))
             return
         dates = dates if isinstance(dates, list) else []
-        dates = recent_kiz_dates_for_menu(dates)
+        dates = kiz_dates_for_menu(dates)
         if not dates:
             self.safe_send_message(chat_id, "Нет дат отгрузки с отсканированными КИЗами.")
             return
@@ -1103,6 +1118,9 @@ class TelegramWorker:
         ]
         self.save_chat_state(chat_id, state)
         lines = ["Выберите дату отгрузки для выгрузки КИЗов:"]
+        start_date, end_date = kiz_date_range_for_menu(dates)
+        if start_date and end_date:
+            lines.append(f"0. Все даты - {display_date(start_date)}-{display_date(end_date)}")
         for index, item in enumerate(dates, start=1):
             completed = kiz_progress_completed(item)
             status = "готово" if completed else f"частично, осталось {item.get('remaining_blocks', 0)}"
@@ -2535,6 +2553,10 @@ class TelegramWorker:
             return
         if data == "kiz_mode:files":
             self.show_kiz_source_files(chat_id)
+            return
+        if data.startswith(TELEGRAM_KIZ_RANGE_CALLBACK_PREFIX):
+            date_from, _, date_to = data.replace(TELEGRAM_KIZ_RANGE_CALLBACK_PREFIX, "", 1).partition(":")
+            self.send_kiz_range_report(chat_id, date_from, date_to)
             return
         if data.startswith("kiz_date:"):
             self.send_kiz_date_report(chat_id, data.split(":", 1)[1])

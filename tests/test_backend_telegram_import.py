@@ -22,6 +22,7 @@ from backend.app.telegram_worker import (
     TELEGRAM_BUTTON_SHIPMENT_DATE,
     TELEGRAM_BUTTON_STATUS,
     TELEGRAM_KIZ_FILE_PREFIX,
+    TELEGRAM_KIZ_RANGE_CALLBACK_PREFIX,
     TelegramWorker,
     display_date,
     summarize_active_orders_by_date,
@@ -733,6 +734,34 @@ class BackendTelegramImportTests(unittest.TestCase):
 
         self.assertEqual(answered, [("cb-3", "")])
         self.assertEqual(calls, [("123", "2026-05-30")])
+
+    def test_telegram_worker_handles_inline_kiz_range_callback(self):
+        worker = TelegramWorker.__new__(TelegramWorker)
+        worker.allowed_chat_ids = set()
+        answered = []
+        calls = []
+
+        def fake_answer(callback_query_id, text=""):
+            answered.append((callback_query_id, text))
+
+        def fake_send_range(chat_id, date_from, date_to):
+            calls.append((chat_id, date_from, date_to))
+            return True
+
+        worker.answer_callback_query = fake_answer
+        worker.send_kiz_range_report = fake_send_range
+
+        worker.handle_update({
+            "update_id": 23,
+            "callback_query": {
+                "id": "cb-4",
+                "data": f"{TELEGRAM_KIZ_RANGE_CALLBACK_PREFIX}2026-06-01:2026-06-10",
+                "message": {"chat": {"id": 123}},
+            },
+        })
+
+        self.assertEqual(answered, [("cb-4", "")])
+        self.assertEqual(calls, [("123", "2026-06-01", "2026-06-10")])
 
     def test_telegram_worker_handles_main_menu_callbacks(self):
         worker = TelegramWorker.__new__(TelegramWorker)
@@ -1926,10 +1955,14 @@ class BackendTelegramImportTests(unittest.TestCase):
 
         self.assertIn("29.05.2026", messages[0][1])
         self.assertIn("30.05.2026", messages[0][1])
-        self.assertEqual(messages[0][2]["inline_keyboard"][0][0]["callback_data"], "kiz_date:2026-05-29")
+        self.assertEqual(
+            messages[0][2]["inline_keyboard"][0][0]["callback_data"],
+            f"{TELEGRAM_KIZ_RANGE_CALLBACK_PREFIX}2026-05-29:2026-05-30",
+        )
+        self.assertEqual(messages[0][2]["inline_keyboard"][1][0]["callback_data"], "kiz_date:2026-05-29")
         self.assertEqual(states[0][1]["kiz_dates"][0]["date"], "2026-05-29")
 
-    def test_telegram_worker_limits_kiz_dates_menu_to_recent_seven_dates(self):
+    def test_telegram_worker_shows_all_kiz_dates_and_range_export_button(self):
         worker = TelegramWorker.__new__(TelegramWorker)
         messages = []
         states = []
@@ -1962,16 +1995,24 @@ class BackendTelegramImportTests(unittest.TestCase):
 
         worker.show_kiz_dates("123")
 
-        self.assertNotIn("01.06.2026", messages[0][1])
-        self.assertNotIn("02.06.2026", messages[0][1])
-        self.assertNotIn("03.06.2026", messages[0][1])
+        self.assertIn("Все даты - 01.06.2026-10.06.2026", messages[0][1])
+        self.assertIn("01.06.2026", messages[0][1])
+        self.assertIn("02.06.2026", messages[0][1])
+        self.assertIn("03.06.2026", messages[0][1])
         self.assertIn("04.06.2026", messages[0][1])
         self.assertIn("10.06.2026", messages[0][1])
         keyboard = messages[0][2]["inline_keyboard"]
-        self.assertEqual(len(keyboard), 7)
-        self.assertEqual(keyboard[0][0]["callback_data"], "kiz_date:2026-06-04")
+        self.assertEqual(len(keyboard), 11)
+        self.assertEqual(
+            keyboard[0][0]["callback_data"],
+            f"{TELEGRAM_KIZ_RANGE_CALLBACK_PREFIX}2026-06-01:2026-06-10",
+        )
+        self.assertEqual(keyboard[1][0]["callback_data"], "kiz_date:2026-06-01")
         self.assertEqual(keyboard[-1][0]["callback_data"], "kiz_date:2026-06-10")
         self.assertEqual([item["date"] for item in states[0][1]["kiz_dates"]], [
+            "2026-06-01",
+            "2026-06-02",
+            "2026-06-03",
             "2026-06-04",
             "2026-06-05",
             "2026-06-06",
