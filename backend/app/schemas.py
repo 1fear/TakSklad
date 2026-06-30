@@ -421,6 +421,15 @@ class ScanRead(BaseModel):
     block_quantity: int = 1
 
 
+class KizAvailabilityRead(BaseModel):
+    code: str
+    available: bool
+    reason: str = ""
+    latest_movement_type: str = ""
+    latest_order_item_id: str = ""
+    existing_order_item_id: str = ""
+
+
 class ImportCreate(BaseModel):
     source: str = "excel"
     filename: str | None = None

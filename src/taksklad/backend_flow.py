@@ -1,14 +1,20 @@
+import logging
+
 from .backend_client import (
     BackendApiError,
     backend_configured,
     backend_enabled,
     complete_order,
+    lookup_kiz_availability,
 )
 from .desktop_scan_rules import (
     format_duplicate_scan_message,
     format_scan_product_mismatch_message,
 )
 from .utils import normalize_kiz_code, normalize_text
+
+
+REUSABLE_KIZ_MOVEMENTS = {"return", "undo", "reset"}
 
 
 def order_uses_backend_scan_path(order):
@@ -50,6 +56,23 @@ def backend_blocked_scan_events_for_item(sync_result, order_item_id):
 
 def backend_blocked_scan_code(item):
     return normalize_kiz_code((item.get("payload") or {}).get("code"))
+
+
+def backend_releases_duplicate_scan_code(order, code):
+    if not order_uses_backend_scan_path(order):
+        return False
+    try:
+        availability = lookup_kiz_availability(
+            code,
+            order_item_id=normalize_text(order.get("_backend_order_item_id")),
+        )
+    except BackendApiError:
+        logging.warning("Backend KIZ availability check failed", exc_info=True)
+        return False
+    if not availability.get("available"):
+        return False
+    latest_movement_type = normalize_text(availability.get("latest_movement_type")).lower()
+    return latest_movement_type in REUSABLE_KIZ_MOVEMENTS
 
 
 def format_backend_blocked_scan_message(blocked_events):

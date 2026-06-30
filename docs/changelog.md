@@ -2,6 +2,23 @@
 
 Здесь фиксируются все правки в коде TakSklad: что менялось, в каком файле, зачем, и какие тесты это покрывают. Записи идут от новых к старым.
 
+## 2026-06-30
+
+### Hotfix 2.0.25: desktop не блокирует возвращенный КИЗ из stale duplicate-cache
+
+**Файлы:** `backend/app/orders_service.py`, `backend/app/main.py`, `backend/app/schemas.py`, `src/taksklad/backend_client.py`, `src/taksklad/backend_flow.py`, `src/taksklad/app_scanning.py`, `tests/test_backend_api_persistence.py`, `tests/test_desktop_ui_contract.py`.
+
+**Что стало:**
+
+- Добавлен read-only endpoint `GET /api/v1/kiz/availability`.
+- Desktop в backend-order path при локальном duplicate-cache проверяет backend перед блокировкой.
+- Локальный duplicate block снимается только если backend вернул `available=true` и latest movement `return`, `undo` или `reset`.
+- Активные дубли, дубль в текущей позиции, mismatch товара и превышение плана блокируются как раньше.
+
+**Причина:**
+
+- После возврата/отмены КИЗ мог оставаться в локальном `all_existing_codes` или Google fallback cache, хотя backend уже считал его свободным для повторного сканирования.
+
 ## 2026-06-26
 
 ### Hotfix 2.0.24: forced update для Green/Brown коробов

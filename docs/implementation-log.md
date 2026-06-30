@@ -2,6 +2,21 @@
 
 Документ фиксирует ход работ: что сделано, что не сделано, какие ошибки найдены, какие решения приняты и что требует проверки. Новые записи добавляются сверху.
 
+## 2026-06-30
+
+### Hotfix 2.0.25 KIZ reuse after return/undo/reset
+
+- Симптом: desktop показывал, что КИЗ уже есть в базе, хотя оператор отменил последние коды или КИЗ уже прошел возврат.
+- Причина:
+  - backend truth мог уже иметь latest movement `return`, `undo` или `reset`;
+  - desktop при этом сначала смотрел локальный `all_existing_codes` и блокировал скан до backend POST.
+- Решение:
+  - backend получил read-only endpoint `GET /api/v1/kiz/availability`;
+  - desktop при stale duplicate-cache запрашивает backend availability;
+  - duplicate block снимается только для backend-confirmed reusable movement `return`, `undo` или `reset`;
+  - активный дубль в текущих заказах остается hard-block.
+- Деплой делается изолированным hotfix от `origin/main`, чтобы не подтягивать 25 feature-commits текущей рабочей ветки.
+
 ## 2026-06-26
 
 ### Hotfix 2.0.24 forced desktop update

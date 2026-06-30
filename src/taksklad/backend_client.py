@@ -162,6 +162,15 @@ def create_scan(order_item_id, code, workstation_id=None, scanned_at=None):
     return backend_request("POST", "/api/v1/scans", payload)
 
 
+def lookup_kiz_availability(code, order_item_id=""):
+    query = urllib.parse.urlencode({
+        "code": code,
+        "order_item_id": order_item_id or "",
+    })
+    timeout = min(TAKSKLAD_BACKEND_TIMEOUT_SECONDS, 3)
+    return backend_request("GET", f"/api/v1/kiz/availability?{query}", timeout=timeout)
+
+
 def undo_scan(order_item_id, code, workstation_id=None, actor="desktop"):
     return backend_request(
         "POST",

@@ -15,11 +15,12 @@ from .kiz_movements_service import (
     kiz_is_available_for_outbound,
     latest_kiz_movement,
     lock_kiz_code_for_transaction,
+    normalize_kiz_code,
     outbound_movement_type_for,
     record_kiz_movement,
 )
 from .models import AuditLog, Order, OrderItem, ScanCode
-from .schemas import OrderItemRead, OrderRead, ScanCreate, ScanRead, ScanUndo
+from .schemas import KizAvailabilityRead, OrderItemRead, OrderRead, ScanCreate, ScanRead, ScanUndo
 from .scan_quantities import (
     SCAN_TYPE_AGGREGATE_BOX,
     product_key_from_name,
@@ -80,6 +81,59 @@ def list_returned_orders(db: Session, limit=50):
         .limit(max(1, min(int(limit or 50), 200)))
     )
     return [order_to_read(order) for order in db.execute(stmt).scalars().all()]
+
+
+def lookup_kiz_availability(db: Session, code, order_item_id=""):
+    code = normalize_kiz_code(code)
+    if not code:
+        raise ApiError(422, "Code must not be empty")
+
+    target_item_id = parse_uuid(order_item_id, "order_item_id") if str(order_item_id or "").strip() else None
+    same_item_scan = find_same_item_scan(db, code=code, order_item_id=target_item_id) if target_item_id else None
+    other_item_scan = find_other_item_scan(db, code=code, order_item_id=target_item_id) if target_item_id else None
+    existing_scan = other_item_scan or same_item_scan
+    if existing_scan is None and target_item_id is None:
+        existing_scan = db.execute(
+            select(ScanCode)
+            .where(ScanCode.code == code)
+            .order_by(ScanCode.scanned_at.desc(), ScanCode.id.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+
+    latest_movement = latest_kiz_movement(db, code)
+    latest_movement_type = latest_movement.movement_type if latest_movement is not None else ""
+    latest_order_item_id = str(latest_movement.order_item_id or "") if latest_movement is not None else ""
+    existing_order_item_id = str(existing_scan.order_item_id or "") if existing_scan is not None else ""
+
+    available = True
+    reason = "no_backend_history"
+    if same_item_scan is not None:
+        available = False
+        reason = "same_order_item_scan"
+    elif other_item_scan is not None and latest_movement is None:
+        available = False
+        reason = "other_order_item_scan_without_movement"
+    elif other_item_scan is not None and not kiz_is_available_for_outbound(latest_movement):
+        available = False
+        reason = "other_order_item_scan_busy"
+    elif other_item_scan is not None:
+        available = True
+        reason = f"latest_movement_{latest_movement_type}_available"
+    elif latest_movement is not None and not kiz_is_available_for_outbound(latest_movement):
+        available = False
+        reason = "latest_movement_busy"
+    elif latest_movement is not None:
+        available = True
+        reason = f"latest_movement_{latest_movement_type}_available"
+
+    return KizAvailabilityRead(
+        code=code,
+        available=available,
+        reason=reason,
+        latest_movement_type=latest_movement_type,
+        latest_order_item_id=latest_order_item_id,
+        existing_order_item_id=existing_order_item_id,
+    )
 
 
 def create_scan(db: Session, payload: ScanCreate):

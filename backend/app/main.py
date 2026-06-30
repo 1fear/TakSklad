@@ -58,6 +58,7 @@ from .orders_service import ApiError, complete_order as complete_order_in_db
 from .orders_service import create_scan as create_scan_in_db
 from .orders_service import list_active_orders as list_active_orders_in_db
 from .orders_service import list_returned_orders as list_returned_orders_in_db
+from .orders_service import lookup_kiz_availability as lookup_kiz_availability_in_db
 from .orders_service import lookup_return_order as lookup_return_order_in_db
 from .orders_service import mark_order_returned as mark_order_returned_in_db
 from .orders_service import undo_scan as undo_scan_in_db
@@ -90,6 +91,7 @@ from .schemas import (
     IncidentListRead,
     IncidentRead,
     IncidentStatusUpdate,
+    KizAvailabilityRead,
     OrderRead,
     OperationsAttentionRead,
     ReadinessResponse,
@@ -682,6 +684,14 @@ def list_returns(limit: int = 50, db=Depends(get_db)):
 def create_scan(payload: ScanCreate, db=Depends(get_db)):
     try:
         return create_scan_in_db(db, payload)
+    except ApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@api.get("/kiz/availability", response_model=KizAvailabilityRead)
+def lookup_kiz_availability(code: str, order_item_id: str = "", db=Depends(get_db)):
+    try:
+        return lookup_kiz_availability_in_db(db, code, order_item_id=order_item_id)
     except ApiError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
