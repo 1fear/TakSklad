@@ -40,6 +40,21 @@
 
 ## 2026-06-30
 
+### Telegram KIZ export: все даты вместо последних пунктов меню
+
+**Файлы:** `backend/app/telegram_worker.py`, `tests/test_backend_telegram_import.py`.
+
+**Что стало:**
+
+- В режиме `Выгрузка КИЗов -> По датам отгрузки` бот больше не обрезает список дат КИЗов до последних 7 пунктов.
+- В начале списка появилась кнопка `Выгрузить все даты (...)`, которая вызывает уже существующую backend-выгрузку диапазона `/api/v1/reports/kiz/range`.
+- Одиночная выгрузка конкретной даты сохранилась через кнопки дат.
+- Лимит последних 7 пунктов для логистики и выгрузки по Excel-файлам не менялся.
+
+**Проверки:**
+
+- `./.venv/bin/python -m unittest tests.test_backend_telegram_import tests.test_backend_api_persistence.BackendApiPersistenceTests.test_kiz_reports_show_source_file_progress_and_allow_partial_date_export tests.test_backend_api_persistence.BackendApiPersistenceTests.test_kiz_source_file_report_separates_same_filename_by_import` - 73 tests OK.
+
 ### Smartup automation phase audit follow-up
 
 **Файлы:** `backend/app/smartup_auto_import.py`, `deploy/vds/docker-compose.yml`, `deploy/vds/verify_smartup_automation.sh`, `tests/test_smartup_auto_import.py`, `tests/test_vds_acceptance_scripts.py`, `docs/user-business-process-guide.md`, `docs/implementation-log.md`, `docs/changelog.md`.
