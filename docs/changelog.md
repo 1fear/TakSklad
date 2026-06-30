@@ -4,6 +4,31 @@
 
 ## 2026-06-30
 
+### Web-admin sidebar viewport height fix
+
+**Файл:** `frontend/src/styles.css`.
+
+**Причина:** левая панель web-admin растягивалась на высоту длинной таблицы заказов, потому что grid-колонка брала высоту основного контента.
+
+**Что стало:**
+
+- `.sidebar` закреплен как `position: sticky; top: 0` и больше не растягивается вместе с длинной страницей;
+- высота панели ограничена `100vh` / `100dvh`, лишний контент внутри панели прокручивается через `overflow-y: auto`;
+- в mobile layout до `1080px` сохранено прежнее поведение: `height: auto`, `max-height: none`, `overflow: visible`.
+
+**Production deploy:**
+
+- restore point: `/opt/stacks/taksklad/restore_points/pre-sidebar-height-fix-20260630T140426Z`;
+- synced file: `frontend/src/styles.css`;
+- deployed SHA256: `f35b39b3dfa8e825cbef84dff9cb273941958c0df90bd1a6b98d1ea15fa88e9e`;
+- production stylesheet: `/assets/index-B6OpEXM3.css`;
+- `npm --prefix frontend run build` - OK;
+- `docker compose -f deploy/vds/docker-compose.yml --env-file deploy/vds/.env.example config` - OK;
+- `docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml build frontend` - OK;
+- `docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml up -d --no-deps frontend` recreated only `frontend`;
+- `https://api.taksklad.uz/health` - OK, backend `2.0.24`;
+- `https://api.taksklad.uz/ready` - DB/migrations OK; overall `degraded` remains from older `telegram_excel_import` failures and one pending `google_sheets_export`, not from this frontend deploy.
+
 ### Web-admin frontend nav refresh deploy
 
 **Состав:** frontend-only deploy уже подготовленного web-admin UI: отдельная вкладка `Отчет` отсутствует, `Импорты`, `SkladBot dry-run`, `Инциденты`, `Активность` доступны через `История действий`, добавлены `Календарь` и `Smartup`.

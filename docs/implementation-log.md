@@ -4,6 +4,27 @@
 
 ## 2026-06-30
 
+### Web-admin sidebar viewport height fix
+
+- Причина: левая панель web-admin растягивалась до высоты длинной таблицы заказов, потому что CSS Grid растягивал sidebar по высоте основной страницы.
+- Fix:
+  - `frontend/src/styles.css`: `.sidebar` получил `position: sticky`, `top: 0`, `align-self: start`, `height/max-height: 100vh` и fallback через `100dvh`;
+  - внутри sidebar включен `overflow-y: auto`, чтобы длинная навигация прокручивалась сама;
+  - mobile override до `1080px` оставлен динамическим: `height: auto`, `max-height: none`, `overflow: visible`.
+- Safety:
+  - создан restore point `/opt/stacks/taksklad/restore_points/pre-sidebar-height-fix-20260630T140426Z`;
+  - на сервер синхронизирован только `frontend/src/styles.css`;
+  - local/server SHA256 для `frontend/src/styles.css`: `f35b39b3dfa8e825cbef84dff9cb273941958c0df90bd1a6b98d1ea15fa88e9e`.
+- Verification:
+  - локально `npm --prefix frontend run build` - OK;
+  - локально `docker compose -f deploy/vds/docker-compose.yml --env-file deploy/vds/.env.example config` - OK;
+  - production frontend rebuild/recreate выполнен только для `frontend`;
+  - live HTML отдает `/assets/index-BhFMlZZS.js` и `/assets/index-B6OpEXM3.css`;
+  - live CSS содержит `position: sticky`, `align-self: start`, `height: 100vh`, `height: 100dvh`, `overflow-y: auto` и mobile override;
+  - `https://api.taksklad.uz/health` - OK, backend `2.0.24`;
+  - `https://api.taksklad.uz/ready` - DB/migrations OK; общий `degraded` остается из-за старых `telegram_excel_import` failures и одного pending `google_sheets_export`, не из-за sidebar fix;
+  - frontend container running, fresh nginx logs без ошибок.
+
 ### Web-admin frontend nav refresh deploy
 
 - Причина: production `taksklad.uz` продолжал отдавать старый frontend bundle `index-DJr5G6jG.js`, где слева были отдельные вкладки `Отчет`, `Импорты`, `SkladBot dry-run`, `Инциденты`, `Активность`. Текущий код уже содержал новую навигацию: `История действий`, `Календарь`, `Smartup`.

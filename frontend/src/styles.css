@@ -289,12 +289,26 @@ summary:focus-visible {
 }
 
 .sidebar {
+  position: sticky;
+  top: 0;
+  align-self: start;
   display: flex;
   flex-direction: column;
   gap: 28px;
+  height: 100vh;
+  max-height: 100vh;
   padding: 22px 18px;
+  overflow-y: auto;
   background: #252522;
   color: #f9faf7;
+  scrollbar-width: thin;
+}
+
+@supports (height: 100dvh) {
+  .sidebar {
+    height: 100dvh;
+    max-height: 100dvh;
+  }
 }
 
 .brand {
@@ -2007,7 +2021,10 @@ summary:focus-visible {
     display: grid;
     grid-template-columns: auto 1fr;
     gap: 12px;
+    height: auto;
+    max-height: none;
     padding: 12px;
+    overflow: visible;
   }
 
   .nav-tabs {
