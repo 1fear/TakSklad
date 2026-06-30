@@ -2268,6 +2268,78 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertEqual(len(event.payload["records"]), 1)
             self.assertEqual(event.payload["records"][0]["ID импорта"], "payload-duplicate-import")
 
+    def test_import_keeps_same_business_item_when_source_import_id_differs(self):
+        base_row = {
+            "Дата отгрузки": "01.07.2026",
+            "Тип оплаты": "Терминал",
+            "Клиент": "Same Deal Client",
+            "Адрес": "Same Deal Address",
+            "Координаты": "41.287313,69.260727",
+            "Торговый представитель": "Rep",
+            "Товары": "Chapman Green OP 20",
+            "Кол-во ШТ": "10",
+            "Кол-во блок": "1",
+            "Сумма позиции": "240000",
+            "ID заказа": "smartup:deal-1",
+            "ID импорта": "smartup:deal-1:product-1:1",
+        }
+        second_row = {
+            **base_row,
+            "ID заказа": "smartup:deal-2",
+            "ID импорта": "smartup:deal-2:product-1:1",
+        }
+
+        response = self.client.post(
+            "/api/v1/imports",
+            json={"source": "smartup_auto", "filename": "terminal.xlsx", "rows": [base_row, second_row]},
+        )
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        self.assertEqual(payload["items_created"], 2)
+        self.assertEqual(payload["duplicate_rows"], 0)
+        with self.SessionLocal() as db:
+            self.assertEqual(len(db.execute(select(Order)).scalars().all()), 1)
+            items = db.execute(select(OrderItem)).scalars().all()
+            items = sorted(items, key=lambda item: item.raw_payload["source_import_id"])
+
+        self.assertEqual([item.quantity_blocks for item in items], [1, 1])
+        self.assertEqual(
+            [item.raw_payload["source_import_id"] for item in items],
+            ["smartup:deal-1:product-1:1", "smartup:deal-2:product-1:1"],
+        )
+
+    def test_import_prefers_imported_repriced_line_total_over_calculated_total(self):
+        row = {
+            "Дата отгрузки": "01.07.2026",
+            "Тип оплаты": "Перечисление",
+            "Клиент": "Repriced Client",
+            "Адрес": "Repriced Address",
+            "Координаты": "41.240603,69.328495",
+            "Товары": "Chapman Brown OP 20",
+            "Кол-во ШТ": "500",
+            "Кол-во блок": "50",
+            "Цена за блок": "240000",
+            "Сумма с переоценкой": "11675000",
+            "ID заказа": "repriced-order",
+            "ID импорта": "repriced-import-row",
+        }
+
+        response = self.client.post(
+            "/api/v1/imports",
+            json={"source": "excel", "filename": "repriced.xlsx", "rows": [row]},
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["items_created"], 1)
+        with self.SessionLocal() as db:
+            item = db.execute(select(OrderItem)).scalar_one()
+
+        self.assertEqual(item.quantity_blocks, 50)
+        self.assertEqual(item.raw_payload["imported_line_total"], 11_675_000)
+        self.assertEqual(item.raw_payload["calculated_line_total"], 12_000_000)
+        self.assertEqual(item.raw_payload["line_total"], 11_675_000)
+
     def test_import_keeps_backend_data_when_google_sheets_export_fails(self):
         rows = [
             {

@@ -32,7 +32,7 @@ QUANTITY_BLOCKS_FIELDS = ("Кол-во блок", "Кол-во блоков", "q
 PIECES_PER_BLOCK_FIELDS = ("_pieces_per_block", "pieces_per_block")
 BLOCK_PRICE_FIELDS = ("Цена за блок", "block_price")
 IMPORTED_UNIT_PRICE_FIELDS = ("Цена из файла", "unit_price")
-IMPORTED_LINE_TOTAL_FIELDS = ("Сумма из файла", "imported_line_total")
+IMPORTED_LINE_TOTAL_FIELDS = ("Сумма из файла", "Сумма с переоценкой", "imported_line_total")
 LINE_TOTAL_FIELDS = ("Сумма позиции", "line_total")
 CALCULATED_LINE_TOTAL_FIELDS = ("Сумма рассчитанная", "calculated_line_total")
 STATUS_FIELDS = ("Статус", "status")
@@ -117,11 +117,7 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
             errors.append(f"row {index}: {exc}")
             continue
 
-        if (
-            row["source_import_id"] and row["source_import_id"] in current_import_source_import_ids
-        ) or (
-            row["item_key"] and row["item_key"] in current_import_item_keys
-        ):
+        if row_is_duplicate_in_current_import(row, current_import_source_import_ids, current_import_item_keys):
             duplicate_rows += 1
             continue
 
@@ -328,11 +324,11 @@ def preview_import(db: Session, payload: ImportCreate):
             continue
 
         existing_item = find_existing_item_for_row(row, existing_items)
-        duplicate = existing_item is not None
-        if row["source_import_id"] and row["source_import_id"] in preview_source_import_ids:
-            duplicate = True
-        if row["item_key"] and row["item_key"] in preview_item_keys:
-            duplicate = True
+        duplicate = existing_item is not None or row_is_duplicate_in_current_import(
+            row,
+            preview_source_import_ids,
+            preview_item_keys,
+        )
 
         if duplicate:
             duplicate_row_numbers.append(index)
@@ -560,13 +556,19 @@ def is_returned_order(order):
 def find_existing_item_for_row(row, existing_items):
     source_import_id = row.get("source_import_id")
     if source_import_id:
-        item = existing_items["source_import_id"].get(source_import_id)
-        if item is not None:
-            return item
+        return existing_items["source_import_id"].get(source_import_id)
     item_key = row.get("item_key")
     if item_key:
         return existing_items["item_key"].get(item_key)
     return None
+
+
+def row_is_duplicate_in_current_import(row, source_import_ids, item_keys):
+    source_import_id = row.get("source_import_id")
+    if source_import_id:
+        return source_import_id in source_import_ids
+    item_key = row.get("item_key")
+    return bool(item_key and item_key in item_keys)
 
 
 def update_existing_order_address(order, row):
@@ -608,7 +610,8 @@ def normalize_import_row(raw_row):
     imported_unit_price = parse_money(first_value(raw_row, IMPORTED_UNIT_PRICE_FIELDS))
     imported_line_total = parse_money(first_value(raw_row, IMPORTED_LINE_TOTAL_FIELDS))
     calculated_line_total = parse_money(first_value(raw_row, CALCULATED_LINE_TOTAL_FIELDS)) or quantity_blocks * block_price
-    line_total = parse_money(first_value(raw_row, LINE_TOTAL_FIELDS)) or imported_line_total or calculated_line_total
+    explicit_line_total = parse_money(first_value(raw_row, LINE_TOTAL_FIELDS))
+    line_total = imported_line_total or explicit_line_total or calculated_line_total
     status = normalize_status(first_value(raw_row, STATUS_FIELDS))
     source_order_id = first_value(raw_row, ORDER_ID_FIELDS)
     source_import_id = first_value(raw_row, IMPORT_ID_FIELDS)
