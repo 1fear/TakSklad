@@ -6686,3 +6686,28 @@ cd /opt/taksklad/app
   - `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_skladbot_daily_report` - 23 tests OK;
   - `./.venv/bin/python -m py_compile backend/app/skladbot_daily_report.py tests/test_skladbot_daily_report.py` - OK;
   - `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_daily_report tests.test_skladbot_daily_report` остановился на импорте `tkinter`: текущий Python без модуля `_tkinter`.
+
+### Smartup import dedupe and repriced logistics totals
+
+- Дата: 2026-06-30.
+- Причина:
+  - две разные строки Smartup с разными `ID импорта`, но одинаковыми клиентом, датой, координатами, товаром и количеством, схлопывались по fallback `item_key`;
+  - Google Sheets sync перезаписывал импортированную `Сумма с переоценкой` расчетом `blocks * block_price`;
+  - логистический отчет для переоцененной строки показывал цену блока из `block_price`, хотя итоговая сумма строки была ниже.
+- Изменено:
+  - `backend/app/imports_service.py` дедуплицирует строки по `source_import_id`, если он есть, и использует бизнес-ключ только для строк без source id;
+  - импорт сохраняет `Сумма с переоценкой` как `imported_line_total` и ставит ее в `line_total` приоритетнее расчетной суммы;
+  - `backend/app/google_sheets_sync_worker.py` сохраняет импортированную/табличную итоговую сумму и не откатывает ее к расчетной;
+  - `backend/app/logistics_service.py` для отчета выводит цену блока из `line_total / quantity_blocks`, если итоговая сумма отличается от `block_price * quantity_blocks`.
+- Production repair:
+  - Postgres backup перед ручным ремонтом: `/opt/taksklad/backups/postgres/taksklad-postgres-pre-import-dedupe-repair-20260630T140832Z.sql.gz`, SHA256 `2313ef260d686db1e71091aae075cedee3692c48716f6daaa9ad55b501ecf7f9`;
+  - добавлена пропущенная строка YASMINA `smartup:257984858:1541071310:1` через dry-run SkladBot mode, без создания новой заявки в SkladBot;
+  - позиция KOMUNA `89581c37-16b9-45fe-afb5-a5eee222760d` проверена с `line_total=11675000`, `calculated_line_total=12000000`.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_smartup_auto_import tests.test_google_sheets_sync_worker` - 41 tests OK;
+  - targeted `tests.test_backend_api_persistence` import/logistics checks - OK;
+  - production deploy commits: `bb1c083` и `e4bb370`;
+  - backend container health внутри `vds-backend-api-1`: `{"status":"ok","service":"taksklad-backend","version":"2.0.24","environment":"staging"}`;
+  - runtime SHA256 для `google_sheets_sync_worker.py` и `logistics_service.py` совпадает с локальными файлами;
+  - финальный отчет `/Users/anton/Documents/Telegram/TakSklad_логистика_01.07.2026_FIXED.xlsx`;
+  - финальная сверка `/Users/anton/Documents/Telegram/Сверка_логистика_01.07.2026_FIXED.xlsx`: source rows 223, logistics rows 223, missing 0, extra 0, conflicts 0, blocks 511, amount 122315000.
