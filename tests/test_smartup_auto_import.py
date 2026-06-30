@@ -248,6 +248,40 @@ class SmartupAutoImportTests(unittest.TestCase):
 
         self.assertEqual([order["deal_id"] for order in filtered], ["ok"])
 
+    def test_build_import_rows_reverse_geocodes_smartup_coordinates_without_address(self):
+        config = self.config("/tmp")
+        order = sample_order(delivery_address_full="", delivery_address_short="")
+
+        with mock.patch(
+            "backend.app.smartup_auto_import.reverse_geocode_yandex",
+            return_value=("Ташкент, геокодированный адрес 1", ""),
+        ) as reverse_geocode:
+            rows = build_import_rows(
+                [order],
+                datetime(2026, 6, 25).date(),
+                "Терминал 25.06.2026 Часть 1.xlsx",
+                config,
+            )
+
+        self.assertEqual(rows[0]["Адрес"], "Ташкент, геокодированный адрес 1")
+        self.assertEqual(rows[0]["Координаты"], "41.311081,69.240562")
+        reverse_geocode.assert_called_once_with("41.311081,69.240562", cache=mock.ANY)
+
+    def test_build_import_rows_keeps_gps_fallback_when_reverse_geocode_fails(self):
+        config = self.config("/tmp")
+        order = sample_order(delivery_address_full="", delivery_address_short="")
+
+        with mock.patch("backend.app.smartup_auto_import.reverse_geocode_yandex", return_value=("", "timeout")):
+            rows = build_import_rows(
+                [order],
+                datetime(2026, 6, 25).date(),
+                "Терминал 25.06.2026 Часть 1.xlsx",
+                config,
+            )
+
+        self.assertEqual(rows[0]["Адрес"], "GPS: 41.311081,69.240562")
+        self.assertEqual(rows[0]["Координаты"], "41.311081,69.240562")
+
     def test_shadow_preview_writes_export_but_does_not_change_status_or_import(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             fake = FakeSmartupClient([sample_order()])
