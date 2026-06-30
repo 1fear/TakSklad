@@ -16,6 +16,13 @@
   - duplicate block снимается только для backend-confirmed reusable movement `return`, `undo` или `reset`;
   - активный дубль в текущих заказах остается hard-block.
 - Деплой делается изолированным hotfix от `origin/main`, чтобы не подтягивать 25 feature-commits текущей рабочей ветки.
+- Release:
+  - `APP_VERSION` desktop/backend поднят до `2.0.25`;
+  - GitHub workflow `28451931009` собрал `TakSklad.exe` и `TakSklad-windows-x64.zip`;
+  - `version.json` переведен на forced `2.0.25`, `mandatory=true`, `block_workflow=true`;
+  - SHA `TakSklad.exe`: `32fdef699d44cc7c565c18367d331e3b05dba78cf05802b6050664950cd2b31a`;
+  - SHA `TakSklad-windows-x64.zip`: `2e49825d25c6c3332f20984f4b4998e223c65500714bd66f1a9763be493e218d`;
+  - metadata уже примененной production migration `20260626_0005` добавлена в hotfix-ветку, чтобы `/ready` не показывал ложный `revision_mismatch`.
 
 ## 2026-06-26
 

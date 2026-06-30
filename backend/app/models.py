@@ -205,6 +205,24 @@ class ClientPoint(Base):
     updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
+class LogisticsCalendarDay(Base):
+    __tablename__ = "logistics_calendar_days"
+    __table_args__ = (
+        UniqueConstraint("service_date", name="uq_logistics_calendar_days_service_date"),
+        Index("idx_logistics_calendar_days_service_date", "service_date"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    service_date: Mapped[object] = mapped_column(Date, nullable=False)
+    is_non_working: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    reason: Mapped[str | None] = mapped_column(String(255))
+    source: Mapped[str] = mapped_column(String(40), nullable=False, default="manual")
+    actor: Mapped[str | None] = mapped_column(String(120))
+    raw_payload: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class User(Base):
     __tablename__ = "users"
 

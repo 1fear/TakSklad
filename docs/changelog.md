@@ -6,7 +6,7 @@
 
 ### Hotfix 2.0.25: desktop не блокирует возвращенный КИЗ из stale duplicate-cache
 
-**Файлы:** `backend/app/orders_service.py`, `backend/app/main.py`, `backend/app/schemas.py`, `src/taksklad/backend_client.py`, `src/taksklad/backend_flow.py`, `src/taksklad/app_scanning.py`, `tests/test_backend_api_persistence.py`, `tests/test_desktop_ui_contract.py`.
+**Файлы:** `backend/app/orders_service.py`, `backend/app/main.py`, `backend/app/schemas.py`, `src/taksklad/backend_client.py`, `src/taksklad/backend_flow.py`, `src/taksklad/app_scanning.py`, `version.json`, `tools/release_preflight.py`, `tools/build_windows_test_archive.ps1`, `deploy/vds/acceptance_status.sh`, `tests/*`.
 
 **Что стало:**
 
@@ -14,6 +14,15 @@
 - Desktop в backend-order path при локальном duplicate-cache проверяет backend перед блокировкой.
 - Локальный duplicate block снимается только если backend вернул `available=true` и latest movement `return`, `undo` или `reset`.
 - Активные дубли, дубль в текущей позиции, mismatch товара и превышение плана блокируются как раньше.
+- Release/preflight/VDS guards переключены на forced `2.0.25`.
+- В hotfix-ветку добавлена metadata уже примененной production migration `20260626_0005`, чтобы `/ready` не деградировал из-за ложного `revision_mismatch`.
+
+**Release:**
+
+- GitHub Release `v2.0.25` собран workflow `28451931009`.
+- `TakSklad.exe` SHA: `32fdef699d44cc7c565c18367d331e3b05dba78cf05802b6050664950cd2b31a`.
+- `TakSklad-windows-x64.zip` SHA: `2e49825d25c6c3332f20984f4b4998e223c65500714bd66f1a9763be493e218d`.
+- Public `version.json` переведен на forced `2.0.25`, `mandatory=true`, `block_workflow=true`.
 
 **Причина:**
 
