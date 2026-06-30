@@ -23,6 +23,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .imports_service import create_import, preview_import
+from .excel_importer import reverse_geocode_yandex
 from .logistics_calendar_service import is_logistics_non_working_day, resolve_effective_delivery_date
 from .logistics_service import build_logistics_report_xlsx
 from .models import AuditLog, ImportJob, PendingEvent
@@ -750,6 +751,7 @@ def build_import_rows(
     db: Session | None = None,
 ) -> list[dict[str, Any]]:
     rows = []
+    geocode_cache: dict[str, tuple[str, str]] = {}
     for order_index, order in enumerate(orders, start=1):
         deal_id = normalize_text(order.get("deal_id"))
         if not deal_id:
@@ -766,7 +768,7 @@ def build_import_rows(
         if not client:
             raise SmartupAutoImportError(f"Smartup deal_id={deal_id}: нет person_name")
         coordinates = smartup_coordinates(order)
-        address = smartup_address(order, coordinates)
+        address = smartup_address(order, coordinates, geocode_cache=geocode_cache)
         representative = normalize_text(
             order.get("sales_manager_name")
             or order.get("sales_manager_code")
@@ -877,11 +879,19 @@ def smartup_coordinates(order: dict[str, Any]) -> str:
     return f"{latitude},{longitude}"
 
 
-def smartup_address(order: dict[str, Any], coordinates: str) -> str:
+def smartup_address(
+    order: dict[str, Any],
+    coordinates: str,
+    *,
+    geocode_cache: dict[str, tuple[str, str]] | None = None,
+) -> str:
     address = normalize_text(order.get("delivery_address_full") or order.get("delivery_address_short"))
     if address:
         return address
     if coordinates:
+        geocoded_address, _ = reverse_geocode_yandex(coordinates, cache=geocode_cache)
+        if geocoded_address:
+            return geocoded_address
         return f"GPS: {coordinates}"
     return ""
 
