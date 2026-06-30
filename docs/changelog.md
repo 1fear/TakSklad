@@ -24,6 +24,16 @@
 - `TakSklad-windows-x64.zip` SHA: `2e49825d25c6c3332f20984f4b4998e223c65500714bd66f1a9763be493e218d`.
 - Public `version.json` переведен на forced `2.0.25`, `mandatory=true`, `block_workflow=true`.
 
+**Production deploy:**
+
+- runtime host: `api.taksklad.uz`, app path `/opt/stacks/taksklad/app`;
+- restore point: `/opt/stacks/taksklad/restore_points/pre-kiz-dedup-rollout-2-0-25-20260630T143801Z`;
+- Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260630T143801Z.sql.gz`;
+- `backend-api` rebuilt and restarted with version `2.0.25`;
+- `https://api.taksklad.uz/health` - OK, backend `2.0.25`;
+- `https://api.taksklad.uz/ready` - DB/migrations OK at `20260626_0005`; overall `degraded` remains only from old `telegram_excel_import` failures;
+- live `GET /api/v1/kiz/availability` for the incident KIZ returned `available=true`, `latest_movement_type=return`.
+
 **Причина:**
 
 - После возврата/отмены КИЗ мог оставаться в локальном `all_existing_codes` или Google fallback cache, хотя backend уже считал его свободным для повторного сканирования.
