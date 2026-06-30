@@ -4,6 +4,39 @@
 
 ## 2026-06-30
 
+### Smartup recovery production deploy with automation off
+
+- Цель: выкатить `0cf5d37 Prepare Smartup production recovery` на production без включения Smartup automation.
+- Перед deploy:
+  - local worktree clean on `codex/taksklad-startup-speedup`;
+  - public `https://api.taksklad.uz/health` отвечал OK, backend `2.0.24`;
+  - на текущем сервере app path `/opt/stacks/taksklad/app`;
+  - старый серверный compose не содержал `smartup-auto-import-worker`, поэтому узкого sync только трех файлов было недостаточно.
+- Safety:
+  - Smartup flags в серверном `deploy/vds/.env` отсутствовали перед deploy, значит compose default должен держать их `false`;
+  - restore point: `/opt/stacks/taksklad/restore_points/pre-smartup-recovery-off-20260630T070044Z`;
+  - Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260630T070045Z.sql.gz`.
+- Deploy:
+  - synced `backend/`, `frontend/`, `deploy/vds/`, `tools/` and updated docs to `/opt/stacks/taksklad/app`;
+  - `.env`, outputs, backups, local build caches and `node_modules` were not synced;
+  - deployed SHA256:
+    - `backend/app/imports_service.py` = `0f2dfd97e1ffee26f38ccc9181d0802daa47e338800f1e7cf54461aca0c79e9a`;
+    - `backend/app/skladbot_request_dry_run.py` = `cf706bd59eb041ffa5595ec580261f7207ce84e534c9f9311a8c00a95ad08d80`;
+    - `backend/app/smartup_auto_import.py` = `bd6df8165a83bf6f2d90e3741a0e79fa7cdb7521287ab1d97969c0d7dc2c0c89`;
+    - `deploy/vds/docker-compose.yml` = `a13b76483601e65f08f69d0ae0737d56d48a6e0550af3f11498456a4cdc7dc24`;
+  - first Alembic run used the old image and left `/ready` at `revision_mismatch`; after image rebuild Alembic was rerun and upgraded `20260623_0004 -> 20260626_0005`;
+  - final Alembic current: `20260626_0005 (head)`;
+  - `docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml up -d --build backend-api skladbot-worker smartup-auto-import-worker`.
+- Post-deploy verification:
+  - containers running: `backend-api`, `skladbot-worker`, `smartup-auto-import-worker`, `postgres`;
+  - VDS compile check inside containers - OK;
+  - `https://api.taksklad.uz/health` - OK, backend `2.0.24`;
+  - `https://api.taksklad.uz/ready` - DB/migrations OK, overall `degraded` because of old `telegram_excel_import` failed events and one pending `google_sheets_export`;
+  - Smartup flags inside `smartup-auto-import-worker`: `SMARTUP_AUTO_IMPORT_ENABLED=false`, `SMARTUP_AUTO_IMPORT_BACKEND_IMPORT_ENABLED=false`, `SMARTUP_AUTO_IMPORT_CHANGE_STATUS_ENABLED=false`, `SMARTUP_AUTO_IMPORT_PROCESS_SKLADBOT_NOW=false`;
+  - worker log: `Smartup auto import worker is disabled`;
+  - `pending_events` query for `event_type='smartup_auto_import_run'` returned no rows;
+  - fresh logs for `backend-api`, `skladbot-worker`, `smartup-auto-import-worker` since deploy contained no `error|traceback|exception|critical|failed`.
+
 ### Smartup production recovery prep
 
 - Цель: подготовить локальный Smartup update к production без включения live write-флагов и без риска потерять заказ между Smartup и TakSklad.

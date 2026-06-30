@@ -4,6 +4,30 @@
 
 ## 2026-06-30
 
+### Smartup recovery deploy with automation off
+
+**Файлы:** `backend/app/imports_service.py`, `backend/app/skladbot_request_dry_run.py`, `backend/app/smartup_auto_import.py`, `backend/app/smartup_auto_import_worker.py`, `backend/app/smartup_auto_import_history_service.py`, `deploy/vds/docker-compose.yml`, `docs/implementation-log.md`, `docs/changelog.md`.
+
+**VDS deploy:**
+
+- commit: `0cf5d37 Prepare Smartup production recovery`;
+- runtime host: `api.taksklad.uz`, app path `/opt/stacks/taksklad/app`;
+- restore point: `/opt/stacks/taksklad/restore_points/pre-smartup-recovery-off-20260630T070044Z`;
+- Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260630T070045Z.sql.gz`;
+- synced runtime: `backend/`, `frontend/`, `deploy/vds/`, `tools/` and updated docs, without `.env`, outputs or backups;
+- deployed SHA256:
+  - `backend/app/imports_service.py` = `0f2dfd97e1ffee26f38ccc9181d0802daa47e338800f1e7cf54461aca0c79e9a`;
+  - `backend/app/skladbot_request_dry_run.py` = `cf706bd59eb041ffa5595ec580261f7207ce84e534c9f9311a8c00a95ad08d80`;
+  - `backend/app/smartup_auto_import.py` = `bd6df8165a83bf6f2d90e3741a0e79fa7cdb7521287ab1d97969c0d7dc2c0c89`;
+- `docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml up -d --build backend-api skladbot-worker smartup-auto-import-worker` пересобрал и запустил эти сервисы;
+- Alembic upgraded to `20260626_0005 (head)`;
+- `SMARTUP_AUTO_IMPORT_ENABLED=false`, `SMARTUP_AUTO_IMPORT_BACKEND_IMPORT_ENABLED=false`, `SMARTUP_AUTO_IMPORT_CHANGE_STATUS_ENABLED=false`, `SMARTUP_AUTO_IMPORT_PROCESS_SKLADBOT_NOW=false`;
+- `smartup-auto-import-worker` запущен, но пишет `Smartup auto import worker is disabled`;
+- `pending_events` не содержит `smartup_auto_import_run` событий после deploy;
+- `https://api.taksklad.uz/health` - OK, backend `2.0.24`;
+- `https://api.taksklad.uz/ready` - DB/migrations OK, общий `degraded` из-за старых `telegram_excel_import` ошибок и одного pending `google_sheets_export`, не из-за deploy;
+- fresh logs `backend-api`/`skladbot-worker`/`smartup-auto-import-worker` since deploy - без `error|traceback|exception|critical|failed`.
+
 ### Smartup prod recovery перед включением automation
 
 **Файлы:** `backend/app/smartup_auto_import.py`, `tests/test_smartup_auto_import.py`, `docs/user-business-process-guide.md`, `docs/taksklad-system-stack-overview.md`, `docs/implementation-log.md`, `docs/changelog.md`.
