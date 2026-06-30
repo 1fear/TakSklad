@@ -4,6 +4,29 @@
 
 ## 2026-06-30
 
+### Smartup controlled run на дату 2026-07-01
+
+- Цель: выполнить первый контролируемый Smartup `run-once` на завтрашнюю дату без включения scheduled automation.
+- Перед запуском:
+  - создан Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-pre-smartup-run-2026-07-01-1523-20260630T102500Z.sql.gz`;
+  - первый run с `--date 2026-07-01 --slot 15:23` остановился до Smartup export из-за отсутствующих `SMARTUP_USERNAME`/`SMARTUP_PASSWORD` в runtime env;
+  - после этого Smartup imports/orders created after run: `0/0`, SkladBot create не запускался.
+- Credentials/env:
+  - в server `deploy/vds/.env` добавлены только непустые Smartup runtime keys из локального `.env.smartup.local`: `SMARTUP_BASE_URL`, `SMARTUP_USERNAME`, `SMARTUP_PASSWORD`;
+  - значения секретов в docs/log не выводились;
+  - `SMARTUP_PROJECT_CODE`, `SMARTUP_FILIAL_ID`, `SMARTUP_FILIAL_CODE` остались empty/missing, потому что в локальном `.env.smartup.local` они пустые;
+  - server env backup: `/opt/stacks/taksklad/app/deploy/vds/.env.pre-smartup-creds-20260630T103318Z.bak`;
+  - `smartup-auto-import-worker` recreated через compose без rebuild, scheduled automation осталась выключенной.
+- Controlled run:
+  - command scope: `SMARTUP_AUTO_IMPORT_ENABLED=false`, `SMARTUP_AUTO_IMPORT_BACKEND_IMPORT_ENABLED=true`, `SMARTUP_AUTO_IMPORT_CHANGE_STATUS_ENABLED=true`, `SKLADBOT_CREATE_REQUESTS_MODE=dry_run`, `SMARTUP_AUTO_IMPORT_PROCESS_SKLADBOT_NOW=false`;
+  - run parameters: `python -m app.smartup_auto_import_worker run-once --date 2026-07-01 --slot 15:23`;
+  - Smartup API `order$export` returned HTTP 200;
+  - result: `status=no_orders`, `raw_orders=0`, `selected_orders=0`, `part=1`, `skladbot_processing=skipped`;
+  - final DB check: `smartup_auto_import_run` for `smartup:auto_import:v1:2026-07-01:15:23` is `completed`, `attempts=2`;
+  - Smartup imports/orders after successful retry: `0/0`;
+  - `/health` OK, migrations OK at revision `20260626_0005`; `/ready` still `degraded` due old `telegram_excel_import` failed events and current Google mirror queue, not due Smartup run.
+- Вывод: controlled run path работает до Smartup API и корректно завершает empty export; боевой импорт заказов не проверен, потому что Smartup вернул 0 orders for `2026-07-01`.
+
 ### Smartup recovery production deploy с выключенной automation
 
 - Цель: выкатить `0cf5d37 Prepare Smartup production recovery` на production без включения Smartup automation.
