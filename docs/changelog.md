@@ -18,6 +18,22 @@
 **Проверки:**
 
 - `./.venv/bin/python -m unittest tests.test_backend_telegram_import tests.test_backend_api_persistence.BackendApiPersistenceTests.test_kiz_reports_show_source_file_progress_and_allow_partial_date_export tests.test_backend_api_persistence.BackendApiPersistenceTests.test_kiz_source_file_report_separates_same_filename_by_import` - 73 tests OK.
+- `./.venv/bin/python -m unittest discover -s tests -p 'test_*.py'` - 654 tests OK.
+
+**Production deploy:**
+
+- commit: `ef31431 Allow all KIZ dates in Telegram export`;
+- runtime host: `api.taksklad.uz` -> `159.195.138.95`, app path `/opt/stacks/taksklad/app`;
+- restore point: `/opt/stacks/taksklad/restore_points/pre-telegram-kiz-all-dates-20260630T113134Z`;
+- Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260630T113134Z.sql.gz`;
+- deployed files: `backend/app/telegram_worker.py`, `docs/changelog.md`;
+- deployed SHA256:
+  - `backend/app/telegram_worker.py` = `8934f558ab14b9a5ace270af075b834c7fec99f68a0b0fbfa5f3565f01792311`;
+  - `docs/changelog.md` = `9865c6f2efcf0f4dfde75d6aee981273145470a0018c8bef72801a86dcc41671`;
+- `docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml up -d --build telegram-worker` rebuilt the backend image and recreated `backend-api` + `telegram-worker`;
+- `https://api.taksklad.uz/health` - OK, backend `2.0.24`;
+- `https://api.taksklad.uz/ready` - DB/migrations OK at `20260626_0005`; overall `degraded` because of older `telegram_excel_import` failures and a pending Google mirror export, not because of this deploy;
+- runtime smoke inside `telegram-worker` confirmed callback `kiz_range:2026-06-01:2026-06-10`.
 
 ### Smartup recovery deploy с выключенной automation
 
