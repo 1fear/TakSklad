@@ -413,7 +413,7 @@ def clean_address_for_display(value):
 
 def is_missing_address_text(value):
     text = normalize_text(value).casefold().replace("ё", "е")
-    return not text or text in MISSING_ADDRESS_MARKERS or text.startswith("координаты")
+    return not text or text in MISSING_ADDRESS_MARKERS or text.startswith(("координаты", "gps"))
 
 
 def is_pickup_address(value):

@@ -6510,3 +6510,22 @@ cd /opt/taksklad/app
   - wrong-SKU, duplicate-other-order и переполнение агрегата остаются blocked/visible, не автопрячутся;
   - при refresh error desktop сохраняет текущую загруженную позицию, если она уже была безопасно загружена;
   - секреты, chat IDs, полные КИЗ-списки и клиентские payload не должны попадать в diagnostics/docs/log summaries.
+### Smartup reverse geocode and Google mirror address guard
+
+- Причина: Smartup orders без текстового адреса сначала импортировались как `GPS: lat,lng`; при создании SkladBot-заявок это попадало в поле адреса. После backfill Google mirror мог вернуть `GPS:` обратно в Postgres.
+- Изменено:
+  - Smartup import делает reverse geocode координат через существующий Yandex geocoder и использует `GPS:` только как fallback;
+  - ошибка reverse geocode не роняет весь Smartup import, а оставляет fallback;
+  - `GPS:` теперь считается missing-address marker в import/backfill и Google export;
+  - Google-to-backend sync больше не перетирает реальный адрес в Postgres заглушкой `GPS:`/`Координаты`;
+  - Smartup Telegram routing разделен: client chat получает только Smartup export files, logistics chat получает только финальный logistics report после слота `17:50`.
+- Production recovery:
+  - DB backup перед работами: `/opt/taksklad/backups/postgres/taksklad-postgres-pre-smartup-address-skladbot-20260630T114407Z.sql.gz`;
+  - Smartup orders backfilled: 45/45, `orders.address like 'GPS:%'` = 0 после полного цикла sync;
+  - SkladBot create events completed: 45/45, TakSklad orders linked: 45/45;
+  - Smartup export file `Терминал 30.06.2026 Часть 1.xlsx` отправлен в client chat вручную после инцидента;
+  - read-only SkladBot check после инцидента: 44 из 45 созданных заявок в самой WMS уже имеют `GPS:` в поле адреса; публичный update endpoint для правки созданных заявок не подтвержден.
+- Проверено:
+  - `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_smartup_auto_import tests.test_google_sheets_sync_worker ...` - 38 tests OK после Telegram routing split;
+  - `py_compile` измененных модулей - OK;
+  - `git diff --check` по измененным файлам - OK.
