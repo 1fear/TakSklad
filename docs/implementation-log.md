@@ -4,6 +4,35 @@
 
 ## 2026-06-30
 
+### Smartup scheduled automation enabled
+
+- Цель: включить production scheduled automation Smartup после controlled run.
+- Safety:
+  - перед включением создан Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-pre-smartup-automation-on-20260630T104351Z.sql.gz`;
+  - server env backup: `/opt/stacks/taksklad/app/deploy/vds/.env.pre-smartup-automation-on-20260630T104406Z.bak`;
+  - значения Smartup/Telegram secrets в docs/log не выводились.
+- Runtime flags после включения:
+  - `SMARTUP_AUTO_IMPORT_ENABLED=true`;
+  - `SMARTUP_AUTO_IMPORT_BACKEND_IMPORT_ENABLED=true`;
+  - `SMARTUP_AUTO_IMPORT_CHANGE_STATUS_ENABLED=true`;
+  - `SMARTUP_AUTO_IMPORT_PROCESS_SKLADBOT_NOW=false`;
+  - `SMARTUP_AUTO_IMPORT_TIMES=12:00,15:00,17:50`;
+  - `SMARTUP_AUTO_IMPORT_FINAL_TIME=17:50`;
+  - `SKLADBOT_CREATE_REQUESTS_MODE=enabled`.
+- Runtime caveats:
+  - `SMARTUP_USERNAME`, `SMARTUP_PASSWORD`, `SMARTUP_BASE_URL` present in worker env;
+  - `SMARTUP_PROJECT_CODE`, `SMARTUP_FILIAL_ID`, `SMARTUP_AUTO_IMPORT_LOGISTICS_CHAT_ID`, `SMARTUP_AUTO_IMPORT_ALERT_CHAT_ID` missing;
+  - without logistics/alert chat ids final logistics report and Smartup failure alert can be skipped.
+- Deploy action:
+  - updated server `deploy/vds/.env`;
+  - recreated only `smartup-auto-import-worker` with compose, no rebuild.
+- Verification:
+  - worker log after restart: `{'status': 'idle', 'now': '2026-06-30T15:44:19.046208+05:00'}`;
+  - automation is enabled, but current time was outside the `15:00` grace window;
+  - next default scheduled slot is `17:50` Asia/Tashkent on `2026-06-30`;
+  - `/health` OK, migrations OK at revision `20260626_0005`;
+  - `/ready` remains `degraded` due old `telegram_excel_import` failed events, not due Smartup automation.
+
 ### Smartup controlled run на дату 2026-07-01
 
 - Цель: выполнить первый контролируемый Smartup `run-once` на завтрашнюю дату без включения scheduled automation.
