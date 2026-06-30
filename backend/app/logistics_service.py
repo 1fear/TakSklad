@@ -273,10 +273,13 @@ def item_quantity_blocks(item):
 def item_block_price(item, line_total=0, quantity_blocks=0):
     raw_payload = item.raw_payload or {}
     explicit = parse_int(raw_payload.get("block_price"))
+    if line_total and quantity_blocks:
+        line_total_price = int(line_total / quantity_blocks)
+        if explicit and explicit * quantity_blocks == line_total:
+            return explicit
+        return line_total_price
     if explicit:
         return explicit
-    if line_total and quantity_blocks:
-        return int(line_total / quantity_blocks)
     return DEFAULT_BLOCK_PRICE
 
 

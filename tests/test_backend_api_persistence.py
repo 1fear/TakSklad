@@ -3143,6 +3143,37 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(sheet["AG2"].value, "69.27")
         workbook.close()
 
+    def test_logistics_report_uses_repriced_line_total_for_block_price(self):
+        rows = [
+            {
+                "Дата отгрузки": "2026-07-01",
+                "Тип оплаты": "Перечисление",
+                "Клиент": "Repriced Logistics Client",
+                "Адрес": "Tashkent Repriced Address",
+                "Координаты": "41.24, 69.32",
+                "Торговый представитель": "Rep One",
+                "Товары": "Chapman Brown OP 20",
+                "Кол-во ШТ": "500",
+                "Кол-во блок": "50",
+                "Цена за блок": "240000",
+                "Сумма с переоценкой": "11675000",
+                "ID заказа": "repriced-logistics-order",
+                "ID импорта": "repriced-logistics-import",
+            },
+        ]
+        imported = self.client.post("/api/v1/imports", json={"source": "excel", "filename": "orders.xlsx", "rows": rows})
+        self.assertEqual(imported.status_code, 201)
+
+        report = self.client.get("/api/v1/logistics/report?shipment_date=2026-07-01")
+
+        self.assertEqual(report.status_code, 200)
+        workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
+        sheet = workbook["Заявки"]
+        self.assertEqual(sheet["S2"].value, 50)
+        self.assertEqual(sheet["V2"].value, 233500)
+        self.assertEqual(sheet["W2"].value, 11_675_000)
+        workbook.close()
+
     def test_logistics_report_uses_saved_client_point_timeslot(self):
         rows = [
             {

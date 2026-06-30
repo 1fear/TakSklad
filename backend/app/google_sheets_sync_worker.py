@@ -458,13 +458,19 @@ def update_item_money_payload(raw_payload, record, quantity_blocks=0):
         raw_payload["block_price"] = block_price
 
     sheet_line_total = int(record.get("line_total") or 0)
+    imported_line_total = parse_int_value(raw_payload.get("imported_line_total"))
     blocks = int(quantity_blocks or record.get("quantity_blocks") or 0)
     calculated_line_total = blocks * block_price if blocks > 0 and block_price > 0 else 0
     if calculated_line_total > 0:
         raw_payload["calculated_line_total"] = calculated_line_total
-        raw_payload["line_total"] = calculated_line_total
-        if sheet_line_total > 0 and sheet_line_total != calculated_line_total:
-            raw_payload["google_sheet_line_total"] = sheet_line_total
+        if sheet_line_total > 0:
+            raw_payload["line_total"] = sheet_line_total
+            if sheet_line_total != calculated_line_total:
+                raw_payload["google_sheet_line_total"] = sheet_line_total
+        elif imported_line_total > 0:
+            raw_payload["line_total"] = imported_line_total
+        else:
+            raw_payload["line_total"] = calculated_line_total
     elif sheet_line_total > 0:
         raw_payload["line_total"] = sheet_line_total
 
