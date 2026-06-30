@@ -27,6 +27,7 @@ from backend.app.smartup_auto_import import (
     smartup_advisory_lock_key,
     smartup_slot_idempotency_key,
 )
+from backend.app import smartup_auto_import_worker
 from backend.app.smartup_auto_import_history_service import list_smartup_auto_import_history
 from backend.app.skladbot_request_dry_run import SKLADBOT_REQUEST_CREATE_EVENT_TYPE
 
@@ -248,6 +249,22 @@ class SmartupAutoImportTests(unittest.TestCase):
 
         self.assertEqual([order["deal_id"] for order in filtered], ["ok"])
 
+    def test_filter_can_limit_to_target_delivery_date(self):
+        config = self.config("/tmp")
+        orders = [
+            sample_order(deal_id="ship-tomorrow", deal_time="30.06.2026 09:10:00", delivery_date="01.07.2026"),
+            sample_order(deal_id="ship-later", deal_time="30.06.2026 10:10:00", delivery_date="02.07.2026"),
+        ]
+
+        filtered = filter_smartup_orders(
+            orders,
+            date(2026, 6, 30),
+            config,
+            target_delivery_date=date(2026, 7, 1),
+        )
+
+        self.assertEqual([order["deal_id"] for order in filtered], ["ship-tomorrow"])
+
     def test_build_import_rows_reverse_geocodes_smartup_coordinates_without_address(self):
         config = self.config("/tmp")
         order = sample_order(delivery_address_full="", delivery_address_short="")
@@ -339,6 +356,36 @@ class SmartupAutoImportTests(unittest.TestCase):
             self.assertEqual(orders[0].payment_type, "Терминал")
             self.assertEqual(len(imports), 1)
             self.assertEqual((imports[0].raw_payload["smartup_auto"]["delivery_dates"]), ["2026-06-26"])
+
+    def test_full_flow_with_target_delivery_date_excludes_other_delivery_dates(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            fake = FakeSmartupClient([
+                sample_order(deal_id="701", deal_time="30.06.2026 09:10:00", delivery_date="01.07.2026"),
+                sample_order(deal_id="702", deal_time="30.06.2026 10:10:00", delivery_date="02.07.2026"),
+            ])
+            config = self.config(tmp_dir, backend_import_enabled=True, change_status_enabled=True)
+            with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "dry_run"}, clear=False):
+                with self.SessionLocal() as db:
+                    result = run_smartup_auto_import_once(
+                        db,
+                        config,
+                        now=datetime(2026, 6, 30, 16, 1, tzinfo=ZoneInfo("Asia/Tashkent")),
+                        slot_label="16:01",
+                        target_delivery_date=date(2026, 7, 1),
+                        smartup_client=fake,
+                    )
+                    orders = db.execute(select(Order)).scalars().all()
+                    imports = db.execute(select(ImportJob)).scalars().all()
+
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["target_delivery_date"], "2026-07-01")
+            self.assertEqual(result["selected_orders"], 1)
+            self.assertEqual(result["delivery_dates"], ["2026-07-01"])
+            self.assertEqual(result["deal_ids"], ["701"])
+            self.assertEqual(fake.changed, [(["701"], "B#W")])
+            self.assertEqual(len(orders), 1)
+            self.assertEqual(orders[0].order_date.isoformat(), "2026-07-01")
+            self.assertEqual(imports[0].raw_payload["smartup_auto"]["delivery_dates"], ["2026-07-01"])
 
     def test_full_flow_sends_smartup_file_to_client_but_not_logistics_before_final_slot(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -637,6 +684,44 @@ class SmartupAutoImportTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertGreaterEqual(first, -(2**63))
         self.assertLess(first, 2**63)
+
+    def test_smartup_slot_key_includes_target_delivery_date_only_when_set(self):
+        old_key = smartup_slot_idempotency_key(date(2026, 6, 30), "16:01")
+        filtered_key = smartup_slot_idempotency_key(
+            date(2026, 6, 30),
+            "16:01",
+            target_delivery_date=date(2026, 7, 1),
+        )
+
+        self.assertEqual(old_key, "smartup:auto_import:v1:2026-06-30:16:01")
+        self.assertEqual(filtered_key, "smartup:auto_import:v1:2026-06-30:16:01:delivery:2026-07-01")
+
+    def test_run_once_cli_passes_target_delivery_date(self):
+        args = smartup_auto_import_worker.parse_args([
+            "run-once",
+            "--date",
+            "2026-06-30",
+            "--slot",
+            "16:01",
+            "--delivery-date",
+            "2026-07-01",
+        ])
+        config = self.config("/tmp")
+
+        with mock.patch.object(smartup_auto_import_worker, "SessionLocal") as session_local:
+            db = mock.Mock()
+            session_local.return_value.__enter__.return_value = db
+            with mock.patch.object(
+                smartup_auto_import_worker,
+                "run_scheduled_smartup_auto_import_slot",
+                return_value={"status": "completed"},
+            ) as run_slot:
+                exit_code = smartup_auto_import_worker.run_once(args, config)
+
+        self.assertEqual(exit_code, 0)
+        run_slot.assert_called_once()
+        self.assertEqual(run_slot.call_args.kwargs["now"], datetime(2026, 6, 30, 16, 1, tzinfo=config.timezone))
+        self.assertEqual(run_slot.call_args.kwargs["target_delivery_date"], date(2026, 7, 1))
 
     def test_postgres_advisory_lock_uses_dedicated_connection(self):
         connection = FakePostgresConnection(acquired=True)

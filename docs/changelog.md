@@ -182,6 +182,7 @@
 
 - Добавлен Postgres advisory lock на слот Smartup `export_date + slot`, чтобы параллельные workers не обработали один слот одновременно.
 - Добавлена команда ручного запуска: `python -m app.smartup_auto_import_worker run-once --date YYYY-MM-DD --slot HH:MM`.
+- Ручной `run-once` поддерживает `--delivery-date YYYY-MM-DD|DD.MM.YYYY`, чтобы controlled run мог импортировать только нужную исходную дату отгрузки Smartup.
 - При ошибке automation событие помечается `failed`, пишется audit и отправляется Telegram alert.
 - Добавлен endpoint `/api/v1/admin/smartup-auto-imports/history` и вкладка `Smartup` в web-admin с последними запусками, файлами, ошибками и количеством созданных заказов.
 

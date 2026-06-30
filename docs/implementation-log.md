@@ -4,6 +4,15 @@
 
 ## 2026-06-30
 
+### Smartup delivery-date guard for controlled runs
+
+- Причина: controlled `run-once` должен ограничивать не только дату Smartup export, статус `Новые` и оплату `Терминал`, но и исходный Smartup `delivery_date`, чтобы в текущую выгрузку не попали будущие даты отгрузки.
+- Изменено:
+  - `run-once` получил параметр `--delivery-date YYYY-MM-DD|DD.MM.YYYY`;
+  - `filter_smartup_orders()` умеет фильтровать исходные Smartup orders по `delivery_date`;
+  - delivery date добавляется в idempotency/advisory key только для controlled run с явным `--delivery-date`, scheduled run остается совместимым с прежним ключом.
+- Проверка: `.venv/bin/python -m unittest tests.test_smartup_auto_import`.
+
 ### Smartup production recovery prep
 
 - Цель: подготовить локальный Smartup update к production без включения live write-флагов и без риска потерять заказ между Smartup и TakSklad.
