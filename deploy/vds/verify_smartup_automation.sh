@@ -66,12 +66,32 @@ imports = read_text(app_dir / "backend/app/imports_service.py")
 google_sync = read_text(app_dir / "backend/app/google_sheets_sync_worker.py")
 logistics = read_text(app_dir / "backend/app/logistics_service.py")
 
+
+def compose_service_block(service_name):
+    marker = f"  {service_name}:"
+    capture = False
+    lines = []
+    for line in compose.splitlines():
+        if line == marker:
+            capture = True
+            lines.append(line)
+            continue
+        if capture and line.startswith("  ") and not line.startswith("    ") and line.strip().endswith(":"):
+            break
+        if capture:
+            lines.append(line)
+    return "\n".join(lines)
+
+
+smartup_worker_compose = compose_service_block("smartup-auto-import-worker")
+
 required_fragments = [
     ("compose smartup service", compose, "smartup-auto-import-worker"),
     ("compose backend import gate", compose, "SMARTUP_AUTO_IMPORT_BACKEND_IMPORT_ENABLED"),
     ("compose change status gate", compose, "SMARTUP_AUTO_IMPORT_CHANGE_STATUS_ENABLED"),
     ("compose client chat route", compose, "SMARTUP_AUTO_IMPORT_CLIENT_CHAT_ID"),
     ("compose logistics chat route", compose, "SMARTUP_AUTO_IMPORT_LOGISTICS_CHAT_ID"),
+    ("compose smartup geocoder key", smartup_worker_compose, "YANDEX_GEOCODER_API_KEY"),
     ("status command", worker, "build_smartup_auto_import_status"),
     ("run-once delivery date option", worker, "--delivery-date"),
     ("backend import requires status change", source, "SMARTUP_AUTO_IMPORT_BACKEND_IMPORT_ENABLED=true требует"),

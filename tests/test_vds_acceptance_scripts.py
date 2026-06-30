@@ -107,15 +107,19 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
     def test_vds_compose_passes_geocoder_and_block_price_to_import_worker(self):
         compose = (PROJECT_ROOT / "deploy" / "vds" / "docker-compose.yml").read_text(encoding="utf-8")
         env_example = (PROJECT_ROOT / "deploy" / "vds" / ".env.example").read_text(encoding="utf-8")
+        smartup_worker = compose.split("  smartup-auto-import-worker:", 1)[1].split(
+            "\n  google-sheets-sync-worker:",
+            1,
+        )[0]
 
         self.assertIn("${TAKSKLAD_ENV_FILE:-.env}", compose)
         self.assertIn("TAKSKLAD_ENV_FILE=.env.example", env_example)
-        self.assertIn("YANDEX_GEOCODER_API_KEY: ${YANDEX_GEOCODER_API_KEY:-}", compose)
-        self.assertIn("TAKSKLAD_TIMEZONE: ${TAKSKLAD_TIMEZONE:-Asia/Tashkent}", compose)
-        self.assertIn("TAKSKLAD_DEFAULT_BLOCK_PRICE: ${TAKSKLAD_DEFAULT_BLOCK_PRICE:-240000}", compose)
+        self.assertIn("YANDEX_GEOCODER_API_KEY: ${YANDEX_GEOCODER_API_KEY:-}", smartup_worker)
+        self.assertIn("TAKSKLAD_TIMEZONE: ${TAKSKLAD_TIMEZONE:-Asia/Tashkent}", smartup_worker)
+        self.assertIn("TAKSKLAD_DEFAULT_BLOCK_PRICE: ${TAKSKLAD_DEFAULT_BLOCK_PRICE:-240000}", smartup_worker)
         self.assertIn("SKLADBOT_WORKER_INTERVAL_SECONDS: ${SKLADBOT_WORKER_INTERVAL_SECONDS:-60}", compose)
         self.assertIn("SKLADBOT_REQUEST_DELAY_SECONDS: ${SKLADBOT_REQUEST_DELAY_SECONDS:-2}", compose)
-        self.assertIn("SKLADBOT_SKU_MAPPING_JSON: ${SKLADBOT_SKU_MAPPING_JSON:-}", compose)
+        self.assertIn("SKLADBOT_SKU_MAPPING_JSON: ${SKLADBOT_SKU_MAPPING_JSON:-}", smartup_worker)
         self.assertIn("SKLADBOT_SYNC_MAX_LOOKBACK_DAYS: ${SKLADBOT_SYNC_MAX_LOOKBACK_DAYS:-7}", compose)
         self.assertIn("SKLADBOT_ORDER_CREATE_LEAD_DAYS: ${SKLADBOT_ORDER_CREATE_LEAD_DAYS:-3}", compose)
         self.assertIn("SKLADBOT_DETAIL_LIMIT: ${SKLADBOT_DETAIL_LIMIT:-10}", compose)

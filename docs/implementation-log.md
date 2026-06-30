@@ -4,6 +4,21 @@
 
 ## 2026-06-30
 
+### Smartup automation phase audit follow-up
+
+- Свежий аудит acceptance criteria нашел production-compose gap: `smartup-auto-import-worker` использует Smartup reverse geocode, но `YANDEX_GEOCODER_API_KEY` был проброшен только в `backend-api` и `telegram-worker`.
+- Исправлено:
+  - `YANDEX_GEOCODER_API_KEY` добавлен в environment `smartup-auto-import-worker`;
+  - VDS acceptance test теперь проверяет geocoder/block-price/SKU env именно в блоке `smartup-auto-import-worker`, а не просто где-то в compose;
+  - Smartup verifier теперь ловит отсутствие geocoder env в compose-блоке worker;
+  - user guide уточнен: код safe-by-default, production включается только явными флагами после backup/smoke/runtime verifier.
+- Проверено:
+  - `.venv/bin/python -m unittest tests.test_smartup_auto_import tests.test_google_sheets_sync_worker tests.test_vds_acceptance_scripts` - 47 tests OK;
+  - `bash -n deploy/vds/verify_smartup_automation.sh deploy/vds/acceptance_status.sh` - OK;
+  - `git diff --check` - OK;
+  - `TAKSKLAD_ENV_FILE=.env.example docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config --quiet` - OK;
+  - `deploy/vds/verify_smartup_automation.sh` - source checks OK, local runtime skipped because local compose service is not running.
+
 ### Smartup automation deploy/status guard
 
 - Цель: перед включением/деплоем Smartup automation иметь быстрый read-only guard, который показывает безопасную конфигурацию и ловит регрессии по ключевым инцидентным местам.
