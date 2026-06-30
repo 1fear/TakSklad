@@ -49,7 +49,7 @@ TELEGRAM_EXCEL_DATE_CHOICE_USE_EXCEL_PREFIX = "excel_date:use_excel:"
 TELEGRAM_EXCEL_DATE_CHOICE_CANCEL_PREFIX = "excel_date:cancel:"
 SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE = "skladbot_daily_report_send"
 SKLADBOT_DAILY_REPORTED_REQUEST_EVENT_TYPE = "skladbot_daily_reported_request"
-TELEGRAM_KIZ_MENU_RECENT_LIMIT = 7
+TELEGRAM_DATE_MENU_RECENT_LIMIT = 7
 TELEGRAM_MANUAL_BLOCK_PRICE = 240000
 TELEGRAM_MANUAL_PIECES_PER_BLOCK = 10
 TELEGRAM_MANUAL_PRODUCTS = {
@@ -518,7 +518,17 @@ def kiz_progress_completed(item):
     return parse_int(item.get("scanned_blocks")) >= parse_int(item.get("planned_blocks"))
 
 
-def recent_kiz_dates_for_menu(dates, limit=TELEGRAM_KIZ_MENU_RECENT_LIMIT):
+def recent_logistics_dates_for_menu(dates, limit=TELEGRAM_DATE_MENU_RECENT_LIMIT):
+    dates = list(dates or [])
+    if len(dates) <= limit:
+        return dates
+    return sorted(
+        dates,
+        key=lambda value: iso_date_from_display(value),
+    )[-limit:]
+
+
+def recent_kiz_dates_for_menu(dates, limit=TELEGRAM_DATE_MENU_RECENT_LIMIT):
     dates = list(dates or [])
     if len(dates) <= limit:
         return dates
@@ -537,7 +547,7 @@ def kiz_source_file_latest_date(item):
     return max(dates) if dates else ""
 
 
-def recent_kiz_source_files_for_menu(files, limit=TELEGRAM_KIZ_MENU_RECENT_LIMIT):
+def recent_kiz_source_files_for_menu(files, limit=TELEGRAM_DATE_MENU_RECENT_LIMIT):
     files = list(files or [])
     if len(files) <= limit:
         return files
@@ -1081,11 +1091,9 @@ class TelegramWorker:
             self.safe_send_message(chat_id, backend_failure_message("Не удалось получить даты логистики", exc))
             return
         dates = dates if isinstance(dates, list) else []
+        dates = recent_logistics_dates_for_menu(dates)
         if not dates:
             self.safe_send_message(chat_id, "Нет доступных дат отгрузки для отчёта логистики.")
-            return
-        if len(dates) == 1:
-            self.send_logistics_report(chat_id, dates[0])
             return
         self.safe_send_message(chat_id, "Выберите дату отгрузки для отчёта логистики:", reply_markup=self.logistics_date_keyboard(dates))
 

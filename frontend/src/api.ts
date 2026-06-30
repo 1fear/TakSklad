@@ -198,6 +198,91 @@ export type EventQueueDiagnostics = {
   recent_events: EventQueueEvent[];
 };
 
+export type OperationsAttentionItem = {
+  category: string;
+  impact: string;
+  severity: string;
+  title: string;
+  count: number;
+  oldest_age_seconds: number;
+  next_action: string;
+  details: string[];
+};
+
+export type OperationsAttention = {
+  generated_at: string;
+  status: string;
+  summary: Record<string, unknown>;
+  items: OperationsAttentionItem[];
+  readiness_status: string;
+  google_mirror_status: string;
+  telegram_summary: string;
+};
+
+export type SmartupAutoImportRun = {
+  id: string;
+  status: string;
+  export_date: string;
+  slot: string;
+  part: number | null;
+  filename: string;
+  export_path: string;
+  audit_path: string;
+  selected_orders: number;
+  rows: number;
+  delivery_dates: string[];
+  imports_count: number;
+  orders_created: number;
+  items_created: number;
+  duplicate_rows: number;
+  status_change_submitted: number;
+  skladbot_status: string;
+  logistics_reports: Array<Record<string, unknown>>;
+  error: string;
+  created_at: string | null;
+  updated_at: string | null;
+  completed_at: string;
+  failed_at: string;
+};
+
+export type SmartupAutoImportHistory = {
+  generated_at: string;
+  summary: Record<string, unknown>;
+  runs: SmartupAutoImportRun[];
+  events: EventQueueEvent[];
+  audit: AdminActivity[];
+};
+
+export type LogisticsCalendarDay = {
+  date: string;
+  weekday: number;
+  is_weekend: boolean;
+  is_non_working: boolean;
+  is_manual: boolean;
+  reason: string;
+  source: string;
+  orders_count: number;
+  active_orders: number;
+  completed_orders: number;
+  planned_blocks: number;
+  clients: string[];
+};
+
+export type LogisticsCalendar = {
+  generated_at: string;
+  month: string;
+  default_non_working_weekdays: number[];
+  days: LogisticsCalendarDay[];
+};
+
+export type LogisticsCalendarDayUpdatePayload = {
+  service_date: string;
+  is_non_working: boolean;
+  reason?: string;
+  actor?: string;
+  source?: string;
+};
+
 export type AdminIncident = {
   id: string;
   source: string;
@@ -333,6 +418,7 @@ export type AuthSession = {
 type RequestOptions = {
   method?: string;
   body?: unknown;
+  timeoutMs?: number;
 };
 
 export class ApiRequestError extends Error {
@@ -401,12 +487,18 @@ export function defaultApiUrl() {
   return "";
 }
 
+const DEFAULT_REQUEST_TIMEOUT_MS = 15000;
+const LONG_REQUEST_TIMEOUT_MS = 45000;
+
 export async function apiRequest<T>(
   config: ApiConfig,
   path: string,
   options: RequestOptions = {},
 ): Promise<T> {
   const apiUrl = config.apiUrl.replace(/\/$/, "");
+  const timeoutMs = options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  const controller = timeoutMs > 0 ? new AbortController() : undefined;
+  const timeoutId = controller ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
   const response = await fetch(`${apiUrl}${path}`, {
     method: options.method ?? "GET",
     credentials: "include",
@@ -415,6 +507,14 @@ export async function apiRequest<T>(
       ...(config.token ? { Authorization: `Bearer ${config.token}` } : {}),
     },
     body: options.body ? JSON.stringify(options.body) : undefined,
+    signal: controller?.signal,
+  }).catch((error) => {
+    if (isAbortError(error)) {
+      throw new Error(`Запрос ${path} не ответил за ${Math.round(timeoutMs / 1000)} сек.`);
+    }
+    throw error;
+  }).finally(() => {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
   });
 
   if (!response.ok) {
@@ -429,6 +529,10 @@ export async function apiRequest<T>(
   }
 
   return response.json() as Promise<T>;
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof DOMException && error.name === "AbortError";
 }
 
 export function listActiveOrders(config: ApiConfig) {
@@ -451,6 +555,27 @@ export function getDashboardDaySummary(config: ApiConfig, reportDate: string) {
 
 export function getAdminEvents(config: ApiConfig) {
   return apiRequest<EventQueueDiagnostics>(config, "/api/v1/admin/events");
+}
+
+export function getOperationsAttention(config: ApiConfig) {
+  return apiRequest<OperationsAttention>(config, "/api/v1/admin/operations");
+}
+
+export function getSmartupAutoImportHistory(config: ApiConfig, limit = 50) {
+  const query = new URLSearchParams({ limit: String(limit) });
+  return apiRequest<SmartupAutoImportHistory>(config, `/api/v1/admin/smartup-auto-imports/history?${query.toString()}`);
+}
+
+export function getLogisticsCalendar(config: ApiConfig, month = "") {
+  const query = month ? `?month=${encodeURIComponent(month)}` : "";
+  return apiRequest<LogisticsCalendar>(config, `/api/v1/admin/logistics-calendar${query}`);
+}
+
+export function updateLogisticsCalendarDay(config: ApiConfig, payload: LogisticsCalendarDayUpdatePayload) {
+  return apiRequest<LogisticsCalendarDay>(config, "/api/v1/admin/logistics-calendar/day", {
+    method: "POST",
+    body: payload,
+  });
 }
 
 export function getAdminIncidents(config: ApiConfig, params: Record<string, string> = {}) {
@@ -585,6 +710,7 @@ export function syncSources(config: ApiConfig, options: { skladbot?: boolean; wa
   });
   return apiRequest<SyncSourcesResult>(config, `/api/v1/sync/sources?${params.toString()}`, {
     method: "POST",
+    timeoutMs: LONG_REQUEST_TIMEOUT_MS,
   });
 }
 
