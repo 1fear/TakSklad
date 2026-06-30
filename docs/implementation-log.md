@@ -4,6 +4,39 @@
 
 ## 2026-06-30
 
+### Smartup production recovery prep
+
+- Цель: подготовить локальный Smartup update к production без включения live write-флагов и без риска потерять заказ между Smartup и TakSklad.
+- Найденный риск:
+  - старый полный flow делал Smartup `change_status` до `create_delivery_group_imports`;
+  - если Smartup статус уже переведен в `В ожидании`, а backend import после этого падает, заказ может исчезнуть из фильтра `Новые + Терминал` и не попасть в TakSklad;
+  - failed слот нельзя было повторить штатно: существующий `PendingEvent` с тем же `smartup:auto_import:v1:{date}:{slot}` всегда возвращал `slot_already_claimed`;
+  - если процесс падал после backend import, но до `mark_smartup_slot_failed`, слот мог остаться в `processing` и заблокировать повтор;
+  - общий `create_import` мог поставить реальный `skladbot_request_create` до Smartup `change_status`, если на сервере включен `SKLADBOT_CREATE_REQUESTS_MODE=enabled`.
+- Решение:
+  - полный flow теперь сначала пишет backend import в Postgres через существующий importer, затем делает Smartup `change_status`;
+  - если `change_status` падает, заказ уже есть в TakSklad, слот остается `failed`, audit/alert сохраняют причину;
+  - `claim_smartup_slot` разрешает повтор только для `failed` события или старого зависшего `processing` старше 30 минут, переводит его в `processing`, увеличивает `attempts` и сохраняет `retry_claimed_at`/`retry_reason`;
+  - Smartup import внутри `create_import` принудительно делает SkladBot dry-run, а реальную SkladBot create-очередь ставит отдельным шагом только после успешного Smartup `change_status`;
+  - `completed` и свежий текущий `processing` слот по-прежнему не выполняются повторно.
+- Инварианты:
+  - Smartup automation по умолчанию остается выключенной env-флагами;
+  - backend import все еще требует включенный `SMARTUP_AUTO_IMPORT_CHANGE_STATUS_ENABLED`;
+  - повтор failed/stale слота не создает дубль заказа, потому что importer видит тот же `ID импорта` и считает строку duplicate;
+  - реальное создание SkladBot-заявок остается под существующим `SKLADBOT_CREATE_REQUESTS_MODE=enabled`, но для Smartup оно запускается только после Smartup status change.
+- Проверено локально:
+  - `.venv/bin/python -m unittest tests.test_smartup_auto_import` - 19 tests OK.
+  - `.venv/bin/python -m unittest tests.test_backend_skladbot_request_dry_run tests.test_backend_api_persistence` - 135 tests OK.
+  - `git diff --check` - OK.
+  - `.venv/bin/python -m compileall backend/app tests tools src/taksklad main.py pyinstaller_entry.py` - OK.
+  - `cd frontend && npm run build` - OK.
+  - `TAKSKLAD_ENV_FILE=.env.example docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config --quiet` - OK.
+  - `bash -n deploy/vds/*.sh` - OK.
+  - `.venv/bin/python -m alembic -c backend/alembic.ini heads` - `20260626_0005 (head)`.
+  - `.venv/bin/python -m unittest discover -s tests -p 'test_*.py'` - 653 tests OK.
+  - `.venv/bin/python tools/release_preflight.py` - status `ok`, public backend health OK, version `2.0.24`.
+  - `.venv/bin/python tools/release_go_no_go.py` - `no_go` из-за незакрытой ручной acceptance: Telegram import, SkladBot matching, Windows desktop acceptance, cleanup.
+
 ### Hotfix 2.0.25 KIZ reuse after return/undo/reset
 
 - Симптом: desktop показывал, что КИЗ уже есть в базе, хотя оператор отменил последние коды или КИЗ уже прошел возврат.
@@ -6417,7 +6450,7 @@ cd /opt/taksklad/app
 
 ### Smartup terminal auto import worker
 
-- Причина: ручной процесс Smartup должен стать серверной автоматизацией по слотам `12:00`, `15:00`, `17:50`: выгрузка `Новые + Терминал`, перевод заказов в `В ожидании`, создание заказов TakSklad по `delivery_date`, постановка SkladBot-заявок и финальный логистический отчёт.
+- Причина: ручной процесс Smartup должен стать серверной автоматизацией по слотам `12:00`, `15:00`, `17:50`: выгрузка `Новые + Терминал`, создание заказов TakSklad по `delivery_date`, перевод заказов в `В ожидании`, постановка SkladBot-заявок и финальный логистический отчёт.
 - Изменено:
   - добавлен `backend/app/smartup_auto_import.py` с Smartup client, локальным XLSX/audit export, backend preview, safety-gates, status change, import grouping by `delivery_date`, SkladBot queue hook и отправкой logistics report;
   - добавлен `backend/app/smartup_auto_import_worker.py` с расписанием и idempotency через `pending_events`;

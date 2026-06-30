@@ -27,7 +27,7 @@ from .logistics_calendar_service import is_logistics_non_working_day, resolve_ef
 from .logistics_service import build_logistics_report_xlsx
 from .models import AuditLog, ImportJob, PendingEvent
 from .schemas import ImportCreate
-from .skladbot_request_dry_run import process_pending_skladbot_request_creates
+from .skladbot_request_dry_run import create_skladbot_dry_run_for_import, process_pending_skladbot_request_creates
 
 
 logger = logging.getLogger(__name__)
@@ -41,6 +41,7 @@ DEFAULT_SCHEDULE_TIMES = ("12:00", "15:00", "17:50")
 DEFAULT_FINAL_TIME = "17:50"
 DEFAULT_TIMEZONE = "Asia/Tashkent"
 DEFAULT_DISABLED_WEEKDAYS = (5, 6)
+STALE_SMARTUP_SLOT_TIMEOUT = timedelta(minutes=30)
 TERMINAL_PAYMENT_CODE = "PYMT:2"
 SMARTUP_NEW_STATUS = "B#N"
 SMARTUP_WAITING_STATUS = "B#W"
@@ -468,7 +469,6 @@ def run_smartup_auto_import_once(
         record_smartup_audit(db, "smartup_auto_import_shadow_preview", result)
         return result
 
-    status_change = client.change_status(unique_deal_ids(selected_orders), config.waiting_status_code)
     imports = create_delivery_group_imports(
         db,
         grouped_rows,
@@ -479,6 +479,8 @@ def run_smartup_auto_import_once(
         slot_label=slot_label,
         logistics_chat_id=config.logistics_chat_id,
     )
+    status_change = client.change_status(unique_deal_ids(selected_orders), config.waiting_status_code)
+    imports = queue_skladbot_after_smartup_status(db, imports)
 
     skladbot_processing = {"status": "skipped"}
     if config.process_skladbot_now:
@@ -528,7 +530,7 @@ def create_delivery_group_imports(
             telegram_event_id=f"smartup-auto:{export_date.isoformat()}:{slot_label}:{delivery_date}:part-{part}",
             rows=rows,
         )
-        import_result = create_import(db, payload)
+        import_result = create_import(db, payload, skladbot_create_mode="dry_run")
         metadata = {
             "version": 1,
             "export_date": export_date.isoformat(),
@@ -557,6 +559,41 @@ def create_delivery_group_imports(
             "skladbot_dry_run_blocked": import_result.skladbot_dry_run_blocked,
             "skladbot_dry_run_event_id": import_result.skladbot_dry_run_event_id,
         })
+    return results
+
+
+def queue_skladbot_after_smartup_status(db: Session, imports: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    results = []
+    for item in imports:
+        import_id = normalize_text(item.get("import_id"))
+        if not import_id:
+            results.append(item)
+            continue
+        try:
+            queue_result = create_skladbot_dry_run_for_import(db, import_id)
+            import_job = db.get(ImportJob, uuid.UUID(import_id))
+            if import_job is not None:
+                import_job.raw_payload = {
+                    **(import_job.raw_payload or {}),
+                    "skladbot_dry_run": queue_result,
+                }
+                db.add(import_job)
+            db.commit()
+            updated = {
+                **item,
+                "skladbot_dry_run_status": queue_result.get("status", ""),
+                "skladbot_dry_run_ready": queue_result.get("ready", 0),
+                "skladbot_dry_run_blocked": queue_result.get("blocked", 0),
+                "skladbot_dry_run_event_id": queue_result.get("event_id", ""),
+                "skladbot_after_status": queue_result,
+            }
+        except Exception as exc:
+            db.rollback()
+            logger.exception("SkladBot after-status queue failed for Smartup import %s", import_id)
+            raise SmartupAutoImportError(
+                f"SkladBot after-status queue failed for Smartup import {import_id}: {str(exc)[:500]}"
+            ) from exc
+        results.append(updated)
     return results
 
 
@@ -1101,6 +1138,41 @@ def claim_smartup_slot(
         select(PendingEvent).where(PendingEvent.idempotency_key == idempotency_key)
     ).scalar_one_or_none()
     if existing is not None:
+        retry_reason = smartup_slot_retry_reason(existing, now)
+        if retry_reason:
+            existing.status = "processing"
+            existing.attempts = int(existing.attempts or 0) + 1
+            existing.last_error = ""
+            payload = {**(existing.payload or {})}
+            payload.pop("failed_at", None)
+            payload.pop("error", None)
+            payload.update({
+                "retry_claimed_at": now.isoformat(),
+                "retry_attempt": int(existing.attempts or 0),
+                "retry_reason": retry_reason,
+            })
+            existing.payload = {
+                **payload,
+            }
+            db.add(existing)
+            if retry_reason == "stale_processing":
+                db.add(AuditLog(
+                    action="smartup_auto_import_stale_processing_reset",
+                    entity_type="pending_event",
+                    entity_id=str(existing.id),
+                    payload={
+                        "event_id": str(existing.id),
+                        "export_date": export_date.isoformat(),
+                        "slot": slot_label,
+                        "attempts": int(existing.attempts or 0),
+                        "last_seen_at": smartup_event_last_seen_at(existing).isoformat()
+                        if smartup_event_last_seen_at(existing) is not None
+                        else "",
+                    },
+                ))
+            db.commit()
+            db.refresh(existing)
+            return existing, None
         return None, {
             "status": "skipped",
             "reason": "slot_already_claimed",
@@ -1134,6 +1206,34 @@ def claim_smartup_slot(
         }
     db.refresh(event)
     return event, None
+
+
+def smartup_slot_retry_reason(event: PendingEvent, now: datetime) -> str:
+    if event.status == "failed":
+        return "failed"
+    if event.status == "processing" and smartup_processing_slot_is_stale(event, now):
+        return "stale_processing"
+    return ""
+
+
+def smartup_processing_slot_is_stale(event: PendingEvent, now: datetime) -> bool:
+    last_seen_at = smartup_event_last_seen_at(event)
+    if last_seen_at is None:
+        return False
+    return smartup_datetime_utc(now) - smartup_datetime_utc(last_seen_at) >= STALE_SMARTUP_SLOT_TIMEOUT
+
+
+def smartup_event_last_seen_at(event: PendingEvent) -> datetime | None:
+    value = event.updated_at or event.created_at
+    if isinstance(value, datetime):
+        return value
+    return None
+
+
+def smartup_datetime_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def mark_smartup_slot_completed(db: Session, event_id: uuid.UUID, result: dict[str, Any]) -> None:

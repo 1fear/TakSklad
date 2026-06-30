@@ -1,6 +1,6 @@
 import tempfile
 import unittest
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 from zoneinfo import ZoneInfo
@@ -13,6 +13,7 @@ from backend.app.models import Base, ImportJob, LogisticsCalendarDay, Order, Pen
 from backend.app.smartup_auto_import import (
     SmartupAutoImportConfig,
     SmartupAutoImportError,
+    SMARTUP_AUTO_IMPORT_EVENT_TYPE,
     build_import_rows,
     delivery_dates_for_export_date,
     filter_smartup_orders,
@@ -24,8 +25,10 @@ from backend.app.smartup_auto_import import (
     release_smartup_slot_advisory_lock,
     send_final_logistics_reports,
     smartup_advisory_lock_key,
+    smartup_slot_idempotency_key,
 )
 from backend.app.smartup_auto_import_history_service import list_smartup_auto_import_history
+from backend.app.skladbot_request_dry_run import SKLADBOT_REQUEST_CREATE_EVENT_TYPE
 
 
 def sample_order(**overrides):
@@ -76,6 +79,12 @@ class FakeSmartupClient:
 class FailingSmartupClient:
     def export_orders(self, export_date):
         raise SmartupAutoImportError("Smartup test failure")
+
+
+class FailingStatusChangeSmartupClient(FakeSmartupClient):
+    def change_status(self, deal_ids, status_code):
+        self.changed.append((list(deal_ids), status_code))
+        raise SmartupAutoImportError("Smartup status change unavailable")
 
 
 class FakeTelegramSender:
@@ -282,6 +291,57 @@ class SmartupAutoImportTests(unittest.TestCase):
             self.assertEqual(len(imports), 1)
             self.assertEqual((imports[0].raw_payload["smartup_auto"]["delivery_dates"]), ["2026-06-26"])
 
+    def test_full_flow_queues_skladbot_create_after_smartup_status_change(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            fake = FakeSmartupClient([sample_order()])
+            config = self.config(tmp_dir, backend_import_enabled=True, change_status_enabled=True)
+            with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "enabled"}, clear=False):
+                with self.SessionLocal() as db:
+                    result = run_smartup_auto_import_once(
+                        db,
+                        config,
+                        now=datetime(2026, 6, 25, 12, 0, tzinfo=ZoneInfo("Asia/Tashkent")),
+                        slot_label="12:00",
+                        smartup_client=fake,
+                    )
+                    create_events = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
+                    ).scalars().all()
+                    imports = db.execute(select(ImportJob)).scalars().all()
+
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(fake.changed, [(["642"], "B#W")])
+            self.assertEqual(len(create_events), 1)
+            self.assertEqual(create_events[0].status, "pending")
+            self.assertEqual(result["imports"][0]["skladbot_after_status"]["queued"], 1)
+            self.assertEqual(imports[0].raw_payload["skladbot_dry_run"]["mode"], "enabled")
+
+    def test_full_flow_imports_before_smartup_status_change_failure(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            fake = FailingStatusChangeSmartupClient([sample_order()])
+            config = self.config(tmp_dir, backend_import_enabled=True, change_status_enabled=True)
+            with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "enabled"}, clear=False):
+                with self.SessionLocal() as db:
+                    with self.assertRaisesRegex(SmartupAutoImportError, "status change unavailable"):
+                        run_smartup_auto_import_once(
+                            db,
+                            config,
+                            now=datetime(2026, 6, 25, 12, 0, tzinfo=ZoneInfo("Asia/Tashkent")),
+                            slot_label="12:00",
+                            smartup_client=fake,
+                    )
+                    orders = db.execute(select(Order)).scalars().all()
+                    imports = db.execute(select(ImportJob)).scalars().all()
+                    create_events = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
+                    ).scalars().all()
+
+            self.assertEqual(fake.changed, [(["642"], "B#W")])
+            self.assertEqual(len(orders), 1)
+            self.assertEqual(len(imports), 1)
+            self.assertEqual(imports[0].status, "completed")
+            self.assertEqual(create_events, [])
+
     def test_delivery_dates_for_export_date_reads_import_metadata(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             fake = FakeSmartupClient([sample_order()])
@@ -341,6 +401,88 @@ class SmartupAutoImportTests(unittest.TestCase):
             self.assertEqual(history["summary"]["total"], 1)
             self.assertEqual(history["runs"][0]["selected_orders"], 1)
             self.assertEqual(history["runs"][0]["filename"], "Терминал 25.06.2026 Часть 1.xlsx")
+
+    def test_failed_scheduled_slot_can_be_retried_without_duplicate_order(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = self.config(tmp_dir, backend_import_enabled=True, change_status_enabled=True)
+            sender = FakeTelegramSender()
+            with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "dry_run"}, clear=False):
+                with self.SessionLocal() as db:
+                    with self.assertRaisesRegex(SmartupAutoImportError, "status change unavailable"):
+                        run_scheduled_smartup_auto_import_slot(
+                            db,
+                            config,
+                            now=datetime(2026, 6, 25, 12, 0, tzinfo=ZoneInfo("Asia/Tashkent")),
+                            slot_label="12:00",
+                            smartup_client=FailingStatusChangeSmartupClient([sample_order()]),
+                            telegram_sender=sender,
+                        )
+                    failed_event = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == SMARTUP_AUTO_IMPORT_EVENT_TYPE)
+                    ).scalar_one()
+                    self.assertEqual(failed_event.status, "failed")
+                    self.assertEqual(failed_event.attempts, 1)
+
+                    retry_client = FakeSmartupClient([sample_order()])
+                    result = run_scheduled_smartup_auto_import_slot(
+                        db,
+                        config,
+                        now=datetime(2026, 6, 25, 12, 1, tzinfo=ZoneInfo("Asia/Tashkent")),
+                        slot_label="12:00",
+                        smartup_client=retry_client,
+                        telegram_sender=sender,
+                    )
+                    events = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == SMARTUP_AUTO_IMPORT_EVENT_TYPE)
+                    ).scalars().all()
+                    orders = db.execute(select(Order)).scalars().all()
+                    imports = db.execute(select(ImportJob)).scalars().all()
+
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["imports"][0]["orders_created"], 0)
+            self.assertEqual(result["imports"][0]["duplicate_rows"], 1)
+            self.assertEqual(retry_client.changed, [(["642"], "B#W")])
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0].status, "completed")
+            self.assertEqual(events[0].attempts, 2)
+            self.assertEqual(len(orders), 1)
+            self.assertEqual(len(imports), 2)
+
+    def test_stale_processing_scheduled_slot_can_be_retried(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = self.config(tmp_dir, backend_import_enabled=True, change_status_enabled=True)
+            stale_time = datetime(2026, 6, 25, 6, 0, tzinfo=timezone.utc)
+            with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "dry_run"}, clear=False):
+                with self.SessionLocal() as db:
+                    db.add(PendingEvent(
+                        event_type=SMARTUP_AUTO_IMPORT_EVENT_TYPE,
+                        idempotency_key=smartup_slot_idempotency_key(date(2026, 6, 25), "12:00"),
+                        status="processing",
+                        attempts=1,
+                        payload={"version": 1, "claimed_at": stale_time.isoformat()},
+                        created_at=stale_time - timedelta(minutes=1),
+                        updated_at=stale_time,
+                    ))
+                    db.commit()
+
+                    result = run_scheduled_smartup_auto_import_slot(
+                        db,
+                        config,
+                        now=datetime(2026, 6, 25, 12, 45, tzinfo=ZoneInfo("Asia/Tashkent")),
+                        slot_label="12:00",
+                        smartup_client=FakeSmartupClient([sample_order()]),
+                        telegram_sender=FakeTelegramSender(),
+                    )
+                    event = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == SMARTUP_AUTO_IMPORT_EVENT_TYPE)
+                    ).scalar_one()
+                    orders = db.execute(select(Order)).scalars().all()
+
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(event.status, "completed")
+            self.assertEqual(event.attempts, 2)
+            self.assertEqual(event.payload["retry_reason"], "stale_processing")
+            self.assertEqual(len(orders), 1)
 
     def test_due_slots_skip_disabled_weekdays(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -239,13 +239,22 @@ flowchart LR
 2. Smartup выгружается по дате заказа сегодня и фильтрам `Новые + Терминал`.
 3. Локально сохраняется файл `Терминал ДД.ММ.ГГГГ Часть N.xlsx` и audit JSON.
 4. Перед записью в TakSklad выполняется backend preview.
-5. После успешной выгрузки и preview Smartup-заказы переводятся в статус `В ожидании`.
-6. Backend создаёт заказы по `delivery_date`, а не по дате заказа.
-7. SkladBot create-events ставятся через существующий импортный контур.
+5. Backend создаёт заказы по `delivery_date`, а не по дате заказа.
+6. Только после успешного backend import Smartup-заказы переводятся в статус `В ожидании`.
+7. SkladBot create-events ставятся через существующий импортный контур только после успешного перевода Smartup-заказов в `В ожидании`.
 8. На финальном слоте отправляется `Отчёт логистики` по датам отгрузки загруженных Smartup-заказов.
 9. По умолчанию автоматические слоты не работают в субботу и воскресенье: `SMARTUP_AUTO_IMPORT_DISABLED_WEEKDAYS=5,6`.
 10. Если `delivery_date` в Smartup попал на нерабочий день логистики, TakSklad переносит дату отгрузки вперед до ближайшего рабочего дня. Исходная дата Smartup остается в export/audit metadata.
 11. Если финальный отчет попадает на нерабочую дату логистики, он не отправляется.
+
+Production-safe recovery:
+
+- если backend preview или import падает, Smartup-статус не меняется, заказ остается в `Новые` для следующей проверки;
+- если Smartup status change падает после backend import, заказ уже сохранен в TakSklad, слот помечается `failed`, ошибка видна во вкладке `Smartup` и уходит Telegram alert;
+- failed слот можно повторить тем же `run-once --date ... --slot ...`; повтор не создаст дубль заказа, потому что importer увидит тот же `ID импорта`;
+- зависший `processing` слот старше 30 минут можно повторить тем же способом, это покрывает падение процесса после backend import;
+- если Smartup status change падает, реальные SkladBot create-events ещё не ставятся;
+- завершенный слот повторно не выполняется без ручного административного вмешательства.
 
 Календарь логистики:
 
@@ -272,6 +281,8 @@ docker compose exec smartup-auto-import-worker python -m app.smartup_auto_import
 - `SKLADBOT_CREATE_REQUESTS_MODE=enabled` для реального создания заявок SkladBot;
 - `SMARTUP_AUTO_IMPORT_LOGISTICS_CHAT_ID` для чата, куда отправлять итоговый отчёт логистики.
 - `SMARTUP_AUTO_IMPORT_ALERT_CHAT_ID` для Telegram-ошибок automation; если пусто, используется logistics chat.
+
+Первый production deploy кода можно делать с этими флагами выключенными. Включать automation нужно отдельным шагом после backup, проверки миграции, web-admin smoke и ручного `run-once` на контролируемом слоте.
 
 Обязательные поля в Excel:
 
