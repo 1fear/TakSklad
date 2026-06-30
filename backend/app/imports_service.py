@@ -65,7 +65,7 @@ class ImportRowError(Exception):
     pass
 
 
-def create_import(db: Session, payload: ImportCreate):
+def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: str | None = None):
     rows_total = len(payload.rows)
     errors = []
     duplicate_rows = 0
@@ -239,7 +239,11 @@ def create_import(db: Session, payload: ImportCreate):
     db.refresh(import_job)
     import_job_id = import_job.id
     try:
-        skladbot_dry_run_result = create_skladbot_dry_run_for_import(db, str(import_job_id))
+        skladbot_dry_run_result = create_skladbot_dry_run_for_import(
+            db,
+            str(import_job_id),
+            force_mode=skladbot_create_mode,
+        )
         import_job.raw_payload = {
             **(import_job.raw_payload or {}),
             "skladbot_dry_run": skladbot_dry_run_result,

@@ -121,8 +121,16 @@ def validate_sku_mapping_entry(sku_key: str, value: Any) -> dict[str, Any]:
     }
 
 
-def create_skladbot_dry_run_for_import(db: Session, import_id: str, rebuild: bool = False) -> dict[str, Any]:
-    configured_mode = skladbot_create_requests_mode()
+def create_skladbot_dry_run_for_import(
+    db: Session,
+    import_id: str,
+    rebuild: bool = False,
+    *,
+    force_mode: str | None = None,
+) -> dict[str, Any]:
+    configured_mode = normalize_text(force_mode).lower() if force_mode is not None else skladbot_create_requests_mode()
+    if configured_mode not in {"dry_run", "enabled", "disabled"}:
+        configured_mode = skladbot_create_requests_mode()
     if configured_mode == "disabled":
         return {
             "status": "disabled",
@@ -154,7 +162,14 @@ def create_skladbot_dry_run_for_import(db: Session, import_id: str, rebuild: boo
                     "ready": max(0, int(summary.get("ready") or 0) - queued),
                     "events_queued": int(summary.get("events_queued") or 0) + queued,
                 }
-                existing_event.payload = {**(existing_event.payload or {}), "mode": "enabled", "would_post": True, "summary": summary, "dry_runs": dry_runs}
+                existing_event.payload = {
+                    **(existing_event.payload or {}),
+                    "mode": "enabled",
+                    "configured_mode": configured_mode,
+                    "would_post": True,
+                    "summary": summary,
+                    "dry_runs": dry_runs,
+                }
                 db.add(existing_event)
         return {
             **default_summary(mode=summary.get("mode") or mode),

@@ -2,6 +2,34 @@
 
 Здесь фиксируются все правки в коде TakSklad: что менялось, в каком файле, зачем, и какие тесты это покрывают. Записи идут от новых к старым.
 
+## 2026-06-30
+
+### Smartup prod recovery перед включением automation
+
+**Файлы:** `backend/app/smartup_auto_import.py`, `tests/test_smartup_auto_import.py`, `docs/user-business-process-guide.md`, `docs/taksklad-system-stack-overview.md`, `docs/implementation-log.md`, `docs/changelog.md`.
+
+**Что стало:**
+
+- Полный Smartup-flow теперь сначала создает backend import в TakSklad/Postgres и только после этого переводит Smartup-заказы в статус `В ожидании`.
+- Если Smartup status change падает после backend import, заказы в TakSklad уже сохранены, слот помечается `failed`, пишется audit и отправляется alert.
+- Повтор того же `export_date + slot` разрешен только для `failed` или устаревшего зависшего `processing` Smartup-события: событие переходит обратно в `processing`, `attempts` увеличивается, завершенный слот остается идемпотентно заблокированным.
+- Повтор failed/stale слота не создает дубль заказа: backend importer видит тот же `ID импорта` и считает строки дублями.
+- При Smartup import реальная очередь SkladBot теперь ставится только после успешного Smartup status change; до этого импорт делает только dry-run, даже если общий `SKLADBOT_CREATE_REQUESTS_MODE=enabled`.
+
+**Почему:**
+
+- Старый порядок мог перевести Smartup-заказ из `Новые` в `В ожидании` до создания заказа TakSklad. При падении после status change заказ исчезал из следующего Smartup export, а в TakSklad мог не попасть.
+- Старый claim не давал повторить failed/stale слот без ручного вмешательства в `pending_events`.
+- Старый Smartup import мог поставить `skladbot_request_create` до Smartup status change через общий import side-effect.
+
+**Проверки:**
+
+- `.venv/bin/python -m unittest tests.test_smartup_auto_import` - 19 tests OK.
+- `.venv/bin/python -m unittest tests.test_backend_skladbot_request_dry_run tests.test_backend_api_persistence` - 135 tests OK.
+- `.venv/bin/python -m unittest discover -s tests -p 'test_*.py'` - 653 tests OK.
+- `.venv/bin/python tools/release_preflight.py` - status `ok`, public backend health OK, version `2.0.24`.
+- `.venv/bin/python tools/release_go_no_go.py` - `no_go` только из-за незакрытой ручной acceptance: Telegram import, SkladBot matching, Windows desktop acceptance, cleanup.
+
 ## 2026-06-29
 
 ### SkladBot daily: жесткий фильтр сегодняшних заявок
@@ -233,7 +261,7 @@
 **Что стало:**
 
 - Добавлен серверный worker Smartup по слотам `12:00`, `15:00`, `17:50`.
-- Flow: export `Новые + Терминал`, локальный файл `Терминал ДД.ММ.ГГГГ Часть N.xlsx`, audit JSON, backend preview, Smartup status `В ожидании`, backend import по `delivery_date`, SkladBot queue, финальный `Отчёт логистики`.
+- Flow: export `Новые + Терминал`, локальный файл `Терминал ДД.ММ.ГГГГ Часть N.xlsx`, audit JSON, backend preview, backend import по `delivery_date`, Smartup status `В ожидании`, SkladBot queue, финальный `Отчёт логистики`.
 - По умолчанию автоматизация выключена. Backend import требует включённый Smartup status-change gate.
 
 **Проверки:**
