@@ -341,21 +341,34 @@ def run_scheduled_smartup_auto_import_slot(
     *,
     slot_label: str,
     now: datetime | None = None,
+    target_delivery_date: date | None = None,
     smartup_client: Any | None = None,
     telegram_sender: Any | None = None,
 ) -> dict[str, Any]:
     local_now = normalize_local_now(now, config.timezone)
     export_date = local_now.date()
-    lock_acquired, lock_connection = acquire_smartup_slot_advisory_lock(db, export_date, slot_label)
+    lock_acquired, lock_connection = acquire_smartup_slot_advisory_lock(
+        db,
+        export_date,
+        slot_label,
+        target_delivery_date=target_delivery_date,
+    )
     if not lock_acquired:
         return {
             "status": "skipped",
             "reason": "slot_locked",
             "export_date": export_date.isoformat(),
             "slot": slot_label,
+            "target_delivery_date": target_delivery_date.isoformat() if target_delivery_date else "",
         }
     try:
-        event, skipped = claim_smartup_slot(db, export_date, slot_label, local_now)
+        event, skipped = claim_smartup_slot(
+            db,
+            export_date,
+            slot_label,
+            local_now,
+            target_delivery_date=target_delivery_date,
+        )
         if skipped:
             return skipped
         try:
@@ -364,6 +377,7 @@ def run_scheduled_smartup_auto_import_slot(
                 config,
                 now=local_now,
                 slot_label=slot_label,
+                target_delivery_date=target_delivery_date,
                 smartup_client=smartup_client,
                 telegram_sender=telegram_sender,
             )
@@ -382,7 +396,12 @@ def run_scheduled_smartup_auto_import_slot(
         mark_smartup_slot_completed(db, event.id, result)
         return result
     finally:
-        release_smartup_slot_advisory_lock(lock_connection, export_date, slot_label)
+        release_smartup_slot_advisory_lock(
+            lock_connection,
+            export_date,
+            slot_label,
+            target_delivery_date=target_delivery_date,
+        )
 
 
 def run_smartup_auto_import_once(
@@ -391,6 +410,7 @@ def run_smartup_auto_import_once(
     *,
     now: datetime | None = None,
     slot_label: str = "",
+    target_delivery_date: date | None = None,
     smartup_client: Any | None = None,
     telegram_sender: Any | None = None,
 ) -> dict[str, Any]:
@@ -402,7 +422,12 @@ def run_smartup_auto_import_once(
 
     raw_response = client.export_orders(export_date)
     raw_orders = extract_smartup_orders(raw_response)
-    selected_orders = filter_smartup_orders(raw_orders, export_date, config)
+    selected_orders = filter_smartup_orders(
+        raw_orders,
+        export_date,
+        config,
+        target_delivery_date=target_delivery_date,
+    )
     part = next_export_part(config.output_dir, export_date)
 
     if not selected_orders:
@@ -410,6 +435,7 @@ def run_smartup_auto_import_once(
             "status": "no_orders",
             "slot": slot_label,
             "export_date": export_date.isoformat(),
+            "target_delivery_date": target_delivery_date.isoformat() if target_delivery_date else "",
             "raw_orders": len(raw_orders),
             "selected_orders": 0,
             "part": part,
@@ -442,6 +468,7 @@ def run_smartup_auto_import_once(
         "slot": slot_label,
         "export_date": export_date.isoformat(),
         "export_date_display": export_date_display,
+        "target_delivery_date": target_delivery_date.isoformat() if target_delivery_date else "",
         "part": part,
         "filename": filename,
         "export_path": str(export_path),
@@ -918,11 +945,15 @@ def filter_smartup_orders(
     orders: list[dict[str, Any]],
     export_date: date,
     config: SmartupAutoImportConfig,
+    *,
+    target_delivery_date: date | None = None,
 ) -> list[dict[str, Any]]:
     result = []
     for order in orders:
         deal_date = smartup_deal_date(order)
         if deal_date != export_date:
+            continue
+        if target_delivery_date is not None and parse_smartup_date(order.get("delivery_date")) != target_delivery_date:
             continue
         if smartup_status(order) != config.new_status_code:
             continue
@@ -1181,12 +1212,14 @@ def acquire_smartup_slot_advisory_lock(
     db: Session,
     export_date: date,
     slot_label: str,
+    *,
+    target_delivery_date: date | None = None,
 ) -> tuple[bool, Any | None]:
     bind = db.get_bind()
     dialect_name = getattr(getattr(bind, "dialect", None), "name", "")
     if dialect_name != "postgresql":
         return True, None
-    lock_key = smartup_advisory_lock_key(export_date, slot_label)
+    lock_key = smartup_advisory_lock_key(export_date, slot_label, target_delivery_date=target_delivery_date)
     connection = bind.connect()
     try:
         acquired = bool(connection.execute(
@@ -1207,13 +1240,19 @@ def acquire_smartup_slot_advisory_lock(
     return True, connection
 
 
-def release_smartup_slot_advisory_lock(lock_connection: Any | None, export_date: date, slot_label: str) -> None:
+def release_smartup_slot_advisory_lock(
+    lock_connection: Any | None,
+    export_date: date,
+    slot_label: str,
+    *,
+    target_delivery_date: date | None = None,
+) -> None:
     if lock_connection is None:
         return
     try:
         lock_connection.execute(
             text("SELECT pg_advisory_unlock(:lock_key)"),
-            {"lock_key": smartup_advisory_lock_key(export_date, slot_label)},
+            {"lock_key": smartup_advisory_lock_key(export_date, slot_label, target_delivery_date=target_delivery_date)},
         )
         lock_connection.commit()
     except Exception:
@@ -1231,8 +1270,14 @@ def claim_smartup_slot(
     export_date: date,
     slot_label: str,
     now: datetime,
+    *,
+    target_delivery_date: date | None = None,
 ) -> tuple[PendingEvent | None, dict[str, Any] | None]:
-    idempotency_key = smartup_slot_idempotency_key(export_date, slot_label)
+    idempotency_key = smartup_slot_idempotency_key(
+        export_date,
+        slot_label,
+        target_delivery_date=target_delivery_date,
+    )
     existing = db.execute(
         select(PendingEvent).where(PendingEvent.idempotency_key == idempotency_key)
     ).scalar_one_or_none()
@@ -1279,6 +1324,7 @@ def claim_smartup_slot(
             "event_status": existing.status,
             "export_date": export_date.isoformat(),
             "slot": slot_label,
+            "target_delivery_date": target_delivery_date.isoformat() if target_delivery_date else "",
         }
     event = PendingEvent(
         event_type=SMARTUP_AUTO_IMPORT_EVENT_TYPE,
@@ -1288,6 +1334,7 @@ def claim_smartup_slot(
         payload={
             "version": 1,
             "export_date": export_date.isoformat(),
+            "target_delivery_date": target_delivery_date.isoformat() if target_delivery_date else "",
             "slot": slot_label,
             "claimed_at": now.isoformat(),
         },
@@ -1302,6 +1349,7 @@ def claim_smartup_slot(
             "reason": "slot_already_claimed",
             "export_date": export_date.isoformat(),
             "slot": slot_label,
+            "target_delivery_date": target_delivery_date.isoformat() if target_delivery_date else "",
         }
     db.refresh(event)
     return event, None
@@ -1371,12 +1419,31 @@ def mark_smartup_slot_failed(db: Session, event_id: uuid.UUID, exc: Exception) -
     db.commit()
 
 
-def smartup_slot_idempotency_key(export_date: date, slot_label: str) -> str:
-    return f"smartup:auto_import:v1:{export_date.isoformat()}:{slot_label}"
+def smartup_slot_idempotency_key(
+    export_date: date,
+    slot_label: str,
+    *,
+    target_delivery_date: date | None = None,
+) -> str:
+    key = f"smartup:auto_import:v1:{export_date.isoformat()}:{slot_label}"
+    if target_delivery_date is not None:
+        key = f"{key}:delivery:{target_delivery_date.isoformat()}"
+    return key
 
 
-def smartup_advisory_lock_key(export_date: date, slot_label: str) -> int:
-    digest = hashlib.sha256(smartup_slot_idempotency_key(export_date, slot_label).encode("utf-8")).digest()
+def smartup_advisory_lock_key(
+    export_date: date,
+    slot_label: str,
+    *,
+    target_delivery_date: date | None = None,
+) -> int:
+    digest = hashlib.sha256(
+        smartup_slot_idempotency_key(
+            export_date,
+            slot_label,
+            target_delivery_date=target_delivery_date,
+        ).encode("utf-8")
+    ).digest()
     value = int.from_bytes(digest[:8], byteorder="big", signed=False)
     if value >= 2**63:
         value -= 2**64

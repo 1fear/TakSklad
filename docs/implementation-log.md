@@ -4,6 +4,25 @@
 
 ## 2026-06-30
 
+### Smartup 02.07 cleanup and delivery-date guard
+
+- Причина: controlled run `2026-06-30 / 16:01` фильтровал Smartup-заказы по `deal_date`, статусу `Новые` и оплате `Терминал`, но не ограничивал исходный Smartup `delivery_date`. Поэтому в выгрузку попали 3 заказа с `delivery_date=02.07.2026`.
+- Production cleanup:
+  - перед write-действиями был создан Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-pre-remove-smartup-0207-20260630T132133Z.sql.gz`;
+  - backup SHA256: `a0bd048a544b2caf544e26c39d3b46229e0d4fd506d3feae8fcf3196db0a6aa6`;
+  - удалены из активной БД TakSklad 3 ошибочных заказа и 10 товарных строк;
+  - перед удалением подтверждено: `scan_codes=0`, `kiz_movements=0`;
+  - штатные события `google_sheets_delete_import_records_export` завершены, строки удалены из Google-зеркала;
+  - SkladBot-заявки были удалены оператором вручную до cleanup, Codex не делал write-действий в SkladBot;
+  - Smartup deal_ids `257942711`, `257929945`, `257964741` возвращены в статус `B#N / Новые` и затем найдены в export `Новые`.
+- Code guard:
+  - `run-once` получил параметр `--delivery-date YYYY-MM-DD|DD.MM.YYYY`;
+  - `filter_smartup_orders()` теперь умеет ограничивать выборку исходным Smartup `delivery_date`;
+  - idempotency/advisory lock для обычного scheduled run не изменены;
+  - если оператор передает `--delivery-date`, дата добавляется в idempotency key, чтобы разные controlled runs по одному `--date/--slot` не схлопывались.
+- Проверки:
+  - `.venv/bin/python -m unittest tests.test_smartup_auto_import` - 27 tests OK.
+
 ### Smartup manual test run now
 
 - Цель: тестово запустить Smartup automation path сразу, не дожидаясь следующего scheduled slot.

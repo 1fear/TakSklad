@@ -48,6 +48,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     run_once_parser = subparsers.add_parser("run-once", help="Run one Smartup automation slot manually")
     run_once_parser.add_argument("--slot", required=True, help="Slot label, for example 12:00, 15:00, 17:50")
     run_once_parser.add_argument("--date", default="", help="Export date, YYYY-MM-DD or DD.MM.YYYY. Defaults to today.")
+    run_once_parser.add_argument(
+        "--delivery-date",
+        default="",
+        help="Optional Smartup delivery_date filter, YYYY-MM-DD or DD.MM.YYYY.",
+    )
     return parser.parse_args(argv)
 
 
@@ -55,6 +60,9 @@ def run_once(args: argparse.Namespace, config) -> int:
     run_date = parse_smartup_date(args.date) if args.date else datetime.now(config.timezone).date()
     if run_date is None:
         raise SystemExit(f"Некорректная дата Smartup run-once: {args.date}")
+    target_delivery_date = parse_smartup_date(args.delivery_date) if args.delivery_date else None
+    if args.delivery_date and target_delivery_date is None:
+        raise SystemExit(f"Некорректная дата отгрузки Smartup run-once: {args.delivery_date}")
     slot_time = parse_slot_time(args.slot)
     run_at = datetime.combine(run_date, slot_time, tzinfo=config.timezone)
     try:
@@ -64,6 +72,7 @@ def run_once(args: argparse.Namespace, config) -> int:
                 config,
                 slot_label=args.slot,
                 now=run_at,
+                target_delivery_date=target_delivery_date,
             )
     except Exception as exc:
         logging.exception("Smartup auto import run-once failed")

@@ -270,6 +270,14 @@ Production-safe recovery:
 docker compose exec smartup-auto-import-worker python -m app.smartup_auto_import_worker run-once --date 2026-06-25 --slot 15:00
 ```
 
+Ручной controlled run на конкретную дату отгрузки:
+
+```bash
+docker compose exec smartup-auto-import-worker python -m app.smartup_auto_import_worker run-once --date 2026-06-30 --slot 16:01 --delivery-date 2026-07-01
+```
+
+`--date` - дата Smartup-сделки/export window. `--delivery-date` - исходная дата отгрузки Smartup, которую нужно оставить в выборке.
+
 История запусков доступна в web-admin во вкладке `Smartup`: там видны последние слоты, созданные файлы, ошибки, количество созданных заказов и статус SkladBot/logistics. Импорты, dry-run, инциденты и активность находятся в нижней группе `История действий`.
 
 Для безопасного включения нужны env-флаги:
