@@ -4,6 +4,28 @@
 
 ## 2026-06-30
 
+### Web-admin frontend nav refresh deploy
+
+- Причина: production `taksklad.uz` продолжал отдавать старый frontend bundle `index-DJr5G6jG.js`, где слева были отдельные вкладки `Отчет`, `Импорты`, `SkladBot dry-run`, `Инциденты`, `Активность`. Текущий код уже содержал новую навигацию: `История действий`, `Календарь`, `Smartup`.
+- Safety:
+  - worktree был clean;
+  - DNS `taksklad.uz` и `api.taksklad.uz` резолвились в `159.195.138.95`;
+  - перед заменой создан restore point `/opt/stacks/taksklad/restore_points/pre-frontend-nav-refresh-20260630T134819Z`;
+  - deploy был frontend-only: синхронизирован только `frontend/`, без `node_modules`, `dist`, `.env`, outputs, backups и клиентских файлов.
+- Deploy action:
+  - локально `npm --prefix frontend run build` - OK;
+  - локально `docker compose -f deploy/vds/docker-compose.yml --env-file deploy/vds/.env.example config` - OK;
+  - на сервере `docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml build frontend` - OK;
+  - на сервере `docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml up -d --no-deps frontend` пересоздал только `frontend`;
+  - backend-api, postgres, telegram-worker, google-sheets-sync-worker, skladbot-worker, smartup-auto-import-worker остались running.
+- Verification:
+  - `https://taksklad.uz/` отдает `/assets/index-CWXlTGAw.js` и `/assets/index-DnZTck9D.css`;
+  - live JS содержит `История действий`, `Календарь`, `Smartup`, `Импорты`, `SkladBot dry-run`, `Инциденты`, `Активность`;
+  - `https://api.taksklad.uz/health` - OK, backend `2.0.24`;
+  - `https://api.taksklad.uz/ready` - DB/migrations OK at `20260626_0005`; общий `degraded` остается из-за старых `telegram_excel_import` failures и одного pending `google_sheets_export`, не из-за frontend deploy;
+  - `https://taksklad.uz/api/v1/auth/session` без cookie - `200 authenticated=false`, около `0.28s`;
+  - fresh frontend logs без ошибок, есть успешные `GET /` и `GET /assets/index-CWXlTGAw.js`.
+
 ### Smartup 02.07 cleanup and delivery-date guard
 
 - Причина: controlled run `2026-06-30 / 16:01` фильтровал Smartup-заказы по `deal_date`, статусу `Новые` и оплате `Терминал`, но не ограничивал исходный Smartup `delivery_date`. Поэтому в выгрузку попали 3 заказа с `delivery_date=02.07.2026`.

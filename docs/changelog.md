@@ -4,6 +4,29 @@
 
 ## 2026-06-30
 
+### Web-admin frontend nav refresh deploy
+
+**Состав:** frontend-only deploy уже подготовленного web-admin UI: отдельная вкладка `Отчет` отсутствует, `Импорты`, `SkladBot dry-run`, `Инциденты`, `Активность` доступны через `История действий`, добавлены `Календарь` и `Smartup`.
+
+**Production deploy:**
+
+- runtime host: `taksklad.uz` / `api.taksklad.uz` -> `159.195.138.95`, app path `/opt/stacks/taksklad/app`;
+- restore point: `/opt/stacks/taksklad/restore_points/pre-frontend-nav-refresh-20260630T134819Z`;
+- synced files: `frontend/` only, excluding `node_modules` and `dist`;
+- deployed SHA256:
+  - `frontend/src/App.tsx` = `0bff7126f511801c0a5e78d6b97ab0c126e0621f61115c9cd0ae3addcef9c8ec`;
+  - `frontend/src/api.ts` = `04eb997316876f239cce7be7e5a91e032f95c23827ad3ccb70a37b27822ae6c6`;
+  - `frontend/src/styles.css` = `f6fa5dac66e81f8b8412ce24c213b24dda4b5652f95e903f53cd061bb23990ef`;
+- local and server build produced frontend asset `index-CWXlTGAw.js` and stylesheet `index-DnZTck9D.css`;
+- `docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml build frontend` - OK;
+- `docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml up -d --no-deps frontend` recreated only `frontend`; backend and workers stayed running;
+- `https://taksklad.uz/` returns HTML with `/assets/index-CWXlTGAw.js`, `Last-Modified: Tue, 30 Jun 2026 13:48:58 GMT`;
+- live JS contains `История действий`, `Календарь`, `Smartup`, `Импорты`, `SkladBot dry-run`, `Инциденты`, `Активность`;
+- `https://api.taksklad.uz/health` - OK, backend `2.0.24`;
+- `https://api.taksklad.uz/ready` - DB/migrations OK at `20260626_0005`; overall `degraded` remains from old `telegram_excel_import` failures and a pending Google mirror export, not from this frontend deploy;
+- `https://taksklad.uz/api/v1/auth/session` - `200`, `authenticated=false` without cookie, response time about `0.28s`;
+- fresh `frontend` logs since restart contain nginx startup notices and successful `GET /` / `GET /assets/index-CWXlTGAw.js`, no errors.
+
 ### Telegram KIZ export: все даты вместо последних пунктов меню
 
 **Файлы:** `backend/app/telegram_worker.py`, `tests/test_backend_telegram_import.py`.
