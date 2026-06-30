@@ -4,6 +4,27 @@
 
 ## 2026-06-30
 
+### Desktop KIZ duplicate release after return/undo/reset
+
+**Файлы:** `backend/app/orders_service.py`, `backend/app/main.py`, `backend/app/schemas.py`, `src/taksklad/backend_client.py`, `src/taksklad/backend_flow.py`, `src/taksklad/app_scanning.py`, `tests/test_backend_api_persistence.py`, `tests/test_desktop_ui_contract.py`.
+
+**Причина:** desktop мог показать `КИЗ уже отсканирован`, если код остался в локальном duplicate-cache/Google fallback, хотя backend уже освободил КИЗ через возврат, отмену или reset.
+
+**Что стало:**
+
+- добавлен read-only endpoint `GET /api/v1/kiz/availability`;
+- desktop в backend-order path при stale duplicate-cache проверяет availability у backend;
+- локальный duplicate блок снимается только если backend вернул `available=true` и latest movement `return`, `undo` или `reset`;
+- активные дубли, дубль в текущей позиции, mismatch товара и превышение плана блокируются как раньше.
+
+**Проверки:**
+
+- `.venv/bin/python -m unittest tests.test_backend_api_persistence` - 113 tests OK;
+- targeted backend/KIZ subset - 27 tests OK;
+- desktop stale/active duplicate branch проверен stub Tk сценарием - OK;
+- `py_compile` измененных файлов - OK;
+- полный `tests.test_desktop_ui_contract` локально заблокирован отсутствием `_tkinter` в `.venv`.
+
 ### Web-admin sidebar viewport height fix
 
 **Файл:** `frontend/src/styles.css`.

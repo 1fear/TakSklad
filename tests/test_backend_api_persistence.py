@@ -2019,6 +2019,46 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertEqual(first_order.status, "returned")
             self.assertEqual(second_order.status, "not_completed")
 
+    def test_kiz_availability_reports_returned_code_as_reusable(self):
+        first_order_id, first_item_id = self.seed_order(quantity_blocks=1)
+        _second_order_id, second_item_id = self.seed_order(quantity_blocks=1)
+        code = "01040000000000000021"
+
+        first_scan = self.client.post(
+            "/api/v1/scans",
+            json={"order_item_id": first_item_id, "code": code, "workstation_id": "pc-1"},
+        )
+        self.assertEqual(first_scan.status_code, 201)
+
+        busy = self.client.get(
+            "/api/v1/kiz/availability",
+            params={"code": code, "order_item_id": second_item_id},
+        )
+        self.assertEqual(busy.status_code, 200)
+        self.assertFalse(busy.json()["available"])
+        self.assertEqual(busy.json()["latest_movement_type"], "outbound")
+
+        self.assertEqual(self.client.post(f"/api/v1/orders/{first_order_id}/complete").status_code, 200)
+        returned = self.client.post(
+            f"/api/v1/returns/{first_order_id}",
+            json={
+                "return_reference": "WH-R-RETURN-210",
+                "returned_by": "warehouse-pc",
+                "confirmed_items": self.confirmed_return_items(first_item_id, blocks=1, pieces=20),
+            },
+        )
+        self.assertEqual(returned.status_code, 200)
+
+        reusable = self.client.get(
+            "/api/v1/kiz/availability",
+            params={"code": code, "order_item_id": second_item_id},
+        )
+
+        self.assertEqual(reusable.status_code, 200)
+        self.assertTrue(reusable.json()["available"])
+        self.assertEqual(reusable.json()["latest_movement_type"], "return")
+        self.assertEqual(reusable.json()["existing_order_item_id"], first_item_id)
+
     def test_scan_flushes_scan_code_before_kiz_movement(self):
         _order_id, item_id = self.seed_order(quantity_blocks=1)
         code = "01040000000000000003"

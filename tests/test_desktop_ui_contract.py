@@ -299,6 +299,130 @@ class DesktopUiContractTests(unittest.TestCase):
         self.assertIn("format_duplicate_scan_message", source)
         self.assertIn("log_duplicate_code_async", source)
 
+    def test_scan_allows_backend_released_kiz_from_stale_duplicate_cache(self):
+        class FakeVar:
+            def __init__(self):
+                self.value = ""
+
+            def set(self, value):
+                self.value = value
+
+        class FakeWidget:
+            def __init__(self, value=""):
+                self.value = value
+                self.options = {}
+                self.deleted = False
+                self.focused = False
+
+            def get(self):
+                return self.value
+
+            def delete(self, *_args):
+                self.deleted = True
+
+            def config(self, **kwargs):
+                self.options.update(kwargs)
+
+            def focus_set(self):
+                self.focused = True
+
+        code = '0104006396104441217"W1vYR93tblUx7K3'
+        order = {
+            "Кол-во блок": 1,
+            "Товары": "Chapman Green OP 20",
+            "_backend_order_item_id": "item-green",
+        }
+        fake = SimpleNamespace(
+            ensure_update_allowed=lambda: True,
+            operation_in_progress=False,
+            current_order=order,
+            current_product_idx=0,
+            current_legal_entity_orders=[order],
+            scanned_codes=[],
+            all_existing_codes={code},
+            today_orders=[],
+            completed_orders=[],
+            scan_entry=FakeWidget(code),
+            progress_label=FakeWidget(),
+            last_code_label=FakeWidget(),
+            status_var=FakeVar(),
+            status_label=FakeWidget(),
+            next_product_btn=FakeWidget(),
+            finish_btn=FakeWidget(),
+            show_error=mock.Mock(),
+            show_busy_error=mock.Mock(),
+            log_duplicate_code_async=mock.Mock(),
+        )
+
+        with (
+            mock.patch("taksklad.app_scanning.backend_releases_duplicate_scan_code", return_value=True) as released,
+            mock.patch("taksklad.app_scanning.write_scan_backup", return_value=True) as write_backup,
+            mock.patch("taksklad.app_scanning.queue_backend_scan") as queue_scan,
+        ):
+            ScanningApp.on_scan(fake)
+
+        released.assert_called_once_with(order, code)
+        write_backup.assert_called_once()
+        queue_scan.assert_called_once_with(order, code)
+        fake.show_error.assert_not_called()
+        fake.log_duplicate_code_async.assert_not_called()
+        self.assertEqual(fake.scanned_codes, [code])
+        self.assertIn(code, fake.all_existing_codes)
+        self.assertTrue(fake.scan_entry.deleted)
+        self.assertTrue(fake.scan_entry.focused)
+
+    def test_scan_keeps_active_order_duplicate_block_even_if_backend_reusable_check_would_pass(self):
+        class FakeWidget:
+            def __init__(self, value=""):
+                self.value = value
+                self.deleted = False
+
+            def get(self):
+                return self.value
+
+            def delete(self, *_args):
+                self.deleted = True
+
+        code = '0104006396104441217"W1vYR93tblUx7K3'
+        order = {
+            "Кол-во блок": 1,
+            "Товары": "Chapman Green OP 20",
+            "_backend_order_item_id": "item-green",
+        }
+        fake = SimpleNamespace(
+            ensure_update_allowed=lambda: True,
+            operation_in_progress=False,
+            current_order=order,
+            scanned_codes=[],
+            all_existing_codes={code},
+            today_orders=[{
+                "Клиент": "Other Client",
+                "Дата отгрузки": "30.06.2026",
+                "Товары": "Chapman Green OP 20",
+                "Отсканированные коды": code,
+            }],
+            completed_orders=[],
+            scan_entry=FakeWidget(code),
+            show_error=mock.Mock(),
+            show_busy_error=mock.Mock(),
+            log_duplicate_code_async=mock.Mock(),
+        )
+
+        with (
+            mock.patch("taksklad.app_scanning.backend_releases_duplicate_scan_code", return_value=True) as released,
+            mock.patch("taksklad.app_scanning.write_scan_backup") as write_backup,
+            mock.patch("taksklad.app_scanning.queue_backend_scan") as queue_scan,
+        ):
+            ScanningApp.on_scan(fake)
+
+        released.assert_not_called()
+        write_backup.assert_not_called()
+        queue_scan.assert_not_called()
+        fake.show_error.assert_called_once()
+        fake.log_duplicate_code_async.assert_called_once_with(code)
+        self.assertEqual(fake.scanned_codes, [])
+        self.assertTrue(fake.scan_entry.deleted)
+
     def test_backend_sync_item_blocker_ignores_unrelated_poisoned_queue_event(self):
         sync_result = {
             "failed": 1,

@@ -12,6 +12,7 @@ from .backend_flow import (
     backend_blocked_scan_code,
     backend_blocked_scan_events_for_item,
     backend_event_error_message,
+    backend_releases_duplicate_scan_code,
     backend_sync_item_blocker,
     format_backend_blocked_scan_message,
     order_uses_backend_scan_path,
@@ -253,10 +254,14 @@ class ScanningActionsMixin:
 
         if code in self.all_existing_codes:
             existing_order = find_code_owner_in_orders(code, self.today_orders)
-            self.show_error(format_duplicate_scan_message(code, existing_order))
-            self.log_duplicate_code_async(code)
-            self.scan_entry.delete(0, tk.END)
-            return
+            if not existing_order and backend_releases_duplicate_scan_code(self.current_order, code):
+                self.all_existing_codes.discard(code)
+                logging.info("Backend released KIZ for re-scan after return/undo/reset; ignoring stale desktop duplicate cache")
+            else:
+                self.show_error(format_duplicate_scan_message(code, existing_order))
+                self.log_duplicate_code_async(code)
+                self.scan_entry.delete(0, tk.END)
+                return
 
         for completed in self.completed_orders:
             if code in completed.get("Коды", []):

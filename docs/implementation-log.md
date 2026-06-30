@@ -4,6 +4,27 @@
 
 ## 2026-06-30
 
+### Desktop KIZ duplicate release after return/undo/reset
+
+- Причина: desktop мог локально заблокировать валидный КИЗ как `уже отсканирован`, если код оставался в `all_existing_codes` из stale Google/local cache, хотя backend уже освободил его через latest movement `return`.
+- Пример расследования: КИЗ Green OP был в `scan_codes` по заказу `WH-R-201832`, но latest movement = `return`, активных backend-заказов с этим кодом = 0, pending-событий по коду = 0, backend POST/409 в логах в момент ошибки не было.
+- Fix:
+  - backend получил read-only endpoint `GET /api/v1/kiz/availability`, который возвращает availability по latest `kiz_movements` и существующим `scan_codes`;
+  - desktop при `code in all_existing_codes` больше не считает stale cache финальной истиной для backend-order path;
+  - если активный владелец кода найден в текущем списке заказов, duplicate блокируется как раньше;
+  - если активного владельца нет, desktop спрашивает backend, и снимает локальный stale-блок только при `available=true` и latest movement `return/undo/reset`.
+- Инварианты:
+  - дубль внутри текущей позиции остается ошибкой;
+  - активный duplicate в другом заказе остается ошибкой;
+  - product mismatch, переполнение плана и aggregate-box rules не менялись;
+  - backend остается финальным gatekeeper при сохранении scan queue.
+- Verification:
+  - `.venv/bin/python -m unittest tests.test_backend_api_persistence` - 113 tests OK;
+  - targeted backend/KIZ subset - 27 tests OK;
+  - desktop stale/active duplicate branch проверен отдельным stub Tk сценариям - OK;
+  - `py_compile` измененных backend/desktop/test файлов - OK;
+  - `tests.test_desktop_ui_contract` локально не запускается целиком, потому что текущая `.venv` Python 3.12 собрана без `_tkinter`.
+
 ### Web-admin sidebar viewport height fix
 
 - Причина: левая панель web-admin растягивалась до высоты длинной таблицы заказов, потому что CSS Grid растягивал sidebar по высоте основной страницы.
