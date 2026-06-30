@@ -4,6 +4,40 @@
 
 ## 2026-06-30
 
+### Smartup manual test run now
+
+- Цель: тестово запустить Smartup automation path сразу, не дожидаясь следующего scheduled slot.
+- Safety:
+  - перед запуском создан Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-pre-smartup-test-now-2026-06-30-1601-20260630T110114Z.sql.gz`;
+  - backup SHA256: `5bc8677a6c329b2d0315bfce916e4c35c18b91b5820bc0489175abe3fb1a60ea`;
+  - manual run использовал technical slot `16:01` Asia/Tashkent и idempotency key `smartup:auto_import:v1:2026-06-30:16:01`;
+  - SkladBot на время manual run был override в `dry_run`, чтобы не создавать реальные SkladBot-заявки вне штатного слота.
+- Run scope:
+  - `SMARTUP_AUTO_IMPORT_ENABLED=true`;
+  - `SMARTUP_AUTO_IMPORT_BACKEND_IMPORT_ENABLED=true`;
+  - `SMARTUP_AUTO_IMPORT_CHANGE_STATUS_ENABLED=true`;
+  - `SKLADBOT_CREATE_REQUESTS_MODE=dry_run`;
+  - `SMARTUP_AUTO_IMPORT_PROCESS_SKLADBOT_NOW=false`;
+  - command: `python -m app.smartup_auto_import_worker run-once --date 2026-06-30 --slot 16:01`.
+- Result:
+  - run status: `completed`;
+  - Smartup raw orders: `68`;
+  - selected `Новые + Терминал`: `45`;
+  - generated rows: `98`;
+  - TakSklad imports created: `2`;
+  - TakSklad orders created: `45`;
+  - TakSklad items created: `98`;
+  - duplicate rows: `0`;
+  - Smartup status change submitted: `45`;
+  - SkladBot processing: `skipped`.
+- Verification:
+  - `pending_events` Smartup slot status: `completed`, attempts `1`;
+  - DB aggregate after run: imports `2 / 98 rows_total / 98 rows_imported`, orders `45`, items `98`;
+  - SkladBot real `skladbot_request_create` events after run: `0`;
+  - SkladBot dry-run events after run: `2 completed`;
+  - `/health` OK, migrations OK at revision `20260626_0005`;
+  - `/ready` remains `degraded` due old `telegram_excel_import` failed events, not due this Smartup run.
+
 ### Smartup scheduled automation enabled
 
 - Цель: включить production scheduled automation Smartup после controlled run.
