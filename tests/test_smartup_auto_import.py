@@ -90,6 +90,17 @@ class FailingStatusChangeSmartupClient(FakeSmartupClient):
         raise SmartupAutoImportError("Smartup status change unavailable")
 
 
+class PartialStatusChangeSmartupClient(FakeSmartupClient):
+    def change_status(self, deal_ids, status_code):
+        self.changed.append((list(deal_ids), status_code))
+        return {
+            "successes": [{"deal_id": deal_ids[0]}],
+            "errors": [{"deal_id": deal_ids[1], "message": "locked"}],
+            "submitted": len(deal_ids),
+            "status": status_code,
+        }
+
+
 class FakeTelegramSender:
     configured = True
 
@@ -238,6 +249,30 @@ class SmartupAutoImportTests(unittest.TestCase):
             "2026-06-27,2026-06-28,2026-06-29",
         )
 
+    def test_mapper_allows_manual_working_override_for_weekend(self):
+        with self.SessionLocal() as db:
+            db.add(LogisticsCalendarDay(
+                service_date=date(2026, 6, 27),
+                is_non_working=False,
+                reason="Рабочая суббота",
+                source="web",
+                raw_payload={},
+            ))
+            db.commit()
+
+            rows = build_import_rows(
+                [sample_order(delivery_date="27.06.2026")],
+                datetime(2026, 6, 26).date(),
+                "Терминал 26.06.2026 Часть 1.xlsx",
+                self.config("/tmp"),
+                db=db,
+            )
+
+        self.assertEqual(rows[0]["Дата отгрузки"], "27.06.2026")
+        self.assertEqual(rows[0]["Smartup delivery_date original"], "27.06.2026")
+        self.assertEqual(rows[0]["Smartup delivery_date adjusted"], "")
+        self.assertEqual(rows[0]["Smartup delivery_date skipped_dates"], "")
+
     def test_filter_requires_today_new_terminal(self):
         config = self.config("/tmp")
         orders = [
@@ -334,6 +369,32 @@ class SmartupAutoImportTests(unittest.TestCase):
             self.assertEqual(fake.changed, [])
             self.assertEqual(imports_count, 0)
             self.assertTrue((Path(tmp_dir) / "2026-06-25" / "Терминал 25.06.2026 Часть 1.xlsx").exists())
+
+    def test_preview_failure_keeps_export_audit_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            fake = FakeSmartupClient([sample_order()])
+            config = self.config(tmp_dir, backend_import_enabled=False, change_status_enabled=False)
+            audit_path = Path(tmp_dir) / "2026-06-25" / "Терминал 25.06.2026 Часть 1.audit.json"
+            with self.SessionLocal() as db:
+                with mock.patch(
+                    "backend.app.smartup_auto_import.preview_import",
+                    side_effect=SmartupAutoImportError("preview boom"),
+                ):
+                    with self.assertRaisesRegex(SmartupAutoImportError, "preview boom"):
+                        run_smartup_auto_import_once(
+                            db,
+                            config,
+                            now=datetime(2026, 6, 25, 12, 0, tzinfo=ZoneInfo("Asia/Tashkent")),
+                            slot_label="12:00",
+                            smartup_client=fake,
+                        )
+
+            self.assertTrue((Path(tmp_dir) / "2026-06-25" / "Терминал 25.06.2026 Часть 1.xlsx").exists())
+            self.assertTrue(audit_path.exists())
+            audit = json.loads(audit_path.read_text(encoding="utf-8"))
+            self.assertEqual(audit["status"], "failed_preview")
+            self.assertEqual(audit["filename"], "Терминал 25.06.2026 Часть 1.xlsx")
+            self.assertIn("preview boom", audit["error"])
 
     def test_full_flow_changes_smartup_status_and_imports_by_delivery_date(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -472,6 +533,41 @@ class SmartupAutoImportTests(unittest.TestCase):
             self.assertEqual(len(imports), 1)
             self.assertEqual(imports[0].status, "completed")
             self.assertEqual(create_events, [])
+
+    def test_partial_smartup_status_change_queues_only_confirmed_deal_imports(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            fake = PartialStatusChangeSmartupClient([
+                sample_order(deal_id="701", deal_time="30.06.2026 09:10:00", delivery_date="01.07.2026"),
+                sample_order(deal_id="702", deal_time="30.06.2026 10:10:00", delivery_date="01.07.2026"),
+            ])
+            config = self.config(tmp_dir, backend_import_enabled=True, change_status_enabled=True)
+            with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "enabled"}, clear=False):
+                with self.SessionLocal() as db:
+                    with self.assertRaisesRegex(SmartupAutoImportError, "Smartup status change failed"):
+                        run_smartup_auto_import_once(
+                            db,
+                            config,
+                            now=datetime(2026, 6, 30, 16, 1, tzinfo=ZoneInfo("Asia/Tashkent")),
+                            slot_label="16:01",
+                            smartup_client=fake,
+                        )
+                    imports = db.execute(select(ImportJob)).scalars().all()
+                    create_events = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
+                    ).scalars().all()
+
+            self.assertEqual(fake.changed, [(["701", "702"], "B#W")])
+            self.assertEqual(len(imports), 2)
+            imports_by_deal = {
+                import_job.raw_payload["smartup_auto"]["deal_ids"][0]: import_job
+                for import_job in imports
+            }
+            self.assertEqual(set(imports_by_deal), {"701", "702"})
+            self.assertEqual(imports_by_deal["701"].raw_payload["skladbot_dry_run"]["mode"], "enabled")
+            self.assertEqual(imports_by_deal["701"].raw_payload["skladbot_dry_run"]["queued"], 1)
+            self.assertEqual(imports_by_deal["702"].raw_payload["skladbot_dry_run"]["mode"], "dry_run")
+            self.assertEqual(imports_by_deal["702"].raw_payload["skladbot_dry_run"]["queued"], 0)
+            self.assertEqual(len(create_events), 1)
 
     def test_delivery_dates_for_export_date_reads_import_metadata(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

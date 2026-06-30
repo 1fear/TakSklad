@@ -6,17 +6,22 @@
 
 ### Smartup automation phase audit follow-up
 
-**Файлы:** `deploy/vds/docker-compose.yml`, `deploy/vds/verify_smartup_automation.sh`, `tests/test_vds_acceptance_scripts.py`, `docs/user-business-process-guide.md`, `docs/implementation-log.md`, `docs/changelog.md`.
+**Файлы:** `backend/app/smartup_auto_import.py`, `deploy/vds/docker-compose.yml`, `deploy/vds/verify_smartup_automation.sh`, `tests/test_smartup_auto_import.py`, `tests/test_vds_acceptance_scripts.py`, `docs/user-business-process-guide.md`, `docs/implementation-log.md`, `docs/changelog.md`.
 
 **Что стало:**
 
 - `YANDEX_GEOCODER_API_KEY` проброшен в `smartup-auto-import-worker`, чтобы Smartup reverse geocode работал в production worker, а не только в backend/telegram worker.
 - VDS tests/verifier теперь проверяют geocoder env именно в compose-блоке `smartup-auto-import-worker`.
+- Smartup import дробится по `delivery_date + deal_id`, поэтому partial `change_status` ставит real SkladBot create-event только по подтвержденным `deal_id`.
+- `.audit.json` создается до backend preview и сохраняет `failed_preview`, если preview падает.
+- Добавлены тесты на partial status-change и ручной календарный override `Работает` для выходного дня.
 - User guide уточняет текущий safe-by-default статус: код развернут, production включается только явными env-флагами после backup/smoke/runtime verifier.
 
 **Проверки:**
 
-- `.venv/bin/python -m unittest tests.test_smartup_auto_import tests.test_google_sheets_sync_worker tests.test_vds_acceptance_scripts` - 47 tests OK.
+- `.venv/bin/python -m unittest tests.test_smartup_auto_import` - 31 tests OK.
+- `.venv/bin/python -m unittest tests.test_smartup_auto_import tests.test_google_sheets_sync_worker tests.test_vds_acceptance_scripts` - 50 tests OK.
+- `.venv/bin/python -m py_compile backend/app/smartup_auto_import.py` - OK.
 - `bash -n deploy/vds/verify_smartup_automation.sh deploy/vds/acceptance_status.sh` - OK.
 - `git diff --check` - OK.
 - `TAKSKLAD_ENV_FILE=.env.example docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config --quiet` - OK.

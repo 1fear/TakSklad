@@ -182,13 +182,14 @@ class SmartupClient:
             ]
         }
         response = self._post(SMARTUP_CHANGE_STATUS_PATH, payload)
-        errors = response.get("errors") if isinstance(response, dict) else []
-        if errors:
-            raise SmartupAutoImportError(f"Smartup status change failed: {redact_json(errors)}")
+        errors = status_change_errors(response)
         return {
             **response,
+            "errors": errors,
             "submitted": len(unique_deal_ids),
             "deal_ids": unique_deal_ids,
+            "successful_deal_ids": status_change_successful_deal_ids(response, unique_deal_ids),
+            "failed_deal_ids": status_change_failed_deal_ids(response),
             "status": status_code,
         }
 
@@ -223,6 +224,77 @@ class SmartupClient:
         if not isinstance(data, dict):
             raise SmartupAutoImportError(f"Smartup API {path} вернул неожиданный формат")
         return data
+
+
+STATUS_CHANGE_DEAL_ID_KEYS = ("deal_id", "dealId", "external_id", "externalId", "order_id", "id", "code")
+
+
+def status_change_errors(response: Any) -> list[Any]:
+    if not isinstance(response, dict):
+        return []
+    errors = response.get("errors")
+    if not errors:
+        errors = response.get("error")
+    if not errors:
+        return []
+    return errors if isinstance(errors, list) else [errors]
+
+
+def status_change_has_errors(response: Any) -> bool:
+    return bool(status_change_errors(response))
+
+
+def status_change_successful_deal_ids(response: Any, submitted_deal_ids: list[str]) -> list[str]:
+    submitted = unique_values(submitted_deal_ids)
+    submitted_set = set(submitted)
+    if not status_change_has_errors(response):
+        return submitted
+    if not isinstance(response, dict):
+        return []
+    explicit = response.get("successful_deal_ids")
+    if isinstance(explicit, list):
+        return [deal_id for deal_id in unique_values(explicit) if deal_id in submitted_set]
+    successful = []
+    for item in status_change_success_items(response):
+        deal_id = status_change_item_deal_id(item)
+        if deal_id and deal_id in submitted_set:
+            successful.append(deal_id)
+    return unique_values(successful)
+
+
+def status_change_failed_deal_ids(response: Any) -> list[str]:
+    return unique_values(
+        status_change_item_deal_id(item)
+        for item in status_change_errors(response)
+        if status_change_item_deal_id(item)
+    )
+
+
+def status_change_success_items(response: dict[str, Any]) -> list[Any]:
+    for key in ("successes", "success", "updated", "orders"):
+        value = response.get(key)
+        if isinstance(value, list):
+            return value
+    return []
+
+
+def status_change_item_deal_id(item: Any) -> str:
+    if isinstance(item, dict):
+        for key in STATUS_CHANGE_DEAL_ID_KEYS:
+            value = normalize_text(item.get(key))
+            if value:
+                return value
+        return ""
+    return normalize_text(item)
+
+
+def status_change_error_message(response: dict[str, Any]) -> str:
+    return (
+        "Smartup status change failed: "
+        f"errors={redact_json(status_change_errors(response))}; "
+        f"successful_deal_ids={redact_json(response.get('successful_deal_ids') or [])}; "
+        f"failed_deal_ids={redact_json(response.get('failed_deal_ids') or [])}"
+    )
 
 
 class TelegramDocumentSender:
@@ -462,11 +534,8 @@ def run_smartup_auto_import_once(
     import_rows = build_import_rows(selected_orders, export_date, filename, config, db=db)
     if not import_rows:
         raise SmartupAutoImportError("Smartup export не дал строк для импорта после фильтра")
-    export_path, workbook_sha256 = write_export_workbook(config.output_dir, export_date, filename, import_rows)
     grouped_rows = group_rows_by_delivery_date(import_rows)
-    previews = preview_delivery_groups(db, grouped_rows, filename, workbook_sha256)
-    assert_previews_safe(previews)
-
+    export_path, workbook_sha256 = write_export_workbook(config.output_dir, export_date, filename, import_rows)
     delivery_dates = sorted(grouped_rows)
     audit_payload = {
         "version": 1,
@@ -484,13 +553,28 @@ def run_smartup_auto_import_once(
         "deal_ids": unique_deal_ids(selected_orders),
         "delivery_dates": delivery_dates,
         "delivery_date_adjustments": delivery_date_adjustments(import_rows),
-        "previews": previews,
+        "previews": [],
         "backend_import_enabled": config.backend_import_enabled,
         "change_status_enabled": config.change_status_enabled,
         "process_skladbot_now": config.process_skladbot_now,
     }
     audit_path = write_export_audit(config.output_dir, export_date, filename, audit_payload)
     audit_payload["audit_path"] = str(audit_path)
+    update_export_audit(audit_path, audit_payload)
+    try:
+        previews = preview_delivery_groups(db, grouped_rows, filename, workbook_sha256)
+        audit_payload["previews"] = previews
+        update_export_audit(audit_path, audit_payload)
+        assert_previews_safe(previews)
+    except Exception as exc:
+        failed_preview = {
+            **audit_payload,
+            "status": "failed_preview",
+            "error": str(exc)[:1000],
+        }
+        update_export_audit(audit_path, failed_preview)
+        record_smartup_audit(db, "smartup_auto_import_preview_failed", failed_preview)
+        raise
 
     if not config.backend_import_enabled:
         result = {
@@ -515,7 +599,24 @@ def run_smartup_auto_import_once(
         source_chat_id=config.client_chat_id,
     )
     status_change = client.change_status(unique_deal_ids(selected_orders), config.waiting_status_code)
-    imports = queue_skladbot_after_smartup_status(db, imports)
+    imports = queue_skladbot_after_smartup_status(
+        db,
+        imports,
+        successful_deal_ids=status_change_successful_deal_ids(status_change, unique_deal_ids(selected_orders)),
+    )
+    if status_change_has_errors(status_change):
+        result = {
+            **audit_payload,
+            "status": "failed_status_change",
+            "imports": imports,
+            "status_change": status_change,
+            "client_export": {"status": "skipped"},
+            "skladbot_processing": {"status": "skipped"},
+            "logistics_reports": [],
+        }
+        update_export_audit(audit_path, result)
+        record_smartup_audit(db, "smartup_auto_import_status_change_failed", result)
+        raise SmartupAutoImportError(status_change_error_message(status_change))
     client_export = send_smartup_export_to_client(
         db,
         config,
@@ -571,49 +672,102 @@ def create_delivery_group_imports(
 ) -> list[dict[str, Any]]:
     results = []
     for delivery_date, rows in sorted(grouped_rows.items()):
-        payload = ImportCreate(
-            source=SMARTUP_AUTO_IMPORT_SOURCE,
-            filename=filename,
-            sha256=sha256,
-            telegram_chat_id=source_chat_id,
-            telegram_event_id=f"smartup-auto:{export_date.isoformat()}:{slot_label}:{delivery_date}:part-{part}",
-            rows=rows,
-        )
-        import_result = create_import(db, payload, skladbot_create_mode="dry_run")
-        metadata = {
-            "version": 1,
-            "export_date": export_date.isoformat(),
-            "export_date_display": format_display_date(export_date),
-            "delivery_dates": [delivery_date],
-            "part": part,
-            "slot": slot_label,
-            "filename": filename,
-            "rows": len(rows),
-            "deal_ids": unique_values(row.get("Smartup deal_id") for row in rows),
-            "delivery_date_adjustments": delivery_date_adjustments(rows),
-        }
-        attach_smartup_metadata_to_import(db, import_result.id, metadata)
-        results.append({
-            "delivery_date": delivery_date,
-            "import_id": import_result.id,
-            "status": import_result.status,
-            "rows_total": import_result.rows_total,
-            "rows_imported": import_result.rows_imported,
-            "orders_created": import_result.orders_created,
-            "items_created": import_result.items_created,
-            "duplicate_rows": import_result.duplicate_rows,
-            "invalid_rows": import_result.invalid_rows,
-            "skladbot_dry_run_status": import_result.skladbot_dry_run_status,
-            "skladbot_dry_run_ready": import_result.skladbot_dry_run_ready,
-            "skladbot_dry_run_blocked": import_result.skladbot_dry_run_blocked,
-            "skladbot_dry_run_event_id": import_result.skladbot_dry_run_event_id,
-        })
+        rows_by_deal_id: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for row in rows:
+            rows_by_deal_id[normalize_text(row.get("Smartup deal_id"))].append(row)
+        for deal_id, deal_rows in sorted(rows_by_deal_id.items()):
+            result = create_smartup_import(
+                db,
+                delivery_date,
+                deal_id,
+                deal_rows,
+                filename,
+                sha256,
+                export_date=export_date,
+                part=part,
+                slot_label=slot_label,
+                source_chat_id=source_chat_id,
+            )
+            results.append(result)
     return results
 
 
-def queue_skladbot_after_smartup_status(db: Session, imports: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def create_smartup_import(
+    db: Session,
+    delivery_date: str,
+    deal_id: str,
+    rows: list[dict[str, Any]],
+    filename: str,
+    sha256: str,
+    *,
+    export_date: date,
+    part: int,
+    slot_label: str,
+    source_chat_id: str,
+) -> dict[str, Any]:
+    payload = ImportCreate(
+        source=SMARTUP_AUTO_IMPORT_SOURCE,
+        filename=filename,
+        sha256=sha256,
+        telegram_chat_id=source_chat_id,
+        telegram_event_id=(
+            f"smartup-auto:{export_date.isoformat()}:{slot_label}:"
+            f"{delivery_date}:{deal_id}:part-{part}"
+        ),
+        rows=rows,
+    )
+    import_result = create_import(db, payload, skladbot_create_mode="dry_run")
+    metadata = {
+        "version": 1,
+        "export_date": export_date.isoformat(),
+        "export_date_display": format_display_date(export_date),
+        "delivery_dates": [delivery_date],
+        "part": part,
+        "slot": slot_label,
+        "filename": filename,
+        "rows": len(rows),
+        "deal_ids": unique_values(row.get("Smartup deal_id") for row in rows),
+        "delivery_date_adjustments": delivery_date_adjustments(rows),
+    }
+    attach_smartup_metadata_to_import(db, import_result.id, metadata)
+    return {
+        "delivery_date": delivery_date,
+        "import_id": import_result.id,
+        "status": import_result.status,
+        "rows_total": import_result.rows_total,
+        "rows_imported": import_result.rows_imported,
+        "orders_created": import_result.orders_created,
+        "items_created": import_result.items_created,
+        "duplicate_rows": import_result.duplicate_rows,
+        "invalid_rows": import_result.invalid_rows,
+        "skladbot_dry_run_status": import_result.skladbot_dry_run_status,
+        "skladbot_dry_run_ready": import_result.skladbot_dry_run_ready,
+        "skladbot_dry_run_blocked": import_result.skladbot_dry_run_blocked,
+        "skladbot_dry_run_event_id": import_result.skladbot_dry_run_event_id,
+        "deal_ids": metadata["deal_ids"],
+    }
+
+
+def queue_skladbot_after_smartup_status(
+    db: Session,
+    imports: list[dict[str, Any]],
+    *,
+    successful_deal_ids: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    successful_deal_id_set = {normalize_text(value) for value in successful_deal_ids or [] if normalize_text(value)}
     results = []
     for item in imports:
+        import_deal_ids = {normalize_text(value) for value in item.get("deal_ids") or [] if normalize_text(value)}
+        if successful_deal_ids is not None and (not import_deal_ids or not import_deal_ids <= successful_deal_id_set):
+            results.append({
+                **item,
+                "skladbot_after_status": {
+                    "status": "skipped",
+                    "reason": "smartup_status_not_confirmed",
+                    "deal_ids": sorted(import_deal_ids),
+                },
+            })
+            continue
         import_id = normalize_text(item.get("import_id"))
         if not import_id:
             results.append(item)

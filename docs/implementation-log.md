@@ -7,13 +7,21 @@
 ### Smartup automation phase audit follow-up
 
 - Свежий аудит acceptance criteria нашел production-compose gap: `smartup-auto-import-worker` использует Smartup reverse geocode, но `YANDEX_GEOCODER_API_KEY` был проброшен только в `backend-api` и `telegram-worker`.
+- Дополнительно закрыты слабые места из второго read-only review:
+  - partial Smartup `change_status` больше не может поставить real SkladBot create-event по неподтвержденному `deal_id`;
+  - Smartup import дробится по `delivery_date + deal_id`, чтобы SkladBot after-status queue был точным по заказу;
+  - audit JSON создается до backend preview и обновляется статусом `failed_preview`, если preview падает;
+  - добавлен тест ручного override `is_non_working=false` для выходного дня логистики;
+  - user guide явно фиксирует, что `Терминал` enforce-ится локально после Smartup export.
 - Исправлено:
   - `YANDEX_GEOCODER_API_KEY` добавлен в environment `smartup-auto-import-worker`;
   - VDS acceptance test теперь проверяет geocoder/block-price/SKU env именно в блоке `smartup-auto-import-worker`, а не просто где-то в compose;
-  - Smartup verifier теперь ловит отсутствие geocoder env в compose-блоке worker;
+  - Smartup verifier теперь ловит отсутствие geocoder env в compose-блоке worker, отсутствие partial-status guard и отсутствие preview-failure audit guard;
   - user guide уточнен: код safe-by-default, production включается только явными флагами после backup/smoke/runtime verifier.
 - Проверено:
-  - `.venv/bin/python -m unittest tests.test_smartup_auto_import tests.test_google_sheets_sync_worker tests.test_vds_acceptance_scripts` - 47 tests OK;
+  - `.venv/bin/python -m unittest tests.test_smartup_auto_import` - 31 tests OK;
+  - `.venv/bin/python -m unittest tests.test_smartup_auto_import tests.test_google_sheets_sync_worker tests.test_vds_acceptance_scripts` - 50 tests OK;
+  - `.venv/bin/python -m py_compile backend/app/smartup_auto_import.py` - OK;
   - `bash -n deploy/vds/verify_smartup_automation.sh deploy/vds/acceptance_status.sh` - OK;
   - `git diff --check` - OK;
   - `TAKSKLAD_ENV_FILE=.env.example docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config --quiet` - OK;
