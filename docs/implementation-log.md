@@ -21,6 +21,18 @@
   - release preflight: status `ok`, public backend health OK, version `2.0.25`;
   - docker compose config OK;
   - Smartup automation source verifier OK, local runtime skipped because local compose service is not running.
+- Production deploy:
+  - restore point: `/opt/stacks/taksklad/restore_points/pre-web-panel-recovery-20260701T055754Z`;
+  - DB backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260701T055755Z.sql.gz`;
+  - selective rsync excluded `.env*`, `node_modules`, `dist`, `__pycache__` and `*.pyc`;
+  - rebuilt/recreated `backend-api`, `frontend`, `telegram-worker`, `google-sheets-sync-worker`, `skladbot-worker`, `smartup-auto-import-worker`;
+  - Alembic upgrade head completed;
+  - public `/health` OK, version `2.0.25`;
+  - public `/ready` stays `degraded` because of known old `telegram_excel_import` failed events and temporary Google mirror pending, while DB and migrations are OK;
+  - live frontend bundle includes `Календарь`, `Smartup`, `История действий`, `Загрузить еще`;
+  - production `admin_table(limit=500, offset=0)` returned 500 of 4193 rows in 1.561 sec, `has_more=true`;
+  - VDS Smartup runtime verifier returned `status=ok`;
+  - fresh container logs after deploy had no `ERROR`, `CRITICAL`, `Traceback`, `Exception` or `panic`.
 
 ## 2026-06-30
 

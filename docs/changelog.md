@@ -25,6 +25,19 @@
 - `TAKSKLAD_ENV_FILE=.env.example docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config --quiet` - OK.
 - `deploy/vds/verify_smartup_automation.sh` - source checks OK, local runtime skipped because local compose service is not running.
 
+**Production deploy:**
+
+- Сервер `159.195.138.95`, app path `/opt/stacks/taksklad/app`.
+- Restore point: `/opt/stacks/taksklad/restore_points/pre-web-panel-recovery-20260701T055754Z`.
+- DB backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260701T055755Z.sql.gz`.
+- Selective rsync: `backend`, `frontend`, `deploy/vds`, `docs`, `tests`, `tools`, `AGENTS.md`, `README.md`, `version.json`, `.githooks`; `.env*`, `node_modules`, `dist`, `__pycache__` and `*.pyc` excluded.
+- Rebuilt/recreated: `backend-api`, `frontend`, `telegram-worker`, `google-sheets-sync-worker`, `skladbot-worker`, `smartup-auto-import-worker`; Alembic upgrade head completed.
+- Public `/health` OK, version `2.0.25`; public `/ready` remains `degraded` due known old `telegram_excel_import` failed events and transient Google mirror pending, not due DB/migrations/API.
+- Live frontend bundle contains `Календарь`, `Smartup`, `История действий` and `Загрузить еще`.
+- Production `admin_table(limit=500, offset=0)` returned 500 of 4193 rows in 1.561 sec, `has_more=true`.
+- VDS `SMARTUP_AUTOMATION_RUNTIME_REQUIRED=1 ./deploy/vds/verify_smartup_automation.sh` returned `status=ok`.
+- Fresh container logs after deploy: no `ERROR`, `CRITICAL`, `Traceback`, `Exception` or `panic`.
+
 ## 2026-06-30
 
 ### Smartup automation phase audit follow-up
