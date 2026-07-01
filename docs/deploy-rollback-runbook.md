@@ -111,6 +111,67 @@ curl -fsS -H "Authorization: Bearer <service-token-from-secret-storage>" \
 curl -fsS https://api.159.195.138.95.sslip.io/health
 ```
 
+## 2.1 Controlled CI/CD
+
+GitHub CI/CD настроен в безопасном режиме:
+
+- `.github/workflows/ci.yml` запускается на `push main`, `pull_request main` и вручную;
+- `.github/workflows/deploy-production.yml` запускается только вручную через `workflow_dispatch`;
+- обычный `git push` не деплоит production;
+- production deploy должен проходить через GitHub Environment `production`, где можно включить required reviewers.
+
+CI проверяет:
+
+```bash
+PYTHONPATH=. python -m compileall -q backend/app backend/migrations tools tests
+PYTHONPATH=. python -m unittest discover -s tests
+PYTHONPATH=. python -m alembic -c backend/alembic.ini heads
+TAKSKLAD_ENV_FILE=.env.example docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config --quiet
+npm ci --prefix frontend
+npm --prefix frontend run build
+```
+
+Для production deploy в GitHub Secrets нужны:
+
+```text
+VDS_HOST
+VDS_USER
+VDS_SSH_KEY
+VDS_SSH_KNOWN_HOSTS
+VDS_APP_DIR
+```
+
+`VDS_APP_DIR` можно не задавать, если production checkout лежит в стандартном пути `/opt/stacks/taksklad/app`. `VDS_SSH_KNOWN_HOSTS` должен содержать known_hosts строку сервера; не использовать `StrictHostKeyChecking=no`.
+
+Ручной запуск:
+
+1. GitHub -> Actions -> `Deploy Production`.
+2. `ref`: обычно `main`.
+3. `services`: `all` или список compose-сервисов через пробел/запятую.
+4. `acceptance`: `optional`, `required` или `skip`.
+
+Разрешенные сервисы для rebuild/recreate:
+
+```text
+backend-api frontend telegram-worker google-sheets-sync-worker skladbot-worker smartup-auto-import-worker
+```
+
+Серверный скрипт `deploy/vds/deploy_from_git.sh` выполняет:
+
+1. отказывается деплоить при tracked changes на VDS checkout;
+2. создает restore point без `outputs`, `.env`, credentials и backup-файлов;
+3. запускает `deploy/vds/backup_postgres.sh`;
+4. checkout выбранного git ref;
+5. build `backend-api`;
+6. `alembic -c alembic.ini upgrade head`;
+7. `docker compose up -d --build` для выбранных сервисов;
+8. `curl -fsS https://api.taksklad.uz/health`;
+9. `curl -fsS https://api.taksklad.uz/ready`;
+10. optional/required `deploy/vds/acceptance_status.sh`;
+11. fresh log scan по rebuilt/recreated сервисам.
+
+Первый запуск CI/CD делать как manual deploy с `acceptance=optional`. Если acceptance manifest на сервере отсутствует, optional mode не блокирует deploy, но это нужно зафиксировать в `implementation-log.md`. Для релизов с ручной acceptance использовать `acceptance=required`.
+
 ## 3. Backup
 
 Ручной backup:

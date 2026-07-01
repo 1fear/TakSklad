@@ -9,7 +9,7 @@ Usage:
 Example:
   ./deploy/vds/switch_backend_host.sh api.taksklad.uz adminer.taksklad.uz
 
-Run this script on the VDS from /opt/taksklad/app after DNS A records already point
+Run this script on the VDS from /opt/stacks/taksklad/app after DNS A records already point
 to the server IP. The script updates deploy/vds/.env and recreates Traefik-routed
 containers so new host rules are applied.
 USAGE

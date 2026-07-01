@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_DIR="${TAKSKLAD_APP_DIR:-/opt/taksklad/app}"
+APP_DIR="${TAKSKLAD_APP_DIR:-/opt/stacks/taksklad/app}"
 SYSTEMD_DIR="${TAKSKLAD_SYSTEMD_DIR:-/etc/systemd/system}"
 SERVICE_NAME="taksklad-postgres-backup"
 

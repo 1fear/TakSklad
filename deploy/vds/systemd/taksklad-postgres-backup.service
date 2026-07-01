@@ -5,9 +5,9 @@ After=docker.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=/opt/taksklad/app
-Environment=TAKSKLAD_COMPOSE_FILE=/opt/taksklad/app/deploy/vds/docker-compose.yml
-Environment=TAKSKLAD_ENV_FILE=/opt/taksklad/app/deploy/vds/.env
+WorkingDirectory=/opt/stacks/taksklad/app
+Environment=TAKSKLAD_COMPOSE_FILE=/opt/stacks/taksklad/app/deploy/vds/docker-compose.yml
+Environment=TAKSKLAD_ENV_FILE=/opt/stacks/taksklad/app/deploy/vds/.env
 Environment=TAKSKLAD_BACKUP_DIR=/opt/taksklad/backups/postgres
 Environment=TAKSKLAD_BACKUP_RETENTION_DAYS=14
-ExecStart=/opt/taksklad/app/deploy/vds/backup_postgres.sh
+ExecStart=/opt/stacks/taksklad/app/deploy/vds/backup_postgres.sh
