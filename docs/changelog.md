@@ -4,6 +4,37 @@
 
 ## 2026-07-01
 
+### Web archive action feedback
+
+**Файлы:** `frontend/src/App.tsx`, `frontend/src/api.ts`, `backend/app/admin_service.py`, `backend/app/order_actions_service.py`, `tests/test_backend_api_persistence.py`, `docs/changelog.md`.
+
+**Что стало:**
+
+- Web-панель больше не стирает ошибку action после refresh: если `В архив как выполнено` получает `409/422`, причина остается видимой оператору.
+- Structured backend errors теперь форматируются в читаемый текст вместо сырого JSON.
+- Bulk close проверяет ответ backend: `completed=0` больше не показывается как успешное закрытие.
+- Admin table считает pending Google events не только по `entity_id`, но и по `payload.order_ids`, кроме SkladBot export events, которые backend для этого action игнорирует.
+- Idempotent retry bulk close возвращает фактическое число новых закрытий, а не `len(order_ids)`.
+
+**Проверки:**
+
+- `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_backend_api_persistence.BackendApiPersistenceTests.test_admin_table_counts_pending_google_exports_from_order_ids tests.test_backend_api_persistence.BackendApiPersistenceTests.test_bulk_complete_without_kiz_idempotency_prevents_duplicate_audit_and_export tests.test_backend_api_persistence.BackendApiPersistenceTests.test_bulk_complete_without_kiz_allows_partially_scanned_order_and_preserves_scans tests.test_backend_api_persistence.BackendApiPersistenceTests.test_bulk_complete_without_kiz_marks_unscanned_orders_completed_and_queues_archive_export` - OK.
+- `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_backend_api_persistence tests.test_backend_google_sheets_pending tests.test_google_sheets_sync_worker` - 144 tests OK.
+- `npm --prefix frontend run build` - OK.
+- `git diff --check -- frontend/src/App.tsx frontend/src/api.ts backend/app/admin_service.py backend/app/order_actions_service.py tests/test_backend_api_persistence.py` - OK.
+
+**Production deploy:**
+
+- Commit: `c3af912`.
+- Server: `159.195.138.95`, app path `/opt/stacks/taksklad/app`.
+- Restore point: `/opt/stacks/taksklad/restore_points/pre-web-archive-action-20260701T121713Z`.
+- Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260701T121713Z.sql.gz`.
+- Runtime patch applied only to `backend/app/admin_service.py`, `backend/app/order_actions_service.py`, `frontend/src/App.tsx`, `frontend/src/api.ts`.
+- Rebuilt/recreated: `backend-api`, `frontend`.
+- Live frontend asset: `/assets/index-38L4qXHj.js`.
+- Public `/health` OK; `/ready` remains degraded by old unrelated `telegram_excel_import` failures.
+- Fresh logs for `backend-api` and `frontend`: no `ERROR`, `Traceback`, `Exception`, `panic`.
+
 ### Main/prod web panel recovery and admin table pagination
 
 **Файлы:** `frontend/src/App.tsx`, `frontend/src/styles.css`, `frontend/src/api.ts`, Smartup/calendar backend files, VDS deploy files, tests and docs from 2.0.25 rollout branch.
