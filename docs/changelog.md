@@ -14,6 +14,7 @@
 - Alembic head поднят до `20260701_0007`; migration использует `CREATE INDEX IF NOT EXISTS`, чтобы не падать, если индекс уже был создан вручную.
 - `/ready` ожидает head `20260701_0007`.
 - `deploy_from_git.sh` больше не требует, чтобы `/opt/stacks/taksklad/app` был git checkout: для non-git app dir он берет выбранный ref из временного clone и синхронизирует код через `rsync --delete` с runtime/secret excludes.
+- Public `/health` и `/ready` в deploy-скрипте проверяются с retry, чтобы transient 404/502 сразу после recreate не помечал успешный deploy как failed.
 - `acceptance=optional` в deploy больше не блокирует production deploy при no-go от `acceptance_status.sh`; `acceptance=required` остается блокирующим.
 
 **Проверки:**

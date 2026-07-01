@@ -12,6 +12,8 @@ HEALTH_URL="${TAKSKLAD_HEALTH_URL:-https://api.taksklad.uz/health}"
 READY_URL="${TAKSKLAD_READY_URL:-https://api.taksklad.uz/ready}"
 LOG_SINCE_SECONDS="${TAKSKLAD_DEPLOY_LOG_SINCE_SECONDS:-120}"
 REMOTE_URL="${TAKSKLAD_DEPLOY_REMOTE_URL:-https://github.com/1fear/TakSklad.git}"
+URL_RETRY_ATTEMPTS="${TAKSKLAD_DEPLOY_URL_RETRY_ATTEMPTS:-30}"
+URL_RETRY_INTERVAL_SECONDS="${TAKSKLAD_DEPLOY_URL_RETRY_INTERVAL_SECONDS:-2}"
 
 ALL_SERVICES=(
   backend-api
@@ -33,6 +35,8 @@ Environment:
   TAKSKLAD_DEPLOY_SERVICES      Space/comma separated services, or all. Default: all
   TAKSKLAD_DEPLOY_ACCEPTANCE    optional|required|skip. Default: optional
   TAKSKLAD_DEPLOY_REMOTE_URL    Git remote for non-git app dirs. Default: https://github.com/1fear/TakSklad.git
+  TAKSKLAD_DEPLOY_URL_RETRY_ATTEMPTS           Public health/readiness attempts. Default: 30
+  TAKSKLAD_DEPLOY_URL_RETRY_INTERVAL_SECONDS  Delay between public URL attempts. Default: 2
 EOF
 }
 
@@ -159,6 +163,29 @@ run_log_scan() {
   fi
 }
 
+check_public_url() {
+  local label="$1"
+  local url="$2"
+  local attempt output status
+
+  for ((attempt = 1; attempt <= URL_RETRY_ATTEMPTS; attempt += 1)); do
+    set +e
+    output="$(curl -fsS "$url" 2>&1)"
+    status="$?"
+    set -e
+    if [[ "$status" -eq 0 ]]; then
+      echo "$output"
+      return 0
+    fi
+    if ((attempt == URL_RETRY_ATTEMPTS)); then
+      echo "$output" >&2
+      fail "$label check failed: $url"
+    fi
+    echo "$label check failed on attempt $attempt/$URL_RETRY_ATTEMPTS; retrying in ${URL_RETRY_INTERVAL_SECONDS}s" >&2
+    sleep "$URL_RETRY_INTERVAL_SECONDS"
+  done
+}
+
 run_acceptance() {
   case "$ACCEPTANCE_MODE" in
     optional|required|skip) ;;
@@ -194,6 +221,9 @@ cd "$APP_DIR"
 
 [[ -f "$ENV_FILE" ]] || fail "env file not found: $APP_DIR/$ENV_FILE"
 [[ -f "$COMPOSE_FILE" ]] || fail "compose file not found: $APP_DIR/$COMPOSE_FILE"
+[[ "$URL_RETRY_ATTEMPTS" =~ ^[0-9]+$ ]] || fail "TAKSKLAD_DEPLOY_URL_RETRY_ATTEMPTS must be a positive integer"
+((URL_RETRY_ATTEMPTS > 0)) || fail "TAKSKLAD_DEPLOY_URL_RETRY_ATTEMPTS must be greater than zero"
+[[ "$URL_RETRY_INTERVAL_SECONDS" =~ ^[0-9]+$ ]] || fail "TAKSKLAD_DEPLOY_URL_RETRY_INTERVAL_SECONDS must be a non-negative integer"
 
 if [[ -d .git ]]; then
   tracked_changes="$(git status --short --untracked-files=no)"
@@ -234,11 +264,11 @@ echo "Rebuilding and recreating services: ${SERVICES[*]}"
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --build "${SERVICES[@]}"
 
 echo "Checking public health..."
-curl -fsS "$HEALTH_URL"
+check_public_url "health" "$HEALTH_URL"
 echo
 
 echo "Checking public readiness..."
-curl -fsS "$READY_URL"
+check_public_url "readiness" "$READY_URL"
 echo
 
 echo "Running acceptance check mode: $ACCEPTANCE_MODE"

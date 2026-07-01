@@ -167,8 +167,8 @@ backend-api frontend telegram-worker google-sheets-sync-worker skladbot-worker s
 5. build `backend-api`;
 6. `alembic -c alembic.ini upgrade head`;
 7. `docker compose up -d --build` для выбранных сервисов;
-8. `curl -fsS https://api.taksklad.uz/health`;
-9. `curl -fsS https://api.taksklad.uz/ready`;
+8. `curl -fsS https://api.taksklad.uz/health` с retry;
+9. `curl -fsS https://api.taksklad.uz/ready` с retry;
 10. optional/required `deploy/vds/acceptance_status.sh`;
 11. fresh log scan по rebuilt/recreated сервисам.
 

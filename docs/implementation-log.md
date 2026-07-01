@@ -12,6 +12,7 @@
   - `pending_events` получил индексы `status, created_at, id`, `status, updated_at, id`, `event_type, status, created_at, id`, `event_type, status, updated_at, id`, `updated_at, created_at, id`;
   - SQLAlchemy metadata, bootstrap SQL и readiness head подняты до `20260701_0007`;
   - `deploy/vds/deploy_from_git.sh` умеет деплоить в non-git app dir через временный clone и `rsync --delete` с exclude для `.env*`, `outputs`, `backups`, runtime logs, restore points, virtualenv и build/cache каталогов;
+  - public `/health` и `/ready` в deploy-скрипте проверяются с retry, чтобы transient 404/502 сразу после recreate не помечал успешный deploy как failed;
   - `TAKSKLAD_DEPLOY_ACCEPTANCE=optional` теперь не блокирует deploy при no-go от `acceptance_status.sh`; `required` остается строгим и падает при missing/no-go acceptance.
 - Локальные проверки:
   - `bash -n deploy/vds/deploy_from_git.sh` - OK;
