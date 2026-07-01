@@ -7,7 +7,7 @@ from unittest import mock
 import openpyxl
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select, text
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, selectinload
 from sqlalchemy.pool import StaticPool
 
 from backend.app.db import get_db
@@ -307,6 +307,150 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertFalse(tail_payload["has_more"])
         self.assertEqual(tail_payload["rows"][0]["client"], "Charlie")
 
+    def test_admin_table_filters_status_before_limit(self):
+        created_at_base = datetime(2026, 6, 1, 8, 0, tzinfo=timezone.utc)
+        with self.SessionLocal() as db:
+            archived_order = Order(
+                payment_type="cash",
+                client="Archived Client",
+                address="Archived Address",
+                representative="Archived Rep",
+                order_date=date(2026, 6, 1),
+                status="completed",
+                created_at=created_at_base,
+                raw_payload={"source": "pagination-filter-test"},
+            )
+            archived_item = OrderItem(
+                order=archived_order,
+                product="Archived Product",
+                quantity_pieces=10,
+                quantity_blocks=1,
+                pieces_per_block=10,
+                scanned_blocks=1,
+                status="completed",
+                created_at=created_at_base,
+                raw_payload={"line_total": 1000},
+            )
+            active_order = Order(
+                payment_type="terminal",
+                client="Active Client",
+                address="Active Address",
+                representative="Active Rep",
+                order_date=date(2026, 7, 1),
+                status="not_completed",
+                created_at=created_at_base + timedelta(minutes=1),
+                raw_payload={"source": "pagination-filter-test"},
+            )
+            active_item = OrderItem(
+                order=active_order,
+                product="Active Product",
+                quantity_pieces=20,
+                quantity_blocks=2,
+                pieces_per_block=10,
+                scanned_blocks=0,
+                status="not_completed",
+                created_at=created_at_base + timedelta(minutes=1),
+                raw_payload={"line_total": 2000},
+            )
+            db.add_all([archived_item, active_item])
+            db.flush()
+            db.add(PendingEvent(
+                event_type="google_sheets_export",
+                status="pending",
+                payload={
+                    "action": "google_sheets_archive_export",
+                    "entity_id": str(archived_order.id),
+                },
+            ))
+            db.commit()
+
+        all_response = self.client.get("/api/v1/admin/table")
+        self.assertEqual(all_response.status_code, 200)
+        self.assertEqual(all_response.json()["totals"]["pending_google_exports"], 1)
+
+        response = self.client.get("/api/v1/admin/table?limit=1&status_bucket=active")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["total_rows"], 1)
+        self.assertEqual(payload["row_count"], 1)
+        self.assertFalse(payload["has_more"])
+        self.assertEqual(payload["rows"][0]["client"], "Active Client")
+        self.assertEqual(payload["rows"][0]["status_bucket"], "active")
+        self.assertEqual(payload["totals"]["orders"], 1)
+        self.assertEqual(payload["totals"]["active_orders"], 1)
+        self.assertEqual(payload["totals"]["pending_google_exports"], 0)
+
+    def test_admin_table_supports_server_side_ui_filters(self):
+        with self.SessionLocal() as db:
+            matching_order = Order(
+                payment_type="terminal",
+                client="Needle Client",
+                address="Needle Address",
+                representative="Needle Rep",
+                order_date=date(2026, 7, 1),
+                status="not_completed",
+                raw_payload={
+                    "source": "admin-filter-test",
+                    "skladbot_request_number": "WH-R-777",
+                    "skladbot_status": "found",
+                },
+            )
+            matching_item = OrderItem(
+                order=matching_order,
+                product="Needle Product",
+                quantity_pieces=30,
+                quantity_blocks=3,
+                pieces_per_block=10,
+                scanned_blocks=1,
+                status="not_completed",
+                raw_payload={
+                    "line_total": 3000,
+                    "source_file": "needle.xlsx",
+                    "google_sheet_synced_at": "2026-07-01T08:00:00+00:00",
+                },
+            )
+            other_order = Order(
+                payment_type="cash",
+                client="Other Client",
+                address="Other Address",
+                representative="Other Rep",
+                order_date=date(2026, 7, 1),
+                status="not_completed",
+                raw_payload={"source": "admin-filter-test"},
+            )
+            other_item = OrderItem(
+                order=other_order,
+                product="Other Product",
+                quantity_pieces=10,
+                quantity_blocks=1,
+                pieces_per_block=10,
+                scanned_blocks=0,
+                status="not_completed",
+                raw_payload={"line_total": 1000},
+            )
+            db.add_all([matching_item, other_item])
+            db.commit()
+
+        response = self.client.get(
+            "/api/v1/admin/table",
+            params={
+                "shipment_date": "2026-07-01",
+                "search": "needle",
+                "scan_state": "in_progress",
+                "skladbot_filter": "found",
+                "google_sheet_status": "synced",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["total_rows"], 1)
+        self.assertEqual(payload["rows"][0]["client"], "Needle Client")
+        self.assertEqual(payload["rows"][0]["product"], "Needle Product")
+        self.assertEqual(payload["rows"][0]["google_sheet_status"], "synced")
+        self.assertEqual(payload["rows"][0]["skladbot_request_number"], "WH-R-777")
+
     def test_admin_table_counts_pending_google_exports_from_order_ids(self):
         order_id, _item_id = self.seed_order()
         with self.SessionLocal() as db:
@@ -333,7 +477,9 @@ class BackendApiPersistenceTests(unittest.TestCase):
         response = self.client.get("/api/v1/admin/table")
 
         self.assertEqual(response.status_code, 200)
-        row = response.json()["rows"][0]
+        payload = response.json()
+        self.assertEqual(payload["totals"]["pending_google_exports"], 1)
+        row = payload["rows"][0]
         self.assertEqual(row["pending_google_exports"], 1)
         self.assertEqual(row["google_sheet_status"], "pending")
 
@@ -2341,6 +2487,204 @@ class BackendApiPersistenceTests(unittest.TestCase):
             ["smartup:deal-1:product-1:1", "smartup:deal-2:product-1:1"],
         )
 
+    def test_smartup_late_export_splits_when_existing_order_already_has_skladbot_request(self):
+        base_row = {
+            "Дата отгрузки": "02.07.2026",
+            "Тип оплаты": "Терминал",
+            "Клиент": '"KAMALOVA KAMOLA ABDUXALIL QIZI"YTT',
+            "Адрес": "Ташкент, Сергелийский район, массив Сергели-7, 3А",
+            "Координаты": "41.221775,69.208391",
+            "Торговый представитель": "Елчиев Сардор",
+            "Кол-во ШТ": "10",
+            "Кол-во блок": "1",
+        }
+        first_rows = [
+            {
+                **base_row,
+                "Товары": "Chapman RED OP 20",
+                "ID заказа": "smartup:258112497",
+                "ID импорта": "smartup:258112497:1542096777:1",
+                "source_batch_key": "smartup:2026-07-01:part:1",
+            },
+            {
+                **base_row,
+                "Товары": "Chapman Brown OP 20",
+                "ID заказа": "smartup:258112497",
+                "ID импорта": "smartup:258112497:1542096778:2",
+                "source_batch_key": "smartup:2026-07-01:part:1",
+            },
+        ]
+        second_row = {
+            **base_row,
+            "Товары": "Chapman Green OP 20",
+            "ID заказа": "smartup:258183923",
+            "ID импорта": "smartup:258183923:1542514989:1",
+            "source_batch_key": "smartup:2026-07-01:part:2",
+        }
+
+        first_response = self.client.post(
+            "/api/v1/imports",
+            json={"source": "smartup_auto", "filename": "Терминал 01.07.2026 Часть 1.xlsx", "rows": first_rows},
+        )
+        self.assertEqual(first_response.status_code, 201)
+        self.assertEqual(first_response.json()["orders_created"], 1)
+
+        with self.SessionLocal() as db:
+            original_order = db.execute(select(Order)).scalar_one()
+            original_raw = dict(original_order.raw_payload or {})
+            original_order.raw_payload = {
+                **original_raw,
+                "skladbot_request_number": "WH-R-202581",
+                "skladbot_request_id": "202581",
+                "skladbot_create_request_payload": {
+                    "products": [{"amount": 1}, {"amount": 1}],
+                },
+            }
+            db.commit()
+
+        second_payload_request = {
+            "source": "smartup_auto",
+            "filename": "Терминал 01.07.2026 Часть 2.xlsx",
+            "rows": [second_row],
+        }
+        preview_response = self.client.post("/api/v1/imports/preview", json=second_payload_request)
+        self.assertEqual(preview_response.status_code, 200)
+        preview_payload = preview_response.json()
+        self.assertEqual(preview_payload["orders_new"], 1)
+        self.assertEqual(preview_payload["items_new"], 1)
+        self.assertEqual(preview_payload["duplicate_rows"], 0)
+
+        second_response = self.client.post(
+            "/api/v1/imports",
+            json=second_payload_request,
+        )
+
+        self.assertEqual(second_response.status_code, 201)
+        second_payload = second_response.json()
+        self.assertEqual(second_payload["orders_created"], 1)
+        self.assertEqual(second_payload["items_created"], 1)
+        self.assertEqual(second_payload["duplicate_rows"], 0)
+        self.assertEqual(second_payload["skladbot_dry_run_status"], "ok")
+        self.assertEqual(second_payload["skladbot_dry_run_ready"], 1)
+
+        retry_response = self.client.post("/api/v1/imports", json=second_payload_request)
+        self.assertEqual(retry_response.status_code, 201)
+        retry_payload = retry_response.json()
+        self.assertEqual(retry_payload["orders_created"], 0)
+        self.assertEqual(retry_payload["items_created"], 0)
+        self.assertEqual(retry_payload["duplicate_rows"], 1)
+
+        with self.SessionLocal() as db:
+            orders = db.execute(select(Order).options(selectinload(Order.items))).scalars().unique().all()
+            self.assertEqual(len(orders), 2)
+            original_order = next(order for order in orders if (order.raw_payload or {}).get("skladbot_request_number"))
+            split_order = next(order for order in orders if (order.raw_payload or {}).get("split_reason"))
+            imports = db.execute(select(ImportJob).order_by(ImportJob.created_at)).scalars().all()
+            split_import = next(import_job for import_job in imports if import_job.rows_imported == 1)
+
+        self.assertEqual(sorted(item.product for item in original_order.items), [
+            "Chapman Brown OP 20",
+            "Chapman RED OP 20",
+        ])
+        self.assertEqual([item.product for item in split_order.items], ["Chapman Green OP 20"])
+        self.assertNotEqual(original_order.external_id, split_order.external_id)
+        self.assertEqual(split_order.client, original_order.client)
+        self.assertEqual(split_order.address, original_order.address)
+        self.assertEqual(split_order.order_date, original_order.order_date)
+        self.assertEqual(split_order.raw_payload["source_order_key"], original_order.raw_payload["order_key"])
+        self.assertEqual(split_order.raw_payload["split_reason"], "linked_skladbot_late_smartup_export")
+        self.assertEqual(split_order.raw_payload["split_from_skladbot_request_number"], "WH-R-202581")
+        self.assertEqual(split_order.raw_payload["split_source_batch_key"], "smartup:2026-07-01:part:2")
+        self.assertEqual(split_order.items[0].raw_payload["source_batch_key"], "smartup:2026-07-01:part:2")
+        self.assertEqual(split_import.raw_payload["skladbot_dry_run"]["orders"], 1)
+        self.assertEqual(split_import.raw_payload["skladbot_dry_run"]["ready"], 1)
+
+        changed_sha_row = {
+            **base_row,
+            "Товары": "Chapman Brown SSL 100`20",
+            "ID заказа": "smartup:258183924",
+            "ID импорта": "smartup:258183924:1542514990:1",
+            "source_batch_key": "smartup:2026-07-01:part:2:sha256:changed",
+        }
+        changed_sha_request = {
+            "source": "smartup_auto",
+            "filename": "Терминал 01.07.2026 Часть 2.xlsx",
+            "rows": [changed_sha_row],
+        }
+        changed_preview = self.client.post("/api/v1/imports/preview", json=changed_sha_request)
+        self.assertEqual(changed_preview.status_code, 200)
+        self.assertEqual(changed_preview.json()["orders_new"], 0)
+        self.assertEqual(changed_preview.json()["items_new"], 1)
+
+        changed_response = self.client.post("/api/v1/imports", json=changed_sha_request)
+        self.assertEqual(changed_response.status_code, 201)
+        self.assertEqual(changed_response.json()["orders_created"], 0)
+        self.assertEqual(changed_response.json()["items_created"], 1)
+
+        with self.SessionLocal() as db:
+            orders = db.execute(select(Order).options(selectinload(Order.items))).scalars().unique().all()
+            self.assertEqual(len(orders), 2)
+            split_order = next(order for order in orders if (order.raw_payload or {}).get("split_reason"))
+        self.assertEqual(
+            sorted(item.product for item in split_order.items),
+            ["Chapman Brown SSL 100`20", "Chapman Green OP 20"],
+        )
+
+    def test_smartup_late_export_splits_when_existing_order_has_pending_skladbot_create(self):
+        base_row = {
+            "Дата отгрузки": "02.07.2026",
+            "Тип оплаты": "Терминал",
+            "Клиент": "Pending SkladBot Client",
+            "Адрес": "Pending SkladBot Address",
+            "Координаты": "41.221775,69.208391",
+            "Торговый представитель": "Rep",
+            "Кол-во ШТ": "10",
+            "Кол-во блок": "1",
+        }
+        first_row = {
+            **base_row,
+            "Товары": "Chapman RED OP 20",
+            "ID заказа": "smartup:pending-deal-1",
+            "ID импорта": "smartup:pending-deal-1:red:1",
+            "source_batch_key": "smartup:2026-07-01:part:1",
+        }
+        second_row = {
+            **base_row,
+            "Товары": "Chapman Green OP 20",
+            "ID заказа": "smartup:pending-deal-2",
+            "ID импорта": "smartup:pending-deal-2:green:1",
+            "source_batch_key": "smartup:2026-07-01:part:2",
+        }
+
+        first_response = self.client.post(
+            "/api/v1/imports",
+            json={"source": "smartup_auto", "filename": "part1.xlsx", "rows": [first_row]},
+        )
+        self.assertEqual(first_response.status_code, 201)
+
+        with self.SessionLocal() as db:
+            original_order = db.execute(select(Order)).scalar_one()
+            db.add(PendingEvent(
+                event_type="skladbot_request_create",
+                idempotency_key=f"skladbot:create:v1:order:{original_order.id}",
+                status="pending",
+                payload={"order_id": str(original_order.id), "create_status": "queued"},
+            ))
+            db.commit()
+
+        second_response = self.client.post(
+            "/api/v1/imports",
+            json={"source": "smartup_auto", "filename": "part2.xlsx", "rows": [second_row]},
+        )
+
+        self.assertEqual(second_response.status_code, 201)
+        self.assertEqual(second_response.json()["orders_created"], 1)
+        with self.SessionLocal() as db:
+            orders = db.execute(select(Order).options(selectinload(Order.items))).scalars().unique().all()
+        self.assertEqual(len(orders), 2)
+        split_order = next(order for order in orders if (order.raw_payload or {}).get("split_reason"))
+        self.assertEqual([item.product for item in split_order.items], ["Chapman Green OP 20"])
+
     def test_import_prefers_imported_repriced_line_total_over_calculated_total(self):
         row = {
             "Дата отгрузки": "01.07.2026",
@@ -2623,7 +2967,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
     def test_failed_import_creates_linked_incident_and_resolve_removes_readiness_blocker(self):
         with self.SessionLocal() as db:
             db.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
-            db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260626_0005')"))
+            db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260701_0006')"))
             event = PendingEvent(
                 event_type="telegram_excel_import",
                 status="processing",
@@ -3698,6 +4042,76 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertIsNone(summary["C3"].value)
         workbook.close()
 
+    def test_kiz_source_file_report_groups_legacy_smartup_same_export_file(self):
+        filename = "Терминал 01.07.2026 Часть 1.xlsx"
+        rows = [
+            {
+                "Дата отгрузки": "2026-07-02",
+                "Тип оплаты": "Терминал",
+                "Клиент": "Smartup Legacy 1",
+                "Адрес": "Legacy Address 1",
+                "Товары": "Chapman Brown OP 20",
+                "Кол-во ШТ": "10",
+                "Кол-во блок": "1",
+                "Источник файла": filename,
+                "ID заказа": "smartup:701",
+                "ID импорта": "smartup:701:line-1:1",
+            },
+            {
+                "Дата отгрузки": "2026-07-02",
+                "Тип оплаты": "Терминал",
+                "Клиент": "Smartup Legacy 2",
+                "Адрес": "Legacy Address 2",
+                "Товары": "Chapman Green OP 20",
+                "Кол-во ШТ": "10",
+                "Кол-во блок": "1",
+                "Источник файла": filename,
+                "ID заказа": "smartup:702",
+                "ID импорта": "smartup:702:line-1:1",
+            },
+        ]
+        for row in rows:
+            imported = self.client.post(
+                "/api/v1/imports",
+                json={"source": "smartup_auto", "filename": filename, "rows": [row]},
+            )
+            self.assertEqual(imported.status_code, 201)
+
+        active = self.client.get("/api/v1/orders/active").json()
+        codes_by_client = {
+            "Smartup Legacy 1": "0104006396053978217LEGACY001",
+            "Smartup Legacy 2": "0104006396104441217LEGACY002",
+        }
+        for client, code in codes_by_client.items():
+            order = next(order for order in active if order["client"] == client)
+            response = self.client.post(
+                "/api/v1/scans",
+                json={"order_item_id": order["items"][0]["id"], "code": code},
+            )
+            self.assertEqual(response.status_code, 201)
+
+        source_files = self.client.get("/api/v1/reports/kiz/source-files")
+        self.assertEqual(source_files.status_code, 200)
+        terminal_files = [item for item in source_files.json() if item["source_file"] == filename]
+        self.assertEqual(len(terminal_files), 1)
+        source_file = terminal_files[0]
+        self.assertTrue(source_file["source_key"].startswith("batch:legacy-smartup-file:"))
+        self.assertTrue(source_file["completed"])
+        self.assertEqual(source_file["items"], 2)
+        self.assertEqual(source_file["planned_blocks"], 2)
+        self.assertEqual(source_file["scanned_blocks"], 2)
+        self.assertEqual(source_file["dates"], ["2026-07-02"])
+
+        report = self.client.get(
+            "/api/v1/reports/kiz/source-file",
+            params={"source_file": filename, "source_key": source_file["source_key"]},
+        )
+        self.assertEqual(report.status_code, 200)
+        workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
+        summary = workbook["Сводка"]
+        self.assertEqual({summary["C2"].value, summary["C3"].value}, {"Smartup Legacy 1", "Smartup Legacy 2"})
+        workbook.close()
+
     def test_day_report_rejects_invalid_report_date(self):
         response = self.client.get("/api/v1/reports/day?report_date=not-a-date")
 
@@ -4487,10 +4901,10 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertNotIn("secret", dumped)
         self.assertNotIn("0104006396053978217SECRETKIZVALUE", dumped)
 
-    def test_readiness_accepts_logistics_calendar_schema_head_revision(self):
+    def test_readiness_accepts_representative_contacts_schema_head_revision(self):
         with self.SessionLocal() as db:
             db.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
-            db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260626_0005')"))
+            db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260701_0006')"))
             db.commit()
 
         response = self.client.get("/ready")
@@ -4500,8 +4914,8 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(payload["status"], "ok")
         self.assertEqual(payload["migrations"]["status"], "ok")
         self.assertEqual(payload["migrations"]["expected_baseline"], "20260616_0001")
-        self.assertEqual(payload["migrations"]["expected_head"], "20260626_0005")
-        self.assertEqual(payload["migrations"]["current_revision"], "20260626_0005")
+        self.assertEqual(payload["migrations"]["expected_head"], "20260701_0006")
+        self.assertEqual(payload["migrations"]["current_revision"], "20260701_0006")
 
     def test_readiness_degrades_when_migration_state_is_missing_or_wrong(self):
         response = self.client.get("/ready")

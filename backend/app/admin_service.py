@@ -21,11 +21,22 @@ GOOGLE_EXPORT_EVENT_TYPE = "google_sheets_export"
 PENDING_STATUSES = ("pending", "failed")
 
 
-def build_admin_table(db: Session, limit=None, offset=0, activity_limit=30):
+def build_admin_table(
+    db: Session,
+    limit=None,
+    offset=0,
+    activity_limit=30,
+    status_bucket="",
+    shipment_date="",
+    search="",
+    scan_state="",
+    skladbot_filter="",
+    google_status="",
+):
     row_limit = None if limit is None else max(1, int(limit))
     row_offset = max(0, int(offset or 0))
     activity_row_limit = max(0, min(int(activity_limit or 30), 100))
-    pending_by_entity, pending_total = pending_google_exports_by_entity(db)
+    pending_by_entity, pending_events = pending_google_exports_by_entity(db)
 
     orders = db.execute(
         select(Order)
@@ -37,12 +48,21 @@ def build_admin_table(db: Session, limit=None, offset=0, activity_limit=30):
     for order in orders:
         for item in sorted(order.items, key=lambda value: (str(value.created_at or ""), str(value.id))):
             all_rows.append(order_item_to_admin_row(order, item, pending_by_entity))
-    total_rows = len(all_rows)
-    rows = all_rows[row_offset:] if row_limit is None else all_rows[row_offset:row_offset + row_limit]
+    filtered_rows = filter_admin_rows(
+        all_rows,
+        status_bucket=status_bucket,
+        shipment_date=shipment_date,
+        search=search,
+        scan_state=scan_state,
+        skladbot_filter=skladbot_filter,
+        google_status=google_status,
+    )
+    total_rows = len(filtered_rows)
+    rows = filtered_rows[row_offset:] if row_limit is None else filtered_rows[row_offset:row_offset + row_limit]
 
     return AdminTableRead(
         generated_at=datetime.now(timezone.utc),
-        totals=build_totals(all_rows, pending_total),
+        totals=build_totals(filtered_rows, pending_events),
         rows=rows,
         recent_activity=list_recent_activity(db, activity_row_limit),
         limit=row_limit if row_limit is not None else len(rows),
@@ -53,6 +73,104 @@ def build_admin_table(db: Session, limit=None, offset=0, activity_limit=30):
     )
 
 
+def filter_admin_rows(
+    rows,
+    *,
+    status_bucket="",
+    shipment_date="",
+    search="",
+    scan_state="",
+    skladbot_filter="",
+    google_status="",
+):
+    status_bucket = normalize_filter_value(status_bucket)
+    shipment_date = normalize_filter_value(shipment_date)
+    search = normalize_text(search).casefold()
+    scan_state = normalize_filter_value(scan_state)
+    skladbot_filter = normalize_filter_value(skladbot_filter)
+    google_status = normalize_filter_value(google_status)
+
+    return [
+        row for row in rows
+        if admin_row_matches_filters(
+            row,
+            status_bucket=status_bucket,
+            shipment_date=shipment_date,
+            search=search,
+            scan_state=scan_state,
+            skladbot_filter=skladbot_filter,
+            google_status=google_status,
+        )
+    ]
+
+
+def admin_row_matches_filters(
+    row,
+    *,
+    status_bucket="",
+    shipment_date="",
+    search="",
+    scan_state="",
+    skladbot_filter="",
+    google_status="",
+):
+    if status_bucket and row.status_bucket != status_bucket:
+        return False
+    if shipment_date and (row.order_date.isoformat() if row.order_date else "") != shipment_date:
+        return False
+    if scan_state and admin_row_scan_state(row) != scan_state:
+        return False
+    if skladbot_filter and not admin_row_matches_skladbot_filter(row, skladbot_filter):
+        return False
+    if google_status and row.google_sheet_status != google_status:
+        return False
+    if search and not admin_row_matches_search(row, search):
+        return False
+    return True
+
+
+def admin_row_matches_search(row, search):
+    values = (
+        row.client,
+        row.address,
+        row.representative or "",
+        row.payment_type,
+        row.product,
+        row.source_file,
+        row.skladbot_request_number,
+        row.skladbot_request_id,
+    )
+    return any(search in normalize_text(value).casefold() for value in values)
+
+
+def admin_row_matches_skladbot_filter(row, value):
+    has_number = bool(row.skladbot_request_number or row.skladbot_request_id)
+    if value == "found":
+        return has_number
+    if value == "missing":
+        return not has_number
+    if value == "problem":
+        return row.skladbot_status in {"not_found", "multiple", "error", "pending"}
+    return True
+
+
+def admin_row_scan_state(row):
+    if row.quantity_blocks <= 0:
+        return "no_plan"
+    if row.scanned_blocks > row.quantity_blocks:
+        return "over_scanned"
+    if row.scanned_blocks >= row.quantity_blocks:
+        return "completed"
+    if row.scanned_blocks > 0:
+        return "in_progress"
+    return "not_started"
+
+
+def normalize_filter_value(value):
+    text = normalize_text(value)
+    return "" if text == "all" else text
+
+
 def pending_google_exports_by_entity(db: Session):
     pending = db.execute(
         select(PendingEvent).where(
@@ -61,10 +179,12 @@ def pending_google_exports_by_entity(db: Session):
         )
     ).scalars().all()
     by_entity = {}
+    visible_events = []
     for event in pending:
         payload = event.payload or {}
         if payload.get("action") == "google_sheets_skladbot_export":
             continue
+        visible_events.append(event)
         entity_id = normalize_text(payload.get("entity_id"))
         if entity_id:
             by_entity[entity_id] = by_entity.get(entity_id, 0) + 1
@@ -72,7 +192,7 @@ def pending_google_exports_by_entity(db: Session):
             order_id = normalize_text(order_id)
             if order_id:
                 by_entity[order_id] = by_entity.get(order_id, 0) + 1
-    return by_entity, len(pending)
+    return by_entity, visible_events
 
 
 def order_item_to_admin_row(order: Order, item: OrderItem, pending_by_entity):
@@ -148,8 +268,9 @@ def google_sheet_status(item: OrderItem, pending_count=0):
     return "unknown"
 
 
-def build_totals(rows, pending_total):
+def build_totals(rows, pending_events):
     order_ids = {row.order_id for row in rows}
+    item_ids = {row.item_id for row in rows}
     active_order_ids = {row.order_id for row in rows if row.status_bucket == "active"}
     archived_order_ids = {row.order_id for row in rows if row.status_bucket == "archive"}
     returned_order_ids = {row.order_id for row in rows if row.status_bucket == "returned"}
@@ -163,8 +284,19 @@ def build_totals(rows, pending_total):
         scanned_blocks=sum(row.scanned_blocks for row in rows),
         remaining_blocks=sum(row.remaining_blocks for row in rows if row.status_bucket == "active"),
         total_price=sum(row.line_total for row in rows),
-        pending_google_exports=pending_total,
+        pending_google_exports=count_pending_google_exports_for_rows(pending_events, order_ids, item_ids),
     )
+
+
+def count_pending_google_exports_for_rows(pending_events, order_ids, item_ids):
+    total = 0
+    for event in pending_events:
+        payload = event.payload or {}
+        entity_id = normalize_text(payload.get("entity_id"))
+        event_order_ids = {normalize_text(order_id) for order_id in payload.get("order_ids") or []}
+        if entity_id in order_ids or entity_id in item_ids or event_order_ids.intersection(order_ids):
+            total += 1
+    return total
 
 
 def list_recent_activity(db: Session, limit):

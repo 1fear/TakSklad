@@ -12,10 +12,14 @@ from .google_sheets_exporter import make_sheet_record
 from .google_sheets_pending import (
     queue_google_sheets_export,
 )
-from .models import AuditLog, ImportFile, ImportJob, Incident, Order, OrderItem
+from .models import AuditLog, ImportFile, ImportJob, Incident, Order, OrderItem, PendingEvent
 from .orders_service import STATUS_COMPLETED, STATUS_NOT_COMPLETED, STATUS_RETURNED
 from .schemas import ImportCreate, ImportPreviewResult, ImportRead, ImportResult
-from .skladbot_request_dry_run import create_skladbot_dry_run_for_import
+from .skladbot_request_dry_run import (
+    SKLADBOT_REQUEST_CREATE_EVENT_TYPE,
+    create_skladbot_dry_run_for_import,
+    skladbot_create_idempotency_key,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -40,8 +44,11 @@ ORDER_ID_FIELDS = ("ID заказа", "order_id", "external_id")
 IMPORT_ID_FIELDS = ("ID импорта", "import_id")
 SOURCE_FILE_FIELDS = ("Источник файла", "source_file")
 SOURCE_ROW_FIELDS = ("Строка файла", "source_row")
+SOURCE_BATCH_FIELDS = ("Ключ исходного документа", "source_batch_key")
 SKLADBOT_NUMBER_FIELDS = ("Номер заявки SkladBot", "skladbot_request_number")
 SKLADBOT_ID_FIELDS = ("ID заявки SkladBot", "skladbot_request_id")
+SMARTUP_AUTO_IMPORT_SOURCE = "smartup_auto"
+LINKED_SKLADBOT_SPLIT_REASON = "linked_skladbot_late_smartup_export"
 PICKUP_ADDRESS = "Самовывоз со склада"
 MISSING_ADDRESS_MARKERS = {
     "адрес не указан",
@@ -142,28 +149,34 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
                 backend_address_updates += 1
             continue
 
-        order = order_by_key.get(row["order_key"])
+        source_order_key, order_key, split_from_order = resolve_order_key_for_import_row(
+            db,
+            row,
+            import_job.source,
+            order_by_key,
+        )
+        order = order_by_key.get(order_key)
         if order is None:
             order = Order(
                 source=import_job.source,
-                external_id=row["order_key"],
+                external_id=order_key,
                 order_date=row["order_date"],
                 payment_type=row["payment_type"],
                 client=row["client"],
                 address=row["address"],
                 representative=row["representative"],
                 status=row["status"],
-                raw_payload={
-                    "order_key": row["order_key"],
-                    "skladbot_request_number": row["skladbot_request_number"],
-                    "skladbot_request_id": row["skladbot_request_id"],
-                    "coordinates": row["coordinates"],
-                    "source": import_job.source,
-                },
+                raw_payload=build_order_raw_payload(
+                    row,
+                    import_job.source,
+                    order_key=order_key,
+                    source_order_key=source_order_key,
+                    split_from_order=split_from_order,
+                ),
             )
             db.add(order)
             db.flush()
-            order_by_key[row["order_key"]] = order
+            order_by_key[order_key] = order
             orders_created += 1
 
         db.add(OrderItem(
@@ -182,6 +195,7 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
                 "source_import_id": row["source_import_id"],
                 "source_file": row["source_file"],
                 "source_row": row["source_row"],
+                "source_batch_key": row["source_batch_key"],
                 "backend_import_id": str(import_job.id),
                 "block_price": row["block_price"],
                 "imported_unit_price": row["imported_unit_price"],
@@ -337,9 +351,15 @@ def preview_import(db: Session, payload: ImportCreate):
                 backend_address_updates += 1
             continue
 
-        if row["order_key"] not in preview_order_keys:
+        _source_order_key, order_key, _split_from_order = resolve_order_key_for_import_row(
+            db,
+            row,
+            payload.source,
+            order_by_key,
+        )
+        if order_key not in preview_order_keys:
             orders_new += 1
-            preview_order_keys.add(row["order_key"])
+            preview_order_keys.add(order_key)
         preview_item_keys.add(row["item_key"])
         if row["source_import_id"]:
             preview_source_import_ids.add(row["source_import_id"])
@@ -554,6 +574,97 @@ def is_returned_order(order):
     )
 
 
+def should_split_from_linked_skladbot_order(db: Session, order, import_source: str) -> bool:
+    if order is None:
+        return False
+    if normalize_text(import_source) != SMARTUP_AUTO_IMPORT_SOURCE:
+        return False
+    raw_payload = order.raw_payload or {}
+    has_linked_payload = bool(
+        normalize_text(raw_payload.get("skladbot_request_number"))
+        or normalize_text(raw_payload.get("skladbot_request_id"))
+    )
+    if has_linked_payload:
+        return True
+    return has_skladbot_create_event(db, order)
+
+
+def has_skladbot_create_event(db: Session, order) -> bool:
+    order_id = normalize_text(getattr(order, "id", ""))
+    if not order_id:
+        return False
+    event_id = db.execute(
+        select(PendingEvent.id)
+        .where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
+        .where(PendingEvent.idempotency_key == skladbot_create_idempotency_key(order_id))
+        .limit(1)
+    ).scalar_one_or_none()
+    return event_id is not None
+
+
+def resolve_order_key_for_import_row(db: Session, row, import_source: str, order_by_key: dict):
+    source_order_key = row["order_key"]
+    source_order = order_by_key.get(source_order_key)
+    if not should_split_from_linked_skladbot_order(db, source_order, import_source):
+        return source_order_key, source_order_key, None
+    return source_order_key, linked_skladbot_split_order_key(row), source_order
+
+
+def linked_skladbot_split_order_key(row) -> str:
+    split_source_key = (
+        stable_smartup_split_source_key(row.get("source_batch_key"))
+        or normalize_text(row.get("source_order_id"))
+        or normalize_text(row.get("source_import_id"))
+        or normalize_text(row.get("source_file"))
+        or normalize_text(row.get("product"))
+    )
+    digest = stable_hash({
+        "reason": LINKED_SKLADBOT_SPLIT_REASON,
+        "order_key": row.get("order_key"),
+        "split_source_key": split_source_key,
+    })
+    return f"late-skladbot-split:{digest[:48]}"
+
+
+def stable_smartup_split_source_key(source_batch_key) -> str:
+    text = normalize_text(source_batch_key)
+    if text.startswith("smartup:") and ":sha256:" in text:
+        return text.split(":sha256:", 1)[0]
+    return text
+
+
+def build_order_raw_payload(
+    row,
+    import_source: str,
+    *,
+    order_key: str,
+    source_order_key: str,
+    split_from_order=None,
+) -> dict:
+    payload = {
+        "order_key": order_key,
+        "skladbot_request_number": row["skladbot_request_number"],
+        "skladbot_request_id": row["skladbot_request_id"],
+        "coordinates": row["coordinates"],
+        "source": import_source,
+        "source_batch_key": row["source_batch_key"],
+    }
+    if split_from_order is None:
+        return payload
+
+    split_raw = split_from_order.raw_payload or {}
+    payload.update({
+        "source_order_key": source_order_key,
+        "split_reason": LINKED_SKLADBOT_SPLIT_REASON,
+        "split_from_order_id": str(split_from_order.id),
+        "split_from_skladbot_request_number": normalize_text(split_raw.get("skladbot_request_number")),
+        "split_from_skladbot_request_id": normalize_text(split_raw.get("skladbot_request_id")),
+        "split_source_batch_key": row["source_batch_key"],
+        "split_source_order_id": row["source_order_id"],
+    })
+    return payload
+
+
 def find_existing_item_for_row(row, existing_items):
     source_import_id = row.get("source_import_id")
     if source_import_id:
@@ -618,6 +729,7 @@ def normalize_import_row(raw_row):
     source_import_id = first_value(raw_row, IMPORT_ID_FIELDS)
     source_file = first_value(raw_row, SOURCE_FILE_FIELDS)
     source_row = first_value(raw_row, SOURCE_ROW_FIELDS)
+    source_batch_key = first_value(raw_row, SOURCE_BATCH_FIELDS)
     skladbot_request_number = first_value(raw_row, SKLADBOT_NUMBER_FIELDS)
     skladbot_request_id = first_value(raw_row, SKLADBOT_ID_FIELDS)
 
@@ -671,6 +783,7 @@ def normalize_import_row(raw_row):
         "source_import_id": normalize_text(source_import_id),
         "source_file": normalize_text(source_file),
         "source_row": normalize_text(source_row),
+        "source_batch_key": normalize_text(source_batch_key),
         "skladbot_request_number": normalize_text(skladbot_request_number),
         "skladbot_request_id": normalize_text(skladbot_request_id),
     }

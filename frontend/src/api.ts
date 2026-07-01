@@ -407,6 +407,12 @@ export type AdminTableRequest = {
   limit?: number;
   offset?: number;
   activityLimit?: number;
+  statusBucket?: string;
+  shipmentDate?: string;
+  search?: string;
+  scanState?: string;
+  skladbotFilter?: string;
+  googleSheetStatus?: string;
 };
 
 export type AuthSession = {
@@ -577,6 +583,12 @@ export function getAdminTable(config: ApiConfig, options: AdminTableRequest = {}
     activity_limit: String(options.activityLimit ?? 30),
   });
   if (options.limit !== undefined) query.set("limit", String(options.limit));
+  if (options.statusBucket) query.set("status_bucket", options.statusBucket);
+  if (options.shipmentDate) query.set("shipment_date", options.shipmentDate);
+  if (options.search) query.set("search", options.search);
+  if (options.scanState) query.set("scan_state", options.scanState);
+  if (options.skladbotFilter) query.set("skladbot_filter", options.skladbotFilter);
+  if (options.googleSheetStatus) query.set("google_sheet_status", options.googleSheetStatus);
   return apiRequest<AdminTable>(config, `/api/v1/admin/table?${query.toString()}`);
 }
 

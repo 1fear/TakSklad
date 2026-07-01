@@ -4,6 +4,61 @@
 
 ## 2026-07-01
 
+### Admin table filters and Smartup split readiness fixes
+
+**Файлы:** `backend/app/admin_service.py`, `backend/app/imports_service.py`, `backend/app/smartup_auto_import.py`, `frontend/src/App.tsx`, `tests/test_backend_api_persistence.py`, `tests/test_smartup_auto_import.py`, `docs/changelog.md`.
+
+**Что стало:**
+
+- `pending_google_exports` в totals web-таблицы считается по тем же видимым строкам, что и остальные totals.
+- `google_sheets_skladbot_export` не попадает в admin-table pending totals, как и в row-level pending.
+- Smartup preview получает тот же `source_batch_key`, что и реальный import.
+- Late split order key для Smartup больше не зависит от SHA XLSX: повторная выгрузка той же части с изменившимся файлом дописывается в тот же split-order.
+- Web-панель после server-side фильтров больше не фильтрует таблицу повторно на клиенте, чтобы `load more`, selection и bulk actions не расходились с backend offset.
+
+**Проверки:**
+
+- `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_backend_api_persistence.BackendApiPersistenceTests.test_admin_table_filters_status_before_limit tests.test_backend_api_persistence.BackendApiPersistenceTests.test_admin_table_counts_pending_google_exports_from_order_ids tests.test_backend_api_persistence.BackendApiPersistenceTests.test_smartup_late_export_splits_when_existing_order_already_has_skladbot_request tests.test_smartup_auto_import.SmartupAutoImportTests.test_preview_delivery_groups_uses_same_source_batch_key_as_import` - OK.
+- `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_backend_api_persistence tests.test_smartup_auto_import` - 153 tests OK.
+- `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_release_go_no_go tests.test_vds_acceptance_scripts tests.test_ci_cd_workflows tests.test_backend_skladbot_request_dry_run` - 47 tests OK.
+- `npm --prefix frontend run build` - OK.
+- `PYTHONPATH=. ./.venv/bin/python tools/release_preflight.py --skip-network` - OK.
+- `PYTHONPATH=. ./.venv/bin/python -m alembic -c backend/alembic.ini heads` - `20260701_0006 (head)`.
+- `TAKSKLAD_ENV_FILE=.env.example docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config --quiet` - OK.
+- `git diff --check` - OK.
+
+### Smartup late exports split after SkladBot link
+
+**Файлы:** `backend/app/imports_service.py`, `backend/app/smartup_auto_import.py`, `backend/app/skladbot_request_dry_run.py`, `tests/test_backend_api_persistence.py`, `tests/test_smartup_auto_import.py`, `tests/test_backend_skladbot_request_dry_run.py`, `docs/implementation-log.md`, `docs/changelog.md`.
+
+**Что стало:**
+
+- Если Smartup приносит новую выгрузку по тому же юрлицу/адресу/дате, но старый backend order уже связан с SkladBot, новая строка не добавляется в старый order.
+- Если SkladBot-заявка для старого backend order еще только стоит в очереди `skladbot_request_create`, новая Smartup-выгрузка тоже отделяется в новый order.
+- Для поздней выгрузки создается отдельный backend order со стабильным split-key по `order_key + source_batch_key`.
+- Новый backend order идет в обычный SkladBot create flow и получает отдельную WH-заявку.
+- Smartup create больше не задерживается до финального слота.
+- Preview import использует тот же split-key, что и реальный import.
+
+**Проверки:**
+
+- `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_backend_api_persistence.BackendApiPersistenceTests.test_smartup_late_export_splits_when_existing_order_already_has_skladbot_request` - OK.
+- `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_backend_api_persistence.BackendApiPersistenceTests.test_smartup_late_export_splits_when_existing_order_has_pending_skladbot_create` - OK.
+- `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_backend_api_persistence.BackendApiPersistenceTests.test_smartup_late_export_splits_when_existing_order_already_has_skladbot_request tests.test_backend_api_persistence.BackendApiPersistenceTests.test_smartup_late_export_splits_when_existing_order_has_pending_skladbot_create tests.test_backend_api_persistence.BackendApiPersistenceTests.test_import_keeps_same_business_item_when_source_import_id_differs tests.test_backend_api_persistence.BackendApiPersistenceTests.test_import_skips_duplicate_rows_inside_same_payload` - OK.
+- `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_smartup_auto_import tests.test_backend_skladbot_request_dry_run` - 62 tests OK.
+- `PYTHONPATH=. ./.venv/bin/python -m py_compile backend/app/imports_service.py backend/app/smartup_auto_import.py backend/app/skladbot_request_dry_run.py tests/test_backend_api_persistence.py tests/test_smartup_auto_import.py tests/test_backend_skladbot_request_dry_run.py` - OK.
+
+**Production deploy:**
+
+- Restore point: `/opt/stacks/taksklad/restore_points/pre-smartup-linked-split-20260701T124040Z`.
+- Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260701T124040Z.sql.gz`.
+- Rebuilt/recreated: `backend-api`, `smartup-auto-import-worker`, `skladbot-worker`.
+- Runtime smoke confirmed split behavior and absence of old `not_before` defer code.
+- Pending-create follow-up restore point: `/opt/stacks/taksklad/restore_points/pre-smartup-pending-split-20260701T125238Z`.
+- Pending-create follow-up Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260701T125238Z.sql.gz`.
+- Pending-create follow-up rebuilt/recreated: `backend-api`, `smartup-auto-import-worker`.
+- Runtime smoke confirmed `skladbot_request_create` pending event now forces a split; `excel` imports do not split.
+
 ### Web archive action feedback
 
 **Файлы:** `frontend/src/App.tsx`, `frontend/src/api.ts`, `backend/app/admin_service.py`, `backend/app/order_actions_service.py`, `tests/test_backend_api_persistence.py`, `docs/changelog.md`.
@@ -34,6 +89,132 @@
 - Live frontend asset: `/assets/index-38L4qXHj.js`.
 - Public `/health` OK; `/ready` remains degraded by old unrelated `telegram_excel_import` failures.
 - Fresh logs for `backend-api` and `frontend`: no `ERROR`, `Traceback`, `Exception`, `panic`.
+
+### SkladBot duplicate SKU aggregation before create
+
+**Файлы:** `backend/app/skladbot_request_dry_run.py`, `tests/test_backend_skladbot_request_dry_run.py`, `docs/implementation-log.md`, `docs/changelog.md`.
+
+**Что стало:**
+
+- Перед формированием SkladBot dry-run/create payload одинаковые ready SKU внутри одной заявки схлопываются по `product_data_id + barcode + is_main_barcode`.
+- Количество блоков суммируется, например две строки `Chapman Green OP 20` по 1 блоку становятся одной SkladBot-позицией `amount=2`.
+- Исходные строки импорта не удаляются: evidence остается в `OrderItem`/Google, а dry-run product хранит `source_products`.
+
+**Проверки:**
+
+- `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_backend_skladbot_request_dry_run` - 30 tests OK.
+- `./.venv/bin/python -m compileall -q backend/app/skladbot_request_dry_run.py tests/test_backend_skladbot_request_dry_run.py` - OK.
+- `git diff --check -- backend/app/skladbot_request_dry_run.py tests/test_backend_skladbot_request_dry_run.py` - OK.
+
+**Production deploy:**
+
+- Postgres backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260701T120248Z.sql.gz`.
+- Restore point: `/opt/stacks/taksklad/restore_points/pre-skladbot-sku-aggregation-20260701T120259Z`.
+- Rebuilt/recreated: `backend-api`, `smartup-auto-import-worker`.
+- Runtime aggregation smoke: `[(2430805, 2, 2), (2189392, 1, 1)]`.
+- Public `/health` OK; `/ready` remains degraded by old unrelated queue/mirror items.
+- Fresh logs for rebuilt services: no errors.
+
+### Controlled GitHub CI/CD
+
+**Файлы:** `.github/workflows/ci.yml`, `.github/workflows/deploy-production.yml`, `deploy/vds/deploy_from_git.sh`, `tests/test_ci_cd_workflows.py`, `docs/deploy-rollback-runbook.md`, `docs/implementation-log.md`, `docs/changelog.md`.
+
+**Что стало:**
+
+- Добавлен CI на `push main`, `pull_request main` и ручной запуск.
+- Добавлен production CD только через ручной GitHub Actions workflow `Deploy Production`.
+- Production deploy создает restore point, делает Postgres backup, применяет Alembic migration, пересобирает выбранные compose-сервисы и проверяет `/health`, `/ready`, optional/required acceptance и свежие логи.
+- Обычный `git push` по-прежнему не выкатывает production.
+- Секреты VDS остаются в GitHub Secrets/Environment и не попадают в репозиторий.
+- Restore point в deploy-скрипте исключает `.env*`, `node_modules`, `dist`, `__pycache__` и `*.pyc`.
+- Backup/restore scripts теперь уважают `TAKSKLAD_ENV_FILE` и `TAKSKLAD_COMPOSE_FILE`, а systemd backup unit использует актуальный `/opt/stacks/taksklad/app`.
+
+**Проверки:**
+
+- `bash -n deploy/vds/*.sh` - OK.
+- Ruby YAML parse для GitHub workflows - OK.
+- `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_ci_cd_workflows tests.test_vds_acceptance_scripts tests.test_windows_release_workflow` - 11 tests OK.
+- `TAKSKLAD_ENV_FILE=.env.example docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config --quiet` - OK.
+- `PYTHONPATH=. ./.venv/bin/python -m compileall -q deploy/vds tools tests` - OK.
+- `npm --prefix frontend run build` - OK.
+- `PYTHONPATH=. ./.venv/bin/python -m alembic -c backend/alembic.ini heads` - `20260701_0006 (head)`.
+- `git diff --check` - OK.
+- Локальный full `unittest discover -s tests` упал только на импорте Tk-dependent desktop tests из-за отсутствующего `_tkinter` в текущем Homebrew Python; GitHub CI устанавливает `python3-tk` перед full discovery.
+
+### YASMINA WH-R-202405 production DB blocks repair
+
+**Файлы:** `docs/implementation-log.md`, `docs/changelog.md`. Код не менялся.
+
+**Что стало:**
+
+- По `"YASMINA GROUP 555" MCHJ` production DB приведена к факту SkladBot: `WH-R-202405` содержит `4` блока.
+- Удалена одна лишняя неотсканированная repair-позиция `smartup:257984858:1541071310:1`, которая давала backend `5` блоков против `4` в SkladBot.
+- Заказ `a949d657-e20a-4def-944c-f20c560edba9` переведен в `completed`: осталось 4 позиции, все `1/1`.
+- SkladBot не изменялся, новая заявка не создавалась.
+
+**Production repair:**
+
+- DB backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260701T075633Z.sql.gz`, SHA256 `f4512ed14374039cecf3d3f73682e63314f1ae5b28988256d9ecd3c8f433659f`.
+- Evidence snapshot: `/opt/stacks/taksklad/repair_evidence/yasmina-wh-r-202405-blocks-before-20260701T075719Z.json`, SHA256 `c3f0e5b736a31754b712308ff4bc5c58f71e0fba72a16c2a65d7b50ca33268f0`.
+- Google cleanup/archive events completed: `google_sheets_delete_import_records_export`, `google_sheets_archive_export`.
+
+**Проверки:**
+
+- Production SQL: `db_blocks=4`, `scanned_blocks=4`, `item_count=4`, linked SkladBot amounts `[1, 1, 1, 1]`.
+- Rebuilt SkladBot dry-run for repair import: `linked_mismatch=0`, `events_queued=0`.
+- New Google/backend conflicts for this order after repair: `0`.
+- Public `/health` OK, version `2.0.25`; `/ready` degraded only by old unrelated queue/mirror items.
+
+### SkladBot representative comments and daily report column
+
+**Файлы:** `backend/app/representative_contacts.py`, `backend/app/skladbot_request_dry_run.py`, `backend/app/skladbot_return_requests.py`, `backend/app/skladbot_daily_report.py`, `backend/app/models.py`, `backend/app/health_service.py`, `backend/sql/001_initial_schema.sql`, `backend/migrations/versions/20260701_0006_representative_contacts.py`, `tools/import_representative_contacts.py`, tests and docs.
+
+**Что стало:**
+
+- Добавлен DB-справочник торговых представителей с рабочим/личным телефоном и рабочей зоной.
+- Добавлен импортёр XLSX-справочника: `tools/import_representative_contacts.py`.
+- При создании SkladBot-заявок TakSklad пишет в comment тип оплаты, ТП и найденные телефоны.
+- Ежедневный SkladBot XLSX показывает `Торговый представитель` на листах `Заявки` и `Товары заявок`.
+- Реальные телефонные номера не добавляются в репозиторий.
+
+**Проверки:**
+
+- `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_representative_contacts tests.test_backend_skladbot_request_dry_run tests.test_skladbot_daily_report tests.test_backend_skeleton tests.test_backend_api_persistence.BackendApiPersistenceTests.test_readiness_accepts_representative_contacts_schema_head_revision` - 70 tests OK.
+- `PYTHONPATH=. ./.venv/bin/python -m py_compile backend/app/representative_contacts.py backend/app/skladbot_request_dry_run.py backend/app/skladbot_return_requests.py backend/app/skladbot_daily_report.py backend/app/models.py backend/app/health_service.py tools/import_representative_contacts.py tests/test_representative_contacts.py tests/test_backend_skladbot_request_dry_run.py tests/test_skladbot_daily_report.py tests/test_backend_skeleton.py` - OK.
+- `PYTHONPATH=. ./.venv/bin/python -m alembic -c backend/alembic.ini heads` - `20260701_0006 (head)`.
+- In-memory dry-run импорта `/Users/anton/Documents/Telegram/номера тп (2).xlsx` - `rows=8 created=8 skipped=0`, без записи в рабочую БД.
+- `git diff --check` - OK.
+
+### Smartup KIZ source-file grouping
+
+**Файлы:** `backend/app/imports_service.py`, `backend/app/kiz_reports_service.py`, `backend/app/smartup_auto_import.py`, `tests/test_smartup_auto_import.py`, `tests/test_backend_api_persistence.py`, `docs/report-source-rules.md`, `docs/implementation-log.md`, `docs/changelog.md`.
+
+**Что стало:**
+
+- Smartup auto import сохраняет общий `source_batch_key` для всех backend-import, созданных из одного XLSX export-файла.
+- KIZ source-files сначала группирует Smartup-позиции по `source_batch_key`; legacy Smartup rows с именем `Терминал ДД.ММ.ГГГГ Часть N.xlsx` объединяются по этому имени.
+- Ручные повторные Excel с одинаковым filename продолжают разделяться по `backend_import_id`.
+
+**Проверки:**
+
+- `.venv/bin/python -m unittest tests.test_smartup_auto_import.SmartupAutoImportTests.test_smartup_kiz_source_files_group_one_export_file_across_deal_imports tests.test_backend_api_persistence.BackendApiPersistenceTests.test_kiz_source_file_report_groups_legacy_smartup_same_export_file tests.test_backend_api_persistence.BackendApiPersistenceTests.test_kiz_source_file_report_separates_same_filename_by_import` - 3 tests OK.
+- `.venv/bin/python -m unittest tests.test_smartup_auto_import` - 32 tests OK.
+- `.venv/bin/python -m unittest tests.test_smartup_auto_import tests.test_backend_api_persistence.BackendApiPersistenceTests.test_kiz_reports_show_source_file_progress_and_allow_partial_date_export tests.test_backend_api_persistence.BackendApiPersistenceTests.test_kiz_source_file_report_separates_same_filename_by_import tests.test_backend_api_persistence.BackendApiPersistenceTests.test_kiz_source_file_report_groups_legacy_smartup_same_export_file tests.test_backend_telegram_import.BackendTelegramImportTests.test_telegram_worker_shows_kiz_source_files_with_progress tests.test_backend_telegram_import.BackendTelegramImportTests.test_telegram_worker_downloads_kiz_source_file_by_import_key tests.test_backend_telegram_import.BackendTelegramImportTests.test_telegram_worker_keeps_kiz_source_key_when_file_selected_by_index` - 38 tests OK.
+- `.venv/bin/python -m py_compile backend/app/imports_service.py backend/app/kiz_reports_service.py backend/app/smartup_auto_import.py tests/test_smartup_auto_import.py tests/test_backend_api_persistence.py` - OK.
+- `git diff --check` - OK.
+
+**Production deploy:**
+
+- Сервер `159.195.138.95`, app path `/opt/stacks/taksklad/app`.
+- Restore point: `/opt/stacks/taksklad/restore_points/pre-smartup-kiz-source-grouping-20260701T073941Z`.
+- DB backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260701T073941Z.sql.gz`.
+- Selective rsync: `backend/app/imports_service.py`, `backend/app/kiz_reports_service.py`, `backend/app/smartup_auto_import.py`, related tests and docs only.
+- Rebuilt/recreated: `backend-api`, `smartup-auto-import-worker`.
+- Runtime `py_compile` inside both containers - OK.
+- Public `/health` OK, version `2.0.25`; public `/ready` remains `degraded` from old `telegram_excel_import` failures and one pending `google_sheets_export`, while DB and migrations are OK.
+- VDS `SMARTUP_AUTOMATION_RUNTIME_REQUIRED=1 ./deploy/vds/verify_smartup_automation.sh` returned `status=ok`, pending SkladBot creates `0`.
+- Production DB read-only check: `Терминал 01.07.2026 Часть 1.xlsx` is one KIZ source-file row with `batch:legacy-smartup-file` key prefix, `34` items, `47` planned blocks.
+- Fresh `backend-api` and `smartup-auto-import-worker` logs after deploy had no `ERROR`, `CRITICAL`, `Traceback`, `Exception` or `panic`.
 
 ### Main/prod web panel recovery and admin table pagination
 

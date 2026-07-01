@@ -536,6 +536,7 @@ def run_smartup_auto_import_once(
         raise SmartupAutoImportError("Smartup export не дал строк для импорта после фильтра")
     grouped_rows = group_rows_by_delivery_date(import_rows)
     export_path, workbook_sha256 = write_export_workbook(config.output_dir, export_date, filename, import_rows)
+    source_batch_key = smartup_source_batch_key(export_date, part, workbook_sha256)
     delivery_dates = sorted(grouped_rows)
     audit_payload = {
         "version": 1,
@@ -545,6 +546,7 @@ def run_smartup_auto_import_once(
         "target_delivery_date": target_delivery_date.isoformat() if target_delivery_date else "",
         "part": part,
         "filename": filename,
+        "source_batch_key": source_batch_key,
         "export_path": str(export_path),
         "sha256": workbook_sha256,
         "raw_orders": len(raw_orders),
@@ -562,7 +564,13 @@ def run_smartup_auto_import_once(
     audit_payload["audit_path"] = str(audit_path)
     update_export_audit(audit_path, audit_payload)
     try:
-        previews = preview_delivery_groups(db, grouped_rows, filename, workbook_sha256)
+        previews = preview_delivery_groups(
+            db,
+            grouped_rows,
+            filename,
+            workbook_sha256,
+            source_batch_key=source_batch_key,
+        )
         audit_payload["previews"] = previews
         update_export_audit(audit_path, audit_payload)
         assert_previews_safe(previews)
@@ -593,6 +601,7 @@ def run_smartup_auto_import_once(
         grouped_rows,
         filename,
         workbook_sha256,
+        source_batch_key=source_batch_key,
         export_date=export_date,
         part=part,
         slot_label=slot_label,
@@ -665,6 +674,7 @@ def create_delivery_group_imports(
     filename: str,
     sha256: str,
     *,
+    source_batch_key: str,
     export_date: date,
     part: int,
     slot_label: str,
@@ -683,6 +693,7 @@ def create_delivery_group_imports(
                 deal_rows,
                 filename,
                 sha256,
+                source_batch_key,
                 export_date=export_date,
                 part=part,
                 slot_label=slot_label,
@@ -699,12 +710,14 @@ def create_smartup_import(
     rows: list[dict[str, Any]],
     filename: str,
     sha256: str,
+    source_batch_key: str,
     *,
     export_date: date,
     part: int,
     slot_label: str,
     source_chat_id: str,
 ) -> dict[str, Any]:
+    import_rows = with_source_batch_key(rows, source_batch_key)
     payload = ImportCreate(
         source=SMARTUP_AUTO_IMPORT_SOURCE,
         filename=filename,
@@ -714,7 +727,7 @@ def create_smartup_import(
             f"smartup-auto:{export_date.isoformat()}:{slot_label}:"
             f"{delivery_date}:{deal_id}:part-{part}"
         ),
-        rows=rows,
+        rows=import_rows,
     )
     import_result = create_import(db, payload, skladbot_create_mode="dry_run")
     metadata = {
@@ -725,9 +738,10 @@ def create_smartup_import(
         "part": part,
         "slot": slot_label,
         "filename": filename,
-        "rows": len(rows),
-        "deal_ids": unique_values(row.get("Smartup deal_id") for row in rows),
-        "delivery_date_adjustments": delivery_date_adjustments(rows),
+        "source_batch_key": source_batch_key,
+        "rows": len(import_rows),
+        "deal_ids": unique_values(row.get("Smartup deal_id") for row in import_rows),
+        "delivery_date_adjustments": delivery_date_adjustments(import_rows),
     }
     attach_smartup_metadata_to_import(db, import_result.id, metadata)
     return {
@@ -895,16 +909,19 @@ def preview_delivery_groups(
     grouped_rows: dict[str, list[dict[str, Any]]],
     filename: str,
     sha256: str,
+    *,
+    source_batch_key: str,
 ) -> list[dict[str, Any]]:
     previews = []
     for delivery_date, rows in sorted(grouped_rows.items()):
+        preview_rows = with_source_batch_key(rows, source_batch_key)
         preview = preview_import(
             db,
             ImportCreate(
                 source=SMARTUP_AUTO_IMPORT_SOURCE,
                 filename=filename,
                 sha256=sha256,
-                rows=rows,
+                rows=preview_rows,
             ),
         )
         previews.append({
@@ -919,6 +936,16 @@ def preview_delivery_groups(
             "errors": preview.errors,
         })
     return previews
+
+
+def with_source_batch_key(rows: list[dict[str, Any]], source_batch_key: str) -> list[dict[str, Any]]:
+    return [
+        {
+            **row,
+            "source_batch_key": source_batch_key,
+        }
+        for row in rows
+    ]
 
 
 def assert_previews_safe(previews: list[dict[str, Any]]) -> None:
@@ -1264,6 +1291,13 @@ def export_day_dir(output_dir: Path, export_date: date) -> Path:
 
 def export_filename(export_date: date, part: int) -> str:
     return f"Терминал {format_display_date(export_date)} Часть {part}.xlsx"
+
+
+def smartup_source_batch_key(export_date: date, part: int, sha256: str) -> str:
+    normalized_sha = normalize_text(sha256).lower()
+    if normalized_sha:
+        return f"smartup:{export_date.isoformat()}:part:{part}:sha256:{normalized_sha}"
+    return f"smartup:{export_date.isoformat()}:part:{part}"
 
 
 def next_export_part(output_dir: Path, export_date: date) -> int:

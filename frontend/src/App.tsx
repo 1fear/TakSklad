@@ -192,27 +192,7 @@ function App() {
   const [notice, setNotice] = useState("");
 
   const rows = adminTable?.rows ?? [];
-  const filteredRows = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    return rows.filter((row) => {
-      if (statusFilter !== "all" && row.status_bucket !== statusFilter) return false;
-      if (shipmentDateFilter && row.order_date !== shipmentDateFilter) return false;
-      if (scanFilter !== "all" && scanState(row) !== scanFilter) return false;
-      if (!matchesSkladBotFilter(row, skladbotFilter)) return false;
-      if (googleFilter !== "all" && row.google_sheet_status !== googleFilter) return false;
-      if (!query) return true;
-      return [
-        row.client,
-        row.address,
-        row.representative ?? "",
-        row.payment_type,
-        row.product,
-        row.source_file,
-        row.skladbot_request_number,
-        row.skladbot_request_id,
-      ].some((value) => value.toLowerCase().includes(query));
-    });
-  }, [rows, search, statusFilter, shipmentDateFilter, scanFilter, skladbotFilter, googleFilter]);
+  const filteredRows = rows;
   const selectedRows = useMemo(
     () => rows.filter((row) => selectedOrderIds.includes(row.order_id)),
     [rows, selectedOrderIds],
@@ -274,13 +254,27 @@ function App() {
   const canEditClientPoints = authPermissions.includes("client_points:write");
   const dayTotals = dashboardSummary?.totals;
 
+  function adminTableRequest(offset = 0): Parameters<typeof getAdminTable>[1] {
+    const request = {
+      offset,
+      limit: ADMIN_TABLE_PAGE_SIZE,
+      search: search.trim() || undefined,
+      shipmentDate: shipmentDateFilter || undefined,
+      statusBucket: statusFilter !== "all" ? statusFilter : undefined,
+      scanState: scanFilter !== "all" ? scanFilter : undefined,
+      skladbotFilter: skladbotFilter !== "all" ? skladbotFilter : undefined,
+      googleSheetStatus: googleFilter !== "all" ? googleFilter : undefined,
+    };
+    return request;
+  }
+
   async function refreshAll(activeConfig = config, showNotice = true) {
     setLoading(true);
     setError("");
     if (showNotice) setNotice("");
     try {
       const [nextAdminTable, nextDashboardSummary, nextImports, nextClientPoints, nextReadiness, nextEventQueue, nextOperationsAttention, nextSmartupHistory, nextLogisticsCalendar, nextIncidents] = await Promise.all([
-        getAdminTable(activeConfig, { offset: 0, limit: ADMIN_TABLE_PAGE_SIZE }),
+        getAdminTable(activeConfig, adminTableRequest(0)),
         getDashboardDaySummary(activeConfig, reportDate),
         listImports(activeConfig),
         listClientPoints(activeConfig).catch(() => []),
@@ -325,6 +319,31 @@ function App() {
     }
   }
 
+  async function refreshAdminTable(activeConfig = config, showNotice = false) {
+    setLoading(true);
+    setError("");
+    if (showNotice) setNotice("");
+    try {
+      const nextAdminTable = await getAdminTable(activeConfig, adminTableRequest(0));
+      setAdminTable(nextAdminTable);
+      setSelectedOrderIds((current) => current.filter((id) => nextAdminTable.rows.some((row) => row.order_id === id)));
+      if (showNotice) {
+        setNotice(`Таблица обновлена: ${new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}`);
+      }
+    } catch (refreshError) {
+      const message = refreshError instanceof Error ? refreshError.message : "Не удалось загрузить таблицу";
+      if (refreshError instanceof ApiRequestError && refreshError.status === 401) {
+        setAuthenticated(false);
+        setAuthUser("");
+        setLoginError("Сессия закончилась. Войдите снова.");
+      } else {
+        setError(message);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function refreshDryRuns(activeConfig = config) {
     try {
       setDryRuns(await listSkladBotDryRuns(activeConfig));
@@ -339,10 +358,7 @@ function App() {
     setError("");
     setNotice("");
     try {
-      const nextPage = await getAdminTable(activeConfig, {
-        offset: adminTable.rows.length,
-        limit: ADMIN_TABLE_PAGE_SIZE,
-      });
+      const nextPage = await getAdminTable(activeConfig, adminTableRequest(adminTable.rows.length));
       setAdminTable((current) => {
         if (!current) return nextPage;
         const existingItemIds = new Set(current.rows.map((row) => row.item_id));
@@ -406,6 +422,23 @@ function App() {
     void refreshLogisticsCalendar(config, calendarMonth);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [calendarMonth, authenticated]);
+
+  useEffect(() => {
+    if (!authenticated || !adminTable) return;
+    const timeoutId = window.setTimeout(() => {
+      void refreshAdminTable(config);
+    }, 300);
+    return () => window.clearTimeout(timeoutId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search, statusFilter, shipmentDateFilter, scanFilter, skladbotFilter, googleFilter]);
+
+  useEffect(() => {
+    const visible = new Set(visibleOrderIds);
+    setSelectedOrderIds((current) => {
+      const next = current.filter((id) => visible.has(id));
+      return next.length === current.length ? current : next;
+    });
+  }, [visibleOrderIds]);
 
   useEffect(() => {
     void initializeAuth();

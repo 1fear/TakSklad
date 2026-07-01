@@ -20,6 +20,7 @@ from backend.app.smartup_auto_import import (
     delivery_dates_for_export_date,
     filter_smartup_orders,
     parse_disabled_weekdays,
+    preview_delivery_groups,
     run_due_smartup_auto_imports,
     run_smartup_auto_import_once,
     run_scheduled_smartup_auto_import_slot,
@@ -30,6 +31,7 @@ from backend.app.smartup_auto_import import (
     smartup_slot_idempotency_key,
 )
 from backend.app import smartup_auto_import_worker
+from backend.app.kiz_reports_service import list_completed_kiz_source_files
 from backend.app.smartup_auto_import_history_service import list_smartup_auto_import_history
 from backend.app.skladbot_request_dry_run import SKLADBOT_REQUEST_CREATE_EVENT_TYPE
 
@@ -191,6 +193,53 @@ class SmartupAutoImportTests(unittest.TestCase):
         }
         values.update(overrides)
         return SmartupAutoImportConfig(**values)
+
+    def test_preview_delivery_groups_uses_same_source_batch_key_as_import(self):
+        captured_payloads = []
+
+        def fake_preview(_db, payload):
+            captured_payloads.append(payload)
+            return mock.Mock(
+                status="ok",
+                rows_total=1,
+                rows_importable=1,
+                orders_new=1,
+                items_new=1,
+                duplicate_rows=0,
+                invalid_rows=0,
+                errors=[],
+            )
+
+        grouped_rows = {
+            "2026-07-02": [
+                {
+                    "Дата отгрузки": "02.07.2026",
+                    "Тип оплаты": "Терминал",
+                    "Клиент": "Preview Client",
+                    "Адрес": "Preview Address",
+                    "Товары": "Chapman RED OP 20",
+                    "Кол-во ШТ": 10,
+                    "Кол-во блок": 1,
+                    "ID заказа": "smartup:preview-deal",
+                    "ID импорта": "smartup:preview-deal:red:1",
+                }
+            ]
+        }
+
+        with mock.patch("backend.app.smartup_auto_import.preview_import", side_effect=fake_preview):
+            previews = preview_delivery_groups(
+                mock.Mock(),
+                grouped_rows,
+                "Терминал 01.07.2026 Часть 2.xlsx",
+                "sha",
+                source_batch_key="smartup:2026-07-01:part:2:sha256:sha",
+            )
+
+        self.assertEqual(previews[0]["status"], "ok")
+        self.assertEqual(
+            captured_payloads[0].rows[0]["source_batch_key"],
+            "smartup:2026-07-01:part:2:sha256:sha",
+        )
 
     def test_mapper_uses_delivery_date_for_taksklad_order_date(self):
         rows = build_import_rows(
@@ -450,6 +499,46 @@ class SmartupAutoImportTests(unittest.TestCase):
             self.assertEqual(orders[0].order_date.isoformat(), "2026-07-01")
             self.assertEqual(imports[0].raw_payload["smartup_auto"]["delivery_dates"], ["2026-07-01"])
 
+    def test_smartup_kiz_source_files_group_one_export_file_across_deal_imports(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            fake = FakeSmartupClient([
+                sample_order(deal_id="701", deal_time="30.06.2026 09:10:00", delivery_date="01.07.2026"),
+                sample_order(deal_id="702", deal_time="30.06.2026 10:10:00", delivery_date="01.07.2026"),
+            ])
+            config = self.config(tmp_dir, backend_import_enabled=True, change_status_enabled=True)
+            with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "dry_run"}, clear=False):
+                with mock.patch(
+                    "backend.app.smartup_auto_import.queue_skladbot_after_smartup_status",
+                    side_effect=lambda db, imports, successful_deal_ids=None, **kwargs: imports,
+                ):
+                    with self.SessionLocal() as db:
+                        result = run_smartup_auto_import_once(
+                            db,
+                            config,
+                            now=datetime(2026, 6, 30, 16, 1, tzinfo=ZoneInfo("Asia/Tashkent")),
+                            slot_label="16:01",
+                            smartup_client=fake,
+                        )
+                        imports = db.execute(select(ImportJob)).scalars().all()
+                        source_files = list_completed_kiz_source_files(db)
+
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(len(imports), 2)
+            self.assertEqual(len(source_files), 1)
+            source_file = source_files[0]
+            self.assertEqual(source_file["source_file"], "Терминал 30.06.2026 Часть 1.xlsx")
+            self.assertTrue(source_file["source_key"].startswith("batch:smartup:2026-06-30:part:1:sha256:"))
+            self.assertEqual(source_file["items"], 2)
+            self.assertEqual(source_file["planned_blocks"], 40)
+            self.assertEqual(source_file["scanned_blocks"], 0)
+            self.assertEqual(source_file["remaining_blocks"], 40)
+            self.assertFalse(source_file["completed"])
+            self.assertEqual(source_file["dates"], ["2026-07-01"])
+            self.assertEqual(
+                {item.raw_payload["smartup_auto"]["source_batch_key"] for item in imports},
+                {result["source_batch_key"]},
+            )
+
     def test_full_flow_sends_smartup_file_to_client_but_not_logistics_before_final_slot(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             fake = FakeSmartupClient([sample_order()])
@@ -505,6 +594,7 @@ class SmartupAutoImportTests(unittest.TestCase):
             self.assertEqual(fake.changed, [(["642"], "B#W")])
             self.assertEqual(len(create_events), 1)
             self.assertEqual(create_events[0].status, "pending")
+            self.assertNotIn("not_before", create_events[0].payload)
             self.assertEqual(result["imports"][0]["skladbot_after_status"]["queued"], 1)
             self.assertEqual(imports[0].raw_payload["skladbot_dry_run"]["mode"], "enabled")
 

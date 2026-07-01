@@ -352,8 +352,31 @@ def list_active_orders(db=Depends(get_db)) -> list[OrderRead]:
 
 
 @api.get("/admin/table", response_model=AdminTableRead)
-def admin_table(limit: int | None = None, offset: int = 0, activity_limit: int = 30, db=Depends(get_db)):
-    return build_admin_table(db, limit=limit, offset=offset, activity_limit=activity_limit)
+def admin_table(
+    limit: int | None = None,
+    offset: int = 0,
+    activity_limit: int = 30,
+    status_bucket: str = "",
+    shipment_date: str = "",
+    search: str = "",
+    scan_state: str = "",
+    skladbot_filter: str = "",
+    google_status: str = "",
+    google_sheet_status: str = "",
+    db=Depends(get_db),
+):
+    return build_admin_table(
+        db,
+        limit=limit,
+        offset=offset,
+        activity_limit=activity_limit,
+        status_bucket=status_bucket,
+        shipment_date=shipment_date,
+        search=search,
+        scan_state=scan_state,
+        skladbot_filter=skladbot_filter,
+        google_status=google_sheet_status or google_status,
+    )
 
 
 @api.get("/admin/dashboard/day-summary", response_model=DashboardDaySummaryRead)

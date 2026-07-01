@@ -1,3 +1,4 @@
+import re
 from io import BytesIO
 from datetime import date, datetime
 
@@ -13,6 +14,8 @@ from .reports_service import payment_group
 from .scan_quantities import scan_block_quantity, scanned_blocks_for_scans
 
 TERMINAL_NO_KIZ_STATUSES = {"archived_no_kiz", "cancelled", "removed_from_google_sheet"}
+SMARTUP_SOURCE_IMPORT_PREFIX = "smartup:"
+SMARTUP_TERMINAL_SOURCE_FILE_PATTERN = re.compile(r"^Терминал \d{2}\.\d{2}\.\d{4} Часть \d+\.xlsx$")
 
 
 KIZ_REPORT_HEADERS = [
@@ -353,8 +356,11 @@ def group_items_by_source_document(items):
 
 def source_document_key(item):
     raw_payload = item.raw_payload or {}
-    backend_import_id = str(raw_payload.get("backend_import_id") or "").strip()
+    source_batch_key = source_batch_key_for_item(item)
     source_file = source_file_for_item(item)
+    if source_batch_key:
+        return f"batch:{source_batch_key}:file:{source_file}"
+    backend_import_id = str(raw_payload.get("backend_import_id") or "").strip()
     if backend_import_id:
         return f"import:{backend_import_id}:file:{source_file}"
     return f"file:{source_file}"
@@ -362,6 +368,21 @@ def source_document_key(item):
 
 def source_file_for_item(item):
     return str((item.raw_payload or {}).get("source_file") or "").strip()
+
+
+def source_batch_key_for_item(item):
+    raw_payload = item.raw_payload or {}
+    source_import_id = str(raw_payload.get("source_import_id") or "").strip()
+    source_batch_key = str(raw_payload.get("source_batch_key") or "").strip()
+    if source_batch_key and source_import_id.startswith(SMARTUP_SOURCE_IMPORT_PREFIX):
+        return source_batch_key
+    source_file = source_file_for_item(item)
+    if (
+        source_import_id.startswith(SMARTUP_SOURCE_IMPORT_PREFIX)
+        and SMARTUP_TERMINAL_SOURCE_FILE_PATTERN.fullmatch(source_file)
+    ):
+        return f"legacy-smartup-file:{source_file}"
+    return ""
 
 
 def source_file_for_items(items):
@@ -378,6 +399,7 @@ def source_group_sort_key(items):
     raw_payload = first_item.raw_payload if first_item else {}
     return (
         str(order.order_date or "") if order else "",
+        source_batch_key_for_item(first_item) if first_item else "",
         str((raw_payload or {}).get("backend_import_id") or ""),
         source_file_for_item(first_item) if first_item else "",
     )
