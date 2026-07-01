@@ -504,6 +504,7 @@ class ImportResult(BaseModel):
     skladbot_dry_run_ready: int = 0
     skladbot_dry_run_blocked: int = 0
     skladbot_dry_run_already_linked: int = 0
+    skladbot_dry_run_linked_mismatch: int = 0
     skladbot_dry_run_event_id: str = ""
 
 

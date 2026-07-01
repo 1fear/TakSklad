@@ -63,6 +63,15 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
             ("Chapman Brown OP 20", 3),
         ]
         with self.SessionLocal() as db:
+            order_raw_payload = {
+                "source": "telegram",
+                "skladbot_request_number": "WH-R-1" if linked else "",
+                "skladbot_request_id": "123" if linked else "",
+            }
+            if linked:
+                order_raw_payload["skladbot_create_request_payload"] = {
+                    "products": [{"amount": blocks} for _product, blocks in products]
+                }
             import_job = ImportJob(
                 source="telegram",
                 status="completed",
@@ -81,11 +90,7 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
                 address="Ташкент, улица Тестовая, 1",
                 representative="ТП1",
                 status="not_completed",
-                raw_payload={
-                    "source": "telegram",
-                    "skladbot_request_number": "WH-R-1" if linked else "",
-                    "skladbot_request_id": "123" if linked else "",
-                },
+                raw_payload=order_raw_payload,
             )
             db.add(order)
             db.flush()
@@ -323,6 +328,52 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
         self.assertEqual(summary["already_linked"], 1)
         self.assertEqual(row["status"], "already_linked")
         self.assertEqual(row["payload"], {})
+
+    def test_linked_order_with_late_repair_item_reports_skladbot_mismatch(self):
+        _import_id, order_id = self.seed_import_order(linked=True)
+
+        with self.SessionLocal() as db:
+            repair_import = ImportJob(source="smartup_auto_repair", status="completed", rows_total=1, rows_imported=1)
+            db.add(repair_import)
+            db.flush()
+            db.add(OrderItem(
+                order_id=uuid.UUID(order_id),
+                product="Chapman Green OP 20",
+                quantity_pieces=10,
+                quantity_blocks=1,
+                pieces_per_block=10,
+                scanned_blocks=0,
+                status="not_completed",
+                raw_payload={
+                    "backend_import_id": str(repair_import.id),
+                    "source_file": "repair.xlsx",
+                    "source_row": 19,
+                    "source_order_id": "smartup:257984858",
+                    "source_import_id": "smartup:257984858:1541071310:1",
+                },
+            ))
+            db.commit()
+            repair_import_id = str(repair_import.id)
+
+        with self.SessionLocal() as db:
+            summary = create_skladbot_dry_run_for_import(db, repair_import_id)
+            db.commit()
+            row = list_skladbot_dry_runs(db, repair_import_id)[0]
+            create_events = db.execute(
+                select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
+            ).scalars().all()
+
+        self.assertEqual(summary["status"], "mismatch")
+        self.assertEqual(summary["linked_mismatch"], 1)
+        self.assertEqual(summary["already_linked"], 0)
+        self.assertEqual(row["status"], "linked_mismatch")
+        self.assertEqual(row["blocks"], 6)
+        self.assertEqual(row["linked_skladbot_blocks"], 5)
+        self.assertEqual(row["linked_skladbot_source"], "skladbot_create_request_payload.products")
+        self.assertIn("в БД 6 блок", row["error"])
+        self.assertIn("в SkladBot 5 блок", row["error"])
+        self.assertEqual(row["payload"], {})
+        self.assertEqual(create_events, [])
 
     def test_repeated_dry_run_does_not_create_duplicate_event(self):
         import_id, _order_id = self.seed_import_order()

@@ -6711,3 +6711,16 @@ cd /opt/taksklad/app
   - runtime SHA256 для `google_sheets_sync_worker.py` и `logistics_service.py` совпадает с локальными файлами;
   - финальный отчет `/Users/anton/Documents/Telegram/TakSklad_логистика_01.07.2026_FIXED.xlsx`;
   - финальная сверка `/Users/anton/Documents/Telegram/Сверка_логистика_01.07.2026_FIXED.xlsx`: source rows 223, logistics rows 223, missing 0, extra 0, conflicts 0, blocks 511, amount 122315000.
+
+### SkladBot linked request mismatch guard
+
+- Дата: 2026-07-01.
+- Причина: поздний `smartup_auto_repair` мог добавить позицию в уже связанную WH-R заявку. Backend становился больше, чем уже созданная SkladBot-заявка, но dry-run показывал только `already_linked`.
+- Изменено:
+  - SkladBot dry-run для linked order сравнивает текущие блоки DB с сохраненным linked SkladBot payload/detail;
+  - если блоки отличаются, статус становится `linked_mismatch`, payload на повторное создание не ставится в очередь;
+  - import response, admin dry-run UI и import issues показывают отдельный счетчик `linked_mismatch`.
+- Инварианты:
+  - SkladBot API на запись не вызывается;
+  - существующие WH-R, остатки, КИЗы, Google Sheets и scan state не меняются;
+  - решение по ручному исправлению конкретной WH-R остается операторским до подтвержденного safe update path.

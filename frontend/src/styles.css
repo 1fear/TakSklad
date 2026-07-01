@@ -1196,6 +1196,11 @@ summary:focus-visible {
   color: #9e2718;
 }
 
+.status-badge.dry-run-linked_mismatch {
+  background: #fff2d7;
+  color: #8a5300;
+}
+
 .status-badge.dry-run-already_linked {
   background: #e7f1f8;
   color: #1f5f82;

@@ -104,8 +104,10 @@ export type SkladBotDryRun = {
   payment_type: string;
   address: string;
   blocks: number;
-  status: "ready" | "blocked" | "already_linked" | string;
+  status: "ready" | "blocked" | "already_linked" | "linked_mismatch" | string;
   error: string;
+  linked_skladbot_blocks: number;
+  linked_skladbot_source: string;
   products: SkladBotDryRunProduct[];
   payload: Record<string, unknown>;
   generated_at: string | null;

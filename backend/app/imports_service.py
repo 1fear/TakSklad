@@ -297,6 +297,7 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
         skladbot_dry_run_ready=skladbot_dry_run_result.get("ready", 0),
         skladbot_dry_run_blocked=skladbot_dry_run_result.get("blocked", 0),
         skladbot_dry_run_already_linked=skladbot_dry_run_result.get("already_linked", 0),
+        skladbot_dry_run_linked_mismatch=skladbot_dry_run_result.get("linked_mismatch", 0),
         skladbot_dry_run_event_id=skladbot_dry_run_result.get("event_id", ""),
     )
 

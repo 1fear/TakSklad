@@ -247,6 +247,8 @@ def list_skladbot_dry_runs(db: Session, import_id: str | None = None) -> list[di
                 "blocks": int(row.get("blocks") or 0),
                 "status": str(row.get("status") or ""),
                 "error": str(row.get("error") or ""),
+                "linked_skladbot_blocks": int(row.get("linked_skladbot_blocks") or 0),
+                "linked_skladbot_source": str(row.get("linked_skladbot_source") or ""),
                 "products": row.get("products") or [],
                 "payload": row.get("payload") or {},
                 "generated_at": generated_at,
@@ -418,12 +420,21 @@ def build_order_dry_run(order: Order, items: list[Any], import_id: str, index: i
         for item in items
     ]
     blocks = sum(int(product.get("quantity_blocks") or 0) for product in products)
+    linked_snapshot = linked_skladbot_amount_snapshot(raw_payload)
     status = "ready"
     error = ""
 
     if linked_number or linked_id:
         status = "already_linked"
         error = "У заказа уже есть номер или ID SkladBot"
+        linked_blocks = int(linked_snapshot.get("blocks") or 0)
+        if linked_snapshot and linked_blocks != blocks:
+            status = "linked_mismatch"
+            source = normalize_text(linked_snapshot.get("source")) or "linked SkladBot payload"
+            error = (
+                f"Расхождение с уже созданной SkladBot-заявкой: "
+                f"в БД {blocks} блок., в SkladBot {linked_blocks} блок. ({source})"
+            )
     else:
         blocked_errors = [product["error"] for product in products if product.get("status") == "blocked"]
         if blocked_errors:
@@ -445,9 +456,52 @@ def build_order_dry_run(order: Order, items: list[Any], import_id: str, index: i
         "blocks": blocks,
         "status": status,
         "error": error,
+        "linked_skladbot_blocks": int(linked_snapshot.get("blocks") or 0),
+        "linked_skladbot_source": normalize_text(linked_snapshot.get("source")),
         "products": products,
         "payload": payload,
     }
+
+
+def linked_skladbot_amount_snapshot(raw_payload: dict[str, Any]) -> dict[str, Any]:
+    candidates = [
+        ("skladbot_raw.detail.products", nested_value(raw_payload, "skladbot_raw", "detail", "products")),
+        ("skladbot_raw.products", nested_value(raw_payload, "skladbot_raw", "products")),
+        ("skladbot_create_request_payload.products", nested_value(raw_payload, "skladbot_create_request_payload", "products")),
+    ]
+    for source, products in candidates:
+        amounts = product_amounts(products)
+        if amounts:
+            return {
+                "source": source,
+                "blocks": sum(amounts),
+                "products": len(amounts),
+                "amounts": amounts,
+            }
+    return {}
+
+
+def nested_value(value: dict[str, Any], *keys: str) -> Any:
+    current: Any = value
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def product_amounts(products: Any) -> list[int]:
+    if not isinstance(products, list):
+        return []
+    amounts = []
+    for product in products:
+        if not isinstance(product, dict):
+            continue
+        for key in ("amount", "request_amount", "delivery_amount"):
+            if key in product:
+                amounts.append(parse_int(product.get(key)))
+                break
+    return amounts
 
 
 def build_product_dry_run(
@@ -543,6 +597,8 @@ def summarize_dry_runs(dry_runs: list[dict[str, Any]], mode: str) -> dict[str, A
         status = str(item.get("status") or "")
         if status in summary:
             summary[status] += 1
+    if summary["linked_mismatch"]:
+        summary["status"] = "mismatch"
     return summary
 
 
@@ -558,6 +614,7 @@ def default_summary(mode: str) -> dict[str, Any]:
         "created": 0,
         "recovered": 0,
         "create_failed": 0,
+        "linked_mismatch": 0,
         "events_queued": 0,
         "event_id": "",
     }

@@ -2230,6 +2230,7 @@ function SkladBotDryRunPanel({
     recovered: filteredRuns.filter((item) => item.status === "recovered").length,
     blocked: filteredRuns.filter((item) => item.status === "blocked").length,
     failed: filteredRuns.filter((item) => item.status === "create_failed").length,
+    mismatch: filteredRuns.filter((item) => item.status === "linked_mismatch").length,
     alreadyLinked: filteredRuns.filter((item) => item.status === "already_linked").length,
   }), [filteredRuns]);
   const importsById = useMemo(
@@ -2259,6 +2260,7 @@ function SkladBotDryRunPanel({
         <Metric icon={<ClipboardList size={20} />} label="Queued" value={summary.queued} />
         <Metric icon={<Server size={20} />} label="Created" value={summary.created + summary.recovered} />
         <Metric icon={<AlertCircle size={20} />} label="Blocked" value={summary.blocked + summary.failed} tone={summary.blocked + summary.failed > 0 ? "warn" : undefined} />
+        <Metric icon={<AlertCircle size={20} />} label="Расхождение" value={summary.mismatch} tone={summary.mismatch > 0 ? "warn" : undefined} />
         <Metric icon={<Server size={20} />} label="Уже WH-R" value={summary.alreadyLinked} />
       </section>
 
@@ -2299,6 +2301,11 @@ function SkladBotDryRunPanel({
                   <td className="dry-run-address">{item.address || "-"}</td>
                   <td>
                     <strong className="cell-title">{item.blocks} блок.</strong>
+                    {item.status === "linked_mismatch" && (
+                      <span className="table-muted cell-sub">
+                        SkladBot: {item.linked_skladbot_blocks} блок.
+                      </span>
+                    )}
                     <div className="dry-run-products">
                       {item.products.map((product, index) => (
                         <span key={`${item.id}-${product.product}-${index}`} className={product.status === "blocked" ? "blocked" : ""}>
@@ -3150,6 +3157,7 @@ function dryRunStatusLabel(value: string) {
   if (value === "blocked") return "Заблокировано";
   if (value === "create_failed") return "Ошибка создания";
   if (value === "already_linked") return "Уже есть WH-R";
+  if (value === "linked_mismatch") return "Расхождение";
   return value || "-";
 }
 
@@ -3193,8 +3201,9 @@ function importDryRunSummaryText(item: ImportRecord) {
   const blocked = Number(summary.blocked ?? 0);
   const failed = Number(summary.create_failed ?? 0);
   const alreadyLinked = Number(summary.already_linked ?? 0);
+  const mismatch = Number(summary.linked_mismatch ?? 0);
   const mode = typeof summary.mode === "string" ? summary.mode : "dry_run";
-  return `${mode}: ready ${ready}, queued ${queued}, created ${created + recovered}, blocked ${blocked + failed}, WH-R ${alreadyLinked}`;
+  return `${mode}: ready ${ready}, queued ${queued}, created ${created + recovered}, blocked ${blocked + failed}, mismatch ${mismatch}, WH-R ${alreadyLinked}`;
 }
 
 function importIssuesText(item: ImportRecord) {
@@ -3206,10 +3215,12 @@ function importIssuesText(item: ImportRecord) {
   const googleError = stringField(raw, "google_sheets_error");
   const summary = readImportDryRunSummary(item);
   const blocked = summary ? numberField(summary, "blocked") + numberField(summary, "create_failed") : 0;
+  const mismatch = summary ? numberField(summary, "linked_mismatch") : 0;
   if (invalidRows > 0) issues.push(`ошибочных строк ${invalidRows}`);
   if (duplicateRows > 0) issues.push(`повторов ${duplicateRows}`);
   if (googleError) issues.push(`Google: ${googleError}`);
   if (blocked > 0) issues.push(`SkladBot blocked ${blocked}`);
+  if (mismatch > 0) issues.push(`SkladBot mismatch ${mismatch}`);
   issues.push(...errors.slice(0, 3));
   return issues.length ? issues.join("; ") : "-";
 }
