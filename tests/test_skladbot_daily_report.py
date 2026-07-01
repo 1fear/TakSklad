@@ -96,7 +96,7 @@ class FakeSkladBotDailyReportClient:
                 "2026-06-09",
                 "XASAN XUSAN SAVDO SERVIS XK",
                 "Ташкент, Карасу",
-                "Терминал",
+                "Терминал\nТП-1 Умид\nРабочий номер: +998 91 111 11 11\nЛичный номер: +998 90 222 22 22",
                 [{"name": "Chapman Brown OP 20", "vendorCode": "130400353", "barcode": "4006396053978", "amount": 4}],
             ),
             999: {
@@ -684,9 +684,11 @@ class SkladBotDailyReportTests(unittest.TestCase):
         ]
         request_by_number = {row["Номер"]: row for row in request_rows}
         self.assertEqual(request_by_number["WH-R-101"]["Юрлицо/точка"], "XASAN XUSAN SAVDO SERVIS XK")
+        self.assertEqual(request_by_number["WH-R-101"]["Торговый представитель"], "ТП-1 Умид")
         self.assertEqual(request_by_number["WH-R-101"]["Блоков план"], 4)
         self.assertEqual(request_by_number["WH-R-101"]["Блоков факт"], 4)
         self.assertEqual(request_by_number["WH-R-101"]["Отклонение"], 0)
+        self.assertEqual(request_by_number["WH-R-303"]["Торговый представитель"], None)
         self.assertEqual(request_by_number["WH-R-303"]["Блоков план"], 1)
         self.assertEqual(request_by_number["WH-R-303"]["Блоков факт"], 500)
         self.assertEqual(request_by_number["WH-R-303"]["Отклонение"], 499)
@@ -698,6 +700,8 @@ class SkladBotDailyReportTests(unittest.TestCase):
             for row in range(2, products_sheet.max_row + 1)
         ]
         self.assertIn("Chapman Gold SSL", [row["Товар"] for row in product_rows])
+        brown_product_row = next(row for row in product_rows if row["Товар"] == "Chapman Brown OP 20")
+        self.assertEqual(brown_product_row["Торговый представитель"], "ТП-1 Умид")
         gold_product_row = next(row for row in product_rows if row["Товар"] == "Chapman Gold SSL")
         self.assertEqual(gold_product_row["Блоков план"], 1)
         self.assertEqual(gold_product_row["Принято факт"], 500)

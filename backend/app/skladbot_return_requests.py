@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from .google_sheets_pending import queue_google_sheets_export
 from .models import AuditLog, Order, PendingEvent
+from .representative_contacts import build_representative_comment, find_representative_contact
 from .skladbot_request_dry_run import (
     SKLADBOT_CUSTOMER_ID,
     build_product_dry_run,
@@ -90,7 +91,12 @@ def queue_skladbot_return_request_create(
     return event
 
 
-def build_skladbot_return_payload(order: Order, confirmed_items: list[dict[str, Any]]) -> tuple[dict[str, Any], list[str]]:
+def build_skladbot_return_payload(
+    order: Order,
+    confirmed_items: list[dict[str, Any]],
+    *,
+    representative_contact: Any | None = None,
+) -> tuple[dict[str, Any], list[str]]:
     products = [
         build_product_dry_run(item.get("product") or item.get("sku") or "", parse_int(item.get("quantity_blocks")))
         for item in confirmed_items
@@ -99,14 +105,15 @@ def build_skladbot_return_payload(order: Order, confirmed_items: list[dict[str, 
     if blocked_errors:
         return {}, blocked_errors
 
+    comment = build_representative_comment(order.payment_type, order.representative, representative_contact)
     payload = {
         "customer_id": SKLADBOT_CUSTOMER_ID,
         "request_type_id": SKLADBOT_RETURN_REQUEST_TYPE_ID,
         "notify": True,
-        "comment": order.payment_type,
+        "comment": comment,
         "fields": {
             "address": {"value": order.address},
-            "comment": {"value": order.payment_type},
+            "comment": {"value": comment},
             "company_name": {"value": order.client},
             "unloading_date": {"value": order.order_date.isoformat() if order.order_date else ""},
         },
@@ -256,7 +263,11 @@ def process_skladbot_return_create_event(db: Session, event: PendingEvent, clien
         }
 
     confirmed_items = payload.get("confirmed_items") or raw_payload.get("skladbot_return_confirmed_items") or []
-    request_payload, blocked_errors = build_skladbot_return_payload(order, confirmed_items)
+    request_payload, blocked_errors = build_skladbot_return_payload(
+        order,
+        confirmed_items,
+        representative_contact=find_representative_contact(db, order.representative),
+    )
     if blocked_errors:
         error = "; ".join(blocked_errors)
         mark_order_skladbot_return_create_failed(order, event, error, status="blocked")

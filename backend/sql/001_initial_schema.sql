@@ -137,6 +137,20 @@ CREATE TABLE IF NOT EXISTS logistics_calendar_days (
     CONSTRAINT uq_logistics_calendar_days_service_date UNIQUE (service_date)
 );
 
+CREATE TABLE IF NOT EXISTS representative_contacts (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    name varchar(255) NOT NULL,
+    normalized_name varchar(255) NOT NULL,
+    work_phone varchar(80),
+    personal_phone varchar(80),
+    work_zone varchar(255),
+    is_active boolean NOT NULL DEFAULT true,
+    raw_payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT uq_representative_contacts_normalized_name UNIQUE (normalized_name)
+);
+
 CREATE TABLE IF NOT EXISTS audit_log (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     actor_user_id uuid REFERENCES users(id) ON DELETE SET NULL,
@@ -162,4 +176,5 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_pending_events_idempotency_key ON pending_e
 CREATE INDEX IF NOT EXISTS idx_client_points_normalized ON client_points(normalized_client, normalized_address);
 CREATE INDEX IF NOT EXISTS idx_client_points_timeslot ON client_points(delivery_from, delivery_to);
 CREATE INDEX IF NOT EXISTS idx_logistics_calendar_days_service_date ON logistics_calendar_days(service_date);
+CREATE INDEX IF NOT EXISTS idx_representative_contacts_normalized_name ON representative_contacts(normalized_name);
 CREATE INDEX IF NOT EXISTS idx_audit_log_created_at ON audit_log(created_at);

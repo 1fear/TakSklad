@@ -84,6 +84,25 @@ SkladBot request/return payloads use the built-in Chapman SKU mapping by default
 
 If this JSON is invalid or an entry misses `product_data_id`, `barcode`, or boolean `is_main_barcode`, the dry-run blocks the affected order and no SkladBot create event is queued.
 
+## SkladBot Representative Contacts
+
+TakSklad stores sales representative phone numbers in `representative_contacts`. SkladBot request comments keep the payment type on the first line, then the representative, then available work/personal phone numbers:
+
+```text
+Терминал
+ТП-1 Умид
+Рабочий номер: +998 91 111 11 11
+Личный номер: +998 90 222 22 22
+```
+
+Load the local XLSX reference into the configured backend database with:
+
+```bash
+PYTHONPATH=. python tools/import_representative_contacts.py "/path/to/номера тп.xlsx"
+```
+
+Use `--dry-run` to validate the workbook without committing. The script reports only row counts and does not print phone values.
+
 ## Day Report
 
 `GET /api/v1/reports/day?report_date=YYYY-MM-DD`

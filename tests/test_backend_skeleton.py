@@ -33,6 +33,7 @@ class BackendSkeletonTests(unittest.TestCase):
             "backend/migrations/versions/20260623_0003_client_points.py",
             "backend/migrations/versions/20260623_0004_user_password_hash.py",
             "backend/migrations/versions/20260626_0005_logistics_calendar.py",
+            "backend/migrations/versions/20260701_0006_representative_contacts.py",
             "docs/database-migrations-runbook.md",
             "deploy/vds/docker-compose.yml",
             "deploy/vds/.env.example",
@@ -77,6 +78,7 @@ class BackendSkeletonTests(unittest.TestCase):
             "pending_events",
             "client_points",
             "logistics_calendar_days",
+            "representative_contacts",
             "users",
             "audit_log",
         ]:
@@ -84,6 +86,7 @@ class BackendSkeletonTests(unittest.TestCase):
 
         self.assertIn("constraint uq_kiz_codes_code unique (code)", schema_sql)
         self.assertIn("constraint uq_logistics_calendar_days_service_date unique (service_date)", schema_sql)
+        self.assertIn("constraint uq_representative_contacts_normalized_name unique (normalized_name)", schema_sql)
         self.assertNotIn("constraint uq_scan_codes_code unique (code)", schema_sql)
         self.assertIn("sha256 varchar(64) not null unique", schema_sql)
         self.assertIn("password_hash varchar(255)", schema_sql)
@@ -121,6 +124,7 @@ class BackendSkeletonTests(unittest.TestCase):
         client_points = (ROOT_DIR / "backend/migrations/versions/20260623_0003_client_points.py").read_text(encoding="utf-8").lower()
         user_password_hash = (ROOT_DIR / "backend/migrations/versions/20260623_0004_user_password_hash.py").read_text(encoding="utf-8").lower()
         logistics_calendar = (ROOT_DIR / "backend/migrations/versions/20260626_0005_logistics_calendar.py").read_text(encoding="utf-8").lower()
+        representative_contacts = (ROOT_DIR / "backend/migrations/versions/20260701_0006_representative_contacts.py").read_text(encoding="utf-8").lower()
 
         for table_name in [
             "orders",
@@ -138,7 +142,9 @@ class BackendSkeletonTests(unittest.TestCase):
             self.assertIn(f'"{table_name}"', baseline)
         self.assertIn("create table if not exists client_points", schema_sql)
         self.assertIn("create table if not exists logistics_calendar_days", schema_sql)
+        self.assertIn("create table if not exists representative_contacts", schema_sql)
         self.assertIn("idx_logistics_calendar_days_service_date", schema_sql)
+        self.assertIn("idx_representative_contacts_normalized_name", schema_sql)
 
         for index_name in [
             "idx_orders_status_date",
@@ -162,11 +168,15 @@ class BackendSkeletonTests(unittest.TestCase):
         self.assertIn('"logistics_calendar_days"', logistics_calendar)
         self.assertIn("revision = \"20260626_0005\"", logistics_calendar)
         self.assertIn("down_revision = \"20260623_0004\"", logistics_calendar)
+        self.assertIn('"representative_contacts"', representative_contacts)
+        self.assertIn("revision = \"20260701_0006\"", representative_contacts)
+        self.assertIn("down_revision = \"20260626_0005\"", representative_contacts)
         self.assertIn("baseline migration is irreversible", baseline)
         self.assertIn("incident migration is forward-only", incidents)
         self.assertIn("client points migration is forward-only", client_points)
         self.assertIn("user password migration is forward-only", user_password_hash)
         self.assertIn("logistics calendar migration is forward-only", logistics_calendar)
+        self.assertIn("representative contacts migration is forward-only", representative_contacts)
 
     def test_deploy_runbook_uses_alembic_for_normal_production_upgrades(self):
         runbook = (ROOT_DIR / "docs/deploy-rollback-runbook.md").read_text(encoding="utf-8")

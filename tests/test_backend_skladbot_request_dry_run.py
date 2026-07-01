@@ -12,7 +12,8 @@ from sqlalchemy.pool import StaticPool
 
 from backend.app.db import get_db
 from backend.app.main import app, require_service_token
-from backend.app.models import AuditLog, Base, ImportJob, Incident, Order, OrderItem, PendingEvent, ScanCode
+from backend.app.models import AuditLog, Base, ImportJob, Incident, Order, OrderItem, PendingEvent, RepresentativeContact, ScanCode
+from backend.app.representative_contacts import normalize_representative_name
 from backend.app.skladbot_request_dry_run import (
     SKLADBOT_REQUEST_CREATE_EVENT_TYPE,
     SKLADBOT_REQUEST_DRY_RUN_EVENT_TYPE,
@@ -143,7 +144,7 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
         self.assertEqual(row["payload"]["customer_id"], 6211)
         self.assertEqual(row["payload"]["request_type_id"], 3389)
         self.assertIs(row["payload"]["notify"], True)
-        self.assertEqual(row["payload"]["fields"]["comment"]["value"], "Перечисление")
+        self.assertEqual(row["payload"]["fields"]["comment"]["value"], "Перечисление\nТП1")
         self.assertEqual(row["payload"]["fields"]["unloading_date"]["value"], "2026-06-05")
         self.assertEqual(
             [product["product_data_id"] for product in row["payload"]["products"]],
@@ -183,6 +184,36 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
             [product["amount"] for product in row["payload"]["products"]],
             [20, 10, 15],
         )
+
+    def test_aggregates_duplicate_sku_before_skladbot_payload(self):
+        import_id, order_id = self.seed_import_order(products=[
+            ("Chapman Green OP 20", 1),
+            ("Chapman Brown SSL 100`20", 1),
+            ("Chapman Green OP 20", 1),
+            ("Chapman Brown OP 20", 1),
+            ("Chapman RED SSL 100 20", 1),
+        ])
+
+        with self.SessionLocal() as db:
+            summary = create_skladbot_dry_run_for_import(db, import_id)
+            db.commit()
+            dry_runs = list_skladbot_dry_runs(db, import_id)
+
+        self.assertEqual(summary["ready"], 1)
+        row = dry_runs[0]
+        self.assertEqual(row["order_id"], order_id)
+        self.assertEqual(row["status"], "ready")
+        self.assertEqual(row["blocks"], 5)
+        self.assertEqual(
+            [product["product_data_id"] for product in row["payload"]["products"]],
+            [2430805, 2189392, 2189391, 2189393],
+        )
+        self.assertEqual(
+            [product["amount"] for product in row["payload"]["products"]],
+            [2, 1, 1, 1],
+        )
+        self.assertEqual(row["products"][0]["quantity_blocks"], 2)
+        self.assertEqual(len(row["products"][0]["source_products"]), 2)
 
     def test_sku_mapping_can_be_overridden_from_env_json(self):
         import_id, _order_id = self.seed_import_order(products=[("Chapman RED OP 20", 2)])
@@ -240,7 +271,7 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
         self.assertEqual(row["payload"], {})
         self.assertEqual(create_events, [])
 
-    def test_terminal_payment_payload_uses_payment_type_as_comment(self):
+    def test_terminal_payment_payload_uses_payment_type_and_representative_as_comment(self):
         import_id, _order_id = self.seed_import_order(payment_type="Терминал")
 
         with self.SessionLocal() as db:
@@ -248,7 +279,32 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
             db.commit()
             row = list_skladbot_dry_runs(db, import_id)[0]
 
-        self.assertEqual(row["payload"]["fields"]["comment"]["value"], "Терминал")
+        self.assertEqual(row["payload"]["comment"], "Терминал\nТП1")
+        self.assertEqual(row["payload"]["fields"]["comment"]["value"], "Терминал\nТП1")
+
+    def test_skladbot_payload_adds_representative_contact_phones_from_db(self):
+        import_id, _order_id = self.seed_import_order(payment_type="Терминал")
+
+        with self.SessionLocal() as db:
+            db.add(RepresentativeContact(
+                name="ТП-1 Умид",
+                normalized_name=normalize_representative_name("ТП-1 Умид"),
+                work_phone="+998 91 111 11 11",
+                personal_phone="+998 90 222 22 22",
+                is_active=True,
+            ))
+            db.commit()
+            create_skladbot_dry_run_for_import(db, import_id)
+            db.commit()
+            row = list_skladbot_dry_runs(db, import_id)[0]
+
+        self.assertEqual(
+            row["payload"]["fields"]["comment"]["value"],
+            "Терминал\n"
+            "ТП1\n"
+            "Рабочий номер: +998 91 111 11 11\n"
+            "Личный номер: +998 90 222 22 22",
+        )
 
     def test_payload_uses_all_order_items_even_if_import_added_one_item(self):
         with self.SessionLocal() as db:
@@ -1012,6 +1068,8 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
         self.assertEqual(payload["request_type_id"], 3403)
         self.assertEqual(payload["customer_id"], 6211)
         self.assertIs(payload["notify"], True)
+        self.assertEqual(payload["comment"], "Перечисление\nТП1")
+        self.assertEqual(payload["fields"]["comment"]["value"], "Перечисление\nТП1")
         self.assertEqual(payload["fields"]["company_name"]["value"], '"TEST CLIENT" MCHJ')
         self.assertEqual(payload["fields"]["unloading_date"]["value"], "2026-06-05")
         self.assertEqual([product["amount"] for product in payload["products"]], [2, 3])

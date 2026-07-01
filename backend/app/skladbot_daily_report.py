@@ -50,6 +50,7 @@ REQUEST_HEADERS = [
     "Дата обновления",
     "Дата выгрузки",
     "Юрлицо/точка",
+    "Торговый представитель",
     "Клиент SkladBot",
     "Адрес",
     "Комментарий",
@@ -66,6 +67,7 @@ REQUEST_PRODUCT_HEADERS = [
     "Тип",
     "Дата выгрузки",
     "Юрлицо/точка",
+    "Торговый представитель",
     "Товар",
     "Артикул",
     "Штрихкод",
@@ -763,6 +765,7 @@ def write_requests_sheet(sheet, requests: list[dict[str, Any]]) -> None:
     for request in requests:
         planned_blocks = request_blocks(request)
         actual_blocks = request_report_blocks(request)
+        representative = request_representative(request)
         sheet.append([
             request.get("id") or "",
             request.get("number") or "",
@@ -774,6 +777,7 @@ def write_requests_sheet(sheet, requests: list[dict[str, Any]]) -> None:
             request.get("updated_at") or "",
             request.get("unloading_date") or "",
             request.get("recipient") or "",
+            representative,
             request.get("customer_name") or "",
             request.get("address") or "",
             request.get("comment") or "",
@@ -790,6 +794,7 @@ def write_request_products_sheet(sheet, requests: list[dict[str, Any]]) -> None:
     sheet.append(REQUEST_PRODUCT_HEADERS)
     for request in requests:
         category = normalize_text(request.get("category")) or REQUEST_CATEGORY_OTHER
+        representative = request_representative(request)
         for product in request.get("products") or []:
             planned_blocks = parse_int(product.get("amount"))
             actual_blocks = report_product_blocks(product, category)
@@ -800,6 +805,7 @@ def write_request_products_sheet(sheet, requests: list[dict[str, Any]]) -> None:
                 request.get("type") or "",
                 request.get("unloading_date") or "",
                 request.get("recipient") or "",
+                representative,
                 product.get("name") or "",
                 product.get("vendor_code") or "",
                 product.get("barcode") or "",
@@ -809,6 +815,29 @@ def write_request_products_sheet(sheet, requests: list[dict[str, Any]]) -> None:
                 actual_blocks - planned_blocks,
             ])
     apply_header_style(sheet)
+
+
+def request_representative(request: dict[str, Any]) -> str:
+    explicit = normalize_text(request.get("representative"))
+    if explicit:
+        return explicit
+    return representative_from_comment(request.get("comment"))
+
+
+def representative_from_comment(comment: Any) -> str:
+    lines = [normalize_text(line) for line in normalize_text(comment).splitlines()]
+    lines = [line for line in lines if line]
+    if len(lines) < 2 or not is_payment_comment_line(lines[0]):
+        return ""
+    candidate = lines[1]
+    if ":" in candidate:
+        return ""
+    return candidate
+
+
+def is_payment_comment_line(value: Any) -> bool:
+    text = normalize_text(value).lower().replace("ё", "е")
+    return "терминал" in text or "перечис" in text or "безнал" in text
 
 
 def write_movements_sheet(sheet, movements: list[dict[str, Any]]) -> None:
@@ -950,8 +979,8 @@ def autosize_columns(sheet) -> None:
 def apply_report_template_widths(workbook: Workbook) -> None:
     widths_by_sheet = {
         "Сводка": {"A": 28, "B": 21, "C": 13.44, "D": 13, "E": 13, "F": 13},
-        "Заявки": {"A": 10, "B": 13, "C": 11, "D": 20, "E": 11, "F": 10, "G": 15, "H": 17, "I": 15, "J": 45, "K": 33, "L": 60, "M": 13, "N": 12, "O": 12, "P": 12, "Q": 10, "R": 24},
-        "Товары заявок": {"A": 13, "B": 11, "C": 20, "D": 15, "E": 45, "F": 36, "G": 17, "H": 15, "I": 12, "J": 13, "K": 12, "L": 12},
+        "Заявки": {"A": 10, "B": 13, "C": 11, "D": 20, "E": 11, "F": 10, "G": 15, "H": 17, "I": 15, "J": 45, "K": 24, "L": 33, "M": 60, "N": 13, "O": 12, "P": 12, "Q": 12, "R": 10, "S": 24},
+        "Товары заявок": {"A": 13, "B": 11, "C": 20, "D": 15, "E": 45, "F": 24, "G": 36, "H": 17, "I": 15, "J": 12, "K": 13, "L": 12, "M": 12},
         "Движения": {"A": 13, "B": 10, "C": 17, "D": 14, "E": 10, "F": 13, "G": 13, "H": 13, "I": 13, "J": 13, "K": 13},
         "Остатки": {"A": 29, "B": 10, "C": 13, "D": 13, "E": 13, "F": 17, "G": 21, "H": 10},
         "Ошибки": {"A": 10},

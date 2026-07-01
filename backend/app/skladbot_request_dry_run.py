@@ -12,6 +12,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from .google_sheets_exporter import make_sheet_record
 from .google_sheets_pending import queue_google_sheets_export
 from .models import AuditLog, ImportJob, Incident, Order, OrderItem, PendingEvent
+from .representative_contacts import build_representative_comment, find_representative_contact
 from .skladbot_worker import (
     SkladBotClient,
     env_int,
@@ -180,7 +181,13 @@ def create_skladbot_dry_run_for_import(
 
     orders = list_orders_for_import(db, import_id)
     dry_runs = [
-        build_order_dry_run(order, items, import_id, index)
+        build_order_dry_run(
+            order,
+            items,
+            import_id,
+            index,
+            representative_contact=find_representative_contact(db, order.representative),
+        )
         for index, (order, items) in enumerate(orders, start=1)
     ]
     queued = 0
@@ -405,7 +412,14 @@ def stable_payload_hash(payload: dict[str, Any]) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def build_order_dry_run(order: Order, items: list[Any], import_id: str, index: int) -> dict[str, Any]:
+def build_order_dry_run(
+    order: Order,
+    items: list[Any],
+    import_id: str,
+    index: int,
+    *,
+    representative_contact: Any | None = None,
+) -> dict[str, Any]:
     raw_payload = order.raw_payload or {}
     linked_number = normalize_text(raw_payload.get("skladbot_request_number"))
     linked_id = normalize_text(raw_payload.get("skladbot_request_id"))
@@ -415,10 +429,10 @@ def build_order_dry_run(order: Order, items: list[Any], import_id: str, index: i
     except ValueError as exc:
         sku_mapping = {}
         sku_mapping_error = str(exc)
-    products = [
+    products = aggregate_skladbot_products([
         build_product_dry_run(item.product, item.quantity_blocks, sku_mapping=sku_mapping, sku_mapping_error=sku_mapping_error)
         for item in items
-    ]
+    ])
     blocks = sum(int(product.get("quantity_blocks") or 0) for product in products)
     linked_snapshot = linked_skladbot_amount_snapshot(raw_payload)
     status = "ready"
@@ -443,7 +457,7 @@ def build_order_dry_run(order: Order, items: list[Any], import_id: str, index: i
 
     payload = {}
     if status == "ready":
-        payload = build_skladbot_payload(order, products)
+        payload = build_skladbot_payload(order, products, representative_contact=representative_contact)
 
     return {
         "id": f"{import_id}:{index}",
@@ -502,6 +516,37 @@ def product_amounts(products: Any) -> list[int]:
                 amounts.append(parse_int(product.get(key)))
                 break
     return amounts
+
+
+def aggregate_skladbot_products(products: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    aggregated: list[dict[str, Any]] = []
+    index_by_key: dict[tuple[Any, str, bool], int] = {}
+    for product in products:
+        if product.get("status") != "ready":
+            aggregated.append(product)
+            continue
+
+        key = (
+            product.get("product_data_id"),
+            normalize_text(product.get("barcode")),
+            bool(product.get("is_main_barcode")),
+        )
+        source_product = {
+            "product": product.get("product"),
+            "quantity_blocks": int(product.get("quantity_blocks") or 0),
+        }
+        existing_index = index_by_key.get(key)
+        if existing_index is None:
+            row = dict(product)
+            row["source_products"] = [source_product]
+            index_by_key[key] = len(aggregated)
+            aggregated.append(row)
+            continue
+
+        existing = aggregated[existing_index]
+        existing["quantity_blocks"] = int(existing.get("quantity_blocks") or 0) + int(product.get("quantity_blocks") or 0)
+        existing.setdefault("source_products", []).append(source_product)
+    return aggregated
 
 
 def build_product_dry_run(
@@ -563,15 +608,21 @@ def build_product_dry_run(
     }
 
 
-def build_skladbot_payload(order: Order, products: list[dict[str, Any]]) -> dict[str, Any]:
+def build_skladbot_payload(
+    order: Order,
+    products: list[dict[str, Any]],
+    *,
+    representative_contact: Any | None = None,
+) -> dict[str, Any]:
+    comment = build_representative_comment(order.payment_type, order.representative, representative_contact)
     return {
         "customer_id": SKLADBOT_CUSTOMER_ID,
         "request_type_id": SKLADBOT_REQUEST_TYPE_ID,
         "notify": True,
-        "comment": order.payment_type,
+        "comment": comment,
         "fields": {
             "address": {"value": order.address},
-            "comment": {"value": order.payment_type},
+            "comment": {"value": comment},
             "company_name": {"value": order.client},
             "unloading_date": {"value": order.order_date.isoformat() if order.order_date else ""},
         },
@@ -666,6 +717,7 @@ def process_pending_skladbot_request_creates(
     result = default_create_processing_result(status="completed")
     result["checked"] = len(events)
     if not events:
+        result["remaining"] = count_pending_skladbot_create_events(db)
         return result
 
     for event in events:
@@ -1113,7 +1165,13 @@ def process_skladbot_create_event(db: Session, event: PendingEvent, client: Any)
             "order_id": str(order.id),
         }
 
-    dry_run = build_order_dry_run(order, list(order.items), str(payload.get("import_id") or ""), 1)
+    dry_run = build_order_dry_run(
+        order,
+        list(order.items),
+        str(payload.get("import_id") or ""),
+        1,
+        representative_contact=find_representative_contact(db, order.representative),
+    )
     if dry_run.get("status") != "ready":
         error = normalize_text(dry_run.get("error")) or "SkladBot payload is blocked"
         mark_order_skladbot_create_failed(order, event, error)

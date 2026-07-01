@@ -223,6 +223,25 @@ class LogisticsCalendarDay(Base):
     updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
+class RepresentativeContact(Base):
+    __tablename__ = "representative_contacts"
+    __table_args__ = (
+        UniqueConstraint("normalized_name", name="uq_representative_contacts_normalized_name"),
+        Index("idx_representative_contacts_normalized_name", "normalized_name"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    normalized_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    work_phone: Mapped[str | None] = mapped_column(String(80))
+    personal_phone: Mapped[str | None] = mapped_column(String(80))
+    work_zone: Mapped[str | None] = mapped_column(String(255))
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    raw_payload: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class User(Base):
     __tablename__ = "users"
 
