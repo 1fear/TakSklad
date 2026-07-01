@@ -2967,7 +2967,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
     def test_failed_import_creates_linked_incident_and_resolve_removes_readiness_blocker(self):
         with self.SessionLocal() as db:
             db.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
-            db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260701_0006')"))
+            db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260701_0007')"))
             event = PendingEvent(
                 event_type="telegram_excel_import",
                 status="processing",
@@ -4901,10 +4901,10 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertNotIn("secret", dumped)
         self.assertNotIn("0104006396053978217SECRETKIZVALUE", dumped)
 
-    def test_readiness_accepts_representative_contacts_schema_head_revision(self):
+    def test_readiness_accepts_pending_event_indexes_schema_head_revision(self):
         with self.SessionLocal() as db:
             db.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
-            db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260701_0006')"))
+            db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260701_0007')"))
             db.commit()
 
         response = self.client.get("/ready")
@@ -4914,8 +4914,8 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(payload["status"], "ok")
         self.assertEqual(payload["migrations"]["status"], "ok")
         self.assertEqual(payload["migrations"]["expected_baseline"], "20260616_0001")
-        self.assertEqual(payload["migrations"]["expected_head"], "20260701_0006")
-        self.assertEqual(payload["migrations"]["current_revision"], "20260701_0006")
+        self.assertEqual(payload["migrations"]["expected_head"], "20260701_0007")
+        self.assertEqual(payload["migrations"]["current_revision"], "20260701_0007")
 
     def test_readiness_degrades_when_migration_state_is_missing_or_wrong(self):
         response = self.client.get("/ready")

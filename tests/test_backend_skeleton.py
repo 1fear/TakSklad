@@ -34,6 +34,7 @@ class BackendSkeletonTests(unittest.TestCase):
             "backend/migrations/versions/20260623_0004_user_password_hash.py",
             "backend/migrations/versions/20260626_0005_logistics_calendar.py",
             "backend/migrations/versions/20260701_0006_representative_contacts.py",
+            "backend/migrations/versions/20260701_0007_pending_event_indexes.py",
             "docs/database-migrations-runbook.md",
             "deploy/vds/docker-compose.yml",
             "deploy/vds/.env.example",
@@ -125,6 +126,7 @@ class BackendSkeletonTests(unittest.TestCase):
         user_password_hash = (ROOT_DIR / "backend/migrations/versions/20260623_0004_user_password_hash.py").read_text(encoding="utf-8").lower()
         logistics_calendar = (ROOT_DIR / "backend/migrations/versions/20260626_0005_logistics_calendar.py").read_text(encoding="utf-8").lower()
         representative_contacts = (ROOT_DIR / "backend/migrations/versions/20260701_0006_representative_contacts.py").read_text(encoding="utf-8").lower()
+        pending_event_indexes = (ROOT_DIR / "backend/migrations/versions/20260701_0007_pending_event_indexes.py").read_text(encoding="utf-8").lower()
 
         for table_name in [
             "orders",
@@ -154,6 +156,15 @@ class BackendSkeletonTests(unittest.TestCase):
         ]:
             self.assertIn(index_name, schema_sql)
             self.assertIn(index_name, baseline)
+        for index_name in [
+            "idx_pending_events_status_created_at",
+            "idx_pending_events_status_updated_at",
+            "idx_pending_events_type_status_created_at",
+            "idx_pending_events_type_status_updated_at",
+            "idx_pending_events_updated_created_at",
+        ]:
+            self.assertIn(index_name, schema_sql)
+            self.assertIn(index_name, pending_event_indexes)
 
         self.assertIn('"incidents"', incidents)
         self.assertIn("revision = \"20260617_0002\"", incidents)
@@ -171,12 +182,17 @@ class BackendSkeletonTests(unittest.TestCase):
         self.assertIn('"representative_contacts"', representative_contacts)
         self.assertIn("revision = \"20260701_0006\"", representative_contacts)
         self.assertIn("down_revision = \"20260626_0005\"", representative_contacts)
+        self.assertIn("pending_events", pending_event_indexes)
+        self.assertIn("create index if not exists", pending_event_indexes)
+        self.assertIn("revision = \"20260701_0007\"", pending_event_indexes)
+        self.assertIn("down_revision = \"20260701_0006\"", pending_event_indexes)
         self.assertIn("baseline migration is irreversible", baseline)
         self.assertIn("incident migration is forward-only", incidents)
         self.assertIn("client points migration is forward-only", client_points)
         self.assertIn("user password migration is forward-only", user_password_hash)
         self.assertIn("logistics calendar migration is forward-only", logistics_calendar)
         self.assertIn("representative contacts migration is forward-only", representative_contacts)
+        self.assertIn("pending event queue index migration is forward-only", pending_event_indexes)
 
     def test_deploy_runbook_uses_alembic_for_normal_production_upgrades(self):
         runbook = (ROOT_DIR / "docs/deploy-rollback-runbook.md").read_text(encoding="utf-8")

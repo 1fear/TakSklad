@@ -141,7 +141,9 @@ VDS_SSH_KNOWN_HOSTS
 VDS_APP_DIR
 ```
 
-`VDS_APP_DIR` можно не задавать, если production checkout лежит в стандартном пути `/opt/stacks/taksklad/app`. `VDS_SSH_KNOWN_HOSTS` должен содержать known_hosts строку сервера; не использовать `StrictHostKeyChecking=no`.
+`VDS_APP_DIR` можно не задавать, если production app лежит в стандартном пути `/opt/stacks/taksklad/app`. `VDS_SSH_KNOWN_HOSTS` должен содержать known_hosts строку сервера; не использовать `StrictHostKeyChecking=no`.
+
+Если `/opt/stacks/taksklad/app` не является git checkout, `deploy/vds/deploy_from_git.sh` делает временный clone из `TAKSKLAD_DEPLOY_REMOTE_URL` и синхронизирует выбранный ref через `rsync --delete`, исключая `.env*`, `outputs`, `backups`, runtime logs, restore points, virtualenv, `node_modules`, `dist`, `__pycache__` и `*.pyc`.
 
 Ручной запуск:
 
@@ -161,7 +163,7 @@ backend-api frontend telegram-worker google-sheets-sync-worker skladbot-worker s
 1. отказывается деплоить при tracked changes на VDS checkout;
 2. создает restore point без `outputs`, `.env`, credentials и backup-файлов;
 3. запускает `deploy/vds/backup_postgres.sh`;
-4. checkout выбранного git ref;
+4. checkout выбранного git ref или sync выбранного ref из временного clone, если app dir не git checkout;
 5. build `backend-api`;
 6. `alembic -c alembic.ini upgrade head`;
 7. `docker compose up -d --build` для выбранных сервисов;
@@ -170,7 +172,7 @@ backend-api frontend telegram-worker google-sheets-sync-worker skladbot-worker s
 10. optional/required `deploy/vds/acceptance_status.sh`;
 11. fresh log scan по rebuilt/recreated сервисам.
 
-Первый запуск CI/CD делать как manual deploy с `acceptance=optional`. Если acceptance manifest на сервере отсутствует, optional mode не блокирует deploy, но это нужно зафиксировать в `implementation-log.md`. Для релизов с ручной acceptance использовать `acceptance=required`.
+Первый запуск CI/CD делать как manual deploy с `acceptance=optional`. Если acceptance manifest на сервере отсутствует или `acceptance_status.sh` возвращает no-go, optional mode логирует результат и не блокирует deploy. Для релизов с обязательной ручной acceptance использовать `acceptance=required`: любой missing/no-go acceptance тогда блокирует deploy.
 
 ## 3. Backup
 

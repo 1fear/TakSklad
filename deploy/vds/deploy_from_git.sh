@@ -11,6 +11,7 @@ RESTORE_ROOT="${TAKSKLAD_RESTORE_ROOT:-/opt/stacks/taksklad/restore_points}"
 HEALTH_URL="${TAKSKLAD_HEALTH_URL:-https://api.taksklad.uz/health}"
 READY_URL="${TAKSKLAD_READY_URL:-https://api.taksklad.uz/ready}"
 LOG_SINCE_SECONDS="${TAKSKLAD_DEPLOY_LOG_SINCE_SECONDS:-120}"
+REMOTE_URL="${TAKSKLAD_DEPLOY_REMOTE_URL:-https://github.com/1fear/TakSklad.git}"
 
 ALL_SERVICES=(
   backend-api
@@ -31,6 +32,7 @@ Environment:
   TAKSKLAD_DEPLOY_REF           Git branch, tag, or commit to deploy. Default: main
   TAKSKLAD_DEPLOY_SERVICES      Space/comma separated services, or all. Default: all
   TAKSKLAD_DEPLOY_ACCEPTANCE    optional|required|skip. Default: optional
+  TAKSKLAD_DEPLOY_REMOTE_URL    Git remote for non-git app dirs. Default: https://github.com/1fear/TakSklad.git
 EOF
 }
 
@@ -106,6 +108,35 @@ checkout_ref() {
   fail "cannot resolve git ref: $ref"
 }
 
+sync_ref_from_temporary_checkout() {
+  local ref="$1"
+  (
+    local checkout_dir
+    checkout_dir="$(mktemp -d /tmp/taksklad-deploy-checkout-XXXXXX)"
+    trap 'rm -rf "$checkout_dir"' EXIT
+
+    git clone --no-checkout "$REMOTE_URL" "$checkout_dir"
+    cd "$checkout_dir"
+    checkout_ref "$ref"
+    git rev-parse --short HEAD
+    rsync -a --delete \
+      --exclude '.git' \
+      --exclude '.env' \
+      --exclude '.env.*' \
+      --exclude '.venv' \
+      --exclude 'venv' \
+      --exclude 'outputs' \
+      --exclude 'backups' \
+      --exclude 'logs' \
+      --exclude 'restore_points' \
+      --exclude 'node_modules' \
+      --exclude 'dist' \
+      --exclude '__pycache__' \
+      --exclude '*.pyc' \
+      "$checkout_dir/" "$APP_DIR/"
+  )
+}
+
 run_log_scan() {
   local since services
   since="${1:-120}"
@@ -146,7 +177,12 @@ run_acceptance() {
     return 0
   fi
 
-  ./deploy/vds/acceptance_status.sh
+  if ./deploy/vds/acceptance_status.sh; then
+    return 0
+  fi
+
+  [[ "$ACCEPTANCE_MODE" == "required" ]] && fail "acceptance_status.sh failed"
+  echo "acceptance_status.sh reported no-go; continuing because acceptance mode is optional"
 }
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
@@ -156,14 +192,17 @@ fi
 
 cd "$APP_DIR"
 
-[[ -d .git ]] || fail "not a git checkout: $APP_DIR"
 [[ -f "$ENV_FILE" ]] || fail "env file not found: $APP_DIR/$ENV_FILE"
 [[ -f "$COMPOSE_FILE" ]] || fail "compose file not found: $APP_DIR/$COMPOSE_FILE"
 
-tracked_changes="$(git status --short --untracked-files=no)"
-if [[ -n "$tracked_changes" ]]; then
-  echo "$tracked_changes" >&2
-  fail "tracked worktree changes must be resolved before CI/CD deploy"
+if [[ -d .git ]]; then
+  tracked_changes="$(git status --short --untracked-files=no)"
+  if [[ -n "$tracked_changes" ]]; then
+    echo "$tracked_changes" >&2
+    fail "tracked worktree changes must be resolved before CI/CD deploy"
+  fi
+else
+  echo "App dir is not a git checkout; deploy will sync from temporary checkout."
 fi
 
 mapfile -t SERVICES < <(resolve_services "$SERVICES_INPUT")
@@ -177,8 +216,12 @@ echo "Creating PostgreSQL backup..."
 ./deploy/vds/backup_postgres.sh
 
 echo "Checking out ref: $DEPLOY_REF"
-checkout_ref "$DEPLOY_REF"
-git rev-parse --short HEAD
+if [[ -d .git ]]; then
+  checkout_ref "$DEPLOY_REF"
+  git rev-parse --short HEAD
+else
+  sync_ref_from_temporary_checkout "$DEPLOY_REF"
+fi
 
 echo "Building backend image for migration..."
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" build backend-api

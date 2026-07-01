@@ -134,7 +134,14 @@ class ImportFile(Base):
 
 class PendingEvent(Base):
     __tablename__ = "pending_events"
-    __table_args__ = (Index("uq_pending_events_idempotency_key", "idempotency_key", unique=True),)
+    __table_args__ = (
+        Index("idx_pending_events_status_created_at", "status", "created_at", "id"),
+        Index("idx_pending_events_status_updated_at", "status", "updated_at", "id"),
+        Index("idx_pending_events_type_status_created_at", "event_type", "status", "created_at", "id"),
+        Index("idx_pending_events_type_status_updated_at", "event_type", "status", "updated_at", "id"),
+        Index("idx_pending_events_updated_created_at", "updated_at", "created_at", "id"),
+        Index("uq_pending_events_idempotency_key", "idempotency_key", unique=True),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
     event_type: Mapped[str] = mapped_column(String(80), nullable=False)

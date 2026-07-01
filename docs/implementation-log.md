@@ -4,6 +4,27 @@
 
 ## 2026-07-01
 
+### Pending event queue indexes and deploy workflow bootstrap
+
+- Причина: активный tracker-хвост `Ускорить TakSklad queue checks` требовал индексировать hot-path выборки очереди, а первый CI/CD deploy должен работать с текущим VDS app dir, который может быть не git checkout.
+- Изменено:
+  - добавлена Alembic migration `20260701_0007_pending_event_indexes.py` с duplicate-safe `CREATE INDEX IF NOT EXISTS`;
+  - `pending_events` получил индексы `status, created_at, id`, `status, updated_at, id`, `event_type, status, created_at, id`, `event_type, status, updated_at, id`, `updated_at, created_at, id`;
+  - SQLAlchemy metadata, bootstrap SQL и readiness head подняты до `20260701_0007`;
+  - `deploy/vds/deploy_from_git.sh` умеет деплоить в non-git app dir через временный clone и `rsync --delete` с exclude для `.env*`, `outputs`, `backups`, runtime logs, restore points, virtualenv и build/cache каталогов;
+  - `TAKSKLAD_DEPLOY_ACCEPTANCE=optional` теперь не блокирует deploy при no-go от `acceptance_status.sh`; `required` остается строгим и падает при missing/no-go acceptance.
+- Локальные проверки:
+  - `bash -n deploy/vds/deploy_from_git.sh` - OK;
+  - `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python -m py_compile backend/app/models.py backend/app/health_service.py backend/migrations/versions/20260701_0007_pending_event_indexes.py tests/test_backend_skeleton.py tests/test_backend_api_persistence.py tests/test_ci_cd_workflows.py` - OK;
+  - `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_backend_skeleton tests.test_ci_cd_workflows tests.test_backend_api_persistence.BackendApiPersistenceTests.test_failed_import_creates_linked_incident_and_resolve_removes_readiness_blocker tests.test_backend_api_persistence.BackendApiPersistenceTests.test_readiness_accepts_pending_event_indexes_schema_head_revision tests.test_backend_api_persistence.BackendApiPersistenceTests.test_readiness_degrades_when_migration_state_is_missing_or_wrong` - 16 tests OK;
+  - `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_backend_skeleton tests.test_ci_cd_workflows tests.test_backend_google_sheets_pending tests.test_backend_events` - 27 tests OK;
+  - `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_backend_api_persistence` - 120 tests OK;
+  - `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python -m alembic -c backend/alembic.ini heads` - `20260701_0007 (head)`;
+  - `TAKSKLAD_ENV_FILE=.env.example docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config --quiet` - OK;
+  - `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python tools/release_preflight.py --skip-network` - OK;
+  - `npm --prefix frontend run build` - OK;
+  - `bash -n deploy/vds/*.sh && git diff --check` - OK.
+
 ### Smartup late export split after SkladBot link
 
 - Причина: по `"KAMALOVA KAMOLA ABDUXALIL QIZI"YTT` Smartup дал один адрес/юрлицо двумя разными deal id в разных частях export:

@@ -4,6 +4,31 @@
 
 ## 2026-07-01
 
+### Pending event queue indexes and CI/CD deploy bootstrap
+
+**Файлы:** `backend/app/models.py`, `backend/app/health_service.py`, `backend/sql/001_initial_schema.sql`, `backend/migrations/versions/20260701_0007_pending_event_indexes.py`, `deploy/vds/deploy_from_git.sh`, `tests/test_backend_skeleton.py`, `tests/test_backend_api_persistence.py`, `tests/test_ci_cd_workflows.py`, `docs/deploy-rollback-runbook.md`, `docs/implementation-log.md`, `docs/changelog.md`.
+
+**Что стало:**
+
+- Для `pending_events` добавлены индексы hot-path очереди: `status, created_at, id`, `status, updated_at, id`, `event_type, status, created_at, id`, `event_type, status, updated_at, id`, `updated_at, created_at, id`.
+- Alembic head поднят до `20260701_0007`; migration использует `CREATE INDEX IF NOT EXISTS`, чтобы не падать, если индекс уже был создан вручную.
+- `/ready` ожидает head `20260701_0007`.
+- `deploy_from_git.sh` больше не требует, чтобы `/opt/stacks/taksklad/app` был git checkout: для non-git app dir он берет выбранный ref из временного clone и синхронизирует код через `rsync --delete` с runtime/secret excludes.
+- `acceptance=optional` в deploy больше не блокирует production deploy при no-go от `acceptance_status.sh`; `acceptance=required` остается блокирующим.
+
+**Проверки:**
+
+- `bash -n deploy/vds/deploy_from_git.sh` - OK.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python -m py_compile backend/app/models.py backend/app/health_service.py backend/migrations/versions/20260701_0007_pending_event_indexes.py tests/test_backend_skeleton.py tests/test_backend_api_persistence.py tests/test_ci_cd_workflows.py` - OK.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_backend_skeleton tests.test_ci_cd_workflows tests.test_backend_api_persistence.BackendApiPersistenceTests.test_failed_import_creates_linked_incident_and_resolve_removes_readiness_blocker tests.test_backend_api_persistence.BackendApiPersistenceTests.test_readiness_accepts_pending_event_indexes_schema_head_revision tests.test_backend_api_persistence.BackendApiPersistenceTests.test_readiness_degrades_when_migration_state_is_missing_or_wrong` - 16 tests OK.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_backend_skeleton tests.test_ci_cd_workflows tests.test_backend_google_sheets_pending tests.test_backend_events` - 27 tests OK.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_backend_api_persistence` - 120 tests OK.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python -m alembic -c backend/alembic.ini heads` - `20260701_0007 (head)`.
+- `TAKSKLAD_ENV_FILE=.env.example docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config --quiet` - OK.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python tools/release_preflight.py --skip-network` - OK.
+- `npm --prefix frontend run build` - OK.
+- `bash -n deploy/vds/*.sh && git diff --check` - OK.
+
 ### Production env and VDS ops tails
 
 **Файлы:** `backend/app/google_sheets_sync_worker.py`, `deploy/vds/docker-compose.yml`, `deploy/vds/.env.example`, `deploy/vds/switch_backend_host.sh`, `tests/test_google_sheets_sync_worker.py`, `tests/test_vds_acceptance_scripts.py`, `tests/test_backend_skeleton.py`, `docs/changelog.md`.
