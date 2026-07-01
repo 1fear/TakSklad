@@ -4,6 +4,36 @@
 
 ## 2026-07-01
 
+### SkladBot linked request mismatch guard
+
+- Причина: поздний `smartup_auto_repair` мог добавить позицию в уже связанную WH-R заявку. Backend становился больше, чем уже созданная SkladBot-заявка, но dry-run показывал только `already_linked`.
+- Изменено:
+  - SkladBot dry-run для linked order сравнивает текущие блоки DB с сохраненным linked SkladBot payload/detail;
+  - если блоки отличаются, статус становится `linked_mismatch`, payload на повторное создание не ставится в очередь;
+  - import response, admin dry-run UI и import issues показывают отдельный счетчик `linked_mismatch`.
+- Инварианты:
+  - SkladBot API на запись не вызывается;
+  - существующие WH-R, остатки, КИЗы, Google Sheets и scan state не меняются;
+  - решение по ручному исправлению конкретной WH-R остается операторским до подтвержденного safe update path.
+- Локальные проверки:
+  - `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_backend_skladbot_request_dry_run tests.test_smartup_auto_import` - 59 tests OK;
+  - `./.venv/bin/python -m py_compile backend/app/skladbot_request_dry_run.py backend/app/imports_service.py backend/app/schemas.py tests/test_backend_skladbot_request_dry_run.py` - OK;
+  - `npm run build` in `frontend/` - OK;
+  - `git diff --check` - OK.
+- Production deploy:
+  - restore point: `/opt/stacks/taksklad/restore_points/pre-skladbot-linked-mismatch-20260701T062139Z`;
+  - DB backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260701T062139Z.sql.gz`;
+  - selective rsync: `backend/app/skladbot_request_dry_run.py`, `backend/app/imports_service.py`, `backend/app/schemas.py`, `frontend/src/App.tsx`, `frontend/src/api.ts`, `frontend/src/styles.css`, test and docs;
+  - rebuilt/recreated `backend-api`, `skladbot-worker`, `smartup-auto-import-worker`, `frontend`.
+- VDS verification:
+  - public `/health` OK, version `2.0.25`;
+  - public `/ready` degraded only because of known old queue/Google mirror items; DB and migrations OK;
+  - `SMARTUP_AUTOMATION_RUNTIME_REQUIRED=1 ./deploy/vds/verify_smartup_automation.sh` - `status=ok`, pending SkladBot creates `0`;
+  - fresh logs for rebuilt containers had no `ERROR`, `CRITICAL`, `Traceback`, `Exception` or `panic`;
+  - live frontend bundle contains `linked_mismatch` / `Расхождение`;
+  - container `py_compile` for changed backend modules - OK;
+  - runtime SHA256 matched local for `backend/app/skladbot_request_dry_run.py` and `frontend/src/App.tsx`.
+
 ### Web panel recovery after main branch drift
 
 - Симптом на `taksklad.uz`: web-панель выглядела как старая версия и показывала ошибку `Запрос /api/v1/admin/table?offset=0&activity_limit=30 не ответил за 15 сек.`
@@ -6711,16 +6741,3 @@ cd /opt/taksklad/app
   - runtime SHA256 для `google_sheets_sync_worker.py` и `logistics_service.py` совпадает с локальными файлами;
   - финальный отчет `/Users/anton/Documents/Telegram/TakSklad_логистика_01.07.2026_FIXED.xlsx`;
   - финальная сверка `/Users/anton/Documents/Telegram/Сверка_логистика_01.07.2026_FIXED.xlsx`: source rows 223, logistics rows 223, missing 0, extra 0, conflicts 0, blocks 511, amount 122315000.
-
-### SkladBot linked request mismatch guard
-
-- Дата: 2026-07-01.
-- Причина: поздний `smartup_auto_repair` мог добавить позицию в уже связанную WH-R заявку. Backend становился больше, чем уже созданная SkladBot-заявка, но dry-run показывал только `already_linked`.
-- Изменено:
-  - SkladBot dry-run для linked order сравнивает текущие блоки DB с сохраненным linked SkladBot payload/detail;
-  - если блоки отличаются, статус становится `linked_mismatch`, payload на повторное создание не ставится в очередь;
-  - import response, admin dry-run UI и import issues показывают отдельный счетчик `linked_mismatch`.
-- Инварианты:
-  - SkladBot API на запись не вызывается;
-  - существующие WH-R, остатки, КИЗы, Google Sheets и scan state не меняются;
-  - решение по ручному исправлению конкретной WH-R остается операторским до подтвержденного safe update path.
