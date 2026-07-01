@@ -182,6 +182,32 @@ class GoogleSheetsSyncWorkerTests(unittest.TestCase):
             self.assertEqual(item.raw_payload["source_file"], "orders.xlsx")
             self.assertTrue(item.raw_payload["google_sheet_synced_at"])
 
+    def test_sync_does_not_replace_real_backend_address_with_gps_from_google_sheet(self):
+        order_id, _item_id = self.seed_order()
+
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            order.address = "Ташкент, геокодированный адрес 1"
+            db.commit()
+
+        with self.SessionLocal() as db:
+            result = sync_google_sheet_to_backend(
+                db,
+                sheet=self.make_sheet(
+                    **{
+                        "Адрес": "GPS: 41.311081,69.240562",
+                        "Товары": "Chapman Brown OP 20",
+                        "Кол-во ШТ": 150,
+                        "Кол-во блок": 15,
+                    }
+                ),
+            )
+
+        self.assertEqual(result["matched"], 1)
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            self.assertEqual(order.address, "Ташкент, геокодированный адрес 1")
+
     def test_sync_does_not_downgrade_existing_skladbot_link_from_stale_google_mirror(self):
         order_id, _item_id = self.seed_order()
 
@@ -250,6 +276,41 @@ class GoogleSheetsSyncWorkerTests(unittest.TestCase):
             self.assertEqual(item.raw_payload["block_price"], 240000)
             self.assertEqual(item.raw_payload["line_total"], 240000)
             self.assertEqual(item.raw_payload["calculated_line_total"], 240000)
+
+    def test_sync_preserves_google_repriced_line_total(self):
+        _, item_id = self.seed_order(quantity_blocks=50)
+
+        with self.SessionLocal() as db:
+            item = db.get(OrderItem, uuid.UUID(item_id))
+            item.raw_payload = {
+                **item.raw_payload,
+                "imported_line_total": 11_675_000,
+                "line_total": 11_675_000,
+                "calculated_line_total": 12_000_000,
+            }
+            db.commit()
+
+        with self.SessionLocal() as db:
+            result = sync_google_sheet_to_backend(
+                db,
+                sheet=self.make_sheet(
+                    **{
+                        "Товары": "Chapman Brown OP 20",
+                        "Кол-во ШТ": 500,
+                        "Кол-во блок": 50,
+                        "Цена за блок": 240000,
+                        "Сумма позиции": 11_675_000,
+                    }
+                ),
+            )
+
+        self.assertEqual(result["matched"], 1)
+        self.assertEqual(result["items_updated"], 1)
+        with self.SessionLocal() as db:
+            item = db.get(OrderItem, uuid.UUID(item_id))
+            self.assertEqual(item.raw_payload["block_price"], 240000)
+            self.assertEqual(item.raw_payload["calculated_line_total"], 12_000_000)
+            self.assertEqual(item.raw_payload["line_total"], 11_675_000)
 
     def test_sync_keeps_backend_item_removed_from_google_sheet_when_unscanned(self):
         order_id, _ = self.seed_order()

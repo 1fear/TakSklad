@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+
+if [ "${ALLOW_NON_MAIN_BRANCH:-}" = "1" ]; then
+  exit 0
+fi
+
+branch="$(git branch --show-current 2>/dev/null || true)"
+if [ -z "$branch" ]; then
+  echo "TakSklad guard: detached HEAD. Commit blocked; switch to main or set ALLOW_NON_MAIN_BRANCH=1 for an explicitly approved exception." >&2
+  exit 1
+fi
+
+if [ "$branch" != "main" ]; then
+  echo "TakSklad guard: commits are allowed only on main. Current branch: $branch" >&2
+  echo "Switch to main, or set ALLOW_NON_MAIN_BRANCH=1 only for an explicitly approved exception." >&2
+  exit 1
+fi

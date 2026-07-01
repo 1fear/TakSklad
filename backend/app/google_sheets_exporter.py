@@ -1312,7 +1312,7 @@ def is_missing_address(value):
             "адрес не определен",
             "адрес отсутствует",
         }
-        or text.startswith("координаты")
+        or text.startswith(("координаты", "gps"))
     )
 
 

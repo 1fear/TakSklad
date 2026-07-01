@@ -1,7 +1,7 @@
 # TakSklad: суть приложения, логика, структура и стек
 
-Актуально на: 22.06.2026
-Текущая версия по коду и release manifest: `2.0.21`
+Актуально на: 30.06.2026
+Текущая версия по коду: `2.0.24`; public `version.json` сейчас в forced rollout `2.0.24`.
 Репозиторий: `1fear/TakSklad`
 Назначение файла: один общий обзор проекта для передачи разработчику, интегратору, техподдержке или внутренней команде.
 
@@ -20,7 +20,8 @@ TakSklad - складская система вокруг процесса Chapm
 7. защищает от дублей, wrong-SKU, недосканов и повторного использования КИЗов без возврата;
 8. обрабатывает возвраты так, чтобы КИЗы снова становились доступными для новой отгрузки;
 9. формирует КИЗ-выгрузки, логистические отчеты и ежедневные SkladBot-отчеты;
-10. дает web-панель для контроля заказов, статусов, Google/SkladBot-синхронизации и ручных действий.
+10. дает web-панель для контроля заказов, статусов, Google/SkladBot-синхронизации и ручных действий;
+11. имеет выключенный по умолчанию серверный worker для Smartup `Новые + Терминал`: export, audit, advisory lock по слотам, календарь логистики, backend import, status change, SkladBot queue, Telegram alert при ошибке и финальный логистический отчёт.
 
 Главная архитектурная линия сейчас:
 
@@ -29,6 +30,9 @@ TakSklad - складская система вокруг процесса Chapm
 - **Telegram worker - серверный канал импорта, отчетов и ручного управления.**
 - **SkladBot - внешняя WMS и источник остатков/заявок.**
 - **Google Sheets - зеркало/витрина и legacy fallback, но не основная база.**
+- **Smartup auto import worker - источник терминальных новых заказов, включается только через env-флаги; последние запуски видны в web-admin во вкладке `Smartup`.**
+- **Logistics calendar - календарь рабочих/нерабочих дней логистики; влияет на Smartup `delivery_date` и отправку финального логистического отчета.**
+- **Smartup recovery boundary - backend import выполняется до перевода Smartup-заказа в `В ожидании`; SkladBot create-очередь ставится только после status change; failed/stale slot можно повторить, completed slot не выполняется повторно.**
 
 ## 2. Название и продуктовая суть
 
@@ -345,6 +349,8 @@ Admin/web endpoints:
 - `GET /api/v1/admin/table` - таблица web-панели с `limit`, `offset`, `row_count`, `total_rows`, `has_more`; totals считаются по всем строкам, а `rows` возвращаются страницей;
 - `GET /api/v1/admin/client-points` - сохраненные точки клиентов и уникальные `юрлицо + адрес`, уже встречавшиеся в заказах;
 - `POST /api/v1/admin/client-points/timeslot` - создать/обновить таймслот точки для логистического XLSX;
+- `GET /api/v1/admin/logistics-calendar` - календарь логистики с заказами, выходными и ручными нерабочими днями;
+- `POST /api/v1/admin/logistics-calendar/day` - вручную отметить день рабочим или нерабочим для логистики;
 - `POST /api/v1/admin/google/pending/retry` - повторить pending Google exports;
 - `POST /api/v1/admin/orders/bulk/complete-without-kiz` - массово закрыть без КИЗов;
 - `POST /api/v1/admin/orders/{order_id}/archive-without-kiz`;
@@ -394,6 +400,7 @@ ORM-модели: `backend/app/models.py`.
 | `import_files` | файлы импорта и SHA256 |
 | `pending_events` | очередь событий workers |
 | `client_points` | справочник юрлиц/точек и их логистических таймслотов |
+| `logistics_calendar_days` | ручные рабочие/нерабочие дни логистики |
 | `audit_log` | аудит действий |
 | `users` | web/admin users |
 

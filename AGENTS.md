@@ -8,6 +8,19 @@
 3. Не читать и не использовать секреты, `.env*`, credentials, `Пароли.md`, `/Users/anton/.codex/LOCAL_SECRETS.md`, клиентские выгрузки, outputs, backups и реальные отчеты как источник для графа.
 4. Любые изменения должны сохранять надежность склада: дедуп КИЗов, audit, backup, понятные отчеты и воспроизводимые проверки.
 
+Git branch discipline:
+1. Все рабочие изменения, коммиты и push для TakSklad по умолчанию делаются только в `main`.
+2. Перед любыми изменениями выполнить `git branch --show-current` и `git status --short --branch`.
+3. Если текущая ветка не `main`, сначала переключиться на `main` и обновить ее из `origin/main`; исключение только если Антон явно попросил отдельную ветку или PR.
+4. Запрещено оставлять production/runtime fix только в `codex/*`, `feature/*` или другой боковой ветке.
+5. Локальные hooks из `.githooks/` блокируют commit и push не из `main`; обход только через `ALLOW_NON_MAIN_BRANCH=1` для явно согласованного исключения.
+
+Smartup live smoke:
+1. Если Антон явно просит проверить live-доступ Smartup, локальные параметры искать только в `.env.smartup.local`.
+2. `.env.smartup.local` должен оставаться gitignored, с правами `600`, и не попадать в docs, логи, граф, git diff, субагентам или внешние сервисы.
+3. Ожидаемые переменные: `SMARTUP_BASE_URL`, `SMARTUP_PROJECT_CODE`, `SMARTUP_FILIAL_ID`, `SMARTUP_USERNAME`, `SMARTUP_PASSWORD`.
+4. Разрешенный smoke test без отдельного подтверждения: read-only `order$export` на короткое окно. Нельзя менять статусы Smartup, импортировать в TakSklad или делать write-back без отдельной команды Антона.
+
 Knowledge graph:
 1. Общий root контекста: `/Users/anton/Documents/work/_knowledge-graph`.
 2. Для архитектурных вопросов, поиска связей и онбординга сначала используй:

@@ -30,6 +30,10 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
             "verify_skladbot_coverage.sh",
             "skladbot coverage verifier failed",
             '"skladbot_coverage"',
+            "verify_smartup_automation.sh",
+            "SMARTUP_AUTOMATION_RUNTIME_REQUIRED=1",
+            "smartup automation verifier failed",
+            '"smartup_automation"',
             "ACCEPTANCE_HEALTH_ATTEMPTS",
             "ACCEPTANCE_HEALTH_RETRY_DELAY_SECONDS",
             "health_attempt",
@@ -64,6 +68,9 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         skladbot_coverage_script = (PROJECT_ROOT / "deploy" / "vds" / "verify_skladbot_coverage.sh").read_text(
             encoding="utf-8"
         )
+        smartup_automation_script = (PROJECT_ROOT / "deploy" / "vds" / "verify_smartup_automation.sh").read_text(
+            encoding="utf-8"
+        )
 
         for script in (verify_script, cleanup_script):
             self.assertIn("*ACCEPTANCE*|*WEB_UI_SMOKE*|*SMOKE_MVP*", script)
@@ -86,18 +93,36 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         self.assertIn("--marker", skladbot_coverage_script)
         self.assertIn("--detail-limit", skladbot_coverage_script)
 
+        self.assertIn("app.smartup_auto_import_worker status", smartup_automation_script)
+        self.assertIn("SMARTUP_AUTO_IMPORT_BACKEND_IMPORT_ENABLED", smartup_automation_script)
+        self.assertIn('skladbot_create_mode="dry_run"', smartup_automation_script)
+        self.assertIn("client.change_status", smartup_automation_script)
+        self.assertIn("successful_deal_ids", smartup_automation_script)
+        self.assertIn("smartup_status_not_confirmed", smartup_automation_script)
+        self.assertIn("failed_preview", smartup_automation_script)
+        self.assertIn("target_delivery_date", smartup_automation_script)
+        self.assertIn("reverse_geocode_yandex", smartup_automation_script)
+        self.assertIn("imported_line_total > 0", smartup_automation_script)
+        self.assertIn("explicit * quantity_blocks == line_total", smartup_automation_script)
+        self.assertIn("Smartup runtime status is required but skipped", smartup_automation_script)
+        self.assertIn('"status": "failed" if errors else "ok"', smartup_automation_script)
+
     def test_vds_compose_passes_geocoder_and_block_price_to_import_worker(self):
         compose = (PROJECT_ROOT / "deploy" / "vds" / "docker-compose.yml").read_text(encoding="utf-8")
         env_example = (PROJECT_ROOT / "deploy" / "vds" / ".env.example").read_text(encoding="utf-8")
+        smartup_worker = compose.split("  smartup-auto-import-worker:", 1)[1].split(
+            "\n  google-sheets-sync-worker:",
+            1,
+        )[0]
 
         self.assertIn("${TAKSKLAD_ENV_FILE:-.env}", compose)
         self.assertIn("TAKSKLAD_ENV_FILE=.env.example", env_example)
-        self.assertIn("YANDEX_GEOCODER_API_KEY: ${YANDEX_GEOCODER_API_KEY:-}", compose)
-        self.assertIn("TAKSKLAD_TIMEZONE: ${TAKSKLAD_TIMEZONE:-Asia/Tashkent}", compose)
-        self.assertIn("TAKSKLAD_DEFAULT_BLOCK_PRICE: ${TAKSKLAD_DEFAULT_BLOCK_PRICE:-240000}", compose)
+        self.assertIn("YANDEX_GEOCODER_API_KEY: ${YANDEX_GEOCODER_API_KEY:-}", smartup_worker)
+        self.assertIn("TAKSKLAD_TIMEZONE: ${TAKSKLAD_TIMEZONE:-Asia/Tashkent}", smartup_worker)
+        self.assertIn("TAKSKLAD_DEFAULT_BLOCK_PRICE: ${TAKSKLAD_DEFAULT_BLOCK_PRICE:-240000}", smartup_worker)
         self.assertIn("SKLADBOT_WORKER_INTERVAL_SECONDS: ${SKLADBOT_WORKER_INTERVAL_SECONDS:-60}", compose)
         self.assertIn("SKLADBOT_REQUEST_DELAY_SECONDS: ${SKLADBOT_REQUEST_DELAY_SECONDS:-2}", compose)
-        self.assertIn("SKLADBOT_SKU_MAPPING_JSON: ${SKLADBOT_SKU_MAPPING_JSON:-}", compose)
+        self.assertIn("SKLADBOT_SKU_MAPPING_JSON: ${SKLADBOT_SKU_MAPPING_JSON:-}", smartup_worker)
         self.assertIn("SKLADBOT_SYNC_MAX_LOOKBACK_DAYS: ${SKLADBOT_SYNC_MAX_LOOKBACK_DAYS:-7}", compose)
         self.assertIn("SKLADBOT_ORDER_CREATE_LEAD_DAYS: ${SKLADBOT_ORDER_CREATE_LEAD_DAYS:-3}", compose)
         self.assertIn("SKLADBOT_DETAIL_LIMIT: ${SKLADBOT_DETAIL_LIMIT:-10}", compose)

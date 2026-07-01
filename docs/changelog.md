@@ -2,7 +2,107 @@
 
 Здесь фиксируются все правки в коде TakSklad: что менялось, в каком файле, зачем, и какие тесты это покрывают. Записи идут от новых к старым.
 
+## 2026-07-01
+
+### Main/prod web panel recovery and admin table pagination
+
+**Файлы:** `frontend/src/App.tsx`, `frontend/src/styles.css`, `frontend/src/api.ts`, Smartup/calendar backend files, VDS deploy files, tests and docs from 2.0.25 rollout branch.
+
+**Что стало:**
+
+- Актуальная web-панель 2.0.25 перенесена в `main`: навигация снова содержит `Календарь`, `Smartup` и `История действий` вместо старого набора разделов.
+- Сохранен быстрый startup gate: после проверки web-session экран не ждет полный `refreshAll`.
+- Стартовый запрос `/api/v1/admin/table` теперь запрашивает первые 500 строк через `limit`, а не весь список позиций одним ответом.
+- В таблице добавлена догрузка следующей страницы, чтобы не возвращать 5 МБ данных на первый экран и не ловить браузерный timeout 15 сек.
+- Sidebar получил фикс высоты/скролла для длинной панели навигации.
+
+**Проверки:**
+
+- `cd frontend && npm run build` - OK.
+- `.venv/bin/python -m unittest tests.test_smartup_auto_import tests.test_google_sheets_sync_worker tests.test_vds_acceptance_scripts tests.test_backend_api_persistence tests.test_backend_telegram_import` - 234 tests OK.
+- `.venv/bin/python -m unittest discover -s tests -p 'test_*.py'` - 669 tests OK.
+- `.venv/bin/python tools/release_preflight.py` - status `ok`, public backend health OK, version `2.0.25`.
+- `TAKSKLAD_ENV_FILE=.env.example docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config --quiet` - OK.
+- `deploy/vds/verify_smartup_automation.sh` - source checks OK, local runtime skipped because local compose service is not running.
+
 ## 2026-06-30
+
+### Smartup automation phase audit follow-up
+
+**Файлы:** `backend/app/smartup_auto_import.py`, `deploy/vds/docker-compose.yml`, `deploy/vds/verify_smartup_automation.sh`, `tests/test_smartup_auto_import.py`, `tests/test_vds_acceptance_scripts.py`, `docs/user-business-process-guide.md`, `docs/implementation-log.md`, `docs/changelog.md`.
+
+**Что стало:**
+
+- `YANDEX_GEOCODER_API_KEY` проброшен в `smartup-auto-import-worker`, чтобы Smartup reverse geocode работал в production worker, а не только в backend/telegram worker.
+- VDS tests/verifier теперь проверяют geocoder env именно в compose-блоке `smartup-auto-import-worker`.
+- Smartup import дробится по `delivery_date + deal_id`, поэтому partial `change_status` ставит real SkladBot create-event только по подтвержденным `deal_id`.
+- `.audit.json` создается до backend preview и сохраняет `failed_preview`, если preview падает.
+- Добавлены тесты на partial status-change и ручной календарный override `Работает` для выходного дня.
+- User guide уточняет текущий safe-by-default статус: код развернут, production включается только явными env-флагами после backup/smoke/runtime verifier.
+
+**Проверки:**
+
+- `.venv/bin/python -m unittest tests.test_smartup_auto_import` - 31 tests OK.
+- `.venv/bin/python -m unittest tests.test_smartup_auto_import tests.test_google_sheets_sync_worker tests.test_vds_acceptance_scripts` - 50 tests OK.
+- `.venv/bin/python -m py_compile backend/app/smartup_auto_import.py` - OK.
+- `bash -n deploy/vds/verify_smartup_automation.sh deploy/vds/acceptance_status.sh` - OK.
+- `git diff --check` - OK.
+- `TAKSKLAD_ENV_FILE=.env.example docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config --quiet` - OK.
+- `deploy/vds/verify_smartup_automation.sh` - source checks OK, local runtime skipped because local compose service is not running.
+
+**Production deploy:**
+
+- Сервер `159.195.138.95`, app path `/opt/stacks/taksklad/app`.
+- Restore point: `/opt/stacks/taksklad/restore_points/pre-smartup-audit-followup-20260630T165654Z`.
+- DB backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260630T165654Z.sql.gz`.
+- Пересобраны `backend-api` и `smartup-auto-import-worker`.
+- VDS `verify_smartup_automation.sh` с `SMARTUP_AUTOMATION_RUNTIME_REQUIRED=1` вернул `status=ok`; worker status `ok`, automation enabled, pending SkladBot creates `0`.
+- `/health` OK, `/ready` остается `degraded` из-за старых `telegram_excel_import` failed events, не из-за Smartup.
+
+### Smartup automation deploy/status guard
+
+**Файлы:** `backend/app/smartup_auto_import.py`, `backend/app/smartup_auto_import_worker.py`, `deploy/vds/verify_smartup_automation.sh`, `deploy/vds/acceptance_status.sh`, `tests/test_smartup_auto_import.py`, `tests/test_vds_acceptance_scripts.py`, `docs/implementation-log.md`, `docs/changelog.md`.
+
+**Что стало:**
+
+- Добавлена read-only команда `python -m app.smartup_auto_import_worker status --json`.
+- Статус показывает Smartup-флаги, наличие обязательной конфигурации, последние Smartup события и количество незавершенных SkladBot create events.
+- Статус не выводит логин, пароль, Telegram token и реальные chat_id.
+- Добавлен VDS verifier `deploy/vds/verify_smartup_automation.sh`.
+- `acceptance_status.sh` теперь валит acceptance, если Smartup automation guard не проходит на VDS.
+
+**Проверки:**
+
+- `.venv/bin/python -m py_compile backend/app/smartup_auto_import.py backend/app/smartup_auto_import_worker.py` - OK.
+- `bash -n deploy/vds/verify_smartup_automation.sh deploy/vds/acceptance_status.sh` - OK.
+- `.venv/bin/python -m unittest tests.test_smartup_auto_import tests.test_google_sheets_sync_worker tests.test_vds_acceptance_scripts` - 47 tests OK.
+- `deploy/vds/verify_smartup_automation.sh` - source checks `ok`, local runtime `skipped`, because local Smartup compose service is not running.
+
+### Smartup prod recovery перед включением automation
+
+**Файлы:** `backend/app/smartup_auto_import.py`, `tests/test_smartup_auto_import.py`, `docs/user-business-process-guide.md`, `docs/taksklad-system-stack-overview.md`, `docs/implementation-log.md`, `docs/changelog.md`.
+
+**Что стало:**
+
+- Полный Smartup-flow теперь сначала создает backend import в TakSklad/Postgres и только после этого переводит Smartup-заказы в статус `В ожидании`.
+- Если Smartup status change падает после backend import, заказы в TakSklad уже сохранены, слот помечается `failed`, пишется audit и отправляется alert.
+- Повтор того же `export_date + slot` разрешен только для `failed` или устаревшего зависшего `processing` Smartup-события: событие переходит обратно в `processing`, `attempts` увеличивается, завершенный слот остается идемпотентно заблокированным.
+- Повтор failed/stale слота не создает дубль заказа: backend importer видит тот же `ID импорта` и считает строки дублями.
+- При Smartup import реальная очередь SkladBot теперь ставится только после успешного Smartup status change; до этого импорт делает только dry-run, даже если общий `SKLADBOT_CREATE_REQUESTS_MODE=enabled`.
+
+**Почему:**
+
+- Старый порядок мог перевести Smartup-заказ из `Новые` в `В ожидании` до создания заказа TakSklad. При падении после status change заказ исчезал из следующего Smartup export, а в TakSklad мог не попасть.
+- Старый claim не давал повторить failed/stale слот без ручного вмешательства в `pending_events`.
+- Старый Smartup import мог поставить `skladbot_request_create` до Smartup status change через общий import side-effect.
+
+**Проверки:**
+
+- `.venv/bin/python -m unittest tests.test_smartup_auto_import` - 19 tests OK.
+- `.venv/bin/python -m unittest tests.test_backend_skladbot_request_dry_run tests.test_backend_api_persistence` - 135 tests OK.
+- `.venv/bin/python -m unittest discover -s tests -p 'test_*.py'` - 653 tests OK.
+- `.venv/bin/python tools/release_preflight.py` - status `ok`, public backend health OK, version `2.0.24`.
+- `.venv/bin/python tools/release_go_no_go.py` - `no_go` только из-за незакрытой ручной acceptance: Telegram import, SkladBot matching, Windows desktop acceptance, cleanup.
 
 ### Hotfix 2.0.25: desktop не блокирует возвращенный КИЗ из stale duplicate-cache
 
@@ -77,6 +177,79 @@
 
 - Mapping `0104006396104458 -> green:op` уже был в коде `2.0.23`, но публичный `version.json` был paused на `1.1.7`; из-за этого рабочий ПК остался на `2.0.22` и продолжил показывать `КИЗ распознан как: не распознан`.
 
+### Telegram: список дат логистики
+
+**Файлы:** `backend/app/telegram_worker.py`, `tests/test_backend_telegram_import.py`, `docs/user-business-process-guide.md`, `docs/changelog.md`.
+
+**Что стало:**
+
+- Кнопка Telegram `Отчёт логистики` показывает только последние 7 доступных дат отгрузки.
+- Список дат пересчитывается при каждом открытии меню из актуального ответа backend `/api/v1/logistics/dates`.
+- Даже если доступна одна дата, бот показывает inline-кнопку выбора, а не отправляет XLSX автоматически.
+- Сам endpoint отчета и состав XLSX не менялись.
+
+**Проверки:**
+
+- `.venv/bin/python -m unittest tests.test_backend_telegram_import` - 70 tests OK.
+
+### Backend-only hot path: shadow/release guardrails
+
+**Файлы:** `src/taksklad/startup_check.py`, `src/taksklad/desktop_refresh_service.py`, `src/taksklad/desktop_diagnostics.py`, `backend/app/operations_service.py`, `backend/app/schemas.py`, `tools/windows_backend_acceptance.ps1`, `tools/release_preflight.py`, `tests/test_startup_check.py`, `tests/test_desktop_diagnostics.py`, `tests/test_backend_api_persistence.py`, `tests/test_release_preflight.py`, `docs/windows-backend-acceptance.md`, `docs/deploy-rollback-runbook.md`, `docs/manual-acceptance-runbook.md`, `docs/implementation-log.md`.
+
+**Что стало:**
+
+- Backend-only refresh включается для shadow-проверки только через workstation-local flag `TAKSKLAD_BACKEND_ONLY_REFRESH=1`.
+- Emergency Google fallback остаётся явным: `TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED=1`.
+- Startup/refresh diagnostics показывают фактический режим и `primary_source`, включая `google_emergency_fallback`.
+- `/api/v1/admin/operations` возвращает `shadow_diagnostics` по backend source, Google mirror lag, stale processing и Telegram worker state.
+- Release preflight падает, если пропали backend-only guardrails или deploy/rollback docs разрешают небезопасный dirty-tree rollout.
+
+**Проверки:**
+
+- `.venv/bin/python -m unittest tests.test_refresh_fallback tests.test_backend_api_persistence tests.test_backend_telegram_import` - 190 tests OK.
+- `.venv/bin/python -m unittest tests.test_release_preflight tests.test_windows_test_build_helper tests.test_vds_acceptance_scripts` - 22 tests OK.
+- `.venv/bin/python tools/release_preflight.py` - `status=ok`.
+- `.venv/bin/python -m compileall src/taksklad backend/app` - OK.
+- `git diff --check` - OK.
+
+### Web-admin календарь логистики и перенос Smartup delivery_date
+
+**Файлы:** `backend/app/logistics_calendar_service.py`, `backend/app/models.py`, `backend/app/main.py`, `backend/app/schemas.py`, `backend/sql/001_initial_schema.sql`, `backend/migrations/versions/20260626_0005_logistics_calendar.py`, `backend/app/smartup_auto_import.py`, `frontend/src/App.tsx`, `frontend/src/api.ts`, `frontend/src/styles.css`, `tests/test_smartup_auto_import.py`, `tests/test_backend_api_persistence.py`, `tests/test_backend_skeleton.py`, `docs/implementation-log.md`, `docs/user-business-process-guide.md`, `docs/taksklad-system-stack-overview.md`, `docs/changelog.md`.
+
+**Что стало:**
+
+- Из web-admin убрана отдельная вкладка `Отчет`.
+- `Импорты`, `SkladBot dry-run`, `Инциденты`, `Активность` перенесены в нижнюю раскрывающую группу `История действий`.
+- Добавлена вкладка `Календарь` с заказами по датам, выделением выходных и ручными нерабочими днями логистики.
+- Добавлена таблица `logistics_calendar_days` и endpoints `GET /api/v1/admin/logistics-calendar`, `POST /api/v1/admin/logistics-calendar/day`.
+- Smartup automation берет `delivery_date`, проверяет календарь логистики и переносит нерабочую дату на ближайший рабочий день.
+- Финальный логистический отчет не отправляется за даты, отмеченные как нерабочие.
+
+**Проверки:**
+
+- `.venv/bin/python -m py_compile backend/app/logistics_calendar_service.py backend/app/smartup_auto_import.py backend/app/main.py backend/app/schemas.py tests/test_smartup_auto_import.py tests/test_backend_api_persistence.py tests/test_backend_skeleton.py` - OK.
+- `.venv/bin/python -m unittest tests.test_smartup_auto_import tests.test_backend_api_persistence.BackendApiPersistenceTests.test_admin_logistics_calendar_lists_orders_and_saves_non_working_day tests.test_backend_skeleton.BackendSkeletonTests.test_required_backend_files_exist tests.test_backend_skeleton.BackendSkeletonTests.test_initial_schema_contains_mvp_tables_and_constraints tests.test_backend_skeleton.BackendSkeletonTests.test_sql_bootstrap_and_alembic_migrations_keep_forward_only_contract` - OK.
+- `cd frontend && npm run build` - OK.
+- `docker compose -f deploy/vds/docker-compose.yml --env-file deploy/vds/.env.example config` - OK.
+- `git diff --check` - OK.
+
+### Smartup auto import weekend guard
+
+**Файлы:** `backend/app/smartup_auto_import.py`, `deploy/vds/docker-compose.yml`, `deploy/vds/.env.example`, `tests/test_smartup_auto_import.py`, `docs/implementation-log.md`, `docs/user-business-process-guide.md`, `docs/taksklad-system-stack-overview.md`, `docs/changelog.md`.
+
+**Что стало:**
+
+- Автоматические Smartup-слоты по умолчанию пропускаются в субботу и воскресенье.
+- Добавлен env `SMARTUP_AUTO_IMPORT_DISABLED_WEEKDAYS=5,6`.
+- Ручной `run-once` оставлен доступным как override.
+
+**Проверки:**
+
+- `.venv/bin/python -m py_compile backend/app/smartup_auto_import.py tests/test_smartup_auto_import.py` - OK.
+- `.venv/bin/python -m unittest tests.test_smartup_auto_import` - 12 tests OK.
+- `docker compose -f deploy/vds/docker-compose.yml --env-file deploy/vds/.env.example config` - OK.
+- `git diff --check` - OK.
+
 ## 2026-06-25
 
 ### Тип оплаты в истории клиента
@@ -93,6 +266,45 @@
 - `python3 -m py_compile backend/app/client_points_service.py backend/app/schemas.py backend/app/main.py` - OK.
 - `cd frontend && npm run build` - OK.
 - `.venv/bin/python -m unittest tests.test_backend_api_persistence.BackendApiPersistenceTests.test_admin_client_point_order_summary_groups_dates_and_products` - OK.
+
+### Smartup auto import hardening
+
+**Файлы:** `backend/app/smartup_auto_import.py`, `backend/app/smartup_auto_import_worker.py`, `backend/app/smartup_auto_import_history_service.py`, `backend/app/main.py`, `backend/app/schemas.py`, `frontend/src/api.ts`, `frontend/src/App.tsx`, `frontend/src/styles.css`, `deploy/vds/docker-compose.yml`, `deploy/vds/.env.example`, `tests/test_smartup_auto_import.py`, `tests/test_backend_api_persistence.py`, `docs/implementation-log.md`, `docs/user-business-process-guide.md`, `docs/taksklad-system-stack-overview.md`, `docs/changelog.md`.
+
+**Что стало:**
+
+- Добавлен Postgres advisory lock на слот Smartup `export_date + slot`, чтобы параллельные workers не обработали один слот одновременно.
+- Добавлена команда ручного запуска: `python -m app.smartup_auto_import_worker run-once --date YYYY-MM-DD --slot HH:MM`.
+- Ручной `run-once` поддерживает `--delivery-date YYYY-MM-DD|DD.MM.YYYY`, чтобы controlled run мог импортировать только нужную исходную дату отгрузки Smartup.
+- При ошибке automation событие помечается `failed`, пишется audit и отправляется Telegram alert.
+- Добавлен endpoint `/api/v1/admin/smartup-auto-imports/history` и вкладка `Smartup` в web-admin с последними запусками, файлами, ошибками и количеством созданных заказов.
+
+**Проверки:**
+
+- `.venv/bin/python -m py_compile backend/app/smartup_auto_import.py backend/app/smartup_auto_import_worker.py backend/app/smartup_auto_import_history_service.py backend/app/main.py backend/app/schemas.py tests/test_smartup_auto_import.py tests/test_backend_api_persistence.py` - OK.
+- `.venv/bin/python -m unittest tests.test_smartup_auto_import tests.test_backend_api_persistence.BackendApiPersistenceTests.test_admin_smartup_history_exposes_runs_and_audit` - 11 tests OK.
+- `cd frontend && npm run build` - OK.
+- `docker compose -f deploy/vds/docker-compose.yml --env-file deploy/vds/.env.example config` - OK.
+- `.venv/bin/python -m unittest tests.test_backend_skladbot_request_dry_run.BackendSkladBotRequestDryRunTests.test_builds_one_ready_payload_for_order_with_multiple_sku` - OK.
+- `git diff --check` - OK.
+
+### Smartup terminal auto import worker
+
+**Файлы:** `backend/app/smartup_auto_import.py`, `backend/app/smartup_auto_import_worker.py`, `deploy/vds/docker-compose.yml`, `deploy/vds/.env.example`, `tests/test_smartup_auto_import.py`, `docs/implementation-log.md`, `docs/user-business-process-guide.md`, `docs/taksklad-system-stack-overview.md`, `docs/changelog.md`.
+
+**Что стало:**
+
+- Добавлен серверный worker Smartup по слотам `12:00`, `15:00`, `17:50`.
+- Flow: export `Новые + Терминал`, локальный файл `Терминал ДД.ММ.ГГГГ Часть N.xlsx`, audit JSON, backend preview, backend import по `delivery_date`, Smartup status `В ожидании`, SkladBot queue, финальный `Отчёт логистики`.
+- По умолчанию автоматизация выключена. Backend import требует включённый Smartup status-change gate.
+
+**Проверки:**
+
+- `.venv/bin/python -m py_compile backend/app/smartup_auto_import.py backend/app/smartup_auto_import_worker.py tests/test_smartup_auto_import.py` - OK.
+- `.venv/bin/python -m unittest tests.test_smartup_auto_import` - 6 tests OK.
+- `.venv/bin/python -m unittest tests.test_backend_skladbot_request_dry_run.BackendSkladBotRequestDryRunTests.test_builds_one_ready_payload_for_order_with_multiple_sku tests.test_backend_api_persistence.BackendApiPersistenceTests.test_logistics_report_uses_shipment_date_coordinates_and_prices` - 2 tests OK.
+- `docker compose -f deploy/vds/docker-compose.yml --env-file deploy/vds/.env.example config` - OK.
+- `git diff --check` - OK.
 
 ### Web/admin больше не режет рабочие цифры лимитами
 

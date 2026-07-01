@@ -11,6 +11,7 @@ VERIFY_SCRIPT="$SCRIPT_DIR/verify_acceptance_marker.sh"
 TELEGRAM_MENU_SCRIPT="$SCRIPT_DIR/verify_telegram_menu.sh"
 GOOGLE_SYNC_SCRIPT="$SCRIPT_DIR/verify_google_backend_sync.sh"
 SKLADBOT_COVERAGE_SCRIPT="$SCRIPT_DIR/verify_skladbot_coverage.sh"
+SMARTUP_AUTOMATION_SCRIPT="$SCRIPT_DIR/verify_smartup_automation.sh"
 RESULTS_FILE="$APP_DIR/outputs/taksklad_acceptance/ACCEPTANCE_RESULTS.md"
 GO_NO_GO_SCRIPT="$APP_DIR/tools/release_go_no_go.py"
 HEALTH_ATTEMPTS="${ACCEPTANCE_HEALTH_ATTEMPTS:-6}"
@@ -101,6 +102,10 @@ if [[ ! -x "$GOOGLE_SYNC_SCRIPT" ]]; then
 fi
 if [[ ! -x "$SKLADBOT_COVERAGE_SCRIPT" ]]; then
   echo "SkladBot coverage verifier is not executable: $SKLADBOT_COVERAGE_SCRIPT" >&2
+  exit 1
+fi
+if [[ ! -x "$SMARTUP_AUTOMATION_SCRIPT" ]]; then
+  echo "Smartup automation verifier is not executable: $SMARTUP_AUTOMATION_SCRIPT" >&2
   exit 1
 fi
 if [[ ! -f "$GO_NO_GO_SCRIPT" ]]; then
@@ -218,11 +223,13 @@ GOOGLE_SYNC_OUTPUT="$("$GOOGLE_SYNC_SCRIPT" 2>&1)"
 GOOGLE_SYNC_STATUS="$?"
 SKLADBOT_COVERAGE_OUTPUT="$("$SKLADBOT_COVERAGE_SCRIPT" 2>&1)"
 SKLADBOT_COVERAGE_STATUS="$?"
+SMARTUP_AUTOMATION_OUTPUT="$(SMARTUP_AUTOMATION_RUNTIME_REQUIRED=1 "$SMARTUP_AUTOMATION_SCRIPT" 2>&1)"
+SMARTUP_AUTOMATION_STATUS="$?"
 GO_NO_GO_OUTPUT="$(python3 "$GO_NO_GO_SCRIPT" --results "$RESULTS_FILE" 2>&1)"
 GO_NO_GO_STATUS="$?"
 set -e
 
-python3 - "$MANIFEST_INFO" "$VERSION_INFO" "$SHA_STATUS" "$ACTUAL_SHA" "$EXPECTED_SHA" "$HEALTH_STATUS" "$HEALTH_OUTPUT" "$READINESS_STATUS" "$READINESS_OUTPUT" "$COMPOSE_STATUS" "$COMPOSE_OUTPUT" "$VERIFY_STATUS" "$VERIFY_OUTPUT" "$TELEGRAM_MENU_STATUS" "$TELEGRAM_MENU_OUTPUT" "$GOOGLE_SYNC_STATUS" "$GOOGLE_SYNC_OUTPUT" "$SKLADBOT_COVERAGE_STATUS" "$SKLADBOT_COVERAGE_OUTPUT" "$GO_NO_GO_STATUS" "$GO_NO_GO_OUTPUT" "$REQUIRE_GO" <<'PY'
+python3 - "$MANIFEST_INFO" "$VERSION_INFO" "$SHA_STATUS" "$ACTUAL_SHA" "$EXPECTED_SHA" "$HEALTH_STATUS" "$HEALTH_OUTPUT" "$READINESS_STATUS" "$READINESS_OUTPUT" "$COMPOSE_STATUS" "$COMPOSE_OUTPUT" "$VERIFY_STATUS" "$VERIFY_OUTPUT" "$TELEGRAM_MENU_STATUS" "$TELEGRAM_MENU_OUTPUT" "$GOOGLE_SYNC_STATUS" "$GOOGLE_SYNC_OUTPUT" "$SKLADBOT_COVERAGE_STATUS" "$SKLADBOT_COVERAGE_OUTPUT" "$SMARTUP_AUTOMATION_STATUS" "$SMARTUP_AUTOMATION_OUTPUT" "$GO_NO_GO_STATUS" "$GO_NO_GO_OUTPUT" "$REQUIRE_GO" <<'PY'
 import json
 import sys
 
@@ -245,9 +252,11 @@ google_sync_status = int(sys.argv[16])
 google_sync_output = sys.argv[17].strip()
 skladbot_coverage_status = int(sys.argv[18])
 skladbot_coverage_output = sys.argv[19].strip()
-go_no_go_status = int(sys.argv[20])
-go_no_go_output = sys.argv[21].strip()
-require_go = sys.argv[22] == "1"
+smartup_automation_status = int(sys.argv[20])
+smartup_automation_output = sys.argv[21].strip()
+go_no_go_status = int(sys.argv[22])
+go_no_go_output = sys.argv[23].strip()
+require_go = sys.argv[24] == "1"
 
 try:
     health = json.loads(health_output)
@@ -291,6 +300,11 @@ try:
     skladbot_coverage = json.loads(skladbot_coverage_output.splitlines()[-1])
 except Exception:
     skladbot_coverage = {"status": "failed", "raw": skladbot_coverage_output}
+
+try:
+    smartup_automation = json.loads(smartup_automation_output.splitlines()[-1])
+except Exception:
+    smartup_automation = {"status": "failed", "raw": smartup_automation_output}
 
 try:
     release_gate = json.loads(go_no_go_output.splitlines()[-1])
@@ -343,6 +357,8 @@ if google_sync_status != 0 or google_sync.get("status") != "ok":
     errors.append(f"google/backend sync verifier failed with exit {google_sync_status}")
 if skladbot_coverage_status != 0 or skladbot_coverage.get("status") != "ok":
     errors.append(f"skladbot coverage verifier failed with exit {skladbot_coverage_status}")
+if smartup_automation_status != 0 or smartup_automation.get("status") != "ok":
+    errors.append(f"smartup automation verifier failed with exit {smartup_automation_status}")
 release_status = release_gate.get("status")
 if require_go and release_status != "go":
     errors.append(f"release GO/NO-GO is not go: {release_status or 'unknown'}")
@@ -384,6 +400,10 @@ summary = {
     "skladbot_coverage": {
         "exit_code": skladbot_coverage_status,
         "response": skladbot_coverage,
+    },
+    "smartup_automation": {
+        "exit_code": smartup_automation_status,
+        "response": smartup_automation,
     },
     "release_go_no_go": {
         "exit_code": go_no_go_status,

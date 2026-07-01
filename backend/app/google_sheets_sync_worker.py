@@ -314,7 +314,6 @@ def update_order_fields(order: Order, record, apply_returns=True):
         ("order_date", record.get("order_date")),
         ("payment_type", record.get("payment_type")),
         ("client", record.get("client")),
-        ("address", record.get("address")),
         ("representative", record.get("representative")),
     ):
         if value in (None, ""):
@@ -322,6 +321,11 @@ def update_order_fields(order: Order, record, apply_returns=True):
         if getattr(order, field_name) != value:
             setattr(order, field_name, value)
             changed = True
+
+    incoming_address = record.get("address")
+    if should_update_address_from_google(order.address, incoming_address):
+        order.address = incoming_address
+        changed = True
 
     raw_payload = dict(order.raw_payload or {})
     before = dict(raw_payload)
@@ -332,6 +336,33 @@ def update_order_fields(order: Order, record, apply_returns=True):
         order.raw_payload = raw_payload
         changed = True
     return changed
+
+
+def should_update_address_from_google(current_address, incoming_address):
+    incoming = normalize_text(incoming_address)
+    if not incoming:
+        return False
+    incoming_missing = is_missing_sheet_address(incoming)
+    if incoming_missing:
+        return False
+    return normalize_text(current_address) != incoming
+
+
+def is_missing_sheet_address(value):
+    text = normalize_text(value).casefold().replace("ё", "е")
+    return (
+        not text
+        or text in {
+            "адрес не указан",
+            "адрес не найден",
+            "адреса не найдены",
+            "адрес не определен",
+            "адрес отсутствует",
+            "самовывоз",
+            "самовывоз со склада",
+        }
+        or text.startswith(("координаты", "gps"))
+    )
 
 
 def apply_skladbot_fields(raw_payload, record):
@@ -427,13 +458,19 @@ def update_item_money_payload(raw_payload, record, quantity_blocks=0):
         raw_payload["block_price"] = block_price
 
     sheet_line_total = int(record.get("line_total") or 0)
+    imported_line_total = parse_int_value(raw_payload.get("imported_line_total"))
     blocks = int(quantity_blocks or record.get("quantity_blocks") or 0)
     calculated_line_total = blocks * block_price if blocks > 0 and block_price > 0 else 0
     if calculated_line_total > 0:
         raw_payload["calculated_line_total"] = calculated_line_total
-        raw_payload["line_total"] = calculated_line_total
-        if sheet_line_total > 0 and sheet_line_total != calculated_line_total:
-            raw_payload["google_sheet_line_total"] = sheet_line_total
+        if sheet_line_total > 0:
+            raw_payload["line_total"] = sheet_line_total
+            if sheet_line_total != calculated_line_total:
+                raw_payload["google_sheet_line_total"] = sheet_line_total
+        elif imported_line_total > 0:
+            raw_payload["line_total"] = imported_line_total
+        else:
+            raw_payload["line_total"] = calculated_line_total
     elif sheet_line_total > 0:
         raw_payload["line_total"] = sheet_line_total
 

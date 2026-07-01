@@ -1,0 +1,31 @@
+#!/bin/sh
+set -eu
+
+if [ "${ALLOW_NON_MAIN_BRANCH:-}" = "1" ]; then
+  cat >/dev/null
+  exit 0
+fi
+
+branch="$(git branch --show-current 2>/dev/null || true)"
+if [ "$branch" != "main" ]; then
+  echo "TakSklad guard: pushes are allowed only from main. Current branch: ${branch:-detached}" >&2
+  cat >/dev/null
+  exit 1
+fi
+
+blocked=0
+while read local_ref local_sha remote_ref remote_sha; do
+  case "$remote_ref" in
+    refs/heads/main)
+      ;;
+    *)
+      echo "TakSklad guard: push blocked to $remote_ref. Use main only." >&2
+      blocked=1
+      ;;
+  esac
+done
+
+if [ "$blocked" -ne 0 ]; then
+  echo "Set ALLOW_NON_MAIN_BRANCH=1 only for an explicitly approved exception." >&2
+  exit 1
+fi

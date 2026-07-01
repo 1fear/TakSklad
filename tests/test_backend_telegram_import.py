@@ -367,6 +367,70 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertEqual(display_date("29.05.2026"), "29.05.2026")
         self.assertEqual(display_date("не дата"), "не дата")
 
+    def test_telegram_worker_limits_logistics_dates_menu_to_recent_seven_dates(self):
+        worker = TelegramWorker.__new__(TelegramWorker)
+        messages = []
+
+        def fake_backend_get(path, params=None):
+            self.assertEqual(path, "/api/v1/logistics/dates")
+            return [f"2026-06-{day:02d}" for day in range(1, 11)]
+
+        def fake_send(chat_id, text, reply_markup=None):
+            messages.append((chat_id, text, reply_markup))
+
+        worker.backend_get = fake_backend_get
+        worker.safe_send_message = fake_send
+
+        worker.show_logistics_dates("123")
+
+        keyboard = messages[0][2]["inline_keyboard"]
+        self.assertEqual(len(keyboard), 7)
+        self.assertEqual(keyboard[0][0]["callback_data"], "logistics:2026-06-04")
+        self.assertEqual(keyboard[-1][0]["callback_data"], "logistics:2026-06-10")
+        self.assertNotIn("01.06.2026", str(keyboard))
+        self.assertIn("10.06.2026", str(keyboard))
+
+    def test_telegram_worker_shows_single_logistics_date_as_menu(self):
+        worker = TelegramWorker.__new__(TelegramWorker)
+        messages = []
+        reports = []
+
+        worker.backend_get = lambda path, params=None: ["2026-06-29"]
+        worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
+        worker.send_logistics_report = lambda chat_id, shipment_date: reports.append((chat_id, shipment_date))
+
+        worker.show_logistics_dates("123")
+
+        self.assertEqual(reports, [])
+        keyboard = messages[0][2]["inline_keyboard"]
+        self.assertEqual(keyboard, [[{"text": "29.06.2026", "callback_data": "logistics:2026-06-29"}]])
+
+    def test_telegram_worker_refreshes_logistics_dates_on_each_open(self):
+        worker = TelegramWorker.__new__(TelegramWorker)
+        messages = []
+        calls = []
+        responses = [
+            ["2026-06-28", "2026-06-29"],
+            ["2026-06-29", "2026-06-30"],
+        ]
+
+        def fake_backend_get(path, params=None):
+            self.assertEqual(path, "/api/v1/logistics/dates")
+            calls.append(path)
+            return responses[len(calls) - 1]
+
+        worker.backend_get = fake_backend_get
+        worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
+
+        worker.show_logistics_dates("123")
+        worker.show_logistics_dates("123")
+
+        self.assertEqual(calls, ["/api/v1/logistics/dates", "/api/v1/logistics/dates"])
+        first_keyboard = messages[0][2]["inline_keyboard"]
+        second_keyboard = messages[1][2]["inline_keyboard"]
+        self.assertEqual(first_keyboard[-1][0]["callback_data"], "logistics:2026-06-29")
+        self.assertEqual(second_keyboard[-1][0]["callback_data"], "logistics:2026-06-30")
+
     def test_telegram_worker_send_document_does_not_force_bottom_reply_keyboard(self):
         worker = TelegramWorker.__new__(TelegramWorker)
         worker.token = "telegram-token"
@@ -942,9 +1006,6 @@ class BackendTelegramImportTests(unittest.TestCase):
         worker = TelegramWorker.__new__(TelegramWorker)
         messages = []
 
-        def fake_backend_get(path, params=None):
-            return ["2026-05-29"]
-
         def fake_backend_get_bytes(path, params=None):
             request = httpx.Request("GET", "http://backend-api/api/v1/logistics/report")
             response = httpx.Response(
@@ -957,11 +1018,10 @@ class BackendTelegramImportTests(unittest.TestCase):
         def fake_send_message(chat_id, text, reply_markup=None):
             messages.append((chat_id, text))
 
-        worker.backend_get = fake_backend_get
         worker.backend_get_bytes = fake_backend_get_bytes
         worker.safe_send_message = fake_send_message
 
-        worker.show_logistics_dates("123")
+        worker.send_logistics_report("123", "2026-05-29")
 
         self.assertEqual(messages[0][0], "123")
         self.assertIn("Не удалось выгрузить отчёт логистики за 29.05.2026", messages[0][1])

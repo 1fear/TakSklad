@@ -1,8 +1,10 @@
 import {
   Activity,
   AlertCircle,
-  BarChart3,
   Building2,
+  CalendarDays,
+  ChevronDown,
+  ChevronRight,
   Box,
   CheckCircle2,
   ClipboardList,
@@ -40,12 +42,16 @@ import {
   ClientPoint,
   ClientPointOrderSummary,
   DashboardDaySummary,
-  DayReport,
   EventQueueDiagnostics,
   EventQueueEvent,
   ImportRecord,
+  LogisticsCalendar,
+  LogisticsCalendarDay,
+  OperationsAttention,
   ReadinessResponse,
   SkladBotDryRun,
+  SmartupAutoImportHistory,
+  SmartupAutoImportRun,
   archiveOrderWithoutKiz,
   cancelOrder,
   completeOrdersWithoutKiz,
@@ -58,8 +64,10 @@ import {
   getAuthSession,
   getClientPointOrderSummary,
   getDashboardDaySummary,
-  getDayReport,
+  getLogisticsCalendar,
+  getOperationsAttention,
   getReadiness,
+  getSmartupAutoImportHistory,
   listClientPoints,
   listImports,
   listSkladBotDryRuns,
@@ -73,12 +81,13 @@ import {
   retryAdminEvent,
   retryPendingGoogle,
   syncSources,
+  updateLogisticsCalendarDay,
   updateClientPointTimeslot,
   updateIncidentStatus,
 } from "./api";
 import "./styles.css";
 
-type Tab = "table" | "clients" | "report" | "imports" | "skladbotDryRun" | "incidents" | "activity";
+type Tab = "table" | "calendar" | "clients" | "smartup" | "imports" | "skladbotDryRun" | "incidents" | "activity";
 type StatusFilter = "all" | "active" | "archive" | "archive_no_kiz" | "cancelled" | "returned" | "removed_from_google";
 type ScanFilter = "all" | "not_started" | "in_progress" | "completed" | "over_scanned" | "no_plan";
 type SkladBotFilter = "all" | "found" | "missing" | "problem";
@@ -104,6 +113,7 @@ type ActionState = {
 };
 
 const SAME_ORIGIN_API_LABEL = "same-origin /api";
+const ADMIN_TABLE_PAGE_SIZE = 500;
 
 function defaultClientPointDraft(): ClientPointFormDraft {
   return {
@@ -132,11 +142,14 @@ function App() {
   const [clientPoints, setClientPoints] = useState<ClientPoint[]>([]);
   const [readiness, setReadiness] = useState<ReadinessResponse | null>(null);
   const [eventQueue, setEventQueue] = useState<EventQueueDiagnostics | null>(null);
+  const [operationsAttention, setOperationsAttention] = useState<OperationsAttention | null>(null);
+  const [smartupHistory, setSmartupHistory] = useState<SmartupAutoImportHistory | null>(null);
+  const [logisticsCalendar, setLogisticsCalendar] = useState<LogisticsCalendar | null>(null);
   const [incidents, setIncidents] = useState<AdminIncident[]>([]);
   const [incidentSummary, setIncidentSummary] = useState<Record<string, unknown>>({});
-  const [report, setReport] = useState<DayReport | null>(null);
   const [dashboardSummary, setDashboardSummary] = useState<DashboardDaySummary | null>(null);
-  const [reportDate, setReportDate] = useState(todayIso());
+  const [reportDate] = useState(todayIso());
+  const [calendarMonth, setCalendarMonth] = useState(todayIso().slice(0, 7));
   const [shipmentDateFilter, setShipmentDateFilter] = useState("");
   const [search, setSearch] = useState("");
   const [clientSearch, setClientSearch] = useState("");
@@ -150,7 +163,9 @@ function App() {
   const [incidentSeverityFilter, setIncidentSeverityFilter] = useState<IncidentSeverityFilter>("all");
   const [incidentSourceFilter, setIncidentSourceFilter] = useState("all");
   const [tab, setTab] = useState<Tab>("table");
+  const [historyNavOpen, setHistoryNavOpen] = useState(false);
   const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([]);
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState(todayIso());
   const [selectedIncidentId, setSelectedIncidentId] = useState("");
   const [selectedEventId, setSelectedEventId] = useState("");
   const [editingClientPointId, setEditingClientPointId] = useState("");
@@ -263,25 +278,29 @@ function App() {
     setError("");
     if (showNotice) setNotice("");
     try {
-      const [nextAdminTable, nextDashboardSummary, nextReport, nextImports, nextClientPoints, nextReadiness, nextEventQueue, nextIncidents] = await Promise.all([
-        getAdminTable(activeConfig, { offset: 0 }),
+      const [nextAdminTable, nextDashboardSummary, nextImports, nextClientPoints, nextReadiness, nextEventQueue, nextOperationsAttention, nextSmartupHistory, nextLogisticsCalendar, nextIncidents] = await Promise.all([
+        getAdminTable(activeConfig, { offset: 0, limit: ADMIN_TABLE_PAGE_SIZE }),
         getDashboardDaySummary(activeConfig, reportDate),
-        getDayReport(activeConfig, reportDate),
         listImports(activeConfig),
         listClientPoints(activeConfig).catch(() => []),
         getReadiness(activeConfig).catch(() => null),
         getAdminEvents(activeConfig).catch(() => null),
+        getOperationsAttention(activeConfig).catch(() => null),
+        getSmartupAutoImportHistory(activeConfig).catch(() => null),
+        getLogisticsCalendar(activeConfig, calendarMonth).catch(() => null),
         getAdminIncidents(activeConfig).catch(() => ({ items: [], summary: {} }) as AdminIncidentsResponse),
       ]);
       setAdminTable(nextAdminTable);
       setDashboardSummary(nextDashboardSummary);
-      setReport(nextReport);
       setImports(nextImports);
       setClientPoints(nextClientPoints);
       setExpandedClientPointId("");
       setClientOrderSummaries({});
       setReadiness(nextReadiness);
       setEventQueue(nextEventQueue);
+      setOperationsAttention(nextOperationsAttention);
+      setSmartupHistory(nextSmartupHistory);
+      setLogisticsCalendar(nextLogisticsCalendar);
       setIncidents(nextIncidents.items);
       setIncidentSummary(nextIncidents.summary);
       void refreshDryRuns(activeConfig);
@@ -312,6 +331,80 @@ function App() {
       setDryRuns([]);
     }
   }
+
+  async function loadMoreAdminRows(activeConfig = config) {
+    if (!adminTable?.has_more || loading) return;
+    setLoading(true);
+    setError("");
+    setNotice("");
+    try {
+      const nextPage = await getAdminTable(activeConfig, {
+        offset: adminTable.rows.length,
+        limit: ADMIN_TABLE_PAGE_SIZE,
+      });
+      setAdminTable((current) => {
+        if (!current) return nextPage;
+        const existingItemIds = new Set(current.rows.map((row) => row.item_id));
+        const appendedRows = nextPage.rows.filter((row) => !existingItemIds.has(row.item_id));
+        const mergedRows = [...current.rows, ...appendedRows];
+        return {
+          ...nextPage,
+          rows: mergedRows,
+          offset: 0,
+          row_count: mergedRows.length,
+          recent_activity: nextPage.recent_activity.length ? nextPage.recent_activity : current.recent_activity,
+        };
+      });
+      setNotice(`Загружено ${formatNumber(Math.min(nextPage.offset + nextPage.row_count, nextPage.total_rows))} из ${formatNumber(nextPage.total_rows)}`);
+    } catch (pageError) {
+      const message = pageError instanceof Error ? pageError.message : "Не удалось догрузить таблицу";
+      if (pageError instanceof ApiRequestError && pageError.status === 401) {
+        setAuthenticated(false);
+        setAuthUser("");
+        setLoginError("Сессия закончилась. Войдите снова.");
+      } else {
+        setError(message);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function refreshLogisticsCalendar(activeConfig = config, month = calendarMonth) {
+    try {
+      setLogisticsCalendar(await getLogisticsCalendar(activeConfig, month));
+    } catch {
+      setLogisticsCalendar(null);
+    }
+  }
+
+  async function saveLogisticsCalendarDay(day: LogisticsCalendarDay, isNonWorking: boolean, reason: string) {
+    if (!canAdminWrite) return;
+    setBusyAction(`calendar-day:${day.date}`);
+    setError("");
+    setNotice("");
+    try {
+      await updateLogisticsCalendarDay(config, {
+        service_date: day.date,
+        is_non_working: isNonWorking,
+        reason,
+        actor: "web",
+        source: "web",
+      });
+      await refreshLogisticsCalendar(config, calendarMonth);
+      setNotice(isNonWorking ? "День отмечен как нерабочий для логистики" : "День отмечен как рабочий для логистики");
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "Не удалось сохранить календарь логистики");
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  useEffect(() => {
+    if (!authenticated) return;
+    void refreshLogisticsCalendar(config, calendarMonth);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [calendarMonth, authenticated]);
 
   useEffect(() => {
     void initializeAuth();
@@ -385,9 +478,11 @@ function App() {
       setClientPoints([]);
       setReadiness(null);
       setEventQueue(null);
+      setOperationsAttention(null);
+      setSmartupHistory(null);
+      setLogisticsCalendar(null);
       setIncidents([]);
       setIncidentSummary({});
-      setReport(null);
       setDashboardSummary(null);
       setSelectedOrderIds([]);
       setSelectedIncidentId("");
@@ -783,29 +878,17 @@ function App() {
             <ClipboardList size={18} />
             Таблица
           </button>
+          <button className={tab === "calendar" ? "active" : ""} onClick={() => setTab("calendar")} aria-current={tab === "calendar" ? "page" : undefined}>
+            <CalendarDays size={18} />
+            Календарь
+          </button>
           <button className={tab === "clients" ? "active" : ""} onClick={() => setTab("clients")} aria-current={tab === "clients" ? "page" : undefined}>
             <Building2 size={18} />
             Клиенты
           </button>
-          <button className={tab === "report" ? "active" : ""} onClick={() => setTab("report")} aria-current={tab === "report" ? "page" : undefined}>
-            <BarChart3 size={18} />
-            Отчет
-          </button>
-          <button className={tab === "imports" ? "active" : ""} onClick={() => setTab("imports")} aria-current={tab === "imports" ? "page" : undefined}>
-            <FileSpreadsheet size={18} />
-            Импорты
-          </button>
-          <button className={tab === "skladbotDryRun" ? "active" : ""} onClick={() => setTab("skladbotDryRun")} aria-current={tab === "skladbotDryRun" ? "page" : undefined}>
-            <SquareCode size={18} />
-            SkladBot dry-run
-          </button>
-          <button className={tab === "incidents" ? "active" : ""} onClick={() => setTab("incidents")} aria-current={tab === "incidents" ? "page" : undefined}>
-            <AlertCircle size={18} />
-            Инциденты
-          </button>
-          <button className={tab === "activity" ? "active" : ""} onClick={() => setTab("activity")} aria-current={tab === "activity" ? "page" : undefined}>
-            <History size={18} />
-            Активность
+          <button className={tab === "smartup" ? "active" : ""} onClick={() => setTab("smartup")} aria-current={tab === "smartup" ? "page" : undefined}>
+            <RefreshCw size={18} />
+            Smartup
           </button>
         </nav>
         <div className="sidebar-status">
@@ -814,6 +897,32 @@ function App() {
             <span>API</span>
             <strong>{config.apiUrl ? config.apiUrl.replace(/^https?:\/\//, "") : SAME_ORIGIN_API_LABEL}</strong>
           </div>
+        </div>
+        <div className={`nav-history ${historyNavOpen || isHistoryTab(tab) ? "open" : ""}`}>
+          <button className={isHistoryTab(tab) ? "active" : ""} onClick={() => setHistoryNavOpen((current) => !current)} aria-expanded={historyNavOpen || isHistoryTab(tab)}>
+            {historyNavOpen || isHistoryTab(tab) ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+            История действий
+          </button>
+          {(historyNavOpen || isHistoryTab(tab)) && (
+            <div className="nav-history-items">
+              <button className={tab === "imports" ? "active" : ""} onClick={() => { setTab("imports"); setHistoryNavOpen(true); }} aria-current={tab === "imports" ? "page" : undefined}>
+                <FileSpreadsheet size={17} />
+                Импорты
+              </button>
+              <button className={tab === "skladbotDryRun" ? "active" : ""} onClick={() => { setTab("skladbotDryRun"); setHistoryNavOpen(true); }} aria-current={tab === "skladbotDryRun" ? "page" : undefined}>
+                <SquareCode size={17} />
+                SkladBot dry-run
+              </button>
+              <button className={tab === "incidents" ? "active" : ""} onClick={() => { setTab("incidents"); setHistoryNavOpen(true); }} aria-current={tab === "incidents" ? "page" : undefined}>
+                <AlertCircle size={17} />
+                Инциденты
+              </button>
+              <button className={tab === "activity" ? "active" : ""} onClick={() => { setTab("activity"); setHistoryNavOpen(true); }} aria-current={tab === "activity" ? "page" : undefined}>
+                <History size={17} />
+                Активность
+              </button>
+            </div>
+          )}
         </div>
       </aside>
 
@@ -968,6 +1077,17 @@ function App() {
               onToggleVisible={toggleVisibleOrderSelection}
               onToggleOrder={toggleOrderSelection}
             />
+            {adminTable?.has_more && (
+              <div className="table-pagination">
+                <span>
+                  Загружено <strong>{formatNumber(rows.length)}</strong> из <strong>{formatNumber(totalAdminRows)}</strong>
+                </span>
+                <button className="ghost-button" onClick={() => void loadMoreAdminRows()} disabled={loading}>
+                  {loading ? <Loader2 className="spin" size={16} /> : <ChevronDown size={16} />}
+                  Загрузить еще {formatNumber(Math.min(ADMIN_TABLE_PAGE_SIZE, Math.max(totalAdminRows - rows.length, 0)))}
+                </button>
+              </div>
+            )}
           </section>
         )}
 
@@ -1000,40 +1120,17 @@ function App() {
           />
         )}
 
-        {tab === "report" && (
-          <section className="table-panel">
-            <div className="panel-header">
-              <h2>Дневной отчет</h2>
-              <input
-                className="date-input"
-                type="date"
-                value={reportDate}
-                onChange={(event) => setReportDate(event.target.value)}
-                onBlur={() => void refreshAll()}
-                aria-label="Дата дневного отчета"
-              />
-            </div>
-            {report && (
-              <>
-                <section className="stats-row compact">
-                  <Metric icon={<ClipboardList size={20} />} label="Заказов" value={report.totals.orders} />
-                  <Metric icon={<PackageCheck size={20} />} label="Готово" value={report.totals.completed_orders} />
-                  <Metric icon={<Box size={20} />} label="Сканов сегодня" value={report.totals.scanned_today} />
-                  <Metric icon={<Activity size={20} />} label="Осталось" value={report.totals.remaining_blocks} tone="warn" />
-                </section>
-                <DataTable
-                  headers={["Клиент", "Оплата", "Заявка", "Блоки", "Осталось"]}
-                  rows={report.orders.map((order) => [
-                    order.client,
-                    order.payment_type,
-                    order.skladbot_request_number || "-",
-                    `${order.scanned_blocks}/${order.planned_blocks}`,
-                    String(order.remaining_blocks),
-                  ])}
-                />
-              </>
-            )}
-          </section>
+        {tab === "calendar" && (
+          <LogisticsCalendarPanel
+            calendar={logisticsCalendar}
+            month={calendarMonth}
+            selectedDate={selectedCalendarDate}
+            busyAction={busyAction}
+            canAdminWrite={canAdminWrite}
+            onMonthChange={setCalendarMonth}
+            onSelectDate={setSelectedCalendarDate}
+            onSaveDay={(day, isNonWorking, reason) => void saveLogisticsCalendarDay(day, isNonWorking, reason)}
+          />
         )}
 
         {tab === "imports" && (
@@ -1054,6 +1151,10 @@ function App() {
               ])}
             />
           </section>
+        )}
+
+        {tab === "smartup" && (
+          <SmartupAutoImportPanel history={smartupHistory} />
         )}
 
         {tab === "skladbotDryRun" && (
@@ -1108,7 +1209,7 @@ function App() {
                 </button>
               )}
             </div>
-            <SystemDiagnosticsPanel readiness={readiness} eventQueue={eventQueue} />
+            <SystemDiagnosticsPanel readiness={readiness} eventQueue={eventQueue} operationsAttention={operationsAttention} />
             <ActivityList items={adminTable?.recent_activity ?? []} />
           </section>
         )}
@@ -1509,6 +1610,157 @@ function SelectFilter({
 function adminTablePageSummary(filteredCount: number, loadedCount: number, totalCount: number) {
   if (loadedCount !== totalCount) return `Показано ${formatNumber(filteredCount)} из ${formatNumber(loadedCount)} · всего ${formatNumber(totalCount)}`;
   return `Показано ${formatNumber(filteredCount)} из ${formatNumber(loadedCount)}`;
+}
+
+function LogisticsCalendarPanel({
+  calendar,
+  month,
+  selectedDate,
+  busyAction,
+  canAdminWrite,
+  onMonthChange,
+  onSelectDate,
+  onSaveDay,
+}: {
+  calendar: LogisticsCalendar | null;
+  month: string;
+  selectedDate: string;
+  busyAction: string;
+  canAdminWrite: boolean;
+  onMonthChange: (value: string) => void;
+  onSelectDate: (value: string) => void;
+  onSaveDay: (day: LogisticsCalendarDay, isNonWorking: boolean, reason: string) => void;
+}) {
+  const days = calendar?.days ?? [];
+  const selectedDay = days.find((day) => day.date === selectedDate) ?? days.find((day) => day.orders_count > 0) ?? days[0];
+  const [reason, setReason] = useState("");
+  useEffect(() => {
+    setReason(selectedDay?.reason || "");
+  }, [selectedDay?.date, selectedDay?.reason]);
+  const leadingBlanks = days[0] ? days[0].weekday : 0;
+  const nonWorkingCount = days.filter((day) => day.is_non_working).length;
+  const manualCount = days.filter((day) => day.is_manual).length;
+  const ordersCount = days.reduce((sum, day) => sum + day.orders_count, 0);
+  const blocksCount = days.reduce((sum, day) => sum + day.planned_blocks, 0);
+
+  return (
+    <section className="table-panel calendar-panel">
+      <div className="panel-header table-panel-header">
+        <div>
+          <h2>Календарь логистики</h2>
+          <span className="panel-subtitle">Доставки, выходные и ручные нерабочие дни</span>
+        </div>
+        <input
+          className="date-input"
+          type="month"
+          value={month}
+          onChange={(event) => onMonthChange(event.target.value)}
+          aria-label="Месяц календаря логистики"
+        />
+      </div>
+
+      <section className="stats-row compact">
+        <Metric icon={<ClipboardList size={20} />} label="Заказов" value={ordersCount} />
+        <Metric icon={<Box size={20} />} label="Блоков" value={blocksCount} />
+        <Metric icon={<CalendarDays size={20} />} label="Нерабочих" value={nonWorkingCount} tone={nonWorkingCount ? "warn" : undefined} />
+        <Metric icon={<Save size={20} />} label="Ручных" value={manualCount} />
+      </section>
+
+      <div className="calendar-layout">
+        <div className="calendar-main">
+          <div className="calendar-weekdays" aria-hidden="true">
+            {["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"].map((label) => <span key={label}>{label}</span>)}
+          </div>
+          <div className="calendar-grid">
+            {Array.from({ length: leadingBlanks }).map((_, index) => (
+              <span className="calendar-day empty" key={`blank-${index}`} />
+            ))}
+            {days.map((day) => (
+              <button
+                key={day.date}
+                type="button"
+                className={[
+                  "calendar-day",
+                  day.is_non_working ? "non-working" : "",
+                  day.is_weekend ? "weekend" : "",
+                  day.is_manual ? "manual" : "",
+                  day.date === selectedDay?.date ? "selected" : "",
+                ].filter(Boolean).join(" ")}
+                onClick={() => onSelectDate(day.date)}
+                aria-pressed={day.date === selectedDay?.date}
+                aria-label={`${formatDate(day.date)}, заказов ${day.orders_count}, ${day.is_non_working ? "нерабочий день" : "рабочий день"}`}
+              >
+                <strong>{day.date.slice(8, 10)}</strong>
+                {day.orders_count > 0 && <span>{day.orders_count} зак.</span>}
+                {day.planned_blocks > 0 && <em>{day.planned_blocks} блок.</em>}
+                {day.is_non_working && <small>{day.is_manual ? "ручн." : "выходной"}</small>}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <aside className="calendar-detail">
+          {selectedDay ? (
+            <>
+              <div className="detail-head compact">
+                <div>
+                  <h3>{formatDate(selectedDay.date)}</h3>
+                  <span>{weekdayLabel(selectedDay.weekday)}</span>
+                </div>
+                <span className={`status-badge ${selectedDay.is_non_working ? "calendar-closed" : "queue-completed"}`}>
+                  {selectedDay.is_non_working ? "Логистика не работает" : "Рабочий день"}
+                </span>
+              </div>
+              <dl className="detail-list">
+                <div><dt>Заказы</dt><dd>{selectedDay.orders_count}</dd></div>
+                <div><dt>Активные</dt><dd>{selectedDay.active_orders}</dd></div>
+                <div><dt>Блоки</dt><dd>{selectedDay.planned_blocks}</dd></div>
+                <div><dt>Источник</dt><dd>{selectedDay.source || "-"}</dd></div>
+              </dl>
+              {selectedDay.clients.length > 0 && (
+                <div className="calendar-client-list">
+                  <strong>Клиенты</strong>
+                  {selectedDay.clients.map((client) => <span key={client}>{client}</span>)}
+                </div>
+              )}
+              <label className="admin-reason-field">
+                <span>Причина / комментарий</span>
+                <textarea
+                  value={reason}
+                  onChange={(event) => setReason(event.target.value)}
+                  rows={3}
+                  disabled={!canAdminWrite}
+                  placeholder="Например: праздник, логистика не работает"
+                />
+              </label>
+              {canAdminWrite && (
+                <div className="action-buttons">
+                  <button
+                    className="ghost-button"
+                    onClick={() => onSaveDay(selectedDay, true, reason || "Нерабочий день логистики")}
+                    disabled={Boolean(busyAction)}
+                  >
+                    {busyAction === `calendar-day:${selectedDay.date}` ? <Loader2 className="spin" size={16} /> : <Lock size={16} />}
+                    Не работает
+                  </button>
+                  <button
+                    className="ghost-button"
+                    onClick={() => onSaveDay(selectedDay, false, reason || "Рабочий день логистики")}
+                    disabled={Boolean(busyAction)}
+                  >
+                    {busyAction === `calendar-day:${selectedDay.date}` ? <Loader2 className="spin" size={16} /> : <CheckCircle2 size={16} />}
+                    Работает
+                  </button>
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="empty-state">Календарь не загружен</div>
+          )}
+        </aside>
+      </div>
+    </section>
+  );
 }
 
 function AdminRowsTable({
@@ -2090,6 +2342,102 @@ function SkladBotDryRunPanel({
   );
 }
 
+function SmartupAutoImportPanel({ history }: { history: SmartupAutoImportHistory | null }) {
+  const runs = history?.runs ?? [];
+  const eventById = useMemo(
+    () => new Map((history?.events ?? []).map((event) => [event.id, event])),
+    [history],
+  );
+  const summary = history?.summary ?? {};
+  const failedRuns = runs.filter((run) => run.status === "failed").length;
+  const processingRuns = runs.filter((run) => run.status === "processing").length;
+
+  return (
+    <section className="table-panel">
+      <div className="panel-header table-panel-header">
+        <div>
+          <h2>Smartup auto import</h2>
+          <span className="panel-subtitle">
+            Последние запуски, файлы выгрузки, ошибки и созданные заказы
+          </span>
+        </div>
+        <span className="table-muted">обновлено {formatDateTime(history?.generated_at ?? null)}</span>
+      </div>
+
+      <section className="stats-row compact">
+        <Metric icon={<RefreshCw size={20} />} label="Запусков" value={numberField(summary, "total")} />
+        <Metric icon={<CheckCircle2 size={20} />} label="Готово" value={numberField(summary, "completed")} />
+        <Metric icon={<PackageCheck size={20} />} label="Заказов" value={numberField(summary, "orders_created")} />
+        <Metric icon={<AlertCircle size={20} />} label="Ошибок" value={failedRuns} tone={failedRuns ? "warn" : undefined} />
+        <Metric icon={<Server size={20} />} label="В работе" value={processingRuns} tone={processingRuns ? "warn" : undefined} />
+      </section>
+
+      <div className="data-table-wrap smartup-table-wrap">
+        <table className="data-table smartup-table">
+          <thead>
+            <tr>
+              <th>Слот</th>
+              <th>Статус</th>
+              <th>Файл</th>
+              <th>Отгрузка</th>
+              <th>Заказы</th>
+              <th>SkladBot</th>
+              <th>Ошибка</th>
+              <th>JSON</th>
+            </tr>
+          </thead>
+          <tbody>
+            {runs.map((run) => {
+              const event = eventById.get(run.id);
+              return (
+                <tr key={run.id}>
+                  <td>
+                    <strong className="cell-title">{formatDate(run.export_date)} · {run.slot || "-"}</strong>
+                    <span className="table-muted cell-sub">{formatDateTime(run.completed_at || run.failed_at || run.updated_at || run.created_at)}</span>
+                  </td>
+                  <td>
+                    <span className={`status-badge queue-${run.status}`}>{smartupRunStatusLabel(run.status)}</span>
+                    <span className="table-muted cell-sub">часть {run.part ?? "-"}</span>
+                  </td>
+                  <td>
+                    <strong className="cell-title">{run.filename || "-"}</strong>
+                    <span className="table-muted cell-sub clamp-text">{run.export_path || run.audit_path || "-"}</span>
+                  </td>
+                  <td>{smartupDeliveryDatesText(run)}</td>
+                  <td>
+                    <strong className="cell-title">{run.orders_created} создано</strong>
+                    <span className="table-muted cell-sub">
+                      выбрано {run.selected_orders}, строк {run.rows}, дублей {run.duplicate_rows}
+                    </span>
+                  </td>
+                  <td>
+                    <strong className="cell-title">{smartupSkladbotStatusText(run)}</strong>
+                    <span className="table-muted cell-sub">{smartupLogisticsText(run)}</span>
+                  </td>
+                  <td>
+                    <span className="table-muted cell-sub clamp-text">{run.error || "-"}</span>
+                  </td>
+                  <td>
+                    <details className="json-preview">
+                      <summary>JSON</summary>
+                      <pre>{JSON.stringify(event?.raw_payload ?? run, null, 2)}</pre>
+                    </details>
+                  </td>
+                </tr>
+              );
+            })}
+            {runs.length === 0 && (
+              <tr>
+                <td colSpan={8}>Smartup запусков еще нет</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
 function AdminCenterPanel({
   incidents,
   allIncidents,
@@ -2415,12 +2763,15 @@ function AdminCenterPanel({
 function SystemDiagnosticsPanel({
   readiness,
   eventQueue,
+  operationsAttention,
 }: {
   readiness: ReadinessResponse | null;
   eventQueue: EventQueueDiagnostics | null;
+  operationsAttention: OperationsAttention | null;
 }) {
   const queueSummary = eventQueue?.summary ?? readiness?.queue?.summary ?? {};
   const activeQueue = numberField(queueSummary, "active");
+  const attentionItems = operationsAttention?.items ?? [];
   const failedEvents = (eventQueue?.recent_events ?? [])
     .filter((event) => ["failed", "error", "blocked", "processing", "pending"].includes(event.status))
     .slice(0, 6);
@@ -2455,10 +2806,22 @@ function SystemDiagnosticsPanel({
           detail={importErrors.length ? "последние ошибки видны ниже" : "критичных ошибок нет"}
           tone={importErrors.length ? "warn" : "ok"}
         />
+        <DiagnosticCard
+          label="Требует внимания"
+          value={`${numberField(operationsAttention?.summary, "total")} пунктов`}
+          detail={`hot path ${numberField(operationsAttention?.summary, "hot_path")}, mirror ${numberField(operationsAttention?.summary, "mirror")}`}
+          tone={attentionItems.length ? "warn" : "ok"}
+        />
       </div>
 
-      {(failedEvents.length > 0 || staleEvents.length > 0 || queueErrors.length > 0 || importErrors.length > 0) && (
+      {(attentionItems.length > 0 || failedEvents.length > 0 || staleEvents.length > 0 || queueErrors.length > 0 || importErrors.length > 0) && (
         <div className="diagnostics-details">
+          {attentionItems.length > 0 && (
+            <DiagnosticList
+              title="Операции требуют внимания"
+              items={attentionItems.map((item) => operationsAttentionText(item))}
+            />
+          )}
           {staleEvents.length > 0 && (
             <DiagnosticList
               title="Зависшие processing"
@@ -2741,6 +3104,14 @@ function makeIdempotencyKey() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+function isHistoryTab(value: Tab) {
+  return ["imports", "skladbotDryRun", "incidents", "activity"].includes(value);
+}
+
+function weekdayLabel(value: number) {
+  return ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"][value] || "-";
+}
+
 function scanStateLabel(value: ScanFilter) {
   if (value === "not_started") return "Не начато";
   if (value === "in_progress") return "В работе";
@@ -2780,6 +3151,36 @@ function dryRunStatusLabel(value: string) {
   if (value === "create_failed") return "Ошибка создания";
   if (value === "already_linked") return "Уже есть WH-R";
   return value || "-";
+}
+
+function smartupRunStatusLabel(value: string) {
+  if (value === "completed") return "Готово";
+  if (value === "failed") return "Ошибка";
+  if (value === "processing") return "В работе";
+  if (value === "pending") return "В очереди";
+  if (value === "cancelled") return "Отменено";
+  return value || "-";
+}
+
+function smartupDeliveryDatesText(run: SmartupAutoImportRun) {
+  if (!run.delivery_dates.length) return "-";
+  return run.delivery_dates.map(formatDate).join(", ");
+}
+
+function smartupSkladbotStatusText(run: SmartupAutoImportRun) {
+  if (run.skladbot_status === "completed") return "Создание выполнено";
+  if (run.skladbot_status === "skipped") return "Пропущено";
+  if (run.skladbot_status === "failed") return "Ошибка";
+  if (run.skladbot_status) return run.skladbot_status;
+  return run.imports_count ? `${run.imports_count} импортов` : "-";
+}
+
+function smartupLogisticsText(run: SmartupAutoImportRun) {
+  const reports = run.logistics_reports;
+  if (!reports.length) return "отчет логистики: -";
+  const sent = reports.filter((item) => stringField(item, "status") === "sent").length;
+  const failed = reports.filter((item) => stringField(item, "status") === "failed").length;
+  return `отчет логистики: sent ${sent}, failed ${failed}`;
 }
 
 function importDryRunSummaryText(item: ImportRecord) {
@@ -2851,6 +3252,11 @@ function diagnosticImportText(item: unknown) {
   const rows = stringField(record, "rows");
   const errors = stringArray(record.errors).slice(0, 3);
   return `${source}: ${status}${rows ? `, ${rows}` : ""}${errors.length ? `, ${errors.join("; ")}` : ""}`;
+}
+
+function operationsAttentionText(item: OperationsAttention["items"][number]) {
+  const details = item.details.length ? `; ${item.details.join("; ")}` : "";
+  return `${item.title}: ${item.count} шт., impact=${item.impact}, age=${item.oldest_age_seconds}s. ${item.next_action}${details}`;
 }
 
 function ageFromDate(value: string | null) {

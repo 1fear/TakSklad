@@ -76,12 +76,14 @@ class BackendSkeletonTests(unittest.TestCase):
             "import_files",
             "pending_events",
             "client_points",
+            "logistics_calendar_days",
             "users",
             "audit_log",
         ]:
             self.assertIn(f"create table if not exists {table_name}", schema_sql)
 
         self.assertIn("constraint uq_kiz_codes_code unique (code)", schema_sql)
+        self.assertIn("constraint uq_logistics_calendar_days_service_date unique (service_date)", schema_sql)
         self.assertNotIn("constraint uq_scan_codes_code unique (code)", schema_sql)
         self.assertIn("sha256 varchar(64) not null unique", schema_sql)
         self.assertIn("password_hash varchar(255)", schema_sql)
@@ -136,6 +138,7 @@ class BackendSkeletonTests(unittest.TestCase):
             self.assertIn(f'"{table_name}"', baseline)
         self.assertIn("create table if not exists client_points", schema_sql)
         self.assertIn("create table if not exists logistics_calendar_days", schema_sql)
+        self.assertIn("idx_logistics_calendar_days_service_date", schema_sql)
 
         for index_name in [
             "idx_orders_status_date",
