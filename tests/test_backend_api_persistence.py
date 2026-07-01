@@ -307,6 +307,36 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertFalse(tail_payload["has_more"])
         self.assertEqual(tail_payload["rows"][0]["client"], "Charlie")
 
+    def test_admin_table_counts_pending_google_exports_from_order_ids(self):
+        order_id, _item_id = self.seed_order()
+        with self.SessionLocal() as db:
+            db.add(PendingEvent(
+                event_type="google_sheets_export",
+                status="pending",
+                payload={
+                    "action": "google_sheets_archive_export",
+                    "entity_id": "batch",
+                    "order_ids": [order_id],
+                },
+            ))
+            db.add(PendingEvent(
+                event_type="google_sheets_export",
+                status="pending",
+                payload={
+                    "action": "google_sheets_skladbot_export",
+                    "entity_id": "skladbot",
+                    "order_ids": [order_id],
+                },
+            ))
+            db.commit()
+
+        response = self.client.get("/api/v1/admin/table")
+
+        self.assertEqual(response.status_code, 200)
+        row = response.json()["rows"][0]
+        self.assertEqual(row["pending_google_exports"], 1)
+        self.assertEqual(row["google_sheet_status"], "pending")
+
     def test_admin_client_points_lists_order_points_and_updates_timeslot(self):
         self.seed_order()
 
@@ -1176,7 +1206,9 @@ class BackendApiPersistenceTests(unittest.TestCase):
         second = self.client.post("/api/v1/admin/orders/bulk/complete-without-kiz", json=body)
 
         self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.json()["completed"], 1)
         self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.json()["completed"], 0)
         with self.SessionLocal() as db:
             self.assertEqual(
                 len(db.execute(select(AuditLog).where(AuditLog.action == "order_completed_without_kiz")).scalars().all()),

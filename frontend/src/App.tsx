@@ -37,6 +37,7 @@ import {
   AdminIncidentsResponse,
   AdminTable,
   AdminTableRow,
+  AdminBulkActionResult,
   ApiConfig,
   ApiRequestError,
   ClientPoint,
@@ -808,6 +809,7 @@ function App() {
     setError("");
     setNotice("");
     try {
+      let bulkResult: AdminBulkActionResult | undefined;
       const payload = {
         reason: reason.trim() || defaultReason,
         actor: "web",
@@ -822,7 +824,8 @@ function App() {
       } else if (kind === "archive") {
         await archiveOrderWithoutKiz(config, primaryRow.order_id, payload);
       } else if (kind === "completeWithoutKiz") {
-        await completeOrdersWithoutKiz(config, selectedOrderIds, payload);
+        bulkResult = await completeOrdersWithoutKiz(config, selectedOrderIds, payload);
+        validateBulkCompleteResult(bulkResult);
       } else if (kind === "cancel") {
         await cancelOrder(config, primaryRow.order_id, payload);
       } else if (kind === "deleteActive") {
@@ -836,10 +839,11 @@ function App() {
       }
       setSelectedOrderIds([]);
       await refreshAll();
-      setNotice(actionSuccessText(kind));
+      setNotice(bulkResult ? bulkCompleteSuccessText(bulkResult) : actionSuccessText(kind));
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : "Действие не выполнено");
-      await refreshAll();
+      const actionMessage = actionError instanceof Error ? actionError.message : "Действие не выполнено";
+      await refreshAll(config, false);
+      setError(actionMessage);
     } finally {
       setBusyAction("");
     }
@@ -1438,6 +1442,27 @@ function selectedUpdatedAtByOrder(rows: AdminTableRow[]) {
     }
   }
   return values;
+}
+
+function validateBulkCompleteResult(result: AdminBulkActionResult) {
+  if (result.failed > 0 || result.errors.length > 0) {
+    throw new Error(bulkCompleteErrorText(result));
+  }
+  if (result.requested > 0 && result.completed === 0) {
+    throw new Error("Backend не закрыл ни одного заказа. Обновите таблицу и проверьте Google очередь.");
+  }
+}
+
+function bulkCompleteErrorText(result: AdminBulkActionResult) {
+  const prefix = `Закрыто ${result.completed} из ${result.requested}`;
+  const errors = result.errors
+    .map((error) => error.order_id ? `${error.message} [${error.order_id}]` : error.message)
+    .filter(Boolean);
+  return errors.length ? `${prefix}: ${errors.join("; ")}` : prefix;
+}
+
+function bulkCompleteSuccessText(result: AdminBulkActionResult) {
+  return `Закрыто ${result.completed} из ${result.requested}, Google архив поставлен в очередь`;
 }
 
 function ActionBar({

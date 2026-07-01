@@ -523,7 +523,7 @@ export async function apiRequest<T>(
     let detail = `${response.status} ${response.statusText}`;
     try {
       const payload = await response.json();
-      detail = typeof payload.detail === "string" ? payload.detail : JSON.stringify(payload.detail ?? payload);
+      detail = formatApiErrorDetail(payload);
     } catch {
       detail = await response.text();
     }
@@ -535,6 +535,36 @@ export async function apiRequest<T>(
 
 function isAbortError(error: unknown) {
   return error instanceof DOMException && error.name === "AbortError";
+}
+
+function formatApiErrorDetail(payload: unknown): string {
+  const detail = isRecord(payload) && "detail" in payload ? payload.detail : payload;
+  if (typeof detail === "string") return detail;
+  if (isRecord(detail)) {
+    const message = typeof detail.message === "string" ? detail.message : "";
+    const errors = Array.isArray(detail.errors)
+      ? detail.errors.map(formatApiErrorItem).filter(Boolean)
+      : [];
+    if (message && errors.length) return `${message}: ${errors.join("; ")}`;
+    if (message) return message;
+  }
+  try {
+    return JSON.stringify(detail ?? payload);
+  } catch {
+    return "Ошибка запроса";
+  }
+}
+
+function formatApiErrorItem(value: unknown): string {
+  if (!isRecord(value)) return "";
+  const message = typeof value.message === "string" ? value.message : "";
+  const orderId = typeof value.order_id === "string" ? value.order_id : "";
+  if (message && orderId) return `${message} [${orderId}]`;
+  return message;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 export function listActiveOrders(config: ApiConfig) {

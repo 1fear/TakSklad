@@ -63,10 +63,15 @@ def pending_google_exports_by_entity(db: Session):
     by_entity = {}
     for event in pending:
         payload = event.payload or {}
-        entity_id = normalize_text(payload.get("entity_id"))
-        if not entity_id:
+        if payload.get("action") == "google_sheets_skladbot_export":
             continue
-        by_entity[entity_id] = by_entity.get(entity_id, 0) + 1
+        entity_id = normalize_text(payload.get("entity_id"))
+        if entity_id:
+            by_entity[entity_id] = by_entity.get(entity_id, 0) + 1
+        for order_id in payload.get("order_ids") or []:
+            order_id = normalize_text(order_id)
+            if order_id:
+                by_entity[order_id] = by_entity.get(order_id, 0) + 1
     return by_entity, len(pending)
 
 

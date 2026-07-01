@@ -182,6 +182,7 @@ def complete_orders_without_kiz(db: Session, payload):
     actor = context["actor"]
     idempotency_key = context["idempotency_key"]
     export_result = {"status": "queued", "queued": True, "error": ""}
+    completed_count = 0
     for order_id in order_ids:
         if order_id in duplicate_ids:
             continue
@@ -236,11 +237,12 @@ def complete_orders_without_kiz(db: Session, payload):
             entity_id=str(order.id),
             payload={**export_result, "pending_event_id": str(event.id) if event else ""},
         ))
+        completed_count += 1
 
     db.commit()
     return {
         "requested": len(order_ids),
-        "completed": len(order_ids),
+        "completed": completed_count,
         "failed": 0,
         "errors": [],
         "dry_run": False,
