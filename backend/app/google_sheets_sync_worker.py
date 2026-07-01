@@ -3,7 +3,7 @@ import os
 import time
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import desc, select
 from sqlalchemy.orm import Session, selectinload
 
 from .db import SessionLocal
@@ -100,12 +100,13 @@ def sync_google_sheet_to_backend(db: Session, sheet=None, now=None, archive_comp
         ):
             completed_order_ids_to_archive.add(item.order_id)
 
-    db.add(AuditLog(
-        action="google_sheets_backend_sync",
-        entity_type="google_sheets",
-        entity_id=SHEET_NAME,
-        payload=result,
-    ))
+    if should_record_sync_summary(result):
+        db.add(AuditLog(
+            action="google_sheets_backend_sync",
+            entity_type="google_sheets",
+            entity_id=SHEET_NAME,
+            payload=result,
+        ))
     mark_backend_items_missing_from_google(db, item_index, matched_item_ids, result, now)
     db.commit()
     archive_completed_orders_from_data_sheet(db, completed_order_ids_to_archive, result)
@@ -289,9 +290,8 @@ def apply_record_to_item(db: Session, item: OrderItem, record, now):
         item.raw_payload = raw_payload
 
     if conflicts:
-        db.add(AuditLog(
-            action="google_sheets_backend_sync_conflict",
-            entity_type="order_item",
+        add_sync_conflict_audit(
+            db,
             entity_id=str(item.id),
             payload={
                 "order_id": str(order.id),
@@ -299,7 +299,7 @@ def apply_record_to_item(db: Session, item: OrderItem, record, now):
                 "source_import_id": record.get("source_import_id"),
                 "conflicts": conflicts,
             },
-        ))
+        )
 
     return {
         "order_changed": order_changed,
@@ -640,9 +640,8 @@ def mark_backend_items_missing_from_google(db: Session, item_index, matched_item
             ):
                 continue
             result["conflicts"] += 1
-            db.add(AuditLog(
-                action="google_sheets_backend_sync_conflict",
-                entity_type="order_item",
+            add_sync_conflict_audit(
+                db,
                 entity_id=str(item.id),
                 payload={
                     "order_id": str(item.order_id),
@@ -651,7 +650,35 @@ def mark_backend_items_missing_from_google(db: Session, item_index, matched_item
                     "source_order_id": (item.raw_payload or {}).get("source_order_id"),
                     "scanned_blocks": item.scanned_blocks,
                 },
-            ))
+            )
+
+
+def should_record_sync_summary(result):
+    return any(
+        int(result.get(field) or 0) > 0
+        for field in ("orders_updated", "items_updated", "archived", "removed")
+    )
+
+
+def add_sync_conflict_audit(db: Session, *, entity_id, payload):
+    previous = db.execute(
+        select(AuditLog)
+        .where(AuditLog.action == "google_sheets_backend_sync_conflict")
+        .where(AuditLog.entity_type == "order_item")
+        .where(AuditLog.entity_id == entity_id)
+        .order_by(desc(AuditLog.created_at), desc(AuditLog.id))
+        .limit(1)
+    ).scalar_one_or_none()
+    if previous is not None and (previous.payload or {}) == payload:
+        return False
+    db.add(AuditLog(
+        action="google_sheets_backend_sync_conflict",
+        entity_type="order_item",
+        entity_id=entity_id,
+        payload=payload,
+    ))
+    return True
+
 
 def is_returned_record(record):
     status = normalize_text(record.get("return_status")).casefold()

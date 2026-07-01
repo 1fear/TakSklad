@@ -193,6 +193,9 @@ class BackendSkeletonTests(unittest.TestCase):
         self.assertIn("postgres:", compose_text)
         self.assertIn("backend-api:", compose_text)
         self.assertIn("adminer:", compose_text)
+        self.assertIn('profiles: ["adminer"]', compose_text)
+        self.assertIn("traefik.enable=false", compose_text)
+        self.assertNotIn("traefik.http.routers.taksklad-adminer", compose_text)
         self.assertIn("traefik.http.routers.taksklad-backend.rule", compose_text)
         self.assertNotIn("5432:5432", compose_text)
 

@@ -142,6 +142,8 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         self.assertIn("SKLADBOT_DETAIL_LIMIT=10", env_example)
         self.assertIn("SKLADBOT_COMPLETED_BACKFILL_DAYS=2", env_example)
         self.assertIn("TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED=false", env_example)
+        self.assertIn("TAKSKLAD_ENV=production", env_example)
+        self.assertNotIn("TAKSKLAD_ADMINER_HOST", env_example)
         self.assertIn("TELEGRAM_ADMIN_CHAT_IDS=", env_example)
 
     def test_web_deploy_forces_https_security_headers(self):
@@ -150,7 +152,9 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
 
         self.assertIn("traefik.http.routers.taksklad-backend.middlewares=taksklad-security-headers", compose)
         self.assertIn("traefik.http.routers.taksklad-frontend.middlewares=taksklad-security-headers,taksklad-frontend-csp", compose)
-        self.assertIn("traefik.http.routers.taksklad-adminer.middlewares=taksklad-security-headers", compose)
+        self.assertIn('profiles: ["adminer"]', compose)
+        self.assertIn("traefik.enable=false", compose)
+        self.assertNotIn("traefik.http.routers.taksklad-adminer", compose)
         self.assertIn("headers.stsSeconds=31536000", compose)
         self.assertIn("headers.stsIncludeSubdomains=true", compose)
         self.assertIn("headers.contentTypeNosniff=true", compose)
@@ -173,6 +177,13 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         self.assertNotIn("proxy_set_header X-Forwarded-Proto $scheme;", nginx)
         self.assertEqual(nginx.count("proxy_set_header X-Forwarded-Proto https;"), 4)
         self.assertNotIn("VITE_TAKSKLAD_API_URL", compose)
+
+    def test_vds_compose_declares_runtime_healthchecks(self):
+        compose = (PROJECT_ROOT / "deploy" / "vds" / "docker-compose.yml").read_text(encoding="utf-8")
+
+        self.assertIn("http://127.0.0.1:8000/ready", compose)
+        self.assertIn("wget -qO- http://127.0.0.1/", compose)
+        self.assertGreaterEqual(compose.count("db.execute(text('SELECT 1')).scalar()"), 4)
 
     def test_frontend_uses_same_origin_api_proxy_contract(self):
         compose = (PROJECT_ROOT / "deploy" / "vds" / "docker-compose.yml").read_text(encoding="utf-8")

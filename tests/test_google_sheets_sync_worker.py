@@ -182,6 +182,60 @@ class GoogleSheetsSyncWorkerTests(unittest.TestCase):
             self.assertEqual(item.raw_payload["source_file"], "orders.xlsx")
             self.assertTrue(item.raw_payload["google_sheet_synced_at"])
 
+    def test_sync_skips_repeated_noop_summary_audit(self):
+        self.seed_order()
+        sheet = self.make_sheet()
+
+        with self.SessionLocal() as db:
+            first = sync_google_sheet_to_backend(db, sheet=sheet)
+        with self.SessionLocal() as db:
+            second = sync_google_sheet_to_backend(db, sheet=sheet)
+
+        self.assertEqual(first["items_updated"], 1)
+        self.assertEqual(second["orders_updated"], 0)
+        self.assertEqual(second["items_updated"], 0)
+        self.assertEqual(second["conflicts"], 0)
+        with self.SessionLocal() as db:
+            audits = db.execute(
+                select(AuditLog).where(AuditLog.action == "google_sheets_backend_sync")
+            ).scalars().all()
+            self.assertEqual(len(audits), 1)
+
+    def test_sync_deduplicates_repeated_conflict_audit(self):
+        self.seed_order(scanned_blocks=12)
+        stale_sheet = self.make_sheet(
+            **{
+                "Дата отгрузки": "31.05.2026",
+                "Тип оплаты": "Перечисление",
+                "Клиент": "Old Client",
+                "Адрес": "Old Address",
+                "Торговый представитель": "Old Rep",
+                "Товары": "Chapman Brown OP 20",
+                "Кол-во ШТ": 110,
+                "Кол-во блок": 11,
+                "Номер заявки SkladBot": "",
+                "ID заявки SkladBot": "",
+                "Статус SkladBot": "",
+            }
+        )
+
+        with self.SessionLocal() as db:
+            first = sync_google_sheet_to_backend(db, sheet=stale_sheet)
+        with self.SessionLocal() as db:
+            second = sync_google_sheet_to_backend(db, sheet=stale_sheet)
+
+        self.assertEqual(first["conflicts"], 1)
+        self.assertEqual(second["conflicts"], 1)
+        with self.SessionLocal() as db:
+            conflicts = db.execute(
+                select(AuditLog).where(AuditLog.action == "google_sheets_backend_sync_conflict")
+            ).scalars().all()
+            summaries = db.execute(
+                select(AuditLog).where(AuditLog.action == "google_sheets_backend_sync")
+            ).scalars().all()
+            self.assertEqual(len(conflicts), 1)
+            self.assertEqual(len(summaries), 1)
+
     def test_sync_does_not_replace_real_backend_address_with_gps_from_google_sheet(self):
         order_id, _item_id = self.seed_order()
 

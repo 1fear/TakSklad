@@ -4,6 +4,25 @@
 
 ## 2026-07-01
 
+### Production env and VDS ops tails
+
+**Файлы:** `backend/app/google_sheets_sync_worker.py`, `deploy/vds/docker-compose.yml`, `deploy/vds/.env.example`, `deploy/vds/switch_backend_host.sh`, `tests/test_google_sheets_sync_worker.py`, `tests/test_vds_acceptance_scripts.py`, `tests/test_backend_skeleton.py`, `docs/changelog.md`.
+
+**Что стало:**
+
+- VDS example env теперь отражает production runtime: `TAKSKLAD_ENV=production`.
+- Google-to-backend sync больше не пишет повторный summary audit при no-op sync.
+- Повторный одинаковый Google sync conflict не создает новый `google_sheets_backend_sync_conflict`.
+- Core VDS-сервисы получили Docker healthchecks: backend `/ready`, frontend `/`, workers через DB `SELECT 1`.
+- Adminer закрыт в production compose по умолчанию: сервис вынесен в profile `adminer`, Traefik отключен, внешняя Traefik-сеть не подключается.
+- `switch_backend_host.sh` больше не принимает и не поднимает public Adminer host.
+
+**Проверки:**
+
+- `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_google_sheets_sync_worker tests.test_vds_acceptance_scripts tests.test_backend_skeleton` - OK.
+- `TAKSKLAD_ENV_FILE=.env.example docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config --quiet` - OK.
+- `bash -n deploy/vds/switch_backend_host.sh` - OK.
+
 ### Admin table filters and Smartup split readiness fixes
 
 **Файлы:** `backend/app/admin_service.py`, `backend/app/imports_service.py`, `backend/app/smartup_auto_import.py`, `frontend/src/App.tsx`, `tests/test_backend_api_persistence.py`, `tests/test_smartup_auto_import.py`, `docs/changelog.md`.
