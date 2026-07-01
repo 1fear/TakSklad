@@ -25,6 +25,7 @@
   - DB backup: `/opt/taksklad/backups/postgres/taksklad-postgres-20260701T062139Z.sql.gz`;
   - selective rsync: `backend/app/skladbot_request_dry_run.py`, `backend/app/imports_service.py`, `backend/app/schemas.py`, `frontend/src/App.tsx`, `frontend/src/api.ts`, `frontend/src/styles.css`, test and docs;
   - rebuilt/recreated `backend-api`, `skladbot-worker`, `smartup-auto-import-worker`, `frontend`.
+  - после deploy пересобран diagnostic dry-run для repair import `4fbd25ae-9c27-4fb9-bf31-089f4021761e`: `linked_mismatch=1`, DB `5` блок., SkladBot `4` блок., без SkladBot/Google/order writes.
 - VDS verification:
   - public `/health` OK, version `2.0.25`;
   - public `/ready` degraded only because of known old queue/Google mirror items; DB and migrations OK;
@@ -6741,3 +6742,30 @@ cd /opt/taksklad/app
   - runtime SHA256 для `google_sheets_sync_worker.py` и `logistics_service.py` совпадает с локальными файлами;
   - финальный отчет `/Users/anton/Documents/Telegram/TakSklad_логистика_01.07.2026_FIXED.xlsx`;
   - финальная сверка `/Users/anton/Documents/Telegram/Сверка_логистика_01.07.2026_FIXED.xlsx`: source rows 223, logistics rows 223, missing 0, extra 0, conflicts 0, blocks 511, amount 122315000.
+
+### Manual KIZ undo for completed terminal order
+
+- Дата: 2026-07-01.
+- Причина: Антон попросил удалить из production DB один ошибочный КИЗ `0104006396053978217MQP?9:93ZNVLLeYm`.
+- Scope:
+  - runtime host: `api.taksklad.uz`, app path `/opt/stacks/taksklad/app`;
+  - order `69887b09-cd63-4508-ad36-74663d007d90`, item `b27b7528-7976-4b18-b366-ee776fd878be`;
+  - source file `Терминал 30.06.2026 Часть 1.xlsx`, product `Chapman Brown OP 20`, SkladBot request ID `202354`.
+- Backup:
+  - affected rows snapshot: `/opt/stacks/taksklad/repair_evidence/kiz-0104006396053978217MQP9-undo-before-20260701T062050Z.json`;
+  - SHA256 `94b2837b9e44983659b4855336563fd32b6c9418b0aacff87ed7a9a90cd78961`.
+- Изменено:
+  - удален ровно один `scan_codes` row `bded7360-5f63-4f88-a0e9-17bffe53cc6e`;
+  - `kiz_codes` сохранен как реестр КИЗа;
+  - записан `kiz_movements` movement `undo` `8cb3f422-0eeb-43df-aa05-9b91a8b0c79f`;
+  - позиция пересчитана с `2/2 completed` на `1/2 not_completed`;
+  - заказ переведен с `completed` на `not_completed`;
+  - поставлены Google export events `google_sheets_restore_order_export` и `google_sheets_scan_export`.
+- Проверено:
+  - точный `scan_codes` count по КИЗу = 0;
+  - последний movement по КИЗу = `undo`, `available_for_outbound=true`;
+  - позиция: `scanned_blocks=1`, `quantity_blocks=2`, `status=not_completed`, расчет по оставшимся scan rows = 1;
+  - заказ: `status=not_completed`;
+  - оба Google export events завершились `completed`;
+  - `https://api.taksklad.uz/health` - OK, backend `2.0.25`;
+  - `backend/sql/preflight_phase3_invariants.sql` показал 0 дублей внутри одного order item и 0 дублей в `kiz_codes`; старые межпозиционные повторы в `scan_codes` остаются вне scope этой ручной операции.
