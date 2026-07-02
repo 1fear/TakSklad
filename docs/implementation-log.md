@@ -4,6 +4,29 @@
 
 ## 2026-07-02
 
+### SkladBot representative comment cleanup
+
+- Причина: в SkladBot comment для отгрузки достаточно типа оплаты и полного имени ТП. `Раб зона`, рабочий номер и личный номер перегружают заявку и не нужны оператору в этом поле.
+- Изменено:
+  - `display_representative_name()` сохраняет полный `order.representative`, если в нем уже есть `ТПN`;
+  - для ФИО без ТП-кода код по-прежнему берется из `representative_contacts`;
+  - `build_representative_comment()` больше не выводит `Раб зона`, рабочий номер и личный номер.
+- Инварианты:
+  - первая строка SkladBot comment остается типом оплаты;
+  - таблица `representative_contacts` продолжает хранить зону и телефоны для справочника; daily SkladBot report заполнит `Раб зона` только из явных полей SkladBot или старых comment со строкой `Раб зона:`;
+  - заказы, статусы, остатки, КИЗы, Google Sheets строки и SkladBot API не меняются.
+- Проверено:
+  - `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_representative_contacts tests.test_backend_skladbot_request_dry_run tests.test_skladbot_daily_report` - 65 tests OK.
+  - `PYTHONPATH=. ./.venv/bin/python -m py_compile backend/app/representative_contacts.py backend/app/skladbot_request_dry_run.py backend/app/skladbot_return_requests.py backend/app/skladbot_daily_report.py tests/test_representative_contacts.py tests/test_backend_skladbot_request_dry_run.py tests/test_skladbot_daily_report.py` - OK.
+  - production selective deploy copied only `backend/app/representative_contacts.py`, restore point `/opt/stacks/taksklad/restore_points/pre-skladbot-comment-cleanup-20260702T133434Z`;
+  - rebuilt/recreated `backend-api`, `skladbot-worker`, `smartup-auto-import-worker`;
+  - live `/health` and `/ready` - OK;
+  - in-container sample confirmed new output: `Терминал` + `ТП6 Хасанов Мираббос`, without `Раб зона` or phones;
+  - fresh logs for rebuilt services had no `ERROR`, `CRITICAL`, `Traceback`, `Exception` or `panic`;
+  - `verify_skladbot_coverage.sh` - `status=ok`, missing orders `0`;
+  - `acceptance_status.sh` could not run because server has no `outputs/taksklad_acceptance/acceptance_manifest.json`;
+  - `verify_smartup_automation.sh` runtime status was `ok`, pending SkladBot creates `0`, but source-check failed on unrelated `repriced totals logistics` guard.
+
 ### Smartup scheduled export by delivery date
 
 - Причина: штатная сборка `01.07.2026` должна забирать все новые терминальные Smartup-заказы с отгрузкой `02.07.2026`, включая сделки с датой заказа `30.06.2026`; старый штатный контур ориентировался на `deal_date=01.07.2026`.

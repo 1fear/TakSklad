@@ -21,6 +21,8 @@ from backend.app.skladbot_daily_report import (
     categorize_request_type,
     collect_skladbot_daily_report,
     product_breakdown_for_summary,
+    request_representative,
+    request_representative_zone,
     summarize_daily_report,
 )
 from backend.app.telegram_worker import (
@@ -595,6 +597,14 @@ class MovementTodayRequestAfterStaleListItemsClient(MovementTodayRequestClient):
 
 
 class SkladBotDailyReportTests(unittest.TestCase):
+    def test_parses_new_two_line_representative_comment_without_zone(self):
+        request = {
+            "comment": "Терминал\nТП6 Хасанов Мираббос",
+        }
+
+        self.assertEqual(request_representative(request), "ТП6 Хасанов Мираббос")
+        self.assertEqual(request_representative_zone(request), "")
+
     def test_collects_requests_movements_stock_and_builds_xlsx(self):
         original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
         try:

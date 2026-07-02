@@ -4,6 +4,32 @@
 
 ## 2026-07-02
 
+### SkladBot representative comment cleanup
+
+**Файлы:** `backend/app/representative_contacts.py`, `tests/test_representative_contacts.py`, `tests/test_backend_skladbot_request_dry_run.py`, `tests/test_skladbot_daily_report.py`, `backend/README.md`, `docs/report-source-rules.md`, `docs/implementation-log.md`, `docs/changelog.md`.
+
+**Что стало:**
+
+- SkladBot comment для новых заявок теперь пишет только тип оплаты и представителя.
+- `Раб зона`, рабочий номер и личный номер больше не попадают в comment SkladBot.
+- Если `order.representative` уже содержит полный `ТПN ФИО`, это имя сохраняется полностью и не заменяется коротким именем из справочника.
+- Если Smartup прислал ФИО без ТП-кода, код берется из `representative_contacts`; короткое имя по-прежнему может использовать справочный fallback.
+
+**Проверки:**
+
+- `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_representative_contacts tests.test_backend_skladbot_request_dry_run tests.test_skladbot_daily_report` - 65 tests OK.
+- `PYTHONPATH=. ./.venv/bin/python -m py_compile backend/app/representative_contacts.py backend/app/skladbot_request_dry_run.py backend/app/skladbot_return_requests.py backend/app/skladbot_daily_report.py tests/test_representative_contacts.py tests/test_backend_skladbot_request_dry_run.py tests/test_skladbot_daily_report.py` - OK.
+
+**Production:**
+
+- Restore point: `/opt/stacks/taksklad/restore_points/pre-skladbot-comment-cleanup-20260702T133434Z`.
+- Selective deploy: `backend/app/representative_contacts.py`.
+- Rebuilt/recreated: `backend-api`, `skladbot-worker`, `smartup-auto-import-worker`.
+- Live `/health` and `/ready` - OK; in-container sample comment returns only `Терминал` + `ТП6 Хасанов Мираббос`; fresh logs for rebuilt services had no `ERROR`, `CRITICAL`, `Traceback`, `Exception` or `panic`.
+- `verify_skladbot_coverage.sh` - `status=ok`, missing orders `0`.
+- `acceptance_status.sh` skipped: server has no `outputs/taksklad_acceptance/acceptance_manifest.json`.
+- `verify_smartup_automation.sh` runtime status was `ok`, pending SkladBot creates `0`, but source-check failed on unrelated `repriced totals logistics` guard.
+
 ### Smartup scheduled export by delivery date
 
 **Файлы:** `backend/app/smartup_auto_import.py`, `tests/test_smartup_auto_import.py`, `docs/user-business-process-guide.md`, `docs/implementation-log.md`, `docs/changelog.md`.

@@ -81,12 +81,17 @@ def display_representative_name(
 ) -> str:
     representative_text = normalize_text(representative)
     contact_name = normalize_text(getattr(contact, "name", ""))
-    tp_code = representative_tp_code(contact_name) or representative_tp_code(representative_text)
+    representative_code = representative_tp_code(representative_text)
+    contact_code = representative_tp_code(contact_name)
+    tp_code = representative_code or contact_code
     if not tp_code:
         return representative_text or contact_name
 
     representative_parts = representative_name_parts(normalize_representative_name(representative_text))
-    if representative_text and not representative_tp_code(representative_text):
+    if representative_code:
+        source_tail = representative_name_without_tp_code(representative_text)
+        return f"{tp_code} {source_tail}" if source_tail else tp_code
+    if representative_text:
         if len(representative_parts) >= 2:
             return f"{tp_code} {representative_text}"
 
@@ -144,12 +149,6 @@ def build_representative_comment(
         lines.append(payment)
     if rep_name:
         lines.append(rep_name)
-    if contact and normalize_text(contact.work_zone):
-        lines.append(f"Раб зона: {normalize_text(contact.work_zone)}")
-    if contact and normalize_text(contact.work_phone):
-        lines.append(f"Рабочий номер: {normalize_phone(contact.work_phone)}")
-    if contact and normalize_text(contact.personal_phone):
-        lines.append(f"Личный номер: {normalize_phone(contact.personal_phone)}")
     return "\n".join(lines)
 
 
