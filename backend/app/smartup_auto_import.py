@@ -143,15 +143,17 @@ class SmartupClient:
         self.config = config
         self.base_url = config.smartup_base_url.rstrip("/")
 
-    def export_orders(self, export_date: date) -> dict[str, Any]:
+    def export_orders(self, export_date: date, *, target_delivery_date: date | None = None) -> dict[str, Any]:
         display_date = format_display_date(export_date)
+        delivery_date = format_display_date(target_delivery_date) if target_delivery_date else ""
+        deal_date = "" if target_delivery_date else display_date
         payload = {
             "filial_code": self.config.smartup_filial_code,
             "external_id": "",
             "deal_id": "",
-            "begin_deal_date": display_date,
-            "end_deal_date": display_date,
-            "delivery_date": "",
+            "begin_deal_date": deal_date,
+            "end_deal_date": deal_date,
+            "delivery_date": delivery_date,
             "begin_created_on": "",
             "end_created_on": "",
             "begin_modified_on": "",
@@ -396,6 +398,7 @@ def run_due_smartup_auto_imports(
             "now": local_now.isoformat(),
         }]
     results = []
+    target_delivery_date = scheduled_smartup_target_delivery_date(local_now.date())
     for slot in config.schedule_times:
         if not is_slot_due(local_now, slot, config.slot_grace_minutes):
             continue
@@ -405,6 +408,7 @@ def run_due_smartup_auto_imports(
                 config,
                 slot_label=slot,
                 now=local_now,
+                target_delivery_date=target_delivery_date,
                 smartup_client=smartup_client,
                 telegram_sender=telegram_sender,
             )
@@ -497,7 +501,7 @@ def run_smartup_auto_import_once(
     export_date_display = format_display_date(export_date)
     client = smartup_client or SmartupClient(config)
 
-    raw_response = client.export_orders(export_date)
+    raw_response = client.export_orders(export_date, target_delivery_date=target_delivery_date)
     raw_orders = extract_smartup_orders(raw_response)
     selected_orders = filter_smartup_orders(
         raw_orders,
@@ -1137,7 +1141,7 @@ def filter_smartup_orders(
     result = []
     for order in orders:
         deal_date = smartup_deal_date(order)
-        if deal_date != export_date:
+        if target_delivery_date is None and deal_date != export_date:
             continue
         if target_delivery_date is not None and parse_smartup_date(order.get("delivery_date")) != target_delivery_date:
             continue
@@ -1756,6 +1760,10 @@ def smartup_advisory_lock_key(
 
 def is_final_slot(slot_label: str, config: SmartupAutoImportConfig) -> bool:
     return normalize_text(slot_label) == normalize_text(config.final_time)
+
+
+def scheduled_smartup_target_delivery_date(export_date: date) -> date:
+    return export_date + timedelta(days=1)
 
 
 def is_slot_due(now: datetime, slot_label: str, grace_minutes: int) -> bool:

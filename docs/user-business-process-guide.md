@@ -236,7 +236,7 @@ flowchart LR
 Рабочая автоматизация:
 
 1. Worker запускается по слотам `12:00`, `15:00`, `17:50`.
-2. Smartup выгружается по дате заказа сегодня и фильтрам `Новые + Терминал`.
+2. Штатный Smartup export ориентируется на целевую дату отгрузки: слот за `01.07.2026` собирает Smartup `delivery_date=02.07.2026`, даже если дата сделки была `30.06.2026`.
 3. Локально сохраняется файл `Терминал ДД.ММ.ГГГГ Часть N.xlsx` и audit JSON.
 4. Перед записью в TakSklad выполняется backend preview.
 5. Backend создаёт заказы по `delivery_date`, а не по дате заказа.
@@ -247,7 +247,7 @@ flowchart LR
 10. Если `delivery_date` в Smartup попал на нерабочий день логистики, TakSklad переносит дату отгрузки вперед до ближайшего рабочего дня. Исходная дата Smartup остается в export/audit metadata.
 11. Если финальный отчет попадает на нерабочую дату логистики, он не отправляется.
 
-Техническое уточнение: Smartup `order$export` получает дату сделки и статус `Новые`; фильтр `Терминал` дополнительно enforce-ится локально перед созданием XLSX/import, чтобы неподходящая оплата не попала дальше в pipeline.
+Техническое уточнение: штатные слоты Smartup `order$export` передают `delivery_date` следующего календарного дня и статус `Новые`; фильтр `Терминал` дополнительно enforce-ится локально перед созданием XLSX/import, чтобы неподходящая оплата не попала дальше в pipeline. Ручной `run-once` без `--delivery-date` сохраняет старый режим проверки по дате Smartup-сделки.
 
 Production-safe recovery:
 
@@ -279,7 +279,7 @@ docker compose exec smartup-auto-import-worker python -m app.smartup_auto_import
 docker compose exec smartup-auto-import-worker python -m app.smartup_auto_import_worker run-once --date 2026-06-30 --slot 16:01 --delivery-date 2026-07-01
 ```
 
-`--date` - дата Smartup-сделки/export window. `--delivery-date` - исходная дата отгрузки Smartup, которую нужно оставить в выборке.
+Без `--delivery-date` параметр `--date` работает как дата Smartup-сделки/export window. С `--delivery-date` параметр `--date` остается датой файла, слота и idempotency-key, а Smartup выборка идет по исходной дате отгрузки.
 
 История запусков доступна в web-admin во вкладке `Smartup`: там видны последние слоты, созданные файлы, ошибки, количество созданных заказов и статус SkladBot/logistics. Импорты, dry-run, инциденты и активность находятся в нижней группе `История действий`.
 

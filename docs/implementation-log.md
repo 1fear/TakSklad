@@ -4,6 +4,21 @@
 
 ## 2026-07-02
 
+### Smartup scheduled export by delivery date
+
+- Причина: штатная сборка `01.07.2026` должна забирать все новые терминальные Smartup-заказы с отгрузкой `02.07.2026`, включая сделки с датой заказа `30.06.2026`; старый штатный контур ориентировался на `deal_date=01.07.2026`.
+- Изменено:
+  - `SmartupClient.export_orders()` при `target_delivery_date` отправляет в `order$export` поле `delivery_date` и очищает `begin_deal_date/end_deal_date`;
+  - `run_due_smartup_auto_imports()` для штатных слотов передает `target_delivery_date = export_date + 1 день`;
+  - `filter_smartup_orders()` при `target_delivery_date` больше не отбрасывает заказы из-за более раннего `deal_date`, но сохраняет фильтры `Новые + Терминал`;
+  - user guide обновлен: штатный режим теперь описан как отбор по дате отгрузки, ручной `run-once` без `--delivery-date` оставлен в старом режиме по дате сделки.
+- Инварианты:
+  - Smartup status change по-прежнему выполняется только после backend preview/import;
+  - дедупликация остается по исходным `ID импорта`;
+  - неподходящая оплата `PYMT:3` не попадает в импорт.
+- Проверено:
+  - `PYTHONPATH=. .venv/bin/python -m unittest tests.test_smartup_auto_import` - 37 tests OK.
+
 ### Production smoke closeout and acceptance gate GO
 
 - Причина: после боевых проверок Антон подтвердил, что основной production-контур прошел без наблюдаемых ошибок: Smartup auto export, Telegram import в БД, сканирование КИЗов и создание заявок SkladBot.

@@ -12,6 +12,7 @@ from sqlalchemy.pool import StaticPool
 
 from backend.app.models import Base, ImportJob, LogisticsCalendarDay, Order, PendingEvent
 from backend.app.smartup_auto_import import (
+    SmartupClient,
     SmartupAutoImportConfig,
     SmartupAutoImportError,
     SMARTUP_AUTO_IMPORT_EVENT_TYPE,
@@ -26,6 +27,7 @@ from backend.app.smartup_auto_import import (
     run_scheduled_smartup_auto_import_slot,
     acquire_smartup_slot_advisory_lock,
     release_smartup_slot_advisory_lock,
+    scheduled_smartup_target_delivery_date,
     send_final_logistics_reports,
     smartup_advisory_lock_key,
     smartup_slot_idempotency_key,
@@ -67,8 +69,10 @@ class FakeSmartupClient:
     def __init__(self, orders):
         self.orders = orders
         self.changed = []
+        self.exports = []
 
-    def export_orders(self, export_date):
+    def export_orders(self, export_date, *, target_delivery_date=None):
+        self.exports.append((export_date, target_delivery_date))
         return {"order": self.orders}
 
     def change_status(self, deal_ids, status_code):
@@ -82,7 +86,7 @@ class FakeSmartupClient:
 
 
 class FailingSmartupClient:
-    def export_orders(self, export_date):
+    def export_orders(self, export_date, *, target_delivery_date=None):
         raise SmartupAutoImportError("Smartup test failure")
 
 
@@ -350,6 +354,68 @@ class SmartupAutoImportTests(unittest.TestCase):
         )
 
         self.assertEqual([order["deal_id"] for order in filtered], ["ship-tomorrow"])
+
+    def test_target_delivery_date_includes_orders_from_previous_deal_date(self):
+        config = self.config("/tmp")
+        orders = [
+            sample_order(deal_id="ship-target-old", deal_time="30.06.2026 09:10:00", delivery_date="02.07.2026"),
+            sample_order(deal_id="ship-target-today", deal_time="01.07.2026 10:10:00", delivery_date="02.07.2026"),
+            sample_order(deal_id="ship-other-date", deal_time="01.07.2026 11:10:00", delivery_date="03.07.2026"),
+            sample_order(deal_id="wrong-payment", deal_time="30.06.2026 12:10:00", delivery_date="02.07.2026", payment_type_code="PYMT:3"),
+        ]
+
+        filtered = filter_smartup_orders(
+            orders,
+            date(2026, 7, 1),
+            config,
+            target_delivery_date=date(2026, 7, 2),
+        )
+
+        self.assertEqual([order["deal_id"] for order in filtered], ["ship-target-old", "ship-target-today"])
+
+    def test_smartup_export_payload_uses_delivery_date_when_targeted(self):
+        captured = {}
+
+        class FakeResponse:
+            text = "{}"
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"order": []}
+
+        class FakeHttpClient:
+            def __init__(self, timeout):
+                self.timeout = timeout
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def post(self, url, headers, json, auth):
+                captured["url"] = url
+                captured["headers"] = headers
+                captured["json"] = json
+                captured["auth"] = auth
+                return FakeResponse()
+
+        config = self.config(
+            "/tmp",
+            smartup_base_url="https://smartup.example",
+            smartup_username="user",
+            smartup_password="password",
+        )
+
+        with mock.patch("backend.app.smartup_auto_import.httpx.Client", FakeHttpClient):
+            SmartupClient(config).export_orders(date(2026, 7, 1), target_delivery_date=date(2026, 7, 2))
+
+        self.assertEqual(captured["json"]["begin_deal_date"], "")
+        self.assertEqual(captured["json"]["end_deal_date"], "")
+        self.assertEqual(captured["json"]["delivery_date"], "02.07.2026")
+        self.assertEqual(captured["json"]["statuses"], ["B#N"])
 
     def test_build_import_rows_reverse_geocodes_smartup_coordinates_without_address(self):
         config = self.config("/tmp")
@@ -786,6 +852,38 @@ class SmartupAutoImportTests(unittest.TestCase):
             self.assertEqual(history["summary"]["total"], 1)
             self.assertEqual(history["runs"][0]["selected_orders"], 1)
             self.assertEqual(history["runs"][0]["filename"], "Терминал 25.06.2026 Часть 1.xlsx")
+
+    def test_due_slot_targets_next_delivery_date(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            fake = FakeSmartupClient([
+                sample_order(deal_id="old-deal", deal_time="30.06.2026 13:32:22", delivery_date="02.07.2026"),
+                sample_order(deal_id="today-deal", deal_time="01.07.2026 09:10:00", delivery_date="02.07.2026"),
+                sample_order(deal_id="future-delivery", deal_time="01.07.2026 10:10:00", delivery_date="03.07.2026"),
+            ])
+            config = self.config(tmp_dir, backend_import_enabled=False, change_status_enabled=False)
+            with self.SessionLocal() as db:
+                result = run_due_smartup_auto_imports(
+                    db,
+                    config,
+                    now=datetime(2026, 7, 1, 12, 0, tzinfo=ZoneInfo("Asia/Tashkent")),
+                    smartup_client=fake,
+                )
+                events = db.execute(select(PendingEvent)).scalars().all()
+
+        self.assertEqual(result[0]["status"], "shadow_preview")
+        self.assertEqual(result[0]["export_date"], "2026-07-01")
+        self.assertEqual(result[0]["target_delivery_date"], "2026-07-02")
+        self.assertEqual(result[0]["selected_orders"], 2)
+        self.assertEqual(result[0]["deal_ids"], ["old-deal", "today-deal"])
+        self.assertEqual(fake.exports, [(date(2026, 7, 1), date(2026, 7, 2))])
+        self.assertEqual(len(events), 1)
+        self.assertEqual(
+            events[0].idempotency_key,
+            "smartup:auto_import:v1:2026-07-01:12:00:delivery:2026-07-02",
+        )
+
+    def test_scheduled_target_delivery_date_is_next_calendar_day(self):
+        self.assertEqual(scheduled_smartup_target_delivery_date(date(2026, 7, 1)), date(2026, 7, 2))
 
     def test_failed_scheduled_slot_can_be_retried_without_duplicate_order(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

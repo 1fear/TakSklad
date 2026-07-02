@@ -4,6 +4,21 @@
 
 ## 2026-07-02
 
+### Smartup scheduled export by delivery date
+
+**Файлы:** `backend/app/smartup_auto_import.py`, `tests/test_smartup_auto_import.py`, `docs/user-business-process-guide.md`, `docs/implementation-log.md`, `docs/changelog.md`.
+
+**Что стало:**
+
+- Штатный Smartup worker теперь в due-slot выставляет `target_delivery_date = export_date + 1 день`.
+- `order$export` для штатного target запуска передает `delivery_date` и не ограничивает Smartup сделку `begin_deal_date/end_deal_date`.
+- Локальный фильтр при `target_delivery_date` берет `Новые + Терминал` по исходному Smartup `delivery_date`, даже если `deal_date` был раньше.
+- Ручной `run-once` без `--delivery-date` сохраняет прежний режим по дате сделки.
+
+**Проверки:**
+
+- `PYTHONPATH=. .venv/bin/python -m unittest tests.test_smartup_auto_import` - 37 tests OK.
+
 ### Logistics XLSX Orders template
 
 **Файлы:** `backend/app/logistics_service.py`, `backend/app/imports_service.py`, `tests/test_backend_api_persistence.py`, `docs/report-source-rules.md`, `docs/taksklad-system-stack-overview.md`, `docs/user-business-process-guide.md`, `docs/taksklad-full-functionality.md`, `docs/implementation-log.md`, `docs/changelog.md`.
