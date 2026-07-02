@@ -4,6 +4,22 @@
 
 ## 2026-07-02
 
+### Web admin updated_at guard UTC normalization
+
+**Файлы:** `backend/app/order_actions_service.py`, `tests/test_backend_api_persistence.py`, `docs/changelog.md`.
+
+**Что стало:**
+
+- Admin-действия больше не получают ложный `409 Order changed after web table was loaded`, когда web-панель присылает `updated_at` в UTC-формате `Z`, а backend хранит тот же момент как `+00:00`.
+- Защита от реально устаревшей строки сохранена: если timestamp отличается по времени, backend продолжает отклонять действие.
+- Bulk `В архив как выполнено` по-прежнему закрывает заказ в `completed` и ставит `google_sheets_archive_export` в очередь без изменения сканов.
+
+**Проверки:**
+
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_backend_api_persistence.BackendApiPersistenceTests.test_archive_without_kiz_accepts_web_z_updated_at_guard tests.test_backend_api_persistence.BackendApiPersistenceTests.test_bulk_complete_without_kiz_accepts_web_z_updated_at_guard tests.test_backend_api_persistence.BackendApiPersistenceTests.test_bulk_complete_without_kiz_rejects_stale_updated_at_guard tests.test_backend_api_persistence.BackendApiPersistenceTests.test_bulk_complete_without_kiz_allows_partially_scanned_order_and_preserves_scans tests.test_backend_api_persistence.BackendApiPersistenceTests.test_bulk_complete_without_kiz_marks_unscanned_orders_completed_and_queues_archive_export` - OK.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python -m py_compile backend/app/order_actions_service.py tests/test_backend_api_persistence.py` - OK.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_backend_api_persistence` - 123 tests OK.
+
 ### Smartup terminal TP contact matching and daily zone
 
 **Файлы:** `backend/app/representative_contacts.py`, `backend/app/skladbot_daily_report.py`, `tests/test_representative_contacts.py`, `tests/test_backend_skladbot_request_dry_run.py`, `tests/test_skladbot_daily_report.py`, `docs/changelog.md`, `docs/implementation-log.md`.

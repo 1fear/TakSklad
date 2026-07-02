@@ -659,12 +659,36 @@ def ensure_expected_updated_at(order, expected_updated_at):
     if not expected:
         return
     actual = order.updated_at.isoformat() if order.updated_at else ""
+    actual_dt = normalize_expected_updated_at(order.updated_at)
+    expected_dt = normalize_expected_updated_at(expected)
+    if actual_dt and expected_dt and actual_dt == expected_dt:
+        return
     if actual and actual != expected:
         raise ApiError(409, {
             "message": "Order changed after web table was loaded",
             "expected_updated_at": expected,
             "actual_updated_at": actual,
         })
+
+
+def normalize_expected_updated_at(value):
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = normalize_text(value)
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = f"{text[:-1]}+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def admin_action_context(action, order_ids, payload):

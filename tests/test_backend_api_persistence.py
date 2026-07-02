@@ -1118,6 +1118,28 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json()["detail"]["message"], "Order already has scanned KIZ codes")
 
+    def test_archive_without_kiz_accepts_web_z_updated_at_guard(self):
+        order_id, _item_id = self.seed_order(quantity_blocks=1)
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            order.updated_at = datetime(2026, 7, 1, 13, 0, 40, 41550, tzinfo=timezone.utc)
+            db.commit()
+
+        response = self.client.post(
+            f"/api/v1/admin/orders/{order_id}/archive-without-kiz",
+            json={
+                "reason": "Manual archive without scans",
+                "actor": "anton",
+                "expected_updated_at": "2026-07-01T13:00:40.041550Z",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "archived_no_kiz")
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            self.assertEqual(order.status, "archived_no_kiz")
+
     def test_bulk_complete_without_kiz_marks_unscanned_orders_completed_and_queues_archive_export(self):
         first_order_id, _first_item_id = self.seed_order(quantity_blocks=3)
         second_order_id, _second_item_id = self.seed_order(quantity_blocks=1)
@@ -1151,6 +1173,58 @@ class BackendApiPersistenceTests(unittest.TestCase):
             events = db.execute(select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")).scalars().all()
             self.assertEqual(len(events), 2)
             self.assertEqual({event.payload["action"] for event in events}, {"google_sheets_archive_export"})
+
+    def test_bulk_complete_without_kiz_accepts_web_z_updated_at_guard(self):
+        order_id, _item_id = self.seed_order(quantity_blocks=1)
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            order.updated_at = datetime(2026, 7, 1, 13, 0, 40, 41550, tzinfo=timezone.utc)
+            db.commit()
+
+        response = self.client.post(
+            "/api/v1/admin/orders/bulk/complete-without-kiz",
+            json={
+                "order_ids": [order_id],
+                "reason": "Manual close without scans",
+                "actor": "anton",
+                "expected_updated_at_by_order": {
+                    order_id: "2026-07-01T13:00:40.041550Z",
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["completed"], 1)
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            self.assertEqual(order.status, "completed")
+
+    def test_bulk_complete_without_kiz_rejects_stale_updated_at_guard(self):
+        order_id, _item_id = self.seed_order(quantity_blocks=1)
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            order.updated_at = datetime(2026, 7, 1, 13, 0, 40, 41550, tzinfo=timezone.utc)
+            db.commit()
+
+        response = self.client.post(
+            "/api/v1/admin/orders/bulk/complete-without-kiz",
+            json={
+                "order_ids": [order_id],
+                "reason": "Manual close without scans",
+                "actor": "anton",
+                "expected_updated_at_by_order": {
+                    order_id: "2026-07-01T13:00:39.041550Z",
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 409)
+        error = response.json()["detail"]["errors"][0]
+        self.assertEqual(error["order_id"], order_id)
+        self.assertIn("Order changed after web table was loaded", error["message"])
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            self.assertEqual(order.status, "not_completed")
 
     def test_bulk_complete_without_kiz_ignores_pending_skladbot_export(self):
         order_id, _item_id = self.seed_order(quantity_blocks=3)
