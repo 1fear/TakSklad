@@ -49,7 +49,7 @@ class RepresentativeContactsTests(unittest.TestCase):
         self.assertEqual(by_name.id, contact.id)
         self.assertEqual(by_smartup_full_name.name, "ТП-2 Достон")
 
-    def test_comment_keeps_payment_first_and_representative_only(self):
+    def test_comment_keeps_payment_representative_and_phones_without_work_zone(self):
         contact = RepresentativeContact(
             name="ТП-1 Умид",
             normalized_name=normalize_representative_name("ТП-1 Умид"),
@@ -63,7 +63,9 @@ class RepresentativeContactsTests(unittest.TestCase):
         self.assertEqual(
             comment,
             "Терминал\n"
-            "ТП1 Умид",
+            "ТП1 Умид\n"
+            "Рабочий номер: +998 91 111 11 11\n"
+            "Личный номер: +998 90 222 22 22",
         )
 
     def test_comment_uses_tp_code_with_smartup_full_name(self):
@@ -80,7 +82,9 @@ class RepresentativeContactsTests(unittest.TestCase):
         self.assertEqual(
             comment,
             "Терминал\n"
-            "ТП3 Мирзаев Бекзод Мусажон угли",
+            "ТП3 Мирзаев Бекзод Мусажон угли\n"
+            "Рабочий номер: +998 77 744 48 40\n"
+            "Личный номер: +998 90 000 61 61",
         )
 
     def test_comment_keeps_full_representative_when_order_has_tp_code(self):
@@ -94,7 +98,13 @@ class RepresentativeContactsTests(unittest.TestCase):
 
         comment = build_representative_comment("Терминал", "ТП6 Хасанов Мираббос", contact)
 
-        self.assertEqual(comment, "Терминал\nТП6 Хасанов Мираббос")
+        self.assertEqual(
+            comment,
+            "Терминал\n"
+            "ТП6 Хасанов Мираббос\n"
+            "Рабочий номер: +998 77 000 00 00\n"
+            "Личный номер: +998 93 000 00 00",
+        )
 
     def test_comment_without_contact_still_includes_representative(self):
         self.assertEqual(build_representative_comment("Перечисление", "ТП2"), "Перечисление\nТП2")

@@ -597,9 +597,14 @@ class MovementTodayRequestAfterStaleListItemsClient(MovementTodayRequestClient):
 
 
 class SkladBotDailyReportTests(unittest.TestCase):
-    def test_parses_new_two_line_representative_comment_without_zone(self):
+    def test_parses_new_representative_comment_with_phones_without_zone(self):
         request = {
-            "comment": "Терминал\nТП6 Хасанов Мираббос",
+            "comment": (
+                "Терминал\n"
+                "ТП6 Хасанов Мираббос\n"
+                "Рабочий номер: +998 77 000 00 00\n"
+                "Личный номер: +998 93 000 00 00"
+            ),
         }
 
         self.assertEqual(request_representative(request), "ТП6 Хасанов Мираббос")

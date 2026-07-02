@@ -149,6 +149,10 @@ def build_representative_comment(
         lines.append(payment)
     if rep_name:
         lines.append(rep_name)
+    if contact and normalize_text(contact.work_phone):
+        lines.append(f"Рабочий номер: {normalize_phone(contact.work_phone)}")
+    if contact and normalize_text(contact.personal_phone):
+        lines.append(f"Личный номер: {normalize_phone(contact.personal_phone)}")
     return "\n".join(lines)
 
 

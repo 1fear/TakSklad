@@ -290,7 +290,7 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
         self.assertEqual(row["payload"]["comment"], "Терминал\nТП1")
         self.assertEqual(row["payload"]["fields"]["comment"]["value"], "Терминал\nТП1")
 
-    def test_skladbot_payload_uses_contact_for_tp_code_without_contact_details(self):
+    def test_skladbot_payload_uses_contact_for_tp_code_and_phones_without_work_zone(self):
         import_id, _order_id = self.seed_import_order(
             payment_type="Терминал",
             representative="Суюнбеков Умид",
@@ -313,7 +313,9 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
         self.assertEqual(
             row["payload"]["fields"]["comment"]["value"],
             "Терминал\n"
-            "ТП1 Суюнбеков Умид",
+            "ТП1 Суюнбеков Умид\n"
+            "Рабочий номер: +998 91 111 11 11\n"
+            "Личный номер: +998 90 222 22 22",
         )
 
     def test_payload_uses_all_order_items_even_if_import_added_one_item(self):

@@ -86,11 +86,13 @@ If this JSON is invalid or an entry misses `product_data_id`, `barcode`, or bool
 
 ## SkladBot Representative Contacts
 
-TakSklad stores sales representative aliases and phone numbers in `representative_contacts`. SkladBot request comments keep only the payment type on the first line and the representative on the second line. The contact table is used to add the TP code or canonical short name when Smartup sends a full or short representative name; work zones and phone numbers are not written to SkladBot comments.
+TakSklad stores sales representative aliases and phone numbers in `representative_contacts`. SkladBot request comments keep the payment type on the first line, the representative on the second line, then available work and personal phone numbers. The contact table is used to add the TP code or canonical short name when Smartup sends a full or short representative name; work zones are not written to SkladBot comments.
 
 ```text
 Терминал
 ТП1 Суюнбеков Умид
+Рабочий номер: +998 91 111 11 11
+Личный номер: +998 90 222 22 22
 ```
 
 Load the local XLSX reference into the configured backend database with:
