@@ -8,6 +8,7 @@ from sqlalchemy.pool import StaticPool
 from backend.app.models import Base, RepresentativeContact
 from backend.app.representative_contacts import (
     build_representative_comment,
+    display_representative_name,
     find_representative_contact,
     import_representative_contacts_from_xlsx,
     normalize_phone,
@@ -37,6 +38,7 @@ class RepresentativeContactsTests(unittest.TestCase):
             db.commit()
             contact = find_representative_contact(db, "ТП1")
             by_name = find_representative_contact(db, "Умид")
+            by_smartup_full_name = find_representative_contact(db, "Кобилов Достон Рустам угли")
 
         self.assertEqual(summary["created"], 2)
         self.assertEqual(summary["updated"], 0)
@@ -45,6 +47,7 @@ class RepresentativeContactsTests(unittest.TestCase):
         self.assertEqual(contact.personal_phone, "+998 90 222 22 22")
         self.assertEqual(contact.work_zone, "Юнусабад")
         self.assertEqual(by_name.id, contact.id)
+        self.assertEqual(by_smartup_full_name.name, "ТП-2 Достон")
 
     def test_comment_keeps_payment_first_and_adds_representative_contacts(self):
         contact = RepresentativeContact(
@@ -52,6 +55,7 @@ class RepresentativeContactsTests(unittest.TestCase):
             normalized_name=normalize_representative_name("ТП-1 Умид"),
             work_phone="+998 91 111 11 11",
             personal_phone="+998 90 222 22 22",
+            work_zone="Юнусабад",
         )
 
         comment = build_representative_comment("Терминал", "ТП-1 Умид", contact)
@@ -59,13 +63,42 @@ class RepresentativeContactsTests(unittest.TestCase):
         self.assertEqual(
             comment,
             "Терминал\n"
-            "ТП-1 Умид\n"
+            "ТП1 Умид\n"
+            "Раб зона: Юнусабад\n"
             "Рабочий номер: +998 91 111 11 11\n"
             "Личный номер: +998 90 222 22 22",
         )
 
+    def test_comment_uses_tp_code_with_smartup_full_name(self):
+        contact = RepresentativeContact(
+            name="ТП-3 Бекзод",
+            normalized_name=normalize_representative_name("ТП-3 Бекзод"),
+            work_phone="+998 77 744 48 40",
+            personal_phone="+998 90 000 61 61",
+            work_zone="Мирзо Улугбек",
+        )
+
+        comment = build_representative_comment("Терминал", "Мирзаев Бекзод Мусажон угли", contact)
+
+        self.assertEqual(
+            comment,
+            "Терминал\n"
+            "ТП3 Мирзаев Бекзод Мусажон угли\n"
+            "Раб зона: Мирзо Улугбек\n"
+            "Рабочий номер: +998 77 744 48 40\n"
+            "Личный номер: +998 90 000 61 61",
+        )
+
     def test_comment_without_contact_still_includes_representative(self):
         self.assertEqual(build_representative_comment("Перечисление", "ТП2"), "Перечисление\nТП2")
+
+    def test_display_representative_name_keeps_canonical_contact_for_short_smartup_name(self):
+        contact = RepresentativeContact(
+            name="ТП-8 Муроджон",
+            normalized_name=normalize_representative_name("ТП-8 Муроджон"),
+        )
+
+        self.assertEqual(display_representative_name("Мурод", contact), "ТП8 Муроджон")
 
     def test_normalize_phone_formats_uzbek_numbers(self):
         self.assertEqual(normalize_phone("998931234567"), "+998 93 123 45 67")

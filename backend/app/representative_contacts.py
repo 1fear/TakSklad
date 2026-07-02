@@ -14,6 +14,7 @@ NAME_HEADERS = ("тп", "торговый представитель", "represen
 WORK_PHONE_HEADERS = ("раб номер", "рабочий номер", "work phone", "work_phone")
 PERSONAL_PHONE_HEADERS = ("лич номер", "личный номер", "personal phone", "personal_phone")
 WORK_ZONE_HEADERS = ("раб зона", "рабочая зона", "work zone", "work_zone")
+REPRESENTATIVE_NOISE_PARTS = {"угли", "огли", "o", "g", "li", "qizi", "кизи", "қизи"}
 
 
 def normalize_representative_name(value: Any) -> str:
@@ -35,12 +36,65 @@ def representative_aliases(value: Any) -> set[str]:
     if match:
         number = match.group(1)
         aliases.update({f"тп-{number}", f"тп{number}", f"тп {number}"})
-    parts = normalized.split()
-    name_parts = [part for part in parts if part != "тп" and not re.fullmatch(r"тп-?\d+|\d+", part)]
+    name_parts = representative_name_parts(normalized)
     if name_parts:
         aliases.add(" ".join(name_parts))
         aliases.add(name_parts[-1])
+        for part in name_parts:
+            aliases.update(representative_token_aliases(part))
     return {alias for alias in aliases if alias}
+
+
+def representative_name_parts(normalized: str) -> list[str]:
+    return [
+        part
+        for part in normalized.split()
+        if len(part) > 1
+        and part not in REPRESENTATIVE_NOISE_PARTS
+        and part != "тп"
+        and not re.fullmatch(r"тп-?\d+|\d+", part)
+    ]
+
+
+def representative_token_aliases(part: str) -> set[str]:
+    aliases = {part}
+    suffixes = ("жон", "jon")
+    for suffix in suffixes:
+        if part.endswith(suffix) and len(part) > len(suffix) + 2:
+            aliases.add(part[: -len(suffix)])
+    return aliases
+
+
+def representative_tp_code(value: Any) -> str:
+    match = re.search(r"\bтп-?(\d+)\b", normalize_representative_name(value))
+    return f"ТП{match.group(1)}" if match else ""
+
+
+def representative_name_without_tp_code(value: Any) -> str:
+    text = normalize_text(value)
+    return re.sub(r"^\s*т\s*п\s*[- ]?\s*\d+\s*", "", text, flags=re.I).strip()
+
+
+def display_representative_name(
+    representative: Any = "",
+    contact: RepresentativeContact | None = None,
+) -> str:
+    representative_text = normalize_text(representative)
+    contact_name = normalize_text(getattr(contact, "name", ""))
+    tp_code = representative_tp_code(contact_name) or representative_tp_code(representative_text)
+    if not tp_code:
+        return representative_text or contact_name
+
+    representative_parts = representative_name_parts(normalize_representative_name(representative_text))
+    if representative_text and not representative_tp_code(representative_text):
+        if len(representative_parts) >= 2:
+            return f"{tp_code} {representative_text}"
+
+    source_name = contact_name or representative_text
+    source_tail = representative_name_without_tp_code(source_name)
+    if source_tail:
+        return f"{tp_code} {source_tail}"
+    return tp_code
 
 
 def normalize_phone(value: Any) -> str:
@@ -85,11 +139,13 @@ def build_representative_comment(
 ) -> str:
     lines = []
     payment = normalize_text(payment_type)
-    rep_name = normalize_text(representative) or normalize_text(getattr(contact, "name", ""))
+    rep_name = display_representative_name(representative, contact)
     if payment:
         lines.append(payment)
     if rep_name:
         lines.append(rep_name)
+    if contact and normalize_text(contact.work_zone):
+        lines.append(f"Раб зона: {normalize_text(contact.work_zone)}")
     if contact and normalize_text(contact.work_phone):
         lines.append(f"Рабочий номер: {normalize_phone(contact.work_phone)}")
     if contact and normalize_text(contact.personal_phone):

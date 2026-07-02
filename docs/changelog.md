@@ -4,6 +4,25 @@
 
 ## 2026-07-02
 
+### Smartup terminal TP contact matching and daily zone
+
+**Файлы:** `backend/app/representative_contacts.py`, `backend/app/skladbot_daily_report.py`, `tests/test_representative_contacts.py`, `tests/test_backend_skladbot_request_dry_run.py`, `tests/test_skladbot_daily_report.py`, `docs/changelog.md`, `docs/implementation-log.md`.
+
+**Что стало:**
+
+- Smartup-ФИО торгового представителя теперь матчится со справочником `representative_contacts` по имени внутри ФИО, а не только по последнему слову.
+- SkladBot comment для найденного ТП пишет: тип оплаты, `ТПN ФИО`, `Раб зона`, рабочий номер, личный номер.
+- Если Smartup дал только короткое имя, например `Мурод`, comment берет каноническое имя из справочника: `ТП8 Муроджон`.
+- Daily SkladBot XLSX получил колонку `Раб зона` на листах `Заявки` и `Товары заявок`; зона читается из multiline comment.
+
+**Проверки:**
+
+- `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_representative_contacts tests.test_backend_skladbot_request_dry_run tests.test_skladbot_daily_report` - 63 tests OK.
+- `PYTHONPATH=. ./.venv/bin/python -m py_compile backend/app/representative_contacts.py backend/app/skladbot_request_dry_run.py backend/app/skladbot_return_requests.py backend/app/skladbot_daily_report.py tests/test_representative_contacts.py tests/test_backend_skladbot_request_dry_run.py tests/test_skladbot_daily_report.py` - OK.
+- In-memory проверка `/Users/anton/Documents/Telegram/номера тп (2).xlsx`: `rows=8 created=8 skipped=0`; `WH-R-202964`, `WH-R-202966`, `WH-R-202967`, `WH-R-202968` находят ТП, зону и телефоны.
+
+## 2026-07-02
+
 ### Web panel refresh latency
 
 **Файлы:** `frontend/src/App.tsx`, `docs/implementation-log.md`, `docs/changelog.md`.

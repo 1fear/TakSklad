@@ -58,7 +58,15 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
         Base.metadata.drop_all(self.engine)
         self.engine.dispose()
 
-    def seed_import_order(self, *, products=None, linked=False, payment_type="Перечисление", telegram_chat_id=""):
+    def seed_import_order(
+        self,
+        *,
+        products=None,
+        linked=False,
+        payment_type="Перечисление",
+        telegram_chat_id="",
+        representative="ТП1",
+    ):
         products = products or [
             ("Chapman RED OP 20", 2),
             ("Chapman Brown OP 20", 3),
@@ -89,7 +97,7 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
                 payment_type=payment_type,
                 client='"TEST CLIENT" MCHJ',
                 address="Ташкент, улица Тестовая, 1",
-                representative="ТП1",
+                representative=representative,
                 status="not_completed",
                 raw_payload=order_raw_payload,
             )
@@ -283,7 +291,10 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
         self.assertEqual(row["payload"]["fields"]["comment"]["value"], "Терминал\nТП1")
 
     def test_skladbot_payload_adds_representative_contact_phones_from_db(self):
-        import_id, _order_id = self.seed_import_order(payment_type="Терминал")
+        import_id, _order_id = self.seed_import_order(
+            payment_type="Терминал",
+            representative="Суюнбеков Умид",
+        )
 
         with self.SessionLocal() as db:
             db.add(RepresentativeContact(
@@ -291,6 +302,7 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
                 normalized_name=normalize_representative_name("ТП-1 Умид"),
                 work_phone="+998 91 111 11 11",
                 personal_phone="+998 90 222 22 22",
+                work_zone="Юнусабад",
                 is_active=True,
             ))
             db.commit()
@@ -301,7 +313,8 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
         self.assertEqual(
             row["payload"]["fields"]["comment"]["value"],
             "Терминал\n"
-            "ТП1\n"
+            "ТП1 Суюнбеков Умид\n"
+            "Раб зона: Юнусабад\n"
             "Рабочий номер: +998 91 111 11 11\n"
             "Личный номер: +998 90 222 22 22",
         )

@@ -51,6 +51,7 @@ REQUEST_HEADERS = [
     "Дата выгрузки",
     "Юрлицо/точка",
     "Торговый представитель",
+    "Раб зона",
     "Клиент SkladBot",
     "Адрес",
     "Комментарий",
@@ -68,6 +69,7 @@ REQUEST_PRODUCT_HEADERS = [
     "Дата выгрузки",
     "Юрлицо/точка",
     "Торговый представитель",
+    "Раб зона",
     "Товар",
     "Артикул",
     "Штрихкод",
@@ -766,6 +768,7 @@ def write_requests_sheet(sheet, requests: list[dict[str, Any]]) -> None:
         planned_blocks = request_blocks(request)
         actual_blocks = request_report_blocks(request)
         representative = request_representative(request)
+        representative_zone = request_representative_zone(request)
         sheet.append([
             request.get("id") or "",
             request.get("number") or "",
@@ -778,6 +781,7 @@ def write_requests_sheet(sheet, requests: list[dict[str, Any]]) -> None:
             request.get("unloading_date") or "",
             request.get("recipient") or "",
             representative,
+            representative_zone,
             request.get("customer_name") or "",
             request.get("address") or "",
             request.get("comment") or "",
@@ -795,6 +799,7 @@ def write_request_products_sheet(sheet, requests: list[dict[str, Any]]) -> None:
     for request in requests:
         category = normalize_text(request.get("category")) or REQUEST_CATEGORY_OTHER
         representative = request_representative(request)
+        representative_zone = request_representative_zone(request)
         for product in request.get("products") or []:
             planned_blocks = parse_int(product.get("amount"))
             actual_blocks = report_product_blocks(product, category)
@@ -806,6 +811,7 @@ def write_request_products_sheet(sheet, requests: list[dict[str, Any]]) -> None:
                 request.get("unloading_date") or "",
                 request.get("recipient") or "",
                 representative,
+                representative_zone,
                 product.get("name") or "",
                 product.get("vendor_code") or "",
                 product.get("barcode") or "",
@@ -833,6 +839,28 @@ def representative_from_comment(comment: Any) -> str:
     if ":" in candidate:
         return ""
     return candidate
+
+
+def request_representative_zone(request: dict[str, Any]) -> str:
+    explicit = normalize_text(
+        request.get("representative_zone")
+        or request.get("work_zone")
+        or request.get("zone")
+    )
+    if explicit:
+        return explicit
+    return representative_zone_from_comment(request.get("comment"))
+
+
+def representative_zone_from_comment(comment: Any) -> str:
+    lines = [normalize_text(line) for line in normalize_text(comment).splitlines()]
+    for line in lines:
+        if ":" not in line:
+            continue
+        label, value = line.split(":", 1)
+        if "зона" in label.lower().replace("ё", "е"):
+            return normalize_text(value)
+    return ""
 
 
 def is_payment_comment_line(value: Any) -> bool:

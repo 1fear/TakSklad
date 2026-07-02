@@ -4,6 +4,25 @@
 
 ## 2026-07-02
 
+### Smartup terminal TP contact matching and daily zone
+
+- Причина: Smartup terminal auto import передает в `order.representative` полное ФИО агента, например `Мирзаев Бекзод Мусажон угли`, а справочник телефонов хранит строки вида `ТП-3 Бекзод`. Старый matcher проверял полный normalized key и последний токен, поэтому имя из середины ФИО не находилось, и SkladBot comment оставался без зоны и телефонов.
+- Изменено:
+  - `representative_aliases()` теперь добавляет отдельные значимые части ФИО и игнорирует шумовые части вроде `угли`;
+  - для короткого Smartup-имени `Мурод` добавлен safe-match к справочному `Муроджон` через суффикс `жон`;
+  - `build_representative_comment()` выводит `ТПN ФИО`, `Раб зона`, рабочий номер и личный номер, если контакт найден;
+  - daily SkladBot XLSX получил колонку `Раб зона` на листах `Заявки` и `Товары заявок`, зона парсится из multiline comment.
+- Инварианты:
+  - первая строка SkladBot comment остается типом оплаты;
+  - реальные телефоны не записаны в git;
+  - заказы, статусы, остатки, КИЗы и Google Sheets строки не меняются.
+- Проверено:
+  - `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_representative_contacts tests.test_backend_skladbot_request_dry_run tests.test_skladbot_daily_report` - 63 tests OK;
+  - `PYTHONPATH=. ./.venv/bin/python -m py_compile backend/app/representative_contacts.py backend/app/skladbot_request_dry_run.py backend/app/skladbot_return_requests.py backend/app/skladbot_daily_report.py tests/test_representative_contacts.py tests/test_backend_skladbot_request_dry_run.py tests/test_skladbot_daily_report.py` - OK;
+  - in-memory проверка `/Users/anton/Documents/Telegram/номера тп (2).xlsx` подтвердила матчинг `WH-R-202964`, `WH-R-202966`, `WH-R-202967`, `WH-R-202968` к ТП, зоне и телефонам без записи в рабочую БД.
+
+## 2026-07-02
+
 ### Web panel refresh latency
 
 - Причина: обычное обновление web-панели ожидало таблицу, дневную сводку и весь дополнительный диагностический fanout. Медленный readiness/events/operations/Smartup/calendar/incidents endpoint держал общий spinner и создавал ощущение постоянного долгого обновления.
