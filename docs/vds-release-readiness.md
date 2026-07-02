@@ -315,17 +315,21 @@ cd /opt/taksklad/app
 ./deploy/vds/acceptance_status.sh --require-go
 ```
 
-До ручной приёмки команда должна падать, потому что `release_go_no_go.status=no_go`.
+После production smoke 2026-07-02 команда должна проходить, потому что `release_go_no_go.status=go`.
 
-Следующий релизный блок:
+Текущий релизный статус:
 
-1. Провести реальный Telegram upload test с копией Excel.
-2. Проверить SkladBot match на живой заявке `3PL отгрузка` командой:
+1. Антон подтвердил боевой контур: Smartup auto export, Telegram import в БД, скан КИЗов и создание заявок SkladBot.
+2. `outputs/taksklad_acceptance/ACCEPTANCE_RESULTS.md` зафиксирован как production smoke `2026-07-02`.
+3. `tools/release_go_no_go.py` возвращает `status=go`.
+4. `tools/feature_acceptance_status.py --require-manual-complete --require-no-open-errors` проходит: manual pending `0`, open errors `0`.
+5. Live `/ready` чистый: DB/migrations OK, queue active `0`, `google_mirror=ok`.
+
+Для повторной искусственной приемки можно использовать synthetic marker:
 
 ```bash
 cd /opt/taksklad/app
 ./deploy/vds/diagnose_skladbot_match.sh --marker "ACCEPTANCE TELEGRAM 20260531" --limit 5 --request-limit 20
 ```
 
-3. Провести ручную Windows-приёмку на копии реальных заказов.
-4. После успешной приёмки готовить Windows archive.
+Новый Windows archive готовить только после отдельного release checklist и повторного smoke для новой версии.

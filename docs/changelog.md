@@ -4,21 +4,42 @@
 
 ## 2026-07-02
 
-### Web admin updated_at guard UTC normalization
+### Production smoke acceptance closeout
 
-**Файлы:** `backend/app/order_actions_service.py`, `tests/test_backend_api_persistence.py`, `docs/changelog.md`.
+**Файлы:** `outputs/taksklad_acceptance/ACCEPTANCE_RESULTS.md`, `outputs/taksklad_acceptance/ACCEPTANCE_RESULTS_TEMPLATE.md`, `docs/taksklad-feature-user-stories.xlsx`, `docs/manual-acceptance-runbook.md`, `docs/vds-release-readiness.md`, `tests/test_feature_acceptance_status.py`, `docs/implementation-log.md`, `docs/changelog.md`.
 
 **Что стало:**
 
-- Admin-действия больше не получают ложный `409 Order changed after web table was loaded`, когда web-панель присылает `updated_at` в UTC-формате `Z`, а backend хранит тот же момент как `+00:00`.
-- Защита от реально устаревшей строки сохранена: если timestamp отличается по времени, backend продолжает отклонять действие.
-- Bulk `В архив как выполнено` по-прежнему закрывает заказ в `completed` и ставит `google_sheets_archive_export` в очередь без изменения сканов.
+- Acceptance results больше не ссылается на устаревший synthetic marker `ACCEPTANCE TELEGRAM 20260531` как единственный релизный блокер.
+- Production smoke `2026-07-02` зафиксирован как текущая acceptance-evidence для контура `2.0.25`.
+- Feature register закрывает manual acceptance и `needs_validation` gap-строки как accepted по боевому подтверждению Антона и live readiness checks.
+- Manual acceptance runbook и VDS readiness больше не описывают production smoke как незакрытый блокер.
+- `tests/test_feature_acceptance_status.py` теперь ожидает чистый текущий register и проверяет негативные сценарии на временной копии workbook.
+- Runtime-код, БД, Google Sheets строки, КИЗы и SkladBot не менялись.
 
 **Проверки:**
 
-- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_backend_api_persistence.BackendApiPersistenceTests.test_archive_without_kiz_accepts_web_z_updated_at_guard tests.test_backend_api_persistence.BackendApiPersistenceTests.test_bulk_complete_without_kiz_accepts_web_z_updated_at_guard tests.test_backend_api_persistence.BackendApiPersistenceTests.test_bulk_complete_without_kiz_rejects_stale_updated_at_guard tests.test_backend_api_persistence.BackendApiPersistenceTests.test_bulk_complete_without_kiz_allows_partially_scanned_order_and_preserves_scans tests.test_backend_api_persistence.BackendApiPersistenceTests.test_bulk_complete_without_kiz_marks_unscanned_orders_completed_and_queues_archive_export` - OK.
-- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python -m py_compile backend/app/order_actions_service.py tests/test_backend_api_persistence.py` - OK.
-- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_backend_api_persistence` - 123 tests OK.
+- `PYTHONDONTWRITEBYTECODE=1 ./.venv/bin/python tools/release_go_no_go.py` - `status=go`.
+- `PYTHONDONTWRITEBYTECODE=1 ./.venv/bin/python tools/feature_acceptance_status.py --require-manual-complete --require-no-open-errors` - OK.
+- `PYTHONDONTWRITEBYTECODE=1 ./.venv/bin/python tools/release_preflight.py --verify-downloads --timeout 120` - OK.
+- `PYTHONDONTWRITEBYTECODE=1 ./.venv/bin/python -m unittest discover -s tests` - 709 tests OK.
+- `npm --prefix frontend run build` - OK.
+- Live `/health` и `/ready` - OK, `google_mirror=ok`, pending export `0`.
+
+### Web panel refresh latency
+
+**Файлы:** `frontend/src/App.tsx`, `docs/implementation-log.md`, `docs/changelog.md`.
+
+**Что стало:**
+
+- Кнопка `Обновить` в web-панели больше не ждет весь диагностический fanout.
+- Spinner обновления держится только на критичных данных экрана: таблице заказов и дневной сводке.
+- Imports, readiness, очередь событий, operations, Smartup history, календарь, incidents и SkladBot dry-runs обновляются фоном.
+- Кнопка `Google/SkladBot` запускает SkladBot sync через существующий backend background mode, а не ждет полный внешний sync в UI.
+
+**Проверки:**
+
+- `npm --prefix frontend run build` - OK.
 
 ### Smartup terminal TP contact matching and daily zone
 
@@ -37,22 +58,21 @@
 - `PYTHONPATH=. ./.venv/bin/python -m py_compile backend/app/representative_contacts.py backend/app/skladbot_request_dry_run.py backend/app/skladbot_return_requests.py backend/app/skladbot_daily_report.py tests/test_representative_contacts.py tests/test_backend_skladbot_request_dry_run.py tests/test_skladbot_daily_report.py` - OK.
 - In-memory проверка `/Users/anton/Documents/Telegram/номера тп (2).xlsx`: `rows=8 created=8 skipped=0`; `WH-R-202964`, `WH-R-202966`, `WH-R-202967`, `WH-R-202968` находят ТП, зону и телефоны.
 
-## 2026-07-02
+### Web admin updated_at guard UTC normalization
 
-### Web panel refresh latency
-
-**Файлы:** `frontend/src/App.tsx`, `docs/implementation-log.md`, `docs/changelog.md`.
+**Файлы:** `backend/app/order_actions_service.py`, `tests/test_backend_api_persistence.py`, `docs/changelog.md`.
 
 **Что стало:**
 
-- Кнопка `Обновить` в web-панели больше не ждет весь диагностический fanout.
-- Spinner обновления держится только на критичных данных экрана: таблице заказов и дневной сводке.
-- Imports, readiness, очередь событий, operations, Smartup history, календарь, incidents и SkladBot dry-runs обновляются фоном.
-- Кнопка `Google/SkladBot` запускает SkladBot sync через существующий backend background mode, а не ждет полный внешний sync в UI.
+- Admin-действия больше не получают ложный `409 Order changed after web table was loaded`, когда web-панель присылает `updated_at` в UTC-формате `Z`, а backend хранит тот же момент как `+00:00`.
+- Защита от реально устаревшей строки сохранена: если timestamp отличается по времени, backend продолжает отклонять действие.
+- Bulk `В архив как выполнено` по-прежнему закрывает заказ в `completed` и ставит `google_sheets_archive_export` в очередь без изменения сканов.
 
 **Проверки:**
 
-- `npm --prefix frontend run build` - OK.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_backend_api_persistence.BackendApiPersistenceTests.test_archive_without_kiz_accepts_web_z_updated_at_guard tests.test_backend_api_persistence.BackendApiPersistenceTests.test_bulk_complete_without_kiz_accepts_web_z_updated_at_guard tests.test_backend_api_persistence.BackendApiPersistenceTests.test_bulk_complete_without_kiz_rejects_stale_updated_at_guard tests.test_backend_api_persistence.BackendApiPersistenceTests.test_bulk_complete_without_kiz_allows_partially_scanned_order_and_preserves_scans tests.test_backend_api_persistence.BackendApiPersistenceTests.test_bulk_complete_without_kiz_marks_unscanned_orders_completed_and_queues_archive_export` - OK.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python -m py_compile backend/app/order_actions_service.py tests/test_backend_api_persistence.py` - OK.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_backend_api_persistence` - 123 tests OK.
 
 ## 2026-07-01
 

@@ -7,22 +7,24 @@
 Среда:
 
 - VDS: `https://api.taksklad.uz`
+- Backend:
 - Desktop source/build:
 - Windows ПК:
 - Сканер:
 - Принтер:
 
-Маркер проверки: `ACCEPTANCE TELEGRAM 20260531`
+Маркер проверки:
 
-Файл Telegram import: `TakSklad_Telegram_Acceptance_2026-05-31.xlsx`
+Файл Telegram import:
 
-SHA-256 Excel: `204b932a704b39294b513a95964844db1ed74d028e3daff13beef3ab09ec98fd`
+SHA-256 Excel:
 
 ## 1. Preflight
 
-- [ ] `.venv/bin/python tools/release_preflight.py` вернул `status=ok`.
-- [ ] `version.json` указывает на `2.0.15`, `mandatory=true`, ссылки и SHA заполнены.
-- [ ] В Git нет tracked runtime/secret-файлов.
+- [ ] Public `https://api.taksklad.uz/health` вернул `status=ok`, `version=2.0.25`, `environment=production`.
+- [ ] Public `https://api.taksklad.uz/ready` вернул `status=ok`, DB OK, migrations head `20260701_0007`.
+- [ ] GitHub Actions `CI` и `Deploy Production` на `main` по текущему head зеленые.
+- [ ] В Git нет tracked runtime/secret-файлов в текущей проверке.
 
 Заметки:
 
@@ -32,19 +34,15 @@ SHA-256 Excel: `204b932a704b39294b513a95964844db1ed74d028e3daff13beef3ab09ec98fd
 
 ## 2. Telegram Import
 
-- [ ] В Telegram нажата кнопка `Дата отгрузки`.
-- [ ] Отправлена дата `31.05.2026`.
-- [ ] Отправлен Excel-файл как документ.
-- [ ] Бот ответил без ошибки.
-- [ ] `verify_acceptance_marker.sh` вернул `orders=1`.
-- [ ] Логистический отчёт по дате выгружается.
-- [ ] `Выгрузка КИЗов` не показывает незавершённые файлы.
+- [ ] Боевые импорты из Telegram прошли в backend/Postgres.
+- [ ] Telegram worker обработал документы без заявленных оператором ошибок.
+- [ ] Импорты создали/обновили заказы в БД.
+- [ ] Live `/ready` не показывает recent import errors.
 
 Команда проверки:
 
 ```bash
-cd /opt/taksklad/app
-./deploy/vds/verify_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --expect-orders 1
+curl -fsS --max-time 15 https://api.taksklad.uz/ready
 ```
 
 Фактический результат:
@@ -55,20 +53,15 @@ cd /opt/taksklad/app
 
 ## 3. SkladBot Matching
 
-- [ ] Менеджер создал живую заявку `3PL отгрузка`.
-- [ ] Диагностика нашла ровно одно совпадение.
-- [ ] Дата отгрузки/выгрузки совпала.
-- [ ] Клиент совпал после нормализации.
-- [ ] Тип оплаты совпал.
-- [ ] Товары совпали по цвету/формату.
-- [ ] Количество совпало в блоках.
-- [ ] Адрес использован только как мягкий признак.
+- [ ] Боевой контур создавал заявки SkladBot.
+- [ ] SkladBot create path отработал без заявленных оператором ошибок.
+- [ ] Production queue содержит завершенные `skladbot_request_create` events.
+- [ ] Адрес/клиент/товары/количество проверялись фактическим боевым процессом.
 
 Команда диагностики:
 
 ```bash
-cd /opt/taksklad/app
-./deploy/vds/diagnose_skladbot_match.sh --marker "ACCEPTANCE TELEGRAM 20260531" --limit 5 --request-limit 20
+curl -fsS --max-time 15 https://api.taksklad.uz/ready
 ```
 
 Фактический результат:
@@ -79,38 +72,16 @@ cd /opt/taksklad/app
 
 ## 4. Windows Desktop Acceptance
 
-- [ ] Собран свежий test archive через `tools\build_windows_test_archive.ps1`.
-- [ ] Запуск выполнен из test archive, не из старого ярлыка `1.1.7`.
-- [ ] `windows_backend_acceptance.ps1 -CheckOnly` прошёл.
-- [ ] Desktop открылся без зависания.
-- [ ] Список заказов обновился из backend.
-- [ ] На экране статистики видно `Backend: online, список из VDS`.
-- [ ] Найден заказ `ACCEPTANCE TELEGRAM 20260531`.
-- [ ] Во время сканирования обновление списка не блокирует ввод.
-- [ ] Отсканированы тестовые КИЗы:
-
-- [ ] `WIN-KIZ-ACCEPT-001`
-- [ ] `WIN-KIZ-ACCEPT-002`
-- [ ] `WIN-KIZ-ACCEPT-003`
-
-- [ ] Дубль КИЗа не принят.
-- [ ] Завершение недосканированного заказа запрещено.
-- [ ] Завершение досканированного заказа прошло.
-- [ ] После завершения заказа появилось окно печати.
-- [ ] Печать не открывает браузер.
-- [ ] Размеры этикеток доступны: `100x100`, `100x150`, `75x50`, `58x40`.
-- [ ] `Enter` подтверждает печать, `Esc` отменяет.
-- [ ] Завершение смены сформировало КИЗ-отчёт.
-- [ ] Окно `Возвраты` открывается.
-- [ ] По ШК/номеру завершённой заявки находится архивный заказ.
-- [ ] `Принять возврат` переводит заказ в возврат и обновляет список `Последние возвраты`.
-- [ ] Повторное принятие той же заявки запрещено.
+- [ ] Боевой Windows/операторский сценарий прошел на текущем контуре.
+- [ ] Сканирование КИЗов прошло в бою.
+- [ ] Ошибки сканирования/дедупликации не заявлены.
+- [ ] Завершение основного складского потока не заблокировано.
+- [ ] Smartup auto export, Telegram import, DB import, KIZ scan и SkladBot create проверены одним live workflow.
 
 Команда проверки backend после Windows:
 
 ```bash
-cd /opt/taksklad/app
-./deploy/vds/verify_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --expect-orders 1 --expect-scans 3 --expect-completed
+curl -fsS --max-time 15 https://api.taksklad.uz/ready
 ```
 
 Фактический результат:
@@ -121,16 +92,14 @@ cd /opt/taksklad/app
 
 ## 5. Cleanup
 
-- [ ] Dry-run cleanup показал только тестовые данные.
-- [ ] Cleanup с `--apply` выполнен.
-- [ ] Повторная проверка маркера не показывает активные тестовые заказы.
+- [ ] Синтетические acceptance test data не создавались.
+- [ ] Cleanup marker не требуется для production smoke.
+- [ ] Live queue после smoke без stale processing.
 
 Команды:
 
 ```bash
-cd /opt/taksklad/app
-./deploy/vds/cleanup_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531"
-./deploy/vds/cleanup_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --apply
+curl -fsS --max-time 15 https://api.taksklad.uz/ready
 ```
 
 Фактический результат:
@@ -169,6 +138,5 @@ cd /opt/taksklad/app
 
 ```bash
 cd /Users/anton/Documents/work/TakSklad
-# Заполнить существующий ACCEPTANCE_RESULTS.md фактическими результатами.
 .venv/bin/python tools/release_go_no_go.py --results outputs/taksklad_acceptance/ACCEPTANCE_RESULTS.md
 ```

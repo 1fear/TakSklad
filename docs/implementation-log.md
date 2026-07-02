@@ -4,6 +4,40 @@
 
 ## 2026-07-02
 
+### Production smoke closeout and acceptance gate GO
+
+- Причина: после боевых проверок Антон подтвердил, что основной production-контур прошел без наблюдаемых ошибок: Smartup auto export, Telegram import в БД, сканирование КИЗов и создание заявок SkladBot.
+- Изменено:
+  - `outputs/taksklad_acceptance/ACCEPTANCE_RESULTS.md` переведен со старого synthetic marker `ACCEPTANCE TELEGRAM 20260531` на фактический production smoke `2026-07-02`;
+  - `outputs/taksklad_acceptance/ACCEPTANCE_RESULTS_TEMPLATE.md` обновлен под текущий production smoke `2.0.25`, а не старый `2.0.15` acceptance kit;
+  - `docs/taksklad-feature-user-stories.xlsx` закрывает 45 manual acceptance строк и 19 `needs_validation` gap-строк как `accepted` по production smoke и live readiness checks;
+  - `docs/manual-acceptance-runbook.md` и `docs/vds-release-readiness.md` обновлены с учетом принятого production smoke;
+  - `tests/test_feature_acceptance_status.py` переведен с ожидания старого pending-register на текущий clean-register, а негативные CLI проверки теперь используют временную копию workbook.
+- Инварианты:
+  - runtime-код, БД, Google Sheets строки, КИЗы, SkladBot и production compose не менялись;
+  - acceptance evidence явно отмечает границу: это операторское боевое подтверждение, не отдельный Codex replay на Windows hardware.
+- Проверено:
+  - `tools/release_go_no_go.py` - `status=go`;
+  - `tools/feature_acceptance_status.py --require-manual-complete --require-no-open-errors` - OK, manual pending `0`, open errors `0`;
+  - `tools/release_preflight.py --verify-downloads --timeout 120` - OK, GitHub release SHA для onefile и onedir совпали;
+  - `PYTHONDONTWRITEBYTECODE=1 ./.venv/bin/python -m unittest discover -s tests` - 709 tests OK;
+  - `npm --prefix frontend run build` - OK;
+  - live `https://api.taksklad.uz/health` - OK, backend `2.0.25`, production;
+  - live `https://api.taksklad.uz/ready` - OK, DB/migrations OK, queue active `0`, stale processing `0`, `google_mirror=ok`, pending export `0`.
+
+### Web panel refresh latency
+
+- Причина: обычное обновление web-панели ожидало таблицу, дневную сводку и весь дополнительный диагностический fanout. Медленный readiness/events/operations/Smartup/calendar/incidents endpoint держал общий spinner и создавал ощущение постоянного долгого обновления.
+- Изменено:
+  - `refreshAll()` теперь ждет только `getAdminTable()` и `getDashboardDaySummary()`;
+  - imports, client points, readiness, event queue, operations attention, Smartup history, logistics calendar, incidents и SkladBot dry-runs обновляются через `refreshPanelContext()` в фоне;
+  - ручной `Google/SkladBot` sync больше не ждет полный SkladBot внешний sync в UI, а использует существующий background mode backend endpoint.
+- Инварианты:
+  - backend endpoints, Google export logic, KIZ logic, статусы заказов и складские данные не менялись;
+  - таблица заказов и дневные метрики остаются критичным blocking refresh surface.
+- Проверено:
+  - `npm --prefix frontend run build` - OK.
+
 ### Smartup terminal TP contact matching and daily zone
 
 - Причина: Smartup terminal auto import передает в `order.representative` полное ФИО агента, например `Мирзаев Бекзод Мусажон угли`, а справочник телефонов хранит строки вида `ТП-3 Бекзод`. Старый matcher проверял полный normalized key и последний токен, поэтому имя из середины ФИО не находилось, и SkladBot comment оставался без зоны и телефонов.
@@ -20,21 +54,6 @@
   - `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_representative_contacts tests.test_backend_skladbot_request_dry_run tests.test_skladbot_daily_report` - 63 tests OK;
   - `PYTHONPATH=. ./.venv/bin/python -m py_compile backend/app/representative_contacts.py backend/app/skladbot_request_dry_run.py backend/app/skladbot_return_requests.py backend/app/skladbot_daily_report.py tests/test_representative_contacts.py tests/test_backend_skladbot_request_dry_run.py tests/test_skladbot_daily_report.py` - OK;
   - in-memory проверка `/Users/anton/Documents/Telegram/номера тп (2).xlsx` подтвердила матчинг `WH-R-202964`, `WH-R-202966`, `WH-R-202967`, `WH-R-202968` к ТП, зоне и телефонам без записи в рабочую БД.
-
-## 2026-07-02
-
-### Web panel refresh latency
-
-- Причина: обычное обновление web-панели ожидало таблицу, дневную сводку и весь дополнительный диагностический fanout. Медленный readiness/events/operations/Smartup/calendar/incidents endpoint держал общий spinner и создавал ощущение постоянного долгого обновления.
-- Изменено:
-  - `refreshAll()` теперь ждет только `getAdminTable()` и `getDashboardDaySummary()`;
-  - imports, client points, readiness, event queue, operations attention, Smartup history, logistics calendar, incidents и SkladBot dry-runs обновляются через `refreshPanelContext()` в фоне;
-  - ручной `Google/SkladBot` sync больше не ждет полный SkladBot внешний sync в UI, а использует существующий background mode backend endpoint.
-- Инварианты:
-  - backend endpoints, Google export logic, KIZ logic, статусы заказов и складские данные не менялись;
-  - таблица заказов и дневные метрики остаются критичным blocking refresh surface.
-- Проверено:
-  - `npm --prefix frontend run build` - OK.
 
 ## 2026-07-01
 

@@ -4,6 +4,8 @@
 
 Этот документ закрывает последние ручные проверки, которые нельзя честно выполнить из macOS/VDS без участия реального Telegram-пользователя и Windows-компьютера склада.
 
+Статус 2026-07-02: основной production smoke принят по боевому подтверждению Антона. В бою прошли Smartup auto export, Telegram import в БД, сканирование КИЗов и создание заявок SkladBot; операторских ошибок не заявлено. Текущий релизный результат фиксируется в `outputs/taksklad_acceptance/ACCEPTANCE_RESULTS.md`, а synthetic marker `ACCEPTANCE TELEGRAM 20260531` остается только fallback-сценарием для повторной искусственной приемки.
+
 ## 1. Telegram Import От Пользовательского Аккаунта
 
 ### Цель
@@ -51,7 +53,7 @@ cd /Users/anton/Documents/work/TakSklad
 Он проверяет:
 
 - публичный `https://api.taksklad.uz/health`;
-- что `version.json` находится в одном из двух допустимых состояний: paused `1.1.7` или forced `2.0.24`, `mandatory=true`, ссылки GitHub Releases и SHA заполнены;
+- что `version.json` находится в forced-состоянии `2.0.25`, `mandatory=true`, ссылки GitHub Releases и SHA заполнены;
 - checksum acceptance Excel;
 - наличие acceptance/runbook/helper-файлов;
 - отсутствие tracked runtime/secret-файлов.
@@ -365,7 +367,7 @@ cd /opt/taksklad/app
 ## 4. Что Не Делать Во Время Acceptance
 
 - Не менять `version.json` вручную и не переключать rollout без release checklist.
-- Не публиковать новый GitHub Release поверх `v2.0.24` без повторной проверки.
+- Не публиковать новый GitHub Release поверх `v2.0.25` без повторной проверки.
 - Не запускать Windows release workflow.
 - Не проверять на реальных заказах без отдельного подтверждения.
 - Не делать deploy из dirty tree широким `rsync`; только selective deploy проверенных файлов после restore point.
@@ -384,4 +386,4 @@ Goal можно закрывать только после трёх подтве
 2. SkladBot matching проверен на живой заявке `3PL отгрузка`.
 3. Windows desktop acceptance прошёл на тестовой Windows-копии.
 
-До этого PR должен оставаться draft.
+Статус 2026-07-02: эти подтверждения приняты через production smoke Антона и live readiness checks. Для нового релиза или подозрения на регрессию повторить сценарий по этому runbook.

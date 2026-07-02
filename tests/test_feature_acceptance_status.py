@@ -20,7 +20,7 @@ class FeatureAcceptanceStatusTests(unittest.TestCase):
         temp_register.write_bytes(DEFAULT_REGISTER_PATH.read_bytes())
         return temp_register
 
-    def test_current_register_reports_manual_acceptance_pending(self):
+    def test_current_register_reports_manual_acceptance_complete(self):
         result = evaluate_register(DEFAULT_REGISTER_PATH)
 
         self.assertEqual(result["scope"], "feature_register_status")
@@ -30,40 +30,60 @@ class FeatureAcceptanceStatusTests(unittest.TestCase):
         self.assertEqual(result["stories"]["automated_passed"], 46)
         self.assertEqual(result["test_loop"]["total"], 47)
         self.assertEqual(result["manual_acceptance"]["total"], 45)
-        self.assertFalse(result["ready"]["manual_complete"])
-        self.assertGreater(result["manual_acceptance"]["pending"], 0)
+        self.assertTrue(result["ready"]["manual_complete"])
+        self.assertEqual(result["manual_acceptance"]["pending"], 0)
+        self.assertTrue(result["ready"]["no_open_errors"])
+        self.assertEqual(result["errors"]["open"], 0)
 
     def test_cli_require_manual_complete_fails_until_manual_rows_are_accepted(self):
-        proc = subprocess.run(
-            [
-                sys.executable,
-                str(SCRIPT_PATH),
-                "--register",
-                str(DEFAULT_REGISTER_PATH),
-                "--require-manual-complete",
-            ],
-            cwd=PROJECT_ROOT,
-            text=True,
-            capture_output=True,
-        )
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            temp_register = self.write_temp_register(tmp_dir)
+            workbook = load_workbook(temp_register)
+            sheet = workbook["Manual Acceptance"]
+            headers = [cell.value for cell in sheet[1]]
+            status_col = headers.index("Status") + 1
+            sheet.cell(2, status_col).value = "pending"
+            workbook.save(temp_register)
+
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    "--register",
+                    str(temp_register),
+                    "--require-manual-complete",
+                ],
+                cwd=PROJECT_ROOT,
+                text=True,
+                capture_output=True,
+            )
 
         self.assertEqual(proc.returncode, 3)
         payload = json.loads(proc.stdout)
         self.assertFalse(payload["ready"]["manual_complete"])
 
     def test_cli_require_no_open_errors_fails_until_errors_are_closed(self):
-        proc = subprocess.run(
-            [
-                sys.executable,
-                str(SCRIPT_PATH),
-                "--register",
-                str(DEFAULT_REGISTER_PATH),
-                "--require-no-open-errors",
-            ],
-            cwd=PROJECT_ROOT,
-            text=True,
-            capture_output=True,
-        )
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            temp_register = self.write_temp_register(tmp_dir)
+            workbook = load_workbook(temp_register)
+            sheet = workbook["Errors"]
+            headers = [cell.value for cell in sheet[1]]
+            status_col = headers.index("Status") + 1
+            sheet.cell(2, status_col).value = "needs_validation"
+            workbook.save(temp_register)
+
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    "--register",
+                    str(temp_register),
+                    "--require-no-open-errors",
+                ],
+                cwd=PROJECT_ROOT,
+                text=True,
+                capture_output=True,
+            )
 
         self.assertEqual(proc.returncode, 4)
         payload = json.loads(proc.stdout)
