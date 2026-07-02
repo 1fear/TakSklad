@@ -2,6 +2,21 @@
 
 Документ фиксирует ход работ: что сделано, что не сделано, какие ошибки найдены, какие решения приняты и что требует проверки. Новые записи добавляются сверху.
 
+## 2026-07-02
+
+### Web panel refresh latency
+
+- Причина: обычное обновление web-панели ожидало таблицу, дневную сводку и весь дополнительный диагностический fanout. Медленный readiness/events/operations/Smartup/calendar/incidents endpoint держал общий spinner и создавал ощущение постоянного долгого обновления.
+- Изменено:
+  - `refreshAll()` теперь ждет только `getAdminTable()` и `getDashboardDaySummary()`;
+  - imports, client points, readiness, event queue, operations attention, Smartup history, logistics calendar, incidents и SkladBot dry-runs обновляются через `refreshPanelContext()` в фоне;
+  - ручной `Google/SkladBot` sync больше не ждет полный SkladBot внешний sync в UI, а использует существующий background mode backend endpoint.
+- Инварианты:
+  - backend endpoints, Google export logic, KIZ logic, статусы заказов и складские данные не менялись;
+  - таблица заказов и дневные метрики остаются критичным blocking refresh surface.
+- Проверено:
+  - `npm --prefix frontend run build` - OK.
+
 ## 2026-07-01
 
 ### Daily reconciliation returned-order WH-R false positive

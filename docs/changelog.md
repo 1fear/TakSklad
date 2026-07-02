@@ -2,6 +2,23 @@
 
 Здесь фиксируются все правки в коде TakSklad: что менялось, в каком файле, зачем, и какие тесты это покрывают. Записи идут от новых к старым.
 
+## 2026-07-02
+
+### Web panel refresh latency
+
+**Файлы:** `frontend/src/App.tsx`, `docs/implementation-log.md`, `docs/changelog.md`.
+
+**Что стало:**
+
+- Кнопка `Обновить` в web-панели больше не ждет весь диагностический fanout.
+- Spinner обновления держится только на критичных данных экрана: таблице заказов и дневной сводке.
+- Imports, readiness, очередь событий, operations, Smartup history, календарь, incidents и SkladBot dry-runs обновляются фоном.
+- Кнопка `Google/SkladBot` запускает SkladBot sync через существующий backend background mode, а не ждет полный внешний sync в UI.
+
+**Проверки:**
+
+- `npm --prefix frontend run build` - OK.
+
 ## 2026-07-01
 
 ### Daily reconciliation returned-order WH-R false positive

@@ -34,7 +34,6 @@ import { Fragment, FormEvent, useEffect, useMemo, useState } from "react";
 import {
   AdminIncident,
   AdminActivity,
-  AdminIncidentsResponse,
   AdminTable,
   AdminTableRow,
   AdminBulkActionResult,
@@ -273,38 +272,17 @@ function App() {
     setError("");
     if (showNotice) setNotice("");
     try {
-      const [nextAdminTable, nextDashboardSummary, nextImports, nextClientPoints, nextReadiness, nextEventQueue, nextOperationsAttention, nextSmartupHistory, nextLogisticsCalendar, nextIncidents] = await Promise.all([
+      const [nextAdminTable, nextDashboardSummary] = await Promise.all([
         getAdminTable(activeConfig, adminTableRequest(0)),
         getDashboardDaySummary(activeConfig, reportDate),
-        listImports(activeConfig),
-        listClientPoints(activeConfig).catch(() => []),
-        getReadiness(activeConfig).catch(() => null),
-        getAdminEvents(activeConfig).catch(() => null),
-        getOperationsAttention(activeConfig).catch(() => null),
-        getSmartupAutoImportHistory(activeConfig).catch(() => null),
-        getLogisticsCalendar(activeConfig, calendarMonth).catch(() => null),
-        getAdminIncidents(activeConfig).catch(() => ({ items: [], summary: {} }) as AdminIncidentsResponse),
       ]);
       setAdminTable(nextAdminTable);
       setDashboardSummary(nextDashboardSummary);
-      setImports(nextImports);
-      setClientPoints(nextClientPoints);
-      setExpandedClientPointId("");
-      setClientOrderSummaries({});
-      setReadiness(nextReadiness);
-      setEventQueue(nextEventQueue);
-      setOperationsAttention(nextOperationsAttention);
-      setSmartupHistory(nextSmartupHistory);
-      setLogisticsCalendar(nextLogisticsCalendar);
-      setIncidents(nextIncidents.items);
-      setIncidentSummary(nextIncidents.summary);
-      void refreshDryRuns(activeConfig);
       setSelectedOrderIds((current) => current.filter((id) => nextAdminTable.rows.some((row) => row.order_id === id)));
-      setSelectedIncidentId((current) => current && nextIncidents.items.some((item) => item.id === current) ? current : "");
-      setSelectedEventId((current) => current && nextEventQueue?.recent_events.some((event) => event.id === current) ? current : "");
       if (showNotice) {
         setNotice(`Обновлено: ${new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}`);
       }
+      void refreshPanelContext(activeConfig);
     } catch (refreshError) {
       const message = refreshError instanceof Error ? refreshError.message : "Не удалось загрузить данные";
       if (refreshError instanceof ApiRequestError && refreshError.status === 401) {
@@ -317,6 +295,39 @@ function App() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function refreshPanelContext(activeConfig = config) {
+    const [nextImports, nextClientPoints, nextReadiness, nextEventQueue, nextOperationsAttention, nextSmartupHistory, nextLogisticsCalendar, nextIncidents] = await Promise.all([
+      listImports(activeConfig).catch(() => null),
+      listClientPoints(activeConfig).catch(() => null),
+      getReadiness(activeConfig).catch(() => null),
+      getAdminEvents(activeConfig).catch(() => null),
+      getOperationsAttention(activeConfig).catch(() => null),
+      getSmartupAutoImportHistory(activeConfig).catch(() => null),
+      getLogisticsCalendar(activeConfig, calendarMonth).catch(() => null),
+      getAdminIncidents(activeConfig).catch(() => null),
+    ]);
+    if (nextImports) setImports(nextImports);
+    if (nextClientPoints) {
+      setClientPoints(nextClientPoints);
+      setExpandedClientPointId("");
+      setClientOrderSummaries({});
+    }
+    if (nextReadiness) setReadiness(nextReadiness);
+    if (nextEventQueue) {
+      setEventQueue(nextEventQueue);
+      setSelectedEventId((current) => current && nextEventQueue.recent_events.some((event) => event.id === current) ? current : "");
+    }
+    if (nextOperationsAttention) setOperationsAttention(nextOperationsAttention);
+    if (nextSmartupHistory) setSmartupHistory(nextSmartupHistory);
+    if (nextLogisticsCalendar) setLogisticsCalendar(nextLogisticsCalendar);
+    if (nextIncidents) {
+      setIncidents(nextIncidents.items);
+      setIncidentSummary(nextIncidents.summary);
+      setSelectedIncidentId((current) => current && nextIncidents.items.some((item) => item.id === current) ? current : "");
+    }
+    void refreshDryRuns(activeConfig);
   }
 
   async function refreshAdminTable(activeConfig = config, showNotice = false) {
@@ -568,11 +579,11 @@ function App() {
     setError("");
     setNotice("");
     try {
-      const result = await syncSources(config, { skladbot: true, waitSkladbot: true });
+      const result = await syncSources(config, { skladbot: true, waitSkladbot: false });
       await refreshAll(config, false);
       const status = String(result.status || "completed");
       const skladbotStatus = String(result.skladbot?.status || "unknown");
-      setNotice(`Источники обновлены: ${status}, SkladBot ${skladbotStatus}`);
+      setNotice(`Источники обновлены или запущены: ${status}, SkladBot ${skladbotStatus}`);
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : "Не удалось обновить Google/SkladBot");
     } finally {
