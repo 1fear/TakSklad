@@ -463,6 +463,8 @@ def compare_status(item: OrderItem, record: dict) -> dict | None:
 
 
 def compare_skladbot_fields(item: OrderItem, record: dict) -> list[dict]:
+    if normalize_text(item.order.status).casefold() == "returned":
+        return []
     order_raw = item.order.raw_payload or {}
     comparisons = [
         ("skladbot_request_number", order_raw.get("skladbot_request_number"), record.get("skladbot_request_number")),

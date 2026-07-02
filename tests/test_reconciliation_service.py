@@ -200,6 +200,9 @@ class ReconciliationServiceTests(unittest.TestCase):
                 status="returned",
                 source_import_id="import-returned",
                 source_order_id="order-returned",
+                skladbot_request_number="WH-R-BACKEND",
+                skladbot_request_id="1001",
+                skladbot_status="found",
             )
             db.commit()
 
@@ -211,6 +214,9 @@ class ReconciliationServiceTests(unittest.TestCase):
                         source_import_id="import-returned",
                         source_order_id="order-returned",
                         status="Выполнено",
+                        skladbot_request_number="WH-R-GOOGLE",
+                        skladbot_request_id="2002",
+                        skladbot_status="Создано",
                     ),
                 ],
                 alert_chat_ids=["123"],
@@ -220,6 +226,7 @@ class ReconciliationServiceTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["google"]["status_mismatches"], 0)
+        self.assertEqual(result["google"]["wh_r_mismatches"], 0)
         self.assertEqual(incidents, [])
         self.assertEqual(notifications, [])
 

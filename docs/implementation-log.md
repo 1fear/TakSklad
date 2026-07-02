@@ -4,6 +4,16 @@
 
 ## 2026-07-01
 
+### Daily reconciliation returned-order WH-R false positive
+
+- Причина: live reconciliation за `2026-06-26` показывал `google_mirror_mismatch`, хотя единственный mismatch был по WH-R полям у уже returned order. Для returned order Google mirror может хранить исторический WH-R, а возвратный workflow живет отдельно.
+- Изменено:
+  - `backend/app/reconciliation_service.py` больше не считает SkladBot WH-R/status mismatch критичным Google drift для order со статусом `returned`;
+  - regression test расширен: returned order с разными WH-R/ID/status в DB и Google остается reconciliation `ok`.
+- Проверено:
+  - `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_reconciliation_service tests.test_backend_api_persistence.BackendApiPersistenceTests.test_reconciliation_report_endpoint_is_db_first_and_does_not_alert tests.test_backend_api_persistence.BackendApiPersistenceTests.test_reconciliation_report_endpoint_records_google_down_as_mirror_issue` - 8 tests OK;
+  - `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python -m py_compile backend/app/reconciliation_service.py tests/test_reconciliation_service.py` - OK.
+
 ### Pending event queue indexes and deploy workflow bootstrap
 
 - Причина: активный tracker-хвост `Ускорить TakSklad queue checks` требовал индексировать hot-path выборки очереди, а первый CI/CD deploy должен работать с текущим VDS app dir, который может быть не git checkout.

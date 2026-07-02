@@ -4,6 +4,20 @@
 
 ## 2026-07-01
 
+### Daily reconciliation returned-order WH-R false positive
+
+**Файлы:** `backend/app/reconciliation_service.py`, `tests/test_reconciliation_service.py`, `docs/implementation-log.md`, `docs/changelog.md`.
+
+**Что стало:**
+
+- Returned order больше не дает critical `google_mirror_mismatch` только из-за различий WH-R/ID/status между DB и Google mirror.
+- Статус returned по-прежнему сравнивается как Google `Выполнено`; остальной active-order reconciliation не менялся.
+
+**Проверки:**
+
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_reconciliation_service tests.test_backend_api_persistence.BackendApiPersistenceTests.test_reconciliation_report_endpoint_is_db_first_and_does_not_alert tests.test_backend_api_persistence.BackendApiPersistenceTests.test_reconciliation_report_endpoint_records_google_down_as_mirror_issue` - 8 tests OK.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python -m py_compile backend/app/reconciliation_service.py tests/test_reconciliation_service.py` - OK.
+
 ### Pending event queue indexes and CI/CD deploy bootstrap
 
 **Файлы:** `backend/app/models.py`, `backend/app/health_service.py`, `backend/sql/001_initial_schema.sql`, `backend/migrations/versions/20260701_0007_pending_event_indexes.py`, `deploy/vds/deploy_from_git.sh`, `tests/test_backend_skeleton.py`, `tests/test_backend_api_persistence.py`, `tests/test_ci_cd_workflows.py`, `docs/deploy-rollback-runbook.md`, `docs/implementation-log.md`, `docs/changelog.md`.
