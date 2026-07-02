@@ -37,7 +37,12 @@ from .orders_service import (
     STATUS_RETURNED,
 )
 from .scan_quantities import scan_metadata_for_code, scanned_blocks_for_scans
-from .google_sheets_pending import process_pending_google_sheets_exports
+from .google_sheets_pending import (
+    google_sheets_export_cooldown_until,
+    is_google_rate_limit_error,
+    process_pending_google_sheets_exports,
+    retry_after_seconds_from_error,
+)
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -67,6 +72,77 @@ def env_bool(name, default=False):
     if not text:
         return default
     return text in {"1", "true", "yes", "on", "да"}
+
+
+def backend_sync_interval_seconds(worker_interval=None):
+    worker_interval = max(30, int(worker_interval or 60))
+    return max(30, env_int("GOOGLE_SHEETS_BACKEND_SYNC_INTERVAL_SECONDS", max(worker_interval, 300)))
+
+
+def backend_sync_rate_limit_cooldown_seconds(worker_interval=None):
+    worker_interval = max(30, int(worker_interval or 60))
+    return max(30, env_int("GOOGLE_SHEETS_BACKEND_SYNC_RATE_LIMIT_COOLDOWN_SECONDS", max(worker_interval, 300)))
+
+
+def skipped_backend_sync_result(reason):
+    return {**build_result(rows=0), "status": "skipped", "reason": reason}
+
+
+def run_google_sheets_worker_cycle(
+    db: Session,
+    *,
+    backend_sync_enabled=None,
+    next_backend_sync_at=0.0,
+    backend_sync_interval=None,
+    rate_limit_cooldown=None,
+    now_monotonic=None,
+    pending_processor=process_pending_google_sheets_exports,
+    cooldown_reader=google_sheets_export_cooldown_until,
+    backend_syncer=None,
+):
+    now_monotonic = time.monotonic() if now_monotonic is None else float(now_monotonic)
+    backend_sync_enabled = (
+        env_bool("TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED", default=False)
+        if backend_sync_enabled is None
+        else bool(backend_sync_enabled)
+    )
+    backend_sync_interval = max(30, int(backend_sync_interval or backend_sync_interval_seconds()))
+    rate_limit_cooldown = max(30, int(rate_limit_cooldown or backend_sync_rate_limit_cooldown_seconds()))
+    backend_syncer = sync_google_sheet_to_backend if backend_syncer is None else backend_syncer
+
+    pending_result = pending_processor(db)
+    if not backend_sync_enabled:
+        return pending_result, skipped_backend_sync_result("disabled"), next_backend_sync_at
+    if str((pending_result or {}).get("status") or "").strip().lower() == "paused":
+        return (
+            pending_result,
+            skipped_backend_sync_result("pending_export_paused"),
+            max(float(next_backend_sync_at or 0), now_monotonic + rate_limit_cooldown),
+        )
+    cooldown_until = cooldown_reader(db)
+    if cooldown_until is not None:
+        cooldown_seconds = max(1, int((cooldown_until - datetime.now(timezone.utc)).total_seconds()))
+        return (
+            pending_result,
+            skipped_backend_sync_result("pending_export_cooldown"),
+            max(float(next_backend_sync_at or 0), now_monotonic + cooldown_seconds),
+        )
+    if now_monotonic < float(next_backend_sync_at or 0):
+        return pending_result, skipped_backend_sync_result("cooldown"), next_backend_sync_at
+
+    try:
+        result = backend_syncer(db)
+    except Exception as exc:
+        if not is_google_rate_limit_error(exc):
+            raise
+        cooldown = retry_after_seconds_from_error(exc, default=rate_limit_cooldown)
+        logging.warning("Google Sheets backend sync paused after rate limit: %s", exc)
+        return (
+            pending_result,
+            {**build_result(rows=0), "status": "paused", "reason": "rate_limited", "error": str(exc)},
+            now_monotonic + cooldown,
+        )
+    return pending_result, result, now_monotonic + backend_sync_interval
 
 
 def sync_google_sheet_to_backend(db: Session, sheet=None, now=None, archive_completed_data_rows=None):
@@ -688,16 +764,22 @@ def is_returned_record(record):
 def main():
     interval = max(30, env_int("GOOGLE_SHEETS_SYNC_INTERVAL_SECONDS", 60))
     once = normalize_text(os.environ.get("GOOGLE_SHEETS_SYNC_ONCE")).casefold() in {"1", "true", "yes", "да"}
+    backend_sync_interval = backend_sync_interval_seconds(interval)
+    rate_limit_cooldown = backend_sync_rate_limit_cooldown_seconds(interval)
+    next_backend_sync_at = 0.0
     while True:
         try:
             with SessionLocal() as db:
-                pending_result = process_pending_google_sheets_exports(db)
-                if env_bool("TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED", default=False):
-                    result = sync_google_sheet_to_backend(db)
-                else:
-                    result = {**build_result(rows=0), "status": "skipped"}
+                pending_result, result, next_backend_sync_at = run_google_sheets_worker_cycle(
+                    db,
+                    backend_sync_interval=backend_sync_interval,
+                    rate_limit_cooldown=rate_limit_cooldown,
+                    next_backend_sync_at=next_backend_sync_at,
+                )
             logging.info(
-                "Google Sheets sync: pending_synced=%s pending_failed=%s rows=%s matched=%s missing=%s orders_updated=%s items_updated=%s conflicts=%s archived=%s removed=%s",
+                "Google Sheets sync: pending_status=%s backend_status=%s pending_synced=%s pending_failed=%s rows=%s matched=%s missing=%s orders_updated=%s items_updated=%s conflicts=%s archived=%s removed=%s",
+                pending_result.get("status", ""),
+                result.get("status", "completed"),
                 pending_result["synced"],
                 pending_result["failed"],
                 result["rows"],

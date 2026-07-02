@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
-from sqlalchemy import or_, select, text
+from sqlalchemy import desc, or_, select, text
 from sqlalchemy.orm import selectinload
 
 from .db import SessionLocal
@@ -1134,6 +1134,7 @@ def update_orders_from_skladbot():
                 orders,
                 include_inactive=include_archive,
                 include_archive=include_archive,
+                force=True,
             )
             db.add(AuditLog(
                 action="skladbot_google_sheets_export",
@@ -1183,10 +1184,18 @@ def load_skladbot_fetch_cursor(db):
     return parse_int(fetch.get("last_checked_request_id"))
 
 
-def export_skladbot_numbers_to_google_sheets(db, orders, include_inactive=False, include_archive=False):
+def export_skladbot_numbers_to_google_sheets(db, orders, include_inactive=False, include_archive=False, force=False):
     order_ids = [str(order.id) for order in orders or []]
     if not order_ids:
         return {"status": "skipped", "updated": 0, "error": ""}
+    if not force and not include_inactive and not include_archive and recent_skladbot_google_export_exists(db):
+        return {
+            "status": "skipped",
+            "queued": False,
+            "updated": 0,
+            "error": "",
+            "reason": "recent_export_cooldown",
+        }
     result = {"status": "queued", "queued": True, "updated": 0, "error": ""}
     event = queue_google_sheets_export(
         db,
@@ -1201,6 +1210,29 @@ def export_skladbot_numbers_to_google_sheets(db, orders, include_inactive=False,
         },
     )
     return {**result, "pending_event_id": str(event.id) if event else ""}
+
+
+def recent_skladbot_google_export_exists(db, min_interval_seconds=None):
+    min_interval_seconds = (
+        skladbot_google_export_min_interval_seconds()
+        if min_interval_seconds is None
+        else int(min_interval_seconds or 0)
+    )
+    if min_interval_seconds <= 0:
+        return False
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=min_interval_seconds)
+    recent = db.execute(
+        select(AuditLog)
+        .where(AuditLog.action == "skladbot_google_sheets_export")
+        .where(AuditLog.created_at >= cutoff)
+        .order_by(desc(AuditLog.created_at), desc(AuditLog.id))
+        .limit(1)
+    ).scalar_one_or_none()
+    return recent is not None
+
+
+def skladbot_google_export_min_interval_seconds():
+    return max(0, env_int("SKLADBOT_GOOGLE_EXPORT_MIN_INTERVAL_SECONDS", 300))
 
 
 def try_acquire_skladbot_sync_lock(db):

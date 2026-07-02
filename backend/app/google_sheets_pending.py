@@ -491,6 +491,30 @@ def google_sheets_export_event_ready(event: PendingEvent, now=None):
     return next_attempt <= now
 
 
+def google_sheets_export_cooldown_until(db: Session, now=None):
+    now = now or datetime.now(timezone.utc)
+    attempts = []
+    events = db.execute(
+        select(PendingEvent)
+        .where(PendingEvent.event_type == GOOGLE_SHEETS_EXPORT_EVENT_TYPE)
+        .where(PendingEvent.status.in_(("pending", "failed")))
+    ).scalars().all()
+    for event in events:
+        payload = event.payload or {}
+        next_attempt_at = str(payload.get("next_attempt_at") or "").strip()
+        if not next_attempt_at:
+            continue
+        try:
+            next_attempt = datetime.fromisoformat(next_attempt_at)
+        except ValueError:
+            continue
+        if next_attempt.tzinfo is None:
+            next_attempt = next_attempt.replace(tzinfo=timezone.utc)
+        if next_attempt > now:
+            attempts.append(next_attempt)
+    return min(attempts) if attempts else None
+
+
 def reset_stale_processing_export_events(db: Session):
     cutoff = datetime.now(timezone.utc) - STALE_PROCESSING_EXPORT_TIMEOUT
     events = db.execute(

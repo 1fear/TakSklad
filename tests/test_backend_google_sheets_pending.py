@@ -10,6 +10,7 @@ from sqlalchemy.pool import StaticPool
 from backend.app.google_sheets_pending import (
     GOOGLE_SHEETS_EXPORT_EVENT_TYPE,
     acquire_google_sheets_export_lock,
+    google_sheets_export_cooldown_until,
     load_skladbot_export_orders,
     process_pending_google_sheets_exports,
     queue_google_sheets_export,
@@ -207,6 +208,46 @@ class GoogleSheetsPendingLockTests(unittest.TestCase):
             self.assertTrue((events_by_entity_id["future-retry"].payload or {}).get("next_attempt_at"))
             self.assertEqual(events_by_entity_id["ready-import"].status, "completed")
             self.assertEqual(events_by_entity_id["ready-import"].attempts, 1)
+        finally:
+            Base.metadata.drop_all(engine)
+            engine.dispose()
+
+    def test_google_sheets_export_cooldown_until_uses_future_retry_events(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        try:
+            now = datetime(2026, 7, 2, 7, 0, tzinfo=timezone.utc)
+            retry_at = now + timedelta(minutes=3)
+            with SessionLocal() as db:
+                db.add(PendingEvent(
+                    event_type=GOOGLE_SHEETS_EXPORT_EVENT_TYPE,
+                    status="pending",
+                    payload={
+                        "action": "google_sheets_import_export",
+                        "entity_id": "future-retry",
+                        "records": [{"ID заказа": "future-retry"}],
+                        "next_attempt_at": retry_at.isoformat(),
+                    },
+                    last_error="APIError: [429]: quota exceeded",
+                ))
+                db.add(PendingEvent(
+                    event_type=GOOGLE_SHEETS_EXPORT_EVENT_TYPE,
+                    status="completed",
+                    payload={
+                        "action": "google_sheets_import_export",
+                        "entity_id": "completed",
+                        "next_attempt_at": (now + timedelta(minutes=1)).isoformat(),
+                    },
+                ))
+                db.commit()
+
+                self.assertEqual(google_sheets_export_cooldown_until(db, now=now), retry_at)
+                self.assertIsNone(google_sheets_export_cooldown_until(db, now=retry_at + timedelta(seconds=1)))
         finally:
             Base.metadata.drop_all(engine)
             engine.dispose()

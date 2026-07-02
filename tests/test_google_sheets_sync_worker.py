@@ -1,6 +1,6 @@
 import unittest
 import uuid
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from unittest import mock
 
 from sqlalchemy import create_engine, select
@@ -13,6 +13,7 @@ from backend.app.google_sheets_sync_worker import (
     RETURN_REFERENCE_COLUMN,
     RETURN_STATUS_COLUMN,
     RETURNED_BY_COLUMN,
+    run_google_sheets_worker_cycle,
     split_codes,
     sync_google_sheet_to_backend,
 )
@@ -181,6 +182,73 @@ class GoogleSheetsSyncWorkerTests(unittest.TestCase):
             self.assertEqual(item.quantity_blocks, 11)
             self.assertEqual(item.raw_payload["source_file"], "orders.xlsx")
             self.assertTrue(item.raw_payload["google_sheet_synced_at"])
+
+    def test_worker_cycle_skips_backend_read_when_pending_exports_paused(self):
+        pending_processor = mock.Mock(return_value={"status": "paused", "synced": 0, "failed": 0})
+        backend_syncer = mock.Mock()
+
+        pending_result, result, next_backend_sync_at = run_google_sheets_worker_cycle(
+            mock.Mock(),
+            backend_sync_enabled=True,
+            next_backend_sync_at=0,
+            backend_sync_interval=300,
+            rate_limit_cooldown=120,
+            now_monotonic=100,
+            pending_processor=pending_processor,
+            cooldown_reader=mock.Mock(return_value=None),
+            backend_syncer=backend_syncer,
+        )
+
+        self.assertEqual(pending_result["status"], "paused")
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["reason"], "pending_export_paused")
+        self.assertEqual(next_backend_sync_at, 220)
+        backend_syncer.assert_not_called()
+
+    def test_worker_cycle_cools_down_backend_read_after_rate_limit(self):
+        pending_processor = mock.Mock(return_value={"status": "completed", "synced": 0, "failed": 0})
+        backend_syncer = mock.Mock(side_effect=RuntimeError("APIError: [429] retry-after: 45"))
+
+        with mock.patch("backend.app.google_sheets_sync_worker.logging.warning"):
+            _pending_result, result, next_backend_sync_at = run_google_sheets_worker_cycle(
+                mock.Mock(),
+                backend_sync_enabled=True,
+                next_backend_sync_at=0,
+                backend_sync_interval=300,
+                rate_limit_cooldown=120,
+                now_monotonic=100,
+                pending_processor=pending_processor,
+                cooldown_reader=mock.Mock(return_value=None),
+                backend_syncer=backend_syncer,
+            )
+
+        self.assertEqual(result["status"], "paused")
+        self.assertEqual(result["reason"], "rate_limited")
+        self.assertIn("429", result["error"])
+        self.assertEqual(next_backend_sync_at, 145)
+        backend_syncer.assert_called_once()
+
+    def test_worker_cycle_skips_backend_read_during_persistent_export_cooldown(self):
+        pending_processor = mock.Mock(return_value={"status": "completed", "synced": 0, "failed": 0})
+        backend_syncer = mock.Mock()
+        cooldown_reader = mock.Mock(return_value=datetime.now(timezone.utc) + timedelta(seconds=90))
+
+        _pending_result, result, next_backend_sync_at = run_google_sheets_worker_cycle(
+            mock.Mock(),
+            backend_sync_enabled=True,
+            next_backend_sync_at=0,
+            backend_sync_interval=300,
+            rate_limit_cooldown=120,
+            now_monotonic=100,
+            pending_processor=pending_processor,
+            cooldown_reader=cooldown_reader,
+            backend_syncer=backend_syncer,
+        )
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["reason"], "pending_export_cooldown")
+        self.assertGreaterEqual(next_backend_sync_at, 189)
+        backend_syncer.assert_not_called()
 
     def test_sync_skips_repeated_noop_summary_audit(self):
         self.seed_order()
