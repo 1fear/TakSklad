@@ -1,9 +1,10 @@
 import re
+from datetime import datetime
 from io import BytesIO
 from re import sub
 
 from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
@@ -15,51 +16,43 @@ from .reports_service import parse_report_date
 
 
 LOGISTICS_HEADERS = [
-    "Тип заявки*",
-    "Склад Поставщик*",
-    "ФИО или Наименование торговой точки*",
-    "E-mail клиента",
-    "Номер телефона*",
-    "Адрес доставки*",
-    "Координаты",
-    "Детали адреса",
-    "Тип оплаты",
-    "Дата доставки*",
-    "Доставка С*",
-    "Доставка ПО*",
-    "Дата забора",
-    "Забор С",
-    "Забор ПО",
-    "Код (товара)",
-    "",
-    "Наименование Товара",
-    "Кол-во",
-    "Вес",
-    "Объем",
-    "Цена",
-    "Цена заказа",
-    "Доп.информация",
-    "Сведения",
-    "Категория заказа",
-    "Имя отправителя",
-    "Номер отправителя",
-    "Время загрузки",
-    "Время отгрузки",
-    "Координаты",
-    "Широта (Куда)",
-    "Долгота (Куда)",
-    "Широта (Откуда)",
-    "Долгота (Откуда)",
-    "Id заявки",
-    "Приоритет",
-    "Cтоимость рейса",
-    "Теги заявок",
+    "Тип заказа",
+    "Внешний ID",
+    "Описание",
+    "Имя клиента",
+    "Телефон",
+    "Email",
+    "Заметки",
+    "Широта (забор)",
+    "Долгота (забор)",
+    "Адрес забора",
+    "Окно времени С (забор)",
+    "Окно времени ПО (забор)",
+    "Окно перерыва С (забор)",
+    "Окно перерыва ПО (забор)",
+    "Детали адреса забора",
+    "Время обслуживания забора",
+    "Широта (доставка)",
+    "Долгота (доставка)",
+    "Адрес доставки",
+    "Окно времени С (доставка)",
+    "Окно времени ПО (доставка)",
+    "Окно перерыва С (доставка)",
+    "Окно перерыва ПО (доставка)",
+    "Детали адреса доставки",
+    "Время обслуживания доставки",
+    "Навыки",
+    "Название товара",
+    "Айди товара",
+    "Вес (кг)",
+    "Объем (m3)",
+    "Короба",
 ]
 
 LOGISTICS_COORDINATE_PROBLEM_HEADERS = [
     "Клиент",
     "Адрес",
-    "Id заявки",
+    "Внешний ID",
     "Причина",
     "Товары",
     "Тип оплаты",
@@ -67,8 +60,33 @@ LOGISTICS_COORDINATE_PROBLEM_HEADERS = [
     "Складская заявка",
 ]
 
-DEFAULT_BLOCK_PRICE = 240000
 PICKUP_ADDRESS = "Самовывоз со склада"
+LOGISTICS_DATETIME_FORMAT = "yyyy-mm-dd hh:mm"
+LOGISTICS_TEMPLATE_COLUMN_WIDTHS = {
+    "A": 14,
+    "B": 18,
+    "C": 22,
+    "D": 30,
+    "E": 18,
+    "F": 28,
+    "G": 30,
+    "H": 14,
+    "I": 14,
+    "J": 30,
+    "K": 22,
+    "L": 22,
+    "Q": 14,
+    "R": 14,
+    "S": 30,
+    "T": 22,
+    "U": 22,
+    "Z": 24,
+    "AA": 22,
+    "AB": 18,
+    "AC": 14,
+    "AD": 14,
+    "AE": 10,
+}
 
 
 def list_logistics_dates(db: Session):
@@ -106,9 +124,9 @@ def build_logistics_report_xlsx(db: Session, shipment_date: str):
 
     workbook = Workbook()
     sheet = workbook.active
-    sheet.title = "Заявки"
+    sheet.title = "Orders"
     sheet.append(LOGISTICS_HEADERS)
-    apply_header_style(sheet)
+    apply_orders_template_style(sheet)
 
     for order in delivery_orders:
         coordinates = normalize_coordinates((order.raw_payload or {}).get("coordinates"))
@@ -116,31 +134,23 @@ def build_logistics_report_xlsx(db: Session, shipment_date: str):
         delivery_from, delivery_to = delivery_slot_for_order(order, delivery_slots)
         for item in sorted(order.items, key=lambda value: (value.product, str(value.id))):
             quantity_blocks = item_quantity_blocks(item)
-            line_total = parse_int((item.raw_payload or {}).get("line_total"))
-            block_price = item_block_price(item, line_total, quantity_blocks)
-            if not line_total and quantity_blocks:
-                line_total = quantity_blocks * block_price
             row = [""] * len(LOGISTICS_HEADERS)
-            set_cell(row, 1, "Доставка")
-            set_cell(row, 3, order.client)
-            set_cell(row, 5, order.representative or "")
-            set_cell(row, 6, order.address)
-            set_cell(row, 7, coordinates)
-            set_cell(row, 9, order.payment_type)
-            set_cell(row, 10, report_date.strftime("%d.%m.%Y"))
-            set_cell(row, 11, delivery_from)
-            set_cell(row, 12, delivery_to)
-            set_cell(row, 18, item.product)
-            set_cell(row, 19, quantity_blocks)
-            set_cell(row, 22, block_price)
-            set_cell(row, 23, line_total)
-            set_cell(row, 31, coordinates)
-            set_cell(row, 32, latitude)
-            set_cell(row, 33, longitude)
-            set_cell(row, 36, (order.raw_payload or {}).get("skladbot_request_number") or "")
+            set_cell(row, 1, "delivery")
+            set_cell(row, 2, logistics_external_id(order, item))
+            set_cell(row, 4, order.client)
+            set_cell(row, 7, order.representative or "")
+            set_cell(row, 17, latitude)
+            set_cell(row, 18, longitude)
+            set_cell(row, 19, order.address)
+            set_cell(row, 20, delivery_window_datetime(report_date, delivery_from))
+            set_cell(row, 21, delivery_window_datetime(report_date, delivery_to))
+            set_cell(row, 27, item.product)
+            set_cell(row, 29, 0)
+            set_cell(row, 30, 0)
+            set_cell(row, 31, quantity_blocks)
             sheet.append(row)
+            apply_orders_row_style(sheet, sheet.max_row)
 
-    autosize_columns(sheet)
     if coordinate_problem_orders:
         problem_sheet = workbook.create_sheet("Требуют координаты")
         problem_sheet.append(LOGISTICS_COORDINATE_PROBLEM_HEADERS)
@@ -149,7 +159,7 @@ def build_logistics_report_xlsx(db: Session, shipment_date: str):
             problem_sheet.append([
                 order.client,
                 order.address,
-                (order.raw_payload or {}).get("source_order_id") or "",
+                logistics_external_id(order),
                 logistics_coordinate_problem_reason(order),
                 order_product_summary(order),
                 order.payment_type,
@@ -260,6 +270,39 @@ def split_coordinates(value):
     return parts[0], parts[1]
 
 
+def delivery_window_datetime(report_date, value):
+    text = str(value or "").strip()
+    match = re.fullmatch(r"(\d{1,2}):(\d{2})", text)
+    if not match:
+        return None
+    hour = int(match.group(1))
+    minute = int(match.group(2))
+    if hour > 23 or minute > 59:
+        return None
+    return datetime(report_date.year, report_date.month, report_date.day, hour, minute)
+
+
+def logistics_external_id(order, item=None):
+    raw_payload = order.raw_payload or {}
+    if raw_payload.get("skladbot_request_number"):
+        return raw_payload.get("skladbot_request_number")
+    if raw_payload.get("source_order_id"):
+        return raw_payload.get("source_order_id")
+    if item is not None:
+        item_payload = item.raw_payload or {}
+        if item_payload.get("source_order_id"):
+            return item_payload.get("source_order_id")
+        if item_payload.get("source_import_id"):
+            return item_payload.get("source_import_id")
+    for order_item in sorted(order.items, key=lambda value: (value.product, str(value.id))):
+        item_payload = order_item.raw_payload or {}
+        if item_payload.get("source_order_id"):
+            return item_payload.get("source_order_id")
+        if item_payload.get("source_import_id"):
+            return item_payload.get("source_import_id")
+    return ""
+
+
 def item_quantity_blocks(item):
     if item.quantity_blocks and item.quantity_blocks > 0:
         return item.quantity_blocks
@@ -270,32 +313,28 @@ def item_quantity_blocks(item):
     return (pieces + pieces_per_block - 1) // pieces_per_block
 
 
-def item_block_price(item, line_total=0, quantity_blocks=0):
-    raw_payload = item.raw_payload or {}
-    explicit = parse_int(raw_payload.get("block_price"))
-    if line_total and quantity_blocks:
-        line_total_price = int(line_total / quantity_blocks)
-        if explicit and explicit * quantity_blocks == line_total:
-            return explicit
-        return line_total_price
-    if explicit:
-        return explicit
-    return DEFAULT_BLOCK_PRICE
-
-
-def parse_int(value):
-    try:
-        return int(value or 0)
-    except (TypeError, ValueError):
-        return 0
-
-
 def apply_header_style(sheet):
-    fill = PatternFill("solid", fgColor="F0E68C")
+    fill = PatternFill("solid", fgColor="1E293B")
+    bottom_border = Border(bottom=Side(style="thin", color="000000"))
     for cell in sheet[1]:
-        cell.font = Font(bold=True, color="000000")
+        cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = fill
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.border = bottom_border
     sheet.freeze_panes = "A2"
+
+
+def apply_orders_template_style(sheet):
+    apply_header_style(sheet)
+    sheet.freeze_panes = None
+    sheet.row_dimensions[1].height = 17.55
+    for column_letter, width in LOGISTICS_TEMPLATE_COLUMN_WIDTHS.items():
+        sheet.column_dimensions[column_letter].width = width
+
+
+def apply_orders_row_style(sheet, row_number):
+    for column_letter in ("T", "U"):
+        sheet[f"{column_letter}{row_number}"].number_format = LOGISTICS_DATETIME_FORMAT
 
 
 def autosize_columns(sheet):

@@ -4,6 +4,23 @@
 
 ## 2026-07-02
 
+### Logistics XLSX Orders template
+
+**Файлы:** `backend/app/logistics_service.py`, `backend/app/imports_service.py`, `tests/test_backend_api_persistence.py`, `docs/report-source-rules.md`, `docs/taksklad-system-stack-overview.md`, `docs/user-business-process-guide.md`, `docs/taksklad-full-functionality.md`, `docs/implementation-log.md`, `docs/changelog.md`.
+
+**Что стало:**
+
+- Логистический XLSX теперь формирует первый лист `Orders` по новому ежедневному шаблону.
+- `Внешний ID` берется из SkladBot WH-R, fallback - исходный `ID заказа`/`ID импорта` из позиции.
+- Координаты доставки разделены на `Широта (доставка)` и `Долгота (доставка)`, окна доставки пишутся как Excel datetime.
+- Количество блоков выводится в `Короба`; `Вес (кг)` и `Объем (m3)` остаются `0`, пока источник их не дает.
+- Лист `Требуют координаты` сохранен для delivery-заказов без валидных координат.
+
+**Проверки:**
+
+- `PYTHONPATH=. .venv/bin/python -m unittest -k logistics tests.test_backend_api_persistence tests.test_backend_telegram_import tests.test_smartup_auto_import tests.test_backend_skladbot_request_dry_run` - 19 tests OK.
+- `PYTHONPATH=. .venv/bin/python -m unittest -k import tests.test_backend_api_persistence` - 23 tests OK.
+
 ### Production smoke acceptance closeout
 
 **Файлы:** `outputs/taksklad_acceptance/ACCEPTANCE_RESULTS.md`, `outputs/taksklad_acceptance/ACCEPTANCE_RESULTS_TEMPLATE.md`, `docs/taksklad-feature-user-stories.xlsx`, `docs/manual-acceptance-runbook.md`, `docs/vds-release-readiness.md`, `tests/test_feature_acceptance_status.py`, `docs/implementation-log.md`, `docs/changelog.md`.

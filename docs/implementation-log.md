@@ -7042,3 +7042,20 @@ cd /opt/taksklad/app
   - оба Google export events завершились `completed`;
   - `https://api.taksklad.uz/health` - OK, backend `2.0.25`;
   - `backend/sql/preflight_phase3_invariants.sql` показал 0 дублей внутри одного order item и 0 дублей в `kiz_codes`; старые межпозиционные повторы в `scan_codes` остаются вне scope этой ручной операции.
+
+### Logistics XLSX template 02.07.2026
+
+- Дата: 2026-07-02.
+- Причина: логистика передала новый ежедневный шаблон `Orders` вместо старого листа `Заявки`.
+- Изменено:
+  - `backend/app/logistics_service.py` формирует первый лист `Orders` с колонками нового шаблона;
+  - `backend/app/imports_service.py` сохраняет `source_order_id/source_import_id` в `orders.raw_payload` для новых импортов;
+  - `Внешний ID` берется из SkladBot WH-R, fallback - исходный `ID заказа` или `ID импорта` из позиции;
+  - координаты доставки разделены на `Широта (доставка)` и `Долгота (доставка)`;
+  - окна доставки пишутся как Excel datetime выбранной даты отгрузки;
+  - количество блоков выводится в `Короба`, вес и объем остаются `0`, если источник их не дает;
+  - лист `Требуют координаты` сохранен для заказов, которые нельзя пустить в маршрут.
+- Проверено:
+  - `python -m py_compile backend/app/imports_service.py backend/app/logistics_service.py tests/test_backend_api_persistence.py` - OK;
+  - targeted logistics tests in `tests.test_backend_api_persistence` - 9 tests OK;
+  - `PYTHONPATH=. .venv/bin/python -m unittest -k import tests.test_backend_api_persistence` - 23 tests OK.

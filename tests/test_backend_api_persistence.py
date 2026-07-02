@@ -3577,23 +3577,57 @@ class BackendApiPersistenceTests(unittest.TestCase):
         report = self.client.get("/api/v1/logistics/report?shipment_date=2026-05-30")
         self.assertEqual(report.status_code, 200)
         workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
-        sheet = workbook["Заявки"]
+        sheet = workbook["Orders"]
 
-        self.assertEqual(sheet["C2"].value, "Logistics Client")
-        self.assertEqual(sheet["G2"].value, "41.31,69.27")
-        self.assertEqual(sheet["J2"].value, "30.05.2026")
-        self.assertEqual(sheet["K2"].value, "10:00")
-        self.assertEqual(sheet["L2"].value, "18:00")
-        self.assertEqual(sheet["R2"].value, "Chapman Brown OP 20")
-        self.assertEqual(sheet["S2"].value, 20)
-        self.assertEqual(sheet["V2"].value, 240000)
-        self.assertEqual(sheet["W2"].value, 4_800_000)
-        self.assertEqual(sheet["AE2"].value, "41.31,69.27")
-        self.assertEqual(sheet["AF2"].value, "41.31")
-        self.assertEqual(sheet["AG2"].value, "69.27")
+        self.assertEqual([cell.value for cell in sheet[1]], [
+            "Тип заказа",
+            "Внешний ID",
+            "Описание",
+            "Имя клиента",
+            "Телефон",
+            "Email",
+            "Заметки",
+            "Широта (забор)",
+            "Долгота (забор)",
+            "Адрес забора",
+            "Окно времени С (забор)",
+            "Окно времени ПО (забор)",
+            "Окно перерыва С (забор)",
+            "Окно перерыва ПО (забор)",
+            "Детали адреса забора",
+            "Время обслуживания забора",
+            "Широта (доставка)",
+            "Долгота (доставка)",
+            "Адрес доставки",
+            "Окно времени С (доставка)",
+            "Окно времени ПО (доставка)",
+            "Окно перерыва С (доставка)",
+            "Окно перерыва ПО (доставка)",
+            "Детали адреса доставки",
+            "Время обслуживания доставки",
+            "Навыки",
+            "Название товара",
+            "Айди товара",
+            "Вес (кг)",
+            "Объем (m3)",
+            "Короба",
+        ])
+        self.assertEqual(sheet["A2"].value, "delivery")
+        self.assertEqual(sheet["B2"].value, "logistics-source-order")
+        self.assertEqual(sheet["D2"].value, "Logistics Client")
+        self.assertEqual(sheet["G2"].value, "Rep One")
+        self.assertEqual(sheet["Q2"].value, "41.31")
+        self.assertEqual(sheet["R2"].value, "69.27")
+        self.assertEqual(sheet["S2"].value, "Tashkent Address")
+        self.assertEqual(sheet["T2"].value, datetime(2026, 5, 30, 10, 0))
+        self.assertEqual(sheet["U2"].value, datetime(2026, 5, 30, 18, 0))
+        self.assertEqual(sheet["AA2"].value, "Chapman Brown OP 20")
+        self.assertEqual(sheet["AC2"].value, 0)
+        self.assertEqual(sheet["AD2"].value, 0)
+        self.assertEqual(sheet["AE2"].value, 20)
         workbook.close()
 
-    def test_logistics_report_uses_repriced_line_total_for_block_price(self):
+    def test_logistics_report_uses_quantity_blocks_for_boxes(self):
         rows = [
             {
                 "Дата отгрузки": "2026-07-01",
@@ -3618,10 +3652,9 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
         self.assertEqual(report.status_code, 200)
         workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
-        sheet = workbook["Заявки"]
-        self.assertEqual(sheet["S2"].value, 50)
-        self.assertEqual(sheet["V2"].value, 233500)
-        self.assertEqual(sheet["W2"].value, 11_675_000)
+        sheet = workbook["Orders"]
+        self.assertEqual(sheet["AA2"].value, "Chapman Brown OP 20")
+        self.assertEqual(sheet["AE2"].value, 50)
         workbook.close()
 
     def test_logistics_report_uses_saved_client_point_timeslot(self):
@@ -3658,10 +3691,10 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
         self.assertEqual(report.status_code, 200)
         workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
-        sheet = workbook["Заявки"]
-        self.assertEqual(sheet["C2"].value, "Timeslot Legal Entity")
-        self.assertEqual(sheet["K2"].value, "08:30")
-        self.assertEqual(sheet["L2"].value, "11:45")
+        sheet = workbook["Orders"]
+        self.assertEqual(sheet["D2"].value, "Timeslot Legal Entity")
+        self.assertEqual(sheet["T2"].value, datetime(2026, 5, 30, 8, 30))
+        self.assertEqual(sheet["U2"].value, datetime(2026, 5, 30, 11, 45))
         workbook.close()
 
     def test_import_updates_client_point_address_and_keeps_timeslot_by_client(self):
@@ -3725,11 +3758,11 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
         self.assertEqual(report.status_code, 200)
         workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
-        sheet = workbook["Заявки"]
-        self.assertEqual(sheet["C2"].value, "Timeslot Legal Entity")
-        self.assertEqual(sheet["F2"].value, "New Timeslot Address")
-        self.assertEqual(sheet["K2"].value, "08:30")
-        self.assertEqual(sheet["L2"].value, "11:45")
+        sheet = workbook["Orders"]
+        self.assertEqual(sheet["D2"].value, "Timeslot Legal Entity")
+        self.assertEqual(sheet["S2"].value, "New Timeslot Address")
+        self.assertEqual(sheet["T2"].value, datetime(2026, 5, 31, 8, 30))
+        self.assertEqual(sheet["U2"].value, datetime(2026, 5, 31, 11, 45))
         workbook.close()
 
     def test_logistics_report_keeps_unrouteable_orders_on_separate_sheet(self):
@@ -3799,13 +3832,13 @@ class BackendApiPersistenceTests(unittest.TestCase):
         report = self.client.get("/api/v1/logistics/report?shipment_date=2026-05-30")
         self.assertEqual(report.status_code, 200)
         workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
-        sheet = workbook["Заявки"]
+        sheet = workbook["Orders"]
         problems = workbook["Требуют координаты"]
 
         self.assertEqual(sheet.max_row, 2)
-        self.assertEqual(sheet["C2"].value, "Route Client")
-        self.assertEqual(sheet["F2"].value, "Tashkent Address")
-        self.assertEqual(sheet["R2"].value, "Chapman Brown OP 20")
+        self.assertEqual(sheet["D2"].value, "Route Client")
+        self.assertEqual(sheet["S2"].value, "Tashkent Address")
+        self.assertEqual(sheet["AA2"].value, "Chapman Brown OP 20")
         self.assertEqual(problems.max_row, 3)
         problem_rows = {
             row[0]: row
@@ -3851,7 +3884,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
         self.assertEqual(report.status_code, 200)
         workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
-        sheet = workbook["Заявки"]
+        sheet = workbook["Orders"]
         problems = workbook["Требуют координаты"]
 
         self.assertEqual(sheet.max_row, 1)
@@ -3938,11 +3971,10 @@ class BackendApiPersistenceTests(unittest.TestCase):
         report = self.client.get("/api/v1/logistics/report?shipment_date=2026-05-30")
         self.assertEqual(report.status_code, 200)
         workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
-        sheet = workbook["Заявки"]
+        sheet = workbook["Orders"]
 
-        self.assertEqual(sheet["AE2"].value, "41.214609,69.223027")
-        self.assertEqual(sheet["AF2"].value, "41.214609")
-        self.assertEqual(sheet["AG2"].value, "69.223027")
+        self.assertEqual(sheet["Q2"].value, "41.214609")
+        self.assertEqual(sheet["R2"].value, "69.223027")
         workbook.close()
 
     def test_kiz_reports_show_source_file_progress_and_allow_partial_date_export(self):

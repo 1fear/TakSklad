@@ -647,6 +647,8 @@ def build_order_raw_payload(
         "skladbot_request_id": row["skladbot_request_id"],
         "coordinates": row["coordinates"],
         "source": import_source,
+        "source_order_id": row["source_order_id"],
+        "source_import_id": row["source_import_id"],
         "source_batch_key": row["source_batch_key"],
     }
     if split_from_order is None:
