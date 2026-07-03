@@ -10,12 +10,13 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from backend.app.models import Base, ImportJob, LogisticsCalendarDay, Order, PendingEvent
+from backend.app.models import AuditLog, Base, ImportJob, LogisticsCalendarDay, Order, PendingEvent
 from backend.app.smartup_auto_import import (
     SmartupClient,
     SmartupAutoImportConfig,
     SmartupAutoImportError,
     SMARTUP_AUTO_IMPORT_EVENT_TYPE,
+    SMARTUP_LOGISTICS_REPORT_EVENT_TYPE,
     build_smartup_auto_import_status,
     build_import_rows,
     delivery_dates_for_export_date,
@@ -950,7 +951,18 @@ class SmartupAutoImportTests(unittest.TestCase):
                         smartup_client=fake,
                         telegram_sender=sender,
                     )
+                    second_result = run_due_smartup_auto_imports(
+                        db,
+                        config,
+                        now=datetime(2026, 7, 3, 17, 50, 30, tzinfo=ZoneInfo("Asia/Tashkent")),
+                        smartup_client=fake,
+                        telegram_sender=sender,
+                    )
                     imports = db.execute(select(ImportJob)).scalars().all()
+                    logistics_events = db.execute(
+                        select(PendingEvent)
+                        .where(PendingEvent.event_type == SMARTUP_LOGISTICS_REPORT_EVENT_TYPE)
+                    ).scalars().all()
 
         self.assertEqual([item["status"] for item in result[:3]], ["completed", "completed", "completed"])
         self.assertEqual([item["delivery_dates"] for item in result[:3]], [
@@ -964,6 +976,12 @@ class SmartupAutoImportTests(unittest.TestCase):
         self.assertEqual(result[3]["logistics_reports"][0]["status"], "sent")
         self.assertEqual(result[3]["logistics_reports"][0]["delivery_date"], "2026-07-06")
         self.assertEqual(len(imports), 3)
+        self.assertEqual(second_result[3]["status"], "final_logistics_reports")
+        self.assertEqual(second_result[3]["delivery_dates"], ["2026-07-06"])
+        self.assertEqual(second_result[3]["logistics_reports"][0]["status"], "skipped")
+        self.assertEqual(second_result[3]["logistics_reports"][0]["reason"], "already_sent")
+        self.assertEqual(len(logistics_events), 1)
+        self.assertEqual(logistics_events[0].status, "completed")
         self.assertEqual(fake.changed, [
             (["saturday"], "B#W"),
             (["sunday"], "B#W"),
@@ -994,6 +1012,43 @@ class SmartupAutoImportTests(unittest.TestCase):
             result = scheduled_smartup_target_delivery_dates(db, date(2026, 7, 3), config)
 
         self.assertEqual(result, [date(2026, 7, 4)])
+
+    def test_final_logistics_report_uses_existing_audit_as_idempotency_guard(self):
+        sender = FakeTelegramSender()
+        config = self.config(
+            "/tmp",
+            logistics_chat_id="-1003515369435",
+        )
+        with self.SessionLocal() as db:
+            db.add(AuditLog(
+                action="smartup_auto_import_logistics_report",
+                entity_type="delivery_date",
+                entity_id="2026-07-06",
+                payload={
+                    "status": "sent",
+                    "delivery_date": "2026-07-06",
+                    "filename": "TakSklad_логистика_06.07.2026.xlsx",
+                },
+            ))
+            db.commit()
+
+            result = send_final_logistics_reports(
+                db,
+                config,
+                export_date=date(2026, 7, 3),
+                telegram_sender=sender,
+                extra_delivery_dates=["2026-07-06"],
+            )
+            logistics_events = db.execute(
+                select(PendingEvent)
+                .where(PendingEvent.event_type == SMARTUP_LOGISTICS_REPORT_EVENT_TYPE)
+            ).scalars().all()
+
+        self.assertEqual(result[0]["status"], "skipped")
+        self.assertEqual(result[0]["reason"], "already_sent")
+        self.assertEqual(len(sender.documents), 0)
+        self.assertEqual(len(logistics_events), 1)
+        self.assertEqual(logistics_events[0].status, "completed")
 
     def test_failed_scheduled_slot_can_be_retried_without_duplicate_order(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

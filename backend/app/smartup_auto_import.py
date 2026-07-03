@@ -39,6 +39,7 @@ from .skladbot_request_dry_run import (
 logger = logging.getLogger(__name__)
 
 SMARTUP_AUTO_IMPORT_EVENT_TYPE = "smartup_auto_import_run"
+SMARTUP_LOGISTICS_REPORT_EVENT_TYPE = "smartup_logistics_report"
 SMARTUP_AUTO_IMPORT_SOURCE = "smartup_auto"
 SMARTUP_EXPORT_REQUEST_PATH = "/b/trade/txs/tdeal/order$export"
 SMARTUP_CHANGE_STATUS_PATH = "/b/trade/txs/tdeal/order$change_status"
@@ -419,6 +420,8 @@ def run_due_smartup_auto_imports(
             results.append(slot_result)
         if defer_final_logistics_reports and config.backend_import_enabled:
             delivery_dates = delivery_dates_from_smartup_run_results(slot_results)
+            if not delivery_dates:
+                delivery_dates = delivery_dates_for_export_date(db, local_now.date())
             results.append({
                 "status": "final_logistics_reports",
                 "slot": slot,
@@ -1005,6 +1008,9 @@ def send_final_logistics_reports(
     results = []
     for delivery_date in sorted(delivery_dates):
         parsed_delivery_date = parse_smartup_date(delivery_date)
+        normalized_delivery_date = (
+            parsed_delivery_date.isoformat() if parsed_delivery_date else normalize_text(delivery_date)
+        )
         if parsed_delivery_date and is_logistics_non_working_day(
             db,
             parsed_delivery_date,
@@ -1023,6 +1029,10 @@ def send_final_logistics_reports(
                 payload=result,
             ))
             continue
+        event, skipped = claim_smartup_logistics_report(db, export_date, normalized_delivery_date)
+        if skipped is not None:
+            results.append(skipped)
+            continue
         try:
             content, filename = build_logistics_report_xlsx(db, delivery_date)
             sender.send_document(
@@ -1038,6 +1048,9 @@ def send_final_logistics_reports(
                 "delivery_date": delivery_date,
                 "error": str(exc)[:500],
             }
+            mark_smartup_logistics_report_failed(db, event.id, result)
+        else:
+            mark_smartup_logistics_report_completed(db, event.id, result)
         results.append(result)
         db.add(AuditLog(
             action="smartup_auto_import_logistics_report",
@@ -1047,6 +1060,146 @@ def send_final_logistics_reports(
         ))
     db.commit()
     return results
+
+
+def claim_smartup_logistics_report(
+    db: Session,
+    export_date: date,
+    delivery_date: str,
+) -> tuple[PendingEvent | None, dict[str, Any] | None]:
+    idempotency_key = smartup_logistics_report_idempotency_key(export_date, delivery_date)
+    existing = db.execute(
+        select(PendingEvent).where(PendingEvent.idempotency_key == idempotency_key)
+    ).scalar_one_or_none()
+    if existing is not None:
+        if existing.status in {"completed", "processing"}:
+            return None, {
+                "status": "skipped",
+                "reason": "already_sent" if existing.status == "completed" else "already_processing",
+                "delivery_date": delivery_date,
+                "event_id": str(existing.id),
+            }
+        existing.status = "processing"
+        existing.attempts = int(existing.attempts or 0) + 1
+        existing.last_error = ""
+        existing.payload = {
+            **(existing.payload or {}),
+            "retry_claimed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        db.add(existing)
+        db.commit()
+        db.refresh(existing)
+        return existing, None
+
+    sent_audit = find_existing_smartup_logistics_report_audit(db, delivery_date)
+    if sent_audit is not None:
+        event = PendingEvent(
+            event_type=SMARTUP_LOGISTICS_REPORT_EVENT_TYPE,
+            idempotency_key=idempotency_key,
+            status="completed",
+            attempts=0,
+            payload={
+                "version": 1,
+                "export_date": export_date.isoformat(),
+                "delivery_date": delivery_date,
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "result": sanitize_audit_payload(sent_audit.payload or {}),
+                "legacy_audit_log_id": str(sent_audit.id),
+            },
+        )
+        db.add(event)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+        return None, {
+            "status": "skipped",
+            "reason": "already_sent",
+            "delivery_date": delivery_date,
+            "audit_log_id": str(sent_audit.id),
+        }
+
+    event = PendingEvent(
+        event_type=SMARTUP_LOGISTICS_REPORT_EVENT_TYPE,
+        idempotency_key=idempotency_key,
+        status="processing",
+        attempts=1,
+        payload={
+            "version": 1,
+            "export_date": export_date.isoformat(),
+            "delivery_date": delivery_date,
+            "claimed_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    db.add(event)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return None, {
+            "status": "skipped",
+            "reason": "already_claimed",
+            "delivery_date": delivery_date,
+        }
+    db.refresh(event)
+    return event, None
+
+
+def mark_smartup_logistics_report_completed(
+    db: Session,
+    event_id: uuid.UUID,
+    result: dict[str, Any],
+) -> None:
+    event = db.get(PendingEvent, event_id)
+    if event is None:
+        return
+    event.status = "completed"
+    event.last_error = ""
+    event.payload = {
+        **(event.payload or {}),
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "result": sanitize_audit_payload(result),
+    }
+    db.add(event)
+    db.commit()
+
+
+def mark_smartup_logistics_report_failed(
+    db: Session,
+    event_id: uuid.UUID,
+    result: dict[str, Any],
+) -> None:
+    event = db.get(PendingEvent, event_id)
+    if event is None:
+        return
+    event.status = "failed"
+    event.last_error = normalize_text(result.get("error"))[:1000]
+    event.payload = {
+        **(event.payload or {}),
+        "failed_at": datetime.now(timezone.utc).isoformat(),
+        "result": sanitize_audit_payload(result),
+    }
+    db.add(event)
+    db.commit()
+
+
+def smartup_logistics_report_idempotency_key(export_date: date, delivery_date: str) -> str:
+    return f"smartup:logistics_report:v1:{export_date.isoformat()}:{normalize_text(delivery_date)}"
+
+
+def find_existing_smartup_logistics_report_audit(db: Session, delivery_date: str) -> AuditLog | None:
+    rows = db.execute(
+        select(AuditLog)
+        .where(AuditLog.action == "smartup_auto_import_logistics_report")
+        .where(AuditLog.entity_id == delivery_date)
+        .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+        .limit(20)
+    ).scalars().all()
+    for row in rows:
+        payload = row.payload or {}
+        if payload.get("status") == "sent":
+            return row
+    return None
 
 
 def delivery_dates_for_export_date(db: Session, export_date: date) -> list[str]:
