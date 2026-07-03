@@ -398,12 +398,14 @@ def run_due_smartup_auto_imports(
             "now": local_now.isoformat(),
         }]
     results = []
-    target_delivery_date = scheduled_smartup_target_delivery_date(local_now.date())
+    target_delivery_dates = scheduled_smartup_target_delivery_dates(db, local_now.date(), config)
     for slot in config.schedule_times:
         if not is_slot_due(local_now, slot, config.slot_grace_minutes):
             continue
-        results.append(
-            run_scheduled_smartup_auto_import_slot(
+        defer_final_logistics_reports = is_final_slot(slot, config) and len(target_delivery_dates) > 1
+        slot_results = []
+        for target_delivery_date in target_delivery_dates:
+            slot_result = run_scheduled_smartup_auto_import_slot(
                 db,
                 config,
                 slot_label=slot,
@@ -411,8 +413,26 @@ def run_due_smartup_auto_imports(
                 target_delivery_date=target_delivery_date,
                 smartup_client=smartup_client,
                 telegram_sender=telegram_sender,
+                final_logistics_reports_enabled=not defer_final_logistics_reports,
             )
-        )
+            slot_results.append(slot_result)
+            results.append(slot_result)
+        if defer_final_logistics_reports and config.backend_import_enabled:
+            delivery_dates = delivery_dates_from_smartup_run_results(slot_results)
+            results.append({
+                "status": "final_logistics_reports",
+                "slot": slot,
+                "export_date": local_now.date().isoformat(),
+                "target_delivery_dates": [value.isoformat() for value in target_delivery_dates],
+                "delivery_dates": delivery_dates,
+                "logistics_reports": send_final_logistics_reports(
+                    db,
+                    config,
+                    export_date=local_now.date(),
+                    telegram_sender=telegram_sender,
+                    extra_delivery_dates=delivery_dates,
+                ),
+            })
     return results or [{"status": "idle", "now": local_now.isoformat()}]
 
 
@@ -425,6 +445,7 @@ def run_scheduled_smartup_auto_import_slot(
     target_delivery_date: date | None = None,
     smartup_client: Any | None = None,
     telegram_sender: Any | None = None,
+    final_logistics_reports_enabled: bool = True,
 ) -> dict[str, Any]:
     local_now = normalize_local_now(now, config.timezone)
     export_date = local_now.date()
@@ -461,6 +482,7 @@ def run_scheduled_smartup_auto_import_slot(
                 target_delivery_date=target_delivery_date,
                 smartup_client=smartup_client,
                 telegram_sender=telegram_sender,
+                final_logistics_reports_enabled=final_logistics_reports_enabled,
             )
         except Exception as exc:
             db.rollback()
@@ -494,6 +516,7 @@ def run_smartup_auto_import_once(
     target_delivery_date: date | None = None,
     smartup_client: Any | None = None,
     telegram_sender: Any | None = None,
+    final_logistics_reports_enabled: bool = True,
 ) -> dict[str, Any]:
     config.validate_for_run()
     local_now = normalize_local_now(now, config.timezone)
@@ -525,12 +548,13 @@ def run_smartup_auto_import_once(
         if is_final_slot(slot_label, config):
             if config.process_skladbot_now:
                 result["skladbot_processing"] = process_pending_skladbot_request_creates(db)
-            result["logistics_reports"] = send_final_logistics_reports(
-                db,
-                config,
-                export_date=export_date,
-                telegram_sender=telegram_sender,
-            )
+            if final_logistics_reports_enabled:
+                result["logistics_reports"] = send_final_logistics_reports(
+                    db,
+                    config,
+                    export_date=export_date,
+                    telegram_sender=telegram_sender,
+                )
         record_smartup_audit(db, "smartup_auto_import_no_orders", result)
         return result
 
@@ -649,7 +673,7 @@ def run_smartup_auto_import_once(
         skladbot_processing = process_pending_skladbot_request_creates(db)
 
     logistics_reports = []
-    if is_final_slot(slot_label, config):
+    if is_final_slot(slot_label, config) and final_logistics_reports_enabled:
         logistics_reports = send_final_logistics_reports(
             db,
             config,
@@ -1042,6 +1066,14 @@ def delivery_dates_for_export_date(db: Session, export_date: date) -> list[str]:
             if parsed:
                 result.add(parsed.isoformat())
     return sorted(result)
+
+
+def delivery_dates_from_smartup_run_results(results: list[dict[str, Any]]) -> list[str]:
+    return sorted(unique_values(
+        value
+        for result in results
+        for value in result.get("delivery_dates", [])
+    ))
 
 
 def build_import_rows(
@@ -1764,6 +1796,25 @@ def is_final_slot(slot_label: str, config: SmartupAutoImportConfig) -> bool:
 
 def scheduled_smartup_target_delivery_date(export_date: date) -> date:
     return export_date + timedelta(days=1)
+
+
+def scheduled_smartup_target_delivery_dates(
+    db: Session | None,
+    export_date: date,
+    config: SmartupAutoImportConfig,
+) -> list[date]:
+    first_delivery_date = scheduled_smartup_target_delivery_date(export_date)
+    effective_delivery_date = resolve_effective_delivery_date(
+        db,
+        first_delivery_date,
+        default_non_working_weekdays=config.disabled_weekdays,
+    ).effective_date
+    delivery_dates = []
+    current = first_delivery_date
+    while current <= effective_delivery_date:
+        delivery_dates.append(current)
+        current += timedelta(days=1)
+    return delivery_dates
 
 
 def is_slot_due(now: datetime, slot_label: str, grace_minutes: int) -> bool:

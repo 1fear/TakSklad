@@ -28,6 +28,7 @@ from backend.app.smartup_auto_import import (
     acquire_smartup_slot_advisory_lock,
     release_smartup_slot_advisory_lock,
     scheduled_smartup_target_delivery_date,
+    scheduled_smartup_target_delivery_dates,
     send_final_logistics_reports,
     smartup_advisory_lock_key,
     smartup_slot_idempotency_key,
@@ -882,8 +883,117 @@ class SmartupAutoImportTests(unittest.TestCase):
             "smartup:auto_import:v1:2026-07-01:12:00:delivery:2026-07-02",
         )
 
+    def test_due_slot_targets_all_dates_until_next_working_delivery_date(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            fake = FakeSmartupClient([
+                sample_order(deal_id="saturday", deal_time="03.07.2026 08:49:15", delivery_date="04.07.2026"),
+                sample_order(deal_id="sunday", deal_time="03.07.2026 10:17:51", delivery_date="05.07.2026"),
+                sample_order(deal_id="monday", deal_time="03.07.2026 11:33:17", delivery_date="06.07.2026"),
+                sample_order(deal_id="tuesday", deal_time="03.07.2026 12:56:24", delivery_date="07.07.2026"),
+            ])
+            config = self.config(tmp_dir, backend_import_enabled=False, change_status_enabled=False)
+            with self.SessionLocal() as db:
+                result = run_due_smartup_auto_imports(
+                    db,
+                    config,
+                    now=datetime(2026, 7, 3, 17, 50, tzinfo=ZoneInfo("Asia/Tashkent")),
+                    smartup_client=fake,
+                )
+                events = db.execute(
+                    select(PendingEvent).where(PendingEvent.event_type == SMARTUP_AUTO_IMPORT_EVENT_TYPE)
+                ).scalars().all()
+
+        self.assertEqual([item["status"] for item in result], ["shadow_preview", "shadow_preview", "shadow_preview"])
+        self.assertEqual(
+            [item["target_delivery_date"] for item in result],
+            ["2026-07-04", "2026-07-05", "2026-07-06"],
+        )
+        self.assertEqual([item["deal_ids"] for item in result], [["saturday"], ["sunday"], ["monday"]])
+        self.assertEqual(
+            fake.exports,
+            [
+                (date(2026, 7, 3), date(2026, 7, 4)),
+                (date(2026, 7, 3), date(2026, 7, 5)),
+                (date(2026, 7, 3), date(2026, 7, 6)),
+            ],
+        )
+        self.assertEqual(
+            sorted(event.idempotency_key for event in events),
+            [
+                "smartup:auto_import:v1:2026-07-03:17:50:delivery:2026-07-04",
+                "smartup:auto_import:v1:2026-07-03:17:50:delivery:2026-07-05",
+                "smartup:auto_import:v1:2026-07-03:17:50:delivery:2026-07-06",
+            ],
+        )
+
+    def test_due_final_slot_sends_logistics_once_after_delivery_date_range(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            fake = FakeSmartupClient([
+                sample_order(deal_id="saturday", deal_time="03.07.2026 08:49:15", delivery_date="04.07.2026"),
+                sample_order(deal_id="sunday", deal_time="03.07.2026 10:17:51", delivery_date="05.07.2026"),
+                sample_order(deal_id="monday", deal_time="03.07.2026 11:33:17", delivery_date="06.07.2026"),
+            ])
+            sender = FakeTelegramSender()
+            config = self.config(
+                tmp_dir,
+                backend_import_enabled=True,
+                change_status_enabled=True,
+                client_chat_id="-5271267499",
+                logistics_chat_id="-1003515369435",
+            )
+            with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "dry_run"}, clear=False):
+                with self.SessionLocal() as db:
+                    result = run_due_smartup_auto_imports(
+                        db,
+                        config,
+                        now=datetime(2026, 7, 3, 17, 50, tzinfo=ZoneInfo("Asia/Tashkent")),
+                        smartup_client=fake,
+                        telegram_sender=sender,
+                    )
+                    imports = db.execute(select(ImportJob)).scalars().all()
+
+        self.assertEqual([item["status"] for item in result[:3]], ["completed", "completed", "completed"])
+        self.assertEqual([item["delivery_dates"] for item in result[:3]], [
+            ["2026-07-06"],
+            ["2026-07-06"],
+            ["2026-07-06"],
+        ])
+        self.assertEqual([item["logistics_reports"] for item in result[:3]], [[], [], []])
+        self.assertEqual(result[3]["status"], "final_logistics_reports")
+        self.assertEqual(result[3]["delivery_dates"], ["2026-07-06"])
+        self.assertEqual(result[3]["logistics_reports"][0]["status"], "sent")
+        self.assertEqual(result[3]["logistics_reports"][0]["delivery_date"], "2026-07-06")
+        self.assertEqual(len(imports), 3)
+        self.assertEqual(fake.changed, [
+            (["saturday"], "B#W"),
+            (["sunday"], "B#W"),
+            (["monday"], "B#W"),
+        ])
+        self.assertEqual(len(sender.documents), 4)
+        logistics_documents = [
+            document for document in sender.documents if document[0] == "-1003515369435"
+        ]
+        self.assertEqual(len(logistics_documents), 1)
+        self.assertIn("Отчёт логистики за 06.07.2026", logistics_documents[0][3])
+
     def test_scheduled_target_delivery_date_is_next_calendar_day(self):
         self.assertEqual(scheduled_smartup_target_delivery_date(date(2026, 7, 1)), date(2026, 7, 2))
+
+    def test_scheduled_target_delivery_dates_honor_working_weekend_override(self):
+        config = self.config("/tmp", disabled_weekdays=(5, 6))
+        with self.SessionLocal() as db:
+            db.add(LogisticsCalendarDay(
+                service_date=date(2026, 7, 4),
+                is_non_working=False,
+                reason="Рабочая суббота",
+                source="web",
+                raw_payload={},
+            ))
+            db.commit()
+
+            result = scheduled_smartup_target_delivery_dates(db, date(2026, 7, 3), config)
+
+        self.assertEqual(result, [date(2026, 7, 4)])
 
     def test_failed_scheduled_slot_can_be_retried_without_duplicate_order(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
