@@ -527,11 +527,13 @@ export async function apiRequest<T>(
 
   if (!response.ok) {
     let detail = `${response.status} ${response.statusText}`;
-    try {
-      const payload = await response.json();
-      detail = formatApiErrorDetail(payload);
-    } catch {
-      detail = await response.text();
+    const body = await response.text();
+    if (body) {
+      try {
+        detail = formatApiErrorDetail(JSON.parse(body));
+      } catch {
+        detail = body;
+      }
     }
     throw new ApiRequestError(response.status, response.statusText, detail);
   }
