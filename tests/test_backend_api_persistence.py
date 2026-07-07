@@ -572,6 +572,15 @@ class BackendApiPersistenceTests(unittest.TestCase):
                 status="not_completed",
                 raw_payload={"source": "test"},
             )
+            returned_order = Order(
+                payment_type="cash",
+                client="History Client",
+                address="Changed Address",
+                representative="Rep",
+                order_date=date(2026, 6, 21),
+                status="returned",
+                raw_payload={"source": "test", "return_status": "returned"},
+            )
             other_client_order = Order(
                 payment_type="cash",
                 client="Other Client",
@@ -613,6 +622,15 @@ class BackendApiPersistenceTests(unittest.TestCase):
                     raw_payload={"source": "test"},
                 ),
                 OrderItem(
+                    order=returned_order,
+                    product="Returned Product",
+                    quantity_pieces=10,
+                    quantity_blocks=1,
+                    pieces_per_block=10,
+                    status="completed",
+                    raw_payload={"source": "test"},
+                ),
+                OrderItem(
                     order=other_client_order,
                     product="Ignored Product",
                     quantity_pieces=90,
@@ -634,21 +652,25 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(payload["client_name"], "History Client")
         self.assertEqual(payload["totals"], {
             "orders_count": 2,
-            "positions_count": 3,
-            "quantity_blocks": 10,
-            "quantity_pieces": 100,
+            "returned_orders_count": 1,
+            "positions_count": 4,
+            "quantity_blocks": 11,
+            "quantity_pieces": 110,
         })
         self.assertEqual([row["shipment_date"] for row in payload["dates"]], ["2026-06-21", "2026-06-20"])
         self.assertEqual([row["payment_type"] for row in payload["dates"]], ["cash", "cash"])
         self.assertEqual(payload["dates"][0]["orders_count"], 1)
-        self.assertEqual(payload["dates"][0]["positions_count"], 1)
-        self.assertEqual(payload["dates"][0]["products"], [{
-            "product": "Chapman Green OP 20",
-            "positions_count": 1,
-            "quantity_blocks": 5,
-            "quantity_pieces": 50,
-        }])
+        self.assertEqual(payload["dates"][0]["returned_orders_count"], 1)
+        self.assertEqual(payload["dates"][0]["positions_count"], 2)
+        self.assertEqual(
+            {product["product"]: product["quantity_blocks"] for product in payload["dates"][0]["products"]},
+            {
+                "Chapman Green OP 20": 5,
+                "Returned Product": 1,
+            },
+        )
         self.assertEqual(payload["dates"][1]["orders_count"], 1)
+        self.assertEqual(payload["dates"][1]["returned_orders_count"], 0)
         self.assertEqual(payload["dates"][1]["positions_count"], 2)
         self.assertEqual(
             {product["product"]: product["quantity_blocks"] for product in payload["dates"][1]["products"]},
@@ -717,6 +739,15 @@ class BackendApiPersistenceTests(unittest.TestCase):
                 status="not_completed",
                 raw_payload={"source": "calendar-test"},
             )
+            returned_order = Order(
+                payment_type="terminal",
+                client="Calendar Client",
+                address="Calendar Address",
+                representative="Calendar Rep",
+                order_date=date(2026, 6, 29),
+                status="returned",
+                raw_payload={"source": "calendar-test", "return_status": "returned"},
+            )
             db.add(OrderItem(
                 order=order,
                 product="Calendar Product",
@@ -724,6 +755,15 @@ class BackendApiPersistenceTests(unittest.TestCase):
                 quantity_blocks=4,
                 pieces_per_block=10,
                 status="not_completed",
+                raw_payload={"source": "calendar-test"},
+            ))
+            db.add(OrderItem(
+                order=returned_order,
+                product="Calendar Return Product",
+                quantity_pieces=10,
+                quantity_blocks=1,
+                pieces_per_block=10,
+                status="completed",
                 raw_payload={"source": "calendar-test"},
             ))
             db.commit()
@@ -738,6 +778,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertTrue(days["2026-06-27"]["is_non_working"])
         self.assertEqual(days["2026-06-29"]["orders_count"], 1)
         self.assertEqual(days["2026-06-29"]["active_orders"], 1)
+        self.assertEqual(days["2026-06-29"]["returned_orders"], 1)
         self.assertEqual(days["2026-06-29"]["planned_blocks"], 4)
         self.assertEqual(days["2026-06-29"]["clients"], ["Calendar Client"])
 
@@ -758,6 +799,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertTrue(updated_day["is_manual"])
         self.assertEqual(updated_day["reason"], "Праздник")
         self.assertEqual(updated_day["orders_count"], 1)
+        self.assertEqual(updated_day["returned_orders"], 1)
 
         refreshed = self.client.get("/api/v1/admin/logistics-calendar?month=2026-06")
         refreshed_days = {day["date"]: day for day in refreshed.json()["days"]}
@@ -2090,6 +2132,21 @@ class BackendApiPersistenceTests(unittest.TestCase):
                 created_at=old_loaded_at,
                 raw_payload={"source": "test"},
             )
+            returned_order = Order(
+                payment_type="cash",
+                client="Returned Today",
+                address="Address",
+                representative="Rep",
+                order_date=date(2026, 5, 29),
+                status="returned",
+                created_at=old_loaded_at,
+                updated_at=loaded_at,
+                raw_payload={
+                    "source": "test",
+                    "return_status": "returned",
+                    "returned_at": loaded_at.isoformat(),
+                },
+            )
             old_item = OrderItem(
                 order=old_order,
                 product="Product C",
@@ -2100,7 +2157,17 @@ class BackendApiPersistenceTests(unittest.TestCase):
                 created_at=old_loaded_at,
                 raw_payload={"line_total": 480000},
             )
-            db.add_all([active_order, active_item, completed_order, completed_item, old_order, old_item])
+            returned_item = OrderItem(
+                order=returned_order,
+                product="Returned Product",
+                quantity_pieces=10,
+                quantity_blocks=1,
+                scanned_blocks=1,
+                status="completed",
+                created_at=old_loaded_at,
+                raw_payload={"line_total": 240000},
+            )
+            db.add_all([active_order, active_item, completed_order, completed_item, old_order, old_item, returned_order, returned_item])
             db.flush()
             db.add(ScanCode(
                 order_item_id=old_item.id,
@@ -2119,6 +2186,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(payload["totals"]["orders"], 2)
         self.assertEqual(payload["totals"]["completed_orders"], 1)
         self.assertEqual(payload["totals"]["active_orders"], 1)
+        self.assertEqual(payload["totals"]["returned_orders"], 1)
         self.assertEqual(payload["totals"]["planned_blocks"], 8)
         self.assertEqual(payload["totals"]["scanned_blocks"], 5)
         self.assertEqual(payload["totals"]["scanned_today"], 0)

@@ -597,7 +597,7 @@ summary:focus-visible {
 
 .stats-row {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px;
   margin-bottom: 16px;
 }
@@ -1570,6 +1570,10 @@ summary:focus-visible {
 .calendar-day span {
   color: #16635b;
   font-weight: 700;
+}
+
+.calendar-day .calendar-return-count {
+  color: #8a5300;
 }
 
 .calendar-day small {

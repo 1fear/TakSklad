@@ -610,7 +610,7 @@ function App() {
       return;
     }
     setExpandedClientPointId(point.id);
-    if (point.orders_count <= 0 || clientOrderSummaries[point.id]) {
+    if (clientPointActivityCount(point) <= 0 || clientOrderSummaries[point.id]) {
       return;
     }
     setClientOrderSummaryLoadingId(point.id);
@@ -1024,7 +1024,8 @@ function App() {
             <Metric icon={<ClipboardList size={20} />} label="Акт. заказы" value={dayTotals?.active_orders ?? 0} />
             <Metric icon={<PackageCheck size={20} />} label="Отскан. блоков" value={dayTotals?.scanned_blocks ?? 0} />
             <Metric icon={<Box size={20} />} label="Всего блоков" value={dayTotals?.planned_blocks ?? 0} />
-            <Metric icon={<Activity size={20} />} label="Всего заказов" value={dayTotals?.orders ?? 0} />
+            <Metric icon={<Activity size={20} />} label="Заказов" value={dayTotals?.orders ?? 0} />
+            <Metric icon={<RotateCcw size={20} />} label="Возвратов" value={dayTotals?.returned_orders ?? 0} tone={(dayTotals?.returned_orders ?? 0) > 0 ? "warn" : undefined} />
           </div>
         </section>
 
@@ -1710,6 +1711,7 @@ function LogisticsCalendarPanel({
   const nonWorkingCount = days.filter((day) => day.is_non_working).length;
   const manualCount = days.filter((day) => day.is_manual).length;
   const ordersCount = days.reduce((sum, day) => sum + day.orders_count, 0);
+  const returnedOrdersCount = days.reduce((sum, day) => sum + day.returned_orders, 0);
   const blocksCount = days.reduce((sum, day) => sum + day.planned_blocks, 0);
 
   return (
@@ -1730,6 +1732,7 @@ function LogisticsCalendarPanel({
 
       <section className="stats-row compact">
         <Metric icon={<ClipboardList size={20} />} label="Заказов" value={ordersCount} />
+        <Metric icon={<RotateCcw size={20} />} label="Возвратов" value={returnedOrdersCount} tone={returnedOrdersCount ? "warn" : undefined} />
         <Metric icon={<Box size={20} />} label="Блоков" value={blocksCount} />
         <Metric icon={<CalendarDays size={20} />} label="Нерабочих" value={nonWorkingCount} tone={nonWorkingCount ? "warn" : undefined} />
         <Metric icon={<Save size={20} />} label="Ручных" value={manualCount} />
@@ -1757,10 +1760,11 @@ function LogisticsCalendarPanel({
                 ].filter(Boolean).join(" ")}
                 onClick={() => onSelectDate(day.date)}
                 aria-pressed={day.date === selectedDay?.date}
-                aria-label={`${formatDate(day.date)}, заказов ${day.orders_count}, ${day.is_non_working ? "нерабочий день" : "рабочий день"}`}
+                aria-label={`${formatDate(day.date)}, заказов ${day.orders_count}, возвратов ${day.returned_orders}, ${day.is_non_working ? "нерабочий день" : "рабочий день"}`}
               >
                 <strong>{day.date.slice(8, 10)}</strong>
                 {day.orders_count > 0 && <span>{day.orders_count} зак.</span>}
+                {day.returned_orders > 0 && <span className="calendar-return-count">{day.returned_orders} возв.</span>}
                 {day.planned_blocks > 0 && <em>{day.planned_blocks} блок.</em>}
                 {day.is_non_working && <small>{day.is_manual ? "ручн." : "выходной"}</small>}
               </button>
@@ -1783,6 +1787,7 @@ function LogisticsCalendarPanel({
               <dl className="detail-list">
                 <div><dt>Заказы</dt><dd>{selectedDay.orders_count}</dd></div>
                 <div><dt>Активные</dt><dd>{selectedDay.active_orders}</dd></div>
+                <div><dt>Возвраты</dt><dd>{selectedDay.returned_orders}</dd></div>
                 <div><dt>Блоки</dt><dd>{selectedDay.planned_blocks}</dd></div>
                 <div><dt>Источник</dt><dd>{selectedDay.source || "-"}</dd></div>
               </dl>
@@ -2164,11 +2169,11 @@ function ClientsPanel({
                       <button
                         className="client-orders-toggle"
                         onClick={() => onToggleOrderHistory(point)}
-                        disabled={point.orders_count <= 0}
+                        disabled={clientPointActivityCount(point) <= 0}
                         aria-expanded={expanded}
                         aria-controls={`client-orders-${point.id}`}
                       >
-                        <strong className="cell-title">{formatNumber(point.orders_count)}</strong>
+                        <strong className="cell-title">{formatClientPointActivity(point)}</strong>
                       </button>
                       <span className="table-muted cell-sub">{formatDate(point.last_order_date)}</span>
                     </td>
@@ -2255,7 +2260,7 @@ function ClientOrderHistory({ point, summary, loading }: { point: ClientPoint; s
               <span>Тип оплаты: {entry.payment_type || "-"}</span>
             </div>
             <span>
-              {formatNumber(entry.orders_count)} заказов · {formatNumber(entry.positions_count)} позиций · {formatClientProductQuantity(entry.quantity_blocks, entry.quantity_pieces)}
+              {formatOrderReturnCounts(entry.orders_count, entry.returned_orders_count)} · {formatNumber(entry.positions_count)} позиций · {formatClientProductQuantity(entry.quantity_blocks, entry.quantity_pieces)}
             </span>
           </div>
           <ul className="client-order-products">
@@ -3404,6 +3409,20 @@ function formatDateTime(value: string | null) {
 
 function formatNumber(value: number) {
   return new Intl.NumberFormat("ru-RU").format(value);
+}
+
+function clientPointActivityCount(point: ClientPoint) {
+  return (point.orders_count ?? 0) + (point.returned_orders_count ?? 0);
+}
+
+function formatClientPointActivity(point: ClientPoint) {
+  return formatOrderReturnCounts(point.orders_count ?? 0, point.returned_orders_count ?? 0);
+}
+
+function formatOrderReturnCounts(orders: number, returns: number) {
+  const parts = [`${formatNumber(orders)} заказов`];
+  if (returns > 0) parts.push(`${formatNumber(returns)} возвратов`);
+  return parts.join(" · ");
 }
 
 function formatClientProductQuantity(blocks: number, pieces: number) {

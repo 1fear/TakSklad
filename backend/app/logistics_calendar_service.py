@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from .logistics_service import is_logistics_candidate_order
+from .logistics_service import is_logistics_candidate_order, is_returned_order
 from .models import AuditLog, LogisticsCalendarDay, Order
 
 
@@ -47,6 +47,7 @@ def list_logistics_calendar(db: Session, month: str | None = None) -> dict[str, 
             "orders_count": int(summary.get("orders_count") or 0),
             "active_orders": int(summary.get("active_orders") or 0),
             "completed_orders": int(summary.get("completed_orders") or 0),
+            "returned_orders": int(summary.get("returned_orders") or 0),
             "planned_blocks": int(summary.get("planned_blocks") or 0),
             "clients": summary.get("clients") or [],
         })
@@ -169,7 +170,8 @@ def calendar_order_summary(db: Session, first_day: date, last_day: date) -> dict
     ).scalars().all()
     summary: dict[date, dict[str, Any]] = {}
     for order in orders:
-        if not is_logistics_candidate_order(order):
+        returned_order = is_returned_order(order)
+        if not returned_order and not is_logistics_candidate_order(order):
             continue
         service_date = order.order_date
         if not isinstance(service_date, date):
@@ -178,9 +180,15 @@ def calendar_order_summary(db: Session, first_day: date, last_day: date) -> dict
             "orders_count": 0,
             "active_orders": 0,
             "completed_orders": 0,
+            "returned_orders": 0,
             "planned_blocks": 0,
             "clients": [],
         })
+        if returned_order:
+            day["returned_orders"] += 1
+            if order.client and order.client not in day["clients"]:
+                day["clients"].append(order.client)
+            continue
         day["orders_count"] += 1
         if order.status == "completed":
             day["completed_orders"] += 1

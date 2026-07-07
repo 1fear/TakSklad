@@ -356,6 +356,7 @@ class ClientPointOrderDateRead(BaseModel):
     shipment_date: date | None = None
     payment_type: str = ""
     orders_count: int = 0
+    returned_orders_count: int = 0
     positions_count: int = 0
     quantity_blocks: int = 0
     quantity_pieces: int = 0
@@ -364,6 +365,7 @@ class ClientPointOrderDateRead(BaseModel):
 
 class ClientPointOrderSummaryTotalsRead(BaseModel):
     orders_count: int = 0
+    returned_orders_count: int = 0
     positions_count: int = 0
     quantity_blocks: int = 0
     quantity_pieces: int = 0
@@ -390,6 +392,7 @@ class ClientPointRead(BaseModel):
     source: str = ""
     has_custom_timeslot: bool = False
     orders_count: int = 0
+    returned_orders_count: int = 0
     last_order_date: date | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -554,6 +557,7 @@ class DayReportTotals(BaseModel):
     orders: int
     completed_orders: int
     active_orders: int
+    returned_orders: int = 0
     items: int
     completed_items: int
     planned_blocks: int
@@ -624,6 +628,7 @@ class LogisticsCalendarDayRead(BaseModel):
     orders_count: int = 0
     active_orders: int = 0
     completed_orders: int = 0
+    returned_orders: int = 0
     planned_blocks: int = 0
     clients: list[str] = Field(default_factory=list)
 

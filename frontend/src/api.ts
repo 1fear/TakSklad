@@ -29,6 +29,7 @@ export type DayReport = {
     orders: number;
     completed_orders: number;
     active_orders: number;
+    returned_orders: number;
     items: number;
     completed_items: number;
     planned_blocks: number;
@@ -266,6 +267,7 @@ export type LogisticsCalendarDay = {
   orders_count: number;
   active_orders: number;
   completed_orders: number;
+  returned_orders: number;
   planned_blocks: number;
   clients: string[];
 };
@@ -325,6 +327,7 @@ export type ClientPoint = {
   source: string;
   has_custom_timeslot: boolean;
   orders_count: number;
+  returned_orders_count: number;
   last_order_date: string | null;
   created_at: string | null;
   updated_at: string | null;
@@ -339,6 +342,7 @@ export type ClientPointOrderSummary = {
 
 export type ClientPointOrderSummaryTotals = {
   orders_count: number;
+  returned_orders_count: number;
   positions_count: number;
   quantity_blocks: number;
   quantity_pieces: number;
@@ -348,6 +352,7 @@ export type ClientPointOrderSummaryDate = {
   shipment_date: string | null;
   payment_type: string;
   orders_count: number;
+  returned_orders_count: number;
   positions_count: number;
   quantity_blocks: number;
   quantity_pieces: number;

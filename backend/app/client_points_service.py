@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from .models import AuditLog, ClientPoint, Order, OrderItem
+from .orders_service import STATUS_RETURNED
 
 
 DEFAULT_DELIVERY_FROM = "10:00"
@@ -205,9 +206,13 @@ def build_order_point_meta(db: Session):
             "coordinates": "",
             "representative": "",
             "orders_count": 0,
+            "returned_orders_count": 0,
             "last_order_date": None,
         })
-        meta["orders_count"] += 1
+        if is_returned_order(order):
+            meta["returned_orders_count"] += 1
+        else:
+            meta["orders_count"] += 1
         if order.order_date and (meta["last_order_date"] is None or order.order_date > meta["last_order_date"]):
             meta["last_order_date"] = order.order_date
             meta["client_name"] = client_name
@@ -242,6 +247,7 @@ def get_client_point_order_summary(
 
     totals = {
         "orders_count": 0,
+        "returned_orders_count": 0,
         "positions_count": 0,
         "quantity_blocks": 0,
         "quantity_pieces": 0,
@@ -258,6 +264,7 @@ def get_client_point_order_summary(
             "shipment_date": order.order_date,
             "payment_types": set(),
             "orders_count": 0,
+            "returned_orders_count": 0,
             "positions_count": 0,
             "quantity_blocks": 0,
             "quantity_pieces": 0,
@@ -266,8 +273,12 @@ def get_client_point_order_summary(
         payment_type = normalize_text(order.payment_type)
         if payment_type:
             date_row["payment_types"].add(payment_type)
-        totals["orders_count"] += 1
-        date_row["orders_count"] += 1
+        if is_returned_order(order):
+            totals["returned_orders_count"] += 1
+            date_row["returned_orders_count"] += 1
+        else:
+            totals["orders_count"] += 1
+            date_row["orders_count"] += 1
         for item in sorted(order.items, key=lambda value: (normalize_text(value.product).casefold(), str(value.id))):
             product_name = normalize_text(item.product) or "Без названия"
             product = date_row["products_by_name"].setdefault(product_name, {
@@ -302,6 +313,7 @@ def get_client_point_order_summary(
                 "shipment_date": row.get("shipment_date"),
                 "payment_type": ", ".join(sorted(row.get("payment_types") or [], key=str.casefold)),
                 "orders_count": int(row.get("orders_count") or 0),
+                "returned_orders_count": int(row.get("returned_orders_count") or 0),
                 "positions_count": int(row.get("positions_count") or 0),
                 "quantity_blocks": int(row.get("quantity_blocks") or 0),
                 "quantity_pieces": int(row.get("quantity_pieces") or 0),
@@ -340,6 +352,7 @@ def derived_point_to_read(key, meta):
         "source": "orders",
         "has_custom_timeslot": False,
         "orders_count": int(meta.get("orders_count") or 0),
+        "returned_orders_count": int(meta.get("returned_orders_count") or 0),
         "last_order_date": meta.get("last_order_date"),
         "created_at": None,
         "updated_at": None,
@@ -364,10 +377,19 @@ def client_point_to_read(point: ClientPoint, meta=None, source="saved"):
         "source": source,
         "has_custom_timeslot": delivery_from != DEFAULT_DELIVERY_FROM or delivery_to != DEFAULT_DELIVERY_TO,
         "orders_count": int(meta.get("orders_count") or 0),
+        "returned_orders_count": int(meta.get("returned_orders_count") or 0),
         "last_order_date": meta.get("last_order_date"),
         "created_at": point.created_at,
         "updated_at": point.updated_at,
     }
+
+
+def is_returned_order(order: Order) -> bool:
+    raw_payload = order.raw_payload or {}
+    return (
+        normalize_text(order.status).casefold() == STATUS_RETURNED
+        or normalize_text(raw_payload.get("return_status")).casefold() in {"returned", "return", "возврат"}
+    )
 
 
 def point_key(client_name):

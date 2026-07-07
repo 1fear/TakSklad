@@ -38,6 +38,7 @@ def build_day_report(db: Session, report_date: str | None = None):
         "orders": 0,
         "completed_orders": 0,
         "active_orders": 0,
+        "returned_orders": 0,
         "items": 0,
         "completed_items": 0,
         "planned_blocks": 0,
@@ -108,6 +109,7 @@ def build_dashboard_day_summary(db: Session, report_date: str | None = None):
         "orders": 0,
         "completed_orders": 0,
         "active_orders": 0,
+        "returned_orders": 0,
         "items": 0,
         "completed_items": 0,
         "planned_blocks": 0,
@@ -119,6 +121,10 @@ def build_dashboard_day_summary(db: Session, report_date: str | None = None):
     }
 
     for order in orders:
+        if is_returned_order(order):
+            if return_business_date(order) == parsed_date:
+                totals["returned_orders"] += 1
+            continue
         if is_dashboard_excluded_order(order):
             continue
         loaded_items = [
@@ -167,6 +173,22 @@ def is_dashboard_excluded_order(order: Order):
     return status in {STATUS_RETURNED, STATUS_ARCHIVED_NO_KIZ, STATUS_CANCELLED}
 
 
+def is_returned_order(order: Order):
+    raw_payload = order.raw_payload or {}
+    return (
+        str(order.status or "").strip().casefold() == STATUS_RETURNED
+        or str(raw_payload.get("return_status") or "").strip().casefold() in {"returned", "return", "возврат"}
+    )
+
+
+def return_business_date(order: Order):
+    raw_payload = order.raw_payload or {}
+    returned_at = parse_datetime_value(raw_payload.get("returned_at"))
+    if returned_at is not None:
+        return business_date(returned_at)
+    return business_date(order.updated_at)
+
+
 def dashboard_item_loaded_date(item: OrderItem, import_dates: dict[str, date | None]):
     raw_payload = item.raw_payload or {}
     import_id = str(raw_payload.get("backend_import_id") or "")
@@ -207,6 +229,8 @@ def summarize_items(items: list[OrderItem], report_date: date):
 
 def add_totals(totals, order_totals, order_status):
     totals["orders"] += 1
+    if order_status == STATUS_RETURNED:
+        totals["returned_orders"] += 1
     if order_status in COMPLETED_STATUSES:
         totals["completed_orders"] += 1
     else:

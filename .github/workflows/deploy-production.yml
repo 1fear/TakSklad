@@ -1,6 +1,13 @@
 name: Deploy Production
 
 on:
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       ref:
@@ -34,12 +41,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment: production
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -106,9 +114,9 @@ jobs:
           VDS_HOST: ${{ secrets.VDS_HOST }}
           VDS_USER: ${{ secrets.VDS_USER }}
           VDS_APP_DIR: ${{ secrets.VDS_APP_DIR }}
-          DEPLOY_REF: ${{ inputs.ref }}
-          DEPLOY_SERVICES: ${{ inputs.services }}
-          DEPLOY_ACCEPTANCE: ${{ inputs.acceptance }}
+          DEPLOY_REF: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.ref }}
+          DEPLOY_SERVICES: ${{ github.event_name == 'workflow_run' && 'all' || inputs.services }}
+          DEPLOY_ACCEPTANCE: ${{ github.event_name == 'workflow_run' && 'optional' || inputs.acceptance }}
         run: |
           app_dir="${VDS_APP_DIR:-/opt/stacks/taksklad/app}"
           remote="$VDS_USER@$VDS_HOST"
