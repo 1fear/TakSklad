@@ -313,7 +313,7 @@ def item_quantity_blocks(item):
     return (pieces + pieces_per_block - 1) // pieces_per_block
 
 
-def apply_header_style(sheet):
+def apply_header_style(sheet, *, freeze_panes=True):
     fill = PatternFill("solid", fgColor="1E293B")
     bottom_border = Border(bottom=Side(style="thin", color="000000"))
     for cell in sheet[1]:
@@ -321,12 +321,12 @@ def apply_header_style(sheet):
         cell.fill = fill
         cell.alignment = Alignment(horizontal="center", vertical="center")
         cell.border = bottom_border
-    sheet.freeze_panes = "A2"
+    if freeze_panes:
+        sheet.freeze_panes = "A2"
 
 
 def apply_orders_template_style(sheet):
-    apply_header_style(sheet)
-    sheet.freeze_panes = None
+    apply_header_style(sheet, freeze_panes=False)
     sheet.row_dimensions[1].height = 17.55
     for column_letter, width in LOGISTICS_TEMPLATE_COLUMN_WIDTHS.items():
         sheet.column_dimensions[column_letter].width = width

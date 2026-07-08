@@ -1056,6 +1056,33 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertIn("Не удалось выгрузить отчёт логистики за 29.05.2026", messages[0][1])
         self.assertIn("Missing coordinates for logistics report: Client One", messages[0][1])
 
+    def test_telegram_worker_sends_logistics_report_bytes_from_backend(self):
+        worker = TelegramWorker.__new__(TelegramWorker)
+        sent_documents = []
+        report_content = b"xlsx-content"
+
+        def fake_backend_get_bytes(path, params=None):
+            self.assertEqual(path, "/api/v1/logistics/report")
+            self.assertEqual(params, {"shipment_date": "2026-05-29"})
+            return report_content, {"content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
+
+        def fake_send_document(chat_id, content, filename, caption=""):
+            sent_documents.append((chat_id, content, filename, caption))
+            return {"message_id": 1}
+
+        worker.backend_get_bytes = fake_backend_get_bytes
+        worker.safe_send_document = fake_send_document
+
+        result = worker.send_logistics_report("123", "29.05.2026")
+
+        self.assertTrue(result)
+        self.assertEqual(sent_documents, [(
+            "123",
+            report_content,
+            "TakSklad_логистика_29.05.2026.xlsx",
+            "Отчёт логистики за 29.05.2026",
+        )])
+
     def test_telegram_worker_saves_shipment_date_from_message(self):
         worker = TelegramWorker.__new__(TelegramWorker)
         worker.allowed_chat_ids = set()

@@ -3,6 +3,8 @@ import uuid
 from io import BytesIO
 from datetime import date, datetime, timedelta, timezone
 from unittest import mock
+from zipfile import ZipFile
+import xml.etree.ElementTree as ET
 
 import openpyxl
 from fastapi.testclient import TestClient
@@ -94,6 +96,28 @@ class BackendApiPersistenceTests(unittest.TestCase):
             "quantity_blocks": blocks,
             "quantity_pieces": pieces,
         }]
+
+    def assert_xlsx_has_no_orphaned_pane_selections(self, content):
+        namespace = {"xlsx": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+        with ZipFile(BytesIO(content)) as archive:
+            worksheet_names = [
+                name for name in archive.namelist()
+                if name.startswith("xl/worksheets/") and name.endswith(".xml")
+            ]
+            self.assertTrue(worksheet_names)
+            for worksheet_name in worksheet_names:
+                root = ET.fromstring(archive.read(worksheet_name))
+                for sheet_view in root.findall(".//xlsx:sheetView", namespace):
+                    pane = sheet_view.find("xlsx:pane", namespace)
+                    if pane is not None:
+                        continue
+                    for selection in sheet_view.findall("xlsx:selection", namespace):
+                        selection_pane = selection.attrib.get("pane")
+                        self.assertIn(
+                            selection_pane,
+                            (None, "topLeft"),
+                            f"{worksheet_name} contains orphaned selection pane={selection_pane}",
+                        )
 
     def test_active_orders_returns_uncompleted_orders_with_items(self):
         active_order_id, _ = self.seed_order()
@@ -3644,6 +3668,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
         report = self.client.get("/api/v1/logistics/report?shipment_date=2026-05-30")
         self.assertEqual(report.status_code, 200)
+        self.assert_xlsx_has_no_orphaned_pane_selections(report.content)
         workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
         sheet = workbook["Orders"]
 
@@ -3899,6 +3924,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
         report = self.client.get("/api/v1/logistics/report?shipment_date=2026-05-30")
         self.assertEqual(report.status_code, 200)
+        self.assert_xlsx_has_no_orphaned_pane_selections(report.content)
         workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
         sheet = workbook["Orders"]
         problems = workbook["Требуют координаты"]

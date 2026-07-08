@@ -2,10 +2,14 @@ import json
 import tempfile
 import unittest
 from datetime import date, datetime, timedelta, timezone
+from io import BytesIO
 from pathlib import Path
 from unittest import mock
+from zipfile import ZipFile
+import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
+import openpyxl
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -199,6 +203,28 @@ class SmartupAutoImportTests(unittest.TestCase):
         }
         values.update(overrides)
         return SmartupAutoImportConfig(**values)
+
+    def assert_xlsx_has_no_orphaned_pane_selections(self, content):
+        namespace = {"xlsx": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+        with ZipFile(BytesIO(content)) as archive:
+            worksheet_names = [
+                name for name in archive.namelist()
+                if name.startswith("xl/worksheets/") and name.endswith(".xml")
+            ]
+            self.assertTrue(worksheet_names)
+            for worksheet_name in worksheet_names:
+                root = ET.fromstring(archive.read(worksheet_name))
+                for sheet_view in root.findall(".//xlsx:sheetView", namespace):
+                    pane = sheet_view.find("xlsx:pane", namespace)
+                    if pane is not None:
+                        continue
+                    for selection in sheet_view.findall("xlsx:selection", namespace):
+                        selection_pane = selection.attrib.get("pane")
+                        self.assertIn(
+                            selection_pane,
+                            (None, "topLeft"),
+                            f"{worksheet_name} contains orphaned selection pane={selection_pane}",
+                        )
 
     def test_preview_delivery_groups_uses_same_source_batch_key_as_import(self):
         captured_payloads = []
@@ -992,7 +1018,13 @@ class SmartupAutoImportTests(unittest.TestCase):
             document for document in sender.documents if document[0] == "-1003515369435"
         ]
         self.assertEqual(len(logistics_documents), 1)
-        self.assertIn("Отчёт логистики за 06.07.2026", logistics_documents[0][3])
+        _chat_id, content, filename, caption = logistics_documents[0]
+        self.assertEqual(filename, "TakSklad_логистика_06.07.2026.xlsx")
+        self.assertIn("Отчёт логистики за 06.07.2026", caption)
+        self.assert_xlsx_has_no_orphaned_pane_selections(content)
+        workbook = openpyxl.load_workbook(BytesIO(content), data_only=True)
+        self.assertIn("Orders", workbook.sheetnames)
+        workbook.close()
 
     def test_scheduled_target_delivery_date_is_next_calendar_day(self):
         self.assertEqual(scheduled_smartup_target_delivery_date(date(2026, 7, 1)), date(2026, 7, 2))
