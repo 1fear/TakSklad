@@ -268,11 +268,40 @@ function App() {
     return request;
   }
 
+  function clearProtectedPanelState() {
+    setAdminTable(null);
+    setImports([]);
+    setDryRuns([]);
+    setClientPoints([]);
+    setReadiness(null);
+    setEventQueue(null);
+    setOperationsAttention(null);
+    setSmartupHistory(null);
+    setLogisticsCalendar(null);
+    setIncidents([]);
+    setIncidentSummary({});
+    setDashboardSummary(null);
+    setSelectedOrderIds([]);
+    setSelectedIncidentId("");
+    setSelectedEventId("");
+    setEditingClientPointId("");
+    setExpandedClientPointId("");
+    setClientOrderSummaries({});
+    setClientOrderSummaryErrors({});
+    setClientSlotDraft({ deliveryFrom: "", deliveryTo: "" });
+    setAdminActionReason("");
+  }
+
   function expireSession() {
     setAuthenticated(false);
     setAuthUser("");
     setAuthRole("");
     setAuthPermissions([]);
+    clearProtectedPanelState();
+    setBusyAction("");
+    setLoading(false);
+    setError("");
+    setNotice("");
     setLoginError("Сессия закончилась. Войдите снова.");
   }
 
@@ -539,24 +568,7 @@ function App() {
       setAuthUser("");
       setAuthRole("");
       setAuthPermissions([]);
-      setAdminTable(null);
-      setImports([]);
-      setDryRuns([]);
-      setClientPoints([]);
-      setReadiness(null);
-      setEventQueue(null);
-      setOperationsAttention(null);
-      setSmartupHistory(null);
-      setLogisticsCalendar(null);
-      setIncidents([]);
-      setIncidentSummary({});
-      setDashboardSummary(null);
-      setSelectedOrderIds([]);
-      setSelectedIncidentId("");
-      setSelectedEventId("");
-      setEditingClientPointId("");
-      setClientSlotDraft({ deliveryFrom: "", deliveryTo: "" });
-      setAdminActionReason("");
+      clearProtectedPanelState();
     }
   }
 
