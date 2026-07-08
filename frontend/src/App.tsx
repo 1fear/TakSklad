@@ -172,6 +172,7 @@ function App() {
   const [expandedClientPointId, setExpandedClientPointId] = useState("");
   const [clientOrderSummaries, setClientOrderSummaries] = useState<Record<string, ClientPointOrderSummary>>({});
   const [clientOrderSummaryLoadingId, setClientOrderSummaryLoadingId] = useState("");
+  const [clientOrderSummaryErrors, setClientOrderSummaryErrors] = useState<Record<string, string>>({});
   const [clientSlotDraft, setClientSlotDraft] = useState({ deliveryFrom: "", deliveryTo: "" });
   const [clientPointCreateOpen, setClientPointCreateOpen] = useState(false);
   const [newClientPointDraft, setNewClientPointDraft] = useState<ClientPointFormDraft>(() => defaultClientPointDraft());
@@ -267,6 +268,29 @@ function App() {
     return request;
   }
 
+  function expireSession() {
+    setAuthenticated(false);
+    setAuthUser("");
+    setAuthRole("");
+    setAuthPermissions([]);
+    setLoginError("Сессия закончилась. Войдите снова.");
+  }
+
+  function showActionError(actionError: unknown, fallback: string) {
+    if (actionError instanceof ApiRequestError && actionError.status === 401) {
+      expireSession();
+      return;
+    }
+    setError(actionError instanceof Error ? actionError.message : fallback);
+  }
+
+  function ignoreOptionalPanelError(panelError: unknown) {
+    if (panelError instanceof ApiRequestError && panelError.status === 401) {
+      expireSession();
+    }
+    return null;
+  }
+
   async function refreshAll(activeConfig = config, showNotice = true) {
     setLoading(true);
     setError("");
@@ -284,13 +308,10 @@ function App() {
       }
       void refreshPanelContext(activeConfig);
     } catch (refreshError) {
-      const message = refreshError instanceof Error ? refreshError.message : "Не удалось загрузить данные";
       if (refreshError instanceof ApiRequestError && refreshError.status === 401) {
-        setAuthenticated(false);
-        setAuthUser("");
-        setLoginError("Сессия закончилась. Войдите снова.");
+        expireSession();
       } else {
-        setError(message);
+        showActionError(refreshError, "Не удалось загрузить данные");
       }
     } finally {
       setLoading(false);
@@ -299,20 +320,21 @@ function App() {
 
   async function refreshPanelContext(activeConfig = config) {
     const [nextImports, nextClientPoints, nextReadiness, nextEventQueue, nextOperationsAttention, nextSmartupHistory, nextLogisticsCalendar, nextIncidents] = await Promise.all([
-      listImports(activeConfig).catch(() => null),
-      listClientPoints(activeConfig).catch(() => null),
-      getReadiness(activeConfig).catch(() => null),
-      getAdminEvents(activeConfig).catch(() => null),
-      getOperationsAttention(activeConfig).catch(() => null),
-      getSmartupAutoImportHistory(activeConfig).catch(() => null),
-      getLogisticsCalendar(activeConfig, calendarMonth).catch(() => null),
-      getAdminIncidents(activeConfig).catch(() => null),
+      listImports(activeConfig).catch(ignoreOptionalPanelError),
+      listClientPoints(activeConfig).catch(ignoreOptionalPanelError),
+      getReadiness(activeConfig).catch(ignoreOptionalPanelError),
+      getAdminEvents(activeConfig).catch(ignoreOptionalPanelError),
+      getOperationsAttention(activeConfig).catch(ignoreOptionalPanelError),
+      getSmartupAutoImportHistory(activeConfig).catch(ignoreOptionalPanelError),
+      getLogisticsCalendar(activeConfig, calendarMonth).catch(ignoreOptionalPanelError),
+      getAdminIncidents(activeConfig).catch(ignoreOptionalPanelError),
     ]);
     if (nextImports) setImports(nextImports);
     if (nextClientPoints) {
       setClientPoints(nextClientPoints);
       setExpandedClientPointId("");
       setClientOrderSummaries({});
+      setClientOrderSummaryErrors({});
     }
     if (nextReadiness) setReadiness(nextReadiness);
     if (nextEventQueue) {
@@ -342,13 +364,10 @@ function App() {
         setNotice(`Таблица обновлена: ${new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}`);
       }
     } catch (refreshError) {
-      const message = refreshError instanceof Error ? refreshError.message : "Не удалось загрузить таблицу";
       if (refreshError instanceof ApiRequestError && refreshError.status === 401) {
-        setAuthenticated(false);
-        setAuthUser("");
-        setLoginError("Сессия закончилась. Войдите снова.");
+        expireSession();
       } else {
-        setError(message);
+        showActionError(refreshError, "Не удалось загрузить таблицу");
       }
     } finally {
       setLoading(false);
@@ -358,7 +377,10 @@ function App() {
   async function refreshDryRuns(activeConfig = config) {
     try {
       setDryRuns(await listSkladBotDryRuns(activeConfig));
-    } catch {
+    } catch (dryRunError) {
+      if (dryRunError instanceof ApiRequestError && dryRunError.status === 401) {
+        expireSession();
+      }
       setDryRuns([]);
     }
   }
@@ -385,13 +407,10 @@ function App() {
       });
       setNotice(`Загружено ${formatNumber(Math.min(nextPage.offset + nextPage.row_count, nextPage.total_rows))} из ${formatNumber(nextPage.total_rows)}`);
     } catch (pageError) {
-      const message = pageError instanceof Error ? pageError.message : "Не удалось догрузить таблицу";
       if (pageError instanceof ApiRequestError && pageError.status === 401) {
-        setAuthenticated(false);
-        setAuthUser("");
-        setLoginError("Сессия закончилась. Войдите снова.");
+        expireSession();
       } else {
-        setError(message);
+        showActionError(pageError, "Не удалось догрузить таблицу");
       }
     } finally {
       setLoading(false);
@@ -401,7 +420,10 @@ function App() {
   async function refreshLogisticsCalendar(activeConfig = config, month = calendarMonth) {
     try {
       setLogisticsCalendar(await getLogisticsCalendar(activeConfig, month));
-    } catch {
+    } catch (calendarError) {
+      if (calendarError instanceof ApiRequestError && calendarError.status === 401) {
+        expireSession();
+      }
       setLogisticsCalendar(null);
     }
   }
@@ -422,7 +444,7 @@ function App() {
       await refreshLogisticsCalendar(config, calendarMonth);
       setNotice(isNonWorking ? "День отмечен как нерабочий для логистики" : "День отмечен как рабочий для логистики");
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : "Не удалось сохранить календарь логистики");
+      showActionError(actionError, "Не удалось сохранить календарь логистики");
     } finally {
       setBusyAction("");
     }
@@ -568,7 +590,7 @@ function App() {
       await refreshAll();
       setNotice(`Google очередь: ${String(result.status || "completed")}`);
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : "Не удалось повторить Google-очередь");
+      showActionError(actionError, "Не удалось повторить Google-очередь");
     } finally {
       setBusyAction("");
     }
@@ -585,7 +607,7 @@ function App() {
       const skladbotStatus = String(result.skladbot?.status || "unknown");
       setNotice(`Источники обновлены или запущены: ${status}, SkladBot ${skladbotStatus}`);
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : "Не удалось обновить Google/SkladBot");
+      showActionError(actionError, "Не удалось обновить Google/SkladBot");
     } finally {
       setBusyAction("");
     }
@@ -610,6 +632,11 @@ function App() {
       return;
     }
     setExpandedClientPointId(point.id);
+    setClientOrderSummaryErrors((current) => {
+      if (!current[point.id]) return current;
+      const { [point.id]: _removed, ...next } = current;
+      return next;
+    });
     if (clientPointActivityCount(point) <= 0 || clientOrderSummaries[point.id]) {
       return;
     }
@@ -619,7 +646,9 @@ function App() {
       const summary = await getClientPointOrderSummary(config, point.client_name);
       setClientOrderSummaries((current) => ({ ...current, [point.id]: summary }));
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : "Не удалось загрузить историю заказов клиента");
+      const message = actionError instanceof Error ? actionError.message : "Не удалось загрузить историю заказов клиента";
+      setClientOrderSummaryErrors((current) => ({ ...current, [point.id]: message }));
+      showActionError(actionError, "Не удалось загрузить историю заказов клиента");
     } finally {
       setClientOrderSummaryLoadingId("");
     }
@@ -656,7 +685,7 @@ function App() {
       setClientSlotDraft({ deliveryFrom: "", deliveryTo: "" });
       setNotice("Таймслот сохранен");
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : "Не удалось сохранить таймслот");
+      showActionError(actionError, "Не удалось сохранить таймслот");
     } finally {
       setBusyAction("");
     }
@@ -694,7 +723,7 @@ function App() {
       setClientPointCreateOpen(false);
       setNotice("Точка добавлена");
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : "Не удалось добавить точку");
+      showActionError(actionError, "Не удалось добавить точку");
     } finally {
       setBusyAction("");
     }
@@ -725,7 +754,7 @@ function App() {
       setClientSlotDraft({ deliveryFrom: "", deliveryTo: "" });
       setNotice("Таймслот сброшен до 10:00-18:00");
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : "Не удалось сбросить таймслот");
+      showActionError(actionError, "Не удалось сбросить таймслот");
     } finally {
       setBusyAction("");
     }
@@ -741,7 +770,7 @@ function App() {
       await refreshDryRuns(config);
       setNotice("SkladBot dry-run пересобран");
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : "Не удалось пересобрать SkladBot dry-run");
+      showActionError(actionError, "Не удалось пересобрать SkladBot dry-run");
     } finally {
       setBusyAction("");
     }
@@ -763,7 +792,7 @@ function App() {
       URL.revokeObjectURL(objectUrl);
       setNotice("Audit log скачан");
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : "Не удалось скачать audit log");
+      showActionError(actionError, "Не удалось скачать audit log");
     } finally {
       setBusyAction("");
     }
@@ -789,7 +818,7 @@ function App() {
       await refreshAll(config, false);
       setNotice(status === "resolved" ? "Инцидент закрыт" : "Инцидент проигнорирован");
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : "Не удалось обновить инцидент");
+      showActionError(actionError, "Не удалось обновить инцидент");
     } finally {
       setBusyAction("");
     }
@@ -819,7 +848,7 @@ function App() {
       await refreshAll(config, false);
       setNotice("Событие возвращено в очередь");
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : "Не удалось повторить событие");
+      showActionError(actionError, "Не удалось повторить событие");
     } finally {
       setBusyAction("");
     }
@@ -887,7 +916,11 @@ function App() {
     } catch (actionError) {
       const actionMessage = actionError instanceof Error ? actionError.message : "Действие не выполнено";
       await refreshAll(config, false);
-      setError(actionMessage);
+      if (actionError instanceof ApiRequestError && actionError.status === 401) {
+        expireSession();
+      } else {
+        setError(actionMessage);
+      }
     } finally {
       setBusyAction("");
     }
@@ -1149,6 +1182,7 @@ function App() {
             editingPointId={editingClientPointId}
             expandedPointId={expandedClientPointId}
             orderSummaries={clientOrderSummaries}
+            orderSummaryErrors={clientOrderSummaryErrors}
             loadingOrderSummaryId={clientOrderSummaryLoadingId}
             draft={clientSlotDraft}
             createOpen={clientPointCreateOpen}
@@ -1966,6 +2000,7 @@ function ClientsPanel({
   editingPointId,
   expandedPointId,
   orderSummaries,
+  orderSummaryErrors,
   loadingOrderSummaryId,
   draft,
   createOpen,
@@ -1991,6 +2026,7 @@ function ClientsPanel({
   editingPointId: string;
   expandedPointId: string;
   orderSummaries: Record<string, ClientPointOrderSummary>;
+  orderSummaryErrors: Record<string, string>;
   loadingOrderSummaryId: string;
   draft: { deliveryFrom: string; deliveryTo: string };
   createOpen: boolean;
@@ -2217,6 +2253,7 @@ function ClientsPanel({
                         <ClientOrderHistory
                           point={point}
                           summary={orderSummaries[point.id]}
+                          error={orderSummaryErrors[point.id]}
                           loading={loadingOrderSummaryId === point.id}
                         />
                       </td>
@@ -2237,7 +2274,7 @@ function ClientsPanel({
   );
 }
 
-function ClientOrderHistory({ point, summary, loading }: { point: ClientPoint; summary?: ClientPointOrderSummary; loading: boolean }) {
+function ClientOrderHistory({ point, summary, error, loading }: { point: ClientPoint; summary?: ClientPointOrderSummary; error?: string; loading: boolean }) {
   if (loading) {
     return (
       <div className="client-orders-empty" id={`client-orders-${point.id}`}>
@@ -2245,6 +2282,12 @@ function ClientOrderHistory({ point, summary, loading }: { point: ClientPoint; s
         Загрузка истории заказов...
       </div>
     );
+  }
+  if (error) {
+    return <div className="client-orders-empty error-state" id={`client-orders-${point.id}`}>Не удалось загрузить историю заказов: {error}</div>;
+  }
+  if (!summary && clientPointActivityCount(point) > 0) {
+    return <div className="client-orders-empty" id={`client-orders-${point.id}`}>История заказов ещё не загружена.</div>;
   }
   const history = summary?.dates ?? [];
   if (!summary || history.length === 0) {

@@ -1385,6 +1385,11 @@ summary:focus-visible {
   color: #6d7168;
 }
 
+.client-orders-empty.error-state {
+  background: #ffe9e4;
+  color: #9d2b1f;
+}
+
 .client-order-date-card {
   display: grid;
   gap: 8px;

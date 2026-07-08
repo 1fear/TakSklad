@@ -502,6 +502,7 @@ export function defaultApiUrl() {
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 15000;
 const LONG_REQUEST_TIMEOUT_MS = 45000;
+const MAX_TEXT_ERROR_LENGTH = 500;
 
 export async function apiRequest<T>(
   config: ApiConfig,
@@ -537,7 +538,7 @@ export async function apiRequest<T>(
       try {
         detail = formatApiErrorDetail(JSON.parse(body));
       } catch {
-        detail = body;
+        detail = formatTextApiErrorDetail(response.status, body);
       }
     }
     throw new ApiRequestError(response.status, response.statusText, detail);
@@ -566,6 +567,40 @@ function formatApiErrorDetail(payload: unknown): string {
   } catch {
     return "Ошибка запроса";
   }
+}
+
+function formatTextApiErrorDetail(status: number, body: string): string {
+  const text = body.trim();
+  if (status === 401) {
+    return "Сессия закончилась или доступ к API не подтвержден. Войдите снова.";
+  }
+  if (!text) return "";
+  if (looksLikeHtml(text)) {
+    const title = htmlTitle(text) || htmlHeading(text);
+    const cleanTitle = normalizeErrorText(stripHtml(title));
+    return cleanTitle ? `API вернул HTML-ошибку: ${cleanTitle}` : "API вернул HTML-ошибку";
+  }
+  return normalizeErrorText(text).slice(0, MAX_TEXT_ERROR_LENGTH);
+}
+
+function looksLikeHtml(value: string) {
+  return /<\s*(html|head|body|title|center|h1)\b/i.test(value);
+}
+
+function htmlTitle(value: string) {
+  return value.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? "";
+}
+
+function htmlHeading(value: string) {
+  return value.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1] ?? "";
+}
+
+function stripHtml(value: string) {
+  return value.replace(/<[^>]*>/g, " ");
+}
+
+function normalizeErrorText(value: string) {
+  return value.replace(/\s+/g, " ").trim();
 }
 
 function formatApiErrorItem(value: unknown): string {
