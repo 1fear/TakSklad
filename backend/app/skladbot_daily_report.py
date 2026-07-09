@@ -1573,12 +1573,7 @@ def build_skladbot_daily_report_xlsx(report: dict[str, Any]) -> tuple[bytes, str
     write_summary_sheet(summary_sheet, report)
     write_requests_sheet(workbook.create_sheet("Заявки"), report.get("requests") or [])
     write_request_products_sheet(workbook.create_sheet("Товары заявок"), report.get("requests") or [])
-    write_movements_sheet(workbook.create_sheet("Движения"), report.get("movements") or [])
     write_stock_sheet(workbook.create_sheet("Остатки"), report)
-    write_coverage_sheet(workbook.create_sheet("Контроль покрытия"), report)
-    write_excluded_requests_sheet(workbook.create_sheet("Исключенные заявки"), report.get("excluded_requests") or [])
-    write_date_diagnostics_sheet(workbook.create_sheet("Диагностика дат"), report.get("date_diagnostics") or [])
-    write_errors_sheet(workbook.create_sheet("Ошибки"), report.get("errors") or [], report.get("api_errors") or [])
     for sheet in workbook.worksheets:
         autosize_columns(sheet)
     apply_report_template_widths(workbook)
@@ -1589,84 +1584,25 @@ def build_skladbot_daily_report_xlsx(report: dict[str, Any]) -> tuple[bytes, str
 
 def write_summary_sheet(sheet, report: dict[str, Any]) -> None:
     summary = report.get("summary") or {}
-    report_date = format_date(report.get("report_date"))
-    generated_at = report.get("generated_at")
     category_counts = summary.get("category_counts") or {}
     blocks = summary.get("request_blocks_by_category") or {}
-    inbound_blocks = parse_int(blocks.get(REQUEST_CATEGORY_RECEIVING))
-    outbound_blocks = parse_int(blocks.get(REQUEST_CATEGORY_SHIPMENT))
-    defect_outbound_blocks = parse_int(blocks.get(REQUEST_CATEGORY_DEFECT_SHIPMENT))
-    return_blocks = parse_int(blocks.get(REQUEST_CATEGORY_RETURN))
-    stock_total_value = parse_int(summary.get("stock_total"))
-    product_rows = product_breakdown_for_summary(report)
-    if not product_rows:
-        product_rows = [{
-            "name": "Товар не найден",
-            "ending_stock": stock_total_value,
-            "inbound": 0,
-            "outbound": 0,
-            "defect_outbound": 0,
-            "returns": 0,
-        }]
-    request_column = 3 + len(product_rows)
-    request_column_letter = get_column_letter(request_column)
-    sheet.append(["Показатель", "Значение"])
-    sheet.append(["Дата отчета", report_date])
-    sheet.append(["Сформировано", format_datetime(generated_at)])
-    sheet.append(["customer_id", report.get("customer_id") or ""])
-    sheet.append([])
-    sheet.append(["Отчет о движении остатков за день"] + [None] * (request_column - 1))
-    sheet.append([None, "Всего блоков"] + [item["name"] for item in product_rows] + ["Заявок"])
-    sheet.append(
-        ["Расчетный начальный остаток", "=B13-B9-B10-B11-B12"]
-        + [
-            (
-                f"={get_column_letter(index)}13"
-                f"-{get_column_letter(index)}9"
-                f"-{get_column_letter(index)}10"
-                f"-{get_column_letter(index)}11"
-                f"-{get_column_letter(index)}12"
-            )
-            for index in range(3, request_column)
-        ]
-        + [None]
-    )
-    sheet.append(
-        ["Приемка", inbound_blocks]
-        + [item["inbound"] for item in product_rows]
-        + [category_counts.get(REQUEST_CATEGORY_RECEIVING, 0)]
-    )
-    sheet.append(
-        ["Отгрузка", -outbound_blocks]
-        + [-item["outbound"] for item in product_rows]
-        + [category_counts.get(REQUEST_CATEGORY_SHIPMENT, 0)]
-    )
-    sheet.append(
-        ["Отгрузка в браке", -defect_outbound_blocks]
-        + [-item["defect_outbound"] for item in product_rows]
-        + [category_counts.get(REQUEST_CATEGORY_DEFECT_SHIPMENT, 0)]
-    )
-    sheet.append(
-        ["Возврат", return_blocks]
-        + [item["returns"] for item in product_rows]
-        + [category_counts.get(REQUEST_CATEGORY_RETURN, 0)]
-    )
-    sheet.append(
-        ["Остаток на конец дня", stock_total_value]
-        + [item["ending_stock"] for item in product_rows]
-        + [None]
-    )
-    sheet.append([
-        "Примечание",
-        "Рассчитано как актуальный остаток минус движения отчета; не является историческим snapshot склада.",
-    ])
+    sheet.append(["Показатель", "Блоков", "Заявок"])
+    for category in (
+        REQUEST_CATEGORY_SHIPMENT,
+        REQUEST_CATEGORY_DEFECT_SHIPMENT,
+        REQUEST_CATEGORY_RETURN,
+        REQUEST_CATEGORY_RECEIVING,
+    ):
+        sheet.append([
+            category,
+            parse_int(blocks.get(category)),
+            parse_int(category_counts.get(category)),
+        ])
+    sheet.append(["Актуальный остаток", parse_int(summary.get("stock_total")), None])
     apply_header_style(sheet)
-    for cell in ("A6", "A8", "B8", "A13", "B13"):
+    for cell in ("A6", "B6"):
         sheet[cell].font = Font(bold=True)
-    for index in range(3, request_column):
-        for row in (8, 13):
-            sheet.cell(row=row, column=index).font = Font(bold=True)
-    apply_thin_border(sheet, f"A8:{request_column_letter}13")
+    apply_thin_border(sheet, "A2:C6")
 
 
 def write_requests_sheet(sheet, requests: list[dict[str, Any]]) -> None:
@@ -1872,34 +1808,15 @@ def build_skladbot_daily_report_message(report: dict[str, Any]) -> str:
     summary = report.get("summary") or {}
     category_counts = summary.get("category_counts") or {}
     blocks = summary.get("request_blocks_by_category") or {}
-    coverage = report.get("coverage") or default_coverage(report.get("report_date"))
     report_date = format_date_iso(report.get("report_date"))
-    coverage_status = normalize_text(coverage.get("coverage_status") or COVERAGE_STATUS_COMPLETE)
-    warnings = normalize_text(coverage.get("warnings"))
     lines = [
         f"SkladBot daily за {report_date}",
-        f"Срез: {coverage.get('primary_scope') or PRIMARY_DAILY_SCOPE}",
-        f"Статус покрытия: {coverage_status.upper()}",
-        f"В операционных итогах: {coverage.get('included_operational_requests', summary.get('requests_total', 0))} заявок",
-        f"В диагностике/исключено: {coverage.get('excluded_diagnostic_requests', 0)} заявок",
-        f"Ошибки API: {coverage.get('api_error_count', len(report.get('errors') or []))}",
         f"Отгрузка: {category_counts.get(REQUEST_CATEGORY_SHIPMENT, 0)} заявок, {blocks.get(REQUEST_CATEGORY_SHIPMENT, 0)} блоков",
         f"Отгрузка в браке: {category_counts.get(REQUEST_CATEGORY_DEFECT_SHIPMENT, 0)} заявок, {blocks.get(REQUEST_CATEGORY_DEFECT_SHIPMENT, 0)} блоков",
         f"Возврат: {category_counts.get(REQUEST_CATEGORY_RETURN, 0)} заявок, {blocks.get(REQUEST_CATEGORY_RETURN, 0)} блоков",
         f"Приемка: {category_counts.get(REQUEST_CATEGORY_RECEIVING, 0)} заявок, {blocks.get(REQUEST_CATEGORY_RECEIVING, 0)} блоков",
-        f"Прочее: {category_counts.get(REQUEST_CATEGORY_OTHER, 0)} заявок, {blocks.get(REQUEST_CATEGORY_OTHER, 0)} блоков",
-        "",
-        f"Движения: приход {summary.get('movement_in_amount', 0)}, расход {summary.get('movement_out_amount', 0)}",
         f"Актуальный остаток: {summary.get('stock_total', 0)}",
     ]
-    errors = report.get("errors") or []
-    if coverage_status != COVERAGE_STATUS_COMPLETE or errors or warnings:
-        warning_text = warnings or "есть ошибки сбора"
-        lines.extend([
-            "",
-            f"Отчет неполный: {warning_text}.",
-            "Подробности: листы \"Контроль покрытия\", \"Исключенные заявки\", \"Ошибки\".",
-        ])
     return "\n".join(lines)
 
 
@@ -1968,15 +1885,10 @@ def autosize_columns(sheet) -> None:
 
 def apply_report_template_widths(workbook: Workbook) -> None:
     widths_by_sheet = {
-        "Сводка": {"A": 28, "B": 21, "C": 13.44, "D": 13, "E": 13, "F": 13},
+        "Сводка": {"A": 28, "B": 13, "C": 10},
         "Заявки": {"A": 10, "B": 13, "C": 11, "D": 20, "E": 11, "F": 10, "G": 15, "H": 17, "I": 15, "J": 45, "K": 24, "L": 33, "M": 60, "N": 13, "O": 12, "P": 12, "Q": 12, "R": 10, "S": 24},
         "Товары заявок": {"A": 13, "B": 11, "C": 20, "D": 15, "E": 45, "F": 24, "G": 36, "H": 17, "I": 15, "J": 12, "K": 13, "L": 12, "M": 12},
-        "Движения": {"A": 13, "B": 10, "C": 17, "D": 14, "E": 10, "F": 13, "G": 13, "H": 13, "I": 13, "J": 13, "K": 13},
         "Остатки": {"A": 29, "B": 10, "C": 13, "D": 13, "E": 13, "F": 17, "G": 21, "H": 10},
-        "Контроль покрытия": {"A": 36, "B": 40},
-        "Исключенные заявки": {"A": 12, "B": 35, "C": 20, "D": 15, "E": 15, "F": 20, "G": 20, "H": 24, "I": 28, "J": 32, "K": 45, "L": 12, "M": 12},
-        "Диагностика дат": {"A": 12, "B": 15, "C": 13, "D": 30, "E": 18, "F": 22, "G": 26, "H": 32, "I": 18, "J": 20, "K": 15, "L": 15, "M": 20, "N": 20},
-        "Ошибки": {"A": 10},
     }
     for sheet_name, widths in widths_by_sheet.items():
         if sheet_name not in workbook.sheetnames:
