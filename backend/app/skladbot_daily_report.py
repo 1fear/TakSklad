@@ -1,3 +1,4 @@
+import logging
 import os
 import time
 from datetime import date, datetime, timezone
@@ -22,6 +23,7 @@ from .skladbot_worker import (
     request_list_value,
     sanitize_skladbot_error,
 )
+from .representative_contacts import display_representative_name
 
 
 DEFAULT_DAILY_REPORT_REQUEST_TYPE_IDS = (3387, 3388, 3389, 3391, 3403)
@@ -42,6 +44,7 @@ REQUEST_CATEGORIES = (
 REQUEST_HEADERS = [
     "ID",
     "Номер",
+    "ID заявки Smartup",
     "Категория",
     "Тип",
     "Статус",
@@ -65,6 +68,7 @@ REQUEST_HEADERS = [
 REQUEST_PRODUCT_HEADERS = [
     "Заявка",
     "ID заявки",
+    "ID заявки Smartup",
     "Тип",
     "Дата выгрузки",
     "Юрлицо/точка",
@@ -104,6 +108,243 @@ STOCK_HEADERS = [
     "Доступно",
 ]
 
+PRIMARY_DAILY_SCOPE = "Дата выгрузки / движение склада"
+COVERAGE_STATUS_COMPLETE = "complete"
+COVERAGE_STATUS_PARTIAL = "partial"
+COVERAGE_STATUS_FAILED = "failed"
+READ_STYLE_POST_ENDPOINTS = {
+    "/warehouse/transactions",
+    "/products",
+    "/report/stock",
+}
+WRITE_POST_ENDPOINTS = {
+    "/requests",
+}
+
+COVERAGE_FIELDS = [
+    "report_date",
+    "primary_scope",
+    "coverage_status",
+    "pages_fetched",
+    "list_pages_fetched",
+    "page_limit",
+    "max_pages",
+    "max_pages_per_request_type",
+    "list_page_guard_max_total",
+    "max_pages_reached",
+    "movement_pages_fetched",
+    "movements_rows_returned",
+    "movements_limit",
+    "movements_truncation_possible",
+    "products_rows_returned",
+    "products_limit",
+    "products_truncation_possible",
+    "stock_rows_returned",
+    "stock_limit",
+    "stock_truncation_possible",
+    "read_style_post_retry_count",
+    "read_style_post_error_count",
+    "detail_pages_fetched",
+    "total_http_pages_fetched",
+    "list_rows_total",
+    "unique_request_ids",
+    "duplicate_request_ids",
+    "detail_attempted",
+    "detail_attempted_in_scope",
+    "detail_attempted_unknown_date",
+    "detail_attempted_out_of_scope_sample",
+    "detail_success",
+    "detail_errors",
+    "detail_limit_reached",
+    "skipped_due_to_out_of_scope",
+    "out_of_scope_skipped_without_detail",
+    "in_scope_candidates_not_detailed",
+    "included_operational_requests",
+    "excluded_diagnostic_requests",
+    "out_of_scope_requests",
+    "completed_only_count",
+    "archived_only_count",
+    "neither_count",
+    "created_today_future_unloading_count",
+    "future_unloading_requests",
+    "future_unloading_blocks",
+    "missing_date_count",
+    "conflicting_date_count",
+    "included_date_conflict_count",
+    "unloading_movement_conflict_count",
+    "movement_without_unloading_count",
+    "unloading_without_matching_movement_count",
+    "api_error_count",
+    "warnings",
+]
+
+EXCLUDED_REQUEST_HEADERS = [
+    "request_id",
+    "client",
+    "created_at",
+    "unloading_date",
+    "movement_date",
+    "completed_at",
+    "archived_at",
+    "status",
+    "exclusion_reason",
+    "diagnostic_reason",
+    "error_message",
+    "source_page",
+    "detail_loaded",
+]
+
+DATE_DIAGNOSTIC_HEADERS = [
+    "request_id",
+    "number",
+    "report_date",
+    "primary_scope",
+    "date_field_used",
+    "inclusion_reason",
+    "exclusion_reason",
+    "diagnostic_reason",
+    "date_confidence",
+    "created_at",
+    "unloading_date",
+    "movement_date",
+    "completed_at",
+    "archived_at",
+]
+
+FUTURE_UNLOADING_HEADERS = [
+    "ID",
+    "Номер",
+    "ID заявки Smartup",
+    "Дата создания",
+    "Дата выгрузки",
+    "Юрлицо/точка",
+    "Тип оплаты",
+    "Торговый представитель",
+    "Раб зона",
+    "Адрес",
+    "План блоков",
+    "Товаров",
+    "Причина",
+]
+
+LOGGER = logging.getLogger(__name__)
+DEFAULT_DAILY_REPORT_MAX_PAGES = 60
+SKLADBOT_DAILY_REPORT_MAX_RUNTIME_SECONDS_ENV = "SKLADBOT_DAILY_REPORT_MAX_RUNTIME_SECONDS"
+DEFAULT_DAILY_REPORT_MAX_RUNTIME_SECONDS = 25 * 60
+SKLADBOT_DAILY_REPORT_OUT_OF_SCOPE_DETAIL_SAMPLE_LIMIT_ENV = "SKLADBOT_DAILY_REPORT_OUT_OF_SCOPE_DETAIL_SAMPLE_LIMIT"
+DEFAULT_DAILY_REPORT_OUT_OF_SCOPE_DETAIL_SAMPLE_LIMIT = 25
+
+REQUEST_DETAIL_BUCKET_IN_SCOPE = "in_scope"
+REQUEST_DETAIL_BUCKET_UNKNOWN_DATE = "unknown_date"
+REQUEST_DETAIL_BUCKET_CREATED_TODAY_DIAGNOSTIC = "created_today_diagnostic"
+REQUEST_DETAIL_BUCKET_FUTURE_UNLOADING_DIAGNOSTIC = "future_unloading_diagnostic"
+REQUEST_DETAIL_BUCKET_DIAGNOSTIC_OUT_OF_SCOPE = "diagnostic_out_of_scope"
+REQUEST_DETAIL_BUCKET_KNOWN_OUT_OF_SCOPE = "known_out_of_scope"
+REQUEST_DETAIL_BUCKET_ORDER = {
+    REQUEST_DETAIL_BUCKET_IN_SCOPE: 0,
+    REQUEST_DETAIL_BUCKET_UNKNOWN_DATE: 1,
+    REQUEST_DETAIL_BUCKET_CREATED_TODAY_DIAGNOSTIC: 2,
+    REQUEST_DETAIL_BUCKET_FUTURE_UNLOADING_DIAGNOSTIC: 2,
+    REQUEST_DETAIL_BUCKET_DIAGNOSTIC_OUT_OF_SCOPE: 3,
+    REQUEST_DETAIL_BUCKET_KNOWN_OUT_OF_SCOPE: 4,
+}
+
+
+class SkladBotDailyReportTimeout(RuntimeError):
+    pass
+
+
+class SkladBotReadOnlyClient:
+    def __init__(self, client: Any):
+        self._client = client
+
+    def __getattr__(self, name: str) -> Any:
+        if name in {"create_request", "update_request", "delete_request", "return_request"}:
+            raise AttributeError(f"SkladBot daily report client is read-only: {name} is forbidden")
+        return getattr(self._client, name)
+
+    def get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+        return self._client.get(path, params or {})
+
+    def get_request_detail(self, request_id: int) -> Any:
+        return self._client.get_request_detail(request_id)
+
+    def post(self, path: str, payload: dict[str, Any] | None = None) -> Any:
+        normalized_path = f"/{normalize_text(path).lstrip('/')}"
+        if normalized_path not in READ_STYLE_POST_ENDPOINTS:
+            raise RuntimeError(f"SkladBot daily report is read-only; POST {normalized_path} is forbidden")
+        return self._client.post(normalized_path, payload or {})
+
+
+def read_only_client(client: Any) -> SkladBotReadOnlyClient:
+    if isinstance(client, SkladBotReadOnlyClient):
+        return client
+    return SkladBotReadOnlyClient(client)
+
+
+def daily_report_max_runtime_seconds() -> int:
+    return max(1, env_int(SKLADBOT_DAILY_REPORT_MAX_RUNTIME_SECONDS_ENV, DEFAULT_DAILY_REPORT_MAX_RUNTIME_SECONDS))
+
+
+def ensure_daily_report_runtime_budget(started_at: float, max_runtime_seconds: int, stage: str) -> None:
+    if max_runtime_seconds <= 0:
+        return
+    elapsed = time.monotonic() - started_at
+    if elapsed > max_runtime_seconds:
+        raise SkladBotDailyReportTimeout(
+            f"SkladBot daily report runtime exceeded at {stage}: {elapsed:.1f}s > {max_runtime_seconds}s"
+        )
+
+
+def read_style_post(
+    client: Any,
+    path: str,
+    payload: dict[str, Any] | None = None,
+    coverage: dict[str, Any] | None = None,
+) -> Any:
+    normalized_path = f"/{normalize_text(path).lstrip('/')}"
+    if normalized_path not in READ_STYLE_POST_ENDPOINTS:
+        raise RuntimeError(f"Read-style POST retry is forbidden for {normalized_path}")
+    retries = max(0, env_int("SKLADBOT_DAILY_REPORT_READ_POST_RETRIES", env_int("SKLADBOT_DAILY_REPORT_429_RETRIES", 2)))
+    retry_seconds = max(
+        0.0,
+        env_float(
+            "SKLADBOT_DAILY_REPORT_READ_POST_RETRY_SECONDS",
+            env_float("SKLADBOT_DAILY_REPORT_429_RETRY_SECONDS", 15.0),
+        ),
+    )
+    for attempt in range(retries + 1):
+        try:
+            return client.post(normalized_path, payload or {})
+        except Exception as exc:
+            if attempt >= retries or not is_transient_read_style_post_error(exc):
+                if coverage is not None:
+                    coverage["read_style_post_error_count"] = parse_int(coverage.get("read_style_post_error_count")) + 1
+                raise
+            if coverage is not None:
+                coverage["read_style_post_retry_count"] = parse_int(coverage.get("read_style_post_retry_count")) + 1
+            if retry_seconds:
+                time.sleep(retry_seconds)
+    raise RuntimeError(f"SkladBot read-style POST failed: {normalized_path}")
+
+
+def is_transient_read_style_post_error(exc: Exception) -> bool:
+    text = normalize_text(exc).lower()
+    return any(marker in text for marker in (
+        "429",
+        "too many requests",
+        "timeout",
+        "timed out",
+        "http 500",
+        "http 502",
+        "http 503",
+        "http 504",
+        " 500",
+        " 502",
+        " 503",
+        " 504",
+    ))
+
 
 def configured_request_type_ids(environ: dict[str, str] | None = None) -> list[int]:
     environ = environ or os.environ
@@ -122,35 +363,78 @@ def collect_skladbot_daily_report(
     report_date: date | None = None,
     client: Any | None = None,
 ) -> dict[str, Any]:
-    client = client or SkladBotClient()
+    client = read_only_client(client or SkladBotClient())
     report_date = report_date or business_today()
+    started_at = time.monotonic()
+    max_runtime_seconds = daily_report_max_runtime_seconds()
+    LOGGER.info(
+        "SkladBot daily report started report_date=%s max_runtime_seconds=%s",
+        report_date.isoformat(),
+        max_runtime_seconds,
+    )
     generated_at = datetime.now(timezone.utc).astimezone(business_timezone())
     result = {
         "report_date": report_date,
+        "primary_scope": PRIMARY_DAILY_SCOPE,
         "generated_at": generated_at,
         "customer_id": getattr(client, "customer_id", None),
         "requests": [],
+        "future_unloading_requests": [],
+        "excluded_requests": [],
+        "date_diagnostics": [],
         "movements": [],
         "stock": {"total": 0, "rows": [], "raw": {}, "error": ""},
         "errors": [],
+        "api_errors": [],
+        "coverage": default_coverage(report_date),
     }
     if not getattr(client, "configured", False):
         result["errors"].append("SKLADBOT_API_TOKEN is not configured")
+        result["coverage"]["coverage_status"] = COVERAGE_STATUS_FAILED
+        result["coverage"]["api_error_count"] = 1
+        add_coverage_warning(result["coverage"], "skladbot_not_configured")
+        finalize_report_coverage(result)
         result["summary"] = summarize_daily_report(result)
         return result
 
+    ensure_daily_report_runtime_budget(started_at, max_runtime_seconds, "request_types")
     request_types = load_request_types(client, result["errors"])
-    movements = fetch_daily_movements(client, report_date, result["errors"])
+    LOGGER.info("SkladBot daily report request types loaded report_date=%s count=%s", report_date.isoformat(), len(request_types))
+    ensure_daily_report_runtime_budget(started_at, max_runtime_seconds, "movements")
+    movements = fetch_daily_movements(client, report_date, result["errors"], result["coverage"])
+    LOGGER.info("SkladBot daily report movements fetched report_date=%s count=%s", report_date.isoformat(), len(movements))
     result["movements"] = movements
-    requests = fetch_daily_requests(
+    ensure_daily_report_runtime_budget(started_at, max_runtime_seconds, "requests")
+    request_result = fetch_daily_requests(
         client,
         report_date,
         request_types,
         result["errors"],
+        movements=movements,
+        started_at=started_at,
+        max_runtime_seconds=max_runtime_seconds,
+        coverage=result["coverage"],
     )
-    result["requests"] = requests
-    result["stock"] = fetch_current_stock(client, result["errors"])
+    result["requests"] = request_result["requests"]
+    result["future_unloading_requests"] = request_result["future_unloading_requests"]
+    result["excluded_requests"] = request_result["excluded_requests"]
+    result["date_diagnostics"] = request_result["date_diagnostics"]
+    result["api_errors"] = request_result["api_errors"]
+    result["coverage"] = request_result["coverage"]
+    ensure_daily_report_runtime_budget(started_at, max_runtime_seconds, "stock")
+    result["stock"] = fetch_current_stock(client, result["errors"], result["coverage"])
+    finalize_report_coverage(result)
     result["summary"] = summarize_daily_report(result)
+    LOGGER.info(
+        "SkladBot daily report finished report_date=%s coverage_status=%s pages=%s detail_attempted=%s detail_success=%s detail_errors=%s errors=%s",
+        report_date.isoformat(),
+        (result.get("coverage") or {}).get("coverage_status"),
+        (result.get("coverage") or {}).get("pages_fetched"),
+        (result.get("coverage") or {}).get("detail_attempted"),
+        (result.get("coverage") or {}).get("detail_success"),
+        (result.get("coverage") or {}).get("detail_errors"),
+        len(result.get("errors") or []),
+    )
     return result
 
 
@@ -211,62 +495,658 @@ def fetch_daily_requests(
     report_date: date,
     request_types: list[dict[str, Any]],
     errors: list[str],
-) -> list[dict[str, Any]]:
+    movements: list[dict[str, Any]] | None = None,
+    started_at: float | None = None,
+    max_runtime_seconds: int | None = None,
+    coverage: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    started_at = started_at if started_at is not None else time.monotonic()
+    max_runtime_seconds = max_runtime_seconds if max_runtime_seconds is not None else daily_report_max_runtime_seconds()
     limit = max(1, env_int("SKLADBOT_DAILY_REPORT_REQUESTS_LIMIT", getattr(client, "limit", 500) or 500))
+    max_pages = max(1, env_int("SKLADBOT_DAILY_REPORT_MAX_PAGES", DEFAULT_DAILY_REPORT_MAX_PAGES))
     default_detail_limit = max(250, limit * max(1, len(request_types)))
     detail_limit = max(1, env_int("SKLADBOT_DAILY_REPORT_DETAIL_LIMIT", default_detail_limit))
+    out_of_scope_sample_limit = max(
+        0,
+        env_int(
+            SKLADBOT_DAILY_REPORT_OUT_OF_SCOPE_DETAIL_SAMPLE_LIMIT_ENV,
+            min(DEFAULT_DAILY_REPORT_OUT_OF_SCOPE_DETAIL_SAMPLE_LIMIT, detail_limit),
+        ),
+    )
     request_delay = max(0.0, env_float("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS", 3.0))
+    coverage = coverage or default_coverage(report_date, page_limit=limit, max_pages=max_pages)
+    coverage["report_date"] = report_date.isoformat()
+    coverage["page_limit"] = limit
+    coverage["max_pages"] = max_pages
+    coverage["max_pages_per_request_type"] = max_pages
+    coverage["list_page_guard_max_total"] = max_pages * max(1, len(request_types))
     result = []
-    seen_ids = set()
+    future_unloading_requests = []
+    excluded_requests = []
+    date_diagnostics = []
+    api_errors = []
+    movement_dates = movement_dates_by_request_number(movements or [])
+    list_entries = crawl_daily_request_list_pages(
+        client=client,
+        report_date=report_date,
+        request_types=request_types,
+        limit=limit,
+        max_pages=max_pages,
+        request_delay=request_delay,
+        coverage=coverage,
+        errors=errors,
+        api_errors=api_errors,
+        started_at=started_at,
+        max_runtime_seconds=max_runtime_seconds,
+    )
     checked_details = 0
-    for request_type in request_types:
-        type_id = parse_int(request_type.get("id"))
-        if type_id <= 0:
+    detail_entries = prioritize_request_detail_entries(list_entries, report_date, movement_dates)
+    for entry in detail_entries:
+        ensure_daily_report_runtime_budget(started_at, max_runtime_seconds, "request_detail")
+        request_id = parse_int(request_list_value(entry.get("list_item") or {}, "id"))
+        detail_bucket = request_list_detail_bucket(entry.get("list_item") or {}, report_date, movement_dates)
+        if (
+            detail_bucket == REQUEST_DETAIL_BUCKET_KNOWN_OUT_OF_SCOPE
+            and coverage.get("detail_attempted_out_of_scope_sample", 0) >= out_of_scope_sample_limit
+        ):
+            coverage["out_of_scope_skipped_without_detail"] += 1
+            coverage["out_of_scope_requests"] += 1
+            excluded_requests.append(excluded_request_from_list_entry(
+                entry,
+                "out_of_scope",
+                "known_out_of_scope_without_detail",
+                "List-level date is outside report scope; detail fetch skipped",
+            ))
+            continue
+        if checked_details >= detail_limit:
+            coverage["detail_limit_reached"] = True
+            add_coverage_warning(coverage, "detail_limit")
+            if detail_bucket in (REQUEST_DETAIL_BUCKET_IN_SCOPE, REQUEST_DETAIL_BUCKET_UNKNOWN_DATE):
+                coverage["in_scope_candidates_not_detailed"] += 1
+            elif detail_bucket == REQUEST_DETAIL_BUCKET_KNOWN_OUT_OF_SCOPE:
+                coverage["out_of_scope_skipped_without_detail"] += 1
+                coverage["out_of_scope_requests"] += 1
+            excluded_requests.append(excluded_request_from_list_entry(
+                entry,
+                "detail_limit_reached",
+                "detail_not_loaded",
+                "Лимит детализации заявок достигнут",
+            ))
             continue
         try:
-            list_payload = client.get("/requests", {
-                "customer_id": getattr(client, "customer_id", None),
-                "type_id": type_id,
-                "limit": limit,
-            })
-            list_items = extract_list_items(list_payload)
-            if request_delay:
-                time.sleep(request_delay)
-        except Exception as exc:
-            errors.append(f"Не удалось получить список заявок type_id={type_id}: {sanitize_skladbot_error(exc)}")
-            continue
-        for list_item in report_date_request_list_items(list_items, report_date):
-            if checked_details >= detail_limit:
-                errors.append(f"Лимит детализации заявок достигнут: {detail_limit}")
-                return result
-            request_id = parse_int(request_list_value(list_item, "id"))
-            if request_id <= 0 or request_id in seen_ids:
-                continue
-            try:
-                detail = get_daily_request_detail(client, request_id, request_delay)
-                checked_details += 1
-            except Exception as exc:
-                errors.append(f"Не удалось получить заявку {request_id}: {sanitize_skladbot_error(exc)}")
-                continue
-            if request_delay:
-                time.sleep(request_delay)
-            request = normalize_request_payload(list_item, detail)
-            request["category"] = categorize_request_type(request.get("type") or request_type.get("name"))
-            reasons = request_inclusion_reasons(
-                request,
-                report_date,
+            coverage["detail_attempted"] += 1
+            increment_detail_bucket_counter(coverage, detail_bucket)
+            checked_details += 1
+            LOGGER.info(
+                "SkladBot daily report detail fetch started report_date=%s request_index=%s request_id=%s",
+                report_date.isoformat(),
+                checked_details,
+                request_id,
             )
-            if not reasons:
-                continue
-            request["type_id"] = type_id
-            request["include_reasons"] = reasons
-            seen_ids.add(request_id)
+            coverage["detail_pages_fetched"] += 1
+            coverage["total_http_pages_fetched"] += 1
+            detail = get_daily_request_detail(client, request_id, request_delay)
+            coverage["detail_success"] += 1
+        except Exception as exc:
+            error_message = sanitize_skladbot_error(exc)
+            coverage["detail_errors"] += 1
+            errors.append(f"Не удалось получить заявку {request_id}: {error_message}")
+            api_errors.append({
+                "source": "detail",
+                "request_id": request_id,
+                "message": error_message,
+                "source_page": entry.get("source_page") or "",
+            })
+            excluded_requests.append(excluded_request_from_list_entry(
+                entry,
+                "detail_error",
+                "api_error",
+                error_message,
+            ))
+            continue
+        if request_delay:
+            time.sleep(request_delay)
+        list_item = entry.get("list_item") or {}
+        request = normalize_request_payload(list_item, detail)
+        request["category"] = categorize_request_type(request.get("type") or entry.get("type_name"))
+        request["type_id"] = entry.get("type_id")
+        request["source_page"] = entry.get("source_page")
+        apply_request_scope(request, report_date, movement_dates)
+        attach_request_product_identity_keys(request)
+        date_diagnostics.append(date_diagnostic_row(request))
+        if request.get("include_operational"):
+            request["include_reasons"] = [request.get("inclusion_reason")]
             result.append(request)
+            update_coverage_included_counts(coverage, request)
+        else:
+            if request.get("diagnostic_reason") == "created_today_future_unloading":
+                future_unloading_requests.append(request)
+            excluded_requests.append(excluded_request_from_request(request, detail_loaded=True))
+            update_coverage_exclusion_counts(coverage, request)
+
     result.sort(key=lambda item: (
         category_sort_key(item.get("category")),
         parse_int(item.get("id")),
     ))
+    coverage["included_operational_requests"] = len(result)
+    coverage["future_unloading_requests"] = len(future_unloading_requests)
+    coverage["future_unloading_blocks"] = sum(request_blocks(request) for request in future_unloading_requests)
+    coverage["excluded_diagnostic_requests"] = len(excluded_requests)
+    coverage["skipped_due_to_out_of_scope"] = coverage.get("out_of_scope_requests", 0)
+    coverage["api_error_count"] = len(api_errors)
+    finalize_coverage_status(coverage, errors)
+    return {
+        "requests": result,
+        "future_unloading_requests": future_unloading_requests,
+        "excluded_requests": excluded_requests,
+        "date_diagnostics": date_diagnostics,
+        "api_errors": api_errors,
+        "coverage": coverage,
+    }
+
+
+def crawl_daily_request_list_pages(
+    client: Any,
+    report_date: date,
+    request_types: list[dict[str, Any]],
+    limit: int,
+    max_pages: int,
+    request_delay: float,
+    coverage: dict[str, Any],
+    errors: list[str],
+    api_errors: list[dict[str, Any]],
+    started_at: float,
+    max_runtime_seconds: int,
+) -> list[dict[str, Any]]:
+    result = []
+    seen_ids = set()
+    for request_type in request_types:
+        type_id = parse_int(request_type.get("id"))
+        if type_id <= 0:
+            continue
+        page = 1
+        page_signatures = set()
+        while True:
+            ensure_daily_report_runtime_budget(started_at, max_runtime_seconds, "request_list")
+            try:
+                list_payload = client.get("/requests", {
+                    "customer_id": getattr(client, "customer_id", None),
+                    "type_id": type_id,
+                    "limit": limit,
+                    "page": page,
+                })
+                list_items = extract_list_items(list_payload)
+                coverage["pages_fetched"] += 1
+                coverage["list_pages_fetched"] += 1
+                coverage["total_http_pages_fetched"] += 1
+                coverage["list_rows_total"] += len(list_items)
+                LOGGER.info(
+                    "SkladBot daily report list page fetched report_date=%s type_id=%s page=%s rows=%s pages_fetched=%s",
+                    report_date.isoformat(),
+                    type_id,
+                    page,
+                    len(list_items),
+                    coverage["pages_fetched"],
+                )
+                if request_delay:
+                    time.sleep(request_delay)
+            except Exception as exc:
+                error_message = sanitize_skladbot_error(exc)
+                errors.append(f"Не удалось получить список заявок type_id={type_id} page={page}: {error_message}")
+                api_errors.append({
+                    "source": "list",
+                    "type_id": type_id,
+                    "page": page,
+                    "message": error_message,
+                })
+                add_coverage_warning(coverage, "list_error")
+                break
+            page_ids = tuple(
+                parse_int(request_list_value(item, "id"))
+                for item in list_items
+                if isinstance(item, dict) and parse_int(request_list_value(item, "id")) > 0
+            )
+            repeated_page = bool(page_ids and page_ids in page_signatures)
+            if page_ids:
+                page_signatures.add(page_ids)
+            for list_item in list_items:
+                if not isinstance(list_item, dict):
+                    continue
+                request_id = parse_int(request_list_value(list_item, "id"))
+                if request_id <= 0:
+                    add_coverage_warning(coverage, "missing_request_id")
+                    continue
+                if request_id in seen_ids:
+                    coverage["duplicate_request_ids"] += 1
+                    continue
+                seen_ids.add(request_id)
+                result.append({
+                    "list_item": list_item,
+                    "type_id": type_id,
+                    "type_name": request_type.get("name") or list_item.get("type") or "",
+                    "source_page": page,
+                })
+            if repeated_page:
+                add_coverage_warning(coverage, "repeated_page_ids")
+                break
+            if not list_items:
+                break
+            if len(list_items) < limit:
+                break
+            if page >= max_pages:
+                coverage["max_pages_reached"] = True
+                add_coverage_warning(coverage, "max_pages")
+                break
+            page += 1
+    coverage["unique_request_ids"] = len(seen_ids)
     return result
+
+
+def prioritize_request_detail_entries(
+    list_entries: list[dict[str, Any]],
+    report_date: date,
+    movement_dates: dict[str, date],
+) -> list[dict[str, Any]]:
+    return sorted(list_entries, key=lambda entry: (
+        request_list_detail_priority(entry.get("list_item") or {}, report_date, movement_dates),
+        parse_int(request_list_value(entry.get("list_item") or {}, "id")),
+    ))
+
+
+def request_list_detail_priority(
+    list_item: dict[str, Any],
+    report_date: date,
+    movement_dates: dict[str, date],
+) -> int:
+    bucket = request_list_detail_bucket(list_item, report_date, movement_dates)
+    return REQUEST_DETAIL_BUCKET_ORDER.get(bucket, 9)
+
+
+def request_list_detail_bucket(
+    list_item: dict[str, Any],
+    report_date: date,
+    movement_dates: dict[str, date],
+) -> str:
+    request_number = normalize_text(request_list_value(list_item, "delivery_number", "number"))
+    if request_number and movement_dates.get(request_number) == report_date:
+        return REQUEST_DETAIL_BUCKET_IN_SCOPE
+
+    unloading_date = parse_date(request_list_value(list_item, "unloading_date", "unloadingDate"))
+    created_date = parse_date(request_list_value(list_item, "created_at", "createdAt"))
+    completed_date = parse_date(request_list_value(list_item, "completedAt", "completed_at"))
+    archived_date = parse_date(request_list_value(list_item, "archivedAt", "archived_at"))
+
+    if unloading_date == report_date:
+        return REQUEST_DETAIL_BUCKET_IN_SCOPE
+    if not any([created_date, unloading_date, completed_date, archived_date]):
+        return REQUEST_DETAIL_BUCKET_UNKNOWN_DATE
+    if created_date == report_date and unloading_date and unloading_date > report_date:
+        return REQUEST_DETAIL_BUCKET_FUTURE_UNLOADING_DIAGNOSTIC
+    if created_date == report_date:
+        return REQUEST_DETAIL_BUCKET_CREATED_TODAY_DIAGNOSTIC
+    if completed_date == report_date or archived_date == report_date:
+        return REQUEST_DETAIL_BUCKET_DIAGNOSTIC_OUT_OF_SCOPE
+    return REQUEST_DETAIL_BUCKET_KNOWN_OUT_OF_SCOPE
+
+
+def increment_detail_bucket_counter(coverage: dict[str, Any], detail_bucket: str) -> None:
+    if detail_bucket == REQUEST_DETAIL_BUCKET_IN_SCOPE:
+        coverage["detail_attempted_in_scope"] += 1
+    elif detail_bucket == REQUEST_DETAIL_BUCKET_UNKNOWN_DATE:
+        coverage["detail_attempted_unknown_date"] += 1
+    else:
+        coverage["detail_attempted_out_of_scope_sample"] += 1
+
+
+def default_coverage(
+    report_date: date | None,
+    page_limit: int = 0,
+    max_pages: int = 0,
+) -> dict[str, Any]:
+    return {
+        "report_date": report_date.isoformat() if isinstance(report_date, date) else normalize_text(report_date),
+        "primary_scope": PRIMARY_DAILY_SCOPE,
+        "coverage_status": COVERAGE_STATUS_COMPLETE,
+        "pages_fetched": 0,
+        "list_pages_fetched": 0,
+        "page_limit": page_limit,
+        "max_pages": max_pages,
+        "max_pages_per_request_type": max_pages,
+        "list_page_guard_max_total": max_pages,
+        "max_pages_reached": False,
+        "movement_pages_fetched": 0,
+        "movements_rows_returned": 0,
+        "movements_limit": 0,
+        "movements_truncation_possible": False,
+        "products_rows_returned": 0,
+        "products_limit": 0,
+        "products_truncation_possible": False,
+        "stock_rows_returned": 0,
+        "stock_limit": 0,
+        "stock_truncation_possible": False,
+        "read_style_post_retry_count": 0,
+        "read_style_post_error_count": 0,
+        "detail_pages_fetched": 0,
+        "total_http_pages_fetched": 0,
+        "list_rows_total": 0,
+        "unique_request_ids": 0,
+        "duplicate_request_ids": 0,
+        "detail_attempted": 0,
+        "detail_attempted_in_scope": 0,
+        "detail_attempted_unknown_date": 0,
+        "detail_attempted_out_of_scope_sample": 0,
+        "detail_success": 0,
+        "detail_errors": 0,
+        "detail_limit_reached": False,
+        "skipped_due_to_out_of_scope": 0,
+        "out_of_scope_skipped_without_detail": 0,
+        "in_scope_candidates_not_detailed": 0,
+        "included_operational_requests": 0,
+        "excluded_diagnostic_requests": 0,
+        "out_of_scope_requests": 0,
+        "completed_only_count": 0,
+        "archived_only_count": 0,
+        "neither_count": 0,
+        "created_today_future_unloading_count": 0,
+        "future_unloading_requests": 0,
+        "future_unloading_blocks": 0,
+        "missing_date_count": 0,
+        "conflicting_date_count": 0,
+        "included_date_conflict_count": 0,
+        "unloading_movement_conflict_count": 0,
+        "movement_without_unloading_count": 0,
+        "unloading_without_matching_movement_count": 0,
+        "api_error_count": 0,
+        "warnings": "",
+        "_warnings": [],
+    }
+
+
+def add_coverage_warning(coverage: dict[str, Any], warning: str) -> None:
+    warning = normalize_text(warning)
+    if not warning:
+        return
+    warnings = coverage.setdefault("_warnings", [])
+    if warning not in warnings:
+        warnings.append(warning)
+
+
+def mark_possible_truncation(
+    coverage: dict[str, Any] | None,
+    prefix: str,
+    rows_returned: int,
+    limit: int,
+    warning: str,
+) -> None:
+    if coverage is None:
+        return
+    coverage[f"{prefix}_rows_returned"] = parse_int(coverage.get(f"{prefix}_rows_returned")) + max(0, rows_returned)
+    coverage[f"{prefix}_limit"] = max(parse_int(coverage.get(f"{prefix}_limit")), max(0, limit))
+    if limit > 0 and rows_returned >= limit:
+        coverage[f"{prefix}_truncation_possible"] = True
+        add_coverage_warning(coverage, warning)
+
+
+def update_coverage_included_counts(coverage: dict[str, Any], request: dict[str, Any]) -> None:
+    unloading_date = parse_date(request.get("unloading_date"))
+    movement_date = parse_date(request.get("movement_date"))
+    if movement_date and not unloading_date:
+        coverage["movement_without_unloading_count"] += 1
+    if unloading_date and not movement_date:
+        coverage["unloading_without_matching_movement_count"] += 1
+    if unloading_date and movement_date and unloading_date != movement_date:
+        coverage["included_date_conflict_count"] += 1
+        coverage["unloading_movement_conflict_count"] += 1
+        add_coverage_warning(coverage, "date_conflict_unloading_vs_movement")
+
+
+def finalize_coverage_status(coverage: dict[str, Any], errors: list[str] | None = None) -> None:
+    errors = errors or []
+    if errors:
+        add_coverage_warning(coverage, "api_error")
+    warnings = list(coverage.get("_warnings") or [])
+    if coverage.get("unique_request_ids") == 0 and (
+        coverage.get("api_error_count") or "list_error" in warnings
+    ):
+        coverage["coverage_status"] = COVERAGE_STATUS_FAILED
+    elif (
+        coverage.get("max_pages_reached")
+        or coverage.get("detail_limit_reached")
+        or coverage.get("in_scope_candidates_not_detailed")
+        or coverage.get("detail_errors")
+        or coverage.get("api_error_count")
+        or warnings
+    ):
+        coverage["coverage_status"] = COVERAGE_STATUS_PARTIAL
+    else:
+        coverage["coverage_status"] = COVERAGE_STATUS_COMPLETE
+    coverage["warnings"] = "; ".join(warnings)
+
+
+def finalize_report_coverage(report: dict[str, Any]) -> None:
+    coverage = report.get("coverage") or default_coverage(report.get("report_date"))
+    future_unloading_requests = report.get("future_unloading_requests") or []
+    coverage["included_operational_requests"] = len(report.get("requests") or [])
+    coverage["future_unloading_requests"] = len(future_unloading_requests)
+    coverage["future_unloading_blocks"] = sum(request_blocks(request) for request in future_unloading_requests)
+    coverage["excluded_diagnostic_requests"] = len(report.get("excluded_requests") or [])
+    coverage["api_error_count"] = max(parse_int(coverage.get("api_error_count")), len(report.get("errors") or []))
+    finalize_coverage_status(coverage, report.get("errors") or [])
+    report["coverage"] = coverage
+
+
+def movement_dates_by_request_number(movements: list[dict[str, Any]]) -> dict[str, date]:
+    result = {}
+    for movement in movements:
+        request_number = normalize_text(movement.get("request_number"))
+        movement_date = parse_date(movement.get("date"))
+        if request_number and movement_date and request_number not in result:
+            result[request_number] = movement_date
+    return result
+
+
+def apply_request_scope(
+    request: dict[str, Any],
+    report_date: date,
+    movement_dates: dict[str, date],
+) -> None:
+    request_number = normalize_text(request.get("number"))
+    created_date = parse_date(request.get("created_at"))
+    unloading_date = parse_date(request.get("unloading_date"))
+    completed_date = parse_date(request.get("completed_at"))
+    archived_date = parse_date(request.get("archived_at"))
+    movement_date = movement_dates.get(request_number)
+    request["report_date"] = report_date.isoformat()
+    request["primary_scope"] = PRIMARY_DAILY_SCOPE
+    request["movement_date"] = movement_date.isoformat() if movement_date else ""
+    request["date_field_used"] = ""
+    request["inclusion_reason"] = ""
+    request["exclusion_reason"] = ""
+    request["diagnostic_reason"] = ""
+    request["date_confidence"] = "unknown"
+    request["include_operational"] = False
+
+    if unloading_date and movement_date and unloading_date != movement_date:
+        request["diagnostic_reason"] = "conflicting_date_fields"
+
+    if unloading_date == report_date:
+        request["date_field_used"] = "unloading_date"
+        request["inclusion_reason"] = "Дата выгрузки"
+        request["date_confidence"] = "high"
+    elif movement_date == report_date:
+        request["date_field_used"] = "movement_date"
+        request["inclusion_reason"] = "Движение склада"
+        request["date_confidence"] = "high"
+    elif created_date == report_date and unloading_date and unloading_date > report_date:
+        request["date_field_used"] = "created_at"
+        request["exclusion_reason"] = "out_of_scope"
+        request["diagnostic_reason"] = "created_today_future_unloading"
+        request["date_confidence"] = "diagnostic"
+    elif created_date == report_date:
+        request["date_field_used"] = "created_at"
+        request["exclusion_reason"] = "out_of_scope"
+        request["diagnostic_reason"] = "created_today_without_primary_date"
+        request["date_confidence"] = "diagnostic"
+    elif completed_date == report_date or archived_date == report_date:
+        request["date_field_used"] = "completed_at" if completed_date == report_date else "archived_at"
+        request["exclusion_reason"] = "out_of_scope"
+        request["diagnostic_reason"] = "completed_or_archived_date_only"
+        request["date_confidence"] = "diagnostic"
+    elif not any([created_date, unloading_date, movement_date, completed_date, archived_date]):
+        request["exclusion_reason"] = "missing_date"
+        request["diagnostic_reason"] = "missing_date"
+    else:
+        request["exclusion_reason"] = "out_of_scope"
+        request["diagnostic_reason"] = request.get("diagnostic_reason") or "out_of_scope"
+
+    if request.get("inclusion_reason"):
+        if request_is_completed_and_archived(request):
+            request["include_operational"] = True
+            request["exclusion_reason"] = ""
+        else:
+            request["exclusion_reason"] = "status_not_completed_archived"
+            if not request.get("diagnostic_reason") or request.get("diagnostic_reason") == "conflicting_date_fields":
+                request["diagnostic_reason"] = status_diagnostic_reason(request)
+    elif not request.get("diagnostic_reason"):
+        request["diagnostic_reason"] = status_diagnostic_reason(request) or "out_of_scope"
+
+    if not request_is_completed_and_archived(request) and request.get("exclusion_reason") != "status_not_completed_archived":
+        request["exclusion_reason"] = "status_not_completed_archived"
+        status_reason = status_diagnostic_reason(request)
+        if status_reason:
+            request["diagnostic_reason"] = status_reason
+
+
+def status_diagnostic_reason(request: dict[str, Any]) -> str:
+    completed = bool(request.get("is_completed"))
+    archived = bool(request.get("archived"))
+    if completed and not archived:
+        return "completed_only"
+    if archived and not completed:
+        return "archived_only"
+    if not completed and not archived:
+        return "neither"
+    return ""
+
+
+def update_coverage_exclusion_counts(coverage: dict[str, Any], request: dict[str, Any]) -> None:
+    diagnostic_reason = normalize_text(request.get("diagnostic_reason"))
+    exclusion_reason = normalize_text(request.get("exclusion_reason"))
+    date_field_used = normalize_text(request.get("date_field_used"))
+    if diagnostic_reason == "completed_only":
+        coverage["completed_only_count"] += 1
+    if diagnostic_reason == "archived_only":
+        coverage["archived_only_count"] += 1
+    if diagnostic_reason == "neither":
+        coverage["neither_count"] += 1
+    if diagnostic_reason == "created_today_future_unloading":
+        coverage["created_today_future_unloading_count"] += 1
+    if diagnostic_reason == "missing_date" or exclusion_reason == "missing_date":
+        coverage["missing_date_count"] += 1
+    if diagnostic_reason == "conflicting_date_fields":
+        coverage["conflicting_date_count"] += 1
+    if exclusion_reason == "out_of_scope" and diagnostic_reason != "created_today_future_unloading":
+        coverage["out_of_scope_requests"] += 1
+    if exclusion_reason == "status_not_completed_archived" and date_field_used in {"unloading_date", "movement_date"}:
+        add_coverage_warning(coverage, "status_not_completed_archived")
+
+
+def request_status_label(request: dict[str, Any]) -> str:
+    completed = bool(request.get("is_completed"))
+    archived = bool(request.get("archived"))
+    if completed and archived:
+        return "completed+archived"
+    if completed:
+        return "completed_only"
+    if archived:
+        return "archived_only"
+    return "neither"
+
+
+def excluded_request_from_request(request: dict[str, Any], detail_loaded: bool) -> dict[str, Any]:
+    return {
+        "request_id": request.get("id") or "",
+        "client": request.get("recipient") or request.get("customer_name") or "",
+        "created_at": request.get("created_at") or "",
+        "unloading_date": request.get("unloading_date") or "",
+        "movement_date": request.get("movement_date") or "",
+        "completed_at": request.get("completed_at") or "",
+        "archived_at": request.get("archived_at") or "",
+        "status": request_status_label(request),
+        "exclusion_reason": request.get("exclusion_reason") or "",
+        "diagnostic_reason": request.get("diagnostic_reason") or "",
+        "error_message": "",
+        "source_page": request.get("source_page") or "",
+        "detail_loaded": bool(detail_loaded),
+    }
+
+
+def excluded_request_from_list_entry(
+    entry: dict[str, Any],
+    exclusion_reason: str,
+    diagnostic_reason: str,
+    error_message: str,
+) -> dict[str, Any]:
+    list_item = entry.get("list_item") or {}
+    return {
+        "request_id": parse_int(request_list_value(list_item, "id")) or "",
+        "client": first_text(list_item, "customer", "client"),
+        "created_at": request_list_value(list_item, "created_at", "createdAt"),
+        "unloading_date": request_list_value(list_item, "unloading_date", "unloadingDate"),
+        "movement_date": "",
+        "completed_at": request_list_value(list_item, "completedAt", "completed_at"),
+        "archived_at": request_list_value(list_item, "archivedAt", "archived_at"),
+        "status": list_item_status_label(list_item),
+        "exclusion_reason": exclusion_reason,
+        "diagnostic_reason": diagnostic_reason,
+        "error_message": error_message,
+        "source_page": entry.get("source_page") or "",
+        "detail_loaded": False,
+    }
+
+
+def list_item_status_label(list_item: dict[str, Any]) -> str:
+    return request_status_label({
+        "is_completed": bool(list_item.get("isCompleted") or list_item.get("is_completed")),
+        "archived": bool(list_item.get("archived")),
+    })
+
+
+def date_diagnostic_row(request: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "request_id": request.get("id") or "",
+        "number": request.get("number") or "",
+        "report_date": request.get("report_date") or "",
+        "primary_scope": request.get("primary_scope") or PRIMARY_DAILY_SCOPE,
+        "date_field_used": request.get("date_field_used") or "",
+        "inclusion_reason": request.get("inclusion_reason") or "",
+        "exclusion_reason": request.get("exclusion_reason") or "",
+        "diagnostic_reason": request.get("diagnostic_reason") or "",
+        "date_confidence": request.get("date_confidence") or "",
+        "created_at": request.get("created_at") or "",
+        "unloading_date": request.get("unloading_date") or "",
+        "movement_date": request.get("movement_date") or "",
+        "completed_at": request.get("completed_at") or "",
+        "archived_at": request.get("archived_at") or "",
+    }
+
+
+def attach_request_product_identity_keys(request: dict[str, Any]) -> None:
+    request_id = normalize_text(request.get("id"))
+    for product in request.get("products") or []:
+        product_identity = (
+            normalize_text(product.get("vendor_code"))
+            or normalize_text(product.get("barcode"))
+            or normalize_text(product.get("name"))
+        )
+        product["source_type"] = "request_product"
+        product["source_identity_key"] = "|".join([
+            "request",
+            request_id,
+            product_identity,
+            normalize_text(product.get("amount")),
+            "request_product",
+        ])
 
 
 def get_daily_request_detail(client: Any, request_id: int, request_delay: float) -> Any:
@@ -344,22 +1224,39 @@ def category_sort_key(value: Any) -> int:
     return {category: index for index, category in enumerate(REQUEST_CATEGORIES, start=1)}.get(normalize_text(value), 9)
 
 
-def fetch_daily_movements(client: Any, report_date: date, errors: list[str]) -> list[dict[str, Any]]:
+def fetch_daily_movements(
+    client: Any,
+    report_date: date,
+    errors: list[str],
+    coverage: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     limit = max(1, env_int("SKLADBOT_DAILY_REPORT_MOVEMENTS_LIMIT", 1000))
+    if coverage is not None:
+        coverage["movements_limit"] = limit
     result = []
     for movement_type, direction in (("in", "Приход"), ("out", "Расход")):
         try:
-            payload = client.post("/warehouse/transactions", {
+            payload = read_style_post(client, "/warehouse/transactions", {
                 "customer_id": getattr(client, "customer_id", None),
                 "limit": limit,
                 "type": movement_type,
                 "from": report_date.isoformat(),
                 "to": report_date.isoformat(),
-            })
+            }, coverage)
         except Exception as exc:
             errors.append(f"Не удалось получить движения {direction}: {sanitize_skladbot_error(exc)}")
             continue
-        for item in extract_list_items(payload):
+        list_items = extract_list_items(payload)
+        if coverage is not None:
+            coverage["movement_pages_fetched"] += 1
+            mark_possible_truncation(
+                coverage,
+                "movements",
+                len(list_items),
+                limit,
+                "movements_possible_truncation",
+            )
+        for item in list_items:
             if isinstance(item, dict):
                 movement = normalize_movement(item, direction)
                 if movement_on_report_date(movement, report_date):
@@ -377,7 +1274,7 @@ def normalize_movement(item: dict[str, Any], direction: str) -> dict[str, Any]:
     customer = first_nested_dict(item, "customer", "client")
     box = first_nested_dict(item, "box")
     cell = first_nested_dict(item, "cell", "place", "location")
-    return {
+    row = {
         "direction": direction,
         "date": first_text(item, "date", "created_at", "createdAt", "datetime", "created"),
         "request_number": first_text(item, "delivery_number", "request_number", "request", "document", "source"),
@@ -391,15 +1288,38 @@ def normalize_movement(item: dict[str, Any], direction: str) -> dict[str, Any]:
         "cell": nested_text(cell, "name", "title", "code") or first_text(item, "cell", "place", "location"),
         "raw": item,
     }
+    movement_id = first_text(item, "id", "uuid", "movement_id", "transaction_id")
+    row["source_type"] = "movement"
+    if movement_id:
+        row["source_identity_key"] = f"movement:{movement_id}"
+    else:
+        row["source_identity_key"] = "|".join([
+            "movement",
+            normalize_text(row.get("request_number")),
+            normalize_text(row.get("vendor_code") or row.get("barcode") or row.get("product")),
+            normalize_text(row.get("amount")),
+            normalize_text(row.get("date")),
+            normalize_text(row.get("customer")),
+            normalize_text(row.get("movement_type")),
+        ])
+    return row
 
 
-def fetch_current_stock(client: Any, errors: list[str]) -> dict[str, Any]:
-    products_stock = fetch_products_stock(client, errors)
+def fetch_current_stock(
+    client: Any,
+    errors: list[str],
+    coverage: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    products_stock = fetch_products_stock(client, errors, coverage)
+    stock_limit = max(1, env_int("SKLADBOT_DAILY_REPORT_STOCK_LIMIT", 1000))
+    if coverage is not None:
+        coverage["stock_limit"] = stock_limit
     try:
-        payload = client.post("/report/stock", {
+        payload = read_style_post(client, "/report/stock", {
             "customer_id": getattr(client, "customer_id", None),
             "with_details": True,
-        })
+            "limit": stock_limit,
+        }, coverage)
     except Exception as exc:
         error = f"Не удалось получить остаток SkladBot: {sanitize_skladbot_error(exc)}"
         errors.append(error)
@@ -407,25 +1327,49 @@ def fetch_current_stock(client: Any, errors: list[str]) -> dict[str, Any]:
             products_stock["error"] = error
             return products_stock
         return {"total": 0, "rows": [], "raw": {}, "error": error}
+    report_stock_rows = normalize_stock_rows(payload)
+    if coverage is not None:
+        mark_possible_truncation(
+            coverage,
+            "stock",
+            len(report_stock_rows),
+            stock_limit,
+            "stock_possible_truncation",
+        )
     if products_stock["rows"]:
         products_stock["raw"] = {"products": products_stock.get("raw") or {}, "report_stock": payload}
-        products_stock["report_total"] = stock_total(payload, normalize_stock_rows(payload))
+        products_stock["report_total"] = stock_total(payload, report_stock_rows)
         return products_stock
-    rows = normalize_stock_rows(payload)
+    rows = report_stock_rows
     total = stock_total(payload, rows)
     return {"total": total, "rows": rows, "raw": payload, "error": ""}
 
 
-def fetch_products_stock(client: Any, errors: list[str]) -> dict[str, Any]:
+def fetch_products_stock(
+    client: Any,
+    errors: list[str],
+    coverage: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    limit = max(1, env_int("SKLADBOT_DAILY_REPORT_PRODUCTS_LIMIT", 1000))
+    if coverage is not None:
+        coverage["products_limit"] = limit
     try:
-        payload = client.post("/products", {
+        payload = read_style_post(client, "/products", {
             "customer_id": getattr(client, "customer_id", None),
-            "limit": 1000,
-        })
+            "limit": limit,
+        }, coverage)
     except Exception as exc:
         errors.append(f"Не удалось получить товары SkladBot: {sanitize_skladbot_error(exc)}")
         return {"total": 0, "rows": [], "raw": {}, "error": ""}
     rows = normalize_stock_rows(payload)
+    if coverage is not None:
+        mark_possible_truncation(
+            coverage,
+            "products",
+            len(rows),
+            limit,
+            "products_possible_truncation",
+        )
     total = sum(parse_int(row.get("stock")) for row in rows)
     return {"total": total, "rows": rows, "raw": payload, "error": ""}
 
@@ -533,6 +1477,7 @@ def first_int(item: Any, *keys: str) -> int:
 
 def summarize_daily_report(report: dict[str, Any]) -> dict[str, Any]:
     requests = report.get("requests") or []
+    future_unloading_requests = report.get("future_unloading_requests") or []
     movements = report.get("movements") or []
     category_counts = {category: 0 for category in REQUEST_CATEGORIES}
     type_counts: dict[str, int] = {}
@@ -550,6 +1495,8 @@ def summarize_daily_report(report: dict[str, Any]) -> dict[str, Any]:
         "category_counts": category_counts,
         "type_counts": type_counts,
         "request_blocks_by_category": request_blocks_by_category,
+        "future_unloading_requests": len(future_unloading_requests),
+        "future_unloading_blocks": sum(request_blocks(request) for request in future_unloading_requests),
         "movements_total": len(movements),
         "movement_in_rows": len(movement_in),
         "movement_out_rows": len(movement_out),
@@ -673,9 +1620,13 @@ def build_skladbot_daily_report_xlsx(report: dict[str, Any]) -> tuple[bytes, str
     write_summary_sheet(summary_sheet, report)
     write_requests_sheet(workbook.create_sheet("Заявки"), report.get("requests") or [])
     write_request_products_sheet(workbook.create_sheet("Товары заявок"), report.get("requests") or [])
+    write_future_unloading_sheet(workbook.create_sheet("Будущие отгрузки"), report.get("future_unloading_requests") or [])
     write_movements_sheet(workbook.create_sheet("Движения"), report.get("movements") or [])
     write_stock_sheet(workbook.create_sheet("Остатки"), report)
-    write_errors_sheet(workbook.create_sheet("Ошибки"), report.get("errors") or [])
+    write_coverage_sheet(workbook.create_sheet("Контроль покрытия"), report)
+    write_excluded_requests_sheet(workbook.create_sheet("Исключенные заявки"), report.get("excluded_requests") or [])
+    write_date_diagnostics_sheet(workbook.create_sheet("Диагностика дат"), report.get("date_diagnostics") or [])
+    write_errors_sheet(workbook.create_sheet("Ошибки"), report.get("errors") or [], report.get("api_errors") or [])
     for sheet in workbook.worksheets:
         autosize_columns(sheet)
     apply_report_template_widths(workbook)
@@ -715,7 +1666,7 @@ def write_summary_sheet(sheet, report: dict[str, Any]) -> None:
     sheet.append(["Отчет о движении остатков за день"] + [None] * (request_column - 1))
     sheet.append([None, "Всего блоков"] + [item["name"] for item in product_rows] + ["Заявок"])
     sheet.append(
-        ["Остаток на начало дня ", "=B13-B9-B10-B11-B12"]
+        ["Расчетный начальный остаток", "=B13-B9-B10-B11-B12"]
         + [
             (
                 f"={get_column_letter(index)}13"
@@ -753,6 +1704,10 @@ def write_summary_sheet(sheet, report: dict[str, Any]) -> None:
         + [item["ending_stock"] for item in product_rows]
         + [None]
     )
+    sheet.append([
+        "Примечание",
+        "Рассчитано как актуальный остаток минус движения отчета; не является историческим snapshot склада.",
+    ])
     apply_header_style(sheet)
     for cell in ("A6", "A8", "B8", "A13", "B13"):
         sheet[cell].font = Font(bold=True)
@@ -772,6 +1727,7 @@ def write_requests_sheet(sheet, requests: list[dict[str, Any]]) -> None:
         sheet.append([
             request.get("id") or "",
             request.get("number") or "",
+            request_smartup_id(request),
             request.get("category") or "",
             request.get("type") or "",
             "Выполнена" if request.get("is_completed") else "Не выполнена",
@@ -807,6 +1763,7 @@ def write_request_products_sheet(sheet, requests: list[dict[str, Any]]) -> None:
             sheet.append([
                 request.get("number") or "",
                 request.get("id") or "",
+                request_smartup_id(request),
                 request.get("type") or "",
                 request.get("unloading_date") or "",
                 request.get("recipient") or "",
@@ -823,11 +1780,53 @@ def write_request_products_sheet(sheet, requests: list[dict[str, Any]]) -> None:
     apply_header_style(sheet)
 
 
+def write_future_unloading_sheet(sheet, requests: list[dict[str, Any]]) -> None:
+    sheet.append(FUTURE_UNLOADING_HEADERS)
+    for request in requests:
+        sheet.append([
+            request.get("id") or "",
+            request.get("number") or "",
+            request_smartup_id(request),
+            request.get("created_at") or "",
+            request.get("unloading_date") or "",
+            request.get("recipient") or "",
+            request_payment_type(request),
+            request_representative(request),
+            request_representative_zone(request),
+            request.get("address") or "",
+            request_blocks(request),
+            len(request.get("products") or []),
+            "Создана в дату отчета на будущую дату выгрузки",
+        ])
+    apply_header_style(sheet)
+
+
 def request_representative(request: dict[str, Any]) -> str:
     explicit = normalize_text(request.get("representative"))
     if explicit:
+        return display_representative_name(explicit)
+    return display_representative_name(representative_from_comment(request.get("comment")))
+
+
+def request_payment_type(request: dict[str, Any]) -> str:
+    explicit = normalize_text(request.get("payment_type") or request.get("payment"))
+    if explicit:
         return explicit
-    return representative_from_comment(request.get("comment"))
+    for line in normalize_text(request.get("comment")).splitlines():
+        line = normalize_text(line)
+        if not is_payment_comment_line(line):
+            continue
+        text = line.lower().replace("ё", "е")
+        if "перечис" in text or "безнал" in text:
+            return "Перечисление"
+        if "терминал" in text:
+            return "Терминал"
+        return line
+    return ""
+
+
+def request_smartup_id(request: dict[str, Any]) -> str:
+    return normalize_text(request.get("smartup_id"))
 
 
 def representative_from_comment(comment: Any) -> str:
@@ -917,10 +1916,43 @@ def write_stock_sheet(sheet, report: dict[str, Any]) -> None:
     apply_header_style(sheet)
 
 
-def write_errors_sheet(sheet, errors: list[str]) -> None:
+def write_coverage_sheet(sheet, report: dict[str, Any]) -> None:
+    coverage = report.get("coverage") or default_coverage(report.get("report_date"))
+    sheet.append(["Поле", "Значение"])
+    for field in COVERAGE_FIELDS:
+        value = coverage.get(field)
+        if isinstance(value, bool):
+            value = bool(value)
+        sheet.append([field, value])
+    apply_header_style(sheet)
+
+
+def write_excluded_requests_sheet(sheet, rows: list[dict[str, Any]]) -> None:
+    sheet.append(EXCLUDED_REQUEST_HEADERS)
+    for row in rows:
+        sheet.append([row.get(header) for header in EXCLUDED_REQUEST_HEADERS])
+    apply_header_style(sheet)
+
+
+def write_date_diagnostics_sheet(sheet, rows: list[dict[str, Any]]) -> None:
+    sheet.append(DATE_DIAGNOSTIC_HEADERS)
+    for row in rows:
+        sheet.append([row.get(header) for header in DATE_DIAGNOSTIC_HEADERS])
+    apply_header_style(sheet)
+
+
+def write_errors_sheet(sheet, errors: list[str], api_errors: list[dict[str, Any]] | None = None) -> None:
     sheet.append(["Ошибка"])
     for error in errors:
         sheet.append([normalize_text(error)])
+    for error in api_errors or []:
+        message = normalize_text(error.get("message"))
+        source = normalize_text(error.get("source"))
+        request_id = normalize_text(error.get("request_id"))
+        prefix = source
+        if request_id:
+            prefix = f"{prefix} request_id={request_id}" if prefix else f"request_id={request_id}"
+        sheet.append([f"{prefix}: {message}" if prefix else message])
     apply_header_style(sheet)
 
 
@@ -928,11 +1960,22 @@ def build_skladbot_daily_report_message(report: dict[str, Any]) -> str:
     summary = report.get("summary") or {}
     category_counts = summary.get("category_counts") or {}
     blocks = summary.get("request_blocks_by_category") or {}
-    report_date = format_date(report.get("report_date"))
+    coverage = report.get("coverage") or default_coverage(report.get("report_date"))
+    report_date = format_date_iso(report.get("report_date"))
+    coverage_status = normalize_text(coverage.get("coverage_status") or COVERAGE_STATUS_COMPLETE)
+    warnings = normalize_text(coverage.get("warnings"))
     lines = [
-        f"SkladBot отчет за {report_date}",
-        "",
-        f"Заявок всего: {summary.get('requests_total', 0)}",
+        f"SkladBot daily за {report_date}",
+        f"Срез: {coverage.get('primary_scope') or PRIMARY_DAILY_SCOPE}",
+        f"Статус покрытия: {coverage_status.upper()}",
+        f"В операционных итогах: {coverage.get('included_operational_requests', summary.get('requests_total', 0))} заявок",
+        (
+            "Созданы сегодня на будущую дату выгрузки: "
+            f"{coverage.get('future_unloading_requests', summary.get('future_unloading_requests', 0))} заявок, "
+            f"{coverage.get('future_unloading_blocks', summary.get('future_unloading_blocks', 0))} блоков"
+        ),
+        f"В диагностике/исключено: {coverage.get('excluded_diagnostic_requests', 0)} заявок",
+        f"Ошибки API: {coverage.get('api_error_count', len(report.get('errors') or []))}",
         f"Отгрузка: {category_counts.get(REQUEST_CATEGORY_SHIPMENT, 0)} заявок, {blocks.get(REQUEST_CATEGORY_SHIPMENT, 0)} блоков",
         f"Отгрузка в браке: {category_counts.get(REQUEST_CATEGORY_DEFECT_SHIPMENT, 0)} заявок, {blocks.get(REQUEST_CATEGORY_DEFECT_SHIPMENT, 0)} блоков",
         f"Возврат: {category_counts.get(REQUEST_CATEGORY_RETURN, 0)} заявок, {blocks.get(REQUEST_CATEGORY_RETURN, 0)} блоков",
@@ -943,8 +1986,13 @@ def build_skladbot_daily_report_message(report: dict[str, Any]) -> str:
         f"Актуальный остаток: {summary.get('stock_total', 0)}",
     ]
     errors = report.get("errors") or []
-    if errors:
-        lines.extend(["", f"Ошибки сбора: {len(errors)}. Подробности в XLSX."])
+    if coverage_status != COVERAGE_STATUS_COMPLETE or errors or warnings:
+        warning_text = warnings or "есть ошибки сбора"
+        lines.extend([
+            "",
+            f"Отчет неполный: {warning_text}.",
+            "Подробности: листы \"Контроль покрытия\", \"Исключенные заявки\", \"Ошибки\".",
+        ])
     return "\n".join(lines)
 
 
@@ -957,6 +2005,13 @@ def format_date(value: Any) -> str:
         return value.strftime("%d.%m.%Y")
     parsed = parse_date(value)
     return parsed.strftime("%d.%m.%Y") if parsed else normalize_text(value)
+
+
+def format_date_iso(value: Any) -> str:
+    if isinstance(value, date):
+        return value.isoformat()
+    parsed = parse_date(value)
+    return parsed.isoformat() if parsed else normalize_text(value)
 
 
 def format_date_for_filename(value: Any) -> str:
@@ -1011,6 +2066,9 @@ def apply_report_template_widths(workbook: Workbook) -> None:
         "Товары заявок": {"A": 13, "B": 11, "C": 20, "D": 15, "E": 45, "F": 24, "G": 36, "H": 17, "I": 15, "J": 12, "K": 13, "L": 12, "M": 12},
         "Движения": {"A": 13, "B": 10, "C": 17, "D": 14, "E": 10, "F": 13, "G": 13, "H": 13, "I": 13, "J": 13, "K": 13},
         "Остатки": {"A": 29, "B": 10, "C": 13, "D": 13, "E": 13, "F": 17, "G": 21, "H": 10},
+        "Контроль покрытия": {"A": 36, "B": 40},
+        "Исключенные заявки": {"A": 12, "B": 35, "C": 20, "D": 15, "E": 15, "F": 20, "G": 20, "H": 24, "I": 28, "J": 32, "K": 45, "L": 12, "M": 12},
+        "Диагностика дат": {"A": 12, "B": 15, "C": 13, "D": 30, "E": 18, "F": 22, "G": 26, "H": 32, "I": 18, "J": 20, "K": 15, "L": 15, "M": 20, "N": 20},
         "Ошибки": {"A": 10},
     }
     for sheet_name, widths in widths_by_sheet.items():

@@ -2,6 +2,92 @@
 
 Здесь фиксируются все правки в коде TakSklad: что менялось, в каком файле, зачем, и какие тесты это покрывают. Записи идут от новых к старым.
 
+## 2026-07-09
+
+### Daily SkladBot future unloading visibility
+
+**Файлы:** `backend/app/skladbot_daily_report.py`, `backend/app/telegram_worker.py`, `tests/test_skladbot_daily_report.py`, `README.md`, `backend/README.md`, `docs/report-source-rules.md`, `docs/implementation-log.md`, `docs/changelog.md`.
+
+**Что стало:**
+
+- Заявки, созданные в дату отчета на будущую `Дата выгрузки`, больше не теряются в daily XLSX: они выводятся отдельным листом `Будущие отгрузки`.
+- Эти строки остаются вне operational totals `Заявки`/`Товары заявок`, чтобы daily за 07.07 не считал отгрузку 08.07 как складскую операцию 07.07.
+- Coverage получил counters `future_unloading_requests` и `future_unloading_blocks`, Telegram summary показывает отдельную строку по будущим отгрузкам.
+- Scheduled blocker разрешает complete future-only отчет, если все diagnostic/excluded rows являются future-unloading строками; остальные `0 operational + excluded` случаи по-прежнему блокируются.
+- Добавлена регрессия на 8 контрагентов transfer batch `WH-R-204498..WH-R-204505`, 95 блоков, дата создания `2026-07-07`, дата выгрузки `2026-07-08`.
+
+**Проверки:**
+
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_skladbot_daily_report` - 78 tests OK.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_skladbot_daily_report tests.test_backend_telegram_import` - 150 tests OK.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python -m py_compile backend/app/skladbot_daily_report.py backend/app/telegram_worker.py tests/test_skladbot_daily_report.py tests/test_backend_telegram_import.py` - OK.
+- `PYTHONPATH=. ./.venv/bin/python -m alembic -c backend/alembic.ini heads` - `20260701_0007`.
+- `TAKSKLAD_ENV_FILE=.env.example docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config --quiet` - OK.
+- `for script in deploy/vds/*.sh; do bash -n "$script"; done` - OK.
+
+## 2026-07-06
+
+### Daily SkladBot audit closeout
+
+**Файлы:** `backend/app/skladbot_daily_report.py`, `backend/app/telegram_worker.py`, `tests/test_skladbot_daily_report.py`, `deploy/vds/.env.example`, `README.md`, `backend/README.md`, `docs/report-source-rules.md`, `.supergoal/daily-skladbot-audit-closeout-2026-07-06/*`, `docs/implementation-log.md`, `docs/changelog.md`.
+
+**Что стало:**
+
+- Daily report wrapped SkladBot client in a read-only boundary: write helpers and write POST `/requests` are blocked from report collection.
+- Read-style POST is explicit for `/warehouse/transactions`, `/products`, `/report/stock`; retry policy applies only there and records coverage counters.
+- Movements/products/stock limit-hit cases mark coverage `partial` and block scheduled Telegram send.
+- Included rows with conflicting `unloading_date` and movement date remain visible, but make coverage `partial`.
+- Manual `/skladbot_daily` blocks partial reports by default; explicit `--allow-partial` marks the file/message as incomplete and does not act as scheduled recovery.
+- Same-day corrected scheduled reports do not auto-send; existing event is marked `manual_recovery_required`.
+- `Сводка` now labels start stock as `Расчетный начальный остаток` and documents that it is a formula, not a historical stock snapshot.
+- Deploy, Telegram send, SkladBot write calls, production DB writes, commit and push were not performed.
+
+**Проверки:**
+
+- `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_skladbot_daily_report` - 69 tests OK.
+- `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_backend_telegram_import` - 71 tests OK.
+- `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_skladbot_daily_report tests.test_backend_telegram_import` - 140 tests OK.
+- Final compile/diff checks are recorded in `.supergoal/daily-skladbot-audit-closeout-2026-07-06/TEST_RESULTS.md`.
+
+## 2026-07-05
+
+### Daily SkladBot partial-report send block
+
+**Файлы:** `backend/app/skladbot_daily_report.py`, `backend/app/telegram_worker.py`, `tests/test_skladbot_daily_report.py`, `docs/report-source-rules.md`, `docs/implementation-log.md`, `docs/changelog.md`, `.supergoal/daily-skladbot-bvytBP/PARTIAL_REPORT_FIX_VERIFICATION.md`, `.supergoal/daily-skladbot-bvytBP/PARTIAL_REPORT_FIX_RESULTS.md`, `.supergoal/daily-skladbot-bvytBP/PARTIAL_REPORT_FIX_DEPLOY_PLAN.md`, `.supergoal/daily-skladbot-bvytBP/PARTIAL_REPORT_2026-07-05_FINAL_FACTS.md`.
+
+**Что стало:**
+
+- Scheduled SkladBot daily block теперь останавливает Telegram send и daily reconciliation не только при `coverage_status != complete`, но и при `0` operational rows + diagnostic/excluded rows.
+- Detail fetch порядок разделен по list-level bucket: in-scope, unknown date, diagnostic/out-of-scope sample. Known out-of-scope rows больше не могут съесть основной detail budget.
+- Coverage получил счетчики `detail_attempted_in_scope`, `detail_attempted_unknown_date`, `detail_attempted_out_of_scope_sample`, `out_of_scope_skipped_without_detail`, `in_scope_candidates_not_detailed`, `detail_limit_reached`.
+- Page counters разделяют aggregate list pages и per-type guard через `list_pages_fetched`, `max_pages_per_request_type`, `list_page_guard_max_total`, `detail_pages_fetched`, `total_http_pages_fetched`.
+- Deploy не выполнялся, Telegram не отправлялся, production DB не менялась.
+
+**Проверки:**
+
+- `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_skladbot_daily_report` - 46 tests OK.
+- Exact contract tests для partial block, complete send, detail budget, max-pages split, timeout, sendDocument failure, same-day no retry и safe progress payload - OK.
+
+### Daily SkladBot strict date coverage
+
+**Файлы:** `backend/app/skladbot_daily_report.py`, `backend/app/telegram_worker.py`, `tests/test_skladbot_daily_report.py`, `.supergoal/daily-skladbot-bvytBP/PHASE_0_CURRENT_CONTRACT.md`, `docs/report-source-rules.md`, `docs/implementation-log.md`, `docs/changelog.md`.
+
+**Что стало:**
+
+- `/requests` для daily SkladBot читается page-based через `page + limit`, без `offset`, с dedupe и stop guards.
+- Primary daily scope теперь `Дата выгрузки` / `unloading_date` или movement date за дату отчета; `created_at` остался diagnostic signal.
+- Operational totals включают только completed+archived заявки, прошедшие date eligibility.
+- Excluded/out-of-scope/status/API-error строки не исчезают: они попадают в coverage data и XLSX листы `Контроль покрытия`, `Исключенные заявки`, `Диагностика дат`, `Ошибки`.
+- Telegram summary показывает coverage status, included/excluded counts, API errors и warning для partial/failed отчета.
+- Scheduled reported-request registry key теперь включает report date, chat, mode, report kind и report version hash.
+- Deploy не выполнялся.
+
+**Проверки:**
+
+- `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_skladbot_daily_report` - 31 tests OK.
+- `PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_skladbot_daily_report tests.test_backend_telegram_import` - 102 tests OK.
+- `PYTHONPATH=. ./.venv/bin/python -m py_compile backend/app/skladbot_daily_report.py backend/app/telegram_worker.py tests/test_skladbot_daily_report.py` - OK.
+
 ## 2026-07-02
 
 ### SkladBot representative comment cleanup
