@@ -6,11 +6,8 @@ from tools.run_safe_tests import EXCLUDED_MODULES, discover_safe_test_modules
 
 
 class SafeTestRunnerTests(unittest.TestCase):
-    def test_env_example_readers_are_explicitly_excluded(self):
-        self.assertEqual(
-            set(EXCLUDED_MODULES),
-            {"tests.test_backend_skeleton", "tests.test_vds_acceptance_scripts"},
-        )
+    def test_no_modules_are_excluded_after_postgres_safety_net(self):
+        self.assertEqual(EXCLUDED_MODULES, {})
 
     def test_discovery_keeps_other_test_modules(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -22,7 +19,10 @@ class SafeTestRunnerTests(unittest.TestCase):
 
             modules = discover_safe_test_modules(root)
 
-        self.assertEqual(modules, ["tests.test_release_tree_guard"])
+        self.assertEqual(
+            modules,
+            ["tests.test_backend_skeleton", "tests.test_release_tree_guard"],
+        )
 
 
 if __name__ == "__main__":

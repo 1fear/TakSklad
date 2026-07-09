@@ -20,6 +20,7 @@ name and are never opened or hashed by the guard.
 The repository pre-commit hook and CI call the same path policy. Local clones
 should enable the tracked hooks with `git config core.hooksPath .githooks`.
 
-`tools/run_safe_tests.py` is the temporary Phase 1 full-suite entrypoint. It
-excludes the two legacy modules that read repository `.env.example` files; Phase
-2 removes that dependency before the normal full-suite runner replaces it.
+`tools/run_safe_tests.py` and normal unittest discovery both execute the full
+suite. PostgreSQL integration modules skip only when the disposable test URL is
+absent; `tools/run_postgres_tests.sh` supplies it for mandatory migration and
+two-session checks. No test module reads repository `.env*` files.

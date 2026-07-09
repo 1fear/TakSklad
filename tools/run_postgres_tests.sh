@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+MODE="${1:-all}"
+IMAGE="${TAKSKLAD_POSTGRES_TEST_IMAGE:-postgres:16-alpine}"
+CONTAINER="taksklad-phase2-pg-$$-${RANDOM}"
+PASSWORD="synthetic-phase2-only"
+PYTHON_BIN="${TAKSKLAD_TEST_PYTHON:-$ROOT_DIR/.venv/bin/python}"
+
+if [[ ! -x "$PYTHON_BIN" ]]; then
+  PYTHON_BIN="python3"
+fi
+
+cleanup() {
+  if docker inspect "$CONTAINER" >/dev/null 2>&1; then
+    docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+  fi
+  local remaining
+  remaining="$(docker ps -aq --filter "name=^/${CONTAINER}$" | wc -l | tr -d ' ')"
+  echo "postgres-test: cleanup containers=$remaining volumes=0"
+  [[ "$remaining" == "0" ]]
+}
+trap cleanup EXIT INT TERM
+
+case "$MODE" in
+  migrations)
+    TEST_MODULE="tests.test_postgres_migrations"
+    ;;
+  smoke)
+    TEST_MODULE="tests.test_postgres_concurrency"
+    ;;
+  all)
+    TEST_MODULE="tests.test_postgres_migrations tests.test_postgres_concurrency"
+    ;;
+  *)
+    echo "Usage: $0 {migrations|smoke|all}" >&2
+    exit 2
+    ;;
+esac
+
+docker run --detach --rm \
+  --name "$CONTAINER" \
+  --tmpfs /var/lib/postgresql/data:rw,nosuid,nodev,size=512m \
+  --env POSTGRES_PASSWORD="$PASSWORD" \
+  --env POSTGRES_DB=postgres \
+  --publish 127.0.0.1::5432 \
+  "$IMAGE" >/dev/null
+
+ready=0
+for _attempt in $(seq 1 60); do
+  if docker exec "$CONTAINER" pg_isready -U postgres -d postgres >/dev/null 2>&1; then
+    ready=1
+    break
+  fi
+  sleep 0.5
+done
+if [[ "$ready" != "1" ]]; then
+  echo "postgres-test: PostgreSQL did not become ready" >&2
+  exit 1
+fi
+
+mapping="$(docker port "$CONTAINER" 5432/tcp | head -n1)"
+port="${mapping##*:}"
+export TAKSKLAD_TEST_DATABASE_URL="postgresql+psycopg://postgres:${PASSWORD}@127.0.0.1:${port}/postgres"
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONPATH="$ROOT_DIR"
+
+echo "postgres-test: image=$IMAGE mode=$MODE"
+docker exec "$CONTAINER" postgres --version
+
+if [[ "${TAKSKLAD_POSTGRES_TEST_FORCE_FAILURE:-0}" == "1" ]]; then
+  echo "postgres-test: forced synthetic failure" >&2
+  exit 17
+fi
+
+cd "$ROOT_DIR"
+# shellcheck disable=SC2086
+"$PYTHON_BIN" -m unittest -v $TEST_MODULE
+
+cleanup
+trap - EXIT INT TERM

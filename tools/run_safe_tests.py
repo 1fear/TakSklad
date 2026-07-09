@@ -10,10 +10,7 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-EXCLUDED_MODULES = {
-    "tests.test_backend_skeleton": "reads deploy/vds/.env.example",
-    "tests.test_vds_acceptance_scripts": "reads deploy/vds/.env.example",
-}
+EXCLUDED_MODULES = {}
 
 
 def discover_safe_test_modules(root: Path = PROJECT_ROOT) -> list[str]:

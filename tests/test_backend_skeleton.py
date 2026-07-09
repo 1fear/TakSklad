@@ -1,3 +1,4 @@
+import json
 import importlib.util
 import unittest
 from pathlib import Path
@@ -37,9 +38,8 @@ class BackendSkeletonTests(unittest.TestCase):
             "backend/migrations/versions/20260701_0007_pending_event_indexes.py",
             "docs/database-migrations-runbook.md",
             "deploy/vds/docker-compose.yml",
-            "deploy/vds/.env.example",
+            "deploy/vds/config-contract.json",
             "deploy/traefik/docker-compose.yml",
-            "deploy/traefik/.env.example",
         ]
 
         for relative_path in required_paths:
@@ -214,6 +214,7 @@ class BackendSkeletonTests(unittest.TestCase):
         self.assertNotIn("traefik.http.routers.taksklad-adminer", compose_text)
         self.assertIn("traefik.http.routers.taksklad-backend.rule", compose_text)
         self.assertNotIn("5432:5432", compose_text)
+        self.assertNotIn("docker-entrypoint-initdb.d", compose_text)
 
     def test_traefik_compose_declares_https_gateway(self):
         compose_text = (ROOT_DIR / "deploy/traefik/docker-compose.yml").read_text(encoding="utf-8")
@@ -224,13 +225,21 @@ class BackendSkeletonTests(unittest.TestCase):
         self.assertIn("--entrypoints.websecure.address=:443", compose_text)
         self.assertIn("--certificatesresolvers.letsencrypt.acme.httpchallenge=true", compose_text)
 
-    def test_env_example_contains_placeholders_not_real_secrets(self):
-        env_text = (ROOT_DIR / "deploy/vds/.env.example").read_text(encoding="utf-8")
+    def test_tracked_config_contract_contains_only_synthetic_test_values(self):
+        contract = json.loads((ROOT_DIR / "deploy/vds/config-contract.json").read_text(encoding="utf-8"))
 
-        self.assertIn("change-me-service-token", env_text)
-        self.assertIn("change-me-postgres-password", env_text)
-        self.assertNotIn("credentials.json", env_text)
-        self.assertNotIn("private_key", env_text)
+        self.assertEqual(contract["schema"], 1)
+        self.assertEqual(contract["compose_test_values"]["TAKSKLAD_ENV"], "test")
+        self.assertIn("synthetic", contract["compose_test_values"]["TAKSKLAD_API_TOKEN"])
+        self.assertIn("synthetic", contract["compose_test_values"]["POSTGRES_PASSWORD"])
+        self.assertNotIn("private_key", json.dumps(contract).lower())
+
+    def test_legacy_sql_bootstrap_is_explicit_and_empty_database_only(self):
+        script = (ROOT_DIR / "deploy/vds/apply_schema.sh").read_text(encoding="utf-8")
+
+        self.assertIn("ALLOW_EMPTY_UNVERSIONED_DATABASE_ONLY", script)
+        self.assertIn("alembic_version", script)
+        self.assertIn("existing application tables", script)
 
 
 if __name__ == "__main__":

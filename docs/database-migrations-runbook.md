@@ -45,9 +45,9 @@ Phase 3 deliberately does not add a global unique constraint on `scan_codes.code
 
 ## Legacy SQL Files
 
-`backend/sql/001_initial_schema.sql` and `backend/sql/002_kiz_movements.sql` remain as bootstrap/history. They are safe for empty local databases and historical recovery context, but they are not the main production migration path after Alembic is stamped.
+`backend/sql/001_initial_schema.sql` and `backend/sql/002_kiz_movements.sql` remain only as historical recovery inputs. A normal empty database is created exclusively with `alembic upgrade head`; Compose no longer mounts raw SQL into `docker-entrypoint-initdb.d`.
 
-`deploy/vds/apply_schema.sh` still applies those SQL files for the legacy bootstrap path. Do not use it for normal production upgrades after baseline stamping.
+`deploy/vds/apply_schema.sh` is fail-closed behind the exact local flag `TAKSKLAD_LEGACY_SQL_BOOTSTRAP=ALLOW_EMPTY_UNVERSIONED_DATABASE_ONLY`. It also rejects any database with an Alembic version table or existing application tables. Use it only for a separately reviewed legacy recovery; never combine it with Alembic baseline creation.
 
 ## Rollback Posture
 

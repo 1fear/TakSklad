@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import unittest
 
@@ -109,14 +110,16 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
 
     def test_vds_compose_passes_geocoder_and_block_price_to_import_worker(self):
         compose = (PROJECT_ROOT / "deploy" / "vds" / "docker-compose.yml").read_text(encoding="utf-8")
-        env_example = (PROJECT_ROOT / "deploy" / "vds" / ".env.example").read_text(encoding="utf-8")
+        contract = json.loads(
+            (PROJECT_ROOT / "deploy" / "vds" / "config-contract.json").read_text(encoding="utf-8")
+        )
+        test_values = contract["compose_test_values"]
         smartup_worker = compose.split("  smartup-auto-import-worker:", 1)[1].split(
             "\n  google-sheets-sync-worker:",
             1,
         )[0]
 
         self.assertIn("${TAKSKLAD_ENV_FILE:-.env}", compose)
-        self.assertIn("TAKSKLAD_ENV_FILE=.env.example", env_example)
         self.assertIn("YANDEX_GEOCODER_API_KEY: ${YANDEX_GEOCODER_API_KEY:-}", smartup_worker)
         self.assertIn("TAKSKLAD_TIMEZONE: ${TAKSKLAD_TIMEZONE:-Asia/Tashkent}", smartup_worker)
         self.assertIn("TAKSKLAD_DEFAULT_BLOCK_PRICE: ${TAKSKLAD_DEFAULT_BLOCK_PRICE:-240000}", smartup_worker)
@@ -131,20 +134,20 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
             "TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED: ${TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED:-false}",
             compose,
         )
-        self.assertIn("YANDEX_GEOCODER_API_KEY=", env_example)
-        self.assertIn("TAKSKLAD_TIMEZONE=Asia/Tashkent", env_example)
-        self.assertIn("TAKSKLAD_DEFAULT_BLOCK_PRICE=240000", env_example)
-        self.assertIn("SKLADBOT_WORKER_INTERVAL_SECONDS=60", env_example)
-        self.assertIn("SKLADBOT_REQUEST_DELAY_SECONDS=2", env_example)
-        self.assertIn("SKLADBOT_SKU_MAPPING_JSON=", env_example)
-        self.assertIn("SKLADBOT_SYNC_MAX_LOOKBACK_DAYS=7", env_example)
-        self.assertIn("SKLADBOT_ORDER_CREATE_LEAD_DAYS=3", env_example)
-        self.assertIn("SKLADBOT_DETAIL_LIMIT=10", env_example)
-        self.assertIn("SKLADBOT_COMPLETED_BACKFILL_DAYS=2", env_example)
-        self.assertIn("TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED=false", env_example)
-        self.assertIn("TAKSKLAD_ENV=production", env_example)
-        self.assertNotIn("TAKSKLAD_ADMINER_HOST", env_example)
-        self.assertIn("TELEGRAM_ADMIN_CHAT_IDS=", env_example)
+        self.assertEqual(test_values["YANDEX_GEOCODER_API_KEY"], "")
+        self.assertEqual(test_values["TAKSKLAD_TIMEZONE"], "Asia/Tashkent")
+        self.assertEqual(test_values["TAKSKLAD_DEFAULT_BLOCK_PRICE"], "240000")
+        self.assertEqual(test_values["SKLADBOT_WORKER_INTERVAL_SECONDS"], "60")
+        self.assertEqual(test_values["SKLADBOT_REQUEST_DELAY_SECONDS"], "2")
+        self.assertEqual(test_values["SKLADBOT_SKU_MAPPING_JSON"], "")
+        self.assertEqual(test_values["SKLADBOT_SYNC_MAX_LOOKBACK_DAYS"], "7")
+        self.assertEqual(test_values["SKLADBOT_ORDER_CREATE_LEAD_DAYS"], "3")
+        self.assertEqual(test_values["SKLADBOT_DETAIL_LIMIT"], "10")
+        self.assertEqual(test_values["SKLADBOT_COMPLETED_BACKFILL_DAYS"], "2")
+        self.assertEqual(test_values["TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED"], "false")
+        self.assertEqual(test_values["TAKSKLAD_ENV"], "test")
+        self.assertNotIn("TAKSKLAD_ADMINER_HOST", test_values)
+        self.assertEqual(test_values["TELEGRAM_ADMIN_CHAT_IDS"], "")
 
     def test_web_deploy_forces_https_security_headers(self):
         compose = (PROJECT_ROOT / "deploy" / "vds" / "docker-compose.yml").read_text(encoding="utf-8")

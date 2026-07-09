@@ -52,6 +52,12 @@ jobs:
         run: |
           PYTHONPATH=. python -m compileall -q backend/app backend/migrations tools tests
 
+      - name: Test PostgreSQL migration matrix
+        run: ./tools/run_postgres_tests.sh migrations
+
+      - name: Test PostgreSQL session barriers
+        run: ./tools/run_postgres_tests.sh smoke
+
       - name: Run Python tests
         run: |
           PYTHONPATH=. python -m unittest discover -s tests
@@ -68,7 +74,12 @@ jobs:
 
       - name: Check VDS compose config
         run: |
-          TAKSKLAD_ENV_FILE=.env.example docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config --quiet
+          config_path="$RUNNER_TEMP/taksklad-compose-config"
+          python tools/render_compose_test_config.py --output "$config_path"
+          trap 'rm -f "$config_path"' EXIT
+          TAKSKLAD_ENV_FILE="$config_path" docker compose --env-file "$config_path" -f deploy/vds/docker-compose.yml config --quiet
+          rm -f "$config_path"
+          trap - EXIT
 
   frontend:
     name: Frontend build

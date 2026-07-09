@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "description": "Synthetic-only configuration used by tests and Compose validation.",
+  "compose_test_values": {
+    "DATABASE_URL": "postgresql+psycopg://synthetic:synthetic-only@postgres:5432/taksklad_test",
+    "POSTGRES_DB": "taksklad_test",
+    "POSTGRES_PASSWORD": "synthetic-only-postgres-password",
+    "POSTGRES_USER": "synthetic",
+    "SKLADBOT_COMPLETED_BACKFILL_DAYS": "2",
+    "SKLADBOT_DETAIL_LIMIT": "10",
+    "SKLADBOT_ORDER_CREATE_LEAD_DAYS": "3",
+    "SKLADBOT_REQUEST_DELAY_SECONDS": "2",
+    "SKLADBOT_SKU_MAPPING_JSON": "",
+    "SKLADBOT_SYNC_MAX_LOOKBACK_DAYS": "7",
+    "SKLADBOT_WORKER_INTERVAL_SECONDS": "60",
+    "TAKSKLAD_API_TOKEN": "synthetic-only-service-token",
+    "TAKSKLAD_BACKEND_HOST": "api.example.invalid",
+    "TAKSKLAD_DEFAULT_BLOCK_PRICE": "240000",
+    "TAKSKLAD_ENV": "test",
+    "TAKSKLAD_FRONTEND_HOST": "app.example.invalid",
+    "TAKSKLAD_FRONTEND_WWW_HOST": "www.example.invalid",
+    "TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED": "false",
+    "TAKSKLAD_SERVICE_NAME": "taksklad-test",
+    "TAKSKLAD_TIMEZONE": "Asia/Tashkent",
+    "TELEGRAM_ADMIN_CHAT_IDS": "",
+    "TRAEFIK_NETWORK": "taksklad-test-traefik",
+    "YANDEX_GEOCODER_API_KEY": ""
+  }
+}
