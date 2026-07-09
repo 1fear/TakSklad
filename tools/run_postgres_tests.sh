@@ -24,6 +24,9 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 case "$MODE" in
+  seed-reference)
+    TEST_MODULE=""
+    ;;
   migrations)
     TEST_MODULE="tests.test_postgres_migrations"
     ;;
@@ -43,7 +46,7 @@ case "$MODE" in
     TEST_MODULE="tests.test_postgres_migrations tests.test_postgres_concurrency tests.test_postgres_readiness tests.test_postgres_queue_concurrency tests.test_postgres_queue_failures"
     ;;
   *)
-    echo "Usage: $0 {migrations|smoke|readiness|queue-concurrency|queue-failures|all}" >&2
+    echo "Usage: $0 {seed-reference|migrations|smoke|readiness|queue-concurrency|queue-failures|all}" >&2
     exit 2
     ;;
 esac
@@ -84,8 +87,16 @@ if [[ "${TAKSKLAD_POSTGRES_TEST_FORCE_FAILURE:-0}" == "1" ]]; then
 fi
 
 cd "$ROOT_DIR"
-# shellcheck disable=SC2086
-"$PYTHON_BIN" -m unittest -v $TEST_MODULE
+if [[ "$MODE" == "seed-reference" ]]; then
+  export DATABASE_URL="$TAKSKLAD_TEST_DATABASE_URL"
+  export TAKSKLAD_ENV="test"
+  export TAKSKLAD_API_TOKEN="synthetic-only-test-token"
+  "$PYTHON_BIN" -m alembic -c backend/alembic.ini upgrade head
+  "$PYTHON_BIN" tools/benchmark_backend.py seed --profile reference
+else
+  # shellcheck disable=SC2086
+  "$PYTHON_BIN" -m unittest -v $TEST_MODULE
+fi
 
 cleanup
 trap - EXIT INT TERM

@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "synthetic_contract": {
+    "namespace": "SYNTHETIC-TAKSKLAD-PERF",
+    "contains_real_data": false,
+    "generator": "fixed-seed UUIDv5 and deterministic counters only",
+    "production_scale_status": "unconfirmed",
+    "production_scale_reason": "Safe production aggregates are unavailable under the autonomous no-data-read scope; reference scale is reproducible but is not claimed as 2x production."
+  },
+  "profiles": {
+    "small": {
+      "seed": 20260710,
+      "orders": 400,
+      "items_per_order": 3,
+      "scans_per_item": 2,
+      "pending_events": 200,
+      "imports": 20,
+      "scan_targets": 110,
+      "complete_targets": 110,
+      "return_targets": 110
+    },
+    "reference": {
+      "seed": 20260710,
+      "orders": 1000,
+      "items_per_order": 3,
+      "scans_per_item": 2,
+      "pending_events": 2000,
+      "imports": 100,
+      "scan_targets": 110,
+      "complete_targets": 110,
+      "return_targets": 110
+    },
+    "stress": {
+      "seed": 20260710,
+      "orders": 5000,
+      "items_per_order": 3,
+      "scans_per_item": 2,
+      "pending_events": 10000,
+      "imports": 500,
+      "scan_targets": 110,
+      "complete_targets": 110,
+      "return_targets": 110
+    }
+  }
+}

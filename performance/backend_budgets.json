@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "regression_limit_percent": 10,
+  "workloads": {
+    "scan_db": {"p95_ms": 150, "p99_ms": 300},
+    "complete_db": {"p95_ms": 150, "p99_ms": 300},
+    "return_db": {"p95_ms": 150, "p99_ms": 300},
+    "active_orders_first_page": {"p95_ms": 250},
+    "admin_filtered_page": {"p95_ms": 500, "p99_ms": 1000},
+    "day_report": {"p95_ms": 500},
+    "dashboard_report": {"p95_ms": 500},
+    "import_1000": {"p95_ms": 3000},
+    "queue_claim_50": {"p95_ms": 100}
+  }
+}
