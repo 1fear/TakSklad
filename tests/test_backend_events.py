@@ -11,6 +11,7 @@ class BackendEventQueueTests(unittest.TestCase):
         self.original_save_pending_backend_events = backend_events.save_pending_backend_events
         self.original_create_scan = backend_events.create_scan
         self.original_complete_order = backend_events.complete_order
+        self.original_reconcile_queue_section = backend_events.reconcile_queue_section
 
     def tearDown(self):
         backend_events.backend_configured = self.original_backend_configured
@@ -18,6 +19,7 @@ class BackendEventQueueTests(unittest.TestCase):
         backend_events.save_pending_backend_events = self.original_save_pending_backend_events
         backend_events.create_scan = self.original_create_scan
         backend_events.complete_order = self.original_complete_order
+        backend_events.reconcile_queue_section = self.original_reconcile_queue_section
 
     def use_pending_events(self, items):
         state = {"items": list(items)}
@@ -29,6 +31,12 @@ class BackendEventQueueTests(unittest.TestCase):
             return True
 
         backend_events.save_pending_backend_events = save_pending
+
+        def reconcile(_section, _snapshot, remaining):
+            state["items"] = list(remaining)
+            return state["items"]
+
+        backend_events.reconcile_queue_section = reconcile
         return state
 
     def test_retryable_scan_failure_stays_pending_with_attempt_and_error(self):

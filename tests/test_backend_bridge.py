@@ -6,6 +6,15 @@ from taksklad.config import SKLADBOT_REQUEST_NUMBER_COLUMN, STATUS_COMPLETED
 
 
 class BackendBridgeTests(unittest.TestCase):
+    @staticmethod
+    def reconcile_stub(pending, saved):
+        def reconcile(_section, _snapshot, remaining):
+            saved.append(list(remaining))
+            pending[:] = list(remaining)
+            return list(pending)
+
+        return reconcile
+
     def test_backend_duplicate_scan_reuse_status_allows_return_undo_reset(self):
         order = {"_backend_order_item_id": "item-1"}
 
@@ -136,7 +145,11 @@ class BackendBridgeTests(unittest.TestCase):
         with (
             mock.patch.object(backend_events, "backend_configured", return_value=True),
             mock.patch.object(backend_events, "load_pending_backend_events", return_value=pending),
-            mock.patch.object(backend_events, "save_pending_backend_events", side_effect=lambda value: saved.append(value)),
+            mock.patch.object(
+                backend_events,
+                "reconcile_queue_section",
+                side_effect=self.reconcile_stub(pending, saved),
+            ),
             mock.patch.object(
                 backend_events,
                 "create_scan",
@@ -184,7 +197,11 @@ class BackendBridgeTests(unittest.TestCase):
         with (
             mock.patch.object(backend_events, "backend_configured", return_value=True),
             mock.patch.object(backend_events, "load_pending_backend_events", return_value=pending),
-            mock.patch.object(backend_events, "save_pending_backend_events", side_effect=lambda value: saved.append(value)),
+            mock.patch.object(
+                backend_events,
+                "reconcile_queue_section",
+                side_effect=self.reconcile_stub(pending, saved),
+            ),
             mock.patch.object(
                 backend_events,
                 "create_scan",
@@ -218,7 +235,11 @@ class BackendBridgeTests(unittest.TestCase):
         with (
             mock.patch.object(backend_events, "backend_configured", return_value=True),
             mock.patch.object(backend_events, "load_pending_backend_events", return_value=pending),
-            mock.patch.object(backend_events, "save_pending_backend_events", side_effect=lambda value: saved.append(value)),
+            mock.patch.object(
+                backend_events,
+                "reconcile_queue_section",
+                side_effect=self.reconcile_stub(pending, saved),
+            ),
             mock.patch.object(
                 backend_events,
                 "create_scan",
@@ -247,7 +268,11 @@ class BackendBridgeTests(unittest.TestCase):
         with (
             mock.patch.object(backend_events, "backend_configured", return_value=True),
             mock.patch.object(backend_events, "load_pending_backend_events", return_value=pending),
-            mock.patch.object(backend_events, "save_pending_backend_events", side_effect=lambda value: saved.append(value)),
+            mock.patch.object(
+                backend_events,
+                "reconcile_queue_section",
+                side_effect=self.reconcile_stub(pending, saved),
+            ),
             mock.patch.object(
                 backend_events,
                 "create_scan",
@@ -278,7 +303,11 @@ class BackendBridgeTests(unittest.TestCase):
         with (
             mock.patch.object(backend_events, "backend_configured", return_value=True),
             mock.patch.object(backend_events, "load_pending_backend_events", return_value=pending),
-            mock.patch.object(backend_events, "save_pending_backend_events", side_effect=lambda value: saved.append(value)),
+            mock.patch.object(
+                backend_events,
+                "reconcile_queue_section",
+                side_effect=self.reconcile_stub(pending, saved),
+            ),
             mock.patch.object(
                 backend_events,
                 "complete_order",
@@ -310,7 +339,11 @@ class BackendBridgeTests(unittest.TestCase):
         with (
             mock.patch.object(backend_events, "backend_configured", return_value=True),
             mock.patch.object(backend_events, "load_pending_backend_events", return_value=pending),
-            mock.patch.object(backend_events, "save_pending_backend_events", side_effect=lambda value: saved.append(value)),
+            mock.patch.object(
+                backend_events,
+                "reconcile_queue_section",
+                side_effect=self.reconcile_stub(pending, saved),
+            ),
             mock.patch.object(
                 backend_events,
                 "complete_order",
@@ -337,15 +370,18 @@ class BackendBridgeTests(unittest.TestCase):
         def fake_load():
             return list(pending)
 
-        def fake_save(value):
-            saved.append(value)
-            pending[:] = value
+        def fake_append(_section, item, **_kwargs):
+            if any(existing.get("id") == item.get("id") for existing in pending):
+                return False
+            pending.append(item)
+            saved.append(list(pending))
+            return True
 
         order = {"_backend_order_item_id": "item-1"}
         with (
             mock.patch.object(backend_events, "backend_configured", return_value=True),
             mock.patch.object(backend_events, "load_pending_backend_events", side_effect=fake_load),
-            mock.patch.object(backend_events, "save_pending_backend_events", side_effect=fake_save),
+            mock.patch.object(backend_events, "append_queue_item", side_effect=fake_append),
         ):
             first_id = backend_events.queue_backend_scan(order, "01000000000000000001", scanned_at="2026-05-31T10:00:00+05:00")
             second_id = backend_events.queue_backend_scan(order, "01000000000000000001", scanned_at="2026-05-31T10:01:00+05:00")
@@ -375,8 +411,11 @@ class BackendBridgeTests(unittest.TestCase):
         saved = []
 
         with (
-            mock.patch.object(backend_events, "load_pending_backend_events", return_value=pending),
-            mock.patch.object(backend_events, "save_pending_backend_events", side_effect=lambda value: saved.append(value)),
+            mock.patch.object(
+                backend_events,
+                "mutate_queue_section",
+                side_effect=lambda _section, mutator: saved.append(mutator(list(pending))) or saved[-1],
+            ),
         ):
             removed = backend_events.remove_pending_backend_scan(
                 {"_backend_order_item_id": "item-1"},
@@ -421,7 +460,11 @@ class BackendBridgeTests(unittest.TestCase):
         with (
             mock.patch.object(backend_events, "backend_configured", return_value=True),
             mock.patch.object(backend_events, "load_pending_backend_events", return_value=pending),
-            mock.patch.object(backend_events, "save_pending_backend_events", side_effect=lambda value: saved.append(value)),
+            mock.patch.object(
+                backend_events,
+                "reconcile_queue_section",
+                side_effect=self.reconcile_stub(pending, saved),
+            ),
             mock.patch.object(backend_events, "complete_order", side_effect=lambda order_id: completed.append(order_id)),
         ):
             result = backend_events.sync_pending_backend_events()
@@ -443,7 +486,11 @@ class BackendBridgeTests(unittest.TestCase):
         with (
             mock.patch.object(backend_events, "backend_configured", return_value=True),
             mock.patch.object(backend_events, "load_pending_backend_events", return_value=pending),
-            mock.patch.object(backend_events, "save_pending_backend_events", side_effect=lambda value: saved.append(value)),
+            mock.patch.object(
+                backend_events,
+                "reconcile_queue_section",
+                side_effect=self.reconcile_stub(pending, saved),
+            ),
         ):
             result = backend_events.sync_pending_backend_events()
 

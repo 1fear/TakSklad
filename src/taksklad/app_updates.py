@@ -23,7 +23,7 @@ from .startup_check import (
     build_version_update_status,
     format_version_update_status_label,
 )
-from .storage import load_data_section, save_data_section
+from .storage import load_data_section, mutate_data_section
 from .update_service import compare_versions, fetch_update_info, package_transition_required, prepare_update_installer
 from .utils import normalize_text, parse_int_value
 
@@ -292,10 +292,14 @@ class UpdateMixin:
 
         # Сохраняем попытку (даже если пользователь отказался) — это и есть
         # cooldown: следующая проверка той же версии не сработает ещё час.
-        skip_state["last_attempt_ts"] = now_ts
-        skip_state["last_attempt_version"] = latest_version
-        skip_state["last_user_action"] = "accepted" if user_confirmed else "declined"
-        save_data_section("update_skip_state", skip_state)
+        def record_attempt(current):
+            current = current if isinstance(current, dict) else {}
+            current["last_attempt_ts"] = now_ts
+            current["last_attempt_version"] = latest_version
+            current["last_user_action"] = "accepted" if user_confirmed else "declined"
+            return current
+
+        mutate_data_section("update_skip_state", record_attempt, default={})
 
         if not user_confirmed:
             self.update_info = update_info

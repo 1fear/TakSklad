@@ -1,5 +1,5 @@
 from .config import DEFAULT_PIECES_PER_BLOCK
-from .storage import load_data_section, save_data_section
+from .storage import load_data_section, mutate_data_section, save_data_section
 from .utils import normalize_lookup_text, normalize_text, parse_int_value
 
 
@@ -10,6 +10,40 @@ def load_product_catalog():
 
 def save_product_catalog(catalog):
     return save_data_section("product_catalog", catalog)
+
+
+def merge_product_catalog_defaults(defaults):
+    defaults = defaults if isinstance(defaults, dict) else {}
+
+    def merge(catalog):
+        catalog = catalog if isinstance(catalog, dict) else {}
+        for key, rule in defaults.items():
+            if key and key not in catalog:
+                catalog[key] = rule
+        return catalog
+
+    return mutate_data_section("product_catalog", merge, default={})
+
+
+def upsert_product_rule(old_key, new_key, rule):
+    def upsert(catalog):
+        catalog = catalog if isinstance(catalog, dict) else {}
+        if old_key and old_key != new_key:
+            catalog.pop(old_key, None)
+        if new_key:
+            catalog[new_key] = dict(rule)
+        return catalog
+
+    return mutate_data_section("product_catalog", upsert, default={})
+
+
+def delete_product_rule(key):
+    def delete(catalog):
+        catalog = catalog if isinstance(catalog, dict) else {}
+        catalog.pop(key, None)
+        return catalog
+
+    return mutate_data_section("product_catalog", delete, default={})
 
 
 def product_catalog_key(product_name):

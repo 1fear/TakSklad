@@ -49,7 +49,7 @@ from .telegram_service import (
     load_telegram_state,
     mark_daily_report_status,
     safe_telegram_document_path,
-    save_telegram_state,
+    update_telegram_state,
     send_daily_report_result_to_telegram,
     send_or_queue_telegram_document,
     send_telegram_document_to_chat,
@@ -603,9 +603,10 @@ class TelegramActionsMixin:
                 self.handle_telegram_message(update["message"], settings, token)
 
         if max_update_id != last_update_id:
-            local_state["last_update_id"] = max_update_id
-            local_state["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            save_telegram_state(local_state)
+            update_telegram_state({
+                "last_update_id": max_update_id,
+                "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            })
             if shared_state_available:
                 try:
                     write_shared_telegram_state(

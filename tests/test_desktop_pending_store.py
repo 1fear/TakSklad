@@ -27,10 +27,12 @@ class DesktopPendingStoreTests(unittest.TestCase):
         }]
         saved = []
 
-        with (
-            mock.patch.object(pending_store, "load_pending_saves", return_value=pending),
-            mock.patch.object(pending_store, "save_pending_saves", side_effect=lambda value: saved.append(value)),
-        ):
+        def mutate(_section, mutator):
+            updated = mutator(pending)
+            saved.append(updated)
+            return updated
+
+        with mock.patch.object(pending_store, "mutate_queue_section", side_effect=mutate):
             updated = pending_store.update_pending_save_codes_for_undo(
                 order,
                 ["01012345678901234567A", "01012345678901234567B"],
@@ -52,10 +54,12 @@ class DesktopPendingStoreTests(unittest.TestCase):
         }]
         saved = []
 
-        with (
-            mock.patch.object(pending_store, "load_pending_saves", return_value=pending),
-            mock.patch.object(pending_store, "save_pending_saves", side_effect=lambda value: saved.append(value)),
-        ):
+        def mutate(_section, mutator):
+            updated = mutator(pending)
+            saved.append(updated)
+            return updated
+
+        with mock.patch.object(pending_store, "mutate_queue_section", side_effect=mutate):
             updated = pending_store.update_pending_save_codes_for_undo(
                 order,
                 ["01012345678901234567A"],
@@ -87,10 +91,12 @@ class DesktopPendingStoreTests(unittest.TestCase):
         ]
         saved = []
 
-        with (
-            mock.patch.object(pending_store, "load_pending_saves", return_value=pending),
-            mock.patch.object(pending_store, "save_pending_saves", side_effect=lambda value: saved.append(value)),
-        ):
+        def mutate(_section, mutator):
+            updated = mutator(pending)
+            saved.append(updated)
+            return updated
+
+        with mock.patch.object(pending_store, "mutate_queue_section", side_effect=mutate):
             updated = pending_store.update_pending_save_codes_for_undo(
                 target_order,
                 target_codes,

@@ -1,7 +1,7 @@
 import tkinter as tk
 from tkinter import messagebox
 
-from .catalog import load_product_catalog, product_catalog_key, save_product_catalog
+from .catalog import delete_product_rule, load_product_catalog, product_catalog_key, upsert_product_rule
 from .config import (
     ACCENT,
     BG_CARD,
@@ -113,15 +113,15 @@ class CatalogActionsMixin:
 
             old_key = selected_key.get("value")
             new_key = product_catalog_key(name)
-            if old_key and old_key != new_key:
-                catalog.pop(old_key, None)
-            catalog[new_key] = {
+            rule = {
                 "name": name,
                 "pieces_per_block": pieces,
                 "requires_kiz": bool(requires_var.get()),
             }
+            updated_catalog = upsert_product_rule(old_key, new_key, rule)
+            catalog.clear()
+            catalog.update(updated_catalog)
             selected_key["value"] = new_key
-            save_product_catalog(catalog)
             self.product_catalog = catalog
             refresh_list()
             self.status_var.set("✅ Справочник товаров сохранён")
@@ -137,8 +137,9 @@ class CatalogActionsMixin:
             if not key:
                 return
             if messagebox.askyesno("Удалить товар?", "Удалить выбранный товар из справочника?"):
-                catalog.pop(key, None)
-                save_product_catalog(catalog)
+                updated_catalog = delete_product_rule(key)
+                catalog.clear()
+                catalog.update(updated_catalog)
                 new_product()
                 refresh_list()
 

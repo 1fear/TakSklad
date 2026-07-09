@@ -7,7 +7,13 @@ from datetime import datetime
 from .config import BACKUP_DIR, SHEET_NAME, SKLADBOT_REQUEST_NUMBER_COLUMN, SPREADSHEET_ID
 from .orders import get_order_date_value
 from .sheets import get_google_client, update_scanned_codes_to_gsheet
-from .storage import load_data_section, save_data_section
+from .storage import (
+    append_queue_item,
+    load_data_section,
+    mutate_queue_section,
+    reconcile_queue_section,
+    save_data_section,
+)
 from .utils import make_hash, normalize_text, split_codes
 
 
@@ -64,31 +70,36 @@ def make_pending_print_id(address, products):
 
 
 def add_pending_print(address, products):
-    pending = load_pending_prints()
     pending_id = make_pending_print_id(address, products)
-    for item in pending:
-        if item.get("id") == pending_id:
-            return pending_id
-
-    pending.append({
-        "id": pending_id,
-        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "address": address,
-        "products": products,
-    })
-    if save_pending_prints(pending):
-        return pending_id
-    return ""
+    try:
+        append_queue_item("pending_prints", {
+            "id": pending_id,
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "address": address,
+            "products": products,
+        })
+    except Exception:
+        logging.exception("Не удалось поставить сводный лист в durable очередь печати")
+        return ""
+    return pending_id
 
 
 def remove_pending_print(pending_id):
     if not pending_id:
         return False
-    pending = load_pending_prints()
-    new_pending = [item for item in pending if item.get("id") != pending_id]
-    if len(new_pending) != len(pending):
-        return save_pending_prints(new_pending)
-    return True
+    removed = {"value": False}
+
+    def remove(items):
+        result = [item for item in items if item.get("id") != pending_id]
+        removed["value"] = len(result) != len(items)
+        return result
+
+    try:
+        mutate_queue_section("pending_prints", remove)
+    except Exception:
+        logging.exception("Не удалось удалить сводный лист из durable очереди печати")
+        return False
+    return removed["value"]
 
 
 def load_pending_saves():
@@ -113,32 +124,34 @@ def make_pending_save_id(order, scanned_codes):
 
 
 def add_pending_save(order, scanned_codes, reason):
-    pending = load_pending_saves()
     pending_id = make_pending_save_id(order, scanned_codes)
-    for item in pending:
-        if item.get("id") == pending_id:
-            item["last_error"] = reason
-            item["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            save_pending_saves(pending)
-            return pending_id
-
-    pending.append({
+    item = {
         "id": pending_id,
         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "order": {key: value for key, value in order.items() if not key.startswith("_existing")},
         "codes": scanned_codes,
         "last_error": reason,
-    })
-    save_pending_saves(pending)
+    }
+
+    def update_existing(existing):
+        existing["last_error"] = reason
+        existing["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return existing
+
+    try:
+        append_queue_item("pending_saves", item, update_existing=update_existing)
+    except Exception:
+        logging.exception("Не удалось поставить сканы в durable очередь Google Sheets")
+        return ""
     return pending_id
 
 
 def remove_pending_save(pending_id):
-    pending = load_pending_saves()
-    new_pending = [item for item in pending if item.get("id") != pending_id]
-    if len(new_pending) != len(pending):
-        save_pending_saves(new_pending)
+    mutate_queue_section(
+        "pending_saves",
+        lambda items: [item for item in items if item.get("id") != pending_id],
+    )
 
 
 def order_matches_pending_save(order, pending_order):
@@ -160,35 +173,32 @@ def order_matches_pending_save(order, pending_order):
 def update_pending_save_codes_for_undo(order, previous_codes, remaining_codes, reason):
     previous_codes = split_codes("\n".join(previous_codes))
     remaining_codes = split_codes("\n".join(remaining_codes))
-    pending = load_pending_saves()
-    if not pending:
-        return False
-
     previous_id = make_pending_save_id(order, previous_codes)
-    updated = False
-    new_pending = []
-    for item in pending:
-        pending_order = item.get("order", {})
-        item_codes = split_codes("\n".join(item.get("codes", [])))
-        is_target = item.get("id") == previous_id or (
-            item_codes == previous_codes and order_matches_pending_save(order, pending_order)
-        )
-        if not is_target:
-            new_pending.append(item)
-            continue
+    changed = {"value": False}
 
-        updated = True
-        if remaining_codes:
-            item = dict(item)
-            item["id"] = make_pending_save_id(order, remaining_codes)
-            item["codes"] = remaining_codes
-            item["last_error"] = reason
-            item["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            new_pending.append(item)
+    def update(items):
+        result = []
+        for item in items:
+            pending_order = item.get("order", {})
+            item_codes = split_codes("\n".join(item.get("codes", [])))
+            is_target = item.get("id") == previous_id or (
+                item_codes == previous_codes and order_matches_pending_save(order, pending_order)
+            )
+            if not is_target:
+                result.append(item)
+                continue
+            changed["value"] = True
+            if remaining_codes:
+                item = dict(item)
+                item["id"] = make_pending_save_id(order, remaining_codes)
+                item["codes"] = remaining_codes
+                item["last_error"] = reason
+                item["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                result.append(item)
+        return result
 
-    if updated:
-        save_pending_saves(new_pending)
-    return updated
+    mutate_queue_section("pending_saves", update)
+    return changed["value"]
 
 
 def get_pending_codes():
@@ -267,5 +277,5 @@ def sync_pending_saves(sheet=None):
         item["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         remaining.append(item)
 
-    save_pending_saves(remaining)
-    return {"synced": synced, "failed": failed, "remaining": len(remaining), "dropped": dropped}
+    current = reconcile_queue_section("pending_saves", pending, remaining)
+    return {"synced": synced, "failed": failed, "remaining": len(current), "dropped": dropped}

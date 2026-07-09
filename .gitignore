@@ -2,6 +2,9 @@ credentials.json
 TakSklad_data.json
 credentials_*.json
 TakSklad_data_*.json
+TakSklad_queues.sqlite3
+TakSklad_queues.sqlite3-wal
+TakSklad_queues.sqlite3-shm
 google_sheet_backup_*.json
 TakSklad.log
 docs/*.log

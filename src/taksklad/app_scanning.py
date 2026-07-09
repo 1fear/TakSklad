@@ -426,7 +426,8 @@ class ScanningActionsMixin:
             if not ok:
                 if not is_retryable_save_error(message):
                     raise RuntimeError(message)
-                add_pending_save(order, scanned_codes, message)
+                if not add_pending_save(order, scanned_codes, message):
+                    raise RuntimeError("Google Sheets недоступен, и durable очередь записи не создана")
                 if not write_scan_backup("position_queued", order, codes=scanned_codes):
                     raise RuntimeError("Google Sheets недоступен, и локальная очередь записи не создана")
                 return {"queued": True, "message": message}

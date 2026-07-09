@@ -1,7 +1,7 @@
 import os
 from datetime import datetime
 
-from .catalog import calculate_blocks, load_product_catalog, save_product_catalog
+from .catalog import calculate_blocks, load_product_catalog, merge_product_catalog_defaults
 from .config import (
     EXCEL_IMPORT_EXTENSIONS,
     ORDER_DATE_COLUMN,
@@ -20,7 +20,7 @@ from .sheets import (
     get_existing_order_duplicate_keys,
     get_google_client,
 )
-from .storage import load_data_section, save_data_section
+from .storage import load_data_section, mutate_data_section
 from .utils import (
     clean_file_name,
     column_index_to_letter,
@@ -283,7 +283,7 @@ def parse_excel_order_files(file_paths, source_names=None):
         record["_source_file_sha256"] = [item["source_file_sha256"]]
         records.append(record)
 
-    save_product_catalog(catalog)
+    merge_product_catalog_defaults(catalog)
 
     return {
         "records": records,
@@ -414,17 +414,20 @@ def append_import_records(records):
             "range": f"A{start_row}:{end_col}{end_row}",
             "values": rows_to_append,
         }], value_input_option="USER_ENTERED")
-    history = load_data_section("import_history", [])
-    if not isinstance(history, list):
-        history = []
-    history.append({
+    history_item = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "imported": len(rows_to_append),
         "duplicates": duplicates,
         "sources": sorted({record.get("Источник файла", "") for record in records}),
         "source_file_hashes_sha256": sorted(extract_record_file_hashes(appended_records)),
-    })
-    save_data_section("import_history", history[-200:])
+    }
+
+    def append_history(history):
+        history = history if isinstance(history, list) else []
+        history.append(history_item)
+        return history[-200:]
+
+    mutate_data_section("import_history", append_history, default=[])
 
     return {
         "imported": len(rows_to_append),

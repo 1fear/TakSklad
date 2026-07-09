@@ -46,7 +46,7 @@ class ExcelImportAppendTests(unittest.TestCase):
         original_get_import_keys = excel_import.get_existing_import_keys
         original_get_duplicate_keys = excel_import.get_existing_order_duplicate_keys
         original_build_row = excel_import.build_import_record_row
-        original_save_data_section = excel_import.save_data_section
+        original_mutate_data_section = excel_import.mutate_data_section
         original_load_data_section = excel_import.load_data_section
         try:
             excel_import.get_google_client = lambda: FakeClient(spreadsheet)
@@ -55,7 +55,7 @@ class ExcelImportAppendTests(unittest.TestCase):
             excel_import.get_existing_order_duplicate_keys = lambda rows: set()
             excel_import.build_import_record_row = lambda record: ["25.05.2026", record["Клиент"]]
             excel_import.load_data_section = lambda key, default=None: []
-            excel_import.save_data_section = lambda key, value: None
+            excel_import.mutate_data_section = lambda key, mutator, default=None: mutator(default)
 
             result = excel_import.append_import_records([{
                 "ID импорта": "import-1",
@@ -68,7 +68,7 @@ class ExcelImportAppendTests(unittest.TestCase):
             excel_import.get_existing_import_keys = original_get_import_keys
             excel_import.get_existing_order_duplicate_keys = original_get_duplicate_keys
             excel_import.build_import_record_row = original_build_row
-            excel_import.save_data_section = original_save_data_section
+            excel_import.mutate_data_section = original_mutate_data_section
             excel_import.load_data_section = original_load_data_section
 
         self.assertEqual(result, {"imported": 1, "duplicates": 0})

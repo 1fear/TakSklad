@@ -10,7 +10,13 @@ from .backend_client import (
     create_scan,
     undo_scan,
 )
-from .storage import load_data_section, save_data_section
+from .storage import (
+    append_queue_item,
+    load_data_section,
+    mutate_queue_section,
+    reconcile_queue_section,
+    save_data_section,
+)
 from .utils import make_hash, normalize_kiz_code, normalize_text, split_codes
 
 
@@ -46,14 +52,9 @@ def add_pending_backend_event(event_type, payload):
     if not backend_configured():
         return ""
 
-    pending = load_pending_backend_events()
     event_id = make_backend_event_id(event_type, payload)
-    for item in pending:
-        if item.get("id") == event_id:
-            return event_id
-
     now = datetime.now().astimezone().isoformat()
-    pending.append({
+    append_queue_item("pending_backend_events", {
         "id": event_id,
         "type": event_type,
         "payload": payload,
@@ -62,7 +63,6 @@ def add_pending_backend_event(event_type, payload):
         "attempts": 0,
         "last_error": "",
     })
-    save_pending_backend_events(pending)
     return event_id
 
 
@@ -98,12 +98,15 @@ def remove_pending_backend_scan(order, code):
     if not code:
         return False
     event_id = make_backend_event_id("scan", {"order_item_id": order_item_id, "code": code})
-    pending = load_pending_backend_events()
-    new_pending = [item for item in pending if item.get("id") != event_id]
-    if len(new_pending) == len(pending):
-        return False
-    save_pending_backend_events(new_pending)
-    return True
+    removed = {"value": False}
+
+    def remove(items):
+        result = [item for item in items if item.get("id") != event_id]
+        removed["value"] = len(result) != len(items)
+        return result
+
+    mutate_queue_section("pending_backend_events", remove)
+    return removed["value"]
 
 
 def undo_backend_scan(order, code):
@@ -271,11 +274,11 @@ def sync_pending_backend_events():
             item["updated_at"] = datetime.now().astimezone().isoformat()
             remaining.append(item)
 
-    save_pending_backend_events(remaining)
+    current = reconcile_queue_section("pending_backend_events", pending, remaining)
     return {
         "synced": synced,
         "failed": failed,
-        "remaining": len(remaining),
+        "remaining": len(current),
         "dropped": dropped,
         "blocked": blocked,
         "blocked_events": blocked_events,

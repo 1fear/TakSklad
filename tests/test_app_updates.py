@@ -94,7 +94,7 @@ class AppUpdatesTest(unittest.TestCase):
         app = _WindowsUpdateApp()
 
         with mock.patch("taksklad.app_updates.load_data_section", return_value={}), \
-                mock.patch("taksklad.app_updates.save_data_section"), \
+                mock.patch("taksklad.app_updates.mutate_data_section"), \
                 mock.patch("taksklad.app_updates.messagebox.askyesno", return_value=False):
             app.handle_update_info(
                 {
@@ -147,7 +147,7 @@ class AppUpdatesTest(unittest.TestCase):
                     "last_attempt_version": "9.9.9",
                     "last_user_action": "accepted",
                 }), \
-                mock.patch("taksklad.app_updates.save_data_section") as save_section, \
+                mock.patch("taksklad.app_updates.mutate_data_section") as save_section, \
                 mock.patch("taksklad.app_updates.messagebox.askyesno", return_value=True):
             app.handle_update_info(
                 {
@@ -188,7 +188,7 @@ class AppUpdatesTest(unittest.TestCase):
         app = _WindowsUpdateApp()
 
         with mock.patch("taksklad.app_updates.load_data_section", return_value={}), \
-                mock.patch("taksklad.app_updates.save_data_section"), \
+                mock.patch("taksklad.app_updates.mutate_data_section"), \
                 mock.patch("taksklad.app_updates.messagebox.askyesno", return_value=True):
             app.handle_update_info(
                 {

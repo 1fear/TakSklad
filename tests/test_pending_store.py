@@ -6,29 +6,31 @@ from taksklad import pending_store
 
 class PendingStoreTests(unittest.TestCase):
     def test_pending_print_add_reports_save_failure(self):
-        with (
-            mock.patch.object(pending_store, "load_pending_prints", return_value=[]),
-            mock.patch.object(pending_store, "save_pending_prints", return_value=False) as save_pending,
-        ):
+        with mock.patch.object(
+            pending_store,
+            "append_queue_item",
+            side_effect=OSError("disk unavailable"),
+        ) as append_pending:
             pending_id = pending_store.add_pending_print(
                 "Tashkent",
                 [{"Клиент": "Client", "Адрес": "Tashkent", "Товары": "Product", "Коды": ["0101"]}],
             )
 
         self.assertEqual(pending_id, "")
-        save_pending.assert_called_once()
+        append_pending.assert_called_once()
 
     def test_pending_print_remove_reports_save_result(self):
         pending = [{"id": "print-1", "address": "Tashkent", "products": []}]
 
-        with (
-            mock.patch.object(pending_store, "load_pending_prints", return_value=pending),
-            mock.patch.object(pending_store, "save_pending_prints", return_value=False) as save_pending,
-        ):
+        with mock.patch.object(
+            pending_store,
+            "mutate_queue_section",
+            side_effect=OSError("disk unavailable"),
+        ) as mutate_pending:
             removed = pending_store.remove_pending_print("print-1")
 
         self.assertFalse(removed)
-        save_pending.assert_called_once_with([])
+        mutate_pending.assert_called_once()
         self.assertFalse(pending_store.remove_pending_print(""))
 
     def test_sync_pending_saves_drops_non_retryable_missing_row(self):
@@ -42,7 +44,11 @@ class PendingStoreTests(unittest.TestCase):
 
         with (
             mock.patch.object(pending_store, "load_pending_saves", return_value=pending),
-            mock.patch.object(pending_store, "save_pending_saves", side_effect=lambda value: saved.append(value)),
+            mock.patch.object(
+                pending_store,
+                "reconcile_queue_section",
+                side_effect=lambda _section, _snapshot, remaining: saved.append(remaining) or remaining,
+            ),
             mock.patch.object(
                 pending_store,
                 "update_scanned_codes_to_gsheet",
@@ -69,7 +75,11 @@ class PendingStoreTests(unittest.TestCase):
 
         with (
             mock.patch.object(pending_store, "load_pending_saves", return_value=pending),
-            mock.patch.object(pending_store, "save_pending_saves", side_effect=lambda value: saved.append(value)),
+            mock.patch.object(
+                pending_store,
+                "reconcile_queue_section",
+                side_effect=lambda _section, _snapshot, remaining: saved.append(remaining) or remaining,
+            ),
             mock.patch.object(
                 pending_store,
                 "update_scanned_codes_to_gsheet",

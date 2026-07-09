@@ -34,7 +34,13 @@ from .reports import (
     scan_backup_path_for_date,
     truncate_middle,
 )
-from .storage import load_data_section, save_data_section
+from .storage import (
+    append_queue_item,
+    load_data_section,
+    mutate_data_section,
+    reconcile_queue_section,
+    save_data_section,
+)
 from .utils import (
     clean_file_name,
     is_supported_excel_file_name,
@@ -111,6 +117,20 @@ def load_telegram_state():
 
 def save_telegram_state(state):
     return save_data_section("telegram_state", state)
+
+def update_telegram_state(values):
+    def update(state):
+        state = state if isinstance(state, dict) else {}
+        values_to_merge = dict(values or {})
+        if "last_update_id" in values_to_merge:
+            values_to_merge["last_update_id"] = max(
+                parse_int_value(state.get("last_update_id")),
+                parse_int_value(values_to_merge.get("last_update_id")),
+            )
+        state.update(values_to_merge)
+        return state
+
+    return mutate_data_section("telegram_state", update, default={})
 
 def telegram_reports_keyboard():
     return {
@@ -374,17 +394,8 @@ def make_pending_telegram_id(file_path, caption):
 def add_pending_telegram(file_path, caption, reason):
     if not safe_telegram_document_path(file_path):
         return None
-    pending = load_pending_telegram()
     pending_id = make_pending_telegram_id(file_path, caption)
-    for item in pending:
-        if item.get("id") == pending_id:
-            item["last_error"] = reason
-            item["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            item["attempts"] = parse_int_value(item.get("attempts")) + 1
-            save_pending_telegram(pending)
-            return pending_id
-
-    pending.append({
+    item = {
         "id": pending_id,
         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -392,8 +403,15 @@ def add_pending_telegram(file_path, caption, reason):
         "caption": normalize_text(caption),
         "attempts": 1,
         "last_error": reason,
-    })
-    save_pending_telegram(pending)
+    }
+
+    def update_existing(existing):
+        existing["last_error"] = reason
+        existing["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        existing["attempts"] = parse_int_value(existing.get("attempts")) + 1
+        return existing
+
+    append_queue_item("pending_telegram", item, update_existing=update_existing)
     return pending_id
 
 def send_or_queue_telegram_document(file_path, caption):
@@ -427,8 +445,8 @@ def sync_pending_telegram():
         item["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         item["attempts"] = parse_int_value(item.get("attempts")) + 1
         remaining.append(item)
-    save_pending_telegram(remaining)
-    return {"sent": sent, "failed": failed, "remaining": len(remaining)}
+    current = reconcile_queue_section("pending_telegram", pending, remaining)
+    return {"sent": sent, "failed": failed, "remaining": len(current)}
 
 def today_scan_backup_path():
     return scan_backup_path_for_date()
@@ -448,9 +466,8 @@ def daily_report_already_handled(report_date=None):
     return normalize_text(entry.get("status")) in {"sent", "queued", "empty"}
 
 def mark_daily_report_status(report_date, status, filename="", message="", total_rows=0):
-    state = load_daily_report_state()
     key = report_date_key(report_date)
-    state[key] = {
+    entry = {
         "date": key,
         "display_date": report_date_display(report_date),
         "status": normalize_text(status),
@@ -459,8 +476,14 @@ def mark_daily_report_status(report_date, status, filename="", message="", total
         "total_rows": total_rows,
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
-    save_daily_report_state(state)
-    return state[key]
+
+    def update(state):
+        state = state if isinstance(state, dict) else {}
+        state[key] = entry
+        return state
+
+    mutate_data_section("daily_report_state", update, default={})
+    return entry
 
 def scan_backup_report_dates():
     dates = []
