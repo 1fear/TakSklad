@@ -11,6 +11,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from .google_sheets_exporter import make_sheet_record
 from .google_sheets_pending import queue_google_sheets_export
+from .event_leases import claim_event_leases, event_leases_enabled, finalize_event_leases
 from .models import AuditLog, ImportJob, Incident, Order, OrderItem, PendingEvent
 from .representative_contacts import build_representative_comment, find_representative_contact
 from .skladbot_worker import (
@@ -758,9 +759,17 @@ def process_pending_skladbot_request_creates(
     if not getattr(client, "configured", False):
         return default_create_processing_result(status="not_configured")
 
-    reset_stale_skladbot_create_events(db)
     limit = max(1, min(int(limit or env_int(SKLADBOT_REQUEST_CREATE_LIMIT_ENV, 20)), 100))
-    events = select_pending_skladbot_create_events(db, limit)
+    if event_leases_enabled():
+        events = claim_event_leases(
+            db,
+            event_types=(SKLADBOT_REQUEST_CREATE_EVENT_TYPE,),
+            owner=f"skladbot-create:{uuid.uuid4()}",
+            limit=limit,
+        )
+    else:
+        reset_stale_skladbot_create_events(db)
+        events = select_pending_skladbot_create_events(db, limit)
     result = default_create_processing_result(status="completed")
     result["checked"] = len(events)
     if not events:
@@ -768,9 +777,10 @@ def process_pending_skladbot_request_creates(
         return result
 
     for event in events:
-        event.status = "processing"
-        event.attempts = int(event.attempts or 0) + 1
-        db.commit()
+        if not event.lease_owner:
+            event.status = "processing"
+            event.attempts = int(event.attempts or 0) + 1
+            db.commit()
 
         try:
             event_result = process_skladbot_create_event(db, event, client)
@@ -805,6 +815,7 @@ def select_pending_skladbot_create_events(db: Session, limit: int) -> list[Pendi
         select(PendingEvent)
         .where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
         .where(PendingEvent.status.in_(("pending", "failed")))
+        .where(PendingEvent.available_at <= datetime.now(timezone.utc))
         .order_by(PendingEvent.created_at, PendingEvent.id)
         .limit(limit)
     )
@@ -814,22 +825,28 @@ def select_pending_skladbot_create_events(db: Session, limit: int) -> list[Pendi
 
 
 def reset_stale_skladbot_create_events(db: Session) -> int:
-    cutoff = datetime.now(timezone.utc) - STALE_SKLADBOT_CREATE_TIMEOUT
+    now = datetime.now(timezone.utc)
+    cutoff = now - STALE_SKLADBOT_CREATE_TIMEOUT
     events = db.execute(
         select(PendingEvent)
         .where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
         .where(PendingEvent.status == "processing")
         .where(PendingEvent.updated_at < cutoff)
+        .where((PendingEvent.lease_owner.is_(None)) | (PendingEvent.lease_expires_at <= now))
     ).scalars().all()
     if not events:
         return 0
     for event in events:
         event.status = "pending"
+        event.available_at = now
+        event.lease_owner = None
+        event.lease_expires_at = None
+        event.completed_at = None
         event.last_error = "stale SkladBot create event reset"
         event.payload = {
             **(event.payload or {}),
             "create_status": "queued",
-            "reset_at": datetime.now(timezone.utc).isoformat(),
+            "reset_at": now.isoformat(),
         }
         db.add(AuditLog(
             action="skladbot_request_create_stale_reset",
@@ -1444,10 +1461,11 @@ def finish_skladbot_create_event(
     result: dict[str, Any],
 ) -> None:
     status = normalize_text(event_result.get("status"))
-    event.payload = {**(event.payload or {}), "last_result": event_result}
+    event_payload = {**(event.payload or {}), "last_result": event_result}
+    final_status = "failed"
+    final_error = ""
     if status in {"created", "created_recovered", "already_linked"}:
-        event.status = "completed"
-        event.last_error = ""
+        final_status = "completed"
         if status == "created":
             result["created"] += 1
         elif status == "created_recovered":
@@ -1455,21 +1473,19 @@ def finish_skladbot_create_event(
         else:
             result["already_linked"] += 1
     elif status == "blocked":
-        event.status = "blocked"
-        event.last_error = normalize_text(event_result.get("error"))
+        final_status = "blocked"
+        final_error = normalize_text(event_result.get("error"))
         result["blocked"] += 1
     elif status == "cancelled_stock_shortage":
-        event.status = "completed"
-        event.last_error = ""
+        final_status = "completed"
         result["stock_shortage_cancelled"] += 1
     else:
-        event.status = "failed"
-        event.last_error = normalize_text(event_result.get("error")) or "SkladBot request create failed"
+        final_error = normalize_text(event_result.get("error")) or "SkladBot request create failed"
         result["failed"] += 1
         result["errors"].append({
             "event_id": str(event.id),
             "order_id": (event.payload or {}).get("order_id") or "",
-            "error": event.last_error,
+            "error": final_error,
         })
     db.add(AuditLog(
         action="skladbot_request_create_processed",
@@ -1483,7 +1499,21 @@ def finish_skladbot_create_event(
             "error": normalize_text(event_result.get("error")),
         },
     ))
-    db.commit()
+    if event.lease_owner:
+        finalize_event_leases(
+            db,
+            event_ids=(event.id,),
+            owner=event.lease_owner,
+            status=final_status,
+            last_error=final_error,
+            payload=event_payload,
+        )
+    else:
+        event.payload = event_payload
+        event.status = final_status
+        event.last_error = final_error
+        event.completed_at = datetime.now(timezone.utc) if final_status in {"completed", "blocked"} else None
+        db.commit()
 
 
 def update_event_payload(event: PendingEvent, values: dict[str, Any]) -> None:

@@ -20,6 +20,10 @@ TakSklad uses `pending_events` as the durable queue for side effects that must s
 
 Workers claim active queue events with `FOR UPDATE SKIP LOCKED` when the database is PostgreSQL. Google Sheets pending exports also use a process-local lock on non-Postgres databases, so SQLite/local runs return `busy` instead of processing the same queue twice in one process. SQLite/local tests use the same lifecycle rules.
 
+Owner-scoped leases are available behind `TAKSKLAD_EVENT_LEASES_ENABLED=1` for a controlled canary. Google exports, SkladBot create/return and queued Telegram notifications claim a whole batch atomically through `UPDATE ... RETURNING`, commit every owner/expiry before the first external call, and finalize only with the matching unexpired owner. The rollback value is `0`/unset; active leases are never reset by the legacy path. Delivery remains durable at-least-once, not exactly-once.
+
+Retry eligibility uses the indexed `available_at` column. `lease_expires_at` is the only lease recovery clock; non-expired owners remain untouched. Authorized queue diagnostics expose bounded oldest-ready age, active leases, expired leases and scheduled retry backlog.
+
 ## Retry And Rate Limits
 
 Google Sheets export pauses the batch on rate-limit errors such as `429`, `quota`, or `rate limit`, keeps the event `pending`, records `last_error`, and writes `payload.next_attempt_at`. Pending exports whose `next_attempt_at` is in the future are skipped until cooldown expires, but they do not block newer ready exports. SkladBot API calls respect `Retry-After` in their client retry loop.

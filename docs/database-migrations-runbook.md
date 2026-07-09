@@ -31,6 +31,8 @@ After the stamp, future schema changes use new Alembic revisions and `alembic up
 
 Production activation is fail-closed: after `upgrade head` the deploy script performs a read-only comparison of the single `alembic current` value with the single `alembic heads` value. Missing, stale or multiple revisions stop activation, and `/ready` returns HTTP 503 until the database is at the exact current head.
 
+Revision `20260710_0008` adds the pending-event lease columns and claim/expiry indexes. Existing `processing` rows are marked as expired legacy leases so they are recoverable; no live event is deleted. Roll back operationally by disabling `TAKSKLAD_EVENT_LEASES_ENABLED`, not by downgrading this forward-only migration.
+
 ## Invariant Preflight
 
 Before adding future uniqueness constraints for KIZ scans or pending-event idempotency, run:

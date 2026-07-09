@@ -215,6 +215,10 @@ class EventQueueEventRead(BaseModel):
     last_error: str = ""
     idempotency_key: str = ""
     next_attempt_at: str = ""
+    available_at: datetime | None = None
+    lease_owner: str = ""
+    lease_expires_at: datetime | None = None
+    completed_at: datetime | None = None
     payload_status: str = ""
     retryable: bool = False
     linked_order_id: str = ""

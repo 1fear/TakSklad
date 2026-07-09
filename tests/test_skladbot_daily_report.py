@@ -2798,7 +2798,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
         try:
             with SessionLocal() as db:
                 db.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
-                db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260701_0007')"))
+                db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260710_0008')"))
                 db.add(PendingEvent(
                     event_type=SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE,
                     idempotency_key="skladbot_daily_report:2026-07-06:chat-1:scheduled:daily_skladbot:v2",
@@ -2849,7 +2849,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
             Base.metadata.drop_all(engine)
             engine.dispose()
 
-    def test_ready_still_degraded_for_unresolved_failed_or_stale_processing_daily(self):
+    def test_ready_is_unhealthy_for_unresolved_failed_or_stale_processing_daily(self):
         engine = create_engine(
             "sqlite+pysqlite:///:memory:",
             connect_args={"check_same_thread": False},
@@ -2861,7 +2861,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
         try:
             with SessionLocal() as db:
                 db.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
-                db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260701_0007')"))
+                db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260710_0008')"))
                 db.add(PendingEvent(
                     event_type=SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE,
                     idempotency_key="skladbot_daily_report:2026-07-06:chat-1:scheduled:daily_skladbot:v2",
@@ -2884,7 +2884,8 @@ class SkladBotDailyReportTests(unittest.TestCase):
                     SimpleNamespace(service_name="taksklad-backend", environment="test"),
                 )
 
-            self.assertEqual(readiness["status"], "degraded")
+            self.assertFalse(readiness["ready"])
+            self.assertEqual(readiness["status"], "unhealthy")
             self.assertEqual(len(readiness["queue"]["hot_path_last_errors"]), 1)
             self.assertEqual(readiness["queue"]["resolved_historical_errors"], [])
         finally:

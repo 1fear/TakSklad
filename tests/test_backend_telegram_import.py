@@ -1,6 +1,7 @@
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -225,21 +226,33 @@ class BackendTelegramImportTests(unittest.TestCase):
                 db.commit()
 
             sent = []
+            observed_leases = []
             worker = TelegramWorker.__new__(TelegramWorker)
             worker.allowed_chat_ids = set()
             worker.admin_chat_ids = set()
-            worker.send_message = lambda chat_id, text: sent.append((chat_id, text))
+
+            def fake_send(chat_id, text):
+                with SessionLocal() as observer:
+                    leased = observer.execute(select(PendingEvent)).scalar_one()
+                    observed_leases.append((leased.status, bool(leased.lease_owner)))
+                sent.append((chat_id, text))
+
+            worker.send_message = fake_send
             telegram_worker_module.SessionLocal = SessionLocal
 
-            processed = worker.process_pending_telegram_notifications()
+            with mock.patch.dict("os.environ", {"TAKSKLAD_EVENT_LEASES_ENABLED": "1"}, clear=False):
+                processed = worker.process_pending_telegram_notifications()
 
             with SessionLocal() as db:
                 event = db.execute(select(PendingEvent)).scalar_one()
 
             self.assertEqual(processed, 1)
+            self.assertEqual(observed_leases, [("processing", True)])
             self.assertEqual(sent, [("123", "Заказ отменён из-за недостатка товара")])
             self.assertEqual(event.status, "completed")
             self.assertEqual(event.last_error, "")
+            self.assertIsNone(event.lease_owner)
+            self.assertIsNotNone(event.completed_at)
         finally:
             telegram_worker_module.SessionLocal = original_session_local
             Base.metadata.drop_all(engine)

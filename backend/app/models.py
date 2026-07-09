@@ -140,6 +140,8 @@ class PendingEvent(Base):
         Index("idx_pending_events_type_status_created_at", "event_type", "status", "created_at", "id"),
         Index("idx_pending_events_type_status_updated_at", "event_type", "status", "updated_at", "id"),
         Index("idx_pending_events_updated_created_at", "updated_at", "created_at", "id"),
+        Index("idx_pending_events_claim", "event_type", "status", "available_at", "created_at", "id"),
+        Index("idx_pending_events_lease_expiry", "status", "lease_expires_at", "id"),
         Index("uq_pending_events_idempotency_key", "idempotency_key", unique=True),
     )
 
@@ -150,6 +152,10 @@ class PendingEvent(Base):
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     payload: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
     last_error: Mapped[str | None] = mapped_column(Text)
+    available_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    lease_owner: Mapped[str | None] = mapped_column(String(160))
+    lease_expires_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

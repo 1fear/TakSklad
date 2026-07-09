@@ -15,6 +15,7 @@ from sqlalchemy import select
 
 from . import skladbot_daily_report
 from .db import SessionLocal
+from .event_leases import claim_event_leases, event_leases_enabled, finalize_event_leases
 from .event_queue_service import reset_stale_processing_events
 from .excel_importer import ExcelDateConflictError, excel_file_to_import_payload, is_supported_excel_file_name
 from .models import AuditLog, Incident, PendingEvent
@@ -2490,6 +2491,18 @@ class TelegramWorker:
 
     def take_next_telegram_notification_event(self):
         with SessionLocal() as db:
+            if event_leases_enabled():
+                owner = f"telegram-notification:{uuid.uuid4()}"
+                events = claim_event_leases(
+                    db,
+                    event_types=(TELEGRAM_NOTIFICATION_EVENT_TYPE,),
+                    owner=owner,
+                    limit=1,
+                )
+                if not events:
+                    return None
+                event = events[0]
+                return {"id": event.id, "payload": event.payload or {}, "lease_owner": owner}
             stmt = (
                 select(PendingEvent)
                 .where(PendingEvent.event_type == TELEGRAM_NOTIFICATION_EVENT_TYPE)
@@ -2508,14 +2521,15 @@ class TelegramWorker:
             db.commit()
             return {"id": event_id, "payload": payload}
 
-    def finish_telegram_notification_event(self, event_id, success, error="", failure_status="failed"):
+    def finish_telegram_notification_event(
+        self, event_id, success, error="", failure_status="failed", lease_owner="",
+    ):
         with SessionLocal() as db:
             event = db.get(PendingEvent, event_id if isinstance(event_id, uuid.UUID) else uuid.UUID(str(event_id)))
             if event is None:
                 return
             status = "completed" if success else normalize_text(failure_status) or "failed"
-            event.status = status
-            event.last_error = "" if success else normalize_text(error)
+            last_error = "" if success else normalize_text(error)
             if not success and status == "blocked":
                 db.add(AuditLog(
                     action="telegram_notification_blocked",
@@ -2523,13 +2537,29 @@ class TelegramWorker:
                     entity_id=str(event.id),
                     payload={
                         "event_type": event.event_type,
-                        "reason": event.last_error,
+                        "reason": last_error,
                         "attempts": int(event.attempts or 0),
                     },
                 ))
-            db.commit()
+            if lease_owner:
+                finalize_event_leases(
+                    db,
+                    event_ids=(event.id,),
+                    owner=lease_owner,
+                    status=status,
+                    last_error=last_error,
+                    payload=event.payload or {},
+                    available_at=datetime.now(timezone.utc) + timedelta(minutes=1),
+                )
+            else:
+                event.status = status
+                event.last_error = last_error
+                event.completed_at = datetime.now(timezone.utc) if status in {"completed", "blocked"} else None
+                db.commit()
 
     def reset_stale_telegram_notification_events(self):
+        if event_leases_enabled():
+            return 0
         with SessionLocal() as db:
             return reset_stale_processing_events(
                 db,
@@ -2553,6 +2583,7 @@ class TelegramWorker:
             if not event:
                 break
             payload = event.get("payload") or {}
+            lease_owner = event.get("lease_owner") or ""
             text = normalize_text(payload.get("text"))
             targets = self.telegram_notification_targets(payload)
             if not text:
@@ -2561,6 +2592,7 @@ class TelegramWorker:
                     False,
                     "telegram notification text is empty",
                     failure_status="blocked",
+                    lease_owner=lease_owner,
                 )
                 processed += 1
                 continue
@@ -2570,16 +2602,19 @@ class TelegramWorker:
                     False,
                     "telegram notification target chat is empty",
                     failure_status="blocked",
+                    lease_owner=lease_owner,
                 )
                 processed += 1
                 continue
             try:
                 for chat_id in targets:
                     self.send_message(chat_id, text)
-                self.finish_telegram_notification_event(event["id"], True, "")
+                self.finish_telegram_notification_event(event["id"], True, "", lease_owner=lease_owner)
             except Exception as exc:
                 logging.exception("Telegram worker: queued notification failed")
-                self.finish_telegram_notification_event(event["id"], False, str(exc))
+                self.finish_telegram_notification_event(
+                    event["id"], False, str(exc), lease_owner=lease_owner,
+                )
             processed += 1
         return processed
 

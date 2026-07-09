@@ -36,6 +36,7 @@ class BackendSkeletonTests(unittest.TestCase):
             "backend/migrations/versions/20260626_0005_logistics_calendar.py",
             "backend/migrations/versions/20260701_0006_representative_contacts.py",
             "backend/migrations/versions/20260701_0007_pending_event_indexes.py",
+            "backend/migrations/versions/20260710_0008_pending_event_leases.py",
             "docs/database-migrations-runbook.md",
             "deploy/vds/docker-compose.yml",
             "deploy/vds/config-contract.json",
@@ -127,6 +128,7 @@ class BackendSkeletonTests(unittest.TestCase):
         logistics_calendar = (ROOT_DIR / "backend/migrations/versions/20260626_0005_logistics_calendar.py").read_text(encoding="utf-8").lower()
         representative_contacts = (ROOT_DIR / "backend/migrations/versions/20260701_0006_representative_contacts.py").read_text(encoding="utf-8").lower()
         pending_event_indexes = (ROOT_DIR / "backend/migrations/versions/20260701_0007_pending_event_indexes.py").read_text(encoding="utf-8").lower()
+        pending_event_leases = (ROOT_DIR / "backend/migrations/versions/20260710_0008_pending_event_leases.py").read_text(encoding="utf-8").lower()
 
         for table_name in [
             "orders",
@@ -186,6 +188,12 @@ class BackendSkeletonTests(unittest.TestCase):
         self.assertIn("create index if not exists", pending_event_indexes)
         self.assertIn("revision = \"20260701_0007\"", pending_event_indexes)
         self.assertIn("down_revision = \"20260701_0006\"", pending_event_indexes)
+        for column_name in ("available_at", "lease_owner", "lease_expires_at", "completed_at"):
+            self.assertIn(column_name, pending_event_leases)
+        self.assertIn("idx_pending_events_claim", pending_event_leases)
+        self.assertIn("idx_pending_events_lease_expiry", pending_event_leases)
+        self.assertIn("revision = \"20260710_0008\"", pending_event_leases)
+        self.assertIn("down_revision = \"20260701_0007\"", pending_event_leases)
         self.assertIn("baseline migration is irreversible", baseline)
         self.assertIn("incident migration is forward-only", incidents)
         self.assertIn("client points migration is forward-only", client_points)
@@ -193,6 +201,7 @@ class BackendSkeletonTests(unittest.TestCase):
         self.assertIn("logistics calendar migration is forward-only", logistics_calendar)
         self.assertIn("representative contacts migration is forward-only", representative_contacts)
         self.assertIn("pending event queue index migration is forward-only", pending_event_indexes)
+        self.assertIn("pending event lease migration is forward-only", pending_event_leases)
 
     def test_deploy_runbook_uses_alembic_for_normal_production_upgrades(self):
         runbook = (ROOT_DIR / "docs/deploy-rollback-runbook.md").read_text(encoding="utf-8")

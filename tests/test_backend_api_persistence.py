@@ -3192,7 +3192,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
     def test_failed_import_creates_linked_incident_and_resolve_removes_readiness_blocker(self):
         with self.SessionLocal() as db:
             db.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
-            db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260701_0007')"))
+            db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260710_0008')"))
             event = PendingEvent(
                 event_type="telegram_excel_import",
                 status="processing",
@@ -5054,7 +5054,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
     def test_health_is_lightweight_and_readiness_reports_sanitized_db_queue_status(self):
         with self.SessionLocal() as db:
             db.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
-            db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260701_0007')"))
+            db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260710_0008')"))
             db.add(PendingEvent(
                 event_type="google_sheets_export",
                 idempotency_key="google:event:pending",
@@ -5106,7 +5106,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(payload["status"], "unhealthy")
         self.assertEqual(payload["database"]["status"], "ok")
         self.assertEqual(payload["migrations"]["status"], "ok")
-        self.assertEqual(payload["migrations"]["current_revision"], "20260701_0007")
+        self.assertEqual(payload["migrations"]["current_revision"], "20260710_0008")
         self.assertEqual(payload["queue"]["summary"]["by_type"]["google_sheets_export"]["pending"], 1)
         self.assertEqual(payload["queue"]["summary"]["by_type"]["telegram_chat_state:*"]["pending"], 1)
         self.assertEqual(payload["google_mirror"]["status"], "degraded")
@@ -5128,7 +5128,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         next_attempt_at = datetime.now(timezone.utc) + timedelta(minutes=5)
         with self.SessionLocal() as db:
             db.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
-            db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260701_0007')"))
+            db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260710_0008')"))
             db.add(PendingEvent(
                 event_type="google_sheets_export",
                 idempotency_key="google:event:rate-limited",
@@ -5176,7 +5176,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
     def test_readiness_accepts_pending_event_indexes_schema_head_revision(self):
         with self.SessionLocal() as db:
             db.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
-            db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260701_0007')"))
+            db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260710_0008')"))
             db.commit()
 
         response = self.client.get("/ready")
@@ -5187,8 +5187,8 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(payload["status"], "ok")
         self.assertEqual(payload["migrations"]["status"], "ok")
         self.assertEqual(payload["migrations"]["expected_baseline"], "20260616_0001")
-        self.assertEqual(payload["migrations"]["expected_head"], "20260701_0007")
-        self.assertEqual(payload["migrations"]["current_revision"], "20260701_0007")
+        self.assertEqual(payload["migrations"]["expected_head"], "20260710_0008")
+        self.assertEqual(payload["migrations"]["current_revision"], "20260710_0008")
 
     def test_readiness_degrades_when_migration_state_is_missing_or_wrong(self):
         response = self.client.get("/ready")

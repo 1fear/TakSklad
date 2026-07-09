@@ -1,3 +1,4 @@
+import os
 import unittest
 from datetime import date, datetime, timedelta, timezone
 from unittest import mock
@@ -21,6 +22,51 @@ from backend.app.models import Base, Order, OrderItem, PendingEvent
 
 
 class GoogleSheetsPendingLockTests(unittest.TestCase):
+    def test_lease_canary_commits_owner_before_first_external_call(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        observed = []
+        try:
+            with SessionLocal() as db:
+                db.add(PendingEvent(
+                    event_type=GOOGLE_SHEETS_EXPORT_EVENT_TYPE,
+                    status="pending",
+                    payload={
+                        "action": "google_sheets_import_export",
+                        "entity_id": "lease-canary",
+                        "records": [{"ID заказа": "lease-canary"}],
+                    },
+                ))
+                db.commit()
+
+                def fake_external_call(records):
+                    with SessionLocal() as observer:
+                        event = observer.execute(select(PendingEvent)).scalar_one()
+                        observed.append((event.status, bool(event.lease_owner), event.lease_expires_at is not None))
+                    return {"status": "completed", "appended": len(records)}
+
+                with mock.patch.dict(os.environ, {"TAKSKLAD_EVENT_LEASES_ENABLED": "1"}), mock.patch(
+                    "backend.app.google_sheets_pending.append_import_records_to_google_sheets",
+                    side_effect=fake_external_call,
+                ):
+                    result = process_pending_google_sheets_exports(db, limit=10)
+                db.expire_all()
+                event = db.execute(select(PendingEvent)).scalar_one()
+
+            self.assertEqual(observed, [("processing", True, True)])
+            self.assertEqual(result["synced"], 1)
+            self.assertEqual(event.status, "completed")
+            self.assertIsNone(event.lease_owner)
+            self.assertIsNotNone(event.completed_at)
+        finally:
+            Base.metadata.drop_all(engine)
+            engine.dispose()
+
     def test_payload_based_google_export_uses_deterministic_idempotency_key(self):
         engine = create_engine(
             "sqlite+pysqlite:///:memory:",

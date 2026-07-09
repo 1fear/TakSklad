@@ -2,7 +2,7 @@ from collections import defaultdict
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import and_, desc, func, or_, select
 from sqlalchemy.orm import Session
 
 from .models import AuditLog, PendingEvent
@@ -62,10 +62,38 @@ def build_event_queue_summary(db: Session):
         count = int(count or 0)
         by_type[event_type or ""][(status or "")] += count
         total += count
+    now = datetime.now(timezone.utc)
+    active_leases, expired_leases, retry_backlog, oldest_ready = db.execute(
+        select(
+            func.count(PendingEvent.id).filter(
+                PendingEvent.status == "processing",
+                PendingEvent.lease_expires_at > now,
+            ),
+            func.count(PendingEvent.id).filter(
+                PendingEvent.status == "processing",
+                PendingEvent.lease_expires_at <= now,
+            ),
+            func.count(PendingEvent.id).filter(
+                PendingEvent.status.in_(("pending", "failed")),
+                PendingEvent.available_at > now,
+            ),
+            func.min(PendingEvent.created_at).filter(
+                PendingEvent.status.in_(("pending", "failed")),
+                PendingEvent.available_at <= now,
+            ),
+        )
+    ).one()
+    oldest_ready = ensure_aware_utc(oldest_ready)
     return {
         "total": total,
         "active": sum(sum(statuses.get(status, 0) for status in EVENT_QUEUE_ACTIVE_STATUSES) for statuses in by_type.values()),
         "terminal": sum(sum(statuses.get(status, 0) for status in EVENT_QUEUE_TERMINAL_STATUSES) for statuses in by_type.values()),
+        "leases": {
+            "active": int(active_leases or 0),
+            "expired": int(expired_leases or 0),
+            "retry_backlog": int(retry_backlog or 0),
+            "oldest_ready_age_seconds": int(max(0, (now - oldest_ready).total_seconds())) if oldest_ready else 0,
+        },
         "by_type": {
             event_type: dict(statuses)
             for event_type, statuses in sorted(by_type.items())
@@ -79,7 +107,10 @@ def list_stale_processing_events(db: Session, now=None, limit=None):
     stmt = (
         select(PendingEvent)
         .where(PendingEvent.status == "processing")
-        .where(PendingEvent.updated_at < cutoff)
+        .where(or_(
+            PendingEvent.lease_expires_at <= now,
+            and_(PendingEvent.lease_owner.is_(None), PendingEvent.updated_at < cutoff),
+        ))
         .order_by(PendingEvent.updated_at, PendingEvent.created_at)
     )
     if limit is not None:
@@ -105,10 +136,17 @@ def reset_stale_processing_events(
         select(PendingEvent)
         .where(PendingEvent.event_type.in_(event_types))
         .where(PendingEvent.status == "processing")
-        .where(PendingEvent.updated_at < cutoff)
+        .where(or_(
+            PendingEvent.lease_expires_at <= now,
+            and_(PendingEvent.lease_owner.is_(None), PendingEvent.updated_at < cutoff),
+        ))
     ).scalars().all()
     for event in events:
         event.status = "pending"
+        event.available_at = now
+        event.lease_owner = None
+        event.lease_expires_at = None
+        event.completed_at = None
         event.last_error = last_error
         event.payload = {
             **(event.payload or {}),
@@ -163,6 +201,10 @@ def retry_event_queue_event(db: Session, event_id, payload):
         "manual_retry_source": source,
     })
     event.status = "pending"
+    event.available_at = now
+    event.lease_owner = None
+    event.lease_expires_at = None
+    event.completed_at = None
     event.last_error = ""
     event.payload = current_payload
     db.add(AuditLog(
@@ -198,6 +240,10 @@ def event_to_queue_read(event: PendingEvent, now=None):
         "last_error": redact_secrets(event.last_error or ""),
         "idempotency_key": event.idempotency_key or "",
         "next_attempt_at": str(payload.get("next_attempt_at") or ""),
+        "available_at": event.available_at,
+        "lease_owner": event.lease_owner or "",
+        "lease_expires_at": event.lease_expires_at,
+        "completed_at": event.completed_at,
         "payload_status": str(payload.get("create_status") or payload.get("status") or ""),
         "retryable": is_retryable_event(event),
         "linked_order_id": linked_value(payload, "order_id", "order_ids"),

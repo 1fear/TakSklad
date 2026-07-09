@@ -33,11 +33,17 @@ case "$MODE" in
   readiness)
     TEST_MODULE="tests.test_postgres_readiness"
     ;;
+  queue-concurrency)
+    TEST_MODULE="tests.test_postgres_queue_concurrency"
+    ;;
+  queue-failures)
+    TEST_MODULE="tests.test_postgres_queue_failures"
+    ;;
   all)
-    TEST_MODULE="tests.test_postgres_migrations tests.test_postgres_concurrency tests.test_postgres_readiness"
+    TEST_MODULE="tests.test_postgres_migrations tests.test_postgres_concurrency tests.test_postgres_readiness tests.test_postgres_queue_concurrency tests.test_postgres_queue_failures"
     ;;
   *)
-    echo "Usage: $0 {migrations|smoke|readiness|all}" >&2
+    echo "Usage: $0 {migrations|smoke|readiness|queue-concurrency|queue-failures|all}" >&2
     exit 2
     ;;
 esac

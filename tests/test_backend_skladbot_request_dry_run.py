@@ -478,7 +478,10 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
     def test_enabled_mode_queues_create_event_without_posting_inline(self):
         import_id, _order_id = self.seed_import_order()
 
-        with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "enabled"}, clear=False):
+        with mock.patch.dict("os.environ", {
+            "SKLADBOT_CREATE_REQUESTS_MODE": "enabled",
+            "TAKSKLAD_EVENT_LEASES_ENABLED": "1",
+        }, clear=False):
             with self.SessionLocal() as db:
                 summary = create_skladbot_dry_run_for_import(db, import_id)
                 db.commit()
@@ -572,6 +575,8 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
         self.assertEqual(google_event.payload["entity_id"], order_id)
         self.assertTrue(dry_run_event.payload["would_post"])
         self.assertEqual(create_event.status, "completed")
+        self.assertIsNone(create_event.lease_owner)
+        self.assertIsNotNone(create_event.completed_at)
         self.assertEqual(create_event.payload["create_status"], "created")
 
     def test_enabled_mode_does_not_save_wh_r_without_canonical_detail(self):
@@ -1067,29 +1072,30 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
                 }
 
         fake_client = FakeSkladBotClient()
-        with self.SessionLocal() as db:
-            order = db.get(Order, uuid.UUID(order_id))
-            order.status = "returned"
-            order.raw_payload = {
-                **(order.raw_payload or {}),
-                "skladbot_request_number": "WH-R-OUT",
-                "skladbot_request_id": "180000",
-            }
-            confirmed_items = self.confirmed_items_for_order(db, order_id)
-            order.raw_payload = {
-                **(order.raw_payload or {}),
-                "skladbot_return_confirmed_items": confirmed_items,
-            }
-            queue_skladbot_return_request_create(db, order, confirmed_items)
-            process_result = process_pending_skladbot_return_request_creates(db, client=fake_client)
-            db.commit()
-            order = db.get(Order, uuid.UUID(order_id))
-            event = db.execute(
-                select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_RETURN_REQUEST_CREATE_EVENT_TYPE)
-            ).scalar_one()
-            google_event = db.execute(
-                select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")
-            ).scalar_one()
+        with mock.patch.dict("os.environ", {"TAKSKLAD_EVENT_LEASES_ENABLED": "1"}, clear=False):
+            with self.SessionLocal() as db:
+                order = db.get(Order, uuid.UUID(order_id))
+                order.status = "returned"
+                order.raw_payload = {
+                    **(order.raw_payload or {}),
+                    "skladbot_request_number": "WH-R-OUT",
+                    "skladbot_request_id": "180000",
+                }
+                confirmed_items = self.confirmed_items_for_order(db, order_id)
+                order.raw_payload = {
+                    **(order.raw_payload or {}),
+                    "skladbot_return_confirmed_items": confirmed_items,
+                }
+                queue_skladbot_return_request_create(db, order, confirmed_items)
+                process_result = process_pending_skladbot_return_request_creates(db, client=fake_client)
+                db.commit()
+                order = db.get(Order, uuid.UUID(order_id))
+                event = db.execute(
+                    select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_RETURN_REQUEST_CREATE_EVENT_TYPE)
+                ).scalar_one()
+                google_event = db.execute(
+                    select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")
+                ).scalar_one()
 
         self.assertEqual(process_result["created"], 1)
         self.assertEqual(len(fake_client.created_payloads), 1)
@@ -1108,6 +1114,8 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
         self.assertEqual(order.raw_payload["skladbot_return_request_id"], "190707")
         self.assertEqual(order.raw_payload["skladbot_return_request_status"], "created")
         self.assertEqual(event.status, "completed")
+        self.assertIsNone(event.lease_owner)
+        self.assertIsNotNone(event.completed_at)
         self.assertEqual(event.payload["create_status"], "created")
         self.assertEqual(google_event.payload["action"], "google_sheets_return_export")
 
