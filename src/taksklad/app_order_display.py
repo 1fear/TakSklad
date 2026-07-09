@@ -107,6 +107,8 @@ class OrderDisplayMixin:
         self.finish_btn.config(state="disabled")
         self.undo_btn.config(state="disabled")
         self.last_code_label.config(text="", fg=SUCCESS)
+        if hasattr(self, "set_scan_entry_enabled"):
+            self.set_scan_entry_enabled(False)
 
     def select_legal_entity(self):
         if not self.ensure_update_allowed():
@@ -146,6 +148,8 @@ class OrderDisplayMixin:
             self.current_order = None
             self.next_product_btn.config(state="disabled")
             self.finish_btn.config(state="normal")
+            if hasattr(self, "set_scan_entry_enabled"):
+                self.set_scan_entry_enabled(False, "SKU-защита недоступна: все позиции сохранены.")
             self.status_var.set(f"✅ Все позиции уже сохранены: {display_request_number} | {legal_entity}")
             self.status_label.config(bg=BG_MAIN, fg=FG_MUTED)
             return
@@ -225,6 +229,10 @@ class OrderDisplayMixin:
         self.next_product_btn.config(state="disabled")
         self.finish_btn.config(state="disabled")
         self.undo_btn.config(state="normal")
+        if hasattr(self, "set_scan_entry_enabled"):
+            self.set_scan_entry_enabled(True)
+        if hasattr(self, "update_scan_guard_status"):
+            self.update_scan_guard_status()
         self.scan_entry.delete(0, tk.END)
         if existing_codes:
             self.last_code_label.config(text=f"Уже записано: {scanned_blocks} блоков, {len(existing_codes)} кодов", fg=SUCCESS)

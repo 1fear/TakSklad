@@ -59,8 +59,16 @@ def backend_blocked_scan_code(item):
 
 
 def backend_releases_duplicate_scan_code(order, code):
+    return backend_duplicate_scan_reuse_status(order, code).get("available") is True
+
+
+def backend_duplicate_scan_reuse_status(order, code):
     if not order_uses_backend_scan_path(order):
-        return False
+        return {
+            "checked": False,
+            "available": False,
+            "reason": "backend path is unavailable for this position",
+        }
     try:
         availability = lookup_kiz_availability(
             code,
@@ -68,11 +76,20 @@ def backend_releases_duplicate_scan_code(order, code):
         )
     except BackendApiError:
         logging.warning("Backend KIZ availability check failed", exc_info=True)
-        return False
-    if not availability.get("available"):
-        return False
+        return {
+            "checked": False,
+            "available": False,
+            "reason": "backend availability check failed",
+        }
     latest_movement_type = normalize_text(availability.get("latest_movement_type")).lower()
-    return latest_movement_type in REUSABLE_KIZ_MOVEMENTS
+    reusable = bool(availability.get("available") and latest_movement_type in REUSABLE_KIZ_MOVEMENTS)
+    return {
+        "checked": True,
+        "available": reusable,
+        "latest_movement_type": latest_movement_type,
+        "reason": f"latest movement is {latest_movement_type}" if latest_movement_type else "",
+        "existing_order_item_id": normalize_text(availability.get("existing_order_item_id")),
+    }
 
 
 def format_backend_blocked_scan_message(blocked_events):

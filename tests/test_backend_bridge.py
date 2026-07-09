@@ -1,11 +1,72 @@
 import unittest
 from unittest import mock
 
-from taksklad import backend_client, backend_events
+from taksklad import backend_client, backend_events, backend_flow
 from taksklad.config import SKLADBOT_REQUEST_NUMBER_COLUMN, STATUS_COMPLETED
 
 
 class BackendBridgeTests(unittest.TestCase):
+    def test_backend_duplicate_scan_reuse_status_allows_return_undo_reset(self):
+        order = {"_backend_order_item_id": "item-1"}
+
+        for movement in ("return", "undo", "reset"):
+            with (
+                mock.patch.object(backend_flow, "backend_enabled", return_value=True),
+                mock.patch.object(
+                    backend_flow,
+                    "lookup_kiz_availability",
+                    return_value={
+                        "available": True,
+                        "latest_movement_type": movement,
+                        "existing_order_item_id": "old-item",
+                    },
+                ),
+            ):
+                status = backend_flow.backend_duplicate_scan_reuse_status(
+                    order,
+                    "0104006396053978-TEST-REUSE",
+                )
+
+            self.assertTrue(status["checked"])
+            self.assertTrue(status["available"])
+            self.assertEqual(status["latest_movement_type"], movement)
+            self.assertEqual(status["existing_order_item_id"], "old-item")
+
+    def test_backend_duplicate_scan_reuse_status_blocks_outbound_and_failed_check(self):
+        order = {"_backend_order_item_id": "item-1"}
+
+        with (
+            mock.patch.object(backend_flow, "backend_enabled", return_value=True),
+            mock.patch.object(
+                backend_flow,
+                "lookup_kiz_availability",
+                return_value={
+                    "available": False,
+                    "latest_movement_type": "outbound",
+                    "existing_order_item_id": "busy-item",
+                },
+            ),
+        ):
+            busy = backend_flow.backend_duplicate_scan_reuse_status(order, "0104006396053978-TEST-REUSE")
+
+        self.assertTrue(busy["checked"])
+        self.assertFalse(busy["available"])
+        self.assertEqual(busy["latest_movement_type"], "outbound")
+
+        with (
+            mock.patch.object(backend_flow, "backend_enabled", return_value=True),
+            mock.patch.object(
+                backend_flow,
+                "lookup_kiz_availability",
+                side_effect=backend_client.BackendApiError("unavailable"),
+            ),
+        ):
+            failed = backend_flow.backend_duplicate_scan_reuse_status(order, "0104006396053978-TEST-REUSE")
+
+        self.assertFalse(failed["checked"])
+        self.assertFalse(failed["available"])
+        self.assertIn("failed", failed["reason"])
+
     def test_backend_orders_convert_to_desktop_rows_with_existing_codes(self):
         rows = backend_client.backend_orders_to_rows([
             {

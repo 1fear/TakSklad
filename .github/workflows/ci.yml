@@ -26,6 +26,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Reject forbidden release paths
+        run: python tools/check_release_tree.py --strict --path-only
+
       - name: Install Linux GUI test dependencies
         run: |
           sudo apt-get update

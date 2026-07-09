@@ -16,6 +16,15 @@ from .ui_widgets import AppButton
 from .utils import normalize_text, parse_int_value
 
 
+RETURN_CONFIRMED_ITEM_KEYS = ("item_id", "product", "sku", "quantity_blocks", "quantity_pieces")
+PARTIAL_RETURN_UNSUPPORTED_MESSAGE = (
+    "Частичный возврат пока не поддержан для этого пути. "
+    "Выберите все позиции или проведите возврат вручную через backend/SkladBot."
+)
+EMPTY_RETURN_SELECTION_MESSAGE = "Возврат не сохранён: выберите хотя бы одну позицию."
+ALREADY_RETURNED_MESSAGE = "Этот возврат уже принят."
+
+
 def return_item_blocks(item):
     return parse_int_value(item.get("quantity_blocks") or item.get("Кол-во блок"))
 
@@ -30,6 +39,75 @@ def return_order_total_blocks(order):
 
 def return_order_total_price(order):
     return sum(return_item_line_total(item) for item in order.get("items") or [])
+
+
+def return_order_already_returned(order):
+    return (
+        normalize_text(order.get("status")).lower() == "returned"
+        or normalize_text(order.get("return_status")).lower() == "returned"
+    )
+
+
+def sanitize_return_confirmed_item(item):
+    item = item if isinstance(item, dict) else {}
+    item_id = normalize_text(item.get("item_id") or item.get("order_item_id") or item.get("id"))
+    product = normalize_text(item.get("product") or item.get("sku"))
+    sku = normalize_text(item.get("sku") or product)
+    quantity_blocks = parse_int_value(item.get("quantity_blocks"))
+    quantity_pieces = parse_int_value(item.get("quantity_pieces"))
+    if not item_id or not product or quantity_blocks <= 0:
+        return None
+    return {
+        "item_id": item_id,
+        "product": product,
+        "sku": sku or product,
+        "quantity_blocks": quantity_blocks,
+        "quantity_pieces": quantity_pieces,
+    }
+
+
+def build_return_confirmed_items_for_order(order, selected_item_ids=None):
+    confirmed = []
+    selected = None
+    if selected_item_ids is not None:
+        selected = {normalize_text(item_id) for item_id in selected_item_ids if normalize_text(item_id)}
+    is_google_order = normalize_text(order.get("source")) == "google_sheets" or order.get("_row_numbers")
+    for index, item in enumerate(order.get("items") or [], start=1):
+        item_id = normalize_text(item.get("id") or item.get("item_id") or item.get("order_item_id") or item.get("_backend_order_item_id"))
+        if not item_id and is_google_order and not normalize_text(order.get("_backend_order_id")):
+            item_id = f"google_row:{index}"
+        if selected is not None and item_id not in selected:
+            continue
+        product = normalize_text(item.get("product") or item.get("sku") or item.get("Товары"))
+        quantity_blocks = parse_int_value(item.get("quantity_blocks") or item.get("Кол-во блок"))
+        quantity_pieces = parse_int_value(item.get("quantity_pieces") or item.get("Кол-во ШТ"))
+        sanitized = sanitize_return_confirmed_item({
+            "item_id": item_id,
+            "product": product,
+            "sku": product,
+            "quantity_blocks": quantity_blocks,
+            "quantity_pieces": quantity_pieces,
+        })
+        if sanitized:
+            confirmed.append(sanitized)
+    return confirmed
+
+
+def return_partial_supported(order):
+    return False
+
+
+def selected_return_is_partial(order, confirmed_items):
+    all_items = build_return_confirmed_items_for_order(order)
+    if not all_items:
+        return False
+    all_ids = {item["item_id"] for item in all_items}
+    selected_ids = {item["item_id"] for item in confirmed_items or []}
+    if not selected_ids:
+        return False
+    if not selected_ids.issubset(all_ids):
+        raise RuntimeError("Состав возврата содержит позицию не из этого заказа.")
+    return selected_ids != all_ids
 
 
 class ReturnsActionsMixin:
@@ -139,10 +217,7 @@ class ReturnsActionsMixin:
             self.return_lookup_result = order
             total_blocks = return_order_total_blocks(order)
             total_price = return_order_total_price(order)
-            already_returned = (
-                normalize_text(order.get("status")).lower() == "returned"
-                or normalize_text(order.get("return_status")).lower() == "returned"
-            )
+            already_returned = return_order_already_returned(order)
             returned_at = normalize_text(order.get("returned_at"))
             return_reference = normalize_text(order.get("return_reference"))
             lines = [
@@ -164,7 +239,7 @@ class ReturnsActionsMixin:
             if already_returned:
                 lines.extend([
                     "",
-                    "Этот возврат уже принят.",
+                    ALREADY_RETURNED_MESSAGE,
                     f"Дата возврата: {returned_at[:19] if returned_at else 'не указана'}",
                     f"Основание: {return_reference or 'не указано'}",
                 ])
@@ -242,7 +317,11 @@ class ReturnsActionsMixin:
             if not confirmed_items:
                 result_var.set("Возврат не сохранён: в заказе нет состава для подтверждения.")
                 return
-            if not self.show_return_confirmation_dialog(order, confirmed_items):
+            selected_items = self.show_return_confirmation_dialog(order, confirmed_items)
+            if selected_items is None:
+                return
+            if not selected_items:
+                result_var.set(EMPTY_RETURN_SELECTION_MESSAGE)
                 return
             return_btn.config(state="disabled")
             result_var.set("Фиксирую возврат...")
@@ -265,7 +344,7 @@ class ReturnsActionsMixin:
 
             self.run_background(
                 "Не удалось принять возврат",
-                lambda: self.mark_return_for_display(order, normalize_text(lookup_var.get()), confirmed_items=confirmed_items),
+                lambda: self.mark_return_for_display(order, normalize_text(lookup_var.get()), confirmed_items=selected_items),
                 on_success=on_success,
                 on_error=on_error,
             )
@@ -285,26 +364,8 @@ class ReturnsActionsMixin:
         refresh_returns_list()
 
 
-    def build_return_confirmed_items(self, order):
-        confirmed = []
-        is_google_order = normalize_text(order.get("source")) == "google_sheets" or order.get("_row_numbers")
-        for index, item in enumerate(order.get("items") or [], start=1):
-            item_id = normalize_text(item.get("id") or item.get("item_id") or item.get("order_item_id") or item.get("_backend_order_item_id"))
-            if not item_id and is_google_order and not normalize_text(order.get("_backend_order_id")):
-                item_id = f"google_row:{index}"
-            product = normalize_text(item.get("product") or item.get("sku") or item.get("Товары"))
-            quantity_blocks = parse_int_value(item.get("quantity_blocks") or item.get("Кол-во блок"))
-            quantity_pieces = parse_int_value(item.get("quantity_pieces") or item.get("Кол-во ШТ"))
-            if not item_id or not product or quantity_blocks <= 0:
-                continue
-            confirmed.append({
-                "item_id": item_id,
-                "product": product,
-                "sku": product,
-                "quantity_blocks": quantity_blocks,
-                "quantity_pieces": quantity_pieces,
-            })
-        return confirmed
+    def build_return_confirmed_items(self, order, selected_item_ids=None):
+        return build_return_confirmed_items_for_order(order, selected_item_ids=selected_item_ids)
 
 
     def show_return_confirmation_dialog(self, order, confirmed_items):
@@ -357,6 +418,7 @@ class ReturnsActionsMixin:
             height=min(10, max(4, len(confirmed_items))),
             bg=BG_MAIN,
             fg=FG_TEXT,
+            selectmode=tk.MULTIPLE,
             relief="flat",
             bd=0,
             highlightbackground=BORDER,
@@ -369,13 +431,34 @@ class ReturnsActionsMixin:
                 tk.END,
                 f"{item.get('product')}: {parse_int_value(item.get('quantity_blocks'))} блок.",
             )
+        items_list.selection_set(0, tk.END)
 
-        result = {"confirmed": False}
+        status_var = tk.StringVar(value="Выбран полный возврат.")
+        tk.Label(
+            container,
+            textvariable=status_var,
+            bg=BG_CARD,
+            fg=FG_MUTED,
+            justify="left",
+            anchor="w",
+            wraplength=560,
+            font=("Segoe UI", 9),
+        ).pack(fill="x", pady=(8, 0))
+
+        result = {"confirmed_items": None}
         actions = tk.Frame(container, bg=BG_CARD)
         actions.pack(fill="x", pady=(14, 0))
 
         def confirm():
-            result["confirmed"] = True
+            selected_indices = list(items_list.curselection())
+            if not selected_indices:
+                status_var.set(EMPTY_RETURN_SELECTION_MESSAGE)
+                return
+            selected_items = [confirmed_items[index] for index in selected_indices]
+            if len(selected_items) != len(confirmed_items) and not return_partial_supported(order):
+                status_var.set(PARTIAL_RETURN_UNSUPPORTED_MESSAGE)
+                return
+            result["confirmed_items"] = selected_items
             dialog.destroy()
 
         AppButton(
@@ -396,7 +479,7 @@ class ReturnsActionsMixin:
         ).pack(side="right", fill="x", expand=True)
 
         dialog.wait_window()
-        return bool(result["confirmed"])
+        return result["confirmed_items"]
 
 
     def fetch_returns_for_display(self, limit=50):
@@ -417,17 +500,31 @@ class ReturnsActionsMixin:
         if not is_google_order:
             backend_order_id = normalize_text(order.get("id") or backend_order_id)
         backend_reads_enabled = backend_read_orders_enabled()
+        if is_google_order and backend_reads_enabled and not backend_order_id:
+            raise RuntimeError("Возврат нужно провести через backend/order id: у Google-заявки нет _backend_order_id.")
+
+        if confirmed_items is None:
+            payload_items = build_return_confirmed_items_for_order(order)
+        else:
+            payload_items = []
+            for item in confirmed_items:
+                sanitized = sanitize_return_confirmed_item(item)
+                if sanitized:
+                    payload_items.append(sanitized)
+        if confirmed_items is not None and not payload_items:
+            raise RuntimeError(EMPTY_RETURN_SELECTION_MESSAGE)
+        if selected_return_is_partial(order, payload_items) and not return_partial_supported(order):
+            raise RuntimeError(PARTIAL_RETURN_UNSUPPORTED_MESSAGE)
+
         if backend_order_id and backend_reads_enabled:
             return mark_order_returned(
                 backend_order_id,
                 return_reference=return_reference,
                 returned_by=self.telegram_lock_owner_label,
-                confirmed_items=confirmed_items or [],
+                confirmed_items=payload_items,
             )
 
         if is_google_order:
-            if backend_reads_enabled:
-                raise RuntimeError("Возврат нужно провести через backend/order id: у Google-заявки нет _backend_order_id.")
             updated_order = mark_return_order_in_gsheet(
                 order,
                 return_reference=return_reference,
@@ -439,5 +536,5 @@ class ReturnsActionsMixin:
             order.get("id"),
             return_reference=return_reference,
             returned_by=self.telegram_lock_owner_label,
-            confirmed_items=confirmed_items or [],
+            confirmed_items=payload_items,
         )

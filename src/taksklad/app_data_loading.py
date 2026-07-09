@@ -6,12 +6,90 @@ from .backend_events import load_pending_backend_events, sync_pending_backend_ev
 from .backend_flow import backend_blocked_scan_events_for_item
 from .config import BG_MAIN, FG_MUTED, STATUS_COLUMN, STATUS_COMPLETED, STATUS_NOT_COMPLETED
 from .desktop_diagnostics import log_refresh_diagnostic_summary
+from .desktop_scan_rules import (
+    is_terminal_scan_state,
+    scanned_blocks_for_order,
+    scanned_codes_for_order,
+)
 from .desktop_refresh_service import (
     fetch_sheet_data,
     fetch_sheet_data_with_sync,
     format_refresh_error_message,
 )
+from .orders import get_plan_blocks
 from .pending_store import load_pending_saves
+from .scan_quantities import scan_entries_for_order_codes
+from .utils import normalize_kiz_code, normalize_text
+
+
+TERMINAL_REFRESH_STATUSES = {
+    "completed",
+    "complete",
+    "done",
+    "returned",
+    "выполнено",
+    "возврат",
+    "завершено",
+}
+
+
+def refresh_order_identity(order):
+    order = order if isinstance(order, dict) else {}
+    backend_item_id = normalize_text(order.get("_backend_order_item_id") or order.get("order_item_id"))
+    if backend_item_id:
+        return ("backend_item", backend_item_id)
+    source_import_id = normalize_text(order.get("ID импорта") or order.get("source_import_id") or order.get("import_id"))
+    if source_import_id:
+        return ("source_import", source_import_id)
+    row_number = normalize_text(order.get("_row_number") or order.get("row_number"))
+    if row_number:
+        return ("google_row", row_number)
+    source_order_id = normalize_text(order.get("ID заказа") or order.get("id") or order.get("_backend_order_id"))
+    product = normalize_text(order.get("Товары") or order.get("product"))
+    if source_order_id and product:
+        return ("source_item", source_order_id, product.casefold())
+    request_number = normalize_text(order.get("Номер заявки SkladBot") or order.get("skladbot_request_number"))
+    client = normalize_text(order.get("Клиент") or order.get("client"))
+    address = normalize_text(order.get("Адрес") or order.get("address"))
+    if request_number and product:
+        return ("request_item", request_number, product.casefold(), client.casefold(), address.casefold())
+    return ()
+
+
+def find_refreshed_order(current_order, loaded_orders):
+    identity = refresh_order_identity(current_order)
+    if not identity:
+        return None
+    for order in loaded_orders or []:
+        if refresh_order_identity(order) == identity:
+            return order
+    return None
+
+
+def merge_remote_and_local_scan_codes(remote_order, local_codes):
+    remote_codes = scanned_codes_for_order(remote_order)
+    seen = {normalize_kiz_code(code) for code in remote_codes if normalize_kiz_code(code)}
+    merged = list(remote_codes)
+    local_unsaved = []
+    for code in local_codes or []:
+        normalized = normalize_kiz_code(code)
+        if not normalized or normalized in seen:
+            continue
+        merged.append(code)
+        local_unsaved.append(code)
+        seen.add(normalized)
+    return {
+        "remote_codes": remote_codes,
+        "local_unsaved": local_unsaved,
+        "merged_codes": merged,
+    }
+
+
+def refresh_order_is_terminal(order):
+    if not order:
+        return False
+    status = normalize_text(order.get(STATUS_COLUMN) or order.get("status")).lower().replace("ё", "е")
+    return is_terminal_scan_state(order) or status in TERMINAL_REFRESH_STATUSES
 
 
 class DataLoadingMixin:
@@ -111,6 +189,72 @@ class DataLoadingMixin:
             source="backend" if backend_read_orders_enabled() else "google",
         )
 
+    def _set_refresh_scan_controls(self, *, enabled, message=""):
+        set_scan_entry_enabled = getattr(self, "set_scan_entry_enabled", None)
+        if callable(set_scan_entry_enabled):
+            set_scan_entry_enabled(enabled, message)
+        if not enabled:
+            self.safe_config(getattr(self, "next_product_btn", None), state="disabled")
+            self.safe_config(getattr(self, "finish_btn", None), state="disabled")
+            self.safe_config(getattr(self, "undo_btn", None), state="disabled")
+
+    def reconcile_current_order_after_refresh(self):
+        current_order = self.current_order
+        if not current_order:
+            return {"status": "none"}
+
+        refreshed_order = find_refreshed_order(current_order, self.today_orders)
+        if refreshed_order is None:
+            self._set_refresh_scan_controls(
+                enabled=False,
+                message="SKU-защита недоступна: позиция больше не активна после обновления.",
+            )
+            return {"status": "missing", "message": "Текущая позиция больше не активна после обновления."}
+
+        refreshed_snapshot = dict(refreshed_order)
+        terminal = refresh_order_is_terminal(refreshed_snapshot)
+        saved_count = max(0, min(int(self.saved_codes_count or 0), len(self.scanned_codes)))
+        local_unsaved_codes = list(self.scanned_codes[saved_count:])
+        merged = merge_remote_and_local_scan_codes(refreshed_snapshot, local_unsaved_codes)
+        active_codes = merged["remote_codes"] if terminal else merged["merged_codes"]
+
+        current_order.clear()
+        current_order.update(refreshed_snapshot)
+        current_order["_existing_scanned_codes"] = merged["remote_codes"].copy()
+        current_order["_existing_scan_entries"] = scan_entries_for_order_codes(
+            current_order,
+            merged["remote_codes"],
+        )
+        self.scanned_codes = active_codes
+        self.saved_codes_count = len(merged["remote_codes"])
+        for code in active_codes:
+            normalized = normalize_kiz_code(code)
+            if normalized:
+                self.all_existing_codes.add(normalized)
+
+        plan_blocks = get_plan_blocks(current_order)
+        scanned_count = scanned_blocks_for_order(current_order, self.scanned_codes)
+        self.safe_config(getattr(self, "progress_label", None), text=f"{scanned_count} / {plan_blocks}")
+        if terminal:
+            self._set_refresh_scan_controls(
+                enabled=False,
+                message="SKU-защита недоступна: позиция уже закрыта после обновления.",
+            )
+            return {
+                "status": "terminal",
+                "remote_codes": merged["remote_codes"],
+                "local_unsaved": merged["local_unsaved"],
+                "message": "Позиция уже закрыта или возвращена на другом ПК.",
+            }
+
+        self._set_refresh_scan_controls(enabled=True)
+        return {
+            "status": "merged",
+            "remote_codes": merged["remote_codes"],
+            "local_unsaved": merged["local_unsaved"],
+            "merged_codes": merged["merged_codes"],
+        }
+
 
     def refresh_from_sheet(self, initial=False):
         if not self.ensure_update_allowed():
@@ -137,6 +281,9 @@ class DataLoadingMixin:
             self.apply_loaded_data(result, show_empty_warning=initial)
             if not keep_current_selection:
                 self.reset_current_selection()
+                reconcile_result = {"status": "reset"}
+            else:
+                reconcile_result = self.reconcile_current_order_after_refresh()
             self.refresh_legal_list()
             sync_result = self.last_sync_result or {}
             skladbot_result = sync_result.get("skladbot", {}) if isinstance(sync_result, dict) else {}
@@ -177,7 +324,13 @@ class DataLoadingMixin:
             else:
                 status_text = "✅ Список заказов обновлён"
             if keep_current_selection:
-                status_text += ", текущая позиция сохранена"
+                reconcile_status = reconcile_result.get("status")
+                if reconcile_status == "terminal":
+                    status_text += ", текущая позиция закрыта на другом ПК"
+                elif reconcile_status == "missing":
+                    status_text += ", текущая позиция больше не активна"
+                else:
+                    status_text += ", текущая позиция сохранена"
             self.status_var.set(status_text)
             self.status_label.config(bg=BG_MAIN, fg=FG_MUTED)
 

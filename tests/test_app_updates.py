@@ -46,9 +46,13 @@ class _WindowsUpdateApp(UpdateMixin):
         self.critical_errors = []
         self.started_update = False
         self.destroyed = False
+        self.version_status_label = _Button()
 
     def auto_update_supported(self):
         return True
+
+    def after(self, _delay, callback):
+        callback()
 
     def safe_config(self, widget, **kwargs):
         widget.config(**kwargs)
@@ -106,6 +110,7 @@ class AppUpdatesTest(unittest.TestCase):
         self.assertTrue(app.update_required)
         self.assertFalse(app.started_update)
         self.assertEqual(app.refresh_btn.options["state"], "disabled")
+        self.assertIn("заблокирована", app.version_status_label.options["text"])
         self.assertIn("TakSklad_update.log", app.status_var.value)
         self.assertIn("Старую версию для сканирования не используйте", app.status_var.value)
 
@@ -243,8 +248,32 @@ class AppUpdatesTest(unittest.TestCase):
         self.assertFalse(app.update_required)
         self.assertFalse(app.started_update)
         self.assertIsNone(app.update_info)
+        self.assertIn("актуальная", app.version_status_label.options["text"])
         load_section.assert_not_called()
         askyesno.assert_not_called()
+
+    def test_update_check_failure_shows_unavailable_status_without_error_detail(self):
+        app = _WindowsUpdateApp()
+
+        class ImmediateThread:
+            def __init__(self, target, daemon=None):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        with mock.patch("taksklad.app_updates.fetch_update_info", side_effect=RuntimeError("token=secret")), \
+                mock.patch("taksklad.app_updates.threading.Thread", ImmediateThread), \
+                mock.patch("taksklad.app_updates.logging.info") as log_info:
+            app.check_for_updates()
+
+        label = app.version_status_label.options["text"]
+        self.assertIn("недоступен", label)
+        self.assertIn("RuntimeError", label)
+        self.assertNotIn("secret", label)
+        self.assertTrue(
+            any(call.args[:2] == ("Не удалось проверить обновления: %s", "RuntimeError") for call in log_info.call_args_list)
+        )
 
     def test_current_version_package_transition_cooldown_is_non_blocking(self):
         app = _WindowsUpdateApp()

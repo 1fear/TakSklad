@@ -2519,6 +2519,65 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertEqual(order.status, "completed")
             self.assertEqual(db.execute(select(PendingEvent)).scalars().all(), [])
 
+    def test_mark_return_rejects_partial_confirmed_items_without_side_effects(self):
+        with self.SessionLocal() as db:
+            order = Order(
+                payment_type="cash",
+                client="Return Client",
+                address="Return Address",
+                representative="Return Rep",
+                order_date=date(2026, 5, 31),
+                status="completed",
+                raw_payload={"source": "test"},
+            )
+            first_item = OrderItem(
+                order=order,
+                product="First Product",
+                quantity_pieces=20,
+                quantity_blocks=2,
+                pieces_per_block=10,
+                scanned_blocks=2,
+                status="completed",
+                raw_payload={"source": "test"},
+            )
+            second_item = OrderItem(
+                order=order,
+                product="Second Product",
+                quantity_pieces=10,
+                quantity_blocks=1,
+                pieces_per_block=10,
+                scanned_blocks=1,
+                status="completed",
+                raw_payload={"source": "test"},
+            )
+            db.add_all([order, first_item, second_item])
+            db.commit()
+            order_id = str(order.id)
+            first_item_id = str(first_item.id)
+
+        returned = self.client.post(
+            f"/api/v1/returns/{order_id}",
+            json={
+                "return_reference": "WR-RETURN-PARTIAL",
+                "returned_by": "test",
+                "confirmed_items": self.confirmed_return_items(
+                    first_item_id,
+                    product="First Product",
+                    blocks=2,
+                    pieces=20,
+                ),
+            },
+        )
+
+        self.assertEqual(returned.status_code, 422)
+        self.assertIn("Return confirmation is incomplete", returned.json()["detail"])
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            self.assertEqual(order.status, "completed")
+            self.assertEqual(db.execute(select(PendingEvent)).scalars().all(), [])
+            self.assertEqual(db.execute(select(AuditLog)).scalars().all(), [])
+            self.assertEqual(db.execute(select(KizMovement)).scalars().all(), [])
+
     def test_import_creates_grouped_order_items_and_history(self):
         rows = [
             {
@@ -4433,7 +4492,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
                 action="scan_code_created",
                 entity_type="scan_code",
                 entity_id="scan",
-                payload={"code": "010-secret-code"},
+                payload={"code": "TEST-SECRET-CODE"},
             ))
             db.commit()
 
@@ -4454,7 +4513,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertIn("Bearer ***", text)
         self.assertIn('"token": "***"', text)
         self.assertNotIn("secret-service-token", text)
-        self.assertNotIn("010-secret-code", text)
+        self.assertNotIn("TEST-SECRET-CODE", text)
 
     def test_admin_events_exposes_queue_diagnostics(self):
         with self.SessionLocal() as db:

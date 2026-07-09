@@ -52,3 +52,17 @@ graphify-out
 .graphify_*
 
 generated/
+
+# Local release ownership snapshots. They contain path/hash evidence only and
+# are intentionally regenerated per local phase instead of committed.
+.release-state/
+
+# Operational/client data must never enter a release candidate.
+Сверка/
+**/Сверка/
+backup/
+backups/
+client_exports/
+client-exports/
+credentials/
+secrets/

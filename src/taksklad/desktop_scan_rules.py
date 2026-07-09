@@ -113,9 +113,10 @@ def is_terminal_scan_state(order):
     return any(marker in status for marker in ("архив", "возврат", "закрыт", "closed", "returned", "archive"))
 
 
-def format_duplicate_scan_message(code, existing_order=None):
+def format_duplicate_scan_message(code, existing_order=None, backend_status=None):
     code = normalize_kiz_code(code)
     existing_order = existing_order if isinstance(existing_order, dict) else {}
+    backend_status = backend_status if isinstance(backend_status, dict) else {}
     client = normalize_text(existing_order.get("client") or existing_order.get("Клиент"))
     order_date = normalize_text(
         existing_order.get("order_date_display")
@@ -129,6 +130,8 @@ def format_duplicate_scan_message(code, existing_order=None):
         or existing_order.get("SkladBot")
     )
     lines = ["КИЗ уже отсканирован в другом заказе."]
+    if not existing_order:
+        lines.append("Владелец в локальном списке не найден.")
     if client:
         lines.append(f"Заказ: {client}")
     if order_date:
@@ -137,6 +140,18 @@ def format_duplicate_scan_message(code, existing_order=None):
         lines.append(f"Товар: {product}")
     if request_number:
         lines.append(f"SkladBot: {request_number}")
+    if backend_status:
+        reason = normalize_text(backend_status.get("reason"))
+        latest_movement = normalize_text(backend_status.get("latest_movement_type"))
+        if backend_status.get("checked"):
+            if backend_status.get("available"):
+                lines.append(f"Backend разрешил повтор: {reason or latest_movement or 'КИЗ возвращён'}")
+            elif latest_movement:
+                lines.append(f"Backend не разрешил повтор. Последнее движение: {latest_movement}")
+            elif reason:
+                lines.append(f"Backend не разрешил повтор: {reason}")
+        elif reason:
+            lines.append(f"Backend-проверка повтора недоступна: {reason}")
     if code:
         lines.append(f"Код: {code}")
     lines.append("Сканируйте другой КИЗ.")
@@ -175,6 +190,31 @@ def format_product_key_label(product_key):
     if not key:
         return "не распознан"
     return PRODUCT_KEY_LABELS.get(key, key)
+
+
+def scan_sku_guard_status(order):
+    if not order:
+        return {
+            "state": "unavailable",
+            "message": "SKU-защита недоступна: выберите позицию.",
+        }
+    product = normalize_text(order.get("Товары") or order.get("product"))
+    if not product:
+        return {
+            "state": "unknown",
+            "message": "SKU-защита не активна: товар не указан.",
+        }
+    product_key = product_key_from_name(product)
+    if not product_key:
+        return {
+            "state": "unknown",
+            "message": f"SKU-защита не активна: товар не распознан ({product}).",
+        }
+    return {
+        "state": "active",
+        "message": f"SKU-защита активна: {format_product_key_label(product_key)}.",
+        "product_key": product_key,
+    }
 
 
 def format_scan_product_mismatch_message(code, product, expected_product_key="", scan_product_key=""):

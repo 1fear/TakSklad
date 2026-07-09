@@ -13,9 +13,15 @@ from .config import (
     ERROR_BG,
     ERROR_FG,
     FG_MUTED,
+    SUCCESS,
+    WARNING,
     UPDATE_INFO_URL,
     UPDATE_LOG_FILE,
     UPDATE_RETRY_COOLDOWN_SECONDS,
+)
+from .startup_check import (
+    build_version_update_status,
+    format_version_update_status_label,
 )
 from .storage import load_data_section, save_data_section
 from .update_service import compare_versions, fetch_update_info, package_transition_required, prepare_update_installer
@@ -82,6 +88,41 @@ class UpdateMixin:
         else:
             self.status_var.set(f"⛔ {message}")
 
+    def set_version_update_status(self, update_info=None, error=None):
+        status = build_version_update_status(update_info=update_info, error=error)
+        self.version_update_status = status
+        label = format_version_update_status_label(status)
+        color = FG_MUTED
+        if status.get("state") == "current":
+            color = SUCCESS
+        elif status.get("state") in {"blocked", "unavailable"}:
+            color = ERROR_FG
+        elif status.get("state") == "outdated":
+            color = WARNING
+
+        widget = getattr(self, "version_status_label", None)
+        if widget is not None:
+            safe_config = getattr(self, "safe_config", None)
+            if callable(safe_config):
+                safe_config(widget, text=label, fg=color)
+            else:
+                widget.config(text=label, fg=color)
+
+        logging.info(
+            "Update status: workstation_id=%s current=%s latest=%s min_supported=%s "
+            "package_type=%s mandatory=%s block_workflow=%s state=%s error_class=%s",
+            status.get("workstation_id") or "-",
+            status.get("current_version") or "-",
+            status.get("latest_version") or "-",
+            status.get("min_supported_version") or "-",
+            status.get("package_type") or "-",
+            status.get("mandatory") or "-",
+            status.get("block_workflow") or "-",
+            status.get("state") or "-",
+            status.get("error_class") or "-",
+        )
+        return status
+
     def start_auto_update(self, update_info):
         self.status_var.set("⏳ Скачиваю обновление...")
         self.status_label.config(bg=BG_MAIN, fg=FG_MUTED)
@@ -140,7 +181,11 @@ class UpdateMixin:
             try:
                 update_info = fetch_update_info()
             except Exception as exc:
-                logging.info("Не удалось проверить обновления: %s", exc)
+                logging.info("Не удалось проверить обновления: %s", type(exc).__name__)
+                try:
+                    self.after(0, lambda exc=exc: self.set_version_update_status(error=exc))
+                except tk.TclError:
+                    pass
                 return
 
             try:
@@ -153,6 +198,7 @@ class UpdateMixin:
     def handle_update_info(self, update_info):
         if not update_info:
             return
+        self.set_version_update_status(update_info=update_info)
 
         latest_version = normalize_text(update_info.get("latest_version"))
         min_supported_version = normalize_text(update_info.get("min_supported_version"))

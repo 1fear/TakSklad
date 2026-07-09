@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 import socket
@@ -61,6 +62,7 @@ from .storage import (
 )
 from .startup_check import log_startup_self_check
 from .logging_setup import configure_app_logging
+from .single_instance import acquire_single_instance_lock, release_single_instance_lock
 
 configure_app_logging(LOG_FILE, LOG_MAX_BYTES, LOG_BACKUP_COUNT)
 
@@ -123,6 +125,8 @@ class ScanningApp(
         self.current_order = None
         self.scanned_codes = []
         self.saved_codes_count = 0
+        self.scan_feedback_state = "idle"
+        self.last_scan_feedback_message = ""
         self.completed_orders = []
         self.current_legal_entity_products = []
         self.last_completed_summary = None
@@ -139,6 +143,7 @@ class ScanningApp(
         self.refresh_notice_token = 0
         self.update_required = False
         self.update_info = None
+        self.single_instance_lock = None
         self.telegram_poll_running = False
         self.telegram_lock_owner_id = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
         self.telegram_lock_owner_label = f"{socket.gethostname()} pid {os.getpid()}"
@@ -168,23 +173,36 @@ class ScanningApp(
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
 def run_app():
-    if maybe_rename_windows_executable():
+    instance_result = acquire_single_instance_lock()
+    if not instance_result.acquired:
+        logging.warning("Второй экземпляр TakSklad заблокирован: %s", instance_result.reason)
+        show_startup_error_message("TakSklad уже запущен", instance_result.message)
+        return 2
+
+    app = None
+    try:
+        if maybe_rename_windows_executable():
+            return 0
+
+        ensure_windows_desktop_shortcut()
+        migrate_legacy_json_files_to_app_data()
+        log_startup_self_check()
+
+        if not credentials_available() and not backend_read_orders_enabled():
+            show_startup_error_message(
+                "Ошибка",
+                f"Не найдены учётные данные Google Sheets.\n\n"
+                f"Положите credentials.json рядом с программой или перенесите его в {TAKSKLAD_DATA_FILE}",
+            )
+        else:
+            app = ScanningApp()
+            app.single_instance_lock = instance_result.lock
+            app.mainloop()
         return 0
-
-    ensure_windows_desktop_shortcut()
-    migrate_legacy_json_files_to_app_data()
-    log_startup_self_check()
-
-    if not credentials_available() and not backend_read_orders_enabled():
-        show_startup_error_message(
-            "Ошибка",
-            f"Не найдены учётные данные Google Sheets.\n\n"
-            f"Положите credentials.json рядом с программой или перенесите его в {TAKSKLAD_DATA_FILE}",
-        )
-    else:
-        app = ScanningApp()
-        app.mainloop()
-    return 0
+    finally:
+        if app is not None:
+            app.single_instance_lock = None
+        release_single_instance_lock(instance_result.lock)
 
 
 def run_gui_smoke():

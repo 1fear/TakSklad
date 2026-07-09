@@ -11,8 +11,8 @@ from .backend_events import (
 from .backend_flow import (
     backend_blocked_scan_code,
     backend_blocked_scan_events_for_item,
+    backend_duplicate_scan_reuse_status,
     backend_event_error_message,
-    backend_releases_duplicate_scan_code,
     backend_sync_item_blocker,
     format_backend_blocked_scan_message,
     order_uses_backend_scan_path,
@@ -25,6 +25,7 @@ from .desktop_scan_rules import (
     format_duplicate_scan_message,
     format_scan_product_mismatch_message,
     is_terminal_scan_state,
+    scan_sku_guard_status,
     scanned_blocks_for_order,
 )
 from .orders import get_order_status, get_plan_blocks
@@ -46,6 +47,82 @@ from .utils import normalize_kiz_code, validate_kiz_code
 
 
 class ScanningActionsMixin:
+    def set_scan_entry_enabled(self, enabled, message=""):
+        if hasattr(self, "scan_entry"):
+            try:
+                self.scan_entry.config(state="normal")
+                if not enabled:
+                    self.scan_entry.delete(0, tk.END)
+                    self.scan_entry.config(state="disabled")
+            except tk.TclError:
+                pass
+        if hasattr(self, "scan_guard_label"):
+            status = scan_sku_guard_status(self.current_order if enabled else None)
+            self.safe_config(
+                self.scan_guard_label,
+                text=message or status.get("message") or "",
+                fg=SUCCESS if enabled and status.get("state") == "active" else FG_MUTED,
+            )
+
+    def update_scan_guard_status(self):
+        status = scan_sku_guard_status(self.current_order)
+        if hasattr(self, "scan_guard_label"):
+            self.safe_config(
+                self.scan_guard_label,
+                text=status.get("message") or "",
+                fg=SUCCESS if status.get("state") == "active" else FG_MUTED,
+            )
+        return status
+
+    def clear_scan_entry_value(self):
+        if not hasattr(self, "scan_entry"):
+            return
+        try:
+            self.scan_entry.delete(0, tk.END)
+        except tk.TclError:
+            try:
+                self.scan_entry.config(state="normal")
+                self.scan_entry.delete(0, tk.END)
+                self.scan_entry.config(state="disabled")
+            except tk.TclError:
+                pass
+
+    def focus_scan_entry(self):
+        if not hasattr(self, "scan_entry"):
+            return
+        try:
+            self.scan_entry.focus_set()
+        except (AttributeError, tk.TclError):
+            pass
+
+    def play_scan_feedback_sound(self, accepted):
+        if accepted:
+            return False
+        bell = getattr(self, "bell", None)
+        if not callable(bell):
+            return False
+        try:
+            bell()
+            return True
+        except tk.TclError:
+            return False
+
+    def set_scan_feedback(self, state, message):
+        self.scan_feedback_state = state
+        self.last_scan_feedback_message = message
+
+    def reject_scan(self, message, *, popup=True, focus=True):
+        ScanningActionsMixin.set_scan_feedback(self, "rejected", message)
+        self.show_error(message, popup=popup)
+        ScanningActionsMixin.play_scan_feedback_sound(self, accepted=False)
+        ScanningActionsMixin.clear_scan_entry_value(self)
+        if focus:
+            ScanningActionsMixin.focus_scan_entry(self)
+
+    def accept_scan(self, message):
+        ScanningActionsMixin.set_scan_feedback(self, "accepted", message)
+        ScanningActionsMixin.play_scan_feedback_sound(self, accepted=True)
+
     def validate_code(self, code):
         is_valid, error_msg, _normalized_code = validate_kiz_code(code)
         return is_valid, error_msg
@@ -89,10 +166,7 @@ class ScanningActionsMixin:
         if not write_scan_backup("backend_blocked_scan_removed", order, codes=self.scanned_codes):
             logging.warning("Backend отклонил КИЗ, но локальный backup после удаления не создан")
         self.show_error(format_backend_blocked_scan_message(blocked_events), popup=False)
-        try:
-            self.scan_entry.focus_set()
-        except tk.TclError:
-            pass
+        ScanningActionsMixin.focus_scan_entry(self)
         self.update_stats_display()
         return True
 
@@ -189,17 +263,17 @@ class ScanningActionsMixin:
 
     def on_scan(self, event=None):
         if not self.ensure_update_allowed():
-            self.scan_entry.delete(0, tk.END)
+            ScanningActionsMixin.reject_scan(self, "Требуется обновить приложение перед сканированием", popup=False)
             return
 
         if self.operation_in_progress:
             self.show_busy_error()
-            self.scan_entry.delete(0, tk.END)
+            ScanningActionsMixin.clear_scan_entry_value(self)
+            ScanningActionsMixin.focus_scan_entry(self)
             return
 
         if not self.current_order:
-            self.show_error("Сначала выберите заказ")
-            self.scan_entry.delete(0, tk.END)
+            ScanningActionsMixin.reject_scan(self, "Сначала выберите заказ")
             return
 
         is_valid, error_msg, code = validate_kiz_code(self.scan_entry.get())
@@ -207,71 +281,63 @@ class ScanningActionsMixin:
             return
 
         if not is_valid:
-            self.show_error(error_msg)
-            self.scan_entry.delete(0, tk.END)
+            ScanningActionsMixin.reject_scan(self, error_msg)
             return
 
         plan_blocks = get_plan_blocks(self.current_order)
         if plan_blocks <= 0:
-            self.show_error("В заказе не указано корректное 'Кол-во блок'")
-            self.scan_entry.delete(0, tk.END)
+            ScanningActionsMixin.reject_scan(self, "В заказе не указано корректное 'Кол-во блок'")
             return
 
         scanned_before = scanned_blocks_for_order(self.current_order, self.scanned_codes)
         if scanned_before >= plan_blocks:
-            self.show_error(f"План выполнен! Нельзя сканировать больше {plan_blocks} блоков")
-            self.scan_entry.delete(0, tk.END)
+            ScanningActionsMixin.reject_scan(self, f"План выполнен! Нельзя сканировать больше {plan_blocks} блоков")
             return
 
         scan_metadata = scan_metadata_for_code(code)
         block_quantity = scan_metadata["block_quantity"]
         product_name = self.current_order.get("Товары", "")
         if scan_product_mismatch(code, product_name):
-            self.show_error(
+            ScanningActionsMixin.reject_scan(
+                self,
                 format_scan_product_mismatch_message(
                     code,
                     product_name,
                     scan_product_key=scan_metadata.get("product_key") or "",
                 )
             )
-            self.scan_entry.delete(0, tk.END)
             return
         if scan_metadata["scan_type"] == SCAN_TYPE_AGGREGATE_BOX:
             if aggregate_product_mismatch(code, product_name):
-                self.show_error("Код короба не соответствует товару текущей позиции")
-                self.scan_entry.delete(0, tk.END)
+                ScanningActionsMixin.reject_scan(self, "Код короба не соответствует товару текущей позиции")
                 return
             remaining_blocks = max(0, plan_blocks - scanned_before)
             if block_quantity > remaining_blocks:
-                self.show_error(f"Короб +{block_quantity} блоков превышает остаток позиции: осталось {remaining_blocks}")
-                self.scan_entry.delete(0, tk.END)
+                ScanningActionsMixin.reject_scan(self, f"Короб +{block_quantity} блоков превышает остаток позиции: осталось {remaining_blocks}")
                 return
 
         if code in self.scanned_codes:
-            self.show_error("Код уже отсканирован в этой позиции")
-            self.scan_entry.delete(0, tk.END)
+            ScanningActionsMixin.reject_scan(self, "Код уже отсканирован в этой позиции")
             return
 
         if code in self.all_existing_codes:
             existing_order = find_code_owner_in_orders(code, self.today_orders)
-            if not existing_order and backend_releases_duplicate_scan_code(self.current_order, code):
+            reuse_status = {} if existing_order else backend_duplicate_scan_reuse_status(self.current_order, code)
+            if not existing_order and reuse_status.get("available"):
                 self.all_existing_codes.discard(code)
                 logging.info("Backend released KIZ for re-scan after return/undo/reset; ignoring stale desktop duplicate cache")
             else:
-                self.show_error(format_duplicate_scan_message(code, existing_order))
+                ScanningActionsMixin.reject_scan(self, format_duplicate_scan_message(code, existing_order, reuse_status))
                 self.log_duplicate_code_async(code)
-                self.scan_entry.delete(0, tk.END)
                 return
 
         for completed in self.completed_orders:
             if code in completed.get("Коды", []):
-                self.show_error("Код уже использован в другом задании сегодня")
-                self.scan_entry.delete(0, tk.END)
+                ScanningActionsMixin.reject_scan(self, "Код уже использован в другом задании сегодня")
                 return
 
         if not write_scan_backup("scan", self.current_order, code=code, codes=self.scanned_codes + [code]):
-            self.show_error("Не удалось сохранить локальный backup. Код не принят")
-            self.scan_entry.delete(0, tk.END)
+            ScanningActionsMixin.reject_scan(self, "Не удалось сохранить локальный backup. Код не принят")
             return
 
         self.scanned_codes.append(code)
@@ -283,12 +349,15 @@ class ScanningActionsMixin:
         self.progress_label.config(text=f"{scanned_count} / {plan_blocks}")
         if scan_metadata["scan_type"] == SCAN_TYPE_AGGREGATE_BOX:
             self.last_code_label.config(text=f"Последний код: короб +{block_quantity}: {code[:40]}...", fg=SUCCESS)
-            self.status_var.set(f"✅ Отсканирован короб +{block_quantity} ({scanned_count}/{plan_blocks})")
+            message = f"Отсканирован короб +{block_quantity} ({scanned_count}/{plan_blocks})"
+            self.status_var.set(f"✅ {message}")
         else:
             self.last_code_label.config(text=f"Последний код: {code[:40]}...", fg=SUCCESS)
-            self.status_var.set(f"✅ Отсканирован код ({scanned_count}/{plan_blocks})")
+            message = f"Отсканирован код ({scanned_count}/{plan_blocks})"
+            self.status_var.set(f"✅ {message}")
+        ScanningActionsMixin.accept_scan(self, message)
         self.status_label.config(bg=BG_MAIN, fg=FG_MUTED)
-        self.scan_entry.delete(0, tk.END)
+        ScanningActionsMixin.clear_scan_entry_value(self)
 
         if scanned_count >= plan_blocks:
             if self.current_product_idx >= len(self.current_legal_entity_orders) - 1:
@@ -398,6 +467,7 @@ class ScanningActionsMixin:
                 self.status_label.config(bg=BG_MAIN, fg=FG_MUTED)
             else:
                 self.current_order = None
+                self.set_scan_entry_enabled(False, "SKU-защита недоступна: все позиции сохранены.")
                 self.next_product_btn.config(state="disabled")
                 if finish_after_save:
                     self.finish_btn.config(state="disabled")

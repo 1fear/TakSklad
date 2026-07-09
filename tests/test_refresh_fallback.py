@@ -28,6 +28,8 @@ class FakeRefreshApp(app_data_loading.DataLoadingMixin):
         self.sheet = None
         self.all_existing_codes = set()
         self.last_sync_result = {}
+        self.scanned_codes = []
+        self.saved_codes_count = 0
         self.operation_in_progress = False
         self.refresh_in_progress = False
         self.refresh_btn = object()
@@ -508,7 +510,7 @@ class RefreshFallbackTests(unittest.TestCase):
             app_data_loading.fetch_sheet_data_with_sync = lambda sync_skladbot=True: (
                 loaded_orders,
                 None,
-                {"01012345678901234567ABC"},
+                {"TEST-CODE-ABC"},
                 {
                     "backend": {"enabled": True, "remaining": 0},
                     "google_sheets": {"orders_updated": 0, "items_updated": 0},
@@ -528,6 +530,236 @@ class RefreshFallbackTests(unittest.TestCase):
             self.assertIn("сканирование доступно", app.refresh_messages[0])
             self.assertIn("текущая позиция сохранена", app.status_var.value)
             self.assertFalse(app.refresh_in_progress)
+        finally:
+            app_data_loading.fetch_sheet_data_with_sync = original_fetch_sheet_data_with_sync
+            app_data_loading.backend_read_orders_enabled = original_backend_read_orders_enabled
+
+    def test_refresh_order_identity_prefers_backend_item_id(self):
+        order = {
+            "_backend_order_item_id": "item-1",
+            "ID импорта": "import-1",
+            "_row_number": 42,
+            "ID заказа": "order-1",
+            "Товары": "Chapman Brown OP 20",
+        }
+
+        self.assertEqual(app_data_loading.refresh_order_identity(order), ("backend_item", "item-1"))
+
+    def test_refresh_order_identity_prefers_source_import_before_row_fallback(self):
+        order = {
+            "ID импорта": "import-1",
+            "_row_number": 42,
+            "ID заказа": "order-1",
+            "Товары": "Chapman Brown OP 20",
+        }
+
+        self.assertEqual(app_data_loading.refresh_order_identity(order), ("source_import", "import-1"))
+
+    def test_refresh_merge_preserves_local_unsaved_without_double_counting_remote(self):
+        remote_order = {
+            "_backend_order_item_id": "item-1",
+            "Кол-во блок": 3,
+            "Товары": "Chapman Brown OP 20",
+            "_existing_scanned_codes": [
+                "0104006396053978-REMOTE-1",
+                "0104006396053978-REMOTE-2",
+            ],
+        }
+
+        merged = app_data_loading.merge_remote_and_local_scan_codes(
+            remote_order,
+            [
+                "0104006396053978-REMOTE-2",
+                "0104006396053978-LOCAL-3",
+            ],
+        )
+
+        self.assertEqual(merged["remote_codes"], [
+            "0104006396053978-REMOTE-1",
+            "0104006396053978-REMOTE-2",
+        ])
+        self.assertEqual(merged["local_unsaved"], ["0104006396053978-LOCAL-3"])
+        self.assertEqual(merged["merged_codes"], [
+            "0104006396053978-REMOTE-1",
+            "0104006396053978-REMOTE-2",
+            "0104006396053978-LOCAL-3",
+        ])
+
+    def test_refresh_reconciles_current_backend_item_with_remote_and_local_codes(self):
+        original_fetch_sheet_data_with_sync = app_data_loading.fetch_sheet_data_with_sync
+        original_backend_read_orders_enabled = app_data_loading.backend_read_orders_enabled
+        try:
+            remote_order = {
+                "_backend_order_item_id": "item-1",
+                "ID заказа": "order-1",
+                "Кол-во блок": 3,
+                "Товары": "Chapman Brown OP 20",
+                "_existing_scanned_codes": [
+                    "0104006396053978-REMOTE-1",
+                    "0104006396053978-REMOTE-2",
+                ],
+            }
+            app_data_loading.fetch_sheet_data_with_sync = lambda sync_skladbot=True: (
+                [remote_order],
+                None,
+                {"0104006396053978-REMOTE-1", "0104006396053978-REMOTE-2"},
+                {
+                    "backend": {"enabled": True, "remaining": 0},
+                    "google_sheets": {"orders_updated": 0, "items_updated": 0},
+                    "skladbot": {"enabled": False},
+                    "primary_source": "backend",
+                },
+            )
+            app_data_loading.backend_read_orders_enabled = lambda: True
+            app = FakeRefreshApp()
+            app.current_order = {
+                "_backend_order_item_id": "item-1",
+                "ID заказа": "order-1",
+                "Кол-во блок": 3,
+                "Товары": "Chapman Brown OP 20",
+                "_existing_scanned_codes": ["0104006396053978-REMOTE-1"],
+            }
+            app.today_orders = [app.current_order]
+            app.scanned_codes = ["0104006396053978-REMOTE-1", "0104006396053978-LOCAL-3"]
+            app.saved_codes_count = 1
+            app.set_scan_entry_enabled = lambda enabled, message="": setattr(app, "scan_enabled", enabled)
+            original_current_order = app.current_order
+
+            app.refresh_from_sheet(initial=False)
+
+            self.assertIs(app.current_order, original_current_order)
+            self.assertEqual(app.scanned_codes, [
+                "0104006396053978-REMOTE-1",
+                "0104006396053978-REMOTE-2",
+                "0104006396053978-LOCAL-3",
+            ])
+            self.assertEqual(app.saved_codes_count, 2)
+            self.assertIn("0104006396053978-LOCAL-3", app.all_existing_codes)
+            self.assertEqual(getattr(app, "scan_enabled", None), True)
+            self.assertIn("текущая позиция сохранена", app.status_var.value)
+            self.assertEqual(app.reset_calls, 0)
+        finally:
+            app_data_loading.fetch_sheet_data_with_sync = original_fetch_sheet_data_with_sync
+            app_data_loading.backend_read_orders_enabled = original_backend_read_orders_enabled
+
+    def test_refresh_does_not_resurrect_saved_code_removed_by_backend(self):
+        remote_order = {
+            "_backend_order_item_id": "item-1",
+            "ID заказа": "order-1",
+            "Кол-во блок": 2,
+            "Товары": "Chapman Brown OP 20",
+            "_existing_scanned_codes": ["0104006396053978-REMOTE-KEPT"],
+        }
+        app = FakeRefreshApp()
+        app.current_order = {
+            "_backend_order_item_id": "item-1",
+            "ID заказа": "order-1",
+            "Кол-во блок": 2,
+            "Товары": "Chapman Brown OP 20",
+        }
+        app.today_orders = [remote_order]
+        app.scanned_codes = [
+            "0104006396053978-REMOTE-REMOVED",
+            "0104006396053978-REMOTE-KEPT",
+            "0104006396053978-LOCAL-UNSAVED",
+        ]
+        app.saved_codes_count = 2
+        app.set_scan_entry_enabled = lambda enabled, message="": None
+
+        result = app.reconcile_current_order_after_refresh()
+
+        self.assertEqual(result["status"], "merged")
+        self.assertEqual(app.scanned_codes, [
+            "0104006396053978-REMOTE-KEPT",
+            "0104006396053978-LOCAL-UNSAVED",
+        ])
+        self.assertNotIn("0104006396053978-REMOTE-REMOVED", app.scanned_codes)
+        self.assertEqual(app.saved_codes_count, 1)
+
+    def test_refresh_terminal_remote_order_disables_scan_controls(self):
+        original_fetch_sheet_data_with_sync = app_data_loading.fetch_sheet_data_with_sync
+        original_backend_read_orders_enabled = app_data_loading.backend_read_orders_enabled
+        try:
+            remote_order = {
+                "_backend_order_item_id": "item-1",
+                "ID заказа": "order-1",
+                "Кол-во блок": 2,
+                "Товары": "Chapman Brown OP 20",
+                "status": "returned",
+                "_existing_scanned_codes": ["0104006396053978-REMOTE-1"],
+            }
+            app_data_loading.fetch_sheet_data_with_sync = lambda sync_skladbot=True: (
+                [remote_order],
+                None,
+                {"0104006396053978-REMOTE-1"},
+                {
+                    "backend": {"enabled": True, "remaining": 0},
+                    "google_sheets": {"orders_updated": 0, "items_updated": 0},
+                    "skladbot": {"enabled": False},
+                    "primary_source": "backend",
+                },
+            )
+            app_data_loading.backend_read_orders_enabled = lambda: True
+            app = FakeRefreshApp()
+            scan_states = []
+            app.current_order = {
+                "_backend_order_item_id": "item-1",
+                "ID заказа": "order-1",
+                "Кол-во блок": 2,
+                "Товары": "Chapman Brown OP 20",
+                "_existing_scanned_codes": [],
+            }
+            app.today_orders = [app.current_order]
+            app.scanned_codes = ["0104006396053978-LOCAL-2"]
+            app.set_scan_entry_enabled = lambda enabled, message="": scan_states.append((enabled, message))
+
+            app.refresh_from_sheet(initial=False)
+
+            self.assertEqual(app.scanned_codes, ["0104006396053978-REMOTE-1"])
+            self.assertEqual(app.saved_codes_count, 1)
+            self.assertEqual(scan_states[-1][0], False)
+            self.assertIn("закрыта", scan_states[-1][1])
+            self.assertIn("закрыта на другом ПК", app.status_var.value)
+        finally:
+            app_data_loading.fetch_sheet_data_with_sync = original_fetch_sheet_data_with_sync
+            app_data_loading.backend_read_orders_enabled = original_backend_read_orders_enabled
+
+    def test_refresh_missing_current_order_disables_scan_without_losing_cached_order(self):
+        original_fetch_sheet_data_with_sync = app_data_loading.fetch_sheet_data_with_sync
+        original_backend_read_orders_enabled = app_data_loading.backend_read_orders_enabled
+        try:
+            app_data_loading.fetch_sheet_data_with_sync = lambda sync_skladbot=True: (
+                [{"_backend_order_item_id": "item-2", "Товары": "Other", "Кол-во блок": 1}],
+                None,
+                set(),
+                {
+                    "backend": {"enabled": True, "remaining": 0},
+                    "google_sheets": {"orders_updated": 0, "items_updated": 0},
+                    "skladbot": {"enabled": False},
+                    "primary_source": "backend",
+                },
+            )
+            app_data_loading.backend_read_orders_enabled = lambda: True
+            app = FakeRefreshApp()
+            scan_states = []
+            original_order = {
+                "_backend_order_item_id": "item-1",
+                "ID заказа": "order-1",
+                "Кол-во блок": 2,
+                "Товары": "Chapman Brown OP 20",
+            }
+            app.current_order = original_order
+            app.today_orders = [original_order]
+            app.scanned_codes = ["0104006396053978-LOCAL-1"]
+            app.set_scan_entry_enabled = lambda enabled, message="": scan_states.append((enabled, message))
+
+            app.refresh_from_sheet(initial=False)
+
+            self.assertIs(app.current_order, original_order)
+            self.assertEqual(app.scanned_codes, ["0104006396053978-LOCAL-1"])
+            self.assertEqual(scan_states[-1][0], False)
+            self.assertIn("больше не активна", scan_states[-1][1])
+            self.assertIn("больше не активна", app.status_var.value)
         finally:
             app_data_loading.fetch_sheet_data_with_sync = original_fetch_sheet_data_with_sync
             app_data_loading.backend_read_orders_enabled = original_backend_read_orders_enabled

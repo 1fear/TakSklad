@@ -36,7 +36,7 @@ class BackendEventQueueTests(unittest.TestCase):
             {
                 "id": "scan-1",
                 "type": "scan",
-                "payload": {"order_item_id": "item-1", "code": "01012345678901234567ABC"},
+                "payload": {"order_item_id": "item-1", "code": "TEST-CODE-ABC"},
                 "attempts": 0,
                 "last_error": "",
             }
@@ -61,7 +61,7 @@ class BackendEventQueueTests(unittest.TestCase):
             {
                 "id": "scan-1",
                 "type": "scan",
-                "payload": {"order_item_id": "item-1", "code": "01012345678901234567ABC"},
+                "payload": {"order_item_id": "item-1", "code": "TEST-CODE-ABC"},
                 "attempts": 0,
                 "last_error": "",
             }
@@ -81,6 +81,38 @@ class BackendEventQueueTests(unittest.TestCase):
         self.assertEqual(result["synced"], 1)
         self.assertEqual(result["failed"], 0)
         self.assertEqual(result["remaining"], 0)
+        self.assertEqual(state["items"], [])
+
+    def test_non_retryable_scan_conflict_is_returned_as_blocked_event(self):
+        state = self.use_pending_events([
+            {
+                "id": "scan-1",
+                "type": "scan",
+                "payload": {"order_item_id": "item-1", "code": "TEST-CODE-ABC"},
+                "attempts": 0,
+                "last_error": "",
+            }
+        ])
+
+        def conflict_create_scan(*args, **kwargs):
+            raise BackendApiError(
+                "Backend HTTP 409: code already scanned for another order item",
+                status_code=409,
+                detail="code already scanned for another order item",
+            )
+
+        backend_events.create_scan = conflict_create_scan
+
+        result = backend_events.sync_pending_backend_events()
+
+        self.assertEqual(result["synced"], 0)
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(result["remaining"], 0)
+        self.assertEqual(result["dropped"], 1)
+        self.assertEqual(result["blocked"], 1)
+        self.assertEqual(len(result["blocked_events"]), 1)
+        self.assertEqual(result["blocked_events"][0]["attempts"], 1)
+        self.assertIn("409", result["blocked_events"][0]["last_error"])
         self.assertEqual(state["items"], [])
 
 

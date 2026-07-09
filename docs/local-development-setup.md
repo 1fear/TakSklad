@@ -53,6 +53,11 @@ python3.12 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt -r backend/requirements.txt
 ```
 
+На macOS с Homebrew для Tk-dependent desktop-тестов нужен пакет `python-tk@3.12`.
+Проектный `sitecustomize.py` добавляет `src/` в `sys.path` и, если пакет установлен,
+подхватывает `/opt/homebrew/opt/python-tk@3.12/libexec` или `/usr/local/opt/python-tk@3.12/libexec`
+для `_tkinter` при локальных `PYTHONPATH=.` проверках.
+
 Если `.venv/bin/python --version` показывает Python 3.9, пересобери локальную среду перед backend-проверками:
 
 ```bash
@@ -119,3 +124,21 @@ docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml down 
 - реальные Telegram токены;
 - реальные Google private keys;
 - реальные VPS-пароли и ключи.
+
+## Windows Рабочие Компьютеры: Второй Запуск
+
+Desktop-приложение создаёт локальный `TakSklad_instance.lock` рядом с рабочими файлами, чтобы два окна TakSklad на одном ПК не писали одновременно в очереди сканов, печати, Telegram и backend events.
+
+Если сотрудник видит сообщение `TakSklad уже запущен на этом компьютере`:
+
+1. Проверить, не открыто ли уже окно TakSklad.
+2. Если окна нет, перезагрузить рабочий ПК.
+3. Если после перезагрузки сообщение осталось, передать поддержку PID из сообщения. Вручную удалять lock можно только после проверки, что процесс с этим PID не работает или lock старше 24 часов без PID.
+
+Lock не содержит токены, КИЗы, заказы или клиентские данные.
+
+## Windows Рабочие Компьютеры: Runbook Надёжности
+
+Операторские recovery-сценарии для stale build, битых локальных данных, очередей, сети, сбоя обновления, возвратов, scan guard и Windows manual acceptance описаны отдельно:
+
+- `docs/desktop-workstation-reliability-runbook.md`

@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from taksklad import startup_check, storage
+from taksklad import single_instance, startup_check, storage
 
 
 def credentials():
@@ -74,6 +74,10 @@ class StartupCheckTests(unittest.TestCase):
             formatted = startup_check.format_startup_self_check(check)
 
             self.assertEqual(check["build_label"], "MVP 2.0")
+            self.assertRegex(check["workstation_id"], r"^[a-f0-9]{12}$")
+            self.assertEqual(check["version_status"], "checking")
+            self.assertEqual(check["app_data_status"], "ok")
+            self.assertEqual(check["app_data_restored"], "no")
             self.assertEqual(check["credentials"], "stored")
             self.assertEqual(check["telegram_enabled"], "yes")
             self.assertEqual(check["telegram_token"], "yes")
@@ -88,10 +92,103 @@ class StartupCheckTests(unittest.TestCase):
             self.assertIn("telegram_desktop_polling=no", formatted)
             self.assertIn("backend_only_refresh=yes", formatted)
             self.assertIn("backend_emergency_google_fallback=no", formatted)
+            self.assertIn("app_data_status=ok", formatted)
             self.assertNotIn("telegram-token", formatted)
             self.assertNotIn("backend-token", formatted)
             self.assertNotIn("geocoder-key", formatted)
             self.assertNotIn("secret-code", formatted)
+
+    def test_version_update_status_current_manifest_is_non_blocking(self):
+        status = startup_check.build_version_update_status(
+            {
+                "latest_version": startup_check.APP_VERSION,
+                "min_supported_version": startup_check.APP_VERSION,
+                "mandatory": True,
+                "block_workflow": True,
+                "package_type": "onefile_exe",
+            }
+        )
+        label = startup_check.format_version_update_status_label(status)
+
+        self.assertEqual(status["state"], "current")
+        self.assertEqual(status["blocking"], "no")
+        self.assertIn("актуальная", label)
+        self.assertIn(startup_check.APP_VERSION, label)
+        self.assertIn("ПК", label)
+
+    def test_version_update_status_blocks_below_min_supported(self):
+        status = startup_check.build_version_update_status(
+            {
+                "latest_version": "2.0.25",
+                "min_supported_version": "2.0.25",
+                "mandatory": True,
+                "block_workflow": True,
+                "package_type": "onefile_exe",
+            },
+            current_version="2.0.24",
+        )
+        label = startup_check.format_version_update_status_label(status)
+
+        self.assertEqual(status["state"], "blocked")
+        self.assertEqual(status["blocking"], "yes")
+        self.assertEqual(status["below_min_version"], "yes")
+        self.assertIn("заблокирована", label)
+        self.assertIn("2.0.25", label)
+
+    def test_version_update_status_outdated_without_workflow_block_is_non_blocking(self):
+        status = startup_check.build_version_update_status(
+            {
+                "latest_version": "2.0.26",
+                "min_supported_version": startup_check.APP_VERSION,
+                "mandatory": False,
+                "block_workflow": False,
+                "package_type": "onefile_exe",
+            }
+        )
+        label = startup_check.format_version_update_status_label(status)
+
+        self.assertEqual(status["state"], "outdated")
+        self.assertEqual(status["blocking"], "no")
+        self.assertIn("Доступно обновление 2.0.26", label)
+
+    def test_version_update_status_mandatory_without_block_workflow_is_non_blocking(self):
+        status = startup_check.build_version_update_status(
+            {
+                "latest_version": "2.0.26",
+                "min_supported_version": startup_check.APP_VERSION,
+                "mandatory": True,
+                "block_workflow": False,
+                "package_type": "onefile_exe",
+            }
+        )
+
+        self.assertEqual(status["state"], "outdated")
+        self.assertEqual(status["mandatory"], "yes")
+        self.assertEqual(status["block_workflow"], "no")
+        self.assertEqual(status["blocking"], "no")
+
+    def test_version_update_status_unavailable_uses_error_class_only(self):
+        error = RuntimeError("token=secret-token Authorization: Bearer secret")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            storage.TAKSKLAD_DATA_FILE = str(tmp_path / "TakSklad_data.json")
+            storage.CREDENTIALS_FILE = str(tmp_path / "credentials.json")
+            Path(storage.TAKSKLAD_DATA_FILE).write_text("{}", encoding="utf-8")
+
+            status = startup_check.build_version_update_status(error=error)
+            check = startup_check.build_startup_self_check(status)
+            label = startup_check.format_version_update_status_label(status)
+            formatted = startup_check.format_startup_self_check(check)
+
+        self.assertEqual(status["state"], "unavailable")
+        self.assertEqual(status["error_class"], "RuntimeError")
+        self.assertIn("RuntimeError", label)
+        self.assertIn("version_error_class=RuntimeError", formatted)
+        self.assertNotIn("secret-token", label)
+        self.assertNotIn("Authorization", label)
+        self.assertNotIn("secret-token", formatted)
+        self.assertNotIn("Authorization", formatted)
 
     def test_app_version_label_contains_mvp_marker(self):
         label = startup_check.format_app_version_label()
@@ -109,6 +206,116 @@ class StartupCheckTests(unittest.TestCase):
             Path(storage.CREDENTIALS_FILE).write_text(json.dumps(credentials()), encoding="utf-8")
 
             self.assertEqual(startup_check.credentials_status(storage.load_app_data()), "file")
+
+    def test_startup_self_check_reports_degraded_app_data_without_payload_values(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            storage.TAKSKLAD_DATA_FILE = str(tmp_path / "TakSklad_data.json")
+            storage.CREDENTIALS_FILE = str(tmp_path / "credentials.json")
+            Path(storage.TAKSKLAD_DATA_FILE).write_text("{broken-json token-secret", encoding="utf-8")
+
+            check = startup_check.build_startup_self_check()
+            formatted = startup_check.format_startup_self_check(check)
+
+            self.assertEqual(check["app_data_status"], "degraded")
+            self.assertEqual(check["app_data_restored"], "no")
+            self.assertIn("app_data_status=degraded", formatted)
+            self.assertNotIn("token-secret", formatted)
+
+
+class SingleInstanceTests(unittest.TestCase):
+    def test_second_instance_is_rejected_with_operator_safe_message(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            first = single_instance.acquire_single_instance_lock(
+                app_dir=tmp_dir,
+                now=1_000,
+                process_running_func=lambda pid: True,
+            )
+            second = single_instance.acquire_single_instance_lock(
+                app_dir=tmp_dir,
+                now=1_010,
+                process_running_func=lambda pid: True,
+            )
+
+            self.assertTrue(first.acquired)
+            self.assertFalse(second.acquired)
+            self.assertEqual(second.reason, "already_running")
+            self.assertIn("уже запущен", second.message)
+            self.assertIn("локальные очереди сканов", second.message)
+            self.assertNotIn(tmp_dir, second.message)
+
+            single_instance.release_single_instance_lock(first.lock)
+
+    def test_dead_pid_lock_is_recovered(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            lock_path = Path(single_instance.single_instance_lock_path(tmp_dir))
+            lock_path.write_text(
+                json.dumps({"owner_id": "old", "pid": 999999, "updated_ts": 1_000}),
+                encoding="utf-8",
+            )
+
+            result = single_instance.acquire_single_instance_lock(
+                app_dir=tmp_dir,
+                now=1_010,
+                process_running_func=lambda pid: False,
+            )
+
+            self.assertTrue(result.acquired)
+            self.assertTrue(result.recovered)
+            self.assertEqual(result.reason, "acquired_after_stale_recovery")
+            single_instance.release_single_instance_lock(result.lock)
+
+    def test_live_pid_lock_is_not_recovered_even_when_old(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            lock_path = Path(single_instance.single_instance_lock_path(tmp_dir))
+            lock_path.write_text(
+                json.dumps({"owner_id": "old", "pid": 123, "updated_ts": 1_000}),
+                encoding="utf-8",
+            )
+
+            result = single_instance.acquire_single_instance_lock(
+                app_dir=tmp_dir,
+                now=1_000 + single_instance.SINGLE_INSTANCE_LOCK_STALE_SECONDS + 1,
+                process_running_func=lambda pid: True,
+            )
+
+            self.assertFalse(result.acquired)
+            self.assertFalse(result.recovered)
+            self.assertEqual(result.existing["pid"], 123)
+
+    def test_no_pid_lock_is_recovered_by_ttl(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            lock_path = Path(single_instance.single_instance_lock_path(tmp_dir))
+            lock_path.write_text(
+                json.dumps({"owner_id": "old", "updated_ts": 1_000}),
+                encoding="utf-8",
+            )
+
+            result = single_instance.acquire_single_instance_lock(
+                app_dir=tmp_dir,
+                now=1_000 + single_instance.SINGLE_INSTANCE_LOCK_STALE_SECONDS + 1,
+                process_running_func=lambda pid: True,
+            )
+
+            self.assertTrue(result.acquired)
+            self.assertTrue(result.recovered)
+            single_instance.release_single_instance_lock(result.lock)
+
+    def test_release_removes_only_owned_lock(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            result = single_instance.acquire_single_instance_lock(app_dir=tmp_dir, now=1_000)
+            lock_path = Path(result.lock.path)
+
+            self.assertTrue(single_instance.release_single_instance_lock(result.lock))
+            self.assertFalse(lock_path.exists())
+
+            other = single_instance.acquire_single_instance_lock(app_dir=tmp_dir, now=1_100)
+            payload = json.loads(lock_path.read_text(encoding="utf-8"))
+            payload["owner_id"] = "other-owner"
+            lock_path.write_text(json.dumps(payload), encoding="utf-8")
+
+            self.assertFalse(single_instance.release_single_instance_lock(other.lock))
+            self.assertTrue(lock_path.exists())
 
 
 if __name__ == "__main__":

@@ -6,17 +6,23 @@ import tkinter as tk
 from tkinter import messagebox
 
 from .config import (
+    ACCENT,
     APP_NAME,
     BG_MAIN,
     ERROR_BG,
     ERROR_FG,
     FG_MUTED,
     FG_TEXT,
+    SUCCESS,
     LOG_FILE,
     WARNING,
 )
+from .backend_client import backend_configured
+from .desktop_diagnostics import build_sync_queue_summary, format_sync_queue_summary, write_diagnostic_bundle
 from .sheets import release_telegram_poll_lock
+from .single_instance import release_single_instance_lock
 from .telegram_service import telegram_single_listener_lock_enabled
+from .ui_widgets import AppButton
 from .utils import normalize_text
 
 
@@ -279,6 +285,117 @@ class AppRuntimeMixin:
         self.show_status_notice(message, bg=BG_MAIN, fg=FG_MUTED, prefix="✅", log_level=logging.INFO)
 
 
+    def build_sync_queue_window_summary(self):
+        return build_sync_queue_summary(
+            sync_result=getattr(self, "last_sync_result", {}),
+            google_available=bool(getattr(self, "sheet", None)),
+            backend_available=backend_configured(),
+        )
+
+
+    def retry_sync_queues_from_window(self, window=None):
+        summary = self.build_sync_queue_window_summary()
+        if not summary.get("retry_enabled"):
+            self.show_warning(summary.get("retry_blocker") or "Повтор очередей сейчас недоступен")
+            return False
+
+        queues = summary.get("queues") or {}
+        self.show_info("Повторяю отправку очередей")
+        if (queues.get("google_saves") or {}).get("count"):
+            self.refresh_from_sheet()
+        if (queues.get("backend_scans") or {}).get("count") or (queues.get("backend_completes") or {}).get("count"):
+            self.sync_backend_events_async()
+        if (queues.get("telegram") or {}).get("count"):
+            self.sync_pending_telegram_async()
+        if (queues.get("prints") or {}).get("count"):
+            self.check_pending_prints()
+        if window is not None:
+            try:
+                window.destroy()
+            except tk.TclError:
+                pass
+        return True
+
+
+    def show_sync_queue_window(self):
+        summary = self.build_sync_queue_window_summary()
+        text = format_sync_queue_summary(summary)
+        window = tk.Toplevel(self)
+        window.title("Очереди синхронизации")
+        window.configure(bg=BG_MAIN)
+        window.resizable(False, False)
+
+        tk.Label(
+            window,
+            text="Очереди синхронизации",
+            bg=BG_MAIN,
+            fg=FG_TEXT,
+            font=("Segoe UI", 13, "bold"),
+        ).pack(anchor="w", padx=18, pady=(16, 8))
+
+        body = tk.Text(
+            window,
+            width=74,
+            height=12,
+            bg=BG_MAIN,
+            fg=FG_TEXT,
+            relief="flat",
+            bd=0,
+            font=("Segoe UI", 10),
+            wrap="word",
+        )
+        body.insert("1.0", text)
+        body.config(state="disabled")
+        body.pack(fill="both", expand=True, padx=18, pady=(0, 12))
+
+        actions = tk.Frame(window, bg=BG_MAIN)
+        actions.pack(fill="x", padx=18, pady=(0, 16))
+
+        retry_btn = AppButton(
+            actions,
+            text="↻ ПОВТОРИТЬ",
+            bg=SUCCESS if summary.get("retry_enabled") else WARNING,
+            fg="white" if summary.get("retry_enabled") else FG_TEXT,
+            font=("Segoe UI", 9, "bold"),
+            command=lambda: self.retry_sync_queues_from_window(window),
+            state="normal" if summary.get("retry_enabled") else "disabled",
+            pady=7,
+        )
+        retry_btn.pack(side="left")
+
+        close_btn = AppButton(
+            actions,
+            text="ЗАКРЫТЬ",
+            bg=ACCENT,
+            fg="white",
+            font=("Segoe UI", 9, "bold"),
+            command=window.destroy,
+            pady=7,
+        )
+        close_btn.pack(side="right")
+
+        self.update_idletasks()
+        window.update_idletasks()
+        x = self.winfo_x() + max((self.winfo_width() - window.winfo_width()) // 2, 0)
+        y = self.winfo_y() + max((self.winfo_height() - window.winfo_height()) // 2, 0)
+        window.geometry(f"+{x}+{y}")
+        return window
+
+
+    def create_diagnostic_bundle_for_support(self):
+        try:
+            path, _manifest = write_diagnostic_bundle(sync_result=getattr(self, "last_sync_result", {}))
+        except Exception:
+            logging.exception("Не удалось создать диагностический пакет")
+            self.show_error(
+                "Не удалось создать диагностический пакет. Подробности записаны в лог.",
+                popup=False,
+            )
+            return ""
+        self.show_info(f"Диагностический пакет создан: {path}")
+        return path
+
+
     def show_critical_error(self, title, exc_or_message):
         if isinstance(exc_or_message, BaseException):
             message = str(exc_or_message)
@@ -341,4 +458,10 @@ class AppRuntimeMixin:
                 release_telegram_poll_lock(self.telegram_lock_owner_id)
             except Exception:
                 logging.info("Telegram: lock не освобождён при закрытии", exc_info=True)
+        if getattr(self, "single_instance_lock", None):
+            try:
+                release_single_instance_lock(self.single_instance_lock)
+            except Exception:
+                logging.info("Single-instance lock не освобождён при закрытии", exc_info=True)
+            self.single_instance_lock = None
         self.destroy()

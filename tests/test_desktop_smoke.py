@@ -113,7 +113,8 @@ def attach_main_screen_widgets(app):
     app.party_summary_label = FakeWidget("Партия не выбрана")
     app.position_label = FakeWidget("")
     app.progress_label = FakeWidget("0 / 0")
-    app.scan_entry = FakeWidget("")
+    app.scan_entry = FakeWidget("", state="disabled")
+    app.scan_guard_label = FakeWidget("SKU-защита недоступна: выберите позицию.")
     app.last_code_label = FakeWidget("")
     app.undo_btn = FakeWidget("↩️ ОТМЕНИТЬ ПОСЛЕДНИЙ КОД", state="disabled")
     app.next_product_btn = FakeWidget("➡️ СЛЕДУЮЩАЯ ПОЗИЦИЯ", state="disabled")
@@ -124,10 +125,13 @@ def attach_main_screen_widgets(app):
     app.pending_saves_label = FakeWidget("OK")
     app.sync_caption_label = FakeWidget("Синхронизация")
     app.backend_status_label = FakeWidget("")
+    app.sync_queue_btn = FakeWidget("ОЧЕРЕДИ")
+    app.diagnostics_btn = FakeWidget("ДИАГНОСТИКА")
     app.report_btn = FakeWidget("📊 ЗАКРЫТЬ СМЕНУ")
     app.error_toast = FakeWidget("")
     app.status_var = FakeVar("✅ Готов к работе")
     app.status_label = FakeWidget("")
+    app.version_status_label = FakeWidget("Версия: 2.0.25 · MVP 2.0 · проверка обновлений · ПК abc123")
 
 
 if __name__ == "__main__":

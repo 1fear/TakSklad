@@ -15,6 +15,7 @@ MAIN_SCREEN_REQUIRED_WIDGETS = (
     "position_label",
     "progress_label",
     "scan_entry",
+    "scan_guard_label",
     "last_code_label",
     "undo_btn",
     "next_product_btn",
@@ -25,10 +26,13 @@ MAIN_SCREEN_REQUIRED_WIDGETS = (
     "pending_saves_label",
     "sync_caption_label",
     "backend_status_label",
+    "sync_queue_btn",
+    "diagnostics_btn",
     "report_btn",
     "error_toast",
     "status_var",
     "status_label",
+    "version_status_label",
 )
 
 MAIN_SCREEN_TEXT_EXPECTATIONS = {
@@ -42,6 +46,7 @@ MAIN_SCREEN_TEXT_EXPECTATIONS = {
     "product_photo_caption_label": "Фото товара",
     "party_summary_label": "Партия не выбрана",
     "progress_label": "0 / 0",
+    "scan_guard_label": "SKU-защита недоступна",
     "undo_btn": "ОТМЕНИТЬ ПОСЛЕДНИЙ КОД",
     "next_product_btn": "СЛЕДУЮЩАЯ ПОЗИЦИЯ",
     "finish_btn": "ЗАВЕРШИТЬ ЗАКАЗ",
@@ -50,10 +55,13 @@ MAIN_SCREEN_TEXT_EXPECTATIONS = {
     "active_orders_label": "0",
     "pending_saves_label": "OK",
     "sync_caption_label": "Синхронизация",
+    "sync_queue_btn": "ОЧЕРЕДИ",
+    "diagnostics_btn": "ДИАГНОСТИКА",
     "report_btn": "ЗАКРЫТЬ СМЕНУ",
+    "version_status_label": "Версия:",
 }
 
-MAIN_SCREEN_DISABLED_BUTTONS = ("undo_btn", "next_product_btn", "finish_btn")
+MAIN_SCREEN_DISABLED_BUTTONS = ("scan_entry", "undo_btn", "next_product_btn", "finish_btn")
 
 
 def run_tk_app_smoke(app_factory):

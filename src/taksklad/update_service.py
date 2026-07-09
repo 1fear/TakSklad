@@ -23,6 +23,31 @@ from .config import (
 from .http_client import open_https_url
 from .utils import file_sha256, normalize_text
 
+UPDATE_RUNTIME_EXCLUDE_FILES = (
+    "TakSklad_data.json",
+    "TakSklad_data.json.last_good.*.bak",
+    "TakSklad_data.json.*.tmp",
+    "credentials.json",
+    "telegram_settings.json",
+    "pending_saves.json",
+    "pending_prints.json",
+    "pending_telegram.json",
+    "pending_backend_events.json",
+    "telegram_state.json",
+    "product_catalog.json",
+    "import_history.json",
+    "print_settings.json",
+    "*.log",
+)
+UPDATE_RUNTIME_EXCLUDE_DIRS = (
+    "scan_backups",
+    "reports",
+    "outputs",
+    "backups",
+    "diagnostics",
+)
+
+
 def parse_version_parts(version):
     parts = re.findall(r"\d+", normalize_text(version))
     if not parts:
@@ -178,6 +203,9 @@ def validate_onedir_zip(zip_path):
 def powershell_single_quoted(value):
     return "'" + str(value).replace("'", "''") + "'"
 
+def powershell_array(values):
+    return "@(" + ", ".join(powershell_single_quoted(value) for value in values) + ")"
+
 def get_windows_desktop_dir():
     if os.name != "nt":
         return None
@@ -309,6 +337,8 @@ def create_windows_onedir_updater(update_zip_path, update_info):
     extract_dir = os.path.join(tempfile.gettempdir(), f"{APP_NAME}_update_extract_{os.getpid()}")
     process_id = os.getpid()
     entrypoint = normalize_text(update_info.get("entrypoint")) or APP_EXECUTABLE_NAME
+    runtime_exclude_files = powershell_array(UPDATE_RUNTIME_EXCLUDE_FILES)
+    runtime_exclude_dirs = powershell_array(UPDATE_RUNTIME_EXCLUDE_DIRS)
 
     shortcut_script = write_windows_shortcut_script(
         target_exe=os.path.join(app_dir, entrypoint),
@@ -324,6 +354,12 @@ $LogPath = {powershell_single_quoted(log_path)}
 $EntryPoint = {powershell_single_quoted(entrypoint)}
 $ProcessIdToWait = {process_id}
 $Desktop = [Environment]::GetFolderPath('Desktop')
+$RuntimeExcludeFiles = {runtime_exclude_files}
+$RuntimeExcludeDirs = {runtime_exclude_dirs}
+$ParentDir = [IO.Path]::GetDirectoryName($AppDir)
+$UpdateStamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+$NewDir = Join-Path $ParentDir ("{APP_NAME}_new_" + $UpdateStamp)
+$PreviousDir = Join-Path $ParentDir ("{APP_NAME}_previous_" + $UpdateStamp)
 
 function Write-UpdateLog([string]$Message) {{
   $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
@@ -351,16 +387,41 @@ try {{
     throw "В архиве обновления не найден $EntryPoint"
   }}
 
-  robocopy $SourceDir $AppDir /E /R:3 /W:1 /NFL /NDL /NJH /NJS /NP /XF TakSklad_data.json credentials.json telegram_settings.json pending_saves.json pending_prints.json pending_telegram.json telegram_state.json product_catalog.json import_history.json print_settings.json *.log | Out-Null
+  if (Test-Path $NewDir) {{
+    Remove-Item -LiteralPath $NewDir -Recurse -Force
+  }}
+  New-Item -ItemType Directory -Path $NewDir -Force | Out-Null
+  Write-UpdateLog ("Runtime files excluded from update copy: " + ($RuntimeExcludeFiles -join ', '))
+  robocopy $SourceDir $NewDir /E /R:3 /W:1 /NFL /NDL /NJH /NJS /NP /XF $RuntimeExcludeFiles /XD $RuntimeExcludeDirs | Out-Null
   if ($LASTEXITCODE -gt 7) {{
     throw "robocopy failed with exit code $LASTEXITCODE"
   }}
+
+  if (Test-Path $AppDir) {{
+    foreach ($Name in $RuntimeExcludeFiles) {{
+      Get-ChildItem -Path $AppDir -Force -File -Filter $Name -ErrorAction SilentlyContinue |
+        Copy-Item -Destination $NewDir -Force
+    }}
+    foreach ($DirName in $RuntimeExcludeDirs) {{
+      $RuntimeDirSource = Join-Path $AppDir $DirName
+      $RuntimeDirTarget = Join-Path $NewDir $DirName
+      if (Test-Path $RuntimeDirSource) {{
+        if (Test-Path $RuntimeDirTarget) {{
+          Remove-Item -LiteralPath $RuntimeDirTarget -Recurse -Force
+        }}
+        Copy-Item -LiteralPath $RuntimeDirSource -Destination $RuntimeDirTarget -Recurse -Force
+      }}
+    }}
+    Move-Item -LiteralPath $AppDir -Destination $PreviousDir -Force
+  }}
+  Move-Item -LiteralPath $NewDir -Destination $AppDir -Force
 
 {shortcut_script}
 
   $NewExe = Join-Path $AppDir $EntryPoint
   Write-UpdateLog "Обновление установлено: $NewExe"
   Start-Process -FilePath $NewExe -WorkingDirectory $AppDir
+  Write-UpdateLog "Previous app dir retained for health-confirmed/manual rollback: $PreviousDir"
   Remove-Item -LiteralPath $ZipPath -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $ExtractDir -Recurse -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
@@ -371,7 +432,23 @@ try {{
   # Пользователь увидит, что приложение не открылось, посмотрит лог и
   # решит, что делать.
   Write-UpdateLog ("Ошибка onedir-обновления: " + $_.Exception.Message)
+  if (Test-Path $PreviousDir) {{
+    try {{
+      Write-UpdateLog "Пробую восстановить previous app dir после неудачного обновления."
+      if (Test-Path $AppDir) {{
+        $FailedDir = Join-Path $ParentDir ("{APP_NAME}_failed_" + (Get-Date -Format 'yyyyMMdd_HHmmss'))
+        Move-Item -LiteralPath $AppDir -Destination $FailedDir -Force
+      }}
+      Move-Item -LiteralPath $PreviousDir -Destination $AppDir -Force
+      Write-UpdateLog "Previous app dir restored after failed update."
+    }} catch {{
+      Write-UpdateLog ("Не удалось восстановить previous app dir: " + $_.Exception.Message)
+    }}
+  }}
+  Remove-Item -LiteralPath $NewDir -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $ExtractDir -Recurse -Force -ErrorAction SilentlyContinue
   Write-UpdateLog "Перезапуск старого exe отключён во избежание цикла обновлений."
+  Write-UpdateLog "Безопасное действие: установите свежий Windows-архив вручную и запускайте только новый TakSklad.exe."
   exit 1
 }}
 """

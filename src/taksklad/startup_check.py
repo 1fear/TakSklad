@@ -1,6 +1,7 @@
 import hashlib
 import logging
 import os
+import socket
 import sys
 from urllib.parse import urlparse
 
@@ -23,6 +24,7 @@ from .config import (
 )
 from .geocoding import load_yandex_geocoder_key
 from .telegram_service import get_telegram_chat_ids
+from .update_service import compare_versions, package_transition_required
 from .utils import normalize_text
 
 
@@ -59,6 +61,17 @@ def bool_text(value):
     return "yes" if value else "no"
 
 
+def manifest_bool(value):
+    if isinstance(value, bool):
+        return value
+    return normalize_text(value).lower() in {"1", "true", "yes", "on", "да"}
+
+
+def build_workstation_id():
+    hostname = normalize_text(socket.gethostname()) or "unknown"
+    return safe_hash(f"{hostname}|{APP_DIR}", length=12)
+
+
 def format_app_version_label():
     label = normalize_text(APP_BUILD_LABEL)
     if label:
@@ -66,8 +79,79 @@ def format_app_version_label():
     return f"Версия: {APP_VERSION}"
 
 
-def build_startup_self_check():
+def build_version_update_status(update_info=None, error=None, current_version=APP_VERSION):
+    payload = update_info if isinstance(update_info, dict) else {}
+    latest_version = normalize_text(payload.get("latest_version"))
+    min_supported_version = normalize_text(payload.get("min_supported_version"))
+    package_type = normalize_text(payload.get("package_type"))
+    mandatory_update = manifest_bool(payload.get("mandatory"))
+    block_workflow = manifest_bool(payload.get("block_workflow"))
+    error_class = type(error).__name__ if error is not None else ""
+    update_available = bool(latest_version) and compare_versions(current_version, latest_version) < 0
+    below_min_version = bool(min_supported_version) and compare_versions(current_version, min_supported_version) < 0
+    package_update_required = bool(payload) and package_transition_required(payload)
+    blocking_forced_update = block_workflow and (below_min_version or (mandatory_update and update_available))
+
+    if error_class:
+        state = "unavailable"
+    elif not payload:
+        state = "checking"
+    elif blocking_forced_update:
+        state = "blocked"
+    elif update_available or below_min_version or package_update_required:
+        state = "outdated"
+    else:
+        state = "current"
+
+    return {
+        "state": state,
+        "workstation_id": build_workstation_id(),
+        "current_version": current_version,
+        "build_label": APP_BUILD_LABEL,
+        "latest_version": latest_version,
+        "min_supported_version": min_supported_version,
+        "package_type": package_type,
+        "mandatory": bool_text(mandatory_update),
+        "block_workflow": bool_text(block_workflow),
+        "update_available": bool_text(update_available),
+        "below_min_version": bool_text(below_min_version),
+        "package_update_required": bool_text(package_update_required),
+        "blocking": bool_text(blocking_forced_update),
+        "error_class": error_class,
+    }
+
+
+def format_version_update_status_label(status):
+    status = status if isinstance(status, dict) else build_version_update_status()
+    current_version = normalize_text(status.get("current_version")) or APP_VERSION
+    latest_version = normalize_text(status.get("latest_version"))
+    min_supported_version = normalize_text(status.get("min_supported_version"))
+    package_type = normalize_text(status.get("package_type"))
+    workstation_id = normalize_text(status.get("workstation_id")) or build_workstation_id()
+    base = format_app_version_label()
+    suffix = f" · ПК {workstation_id}"
+    if package_type:
+        suffix += f" · пакет {package_type}"
+
+    state = normalize_text(status.get("state"))
+    if state == "current":
+        return f"{base} · актуальная{suffix}"
+    if state == "blocked":
+        target = min_supported_version or latest_version or "новая версия"
+        return f"⛔ Версия {current_version} заблокирована до обновления минимум до {target}{suffix}"
+    if state == "outdated":
+        target = latest_version or min_supported_version or "новая версия"
+        return f"⚠ Доступно обновление {target}{suffix}"
+    if state == "unavailable":
+        error_class = normalize_text(status.get("error_class")) or "unknown"
+        return f"⚠ Статус обновления недоступен ({error_class}){suffix}"
+    return f"{base} · проверка обновлений{suffix}"
+
+
+def build_startup_self_check(version_status=None):
+    version_status = version_status if isinstance(version_status, dict) else build_version_update_status()
     app_data = storage.load_app_data()
+    app_data_recovery = storage.get_app_data_recovery_status()
     telegram_settings = app_data.get("telegram_settings") if isinstance(app_data.get("telegram_settings"), dict) else {}
     telegram_enabled = bool(telegram_settings.get("enabled"))
     telegram_token_configured = bool(normalize_text(telegram_settings.get("bot_token")))
@@ -81,6 +165,14 @@ def build_startup_self_check():
     return {
         "version": APP_VERSION,
         "build_label": APP_BUILD_LABEL,
+        "workstation_id": version_status.get("workstation_id") or build_workstation_id(),
+        "version_status": version_status.get("state") or "checking",
+        "version_latest": version_status.get("latest_version") or "",
+        "version_min_supported": version_status.get("min_supported_version") or "",
+        "version_package_type": version_status.get("package_type") or "",
+        "version_mandatory": version_status.get("mandatory") or "no",
+        "version_block_workflow": version_status.get("block_workflow") or "no",
+        "version_error_class": version_status.get("error_class") or "",
         "frozen": bool_text(getattr(sys, "frozen", False)),
         "app_dir": APP_DIR,
         "log_file": LOG_FILE,
@@ -88,6 +180,8 @@ def build_startup_self_check():
         "sheet": SHEET_NAME,
         "update_origin": url_origin(UPDATE_INFO_URL),
         "app_data": "present" if os.path.exists(storage.TAKSKLAD_DATA_FILE) else "missing",
+        "app_data_status": app_data_recovery.get("status") or "unknown",
+        "app_data_restored": bool_text(bool(app_data_recovery.get("restored_from"))),
         "credentials": credentials_status(app_data),
         "telegram_enabled": bool_text(telegram_enabled),
         "telegram_token": bool_text(telegram_token_configured),
@@ -111,11 +205,21 @@ def format_startup_self_check(check):
     ordered_keys = [
         "version",
         "build_label",
+        "workstation_id",
+        "version_status",
+        "version_latest",
+        "version_min_supported",
+        "version_package_type",
+        "version_mandatory",
+        "version_block_workflow",
+        "version_error_class",
         "frozen",
         "spreadsheet_hash",
         "sheet",
         "credentials",
         "app_data",
+        "app_data_status",
+        "app_data_restored",
         "telegram_enabled",
         "telegram_token",
         "telegram_chats",

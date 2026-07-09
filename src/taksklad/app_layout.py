@@ -13,7 +13,7 @@ from .config import (
     SUCCESS,
     WARNING,
 )
-from .startup_check import format_app_version_label
+from .startup_check import build_version_update_status, format_version_update_status_label
 from .order_list_widgets import OrderCardList, PlaceholderEntry
 from .ui_widgets import AppButton, RoundedNotice
 
@@ -257,9 +257,20 @@ class LayoutMixin:
         self.scan_entry = tk.Entry(scan_card, bg=BG_MAIN, fg=FG_TEXT, font=ENTRY_FONT,
                                    relief="flat", bd=0, highlightbackground=BORDER,
                                    highlightcolor=ACCENT, highlightthickness=1,
-                                   insertbackground=FG_TEXT)
+                                   insertbackground=FG_TEXT, state="disabled")
         self.scan_entry.pack(fill="x", padx=20, pady=(0, 10))
         self.scan_entry.bind("<Return>", self.on_scan)
+
+        self.scan_guard_label = tk.Label(
+            scan_card,
+            text="SKU-защита недоступна: выберите позицию.",
+            bg=BG_CARD,
+            fg=FG_MUTED,
+            font=SMALL_FONT,
+            anchor="w",
+            justify="left",
+        )
+        self.scan_guard_label.pack(fill="x", padx=20, pady=(0, 5))
 
         self.last_code_label = tk.Label(scan_card, text="", bg=BG_CARD, fg=SUCCESS, font=BODY_FONT)
         self.last_code_label.pack(anchor="w", padx=20, pady=(5, 5))
@@ -333,6 +344,32 @@ class LayoutMixin:
         )
         self.backend_status_label.pack(side="left")
 
+        self.sync_queue_btn = AppButton(
+            stats_frame_3,
+            text="ОЧЕРЕДИ",
+            bg=INFO,
+            fg="white",
+            font=SMALL_FONT_BOLD,
+            command=self.show_sync_queue_window,
+            relief="flat",
+            pady=7,
+            cursor="hand2",
+        )
+        self.sync_queue_btn.pack(side="right")
+
+        self.diagnostics_btn = AppButton(
+            stats_frame_3,
+            text="ДИАГНОСТИКА",
+            bg=FG_MUTED,
+            fg="white",
+            font=SMALL_FONT_BOLD,
+            command=self.create_diagnostic_bundle_for_support,
+            relief="flat",
+            pady=7,
+            cursor="hand2",
+        )
+        self.diagnostics_btn.pack(side="right", padx=(0, 8))
+
         self.report_btn = AppButton(right_panel, text="📊 ЗАКРЫТЬ СМЕНУ",
                                    bg=INFO, fg="white", font=ACTION_BUTTON_FONT,
                                    command=self.end_day, relief="flat", pady=10,
@@ -360,10 +397,13 @@ class LayoutMixin:
 
         version_frame = tk.Frame(main, bg=BG_MAIN)
         version_frame.pack(fill="x", pady=(10, 0))
-        tk.Label(
+        self.version_status_label = tk.Label(
             version_frame,
-            text=format_app_version_label(),
+            text=format_version_update_status_label(build_version_update_status()),
             bg=BG_MAIN,
             fg=FG_MUTED,
             font=("Segoe UI", 9),
-        ).pack(side="left")
+            wraplength=1100,
+            justify="left",
+        )
+        self.version_status_label.pack(side="left")

@@ -37,6 +37,21 @@ class WindowsTestBuildHelperTest(unittest.TestCase):
 
         self.assertIn("Assert-TestPackageDoesNotContainLocalSecrets", script)
         self.assertIn("Test package contains local runtime/secret file", script)
+        for forbidden_name in (
+            "TakSklad_data.json",
+            "TakSklad_data.json.last_good.*.bak",
+            "TakSklad_data.json.*.tmp",
+            "credentials.json",
+            "telegram_settings.json",
+            "yandex_geocoder_key.txt",
+            "pending_saves.json",
+            "pending_prints.json",
+            "pending_telegram.json",
+            "pending_backend_events.json",
+            "*.log",
+        ):
+            with self.subTest(forbidden_name=forbidden_name):
+                self.assertIn(f'"{forbidden_name}"', script)
         forbidden_fragments = [
             "gh release upload",
             "TELEGRAM_BOT_TOKEN=",

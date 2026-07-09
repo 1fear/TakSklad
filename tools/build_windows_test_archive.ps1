@@ -192,13 +192,16 @@ function Assert-TestPackageDoesNotContainLocalSecrets {
 
     $ForbiddenNames = @(
         "TakSklad_data.json",
+        "TakSklad_data.json.last_good.*.bak",
+        "TakSklad_data.json.*.tmp",
         "credentials.json",
         "telegram_settings.json",
         "yandex_geocoder_key.txt",
         "pending_saves.json",
         "pending_prints.json",
         "pending_telegram.json",
-        "pending_backend_events.json"
+        "pending_backend_events.json",
+        "*.log"
     )
 
     foreach ($Name in $ForbiddenNames) {

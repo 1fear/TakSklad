@@ -6,10 +6,10 @@ from .config import DANGER, ERROR_FG, FG_MUTED, FG_TEXT, SHEET_NAME, SPREADSHEET
 from .backend_client import backend_configured, backend_enabled
 from .backend_events import load_pending_backend_events
 from .orders import order_group_key
-from .pending_store import load_pending_saves
+from .pending_store import load_pending_prints, load_pending_saves
 from .reports import create_shift_report_excels_by_order_date, truncate_middle
 from .sheets import get_google_client
-from .telegram_service import send_daily_report_result_to_telegram
+from .telegram_service import load_pending_telegram, send_daily_report_result_to_telegram
 from .utils import normalize_text
 
 
@@ -85,9 +85,11 @@ class DayEndActionsMixin:
         self.total_blocks_label.config(text=str(total_blocks), fg=FG_TEXT)
         active_groups = len({order_group_key(order) for order in self.today_orders})
         pending_saves = len(load_pending_saves())
+        pending_prints = len(load_pending_prints())
+        pending_telegram = len(load_pending_telegram())
         pending_backend = len(load_pending_backend_events())
         self.active_orders_label.config(text=str(active_groups), fg=FG_TEXT)
-        pending_total = pending_saves + pending_backend
+        pending_total = pending_saves + pending_prints + pending_telegram + pending_backend
         sync_caption = getattr(self, "sync_caption_label", None)
         if pending_total:
             self.pending_saves_label.config(text=str(pending_total), fg=WARNING)
