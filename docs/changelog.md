@@ -4,28 +4,28 @@
 
 ## 2026-07-09
 
-### Daily SkladBot future unloading visibility
+### Daily SkladBot created-date requests in regular scope
 
-**Файлы:** `backend/app/skladbot_daily_report.py`, `backend/app/telegram_worker.py`, `backend/app/skladbot_worker.py`, `backend/app/health_service.py`, `tests/test_skladbot_daily_report.py`, `README.md`, `backend/README.md`, `docs/report-source-rules.md`, `docs/implementation-log.md`, `docs/changelog.md`.
+**Файлы:** `backend/app/skladbot_daily_report.py`, `backend/app/telegram_worker.py`, `tests/test_skladbot_daily_report.py`, `README.md`, `backend/README.md`, `docs/report-source-rules.md`, `docs/implementation-log.md`, `docs/changelog.md`.
 
 **Что стало:**
 
-- Заявки, созданные в дату отчета на будущую `Дата выгрузки`, больше не теряются в daily XLSX: они выводятся отдельным листом `Будущие отгрузки`.
-- Эти строки остаются вне operational totals `Заявки`/`Товары заявок`, чтобы daily за 07.07 не считал отгрузку 08.07 как складскую операцию 07.07.
-- Coverage получил counters `future_unloading_requests` и `future_unloading_blocks`, Telegram summary показывает отдельную строку по будущим отгрузкам.
-- Scheduled blocker разрешает complete future-only отчет, если все diagnostic/excluded rows являются future-unloading строками; остальные `0 operational + excluded` случаи по-прежнему блокируются.
-- Daily XLSX переносит `ID заявки Smartup` из SkladBot detail/list/fields/comment в листы заявок и товаров.
-- `/ready` не держит старую failed daily-send ошибку как актуальную деградацию, если она закрыта более поздней успешной catch-up отправкой за тот же date/chat/kind.
-- Добавлена регрессия на 8 контрагентов transfer batch `WH-R-204498..WH-R-204505`, 95 блоков, дата создания `2026-07-07`, дата выгрузки `2026-07-08`.
+- Заявки, созданные в дату отчета, входят в обычные листы `Заявки` и `Товары заявок` независимо от плановой `Дата выгрузки`.
+- Статусный фильтр сохранен: в операционные итоги попадают только строки `Выполнена` + `В архиве`.
+- Отдельный лист `Будущие отгрузки`, counters `future_unloading_requests`/`future_unloading_blocks` и отдельная строка Telegram summary удалены.
+- Scheduled blocker снова блокирует complete-отчет с `0` operational rows при наличии diagnostic/excluded rows.
+- Добавлена регрессия на 8 контрагентов transfer batch `WH-R-204498..WH-R-204505`, 95 блоков, дата создания `2026-07-07`, дата выгрузки `2026-07-08`, попадание в обычные `Заявки`.
 
 **Проверки:**
 
 - `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_skladbot_daily_report` - 78 tests OK.
 - `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_skladbot_daily_report tests.test_backend_telegram_import` - 150 tests OK.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python -m unittest discover -s tests` - 831 tests OK.
 - `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python -m py_compile backend/app/skladbot_daily_report.py backend/app/telegram_worker.py tests/test_skladbot_daily_report.py tests/test_backend_telegram_import.py` - OK.
 - `PYTHONPATH=. ./.venv/bin/python -m alembic -c backend/alembic.ini heads` - `20260701_0007`.
 - `TAKSKLAD_ENV_FILE=.env.example docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config --quiet` - OK.
 - `for script in deploy/vds/*.sh; do bash -n "$script"; done` - OK.
+- `npm --prefix frontend run build` - OK.
 
 ## 2026-07-06
 

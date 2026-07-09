@@ -109,7 +109,7 @@ The Telegram worker can build the daily SkladBot XLSX from read-only SkladBot ca
 
 Coverage must stay `complete` before a scheduled Telegram document is sent. Possible movement/product/stock truncation, read-style POST errors, date conflicts between `unloading_date` and movement date, status anomalies in primary scope, detail/list limits, or API errors make coverage `partial`/`failed` and block scheduled send. The reported registry and daily reconciliation run only after successful scheduled document delivery.
 
-Requests created today for a future unloading date are visible in the `Будущие отгрузки` XLSX sheet and `future_unloading_requests`/`future_unloading_blocks` coverage counters. They do not enter operational request/product totals for the report date. A future-only complete report can be sent because the rows are visible and explicitly separated.
+Requests created on the report date enter the regular `Заявки` and `Товары заявок` XLSX sheets regardless of their planned unloading date. The status gate still applies: only requests that are both completed and archived enter operational totals.
 
 Manual `/skladbot_daily` blocks partial reports by default. `--allow-partial` is an explicit admin override for a visibly incomplete document and does not mark the scheduled registry or run reconciliation. Same-day corrected scheduled reports do not auto-send; existing same-day events require manual recovery.
 

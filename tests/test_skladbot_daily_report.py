@@ -16,7 +16,6 @@ from backend.app.health_service import build_readiness_report
 from backend.app.models import Base, PendingEvent
 from backend.app.skladbot_daily_report import (
     DEFAULT_DAILY_REPORT_MAX_PAGES,
-    FUTURE_UNLOADING_HEADERS,
     MOVEMENT_HEADERS,
     REQUEST_HEADERS,
     REQUEST_PRODUCT_HEADERS,
@@ -1090,7 +1089,6 @@ class SkladBotDailyReportTests(unittest.TestCase):
             "Сводка",
             "Заявки",
             "Товары заявок",
-            "Будущие отгрузки",
             "Движения",
             "Остатки",
             "Контроль покрытия",
@@ -1392,59 +1390,55 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(coverage["detail_attempted"], 7)
         self.assertEqual(coverage["detail_success"], 7)
         self.assertEqual(coverage["detail_errors"], 0)
-        self.assertEqual(coverage["included_operational_requests"], 2)
-        self.assertEqual(coverage["excluded_diagnostic_requests"], 5)
+        self.assertEqual(coverage["included_operational_requests"], 3)
+        self.assertEqual(coverage["excluded_diagnostic_requests"], 4)
         self.assertEqual(coverage["out_of_scope_requests"], 1)
         self.assertEqual(coverage["completed_only_count"], 1)
         self.assertEqual(coverage["archived_only_count"], 1)
         self.assertEqual(coverage["neither_count"], 1)
-        self.assertEqual(coverage["created_today_future_unloading_count"], 1)
         self.assertEqual(coverage["api_error_count"], 0)
         self.assertIn("status_not_completed_archived", coverage["warnings"])
 
-        self.assertEqual(report["summary"]["requests_total"], 2)
-        self.assertEqual(report["summary"]["request_blocks_by_category"]["Отгрузка"], 19)
+        self.assertEqual(report["summary"]["requests_total"], 3)
+        self.assertEqual(report["summary"]["request_blocks_by_category"]["Отгрузка"], 22)
         request_by_id = {item["id"]: item for item in report["requests"]}
         self.assertEqual(request_by_id[401]["date_field_used"], "unloading_date")
         self.assertEqual(request_by_id[401]["inclusion_reason"], "Дата выгрузки")
+        self.assertEqual(request_by_id[402]["date_field_used"], "created_at")
+        self.assertEqual(request_by_id[402]["inclusion_reason"], "Дата создания")
         self.assertEqual(request_by_id[407]["date_field_used"], "movement_date")
         self.assertEqual(request_by_id[407]["inclusion_reason"], "Движение склада")
         self.assertEqual(report["summary"]["movement_out_amount"], 8)
 
         excluded_by_id = {item["request_id"]: item for item in report["excluded_requests"]}
-        self.assertEqual(excluded_by_id[402]["diagnostic_reason"], "created_today_future_unloading")
         self.assertEqual(excluded_by_id[403]["exclusion_reason"], "status_not_completed_archived")
         self.assertEqual(excluded_by_id[404]["diagnostic_reason"], "completed_only")
         self.assertEqual(excluded_by_id[405]["diagnostic_reason"], "archived_only")
         self.assertEqual(excluded_by_id[406]["exclusion_reason"], "out_of_scope")
 
-    def test_july7_transfer_batch_with_future_unloading_is_visible_without_operational_counting(self):
+    def test_july7_transfer_batch_with_next_day_unloading_is_in_regular_requests(self):
         report = collect_report_without_delay(
             July7MissingTransferBatchClient(unloading_date="2026-07-08"),
             date(2026, 7, 7),
         )
 
-        self.assertEqual(report["summary"]["requests_total"], 0)
-        self.assertEqual(report["summary"]["request_blocks_by_category"]["Отгрузка"], 0)
-        self.assertEqual(report["summary"]["future_unloading_requests"], 8)
-        self.assertEqual(report["summary"]["future_unloading_blocks"], 95)
+        self.assertEqual(report["summary"]["requests_total"], 8)
+        self.assertEqual(report["summary"]["request_blocks_by_category"]["Отгрузка"], 95)
         self.assertEqual(report["coverage"]["coverage_status"], "complete")
-        self.assertEqual(report["coverage"]["included_operational_requests"], 0)
-        self.assertEqual(report["coverage"]["excluded_diagnostic_requests"], 8)
-        self.assertEqual(report["coverage"]["created_today_future_unloading_count"], 8)
-        self.assertEqual(report["coverage"]["future_unloading_requests"], 8)
-        self.assertEqual(report["coverage"]["future_unloading_blocks"], 95)
+        self.assertEqual(report["coverage"]["included_operational_requests"], 8)
+        self.assertEqual(report["coverage"]["excluded_diagnostic_requests"], 0)
 
-        future_by_number = {item["number"]: item for item in report["future_unloading_requests"]}
-        self.assertEqual(sorted(future_by_number), [f"WH-R-{item[0]}" for item in JULY7_MISSING_TRANSFER_BATCH])
-        self.assertEqual(future_by_number["WH-R-204499"]["recipient"], '"CENTRAL TOBAKKO" MCHJ')
-        self.assertEqual(sum(sum(product["amount"] for product in request["products"]) for request in future_by_number.values()), 95)
-        self.assertTrue(all(item["diagnostic_reason"] == "created_today_future_unloading" for item in report["future_unloading_requests"]))
+        request_by_number = {item["number"]: item for item in report["requests"]}
+        self.assertEqual(sorted(request_by_number), [f"WH-R-{item[0]}" for item in JULY7_MISSING_TRANSFER_BATCH])
+        self.assertEqual(request_by_number["WH-R-204499"]["recipient"], '"CENTRAL TOBAKKO" MCHJ')
+        self.assertEqual(request_by_number["WH-R-204499"]["date_field_used"], "created_at")
+        self.assertEqual(request_by_number["WH-R-204499"]["inclusion_reason"], "Дата создания")
+        self.assertEqual(sum(sum(product["amount"] for product in request["products"]) for request in request_by_number.values()), 95)
 
         blocker = telegram_worker_module.scheduled_skladbot_daily_report_blocker(report)
         self.assertEqual(blocker, "")
 
-    def test_july7_transfer_batch_future_unloading_is_written_to_xlsx_and_message(self):
+    def test_july7_transfer_batch_next_day_unloading_is_written_to_regular_xlsx_and_message(self):
         report = collect_report_without_delay(
             July7MissingTransferBatchClient(unloading_date="2026-07-08"),
             date(2026, 7, 7),
@@ -1452,29 +1446,33 @@ class SkladBotDailyReportTests(unittest.TestCase):
         content, _filename = build_skladbot_daily_report_xlsx(report)
         workbook = openpyxl.load_workbook(BytesIO(content), data_only=False)
 
-        future_sheet = workbook["Будущие отгрузки"]
-        self.assertEqual([cell.value for cell in future_sheet[1]], FUTURE_UNLOADING_HEADERS)
-        future_rows = worksheet_rows_by_header(future_sheet)
-        self.assertEqual(len(future_rows), 8)
-        row_by_number = {row["Номер"]: row for row in future_rows}
+        self.assertNotIn("Будущие отгрузки", workbook.sheetnames)
+        request_rows = worksheet_rows_by_header(workbook["Заявки"])
+        self.assertEqual(len(request_rows), 8)
+        row_by_number = {row["Номер"]: row for row in request_rows}
         self.assertEqual(row_by_number["WH-R-204499"]["Юрлицо/точка"], '"CENTRAL TOBAKKO" MCHJ')
-        self.assertEqual(row_by_number["WH-R-204499"]["Тип оплаты"], "Перечисление")
-        self.assertEqual(row_by_number["WH-R-204499"]["План блоков"], 58)
-        self.assertEqual(sum(row["План блоков"] for row in future_rows), 95)
+        self.assertEqual(row_by_number["WH-R-204499"]["Дата выгрузки"], "2026-07-08")
+        self.assertEqual(row_by_number["WH-R-204499"]["Причина включения"], "Дата создания")
+        self.assertEqual(row_by_number["WH-R-204499"]["Блоков план"], 58)
+        self.assertEqual(sum(row["Блоков план"] for row in request_rows), 95)
+
+        product_rows = worksheet_rows_by_header(workbook["Товары заявок"])
+        self.assertEqual(len(product_rows), 8)
+        self.assertEqual(sum(row["Блоков план"] for row in product_rows), 95)
 
         coverage_rows = {
             row["Поле"]: row["Значение"]
             for row in worksheet_rows_by_header(workbook["Контроль покрытия"])
         }
-        self.assertEqual(coverage_rows["future_unloading_requests"], 8)
-        self.assertEqual(coverage_rows["future_unloading_blocks"], 95)
+        self.assertEqual(coverage_rows["included_operational_requests"], 8)
+        self.assertEqual(coverage_rows["excluded_diagnostic_requests"], 0)
 
         excluded_rows = worksheet_rows_by_header(workbook["Исключенные заявки"])
-        self.assertEqual(len(excluded_rows), 8)
-        self.assertTrue(all(row["diagnostic_reason"] == "created_today_future_unloading" for row in excluded_rows))
+        self.assertEqual(len(excluded_rows), 0)
 
         message = build_skladbot_daily_report_message(report)
-        self.assertIn("Созданы сегодня на будущую дату выгрузки: 8 заявок, 95 блоков", message)
+        self.assertIn("Отгрузка: 8 заявок, 95 блоков", message)
+        self.assertNotIn("будущую дату выгрузки", message)
 
     def test_july7_transfer_batch_includes_when_unloading_date_is_report_date(self):
         report = collect_report_without_delay(
@@ -1484,7 +1482,6 @@ class SkladBotDailyReportTests(unittest.TestCase):
 
         self.assertEqual(report["summary"]["requests_total"], 8)
         self.assertEqual(report["summary"]["request_blocks_by_category"]["Отгрузка"], 95)
-        self.assertEqual(report["summary"]["future_unloading_requests"], 0)
         self.assertEqual(report["coverage"]["included_operational_requests"], 8)
         self.assertEqual(report["coverage"]["excluded_diagnostic_requests"], 0)
         self.assertEqual(report["coverage"]["coverage_status"], "complete")
@@ -1498,7 +1495,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
             204501: (False, False),
         }
         report = collect_report_without_delay(
-            July7MissingTransferBatchClient(unloading_date="2026-07-07", status_matrix=status_matrix),
+            July7MissingTransferBatchClient(unloading_date="2026-07-08", status_matrix=status_matrix),
             date(2026, 7, 7),
         )
 

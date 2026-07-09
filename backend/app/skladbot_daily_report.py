@@ -108,7 +108,7 @@ STOCK_HEADERS = [
     "Доступно",
 ]
 
-PRIMARY_DAILY_SCOPE = "Дата выгрузки / движение склада"
+PRIMARY_DAILY_SCOPE = "Дата создания / дата выгрузки / движение склада"
 COVERAGE_STATUS_COMPLETE = "complete"
 COVERAGE_STATUS_PARTIAL = "partial"
 COVERAGE_STATUS_FAILED = "failed"
@@ -165,9 +165,6 @@ COVERAGE_FIELDS = [
     "completed_only_count",
     "archived_only_count",
     "neither_count",
-    "created_today_future_unloading_count",
-    "future_unloading_requests",
-    "future_unloading_blocks",
     "missing_date_count",
     "conflicting_date_count",
     "included_date_conflict_count",
@@ -211,22 +208,6 @@ DATE_DIAGNOSTIC_HEADERS = [
     "archived_at",
 ]
 
-FUTURE_UNLOADING_HEADERS = [
-    "ID",
-    "Номер",
-    "ID заявки Smartup",
-    "Дата создания",
-    "Дата выгрузки",
-    "Юрлицо/точка",
-    "Тип оплаты",
-    "Торговый представитель",
-    "Раб зона",
-    "Адрес",
-    "План блоков",
-    "Товаров",
-    "Причина",
-]
-
 LOGGER = logging.getLogger(__name__)
 DEFAULT_DAILY_REPORT_MAX_PAGES = 60
 SKLADBOT_DAILY_REPORT_MAX_RUNTIME_SECONDS_ENV = "SKLADBOT_DAILY_REPORT_MAX_RUNTIME_SECONDS"
@@ -237,14 +218,12 @@ DEFAULT_DAILY_REPORT_OUT_OF_SCOPE_DETAIL_SAMPLE_LIMIT = 25
 REQUEST_DETAIL_BUCKET_IN_SCOPE = "in_scope"
 REQUEST_DETAIL_BUCKET_UNKNOWN_DATE = "unknown_date"
 REQUEST_DETAIL_BUCKET_CREATED_TODAY_DIAGNOSTIC = "created_today_diagnostic"
-REQUEST_DETAIL_BUCKET_FUTURE_UNLOADING_DIAGNOSTIC = "future_unloading_diagnostic"
 REQUEST_DETAIL_BUCKET_DIAGNOSTIC_OUT_OF_SCOPE = "diagnostic_out_of_scope"
 REQUEST_DETAIL_BUCKET_KNOWN_OUT_OF_SCOPE = "known_out_of_scope"
 REQUEST_DETAIL_BUCKET_ORDER = {
     REQUEST_DETAIL_BUCKET_IN_SCOPE: 0,
     REQUEST_DETAIL_BUCKET_UNKNOWN_DATE: 1,
     REQUEST_DETAIL_BUCKET_CREATED_TODAY_DIAGNOSTIC: 2,
-    REQUEST_DETAIL_BUCKET_FUTURE_UNLOADING_DIAGNOSTIC: 2,
     REQUEST_DETAIL_BUCKET_DIAGNOSTIC_OUT_OF_SCOPE: 3,
     REQUEST_DETAIL_BUCKET_KNOWN_OUT_OF_SCOPE: 4,
 }
@@ -379,7 +358,6 @@ def collect_skladbot_daily_report(
         "generated_at": generated_at,
         "customer_id": getattr(client, "customer_id", None),
         "requests": [],
-        "future_unloading_requests": [],
         "excluded_requests": [],
         "date_diagnostics": [],
         "movements": [],
@@ -416,7 +394,6 @@ def collect_skladbot_daily_report(
         coverage=result["coverage"],
     )
     result["requests"] = request_result["requests"]
-    result["future_unloading_requests"] = request_result["future_unloading_requests"]
     result["excluded_requests"] = request_result["excluded_requests"]
     result["date_diagnostics"] = request_result["date_diagnostics"]
     result["api_errors"] = request_result["api_errors"]
@@ -521,7 +498,6 @@ def fetch_daily_requests(
     coverage["max_pages_per_request_type"] = max_pages
     coverage["list_page_guard_max_total"] = max_pages * max(1, len(request_types))
     result = []
-    future_unloading_requests = []
     excluded_requests = []
     date_diagnostics = []
     api_errors = []
@@ -619,8 +595,6 @@ def fetch_daily_requests(
             result.append(request)
             update_coverage_included_counts(coverage, request)
         else:
-            if request.get("diagnostic_reason") == "created_today_future_unloading":
-                future_unloading_requests.append(request)
             excluded_requests.append(excluded_request_from_request(request, detail_loaded=True))
             update_coverage_exclusion_counts(coverage, request)
 
@@ -629,15 +603,12 @@ def fetch_daily_requests(
         parse_int(item.get("id")),
     ))
     coverage["included_operational_requests"] = len(result)
-    coverage["future_unloading_requests"] = len(future_unloading_requests)
-    coverage["future_unloading_blocks"] = sum(request_blocks(request) for request in future_unloading_requests)
     coverage["excluded_diagnostic_requests"] = len(excluded_requests)
     coverage["skipped_due_to_out_of_scope"] = coverage.get("out_of_scope_requests", 0)
     coverage["api_error_count"] = len(api_errors)
     finalize_coverage_status(coverage, errors)
     return {
         "requests": result,
-        "future_unloading_requests": future_unloading_requests,
         "excluded_requests": excluded_requests,
         "date_diagnostics": date_diagnostics,
         "api_errors": api_errors,
@@ -780,10 +751,8 @@ def request_list_detail_bucket(
         return REQUEST_DETAIL_BUCKET_IN_SCOPE
     if not any([created_date, unloading_date, completed_date, archived_date]):
         return REQUEST_DETAIL_BUCKET_UNKNOWN_DATE
-    if created_date == report_date and unloading_date and unloading_date > report_date:
-        return REQUEST_DETAIL_BUCKET_FUTURE_UNLOADING_DIAGNOSTIC
     if created_date == report_date:
-        return REQUEST_DETAIL_BUCKET_CREATED_TODAY_DIAGNOSTIC
+        return REQUEST_DETAIL_BUCKET_IN_SCOPE
     if completed_date == report_date or archived_date == report_date:
         return REQUEST_DETAIL_BUCKET_DIAGNOSTIC_OUT_OF_SCOPE
     return REQUEST_DETAIL_BUCKET_KNOWN_OUT_OF_SCOPE
@@ -847,9 +816,6 @@ def default_coverage(
         "completed_only_count": 0,
         "archived_only_count": 0,
         "neither_count": 0,
-        "created_today_future_unloading_count": 0,
-        "future_unloading_requests": 0,
-        "future_unloading_blocks": 0,
         "missing_date_count": 0,
         "conflicting_date_count": 0,
         "included_date_conflict_count": 0,
@@ -925,10 +891,7 @@ def finalize_coverage_status(coverage: dict[str, Any], errors: list[str] | None 
 
 def finalize_report_coverage(report: dict[str, Any]) -> None:
     coverage = report.get("coverage") or default_coverage(report.get("report_date"))
-    future_unloading_requests = report.get("future_unloading_requests") or []
     coverage["included_operational_requests"] = len(report.get("requests") or [])
-    coverage["future_unloading_requests"] = len(future_unloading_requests)
-    coverage["future_unloading_blocks"] = sum(request_blocks(request) for request in future_unloading_requests)
     coverage["excluded_diagnostic_requests"] = len(report.get("excluded_requests") or [])
     coverage["api_error_count"] = max(parse_int(coverage.get("api_error_count")), len(report.get("errors") or []))
     finalize_coverage_status(coverage, report.get("errors") or [])
@@ -977,16 +940,10 @@ def apply_request_scope(
         request["date_field_used"] = "movement_date"
         request["inclusion_reason"] = "Движение склада"
         request["date_confidence"] = "high"
-    elif created_date == report_date and unloading_date and unloading_date > report_date:
-        request["date_field_used"] = "created_at"
-        request["exclusion_reason"] = "out_of_scope"
-        request["diagnostic_reason"] = "created_today_future_unloading"
-        request["date_confidence"] = "diagnostic"
     elif created_date == report_date:
         request["date_field_used"] = "created_at"
-        request["exclusion_reason"] = "out_of_scope"
-        request["diagnostic_reason"] = "created_today_without_primary_date"
-        request["date_confidence"] = "diagnostic"
+        request["inclusion_reason"] = "Дата создания"
+        request["date_confidence"] = "high"
     elif completed_date == report_date or archived_date == report_date:
         request["date_field_used"] = "completed_at" if completed_date == report_date else "archived_at"
         request["exclusion_reason"] = "out_of_scope"
@@ -1039,15 +996,14 @@ def update_coverage_exclusion_counts(coverage: dict[str, Any], request: dict[str
         coverage["archived_only_count"] += 1
     if diagnostic_reason == "neither":
         coverage["neither_count"] += 1
-    if diagnostic_reason == "created_today_future_unloading":
-        coverage["created_today_future_unloading_count"] += 1
     if diagnostic_reason == "missing_date" or exclusion_reason == "missing_date":
         coverage["missing_date_count"] += 1
     if diagnostic_reason == "conflicting_date_fields":
         coverage["conflicting_date_count"] += 1
-    if exclusion_reason == "out_of_scope" and diagnostic_reason != "created_today_future_unloading":
+    if exclusion_reason == "out_of_scope":
         coverage["out_of_scope_requests"] += 1
-    if exclusion_reason == "status_not_completed_archived" and date_field_used in {"unloading_date", "movement_date"}:
+    primary_status_fields = {"unloading_date", "movement_date", "created_at"}
+    if exclusion_reason == "status_not_completed_archived" and date_field_used in primary_status_fields:
         add_coverage_warning(coverage, "status_not_completed_archived")
 
 
@@ -1477,7 +1433,6 @@ def first_int(item: Any, *keys: str) -> int:
 
 def summarize_daily_report(report: dict[str, Any]) -> dict[str, Any]:
     requests = report.get("requests") or []
-    future_unloading_requests = report.get("future_unloading_requests") or []
     movements = report.get("movements") or []
     category_counts = {category: 0 for category in REQUEST_CATEGORIES}
     type_counts: dict[str, int] = {}
@@ -1495,8 +1450,6 @@ def summarize_daily_report(report: dict[str, Any]) -> dict[str, Any]:
         "category_counts": category_counts,
         "type_counts": type_counts,
         "request_blocks_by_category": request_blocks_by_category,
-        "future_unloading_requests": len(future_unloading_requests),
-        "future_unloading_blocks": sum(request_blocks(request) for request in future_unloading_requests),
         "movements_total": len(movements),
         "movement_in_rows": len(movement_in),
         "movement_out_rows": len(movement_out),
@@ -1620,7 +1573,6 @@ def build_skladbot_daily_report_xlsx(report: dict[str, Any]) -> tuple[bytes, str
     write_summary_sheet(summary_sheet, report)
     write_requests_sheet(workbook.create_sheet("Заявки"), report.get("requests") or [])
     write_request_products_sheet(workbook.create_sheet("Товары заявок"), report.get("requests") or [])
-    write_future_unloading_sheet(workbook.create_sheet("Будущие отгрузки"), report.get("future_unloading_requests") or [])
     write_movements_sheet(workbook.create_sheet("Движения"), report.get("movements") or [])
     write_stock_sheet(workbook.create_sheet("Остатки"), report)
     write_coverage_sheet(workbook.create_sheet("Контроль покрытия"), report)
@@ -1779,51 +1731,11 @@ def write_request_products_sheet(sheet, requests: list[dict[str, Any]]) -> None:
             ])
     apply_header_style(sheet)
 
-
-def write_future_unloading_sheet(sheet, requests: list[dict[str, Any]]) -> None:
-    sheet.append(FUTURE_UNLOADING_HEADERS)
-    for request in requests:
-        sheet.append([
-            request.get("id") or "",
-            request.get("number") or "",
-            request_smartup_id(request),
-            request.get("created_at") or "",
-            request.get("unloading_date") or "",
-            request.get("recipient") or "",
-            request_payment_type(request),
-            request_representative(request),
-            request_representative_zone(request),
-            request.get("address") or "",
-            request_blocks(request),
-            len(request.get("products") or []),
-            "Создана в дату отчета на будущую дату выгрузки",
-        ])
-    apply_header_style(sheet)
-
-
 def request_representative(request: dict[str, Any]) -> str:
     explicit = normalize_text(request.get("representative"))
     if explicit:
         return display_representative_name(explicit)
     return display_representative_name(representative_from_comment(request.get("comment")))
-
-
-def request_payment_type(request: dict[str, Any]) -> str:
-    explicit = normalize_text(request.get("payment_type") or request.get("payment"))
-    if explicit:
-        return explicit
-    for line in normalize_text(request.get("comment")).splitlines():
-        line = normalize_text(line)
-        if not is_payment_comment_line(line):
-            continue
-        text = line.lower().replace("ё", "е")
-        if "перечис" in text or "безнал" in text:
-            return "Перечисление"
-        if "терминал" in text:
-            return "Терминал"
-        return line
-    return ""
-
 
 def request_smartup_id(request: dict[str, Any]) -> str:
     return normalize_text(request.get("smartup_id"))
@@ -1969,11 +1881,6 @@ def build_skladbot_daily_report_message(report: dict[str, Any]) -> str:
         f"Срез: {coverage.get('primary_scope') or PRIMARY_DAILY_SCOPE}",
         f"Статус покрытия: {coverage_status.upper()}",
         f"В операционных итогах: {coverage.get('included_operational_requests', summary.get('requests_total', 0))} заявок",
-        (
-            "Созданы сегодня на будущую дату выгрузки: "
-            f"{coverage.get('future_unloading_requests', summary.get('future_unloading_requests', 0))} заявок, "
-            f"{coverage.get('future_unloading_blocks', summary.get('future_unloading_blocks', 0))} блоков"
-        ),
         f"В диагностике/исключено: {coverage.get('excluded_diagnostic_requests', 0)} заявок",
         f"Ошибки API: {coverage.get('api_error_count', len(report.get('errors') or []))}",
         f"Отгрузка: {category_counts.get(REQUEST_CATEGORY_SHIPMENT, 0)} заявок, {blocks.get(REQUEST_CATEGORY_SHIPMENT, 0)} блоков",

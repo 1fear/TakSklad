@@ -562,8 +562,7 @@ def scheduled_skladbot_daily_report_blocker(report):
         return f"{SKLADBOT_DAILY_REPORT_COVERAGE_FAILED_ERROR}: errors={len(errors)}"
     included = parse_int((coverage or {}).get("included_operational_requests"))
     excluded = parse_int((coverage or {}).get("excluded_diagnostic_requests"))
-    future_unloading = parse_int((coverage or {}).get("future_unloading_requests"))
-    if included == 0 and excluded > 0 and future_unloading < excluded:
+    if included == 0 and excluded > 0:
         return f"{SKLADBOT_DAILY_REPORT_COVERAGE_FAILED_ERROR}: included=0 excluded={excluded}"
     return ""
 

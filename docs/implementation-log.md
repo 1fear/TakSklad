@@ -7175,25 +7175,25 @@ cd /opt/taksklad/app
   - targeted logistics tests in `tests.test_backend_api_persistence` - 9 tests OK;
   - `PYTHONPATH=. .venv/bin/python -m unittest -k import tests.test_backend_api_persistence` - 23 tests OK.
 
-### Daily SkladBot future unloading visibility
+### Daily SkladBot created-date requests in regular scope
 
 - Дата: 2026-07-09.
 - Причина: в daily XLSX за `07.07.2026` не были видны 8 transfer-заявок `WH-R-204498..WH-R-204505`, хотя они присутствовали в КИЗ-файле от 07.07 и логистике на 08.07. Файловая проверка подтвердила 95 блоков и будущую дату выгрузки `08.07.2026`.
 - Изменено:
-  - `created_today_future_unloading` заявки собираются в отдельный массив `future_unloading_requests`;
-  - XLSX получил лист `Будущие отгрузки` с контрагентом, типом оплаты, представителем, адресом, планом блоков и причиной;
-  - coverage и Telegram summary получили counters `future_unloading_requests` и `future_unloading_blocks`;
-  - scheduled blocker разрешает complete future-only отчет, но продолжает блокировать прочие `0 operational + excluded` случаи.
-  - `ID заявки Smartup` парсится из SkladBot detail/list/fields/comment и попадает в daily XLSX;
-  - `/ready` считает historical failed daily-send закрытым, если позже был successful catch-up за тот же date/chat/kind.
+  - заявки, созданные в дату отчета, входят в обычные листы `Заявки` и `Товары заявок` независимо от плановой `Дата выгрузки`;
+  - отдельный лист `Будущие отгрузки`, coverage counters `future_unloading_requests`/`future_unloading_blocks` и отдельная строка Telegram summary удалены;
+  - scheduled blocker снова блокирует `0 operational + excluded` случаи без future-only исключения;
+  - `ID заявки Smartup` парсится из SkladBot detail/list/fields/comment и попадает в daily XLSX.
 - Инварианты:
-  - future-unloading строки не попадают в operational totals дня;
+  - статусный фильтр `Выполнена` + `В архиве` остается обязательным;
   - SkladBot API остается read-only;
   - заявки, статусы, остатки, движения, Google Sheets и production DB этим изменением не меняются.
 - Проверено:
   - `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_skladbot_daily_report` - 78 tests OK;
   - `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python -m unittest tests.test_skladbot_daily_report tests.test_backend_telegram_import` - 150 tests OK;
+  - `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python -m unittest discover -s tests` - 831 tests OK;
   - `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. ./.venv/bin/python -m py_compile backend/app/skladbot_daily_report.py backend/app/telegram_worker.py tests/test_skladbot_daily_report.py tests/test_backend_telegram_import.py` - OK;
   - `PYTHONPATH=. ./.venv/bin/python -m alembic -c backend/alembic.ini heads` - `20260701_0007`;
   - `TAKSKLAD_ENV_FILE=.env.example docker compose --env-file deploy/vds/.env.example -f deploy/vds/docker-compose.yml config --quiet` - OK;
-  - `for script in deploy/vds/*.sh; do bash -n "$script"; done` - OK.
+  - `for script in deploy/vds/*.sh; do bash -n "$script"; done` - OK;
+  - `npm --prefix frontend run build` - OK.
