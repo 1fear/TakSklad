@@ -42,11 +42,14 @@ case "$MODE" in
   queue-failures)
     TEST_MODULE="tests.test_postgres_queue_failures"
     ;;
+  import-identity)
+    TEST_MODULE="tests.test_postgres_import_identity"
+    ;;
   all)
-    TEST_MODULE="tests.test_postgres_migrations tests.test_postgres_concurrency tests.test_postgres_readiness tests.test_postgres_queue_concurrency tests.test_postgres_queue_failures"
+    TEST_MODULE="tests.test_postgres_migrations tests.test_postgres_concurrency tests.test_postgres_readiness tests.test_postgres_queue_concurrency tests.test_postgres_queue_failures tests.test_postgres_import_identity"
     ;;
   *)
-    echo "Usage: $0 {seed-reference|migrations|smoke|readiness|queue-concurrency|queue-failures|all}" >&2
+    echo "Usage: $0 {seed-reference|migrations|smoke|readiness|queue-concurrency|queue-failures|import-identity|all}" >&2
     exit 2
     ;;
 esac

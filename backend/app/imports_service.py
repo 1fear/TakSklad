@@ -4,7 +4,7 @@ import logging
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import select
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import Session, selectinload
 
 from .client_points_service import sync_client_point_from_import_row
@@ -74,6 +74,14 @@ class ImportRowError(Exception):
 
 def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: str | None = None):
     rows_total = len(payload.rows)
+    normalized_sha = normalize_text(payload.sha256).lower()
+    existing_file = None
+    if normalized_sha:
+        acquire_import_identity_lock(db, "file", normalized_sha)
+        existing_file = db.execute(
+            select(ImportFile).where(ImportFile.sha256 == normalized_sha).limit(1)
+        ).scalar_one_or_none()
+
     errors = []
     duplicate_rows = 0
     invalid_rows = 0
@@ -89,7 +97,10 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
         rows_imported=0,
         raw_payload={
             "filename": payload.filename,
-            "sha256": normalize_text(payload.sha256).lower(),
+            "sha256": normalized_sha,
+            "file_sha256_reused_from_import_id": (
+                str(existing_file.import_id) if existing_file is not None and existing_file.import_id else ""
+            ),
             "telegram_chat_id": normalize_text(payload.telegram_chat_id),
             "telegram_event_id": normalize_text(payload.telegram_event_id),
             "orders_created": 0,
@@ -102,20 +113,20 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
     db.add(import_job)
     db.flush()
 
-    if payload.filename and payload.sha256:
-        normalized_sha = normalize_text(payload.sha256).lower()
-        existing_file = db.execute(select(ImportFile).where(ImportFile.sha256 == normalized_sha)).scalar_one_or_none()
-        if existing_file is None:
-            db.add(ImportFile(
-                import_id=import_job.id,
-                filename=payload.filename,
-                sha256=normalized_sha,
-                size_bytes=0,
-            ))
+    if payload.filename and normalized_sha and existing_file is None:
+        db.add(ImportFile(
+            import_id=import_job.id,
+            filename=payload.filename,
+            sha256=normalized_sha,
+            size_bytes=0,
+        ))
 
-    order_by_key, item_keys, source_import_ids, existing_items = load_existing_import_keys(db)
+    order_by_key = {}
+    existing_items = {"item_key": {}, "source_import_id": {}}
     current_import_item_keys = set()
     current_import_source_import_ids = set()
+    prepared_rows = []
+    row_locks = set()
     for index, raw_row in enumerate(payload.rows, start=1):
         try:
             row = normalize_import_row(raw_row)
@@ -123,6 +134,18 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
             invalid_rows += 1
             errors.append(f"row {index}: {exc}")
             continue
+        prepared_rows.append((index, raw_row, row))
+        identity_value = normalize_text(row.get("source_import_id")) or normalize_text(row.get("item_key"))
+        if identity_value:
+            row_locks.add(("item", identity_value))
+        if row.get("order_key"):
+            row_locks.add(("order", row["order_key"]))
+
+    acquire_import_identity_locks(db, row_locks)
+    prefetch_existing_items(db, (row for _index, _raw, row in prepared_rows), existing_items)
+    prefetch_active_orders(db, (row["order_key"] for _index, _raw, row in prepared_rows), order_by_key)
+
+    for _index, raw_row, row in prepared_rows:
 
         if row_is_duplicate_in_current_import(row, current_import_source_import_ids, current_import_item_keys):
             duplicate_rows += 1
@@ -142,24 +165,27 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
         if row["source_import_id"]:
             current_import_source_import_ids.add(row["source_import_id"])
 
-        existing_item = find_existing_item_for_row(row, existing_items)
+        existing_item = find_existing_item_for_row(db, row, existing_items)
         if existing_item is not None:
             duplicate_rows += 1
             if update_existing_order_address(existing_item.order, row):
                 backend_address_updates += 1
             continue
 
+        source_order_key = row["order_key"]
+        source_order = find_active_order_by_key(db, source_order_key, order_by_key)
         source_order_key, order_key, split_from_order = resolve_order_key_for_import_row(
-            db,
-            row,
-            import_job.source,
-            order_by_key,
+            db, row, import_job.source, {source_order_key: source_order} if source_order else {},
         )
-        order = order_by_key.get(order_key)
+        if order_key != source_order_key:
+            acquire_import_identity_lock(db, "order", order_key)
+        order = find_active_order_by_key(db, order_key, order_by_key)
         if order is None:
             order = Order(
                 source=import_job.source,
                 external_id=order_key,
+                import_order_key=order_key,
+                import_source_order_key=source_order_key,
                 order_date=row["order_date"],
                 payment_type=row["payment_type"],
                 client=row["client"],
@@ -182,6 +208,10 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
         db.add(OrderItem(
             order_id=order.id,
             product=row["product"],
+            import_item_key=row["item_key"] or None,
+            source_import_key=source_import_lookup_key(row["source_import_id"]),
+            source_import_id=row["source_import_id"] or None,
+            source_batch_key=row["source_batch_key"] or None,
             quantity_pieces=row["quantity_pieces"],
             quantity_blocks=row["quantity_blocks"],
             pieces_per_block=row["pieces_per_block"],
@@ -205,9 +235,6 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
                 "raw_row": raw_row,
             },
         ))
-        item_keys.add(row["item_key"])
-        if row["source_import_id"]:
-            source_import_ids.add(row["source_import_id"])
         items_created += 1
 
     status = "completed"
@@ -325,10 +352,11 @@ def preview_import(db: Session, payload: ImportCreate):
     items_new = 0
     backend_address_updates = 0
 
-    order_by_key, item_keys, source_import_ids, existing_items = load_existing_import_keys(db)
-    preview_order_keys = set(order_by_key.keys())
-    preview_item_keys = set(item_keys)
-    preview_source_import_ids = set(source_import_ids)
+    order_by_key = {}
+    existing_items = {"item_key": {}, "source_import_id": {}}
+    preview_order_keys = set()
+    preview_item_keys = set()
+    preview_source_import_ids = set()
 
     for index, raw_row in enumerate(payload.rows, start=1):
         try:
@@ -338,7 +366,7 @@ def preview_import(db: Session, payload: ImportCreate):
             errors.append(f"row {index}: {exc}")
             continue
 
-        existing_item = find_existing_item_for_row(row, existing_items)
+        existing_item = find_existing_item_for_row(db, row, existing_items)
         duplicate = existing_item is not None or row_is_duplicate_in_current_import(
             row,
             preview_source_import_ids,
@@ -351,12 +379,16 @@ def preview_import(db: Session, payload: ImportCreate):
                 backend_address_updates += 1
             continue
 
+        source_order_key = row["order_key"]
+        source_order = find_active_order_by_key(db, source_order_key, order_by_key)
+        if source_order is not None:
+            preview_order_keys.add(source_order_key)
         _source_order_key, order_key, _split_from_order = resolve_order_key_for_import_row(
-            db,
-            row,
-            payload.source,
-            order_by_key,
+            db, row, payload.source, {source_order_key: source_order} if source_order else {},
         )
+        existing_order = find_active_order_by_key(db, order_key, order_by_key)
+        if existing_order is not None:
+            preview_order_keys.add(order_key)
         if order_key not in preview_order_keys:
             orders_new += 1
             preview_order_keys.add(order_key)
@@ -534,36 +566,142 @@ def list_imports(db: Session):
             raw_payload=row.raw_payload,
             created_at=row.created_at,
         )
-        for row in db.execute(stmt).scalars().all()
+        for row in db.execute(stmt).scalars()
     ]
 
 
-def load_existing_import_keys(db: Session):
-    orders = db.execute(select(Order).options(selectinload(Order.items))).scalars().all()
-    order_by_key = {}
+def acquire_import_identity_lock(db: Session, namespace: str, value: str):
+    identity = f"taksklad:import:{normalize_text(namespace)}:{normalize_text(value)}"
+    if not identity.rsplit(":", 1)[-1]:
+        return
+    if db.bind is not None and db.bind.dialect.name == "postgresql":
+        db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:identity, 0))"), {"identity": identity})
+
+
+def acquire_import_identity_locks(db: Session, locks):
+    identities = sorted({
+        f"taksklad:import:{normalize_text(namespace)}:{normalize_text(value)}"
+        for namespace, value in locks
+        if normalize_text(value)
+    })
+    if not identities or db.bind is None or db.bind.dialect.name != "postgresql":
+        return
+    result = db.execute(text(
+        "WITH identities AS (SELECT unnest(CAST(:identities AS text[])) AS identity) "
+        "SELECT pg_advisory_xact_lock(hashtextextended(identity, 0)) FROM identities ORDER BY identity"
+    ), {"identities": identities})
+    for _row in result:
+        pass
+
+
+def active_order_predicate():
+    return_status = Order.raw_payload["return_status"].as_string()
+    return and_(
+        func.lower(Order.status) != STATUS_RETURNED,
+        or_(
+            return_status.is_(None),
+            ~func.lower(return_status).in_(("returned", "return", "возврат")),
+        ),
+    )
+
+
+def find_active_order_by_key(db: Session, order_key: str, cache=None):
+    order_key = normalize_text(order_key)
+    if not order_key:
+        return None
+    cache = cache if cache is not None else {}
+    if order_key in cache:
+        return cache[order_key]
+    legacy_key = Order.raw_payload["order_key"].as_string()
+    order = db.execute(
+        select(Order)
+        .where(active_order_predicate())
+        .where(or_(
+            Order.import_order_key == order_key,
+            and_(
+                Order.import_order_key.is_(None),
+                or_(legacy_key == order_key, Order.external_id == order_key),
+            ),
+        ))
+        .order_by(Order.created_at.asc(), Order.id.asc())
+        .limit(1)
+    ).scalar_one_or_none()
+    cache[order_key] = order
+    return order
+
+
+def prefetch_active_orders(db: Session, order_keys, cache):
+    keys = {normalize_text(value) for value in order_keys if normalize_text(value)}
+    if not keys:
+        return
+    cache.update({key: None for key in keys if key not in cache})
+    legacy_key = Order.raw_payload["order_key"].as_string()
+    statement = (
+        select(Order)
+        .where(active_order_predicate())
+        .where(or_(
+            Order.import_order_key.in_(keys),
+            and_(Order.import_order_key.is_(None), or_(legacy_key.in_(keys), Order.external_id.in_(keys))),
+        ))
+        .order_by(Order.created_at.asc(), Order.id.asc())
+    )
+    for order in db.execute(statement).scalars():
+        key = normalize_text(order.import_order_key)
+        if not key:
+            raw_payload = order.raw_payload or {}
+            key = normalize_text(raw_payload.get("order_key")) or normalize_text(order.external_id)
+        if key and cache.get(key) is None:
+            cache[key] = order
+
+
+def prefetch_existing_items(db: Session, rows, existing_items):
+    source_ids = set()
+    source_keys = set()
     item_keys = set()
-    source_import_ids = set()
-    existing_items = {
-        "item_key": {},
-        "source_import_id": {},
-    }
-    for order in orders:
-        if is_returned_order(order):
-            continue
-        order_key = (order.raw_payload or {}).get("order_key") or order.external_id
-        if order_key:
-            order_by_key[order_key] = order
-        for item in order.items:
-            raw_payload = item.raw_payload or {}
-            item_key = raw_payload.get("item_key")
-            if item_key:
-                item_keys.add(item_key)
-                existing_items["item_key"].setdefault(item_key, item)
-            source_import_id = raw_payload.get("source_import_id")
-            if source_import_id:
-                source_import_ids.add(source_import_id)
-                existing_items["source_import_id"].setdefault(source_import_id, item)
-    return order_by_key, item_keys, source_import_ids, existing_items
+    for row in rows:
+        source_id = normalize_text(row.get("source_import_id"))
+        if source_id:
+            source_ids.add(source_id)
+            source_keys.add(source_import_lookup_key(source_id))
+        elif row.get("item_key"):
+            item_keys.add(row["item_key"])
+    existing_items["source_import_id"].update({value: None for value in source_ids})
+    existing_items["item_key"].update({value: None for value in item_keys})
+    matches = []
+    if source_ids:
+        matches.append(or_(
+            OrderItem.source_import_key.in_(source_keys),
+            and_(
+                OrderItem.source_import_key.is_(None),
+                OrderItem.raw_payload["source_import_id"].as_string().in_(source_ids),
+            ),
+        ))
+    if item_keys:
+        matches.append(or_(
+            OrderItem.import_item_key.in_(item_keys),
+            and_(
+                OrderItem.import_item_key.is_(None),
+                OrderItem.raw_payload["item_key"].as_string().in_(item_keys),
+            ),
+        ))
+    if not matches:
+        return
+    statement = (
+        select(OrderItem)
+        .join(Order, Order.id == OrderItem.order_id)
+        .options(selectinload(OrderItem.order))
+        .where(active_order_predicate())
+        .where(or_(*matches))
+        .order_by(OrderItem.created_at.asc(), OrderItem.id.asc())
+    )
+    for item in db.execute(statement).scalars():
+        raw_payload = item.raw_payload or {}
+        source_id = normalize_text(item.source_import_id) or normalize_text(raw_payload.get("source_import_id"))
+        item_key = normalize_text(item.import_item_key) or normalize_text(raw_payload.get("item_key"))
+        if source_id in source_ids and existing_items["source_import_id"].get(source_id) is None:
+            existing_items["source_import_id"][source_id] = item
+        elif not source_id and item_key in item_keys and existing_items["item_key"].get(item_key) is None:
+            existing_items["item_key"][item_key] = item
 
 
 def is_returned_order(order):
@@ -667,14 +805,41 @@ def build_order_raw_payload(
     return payload
 
 
-def find_existing_item_for_row(row, existing_items):
-    source_import_id = row.get("source_import_id")
+def find_existing_item_for_row(db: Session, row, existing_items):
+    source_import_id = normalize_text(row.get("source_import_id"))
+    item_key = normalize_text(row.get("item_key"))
+    identity_kind = "source_import_id" if source_import_id else "item_key"
+    identity_value = source_import_id or item_key
+    if not identity_value:
+        return None
+    cached = existing_items[identity_kind]
+    if identity_value in cached:
+        return cached[identity_value]
+
     if source_import_id:
-        return existing_items["source_import_id"].get(source_import_id)
-    item_key = row.get("item_key")
-    if item_key:
-        return existing_items["item_key"].get(item_key)
-    return None
+        legacy_value = OrderItem.raw_payload["source_import_id"].as_string()
+        identity_match = or_(
+            OrderItem.source_import_key == source_import_lookup_key(source_import_id),
+            and_(OrderItem.source_import_key.is_(None), legacy_value == source_import_id),
+        )
+    else:
+        legacy_value = OrderItem.raw_payload["item_key"].as_string()
+        identity_match = or_(
+            OrderItem.import_item_key == item_key,
+            and_(OrderItem.import_item_key.is_(None), legacy_value == item_key),
+        )
+
+    item = db.execute(
+        select(OrderItem)
+        .join(Order, Order.id == OrderItem.order_id)
+        .options(selectinload(OrderItem.order))
+        .where(active_order_predicate())
+        .where(identity_match)
+        .order_by(OrderItem.created_at.asc(), OrderItem.id.asc())
+        .limit(1)
+    ).scalar_one_or_none()
+    cached[identity_value] = item
+    return item
 
 
 def row_is_duplicate_in_current_import(row, source_import_ids, item_keys):
@@ -683,6 +848,11 @@ def row_is_duplicate_in_current_import(row, source_import_ids, item_keys):
         return source_import_id in source_import_ids
     item_key = row.get("item_key")
     return bool(item_key and item_key in item_keys)
+
+
+def source_import_lookup_key(value):
+    value = normalize_text(value)
+    return stable_hash({"source_import_id": value}) if value else None
 
 
 def update_existing_order_address(order, row):

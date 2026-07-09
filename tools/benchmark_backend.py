@@ -781,6 +781,8 @@ def host_manifest(database_url, runtime):
             "runner": sha256_file(__file__),
             "profiles": sha256_file(PROFILES_PATH),
             "budgets": sha256_file(BUDGETS_PATH),
+            "imports_service": sha256_file(ROOT / "backend" / "app" / "imports_service.py"),
+            "models": sha256_file(ROOT / "backend" / "app" / "models.py"),
         },
     }
 
@@ -885,6 +887,69 @@ def run_explain(profile_name):
     return 0
 
 
+def run_compare(workload):
+    workload_name = {"import": "import_1000"}[workload]
+    profiles = load_json(PROFILES_PATH)
+    budgets = load_json(BUDGETS_PATH)
+    approved_path = EVIDENCE_DIR / "backend-baseline-approved.json"
+    if not approved_path.exists():
+        raise RuntimeError("approved Phase 6 baseline is missing; run baseline first")
+    approved = load_json(approved_path)
+    profile = profiles["profiles"]["reference"]
+    with disposable_database() as (database_url, runtime):
+        seed_profile(database_url, "reference")
+        context = workload_context(database_url, profile)
+        result = measure_workload(database_url, workload_name, context, 100)
+        host = host_manifest(database_url, runtime)
+    previous = approved["results"][workload_name]
+    delta = {
+        metric: round(float(result[metric]) - float(previous[metric]), 3)
+        for metric in ("p50_ms", "p95_ms", "p99_ms")
+    }
+    delta_percent = {
+        metric: round(delta[metric] / float(previous[metric]) * 100, 3)
+        for metric in delta
+    }
+    failures = assertion_failures(
+        {name: result if name == workload_name else approved["results"][name]
+         for name in budgets["workloads"]},
+        budgets,
+        approved=approved,
+    )
+    evidence = {
+        "schema": 1,
+        "mode": "compare",
+        "workload": workload_name,
+        "profile": "reference",
+        "iterations": 100,
+        "host": host,
+        "approved": {key: previous[key] for key in ("p50_ms", "p95_ms", "p99_ms", "query_count")},
+        "current": result,
+        "delta_ms": delta,
+        "delta_percent": delta_percent,
+        "absolute_budget": budgets["workloads"][workload_name],
+        "remaining_bottleneck": (
+            f"{result['query_count']['median']} SQL statements per 1000-row import"
+            if result["query_count"]["median"] > 1000 else "none"
+        ),
+        "status": "pass" if not failures else "fail",
+        "failures": failures,
+    }
+    path = EVIDENCE_DIR / f"compare-{workload}.json"
+    path.write_text(json.dumps(evidence, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    sys.stdout.write(json.dumps({
+        "status": evidence["status"],
+        "workload": workload_name,
+        "approved": evidence["approved"],
+        "current": {key: result[key] for key in ("p50_ms", "p95_ms", "p99_ms", "query_count")},
+        "delta_percent": delta_percent,
+        "remaining_bottleneck": evidence["remaining_bottleneck"],
+        "evidence": str(path.relative_to(ROOT)),
+        "failures": failures,
+    }, ensure_ascii=False, sort_keys=True) + "\n")
+    return 0 if not failures else 1
+
+
 def validate_manifest():
     profiles = load_json(PROFILES_PATH)
     budgets = load_json(BUDGETS_PATH)
@@ -945,6 +1010,8 @@ def parse_args():
     explain_parser = subparsers.add_parser("explain")
     explain_parser.add_argument("--profile", choices=("small", "reference", "stress"), required=True)
     explain_parser.add_argument("--format", choices=("json",), default="json")
+    compare_parser = subparsers.add_parser("compare")
+    compare_parser.add_argument("--workload", choices=("import",), required=True)
     subparsers.add_parser("validate-manifest")
     return parser.parse_args()
 
@@ -957,6 +1024,8 @@ def main():
         return run_baseline(args.profile, args.iterations)
     if args.command == "explain":
         return run_explain(args.profile)
+    if args.command == "compare":
+        return run_compare(args.workload)
     return validate_manifest()
 
 

@@ -7,8 +7,8 @@ from tests.postgres_support import create_database, drop_database, run_alembic, 
 
 
 POSTGRES_AVAILABLE = bool(os.environ.get("TAKSKLAD_TEST_DATABASE_URL"))
-CURRENT_HEAD = "20260710_0008"
-PREVIOUS_HEAD = "20260701_0007"
+CURRENT_HEAD = "20260710_0009"
+PREVIOUS_HEAD = "20260710_0008"
 
 
 @unittest.skipUnless(POSTGRES_AVAILABLE, "disposable PostgreSQL URL not provided")
@@ -49,13 +49,23 @@ class PostgresMigrationTests(unittest.TestCase):
         try:
             with engine.begin() as connection:
                 connection.exec_driver_sql("""
-                    INSERT INTO pending_events (
-                        id, event_type, status, attempts, payload, created_at, updated_at
-                    ) VALUES
-                        (gen_random_uuid(), 'migration_pending', 'pending', 0,
-                         '{"next_attempt_at":"2030-01-01T00:00:00+00:00"}'::jsonb, now(), now()),
-                        (gen_random_uuid(), 'migration_processing', 'processing', 1,
-                         '{}'::jsonb, now(), now())
+                    INSERT INTO orders (
+                        id, source, external_id, payment_type, client, address, status, raw_payload
+                    ) VALUES (
+                        '00000000-0000-0000-0000-000000000701', 'synthetic_migration',
+                        'synthetic-legacy-order', 'synthetic', 'SYNTHETIC CLIENT',
+                        'SYNTHETIC ADDRESS', 'not_completed',
+                        '{"order_key":"synthetic-legacy-order"}'::jsonb
+                    );
+                    INSERT INTO order_items (
+                        id, order_id, product, quantity_pieces, quantity_blocks, scanned_blocks,
+                        requires_kiz, status, raw_payload
+                    ) VALUES (
+                        '00000000-0000-0000-0000-000000000702',
+                        '00000000-0000-0000-0000-000000000701', 'SYNTHETIC PRODUCT',
+                        10, 1, 0, true, 'not_completed',
+                        '{"item_key":"synthetic-legacy-item","source_import_id":"synthetic-legacy-row"}'::jsonb
+                    )
                 """)
         finally:
             engine.dispose()
@@ -66,11 +76,14 @@ class PostgresMigrationTests(unittest.TestCase):
         self.assertEqual(scalar(url, "SELECT count(*) FROM alembic_version"), 1)
         self.assertEqual(scalar(
             url,
-            "SELECT count(*) FROM pending_events WHERE event_type = 'migration_pending' AND available_at = '2030-01-01T00:00:00+00:00'::timestamptz",
+            "SELECT count(*) FROM orders WHERE external_id='synthetic-legacy-order' "
+            "AND raw_payload->>'order_key'='synthetic-legacy-order' "
+            "AND import_order_key IS NULL AND import_source_order_key IS NULL",
         ), 1)
         self.assertEqual(scalar(
             url,
-            "SELECT count(*) FROM pending_events WHERE event_type = 'migration_processing' AND lease_owner = 'legacy-expired' AND lease_expires_at IS NOT NULL",
+            "SELECT count(*) FROM order_items WHERE raw_payload->>'source_import_id'='synthetic-legacy-row' "
+            "AND import_item_key IS NULL AND source_import_key IS NULL AND source_import_id IS NULL",
         ), 1)
 
 

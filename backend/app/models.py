@@ -15,10 +15,16 @@ UUID_TYPE = Uuid(as_uuid=True)
 
 class Order(Base):
     __tablename__ = "orders"
+    __table_args__ = (
+        Index("idx_orders_import_order_key_status", "import_order_key", "status"),
+        Index("idx_orders_import_source_order_key_status", "import_source_order_key", "status"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
     source: Mapped[str] = mapped_column(String(40), nullable=False, default="google_sheets")
     external_id: Mapped[str | None] = mapped_column(String(120))
+    import_order_key: Mapped[str | None] = mapped_column(String(120))
+    import_source_order_key: Mapped[str | None] = mapped_column(String(120))
     order_date: Mapped[object | None] = mapped_column(Date)
     payment_type: Mapped[str] = mapped_column(String(120), nullable=False)
     client: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -34,10 +40,18 @@ class Order(Base):
 
 class OrderItem(Base):
     __tablename__ = "order_items"
+    __table_args__ = (
+        Index("idx_order_items_import_item_key", "import_item_key"),
+        Index("idx_order_items_source_import_key", "source_import_key"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
     order_id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, ForeignKey("orders.id", ondelete="CASCADE"), nullable=False)
     product: Mapped[str] = mapped_column(String(255), nullable=False)
+    import_item_key: Mapped[str | None] = mapped_column(String(64))
+    source_import_key: Mapped[str | None] = mapped_column(String(64))
+    source_import_id: Mapped[str | None] = mapped_column(Text)
+    source_batch_key: Mapped[str | None] = mapped_column(Text)
     quantity_pieces: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     quantity_blocks: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     pieces_per_block: Mapped[int | None] = mapped_column(Integer)
