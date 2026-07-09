@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Index, Integer, String, Text, Uuid, UniqueConstraint, func
+from sqlalchemy import JSON, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, String, Text, Uuid, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -18,6 +18,15 @@ class Order(Base):
     __table_args__ = (
         Index("idx_orders_import_order_key_status", "import_order_key", "status"),
         Index("idx_orders_import_source_order_key_status", "import_source_order_key", "status"),
+        CheckConstraint(
+            "status IN ('not_completed','completed','done','closed','returned','archived_no_kiz','cancelled')",
+            name="ck_orders_supported_status",
+        ),
+        CheckConstraint(
+            "(import_order_key IS NULL OR trim(import_order_key) <> '') AND "
+            "(import_source_order_key IS NULL OR trim(import_source_order_key) <> '')",
+            name="ck_orders_import_keys_nonblank",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
@@ -43,6 +52,30 @@ class OrderItem(Base):
     __table_args__ = (
         Index("idx_order_items_import_item_key", "import_item_key"),
         Index("idx_order_items_source_import_key", "source_import_key"),
+        CheckConstraint(
+            "quantity_pieces >= 0 AND quantity_blocks >= 0 AND scanned_blocks >= 0",
+            name="ck_order_items_quantities_nonnegative",
+        ),
+        CheckConstraint(
+            "pieces_per_block IS NULL OR pieces_per_block > 0",
+            name="ck_order_items_pieces_per_block_positive",
+        ),
+        CheckConstraint("scanned_blocks <= quantity_blocks", name="ck_order_items_scanned_within_plan"),
+        CheckConstraint(
+            "status IN ('not_completed','completed','done','closed','returned','removed_from_google_sheet',"
+            "'archived_no_kiz','cancelled')",
+            name="ck_order_items_supported_status",
+        ),
+        CheckConstraint(
+            "(source_import_id IS NULL AND source_import_key IS NULL) OR "
+            "(source_import_id IS NOT NULL AND source_import_key IS NOT NULL)",
+            name="ck_order_items_source_identity_pair",
+        ),
+        CheckConstraint(
+            "(import_item_key IS NULL OR trim(import_item_key) <> '') AND "
+            "(source_import_key IS NULL OR trim(source_import_key) <> '')",
+            name="ck_order_items_import_keys_nonblank",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
@@ -124,6 +157,16 @@ class KizMovement(Base):
 
 class ImportJob(Base):
     __tablename__ = "imports"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('created','completed','completed_with_errors','failed')",
+            name="ck_imports_supported_status",
+        ),
+        CheckConstraint(
+            "rows_total >= 0 AND rows_imported >= 0 AND rows_imported <= rows_total",
+            name="ck_imports_row_counts",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
     source: Mapped[str] = mapped_column(String(40), nullable=False, default="excel")
@@ -157,6 +200,12 @@ class PendingEvent(Base):
         Index("idx_pending_events_claim", "event_type", "status", "available_at", "created_at", "id"),
         Index("idx_pending_events_lease_expiry", "status", "lease_expires_at", "id"),
         Index("uq_pending_events_idempotency_key", "idempotency_key", unique=True),
+        CheckConstraint(
+            "status IN ('pending','failed','error','processing','completed','blocked','dead','cancelled',"
+            "'active','waiting_shipment_date','waiting_date_choice')",
+            name="ck_pending_events_supported_status",
+        ),
+        CheckConstraint("attempts >= 0", name="ck_pending_events_attempts_nonnegative"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)

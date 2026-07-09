@@ -38,6 +38,7 @@ class BackendSkeletonTests(unittest.TestCase):
             "backend/migrations/versions/20260701_0007_pending_event_indexes.py",
             "backend/migrations/versions/20260710_0008_pending_event_leases.py",
             "backend/migrations/versions/20260710_0009_import_identity.py",
+            "backend/migrations/versions/20260710_0010_data_invariants.py",
             "docs/database-migrations-runbook.md",
             "deploy/vds/docker-compose.yml",
             "deploy/vds/config-contract.json",
@@ -131,6 +132,7 @@ class BackendSkeletonTests(unittest.TestCase):
         pending_event_indexes = (ROOT_DIR / "backend/migrations/versions/20260701_0007_pending_event_indexes.py").read_text(encoding="utf-8").lower()
         pending_event_leases = (ROOT_DIR / "backend/migrations/versions/20260710_0008_pending_event_leases.py").read_text(encoding="utf-8").lower()
         import_identity = (ROOT_DIR / "backend/migrations/versions/20260710_0009_import_identity.py").read_text(encoding="utf-8").lower()
+        data_invariants = (ROOT_DIR / "backend/migrations/versions/20260710_0010_data_invariants.py").read_text(encoding="utf-8").lower()
 
         for table_name in [
             "orders",
@@ -200,6 +202,11 @@ class BackendSkeletonTests(unittest.TestCase):
             self.assertIn(column_name, import_identity)
         self.assertIn("revision = \"20260710_0009\"", import_identity)
         self.assertIn("down_revision = \"20260710_0008\"", import_identity)
+        self.assertIn("revision = \"20260710_0010\"", data_invariants)
+        self.assertIn("down_revision = \"20260710_0009\"", data_invariants)
+        self.assertIn("not valid", data_invariants)
+        self.assertIn("validate constraint", data_invariants)
+        self.assertIn("create unique index concurrently", data_invariants)
         self.assertIn("baseline migration is irreversible", baseline)
         self.assertIn("incident migration is forward-only", incidents)
         self.assertIn("client points migration is forward-only", client_points)
@@ -209,6 +216,7 @@ class BackendSkeletonTests(unittest.TestCase):
         self.assertIn("pending event queue index migration is forward-only", pending_event_indexes)
         self.assertIn("pending event lease migration is forward-only", pending_event_leases)
         self.assertIn("import identity expand migration is forward-only", import_identity)
+        self.assertIn("warehouse invariant migration is forward-only", data_invariants)
 
     def test_deploy_runbook_uses_alembic_for_normal_production_upgrades(self):
         runbook = (ROOT_DIR / "docs/deploy-rollback-runbook.md").read_text(encoding="utf-8")

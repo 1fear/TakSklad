@@ -2798,7 +2798,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
         try:
             with SessionLocal() as db:
                 db.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
-                db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260710_0009')"))
+                db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260710_0010')"))
                 db.add(PendingEvent(
                     event_type=SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE,
                     idempotency_key="skladbot_daily_report:2026-07-06:chat-1:scheduled:daily_skladbot:v2",
@@ -2861,7 +2861,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
         try:
             with SessionLocal() as db:
                 db.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
-                db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260710_0009')"))
+                db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260710_0010')"))
                 db.add(PendingEvent(
                     event_type=SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE,
                     idempotency_key="skladbot_daily_report:2026-07-06:chat-1:scheduled:daily_skladbot:v2",

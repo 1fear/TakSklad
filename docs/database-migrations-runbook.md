@@ -51,6 +51,16 @@ PYTHONPATH=. .venv/bin/python tools/import_identity_backfill.py \
 
 Resume with the reported `next_after_order_id` and `next_after_item_id` if an operational window ends. `--apply` is allowed only after a complete dry-run reports zero conflicts and an approved backup/rollback gate exists.
 
+Revision `20260710_0010` makes the warehouse data assumptions enforceable in PostgreSQL. It adds validated checks for nonnegative and internally consistent quantities, supported legacy statuses, import row counts, pending-event attempts, and complete/nonblank materialized identities. It also adds order-scoped active import identity indexes. Returned orders remain reusable history and therefore do not participate in the active-order unique index.
+
+Run the read-only preflight before scheduling this migration:
+
+```bash
+./tools/check_data_invariants.sh --database-url "$DATABASE_URL" --read-only
+```
+
+The preflight only counts violations in a repeatable-read, read-only transaction. It does not repair, delete, merge, or execute DDL. Any nonzero invariant count is a hard stop: keep the database at `20260710_0009`, investigate the reported class, and use a separately reviewed forward data repair. The migration uses `NOT VALID` checks followed by validation, two-second lock timeouts, bounded statement timeouts, and concurrent unique-index creation. A lock timeout or validation failure must leave the previous head active; retry only after the blocker or data violation is resolved. Production execution still requires a verified backup, an approved maintenance window, and explicit production authorization.
+
 ## Invariant Preflight
 
 Before adding future uniqueness constraints for KIZ scans or pending-event idempotency, run:

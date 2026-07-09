@@ -7,8 +7,8 @@ from tests.postgres_support import create_database, drop_database, run_alembic, 
 
 
 POSTGRES_AVAILABLE = bool(os.environ.get("TAKSKLAD_TEST_DATABASE_URL"))
-CURRENT_HEAD = "20260710_0009"
-PREVIOUS_HEAD = "20260710_0008"
+CURRENT_HEAD = "20260710_0010"
+PREVIOUS_HEAD = "20260710_0009"
 
 
 @unittest.skipUnless(POSTGRES_AVAILABLE, "disposable PostgreSQL URL not provided")
