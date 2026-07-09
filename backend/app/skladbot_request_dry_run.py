@@ -17,6 +17,7 @@ from .skladbot_worker import (
     SkladBotClient,
     env_int,
     normalize_request_payload,
+    normalize_smartup_id,
     normalize_text,
     parse_int,
     product_sku_key,
@@ -615,6 +616,9 @@ def build_skladbot_payload(
     representative_contact: Any | None = None,
 ) -> dict[str, Any]:
     comment = build_representative_comment(order.payment_type, order.representative, representative_contact)
+    smartup_id = order_smartup_id(order)
+    if smartup_id:
+        comment = append_comment_line(comment, f"Smartup ID: {smartup_id}")
     return {
         "customer_id": SKLADBOT_CUSTOMER_ID,
         "request_type_id": SKLADBOT_REQUEST_TYPE_ID,
@@ -639,6 +643,49 @@ def build_skladbot_payload(
             for product in products
         ],
     }
+
+
+def order_smartup_id(order: Order) -> str:
+    raw_payload = order.raw_payload or {}
+    for value in (
+        raw_payload.get("smartup_request_id"),
+        raw_payload.get("smartup_deal_id"),
+    ):
+        smartup_id = normalize_smartup_id(value, explicit=True)
+        if smartup_id:
+            return smartup_id
+    for value in (
+        raw_payload.get("source_order_id"),
+        raw_payload.get("source_import_id"),
+    ):
+        smartup_id = normalize_smartup_id(value, explicit=False)
+        if smartup_id:
+            return smartup_id
+    for item in sorted(order.items, key=lambda value: (value.product, str(value.id))):
+        item_payload = item.raw_payload or {}
+        for value in (
+            item_payload.get("smartup_request_id"),
+            item_payload.get("smartup_deal_id"),
+        ):
+            smartup_id = normalize_smartup_id(value, explicit=True)
+            if smartup_id:
+                return smartup_id
+        for value in (
+            item_payload.get("source_order_id"),
+            item_payload.get("source_import_id"),
+        ):
+            smartup_id = normalize_smartup_id(value, explicit=False)
+            if smartup_id:
+                return smartup_id
+    return ""
+
+
+def append_comment_line(comment: str, line: str) -> str:
+    comment = normalize_text(comment)
+    line = normalize_text(line)
+    if not line:
+        return comment
+    return f"{comment}\n{line}" if comment else line
 
 
 def summarize_dry_runs(dry_runs: list[dict[str, Any]], mode: str) -> dict[str, Any]:

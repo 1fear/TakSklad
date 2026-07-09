@@ -290,6 +290,23 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
         self.assertEqual(row["payload"]["comment"], "Терминал\nТП1")
         self.assertEqual(row["payload"]["fields"]["comment"]["value"], "Терминал\nТП1")
 
+    def test_smartup_order_payload_adds_smartup_id_to_comment(self):
+        import_id, order_id = self.seed_import_order()
+
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            order.raw_payload = {
+                **(order.raw_payload or {}),
+                "source_order_id": "smartup:259704266",
+            }
+            db.commit()
+            create_skladbot_dry_run_for_import(db, import_id)
+            db.commit()
+            row = list_skladbot_dry_runs(db, import_id)[0]
+
+        self.assertEqual(row["payload"]["comment"], "Перечисление\nТП1\nSmartup ID: smartup:259704266")
+        self.assertEqual(row["payload"]["fields"]["comment"]["value"], "Перечисление\nТП1\nSmartup ID: smartup:259704266")
+
     def test_skladbot_payload_uses_contact_for_tp_code_and_phones_without_work_zone(self):
         import_id, _order_id = self.seed_import_order(
             payment_type="Терминал",

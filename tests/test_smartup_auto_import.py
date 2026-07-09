@@ -41,7 +41,7 @@ from backend.app.smartup_auto_import import (
 from backend.app import smartup_auto_import_worker
 from backend.app.kiz_reports_service import list_completed_kiz_source_files
 from backend.app.smartup_auto_import_history_service import list_smartup_auto_import_history
-from backend.app.skladbot_request_dry_run import SKLADBOT_REQUEST_CREATE_EVENT_TYPE
+from backend.app.skladbot_request_dry_run import SKLADBOT_REQUEST_CREATE_EVENT_TYPE, list_skladbot_dry_runs
 
 
 def sample_order(**overrides):
@@ -554,12 +554,18 @@ class SmartupAutoImportTests(unittest.TestCase):
                     )
                     orders = db.execute(select(Order)).scalars().all()
                     imports = db.execute(select(ImportJob)).scalars().all()
+                    dry_runs = list_skladbot_dry_runs(db, str(imports[0].id))
+                    order_source_id = orders[0].raw_payload["source_order_id"]
+                    item_source_ids = [item.raw_payload["source_order_id"] for item in orders[0].items]
 
             self.assertEqual(result["status"], "completed")
             self.assertEqual(fake.changed, [(["642"], "B#W")])
             self.assertEqual(len(orders), 1)
             self.assertEqual(orders[0].order_date.isoformat(), "2026-06-26")
             self.assertEqual(orders[0].payment_type, "Терминал")
+            self.assertEqual(order_source_id, "smartup:642")
+            self.assertEqual(item_source_ids, ["smartup:642"])
+            self.assertEqual(dry_runs[0]["payload"]["comment"], "Терминал\nТП\nSmartup ID: smartup:642")
             self.assertEqual(len(imports), 1)
             self.assertEqual((imports[0].raw_payload["smartup_auto"]["delivery_dates"]), ["2026-06-26"])
 
