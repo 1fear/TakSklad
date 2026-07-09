@@ -647,27 +647,38 @@ def kiz_date_range_for_menu(dates):
     return iso_dates[0], iso_dates[-1]
 
 
-def kiz_source_file_latest_date(item):
+def kiz_source_file_uploaded_at(item):
+    uploaded_at = normalize_text((item or {}).get("uploaded_at")).replace("Z", "+00:00")
+    if uploaded_at:
+        try:
+            parsed = datetime.fromisoformat(uploaded_at)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.timestamp()
+        except ValueError:
+            pass
+
     dates = [
         iso_date_from_display(value)
         for value in ((item or {}).get("dates") or [])
         if iso_date_from_display(value)
     ]
-    return max(dates) if dates else ""
+    if not dates:
+        return 0
+    return datetime.fromisoformat(max(dates)).replace(tzinfo=timezone.utc).timestamp()
 
 
 def recent_kiz_source_files_for_menu(files, limit=TELEGRAM_DATE_MENU_RECENT_LIMIT):
     files = list(files or [])
-    if len(files) <= limit:
-        return files
     return sorted(
         files,
         key=lambda item: (
-            kiz_source_file_latest_date(item),
+            kiz_source_file_uploaded_at(item),
             normalize_text((item or {}).get("source_file")),
             normalize_text((item or {}).get("source_key")),
         ),
-    )[-limit:]
+        reverse=True,
+    )[:limit]
 
 
 def backend_http_error_detail(exc):

@@ -8,7 +8,7 @@ from openpyxl.utils import get_column_letter
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from .models import Order, OrderItem
+from .models import ImportJob, Order, OrderItem
 from .orders_service import ApiError, COMPLETED_STATUSES
 from .reports_service import payment_group
 from .scan_quantities import scan_block_quantity, scanned_blocks_for_scans
@@ -48,6 +48,7 @@ KIZ_SUMMARY_HEADERS = [
 
 def list_completed_kiz_source_files(db: Session):
     groups = group_items_by_source_document(load_items(db))
+    import_created_at_by_id = load_import_created_at_by_id(db)
     result = []
     for source_key, items in sorted(groups.items(), key=lambda item: source_group_sort_key(item[1])):
         source_file = source_file_for_items(items)
@@ -57,9 +58,11 @@ def list_completed_kiz_source_files(db: Session):
         scanned_blocks = scanned_kiz_blocks(items)
         completed = not incomplete_kiz_items(items)
         dates = sorted({item.order.order_date.isoformat() for item in items if item.order and item.order.order_date})
+        uploaded_at = source_group_uploaded_at(items, import_created_at_by_id)
         result.append({
             "source_key": source_key,
             "source_file": source_file,
+            "uploaded_at": uploaded_at.isoformat() if uploaded_at else "",
             "dates": dates,
             "items": len(items),
             "planned_blocks": planned_blocks,
@@ -342,6 +345,28 @@ def load_items(db: Session):
             selectinload(OrderItem.scan_codes),
         )
     ).scalars().all()
+
+
+def load_import_created_at_by_id(db: Session):
+    return {
+        str(import_id): created_at
+        for import_id, created_at in db.execute(select(ImportJob.id, ImportJob.created_at)).all()
+        if created_at is not None
+    }
+
+
+def source_group_uploaded_at(items, import_created_at_by_id):
+    import_dates = []
+    item_dates = []
+    for item in items:
+        raw_payload = item.raw_payload or {}
+        import_id = str(raw_payload.get("backend_import_id") or "").strip()
+        import_created_at = import_created_at_by_id.get(import_id)
+        if import_created_at is not None:
+            import_dates.append(import_created_at)
+        elif item.created_at is not None:
+            item_dates.append(item.created_at)
+    return max(import_dates or item_dates, default=None)
 
 
 def group_items_by_source_document(items):

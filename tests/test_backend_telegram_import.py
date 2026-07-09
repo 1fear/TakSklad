@@ -2072,6 +2072,7 @@ class BackendTelegramImportTests(unittest.TestCase):
                     "scanned_blocks": 2,
                     "completed": False,
                     "dates": ["2026-06-08"],
+                    "uploaded_at": "2026-07-01T12:00:00+00:00",
                 },
             ]
 
@@ -2095,12 +2096,13 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertIn("3/3 блоков", messages[0][1])
         self.assertIn("open.xlsx", messages[0][1])
         self.assertIn("2/5 блоков", messages[0][1])
-        self.assertEqual(messages[0][2]["inline_keyboard"][0][0]["callback_data"], "kiz_file:1")
+        self.assertEqual(messages[0][2]["inline_keyboard"][0][0]["callback_data"], "kiz_file:2")
         self.assertEqual(len(messages[0][2]["inline_keyboard"]), 1)
-        self.assertEqual(states[0][1]["kiz_files"][0]["source_key"], "import:done")
-        self.assertFalse(states[0][1]["kiz_files"][1]["completed"])
+        self.assertEqual(states[0][1]["kiz_files"][0]["source_key"], "import:open")
+        self.assertFalse(states[0][1]["kiz_files"][0]["completed"])
+        self.assertTrue(states[0][1]["kiz_files"][1]["completed"])
 
-    def test_telegram_worker_limits_kiz_source_files_menu_to_recent_seven_files(self):
+    def test_telegram_worker_limits_kiz_source_files_menu_to_recent_seven_files_by_upload_time(self):
         worker = TelegramWorker.__new__(TelegramWorker)
         messages = []
         states = []
@@ -2114,7 +2116,8 @@ class BackendTelegramImportTests(unittest.TestCase):
                     "planned_blocks": 1,
                     "scanned_blocks": 1,
                     "completed": True,
-                    "dates": [f"2026-06-{day:02d}"],
+                    "dates": [f"2026-06-{11 - day:02d}"],
+                    "uploaded_at": f"2026-07-{day:02d}T12:00:00+00:00",
                 }
                 for day in range(1, 11)
             ]
@@ -2144,13 +2147,13 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertEqual(len(keyboard), 7)
         self.assertEqual(keyboard[0][0]["callback_data"], "kiz_file:1")
         self.assertEqual([item["source_file"] for item in states[0][1]["kiz_files"]], [
-            "file-04.xlsx",
-            "file-05.xlsx",
-            "file-06.xlsx",
-            "file-07.xlsx",
-            "file-08.xlsx",
-            "file-09.xlsx",
             "file-10.xlsx",
+            "file-09.xlsx",
+            "file-08.xlsx",
+            "file-07.xlsx",
+            "file-06.xlsx",
+            "file-05.xlsx",
+            "file-04.xlsx",
         ])
 
     def test_telegram_worker_downloads_kiz_source_file_by_import_key(self):

@@ -4125,6 +4125,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         by_file = {item["source_file"]: item for item in source_payload}
         self.assertEqual(set(by_file), {"source-a.xlsx", "source-b.xlsx", "source-c.xlsx"})
         self.assertTrue(by_file["source-a.xlsx"]["source_key"].startswith("import:"))
+        self.assertTrue(by_file["source-a.xlsx"]["uploaded_at"])
         self.assertTrue(by_file["source-a.xlsx"]["completed"])
         self.assertEqual(by_file["source-a.xlsx"]["scanned_blocks"], 2)
         self.assertEqual(by_file["source-a.xlsx"]["planned_blocks"], 2)
