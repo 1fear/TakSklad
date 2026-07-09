@@ -26,6 +26,19 @@ PRODUCT_COLORS = ("brown", "red", "gold", "green")
 PRODUCT_FORMATS = ("op", "ssl")
 SKLADBOT_SYNC_LOCK_KEY = 22052631
 SKLADBOT_COMPLETED_BACKFILL_STATUSES = ("completed", "done", "closed")
+SMARTUP_ID_KEYS = (
+    "smartup_id",
+    "smartupId",
+    "smartup_deal_id",
+    "smartupDealId",
+    "Smartup deal_id",
+    "Smartup ID",
+    "ID Smartup",
+    "ID заявки Smartup",
+)
+SMARTUP_COMMENT_ID_RE = re.compile(
+    r"(?im)^\s*(?:smartup(?:\s+deal[_ ]?id|\s+id)?|id\s+smartup|id\s+заявки\s+smartup)\s*[:#-]\s*([^\s;]+)\s*$"
+)
 
 
 class CandidateRequests(list):
@@ -498,6 +511,41 @@ def request_value(detail, list_item, *keys):
     return ""
 
 
+def normalize_smartup_id(value, *, explicit=False):
+    text = normalize_text(value)
+    if not text:
+        return ""
+    if text.startswith("smartup:"):
+        parts = text.split(":")
+        return ":".join(parts[:2]) if len(parts) >= 2 and parts[1] else text
+    if explicit:
+        return f"smartup:{text}"
+    return ""
+
+
+def smartup_id_from_comment(comment):
+    text = normalize_text(comment)
+    if not text:
+        return ""
+    match = SMARTUP_COMMENT_ID_RE.search(text)
+    if not match:
+        return ""
+    return normalize_smartup_id(match.group(1), explicit=True)
+
+
+def request_smartup_id(list_item, detail, fields):
+    explicit = normalize_smartup_id(request_value(detail, list_item, *SMARTUP_ID_KEYS), explicit=True)
+    if explicit:
+        return explicit
+    field_value = normalize_smartup_id(get_field(fields, *SMARTUP_ID_KEYS), explicit=True)
+    if field_value:
+        return field_value
+    return smartup_id_from_comment(
+        request_value(detail, list_item, "comment", "commentary")
+        or get_field(fields, "comment", "Комментарий")
+    )
+
+
 class SkladBotClient:
     def __init__(self):
         self.tokens = parse_skladbot_api_tokens()
@@ -780,6 +828,7 @@ def normalize_request_payload(list_item, detail):
         "recipient": normalize_text(get_field(fields, "company_name", "Название компании/Имя человека") or detail.get("company_name")),
         "address": normalize_text(get_field(fields, "address", "Адрес") or detail.get("address") or logistic.get("address")),
         "comment": normalize_text(detail.get("comment") or get_field(fields, "comment", "Комментарий")),
+        "smartup_id": request_smartup_id(list_item, detail, fields),
         "products": [
             {
                 "name": normalize_text(product.get("name")),

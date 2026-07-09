@@ -6,7 +6,7 @@
 
 ### Daily SkladBot future unloading visibility
 
-**Файлы:** `backend/app/skladbot_daily_report.py`, `backend/app/telegram_worker.py`, `tests/test_skladbot_daily_report.py`, `README.md`, `backend/README.md`, `docs/report-source-rules.md`, `docs/implementation-log.md`, `docs/changelog.md`.
+**Файлы:** `backend/app/skladbot_daily_report.py`, `backend/app/telegram_worker.py`, `backend/app/skladbot_worker.py`, `backend/app/health_service.py`, `tests/test_skladbot_daily_report.py`, `README.md`, `backend/README.md`, `docs/report-source-rules.md`, `docs/implementation-log.md`, `docs/changelog.md`.
 
 **Что стало:**
 
@@ -14,6 +14,8 @@
 - Эти строки остаются вне operational totals `Заявки`/`Товары заявок`, чтобы daily за 07.07 не считал отгрузку 08.07 как складскую операцию 07.07.
 - Coverage получил counters `future_unloading_requests` и `future_unloading_blocks`, Telegram summary показывает отдельную строку по будущим отгрузкам.
 - Scheduled blocker разрешает complete future-only отчет, если все diagnostic/excluded rows являются future-unloading строками; остальные `0 operational + excluded` случаи по-прежнему блокируются.
+- Daily XLSX переносит `ID заявки Smartup` из SkladBot detail/list/fields/comment в листы заявок и товаров.
+- `/ready` не держит старую failed daily-send ошибку как актуальную деградацию, если она закрыта более поздней успешной catch-up отправкой за тот же date/chat/kind.
 - Добавлена регрессия на 8 контрагентов transfer batch `WH-R-204498..WH-R-204505`, 95 блоков, дата создания `2026-07-07`, дата выгрузки `2026-07-08`.
 
 **Проверки:**

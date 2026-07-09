@@ -7184,6 +7184,8 @@ cd /opt/taksklad/app
   - XLSX получил лист `Будущие отгрузки` с контрагентом, типом оплаты, представителем, адресом, планом блоков и причиной;
   - coverage и Telegram summary получили counters `future_unloading_requests` и `future_unloading_blocks`;
   - scheduled blocker разрешает complete future-only отчет, но продолжает блокировать прочие `0 operational + excluded` случаи.
+  - `ID заявки Smartup` парсится из SkladBot detail/list/fields/comment и попадает в daily XLSX;
+  - `/ready` считает historical failed daily-send закрытым, если позже был successful catch-up за тот же date/chat/kind.
 - Инварианты:
   - future-unloading строки не попадают в operational totals дня;
   - SkladBot API остается read-only;

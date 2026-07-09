@@ -20,6 +20,11 @@ EXPECTED_BASELINE_REVISION = "20260616_0001"
 EXPECTED_HEAD_REVISION = "20260701_0007"
 OK_MIGRATION_REVISIONS = {EXPECTED_BASELINE_REVISION, EXPECTED_HEAD_REVISION}
 TERMINAL_INCIDENT_STATUSES = ("resolved", "ignored", "cancelled")
+SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE = "skladbot_daily_report_send"
+SKLADBOT_DAILY_SUCCESS_RESULT_STATUSES = {
+    "CATCHUP_SENT_COMPLETE_ONCE",
+    "completed_sent",
+}
 
 
 def build_readiness_report(db: Session, app_settings):
@@ -120,6 +125,7 @@ def build_queue_readiness(db: Session, now=None):
         .limit(1)
     ).scalars().first()
     errors = last_event_errors(db, now=now)
+    resolved_errors = resolved_daily_report_errors(db, now=now)
     hot_path_errors = [
         event for event in errors
         if event.get("event_type") != GOOGLE_SHEETS_EXPORT_EVENT_TYPE
@@ -135,6 +141,7 @@ def build_queue_readiness(db: Session, now=None):
         ],
         "last_errors": errors,
         "hot_path_last_errors": hot_path_errors,
+        "resolved_historical_errors": resolved_errors,
     }
 
 
@@ -154,7 +161,103 @@ def last_event_errors(db: Session, now=None, limit=10, event_type=None):
         stmt = stmt.where(PendingEvent.event_type == event_type)
     stmt = stmt.order_by(PendingEvent.updated_at.desc(), PendingEvent.created_at.desc(), PendingEvent.id.desc()).limit(limit)
     events = db.execute(stmt).scalars().all()
-    return [compact_event_error(event_to_queue_read(event, now=now)) for event in events]
+    return [
+        compact_event_error(event_to_queue_read(event, now=now))
+        for event in events
+        if not daily_report_failure_resolved_by_later_success(db, event)
+    ]
+
+
+def resolved_daily_report_errors(db: Session, now=None, limit=10):
+    now = now or datetime.now(timezone.utc)
+    stmt = (
+        select(PendingEvent)
+        .where(PendingEvent.event_type == SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE)
+        .where(PendingEvent.status.in_(("failed", "error", "blocked")))
+        .where(PendingEvent.last_error.is_not(None))
+        .order_by(PendingEvent.updated_at.desc(), PendingEvent.created_at.desc(), PendingEvent.id.desc())
+        .limit(limit)
+    )
+    result = []
+    for event in db.execute(stmt).scalars().all():
+        if not daily_report_failure_resolved_by_later_success(db, event):
+            continue
+        row = compact_event_error(event_to_queue_read(event, now=now))
+        row["resolved_by"] = "later_successful_daily_report"
+        result.append(row)
+    return result
+
+
+def daily_report_failure_resolved_by_later_success(db: Session, event: PendingEvent) -> bool:
+    if event.event_type != SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE:
+        return False
+    report_date = daily_report_event_report_date(event)
+    if not report_date:
+        return False
+    event_time = daily_report_event_time(event)
+    event_kind = daily_report_event_kind(event)
+    event_chat = daily_report_event_chat_key(event)
+    candidates = db.execute(
+        select(PendingEvent)
+        .where(PendingEvent.event_type == SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE)
+        .where(PendingEvent.status == "completed")
+        .order_by(PendingEvent.updated_at.desc(), PendingEvent.created_at.desc(), PendingEvent.id.desc())
+        .limit(100)
+    ).scalars().all()
+    for candidate in candidates:
+        if candidate.id == event.id:
+            continue
+        if daily_report_event_report_date(candidate) != report_date:
+            continue
+        candidate_kind = daily_report_event_kind(candidate)
+        if event_kind and candidate_kind and event_kind != candidate_kind:
+            continue
+        candidate_chat = daily_report_event_chat_key(candidate)
+        if event_chat and candidate_chat and event_chat != candidate_chat:
+            continue
+        candidate_time = daily_report_event_time(candidate)
+        if event_time and candidate_time and candidate_time <= event_time:
+            continue
+        if daily_report_event_success(candidate):
+            return True
+    return False
+
+
+def daily_report_event_payload(event: PendingEvent) -> dict:
+    return event.payload if isinstance(event.payload, dict) else {}
+
+
+def daily_report_event_report_date(event: PendingEvent) -> str:
+    return str(daily_report_event_payload(event).get("report_date") or "").strip()
+
+
+def daily_report_event_kind(event: PendingEvent) -> str:
+    payload = daily_report_event_payload(event)
+    return str(payload.get("kind") or payload.get("report_kind") or "").strip()
+
+
+def daily_report_event_chat_key(event: PendingEvent) -> str:
+    key = str(event.idempotency_key or "")
+    parts = key.split(":")
+    if len(parts) >= 6 and parts[0] == "skladbot_daily_report":
+        return parts[2].strip()
+    payload = daily_report_event_payload(event)
+    return str(payload.get("chat_id") or "").strip()
+
+
+def daily_report_event_time(event: PendingEvent):
+    return ensure_aware_utc(event.updated_at or event.created_at)
+
+
+def daily_report_event_success(event: PendingEvent) -> bool:
+    payload = daily_report_event_payload(event)
+    result_status = str(payload.get("result_status") or "").strip()
+    success = payload.get("success")
+    if success is True:
+        return True
+    if isinstance(success, str) and success.strip().lower() == "true":
+        return True
+    return result_status in SKLADBOT_DAILY_SUCCESS_RESULT_STATUSES
 
 
 def compact_event_error(event):
