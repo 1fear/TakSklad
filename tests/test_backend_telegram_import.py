@@ -2156,6 +2156,52 @@ class BackendTelegramImportTests(unittest.TestCase):
             "file-04.xlsx",
         ])
 
+    def test_telegram_worker_keeps_telegram_upload_above_newer_auto_imports(self):
+        worker = TelegramWorker.__new__(TelegramWorker)
+        messages = []
+        states = []
+
+        def fake_backend_get(path, params=None):
+            self.assertEqual(path, "/api/v1/reports/kiz/source-files")
+            return [
+                {
+                    "source_key": f"smartup:{day}",
+                    "source_file": f"smartup-{day}.xlsx",
+                    "planned_blocks": 1,
+                    "scanned_blocks": 1,
+                    "completed": True,
+                    "uploaded_at": f"2026-07-{day:02d}T12:00:00+00:00",
+                    "import_source": "smartup_auto",
+                }
+                for day in range(1, 11)
+            ] + [{
+                "source_key": "telegram:manual",
+                "source_file": "manual.xlsx",
+                "planned_blocks": 1,
+                "scanned_blocks": 1,
+                "completed": True,
+                "uploaded_at": "2026-06-01T12:00:00+00:00",
+                "import_source": "telegram",
+            }]
+
+        worker.backend_get = fake_backend_get
+        worker.get_chat_state = lambda chat_id: {}
+        worker.save_chat_state = lambda chat_id, payload: states.append((chat_id, payload))
+        worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
+
+        worker.show_kiz_source_files("123")
+
+        self.assertEqual(len(messages[0][2]["inline_keyboard"]), 7)
+        self.assertEqual([item["source_file"] for item in states[0][1]["kiz_files"]], [
+            "manual.xlsx",
+            "smartup-10.xlsx",
+            "smartup-9.xlsx",
+            "smartup-8.xlsx",
+            "smartup-7.xlsx",
+            "smartup-6.xlsx",
+            "smartup-5.xlsx",
+        ])
+
     def test_telegram_worker_downloads_kiz_source_file_by_import_key(self):
         worker = TelegramWorker.__new__(TelegramWorker)
         params_seen = []

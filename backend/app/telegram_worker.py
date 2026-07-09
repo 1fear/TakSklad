@@ -668,11 +668,16 @@ def kiz_source_file_uploaded_at(item):
     return datetime.fromisoformat(max(dates)).replace(tzinfo=timezone.utc).timestamp()
 
 
+def kiz_source_file_is_telegram_upload(item):
+    return normalize_text((item or {}).get("import_source")).casefold() == "telegram"
+
+
 def recent_kiz_source_files_for_menu(files, limit=TELEGRAM_DATE_MENU_RECENT_LIMIT):
     files = list(files or [])
     return sorted(
         files,
         key=lambda item: (
+            kiz_source_file_is_telegram_upload(item),
             kiz_source_file_uploaded_at(item),
             normalize_text((item or {}).get("source_file")),
             normalize_text((item or {}).get("source_key")),
