@@ -345,8 +345,17 @@ if health_status != 0:
     errors.append(f"backend health failed with exit {health_status}")
 if readiness_status != 0:
     errors.append(f"backend readiness failed with exit {readiness_status}")
-if readiness.get("status") != "ok":
-    errors.append(f"backend readiness status is not ok: {readiness.get('status') or 'unknown'}")
+readiness_database = readiness.get("database") or {}
+readiness_migrations = readiness.get("migrations") or {}
+readiness_policy = readiness.get("policy") or {}
+if readiness.get("ready") is not True or readiness.get("status") not in ("ok", "degraded"):
+    errors.append(f"backend readiness contract failed: {readiness.get('status') or 'unknown'}")
+if readiness_database.get("status") != "ok":
+    errors.append("backend readiness database status is not ok")
+if readiness_migrations.get("status") != "ok" or not readiness_migrations.get("expected_head") or readiness_migrations.get("current_revision") != readiness_migrations.get("expected_head"):
+    errors.append("backend readiness migration revision is not current")
+if readiness_policy.get("mandatory_status") != "ok":
+    errors.append("backend readiness mandatory policy is not ok")
 if compose_status != 0:
     errors.append(f"docker compose ps failed with exit {compose_status}")
 if verify_status != 0:

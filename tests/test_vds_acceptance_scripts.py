@@ -40,8 +40,9 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
             "health_attempt",
             "http://127.0.0.1:8000/ready",
             "READINESS_OUTPUT",
-            'readiness.get("status") != "ok"',
-            "backend readiness status is not ok",
+            'readiness.get("ready") is not True',
+            "backend readiness migration revision is not current",
+            "backend readiness mandatory policy is not ok",
             '"backend_readiness"',
             "release_go_no_go.py",
             "--require-go",
@@ -185,6 +186,10 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         compose = (PROJECT_ROOT / "deploy" / "vds" / "docker-compose.yml").read_text(encoding="utf-8")
 
         self.assertIn("http://127.0.0.1:8000/ready", compose)
+        self.assertIn("payload.get('ready') is True", compose)
+        self.assertIn("migrations.get('current_revision') == migrations.get('expected_head')", compose)
+        self.assertIn("policy.get('mandatory_status') == 'ok'", compose)
+        self.assertIn("json.load(response)", compose)
         self.assertIn("wget -qO- http://127.0.0.1/", compose)
         self.assertGreaterEqual(compose.count("db.execute(text('SELECT 1')).scalar()"), 4)
 

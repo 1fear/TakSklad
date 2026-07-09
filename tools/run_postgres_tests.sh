@@ -30,11 +30,14 @@ case "$MODE" in
   smoke)
     TEST_MODULE="tests.test_postgres_concurrency"
     ;;
+  readiness)
+    TEST_MODULE="tests.test_postgres_readiness"
+    ;;
   all)
-    TEST_MODULE="tests.test_postgres_migrations tests.test_postgres_concurrency"
+    TEST_MODULE="tests.test_postgres_migrations tests.test_postgres_concurrency tests.test_postgres_readiness"
     ;;
   *)
-    echo "Usage: $0 {migrations|smoke|all}" >&2
+    echo "Usage: $0 {migrations|smoke|readiness|all}" >&2
     exit 2
     ;;
 esac

@@ -13,6 +13,7 @@ class HealthResponse(BaseModel):
 
 class ReadinessResponse(BaseModel):
     generated_at: datetime
+    ready: bool
     status: str
     service: str
     version: str
@@ -22,6 +23,7 @@ class ReadinessResponse(BaseModel):
     queue: dict[str, Any] = Field(default_factory=dict)
     google_mirror: dict[str, Any] = Field(default_factory=dict)
     imports: dict[str, Any] = Field(default_factory=dict)
+    policy: dict[str, Any] = Field(default_factory=dict)
 
 
 class AuthLoginRequest(BaseModel):

@@ -9,6 +9,7 @@ from tools.release_preflight import (
     REQUIRED_FILES,
     VERSION_JSON,
     check_acceptance_kit,
+    check_deployment_readiness_contract,
     check_required_files,
     check_update_manifest_downloads,
     check_version_json,
@@ -117,6 +118,30 @@ class ReleasePreflightTests(unittest.TestCase):
             return "primary_source backend_only_refresh emergency_google_fallback google_mirror_pending_exports\n"
         if path_text.endswith("backend/app/operations_service.py"):
             return "shadow_diagnostics backend_active_orders_source google_mirror_lag_seconds hot_path_stale_processing telegram_worker_state\n"
+        if path_text.endswith("backend/app/health_service.py"):
+            return (
+                'EXPECTED_HEAD_REVISION = "20260701_0007"\n'
+                'report["ready"] = True\n'
+                'report["status"] = "unhealthy"\n'
+                'report["status"] = "degraded"\n'
+            )
+        if path_text.endswith("deploy/vds/docker-compose.yml"):
+            return "payload.get('ready') is True json.load(response)\n"
+        if path_text.endswith("deploy/vds/deploy_from_git.sh"):
+            return (
+                "verify_migration_revision_before_activation\n"
+                "--wait --wait-timeout\n"
+                "readiness body contract failed\n"
+                "acceptance_status.sh --require-go\n"
+                "TAKSKLAD_DEPLOY_ACCEPTANCE:-required\n"
+                "tools/validate_deploy_probe.py\n"
+            )
+        if path_text.endswith("tools/validate_deploy_probe.py"):
+            return (
+                "readiness database contract failed\n"
+                "readiness migration revision failed\n"
+                "readiness mandatory policy failed\n"
+            )
         if path_text.endswith("docs/windows-backend-acceptance.md"):
             return (
                 'TAKSKLAD_BACKEND_ONLY_REFRESH = "1"\n'
@@ -160,6 +185,11 @@ class ReleasePreflightTests(unittest.TestCase):
 
         self.assertEqual(summary["status"], "ok")
         self.assertTrue(all(check["ok"] for check in summary["checks"]))
+
+    def test_current_deployment_readiness_contract_is_fail_closed(self):
+        check = check_deployment_readiness_contract(Path(__file__).resolve().parents[1])
+
+        self.assertTrue(check["ok"], check.get("problems"))
 
     def test_version_json_accepts_paused_rollout_manifest(self):
         tmp_dir, root = self.make_root()

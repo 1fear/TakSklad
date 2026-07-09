@@ -1,4 +1,6 @@
 from pathlib import Path
+import subprocess
+import sys
 import unittest
 
 
@@ -6,6 +8,29 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class CiCdWorkflowTests(unittest.TestCase):
+    def test_deploy_probe_rejects_transport_success_with_invalid_readiness_body(self):
+        validator = PROJECT_ROOT / "tools" / "validate_deploy_probe.py"
+        invalid = subprocess.run(
+            [sys.executable, str(validator), "readiness"],
+            input='{"ready": true, "status": "ok"}',
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        valid = subprocess.run(
+            [sys.executable, str(validator), "readiness"],
+            input='{"ready":true,"status":"degraded","database":{"status":"ok"},"migrations":{"status":"ok","expected_head":"head","current_revision":"head"},"policy":{"mandatory_status":"ok"}}',
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+        self.assertEqual(invalid.returncode, 1)
+        self.assertIn("readiness database contract failed", invalid.stderr)
+        self.assertEqual(valid.returncode, 0)
+
     def test_ci_runs_checks_without_production_secrets(self):
         workflow = (PROJECT_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
@@ -18,6 +43,7 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn("python -m alembic -c backend/alembic.ini heads", workflow)
         self.assertIn("./tools/run_postgres_tests.sh migrations", workflow)
         self.assertIn("./tools/run_postgres_tests.sh smoke", workflow)
+        self.assertIn("./tools/run_postgres_tests.sh readiness", workflow)
         self.assertIn("tools/render_compose_test_config.py", workflow)
         self.assertIn('bash -n "$script"', workflow)
         self.assertIn('docker compose --env-file "$config_path" -f deploy/vds/docker-compose.yml config --quiet', workflow)
@@ -45,6 +71,11 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn("deploy/vds/deploy_from_git.sh", workflow)
         self.assertIn("TAKSKLAD_DEPLOY_REF", workflow)
         self.assertIn("TAKSKLAD_DEPLOY_ACCEPTANCE", workflow)
+        self.assertIn("DEPLOY_ACCEPTANCE: required", workflow)
+        self.assertNotIn("workflow_run:", workflow)
+        self.assertNotIn("default: optional", workflow)
+        self.assertNotIn("- optional", workflow)
+        self.assertNotIn("- skip", workflow)
         self.assertNotIn("\n  push:", workflow)
         self.assertNotIn("password", workflow.lower())
 
@@ -68,6 +99,10 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn("./deploy/vds/backup_postgres.sh", script)
         self.assertIn("docker compose --env-file \"$ENV_FILE\" -f \"$COMPOSE_FILE\" build backend-api", script)
         self.assertIn("alembic -c alembic.ini upgrade head", script)
+        self.assertIn("verify_migration_revision_before_activation", script)
+        self.assertIn("--wait --wait-timeout", script)
+        self.assertIn("readiness body contract failed", script)
+        self.assertIn("tools/validate_deploy_probe.py", script)
         self.assertIn("docker compose --env-file \"$ENV_FILE\" -f \"$COMPOSE_FILE\" up -d --build", script)
         self.assertIn("curl -fsS \"$url\"", script)
         self.assertIn("TAKSKLAD_DEPLOY_URL_RETRY_ATTEMPTS", script)
@@ -75,8 +110,11 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn("check_public_url \"health\" \"$HEALTH_URL\"", script)
         self.assertIn("check_public_url \"readiness\" \"$READY_URL\"", script)
         self.assertIn("deploy/vds/acceptance_status.sh", script)
-        self.assertIn("acceptance_status.sh reported no-go; continuing because acceptance mode is optional", script)
-        self.assertIn("[[ \"$ACCEPTANCE_MODE\" == \"required\" ]] && fail \"acceptance_status.sh failed\"", script)
+        self.assertIn('ACCEPTANCE_MODE="${TAKSKLAD_DEPLOY_ACCEPTANCE:-required}"', script)
+        self.assertIn('[[ "$ACCEPTANCE_MODE" == "required" ]] || fail', script)
+        self.assertIn("acceptance_status.sh --require-go", script)
+        self.assertNotIn("continuing because acceptance mode is optional", script)
+        self.assertNotIn("optional|required|skip", script)
         self.assertIn("grep -Ei 'ERROR|CRITICAL|Traceback|Exception|panic'", script)
         self.assertNotIn("git reset --hard", script)
         self.assertNotIn(".env.example\" ]] ||", script)

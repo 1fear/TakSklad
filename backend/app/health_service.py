@@ -18,7 +18,6 @@ from .settings import APP_VERSION
 
 EXPECTED_BASELINE_REVISION = "20260616_0001"
 EXPECTED_HEAD_REVISION = "20260701_0007"
-OK_MIGRATION_REVISIONS = {EXPECTED_BASELINE_REVISION, EXPECTED_HEAD_REVISION}
 TERMINAL_INCIDENT_STATUSES = ("resolved", "ignored", "cancelled")
 SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE = "skladbot_daily_report_send"
 SKLADBOT_DAILY_SUCCESS_RESULT_STATUSES = {
@@ -31,6 +30,7 @@ def build_readiness_report(db: Session, app_settings):
     now = datetime.now(timezone.utc)
     report = {
         "generated_at": now.isoformat(),
+        "ready": False,
         "status": "ok",
         "service": app_settings.service_name,
         "version": APP_VERSION,
@@ -57,6 +57,12 @@ def build_readiness_report(db: Session, app_settings):
             "next_attempt_at": "",
             "last_errors": [],
         },
+        "policy": {
+            "mandatory": ["database", "migrations", "hot_path_queue", "imports"],
+            "optional": ["google_mirror"],
+            "mandatory_status": "unknown",
+            "optional_status": "unknown",
+        },
     }
 
     try:
@@ -68,25 +74,80 @@ def build_readiness_report(db: Session, app_settings):
     except SQLAlchemyError as exc:
         report["status"] = "unhealthy"
         report["database"] = {"status": "error", "error": redact_secrets(exc)}
+        report["policy"]["mandatory_status"] = "unhealthy"
         return report
 
     report["migrations"] = read_migration_status(db)
-    report["queue"] = build_queue_readiness(db, now=now)
-    report["google_mirror"] = build_google_mirror_readiness(db, now=now)
-    report["imports"] = build_import_error_readiness(db)
-    if (
+    try:
+        report["queue"] = build_queue_readiness(db, now=now)
+        report["google_mirror"] = build_google_mirror_readiness(db, now=now)
+        report["imports"] = build_import_error_readiness(db)
+    except SQLAlchemyError as exc:
+        report["status"] = "unhealthy"
+        report["database"] = {
+            "status": "error",
+            "error": redact_secrets(exc),
+        }
+        report["policy"]["mandatory_status"] = "unhealthy"
+        report["policy"]["optional_status"] = "unknown"
+        return report
+    mandatory_failed = (
         report["migrations"].get("status") != "ok"
         or report["queue"]["hot_path_stale_processing_count"]
+        or report["queue"]["hot_path_blocking_count"]
         or report["queue"]["hot_path_last_errors"]
         or report["imports"]["recent_errors"]
-    ):
+    )
+    optional_degraded = report["google_mirror"].get("status") != "ok"
+    report["ready"] = not bool(mandatory_failed)
+    report["policy"]["mandatory_status"] = "unhealthy" if mandatory_failed else "ok"
+    report["policy"]["optional_status"] = "degraded" if optional_degraded else "ok"
+    if mandatory_failed:
+        report["status"] = "unhealthy"
+    elif optional_degraded:
         report["status"] = "degraded"
     return report
 
 
+def readiness_http_status(report):
+    return 200 if report.get("ready") is True else 503
+
+
+def public_readiness_report(report):
+    queue = report.get("queue") or {}
+    google_mirror = report.get("google_mirror") or {}
+    imports = report.get("imports") or {}
+    return {
+        "generated_at": report.get("generated_at"),
+        "ready": report.get("ready") is True,
+        "status": report.get("status") or "unhealthy",
+        "service": report.get("service") or "",
+        "version": report.get("version") or "",
+        "environment": report.get("environment") or "",
+        "database": {"status": (report.get("database") or {}).get("status") or "unknown"},
+        "migrations": {
+            key: (report.get("migrations") or {}).get(key)
+            for key in ("status", "expected_baseline", "expected_head", "current_revision")
+        },
+        "queue": {
+            "hot_path_stale_processing_count": int(queue.get("hot_path_stale_processing_count") or 0),
+            "hot_path_blocking_count": int(queue.get("hot_path_blocking_count") or 0),
+            "hot_path_error_count": len(queue.get("hot_path_last_errors") or []),
+        },
+        "google_mirror": {
+            "status": google_mirror.get("status") or "unknown",
+            "role": google_mirror.get("role") or "mirror_export",
+        },
+        "imports": {"recent_error_count": len(imports.get("recent_errors") or [])},
+        "policy": dict(report.get("policy") or {}),
+    }
+
+
 def read_migration_status(db: Session):
     try:
-        revision = db.execute(text("SELECT version_num FROM alembic_version LIMIT 1")).scalar_one_or_none()
+        revisions = [str(value or "") for value in db.execute(
+            text("SELECT version_num FROM alembic_version ORDER BY version_num")
+        ).scalars().all()]
     except SQLAlchemyError as exc:
         return {
             "status": "not_configured",
@@ -95,10 +156,12 @@ def read_migration_status(db: Session):
             "current_revision": "",
             "error": redact_secrets(exc),
         }
-    revision = str(revision or "")
-    if not revision:
+    revision = revisions[0] if len(revisions) == 1 else ",".join(revisions)
+    if not revisions:
         status = "not_stamped"
-    elif revision in OK_MIGRATION_REVISIONS:
+    elif len(revisions) != 1:
+        status = "multiple_revisions"
+    elif revision == EXPECTED_HEAD_REVISION:
         status = "ok"
     else:
         status = "revision_mismatch"
@@ -130,11 +193,13 @@ def build_queue_readiness(db: Session, now=None):
         event for event in errors
         if event.get("event_type") != GOOGLE_SHEETS_EXPORT_EVENT_TYPE
     ]
+    hot_path_blocking_count = count_unresolved_hot_path_failures(db)
     return {
         "summary": summary,
         "oldest_pending_age_seconds": event_age_seconds(oldest_pending, now, field="created_at"),
         "stale_processing_count": len(stale_processing),
         "hot_path_stale_processing_count": len(hot_path_stale_processing),
+        "hot_path_blocking_count": hot_path_blocking_count,
         "stale_processing": [
             compact_event_error(event_to_queue_read(event, now=now))
             for event in stale_processing[:10]
@@ -143,6 +208,24 @@ def build_queue_readiness(db: Session, now=None):
         "hot_path_last_errors": hot_path_errors,
         "resolved_historical_errors": resolved_errors,
     }
+
+
+def count_unresolved_hot_path_failures(db: Session) -> int:
+    events = db.execute(
+        select(PendingEvent)
+        .where(PendingEvent.status.in_(("failed", "error", "blocked")))
+        .where(PendingEvent.event_type != GOOGLE_SHEETS_EXPORT_EVENT_TYPE)
+        .where(~PendingEvent.id.in_(
+            select(Incident.pending_event_id)
+            .where(Incident.pending_event_id.is_not(None))
+            .where(Incident.status.in_(TERMINAL_INCIDENT_STATUSES))
+        ))
+    ).scalars().all()
+    return sum(
+        1
+        for event in events
+        if not daily_report_failure_resolved_by_later_success(db, event)
+    )
 
 
 def last_event_errors(db: Session, now=None, limit=10, event_type=None):

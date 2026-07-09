@@ -58,6 +58,9 @@ jobs:
       - name: Test PostgreSQL session barriers
         run: ./tools/run_postgres_tests.sh smoke
 
+      - name: Test PostgreSQL readiness policy
+        run: ./tools/run_postgres_tests.sh readiness
+
       - name: Run Python tests
         run: |
           PYTHONPATH=. python -m unittest discover -s tests

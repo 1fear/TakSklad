@@ -24,7 +24,11 @@ from .event_queue_service import (
 )
 from .google_sheets_sync_worker import sync_google_sheet_to_backend
 from .google_sheets_pending import process_pending_google_sheets_exports
-from .health_service import build_readiness_report
+from .health_service import (
+    build_readiness_report,
+    public_readiness_report,
+    readiness_http_status,
+)
 from .incidents_service import (
     IncidentApiError,
     create_incident as create_incident_in_db,
@@ -233,8 +237,10 @@ def health():
 
 
 @app.get("/ready", response_model=ReadinessResponse)
-def readiness(db=Depends(get_db)):
-    return build_readiness_report(db, settings)
+def readiness(response: Response, db=Depends(get_db)):
+    report = build_readiness_report(db, settings)
+    response.status_code = readiness_http_status(report)
+    return public_readiness_report(report)
 
 
 auth_api = APIRouter(prefix="/api/v1/auth")
@@ -538,9 +544,15 @@ def admin_update_incident_status(incident_id: str, payload: IncidentStatusUpdate
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
-@api.get("/readiness", response_model=ReadinessResponse)
-def api_readiness(db=Depends(get_db)):
-    return build_readiness_report(db, settings)
+@api.get(
+    "/readiness",
+    response_model=ReadinessResponse,
+    dependencies=[Depends(require_service_token)],
+)
+def api_readiness(response: Response, db=Depends(get_db)):
+    report = build_readiness_report(db, settings)
+    response.status_code = readiness_http_status(report)
+    return report
 
 
 @api.post(

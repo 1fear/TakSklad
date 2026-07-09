@@ -150,7 +150,7 @@ VDS_APP_DIR
 1. GitHub -> Actions -> `Deploy Production`.
 2. `ref`: обычно `main`.
 3. `services`: `all` или список compose-сервисов через пробел/запятую.
-4. `acceptance`: `optional`, `required` или `skip`.
+Production workflow запускается только вручную. Acceptance не имеет bypass-режима и всегда обязателен.
 
 Разрешенные сервисы для rebuild/recreate:
 
@@ -166,13 +166,14 @@ backend-api frontend telegram-worker google-sheets-sync-worker skladbot-worker s
 4. checkout выбранного git ref или sync выбранного ref из временного clone, если app dir не git checkout;
 5. build `backend-api`;
 6. `alembic -c alembic.ini upgrade head`;
-7. `docker compose up -d --build` для выбранных сервисов;
-8. `curl -fsS https://api.taksklad.uz/health` с retry;
-9. `curl -fsS https://api.taksklad.uz/ready` с retry;
-10. optional/required `deploy/vds/acceptance_status.sh`;
-11. fresh log scan по rebuilt/recreated сервисам.
+7. read-only сверяет единственный `alembic current` с единственным `alembic heads` до активации;
+8. `docker compose up -d --build --wait --wait-timeout ...` для выбранных сервисов;
+9. проверяет JSON-контракт `/health` с retry;
+10. проверяет JSON-контракт `/ready`: database/migrations/head/mandatory policy обязаны быть готовы; optional Google degradation допускает `status=degraded` при `ready=true`;
+11. обязательно запускает `deploy/vds/acceptance_status.sh --require-go`;
+12. выполняет fresh log scan по rebuilt/recreated сервисам.
 
-Первый запуск CI/CD делать как manual deploy с `acceptance=optional`. Если acceptance manifest на сервере отсутствует или `acceptance_status.sh` возвращает no-go, optional mode логирует результат и не блокирует deploy. Для релизов с обязательной ручной acceptance использовать `acceptance=required`: любой missing/no-go acceptance тогда блокирует deploy.
+Любой missing/no-go acceptance, несовпадение migration head, нездоровая БД или обязательная очередь останавливают deploy. `/health` остаётся lightweight-проверкой процесса; `/ready` возвращает HTTP 503 при обязательном отказе.
 
 ## 3. Backup
 

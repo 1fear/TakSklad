@@ -40,7 +40,7 @@ Authenticated event diagnostics expose `raw_payload` for operator review only af
 
 `/api/v1/diagnostics/logs` includes the same active queue fields in the downloadable support log with secret redaction.
 
-Public `/ready` uses a narrower view than authenticated admin diagnostics: queue `event_type` suffixes after `:` are aggregated as `prefix:*`, and compact error rows omit raw payloads, idempotency keys, and linked entity fields.
+Public `/ready` uses a narrower view than authenticated admin diagnostics: it exposes only counts and policy status, without event identifiers or error text. Any unresolved failed/error/blocked mandatory hot-path event makes readiness unhealthy with HTTP 503 even when `last_error` is empty. Google Sheets is an optional mirror: its isolated degradation is explicit as top-level `status=degraded`, but keeps `ready=true` and HTTP 200.
 
 ## Safety Rules
 

@@ -33,10 +33,14 @@ REQUIRED_FILES = [
     Path("src/taksklad/app_runtime.py"),
     Path("src/taksklad/desktop_diagnostics.py"),
     Path("backend/app/operations_service.py"),
+    Path("backend/app/health_service.py"),
     Path("tools/windows_backend_acceptance.ps1"),
+    Path("tools/validate_deploy_probe.py"),
     Path("tools/build_windows_test_archive.ps1"),
     Path("tools/release_go_no_go.py"),
     Path("deploy/vds/acceptance_status.sh"),
+    Path("deploy/vds/deploy_from_git.sh"),
+    Path("deploy/vds/docker-compose.yml"),
     Path("deploy/vds/verify_acceptance_marker.sh"),
     Path("deploy/vds/wait_acceptance_marker.sh"),
     Path("deploy/vds/verify_google_backend_sync.sh"),
@@ -139,6 +143,31 @@ DEPLOY_RUNBOOK_REQUIRED_FRAGMENTS = {
         "network timeout",
         "Google 429",
         "dirty tree",
+    ],
+}
+DEPLOYMENT_READINESS_CONTRACT_FRAGMENTS = {
+    Path("backend/app/health_service.py"): [
+        'EXPECTED_HEAD_REVISION = "20260701_0007"',
+        'report["ready"]',
+        'report["status"] = "unhealthy"',
+        'report["status"] = "degraded"',
+    ],
+    Path("deploy/vds/docker-compose.yml"): [
+        "payload.get('ready') is True",
+        "json.load(response)",
+    ],
+    Path("deploy/vds/deploy_from_git.sh"): [
+        "verify_migration_revision_before_activation",
+        "--wait --wait-timeout",
+        "readiness body contract failed",
+        "acceptance_status.sh --require-go",
+        'TAKSKLAD_DEPLOY_ACCEPTANCE:-required',
+        "tools/validate_deploy_probe.py",
+    ],
+    Path("tools/validate_deploy_probe.py"): [
+        "readiness database contract failed",
+        "readiness migration revision failed",
+        "readiness mandatory policy failed",
     ],
 }
 
@@ -462,6 +491,14 @@ def check_deploy_runbook_contract(root):
     )
 
 
+def check_deployment_readiness_contract(root):
+    return check_text_fragment_contract(
+        root,
+        "deployment_readiness_contract",
+        DEPLOYMENT_READINESS_CONTRACT_FRAGMENTS,
+    )
+
+
 def check_public_backend_health(url, timeout_seconds):
     request = urllib.request.Request(url, headers={"User-Agent": "TakSklad-release-preflight/1.0"})
     try:
@@ -487,12 +524,21 @@ def run_checks(root, health_url, timeout_seconds, skip_network=False, verify_dow
     checks = [
         check_required_files(root),
         check_version_json(root),
-        check_acceptance_kit(root),
         check_windows_acceptance_flow(root),
         check_backend_only_hot_path_contract(root),
         check_deploy_runbook_contract(root),
+        check_deployment_readiness_contract(root),
         check_tracked_secrets(root),
     ]
+    if skip_network:
+        checks.append(result(
+            "acceptance_kit",
+            True,
+            skipped=True,
+            reason="source-only preflight does not read outputs",
+        ))
+    else:
+        checks.append(check_acceptance_kit(root))
     if verify_downloads:
         checks.append(check_update_manifest_downloads(root, timeout_seconds))
     if skip_network:

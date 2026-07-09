@@ -68,7 +68,7 @@ services:
       - taksklad-internal
       - traefik
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"from urllib.request import urlopen; response = urlopen('http://127.0.0.1:8000/ready', timeout=5); raise SystemExit(0 if response.status == 200 else 1)\""]
+      test: ["CMD-SHELL", "python -c \"import json; from urllib.request import urlopen; response = urlopen('http://127.0.0.1:8000/ready', timeout=5); payload = json.load(response); database = payload.get('database') or {}; migrations = payload.get('migrations') or {}; policy = payload.get('policy') or {}; valid = response.status == 200 and payload.get('ready') is True and payload.get('status') in ('ok', 'degraded') and database.get('status') == 'ok' and migrations.get('status') == 'ok' and migrations.get('current_revision') == migrations.get('expected_head') and policy.get('mandatory_status') == 'ok'; raise SystemExit(0 if valid else 1)\""]
       interval: 30s
       timeout: 5s
       retries: 5

@@ -3225,8 +3225,10 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertEqual(str(incidents[0].pending_event_id), event_id)
             incident_id = str(incidents[0].id)
 
-        before = self.client.get("/ready").json()
-        self.assertEqual(before["status"], "degraded")
+        before_response = self.client.get("/api/v1/readiness")
+        self.assertEqual(before_response.status_code, 503)
+        before = before_response.json()
+        self.assertEqual(before["status"], "unhealthy")
         self.assertEqual(before["imports"]["recent_errors"][0]["filename"], "broken.xlsx")
 
         status_response = self.client.post(
@@ -3235,7 +3237,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         )
         self.assertEqual(status_response.status_code, 200)
 
-        after = self.client.get("/ready").json()
+        after = self.client.get("/api/v1/readiness").json()
         self.assertEqual(after["status"], "ok")
         self.assertEqual(after["imports"]["recent_errors"], [])
         with self.SessionLocal() as db:
@@ -5052,7 +5054,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
     def test_health_is_lightweight_and_readiness_reports_sanitized_db_queue_status(self):
         with self.SessionLocal() as db:
             db.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
-            db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260616_0001')"))
+            db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260701_0007')"))
             db.add(PendingEvent(
                 event_type="google_sheets_export",
                 idempotency_key="google:event:pending",
@@ -5096,12 +5098,15 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertNotIn("database", health.json())
         self.assertNotIn("queue", health.json())
 
-        self.assertEqual(readiness.status_code, 200)
-        payload = readiness.json()
-        self.assertEqual(payload["status"], "degraded")
+        self.assertEqual(readiness.status_code, 503)
+        self.assertFalse(readiness.json()["ready"])
+        self.assertEqual(readiness.json()["status"], "unhealthy")
+        self.assertEqual(api_readiness.status_code, 503)
+        payload = api_readiness.json()
+        self.assertEqual(payload["status"], "unhealthy")
         self.assertEqual(payload["database"]["status"], "ok")
         self.assertEqual(payload["migrations"]["status"], "ok")
-        self.assertEqual(payload["migrations"]["current_revision"], "20260616_0001")
+        self.assertEqual(payload["migrations"]["current_revision"], "20260701_0007")
         self.assertEqual(payload["queue"]["summary"]["by_type"]["google_sheets_export"]["pending"], 1)
         self.assertEqual(payload["queue"]["summary"]["by_type"]["telegram_chat_state:*"]["pending"], 1)
         self.assertEqual(payload["google_mirror"]["status"], "degraded")
@@ -5117,13 +5122,13 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertNotIn("0104006396053978217ABCDE", dumped)
         self.assertNotIn("telegram_chat_state:123456789", dumped)
         self.assertNotIn("'chat_id': '123456789'", dumped)
-        self.assertEqual(api_readiness.status_code, 200)
+        self.assertFalse(payload["ready"])
 
     def test_readiness_keeps_hot_path_ok_when_only_google_mirror_is_degraded(self):
         next_attempt_at = datetime.now(timezone.utc) + timedelta(minutes=5)
         with self.SessionLocal() as db:
             db.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
-            db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260616_0001')"))
+            db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260701_0007')"))
             db.add(PendingEvent(
                 event_type="google_sheets_export",
                 idempotency_key="google:event:rate-limited",
@@ -5147,8 +5152,14 @@ class BackendApiPersistenceTests(unittest.TestCase):
         response = self.client.get("/ready")
 
         self.assertEqual(response.status_code, 200)
-        payload = response.json()
-        self.assertEqual(payload["status"], "ok")
+        public_payload = response.json()
+        self.assertTrue(public_payload["ready"])
+        self.assertEqual(public_payload["status"], "degraded")
+        self.assertEqual(public_payload["policy"]["mandatory_status"], "ok")
+        self.assertEqual(public_payload["policy"]["optional_status"], "degraded")
+        detailed = self.client.get("/api/v1/readiness")
+        self.assertEqual(detailed.status_code, 200)
+        payload = detailed.json()
         self.assertEqual(payload["queue"]["hot_path_last_errors"], [])
         self.assertEqual(payload["queue"]["hot_path_stale_processing_count"], 0)
         self.assertEqual(payload["google_mirror"]["status"], "degraded")
@@ -5172,6 +5183,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
+        self.assertTrue(payload["ready"])
         self.assertEqual(payload["status"], "ok")
         self.assertEqual(payload["migrations"]["status"], "ok")
         self.assertEqual(payload["migrations"]["expected_baseline"], "20260616_0001")
@@ -5181,10 +5193,11 @@ class BackendApiPersistenceTests(unittest.TestCase):
     def test_readiness_degrades_when_migration_state_is_missing_or_wrong(self):
         response = self.client.get("/ready")
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 503)
         payload = response.json()
         self.assertEqual(payload["database"]["status"], "ok")
-        self.assertEqual(payload["status"], "degraded")
+        self.assertFalse(payload["ready"])
+        self.assertEqual(payload["status"], "unhealthy")
         self.assertEqual(payload["migrations"]["status"], "not_configured")
 
         with self.SessionLocal() as db:
@@ -5194,9 +5207,10 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
         response = self.client.get("/ready")
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 503)
         payload = response.json()
-        self.assertEqual(payload["status"], "degraded")
+        self.assertFalse(payload["ready"])
+        self.assertEqual(payload["status"], "unhealthy")
         self.assertEqual(payload["migrations"]["status"], "revision_mismatch")
         self.assertEqual(payload["migrations"]["current_revision"], "old_revision")
 
