@@ -11,6 +11,7 @@ from .db import SessionLocal
 from .event_queue_service import reset_stale_processing_events
 from .excel_importer import ExcelDateConflictError, excel_file_to_import_payload
 from .models import AuditLog, Incident, PendingEvent
+from .observability_context import payload_with_correlation
 from .telegram_clients import ExternalTimeoutError, TelegramProcessorDelegate
 from .telegram_common import normalize_text, parse_date_from_text, parse_int
 from .telegram_import_messages import (
@@ -545,7 +546,7 @@ class TelegramImportProcessor(TelegramProcessorDelegate):
             event = PendingEvent(
                 event_type=TELEGRAM_EXCEL_IMPORT_EVENT_TYPE,
                 status=TELEGRAM_EXCEL_IMPORT_WAITING_SHIPMENT_DATE_STATUS,
-                payload={
+                payload=payload_with_correlation({
                     "chat_id": normalize_text(chat_id),
                     "document": document,
                     "file_name": file_name,
@@ -553,7 +554,7 @@ class TelegramImportProcessor(TelegramProcessorDelegate):
                     "shipment_date": "",
                     "shipment_date_source": "",
                     "queued_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                },
+                }),
             )
             db.add(event)
             db.commit()

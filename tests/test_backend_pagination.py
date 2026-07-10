@@ -164,7 +164,11 @@ class TelegramPaginationClientTests(unittest.TestCase):
         self.assertEqual(result, [{"id": "one"}, {"id": "two"}])
         self.assertEqual(calls[0][1]["params"], {"status": "active", "limit": 1})
         self.assertEqual(calls[1][1]["params"], {"status": "active", "limit": 1, "cursor": "cursor-1"})
-        self.assertEqual(calls[0][1]["headers"], {"Authorization": "Bearer token"})
+        self.assertEqual(calls[0][1]["headers"]["Authorization"], "Bearer token")
+        self.assertRegex(
+            calls[0][1]["headers"]["X-Correlation-ID"],
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+        )
 
         fallback_calls = []
         fallback_client = BackendApiClient(

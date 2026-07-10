@@ -8,6 +8,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from .models import PendingEvent
+from .observability_context import payload_with_correlation
 from .redaction import redact_secrets
 
 
@@ -31,13 +32,13 @@ def queue_outbox_event(
     aggregate_type = required_identity(aggregate_type, "aggregate_type", 80)
     aggregate_id = required_identity(aggregate_id, "aggregate_id", 180)
     idempotency_key = required_identity(idempotency_key, "idempotency_key", 180)
-    event_payload = sanitize_outbox_payload({
+    event_payload = sanitize_outbox_payload(payload_with_correlation({
         **(payload or {}),
         "action": action,
         "entity_type": aggregate_type,
         "entity_id": aggregate_id,
         "idempotency_key": idempotency_key,
-    })
+    }))
     ensure_payload_size(event_payload)
 
     values = {
@@ -108,7 +109,7 @@ def find_active_outbox_event(
 
 
 def reactivate_outbox_event(event: PendingEvent, payload: dict, last_error: str | None = None) -> PendingEvent:
-    event.payload = sanitize_outbox_payload({**(event.payload or {}), **payload})
+    event.payload = sanitize_outbox_payload(payload_with_correlation({**(event.payload or {}), **payload}))
     ensure_payload_size(event.payload)
     event.action = event.action or str(event.payload.get("action") or "") or None
     event.aggregate_type = event.aggregate_type or str(event.payload.get("entity_type") or "") or None

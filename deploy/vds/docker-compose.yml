@@ -118,6 +118,7 @@ services:
       TAKSKLAD_GOOGLE_CREDENTIALS_JSON_BASE64: ${TAKSKLAD_GOOGLE_CREDENTIALS_JSON_BASE64:-}
       TAKSKLAD_GOOGLE_API_TIMEOUT_SECONDS: ${TAKSKLAD_GOOGLE_API_TIMEOUT_SECONDS:-8}
       TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED: ${TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED:-false}
+      TAKSKLAD_REQUIRED_WORKERS: ${TAKSKLAD_REQUIRED_WORKERS:-google_sheets_sync,skladbot,smartup_auto_import,telegram}
       TAKSKLAD_WEB_LOGIN: ${TAKSKLAD_WEB_LOGIN:-}
       TAKSKLAD_WEB_PASSWORD_HASH: ${TAKSKLAD_WEB_PASSWORD_HASH:-}
       TAKSKLAD_WEB_SESSION_SECRET: ${TAKSKLAD_WEB_SESSION_SECRET:-}
@@ -139,6 +140,11 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    volumes:
+      - type: bind
+        source: /run/taksklad-observability
+        target: /run/taksklad-observability
+        read_only: true
     labels:
       - traefik.enable=true
       - traefik.http.routers.taksklad-backend.rule=Host(`${TAKSKLAD_BACKEND_HOST}`) && (PathPrefix(`/api`) || Path(`/health`) || Path(`/ready`))
@@ -244,7 +250,7 @@ services:
     networks:
       - taksklad-internal
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"from sqlalchemy import text; from app.db import SessionLocal; db = SessionLocal(); db.execute(text('SELECT 1')).scalar(); db.close()\""]
+      test: ["CMD-SHELL", "python -c \"from app.db import SessionLocal; from app.worker_observability import build_worker_readiness; db=SessionLocal(); result=build_worker_readiness(db, required_workers=('skladbot',)); db.close(); raise SystemExit(0 if result['status']=='ok' else 1)\""]
       interval: 60s
       timeout: 10s
       retries: 3
@@ -309,7 +315,7 @@ services:
     networks:
       - taksklad-internal
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"from sqlalchemy import text; from app.db import SessionLocal; db = SessionLocal(); db.execute(text('SELECT 1')).scalar(); db.close()\""]
+      test: ["CMD-SHELL", "python -c \"from app.db import SessionLocal; from app.worker_observability import build_worker_readiness; db=SessionLocal(); result=build_worker_readiness(db, required_workers=('smartup_auto_import',)); db.close(); raise SystemExit(0 if result['status']=='ok' else 1)\""]
       interval: 60s
       timeout: 10s
       retries: 3
@@ -337,7 +343,7 @@ services:
     networks:
       - taksklad-internal
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"from sqlalchemy import text; from app.db import SessionLocal; db = SessionLocal(); db.execute(text('SELECT 1')).scalar(); db.close()\""]
+      test: ["CMD-SHELL", "python -c \"from app.db import SessionLocal; from app.worker_observability import build_worker_readiness; db=SessionLocal(); result=build_worker_readiness(db, required_workers=('google_sheets_sync',)); db.close(); raise SystemExit(0 if result['status']=='ok' else 1)\""]
       interval: 60s
       timeout: 10s
       retries: 3
@@ -373,7 +379,7 @@ services:
     networks:
       - taksklad-internal
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"from sqlalchemy import text; from app.db import SessionLocal; db = SessionLocal(); db.execute(text('SELECT 1')).scalar(); db.close()\""]
+      test: ["CMD-SHELL", "python -c \"from app.db import SessionLocal; from app.worker_observability import build_worker_readiness; db=SessionLocal(); result=build_worker_readiness(db, required_workers=('telegram',)); db.close(); raise SystemExit(0 if result['status']=='ok' else 1)\""]
       interval: 60s
       timeout: 10s
       retries: 3

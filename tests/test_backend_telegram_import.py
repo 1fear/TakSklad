@@ -195,17 +195,35 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertEqual(backend_client.post("/api/v1/imports", {"rows": []}), {"ok": True, "result": {"message_id": 7}})
         self.assertEqual(telegram_client.poll_updates(4, 7), {"message_id": 7})
         self.assertEqual(len(calls), 3)
+        telegram_correlation_id = calls[0][3]["headers"]["X-Correlation-ID"]
+        backend_correlation_id = calls[1][3]["headers"]["X-Correlation-ID"]
+        poll_correlation_id = calls[2][3]["headers"]["X-Correlation-ID"]
+        self.assertEqual(telegram_correlation_id, backend_correlation_id)
+        self.assertEqual(telegram_correlation_id, poll_correlation_id)
+        self.assertEqual(len(telegram_correlation_id), 36)
         self.assertEqual(calls[0], (
             "post", 9, "https://api.telegram.org/botbot-token/sendMessage",
-            {"json": {"chat_id": "123", "text": "hello"}},
+            {
+                "json": {"chat_id": "123", "text": "hello"},
+                "headers": {"X-Correlation-ID": telegram_correlation_id},
+            },
         ))
         self.assertEqual(calls[1], (
             "post", 33, "http://backend:8000/api/v1/imports",
-            {"json": {"rows": []}, "headers": {"Authorization": "Bearer api-token"}},
+            {
+                "json": {"rows": []},
+                "headers": {
+                    "X-Correlation-ID": telegram_correlation_id,
+                    "Authorization": "Bearer api-token",
+                },
+            },
         ))
         self.assertEqual(calls[2], (
             "post", 12, "https://api.telegram.org/botbot-token/getUpdates",
-            {"json": {"offset": 5, "timeout": 7, "allowed_updates": ["message", "callback_query"]}},
+            {
+                "json": {"offset": 5, "timeout": 7, "allowed_updates": ["message", "callback_query"]},
+                "headers": {"X-Correlation-ID": telegram_correlation_id},
+            },
         ))
 
     def test_admin_processor_sends_notification_with_characterized_ordered_calls(self):
@@ -793,10 +811,11 @@ class BackendTelegramImportTests(unittest.TestCase):
             def __exit__(self, *_args):
                 return False
 
-            def post(self, url, data=None, files=None):
+            def post(self, url, data=None, files=None, headers=None):
                 captured["url"] = url
                 captured["data"] = data
                 captured["files"] = files
+                captured["headers"] = headers
                 return FakeResponse()
 
         try:
@@ -811,6 +830,7 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertEqual(captured["data"]["caption"], "done")
         self.assertNotIn("reply_markup", captured["data"])
         self.assertEqual(captured["files"]["document"][0], "orders.xlsx")
+        self.assertEqual(len(captured["headers"]["X-Correlation-ID"]), 36)
 
     def test_telegram_worker_clears_public_command_menu_once(self):
         worker = TelegramWorker.__new__(TelegramWorker)

@@ -40,6 +40,21 @@ class ContainerPolicyTests(unittest.TestCase):
         self.assertEqual(len(rows), 7)
         self.assertEqual(next(row for row in rows if row.service == "frontend").sensitive_names, ())
 
+    def test_read_only_bind_is_not_classified_as_writable(self):
+        temporary, root = self.make_root()
+        with temporary:
+            def mutate(payload):
+                payload["services"]["backend-api"].setdefault("volumes", []).append({
+                    "type": "bind",
+                    "source": "/run/read-only-signal",
+                    "target": "/run/read-only-signal",
+                    "read_only": True,
+                })
+
+            self.mutate_compose(root, "deploy/vds/docker-compose.yml", mutate)
+            errors, _ = validate_repository(root)
+            self.assertEqual(errors, [])
+
     def test_missing_hardening_and_shared_env_file_are_blocked(self):
         temporary, root = self.make_root()
         with temporary:

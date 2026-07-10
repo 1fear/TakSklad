@@ -130,9 +130,22 @@ def _volume_target(raw: Any) -> str:
     return ""
 
 
+def _volume_is_read_only(raw: Any) -> bool:
+    if isinstance(raw, dict):
+        return raw.get("read_only") is True
+    if isinstance(raw, str):
+        parts = raw.split(":")
+        return len(parts) > 2 and "ro" in {option.strip() for option in parts[2].split(",")}
+    return False
+
+
 def _writable_targets(service: dict[str, Any]) -> set[str]:
     result = {str(item).split(":", 1)[0] for item in service.get("tmpfs", []) or []}
-    result.update(_volume_target(item) for item in service.get("volumes", []) or [])
+    result.update(
+        _volume_target(item)
+        for item in service.get("volumes", []) or []
+        if not _volume_is_read_only(item)
+    )
     result.discard("")
     return result
 

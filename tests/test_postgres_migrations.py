@@ -7,7 +7,7 @@ from tests.postgres_support import create_database, drop_database, run_alembic, 
 
 
 POSTGRES_AVAILABLE = bool(os.environ.get("TAKSKLAD_TEST_DATABASE_URL"))
-CURRENT_HEAD = "20260710_0014"
+CURRENT_HEAD = "20260711_0015"
 PREVIOUS_HEAD = "20260710_0013"
 
 
@@ -37,9 +37,15 @@ class PostgresMigrationTests(unittest.TestCase):
             user_columns = {column["name"] for column in inspect(engine).get_columns("users")}
             audit_columns = {column["name"] for column in inspect(engine).get_columns("audit_log")}
             audit_checks = {check["name"] for check in inspect(engine).get_check_constraints("audit_log")}
+            heartbeat_columns = {column["name"] for column in inspect(engine).get_columns("worker_heartbeats")}
         finally:
             engine.dispose()
         self.assertTrue({"orders", "order_items", "pending_events", "kiz_codes"}.issubset(tables))
+        self.assertIn("worker_heartbeats", tables)
+        self.assertTrue({
+            "worker_name", "interval_seconds", "status", "correlation_id", "last_cycle_started_at",
+            "last_success_at", "last_failure_at",
+        }.issubset(heartbeat_columns))
         self.assertTrue({"auth_sessions", "service_principals", "service_principal_tokens"}.issubset(tables))
         self.assertTrue({"available_at", "lease_owner", "lease_expires_at", "completed_at"}.issubset(pending_columns))
         self.assertTrue({"idx_pending_events_claim", "idx_pending_events_lease_expiry"}.issubset(pending_indexes))

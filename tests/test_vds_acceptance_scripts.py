@@ -202,7 +202,13 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         self.assertIn("policy.get('mandatory_status') == 'ok'", compose)
         self.assertIn("json.load(response)", compose)
         self.assertIn("wget -qO- http://127.0.0.1:8080/", compose)
-        self.assertGreaterEqual(compose.count("db.execute(text('SELECT 1')).scalar()"), 4)
+        self.assertEqual(compose.count("from app.worker_observability import build_worker_readiness"), 4)
+        for worker_name in ("google_sheets_sync", "skladbot", "smartup_auto_import", "telegram"):
+            self.assertIn(f"required_workers=('{worker_name}',)", compose)
+        self.assertIn(
+            "TAKSKLAD_REQUIRED_WORKERS:-google_sheets_sync,skladbot,smartup_auto_import,telegram",
+            compose,
+        )
 
     def test_frontend_uses_same_origin_api_proxy_contract(self):
         compose = (PROJECT_ROOT / "deploy" / "vds" / "docker-compose.yml").read_text(encoding="utf-8")

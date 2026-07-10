@@ -61,7 +61,7 @@ class PostgresOutboxTests(unittest.TestCase):
                             '{"action":"google_sheets_scan_export","entity_type":"order_item","entity_id":"legacy-item"}'::jsonb)
                 """))
             run_alembic(url, "upgrade", "head")
-            self.assertEqual(scalar(url, "SELECT version_num FROM alembic_version"), "20260710_0014")
+            self.assertEqual(scalar(url, "SELECT version_num FROM alembic_version"), "20260711_0015")
             with engine.connect() as connection:
                 row = connection.execute(text(
                     "SELECT action,aggregate_type,aggregate_id FROM pending_events"

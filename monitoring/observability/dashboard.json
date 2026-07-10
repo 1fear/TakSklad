@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "title": "TakSklad operational SLOs",
+  "panels": [
+    {"title": "Request p50", "query": "histogram_quantile(0.50, sum by (le) (rate(taksklad_request_duration_seconds_bucket[5m])))"},
+    {"title": "Request p95", "query": "histogram_quantile(0.95, sum by (le) (rate(taksklad_request_duration_seconds_bucket[5m])))"},
+    {"title": "Request p99", "query": "histogram_quantile(0.99, sum by (le) (rate(taksklad_request_duration_seconds_bucket[5m])))"},
+    {"title": "5xx error rate", "query": "sum(rate(taksklad_requests_total{outcome=\"server_error\"}[5m])) / clamp_min(sum(rate(taksklad_requests_total[5m])), 1)"},
+    {"title": "Queue pickup", "query": "taksklad_queue_pickup_seconds"},
+    {"title": "Oldest queue item", "query": "taksklad_queue_oldest_pending_age_seconds"},
+    {"title": "DB pool checked out", "query": "taksklad_db_pool_checked_out"},
+    {"title": "DB pool available", "query": "taksklad_db_pool_checked_in"},
+    {"title": "DB pool size", "query": "taksklad_db_pool_size"},
+    {"title": "Backup freshness", "query": "taksklad_backup_last_success_age_seconds"},
+    {"title": "Restore drill freshness", "query": "taksklad_restore_drill_last_success_age_seconds"}
+  ]
+}

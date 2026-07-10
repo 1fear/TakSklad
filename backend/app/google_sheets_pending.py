@@ -24,6 +24,7 @@ from .google_sheets_exporter import (
     sync_backend_order_item_to_google_sheets,
 )
 from .models import AuditLog, Order, OrderItem, PendingEvent
+from .observability_context import bind_pending_event
 from .outbox_service import queue_outbox_event, reactivate_outbox_event
 
 
@@ -218,7 +219,8 @@ def process_pending_google_sheets_exports(db: Session, limit=50):
                 db.commit()
 
             try:
-                export_result = run_google_sheets_export_event(db, event)
+                with bind_pending_event(event):
+                    export_result = run_google_sheets_export_event(db, event)
             except Exception as exc:
                 if is_google_rate_limit_error(exc):
                     logger.warning("Pending Google Sheets export paused after rate limit: %s", exc)

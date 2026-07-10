@@ -22,6 +22,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from .observability_context import current_correlation_id
 from .imports_service import create_import, preview_import
 from .excel_importer import reverse_geocode_yandex
 from .logistics_calendar_service import is_logistics_non_working_day, resolve_effective_delivery_date
@@ -218,6 +219,7 @@ class SmartupClient:
         headers = {
             "Accept": "application/json",
             "Content-Type": "application/json; charset=utf-8",
+            "X-Correlation-ID": current_correlation_id(),
         }
         if self.config.smartup_project_code:
             headers["project_code"] = self.config.smartup_project_code

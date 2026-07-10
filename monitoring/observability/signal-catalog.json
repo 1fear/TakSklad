@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "privacy": {
+    "forbidden_data_classes": [
+      "address",
+      "auth_token",
+      "client_name",
+      "correlation_id",
+      "kiz",
+      "order_id",
+      "phone",
+      "request_id"
+    ],
+    "rule": "Forbidden and unbounded identifiers are never metric labels."
+  },
+  "signals": [
+    {"name": "taksklad_requests_total", "type": "counter", "labels": {"method": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD", "OTHER"], "route_group": ["admin", "auth", "health", "imports", "metrics", "orders", "other", "readiness", "reports", "returns", "scans"], "outcome": ["success", "client_error", "server_error"]}, "maximum_series": 264},
+    {"name": "taksklad_request_duration_seconds", "type": "histogram", "labels": {"method": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD", "OTHER"], "route_group": ["admin", "auth", "health", "imports", "metrics", "orders", "other", "readiness", "reports", "returns", "scans"]}, "maximum_series": 88},
+    {"name": "taksklad_db_pool_checked_out", "type": "gauge", "labels": {}, "maximum_series": 1},
+    {"name": "taksklad_db_pool_checked_in", "type": "gauge", "labels": {}, "maximum_series": 1},
+    {"name": "taksklad_db_pool_size", "type": "gauge", "labels": {}, "maximum_series": 1},
+    {"name": "taksklad_queue_oldest_pending_age_seconds", "type": "gauge", "labels": {}, "maximum_series": 1},
+    {"name": "taksklad_queue_pickup_seconds", "type": "gauge", "labels": {}, "maximum_series": 1},
+    {"name": "taksklad_import_last_success_age_seconds", "type": "gauge", "labels": {}, "maximum_series": 1},
+    {"name": "taksklad_provider_failure_events", "type": "gauge", "labels": {}, "maximum_series": 1},
+    {"name": "taksklad_backup_last_success_age_seconds", "type": "gauge", "labels": {}, "maximum_series": 1},
+    {"name": "taksklad_restore_drill_last_success_age_seconds", "type": "gauge", "labels": {}, "maximum_series": 1},
+    {"name": "taksklad_worker_last_heartbeat_age_seconds", "type": "gauge", "labels": {"worker": ["google_sheets_sync", "skladbot", "smartup_auto_import", "telegram"]}, "maximum_series": 4},
+    {"name": "taksklad_readiness", "type": "gauge", "labels": {}, "maximum_series": 1},
+    {"name": "taksklad_http_5xx_ratio", "type": "gauge", "labels": {}, "maximum_series": 1},
+    {"name": "taksklad_http_p95_seconds", "type": "gauge", "labels": {}, "maximum_series": 1},
+    {"name": "taksklad_runtime_identity_valid", "type": "gauge", "labels": {}, "maximum_series": 1}
+  ]
+}

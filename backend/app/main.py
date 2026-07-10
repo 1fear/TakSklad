@@ -92,6 +92,14 @@ from .order_actions_service import (
     resync_order_skladbot as resync_order_skladbot_in_db,
 )
 from .operations_service import build_operations_attention
+from .observability_context import CorrelationIdMiddleware
+from .observability_metrics import (
+    OperationalMetricsMiddleware,
+    db_pool_snapshot,
+    read_maintenance_timestamps,
+    registry as metrics_registry,
+    runtime_signal_snapshot,
+)
 from .pagination import CursorError, decode_cursor, encode_cursor, normalize_page_limit, set_pagination_headers
 from .orders_service import ApiError, complete_order as complete_order_in_db
 from .orders_service import create_scan as create_scan_in_db
@@ -179,6 +187,8 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 app.add_middleware(RequestBodyLimitMiddleware, max_bytes=MAX_REQUEST_BODY_BYTES)
+app.add_middleware(OperationalMetricsMiddleware)
+app.add_middleware(CorrelationIdMiddleware)
 
 
 @app.exception_handler(RequestValidationError)
@@ -728,6 +738,23 @@ def admin_dashboard_day_summary(report_date: str | None = None, db=Depends(get_d
         return build_dashboard_day_summary(db, report_date)
     except ApiError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@api.get("/admin/metrics")
+def admin_operational_metrics(db=Depends(get_db)):
+    runtime = runtime_signal_snapshot(db)
+    readiness_report = build_readiness_report(db, settings)
+    runtime["readiness"] = readiness_report.get("ready") is True
+    runtime["identity"] = {"version": APP_VERSION, **runtime_build_identity()}
+    return Response(
+        content=metrics_registry.render(
+            db_pool=db_pool_snapshot(db),
+            runtime=runtime,
+            maintenance=read_maintenance_timestamps(),
+        ),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @api.get("/admin/client-points", response_model=list[ClientPointRead])

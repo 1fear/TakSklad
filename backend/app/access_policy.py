@@ -94,6 +94,7 @@ ROUTE_POLICIES: dict[tuple[str, str], RoutePolicy] = {
     ("GET", "/api/v1/orders/active"): _protected(PERMISSION_WAREHOUSE_READ, "orders:read"),
     ("GET", "/api/v1/admin/table"): _protected(PERMISSION_ADMIN_READ, "admin:read", sensitive=True),
     ("GET", "/api/v1/admin/dashboard/day-summary"): _protected(PERMISSION_ADMIN_READ, "admin:read"),
+    ("GET", "/api/v1/admin/metrics"): _protected(PERMISSION_DIAGNOSTICS_READ, "diagnostics:read", sensitive=True),
     ("GET", "/api/v1/admin/client-points"): _protected(PERMISSION_CLIENT_POINTS_READ, "client_points:read"),
     ("GET", "/api/v1/admin/client-points/order-summary"): _protected(PERMISSION_CLIENT_POINTS_READ, "client_points:read"),
     ("GET", "/api/v1/admin/logistics-calendar"): _protected(PERMISSION_CLIENT_POINTS_READ, "client_points:read"),

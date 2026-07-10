@@ -13,6 +13,7 @@ from .smartup_auto_import import (
     run_scheduled_smartup_auto_import_slot,
     worker_sleep,
 )
+from .worker_observability import observed_worker_cycle
 
 
 logging.basicConfig(level=logging.INFO)
@@ -28,17 +29,17 @@ def main(argv: list[str] | None = None) -> int:
 
     disabled_logged = False
     while True:
-        if not config.enabled:
-            if not disabled_logged:
-                logging.info("Smartup auto import worker is disabled")
-                disabled_logged = True
-            worker_sleep(config)
-            continue
         try:
-            with SessionLocal() as db:
-                results = run_due_smartup_auto_imports(db, config)
-            for result in results:
-                logging.info("Smartup auto import worker: %s", result)
+            with observed_worker_cycle("smartup_auto_import", config.poll_seconds):
+                if not config.enabled:
+                    if not disabled_logged:
+                        logging.info("Smartup auto import worker is disabled")
+                        disabled_logged = True
+                else:
+                    with SessionLocal() as db:
+                        results = run_due_smartup_auto_imports(db, config)
+                    for result in results:
+                        logging.info("Smartup auto import worker: %s", result)
         except Exception:
             logging.exception("Smartup auto import worker failed")
         worker_sleep(config)

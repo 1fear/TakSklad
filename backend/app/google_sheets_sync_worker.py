@@ -966,6 +966,8 @@ def is_returned_record(record):
 
 
 def main():
+    from .worker_observability import observed_worker_cycle
+
     interval = max(30, env_int("GOOGLE_SHEETS_SYNC_INTERVAL_SECONDS", 60))
     once = normalize_text(os.environ.get("GOOGLE_SHEETS_SYNC_ONCE")).casefold() in {"1", "true", "yes", "да"}
     backend_sync_interval = backend_sync_interval_seconds(interval)
@@ -973,28 +975,29 @@ def main():
     next_backend_sync_at = 0.0
     while True:
         try:
-            with SessionLocal() as db:
-                pending_result, result, next_backend_sync_at = run_google_sheets_worker_cycle(
-                    db,
-                    backend_sync_interval=backend_sync_interval,
-                    rate_limit_cooldown=rate_limit_cooldown,
-                    next_backend_sync_at=next_backend_sync_at,
+            with observed_worker_cycle("google_sheets_sync", interval):
+                with SessionLocal() as db:
+                    pending_result, result, next_backend_sync_at = run_google_sheets_worker_cycle(
+                        db,
+                        backend_sync_interval=backend_sync_interval,
+                        rate_limit_cooldown=rate_limit_cooldown,
+                        next_backend_sync_at=next_backend_sync_at,
+                    )
+                logging.info(
+                    "Google Sheets sync: pending_status=%s backend_status=%s pending_synced=%s pending_failed=%s rows=%s matched=%s missing=%s orders_updated=%s items_updated=%s conflicts=%s archived=%s removed=%s",
+                    pending_result.get("status", ""),
+                    result.get("status", "completed"),
+                    pending_result["synced"],
+                    pending_result["failed"],
+                    result["rows"],
+                    result["matched"],
+                    result["missing"],
+                    result["orders_updated"],
+                    result["items_updated"],
+                    result["conflicts"],
+                    result["archived"],
+                    result["removed"],
                 )
-            logging.info(
-                "Google Sheets sync: pending_status=%s backend_status=%s pending_synced=%s pending_failed=%s rows=%s matched=%s missing=%s orders_updated=%s items_updated=%s conflicts=%s archived=%s removed=%s",
-                pending_result.get("status", ""),
-                result.get("status", "completed"),
-                pending_result["synced"],
-                pending_result["failed"],
-                result["rows"],
-                result["matched"],
-                result["missing"],
-                result["orders_updated"],
-                result["items_updated"],
-                result["conflicts"],
-                result["archived"],
-                result["removed"],
-            )
         except Exception:
             logging.exception("Google Sheets sync worker failed")
         if once:

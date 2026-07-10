@@ -3,6 +3,7 @@ import urllib.parse
 
 import httpx
 
+from .observability_context import current_correlation_id
 from .pagination import NEXT_CURSOR_HEADER
 from .redaction import redact_secrets
 
@@ -46,7 +47,11 @@ class TelegramApiClient:
     def request(self, method, payload=None, timeout=None):
         with self.http.Client(timeout=timeout or self.timeout) as client:
             try:
-                response = client.post(f"https://api.telegram.org/bot{self.token}/{method}", json=payload or {})
+                response = client.post(
+                    f"https://api.telegram.org/bot{self.token}/{method}",
+                    json=payload or {},
+                    headers={"X-Correlation-ID": current_correlation_id()},
+                )
                 response.raise_for_status()
             except self.http.HTTPStatusError as exc:
                 detail = redact_secrets(exc.response.text[:300] if exc.response is not None else "")
@@ -90,7 +95,9 @@ class TelegramApiClient:
         url = f"https://api.telegram.org/file/bot{self.token}/{quoted_path}"
         with self.http.Client(timeout=self.file_timeout, follow_redirects=True) as client:
             try:
-                with client.stream("GET", url) as response:
+                with client.stream(
+                    "GET", url, headers={"X-Correlation-ID": current_correlation_id()}
+                ) as response:
                     response.raise_for_status()
                     total = 0
                     with open(destination_path, "wb") as output:
@@ -122,7 +129,10 @@ class TelegramApiClient:
             data = {"chat_id": chat_id, "caption": caption[:1000]}
             try:
                 response = client.post(
-                    f"https://api.telegram.org/bot{self.token}/sendDocument", data=data, files=files,
+                    f"https://api.telegram.org/bot{self.token}/sendDocument",
+                    data=data,
+                    files=files,
+                    headers={"X-Correlation-ID": current_correlation_id()},
                 )
                 response.raise_for_status()
             except self.http.HTTPStatusError as exc:
@@ -151,7 +161,10 @@ class BackendApiClient:
         self.http = http_client_module
 
     def _headers(self):
-        return {"Authorization": f"Bearer {self.token}"} if self.token else {}
+        headers = {"X-Correlation-ID": current_correlation_id()}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        return headers
 
     def get(self, path, params=None):
         payload, _next_cursor = self.get_page(path, params=params)

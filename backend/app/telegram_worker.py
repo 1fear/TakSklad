@@ -708,6 +708,8 @@ class TelegramWorker:
 
 
 def main():
+    from .worker_observability import observed_worker_cycle
+
     try:
         worker = TelegramWorker()
     except TelegramConfigurationError as exc:
@@ -715,12 +717,17 @@ def main():
         return 2
     if not worker.configured:
         while True:
-            logging.info("Telegram worker waiting for TELEGRAM_BOT_TOKEN")
+            try:
+                with observed_worker_cycle("telegram", 300):
+                    logging.info("Telegram worker waiting for configuration")
+            except Exception:
+                logging.exception("Telegram worker heartbeat failed")
             time.sleep(300)
 
     while True:
         try:
-            worker.poll_once()
+            with observed_worker_cycle("telegram", max(1, worker.poll_timeout)):
+                worker.poll_once()
         except Exception:
             logging.exception("Telegram worker failed")
             time.sleep(10)

@@ -8,12 +8,18 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
   PYTHON_BIN="python3"
 fi
 
+maintenance_marker="${TAKSKLAD_MAINTENANCE_MARKER:-/run/taksklad-observability/maintenance.json}"
 if [[ "$*" == "--isolated --synthetic-db --assert-invariants" ]]; then
-  exec "$PYTHON_BIN" "$APP_DIR/tools/dr_recovery.py" restore-drill
+  if [[ -z "${TAKSKLAD_MAINTENANCE_MARKER:-}" ]]; then
+    maintenance_marker="$APP_DIR/test-artifacts/disaster-recovery/maintenance.json"
+  fi
+  "$PYTHON_BIN" "$APP_DIR/tools/dr_recovery.py" restore-drill
+  exec "$PYTHON_BIN" "$APP_DIR/tools/write_maintenance_marker.py" restore_drill --path "$maintenance_marker"
 fi
 
 if [[ $# -eq 1 && -f "$1" ]]; then
-  exec "$PYTHON_BIN" "$APP_DIR/tools/dr_recovery.py" restore-drill --manifest "$1"
+  "$PYTHON_BIN" "$APP_DIR/tools/dr_recovery.py" restore-drill --manifest "$1"
+  exec "$PYTHON_BIN" "$APP_DIR/tools/write_maintenance_marker.py" restore_drill --path "$maintenance_marker"
 fi
 
 echo "Usage: $0 --isolated --synthetic-db --assert-invariants" >&2

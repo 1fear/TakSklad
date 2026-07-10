@@ -13,6 +13,7 @@ from .google_sheets_exporter import make_sheet_record
 from .google_sheets_pending import queue_google_sheets_export
 from .event_leases import claim_event_leases, event_leases_enabled, finalize_event_leases
 from .models import AuditLog, ImportJob, Incident, Order, OrderItem, PendingEvent
+from .observability_context import bind_pending_event
 from .outbox_service import queue_outbox_event
 from .representative_contacts import build_representative_comment, find_representative_contact
 from .skladbot_client import SkladBotClient, env_int, sanitize_skladbot_error
@@ -811,12 +812,13 @@ def process_pending_skladbot_request_creates(
             event.attempts = int(event.attempts or 0) + 1
             db.commit()
 
-        try:
-            event_result = process_skladbot_create_event(db, event, client)
-        except Exception as exc:
-            event_result = {"status": "create_failed", "error": sanitize_skladbot_error(exc)}
+        with bind_pending_event(event):
+            try:
+                event_result = process_skladbot_create_event(db, event, client)
+            except Exception as exc:
+                event_result = {"status": "create_failed", "error": sanitize_skladbot_error(exc)}
 
-        finish_skladbot_create_event(db, event, event_result, result)
+            finish_skladbot_create_event(db, event, event_result, result)
 
     if result["failed"]:
         result["status"] = "completed_with_errors"

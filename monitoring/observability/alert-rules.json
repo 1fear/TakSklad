@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "destination": "local-jsonl://temporary",
+  "rules": [
+    {"name": "TakSkladReadinessDown", "metric": "taksklad_readiness", "operator": "lt", "threshold": 1, "for_seconds": 30, "failure_value": 0, "recovery_value": 1},
+    {"name": "TakSkladHigh5xxRate", "metric": "taksklad_http_5xx_ratio", "operator": "gt", "threshold": 0.05, "for_seconds": 60, "failure_value": 0.2, "recovery_value": 0},
+    {"name": "TakSkladHighP95Latency", "metric": "taksklad_http_p95_seconds", "operator": "gt", "threshold": 1, "for_seconds": 60, "failure_value": 2, "recovery_value": 0.1},
+    {"name": "TakSkladWorkerHeartbeatStale", "metric": "taksklad_worker_last_heartbeat_age_seconds", "operator": "gt", "threshold": 150, "for_seconds": 30, "failure_value": 240, "recovery_value": 0},
+    {"name": "TakSkladQueueAgeHigh", "metric": "taksklad_queue_oldest_pending_age_seconds", "operator": "gt", "threshold": 300, "for_seconds": 60, "failure_value": 600, "recovery_value": 0},
+    {"name": "TakSkladProviderFailures", "metric": "taksklad_provider_failure_events", "operator": "gt", "threshold": 0, "for_seconds": 30, "failure_value": 2, "recovery_value": 0},
+    {"name": "TakSkladBackupStale", "metric": "taksklad_backup_last_success_age_seconds", "operator": "gt", "threshold": 93600, "for_seconds": 60, "failure_value": 172800, "recovery_value": 60},
+    {"name": "TakSkladRestoreDrillStale", "metric": "taksklad_restore_drill_last_success_age_seconds", "operator": "gt", "threshold": 691200, "for_seconds": 60, "failure_value": 1209600, "recovery_value": 60}
+  ]
+}

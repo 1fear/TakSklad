@@ -9,6 +9,8 @@ from typing import Protocol, runtime_checkable
 
 import httpx
 
+from .observability_context import current_correlation_id
+
 from .skladbot_contracts import extract_list_items, normalize_text, parse_int
 
 
@@ -195,7 +197,11 @@ class SkladBotClient:
                     response = client.get(
                         url,
                         params=params or {},
-                        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                        headers={
+                            "Authorization": f"Bearer {token}",
+                            "Accept": "application/json",
+                            "X-Correlation-ID": current_correlation_id(),
+                        },
                     )
                 except httpx.TimeoutException:
                     cooldown = max(1.0, self.request_delay)
@@ -278,6 +284,7 @@ class SkladBotClient:
                         "Authorization": f"Bearer {token}",
                         "Accept": "application/json",
                         "Content-Type": "application/json",
+                        "X-Correlation-ID": current_correlation_id(),
                     },
                 )
             except httpx.TimeoutException:

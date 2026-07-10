@@ -68,6 +68,7 @@ class Settings:
     legacy_auth_expires_at: str
     service_token_rotation_max_overlap_seconds: int
     google_to_backend_sync_enabled: bool
+    worker_heartbeat_required_names: tuple[str, ...]
 
     @property
     def api_auth_enabled(self):
@@ -193,12 +194,16 @@ def load_settings(environ=None):
             environ.get("TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED"),
             default=False,
         ),
+        worker_heartbeat_required_names=parse_csv(environ.get("TAKSKLAD_REQUIRED_WORKERS", "")),
     )
 
 
 def validate_backend_settings(settings):
     errors = []
     environment = str(settings.environment or "").strip().casefold()
+    known_workers = {"google_sheets_sync", "skladbot", "smartup_auto_import", "telegram"}
+    if any(name not in known_workers for name in settings.worker_heartbeat_required_names):
+        errors.append("TAKSKLAD_REQUIRED_WORKERS")
     if not settings.environment_explicit or environment not in VALID_ENVIRONMENTS:
         errors.append("TAKSKLAD_ENV")
 

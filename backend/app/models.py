@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import JSON, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, String, Text, Uuid, UniqueConstraint, func, text
+from sqlalchemy import JSON, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, String, Text, Uuid, UniqueConstraint, event, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -244,6 +244,38 @@ class PendingEvent(Base):
     lease_expires_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+@event.listens_for(PendingEvent, "before_insert")
+@event.listens_for(PendingEvent, "before_update")
+def _persist_pending_event_correlation(_mapper, _connection, target: PendingEvent) -> None:
+    """Cover direct/legacy producers at the ORM persistence boundary."""
+    from .observability_context import pending_event_correlation_id
+
+    pending_event_correlation_id(target)
+
+
+class WorkerHeartbeat(Base):
+    __tablename__ = "worker_heartbeats"
+    __table_args__ = (
+        CheckConstraint("interval_seconds > 0", name="ck_worker_heartbeats_interval_positive"),
+        CheckConstraint("grace_seconds >= 0", name="ck_worker_heartbeats_grace_nonnegative"),
+        CheckConstraint(
+            "status IN ('running','success','failed')",
+            name="ck_worker_heartbeats_supported_status",
+        ),
+    )
+
+    worker_name: Mapped[str] = mapped_column(String(80), primary_key=True)
+    interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    grace_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=15, server_default="15")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="running")
+    correlation_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    last_cycle_started_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_success_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+    last_failure_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+    last_error_class: Mapped[str | None] = mapped_column(String(80))
     updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 

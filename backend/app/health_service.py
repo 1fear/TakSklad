@@ -16,10 +16,11 @@ from .google_sheets_pending import GOOGLE_SHEETS_EXPORT_EVENT_TYPE
 from .models import ImportJob, Incident, PendingEvent
 from .redaction import redact_secrets
 from .settings import APP_VERSION
+from .worker_observability import build_worker_readiness
 
 
 EXPECTED_BASELINE_REVISION = "20260616_0001"
-EXPECTED_HEAD_REVISION = "20260710_0014"
+EXPECTED_HEAD_REVISION = "20260711_0015"
 LEGACY_SQLITE_HEAD_REVISION = "20260710_0011"
 TERMINAL_INCIDENT_STATUSES = ("resolved", "ignored", "cancelled")
 SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE = "skladbot_daily_report_send"
@@ -64,6 +65,7 @@ def build_readiness_report(db: Session, app_settings):
             "last_errors": [],
         },
         "imports": {"recent_errors": []},
+        "workers": {"status": "unknown", "required": [], "missing": [], "unhealthy": [], "workers": []},
         "google_mirror": {
             "status": "unknown",
             "summary": {},
@@ -73,7 +75,7 @@ def build_readiness_report(db: Session, app_settings):
             "last_errors": [],
         },
         "policy": {
-            "mandatory": ["database", "migrations", "hot_path_queue", "imports"],
+            "mandatory": ["database", "migrations", "hot_path_queue", "imports", "worker_main_loops"],
             "optional": ["google_mirror"],
             "mandatory_status": "unknown",
             "optional_status": "unknown",
@@ -97,6 +99,12 @@ def build_readiness_report(db: Session, app_settings):
         report["queue"] = build_queue_readiness(db, now=now)
         report["google_mirror"] = build_google_mirror_readiness(db, now=now)
         report["imports"] = build_import_error_readiness(db)
+        configured_required_workers = getattr(app_settings, "worker_heartbeat_required_names", ())
+        report["workers"] = build_worker_readiness(
+            db,
+            required_workers=configured_required_workers,
+            now=now,
+        )
     except SQLAlchemyError as exc:
         report["status"] = "unhealthy"
         report["database"] = {
@@ -112,6 +120,7 @@ def build_readiness_report(db: Session, app_settings):
         or report["queue"]["hot_path_blocking_count"]
         or report["queue"]["hot_path_last_errors"]
         or report["imports"]["recent_errors"]
+        or report["workers"].get("status") != "ok"
     )
     optional_degraded = report["google_mirror"].get("status") != "ok"
     report["ready"] = not bool(mandatory_failed)
@@ -132,6 +141,7 @@ def public_readiness_report(report):
     queue = report.get("queue") or {}
     google_mirror = report.get("google_mirror") or {}
     imports = report.get("imports") or {}
+    workers = report.get("workers") or {}
     return {
         "generated_at": report.get("generated_at"),
         "ready": report.get("ready") is True,
@@ -156,6 +166,12 @@ def public_readiness_report(report):
             "role": google_mirror.get("role") or "mirror_export",
         },
         "imports": {"recent_error_count": len(imports.get("recent_errors") or [])},
+        "workers": {
+            "status": workers.get("status") or "unknown",
+            "required_count": len(workers.get("required") or []),
+            "missing_count": len(workers.get("missing") or []),
+            "unhealthy_count": len(workers.get("unhealthy") or []),
+        },
         "policy": dict(report.get("policy") or {}),
     }
 

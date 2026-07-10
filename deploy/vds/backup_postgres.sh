@@ -280,6 +280,12 @@ if [[ "$TEST_MODE" != true ]]; then
     -mtime "+$RETENTION_DAYS" -exec rm -rf {} +
 fi
 
+maintenance_marker="${TAKSKLAD_MAINTENANCE_MARKER:-/run/taksklad-observability/maintenance.json}"
+if [[ "$TEST_MODE" == true && -z "${TAKSKLAD_MAINTENANCE_MARKER:-}" ]]; then
+  maintenance_marker="$BACKUP_DIR/maintenance.json"
+fi
+python3 "$APP_DIR/tools/write_maintenance_marker.py" backup --path "$maintenance_marker" >/dev/null
+
 printf 'BACKUP_OK backup_id=%s format=postgresql-custom actual_postgresql=%s sha256=%s bytes=%s list_entries=%s cleanup_count=%s bundle=%s manifest=%s source=%s\n' \
   "$backup_id" "$actual_postgresql" "$archive_sha256" "$archive_bytes" "$list_entries" \
   "$disposable_cleanup_count" "$bundle_dir" "$bundle_dir/$manifest_name" "$source_kind"

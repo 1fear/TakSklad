@@ -16,6 +16,7 @@ from .google_sheets_pending import (
     queue_google_sheets_export,
 )
 from .models import AuditLog, ImportFile, ImportJob, Incident, Order, OrderItem, PendingEvent
+from .observability_context import current_correlation_id, log_trace
 from .pagination import CursorError, decode_cursor, encode_cursor, normalize_page_limit
 from . import outbox_service
 from .orders_service import STATUS_COMPLETED, STATUS_NOT_COMPLETED, STATUS_RETURNED
@@ -79,6 +80,7 @@ class ImportRowError(Exception):
 
 
 def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: str | None = None):
+    correlation_id = current_correlation_id()
     rows_total = len(payload.rows)
     normalized_sha = normalize_text(payload.sha256).lower()
     existing_file = None
@@ -102,6 +104,7 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
         rows_total=rows_total,
         rows_imported=0,
         raw_payload={
+            "correlation_id": correlation_id,
             "filename": payload.filename,
             "sha256": normalized_sha,
             "file_sha256_reused_from_import_id": (
@@ -118,6 +121,7 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
     )
     db.add(import_job)
     db.flush()
+    log_trace(logger, "import_created", rows_total=rows_total)
 
     if payload.filename and normalized_sha and existing_file is None:
         db.add(ImportFile(
@@ -289,7 +293,11 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
                 force_mode=skladbot_create_mode,
             )
     except Exception as exc:
-        logger.exception("SkladBot dry-run failed for import %s", import_job.id)
+        logger.error(
+            "trace event=import_skladbot_dry_run_failed correlation_id=%s error_class=%s",
+            correlation_id,
+            exc.__class__.__name__,
+        )
         skladbot_dry_run_result = {
             "status": "error",
             "mode": "dry_run",
@@ -318,6 +326,13 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
     db.commit()
     outbox_service.outbox_fault("after_commit", "import")
     db.refresh(import_job)
+    log_trace(
+        logger,
+        "import_finished",
+        status=import_job.status,
+        rows_total=rows_total,
+        rows_imported=items_created,
+    )
     return ImportResult(
         id=str(import_job.id),
         source=import_job.source,

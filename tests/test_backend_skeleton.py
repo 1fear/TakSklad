@@ -46,6 +46,7 @@ class BackendSkeletonTests(unittest.TestCase):
             "backend/migrations/versions/20260710_0012_auth_identities.py",
             "backend/migrations/versions/20260710_0013_authenticated_audit_subject.py",
             "backend/migrations/versions/20260710_0014_hot_query_indexes.py",
+            "backend/migrations/versions/20260711_0015_worker_heartbeats.py",
             "docs/database-migrations-runbook.md",
             "deploy/vds/docker-compose.yml",
             "deploy/vds/config-contract.json",

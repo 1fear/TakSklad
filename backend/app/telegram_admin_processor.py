@@ -10,6 +10,7 @@ from .db import SessionLocal
 from .event_leases import claim_event_leases, event_leases_enabled, finalize_event_leases
 from .event_queue_service import reset_stale_processing_events
 from .models import AuditLog, PendingEvent
+from .observability_context import bind_event_payload
 from .telegram_clients import TelegramProcessorDelegate
 from .telegram_common import display_date, normalize_text, parse_date_from_text, parse_int, text_matches
 from .telegram_manual_support import (
@@ -527,7 +528,7 @@ class TelegramAdminProcessor(TelegramProcessorDelegate):
             payload = event.payload or {}
             event_id = event.id
             db.commit()
-            return {"id": event_id, "payload": payload}
+            return {"id": event_id, "payload": event.payload or payload}
 
     def finish_telegram_notification_event(
         self, event_id, success, error="", failure_status="failed", lease_owner="",
@@ -624,15 +625,16 @@ class TelegramAdminProcessor(TelegramProcessorDelegate):
                 )
                 processed += 1
                 continue
-            try:
-                for chat_id in targets:
-                    self.send_message(chat_id, text)
-                self.finish_telegram_notification_event(event["id"], True, "", lease_owner=lease_owner)
-            except Exception as exc:
-                logging.exception("Telegram worker: queued notification failed")
-                self.finish_telegram_notification_event(
-                    event["id"], False, str(exc), lease_owner=lease_owner,
-                )
+            with bind_event_payload(payload):
+                try:
+                    for chat_id in targets:
+                        self.send_message(chat_id, text)
+                    self.finish_telegram_notification_event(event["id"], True, "", lease_owner=lease_owner)
+                except Exception as exc:
+                    logging.exception("Telegram worker: queued notification failed")
+                    self.finish_telegram_notification_event(
+                        event["id"], False, str(exc), lease_owner=lease_owner,
+                    )
             processed += 1
         return processed
 
