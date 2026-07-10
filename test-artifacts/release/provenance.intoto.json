@@ -1,0 +1,45 @@
+{
+  "_type": "https://in-toto.io/Statement/v1",
+  "predicate": {
+    "buildDefinition": {
+      "buildType": "https://taksklad.local/phase23/release-artifacts/v1",
+      "externalParameters": {
+        "sourceSha": "f19973e1cf9c87164b9a7150b6ddf5508e9f7a85"
+      },
+      "internalParameters": {
+        "dirtyWorkingTreeUsed": false,
+        "gitArchive": true
+      },
+      "resolvedDependencies": []
+    },
+    "runDetails": {
+      "builder": {
+        "id": "https://taksklad.local/builders/local-phase23"
+      },
+      "metadata": {
+        "invocationId": "local-f19973e1cf9c87164b9a7150b6ddf5508e9f7a85"
+      }
+    }
+  },
+  "predicateType": "https://slsa.dev/provenance/v1",
+  "subject": [
+    {
+      "digest": {
+        "sha256": "92ccba0f11241aab9c8bcfc64b23af40bded6616aca4497ce5f3b988475e1872"
+      },
+      "name": "local/taksklad-backend"
+    },
+    {
+      "digest": {
+        "sha256": "c025403158e31bface7844ed5bba8829fca8e41e2f846ae4c5dca1d8a761eab3"
+      },
+      "name": "local/taksklad-frontend"
+    },
+    {
+      "digest": {
+        "sha256": "dc51eb14c4bbca8c04c69b8c9285f7f9b85c62d2a04fc083a4c27ae85831f992"
+      },
+      "name": "test-artifacts/provenance/TakSklad-synthetic-signed.exe"
+    }
+  ]
+}

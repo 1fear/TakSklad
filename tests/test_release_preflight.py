@@ -129,9 +129,12 @@ class ReleasePreflightTests(unittest.TestCase):
             return "payload.get('ready') is True json.load(response)\n"
         if path_text.endswith("deploy/vds/deploy_from_git.sh"):
             return (
-                "verify_migration_revision_before_activation\n"
+                "tools/release_artifacts.py verify\n"
+                "alembic -c alembic.ini upgrade head\n"
+                "--no-build --pull never\n"
                 "--wait --wait-timeout\n"
-                "readiness body contract failed\n"
+                '--expected-sha "$RELEASE_SOURCE_SHA"\n'
+                '--expected-digest "$RELEASE_BACKEND_DIGEST"\n'
                 "acceptance_status.sh --require-go\n"
                 "TAKSKLAD_DEPLOY_ACCEPTANCE:-required\n"
                 "tools/validate_deploy_probe.py\n"

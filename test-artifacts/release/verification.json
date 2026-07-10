@@ -1,0 +1,14 @@
+{
+  "authority": "local-test",
+  "dirty_worktree_used": false,
+  "github_identity_verified": false,
+  "oci_tar_files_retained": false,
+  "production_deployable": false,
+  "source_sha": "f19973e1cf9c87164b9a7150b6ddf5508e9f7a85",
+  "status": "pass",
+  "subjects": {
+    "local/taksklad-backend": "92ccba0f11241aab9c8bcfc64b23af40bded6616aca4497ce5f3b988475e1872",
+    "local/taksklad-frontend": "c025403158e31bface7844ed5bba8829fca8e41e2f846ae4c5dca1d8a761eab3",
+    "test-artifacts/provenance/TakSklad-synthetic-signed.exe": "dc51eb14c4bbca8c04c69b8c9285f7f9b85c62d2a04fc083a4c27ae85831f992"
+  }
+}

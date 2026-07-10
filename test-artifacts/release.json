@@ -1,0 +1,56 @@
+{
+  "acceptance_required": true,
+  "attestation": {
+    "bundle": "test-artifacts/release/provenance.dsse.json",
+    "github_identity_verified": false,
+    "public_key": "test-artifacts/release/local-test-public-key.pem",
+    "registry_attestation_verified": false,
+    "type": "local-test-dsse-slsa-v1"
+  },
+  "authority": "local-test",
+  "database_rollback": {
+    "alembic_downgrade_allowed": false,
+    "strategy": "retain-current-schema"
+  },
+  "dependency_locks": {
+    "backend_sha256": "211b695494ce64f2d13561bd32322f6873fa50f59786a77ced2a08baf4eac55b",
+    "desktop_sha256": "582eaa79370a79d1eae415c34fc57aecd69dc8d46cf40ef0835562b8f5de01c1"
+  },
+  "deployable": false,
+  "images": {
+    "backend": {
+      "digest": "sha256:92ccba0f11241aab9c8bcfc64b23af40bded6616aca4497ce5f3b988475e1872",
+      "name": "local/taksklad-backend",
+      "oci_tar_retained": false,
+      "oci_tar_sha256": "03bc2320f34fa22f7fb4bf1129306b62d91d4855a3b5f6429d49a119035a8de2",
+      "tag": "sha-f19973e1cf9c87164b9a7150b6ddf5508e9f7a85"
+    },
+    "frontend": {
+      "digest": "sha256:c025403158e31bface7844ed5bba8829fca8e41e2f846ae4c5dca1d8a761eab3",
+      "name": "local/taksklad-frontend",
+      "oci_tar_retained": false,
+      "oci_tar_sha256": "73a30cd0472a59085575191f365b611b5fb9002f96580bce8a052fa1bf0ff2a8",
+      "tag": "sha-f19973e1cf9c87164b9a7150b6ddf5508e9f7a85"
+    }
+  },
+  "previous_release": {
+    "backend_digest": "sha256:70fdf84d282efdaea5fa8dcbc425c6fa4c891a71646bf3d6cff6244d9a1a04af",
+    "frontend_digest": "sha256:542916c46b1374fe218e50f2cf2b9995726579af9912c4299dc3be6f3b50777f",
+    "source": "synthetic-local-dry-run"
+  },
+  "release_id": "local-f19973e1cf9c87164b9a7150b6ddf5508e9f7a85",
+  "schema_version": 1,
+  "source_sha": "f19973e1cf9c87164b9a7150b6ddf5508e9f7a85",
+  "windows": {
+    "artifact": "test-artifacts/provenance/TakSklad-synthetic-signed.exe",
+    "artifact_sha256": "dc51eb14c4bbca8c04c69b8c9285f7f9b85c62d2a04fc083a4c27ae85831f992",
+    "artifact_source_sha": "b6229ca247056358866c80fce8cb43792808ee80",
+    "dependency_lock_sha256": "582eaa79370a79d1eae415c34fc57aecd69dc8d46cf40ef0835562b8f5de01c1",
+    "production_certificate_verified": false,
+    "production_gate": "WINDOWS_CODESIGN_CERTIFICATE_NOT_AVAILABLE",
+    "release_source_sha": "f19973e1cf9c87164b9a7150b6ddf5508e9f7a85",
+    "signature_status": "Valid",
+    "signature_type": "authenticode-local-test",
+    "version": "2.0.25"
+  }
+}

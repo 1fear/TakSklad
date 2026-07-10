@@ -1,0 +1,129 @@
+{
+  "exact_count": 2,
+  "mutation_count": 0,
+  "pending_count": 14,
+  "read_only": true,
+  "repository": "1fear/TakSklad",
+  "schema_version": 1,
+  "settings": [
+    {
+      "actual": false,
+      "desired": true,
+      "path": "branch_ruleset.exists",
+      "status": "pending"
+    },
+    {
+      "actual": null,
+      "desired": "TakSklad main release gate",
+      "path": "branch_ruleset.name",
+      "status": "pending"
+    },
+    {
+      "actual": null,
+      "desired": "branch",
+      "path": "branch_ruleset.target",
+      "status": "pending"
+    },
+    {
+      "actual": null,
+      "desired": "active",
+      "path": "branch_ruleset.enforcement",
+      "status": "pending"
+    },
+    {
+      "actual": null,
+      "desired": [],
+      "path": "branch_ruleset.bypass_actors",
+      "status": "pending"
+    },
+    {
+      "actual": null,
+      "desired": {
+        "exclude": [],
+        "include": [
+          "refs/heads/main"
+        ]
+      },
+      "path": "branch_ruleset.conditions.ref_name",
+      "status": "pending"
+    },
+    {
+      "actual": false,
+      "desired": true,
+      "path": "branch_ruleset.rules.deletion",
+      "status": "pending"
+    },
+    {
+      "actual": false,
+      "desired": true,
+      "path": "branch_ruleset.rules.non_fast_forward",
+      "status": "pending"
+    },
+    {
+      "actual": false,
+      "desired": true,
+      "path": "branch_ruleset.rules.required_linear_history",
+      "status": "pending"
+    },
+    {
+      "actual": null,
+      "desired": {
+        "do_not_enforce_on_create": false,
+        "required_status_checks": [
+          {
+            "context": "Release gate"
+          }
+        ],
+        "strict_required_status_checks_policy": true
+      },
+      "path": "branch_ruleset.rules.required_status_checks",
+      "status": "pending"
+    },
+    {
+      "actual": true,
+      "desired": true,
+      "path": "environment.exists",
+      "status": "exact"
+    },
+    {
+      "actual": true,
+      "desired": false,
+      "path": "environment.can_admins_bypass",
+      "status": "pending"
+    },
+    {
+      "actual": null,
+      "desired": {
+        "custom_branch_policies": false,
+        "protected_branches": true
+      },
+      "path": "environment.deployment_branch_policy",
+      "status": "pending"
+    },
+    {
+      "actual": 0,
+      "desired": 0,
+      "path": "environment.wait_timer",
+      "status": "exact"
+    },
+    {
+      "actual": null,
+      "desired": false,
+      "path": "environment.prevent_self_review",
+      "status": "pending"
+    },
+    {
+      "actual": [],
+      "desired": [
+        {
+          "login": "1fear",
+          "type": "User"
+        }
+      ],
+      "path": "environment.required_reviewers",
+      "status": "pending"
+    }
+  ],
+  "settings_count": 16,
+  "source": "github-read-only-live"
+}
