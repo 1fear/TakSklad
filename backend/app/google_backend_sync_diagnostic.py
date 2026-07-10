@@ -115,8 +115,8 @@ def compare_field(mismatches, field, backend_value, sheet_value, context, *, num
         mismatches.append({
             **context,
             "field": field,
-            "backend": backend_value,
-            "google_sheet": sheet_value,
+            "backend": backend_normalized if date_value else backend_value,
+            "google_sheet": sheet_normalized if date_value else sheet_value,
         })
 
 

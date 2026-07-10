@@ -105,7 +105,8 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         self.assertIn("target_delivery_date", smartup_automation_script)
         self.assertIn("reverse_geocode_yandex", smartup_automation_script)
         self.assertIn("imported_line_total > 0", smartup_automation_script)
-        self.assertIn("explicit * quantity_blocks == line_total", smartup_automation_script)
+        self.assertIn('"Короба",', smartup_automation_script)
+        self.assertIn("set_cell(row, 31, quantity_blocks)", smartup_automation_script)
         self.assertIn("Smartup runtime status is required but skipped", smartup_automation_script)
         self.assertIn('"status": "failed" if errors else "ok"', smartup_automation_script)
 

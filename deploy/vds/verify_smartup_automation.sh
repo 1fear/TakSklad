@@ -109,7 +109,8 @@ required_fragments = [
     ("source import id dedupe", imports, "source_import_id"),
     ("repriced totals import", imports, "imported_line_total"),
     ("repriced totals sync", google_sync, "imported_line_total > 0"),
-    ("repriced totals logistics", logistics, "explicit * quantity_blocks == line_total"),
+    ("logistics template boxes header", logistics, '"Короба",'),
+    ("logistics boxes from order quantity", logistics, "set_cell(row, 31, quantity_blocks)"),
 ]
 
 for label, text, fragment in required_fragments:

@@ -1,3 +1,4 @@
+import json
 import unittest
 from datetime import date
 from types import SimpleNamespace
@@ -95,6 +96,18 @@ class GoogleBackendSyncDiagnosticTests(unittest.TestCase):
         fields = {item["field"] for item in result["field_mismatches"]}
         self.assertIn("quantity_blocks", fields)
         self.assertIn("quantity_pieces", fields)
+
+    def test_date_mismatch_result_is_json_serializable(self):
+        order = make_order(order_date=date(2026, 5, 30))
+        make_item(order)
+
+        result = verify_google_backend_sync([make_record(order_date=date(2026, 5, 31))], [order])
+
+        serialized = json.dumps(result)
+        mismatch = next(item for item in result["field_mismatches"] if item["field"] == "order_date")
+        self.assertIn('"2026-05-30"', serialized)
+        self.assertEqual(mismatch["backend"], "2026-05-30")
+        self.assertEqual(mismatch["google_sheet"], "2026-05-31")
 
     def test_fails_when_backend_line_total_is_stale_after_quantity_change(self):
         order = make_order()
