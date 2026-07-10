@@ -124,7 +124,7 @@ services:
       context: ../../backend
       dockerfile: Dockerfile
     restart: unless-stopped
-    command: ["python", "-m", "app.skladbot_worker"]
+    command: ["python", "-m", "app.skladbot_worker_runner"]
     env_file:
       - ${TAKSKLAD_ENV_FILE:-.env}
     environment:

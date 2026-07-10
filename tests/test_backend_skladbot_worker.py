@@ -38,8 +38,8 @@ from backend.app.skladbot_worker import (
     sanitize_skladbot_error,
     try_acquire_skladbot_sync_lock,
     update_orders_from_skladbot,
-    worker_interval_seconds,
 )
+from backend.app.skladbot_worker_runner import run_worker_cycle, worker_interval_seconds
 
 
 class BackendSkladBotWorkerTests(unittest.TestCase):
@@ -1596,6 +1596,30 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
 
         with mock.patch.dict("os.environ", {"SKLADBOT_WORKER_INTERVAL_SECONDS": "120"}, clear=True):
             self.assertEqual(worker_interval_seconds(), 120)
+
+    def test_worker_runner_routes_each_processor_once(self):
+        db = object()
+        context = mock.MagicMock()
+        context.__enter__.return_value = db
+        create_processor = mock.Mock(return_value={"checked": 1})
+        return_processor = mock.Mock(return_value={"checked": 2})
+        sync_processor = mock.Mock(return_value={"updated": 3})
+
+        result = run_worker_cycle(
+            session_factory=lambda: context,
+            create_processor=create_processor,
+            return_processor=return_processor,
+            sync_processor=sync_processor,
+        )
+
+        create_processor.assert_called_once_with(db)
+        return_processor.assert_called_once_with(db)
+        sync_processor.assert_called_once_with()
+        self.assertEqual(result, {
+            "create": {"checked": 1},
+            "return": {"checked": 2},
+            "sync": {"updated": 3},
+        })
 
     def test_postgres_skladbot_lock_is_transaction_scoped(self):
         db = mock.Mock()

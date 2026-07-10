@@ -462,7 +462,7 @@ ORM-модели: `backend/app/models.py`.
 | Service | Command | Назначение |
 |---|---|---|
 | `backend-api` | `uvicorn app.main:app` | API для desktop, frontend, workers |
-| `skladbot-worker` | `python -m app.skladbot_worker` | SkladBot sync/create/reconcile |
+| `skladbot-worker` | `python -m app.skladbot_worker_runner` | Scheduler for SkladBot sync/create/reconcile processors |
 | `google-sheets-sync-worker` | `python -m app.google_sheets_sync_worker` | mirror/sync с Google Sheets |
 | `telegram-worker` | `python -m app.telegram_worker` | Telegram bot, imports, reports, manual actions |
 | `frontend` | Nginx | React web panel |

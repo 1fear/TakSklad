@@ -1,10 +1,13 @@
-import json
+"""SkladBot order synchronization processor.
+
+External HTTP and pure payload/matching contracts live in dedicated modules.
+The scheduling loop lives in skladbot_worker_runner.
+"""
+
 import logging
 import os
-import re
 import time
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from sqlalchemy import desc, or_, select, text
@@ -15,32 +18,51 @@ from .db import SessionLocal
 from .google_sheets_pending import queue_google_sheets_export
 from .models import AuditLog, Order, OrderItem
 from .order_statuses import COMPLETED_STATUSES
-from .settings import load_settings
+from .skladbot_client import (
+    SkladBotClient,
+    env_float,
+    env_int,
+    parse_skladbot_api_tokens,
+    sanitize_skladbot_error,
+    skladbot_response_error_text,
+)
+from .skladbot_contracts import (
+    address_soft_match,
+    business_timezone,
+    business_today,
+    client_matches,
+    extract_list_items,
+    field_map,
+    get_field,
+    nearest_request_diagnostics,
+    normalize_lookup_text,
+    normalize_payment_type,
+    normalize_request_payload,
+    normalize_smartup_id,
+    normalize_text,
+    order_group_payload,
+    parse_bool,
+    parse_date,
+    parse_datetime_value,
+    parse_int,
+    product_matches,
+    product_sku_key,
+    request_list_value,
+    request_match_diagnostics,
+    request_matches_order,
+    request_smartup_id,
+    request_type_matches,
+    request_value,
+    simplify_tokens,
+    smartup_id_from_comment,
+    text_tokens_match,
+)
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-NOISE_COMPANY_TOKENS = {"ooo", "ооо", "mchj", "мчж", "ip", "ип", "sp", "сп", "склад", "склади"}
-NOISE_PRODUCT_TOKENS = {"uz", "kingsize", "king", "size", "superslim", "super", "slim"}
-RETURN_REQUEST_TOKENS = {"возврат", "возврата", "return", "returned"}
-PRODUCT_COLORS = ("brown", "red", "gold", "green")
-PRODUCT_FORMATS = ("op", "ssl")
 SKLADBOT_SYNC_LOCK_KEY = 22052631
 SKLADBOT_COMPLETED_BACKFILL_STATUSES = ("completed", "done", "closed")
-SMARTUP_ID_KEYS = (
-    "smartup_id",
-    "smartupId",
-    "smartup_deal_id",
-    "smartupDealId",
-    "Smartup deal_id",
-    "Smartup ID",
-    "ID Smartup",
-    "ID заявки Smartup",
-)
-SMARTUP_COMMENT_ID_RE = re.compile(
-    r"(?im)^\s*(?:smartup(?:\s+deal[_ ]?id|\s+id)?|id\s+smartup|id\s+заявки\s+smartup)\s*[:#-]\s*([^\s;]+)\s*$"
-)
-
 
 class CandidateRequests(list):
     def __init__(
@@ -80,260 +102,12 @@ class CandidateRequests(list):
             "rotated_after_request_id": self.rotated_after_request_id,
         }
 
-
-def env_int(name, default):
-    try:
-        return int(os.environ.get(name, "") or default)
-    except ValueError:
-        return default
-
-
-def env_float(name, default):
-    try:
-        return float(os.environ.get(name, "") or default)
-    except ValueError:
-        return default
-
-
-def parse_skladbot_api_tokens(environ=None):
-    if environ is None:
-        environ = os.environ
-    raw_tokens = normalize_text(environ.get("SKLADBOT_API_TOKENS"))
-    if raw_tokens:
-        candidates = re.split(r"[\s,;]+", raw_tokens)
-    else:
-        candidates = [environ.get("SKLADBOT_API_TOKEN", "")]
-    tokens = []
-    seen = set()
-    for candidate in candidates:
-        token = normalize_text(candidate)
-        if not token or token in seen:
-            continue
-        tokens.append(token)
-        seen.add(token)
-    if not tokens and raw_tokens:
-        fallback_token = normalize_text(environ.get("SKLADBOT_API_TOKEN", ""))
-        if fallback_token:
-            tokens.append(fallback_token)
-    return tokens
-
-
-def sanitize_skladbot_error(value):
-    text = normalize_text(value)
-    if not text:
-        return ""
-    for token in parse_skladbot_api_tokens():
-        if token:
-            text = text.replace(token, "***")
-    text = re.sub(r"(Authorization['\"]?\s*[:=]\s*['\"]?Bearer\s+)[A-Za-z0-9._-]+", r"\1***", text, flags=re.I)
-    return text
-
-
-def normalize_text(value):
-    return str(value or "").strip()
-
-
-def skladbot_response_error_text(response):
-    body = ""
-    try:
-        payload = response.json()
-    except Exception:
-        payload = None
-    if isinstance(payload, dict):
-        body_value = next(
-            (
-                payload.get(key)
-                for key in ("detail", "message", "error", "errors")
-                if payload.get(key)
-            ),
-            payload,
-        )
-    elif payload:
-        body_value = payload
-    else:
-        body_value = getattr(response, "text", "")
-    if isinstance(body_value, (dict, list)):
-        body = json.dumps(body_value, ensure_ascii=False)
-    else:
-        body = normalize_text(body_value)
-    status_code = normalize_text(getattr(response, "status_code", ""))
-    if body:
-        return sanitize_skladbot_error(f"SkladBot API HTTP {status_code}: {body}")
-    return sanitize_skladbot_error(f"SkladBot API HTTP {status_code}")
-
-
-def normalize_lookup_text(value):
-    text = normalize_text(value).lower().replace("ё", "е")
-    text = re.sub(r"[^0-9a-zа-я]+", " ", text)
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
-
-
-def simplify_tokens(value, noise_tokens=None):
-    noise_tokens = noise_tokens or set()
-    return [token for token in normalize_lookup_text(value).split() if token and token not in noise_tokens]
-
-
-def text_tokens_match(left, right, noise_tokens=None, min_overlap=0.75):
-    left_tokens = set(simplify_tokens(left, noise_tokens))
-    right_tokens = set(simplify_tokens(right, noise_tokens))
-    if not left_tokens or not right_tokens:
-        return False
-    shorter, longer = (left_tokens, right_tokens) if len(left_tokens) <= len(right_tokens) else (right_tokens, left_tokens)
-    return len(shorter.intersection(longer)) / max(1, len(shorter)) >= min_overlap
-
-
-def normalized_token_set(value, noise_tokens=None):
-    return set(simplify_tokens(value, noise_tokens or set()))
-
-
-def client_matches(left, right):
-    left_tokens = normalized_token_set(left, NOISE_COMPANY_TOKENS)
-    right_tokens = normalized_token_set(right, NOISE_COMPANY_TOKENS)
-    if not left_tokens or not right_tokens:
-        return False
-    return left_tokens == right_tokens
-
-
-def product_sku_key(value):
-    text = normalize_lookup_text(value)
-    tokens = text.split()
-    compact = "".join(tokens)
-    color = next((item for item in PRODUCT_COLORS if item in tokens or item in compact), "")
-    product_format = next((
-        item
-        for item in PRODUCT_FORMATS
-        if item in tokens or (color and f"{color}{item}" in compact)
-    ), "")
-    if color and product_format:
-        return f"{color}:{product_format}"
-    return ""
-
-
-def product_matches(left, right):
-    left_key = product_sku_key(left)
-    right_key = product_sku_key(right)
-    if left_key and right_key:
-        return left_key == right_key
-    return text_tokens_match(left, right, NOISE_PRODUCT_TOKENS, min_overlap=0.8)
-
-
-def request_type_matches(value):
-    expected = normalize_lookup_text(os.environ.get("SKLADBOT_REQUEST_TYPE_NAME") or "3PL отгрузка")
-    actual = normalize_lookup_text(value)
-    if normalized_token_set(actual).intersection(RETURN_REQUEST_TOKENS):
-        return False
-    if expected and expected == actual:
-        return True
-    return "3pl" in actual and "отгруз" in actual
-
-
-def address_soft_match(left, right):
-    if not normalize_text(left) or not normalize_text(right):
-        return False
-    return text_tokens_match(left, right, min_overlap=0.55)
-
-
-def normalize_payment_type(value):
-    text = normalize_lookup_text(value)
-    if "терминал" in text:
-        return "terminal"
-    if "перечис" in text or "безнал" in text:
-        return "transfer"
-    return "unknown"
-
-
-def parse_int(value):
-    text = normalize_text(value).replace(" ", "").replace(",", ".")
-    if not text:
-        return 0
-    try:
-        return int(float(text))
-    except ValueError:
-        return 0
-
-
-def parse_bool(value):
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return value != 0
-    return normalize_lookup_text(value) in {"1", "true", "yes", "да"}
-
-
-def parse_date(value):
-    text = normalize_text(value)
-    if not text:
-        return None
-    parsed_datetime = parse_datetime_value(text)
-    if parsed_datetime is not None:
-        if parsed_datetime.tzinfo is None:
-            parsed_datetime = parsed_datetime.replace(tzinfo=business_timezone())
-        return parsed_datetime.astimezone(business_timezone()).date()
-    if "T" in text:
-        text = text.split("T", 1)[0]
-    if " " in text:
-        text = text.split(" ", 1)[0]
-    for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y", "%Y.%m.%d"):
-        try:
-            return datetime.strptime(text, fmt).date()
-        except ValueError:
-            pass
-    return None
-
-
-def parse_datetime_value(value):
-    text = normalize_text(value)
-    if not text:
-        return None
-    has_time = "T" in text or (":" in text and " " in text)
-    if not has_time:
-        return None
-    if text.endswith("Z"):
-        text = f"{text[:-1]}+00:00"
-    try:
-        return datetime.fromisoformat(text)
-    except ValueError:
-        pass
-    for fmt in (
-        "%d.%m.%Y %H:%M:%S%z",
-        "%d.%m.%Y %H:%M%z",
-        "%d/%m/%Y %H:%M:%S%z",
-        "%d/%m/%Y %H:%M%z",
-        "%d.%m.%Y %H:%M:%S",
-        "%d.%m.%Y %H:%M",
-        "%d/%m/%Y %H:%M:%S",
-        "%d/%m/%Y %H:%M",
-    ):
-        try:
-            return datetime.strptime(text, fmt)
-        except ValueError:
-            pass
-    return None
-
-
-def business_timezone():
-    timezone_name = load_settings().timezone
-    try:
-        return ZoneInfo(timezone_name)
-    except ZoneInfoNotFoundError:
-        return ZoneInfo("Asia/Tashkent")
-
-
-def business_today(now=None):
-    now = now or datetime.now(timezone.utc)
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=timezone.utc)
-    return now.astimezone(business_timezone()).date()
-
-
 def date_in_window(value, today=None, lookback_days=1):
     today = today or business_today()
     parsed = parse_date(value)
     if not parsed:
         return False
     return today - timedelta(days=lookback_days) <= parsed <= today
-
 
 def active_order_unloading_dates(orders=None, today=None):
     today = today or business_today()
@@ -344,13 +118,11 @@ def active_order_unloading_dates(orders=None, today=None):
             dates.add(order_date)
     return dates
 
-
 def request_unloading_date_matches_active_orders(request, orders=None, today=None):
     parsed = parse_date(request.get("unloading_date") if isinstance(request, dict) else None)
     if not parsed:
         return False
     return parsed in active_order_unloading_dates(orders=orders, today=today)
-
 
 def request_created_recently(request, today=None, lookback_days=1):
     dated_values = [
@@ -361,7 +133,6 @@ def request_created_recently(request, today=None, lookback_days=1):
     if not dated_values:
         return False
     return any(date_in_window(value, today=today, lookback_days=lookback_days) for value in dated_values)
-
 
 def dynamic_skladbot_lookback_days(orders=None, today=None, base_lookback_days=None):
     today = today or business_today()
@@ -382,11 +153,9 @@ def dynamic_skladbot_lookback_days(orders=None, today=None, base_lookback_days=N
     required_lookback = days_since_oldest_order + create_lead_days
     return min(max(base_lookback_days, required_lookback), max_lookback_days)
 
-
 def order_has_skladbot_number(order):
     raw_payload = getattr(order, "raw_payload", None) or {}
     return bool(normalize_text(raw_payload.get("skladbot_request_number")) or normalize_text(raw_payload.get("skladbot_request_id")))
-
 
 def order_needs_skladbot_backfill(order):
     raw_payload = getattr(order, "raw_payload", None) or {}
@@ -395,17 +164,14 @@ def order_needs_skladbot_backfill(order):
         and normalize_text(raw_payload.get("skladbot_request_id"))
     )
 
-
 def completed_backfill_days():
     return max(0, env_int("SKLADBOT_COMPLETED_BACKFILL_DAYS", 2))
-
 
 def completed_backfill_cutoffs(today=None, now=None):
     days = completed_backfill_days()
     now = now or datetime.now(timezone.utc)
     today = today or business_today(now)
     return today - timedelta(days=days), now - timedelta(days=days)
-
 
 def load_skladbot_sync_orders(db, now=None):
     active_orders = db.execute(
@@ -446,7 +212,6 @@ def load_skladbot_sync_orders(db, now=None):
         orders.append(order)
     return orders, active_orders, completed_backfill
 
-
 def all_orders_have_candidate_match(orders, requests):
     if not orders:
         return False
@@ -454,397 +219,6 @@ def all_orders_have_candidate_match(orders, requests):
         if not any(request_matches_order(order, request) for request in requests):
             return False
     return True
-
-
-def extract_list_items(payload):
-    if isinstance(payload, list):
-        return payload
-    if not isinstance(payload, dict):
-        return []
-    for key in ("items", "data", "requests", "result"):
-        value = payload.get(key)
-        if isinstance(value, list):
-            return value
-        if isinstance(value, dict):
-            nested = extract_list_items(value)
-            if nested:
-                return nested
-    return []
-
-
-def field_map(detail):
-    result = {}
-    for item in detail.get("fields", []) if isinstance(detail, dict) else []:
-        if not isinstance(item, dict):
-            continue
-        value = normalize_text(item.get("value"))
-        for key in (item.get("field"), item.get("name")):
-            normalized = normalize_lookup_text(key)
-            if normalized:
-                result[normalized] = value
-    return result
-
-
-def get_field(fields, *names):
-    for name in names:
-        value = fields.get(normalize_lookup_text(name))
-        if value:
-            return value
-    return ""
-
-
-def request_list_value(item, *keys):
-    for key in keys:
-        value = item.get(key)
-        if value not in (None, ""):
-            return value
-    return ""
-
-
-def request_value(detail, list_item, *keys):
-    for key in keys:
-        value = detail.get(key) if isinstance(detail, dict) else None
-        if value not in (None, ""):
-            return value
-        value = request_list_value(list_item, key) if isinstance(list_item, dict) else ""
-        if value not in (None, ""):
-            return value
-    return ""
-
-
-def normalize_smartup_id(value, *, explicit=False):
-    text = normalize_text(value)
-    if not text:
-        return ""
-    if text.startswith("smartup:"):
-        parts = text.split(":")
-        return ":".join(parts[:2]) if len(parts) >= 2 and parts[1] else text
-    if explicit:
-        return f"smartup:{text}"
-    return ""
-
-
-def smartup_id_from_comment(comment):
-    text = normalize_text(comment)
-    if not text:
-        return ""
-    match = SMARTUP_COMMENT_ID_RE.search(text)
-    if not match:
-        return ""
-    return normalize_smartup_id(match.group(1), explicit=True)
-
-
-def request_smartup_id(list_item, detail, fields):
-    explicit = normalize_smartup_id(request_value(detail, list_item, *SMARTUP_ID_KEYS), explicit=True)
-    if explicit:
-        return explicit
-    field_value = normalize_smartup_id(get_field(fields, *SMARTUP_ID_KEYS), explicit=True)
-    if field_value:
-        return field_value
-    return smartup_id_from_comment(
-        request_value(detail, list_item, "comment", "commentary")
-        or get_field(fields, "comment", "Комментарий")
-    )
-
-
-class SkladBotClient:
-    def __init__(self):
-        self.tokens = parse_skladbot_api_tokens()
-        self.token_index = 0
-        self.token_cooldown_until = {}
-        self.disabled_token_indexes = set()
-        self.base_url = normalize_text(os.environ.get("SKLADBOT_API_BASE_URL")) or "https://api.skladbot.ru/v1"
-        self.base_url = self.base_url.rstrip("/")
-        self.timeout = env_int("SKLADBOT_API_TIMEOUT_SECONDS", 8)
-        self.customer_id = env_int("SKLADBOT_CUSTOMER_ID", 6211)
-        self.shipment_type_id = env_int("SKLADBOT_SHIPMENT_TYPE_ID", 3389)
-        self.limit = env_int("SKLADBOT_REQUESTS_LIMIT", 500)
-        self.request_delay = max(0.0, env_float("SKLADBOT_REQUEST_DELAY_SECONDS", 0.25))
-        self.max_retries = max(0, env_int("SKLADBOT_API_MAX_RETRIES", 2))
-        self.max_cooldown_wait = max(0.0, env_float("SKLADBOT_MAX_COOLDOWN_WAIT_SECONDS", 5.0))
-        self.last_request_at = 0.0
-
-    @property
-    def configured(self):
-        return bool(self.tokens)
-
-    def pick_token_index(self):
-        now = time.monotonic()
-        for offset in range(len(self.tokens)):
-            index = (self.token_index + offset) % len(self.tokens)
-            if index in self.disabled_token_indexes:
-                continue
-            if self.token_cooldown_until.get(index, 0.0) <= now:
-                self.token_index = index
-                return index
-        return None
-
-    def mark_token_cooldown(self, index, seconds):
-        if index is None:
-            return
-        self.token_cooldown_until[index] = time.monotonic() + max(0.0, float(seconds or 0))
-
-    def mark_token_disabled(self, index):
-        if index is not None:
-            self.disabled_token_indexes.add(index)
-
-    def wait_for_available_token(self):
-        index = self.pick_token_index()
-        if index is not None:
-            return index
-        if len(self.disabled_token_indexes) >= len(self.tokens):
-            raise RuntimeError("All SkladBot API tokens are disabled")
-        now = time.monotonic()
-        cooldowns = [
-            cooldown_until
-            for index, cooldown_until in self.token_cooldown_until.items()
-            if index not in self.disabled_token_indexes and cooldown_until > now
-        ]
-        if cooldowns:
-            sleep_for = max(0.0, min(cooldowns) - now)
-            if self.max_cooldown_wait > 0:
-                sleep_for = min(sleep_for, self.max_cooldown_wait)
-            logging.warning("SkladBot API tokens are in cooldown, wait %.1fs", sleep_for)
-            time.sleep(sleep_for)
-        index = self.pick_token_index()
-        if index is None:
-            raise RuntimeError("SkladBot API tokens are not available")
-        return index
-
-    def advance_token(self, index):
-        if self.tokens:
-            self.token_index = (int(index or 0) + 1) % len(self.tokens)
-
-    def wait_between_requests(self):
-        if self.request_delay <= 0:
-            return
-        now = time.monotonic()
-        if self.last_request_at > 0:
-            elapsed = now - self.last_request_at
-            if elapsed < self.request_delay:
-                time.sleep(self.request_delay - elapsed)
-        self.last_request_at = time.monotonic()
-
-    def retry_sleep(self, seconds):
-        sleep_for = max(0.0, float(seconds or 0))
-        if sleep_for:
-            time.sleep(sleep_for)
-        self.last_request_at = 0.0
-
-    def get(self, path, params=None):
-        if not self.tokens:
-            raise RuntimeError("SKLADBOT_API_TOKEN is not configured")
-        url = f"{self.base_url}/{path.lstrip('/')}"
-        max_attempts = max(self.max_retries + 1, len(self.tokens))
-        last_response = None
-        with httpx.Client(timeout=self.timeout) as client:
-            for attempt in range(max_attempts):
-                token_index = self.wait_for_available_token()
-                token = self.tokens[token_index]
-                try:
-                    self.wait_between_requests()
-                    response = client.get(
-                        url,
-                        params=params or {},
-                        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-                    )
-                except httpx.TimeoutException:
-                    cooldown = max(1.0, self.request_delay)
-                    self.mark_token_cooldown(token_index, cooldown)
-                    self.advance_token(token_index)
-                    if attempt + 1 < max_attempts:
-                        logging.warning(
-                            "SkladBot API timeout with token %s/%s, retry %s/%s",
-                            token_index + 1,
-                            len(self.tokens),
-                            attempt + 1,
-                            max_attempts - 1,
-                        )
-                        self.retry_sleep(cooldown)
-                        continue
-                    raise
-                last_response = response
-                if response.status_code in {401, 403}:
-                    self.mark_token_disabled(token_index)
-                    self.advance_token(token_index)
-                    logging.warning(
-                        "SkladBot API token %s/%s disabled after HTTP %s",
-                        token_index + 1,
-                        len(self.tokens),
-                        response.status_code,
-                    )
-                    if attempt + 1 < max_attempts and len(self.disabled_token_indexes) < len(self.tokens):
-                        continue
-                    raise RuntimeError(skladbot_response_error_text(response))
-                if response.status_code == 429 and attempt + 1 < max_attempts:
-                    retry_after = parse_int(response.headers.get("Retry-After"))
-                    sleep_for = retry_after if retry_after > 0 else max(1.0, self.request_delay * 4 * (attempt + 1))
-                    self.mark_token_cooldown(token_index, sleep_for)
-                    self.advance_token(token_index)
-                    logging.warning(
-                        "SkladBot API 429 with token %s/%s, retry %s/%s after %.1fs",
-                        token_index + 1,
-                        len(self.tokens),
-                        attempt + 1,
-                        max_attempts - 1,
-                        sleep_for,
-                    )
-                    self.retry_sleep(sleep_for)
-                    continue
-                if 500 <= response.status_code < 600 and attempt + 1 < max_attempts:
-                    sleep_for = max(1.0, self.request_delay)
-                    self.mark_token_cooldown(token_index, sleep_for)
-                    self.advance_token(token_index)
-                    logging.warning(
-                        "SkladBot API HTTP %s with token %s/%s, retry %s/%s after %.1fs",
-                        response.status_code,
-                        token_index + 1,
-                        len(self.tokens),
-                        attempt + 1,
-                        max_attempts - 1,
-                        sleep_for,
-                    )
-                    self.retry_sleep(sleep_for)
-                    continue
-                if response.status_code >= 400:
-                    raise RuntimeError(skladbot_response_error_text(response))
-                return response.json()
-        if last_response is not None:
-            raise RuntimeError(skladbot_response_error_text(last_response))
-        raise RuntimeError("SkladBot API request failed")
-
-    def post(self, path, payload=None):
-        if not self.tokens:
-            raise RuntimeError("SKLADBOT_API_TOKEN is not configured")
-        url = f"{self.base_url}/{path.lstrip('/')}"
-        with httpx.Client(timeout=self.timeout) as client:
-            token_index = self.wait_for_available_token()
-            token = self.tokens[token_index]
-            try:
-                self.wait_between_requests()
-                response = client.post(
-                    url,
-                    json=payload or {},
-                    headers={
-                        "Authorization": f"Bearer {token}",
-                        "Accept": "application/json",
-                        "Content-Type": "application/json",
-                    },
-                )
-            except httpx.TimeoutException:
-                cooldown = max(1.0, self.request_delay)
-                self.mark_token_cooldown(token_index, cooldown)
-                self.advance_token(token_index)
-                raise
-            if response.status_code in {401, 403}:
-                self.mark_token_disabled(token_index)
-                self.advance_token(token_index)
-                logging.warning(
-                    "SkladBot API POST token %s/%s disabled after HTTP %s",
-                    token_index + 1,
-                    len(self.tokens),
-                    response.status_code,
-                )
-            elif response.status_code == 429:
-                retry_after = parse_int(response.headers.get("Retry-After"))
-                sleep_for = retry_after if retry_after > 0 else max(1.0, self.request_delay * 4)
-                self.mark_token_cooldown(token_index, sleep_for)
-                self.advance_token(token_index)
-                logging.warning(
-                    "SkladBot API POST 429 with token %s/%s, request queued for later retry",
-                    token_index + 1,
-                    len(self.tokens),
-                )
-            elif 500 <= response.status_code < 600:
-                cooldown = max(1.0, self.request_delay)
-                self.mark_token_cooldown(token_index, cooldown)
-                self.advance_token(token_index)
-                logging.warning(
-                    "SkladBot API POST HTTP %s with token %s/%s, request queued for later reconcile",
-                    response.status_code,
-                    token_index + 1,
-                    len(self.tokens),
-                )
-            if response.status_code >= 400:
-                raise RuntimeError(skladbot_response_error_text(response))
-            return response.json()
-
-    def list_requests(self, type_id=None):
-        return extract_list_items(self.get("/requests", {
-            "customer_id": self.customer_id,
-            "type_id": self.shipment_type_id if type_id is None else type_id,
-            "limit": self.limit,
-        }))
-
-    def create_request(self, payload):
-        return self.post("/requests", payload)
-
-    def get_request_detail(self, request_id):
-        payload = self.get(f"/requests/show/{request_id}")
-        if isinstance(payload, dict) and isinstance(payload.get("data"), dict):
-            return payload["data"]
-        return payload
-
-
-def normalize_request_payload(list_item, detail):
-    detail = detail if isinstance(detail, dict) else {}
-    fields = field_map(detail)
-    customer = detail.get("customer") if isinstance(detail.get("customer"), dict) else {}
-    logistic = detail.get("logistic") if isinstance(detail.get("logistic"), dict) else {}
-    products = detail.get("products") if isinstance(detail.get("products"), list) else []
-    return {
-        "id": parse_int(detail.get("id")) or parse_int(request_list_value(list_item, "id")),
-        "number": normalize_text(detail.get("delivery_number") or request_list_value(list_item, "delivery_number", "number")),
-        "customer_name": normalize_text(customer.get("name") or request_list_value(list_item, "customer")),
-        "type": normalize_text(detail.get("type") or request_list_value(list_item, "type")),
-        "is_completed": parse_bool(detail.get("isCompleted") or detail.get("is_completed") or request_list_value(list_item, "is_completed")),
-        "archived": parse_bool(detail.get("archived") or request_list_value(list_item, "archived")),
-        "created_at": normalize_text(detail.get("createdAt") or request_list_value(list_item, "created_at")),
-        "updated_at": normalize_text(detail.get("updatedAt") or request_list_value(list_item, "updated_at")),
-        "completed_at": normalize_text(request_value(
-            detail,
-            list_item,
-            "completedAt",
-            "completed_at",
-            "closedAt",
-            "closed_at",
-            "doneAt",
-            "done_at",
-            "finishedAt",
-            "finished_at",
-            "processedAt",
-            "processed_at",
-            "acceptedAt",
-            "accepted_at",
-        )),
-        "archived_at": normalize_text(request_value(
-            detail,
-            list_item,
-            "archivedAt",
-            "archived_at",
-            "archiveAt",
-            "archive_at",
-        )),
-        "unloading_date": normalize_text(get_field(fields, "unloading_date", "Дата выгрузки")),
-        "recipient": normalize_text(get_field(fields, "company_name", "Название компании/Имя человека") or detail.get("company_name")),
-        "address": normalize_text(get_field(fields, "address", "Адрес") or detail.get("address") or logistic.get("address")),
-        "comment": normalize_text(detail.get("comment") or get_field(fields, "comment", "Комментарий")),
-        "smartup_id": request_smartup_id(list_item, detail, fields),
-        "products": [
-            {
-                "name": normalize_text(product.get("name")),
-                "vendor_code": normalize_text(product.get("vendorCode") or product.get("vendor_code")),
-                "barcode": normalize_text(product.get("barcode")),
-                "amount": parse_int(product.get("amount")),
-                "accepted_amount": parse_int(product.get("acceptedAmount") or product.get("accepted_amount")),
-                "accepted_amount_present": "acceptedAmount" in product or "accepted_amount" in product,
-            }
-            for product in products
-            if isinstance(product, dict)
-        ],
-        "raw": {"list": list_item, "detail": detail},
-    }
-
 
 def fetch_candidate_requests(today=None, orders=None, client=None, start_after_request_id=0):
     client = client or SkladBotClient()
@@ -967,7 +341,6 @@ def fetch_candidate_requests(today=None, orders=None, client=None, start_after_r
         rotated_after_request_id=parse_int(start_after_request_id),
     )
 
-
 def rotate_candidate_list_items(list_items, start_after_request_id=0):
     cursor = parse_int(start_after_request_id)
     if cursor <= 0 or len(list_items) < 2:
@@ -976,144 +349,6 @@ def rotate_candidate_list_items(list_items, start_after_request_id=0):
         if item[2] == cursor:
             return list_items[index + 1:] + list_items[:index + 1]
     return list_items
-
-
-def order_group_payload(order):
-    return {
-        "date": order.order_date.isoformat() if order.order_date else "",
-        "payment": order.payment_type,
-        "client": order.client,
-        "address": order.address,
-        "products": [
-            {"name": item.product, "blocks": item.quantity_blocks}
-            for item in order.items
-        ],
-    }
-
-
-def request_matches_order(order, request):
-    return request_match_diagnostics(order, request)["matched"]
-
-
-def nearest_request_diagnostics(order, requests, limit=3):
-    diagnostics = []
-    for request in requests:
-        diagnostic = request_match_diagnostics(order, request)
-        checks = diagnostic.get("checks") or {}
-        diagnostics.append((
-            diagnostic.get("score", 0),
-            {
-                "id": request.get("id"),
-                "number": request.get("number") or "",
-                "unloading_date": request.get("unloading_date") or "",
-                "recipient": request.get("recipient") or "",
-                "payment": normalize_payment_type(request.get("comment")),
-                "score": diagnostic.get("score", 0),
-                "matched": diagnostic.get("matched", False),
-                "failed_checks": [name for name, ok in checks.items() if not ok],
-                "products": diagnostic.get("products") or [],
-            },
-        ))
-    diagnostics.sort(key=lambda item: (item[0], item[1].get("matched")), reverse=True)
-    return [payload for _score, payload in diagnostics[:max(1, int(limit or 3))]]
-
-
-def request_match_diagnostics(order, request):
-    group = order_group_payload(order)
-    request_date = parse_date(request.get("unloading_date"))
-    date_ok = bool(order.order_date and request_date and order.order_date == request_date)
-    client_ok = client_matches(group["client"], request.get("recipient"))
-    payment_ok = normalize_payment_type(group["payment"]) == normalize_payment_type(request.get("comment"))
-    address_soft_ok = address_soft_match(group["address"], request.get("address"))
-
-    request_products = list(request.get("products") or [])
-    used_indexes = set()
-    product_results = []
-    for order_product in group["products"]:
-        matched_index = None
-        matched_request_product = None
-        for index, request_product in enumerate(request_products):
-            if index in used_indexes:
-                continue
-            if request_product.get("amount") != order_product.get("blocks"):
-                continue
-            if any(
-                product_matches(order_product["name"], candidate)
-                for candidate in (request_product.get("name"), request_product.get("vendor_code"), request_product.get("barcode"))
-                if candidate
-            ):
-                matched_index = index
-                matched_request_product = request_product
-                break
-        if matched_index is not None:
-            used_indexes.add(matched_index)
-        product_results.append({
-            "order_product": order_product.get("name"),
-            "order_blocks": order_product.get("blocks"),
-            "matched": matched_index is not None,
-            "request_product": (matched_request_product or {}).get("name") or "",
-            "request_blocks": (matched_request_product or {}).get("amount") or 0,
-        })
-    products_ok = bool(product_results) and all(item["matched"] for item in product_results)
-    checks = {
-        "date": date_ok,
-        "client": client_ok,
-        "payment": payment_ok,
-        "products": products_ok,
-    }
-    score = sum(1 for ok in checks.values() if ok)
-    return {
-        "matched": all(checks.values()),
-        "score": score,
-        "checks": checks,
-        "address_soft_match": address_soft_ok,
-        "products": product_results,
-        "extra_request_products": max(0, len(request_products) - len(used_indexes)),
-    }
-
-
-# Compatibility re-exports.  New code imports these boundaries directly;
-# existing callers of backend.app.skladbot_worker keep the same public API.
-from .skladbot_client import (  # noqa: E402
-    SkladBotClient,
-    env_float,
-    env_int,
-    parse_skladbot_api_tokens,
-    sanitize_skladbot_error,
-    skladbot_response_error_text,
-)
-from .skladbot_contracts import (  # noqa: E402
-    address_soft_match,
-    business_timezone,
-    business_today,
-    client_matches,
-    extract_list_items,
-    field_map,
-    get_field,
-    nearest_request_diagnostics,
-    normalize_lookup_text,
-    normalize_payment_type,
-    normalize_request_payload,
-    normalize_smartup_id,
-    normalize_text,
-    order_group_payload,
-    parse_bool,
-    parse_date,
-    parse_datetime_value,
-    parse_int,
-    product_matches,
-    product_sku_key,
-    request_list_value,
-    request_match_diagnostics,
-    request_matches_order,
-    request_smartup_id,
-    request_type_matches,
-    request_value,
-    simplify_tokens,
-    smartup_id_from_comment,
-    text_tokens_match,
-)
-
 
 def update_orders_from_skladbot(audit_actor: AuditActor | None = None):
     checked_at = datetime.now(timezone.utc).isoformat()
@@ -1264,7 +499,6 @@ def update_orders_from_skladbot(audit_actor: AuditActor | None = None):
         "google_sheets_export": google_sheets_result,
     }
 
-
 def load_skladbot_fetch_cursor(db):
     event = db.execute(
         select(AuditLog)
@@ -1277,7 +511,6 @@ def load_skladbot_fetch_cursor(db):
     if not isinstance(fetch, dict):
         return 0
     return parse_int(fetch.get("last_checked_request_id"))
-
 
 def export_skladbot_numbers_to_google_sheets(db, orders, include_inactive=False, include_archive=False, force=False):
     order_ids = [str(order.id) for order in orders or []]
@@ -1306,7 +539,6 @@ def export_skladbot_numbers_to_google_sheets(db, orders, include_inactive=False,
     )
     return {**result, "pending_event_id": str(event.id) if event else ""}
 
-
 def recent_skladbot_google_export_exists(db, min_interval_seconds=None):
     min_interval_seconds = (
         skladbot_google_export_min_interval_seconds()
@@ -1325,10 +557,8 @@ def recent_skladbot_google_export_exists(db, min_interval_seconds=None):
     ).scalar_one_or_none()
     return recent is not None
 
-
 def skladbot_google_export_min_interval_seconds():
     return max(0, env_int("SKLADBOT_GOOGLE_EXPORT_MIN_INTERVAL_SECONDS", 300))
-
 
 def try_acquire_skladbot_sync_lock(db):
     if db.bind.dialect.name != "postgresql":
@@ -1338,42 +568,7 @@ def try_acquire_skladbot_sync_lock(db):
         {"lock_key": SKLADBOT_SYNC_LOCK_KEY},
     ).scalar())
 
-
 def release_skladbot_sync_lock(db):
     if db.bind.dialect.name != "postgresql":
         return
     return
-
-
-def main():
-    interval = worker_interval_seconds()
-    once = normalize_lookup_text(os.environ.get("SKLADBOT_WORKER_ONCE")) in {"1", "true", "yes", "да"}
-    while True:
-        try:
-            from .skladbot_request_dry_run import process_pending_skladbot_request_creates
-            from .skladbot_return_requests import process_pending_skladbot_return_request_creates
-
-            with SessionLocal() as db:
-                result = process_pending_skladbot_request_creates(db)
-                if result.get("checked"):
-                    logging.info("SkladBot create worker: %s", result)
-                return_result = process_pending_skladbot_return_request_creates(db)
-                if return_result.get("checked"):
-                    logging.info("SkladBot return create worker: %s", return_result)
-        except Exception:
-            logging.exception("SkladBot create worker failed")
-        try:
-            update_orders_from_skladbot()
-        except Exception:
-            logging.exception("SkladBot worker failed")
-        if once:
-            return
-        time.sleep(max(60, interval))
-
-
-def worker_interval_seconds():
-    return max(60, env_int("SKLADBOT_WORKER_INTERVAL_SECONDS", 60))
-
-
-if __name__ == "__main__":
-    main()
