@@ -54,11 +54,14 @@ case "$MODE" in
   outbox-faults)
     TEST_MODULE="tests.test_postgres_outbox_faults"
     ;;
+  smartup-saga)
+    TEST_MODULE="tests.test_postgres_smartup_saga"
+    ;;
   all)
-    TEST_MODULE="tests.test_postgres_migrations tests.test_postgres_concurrency tests.test_postgres_readiness tests.test_postgres_queue_concurrency tests.test_postgres_queue_failures tests.test_postgres_import_identity tests.test_postgres_invariants tests.test_postgres_outbox tests.test_postgres_outbox_faults"
+    TEST_MODULE="tests.test_postgres_migrations tests.test_postgres_concurrency tests.test_postgres_readiness tests.test_postgres_queue_concurrency tests.test_postgres_queue_failures tests.test_postgres_import_identity tests.test_postgres_invariants tests.test_postgres_outbox tests.test_postgres_outbox_faults tests.test_postgres_smartup_saga"
     ;;
   *)
-    echo "Usage: $0 {seed-reference|migrations|smoke|readiness|queue-concurrency|queue-failures|import-identity|invariants|outbox|outbox-faults|all}" >&2
+    echo "Usage: $0 {seed-reference|migrations|smoke|readiness|queue-concurrency|queue-failures|import-identity|invariants|outbox|outbox-faults|smartup-saga|all}" >&2
     exit 2
     ;;
 esac

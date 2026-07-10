@@ -27,6 +27,7 @@ from backend.app.smartup_auto_import import (
     filter_smartup_orders,
     parse_disabled_weekdays,
     preview_delivery_groups,
+    prepare_orphaned_smartup_sagas,
     run_due_smartup_auto_imports,
     run_smartup_auto_import_once,
     run_scheduled_smartup_auto_import_slot,
@@ -42,6 +43,7 @@ from backend.app import smartup_auto_import_worker
 from backend.app.kiz_reports_service import list_completed_kiz_source_files
 from backend.app.smartup_auto_import_history_service import list_smartup_auto_import_history
 from backend.app.skladbot_request_dry_run import SKLADBOT_REQUEST_CREATE_EVENT_TYPE, list_skladbot_dry_runs
+from backend.app.smartup_saga import SMARTUP_DEAL_SAGA_EVENT_TYPE
 
 
 def sample_order(**overrides):
@@ -72,10 +74,17 @@ def sample_order(**overrides):
 
 
 class FakeSmartupClient:
+    smartup_saga_fake = True
+
     def __init__(self, orders):
         self.orders = orders
         self.changed = []
         self.exports = []
+        self.status_reads = []
+        self.statuses = {
+            str(order.get("deal_id")): str(order.get("status") or "B#N")
+            for order in orders
+        }
 
     def export_orders(self, export_date, *, target_delivery_date=None):
         self.exports.append((export_date, target_delivery_date))
@@ -83,12 +92,18 @@ class FakeSmartupClient:
 
     def change_status(self, deal_ids, status_code):
         self.changed.append((list(deal_ids), status_code))
+        for deal_id in deal_ids:
+            self.statuses[str(deal_id)] = status_code
         return {
             "successes": [{"code": deal_id} for deal_id in deal_ids],
             "errors": [],
             "submitted": len(deal_ids),
             "status": status_code,
         }
+
+    def get_deal_statuses(self, deal_ids):
+        self.status_reads.append(list(deal_ids))
+        return {str(deal_id): self.statuses.get(str(deal_id), "") for deal_id in deal_ids}
 
 
 class FailingSmartupClient:
@@ -105,6 +120,7 @@ class FailingStatusChangeSmartupClient(FakeSmartupClient):
 class PartialStatusChangeSmartupClient(FakeSmartupClient):
     def change_status(self, deal_ids, status_code):
         self.changed.append((list(deal_ids), status_code))
+        self.statuses[str(deal_ids[0])] = status_code
         return {
             "successes": [{"deal_id": deal_ids[0]}],
             "errors": [{"deal_id": deal_ids[1], "message": "locked"}],
@@ -115,6 +131,7 @@ class PartialStatusChangeSmartupClient(FakeSmartupClient):
 
 class FakeTelegramSender:
     configured = True
+    smartup_saga_fake = True
 
     def __init__(self):
         self.messages = []
@@ -1133,6 +1150,363 @@ class SmartupAutoImportTests(unittest.TestCase):
             self.assertEqual(events[0].attempts, 2)
             self.assertEqual(len(orders), 1)
             self.assertEqual(len(imports), 2)
+
+    def test_enforced_saga_persists_intent_before_change_and_queues_one_skladbot_key(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = self.config(
+                tmp_dir,
+                backend_import_enabled=True,
+                change_status_enabled=True,
+                saga_mode="enforced",
+            )
+            observed_states = []
+            parent = self
+
+            class ObservingClient(FakeSmartupClient):
+                def change_status(self, deal_ids, status_code):
+                    with parent.SessionLocal() as observer:
+                        events = observer.execute(
+                            select(PendingEvent).where(PendingEvent.event_type == SMARTUP_DEAL_SAGA_EVENT_TYPE)
+                        ).scalars().all()
+                        observed_states.extend((event.payload or {}).get("saga_state") for event in events)
+                    return super().change_status(deal_ids, status_code)
+
+            fake = ObservingClient([sample_order()])
+            with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "enabled"}, clear=False):
+                with self.SessionLocal() as db:
+                    result = run_smartup_auto_import_once(
+                        db,
+                        config,
+                        now=datetime(2026, 6, 25, 12, 0, tzinfo=ZoneInfo("Asia/Tashkent")),
+                        slot_label="12:00",
+                        smartup_client=fake,
+                        telegram_sender=FakeTelegramSender(),
+                    )
+                    sagas = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == SMARTUP_DEAL_SAGA_EVENT_TYPE)
+                    ).scalars().all()
+                    creates = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
+                    ).scalars().all()
+
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(observed_states, ["remote_write_started"])
+            self.assertEqual(fake.changed, [(["642"], "B#W")])
+            self.assertEqual(len(sagas), 1)
+            self.assertEqual((sagas[0].payload or {}).get("saga_state"), "skladbot_queued")
+            self.assertEqual((sagas[0].payload or {}).get("skladbot_event_count"), 1)
+            self.assertEqual(len(creates), 1)
+            self.assertEqual((sagas[0].payload or {}).get("skladbot_event_key"), creates[0].idempotency_key)
+            self.assertEqual(len(result["smartup_saga"]["workflow_key_hashes"]), 1)
+
+    def test_saga_mode_rejects_non_fake_side_effect_clients(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            fake = FakeSmartupClient([sample_order()])
+            telegram_config = self.config(
+                tmp_dir,
+                backend_import_enabled=True,
+                change_status_enabled=True,
+                saga_mode="enforced",
+                client_chat_id="synthetic-chat",
+            )
+            with self.SessionLocal() as db:
+                with self.assertRaisesRegex(SmartupAutoImportError, "fake sender"):
+                    run_smartup_auto_import_once(
+                        db,
+                        telegram_config,
+                        now=datetime(2026, 6, 25, 12, 0, tzinfo=ZoneInfo("Asia/Tashkent")),
+                        slot_label="12:00",
+                        smartup_client=fake,
+                    )
+
+            processing_config = self.config(
+                tmp_dir,
+                backend_import_enabled=True,
+                change_status_enabled=True,
+                saga_mode="enforced",
+                process_skladbot_now=True,
+            )
+            with self.SessionLocal() as db:
+                with self.assertRaisesRegex(SmartupAutoImportError, "немедленную обработку SkladBot"):
+                    run_smartup_auto_import_once(
+                        db,
+                        processing_config,
+                        now=datetime(2026, 6, 25, 12, 0, tzinfo=ZoneInfo("Asia/Tashkent")),
+                        slot_label="12:00",
+                        smartup_client=fake,
+                        telegram_sender=FakeTelegramSender(),
+                    )
+
+            self.assertEqual(fake.exports, [])
+            self.assertEqual(fake.changed, [])
+
+    def test_orphan_recovery_ignores_legacy_import_without_enforced_provenance(self):
+        config = self.config(
+            "/tmp",
+            backend_import_enabled=True,
+            change_status_enabled=True,
+            saga_mode="enforced",
+        )
+        metadata = {
+            "export_date": "2026-06-25",
+            "slot": "12:00",
+            "target_delivery_date": "",
+            "delivery_dates": ["2026-06-26"],
+            "deal_ids": ["642"],
+        }
+        with self.SessionLocal() as db:
+            import_job = ImportJob(
+                source="smartup_auto",
+                status="completed",
+                rows_total=1,
+                rows_imported=1,
+                raw_payload={"smartup_auto": metadata, "items_created": 1},
+            )
+            db.add(import_job)
+            db.commit()
+            import_id = str(import_job.id)
+
+            ignored = prepare_orphaned_smartup_sagas(
+                db,
+                config,
+                export_date=date(2026, 6, 25),
+                slot_label="12:00",
+                target_delivery_date=None,
+            )
+            self.assertEqual(ignored, [])
+
+            import_job.raw_payload = {
+                **(import_job.raw_payload or {}),
+                "smartup_auto": {**metadata, "saga_mode": "enforced"},
+            }
+            db.commit()
+            recovered = prepare_orphaned_smartup_sagas(
+                db,
+                config,
+                export_date=date(2026, 6, 25),
+                slot_label="12:00",
+                target_delivery_date=None,
+            )
+            recovered_import_id = (recovered[0].payload or {}).get("import_id")
+
+        self.assertEqual(len(recovered), 1)
+        self.assertEqual(recovered_import_id, import_id)
+
+    def test_enforced_saga_reconciles_remote_success_without_duplicate_write(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = self.config(
+                tmp_dir,
+                backend_import_enabled=True,
+                change_status_enabled=True,
+                saga_mode="enforced",
+            )
+            fake = FakeSmartupClient([sample_order()])
+            failed_once = {"value": False}
+
+            def inject_fault(boundary, _deal_id):
+                if boundary == "smartup_to_local" and not failed_once["value"]:
+                    failed_once["value"] = True
+                    raise RuntimeError("synthetic Smartup-to-local fault")
+
+            with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "enabled"}, clear=False):
+                with self.SessionLocal() as db, mock.patch(
+                    "backend.app.smartup_saga.smartup_saga_fault",
+                    side_effect=inject_fault,
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "Smartup-to-local"):
+                        run_scheduled_smartup_auto_import_slot(
+                            db,
+                            config,
+                            now=datetime(2026, 6, 25, 12, 0, tzinfo=ZoneInfo("Asia/Tashkent")),
+                            slot_label="12:00",
+                            smartup_client=fake,
+                            telegram_sender=FakeTelegramSender(),
+                        )
+
+                fake.orders = []
+                with self.SessionLocal() as db:
+                    result = run_scheduled_smartup_auto_import_slot(
+                        db,
+                        config,
+                        now=datetime(2026, 6, 25, 12, 1, tzinfo=ZoneInfo("Asia/Tashkent")),
+                        slot_label="12:00",
+                        smartup_client=fake,
+                        telegram_sender=FakeTelegramSender(),
+                    )
+                    sagas = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == SMARTUP_DEAL_SAGA_EVENT_TYPE)
+                    ).scalars().all()
+                    creates = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
+                    ).scalars().all()
+                    slots = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == SMARTUP_AUTO_IMPORT_EVENT_TYPE)
+                    ).scalars().all()
+
+            self.assertEqual(result["status"], "completed_recovery")
+            self.assertEqual(fake.changed, [(["642"], "B#W")])
+            self.assertEqual(fake.status_reads, [["642"]])
+            self.assertEqual(len(fake.exports), 1)
+            self.assertEqual(len(sagas), 1)
+            self.assertEqual(len(creates), 1)
+            self.assertEqual(len(slots), 1)
+            self.assertEqual(slots[0].attempts, 2)
+
+    def test_enforced_saga_keeps_slot_retryable_until_skladbot_key_exists(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = self.config(
+                tmp_dir,
+                backend_import_enabled=True,
+                change_status_enabled=True,
+                saga_mode="enforced",
+            )
+            fake = FakeSmartupClient([sample_order()])
+            with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "dry_run"}, clear=False):
+                with self.SessionLocal() as db:
+                    with self.assertRaisesRegex(SmartupAutoImportError, "remain retryable"):
+                        run_scheduled_smartup_auto_import_slot(
+                            db,
+                            config,
+                            now=datetime(2026, 6, 25, 12, 0, tzinfo=ZoneInfo("Asia/Tashkent")),
+                            slot_label="12:00",
+                            smartup_client=fake,
+                            telegram_sender=FakeTelegramSender(),
+                        )
+                    slot = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == SMARTUP_AUTO_IMPORT_EVENT_TYPE)
+                    ).scalar_one()
+                    saga = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == SMARTUP_DEAL_SAGA_EVENT_TYPE)
+                    ).scalar_one()
+                    self.assertEqual(slot.status, "failed")
+                    self.assertEqual((saga.payload or {}).get("saga_state"), "skladbot_pending")
+
+            with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "enabled"}, clear=False):
+                with self.SessionLocal() as db:
+                    result = run_scheduled_smartup_auto_import_slot(
+                        db,
+                        config,
+                        now=datetime(2026, 6, 25, 12, 1, tzinfo=ZoneInfo("Asia/Tashkent")),
+                        slot_label="12:00",
+                        smartup_client=fake,
+                        telegram_sender=FakeTelegramSender(),
+                    )
+                    creates = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
+                    ).scalars().all()
+
+            self.assertEqual(result["status"], "completed_recovery")
+            self.assertEqual(fake.changed, [(["642"], "B#W")])
+            self.assertEqual(len(creates), 1)
+
+    def test_enforced_saga_recovers_local_to_skladbot_fault(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = self.config(
+                tmp_dir,
+                backend_import_enabled=True,
+                change_status_enabled=True,
+                saga_mode="enforced",
+            )
+            fake = FakeSmartupClient([sample_order()])
+
+            def inject_fault(boundary, _deal_id):
+                if boundary == "local_state_to_skladbot":
+                    raise RuntimeError("synthetic local-to-SkladBot fault")
+
+            with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "enabled"}, clear=False):
+                with self.SessionLocal() as db, mock.patch(
+                    "backend.app.smartup_auto_import.smartup_saga_fault",
+                    side_effect=inject_fault,
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "local-to-SkladBot"):
+                        run_scheduled_smartup_auto_import_slot(
+                            db,
+                            config,
+                            now=datetime(2026, 6, 25, 12, 0, tzinfo=ZoneInfo("Asia/Tashkent")),
+                            slot_label="12:00",
+                            smartup_client=fake,
+                            telegram_sender=FakeTelegramSender(),
+                        )
+
+                with self.SessionLocal() as db:
+                    saga = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == SMARTUP_DEAL_SAGA_EVENT_TYPE)
+                    ).scalar_one()
+                    self.assertEqual((saga.payload or {}).get("saga_state"), "remote_confirmed")
+                    result = run_scheduled_smartup_auto_import_slot(
+                        db,
+                        config,
+                        now=datetime(2026, 6, 25, 12, 1, tzinfo=ZoneInfo("Asia/Tashkent")),
+                        slot_label="12:00",
+                        smartup_client=fake,
+                        telegram_sender=FakeTelegramSender(),
+                    )
+                    creates = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
+                    ).scalars().all()
+
+            self.assertEqual(result["status"], "completed_recovery")
+            self.assertEqual(fake.changed, [(["642"], "B#W")])
+            self.assertEqual(fake.status_reads, [])
+            self.assertEqual(len(creates), 1)
+
+    def test_enforced_saga_recovers_import_to_intent_without_second_import(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = self.config(
+                tmp_dir,
+                backend_import_enabled=True,
+                change_status_enabled=True,
+                saga_mode="enforced",
+            )
+            fake = FakeSmartupClient([sample_order()])
+
+            def inject_fault(boundary, _deal_id):
+                if boundary == "import_to_intent":
+                    raise RuntimeError("synthetic import-to-intent fault")
+
+            with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "enabled"}, clear=False):
+                with self.SessionLocal() as db, mock.patch(
+                    "backend.app.smartup_saga.smartup_saga_fault",
+                    side_effect=inject_fault,
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "import-to-intent"):
+                        run_scheduled_smartup_auto_import_slot(
+                            db,
+                            config,
+                            now=datetime(2026, 6, 25, 12, 0, tzinfo=ZoneInfo("Asia/Tashkent")),
+                            slot_label="12:00",
+                            smartup_client=fake,
+                            telegram_sender=FakeTelegramSender(),
+                        )
+                    self.assertEqual(len(db.execute(select(ImportJob)).scalars().all()), 1)
+                    self.assertEqual(db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == SMARTUP_DEAL_SAGA_EVENT_TYPE)
+                    ).scalars().all(), [])
+
+                with self.SessionLocal() as db:
+                    result = run_scheduled_smartup_auto_import_slot(
+                        db,
+                        config,
+                        now=datetime(2026, 6, 25, 12, 1, tzinfo=ZoneInfo("Asia/Tashkent")),
+                        slot_label="12:00",
+                        smartup_client=fake,
+                        telegram_sender=FakeTelegramSender(),
+                    )
+                    imports = db.execute(select(ImportJob)).scalars().all()
+                    sagas = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == SMARTUP_DEAL_SAGA_EVENT_TYPE)
+                    ).scalars().all()
+                    creates = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
+                    ).scalars().all()
+
+            self.assertEqual(result["status"], "completed_recovery")
+            self.assertEqual(len(fake.exports), 1)
+            self.assertEqual(fake.changed, [(["642"], "B#W")])
+            self.assertEqual(len(imports), 1)
+            self.assertEqual(len(sagas), 1)
+            self.assertEqual(len(creates), 1)
+            self.assertEqual((sagas[0].payload or {}).get("import_id"), str(imports[0].id))
 
     def test_stale_processing_scheduled_slot_can_be_retried(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

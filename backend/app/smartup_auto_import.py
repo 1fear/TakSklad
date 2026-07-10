@@ -34,6 +34,18 @@ from .skladbot_request_dry_run import (
     create_skladbot_dry_run_for_import,
     process_pending_skladbot_request_creates,
 )
+from .smartup_saga import (
+    execute_status_sagas,
+    imports_from_sagas,
+    load_slot_sagas,
+    mark_skladbot_results,
+    normalize_saga_mode,
+    prepare_deal_sagas,
+    record_shadow_results,
+    saga_idempotency_key,
+    saga_report,
+    smartup_saga_fault,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -94,6 +106,7 @@ class SmartupAutoImportConfig:
     backend_import_enabled: bool = False
     change_status_enabled: bool = False
     process_skladbot_now: bool = False
+    saga_mode: str = "disabled"
     schedule_times: tuple[str, ...] = DEFAULT_SCHEDULE_TIMES
     disabled_weekdays: tuple[int, ...] = DEFAULT_DISABLED_WEEKDAYS
     final_time: str = DEFAULT_FINAL_TIME
@@ -133,6 +146,10 @@ class SmartupAutoImportConfig:
             raise SmartupAutoImportError("TAKSKLAD_DEFAULT_PIECES_PER_BLOCK должен быть больше нуля")
         if self.default_block_price <= 0:
             raise SmartupAutoImportError("TAKSKLAD_DEFAULT_BLOCK_PRICE должен быть больше нуля")
+        if normalize_saga_mode(self.saga_mode) != self.saga_mode:
+            raise SmartupAutoImportError(
+                "SMARTUP_AUTO_IMPORT_SAGA_MODE должен быть disabled, shadow или enforced"
+            )
 
     @property
     def timezone(self) -> ZoneInfo:
@@ -350,6 +367,7 @@ def load_smartup_auto_import_config(environ: dict[str, str] | None = None) -> Sm
         backend_import_enabled=parse_bool(environ.get("SMARTUP_AUTO_IMPORT_BACKEND_IMPORT_ENABLED"), default=False),
         change_status_enabled=parse_bool(environ.get("SMARTUP_AUTO_IMPORT_CHANGE_STATUS_ENABLED"), default=False),
         process_skladbot_now=parse_bool(environ.get("SMARTUP_AUTO_IMPORT_PROCESS_SKLADBOT_NOW"), default=False),
+        saga_mode=normalize_saga_mode(environ.get("SMARTUP_AUTO_IMPORT_SAGA_MODE")),
         schedule_times=parse_schedule_times(environ.get("SMARTUP_AUTO_IMPORT_TIMES")),
         disabled_weekdays=parse_disabled_weekdays(environ.get("SMARTUP_AUTO_IMPORT_DISABLED_WEEKDAYS")),
         final_time=normalize_text(environ.get("SMARTUP_AUTO_IMPORT_FINAL_TIME")) or DEFAULT_FINAL_TIME,
@@ -526,6 +544,26 @@ def run_smartup_auto_import_once(
     export_date = local_now.date()
     export_date_display = format_display_date(export_date)
     client = smartup_client or SmartupClient(config)
+    require_fake_saga_clients(config, smartup_client, telegram_sender)
+
+    if config.saga_mode == "enforced":
+        prepare_orphaned_smartup_sagas(
+            db,
+            config,
+            export_date=export_date,
+            slot_label=slot_label,
+            target_delivery_date=target_delivery_date,
+        )
+        recovery = recover_smartup_slot_sagas(
+            db,
+            config,
+            client=client,
+            export_date=export_date,
+            slot_label=slot_label,
+            target_delivery_date=target_delivery_date,
+        )
+        if recovery is not None:
+            return recovery
 
     raw_response = client.export_orders(export_date, target_delivery_date=target_delivery_date)
     raw_orders = extract_smartup_orders(raw_response)
@@ -547,6 +585,7 @@ def run_smartup_auto_import_once(
             "selected_orders": 0,
             "part": part,
             "skladbot_processing": {"status": "skipped"},
+            "smartup_saga": saga_report([], config.saga_mode),
         }
         if is_final_slot(slot_label, config):
             if config.process_skladbot_now:
@@ -590,6 +629,7 @@ def run_smartup_auto_import_once(
         "backend_import_enabled": config.backend_import_enabled,
         "change_status_enabled": config.change_status_enabled,
         "process_skladbot_now": config.process_skladbot_now,
+        "saga_mode": config.saga_mode,
     }
     audit_path = write_export_audit(config.output_dir, export_date, filename, audit_payload)
     audit_payload["audit_path"] = str(audit_path)
@@ -623,6 +663,7 @@ def run_smartup_auto_import_once(
             "status_change": {"status": "skipped"},
             "skladbot_processing": {"status": "skipped"},
             "logistics_reports": [],
+            "smartup_saga": saga_report([], config.saga_mode),
         }
         record_smartup_audit(db, "smartup_auto_import_shadow_preview", result)
         return result
@@ -637,13 +678,50 @@ def run_smartup_auto_import_once(
         part=part,
         slot_label=slot_label,
         source_chat_id=config.client_chat_id,
+        target_delivery_date=target_delivery_date,
+        saga_mode=config.saga_mode,
     )
-    status_change = client.change_status(unique_deal_ids(selected_orders), config.waiting_status_code)
+    saga_events = []
+    if config.saga_mode in {"shadow", "enforced"}:
+        saga_events = prepare_deal_sagas(
+            db,
+            imports,
+            source_batch_key=source_batch_key,
+            target_status=config.waiting_status_code,
+            export_date=export_date,
+            slot_label=slot_label,
+            target_delivery_date=target_delivery_date,
+            mode=config.saga_mode,
+        )
+    if config.saga_mode == "enforced":
+        status_change = execute_status_sagas(
+            db,
+            client,
+            saga_events,
+            target_status=config.waiting_status_code,
+            successful_ids=status_change_successful_deal_ids,
+            failed_ids=status_change_failed_deal_ids,
+        )
+    else:
+        status_change = client.change_status(unique_deal_ids(selected_orders), config.waiting_status_code)
+        if config.saga_mode == "shadow":
+            record_shadow_results(
+                db,
+                saga_events,
+                status_change,
+                status_change_successful_deal_ids,
+                status_change_failed_deal_ids,
+            )
+    if config.saga_mode == "enforced":
+        smartup_saga_fault("local_state_to_skladbot", "batch")
     imports = queue_skladbot_after_smartup_status(
         db,
         imports,
         successful_deal_ids=status_change_successful_deal_ids(status_change, unique_deal_ids(selected_orders)),
     )
+    if saga_events:
+        mark_skladbot_results(db, saga_events)
+        assert_enforced_sagas_complete(saga_events, config.saga_mode)
     if status_change_has_errors(status_change):
         result = {
             **audit_payload,
@@ -653,6 +731,7 @@ def run_smartup_auto_import_once(
             "client_export": {"status": "skipped"},
             "skladbot_processing": {"status": "skipped"},
             "logistics_reports": [],
+            "smartup_saga": saga_report(saga_events, config.saga_mode),
         }
         update_export_audit(audit_path, result)
         record_smartup_audit(db, "smartup_auto_import_status_change_failed", result)
@@ -693,10 +772,177 @@ def run_smartup_auto_import_once(
         "client_export": client_export,
         "skladbot_processing": skladbot_processing,
         "logistics_reports": logistics_reports,
+        "smartup_saga": saga_report(saga_events, config.saga_mode),
     }
     update_export_audit(audit_path, result)
     record_smartup_audit(db, "smartup_auto_import_completed", result)
     return result
+
+
+def require_fake_saga_clients(
+    config: SmartupAutoImportConfig,
+    smartup_client: Any | None,
+    telegram_sender: Any | None,
+) -> None:
+    if config.saga_mode == "disabled":
+        return
+    if smartup_client is None or not bool(getattr(smartup_client, "smartup_saga_fake", False)):
+        raise SmartupAutoImportError(
+            "Smartup saga shadow/enforced в Phase 10 разрешена только с явно внедренным fake client"
+        )
+    if config.saga_mode == "enforced" and not callable(getattr(smartup_client, "get_deal_statuses", None)):
+        raise SmartupAutoImportError("Smartup saga fake client должен поддерживать get_deal_statuses")
+    if config.process_skladbot_now:
+        raise SmartupAutoImportError(
+            "Smartup saga в Phase 10 запрещает немедленную обработку SkladBot; разрешена только durable queue"
+        )
+    telegram_configured = any((config.client_chat_id, config.logistics_chat_id, config.alert_chat_id))
+    if telegram_configured and not bool(getattr(telegram_sender, "smartup_saga_fake", False)):
+        raise SmartupAutoImportError(
+            "Smartup saga с Telegram-настройками в Phase 10 требует явно внедренный fake sender"
+        )
+
+
+def recover_smartup_slot_sagas(
+    db: Session,
+    config: SmartupAutoImportConfig,
+    *,
+    client: Any,
+    export_date: date,
+    slot_label: str,
+    target_delivery_date: date | None,
+) -> dict[str, Any] | None:
+    saga_events = load_slot_sagas(
+        db,
+        export_date=export_date,
+        slot_label=slot_label,
+        target_delivery_date=target_delivery_date,
+    )
+    if not saga_events:
+        return None
+    status_change = execute_status_sagas(
+        db,
+        client,
+        saga_events,
+        target_status=config.waiting_status_code,
+        successful_ids=status_change_successful_deal_ids,
+        failed_ids=status_change_failed_deal_ids,
+    )
+    imports = imports_from_sagas(saga_events)
+    smartup_saga_fault("local_state_to_skladbot", "batch")
+    imports = queue_skladbot_after_smartup_status(
+        db,
+        imports,
+        successful_deal_ids=status_change_successful_deal_ids(
+            status_change,
+            [event.aggregate_id for event in saga_events],
+        ),
+    )
+    mark_skladbot_results(db, saga_events)
+    assert_enforced_sagas_complete(saga_events, config.saga_mode)
+    result = {
+        "status": "completed_recovery" if not status_change_has_errors(status_change) else "failed_status_change",
+        "slot": slot_label,
+        "export_date": export_date.isoformat(),
+        "target_delivery_date": target_delivery_date.isoformat() if target_delivery_date else "",
+        "raw_orders": 0,
+        "selected_orders": 0,
+        "imports": imports,
+        "status_change": status_change,
+        "client_export": {"status": "skipped", "reason": "saga_recovery"},
+        "skladbot_processing": {"status": "skipped"},
+        "logistics_reports": [],
+        "smartup_saga": saga_report(saga_events, config.saga_mode),
+    }
+    record_smartup_audit(db, "smartup_auto_import_saga_recovery", result)
+    if status_change_has_errors(status_change):
+        raise SmartupAutoImportError(status_change_error_message(status_change))
+    return result
+
+
+def assert_enforced_sagas_complete(events: list[PendingEvent], mode: str) -> None:
+    if mode != "enforced":
+        return
+    incomplete = [
+        event for event in events
+        if normalize_text((event.payload or {}).get("saga_state")) != "skladbot_queued"
+        or int((event.payload or {}).get("skladbot_event_count") or 0) != 1
+    ]
+    if incomplete:
+        raise SmartupAutoImportError(
+            f"Smartup saga SkladBot intent incomplete: {len(incomplete)} deal(s) remain retryable"
+        )
+
+
+def prepare_orphaned_smartup_sagas(
+    db: Session,
+    config: SmartupAutoImportConfig,
+    *,
+    export_date: date,
+    slot_label: str,
+    target_delivery_date: date | None,
+) -> list[PendingEvent]:
+    existing_keys = set(db.execute(
+        select(PendingEvent.idempotency_key)
+        .where(PendingEvent.event_type == "smartup_deal_saga")
+    ).scalars().all())
+    imports = db.execute(
+        select(ImportJob)
+        .where(ImportJob.source == SMARTUP_AUTO_IMPORT_SOURCE)
+        .order_by(ImportJob.created_at, ImportJob.id)
+    ).scalars().all()
+    orphan_snapshots = []
+    seen_deals = set()
+    for import_job in imports:
+        raw_payload = import_job.raw_payload or {}
+        metadata = raw_payload.get("smartup_auto") if isinstance(raw_payload.get("smartup_auto"), dict) else {}
+        if normalize_text(metadata.get("export_date")) != export_date.isoformat():
+            continue
+        if normalize_text(metadata.get("slot")) != normalize_text(slot_label):
+            continue
+        metadata_target = normalize_text(metadata.get("target_delivery_date"))
+        expected_target = target_delivery_date.isoformat() if target_delivery_date else ""
+        if metadata_target != expected_target:
+            continue
+        if normalize_saga_mode(metadata.get("saga_mode")) != "enforced":
+            continue
+        if import_job.status not in {"completed", "completed_with_errors"} or int(import_job.rows_imported or 0) <= 0:
+            continue
+        for deal_id in sorted({normalize_text(value) for value in metadata.get("deal_ids") or [] if normalize_text(value)}):
+            key = saga_idempotency_key(
+                export_date=export_date,
+                slot_label=slot_label,
+                target_delivery_date=target_delivery_date,
+                deal_id=deal_id,
+                target_status=config.waiting_status_code,
+            )
+            if key in existing_keys or deal_id in seen_deals:
+                continue
+            seen_deals.add(deal_id)
+            orphan_snapshots.append({
+                "delivery_date": normalize_text((metadata.get("delivery_dates") or [""])[0]),
+                "import_id": str(import_job.id),
+                "status": import_job.status,
+                "rows_total": int(import_job.rows_total or 0),
+                "rows_imported": int(import_job.rows_imported or 0),
+                "orders_created": int(raw_payload.get("orders_created") or 0),
+                "items_created": int(raw_payload.get("items_created") or 0),
+                "duplicate_rows": int(raw_payload.get("duplicate_rows") or 0),
+                "invalid_rows": int(raw_payload.get("invalid_rows") or 0),
+                "deal_ids": [deal_id],
+            })
+    if not orphan_snapshots:
+        return []
+    return prepare_deal_sagas(
+        db,
+        orphan_snapshots,
+        source_batch_key=f"orphan-recovery:{export_date.isoformat()}:{slot_label}",
+        target_status=config.waiting_status_code,
+        export_date=export_date,
+        slot_label=slot_label,
+        target_delivery_date=target_delivery_date,
+        mode="enforced",
+    )
 
 
 def create_delivery_group_imports(
@@ -710,6 +956,8 @@ def create_delivery_group_imports(
     part: int,
     slot_label: str,
     source_chat_id: str,
+    target_delivery_date: date | None = None,
+    saga_mode: str = "disabled",
 ) -> list[dict[str, Any]]:
     results = []
     for delivery_date, rows in sorted(grouped_rows.items()):
@@ -729,6 +977,8 @@ def create_delivery_group_imports(
                 part=part,
                 slot_label=slot_label,
                 source_chat_id=source_chat_id,
+                target_delivery_date=target_delivery_date,
+                saga_mode=saga_mode,
             )
             results.append(result)
     return results
@@ -747,6 +997,8 @@ def create_smartup_import(
     part: int,
     slot_label: str,
     source_chat_id: str,
+    target_delivery_date: date | None = None,
+    saga_mode: str = "disabled",
 ) -> dict[str, Any]:
     import_rows = with_source_batch_key(rows, source_batch_key)
     payload = ImportCreate(
@@ -768,6 +1020,8 @@ def create_smartup_import(
         "delivery_dates": [delivery_date],
         "part": part,
         "slot": slot_label,
+        "target_delivery_date": target_delivery_date.isoformat() if target_delivery_date else "",
+        "saga_mode": normalize_saga_mode(saga_mode),
         "filename": filename,
         "source_batch_key": source_batch_key,
         "rows": len(import_rows),
@@ -1827,6 +2081,7 @@ def build_smartup_auto_import_status(
             "backend_import_enabled": config.backend_import_enabled,
             "change_status_enabled": config.change_status_enabled,
             "process_skladbot_now": config.process_skladbot_now,
+            "saga_mode": config.saga_mode,
             "schedule_times": list(config.schedule_times),
             "disabled_weekdays": list(config.disabled_weekdays),
             "final_time": config.final_time,
@@ -1876,6 +2131,10 @@ def smartup_auto_import_status_findings(config: SmartupAutoImportConfig) -> tupl
         warnings.append("SMARTUP_AUTO_IMPORT_LOGISTICS_CHAT_ID не задан: финальный отчет логистики не отправится")
     if config.process_skladbot_now:
         warnings.append("SMARTUP_AUTO_IMPORT_PROCESS_SKLADBOT_NOW=true: SkladBot create queue обрабатывается сразу")
+    if config.saga_mode in {"shadow", "enforced"}:
+        warnings.append(
+            "SMARTUP_AUTO_IMPORT_SAGA_MODE активен только для явно внедренного fake client в Phase 10"
+        )
     return errors, warnings
 
 

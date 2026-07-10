@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 import uuid
 from datetime import date, datetime
 
@@ -20,6 +21,9 @@ from .skladbot_request_dry_run import (
     create_skladbot_dry_run_for_import,
     skladbot_create_idempotency_key,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 ORDER_DATE_FIELDS = ("Дата отгрузки", "Дата получения заказа", "order_date", "date")
@@ -269,11 +273,35 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
         "google_sheets": google_sheets_result,
     }
     db.flush()
-    skladbot_dry_run_result = create_skladbot_dry_run_for_import(
-        db,
-        str(import_job.id),
-        force_mode=skladbot_create_mode,
-    )
+    try:
+        with db.begin_nested():
+            skladbot_dry_run_result = create_skladbot_dry_run_for_import(
+                db,
+                str(import_job.id),
+                force_mode=skladbot_create_mode,
+            )
+    except Exception as exc:
+        logger.exception("SkladBot dry-run failed for import %s", import_job.id)
+        skladbot_dry_run_result = {
+            "status": "error",
+            "mode": "dry_run",
+            "orders": 0,
+            "ready": 0,
+            "blocked": 0,
+            "already_linked": 0,
+            "event_id": "",
+            "error": str(exc)[:500],
+        }
+        db.add(AuditLog(
+            action="skladbot_request_dry_run_failed",
+            entity_type="import",
+            entity_id=str(import_job.id),
+            payload={
+                "import_id": str(import_job.id),
+                "status": "error",
+                "error": str(exc)[:500],
+            },
+        ))
     import_job.raw_payload = {
         **(import_job.raw_payload or {}),
         "skladbot_dry_run": skladbot_dry_run_result,
