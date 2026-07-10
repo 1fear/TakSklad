@@ -1,0 +1,3 @@
+# Resolver guard: cffi 2.1.0 metadata was visible to uv but had no installable
+# distribution on the release Python indexes used by pip.
+cffi==2.0.0

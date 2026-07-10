@@ -1,0 +1,54 @@
+{
+  "_type": "https://in-toto.io/Statement/v1",
+  "predicate": {
+    "buildDefinition": {
+      "buildType": "https://taksklad.local/rehearsal/authenticode/v1",
+      "externalParameters": {
+        "authority": "local-test",
+        "production": false
+      },
+      "internalParameters": {
+        "candidateInputSha256": {
+          "backend": "bacc61caf539954f0851fdf06109b4550957c09af5784cd96d9216ab812fbc84",
+          "frontend": "2382ee61e2c03f67d7e36b801448a7996f45480516e40a159ef0c53243baa0d9"
+        },
+        "dirtyCandidate": true,
+        "sourceCommit": "b6229ca247056358866c80fce8cb43792808ee80"
+      },
+      "resolvedDependencies": [
+        {
+          "uri": "pkg:oci/debian@sha256:28de0877c2189802884ccd20f15ee41c203573bd87bb6b883f5f46362d24c5c2"
+        }
+      ]
+    },
+    "runDetails": {
+      "builder": {
+        "id": "local-test://taksklad/release-rehearsal"
+      },
+      "metadata": {
+        "invocationId": "local-test:sha256:4d14b044bcbb685e17203f5e3df1c1747b4e07e2553fd47532cb0f9931112fea"
+      }
+    }
+  },
+  "predicateType": "https://slsa.dev/provenance/v1",
+  "subject": [
+    {
+      "digest": {
+        "sha256": "dc51eb14c4bbca8c04c69b8c9285f7f9b85c62d2a04fc083a4c27ae85831f992"
+      },
+      "name": "TakSklad-synthetic-signed.exe"
+    },
+    {
+      "digest": {
+        "sha256": "345017deb4171058a3c09090f4305b10f8bc6b64dbe2b14c40b83ab82cabbd3f"
+      },
+      "name": "taksklad-backend.oci.tar"
+    },
+    {
+      "digest": {
+        "sha256": "8b1aac20486872a9a611feaf8bb0c9c507eb01ec90f2da0d4412e410e6ce8cd5"
+      },
+      "name": "taksklad-frontend.oci.tar"
+    }
+  ]
+}

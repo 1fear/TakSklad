@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "dependency_lock_generator": {
+    "name": "uv",
+    "version": "0.11.23"
+  },
+  "security_gate": {
+    "implementation": "tools/security_gate.py",
+    "ruleset": "taksklad-security-gate-v1",
+    "exception_schema": "security/vulnerability-exceptions.schema.json"
+  },
+  "sbom": {
+    "format": "CycloneDX",
+    "spec_version": "1.6",
+    "implementation": "tools/generate_sbom.py"
+  }
+}

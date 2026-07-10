@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "gh_cli_version": "2.88.0",
+  "roadmap_command": "gh attestation verify --repo 1fear/TakSklad --bundle test-artifacts/attestation-bundle.json",
+  "roadmap_command_exit": 1,
+  "roadmap_command_error": "MISSING_POSITIONAL_ARTIFACT",
+  "correct_command_contract": "gh attestation verify <artifact> --repo 1fear/TakSklad --bundle <github-issued-bundle>",
+  "github_issued_bundle_present": false,
+  "github_identity_verified": false,
+  "github_gate": "GITHUB_IDENTITY_ATTESTATION_NOT_AVAILABLE",
+  "autonomous_replacement": {
+    "authority": "local-test",
+    "evidence": "test-artifacts/provenance/verification.json",
+    "subject_bound": true,
+    "github_identity_claimed": false
+  },
+  "workflow_contract": {
+    "action": "actions/attest-build-provenance",
+    "pin": "e8998f949152b193b063cb0ec769d69d929409be",
+    "windows_and_container_subjects": true
+  }
+}

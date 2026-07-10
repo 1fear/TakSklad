@@ -1,0 +1,11 @@
+{
+  "findings": [
+    {
+      "scanner": "dependency-audit",
+      "id": "SYNTHETIC-HIGH-0001",
+      "severity": "high",
+      "package": "synthetic-package",
+      "version": "0.0.1"
+    }
+  ]
+}

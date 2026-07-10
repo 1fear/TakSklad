@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "update_policy": {
+    "automatic_commits": false,
+    "automatic_pushes": false,
+    "change_channel": "owner-approved-pull-request",
+    "network_mode": "read-only-resolution",
+    "required_checks": [
+      "PYTHONDONTWRITEBYTECODE=1 python3 tools/verify_immutable_refs.py",
+      "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python -m unittest tests.test_immutable_refs"
+    ]
+  },
+  "actions": [
+    {
+      "uses": "actions/attest-build-provenance",
+      "version": "v2.4.0",
+      "sha": "e8998f949152b193b063cb0ec769d69d929409be",
+      "source": "https://github.com/actions/attest-build-provenance"
+    },
+    {
+      "uses": "actions/checkout",
+      "version": "v4.2.2",
+      "sha": "11bd71901bbe5b1630ceea73d27597364c9af683",
+      "source": "https://github.com/actions/checkout"
+    },
+    {
+      "uses": "actions/setup-node",
+      "version": "v4.4.0",
+      "sha": "49933ea5288caeca8642d1e84afbd3f7d6820020",
+      "source": "https://github.com/actions/setup-node"
+    },
+    {
+      "uses": "actions/setup-python",
+      "version": "v5.6.0",
+      "sha": "a26af69be951a213d495a4c3e4e4022e16d87065",
+      "source": "https://github.com/actions/setup-python"
+    },
+    {
+      "uses": "actions/upload-artifact",
+      "version": "v4.6.2",
+      "sha": "ea165f8d65b6e75b540449e92b4886f43607fa02",
+      "source": "https://github.com/actions/upload-artifact"
+    },
+    {
+      "uses": "docker/build-push-action",
+      "version": "v6.18.0",
+      "sha": "263435318d21b8e681c14492fe198d362a7d2c83",
+      "source": "https://github.com/docker/build-push-action"
+    },
+    {
+      "uses": "docker/setup-buildx-action",
+      "version": "v3.11.1",
+      "sha": "e468171a9de216ec08956ac3ada2f0791b6bd435",
+      "source": "https://github.com/docker/setup-buildx-action"
+    }
+  ],
+  "images": [
+    {
+      "reference": "adminer:4",
+      "digest": "sha256:bb7f148f65aae5916b79a5b7b4ac594f04b17340840cda4c556c84fe4c89b110",
+      "source": "https://hub.docker.com/_/adminer"
+    },
+    {
+      "reference": "nginx:1.27-alpine",
+      "digest": "sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10",
+      "source": "https://hub.docker.com/_/nginx"
+    },
+    {
+      "reference": "node:22-alpine",
+      "digest": "sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2",
+      "source": "https://hub.docker.com/_/node"
+    },
+    {
+      "reference": "postgres:16-alpine",
+      "digest": "sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777",
+      "source": "https://hub.docker.com/_/postgres"
+    },
+    {
+      "reference": "python:3.12-slim",
+      "digest": "sha256:423ed6ab25b1921a477529254bfeeabf5855151dc2c3141699a1bfc852199fbf",
+      "source": "https://hub.docker.com/_/python"
+    },
+    {
+      "reference": "traefik:v3.6",
+      "digest": "sha256:f5dba1e65167778cd5f8d1b463fc5d200f49d40c6458fc9f4b391a68ebfb9534",
+      "source": "https://hub.docker.com/_/traefik"
+    }
+  ]
+}

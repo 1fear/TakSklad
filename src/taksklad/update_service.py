@@ -64,6 +64,16 @@ UPDATE_RUNTIME_EXCLUDE_DIRS = (
     "backups",
     "diagnostics",
 )
+MAX_UPDATE_DOWNLOAD_BYTES = 512 * 1024 * 1024
+UPDATE_SIGNATURE_TYPE = "authenticode"
+WINDOWS_CODESIGN_CERTIFICATE_NOT_AVAILABLE = "WINDOWS_CODESIGN_CERTIFICATE_NOT_AVAILABLE"
+# Public certificate fingerprints are release inputs, not secrets. Keep this
+# fail-closed until the production certificate is approved and its SHA-256
+# fingerprint is compiled into the released application.
+TRUSTED_WINDOWS_SIGNER_CERT_SHA256 = frozenset()
+IMMUTABLE_RELEASE_TAG_RE = re.compile(
+    r"^v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?$"
+)
 
 
 def parse_version_parts(version):
@@ -145,21 +155,116 @@ def validate_update_download_url(download_url):
         raise ValueError("download_url обновления должен быть HTTPS-ссылкой GitHub Releases")
     if parsed_url.username or parsed_url.password:
         raise ValueError("download_url обновления не должен содержать логин или пароль")
-    if not parsed_url.path.startswith("/1fear/TakSklad/releases/download/"):
+    if parsed_url.query or parsed_url.fragment:
+        raise ValueError("download_url обновления не должен содержать query или fragment")
+    path_parts = parsed_url.path.split("/")
+    if len(path_parts) != 7 or path_parts[1:5] != ["1fear", "TakSklad", "releases", "download"]:
         raise ValueError("download_url обновления должен вести на release 1fear/TakSklad")
+    release_tag = urllib.parse.unquote(path_parts[5])
+    asset_name = urllib.parse.unquote(path_parts[6])
+    if not IMMUTABLE_RELEASE_TAG_RE.fullmatch(release_tag):
+        raise ValueError("download_url обновления должен содержать immutable version release tag")
+    if not asset_name or asset_name in {".", ".."} or "/" in asset_name or "\\" in asset_name:
+        raise ValueError("download_url обновления должен содержать имя release asset")
+
+
+def update_release_tag(download_url):
+    validate_update_download_url(download_url)
+    return urllib.parse.unquote(urllib.parse.urlparse(download_url).path.split("/")[5])
 
 def validate_update_sha256(expected_sha256):
     if not expected_sha256:
-        return
+        raise ValueError("SHA256 обновления обязателен")
     if len(expected_sha256) != 64 or any(char not in "0123456789abcdef" for char in expected_sha256):
         raise ValueError("SHA256 обновления в version.json должен быть lowercase hex digest")
 
-def download_update_file(update_info):
+
+def validate_update_manifest(update_info, trusted_signers=None):
+    if not isinstance(update_info, dict):
+        raise ValueError("Файл обновления должен быть JSON-объектом")
     download_url, expected_sha256 = select_update_download(update_info)
     if not download_url:
         raise ValueError("В version.json не указан download_url для обновления")
     validate_update_download_url(download_url)
     validate_update_sha256(expected_sha256)
+
+    latest_version = normalize_text(update_info.get("latest_version"))
+    if not latest_version:
+        raise ValueError("В version.json не указан latest_version")
+    release_tag = normalize_text(update_info.get("release_tag"))
+    if not IMMUTABLE_RELEASE_TAG_RE.fullmatch(release_tag):
+        raise ValueError("Manifest обновления должен быть привязан к immutable release tag")
+    if release_tag != f"v{latest_version}" or update_release_tag(download_url) != release_tag:
+        raise ValueError("Release tag обновления не совпадает с latest_version")
+
+    signature_type = normalize_text(update_info.get("signature_type")).lower()
+    if signature_type != UPDATE_SIGNATURE_TYPE or update_info.get("signature_required") is not True:
+        raise ValueError("Для обновления обязательна Authenticode-подпись")
+    signer_certificate_sha256 = normalize_text(
+        update_info.get("signer_certificate_sha256")
+    ).lower()
+    validate_update_sha256(signer_certificate_sha256)
+    allowed_signers = frozenset(
+        normalize_text(value).lower()
+        for value in (
+            TRUSTED_WINDOWS_SIGNER_CERT_SHA256
+            if trusted_signers is None
+            else trusted_signers
+        )
+    )
+    if not allowed_signers:
+        raise RuntimeError(WINDOWS_CODESIGN_CERTIFICATE_NOT_AVAILABLE)
+    if signer_certificate_sha256 not in allowed_signers:
+        raise ValueError("Сертификат издателя обновления не входит в доверенный allowlist")
+    return download_url, expected_sha256, signer_certificate_sha256
+
+
+def verify_windows_authenticode_signature(artifact_path, expected_signer_certificate_sha256):
+    if os.name != "nt":
+        raise RuntimeError("WINDOWS_AUTHENTICODE_VERIFICATION_UNAVAILABLE")
+    validate_update_sha256(expected_signer_certificate_sha256)
+    script = (
+        "& { param([string]$Path) "
+        "$signature = Get-AuthenticodeSignature -LiteralPath $Path; "
+        "$status = $signature.Status.ToString(); "
+        "$fingerprint = ''; "
+        "if ($null -ne $signature.SignerCertificate) { "
+        "$hasher = [System.Security.Cryptography.SHA256]::Create(); "
+        "try { $bytes = $hasher.ComputeHash($signature.SignerCertificate.RawData) } "
+        "finally { $hasher.Dispose() }; "
+        "$fingerprint = -join ($bytes | ForEach-Object { $_.ToString('x2') }) }; "
+        "Write-Output $status; Write-Output $fingerprint }"
+    )
+    completed = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+            artifact_path,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    output_lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+    signature_status = output_lines[0] if output_lines else ""
+    signer_certificate_sha256 = output_lines[1].lower() if len(output_lines) == 2 else ""
+    if completed.returncode != 0 or signature_status != "Valid":
+        raise ValueError("Authenticode-подпись обновления недействительна")
+    if signer_certificate_sha256 != expected_signer_certificate_sha256:
+        raise ValueError("Authenticode-подпись создана недоверенным издателем")
+    return True
+
+def download_update_file(update_info, trusted_signers=None):
+    download_url, expected_sha256, signer_certificate_sha256 = validate_update_manifest(
+        update_info,
+        trusted_signers=trusted_signers,
+    )
 
     parsed_url = urllib.parse.urlparse(download_url)
     suffix = os.path.splitext(parsed_url.path)[1] or ".exe"
@@ -173,17 +278,34 @@ def download_update_file(update_info):
     )
     try:
         with open_https_url(request, timeout=UPDATE_DOWNLOAD_TIMEOUT_SECONDS) as response:
+            content_length = normalize_text(response.headers.get("Content-Length"))
+            if content_length:
+                try:
+                    declared_size = int(content_length)
+                except ValueError as exc:
+                    raise ValueError("Content-Length обновления должен быть целым числом") from exc
+                if declared_size < 0 or declared_size > MAX_UPDATE_DOWNLOAD_BYTES:
+                    raise ValueError("Размер обновления превышает допустимый лимит")
+            downloaded_size = 0
             with open(temp_path, "wb") as file_obj:
                 while True:
                     chunk = response.read(1024 * 1024)
                     if not chunk:
                         break
+                    downloaded_size += len(chunk)
+                    if downloaded_size > MAX_UPDATE_DOWNLOAD_BYTES:
+                        raise ValueError("Размер обновления превышает допустимый лимит")
                     file_obj.write(chunk)
 
-        if expected_sha256:
-            actual_sha256 = file_sha256(temp_path)
-            if actual_sha256.lower() != expected_sha256:
-                raise ValueError("Контрольная сумма обновления не совпала")
+        actual_sha256 = file_sha256(temp_path)
+        if actual_sha256.lower() != expected_sha256:
+            raise ValueError("Контрольная сумма обновления не совпала")
+
+        if not manifest_targets_onedir(update_info):
+            verify_windows_authenticode_signature(
+                temp_path,
+                signer_certificate_sha256,
+            )
 
         return temp_path
     except Exception:
@@ -340,7 +462,7 @@ exit /b 1
         updater_file.write(script)
     return updater_path
 
-def create_windows_onedir_updater(update_zip_path, update_info):
+def create_windows_onedir_updater(update_zip_path, update_info, trusted_signers=None):
     if not getattr(sys, "frozen", False):
         raise RuntimeError("Автообновление доступно только в собранной Windows-версии приложения")
     if os.name != "nt":
@@ -355,6 +477,10 @@ def create_windows_onedir_updater(update_zip_path, update_info):
     extract_dir = os.path.join(tempfile.gettempdir(), f"{APP_NAME}_update_extract_{os.getpid()}")
     process_id = os.getpid()
     entrypoint = normalize_text(update_info.get("entrypoint")) or APP_EXECUTABLE_NAME
+    _, _, signer_certificate_sha256 = validate_update_manifest(
+        update_info,
+        trusted_signers=trusted_signers,
+    )
     runtime_exclude_files = powershell_array(UPDATE_RUNTIME_EXCLUDE_FILES)
     runtime_preserve_files = powershell_array(UPDATE_RUNTIME_PRESERVE_FILES)
     runtime_exclude_dirs = powershell_array(UPDATE_RUNTIME_EXCLUDE_DIRS)
@@ -371,6 +497,7 @@ $ZipPath = {powershell_single_quoted(update_zip_path)}
 $ExtractDir = {powershell_single_quoted(extract_dir)}
 $LogPath = {powershell_single_quoted(log_path)}
 $EntryPoint = {powershell_single_quoted(entrypoint)}
+$ExpectedSignerCertificateSha256 = {powershell_single_quoted(signer_certificate_sha256)}
 $ProcessIdToWait = {process_id}
 $Desktop = [Environment]::GetFolderPath('Desktop')
 $RuntimeExcludeFiles = {runtime_exclude_files}
@@ -405,6 +532,22 @@ try {{
   }}
   if (-not (Test-Path (Join-Path $SourceDir $EntryPoint))) {{
     throw "В архиве обновления не найден $EntryPoint"
+  }}
+  $Signature = Get-AuthenticodeSignature -LiteralPath (Join-Path $SourceDir $EntryPoint)
+  if ($Signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {{
+    throw "Authenticode-подпись обновления недействительна: $($Signature.Status)"
+  }}
+  if ($null -eq $Signature.SignerCertificate) {{
+    throw "Authenticode-подпись обновления не содержит сертификат издателя"
+  }}
+  $Hasher = [System.Security.Cryptography.SHA256]::Create()
+  try {{
+    $SignerCertificateSha256 = -join ($Hasher.ComputeHash($Signature.SignerCertificate.RawData) | ForEach-Object {{ $_.ToString('x2') }})
+  }} finally {{
+    $Hasher.Dispose()
+  }}
+  if ($SignerCertificateSha256 -ne $ExpectedSignerCertificateSha256) {{
+    throw "Authenticode-подпись создана недоверенным издателем"
   }}
 
   if (Test-Path $NewDir) {{

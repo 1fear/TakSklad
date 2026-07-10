@@ -1,0 +1,212 @@
+{
+  "bomFormat": "CycloneDX",
+  "components": [
+    {
+      "bom-ref": "pkg:oci/adminer@sha256:bb7f148f65aae5916b79a5b7b4ac594f04b17340840cda4c556c84fe4c89b110?tag=4",
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://hub.docker.com/_/adminer"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "bb7f148f65aae5916b79a5b7b4ac594f04b17340840cda4c556c84fe4c89b110"
+        }
+      ],
+      "name": "adminer",
+      "properties": [
+        {
+          "name": "taksklad:immutable-reference",
+          "value": "adminer:4@sha256:bb7f148f65aae5916b79a5b7b4ac594f04b17340840cda4c556c84fe4c89b110"
+        },
+        {
+          "name": "taksklad:source-manifest",
+          "value": "supply-chain/immutable-refs.json"
+        }
+      ],
+      "purl": "pkg:oci/adminer@sha256:bb7f148f65aae5916b79a5b7b4ac594f04b17340840cda4c556c84fe4c89b110?tag=4",
+      "type": "container",
+      "version": "4"
+    },
+    {
+      "bom-ref": "pkg:oci/nginx@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10?tag=1.27-alpine",
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://hub.docker.com/_/nginx"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10"
+        }
+      ],
+      "name": "nginx",
+      "properties": [
+        {
+          "name": "taksklad:immutable-reference",
+          "value": "nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10"
+        },
+        {
+          "name": "taksklad:source-manifest",
+          "value": "supply-chain/immutable-refs.json"
+        }
+      ],
+      "purl": "pkg:oci/nginx@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10?tag=1.27-alpine",
+      "type": "container",
+      "version": "1.27-alpine"
+    },
+    {
+      "bom-ref": "pkg:oci/node@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2?tag=22-alpine",
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://hub.docker.com/_/node"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2"
+        }
+      ],
+      "name": "node",
+      "properties": [
+        {
+          "name": "taksklad:immutable-reference",
+          "value": "node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2"
+        },
+        {
+          "name": "taksklad:source-manifest",
+          "value": "supply-chain/immutable-refs.json"
+        }
+      ],
+      "purl": "pkg:oci/node@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2?tag=22-alpine",
+      "type": "container",
+      "version": "22-alpine"
+    },
+    {
+      "bom-ref": "pkg:oci/postgres@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777?tag=16-alpine",
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://hub.docker.com/_/postgres"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777"
+        }
+      ],
+      "name": "postgres",
+      "properties": [
+        {
+          "name": "taksklad:immutable-reference",
+          "value": "postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777"
+        },
+        {
+          "name": "taksklad:source-manifest",
+          "value": "supply-chain/immutable-refs.json"
+        }
+      ],
+      "purl": "pkg:oci/postgres@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777?tag=16-alpine",
+      "type": "container",
+      "version": "16-alpine"
+    },
+    {
+      "bom-ref": "pkg:oci/python@sha256:423ed6ab25b1921a477529254bfeeabf5855151dc2c3141699a1bfc852199fbf?tag=3.12-slim",
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://hub.docker.com/_/python"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "423ed6ab25b1921a477529254bfeeabf5855151dc2c3141699a1bfc852199fbf"
+        }
+      ],
+      "name": "python",
+      "properties": [
+        {
+          "name": "taksklad:immutable-reference",
+          "value": "python:3.12-slim@sha256:423ed6ab25b1921a477529254bfeeabf5855151dc2c3141699a1bfc852199fbf"
+        },
+        {
+          "name": "taksklad:source-manifest",
+          "value": "supply-chain/immutable-refs.json"
+        }
+      ],
+      "purl": "pkg:oci/python@sha256:423ed6ab25b1921a477529254bfeeabf5855151dc2c3141699a1bfc852199fbf?tag=3.12-slim",
+      "type": "container",
+      "version": "3.12-slim"
+    },
+    {
+      "bom-ref": "pkg:oci/traefik@sha256:f5dba1e65167778cd5f8d1b463fc5d200f49d40c6458fc9f4b391a68ebfb9534?tag=v3.6",
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://hub.docker.com/_/traefik"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "f5dba1e65167778cd5f8d1b463fc5d200f49d40c6458fc9f4b391a68ebfb9534"
+        }
+      ],
+      "name": "traefik",
+      "properties": [
+        {
+          "name": "taksklad:immutable-reference",
+          "value": "traefik:v3.6@sha256:f5dba1e65167778cd5f8d1b463fc5d200f49d40c6458fc9f4b391a68ebfb9534"
+        },
+        {
+          "name": "taksklad:source-manifest",
+          "value": "supply-chain/immutable-refs.json"
+        }
+      ],
+      "purl": "pkg:oci/traefik@sha256:f5dba1e65167778cd5f8d1b463fc5d200f49d40c6458fc9f4b391a68ebfb9534?tag=v3.6",
+      "type": "container",
+      "version": "v3.6"
+    }
+  ],
+  "dependencies": [
+    {
+      "dependsOn": [
+        "pkg:oci/adminer@sha256:bb7f148f65aae5916b79a5b7b4ac594f04b17340840cda4c556c84fe4c89b110?tag=4",
+        "pkg:oci/nginx@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10?tag=1.27-alpine",
+        "pkg:oci/node@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2?tag=22-alpine",
+        "pkg:oci/postgres@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777?tag=16-alpine",
+        "pkg:oci/python@sha256:423ed6ab25b1921a477529254bfeeabf5855151dc2c3141699a1bfc852199fbf?tag=3.12-slim",
+        "pkg:oci/traefik@sha256:f5dba1e65167778cd5f8d1b463fc5d200f49d40c6458fc9f4b391a68ebfb9534?tag=v3.6"
+      ],
+      "ref": "pkg:generic/taksklad-container-images@phase-21"
+    }
+  ],
+  "metadata": {
+    "component": {
+      "bom-ref": "pkg:generic/taksklad-container-images@phase-21",
+      "name": "TakSklad container-images",
+      "type": "application",
+      "version": "phase-21"
+    },
+    "properties": [
+      {
+        "name": "taksklad:deterministic",
+        "value": "true"
+      },
+      {
+        "name": "taksklad:generator",
+        "value": "tools/generate_sbom.py"
+      }
+    ]
+  },
+  "specVersion": "1.6",
+  "version": 1
+}

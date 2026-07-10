@@ -1,0 +1,58 @@
+{
+  "artifact": "TakSklad-synthetic-signed.exe",
+  "artifact_sha256": "dc51eb14c4bbca8c04c69b8c9285f7f9b85c62d2a04fc083a4c27ae85831f992",
+  "authenticode": {
+    "certificate_scope": "local-test",
+    "embedded_signature_verified": true,
+    "production_certificate_verified": false,
+    "production_gate": "WINDOWS_CODESIGN_CERTIFICATE_NOT_AVAILABLE",
+    "tamper_rejected": true
+  },
+  "authority": "local-test",
+  "evidence_files": [
+    "TakSklad-synthetic-signed.exe",
+    "local-test-public-key.pem",
+    "leaf-certificate.pem",
+    "root-certificate.pem",
+    "toolchain-packages.txt",
+    "provenance.intoto.json",
+    "provenance.dsse.json",
+    "verification.json"
+  ],
+  "oci_subjects": {
+    "build_output": "type=oci,dest",
+    "candidate_input_sha256": {
+      "backend": "bacc61caf539954f0851fdf06109b4550957c09af5784cd96d9216ab812fbc84",
+      "frontend": "2382ee61e2c03f67d7e36b801448a7996f45480516e40a159ef0c53243baa0d9"
+    },
+    "context_file_counts": {
+      "backend": 88,
+      "frontend": 35
+    },
+    "dirty_candidate": true,
+    "local_tag": "phase21-candidate",
+    "owned_worktree_paths_restored_from_head": [
+      "backend/app/logistics_service.py"
+    ],
+    "platform": "linux/amd64",
+    "sha256": {
+      "taksklad-backend.oci.tar": "345017deb4171058a3c09090f4305b10f8bc6b64dbe2b14c40b83ab82cabbd3f",
+      "taksklad-frontend.oci.tar": "8b1aac20486872a9a611feaf8bb0c9c507eb01ec90f2da0d4412e410e6ce8cd5"
+    },
+    "source_commit": "b6229ca247056358866c80fce8cb43792808ee80",
+    "tar_files_retained": false
+  },
+  "private_material_retained": false,
+  "provenance": {
+    "authority": "local-test",
+    "format": "SLSA v1 in-toto Statement in local-test DSSE envelope",
+    "github_gate": "GITHUB_IDENTITY_ATTESTATION_NOT_AVAILABLE",
+    "github_identity_verified": false,
+    "signature_tamper_rejected": true,
+    "sigstore_bundle_verified": false,
+    "subject_sha256_verified": true
+  },
+  "schema_version": 1,
+  "status": "pass",
+  "toolchain_image": "debian@sha256:28de0877c2189802884ccd20f15ee41c203573bd87bb6b883f5f46362d24c5c2"
+}

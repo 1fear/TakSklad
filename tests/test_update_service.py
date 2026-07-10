@@ -1,3 +1,5 @@
+import hashlib
+import io
 import json
 import tempfile
 import unittest
@@ -8,16 +10,37 @@ from unittest import mock
 from backend.app.settings import APP_VERSION as BACKEND_APP_VERSION
 from taksklad.config import APP_VERSION
 from taksklad.update_service import (
+    MAX_UPDATE_DOWNLOAD_BYTES,
+    WINDOWS_CODESIGN_CERTIFICATE_NOT_AVAILABLE,
     create_windows_exe_updater,
     create_windows_onedir_updater,
+    download_update_file,
     package_transition_required,
     select_update_download,
+    validate_update_manifest,
     validate_update_download_url,
     validate_update_sha256,
+    verify_windows_authenticode_signature,
 )
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+SYNTHETIC_SIGNER_CERT_SHA256 = "1" * 64
+
+
+class FakeDownloadResponse(io.BytesIO):
+    def __init__(self, payload, *, content_length=None):
+        super().__init__(payload)
+        self.headers = {}
+        if content_length is not None:
+            self.headers["Content-Length"] = str(content_length)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+        return False
 
 
 class UpdateServiceTests(unittest.TestCase):
@@ -26,17 +49,39 @@ class UpdateServiceTests(unittest.TestCase):
             zip_file.writestr("TakSklad/TakSklad.exe", "fake exe")
             zip_file.writestr("TakSklad/lib/module.pyd", "fake module")
 
+    def _release_manifest(self, payload=b"signed synthetic exe", **overrides):
+        manifest = {
+            "latest_version": "9.8.7",
+            "release_tag": "v9.8.7",
+            "package_type": "onefile_exe",
+            "download_url": "https://github.com/1fear/TakSklad/releases/download/v9.8.7/TakSklad.exe",
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "signature_type": "authenticode",
+            "signature_required": True,
+            "signer_certificate_sha256": SYNTHETIC_SIGNER_CERT_SHA256,
+        }
+        manifest.update(overrides)
+        return manifest
+
     def test_current_forced_release_manifest_matches_app_versions(self):
         payload = json.loads((REPO_ROOT / "version.json").read_text(encoding="utf-8"))
 
         self.assertEqual(APP_VERSION, "2.0.25")
         self.assertEqual(BACKEND_APP_VERSION, APP_VERSION)
         self.assertEqual(payload["latest_version"], APP_VERSION)
+        self.assertEqual(payload["release_tag"], f"v{APP_VERSION}")
         self.assertEqual(payload["min_supported_version"], APP_VERSION)
         self.assertIs(payload["mandatory"], True)
         self.assertIs(payload["block_workflow"], True)
         self.assertEqual(payload["package_type"], "onefile_exe")
         self.assertEqual(payload["entrypoint"], "TakSklad.exe")
+        self.assertEqual(payload["signature_type"], "authenticode")
+        self.assertIs(payload["signature_required"], True)
+        self.assertEqual(payload["signer_certificate_sha256"], "")
+        self.assertEqual(
+            payload["signing_status"],
+            WINDOWS_CODESIGN_CERTIFICATE_NOT_AVAILABLE,
+        )
 
         for url_field in ("download_url", "download_url_onedir"):
             with self.subTest(url_field=url_field):
@@ -45,6 +90,11 @@ class UpdateServiceTests(unittest.TestCase):
         for sha_field in ("sha256", "sha256_onedir"):
             with self.subTest(sha_field=sha_field):
                 validate_update_sha256(payload[sha_field])
+        with self.assertRaisesRegex(
+            (ValueError, RuntimeError),
+            f"SHA256|{WINDOWS_CODESIGN_CERTIFICATE_NOT_AVAILABLE}",
+        ):
+            validate_update_manifest(payload)
 
     def test_update_download_url_accepts_github_release_asset(self):
         validate_update_download_url(
@@ -57,6 +107,9 @@ class UpdateServiceTests(unittest.TestCase):
             "https://mirror.example.com/1fear/TakSklad/releases/download/v2.0.15/TakSklad.exe",
             "https://github.com/other/TakSklad/releases/download/v2.0.15/TakSklad.exe",
             "https://user:pass@github.com/1fear/TakSklad/releases/download/v2.0.15/TakSklad.exe",
+            "https://github.com/1fear/TakSklad/releases/download/main/TakSklad.exe",
+            "https://github.com/1fear/TakSklad/releases/download/master/TakSklad.exe",
+            "https://github.com/1fear/TakSklad/releases/download/v2.0.15/TakSklad.exe?raw=1",
         ]
 
         for url in bad_urls:
@@ -69,11 +122,163 @@ class UpdateServiceTests(unittest.TestCase):
 
         for checksum in ("", "A" * 64, "short", "g" * 64):
             with self.subTest(checksum=checksum):
-                if not checksum:
+                with self.assertRaises(ValueError):
                     validate_update_sha256(checksum)
-                else:
-                    with self.assertRaises(ValueError):
-                        validate_update_sha256(checksum)
+
+    def test_update_manifest_requires_matching_immutable_tag_and_authenticode(self):
+        manifest = self._release_manifest()
+        self.assertEqual(
+            validate_update_manifest(
+                manifest,
+                trusted_signers={SYNTHETIC_SIGNER_CERT_SHA256},
+            ),
+            (
+                manifest["download_url"],
+                manifest["sha256"],
+                SYNTHETIC_SIGNER_CERT_SHA256,
+            ),
+        )
+
+        rejected = (
+            {**manifest, "download_url": "https://github.com/1fear/TakSklad/releases/download/main/TakSklad.exe"},
+            {**manifest, "release_tag": "main"},
+            {**manifest, "download_url": "https://github.com/1fear/TakSklad/releases/download/v9.8.6/TakSklad.exe"},
+            {**manifest, "sha256": ""},
+            {**manifest, "signature_type": ""},
+            {**manifest, "signature_required": False},
+            {**manifest, "signer_certificate_sha256": ""},
+            {**manifest, "signer_certificate_sha256": "2" * 64},
+        )
+        for candidate in rejected:
+            with self.subTest(candidate=candidate):
+                with self.assertRaises(ValueError):
+                    validate_update_manifest(
+                        candidate,
+                        trusted_signers={SYNTHETIC_SIGNER_CERT_SHA256},
+                    )
+
+        with self.assertRaisesRegex(RuntimeError, WINDOWS_CODESIGN_CERTIFICATE_NOT_AVAILABLE):
+            validate_update_manifest(manifest)
+
+    def test_download_rejects_missing_sha_before_network(self):
+        manifest = self._release_manifest(sha256="")
+        with mock.patch("taksklad.update_service.open_https_url") as open_url:
+            with self.assertRaisesRegex(ValueError, "SHA256"):
+                download_update_file(
+                    manifest,
+                    trusted_signers={SYNTHETIC_SIGNER_CERT_SHA256},
+                )
+        open_url.assert_not_called()
+
+    def test_download_rejects_oversize_declared_or_streamed_artifact(self):
+        payload = b"abcd"
+        manifest = self._release_manifest(payload)
+        cases = (
+            (FakeDownloadResponse(payload, content_length=MAX_UPDATE_DOWNLOAD_BYTES + 1), None),
+            (FakeDownloadResponse(payload), 3),
+        )
+        for response, patched_limit in cases:
+            with self.subTest(patched_limit=patched_limit):
+                patches = [mock.patch("taksklad.update_service.open_https_url", return_value=response)]
+                if patched_limit is not None:
+                    patches.append(mock.patch("taksklad.update_service.MAX_UPDATE_DOWNLOAD_BYTES", patched_limit))
+                with patches[0]:
+                    if len(patches) == 2:
+                        with patches[1]:
+                            with self.assertRaisesRegex(ValueError, "превышает"):
+                                download_update_file(
+                                    manifest,
+                                    trusted_signers={SYNTHETIC_SIGNER_CERT_SHA256},
+                                )
+                    else:
+                        with self.assertRaisesRegex(ValueError, "превышает"):
+                            download_update_file(
+                                manifest,
+                                trusted_signers={SYNTHETIC_SIGNER_CERT_SHA256},
+                            )
+
+    def test_download_rejects_bad_authenticode_signature(self):
+        payload = b"badly signed synthetic exe"
+        manifest = self._release_manifest(payload)
+        response = FakeDownloadResponse(payload, content_length=len(payload))
+        with mock.patch("taksklad.update_service.open_https_url", return_value=response), \
+                mock.patch(
+                    "taksklad.update_service.verify_windows_authenticode_signature",
+                    side_effect=ValueError("Authenticode-подпись обновления недействительна"),
+                ):
+            with self.assertRaisesRegex(ValueError, "Authenticode"):
+                download_update_file(
+                    manifest,
+                    trusted_signers={SYNTHETIC_SIGNER_CERT_SHA256},
+                )
+
+    def test_download_accepts_hash_and_valid_authenticode_signature(self):
+        payload = b"valid signed synthetic exe"
+        manifest = self._release_manifest(payload)
+        response = FakeDownloadResponse(payload, content_length=len(payload))
+        with mock.patch("taksklad.update_service.open_https_url", return_value=response), \
+                mock.patch(
+                    "taksklad.update_service.verify_windows_authenticode_signature",
+                    return_value=True,
+                ) as verify_signature:
+            downloaded_path = download_update_file(
+                manifest,
+                trusted_signers={SYNTHETIC_SIGNER_CERT_SHA256},
+            )
+        try:
+            self.assertEqual(Path(downloaded_path).read_bytes(), payload)
+            verify_signature.assert_called_once_with(
+                downloaded_path,
+                SYNTHETIC_SIGNER_CERT_SHA256,
+            )
+        finally:
+            Path(downloaded_path).unlink(missing_ok=True)
+
+    def test_authenticode_verifier_rejects_invalid_status(self):
+        completed = mock.Mock(
+            returncode=0,
+            stdout=f"HashMismatch\n{SYNTHETIC_SIGNER_CERT_SHA256}\n",
+            stderr="",
+        )
+        with mock.patch("taksklad.update_service.os.name", "nt"), \
+                mock.patch("taksklad.update_service.subprocess.run", return_value=completed):
+            with self.assertRaisesRegex(ValueError, "Authenticode"):
+                verify_windows_authenticode_signature(
+                    "TakSklad.synthetic.exe",
+                    SYNTHETIC_SIGNER_CERT_SHA256,
+                )
+
+    def test_authenticode_verifier_accepts_only_exact_valid_status(self):
+        completed = mock.Mock(
+            returncode=0,
+            stdout=f"Valid\n{SYNTHETIC_SIGNER_CERT_SHA256}\n",
+            stderr="",
+        )
+        with mock.patch("taksklad.update_service.os.name", "nt"), \
+                mock.patch("taksklad.update_service.subprocess.run", return_value=completed) as run:
+            self.assertTrue(
+                verify_windows_authenticode_signature(
+                    "TakSklad.synthetic.exe",
+                    SYNTHETIC_SIGNER_CERT_SHA256,
+                )
+            )
+        command = run.call_args.args[0]
+        self.assertIn("Get-AuthenticodeSignature", command[-2])
+        self.assertEqual(command[-1], "TakSklad.synthetic.exe")
+
+    def test_authenticode_verifier_rejects_other_valid_publisher(self):
+        completed = mock.Mock(
+            returncode=0,
+            stdout=f"Valid\n{'2' * 64}\n",
+            stderr="",
+        )
+        with mock.patch("taksklad.update_service.os.name", "nt"), \
+                mock.patch("taksklad.update_service.subprocess.run", return_value=completed):
+            with self.assertRaisesRegex(ValueError, "недоверенным издателем"):
+                verify_windows_authenticode_signature(
+                    "TakSklad.synthetic.exe",
+                    SYNTHETIC_SIGNER_CERT_SHA256,
+                )
 
     def test_package_transition_required_only_for_frozen_onefile_to_onedir(self):
         update_info = {
@@ -154,7 +359,13 @@ class UpdateServiceTests(unittest.TestCase):
                     mock.patch("taksklad.update_service.os.getpid", return_value=1234):
                 updater_path = create_windows_onedir_updater(
                     str(zip_path),
-                    {"entrypoint": "TakSklad.exe", "package_type": "onedir_zip"},
+                    self._release_manifest(
+                        entrypoint="TakSklad.exe",
+                        package_type="onedir_zip",
+                        download_url_onedir="https://github.com/1fear/TakSklad/releases/download/v9.8.7/TakSklad-windows-x64.zip",
+                        sha256_onedir="a" * 64,
+                    ),
+                    trusted_signers={SYNTHETIC_SIGNER_CERT_SHA256},
                 )
 
             script = Path(updater_path).read_text(encoding="utf-8-sig")
@@ -165,6 +376,14 @@ class UpdateServiceTests(unittest.TestCase):
             self.assertIn("Move-Item -LiteralPath $AppDir -Destination $PreviousDir", script)
             self.assertIn("Move-Item -LiteralPath $NewDir -Destination $AppDir", script)
             self.assertNotIn("robocopy $SourceDir $AppDir", script)
+            signature_check = script.index("Get-AuthenticodeSignature")
+            staged_copy = script.index("robocopy $SourceDir $NewDir")
+            self.assertLess(signature_check, staged_copy)
+            self.assertIn("SignatureStatus]::Valid", script)
+            self.assertIn("$ExpectedSignerCertificateSha256", script)
+            self.assertIn(SYNTHETIC_SIGNER_CERT_SHA256, script)
+            self.assertIn("SignerCertificate.RawData", script)
+            self.assertIn("недоверенным издателем", script)
 
             for fragment in (
                 "'TakSklad_data.json'",
@@ -233,7 +452,13 @@ class UpdateServiceTests(unittest.TestCase):
                     mock.patch("taksklad.update_service.os.getpid", return_value=1235):
                 updater_path = create_windows_onedir_updater(
                     str(zip_path),
-                    {"entrypoint": "TakSklad.exe", "package_type": "onedir_zip"},
+                    self._release_manifest(
+                        entrypoint="TakSklad.exe",
+                        package_type="onedir_zip",
+                        download_url_onedir="https://github.com/1fear/TakSklad/releases/download/v9.8.7/TakSklad-windows-x64.zip",
+                        sha256_onedir="a" * 64,
+                    ),
+                    trusted_signers={SYNTHETIC_SIGNER_CERT_SHA256},
                 )
 
             script = Path(updater_path).read_text(encoding="utf-8-sig")

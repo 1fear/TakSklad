@@ -207,7 +207,13 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
     def test_frontend_uses_same_origin_api_proxy_contract(self):
         compose = (PROJECT_ROOT / "deploy" / "vds" / "docker-compose.yml").read_text(encoding="utf-8")
         nginx = (PROJECT_ROOT / "frontend" / "nginx.conf.template").read_text(encoding="utf-8")
-        api_source = (PROJECT_ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
+        api_source = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in (
+                PROJECT_ROOT / "frontend" / "src" / "api" / "core.ts",
+                PROJECT_ROOT / "frontend" / "src" / "api.ts",
+            )
+        )
         vite_config = (PROJECT_ROOT / "frontend" / "vite.config.ts").read_text(encoding="utf-8")
 
         self.assertIn("export function defaultApiUrl()", api_source)

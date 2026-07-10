@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "windows-executable",
+  "signature_type": "authenticode",
+  "required_status": "Valid",
+  "verification_api": "Get-AuthenticodeSignature",
+  "signer_identity": "certificate-sha256",
+  "trusted_signer_certificate_sha256": [],
+  "production_signer_pinned": false,
+  "synthetic_test_only": true,
+  "production_gate": "WINDOWS_CODESIGN_CERTIFICATE_NOT_AVAILABLE"
+}
