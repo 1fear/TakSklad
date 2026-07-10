@@ -197,6 +197,47 @@ def parse_chat_ids(value):
     return result
 
 
+class TelegramConfigurationError(RuntimeError):
+    def __init__(self, setting_names):
+        self.setting_names = tuple(sorted({str(name) for name in setting_names if str(name)}))
+        super().__init__("Invalid Telegram configuration: " + ", ".join(self.setting_names))
+
+
+def validate_telegram_worker_config(
+    token,
+    allowed_chat_ids,
+    admin_chat_ids,
+    scheduled_chat_ids=(),
+    reconciliation_chat_ids=(),
+):
+    if not normalize_text(token):
+        return True
+    errors = []
+    allowed = {str(value) for value in allowed_chat_ids or ()}
+    admins = {str(value) for value in admin_chat_ids or ()}
+    scheduled = {str(value) for value in scheduled_chat_ids or ()}
+    reconciliation = {str(value) for value in reconciliation_chat_ids or ()}
+    if not allowed:
+        errors.append("TELEGRAM_ALLOWED_CHAT_IDS")
+    for setting_name, values in (
+        ("TELEGRAM_ALLOWED_CHAT_IDS", allowed),
+        ("TELEGRAM_ADMIN_CHAT_IDS", admins),
+        ("SKLADBOT_DAILY_REPORT_CHAT_IDS", scheduled),
+        ("TAKSKLAD_DAILY_RECONCILIATION_CHAT_IDS", reconciliation),
+    ):
+        if any(not value or not value.lstrip("-").isdigit() or int(value) == 0 for value in values):
+            errors.append(setting_name)
+    if not admins.issubset(allowed):
+        errors.append("TELEGRAM_ADMIN_CHAT_IDS")
+    if not scheduled.issubset(allowed):
+        errors.append("SKLADBOT_DAILY_REPORT_CHAT_IDS")
+    if not reconciliation.issubset(allowed):
+        errors.append("TAKSKLAD_DAILY_RECONCILIATION_CHAT_IDS")
+    if errors:
+        raise TelegramConfigurationError(errors)
+    return True
+
+
 def parse_bool_flag(value, default=False):
     text = normalize_text(value).casefold()
     if not text:
@@ -755,8 +796,6 @@ class TelegramWorker:
         self.file_timeout = int(os.environ.get("TELEGRAM_WORKER_FILE_TIMEOUT_SECONDS", "120") or "120")
         self.poll_timeout = int(os.environ.get("TELEGRAM_WORKER_POLL_TIMEOUT_SECONDS", "15") or "15")
         self.max_file_size = int(os.environ.get("TELEGRAM_WORKER_MAX_FILE_BYTES", str(20 * 1024 * 1024)) or 0)
-        self.offset = self.load_offset() or int(os.environ.get("TELEGRAM_WORKER_INITIAL_OFFSET", "0") or "0")
-        self.bot_menu_ready = False
         self.skladbot_daily_report_enabled = parse_bool_flag(os.environ.get("SKLADBOT_DAILY_REPORT_ENABLED"))
         self.skladbot_daily_report_chat_ids = parse_chat_ids(os.environ.get("SKLADBOT_DAILY_REPORT_CHAT_IDS"))
         self.skladbot_daily_report_hour = max(0, min(23, parse_int(os.environ.get("SKLADBOT_DAILY_REPORT_HOUR") or "22")))
@@ -764,6 +803,15 @@ class TelegramWorker:
         self.skladbot_daily_report_retry_minutes = max(1, parse_int(os.environ.get("SKLADBOT_DAILY_REPORT_RETRY_MINUTES") or "15"))
         self.daily_reconciliation_enabled = parse_bool_flag(os.environ.get("TAKSKLAD_DAILY_RECONCILIATION_ENABLED"), default=True)
         self.daily_reconciliation_chat_ids = parse_chat_ids(os.environ.get("TAKSKLAD_DAILY_RECONCILIATION_CHAT_IDS"))
+        validate_telegram_worker_config(
+            self.token,
+            self.allowed_chat_ids,
+            self.admin_chat_ids,
+            self.skladbot_daily_report_chat_ids,
+            self.daily_reconciliation_chat_ids,
+        )
+        self.offset = self.load_offset() or int(os.environ.get("TELEGRAM_WORKER_INITIAL_OFFSET", "0") or "0")
+        self.bot_menu_ready = False
         self.manual_flow_cache = {}
 
     @property
@@ -900,14 +948,18 @@ class TelegramWorker:
         return f"{TELEGRAM_CHAT_STATE_EVENT_PREFIX}{chat_id}"
 
     def is_admin_chat(self, chat_id):
-        admin_chat_ids = getattr(self, "admin_chat_ids", set())
-        return not admin_chat_ids or str(chat_id) in admin_chat_ids
+        chat_id = str(chat_id)
+        return self.is_allowed_chat(chat_id) and chat_id in getattr(self, "admin_chat_ids", set())
+
+    def is_allowed_chat(self, chat_id):
+        return str(chat_id) in getattr(self, "allowed_chat_ids", set())
 
     def ensure_admin_chat(self, chat_id):
         if self.is_admin_chat(chat_id):
             return True
-        self.send_message(chat_id, "Команда доступна только администратору.")
-        logging.warning("Telegram worker denied admin command for chat_id=%s", chat_id)
+        if self.is_allowed_chat(chat_id):
+            self.send_message(chat_id, "Команда доступна только администратору.")
+        logging.warning("Telegram worker denied admin command")
         return False
 
     def get_chat_state(self, chat_id):
@@ -976,6 +1028,8 @@ class TelegramWorker:
         return cancelled
 
     def confirm_waiting_telegram_import_shipment_date(self, chat_id, shipment_date):
+        if not self.ensure_admin_chat(chat_id):
+            return False
         parsed_date = parse_date_from_text(shipment_date)
         event_id, payload = self.take_waiting_telegram_import_for_date(chat_id)
         if not event_id:
@@ -1102,6 +1156,8 @@ class TelegramWorker:
             return True, payload, ""
 
     def confirm_telegram_import_excel_date(self, chat_id, event_id):
+        if not self.ensure_admin_chat(chat_id):
+            return False
         success, payload, error = self.resolve_telegram_import_date_choice(chat_id, event_id, "use_excel")
         if not success:
             self.safe_send_message(chat_id, error)
@@ -1121,6 +1177,8 @@ class TelegramWorker:
         return True
 
     def cancel_telegram_import_date_choice(self, chat_id, event_id):
+        if not self.ensure_admin_chat(chat_id):
+            return False
         success, payload, error = self.resolve_telegram_import_date_choice(chat_id, event_id, "cancel")
         if not success:
             self.safe_send_message(chat_id, error)
@@ -1848,6 +1906,8 @@ class TelegramWorker:
 
     def handle_manual_callback(self, chat_id, data):
         action = normalize_text(data).replace(TELEGRAM_MANUAL_CALLBACK_PREFIX, "", 1)
+        if not self.ensure_admin_chat(chat_id):
+            return False
         if action == "cancel":
             self.clear_manual_flow(chat_id)
             state = self.get_chat_state(chat_id)
@@ -1855,8 +1915,6 @@ class TelegramWorker:
             self.save_chat_state(chat_id, state)
             self.safe_send_message(chat_id, "Ручное действие отменено.")
             return True
-        if not self.ensure_admin_chat(chat_id):
-            return False
         if action == "add":
             return self.start_manual_add_order(chat_id)
         if action == "delete":
@@ -2372,6 +2430,8 @@ class TelegramWorker:
         return None
 
     def enqueue_telegram_document(self, chat_id, document, update_id=None, shipment_date=""):
+        if not self.ensure_admin_chat(chat_id):
+            return False
         file_name = normalize_text(document.get("file_name")) or "telegram_import.xlsx"
         if not is_supported_excel_file_name(file_name):
             self.safe_send_message(chat_id, "Файл не импортирован. Отправьте Excel-файл в формате .xlsx или .xlsm.")
@@ -2596,6 +2656,16 @@ class TelegramWorker:
                 )
                 processed += 1
                 continue
+            if any(not self.is_allowed_chat(chat_id) for chat_id in targets):
+                self.finish_telegram_notification_event(
+                    event["id"],
+                    False,
+                    "telegram notification target is not allowed",
+                    failure_status="blocked",
+                    lease_owner=lease_owner,
+                )
+                processed += 1
+                continue
             if not targets:
                 self.finish_telegram_notification_event(
                     event["id"],
@@ -2637,6 +2707,14 @@ class TelegramWorker:
             payload = event.get("payload") or {}
             chat_id = normalize_text(payload.get("chat_id"))
             document = payload.get("document") or {}
+            if not self.is_admin_chat(chat_id):
+                self.finish_telegram_import_event(
+                    event["id"],
+                    False,
+                    "telegram import chat is not authorized",
+                )
+                processed += 1
+                continue
             result = self.import_telegram_document(
                 chat_id,
                 document,
@@ -2689,7 +2767,7 @@ class TelegramWorker:
         chat_id = str(chat.get("id") or "")
         if not chat_id:
             return
-        if self.allowed_chat_ids and chat_id not in self.allowed_chat_ids:
+        if not self.is_allowed_chat(chat_id):
             return
         reason = redact_secrets(normalize_text(exc))
         if len(reason) > 500:
@@ -2714,8 +2792,8 @@ class TelegramWorker:
         message = update.get("message") or {}
         chat = message.get("chat") or {}
         chat_id = str(chat.get("id") or "")
-        if self.allowed_chat_ids and chat_id not in self.allowed_chat_ids:
-            logging.warning("Telegram worker denied chat_id=%s", chat_id)
+        if not self.is_allowed_chat(chat_id):
+            logging.warning("Telegram worker denied unauthorized chat")
             return
 
         text = normalize_text(message.get("text"))
@@ -2736,6 +2814,8 @@ class TelegramWorker:
             self.send_date_help(chat_id)
             return
         if text.startswith("/date ") or parse_date_from_text(text) == text:
+            if not self.ensure_admin_chat(chat_id):
+                return
             if text and self.handle_manual_text(chat_id, text):
                 return
             shipment_date = parse_date_from_text(text)
@@ -2826,7 +2906,7 @@ class TelegramWorker:
         if text and self.handle_manual_text(chat_id, text):
             return
 
-        if text and self.confirm_waiting_telegram_import_shipment_date(chat_id, text):
+        if text and self.is_admin_chat(chat_id) and self.confirm_waiting_telegram_import_shipment_date(chat_id, text):
             return
 
         self.send_main_menu(chat_id, "Команда не распознана. Выберите действие в меню:")
@@ -2836,9 +2916,8 @@ class TelegramWorker:
         message = callback_query.get("message") or {}
         chat = message.get("chat") or {}
         chat_id = str(chat.get("id") or "")
-        if self.allowed_chat_ids and chat_id not in self.allowed_chat_ids:
-            logging.warning("Telegram worker denied callback chat_id=%s", chat_id)
-            self.answer_callback_query(callback_id, "Нет доступа")
+        if not self.is_allowed_chat(chat_id):
+            logging.warning("Telegram worker denied unauthorized callback")
             return
 
         data = normalize_text(callback_query.get("data"))
@@ -2870,12 +2949,16 @@ class TelegramWorker:
             self.handle_manual_callback(chat_id, data)
             return
         if data.startswith(TELEGRAM_EXCEL_DATE_CHOICE_USE_EXCEL_PREFIX):
+            if not self.ensure_admin_chat(chat_id):
+                return
             self.confirm_telegram_import_excel_date(
                 chat_id,
                 data.replace(TELEGRAM_EXCEL_DATE_CHOICE_USE_EXCEL_PREFIX, "", 1),
             )
             return
         if data.startswith(TELEGRAM_EXCEL_DATE_CHOICE_CANCEL_PREFIX):
+            if not self.ensure_admin_chat(chat_id):
+                return
             self.cancel_telegram_import_date_choice(
                 chat_id,
                 data.replace(TELEGRAM_EXCEL_DATE_CHOICE_CANCEL_PREFIX, "", 1),
@@ -2929,7 +3012,11 @@ class TelegramWorker:
 
 
 def main():
-    worker = TelegramWorker()
+    try:
+        worker = TelegramWorker()
+    except TelegramConfigurationError as exc:
+        logging.error("Telegram worker configuration invalid: %s", ", ".join(exc.setting_names))
+        return 2
     if not worker.configured:
         while True:
             logging.info("Telegram worker waiting for TELEGRAM_BOT_TOKEN")
@@ -2944,4 +3031,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

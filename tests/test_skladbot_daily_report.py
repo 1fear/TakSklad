@@ -2133,8 +2133,8 @@ class SkladBotDailyReportTests(unittest.TestCase):
 
     def test_telegram_manual_command_sends_skladbot_daily_report(self):
         worker = TelegramWorker.__new__(TelegramWorker)
-        worker.allowed_chat_ids = set()
-        worker.admin_chat_ids = set()
+        worker.allowed_chat_ids = {"123"}
+        worker.admin_chat_ids = {"123"}
         messages = []
         documents = []
         captured = {}
@@ -2182,8 +2182,8 @@ class SkladBotDailyReportTests(unittest.TestCase):
 
     def test_manual_skladbot_daily_partial_blocked_by_default(self):
         worker = TelegramWorker.__new__(TelegramWorker)
-        worker.allowed_chat_ids = set()
-        worker.admin_chat_ids = set()
+        worker.allowed_chat_ids = {"123"}
+        worker.admin_chat_ids = {"123"}
         messages = []
         documents = []
 
@@ -2236,8 +2236,8 @@ class SkladBotDailyReportTests(unittest.TestCase):
 
     def test_manual_skladbot_daily_partial_requires_explicit_allow_flag(self):
         worker = TelegramWorker.__new__(TelegramWorker)
-        worker.allowed_chat_ids = set()
-        worker.admin_chat_ids = set()
+        worker.allowed_chat_ids = {"123"}
+        worker.admin_chat_ids = {"123"}
         messages = []
         documents = []
 
@@ -2454,8 +2454,8 @@ class SkladBotDailyReportTests(unittest.TestCase):
 
     def test_telegram_manual_skladbot_daily_rejects_invalid_date(self):
         worker = TelegramWorker.__new__(TelegramWorker)
-        worker.allowed_chat_ids = set()
-        worker.admin_chat_ids = set()
+        worker.allowed_chat_ids = {"123"}
+        worker.admin_chat_ids = {"123"}
         messages = []
         sends = []
 

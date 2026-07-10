@@ -64,7 +64,7 @@ def main(argv=None):
     for relative_path, path in allowed_repo_paths():
         scanned += 1
         count += sentinel_count_in_file(relative_path, path)
-    print(f"synthetic_secret_sentinel_count={count} scanned_allowed_files={scanned}")
+    sys.stdout.write(f"synthetic_secret_sentinel_count={count} scanned_allowed_files={scanned}\n")
     return 1 if count else 0
 
 

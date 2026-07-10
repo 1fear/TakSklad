@@ -14,6 +14,7 @@ from backend.app.db import get_db
 from backend.app.main import app, require_service_token
 from backend.app.models import AuditLog, Base, ImportJob, Incident, Order, OrderItem, PendingEvent, RepresentativeContact, ScanCode
 from backend.app.representative_contacts import normalize_representative_name
+from backend.app.settings import load_settings
 from backend.app.skladbot_request_dry_run import (
     SKLADBOT_REQUEST_CREATE_EVENT_TYPE,
     SKLADBOT_REQUEST_DRY_RUN_EVENT_TYPE,
@@ -33,6 +34,14 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
     def setUp(self):
         self.env_patch = mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "dry_run"}, clear=False)
         self.env_patch.start()
+        self.settings_patch = mock.patch(
+            "backend.app.main.settings",
+            load_settings({
+                "TAKSKLAD_ENV": "local",
+                "TAKSKLAD_INSECURE_LOCAL_ANONYMOUS": "true",
+            }),
+        )
+        self.settings_patch.start()
         self.engine = create_engine(
             "sqlite+pysqlite:///:memory:",
             connect_args={"check_same_thread": False},
@@ -53,6 +62,7 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
         self.client = TestClient(app)
 
     def tearDown(self):
+        self.settings_patch.stop()
         self.env_patch.stop()
         app.dependency_overrides.clear()
         Base.metadata.drop_all(self.engine)

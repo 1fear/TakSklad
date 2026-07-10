@@ -148,7 +148,11 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         self.assertEqual(test_values["TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED"], "false")
         self.assertEqual(test_values["TAKSKLAD_ENV"], "test")
         self.assertNotIn("TAKSKLAD_ADMINER_HOST", test_values)
-        self.assertEqual(test_values["TELEGRAM_ADMIN_CHAT_IDS"], "")
+        self.assertEqual(test_values["TELEGRAM_ADMIN_CHAT_IDS"], "1001")
+        self.assertIn(
+            test_values["TELEGRAM_ADMIN_CHAT_IDS"],
+            test_values["TELEGRAM_ALLOWED_CHAT_IDS"].split(","),
+        )
 
     def test_web_deploy_forces_https_security_headers(self):
         compose = (PROJECT_ROOT / "deploy" / "vds" / "docker-compose.yml").read_text(encoding="utf-8")

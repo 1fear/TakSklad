@@ -24,10 +24,12 @@ from backend.app.telegram_worker import (
     TELEGRAM_BUTTON_STATUS,
     TELEGRAM_KIZ_FILE_PREFIX,
     TELEGRAM_KIZ_RANGE_CALLBACK_PREFIX,
+    TelegramConfigurationError,
     TelegramWorker,
     display_date,
     summarize_active_orders_by_date,
     telegram_main_reply_keyboard,
+    validate_telegram_worker_config,
 )
 
 
@@ -78,6 +80,87 @@ def create_conflicting_date_workbook(path):
 
 
 class BackendTelegramImportTests(unittest.TestCase):
+    def test_telegram_configuration_requires_allowlist_and_admin_subset(self):
+        with self.assertRaises(TelegramConfigurationError) as missing_allowed:
+            validate_telegram_worker_config("synthetic-token", set(), set())
+        self.assertEqual(missing_allowed.exception.setting_names, ("TELEGRAM_ALLOWED_CHAT_IDS",))
+
+        with self.assertRaises(TelegramConfigurationError) as invalid_admin:
+            validate_telegram_worker_config("synthetic-token", {"123"}, {"999"})
+        self.assertEqual(invalid_admin.exception.setting_names, ("TELEGRAM_ADMIN_CHAT_IDS",))
+
+        self.assertTrue(validate_telegram_worker_config(
+            "synthetic-token",
+            {"123", "999"},
+            {"999"},
+            {"123"},
+            {"999"},
+        ))
+
+    def test_telegram_constructor_rejects_invalid_config_before_database_access(self):
+        with mock.patch.dict(
+            telegram_worker_module.os.environ,
+            {"TELEGRAM_BOT_TOKEN": "synthetic-token"},
+            clear=True,
+        ), mock.patch.object(
+            TelegramWorker,
+            "load_offset",
+            side_effect=AssertionError("database must not be touched"),
+        ):
+            with self.assertRaises(TelegramConfigurationError):
+                TelegramWorker()
+
+    def test_allowed_non_admin_cannot_enqueue_excel_document(self):
+        worker = TelegramWorker.__new__(TelegramWorker)
+        worker.allowed_chat_ids = {"123", "999"}
+        worker.admin_chat_ids = {"999"}
+        messages = []
+        worker.send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text))
+
+        result = worker.enqueue_telegram_document(
+            "123",
+            {"file_name": "orders.xlsx", "file_id": "synthetic-file"},
+            update_id=1,
+        )
+
+        self.assertFalse(result)
+        self.assertIn("только администратору", messages[0][1])
+
+    def test_allowed_non_admin_cannot_confirm_waiting_import_date(self):
+        worker = TelegramWorker.__new__(TelegramWorker)
+        worker.allowed_chat_ids = {"123", "999"}
+        worker.admin_chat_ids = {"999"}
+        messages = []
+        worker.send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text))
+        worker.take_waiting_telegram_import_for_date = lambda chat_id: self.fail(
+            "unauthorized date confirmation reached database lookup"
+        )
+
+        result = worker.confirm_waiting_telegram_import_shipment_date("123", "10.07.2026")
+
+        self.assertFalse(result)
+        self.assertIn("только администратору", messages[0][1])
+
+    def test_queued_import_rechecks_current_admin_membership(self):
+        worker = TelegramWorker.__new__(TelegramWorker)
+        worker.allowed_chat_ids = {"123", "999"}
+        worker.admin_chat_ids = {"999"}
+        events = [{
+            "id": "11111111-1111-1111-1111-111111111111",
+            "payload": {"chat_id": "123", "document": {"file_name": "orders.xlsx"}},
+        }]
+        finished = []
+        worker.reset_stale_telegram_import_events = lambda: 0
+        worker.take_next_telegram_import_event = lambda: events.pop(0) if events else None
+        worker.import_telegram_document = lambda *args, **kwargs: self.fail("unauthorized import executed")
+        worker.finish_telegram_import_event = lambda *args: finished.append(args)
+
+        processed = worker.process_queued_telegram_imports()
+
+        self.assertEqual(processed, 1)
+        self.assertEqual(finished[0][1], False)
+        self.assertEqual(finished[0][2], "telegram import chat is not authorized")
+
     def test_excel_file_to_import_payload_converts_rows_for_backend_import(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             path = Path(tmp_dir) / "orders_30_05_2026.xlsx"
@@ -228,8 +311,8 @@ class BackendTelegramImportTests(unittest.TestCase):
             sent = []
             observed_leases = []
             worker = TelegramWorker.__new__(TelegramWorker)
-            worker.allowed_chat_ids = set()
-            worker.admin_chat_ids = set()
+            worker.allowed_chat_ids = {"123"}
+            worker.admin_chat_ids = {"123"}
 
             def fake_send(chat_id, text):
                 with SessionLocal() as observer:
@@ -334,7 +417,8 @@ class BackendTelegramImportTests(unittest.TestCase):
 
     def test_telegram_worker_start_message_uses_hideable_reply_keyboard(self):
         worker = TelegramWorker.__new__(TelegramWorker)
-        worker.allowed_chat_ids = set()
+        worker.allowed_chat_ids = {"123"}
+        worker.admin_chat_ids = {"123"}
         calls = []
 
         def fake_send(chat_id, text, reply_markup=None):
@@ -508,7 +592,8 @@ class BackendTelegramImportTests(unittest.TestCase):
 
     def test_telegram_worker_menu_command_shows_hideable_reply_keyboard(self):
         worker = TelegramWorker.__new__(TelegramWorker)
-        worker.allowed_chat_ids = set()
+        worker.allowed_chat_ids = {"123"}
+        worker.admin_chat_ids = {"123"}
         calls = []
 
         def fake_send(chat_id, text, reply_markup=None):
@@ -531,7 +616,8 @@ class BackendTelegramImportTests(unittest.TestCase):
 
     def test_telegram_worker_unknown_text_opens_menu_instead_of_dead_button_error(self):
         worker = TelegramWorker.__new__(TelegramWorker)
-        worker.allowed_chat_ids = set()
+        worker.allowed_chat_ids = {"123"}
+        worker.admin_chat_ids = {"123"}
         calls = []
 
         def fake_send(chat_id, text, reply_markup=None):
@@ -553,7 +639,8 @@ class BackendTelegramImportTests(unittest.TestCase):
 
     def test_telegram_worker_handles_bottom_logistics_button(self):
         worker = TelegramWorker.__new__(TelegramWorker)
-        worker.allowed_chat_ids = set()
+        worker.allowed_chat_ids = {"123"}
+        worker.admin_chat_ids = {"123"}
         calls = []
 
         def fake_show_logistics_dates(chat_id):
@@ -573,7 +660,8 @@ class BackendTelegramImportTests(unittest.TestCase):
 
     def test_telegram_worker_handles_status_button(self):
         worker = TelegramWorker.__new__(TelegramWorker)
-        worker.allowed_chat_ids = set()
+        worker.allowed_chat_ids = {"123"}
+        worker.admin_chat_ids = {"123"}
         messages = []
         calls = []
 
@@ -666,7 +754,8 @@ class BackendTelegramImportTests(unittest.TestCase):
 
     def test_telegram_worker_handles_inline_logistics_callback(self):
         worker = TelegramWorker.__new__(TelegramWorker)
-        worker.allowed_chat_ids = set()
+        worker.allowed_chat_ids = {"123"}
+        worker.admin_chat_ids = {"123"}
         answered = []
         calls = []
 
@@ -694,7 +783,8 @@ class BackendTelegramImportTests(unittest.TestCase):
 
     def test_telegram_worker_handles_inline_kiz_file_callback(self):
         worker = TelegramWorker.__new__(TelegramWorker)
-        worker.allowed_chat_ids = set()
+        worker.allowed_chat_ids = {"123"}
+        worker.admin_chat_ids = {"123"}
         answered = []
         calls = []
 
@@ -722,7 +812,8 @@ class BackendTelegramImportTests(unittest.TestCase):
 
     def test_telegram_worker_handles_inline_kiz_date_callback(self):
         worker = TelegramWorker.__new__(TelegramWorker)
-        worker.allowed_chat_ids = set()
+        worker.allowed_chat_ids = {"123"}
+        worker.admin_chat_ids = {"123"}
         answered = []
         calls = []
 
@@ -750,7 +841,8 @@ class BackendTelegramImportTests(unittest.TestCase):
 
     def test_telegram_worker_handles_inline_kiz_range_callback(self):
         worker = TelegramWorker.__new__(TelegramWorker)
-        worker.allowed_chat_ids = set()
+        worker.allowed_chat_ids = {"123"}
+        worker.admin_chat_ids = {"123"}
         answered = []
         calls = []
 
@@ -778,7 +870,8 @@ class BackendTelegramImportTests(unittest.TestCase):
 
     def test_telegram_worker_handles_main_menu_callbacks(self):
         worker = TelegramWorker.__new__(TelegramWorker)
-        worker.allowed_chat_ids = set()
+        worker.allowed_chat_ids = {"123"}
+        worker.admin_chat_ids = {"123"}
         answered = []
         calls = []
 
@@ -832,7 +925,8 @@ class BackendTelegramImportTests(unittest.TestCase):
 
     def test_telegram_worker_manual_add_order_imports_through_backend(self):
         worker = TelegramWorker.__new__(TelegramWorker)
-        worker.allowed_chat_ids = set()
+        worker.allowed_chat_ids = {"123"}
+        worker.admin_chat_ids = {"123"}
         state = {}
         messages = []
         posts = []
@@ -897,7 +991,7 @@ class BackendTelegramImportTests(unittest.TestCase):
 
     def test_telegram_worker_manual_controls_are_admin_only_when_configured(self):
         worker = TelegramWorker.__new__(TelegramWorker)
-        worker.allowed_chat_ids = set()
+        worker.allowed_chat_ids = {"123"}
         worker.admin_chat_ids = {"999"}
         answered = []
         messages = []
@@ -922,8 +1016,8 @@ class BackendTelegramImportTests(unittest.TestCase):
 
     def test_telegram_worker_manual_delete_active_order_calls_safe_backend_endpoint(self):
         worker = TelegramWorker.__new__(TelegramWorker)
-        worker.allowed_chat_ids = set()
-        worker.admin_chat_ids = set()
+        worker.allowed_chat_ids = {"123"}
+        worker.admin_chat_ids = {"123"}
         state = {}
         messages = []
         posts = []
@@ -983,8 +1077,8 @@ class BackendTelegramImportTests(unittest.TestCase):
 
     def test_telegram_worker_manual_delete_refuses_started_order_before_backend_call(self):
         worker = TelegramWorker.__new__(TelegramWorker)
-        worker.allowed_chat_ids = set()
-        worker.admin_chat_ids = set()
+        worker.allowed_chat_ids = {"123"}
+        worker.admin_chat_ids = {"123"}
         messages = []
         posts = []
         state = {
@@ -1024,7 +1118,8 @@ class BackendTelegramImportTests(unittest.TestCase):
 
     def test_telegram_worker_unknown_inline_callback_opens_fresh_menu(self):
         worker = TelegramWorker.__new__(TelegramWorker)
-        worker.allowed_chat_ids = set()
+        worker.allowed_chat_ids = {"123"}
+        worker.admin_chat_ids = {"123"}
         answered = []
         messages = []
 
@@ -1098,7 +1193,8 @@ class BackendTelegramImportTests(unittest.TestCase):
 
     def test_telegram_worker_saves_shipment_date_from_message(self):
         worker = TelegramWorker.__new__(TelegramWorker)
-        worker.allowed_chat_ids = set()
+        worker.allowed_chat_ids = {"123"}
+        worker.admin_chat_ids = {"123"}
         saved = []
         messages = []
 
@@ -1126,7 +1222,8 @@ class BackendTelegramImportTests(unittest.TestCase):
 
     def test_telegram_worker_enqueues_excel_document_from_message(self):
         worker = TelegramWorker.__new__(TelegramWorker)
-        worker.allowed_chat_ids = set()
+        worker.allowed_chat_ids = {"123"}
+        worker.admin_chat_ids = {"123"}
         calls = []
 
         def fake_enqueue(chat_id, document, update_id=None, shipment_date=""):
@@ -1157,6 +1254,8 @@ class BackendTelegramImportTests(unittest.TestCase):
         try:
             messages = []
             worker = TelegramWorker.__new__(TelegramWorker)
+            worker.allowed_chat_ids = {"123"}
+            worker.admin_chat_ids = {"123"}
             worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
             telegram_worker_module.SessionLocal = SessionLocal
 
@@ -1208,7 +1307,8 @@ class BackendTelegramImportTests(unittest.TestCase):
             messages = []
             processed = []
             worker = TelegramWorker.__new__(TelegramWorker)
-            worker.allowed_chat_ids = set()
+            worker.allowed_chat_ids = {"123"}
+            worker.admin_chat_ids = {"123"}
             worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
             worker.process_queued_telegram_imports = lambda: processed.append(True)
             telegram_worker_module.SessionLocal = SessionLocal
@@ -1267,6 +1367,8 @@ class BackendTelegramImportTests(unittest.TestCase):
             messages = []
             processed = []
             worker = TelegramWorker.__new__(TelegramWorker)
+            worker.allowed_chat_ids = {"123"}
+            worker.admin_chat_ids = {"123"}
             worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
             worker.process_queued_telegram_imports = lambda: processed.append(True)
             telegram_worker_module.SessionLocal = SessionLocal
@@ -1324,7 +1426,8 @@ class BackendTelegramImportTests(unittest.TestCase):
             messages = []
             processed = []
             worker = TelegramWorker.__new__(TelegramWorker)
-            worker.allowed_chat_ids = set()
+            worker.allowed_chat_ids = {"123"}
+            worker.admin_chat_ids = {"123"}
             worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
             worker.process_queued_telegram_imports = lambda: processed.append(True)
             telegram_worker_module.SessionLocal = SessionLocal
@@ -1351,6 +1454,8 @@ class BackendTelegramImportTests(unittest.TestCase):
 
     def test_telegram_worker_processes_multiple_queued_imports(self):
         worker = TelegramWorker.__new__(TelegramWorker)
+        worker.allowed_chat_ids = {"123"}
+        worker.admin_chat_ids = {"123"}
         events = [
             {"id": "event-1", "payload": {"chat_id": "123", "document": {"file_name": "a.xlsx"}}},
             {"id": "event-2", "payload": {"chat_id": "123", "document": {"file_name": "b.xlsx"}}},
@@ -1615,6 +1720,8 @@ class BackendTelegramImportTests(unittest.TestCase):
 
             imported = []
             worker = TelegramWorker.__new__(TelegramWorker)
+            worker.allowed_chat_ids = {"123"}
+            worker.admin_chat_ids = {"123"}
             worker.import_telegram_document = lambda chat_id, document, shipment_date="", event_id="": imported.append(
                 (chat_id, document["file_name"], shipment_date, event_id)
             ) or (True, "")
@@ -1665,6 +1772,8 @@ class BackendTelegramImportTests(unittest.TestCase):
 
             import_calls = []
             worker = TelegramWorker.__new__(TelegramWorker)
+            worker.allowed_chat_ids = {"123"}
+            worker.admin_chat_ids = {"123"}
             worker.import_telegram_document = (
                 lambda chat_id, document, shipment_date="", event_id="":
                 import_calls.append((chat_id, shipment_date, event_id)) or (True, "")
@@ -1711,8 +1820,8 @@ class BackendTelegramImportTests(unittest.TestCase):
 
             sent = []
             worker = TelegramWorker.__new__(TelegramWorker)
-            worker.admin_chat_ids = set()
-            worker.allowed_chat_ids = set()
+            worker.admin_chat_ids = {"123"}
+            worker.allowed_chat_ids = {"123"}
             worker.send_message = lambda chat_id, text: sent.append((chat_id, text))
             telegram_worker_module.SessionLocal = SessionLocal
 
@@ -1783,6 +1892,8 @@ class BackendTelegramImportTests(unittest.TestCase):
 
     def test_telegram_worker_does_not_finish_event_while_waiting_for_date_choice(self):
         worker = TelegramWorker.__new__(TelegramWorker)
+        worker.allowed_chat_ids = {"123"}
+        worker.admin_chat_ids = {"123"}
         events = [{
             "id": "11111111-1111-1111-1111-111111111111",
             "payload": {
@@ -1812,7 +1923,8 @@ class BackendTelegramImportTests(unittest.TestCase):
 
     def test_telegram_worker_handles_date_choice_callbacks(self):
         worker = TelegramWorker.__new__(TelegramWorker)
-        worker.allowed_chat_ids = set()
+        worker.allowed_chat_ids = {"123"}
+        worker.admin_chat_ids = {"123"}
         answered = []
         confirmed = []
         cancelled = []
@@ -1871,6 +1983,8 @@ class BackendTelegramImportTests(unittest.TestCase):
             messages = []
             processed = []
             worker = TelegramWorker.__new__(TelegramWorker)
+            worker.allowed_chat_ids = {"123"}
+            worker.admin_chat_ids = {"123"}
             worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
             worker.process_queued_telegram_imports = lambda: processed.append(True)
             telegram_worker_module.SessionLocal = SessionLocal
@@ -1921,6 +2035,8 @@ class BackendTelegramImportTests(unittest.TestCase):
 
             messages = []
             worker = TelegramWorker.__new__(TelegramWorker)
+            worker.allowed_chat_ids = {"123"}
+            worker.admin_chat_ids = {"123"}
             worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
             telegram_worker_module.SessionLocal = SessionLocal
 
@@ -2307,7 +2423,8 @@ class BackendTelegramImportTests(unittest.TestCase):
     def test_telegram_worker_keeps_polling_after_single_update_error(self):
         worker = TelegramWorker.__new__(TelegramWorker)
         worker.token = "telegram-token"
-        worker.allowed_chat_ids = set()
+        worker.allowed_chat_ids = {"123"}
+        worker.admin_chat_ids = {"123"}
         worker.timeout = 20
         worker.poll_timeout = 1
         worker.offset = 0
@@ -2399,8 +2516,8 @@ class BackendTelegramImportTests(unittest.TestCase):
 
     def test_telegram_worker_handles_hidden_logs_command(self):
         worker = TelegramWorker.__new__(TelegramWorker)
-        worker.allowed_chat_ids = set()
-        worker.admin_chat_ids = set()
+        worker.allowed_chat_ids = {"123"}
+        worker.admin_chat_ids = {"123"}
         sent = []
 
         def fake_backend_get_bytes(path, params=None):

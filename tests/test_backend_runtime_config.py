@@ -16,6 +16,11 @@ from taksklad.secret_store import (
     reset_secret_store_for_tests,
     set_secret_store_for_tests,
 )
+from backend.app.settings import (
+    ConfigurationError,
+    load_settings as load_backend_settings,
+    validate_backend_settings,
+)
 
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "src" / "taksklad" / "config.py"
@@ -156,6 +161,80 @@ class BackendRuntimeConfigTests(unittest.TestCase):
         headers = backend_client.make_backend_headers()
 
         self.assertNotIn("Authorization", headers)
+
+    def test_empty_backend_mapping_does_not_inherit_process_environment(self):
+        with mock.patch.dict(os.environ, {"TAKSKLAD_API_TOKEN": "inherited-token"}, clear=True):
+            settings = load_backend_settings({})
+
+        self.assertEqual(settings.api_token, "")
+        self.assertFalse(settings.environment_explicit)
+
+    def test_production_requires_auth_and_independent_session_secret(self):
+        with self.assertRaises(ConfigurationError) as missing_auth:
+            validate_backend_settings(load_backend_settings({"TAKSKLAD_ENV": "production"}))
+        self.assertIn("TAKSKLAD_AUTH_MECHANISM", missing_auth.exception.setting_names)
+        self.assertIn("TAKSKLAD_WEB_SESSION_SECRET", missing_auth.exception.setting_names)
+
+        with self.assertRaises(ConfigurationError) as shared_secret:
+            validate_backend_settings(load_backend_settings({
+                "TAKSKLAD_ENV": "production",
+                "TAKSKLAD_API_TOKEN": "synthetic-api-token",
+                "TAKSKLAD_WEB_SESSION_SECRET": "synthetic-api-token",
+            }))
+        self.assertEqual(shared_secret.exception.setting_names, ("TAKSKLAD_WEB_SESSION_SECRET",))
+
+        for weak_secret in ("x", "x" * 64):
+            with self.subTest(weak_secret_length=len(weak_secret)):
+                with self.assertRaises(ConfigurationError) as weak:
+                    validate_backend_settings(load_backend_settings({
+                        "TAKSKLAD_ENV": "production",
+                        "TAKSKLAD_API_TOKEN": "synthetic-api-token",
+                        "TAKSKLAD_WEB_SESSION_SECRET": weak_secret,
+                    }))
+                self.assertEqual(weak.exception.setting_names, ("TAKSKLAD_WEB_SESSION_SECRET",))
+                self.assertNotIn(weak_secret, str(weak.exception))
+
+        settings = validate_backend_settings(load_backend_settings({
+            "TAKSKLAD_ENV": "production",
+            "TAKSKLAD_API_TOKEN": "synthetic-api-token",
+            "TAKSKLAD_WEB_SESSION_SECRET": "independent-synthetic-session-secret",
+        }))
+        self.assertTrue(settings.api_auth_enabled)
+
+    def test_anonymous_local_admin_requires_explicit_environment_and_opt_in(self):
+        for environment in (None, "local"):
+            with self.subTest(environment=environment):
+                values = {}
+                if environment is not None:
+                    values["TAKSKLAD_ENV"] = environment
+                with self.assertRaises(ConfigurationError):
+                    validate_backend_settings(load_backend_settings(values))
+
+        settings = validate_backend_settings(load_backend_settings({
+            "TAKSKLAD_ENV": "local",
+            "TAKSKLAD_INSECURE_LOCAL_ANONYMOUS": "true",
+        }))
+        self.assertTrue(settings.anonymous_local_admin_enabled)
+
+    def test_partial_web_auth_and_unknown_environment_fail_name_only(self):
+        with self.assertRaises(ConfigurationError) as captured:
+            validate_backend_settings(load_backend_settings({
+                "TAKSKLAD_ENV": "prodution",
+                "TAKSKLAD_WEB_LOGIN": "synthetic-login",
+                "TAKSKLAD_WEB_SESSION_SECRET": "synthetic-session-secret",
+            }))
+
+        self.assertEqual(
+            captured.exception.setting_names,
+            (
+                "TAKSKLAD_AUTH_MECHANISM",
+                "TAKSKLAD_ENV",
+                "TAKSKLAD_WEB_LOGIN",
+                "TAKSKLAD_WEB_PASSWORD_HASH",
+                "TAKSKLAD_WEB_SESSION_SECRET",
+            ),
+        )
+        self.assertNotIn("synthetic-login", str(captured.exception))
 
 
 if __name__ == "__main__":

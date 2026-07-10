@@ -20,9 +20,16 @@
     "TAKSKLAD_FRONTEND_HOST": "app.example.invalid",
     "TAKSKLAD_FRONTEND_WWW_HOST": "www.example.invalid",
     "TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED": "false",
+    "TAKSKLAD_INSECURE_LOCAL_ANONYMOUS": "false",
     "TAKSKLAD_SERVICE_NAME": "taksklad-test",
     "TAKSKLAD_TIMEZONE": "Asia/Tashkent",
-    "TELEGRAM_ADMIN_CHAT_IDS": "",
+    "TAKSKLAD_TRUSTED_PROXY_CIDRS": "172.16.0.0/12",
+    "TAKSKLAD_WEB_LOGIN_LIMITER_ENTRY_TTL_SECONDS": "3600",
+    "TAKSKLAD_WEB_LOGIN_LIMITER_MAX_ENTRIES": "10000",
+    "TAKSKLAD_WEB_SESSION_SECRET": "independent-synthetic-only-session-secret",
+    "TELEGRAM_ADMIN_CHAT_IDS": "1001",
+    "TELEGRAM_ALLOWED_CHAT_IDS": "1001",
+    "TELEGRAM_BOT_TOKEN": "synthetic-only-bot-token",
     "TRAEFIK_NETWORK": "taksklad-test-traefik",
     "YANDEX_GEOCODER_API_KEY": ""
   }

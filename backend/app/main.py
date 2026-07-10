@@ -1,4 +1,6 @@
-import time
+import hashlib
+import hmac
+import ipaddress
 from dataclasses import dataclass
 from urllib.parse import quote
 from threading import Lock, Thread
@@ -114,7 +116,12 @@ from .schemas import (
     SkladBotDryRunRead,
     SmartupAutoImportHistoryRead,
 )
-from .settings import APP_VERSION, load_settings
+from .login_limiter import (
+    BoundedTTLLoginLimiter,
+    LoginLimiterCapacityExceeded,
+    LoginRateLimited,
+)
+from .settings import APP_VERSION, load_settings, validate_backend_settings
 from .web_auth import (
     PERMISSION_ADMIN_WRITE,
     PERMISSION_CLIENT_POINTS_WRITE,
@@ -132,8 +139,10 @@ from .web_auth import (
 settings = load_settings()
 sync_sources_lock = Lock()
 skladbot_sync_lock = Lock()
-login_attempts_lock = Lock()
-login_attempts = {}
+login_limiter = BoundedTTLLoginLimiter(
+    max_entries=settings.web_login_limiter_max_entries,
+    entry_ttl_seconds=settings.web_login_limiter_entry_ttl_seconds,
+)
 
 app = FastAPI(
     title="TakSklad Backend API",
@@ -159,11 +168,16 @@ def configure_cors(app_instance: FastAPI, app_settings) -> None:
 configure_cors(app, settings)
 
 
+@app.on_event("startup")
+def validate_startup_configuration():
+    validate_backend_settings(settings)
+
+
 def is_valid_service_token(authorization: str | None) -> bool:
     if not settings.api_auth_enabled:
         return False
     expected = f"Bearer {settings.api_token}"
-    return authorization == expected
+    return hmac.compare_digest(str(authorization or ""), expected)
 
 
 @dataclass(frozen=True)
@@ -194,7 +208,11 @@ def read_auth_context(request: Request, authorization: str | None = None):
             )
         except WebAuthError:
             pass
-    if not settings.api_auth_enabled and not settings.web_auth_enabled:
+    if (
+        not settings.api_auth_enabled
+        and not settings.web_auth_enabled
+        and settings.anonymous_local_admin_enabled
+    ):
         return AuthContext(
             login="local-dev",
             role=ROLE_ADMIN,
@@ -290,37 +308,75 @@ def web_login(payload: AuthLoginRequest, request: Request, response: Response, d
 
 
 def login_attempt_key(request: Request, login):
-    forwarded = request.headers.get("x-forwarded-for") or ""
-    ip = forwarded.split(",", 1)[0].strip() or (request.client.host if request.client else "unknown")
-    normalized_login = "".join(ch for ch in str(login or "").strip() if ch.isdigit() or ch == "+")
-    return f"{ip}:{normalized_login}"
+    ip = client_identity(request, settings.trusted_proxy_cidrs)
+    login_digest = hashlib.sha256()
+    for character in str(login or ""):
+        if character.isdigit() or character == "+":
+            login_digest.update(character.encode("utf-8"))
+    return f"{ip}:{login_digest.hexdigest()}"
+
+
+def client_identity(request, trusted_proxy_cidrs=()):
+    peer_text = str(request.client.host if request.client else "unknown").strip()
+    try:
+        peer = ipaddress.ip_address(peer_text)
+    except ValueError:
+        return "unknown"
+
+    networks = []
+    for cidr in trusted_proxy_cidrs or ():
+        try:
+            networks.append(ipaddress.ip_network(str(cidr), strict=False))
+        except ValueError:
+            return str(peer)
+
+    def is_trusted(address):
+        return any(address.version == network.version and address in network for network in networks)
+
+    if not is_trusted(peer):
+        return str(peer)
+
+    parts = [part.strip() for part in str(request.headers.get("x-forwarded-for") or "").split(",")]
+    if not parts or not parts[0] or len(parts) > 32:
+        return str(peer)
+    try:
+        forwarded = [ipaddress.ip_address(part) for part in parts]
+    except ValueError:
+        return str(peer)
+
+    for address in reversed(forwarded):
+        if not is_trusted(address):
+            return str(address)
+    return str(forwarded[0])
 
 
 def ensure_login_not_locked(key):
-    now = time.time()
-    with login_attempts_lock:
-        record = login_attempts.get(key) or {}
-        locked_until = float(record.get("locked_until") or 0)
-        if locked_until > now:
-            raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many login attempts")
+    try:
+        login_limiter.ensure_not_locked(key)
+    except (LoginRateLimited, LoginLimiterCapacityExceeded) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many login attempts",
+        ) from exc
 
 
 def register_login_failure(key):
-    now = time.time()
-    with login_attempts_lock:
-        record = login_attempts.get(key) or {}
-        window_start = float(record.get("window_start") or now)
-        if now - window_start > settings.web_login_window_seconds:
-            record = {"window_start": now, "count": 0, "locked_until": 0}
-        record["count"] = int(record.get("count") or 0) + 1
-        if record["count"] >= settings.web_login_max_attempts:
-            record["locked_until"] = now + settings.web_login_lock_seconds
-        login_attempts[key] = record
+    try:
+        login_limiter.register_failure(
+            key,
+            max_attempts=settings.web_login_max_attempts,
+            window_seconds=settings.web_login_window_seconds,
+            lock_seconds=settings.web_login_lock_seconds,
+        )
+    except (LoginRateLimited, LoginLimiterCapacityExceeded) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many login attempts",
+        ) from exc
 
 
 def clear_login_failures(key):
-    with login_attempts_lock:
-        login_attempts.pop(key, None)
+    login_limiter.clear(key)
 
 
 @auth_api.post("/logout", response_model=AuthSessionRead)
