@@ -13,10 +13,61 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = ROOT / "supply-chain/github-protection.json"
+DEFAULT_SCHEMA = ROOT / "supply-chain/github-protection.schema.json"
 
 
 class ProtectionError(RuntimeError):
     pass
+
+
+def validate_json_schema(instance: Any, schema: Any, path: str = "$") -> None:
+    if not isinstance(schema, dict):
+        raise ProtectionError(f"schema node must be an object at {path}")
+    if "const" in schema and instance != schema["const"]:
+        raise ProtectionError(f"schema const mismatch at {path}")
+    expected_type = schema.get("type")
+    if expected_type == "object" and not isinstance(instance, dict):
+        raise ProtectionError(f"schema expected object at {path}")
+    if expected_type == "array" and not isinstance(instance, list):
+        raise ProtectionError(f"schema expected array at {path}")
+    if isinstance(instance, dict):
+        required = schema.get("required") or []
+        missing = [key for key in required if key not in instance]
+        if missing:
+            raise ProtectionError(f"schema missing fields at {path}: {','.join(missing)}")
+        properties = schema.get("properties") or {}
+        if schema.get("additionalProperties") is False:
+            unknown = sorted(set(instance) - set(properties))
+            if unknown:
+                raise ProtectionError(f"schema unknown fields at {path}: {','.join(unknown)}")
+        for key, child_schema in properties.items():
+            if key in instance:
+                validate_json_schema(instance[key], child_schema, f"{path}.{key}")
+    if isinstance(instance, list):
+        if len(instance) < int(schema.get("minItems", 0)):
+            raise ProtectionError(f"schema array is too short at {path}")
+        if "maxItems" in schema and len(instance) > int(schema["maxItems"]):
+            raise ProtectionError(f"schema array is too long at {path}")
+        if "items" in schema:
+            for index, value in enumerate(instance):
+                validate_json_schema(value, schema["items"], f"{path}[{index}]")
+    for child_schema in schema.get("allOf") or []:
+        if "contains" in child_schema:
+            if not isinstance(instance, list):
+                raise ProtectionError(f"schema contains requires array at {path}")
+            matches = 0
+            for value in instance:
+                try:
+                    validate_json_schema(value, child_schema["contains"], path)
+                except ProtectionError:
+                    continue
+                matches += 1
+            if matches < int(child_schema.get("minContains", 1)):
+                raise ProtectionError(f"schema contains minimum failed at {path}")
+            if "maxContains" in child_schema and matches > int(child_schema["maxContains"]):
+                raise ProtectionError(f"schema contains maximum failed at {path}")
+        else:
+            validate_json_schema(instance, child_schema, path)
 
 
 def load_json(path: Path) -> Any:
@@ -96,6 +147,7 @@ def validate_manifest(manifest: Any) -> dict[str, Any]:
         "custom_branch_policies": False,
     }:
         raise ProtectionError("production deployments must be restricted to protected branches")
+    validate_json_schema(manifest, load_json(DEFAULT_SCHEMA))
     return manifest
 
 

@@ -17,6 +17,7 @@ permissions:
   actions: read
   attestations: read
   contents: read
+  packages: read
 
 concurrency:
   group: taksklad-production
@@ -53,8 +54,8 @@ jobs:
           run_metadata="$RUNNER_TEMP/release-run.json"
           gh run view "$ARTIFACT_RUN_ID" \
             --repo "$GITHUB_REPOSITORY" \
-            --json conclusion,workflowName > "$run_metadata"
-          python3 - "$run_metadata" <<'PY'
+            --json conclusion,event,headSha,workflowName > "$run_metadata"
+          python3 - "$run_metadata" "$EXPECTED_SOURCE_SHA" <<'PY'
           import json
           import sys
           from pathlib import Path
@@ -64,6 +65,10 @@ jobs:
               raise SystemExit("UNVERIFIED_RELEASE_WORKFLOW")
           if metadata.get("conclusion") != "success":
               raise SystemExit("RELEASE_WORKFLOW_NOT_SUCCESSFUL")
+          if metadata.get("event") not in {"release", "workflow_dispatch"}:
+              raise SystemExit("UNVERIFIED_RELEASE_EVENT")
+          if metadata.get("headSha") != sys.argv[2]:
+              raise SystemExit("RELEASE_WORKFLOW_SOURCE_SHA_MISMATCH")
           PY
 
           manifest_dir="$RUNNER_TEMP/release-manifest"
@@ -82,7 +87,11 @@ jobs:
             echo "RELEASE_MANIFEST_SHA256_MISMATCH" >&2
             exit 1
           }
-          gh attestation verify "$manifest_path" --repo "$GITHUB_REPOSITORY"
+          signer_workflow="github.com/$GITHUB_REPOSITORY/.github/workflows/build-windows-release.yml"
+          gh attestation verify "$manifest_path" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$signer_workflow" \
+            --source-digest "$EXPECTED_SOURCE_SHA"
 
           python3 - "$manifest_path" "$ARTIFACT_RUN_ID" "$EXPECTED_SOURCE_SHA" <<'PY'
           import json
@@ -110,6 +119,25 @@ jobs:
               if reference != f"{image.get('name')}@{digest}":
                   raise SystemExit(f"IMMUTABLE_{service.upper()}_REFERENCE_REQUIRED")
           PY
+
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          mapfile -t image_references < <(python3 - "$manifest_path" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          for role in ("backend", "frontend"):
+              print(manifest["images"][role]["reference"])
+          PY
+          )
+          test "${#image_references[@]}" -eq 2
+          for reference in "${image_references[@]}"; do
+            gh attestation verify "oci://$reference" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$signer_workflow" \
+              --source-digest "$EXPECTED_SOURCE_SHA"
+          done
           printf 'RELEASE_MANIFEST_PATH=%s\n' "$manifest_path" >> "$GITHUB_ENV"
 
       - name: Checkout exact verified release SHA
@@ -120,6 +148,17 @@ jobs:
 
       - name: Validate deploy script syntax
         run: bash -n deploy/vds/deploy_from_git.sh
+
+      - name: Package exact-SHA deployment control plane
+        run: |
+          set -euo pipefail
+          tar -czf "$RUNNER_TEMP/taksklad-deploy-control.tar.gz" \
+            deploy/vds/deploy_from_git.sh \
+            deploy/vds/docker-compose.yml \
+            deploy/vds/acceptance_status.sh \
+            deploy/vds/backup_postgres.sh \
+            tools/release_artifacts.py \
+            tools/validate_deploy_probe.py
 
       - name: Validate required secrets
         env:
@@ -144,13 +183,13 @@ jobs:
           printf '%s\n' "$VDS_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-      - name: Copy deploy script and verified manifest to VDS
+      - name: Copy exact-SHA control bundle and verified manifest to VDS
         env:
           VDS_HOST: ${{ secrets.VDS_HOST }}
           VDS_USER: ${{ secrets.VDS_USER }}
         run: |
           scp -i ~/.ssh/taksklad_deploy_key \
-            deploy/vds/deploy_from_git.sh \
+            "$RUNNER_TEMP/taksklad-deploy-control.tar.gz" \
             "$RELEASE_MANIFEST_PATH" \
             "$VDS_USER@$VDS_HOST:/tmp/"
 
@@ -160,13 +199,18 @@ jobs:
           VDS_USER: ${{ secrets.VDS_USER }}
           VDS_APP_DIR: ${{ secrets.VDS_APP_DIR }}
           DEPLOY_ACCEPTANCE: required
+          PRODUCTION_APPROVAL: READY_FOR_PRODUCTION_DEPLOY
         run: |
           app_dir="${VDS_APP_DIR:-/opt/stacks/taksklad/app}"
           remote="$VDS_USER@$VDS_HOST"
           ssh -i ~/.ssh/taksklad_deploy_key "$remote" 'bash -s' <<EOF
           set -euo pipefail
+          app_dir=$(printf '%q' "$app_dir")
+          install -d -m 755 "$app_dir"
+          tar -xzf /tmp/taksklad-deploy-control.tar.gz -C "$app_dir" --no-same-owner
           export TAKSKLAD_DEPLOY_APP_DIR=$(printf '%q' "$app_dir")
           export TAKSKLAD_DEPLOY_ACCEPTANCE=$(printf '%q' "$DEPLOY_ACCEPTANCE")
-          chmod +x /tmp/deploy_from_git.sh
-          /tmp/deploy_from_git.sh --artifact-manifest /tmp/release.json
+          export TAKSKLAD_PRODUCTION_APPROVAL=$(printf '%q' "$PRODUCTION_APPROVAL")
+          chmod +x "$app_dir/deploy/vds/deploy_from_git.sh"
+          "$app_dir/deploy/vds/deploy_from_git.sh" --artifact-manifest /tmp/release.json
           EOF

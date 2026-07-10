@@ -63,6 +63,9 @@ jobs:
           if ($sha -ne $tagSha) {
             throw "IMMUTABLE_RELEASE_TAG_REQUIRED"
           }
+          if ($sha -ne $env:GITHUB_SHA.ToLower()) {
+            throw "IMMUTABLE_WORKFLOW_SHA_MISMATCH"
+          }
           "sha=$sha" >> $env:GITHUB_OUTPUT
 
       - name: Validate release version contract

@@ -5,13 +5,53 @@ import subprocess
 import sys
 import unittest
 
-from tools.github_protection_diff import semantic_diff, validate_manifest
+from tools.github_protection_diff import (
+    load_json,
+    semantic_diff,
+    validate_json_schema,
+    validate_manifest,
+)
+from tools.release_artifacts import validate_manifest_shape
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class CiCdWorkflowTests(unittest.TestCase):
+    def test_historical_production_manifest_remains_valid_for_runtime_rollback(self):
+        source_sha = "a" * 40
+        digest = f"sha256:{'b' * 64}"
+        manifest = {
+            "schema_version": 1,
+            "authority": "github-sigstore",
+            "deployable": True,
+            "source_sha": source_sha,
+            "acceptance_required": True,
+            "images": {
+                role: {
+                    "name": f"ghcr.io/1fear/taksklad-{role}",
+                    "tag": f"sha-{source_sha}",
+                    "digest": digest,
+                }
+                for role in ("backend", "frontend")
+            },
+            "windows": {
+                "version": "1.9.0",
+                "artifact_sha256": "c" * 64,
+                "dependency_lock_sha256": "d" * 64,
+            },
+            "database_rollback": {
+                "strategy": "retain-current-schema",
+                "alembic_downgrade_allowed": False,
+            },
+            "attestation": {
+                "github_identity_verified": True,
+                "registry_attestation_verified": True,
+            },
+        }
+
+        validate_manifest_shape(manifest, local=False)
+
     def test_deploy_probe_rejects_transport_success_with_invalid_readiness_body(self):
         validator = PROJECT_ROOT / "tools" / "validate_deploy_probe.py"
         invalid = subprocess.run(
@@ -138,9 +178,16 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn('metadata.get("workflowName") != "Build Immutable Release"', workflow)
         self.assertIn('metadata.get("conclusion") != "success"', workflow)
         self.assertIn("gh attestation verify \"$manifest_path\"", workflow)
+        self.assertIn('gh attestation verify "oci://$reference"', workflow)
+        self.assertIn('--signer-workflow "$signer_workflow"', workflow)
+        self.assertIn('--source-digest "$EXPECTED_SOURCE_SHA"', workflow)
         self.assertIn("RELEASE_MANIFEST_SOURCE_SHA_MISMATCH", workflow)
+        self.assertIn("RELEASE_WORKFLOW_SOURCE_SHA_MISMATCH", workflow)
         self.assertIn("SOURCE_BUILD_DEPLOYMENT_FORBIDDEN", workflow)
         self.assertIn("ref: ${{ inputs.source_sha }}", workflow)
+        self.assertIn("taksklad-deploy-control.tar.gz", workflow)
+        self.assertIn("PRODUCTION_APPROVAL: READY_FOR_PRODUCTION_DEPLOY", workflow)
+        self.assertIn("TAKSKLAD_PRODUCTION_APPROVAL", workflow)
         self.assertIn("DEPLOY_ACCEPTANCE: required", workflow)
         self.assertNotIn("TAKSKLAD_DEPLOY_REF", workflow)
         self.assertNotIn("inputs.ref", workflow)
@@ -151,7 +198,8 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertNotIn("- optional", workflow)
         self.assertNotIn("- skip", workflow)
         self.assertNotIn("\n  push:", workflow)
-        self.assertNotIn("password", workflow.lower())
+        self.assertNotIn("VDS_PASSWORD", workflow)
+        self.assertNotIn("secrets.VDS_PASSWORD", workflow)
 
     def test_vds_deploy_script_is_artifact_only_and_rolls_back_runtime_without_db_downgrade(self):
         script = (PROJECT_ROOT / "deploy" / "vds" / "deploy_from_git.sh").read_text(encoding="utf-8")
@@ -197,6 +245,12 @@ class CiCdWorkflowTests(unittest.TestCase):
         )
         validated = validate_manifest(manifest)
         self.assertIs(validated["mutation_allowed"], False)
+        schema = load_json(PROJECT_ROOT / "supply-chain" / "github-protection.schema.json")
+        validate_json_schema(manifest, schema)
+        schema_unsafe = copy.deepcopy(manifest)
+        schema_unsafe["branch_rulesets"][0]["conditions"]["ref_name"]["unexpected"] = True
+        with self.assertRaisesRegex(RuntimeError, "schema unknown fields"):
+            validate_json_schema(schema_unsafe, schema)
 
         result = semantic_diff(validated, {"ruleset": None, "environment": None}, source="test")
         self.assertIs(result["read_only"], True)

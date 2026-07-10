@@ -23,6 +23,7 @@ DEFAULT_EVIDENCE_DIR = ROOT / "test-artifacts/release"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$")
 LOCAL_IMAGE_NAMES = {
     "backend": "local/taksklad-backend",
     "frontend": "local/taksklad-frontend",
@@ -326,9 +327,11 @@ def validate_manifest_shape(manifest: dict[str, Any], *, local: bool) -> None:
     for field in ("artifact_sha256", "dependency_lock_sha256"):
         if not HEX_RE.fullmatch(str(windows.get(field) or "")):
             raise ReleaseArtifactError(f"Windows {field} is invalid")
-    if windows.get("version") != read_app_version(ROOT):
-        raise ReleaseArtifactError("Windows version differs from application version")
+    if not VERSION_RE.fullmatch(str(windows.get("version") or "")):
+        raise ReleaseArtifactError("Windows version is invalid")
     if local:
+        if windows.get("version") != read_app_version(ROOT):
+            raise ReleaseArtifactError("Windows version differs from application version")
         if manifest.get("authority") != "local-test" or manifest.get("deployable") is not False:
             raise ReleaseArtifactError("local verification requires non-deployable local-test authority")
         if manifest.get("attestation", {}).get("github_identity_verified") is not False:

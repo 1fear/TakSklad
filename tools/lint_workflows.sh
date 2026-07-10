@@ -110,7 +110,10 @@ deploy_contract = {
     "manifest hash input": "manifest_sha256:",
     "successful producer verification": 'metadata.get("conclusion") != "success"',
     "manifest attestation verification": 'gh attestation verify "$manifest_path"',
-    "artifact-only invocation": "/tmp/deploy_from_git.sh --artifact-manifest /tmp/release.json",
+    "artifact-only invocation": '"$app_dir/deploy/vds/deploy_from_git.sh" --artifact-manifest /tmp/release.json',
+    "registry subject verification": 'gh attestation verify "oci://$reference"',
+    "exact-SHA control bundle": "taksklad-deploy-control.tar.gz",
+    "explicit production approval": "PRODUCTION_APPROVAL: READY_FOR_PRODUCTION_DEPLOY",
     "protected production environment": "environment: production",
 }
 for label, needle in deploy_contract.items():

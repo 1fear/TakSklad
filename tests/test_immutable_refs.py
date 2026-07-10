@@ -109,6 +109,7 @@ class ImmutableReferenceTests(unittest.TestCase):
         self.assertNotIn("dist/provenance/taksklad-backend.oci.tar", workflow)
         self.assertNotIn("dist/provenance/taksklad-frontend.oci.tar", workflow)
         self.assertGreaterEqual(workflow.count("IMMUTABLE_RELEASE_TAG_REQUIRED"), 4)
+        self.assertIn("IMMUTABLE_WORKFLOW_SHA_MISMATCH", workflow)
         self.assertEqual(workflow.count("ref: ${{ steps.release.outputs.tag }}"), 1)
         self.assertIn("ref: ${{ needs.build-windows.outputs.source_sha }}", workflow)
         self.assertGreaterEqual(workflow.count("fetch-tags: true"), 2)
