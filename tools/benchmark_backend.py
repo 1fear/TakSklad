@@ -465,8 +465,7 @@ def scan_db(db, context, iteration):
 def complete_db(db, context, _iteration):
     from backend.app.orders_service import complete_order
 
-    with patch("backend.app.orders_service.export_order_archive_to_google_sheets_best_effort", lambda *_args: None):
-        result = complete_order(db, context["complete_order"])
+    result = complete_order(db, context["complete_order"])
 
     def cleanup():
         cleanup_sql(context, [
@@ -480,14 +479,10 @@ def complete_db(db, context, _iteration):
 def return_db(db, context, iteration):
     from backend.app.orders_service import mark_order_returned
 
-    with (
-        patch("backend.app.orders_service.export_order_archive_to_google_sheets_best_effort", lambda *_args: None),
-        patch("backend.app.orders_service.export_order_return_to_google_sheets_best_effort", lambda *_args: None),
-    ):
-        result = mark_order_returned(
-            db, context["return_order"], return_reference=f"SYNTHETIC-RETURN-{iteration:08d}",
-            returned_by="synthetic-benchmark", confirmed_items=context["return_items"],
-        )
+    result = mark_order_returned(
+        db, context["return_order"], return_reference=f"SYNTHETIC-RETURN-{iteration:08d}",
+        returned_by="synthetic-benchmark", confirmed_items=context["return_items"],
+    )
 
     def cleanup():
         cleanup_sql(context, [
@@ -950,6 +945,92 @@ def run_compare(workload):
     return 0 if not failures else 1
 
 
+def compare_metric_snapshot(metrics):
+    return {
+        key: metrics[key]
+        for key in ("p50_ms", "p95_ms", "p99_ms", "query_count", "rows_returned")
+    }
+
+
+def run_profile_compare(profile_name, repeat, assert_budgets):
+    if repeat < 1:
+        raise ValueError("compare repeat must be at least 1")
+    profiles = load_json(PROFILES_PATH)
+    budgets = load_json(BUDGETS_PATH)
+    approved_path = EVIDENCE_DIR / "backend-baseline-approved.json"
+    if not approved_path.exists():
+        raise RuntimeError("approved Phase 6 baseline is missing; run baseline first")
+    approved = load_json(approved_path)
+    profile = profiles["profiles"][profile_name]
+    runs = []
+    failures = []
+    for run_number in range(1, repeat + 1):
+        with disposable_database() as (database_url, runtime):
+            dataset, dataset_path = seed_profile(database_url, profile_name)
+            context = workload_context(database_url, profile)
+            results = {
+                name: measure_workload(database_url, name, context, 100)
+                for name in WORKLOADS
+            }
+            host = host_manifest(database_url, runtime)
+        run_failures = assertion_failures(results, budgets, approved=approved)
+        failures.extend(f"run {run_number}: {failure}" for failure in run_failures)
+        runs.append({
+            "run": run_number,
+            "dataset_manifest": str(dataset_path.relative_to(ROOT)),
+            "dataset_counts": dataset["table_counts"],
+            "host": host,
+            "results": results,
+            "failures": run_failures,
+        })
+
+    summaries = {}
+    for workload in WORKLOADS:
+        previous = approved["results"][workload]
+        workload_runs = [compare_metric_snapshot(run["results"][workload]) for run in runs]
+        summaries[workload] = {
+            "approved": compare_metric_snapshot(previous),
+            "runs": workload_runs,
+            "delta_percent": [
+                {
+                    metric: round(
+                        (float(metrics[metric]) - float(previous[metric]))
+                        / float(previous[metric]) * 100,
+                        3,
+                    )
+                    for metric in ("p50_ms", "p95_ms", "p99_ms")
+                }
+                for metrics in workload_runs
+            ],
+        }
+    enforced_failures = failures if assert_budgets else []
+    evidence = {
+        "schema": 1,
+        "mode": "profile_compare",
+        "profile": profile_name,
+        "repeat": repeat,
+        "iterations_per_workload_per_run": 100,
+        "assert_budgets": bool(assert_budgets),
+        "approved_evidence": str(approved_path.relative_to(ROOT)),
+        "summaries": summaries,
+        "runs": runs,
+        "status": "pass" if not enforced_failures else "fail",
+        "failures": enforced_failures,
+    }
+    path = EVIDENCE_DIR / f"compare-{profile_name}.json"
+    path.write_text(json.dumps(evidence, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    sys.stdout.write(json.dumps({
+        "status": evidence["status"],
+        "profile": profile_name,
+        "repeat": repeat,
+        "iterations_per_workload_per_run": 100,
+        "summaries": summaries,
+        "evidence": str(path.relative_to(ROOT)),
+        "failures": enforced_failures,
+    }, ensure_ascii=False, sort_keys=True) + "\n")
+    return 0 if not enforced_failures else 1
+
+
 def validate_manifest():
     profiles = load_json(PROFILES_PATH)
     budgets = load_json(BUDGETS_PATH)
@@ -1011,7 +1092,10 @@ def parse_args():
     explain_parser.add_argument("--profile", choices=("small", "reference", "stress"), required=True)
     explain_parser.add_argument("--format", choices=("json",), default="json")
     compare_parser = subparsers.add_parser("compare")
-    compare_parser.add_argument("--workload", choices=("import",), required=True)
+    compare_parser.add_argument("--workload", choices=("import",))
+    compare_parser.add_argument("--profile", choices=("reference",))
+    compare_parser.add_argument("--repeat", type=int, default=1)
+    compare_parser.add_argument("--assert-budgets", action="store_true")
     subparsers.add_parser("validate-manifest")
     return parser.parse_args()
 
@@ -1025,6 +1109,12 @@ def main():
     if args.command == "explain":
         return run_explain(args.profile)
     if args.command == "compare":
+        if args.profile:
+            if args.workload:
+                raise ValueError("compare accepts either --profile or --workload, not both")
+            return run_profile_compare(args.profile, args.repeat, args.assert_budgets)
+        if not args.workload:
+            raise ValueError("compare requires --profile or --workload")
         return run_compare(args.workload)
     return validate_manifest()
 

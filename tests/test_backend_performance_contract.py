@@ -1,5 +1,11 @@
 import copy
+import io
+import json
+import tempfile
 import unittest
+from contextlib import contextmanager, redirect_stdout
+from pathlib import Path
+from unittest import mock
 
 from tools import benchmark_backend
 
@@ -61,6 +67,60 @@ class BackendPerformanceContractTests(unittest.TestCase):
         self.assertEqual(50, benchmark_backend.percentile(values, 50))
         self.assertEqual(95, benchmark_backend.percentile(values, 95))
         self.assertEqual(99, benchmark_backend.percentile(values, 99))
+
+    def test_profile_compare_runs_every_workload_three_times_without_overwriting_approved(self):
+        metrics = {
+            "iterations": 100,
+            "warmup_iterations": 10,
+            "p50_ms": 1,
+            "p95_ms": 1,
+            "p99_ms": 1,
+            "query_count": {"min": 1, "median": 1, "max": 1},
+            "rows_returned": {"min": 1, "median": 1, "max": 1},
+        }
+
+        @contextmanager
+        def fake_database():
+            yield "postgresql+psycopg://synthetic", {"image": "synthetic-postgres"}
+
+        release_state = benchmark_backend.ROOT / ".release-state"
+        release_state.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=release_state) as temp_dir:
+            evidence_dir = Path(temp_dir)
+            approved_path = evidence_dir / "backend-baseline-approved.json"
+            approved_payload = {
+                "results": {name: copy.deepcopy(metrics) for name in benchmark_backend.WORKLOADS},
+            }
+            approved_path.write_text(json.dumps(approved_payload), encoding="utf-8")
+            measured = []
+
+            def fake_measure(_url, workload, _context, iterations):
+                measured.append((workload, iterations))
+                return copy.deepcopy(metrics)
+
+            with (
+                mock.patch.object(benchmark_backend, "EVIDENCE_DIR", evidence_dir),
+                mock.patch.object(benchmark_backend, "disposable_database", fake_database),
+                mock.patch.object(
+                    benchmark_backend,
+                    "seed_profile",
+                    return_value=({"table_counts": {"orders": 1}}, evidence_dir / "dataset-reference.json"),
+                ),
+                mock.patch.object(benchmark_backend, "workload_context", return_value={}),
+                mock.patch.object(benchmark_backend, "measure_workload", side_effect=fake_measure),
+                mock.patch.object(benchmark_backend, "host_manifest", return_value={"synthetic": True}),
+            ):
+                with redirect_stdout(io.StringIO()):
+                    result = benchmark_backend.run_profile_compare("reference", 3, True)
+
+            self.assertEqual(result, 0)
+            self.assertEqual(len(measured), 3 * len(benchmark_backend.WORKLOADS))
+            self.assertTrue(all(iterations == 100 for _workload, iterations in measured))
+            self.assertEqual(json.loads(approved_path.read_text(encoding="utf-8")), approved_payload)
+            evidence = json.loads((evidence_dir / "compare-reference.json").read_text(encoding="utf-8"))
+            self.assertEqual(evidence["repeat"], 3)
+            self.assertEqual(evidence["status"], "pass")
+            self.assertEqual(len(evidence["runs"]), 3)
 
 
 if __name__ == "__main__":
