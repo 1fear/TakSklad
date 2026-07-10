@@ -1,0 +1,10 @@
+[Unit]
+Description=Run TakSklad isolated restore control drill weekly
+
+[Timer]
+OnCalendar=Sun *-*-* 04:30:00
+Persistent=true
+Unit=taksklad-postgres-restore-drill.service
+
+[Install]
+WantedBy=timers.target

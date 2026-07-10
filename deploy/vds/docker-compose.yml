@@ -17,11 +17,43 @@ x-app-hardening: &app-hardening
       max-file: "3"
 
 services:
+  postgres-wal-init:
+    image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+    restart: "no"
+    user: "0:0"
+    command: ["sh", "-c", "install -d -o 70 -g 70 -m 700 /wal-archive"]
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 32
+    mem_limit: 64m
+    cpus: 0.1
+    network_mode: none
+    volumes:
+      - type: volume
+        source: postgres_wal_archive
+        target: /wal-archive
+
   postgres:
     image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
     restart: unless-stopped
     init: true
     user: "70:70"
+    command:
+      - postgres
+      - -c
+      - wal_level=replica
+      - -c
+      - archive_mode=on
+      - -c
+      - archive_timeout=900s
+      - -c
+      - archive_command=test ! -f /wal-archive/%f && cp %p /wal-archive/%f
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -30,6 +62,11 @@ services:
       - type: volume
         source: postgres_data
         target: /var/lib/postgresql/data
+        volume:
+          nocopy: true
+      - type: volume
+        source: postgres_wal_archive
+        target: /wal-archive
         volume:
           nocopy: true
     read_only: true
@@ -55,6 +92,9 @@ services:
       retries: 5
     networks:
       - taksklad-internal
+    depends_on:
+      postgres-wal-init:
+        condition: service_completed_successfully
 
   backend-api:
     <<: *app-hardening
@@ -355,6 +395,7 @@ services:
 
 volumes:
   postgres_data:
+  postgres_wal_archive:
 
 networks:
   taksklad-internal:

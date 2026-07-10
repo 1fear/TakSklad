@@ -1,0 +1,13 @@
+[Unit]
+Description=TakSklad isolated synthetic restore control drill
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/stacks/taksklad/app
+Environment=TAKSKLAD_DR_EVIDENCE_DIR=/opt/taksklad/dr-evidence
+ExecStart=/opt/stacks/taksklad/app/deploy/vds/restore_drill.sh --isolated --synthetic-db --assert-invariants
+
+# This scheduled control never reads production backup/env or contacts PostgreSQL.
+# A real production restore remains separately approval-gated.

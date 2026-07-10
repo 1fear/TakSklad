@@ -275,10 +275,16 @@ class CiCdWorkflowTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        for script in (backup, restore, drill):
+        for script in (backup, restore):
             self.assertIn('ENV_FILE="${TAKSKLAD_ENV_FILE:-$SCRIPT_DIR/.env}"', script)
             self.assertIn('COMPOSE_FILE="${TAKSKLAD_COMPOSE_FILE:-$SCRIPT_DIR/docker-compose.yml}"', script)
             self.assertIn('docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE"', script)
+
+        self.assertIn("tools/dr_recovery.py", drill)
+        self.assertIn("--isolated --synthetic-db --assert-invariants", drill)
+        self.assertIn("--manifest", drill)
+        self.assertNotIn("TAKSKLAD_ENV_FILE", drill)
+        self.assertNotIn("docker compose", drill)
 
         self.assertIn("/opt/stacks/taksklad/app", installer)
         self.assertIn("WorkingDirectory=/opt/stacks/taksklad/app", unit)
