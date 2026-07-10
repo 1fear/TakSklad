@@ -194,6 +194,10 @@ describe("authenticated control-surface characterization", () => {
     expect(await screen.findByRole("heading", { name: "Клиенты и таймслоты" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "2 заказов · 1 возвратов" }));
     expect(await screen.findByText("Тестовый товар")).toBeInTheDocument();
+    expect(screen.getByText("Заказ 1 · SkladBot: WH-R-TEST-1")).toBeInTheDocument();
+    expect(screen.getByText("Заказ 2 · SkladBot: ID 1002")).toBeInTheDocument();
+    expect(screen.getByText("Возврат · SkladBot: не найдена")).toBeInTheDocument();
+
     const clientSearch = screen.getByRole("searchbox", { name: "Поиск клиентов" });
     await user.type(clientSearch, "Несуществующий клиент");
     expect(screen.getByText("Нет данных")).toBeInTheDocument();

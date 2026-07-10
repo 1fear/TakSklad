@@ -177,6 +177,26 @@ export const clientOrderSummary: ClientPointOrderSummary = {
     positions_count: 1,
     quantity_blocks: 2,
     quantity_pieces: 20,
+    order_references: [
+      {
+        order_id: "order-with-number",
+        skladbot_request_number: "WH-R-TEST-1",
+        skladbot_request_id: "1001",
+        is_returned: false,
+      },
+      {
+        order_id: "order-with-id",
+        skladbot_request_number: "",
+        skladbot_request_id: "1002",
+        is_returned: false,
+      },
+      {
+        order_id: "order-without-reference",
+        skladbot_request_number: "",
+        skladbot_request_id: "",
+        is_returned: true,
+      },
+    ],
     products: [{
       product: "Тестовый товар",
       positions_count: 1,

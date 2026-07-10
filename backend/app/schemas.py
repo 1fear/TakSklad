@@ -413,6 +413,13 @@ class ClientPointOrderProductRead(BaseModel):
     quantity_pieces: int = 0
 
 
+class ClientPointOrderReferenceRead(BaseModel):
+    order_id: str
+    skladbot_request_number: str = ""
+    skladbot_request_id: str = ""
+    is_returned: bool = False
+
+
 class ClientPointOrderDateRead(BaseModel):
     shipment_date: date | None = None
     payment_type: str = ""
@@ -421,6 +428,7 @@ class ClientPointOrderDateRead(BaseModel):
     positions_count: int = 0
     quantity_blocks: int = 0
     quantity_pieces: int = 0
+    order_references: list[ClientPointOrderReferenceRead] = Field(default_factory=list)
     products: list[ClientPointOrderProductRead] = Field(default_factory=list)
 
 

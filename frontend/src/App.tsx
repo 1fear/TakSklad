@@ -2360,6 +2360,14 @@ function ClientOrderHistory({ point, summary, error, loading }: { point: ClientP
           <div className="client-order-date-head">
             <div className="client-order-date-meta">
               <strong>{formatDate(entry.shipment_date)}</strong>
+              <div className="client-order-skladbot-references" aria-label="Заявки SkladBot">
+                {entry.order_references.map((reference, index) => (
+                  <span key={reference.order_id}>
+                    {formatClientOrderSkladBotReference(reference, entry.order_references.length, index)}
+                  </span>
+                ))}
+                {entry.order_references.length === 0 && <span>Заявка SkladBot: не найдена</span>}
+              </div>
               <span>Тип оплаты: {entry.payment_type || "-"}</span>
             </div>
             <span>
@@ -3525,6 +3533,18 @@ function formatOrderReturnCounts(orders: number, returns: number) {
   const parts = [`${formatNumber(orders)} заказов`];
   if (returns > 0) parts.push(`${formatNumber(returns)} возвратов`);
   return parts.join(" · ");
+}
+
+function formatClientOrderSkladBotReference(
+  reference: ClientPointOrderSummary["dates"][number]["order_references"][number],
+  totalReferences: number,
+  index: number,
+) {
+  const value = reference.skladbot_request_number
+    || (reference.skladbot_request_id ? `ID ${reference.skladbot_request_id}` : "не найдена");
+  if (totalReferences === 1) return `Заявка SkladBot: ${value}`;
+  const orderLabel = reference.is_returned ? "Возврат" : `Заказ ${index + 1}`;
+  return `${orderLabel} · SkladBot: ${value}`;
 }
 
 function formatClientProductQuantity(blocks: number, pieces: number) {

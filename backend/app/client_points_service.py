@@ -482,6 +482,21 @@ def get_client_point_order_summary(
         .where(*order_filters)
         .group_by(Order.order_date, Order.payment_type, returned)
     ).mappings()
+    order_reference_rows = db.execute(
+        select(
+            Order.id.label("order_id"),
+            Order.order_date.label("shipment_date"),
+            func.coalesce(Order.raw_payload["skladbot_request_number"].as_string(), "").label(
+                "skladbot_request_number"
+            ),
+            func.coalesce(Order.raw_payload["skladbot_request_id"].as_string(), "").label(
+                "skladbot_request_id"
+            ),
+            returned.label("is_returned"),
+        )
+        .where(*order_filters)
+        .order_by(returned.asc(), Order.created_at.asc(), Order.id.asc())
+    ).mappings()
     display_client_name = db.execute(
         select(Order.client)
         .where(*order_filters)
@@ -522,6 +537,7 @@ def get_client_point_order_summary(
             "positions_count": 0,
             "quantity_blocks": 0,
             "quantity_pieces": 0,
+            "order_references": [],
             "products_by_name": {},
         })
         payment_type = normalize_text(row["payment_type"])
@@ -534,6 +550,16 @@ def get_client_point_order_summary(
         else:
             totals["orders_count"] += order_count
             date_row["orders_count"] += order_count
+
+    for row in order_reference_rows:
+        shipment_date = row["shipment_date"]
+        date_key = shipment_date.isoformat() if shipment_date else ""
+        dates_by_key[date_key]["order_references"].append({
+            "order_id": str(row["order_id"]),
+            "skladbot_request_number": normalize_text(row["skladbot_request_number"]),
+            "skladbot_request_id": normalize_text(row["skladbot_request_id"]),
+            "is_returned": bool(row["is_returned"]),
+        })
 
     for row in item_rows:
         shipment_date = row["shipment_date"]
@@ -573,6 +599,7 @@ def get_client_point_order_summary(
                 "positions_count": int(row.get("positions_count") or 0),
                 "quantity_blocks": int(row.get("quantity_blocks") or 0),
                 "quantity_pieces": int(row.get("quantity_pieces") or 0),
+                "order_references": list(row.get("order_references") or []),
                 "products": sorted(
                     [
                         {

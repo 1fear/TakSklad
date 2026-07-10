@@ -594,7 +594,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
                 representative="Rep",
                 order_date=date(2026, 6, 21),
                 status="not_completed",
-                raw_payload={"source": "test"},
+                raw_payload={"source": "test", "skladbot_request_number": "WH-R-NEW"},
             )
             returned_order = Order(
                 payment_type="cash",
@@ -603,7 +603,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
                 representative="Rep",
                 order_date=date(2026, 6, 21),
                 status="returned",
-                raw_payload={"source": "test", "return_status": "returned"},
+                raw_payload={"source": "test", "return_status": "returned", "skladbot_request_id": "RETURN-21"},
             )
             other_client_order = Order(
                 payment_type="cash",
@@ -687,6 +687,17 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(payload["dates"][0]["returned_orders_count"], 1)
         self.assertEqual(payload["dates"][0]["positions_count"], 2)
         self.assertEqual(
+            {
+                (
+                    reference["skladbot_request_number"],
+                    reference["skladbot_request_id"],
+                    reference["is_returned"],
+                )
+                for reference in payload["dates"][0]["order_references"]
+            },
+            {("WH-R-NEW", "", False), ("", "RETURN-21", True)},
+        )
+        self.assertEqual(
             {product["product"]: product["quantity_blocks"] for product in payload["dates"][0]["products"]},
             {
                 "Chapman Green OP 20": 5,
@@ -696,6 +707,14 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(payload["dates"][1]["orders_count"], 1)
         self.assertEqual(payload["dates"][1]["returned_orders_count"], 0)
         self.assertEqual(payload["dates"][1]["positions_count"], 2)
+        self.assertEqual(
+            {
+                "skladbot_request_number": payload["dates"][1]["order_references"][0]["skladbot_request_number"],
+                "skladbot_request_id": payload["dates"][1]["order_references"][0]["skladbot_request_id"],
+                "is_returned": payload["dates"][1]["order_references"][0]["is_returned"],
+            },
+            {"skladbot_request_number": "", "skladbot_request_id": "", "is_returned": False},
+        )
         self.assertEqual(
             {product["product"]: product["quantity_blocks"] for product in payload["dates"][1]["products"]},
             {

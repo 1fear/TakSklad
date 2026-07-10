@@ -359,7 +359,15 @@ export type ClientPointOrderSummaryDate = {
   positions_count: number;
   quantity_blocks: number;
   quantity_pieces: number;
+  order_references: ClientPointOrderReference[];
   products: ClientPointOrderSummaryProduct[];
+};
+
+export type ClientPointOrderReference = {
+  order_id: string;
+  skladbot_request_number: string;
+  skladbot_request_id: string;
+  is_returned: boolean;
 };
 
 export type ClientPointOrderSummaryProduct = {
