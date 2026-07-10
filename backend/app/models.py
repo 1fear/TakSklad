@@ -327,13 +327,105 @@ class RepresentativeContact(Base):
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        CheckConstraint("auth_version > 0", name="ck_users_auth_version_positive"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
     username: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
     password_hash: Mapped[str | None] = mapped_column(String(255))
     role: Mapped[str] = mapped_column(String(40), nullable=False, default="operator")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    auth_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class AuthSession(Base):
+    __tablename__ = "auth_sessions"
+    __table_args__ = (
+        UniqueConstraint("session_digest", name="uq_auth_sessions_session_digest"),
+        Index("idx_auth_sessions_user_active", "user_id", "revoked_at", "expires_at"),
+        Index("idx_auth_sessions_expires_at", "expires_at"),
+        CheckConstraint("auth_version > 0", name="ck_auth_sessions_auth_version_positive"),
+        CheckConstraint("trim(subject) <> ''", name="ck_auth_sessions_subject_nonblank"),
+        CheckConstraint("trim(role) <> ''", name="ck_auth_sessions_role_nonblank"),
+        CheckConstraint("length(auth_state_digest) = 64", name="ck_auth_sessions_auth_state_digest_length"),
+        CheckConstraint("length(session_digest) = 64", name="ck_auth_sessions_session_digest_length"),
+        CheckConstraint("expires_at > created_at", name="ck_auth_sessions_expiry_after_creation"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID_TYPE,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    subject: Mapped[str] = mapped_column(String(120), nullable=False)
+    role: Mapped[str] = mapped_column(String(40), nullable=False)
+    auth_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    auth_state_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    session_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+    last_used_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ServicePrincipal(Base):
+    __tablename__ = "service_principals"
+    __table_args__ = (
+        UniqueConstraint("identifier", name="uq_service_principals_identifier"),
+        Index("idx_service_principals_kind_active", "kind", "is_active"),
+        Index("idx_service_principals_expires_at", "expires_at"),
+        CheckConstraint("trim(identifier) <> ''", name="ck_service_principals_identifier_nonblank"),
+        CheckConstraint(
+            "kind IN ('desktop','worker','acceptance')",
+            name="ck_service_principals_supported_kind",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    identifier: Mapped[str] = mapped_column(String(120), nullable=False)
+    kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    scopes: Mapped[list[str]] = mapped_column(JSON_TYPE, nullable=False, default=list)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    expires_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+    last_used_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class ServicePrincipalToken(Base):
+    __tablename__ = "service_principal_tokens"
+    __table_args__ = (
+        UniqueConstraint("token_digest", name="uq_service_principal_tokens_token_digest"),
+        Index(
+            "idx_service_principal_tokens_principal_active",
+            "principal_id",
+            "revoked_at",
+            "expires_at",
+        ),
+        Index("idx_service_principal_tokens_expires_at", "expires_at"),
+        CheckConstraint("length(token_digest) = 64", name="ck_service_principal_tokens_digest_length"),
+        CheckConstraint("expires_at > issued_at", name="ck_service_principal_tokens_expiry_after_issue"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    principal_id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE,
+        ForeignKey("service_principals.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    token_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    issued_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+    last_used_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+    replaced_by_token_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID_TYPE,
+        ForeignKey("service_principal_tokens.id", ondelete="SET NULL"),
+    )
 
 
 class AuditLog(Base):
@@ -341,6 +433,10 @@ class AuditLog(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
     actor_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID_TYPE, ForeignKey("users.id", ondelete="SET NULL"))
+    actor_service_principal_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID_TYPE,
+        ForeignKey("service_principals.id", ondelete="SET NULL"),
+    )
     action: Mapped[str] = mapped_column(String(120), nullable=False)
     entity_type: Mapped[str | None] = mapped_column(String(80))
     entity_id: Mapped[str | None] = mapped_column(String(120))

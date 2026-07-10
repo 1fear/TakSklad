@@ -4,6 +4,7 @@ import hmac
 import json
 import secrets
 import time
+import uuid
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -21,6 +22,8 @@ PERMISSION_CLIENT_POINTS_WRITE = "client_points:write"
 class AuthIdentity:
     login: str
     role: str
+    user_id: uuid.UUID | None = None
+    auth_version: int = 0
 
 
 class WebAuthError(Exception):
@@ -40,7 +43,12 @@ def authenticate_web_user(settings, login, password, db=None):
     if db is not None:
         user = find_active_db_user(db, normalized_login)
         if user and user.password_hash and verify_password(str(password or ""), user.password_hash):
-            return AuthIdentity(login=user.username, role=normalize_role(user.role))
+            return AuthIdentity(
+                login=user.username,
+                role=normalize_role(user.role),
+                user_id=user.id,
+                auth_version=int(getattr(user, "auth_version", 0) or 0),
+            )
 
     if not settings.web_auth_enabled and db is None:
         raise WebAuthError("web auth is not configured")

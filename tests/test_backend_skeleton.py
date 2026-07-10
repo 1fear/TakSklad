@@ -40,6 +40,7 @@ class BackendSkeletonTests(unittest.TestCase):
             "backend/migrations/versions/20260710_0009_import_identity.py",
             "backend/migrations/versions/20260710_0010_data_invariants.py",
             "backend/migrations/versions/20260710_0011_atomic_outbox.py",
+            "backend/migrations/versions/20260710_0012_auth_identities.py",
             "docs/database-migrations-runbook.md",
             "deploy/vds/docker-compose.yml",
             "deploy/vds/config-contract.json",
@@ -135,6 +136,7 @@ class BackendSkeletonTests(unittest.TestCase):
         import_identity = (ROOT_DIR / "backend/migrations/versions/20260710_0009_import_identity.py").read_text(encoding="utf-8").lower()
         data_invariants = (ROOT_DIR / "backend/migrations/versions/20260710_0010_data_invariants.py").read_text(encoding="utf-8").lower()
         atomic_outbox = (ROOT_DIR / "backend/migrations/versions/20260710_0011_atomic_outbox.py").read_text(encoding="utf-8").lower()
+        auth_identities = (ROOT_DIR / "backend/migrations/versions/20260710_0012_auth_identities.py").read_text(encoding="utf-8").lower()
 
         for table_name in [
             "orders",
@@ -223,6 +225,11 @@ class BackendSkeletonTests(unittest.TestCase):
         self.assertIn('down_revision = "20260710_0010"', atomic_outbox)
         self.assertIn("create index concurrently", atomic_outbox)
         self.assertIn("atomic outbox migration is forward-only", atomic_outbox)
+        self.assertIn('revision = "20260710_0012"', auth_identities)
+        self.assertIn('down_revision = "20260710_0011"', auth_identities)
+        for table_name in ("auth_sessions", "service_principals", "service_principal_tokens"):
+            self.assertIn(f'"{table_name}"', auth_identities)
+        self.assertIn("auth identity migration is forward-only", auth_identities)
 
     def test_deploy_runbook_uses_alembic_for_normal_production_upgrades(self):
         runbook = (ROOT_DIR / "docs/deploy-rollback-runbook.md").read_text(encoding="utf-8")

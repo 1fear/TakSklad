@@ -1004,6 +1004,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.seed_order()
         auth_settings = load_settings({
             "TAKSKLAD_ENV": "local",
+            "TAKSKLAD_INSECURE_LOCAL_ANONYMOUS": "true",
             "TAKSKLAD_API_TOKEN": "",
             "TAKSKLAD_WEB_LOGIN": "",
             "TAKSKLAD_WEB_PASSWORD_HASH": "",

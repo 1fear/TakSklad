@@ -1,10 +1,11 @@
 import hashlib
 import hmac
 import ipaddress
+import logging
 from dataclasses import dataclass
 from urllib.parse import quote
 from threading import Lock, Thread
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -41,6 +42,13 @@ from .incidents_service import (
 from .imports_service import create_import as create_import_in_db
 from .imports_service import list_imports as list_imports_in_db
 from .imports_service import preview_import as preview_import_in_db
+from .auth_identities import (
+    IdentityAuthError,
+    authenticate_service_token,
+    create_user_session,
+    revoke_user_session,
+    validate_user_session,
+)
 from .kiz_reports_service import (
     build_kiz_date_range_report_xlsx,
     build_kiz_date_report_xlsx,
@@ -121,6 +129,7 @@ from .login_limiter import (
     LoginLimiterCapacityExceeded,
     LoginRateLimited,
 )
+from .models import User
 from .settings import APP_VERSION, load_settings, validate_backend_settings
 from .web_auth import (
     PERMISSION_ADMIN_WRITE,
@@ -173,11 +182,31 @@ def validate_startup_configuration():
     validate_backend_settings(settings)
 
 
-def is_valid_service_token(authorization: str | None) -> bool:
+def legacy_auth_window_active(now=None) -> bool:
+    if settings.legacy_auth_mode != "enforce":
+        return False
+    expiry_text = str(settings.legacy_auth_expires_at or "").strip()
+    if not expiry_text:
+        return settings.environment.strip().casefold() != "production"
+    try:
+        expiry = datetime.fromisoformat(expiry_text.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if expiry.tzinfo is None:
+        return False
+    current = now or datetime.now(timezone.utc)
+    return current.astimezone(timezone.utc) < expiry.astimezone(timezone.utc)
+
+
+def legacy_service_token_matches(authorization: str | None) -> bool:
     if not settings.api_auth_enabled:
         return False
     expected = f"Bearer {settings.api_token}"
     return hmac.compare_digest(str(authorization or ""), expected)
+
+
+def is_valid_service_token(authorization: str | None) -> bool:
+    return legacy_auth_window_active() and legacy_service_token_matches(authorization)
 
 
 @dataclass(frozen=True)
@@ -186,62 +215,170 @@ class AuthContext:
     role: str
     permissions: tuple[str, ...]
     source: str
+    principal_id: str = ""
+    token_id: str = ""
+    session_id: str = ""
 
 
-def read_auth_context(request: Request, authorization: str | None = None):
-    if is_valid_service_token(authorization):
-        return AuthContext(
-            login="service-token",
-            role=ROLE_ADMIN,
-            permissions=role_permissions(ROLE_ADMIN),
-            source="service-token",
-        )
-    if settings.web_auth_enabled:
+def bearer_token(authorization: str | None) -> str:
+    scheme, separator, token = str(authorization or "").partition(" ")
+    if not separator or scheme.casefold() != "bearer":
+        return ""
+    return token.strip()
+
+
+def required_service_scope(request: Request) -> str:
+    path = request.url.path
+    method = request.method.upper()
+    if path == "/api/v1/orders/active":
+        return "orders:read"
+    if path.startswith("/api/v1/admin/orders/") and path.endswith("/delete-active"):
+        return "orders:delete_active"
+    if path.startswith("/api/v1/admin/"):
+        return "admin:read" if method == "GET" else PERMISSION_ADMIN_WRITE
+    if path == "/api/v1/sync/sources":
+        return "sync:run"
+    if path.startswith("/api/v1/scans/undo"):
+        return "scans:undo"
+    if path.startswith("/api/v1/scans"):
+        return "scans:create"
+    if path.startswith("/api/v1/orders/") and path.endswith("/complete"):
+        return "orders:complete"
+    if path.startswith("/api/v1/returns"):
+        return "returns:read" if method == "GET" else "returns:write"
+    if path.startswith("/api/v1/kiz/"):
+        return "kiz:read"
+    if path == "/api/v1/imports/preview":
+        return "imports:preview"
+    if path.startswith("/api/v1/imports"):
+        return "imports:read" if method == "GET" else "imports:create"
+    if path == "/api/v1/reports/reconciliation/day":
+        return "reconciliation:run"
+    if path.startswith("/api/v1/reports/"):
+        return "reports:read"
+    if path.startswith("/api/v1/logistics/"):
+        return "logistics:read"
+    if path.startswith("/api/v1/diagnostics/"):
+        return "diagnostics:read"
+    return ""
+
+
+def cache_auth_context(request: Request, context: AuthContext) -> AuthContext:
+    state = getattr(request, "state", None)
+    if state is not None:
+        state.auth_context = context
+    return context
+
+
+def read_auth_context(request: Request, authorization: str | None = None, db=None):
+    cached = getattr(getattr(request, "state", None), "auth_context", None)
+    if isinstance(cached, AuthContext):
+        return cached
+
+    raw_bearer = bearer_token(authorization)
+    if settings.identity_auth_enabled and db is not None and raw_bearer.startswith("tks."):
         try:
-            payload = read_web_session(request)
+            verified = authenticate_service_token(db, raw_bearer)
+            db.commit()
+            return cache_auth_context(request, AuthContext(
+                login=verified.principal_identifier,
+                role=verified.principal_kind,
+                permissions=tuple(sorted(verified.scopes)),
+                source="service-principal",
+                principal_id=str(verified.principal_id),
+                token_id=str(verified.token_id),
+            ))
+        except IdentityAuthError:
+            db.rollback()
+
+    if legacy_service_token_matches(authorization):
+        if settings.legacy_auth_mode == "shadow":
+            logging.warning("Legacy service credential matched in shadow-only mode")
+        elif legacy_auth_window_active():
+            return cache_auth_context(request, AuthContext(
+                login="legacy-service-token",
+                role=ROLE_ADMIN,
+                permissions=role_permissions(ROLE_ADMIN),
+                source="legacy-service-token",
+            ))
+
+    if settings.web_auth_enabled or settings.identity_auth_enabled:
+        try:
+            payload = read_web_session(request, db=db)
             role = normalize_role(payload.get("role"))
-            return AuthContext(
+            return cache_auth_context(request, AuthContext(
                 login=payload.get("sub") or "",
                 role=role,
                 permissions=role_permissions(role),
                 source="web-session",
-            )
-        except WebAuthError:
-            pass
+                session_id=str(payload.get("sid") or ""),
+            ))
+        except (WebAuthError, IdentityAuthError):
+            if db is not None:
+                db.rollback()
+
     if (
-        not settings.api_auth_enabled
+        not settings.identity_auth_enabled
+        and not settings.api_auth_enabled
         and not settings.web_auth_enabled
         and settings.anonymous_local_admin_enabled
     ):
-        return AuthContext(
+        return cache_auth_context(request, AuthContext(
             login="local-dev",
             role=ROLE_ADMIN,
             permissions=role_permissions(ROLE_ADMIN),
             source="local-dev",
-        )
+        ))
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid service token or web session",
     )
 
 
-def require_service_token(request: Request, authorization: str | None = Header(default=None)):
-    return read_auth_context(request, authorization)
+def require_service_token(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    db=Depends(get_db),
+):
+    auth_context = read_auth_context(request, authorization, db=db)
+    if auth_context.source == "service-principal":
+        required_scope = required_service_scope(request)
+        if not required_scope or required_scope not in auth_context.permissions:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Service principal scope denied")
+    return auth_context
 
 
-def require_permission(permission: str, request: Request, authorization: str | None = Header(default=None)):
-    auth_context = read_auth_context(request, authorization)
+def require_permission(
+    permission: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+    db=None,
+):
+    auth_context = read_auth_context(request, authorization, db=db)
     if permission not in auth_context.permissions:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permissions")
     return auth_context
 
 
-def require_admin_write_permission(request: Request, authorization: str | None = Header(default=None)):
-    return require_permission(PERMISSION_ADMIN_WRITE, request, authorization)
+def require_admin_write_permission(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    db=Depends(get_db),
+):
+    auth_context = read_auth_context(request, authorization, db=db)
+    if auth_context.source == "service-principal":
+        required_scope = required_service_scope(request)
+        if required_scope and required_scope in auth_context.permissions:
+            return auth_context
+    return require_permission(PERMISSION_ADMIN_WRITE, request, authorization, db=db)
 
 
-def require_client_points_write_permission(request: Request, authorization: str | None = Header(default=None)):
-    return require_permission(PERMISSION_CLIENT_POINTS_WRITE, request, authorization)
+def require_client_points_write_permission(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    db=Depends(get_db),
+):
+    return require_permission(PERMISSION_CLIENT_POINTS_WRITE, request, authorization, db=db)
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -276,8 +413,22 @@ def auth_session_read(payload):
     )
 
 
-def read_web_session(request: Request):
-    return verify_session_token(settings, request.cookies.get(SESSION_COOKIE_NAME))
+def read_web_session(request: Request, db=None):
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    if settings.identity_auth_enabled and db is not None and str(token or "").startswith("tks."):
+        verified = validate_user_session(db, token)
+        db.commit()
+        return {
+            "sub": verified.username,
+            "role": verified.role,
+            "exp": int(verified.expires_at.timestamp()),
+            "sid": str(verified.session_id),
+            "uid": str(verified.user_id),
+            "av": verified.auth_version,
+        }
+    if not legacy_auth_window_active():
+        raise WebAuthError("legacy web session is disabled")
+    return verify_session_token(settings, token)
 
 
 @auth_api.post("/login", response_model=AuthSessionRead)
@@ -286,9 +437,31 @@ def web_login(payload: AuthLoginRequest, request: Request, response: Response, d
     ensure_login_not_locked(login_key)
     try:
         identity = authenticate_web_user(settings, payload.login, payload.password, db=db)
-        token = create_session_token(settings, identity.login, role=identity.role)
-        session_payload = verify_session_token(settings, token)
-    except WebAuthError as exc:
+        if identity.user_id is not None and settings.identity_auth_enabled:
+            user = db.get(User, identity.user_id)
+            issued = create_user_session(
+                db,
+                user,
+                expires_at=datetime.now(timezone.utc) + timedelta(seconds=settings.web_session_ttl_seconds),
+            )
+            token = issued.token
+            verified = validate_user_session(db, token)
+            db.commit()
+            session_payload = {
+                "sub": verified.username,
+                "role": verified.role,
+                "exp": int(verified.expires_at.timestamp()),
+                "sid": str(verified.session_id),
+                "uid": str(verified.user_id),
+                "av": verified.auth_version,
+            }
+        else:
+            if not legacy_auth_window_active():
+                raise WebAuthError("legacy web auth is disabled")
+            token = create_session_token(settings, identity.login, role=identity.role)
+            session_payload = verify_session_token(settings, token)
+    except (WebAuthError, IdentityAuthError) as exc:
+        db.rollback()
         register_login_failure(login_key)
         if "configured" in str(exc):
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Web auth is not configured") from exc
@@ -380,24 +553,33 @@ def clear_login_failures(key):
 
 
 @auth_api.post("/logout", response_model=AuthSessionRead)
-def web_logout(response: Response):
+def web_logout(request: Request, response: Response, db=Depends(get_db)):
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    if settings.identity_auth_enabled and str(token or "").startswith("tks."):
+        try:
+            revoke_user_session(db, token)
+            db.commit()
+        except IdentityAuthError:
+            db.rollback()
     response.delete_cookie(SESSION_COOKIE_NAME, path="/")
     return AuthSessionRead(authenticated=False)
 
 
 @auth_api.get("/session", response_model=AuthSessionRead)
-def web_session(request: Request):
+def web_session(request: Request, db=Depends(get_db)):
     try:
-        return auth_session_read(read_web_session(request))
-    except WebAuthError:
+        return auth_session_read(read_web_session(request, db=db))
+    except (WebAuthError, IdentityAuthError):
+        db.rollback()
         return AuthSessionRead(authenticated=False)
 
 
 @auth_api.get("/check")
-def web_auth_check(request: Request):
+def web_auth_check(request: Request, db=Depends(get_db)):
     try:
-        read_web_session(request)
-    except WebAuthError as exc:
+        read_web_session(request, db=db)
+    except (WebAuthError, IdentityAuthError) as exc:
+        db.rollback()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated") from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

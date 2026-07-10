@@ -7,8 +7,8 @@ from tests.postgres_support import create_database, drop_database, run_alembic, 
 
 
 POSTGRES_AVAILABLE = bool(os.environ.get("TAKSKLAD_TEST_DATABASE_URL"))
-CURRENT_HEAD = "20260710_0011"
-PREVIOUS_HEAD = "20260710_0010"
+CURRENT_HEAD = "20260710_0012"
+PREVIOUS_HEAD = "20260710_0011"
 
 
 @unittest.skipUnless(POSTGRES_AVAILABLE, "disposable PostgreSQL URL not provided")
@@ -34,11 +34,16 @@ class PostgresMigrationTests(unittest.TestCase):
             tables = set(inspect(engine).get_table_names())
             pending_columns = {column["name"] for column in inspect(engine).get_columns("pending_events")}
             pending_indexes = {index["name"] for index in inspect(engine).get_indexes("pending_events")}
+            user_columns = {column["name"] for column in inspect(engine).get_columns("users")}
+            audit_columns = {column["name"] for column in inspect(engine).get_columns("audit_log")}
         finally:
             engine.dispose()
         self.assertTrue({"orders", "order_items", "pending_events", "kiz_codes"}.issubset(tables))
+        self.assertTrue({"auth_sessions", "service_principals", "service_principal_tokens"}.issubset(tables))
         self.assertTrue({"available_at", "lease_owner", "lease_expires_at", "completed_at"}.issubset(pending_columns))
         self.assertTrue({"idx_pending_events_claim", "idx_pending_events_lease_expiry"}.issubset(pending_indexes))
+        self.assertTrue({"auth_version", "updated_at"}.issubset(user_columns))
+        self.assertIn("actor_service_principal_id", audit_columns)
 
     def test_previous_head_and_repeated_head_upgrade_are_idempotent(self):
         url = create_database(self.databases[1])

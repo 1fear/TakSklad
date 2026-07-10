@@ -1,6 +1,7 @@
 import ipaddress
 import os
 from dataclasses import dataclass
+from datetime import datetime
 from urllib.parse import urlsplit, urlunsplit
 
 
@@ -8,6 +9,8 @@ APP_VERSION = "2.0.25"
 VALID_ENVIRONMENTS = frozenset({"local", "test", "production"})
 MIN_SESSION_SECRET_BYTES = 32
 MIN_SESSION_SECRET_DISTINCT_CHARACTERS = 8
+VALID_LEGACY_AUTH_MODES = frozenset({"enforce", "shadow", "disabled"})
+MAX_SERVICE_TOKEN_ROTATION_OVERLAP_SECONDS = 3600
 
 
 class ConfigurationError(RuntimeError):
@@ -37,6 +40,10 @@ class Settings:
     trusted_proxy_cidrs: tuple[str, ...]
     web_login_limiter_max_entries: int
     web_login_limiter_entry_ttl_seconds: int
+    identity_auth_enabled: bool
+    legacy_auth_mode: str
+    legacy_auth_expires_at: str
+    service_token_rotation_max_overlap_seconds: int
     google_to_backend_sync_enabled: bool
 
     @property
@@ -123,6 +130,16 @@ def load_settings(environ=None):
             60,
             parse_int(environ.get("TAKSKLAD_WEB_LOGIN_LIMITER_ENTRY_TTL_SECONDS"), 3600),
         ),
+        identity_auth_enabled=parse_bool(
+            environ.get("TAKSKLAD_IDENTITY_AUTH_ENABLED"),
+            default=False,
+        ),
+        legacy_auth_mode=str(environ.get("TAKSKLAD_LEGACY_AUTH_MODE", "enforce") or "enforce").strip().casefold(),
+        legacy_auth_expires_at=str(environ.get("TAKSKLAD_LEGACY_AUTH_EXPIRES_AT", "") or "").strip(),
+        service_token_rotation_max_overlap_seconds=max(
+            1,
+            parse_int(environ.get("TAKSKLAD_SERVICE_TOKEN_ROTATION_MAX_OVERLAP_SECONDS"), 900),
+        ),
         google_to_backend_sync_enabled=parse_bool(
             environ.get("TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED"),
             default=False,
@@ -141,7 +158,11 @@ def validate_backend_settings(settings):
     if has_web_login != has_web_password:
         errors.extend(("TAKSKLAD_WEB_LOGIN", "TAKSKLAD_WEB_PASSWORD_HASH"))
 
-    auth_enabled = bool(settings.api_auth_enabled or settings.web_auth_enabled)
+    legacy_auth_can_enforce = settings.legacy_auth_mode == "enforce"
+    auth_enabled = bool(
+        settings.identity_auth_enabled
+        or (legacy_auth_can_enforce and (settings.api_auth_enabled or settings.web_auth_enabled))
+    )
     if not auth_enabled and not settings.anonymous_local_admin_enabled:
         errors.append("TAKSKLAD_AUTH_MECHANISM")
 
@@ -166,6 +187,24 @@ def validate_backend_settings(settings):
         except ValueError:
             errors.append("TAKSKLAD_TRUSTED_PROXY_CIDRS")
             break
+
+    if settings.legacy_auth_mode not in VALID_LEGACY_AUTH_MODES:
+        errors.append("TAKSKLAD_LEGACY_AUTH_MODE")
+    if settings.legacy_auth_mode in {"shadow", "disabled"} and not settings.identity_auth_enabled:
+        errors.append("TAKSKLAD_IDENTITY_AUTH_ENABLED")
+    legacy_configured = bool(settings.api_auth_enabled or settings.web_auth_enabled)
+    if environment == "production" and legacy_configured and settings.legacy_auth_mode != "disabled":
+        if not settings.legacy_auth_expires_at:
+            errors.append("TAKSKLAD_LEGACY_AUTH_EXPIRES_AT")
+        else:
+            try:
+                legacy_expiry = datetime.fromisoformat(settings.legacy_auth_expires_at.replace("Z", "+00:00"))
+                if legacy_expiry.tzinfo is None:
+                    raise ValueError
+            except ValueError:
+                errors.append("TAKSKLAD_LEGACY_AUTH_EXPIRES_AT")
+    if settings.service_token_rotation_max_overlap_seconds > MAX_SERVICE_TOKEN_ROTATION_OVERLAP_SECONDS:
+        errors.append("TAKSKLAD_SERVICE_TOKEN_ROTATION_MAX_OVERLAP_SECONDS")
 
     if errors:
         raise ConfigurationError(errors)

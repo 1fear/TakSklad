@@ -57,11 +57,14 @@ case "$MODE" in
   smartup-saga)
     TEST_MODULE="tests.test_postgres_smartup_saga"
     ;;
+  auth-identities)
+    TEST_MODULE="tests.test_postgres_auth_identities"
+    ;;
   all)
-    TEST_MODULE="tests.test_postgres_migrations tests.test_postgres_concurrency tests.test_postgres_readiness tests.test_postgres_queue_concurrency tests.test_postgres_queue_failures tests.test_postgres_import_identity tests.test_postgres_invariants tests.test_postgres_outbox tests.test_postgres_outbox_faults tests.test_postgres_smartup_saga"
+    TEST_MODULE="tests.test_postgres_migrations tests.test_postgres_concurrency tests.test_postgres_readiness tests.test_postgres_queue_concurrency tests.test_postgres_queue_failures tests.test_postgres_import_identity tests.test_postgres_invariants tests.test_postgres_outbox tests.test_postgres_outbox_faults tests.test_postgres_smartup_saga tests.test_postgres_auth_identities"
     ;;
   *)
-    echo "Usage: $0 {seed-reference|migrations|smoke|readiness|queue-concurrency|queue-failures|import-identity|invariants|outbox|outbox-faults|smartup-saga|all}" >&2
+    echo "Usage: $0 {seed-reference|migrations|smoke|readiness|queue-concurrency|queue-failures|import-identity|invariants|outbox|outbox-faults|smartup-saga|auth-identities|all}" >&2
     exit 2
     ;;
 esac

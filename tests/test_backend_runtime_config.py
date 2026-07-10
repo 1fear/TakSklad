@@ -180,6 +180,7 @@ class BackendRuntimeConfigTests(unittest.TestCase):
                 "TAKSKLAD_ENV": "production",
                 "TAKSKLAD_API_TOKEN": "synthetic-api-token",
                 "TAKSKLAD_WEB_SESSION_SECRET": "synthetic-api-token",
+                "TAKSKLAD_LEGACY_AUTH_EXPIRES_AT": "2026-07-17T00:00:00+00:00",
             }))
         self.assertEqual(shared_secret.exception.setting_names, ("TAKSKLAD_WEB_SESSION_SECRET",))
 
@@ -190,6 +191,7 @@ class BackendRuntimeConfigTests(unittest.TestCase):
                         "TAKSKLAD_ENV": "production",
                         "TAKSKLAD_API_TOKEN": "synthetic-api-token",
                         "TAKSKLAD_WEB_SESSION_SECRET": weak_secret,
+                        "TAKSKLAD_LEGACY_AUTH_EXPIRES_AT": "2026-07-17T00:00:00+00:00",
                     }))
                 self.assertEqual(weak.exception.setting_names, ("TAKSKLAD_WEB_SESSION_SECRET",))
                 self.assertNotIn(weak_secret, str(weak.exception))
@@ -198,6 +200,7 @@ class BackendRuntimeConfigTests(unittest.TestCase):
             "TAKSKLAD_ENV": "production",
             "TAKSKLAD_API_TOKEN": "synthetic-api-token",
             "TAKSKLAD_WEB_SESSION_SECRET": "independent-synthetic-session-secret",
+            "TAKSKLAD_LEGACY_AUTH_EXPIRES_AT": "2026-07-17T00:00:00+00:00",
         }))
         self.assertTrue(settings.api_auth_enabled)
 
@@ -215,6 +218,50 @@ class BackendRuntimeConfigTests(unittest.TestCase):
             "TAKSKLAD_INSECURE_LOCAL_ANONYMOUS": "true",
         }))
         self.assertTrue(settings.anonymous_local_admin_enabled)
+
+    def test_identity_auth_and_legacy_window_validation_are_fail_closed(self):
+        identity_settings = validate_backend_settings(load_backend_settings({
+            "TAKSKLAD_ENV": "production",
+            "TAKSKLAD_IDENTITY_AUTH_ENABLED": "true",
+            "TAKSKLAD_WEB_SESSION_SECRET": "independent-synthetic-session-secret",
+        }))
+        self.assertTrue(identity_settings.identity_auth_enabled)
+
+        with self.assertRaises(ConfigurationError) as missing_expiry:
+            validate_backend_settings(load_backend_settings({
+                "TAKSKLAD_ENV": "production",
+                "TAKSKLAD_API_TOKEN": "synthetic-api-token",
+                "TAKSKLAD_WEB_SESSION_SECRET": "independent-synthetic-session-secret",
+            }))
+        self.assertEqual(
+            missing_expiry.exception.setting_names,
+            ("TAKSKLAD_LEGACY_AUTH_EXPIRES_AT",),
+        )
+
+        with self.assertRaises(ConfigurationError) as invalid_policy:
+            validate_backend_settings(load_backend_settings({
+                "TAKSKLAD_ENV": "production",
+                "TAKSKLAD_IDENTITY_AUTH_ENABLED": "true",
+                "TAKSKLAD_WEB_SESSION_SECRET": "independent-synthetic-session-secret",
+                "TAKSKLAD_LEGACY_AUTH_MODE": "forever",
+                "TAKSKLAD_SERVICE_TOKEN_ROTATION_MAX_OVERLAP_SECONDS": "3601",
+            }))
+        self.assertEqual(
+            invalid_policy.exception.setting_names,
+            ("TAKSKLAD_LEGACY_AUTH_MODE", "TAKSKLAD_SERVICE_TOKEN_ROTATION_MAX_OVERLAP_SECONDS"),
+        )
+
+        for legacy_mode in ("shadow", "disabled"):
+            with self.subTest(legacy_mode=legacy_mode):
+                with self.assertRaises(ConfigurationError) as no_identity:
+                    validate_backend_settings(load_backend_settings({
+                        "TAKSKLAD_ENV": "production",
+                        "TAKSKLAD_API_TOKEN": "synthetic-api-token",
+                        "TAKSKLAD_WEB_SESSION_SECRET": "independent-synthetic-session-secret",
+                        "TAKSKLAD_LEGACY_AUTH_MODE": legacy_mode,
+                    }))
+                self.assertIn("TAKSKLAD_AUTH_MECHANISM", no_identity.exception.setting_names)
+                self.assertIn("TAKSKLAD_IDENTITY_AUTH_ENABLED", no_identity.exception.setting_names)
 
     def test_partial_web_auth_and_unknown_environment_fail_name_only(self):
         with self.assertRaises(ConfigurationError) as captured:
