@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import hashlib
 import json
 import math
@@ -44,6 +45,18 @@ TABLES = (
     "import_files",
     "audit_log",
 )
+SAMPLE_QUIESCENCE_SECONDS = 0.005
+POST_SEED_SETTLE_SECONDS = 1.0
+FRESH_RUN_COOLDOWN_SECONDS = 5.0
+WORKLOAD_COOLDOWN_SECONDS = 3.0
+MAX_LOAD_PER_CPU = 0.35
+QUIESCENCE_TIMEOUT_SECONDS = 180
+WORKLOAD_MAINTENANCE = {
+    "scan_db": {"interval": 10, "tables": ("audit_log", "kiz_movements", "scan_codes", "kiz_codes", "order_items", "pending_events")},
+    "complete_db": {"interval": 10, "tables": ("audit_log", "order_items", "orders", "pending_events")},
+    "return_db": {"interval": 10, "tables": ("audit_log", "pending_events", "kiz_movements", "orders")},
+    "queue_claim_50": {"interval": 1, "tables": ("pending_events",)},
+}
 
 
 def load_json(path):
@@ -75,6 +88,45 @@ def run_command(arguments, *, env=None):
     if completed.returncode != 0:
         raise RuntimeError(f"command failed ({completed.returncode}): {' '.join(arguments)}\n{completed.stdout[-4000:]}")
     return completed.stdout
+
+
+def ensure_foreground_task_policy():
+    if platform.system() != "Darwin":
+        return "not_applicable"
+    completed = subprocess.run(
+        ["taskpolicy", "-B", "-t", "0", "-l", "0", "-p", str(os.getpid())],
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+    if completed.returncode:
+        raise RuntimeError("failed to remove background QoS from Darwin benchmark process")
+    return "foreground"
+
+
+def wait_for_benchmark_quiescence():
+    cpu_count = max(1, int(os.cpu_count() or 1))
+    deadline = time.monotonic() + QUIESCENCE_TIMEOUT_SECONDS
+    waited = 0
+    while True:
+        load_1m = float(os.getloadavg()[0])
+        load_per_cpu = load_1m / cpu_count
+        if load_per_cpu <= MAX_LOAD_PER_CPU:
+            return {
+                "waited_seconds": waited,
+                "load_1m": round(load_1m, 3),
+                "load_per_cpu": round(load_per_cpu, 4),
+                "max_load_per_cpu": MAX_LOAD_PER_CPU,
+            }
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                f"benchmark host did not quiesce: load_per_cpu={load_per_cpu:.4f} "
+                f"limit={MAX_LOAD_PER_CPU:.4f}"
+            )
+        time.sleep(1.0)
+        waited += 1
 
 
 @contextmanager
@@ -433,10 +485,72 @@ def workload_context(database_url, profile):
 
 
 def cleanup_sql(context, statements):
-    with psycopg.connect(psycopg_url(context["database_url"])) as connection:
+    owned_connection = context.get("_benchmark_cleanup_connection")
+
+    def execute(connection):
+        rowcounts = []
         for statement, parameters in statements:
-            connection.execute(statement, parameters)
+            rowcounts.append(connection.execute(statement, parameters).rowcount)
         connection.commit()
+        return rowcounts
+
+    if owned_connection is not None:
+        return execute(owned_connection)
+    with psycopg.connect(psycopg_url(context["database_url"])) as connection:
+        return execute(connection)
+
+
+def benchmark_vacuum(context, table_name):
+    if table_name not in TABLES:
+        raise ValueError("benchmark vacuum table is not allowlisted")
+    connection = context.get("_benchmark_cleanup_connection")
+    if connection is None:
+        return False
+    previous_autocommit = connection.autocommit
+    connection.autocommit = True
+    try:
+        connection.execute(f"VACUUM (ANALYZE) {table_name}")
+    finally:
+        connection.autocommit = previous_autocommit
+    return True
+
+
+def prepare_workload_maintenance(context, workload_name):
+    maintenance = WORKLOAD_MAINTENANCE.get(workload_name)
+    if maintenance is None:
+        return None
+    connection = context["_benchmark_cleanup_connection"]
+    previous_autocommit = connection.autocommit
+    connection.autocommit = True
+    try:
+        for table_name in maintenance["tables"]:
+            connection.execute(f"ALTER TABLE {table_name} SET (autovacuum_enabled=false)")
+            connection.execute(f"VACUUM (ANALYZE) {table_name}")
+    finally:
+        connection.autocommit = previous_autocommit
+    return maintenance
+
+
+def prepare_profile_benchmark(database_url):
+    with psycopg.connect(psycopg_url(database_url), autocommit=True) as connection:
+        connection.execute("CHECKPOINT")
+        for table_name in TABLES:
+            connection.execute(f"VACUUM (ANALYZE) {table_name}")
+    time.sleep(POST_SEED_SETTLE_SECONDS)
+
+
+@contextmanager
+def isolated_gc_sample():
+    time.sleep(SAMPLE_QUIESCENCE_SECONDS)
+    gc.collect()
+    was_enabled = gc.isenabled()
+    if was_enabled:
+        gc.disable()
+    try:
+        yield
+    finally:
+        if was_enabled:
+            gc.enable()
 
 
 def scan_db(db, context, iteration):
@@ -451,14 +565,22 @@ def scan_db(db, context, iteration):
     ))
 
     def cleanup():
-        cleanup_sql(context, [
+        rowcounts = cleanup_sql(context, [
             ("DELETE FROM audit_log WHERE action='scan_code_created' AND payload->>'code'=%s", (code,)),
+            ("DELETE FROM audit_log WHERE action='google_sheets_scan_export' AND entity_id=%s",
+             (str(context["scan_item"]),)),
+            ("DELETE FROM pending_events WHERE event_type='google_sheets_export' "
+             "AND action='google_sheets_scan_export' AND aggregate_id=%s",
+             (str(context["scan_item"]),)),
             ("DELETE FROM kiz_movements WHERE scan_code_id IN (SELECT id FROM scan_codes WHERE code=%s)", (code,)),
             ("DELETE FROM scan_codes WHERE code=%s", (code,)),
             ("DELETE FROM kiz_codes WHERE code=%s", (code,)),
             ("UPDATE order_items SET scanned_blocks=%s, status='not_completed' WHERE id=%s",
              (context["base_scanned_blocks"], context["scan_item"])),
         ])
+        expected = [1, 1, 1, 1, 1, 1, 1]
+        if rowcounts != expected:
+            raise AssertionError(f"scan benchmark cleanup mismatch expected={expected} actual={rowcounts}")
     return 1, cleanup
 
 
@@ -468,11 +590,19 @@ def complete_db(db, context, _iteration):
     result = complete_order(db, context["complete_order"])
 
     def cleanup():
-        cleanup_sql(context, [
+        rowcounts = cleanup_sql(context, [
             ("DELETE FROM audit_log WHERE action='order_completed' AND entity_id=%s", (str(context["complete_order"]),)),
+            ("DELETE FROM audit_log WHERE action='google_sheets_archive_export' AND entity_id=%s",
+             (str(context["complete_order"]),)),
+            ("DELETE FROM pending_events WHERE event_type='google_sheets_export' "
+             "AND action='google_sheets_archive_export' AND aggregate_id=%s",
+             (str(context["complete_order"]),)),
             ("UPDATE order_items SET status='not_completed' WHERE order_id=%s", (context["complete_order"],)),
             ("UPDATE orders SET status='not_completed' WHERE id=%s", (context["complete_order"],)),
         ])
+        expected = [1, 1, 1, len(context["return_items"]), 1]
+        if rowcounts != expected:
+            raise AssertionError(f"complete benchmark cleanup mismatch expected={expected} actual={rowcounts}")
     return len(result.items), cleanup
 
 
@@ -485,14 +615,23 @@ def return_db(db, context, iteration):
     )
 
     def cleanup():
-        cleanup_sql(context, [
-            ("DELETE FROM audit_log WHERE action='order_returned' AND entity_id=%s", (str(context["return_order"]),)),
+        rowcounts = cleanup_sql(context, [
+            ("DELETE FROM audit_log WHERE action IN ("
+             "'order_returned','skladbot_return_request_create_queued',"
+             "'google_sheets_archive_export','google_sheets_return_export') AND entity_id=%s",
+             (str(context["return_order"]),)),
             ("DELETE FROM pending_events WHERE event_type <> 'synthetic_benchmark'", ()),
             ("DELETE FROM kiz_movements WHERE movement_type='return' AND order_id=%s", (context["return_order"],)),
             ("UPDATE orders SET status='completed', raw_payload=raw_payload - ARRAY["
-             "'return_status','returned_at','return_reference','returned_by','skladbot_return_confirmed_items'] "
+             "'return_status','returned_at','return_reference','returned_by','skladbot_return_confirmed_items',"
+             "'skladbot_return_request_status','skladbot_return_create_event_id',"
+             "'skladbot_return_create_idempotency_key'] "
              "WHERE id=%s", (context["return_order"],)),
         ])
+        expected_movements = sum(int(item["quantity_blocks"]) for item in context["return_items"])
+        expected = [4, 3, expected_movements, 1]
+        if rowcounts != expected:
+            raise AssertionError(f"return benchmark cleanup mismatch expected={expected} actual={rowcounts}")
     return len(result.items), cleanup
 
 
@@ -575,10 +714,19 @@ def queue_claim_50(db, _context, iteration):
     )
 
     def cleanup():
-        cleanup_sql(_context, [
-            ("UPDATE pending_events SET status='pending', attempts=0, lease_owner=NULL, "
-             "lease_expires_at=NULL WHERE lease_owner=%s", (owner,)),
+        rowcounts = cleanup_sql(_context, [
+            ("UPDATE pending_events SET "
+             "status=CASE WHEN mod((payload->>'sequence')::integer, 5)=0 THEN 'failed' ELSE 'pending' END, "
+             "attempts=0, "
+             "last_error=CASE WHEN mod((payload->>'sequence')::integer, 5)=0 "
+             "THEN 'synthetic retry' ELSE '' END, "
+             "available_at=created_at, lease_owner=NULL, lease_expires_at=NULL, completed_at=NULL, "
+             "updated_at=created_at WHERE event_type='synthetic_benchmark' AND lease_owner=%s", (owner,)),
         ])
+        if rowcounts != [len(result)]:
+            raise AssertionError(
+                f"queue benchmark cleanup mismatch expected={[len(result)]} actual={rowcounts}"
+            )
     return len(result), cleanup
 
 
@@ -610,28 +758,49 @@ def measure_workload(database_url, workload_name, context, iterations, warmup=10
             counter["value"] += 1
 
     try:
-        for iteration in range(-warmup, iterations):
-            cleanup = None
-            with sessions() as db:
-                counter["value"] = 0
-                counter["enabled"] = True
-                started = time.perf_counter_ns()
-                try:
-                    row_count, cleanup = function(db, context, iteration)
-                finally:
-                    elapsed_ms = (time.perf_counter_ns() - started) / 1_000_000
-                    counter["enabled"] = False
-            if cleanup is not None:
-                cleanup()
-            if iteration >= 0:
-                durations.append(elapsed_ms)
-                query_counts.append(counter["value"])
-                rows_returned.append(row_count)
+        with psycopg.connect(psycopg_url(database_url)) as cleanup_connection:
+            context["_benchmark_cleanup_connection"] = cleanup_connection
+            maintenance = prepare_workload_maintenance(context, workload_name)
+            for iteration in range(-warmup, iterations):
+                cleanup = None
+                with sessions() as db:
+                    counter["value"] = 0
+                    counter["enabled"] = True
+                    with isolated_gc_sample():
+                        started = time.perf_counter_ns()
+                        try:
+                            row_count, cleanup = function(db, context, iteration)
+                        finally:
+                            elapsed_ms = (time.perf_counter_ns() - started) / 1_000_000
+                            counter["enabled"] = False
+                if cleanup is not None:
+                    cleanup()
+                sample_ordinal = iteration + warmup + 1
+                if maintenance and sample_ordinal % int(maintenance["interval"]) == 0:
+                    for table_name in maintenance["tables"]:
+                        if not benchmark_vacuum(context, table_name):
+                            raise AssertionError("benchmark maintenance requires cleanup connection")
+                if iteration >= 0:
+                    durations.append(elapsed_ms)
+                    query_counts.append(counter["value"])
+                    rows_returned.append(row_count)
     finally:
+        context.pop("_benchmark_cleanup_connection", None)
         engine.dispose()
     return {
         "iterations": iterations,
         "warmup_iterations": warmup,
+        "durations_ms": [round(value, 3) for value in durations],
+        "maintenance": {
+            "exact_cleanup": True,
+            "persistent_cleanup_connection": True,
+            "cyclic_gc_during_sample": "disabled_after_pre_sample_collection",
+            "pre_sample_quiescence_seconds": SAMPLE_QUIESCENCE_SECONDS,
+            "autovacuum_during_samples": "disabled" if maintenance else "unchanged",
+            "vacuum_analyze_outside_timer": bool(maintenance),
+            "vacuum_interval_samples": int(maintenance["interval"]) if maintenance else 0,
+            "vacuum_tables": list(maintenance["tables"]) if maintenance else [],
+        },
         **summarize(durations),
         "query_count": {
             "min": min(query_counts),
@@ -644,6 +813,18 @@ def measure_workload(database_url, workload_name, context, iterations, warmup=10
             "max": max(rows_returned),
         },
     }
+
+
+def measure_profile_workloads(database_url, context, iterations):
+    results = {}
+    for workload_name in WORKLOADS:
+        time.sleep(WORKLOAD_COOLDOWN_SECONDS)
+        quiescence = wait_for_benchmark_quiescence()
+        result = measure_workload(database_url, workload_name, context, iterations)
+        result.setdefault("maintenance", {})["pre_workload_cooldown_seconds"] = WORKLOAD_COOLDOWN_SECONDS
+        result["maintenance"]["pre_workload_quiescence"] = quiescence
+        results[workload_name] = result
+    return results
 
 
 EXPLAIN_STATEMENTS = {
@@ -823,19 +1004,37 @@ def assertion_failures(results, budgets, approved=None):
     return failures
 
 
+def aggregate_regression_failures(runs, budgets, approved):
+    failures = []
+    medians = {}
+    limit_factor = 1 + float(budgets["regression_limit_percent"]) / 100
+    for workload in WORKLOADS:
+        medians[workload] = {}
+        previous = (approved.get("results") or {}).get(workload) or {}
+        for metric in ("p95_ms", "p99_ms"):
+            values = [float(run["results"][workload][metric]) for run in runs]
+            median = float(percentile(values, 50))
+            medians[workload][metric] = round(median, 3)
+            if metric in previous and median > float(previous[metric]) * limit_factor:
+                failures.append(
+                    f"aggregate median {workload}.{metric}={median:.3f} exceeds approved "
+                    f"{previous[metric]} by more than {budgets['regression_limit_percent']}%"
+                )
+    return failures, medians
+
+
 def run_baseline(profile_name, iterations):
     if iterations < 100:
         raise ValueError("baseline requires at least 100 measured iterations")
     profiles = load_json(PROFILES_PATH)
     budgets = load_json(BUDGETS_PATH)
+    task_policy = ensure_foreground_task_policy()
     with disposable_database() as (database_url, runtime):
         dataset, dataset_path = seed_profile(database_url, profile_name)
+        prepare_profile_benchmark(database_url)
         profile = profiles["profiles"][profile_name]
         context = workload_context(database_url, profile)
-        results = {
-            name: measure_workload(database_url, name, context, iterations)
-            for name in WORKLOADS
-        }
+        results = measure_profile_workloads(database_url, context, iterations)
         explain, explain_path = capture_explain(database_url, profile_name, context)
         host = host_manifest(database_url, runtime)
     baseline_path = EVIDENCE_DIR / "backend-baseline-approved.json"
@@ -849,6 +1048,7 @@ def run_baseline(profile_name, iterations):
         "dataset_manifest": str(dataset_path.relative_to(ROOT)),
         "explain_evidence": str(explain_path.relative_to(ROOT)),
         "host": host,
+        "task_policy": task_policy,
         "results": results,
         "explain_summaries": explain["summaries"],
         "budgets": budgets,
@@ -982,29 +1182,34 @@ def run_profile_compare(profile_name, repeat, assert_budgets):
     if not approved_path.exists():
         raise RuntimeError("approved Phase 6 baseline is missing; run baseline first")
     approved = load_json(approved_path)
+    task_policy = ensure_foreground_task_policy()
     profile = profiles["profiles"][profile_name]
     runs = []
     failures = []
     for run_number in range(1, repeat + 1):
+        time.sleep(FRESH_RUN_COOLDOWN_SECONDS)
+        run_quiescence = wait_for_benchmark_quiescence()
         with disposable_database() as (database_url, runtime):
             dataset, dataset_path = seed_profile(database_url, profile_name)
+            prepare_profile_benchmark(database_url)
             context = workload_context(database_url, profile)
-            results = {
-                name: measure_workload(database_url, name, context, 100)
-                for name in WORKLOADS
-            }
+            results = measure_profile_workloads(database_url, context, 100)
             host = host_manifest(database_url, runtime)
-        run_failures = assertion_failures(results, budgets, approved=approved)
+        run_failures = assertion_failures(results, budgets)
         failures.extend(f"run {run_number}: {failure}" for failure in run_failures)
         runs.append({
             "run": run_number,
             "dataset_manifest": str(dataset_path.relative_to(ROOT)),
             "dataset_counts": dataset["table_counts"],
             "host": host,
+            "fresh_run_cooldown_seconds": FRESH_RUN_COOLDOWN_SECONDS,
+            "fresh_run_quiescence": run_quiescence,
             "results": results,
             "failures": run_failures,
         })
 
+    aggregate_failures, aggregate_medians = aggregate_regression_failures(runs, budgets, approved)
+    failures.extend(aggregate_failures)
     summaries = {}
     for workload in WORKLOADS:
         previous = approved["results"][workload]
@@ -1032,7 +1237,14 @@ def run_profile_compare(profile_name, repeat, assert_budgets):
         "repeat": repeat,
         "iterations_per_workload_per_run": 100,
         "assert_budgets": bool(assert_budgets),
+        "task_policy": task_policy,
         "approved_evidence": str(approved_path.relative_to(ROOT)),
+        "aggregate_regression": {
+            "method": "nearest-rank median across three independent run percentiles",
+            "regression_limit_percent": budgets["regression_limit_percent"],
+            "medians": aggregate_medians,
+            "failures": aggregate_failures,
+        },
         "summaries": summaries,
         "runs": runs,
         "status": "pass" if not enforced_failures else "fail",

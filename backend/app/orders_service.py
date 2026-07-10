@@ -1,9 +1,10 @@
 import uuid
 from datetime import date, datetime, timezone
 
-from sqlalchemy import and_, exists, or_, select, tuple_
+from sqlalchemy import and_, exists, or_, select, text, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload, selectinload
+from sqlalchemy.orm.attributes import set_committed_value
 
 from .google_sheets_pending import queue_google_sheets_export
 from .kiz_movements_service import (
@@ -554,9 +555,6 @@ def complete_order(db: Session, order_id):
             ],
         })
 
-    for item in order.items:
-        item.status = STATUS_COMPLETED
-    order.status = STATUS_COMPLETED
     db.add(AuditLog(
         action="order_completed",
         entity_type="order",
@@ -570,6 +568,29 @@ def complete_order(db: Session, order_id):
         entity_id=str(order.id),
         idempotency_key=f"outbox:order:complete:{order.id}",
     )
+    if db.get_bind().dialect.name == "postgresql":
+        with db.no_autoflush:
+            updated_order_count, updated_item_count = db.execute(text("""
+                WITH updated_order AS (
+                    UPDATE orders SET status=:status, updated_at=now()
+                    WHERE id=:order_id RETURNING id
+                ), updated_items AS (
+                    UPDATE order_items SET status=:status, updated_at=now()
+                    WHERE order_id=:order_id RETURNING id
+                )
+                SELECT
+                    (SELECT count(*) FROM updated_order),
+                    (SELECT count(*) FROM updated_items)
+            """), {"status": STATUS_COMPLETED, "order_id": order.id}).one()
+        if int(updated_order_count) != 1 or int(updated_item_count) != len(order.items):
+            raise RuntimeError("complete order status update cardinality mismatch")
+        set_committed_value(order, "status", STATUS_COMPLETED)
+        for item in order.items:
+            set_committed_value(item, "status", STATUS_COMPLETED)
+    else:
+        for item in order.items:
+            item.status = STATUS_COMPLETED
+        order.status = STATUS_COMPLETED
     response = order_to_read(order)
     outbox_service.outbox_fault("before_commit", "complete")
     db.commit()
@@ -817,6 +838,7 @@ def order_to_read(order: Order):
 
 def item_to_read(item: OrderItem):
     raw_payload = item.raw_payload or {}
+    scans = sorted(item.scan_codes, key=lambda value: (str(value.scanned_at or ""), str(value.id)))
     return OrderItemRead(
         id=str(item.id),
         product=item.product,
@@ -828,7 +850,7 @@ def item_to_read(item: OrderItem):
         status=item.status,
         scan_codes=[
             scan.code
-            for scan in sorted(item.scan_codes, key=lambda value: (str(value.scanned_at or ""), str(value.id)))
+            for scan in scans
         ],
         scan_entries=[
             {
@@ -837,7 +859,7 @@ def item_to_read(item: OrderItem):
                 "block_quantity": scan_block_quantity(scan),
                 "scanned_at": scan.scanned_at,
             }
-            for scan in sorted(item.scan_codes, key=lambda value: (str(value.scanned_at or ""), str(value.id)))
+            for scan in scans
         ],
     )
 

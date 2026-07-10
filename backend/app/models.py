@@ -206,14 +206,12 @@ class PendingEvent(Base):
         Index("idx_pending_events_type_status_created_at", "event_type", "status", "created_at", "id"),
         Index("idx_pending_events_type_status_updated_at", "event_type", "status", "updated_at", "id"),
         Index("idx_pending_events_updated_created_at", "updated_at", "created_at", "id"),
-        Index("idx_pending_events_claim", "event_type", "status", "available_at", "created_at", "id"),
         Index(
             "idx_pending_events_claim_ordered",
             "event_type",
             "available_at",
             "created_at",
             "id",
-            postgresql_include=("status", "lease_expires_at"),
         ),
         Index("idx_pending_events_lease_expiry", "status", "lease_expires_at", "id"),
         Index(

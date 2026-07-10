@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from typing import Any, Callable
@@ -158,12 +159,12 @@ GATES = [
     ("attestations", "supply_chain", "./tools/verify_release_attestations.sh --local"),
     ("workflow-lint", "supply_chain", "./tools/lint_workflows.sh"),
     ("release-preflight", "source_integrity", "PYTHONPATH=. .venv/bin/python tools/release_preflight.py --skip-network"),
-    ("compose-config", "source_integrity", "docker compose -f deploy/vds/docker-compose.yml config --no-interpolate --quiet"),
+    ("compose-config", "source_integrity", "docker compose --env-file /dev/null -f deploy/vds/docker-compose.yml config --no-interpolate --quiet"),
     ("container-policy", "security", "PYTHONPATH=. .venv/bin/python tools/check_container_policy.py --strict"),
     ("container-smoke", "migration", "./tools/run_container_smoke.sh --dummy-config --permission-tests"),
     ("container-load", "performance", "./tools/run_container_load.sh --assert-resource-limits"),
-    ("restore-drill", "disaster_recovery", "./deploy/vds/restore_drill.sh --isolated --synthetic-db --assert-invariants"),
     ("backup-create", "disaster_recovery", "./deploy/vds/backup_postgres.sh --test-mode --synthetic-db"),
+    ("restore-drill", "disaster_recovery", "./deploy/vds/restore_drill.sh --isolated --synthetic-db --assert-invariants"),
     ("offsite-backup", "disaster_recovery", "./tools/verify_offsite_backup.sh --test-bucket --checksum"),
     ("pitr-drill", "disaster_recovery", "./tools/run_pitr_drill.sh --synthetic-db --assert-rpo-minutes 15 --assert-rto-minutes 30"),
     ("worker-heartbeats", "observability", "PYTHONPATH=. .venv/bin/python tools/test_worker_heartbeats.py --fault-matrix"),

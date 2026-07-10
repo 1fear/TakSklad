@@ -180,8 +180,7 @@ CREATE INDEX IF NOT EXISTS idx_pending_events_type_status_created_at ON pending_
 CREATE INDEX IF NOT EXISTS idx_pending_events_type_status_updated_at ON pending_events(event_type, status, updated_at, id);
 CREATE INDEX IF NOT EXISTS idx_pending_events_updated_created_at ON pending_events(updated_at, created_at, id);
 CREATE INDEX IF NOT EXISTS idx_pending_events_claim_ordered
-ON pending_events(event_type, available_at, created_at, id)
-INCLUDE (status, lease_expires_at);
+ON pending_events(event_type, available_at, created_at, id);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_pending_events_idempotency_key ON pending_events(idempotency_key);
 CREATE INDEX IF NOT EXISTS idx_client_points_normalized ON client_points(normalized_client, normalized_address);
 CREATE INDEX IF NOT EXISTS idx_client_points_timeslot ON client_points(delivery_from, delivery_to);

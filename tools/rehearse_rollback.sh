@@ -22,4 +22,7 @@ done
 export PYTHONDONTWRITEBYTECODE=1
 PYTHON_BIN=.venv/bin/python
 [[ -x "$PYTHON_BIN" ]] || PYTHON_BIN=python3
-exec "$PYTHON_BIN" tools/release_rehearsal_runtime.py rollback --max-seconds "$max_seconds" "${extra[@]}"
+if (( ${#extra[@]} )); then
+  exec "$PYTHON_BIN" tools/release_rehearsal_runtime.py rollback --max-seconds "$max_seconds" "${extra[@]}"
+fi
+exec "$PYTHON_BIN" tools/release_rehearsal_runtime.py rollback --max-seconds "$max_seconds"

@@ -47,17 +47,6 @@ def claim_event_leases(
     else:
         now_value = now or db.execute(select(func.now())).scalar_one()
         expires_at = now_value + lease_duration
-    eligible = or_(
-        and_(
-            PendingEvent.status.in_(CLAIMABLE_EVENT_STATUSES),
-            PendingEvent.available_at <= now_value,
-        ),
-        and_(
-            PendingEvent.status == "processing",
-            PendingEvent.lease_expires_at.is_not(None),
-            PendingEvent.lease_expires_at <= now_value,
-        ),
-    )
     try:
         if is_postgresql:
             statement = build_postgres_claim_statement(
@@ -71,6 +60,17 @@ def claim_event_leases(
                 statement.execution_options(synchronize_session=False)
             ).scalars().all()
         else:
+            eligible = or_(
+                and_(
+                    PendingEvent.status.in_(CLAIMABLE_EVENT_STATUSES),
+                    PendingEvent.available_at <= now_value,
+                ),
+                and_(
+                    PendingEvent.status == "processing",
+                    PendingEvent.lease_expires_at.is_not(None),
+                    PendingEvent.lease_expires_at <= now_value,
+                ),
+            )
             events = db.execute(
                 select(PendingEvent)
                 .where(PendingEvent.event_type.in_(event_types))

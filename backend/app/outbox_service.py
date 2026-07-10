@@ -2,7 +2,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import bindparam, case, or_, select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
@@ -27,32 +27,21 @@ def queue_outbox_event(
     payload: dict | None = None,
     last_error: str | None = None,
 ) -> PendingEvent:
-    event_type = required_identity(event_type, "event_type", 80)
-    action = required_identity(action, "action", 80)
-    aggregate_type = required_identity(aggregate_type, "aggregate_type", 80)
-    aggregate_id = required_identity(aggregate_id, "aggregate_id", 180)
-    idempotency_key = required_identity(idempotency_key, "idempotency_key", 180)
-    event_payload = sanitize_outbox_payload(payload_with_correlation({
-        **(payload or {}),
-        "action": action,
-        "entity_type": aggregate_type,
-        "entity_id": aggregate_id,
-        "idempotency_key": idempotency_key,
-    }))
-    ensure_payload_size(event_payload)
+    values = outbox_values(
+        event_type=event_type,
+        action=action,
+        aggregate_type=aggregate_type,
+        aggregate_id=aggregate_id,
+        idempotency_key=idempotency_key,
+        payload=payload,
+        last_error=last_error,
+    )
+    event_type = values["event_type"]
+    action = values["action"]
+    aggregate_type = values["aggregate_type"]
+    aggregate_id = values["aggregate_id"]
+    idempotency_key = values["idempotency_key"]
 
-    values = {
-        "id": uuid.uuid4(),
-        "event_type": event_type,
-        "action": action,
-        "aggregate_type": aggregate_type,
-        "aggregate_id": aggregate_id,
-        "idempotency_key": idempotency_key,
-        "status": "pending",
-        "attempts": 0,
-        "payload": event_payload,
-        "last_error": redact_secrets(last_error or ""),
-    }
     dialect_name = db.get_bind().dialect.name
     if dialect_name in {"postgresql", "sqlite"}:
         insert_factory = postgresql_insert if dialect_name == "postgresql" else sqlite_insert
@@ -86,6 +75,100 @@ def queue_outbox_event(
     db.add(event)
     db.flush()
     return event
+
+
+def outbox_values(
+    *, event_type, action, aggregate_type, aggregate_id, idempotency_key, payload=None, last_error=None,
+):
+    event_type = required_identity(event_type, "event_type", 80)
+    action = required_identity(action, "action", 80)
+    aggregate_type = required_identity(aggregate_type, "aggregate_type", 80)
+    aggregate_id = required_identity(aggregate_id, "aggregate_id", 180)
+    idempotency_key = required_identity(idempotency_key, "idempotency_key", 180)
+    event_payload = sanitize_outbox_payload(payload_with_correlation({
+        **(payload or {}),
+        "action": action,
+        "entity_type": aggregate_type,
+        "entity_id": aggregate_id,
+        "idempotency_key": idempotency_key,
+    }))
+    ensure_payload_size(event_payload)
+
+    return {
+        "id": uuid.uuid4(),
+        "event_type": event_type,
+        "action": action,
+        "aggregate_type": aggregate_type,
+        "aggregate_id": aggregate_id,
+        "idempotency_key": idempotency_key,
+        "status": "pending",
+        "attempts": 0,
+        "payload": event_payload,
+        "last_error": redact_secrets(last_error or ""),
+    }
+
+
+def queue_coalesced_postgres_outbox_event(
+    db: Session,
+    *,
+    event_type: str,
+    action: str,
+    aggregate_type: str,
+    aggregate_id: str,
+    idempotency_key: str,
+    payload: dict | None = None,
+    last_error: str | None = None,
+) -> tuple[PendingEvent, bool]:
+    if db.get_bind().dialect.name != "postgresql":
+        raise ValueError("coalesced PostgreSQL outbox path requires PostgreSQL")
+    values = outbox_values(
+        event_type=event_type,
+        action=action,
+        aggregate_type=aggregate_type,
+        aggregate_id=aggregate_id,
+        idempotency_key=idempotency_key,
+        payload=payload,
+        last_error=last_error,
+    )
+    candidate_filter = or_(
+        PendingEvent.idempotency_key == values["idempotency_key"],
+        (PendingEvent.event_type == values["event_type"])
+        & (PendingEvent.action == values["action"])
+        & (PendingEvent.aggregate_type == values["aggregate_type"])
+        & (PendingEvent.aggregate_id == values["aggregate_id"])
+        & PendingEvent.status.in_(("pending", "failed")),
+    )
+    candidate_exists = select(PendingEvent.id).where(candidate_filter).limit(1).exists()
+    table = PendingEvent.__table__
+    columns = tuple(values)
+    source = select(*(
+        bindparam(f"coalesced_{name}", value, type_=table.c[name].type)
+        for name, value in values.items()
+    )).where(~candidate_exists)
+    statement = (
+        postgresql_insert(PendingEvent)
+        .from_select(columns, source)
+        .on_conflict_do_nothing(index_elements=[PendingEvent.idempotency_key])
+        .returning(PendingEvent)
+    )
+    with db.no_autoflush:
+        inserted = db.execute(statement).scalar_one_or_none()
+    if inserted is not None:
+        return inserted, True
+    existing = db.execute(
+        select(PendingEvent)
+        .where(candidate_filter)
+        .order_by(
+            case((PendingEvent.idempotency_key == values["idempotency_key"], 0), else_=1),
+            PendingEvent.created_at,
+            PendingEvent.id,
+        )
+        .limit(1)
+    ).scalar_one()
+    existing.action = existing.action or values["action"]
+    existing.aggregate_type = existing.aggregate_type or values["aggregate_type"]
+    existing.aggregate_id = existing.aggregate_id or values["aggregate_id"]
+    return existing, False
 
 
 def find_active_outbox_event(

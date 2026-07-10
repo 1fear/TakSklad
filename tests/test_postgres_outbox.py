@@ -61,7 +61,7 @@ class PostgresOutboxTests(unittest.TestCase):
                             '{"action":"google_sheets_scan_export","entity_type":"order_item","entity_id":"legacy-item"}'::jsonb)
                 """))
             run_alembic(url, "upgrade", "head")
-            self.assertEqual(scalar(url, "SELECT version_num FROM alembic_version"), "20260711_0015")
+            self.assertEqual(scalar(url, "SELECT version_num FROM alembic_version"), "20260711_0016")
             with engine.connect() as connection:
                 row = connection.execute(text(
                     "SELECT action,aggregate_type,aggregate_id FROM pending_events"
@@ -127,6 +127,35 @@ class PostgresOutboxTests(unittest.TestCase):
             event_ids = list(executor.map(worker, (1, 2)))
         self.assertEqual(len(set(event_ids)), 1)
         self.assertEqual(scalar(self.url, "SELECT count(*) FROM pending_events"), 1)
+
+    def test_google_fast_path_coalesces_active_legacy_identity(self):
+        with self.SessionLocal() as session:
+            first = queue_google_sheets_export(
+                session,
+                "google_sheets_archive_export",
+                "order",
+                "phase26-coalesced-order",
+                result={"status": "queued"},
+                payload={"idempotency_key": "phase26:legacy:key"},
+            )
+            session.commit()
+            second = queue_google_sheets_export(
+                session,
+                "google_sheets_archive_export",
+                "order",
+                "phase26-coalesced-order",
+                result={"status": "queued"},
+                payload={"idempotency_key": "phase26:new:key"},
+            )
+            session.commit()
+            count = session.execute(text(
+                "SELECT count(*) FROM pending_events WHERE aggregate_id='phase26-coalesced-order'"
+            )).scalar_one()
+
+        self.assertEqual(first.id, second.id)
+        self.assertEqual(count, 1)
+        self.assertEqual(second.idempotency_key, "phase26:legacy:key")
+        self.assertEqual(second.payload["idempotency_key"], "phase26:legacy:key")
 
     def test_normalized_lookup_uses_index_without_payload_expression(self):
         with self.engine.begin() as connection:

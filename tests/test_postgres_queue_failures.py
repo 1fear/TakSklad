@@ -164,7 +164,7 @@ class PostgresQueueFailureTests(unittest.TestCase):
                 ORDER BY available_at, created_at, id
                 LIMIT 100
             """)))
-        self.assertIn("idx_pending_events_claim", plan)
+        self.assertIn("idx_pending_events_claim_ordered", plan)
         self.assertNotIn("payload", plan.lower())
 
 

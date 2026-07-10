@@ -22,13 +22,15 @@ from urllib.request import urlopen
 
 from sqlalchemy import create_engine, text
 
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
 from tools.import_identity_backfill import apply_backfill, analyze
 from tools.release_artifacts import verify_manifest
 
 
-ROOT = Path(__file__).resolve().parents[1]
 POSTGRES_IMAGE = "postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777"
-EXPECTED_HEAD = "20260711_0015"
+EXPECTED_HEAD = "20260711_0016"
 MIGRATION_START = "20260710_0013"
 KNOWN_WORKERS = ("google_sheets_sync", "skladbot", "smartup_auto_import", "telegram")
 DEFAULT_MIGRATION_BUDGET_SECONDS = 120.0

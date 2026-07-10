@@ -25,7 +25,7 @@ from .google_sheets_exporter import (
 )
 from .models import AuditLog, Order, OrderItem, PendingEvent
 from .observability_context import bind_pending_event
-from .outbox_service import queue_outbox_event, reactivate_outbox_event
+from .outbox_service import queue_coalesced_postgres_outbox_event, queue_outbox_event, reactivate_outbox_event
 
 
 GOOGLE_SHEETS_EXPORT_EVENT_TYPE = "google_sheets_export"
@@ -83,6 +83,21 @@ def queue_google_sheets_export(db: Session, action, entity_type, entity_id, resu
     active_lookup_performed = bool(idempotency_key and not multi_chunk_intent)
     if idempotency_key:
         event_payload["idempotency_key"] = idempotency_key
+        if not multi_chunk_intent and db.get_bind().dialect.name == "postgresql":
+            event, inserted = queue_coalesced_postgres_outbox_event(
+                db,
+                event_type=GOOGLE_SHEETS_EXPORT_EVENT_TYPE,
+                action=action,
+                aggregate_type=entity_type,
+                aggregate_id=entity_id,
+                idempotency_key=idempotency_key,
+                payload=event_payload,
+                last_error=format_export_error(result),
+            )
+            if not inserted and event.status in ("pending", "failed"):
+                event_payload["idempotency_key"] = event.idempotency_key or idempotency_key
+                reactivate_outbox_event(event, event_payload, format_export_error(result))
+            return event
         predicates = [PendingEvent.idempotency_key == idempotency_key]
         if not multi_chunk_intent:
             predicates.append(

@@ -7,7 +7,7 @@ from tests.postgres_support import create_database, drop_database, run_alembic, 
 
 
 POSTGRES_AVAILABLE = bool(os.environ.get("TAKSKLAD_TEST_DATABASE_URL"))
-CURRENT_HEAD = "20260711_0015"
+CURRENT_HEAD = "20260711_0016"
 PREVIOUS_HEAD = "20260710_0013"
 
 
@@ -48,7 +48,9 @@ class PostgresMigrationTests(unittest.TestCase):
         }.issubset(heartbeat_columns))
         self.assertTrue({"auth_sessions", "service_principals", "service_principal_tokens"}.issubset(tables))
         self.assertTrue({"available_at", "lease_owner", "lease_expires_at", "completed_at"}.issubset(pending_columns))
-        self.assertTrue({"idx_pending_events_claim", "idx_pending_events_lease_expiry"}.issubset(pending_indexes))
+        self.assertIn("idx_pending_events_claim_ordered", pending_indexes)
+        self.assertNotIn("idx_pending_events_claim", pending_indexes)
+        self.assertIn("idx_pending_events_lease_expiry", pending_indexes)
         self.assertTrue({"auth_version", "updated_at"}.issubset(user_columns))
         self.assertIn("actor_service_principal_id", audit_columns)
         self.assertIn("actor_subject", audit_columns)
