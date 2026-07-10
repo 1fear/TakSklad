@@ -15,7 +15,7 @@ from tests.postgres_support import create_database, drop_database, run_alembic, 
 
 POSTGRES_AVAILABLE = bool(os.environ.get("TAKSKLAD_TEST_DATABASE_URL"))
 PREVIOUS_HEAD = "20260710_0011"
-CURRENT_HEAD = "20260710_0012"
+CURRENT_HEAD = "20260710_0013"
 
 
 @unittest.skipUnless(POSTGRES_AVAILABLE, "disposable PostgreSQL URL not provided")
@@ -102,6 +102,7 @@ class PostgresAuthIdentityTests(unittest.TestCase):
             },
         )
         self.assertIn("actor_service_principal_id", audit_columns)
+        self.assertIn("actor_subject", audit_columns)
         self.assertTrue({"idx_auth_sessions_user_active", "idx_auth_sessions_expires_at"}.issubset(session_indexes))
         self.assertTrue(
             {"idx_service_principals_kind_active", "idx_service_principals_expires_at"}.issubset(

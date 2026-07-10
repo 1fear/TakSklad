@@ -37,6 +37,7 @@ class AuthSessionRead(BaseModel):
     role: str = ""
     permissions: list[str] = Field(default_factory=list)
     expires_at: datetime | None = None
+    csrf_token: str = ""
 
 
 class ScanEntryRead(BaseModel):
@@ -149,6 +150,9 @@ class AdminActivityRead(BaseModel):
     action: str
     entity_type: str = ""
     entity_id: str = ""
+    actor_subject: str = ""
+    actor_user_id: str = ""
+    actor_service_principal_id: str = ""
     payload: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime | None = None
 

@@ -11,7 +11,15 @@ from backend.app.login_limiter import (
     LoginLimiterCapacityExceeded,
     LoginRateLimited,
 )
-from backend.app.main import client_identity, configure_cors, login_attempt_key, register_login_failure
+from backend.app.main import (
+    client_identity,
+    configure_cors,
+    login_attempt_key,
+    register_login_failure,
+    require_browser_request_security,
+)
+from backend.app.csrf import csrf_token_for_session
+from backend.app.web_auth import SESSION_COOKIE_NAME
 from backend.app.settings import load_settings
 
 
@@ -34,7 +42,7 @@ class BackendCorsTests(unittest.TestCase):
             headers={
                 "Origin": "https://app.example.com",
                 "Access-Control-Request-Method": "GET",
-                "Access-Control-Request-Headers": "authorization,content-type",
+                "Access-Control-Request-Headers": "authorization,content-type,x-taksklad-csrf",
             },
         )
 
@@ -42,6 +50,45 @@ class BackendCorsTests(unittest.TestCase):
         self.assertEqual(response.headers["access-control-allow-origin"], "https://app.example.com")
         self.assertIn("GET", response.headers["access-control-allow-methods"])
         self.assertIn("Authorization", response.headers["access-control-allow-headers"])
+        self.assertIn("X-TakSklad-CSRF", response.headers["access-control-allow-headers"])
+
+    def test_cookie_csrf_guard_requires_exact_origin_and_session_proof(self):
+        auth_settings = load_settings({
+            "TAKSKLAD_ENV": "local",
+            "TAKSKLAD_WEB_SESSION_SECRET": "synthetic-csrf-session-secret-with-32-bytes",
+            "TAKSKLAD_WEB_COOKIE_SECURE": "false",
+        })
+        session_token = "synthetic-session-token"
+        csrf_token = csrf_token_for_session(auth_settings, session_token)
+
+        def request(origin, candidate):
+            return SimpleNamespace(
+                cookies={SESSION_COOKIE_NAME: session_token},
+                headers={
+                    "host": "testserver",
+                    "origin": origin,
+                    "X-TakSklad-CSRF": candidate,
+                },
+                url=SimpleNamespace(netloc="testserver", scheme="http"),
+            )
+
+        original_settings = backend_main.settings
+        try:
+            backend_main.settings = auth_settings
+            require_browser_request_security(request("http://testserver", csrf_token))
+            for origin, candidate in (
+                ("http://testserver", ""),
+                ("http://testserver", "wrong-proof"),
+                ("https://cross-origin.example.test", csrf_token),
+                ("null", csrf_token),
+            ):
+                with self.assertRaises(HTTPException) as denied:
+                    require_browser_request_security(request(origin, candidate))
+                self.assertEqual(denied.exception.status_code, 403)
+                self.assertNotIn(csrf_token, str(denied.exception.detail))
+                self.assertNotIn(auth_settings.web_session_secret, str(denied.exception.detail))
+        finally:
+            backend_main.settings = original_settings
 
     def test_local_anonymous_context_requires_both_explicit_conditions(self):
         request = SimpleNamespace(cookies={})

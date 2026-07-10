@@ -88,6 +88,7 @@ import {
 import "./styles.css";
 
 type Tab = "table" | "calendar" | "clients" | "smartup" | "imports" | "skladbotDryRun" | "incidents" | "activity";
+const HISTORY_TABS: Tab[] = ["imports", "skladbotDryRun", "incidents", "activity"];
 type StatusFilter = "all" | "active" | "archive" | "archive_no_kiz" | "cancelled" | "returned" | "removed_from_google";
 type ScanFilter = "all" | "not_started" | "in_progress" | "completed" | "over_scanned" | "no_plan";
 type SkladBotFilter = "all" | "found" | "missing" | "problem";
@@ -127,7 +128,7 @@ function defaultClientPointDraft(): ClientPointFormDraft {
 }
 
 function loadConfig(): ApiConfig {
-  return { apiUrl: defaultApiUrl(), token: "" };
+  return { apiUrl: defaultApiUrl(), token: "", csrfToken: "" };
 }
 
 function todayIso() {
@@ -135,7 +136,7 @@ function todayIso() {
 }
 
 function App() {
-  const [config] = useState<ApiConfig>(() => loadConfig());
+  const [config, setConfig] = useState<ApiConfig>(() => loadConfig());
   const [adminTable, setAdminTable] = useState<AdminTable | null>(null);
   const [imports, setImports] = useState<ImportRecord[]>([]);
   const [dryRuns, setDryRuns] = useState<SkladBotDryRun[]>([]);
@@ -236,6 +237,7 @@ function App() {
     () => Array.from(new Set(incidents.map((item) => item.source).filter(Boolean))).sort(),
     [incidents],
   );
+  const accessibleTabs = useMemo(() => accessibleTabsForPermissions(authPermissions), [authPermissions]);
   const actionableEvents = useMemo(
     () => (eventQueue?.recent_events ?? [])
       .filter((event) => ["failed", "pending", "processing", "blocked"].includes(event.status)),
@@ -251,6 +253,7 @@ function App() {
   );
   const totalAdminRows = adminTable?.total_rows ?? rows.length;
   const canAdminWrite = authPermissions.includes("admin:write");
+  const canClientPointsRead = authPermissions.includes("client_points:read");
   const canEditClientPoints = authPermissions.includes("client_points:write");
   const dayTotals = dashboardSummary?.totals;
 
@@ -293,6 +296,7 @@ function App() {
   }
 
   function expireSession() {
+    setConfig((current) => ({ ...current, csrfToken: "" }));
     setAuthenticated(false);
     setAuthUser("");
     setAuthRole("");
@@ -310,21 +314,39 @@ function App() {
       expireSession();
       return;
     }
+    if (actionError instanceof ApiRequestError && actionError.status === 403) {
+      if (["csrf_invalid", "origin_denied"].includes(actionError.code)) {
+        setError("Защита браузерной сессии устарела. Обновите страницу и повторите вход.");
+      } else {
+        setError("Эта роль не имеет доступа к запрошенному действию.");
+      }
+      return;
+    }
     setError(actionError instanceof Error ? actionError.message : fallback);
   }
 
   function ignoreOptionalPanelError(panelError: unknown) {
     if (panelError instanceof ApiRequestError && panelError.status === 401) {
       expireSession();
+    } else {
+      showActionError(panelError, "Не удалось загрузить защищённый раздел");
     }
     return null;
   }
 
-  async function refreshAll(activeConfig = config, showNotice = true) {
+  async function refreshAll(activeConfig = config, showNotice = true, activePermissions = authPermissions) {
     setLoading(true);
     setError("");
     if (showNotice) setNotice("");
     try {
+      if (!activePermissions.includes("admin:read")) {
+        setAdminTable(null);
+        setDashboardSummary(null);
+        setSelectedOrderIds([]);
+        setNotice("Ограниченный доступ: административные таблицы скрыты для этой роли.");
+        void refreshPanelContext(activeConfig, activePermissions);
+        return;
+      }
       const [nextAdminTable, nextDashboardSummary] = await Promise.all([
         getAdminTable(activeConfig, adminTableRequest(0)),
         getDashboardDaySummary(activeConfig, reportDate),
@@ -335,7 +357,7 @@ function App() {
       if (showNotice) {
         setNotice(`Обновлено: ${new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}`);
       }
-      void refreshPanelContext(activeConfig);
+      void refreshPanelContext(activeConfig, activePermissions);
     } catch (refreshError) {
       if (refreshError instanceof ApiRequestError && refreshError.status === 401) {
         expireSession();
@@ -347,16 +369,17 @@ function App() {
     }
   }
 
-  async function refreshPanelContext(activeConfig = config) {
+  async function refreshPanelContext(activeConfig = config, activePermissions = authPermissions) {
+    const has = (permission: string) => activePermissions.includes(permission);
     const [nextImports, nextClientPoints, nextReadiness, nextEventQueue, nextOperationsAttention, nextSmartupHistory, nextLogisticsCalendar, nextIncidents] = await Promise.all([
-      listImports(activeConfig).catch(ignoreOptionalPanelError),
-      listClientPoints(activeConfig).catch(ignoreOptionalPanelError),
-      getReadiness(activeConfig).catch(ignoreOptionalPanelError),
-      getAdminEvents(activeConfig).catch(ignoreOptionalPanelError),
-      getOperationsAttention(activeConfig).catch(ignoreOptionalPanelError),
-      getSmartupAutoImportHistory(activeConfig).catch(ignoreOptionalPanelError),
-      getLogisticsCalendar(activeConfig, calendarMonth).catch(ignoreOptionalPanelError),
-      getAdminIncidents(activeConfig).catch(ignoreOptionalPanelError),
+      has("imports:read") ? listImports(activeConfig).catch(ignoreOptionalPanelError) : Promise.resolve(null),
+      has("client_points:read") ? listClientPoints(activeConfig).catch(ignoreOptionalPanelError) : Promise.resolve(null),
+      has("diagnostics:read") ? getReadiness(activeConfig).catch(ignoreOptionalPanelError) : Promise.resolve(null),
+      has("admin:read") ? getAdminEvents(activeConfig).catch(ignoreOptionalPanelError) : Promise.resolve(null),
+      has("admin:read") ? getOperationsAttention(activeConfig).catch(ignoreOptionalPanelError) : Promise.resolve(null),
+      has("admin:read") ? getSmartupAutoImportHistory(activeConfig).catch(ignoreOptionalPanelError) : Promise.resolve(null),
+      has("client_points:read") ? getLogisticsCalendar(activeConfig, calendarMonth).catch(ignoreOptionalPanelError) : Promise.resolve(null),
+      has("admin:read") ? getAdminIncidents(activeConfig).catch(ignoreOptionalPanelError) : Promise.resolve(null),
     ]);
     if (nextImports) setImports(nextImports);
     if (nextClientPoints) {
@@ -378,7 +401,7 @@ function App() {
       setIncidentSummary(nextIncidents.summary);
       setSelectedIncidentId((current) => current && nextIncidents.items.some((item) => item.id === current) ? current : "");
     }
-    void refreshDryRuns(activeConfig);
+    if (has("admin:read")) void refreshDryRuns(activeConfig);
   }
 
   async function refreshAdminTable(activeConfig = config, showNotice = false) {
@@ -409,6 +432,8 @@ function App() {
     } catch (dryRunError) {
       if (dryRunError instanceof ApiRequestError && dryRunError.status === 401) {
         expireSession();
+      } else {
+        showActionError(dryRunError, "Не удалось загрузить SkladBot dry-run");
       }
       setDryRuns([]);
     }
@@ -452,6 +477,8 @@ function App() {
     } catch (calendarError) {
       if (calendarError instanceof ApiRequestError && calendarError.status === 401) {
         expireSession();
+      } else {
+        showActionError(calendarError, "Не удалось загрузить календарь логистики");
       }
       setLogisticsCalendar(null);
     }
@@ -480,10 +507,10 @@ function App() {
   }
 
   useEffect(() => {
-    if (!authenticated) return;
+    if (!authenticated || !canClientPointsRead) return;
     void refreshLogisticsCalendar(config, calendarMonth);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [calendarMonth, authenticated]);
+  }, [calendarMonth, authenticated, canClientPointsRead]);
 
   useEffect(() => {
     if (!authenticated || !adminTable) return;
@@ -507,24 +534,33 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    if (!authenticated || accessibleTabs.length === 0 || accessibleTabs.includes(tab)) return;
+    setTab(accessibleTabs[0]);
+  }, [accessibleTabs, authenticated, tab]);
+
   async function initializeAuth() {
     setAuthChecked(false);
     setLoginError("");
     try {
       const session = await getAuthSession(config);
+      const nextConfig = { ...config, csrfToken: session.csrf_token || "" };
+      setConfig(nextConfig);
       setAuthenticated(session.authenticated);
       setAuthUser(session.login || "");
       setAuthRole(session.role || "");
       setAuthPermissions(session.permissions ?? []);
       if (session.authenticated) {
         setAuthChecked(true);
-        void refreshAll(config, false);
+        void refreshAll(nextConfig, false, session.permissions ?? []);
       }
     } catch {
       setAuthenticated(false);
       setAuthUser("");
       setAuthRole("");
       setAuthPermissions([]);
+      setConfig((current) => ({ ...current, csrfToken: "" }));
+      setLoginError("Не удалось проверить сессию. Проверьте соединение и повторите вход.");
     } finally {
       setAuthChecked(true);
     }
@@ -542,12 +578,14 @@ function App() {
     setLoginError("");
     try {
       const session = await loginWeb(config, normalizedPhone, loginPassword);
+      const nextConfig = { ...config, csrfToken: session.csrf_token || "" };
+      setConfig(nextConfig);
       setLoginPassword("");
       setAuthenticated(session.authenticated);
       setAuthUser(session.login || normalizedPhone);
       setAuthRole(session.role || "");
       setAuthPermissions(session.permissions ?? []);
-      await refreshAll(config, false);
+      await refreshAll(nextConfig, false, session.permissions ?? []);
     } catch (loginFailure) {
       const message = loginFailure instanceof Error ? loginFailure.message : "";
       setLoginError(loginFailureMessage(message));
@@ -560,15 +598,16 @@ function App() {
     setBusyAction("logout");
     try {
       await logoutWeb(config);
-    } catch {
-      // Local state must still close access if the server response is interrupted.
-    } finally {
-      setBusyAction("");
+      setConfig((current) => ({ ...current, csrfToken: "" }));
       setAuthenticated(false);
       setAuthUser("");
       setAuthRole("");
       setAuthPermissions([]);
       clearProtectedPanelState();
+    } catch (logoutFailure) {
+      showActionError(logoutFailure, "Не удалось завершить серверную сессию. Повторите выход.");
+    } finally {
+      setBusyAction("");
     }
   }
 
@@ -689,7 +728,7 @@ function App() {
         actor: "web",
         reason: "Изменение таймслота точки в web-панели",
       });
-      const nextClientPoints = await listClientPoints(config).catch(() => []);
+      const nextClientPoints = await listClientPoints(config);
       setClientPoints(nextClientPoints);
       setExpandedClientPointId("");
       setClientOrderSummaries({});
@@ -727,7 +766,7 @@ function App() {
         actor: "web",
         reason: "Ручное добавление точки в web-панели",
       });
-      const nextClientPoints = await listClientPoints(config).catch(() => []);
+      const nextClientPoints = await listClientPoints(config);
       setClientPoints(nextClientPoints);
       setExpandedClientPointId("");
       setClientOrderSummaries({});
@@ -758,7 +797,7 @@ function App() {
         actor: "web",
         reason: "Сброс таймслота точки до значения по умолчанию",
       });
-      const nextClientPoints = await listClientPoints(config).catch(() => []);
+      const nextClientPoints = await listClientPoints(config);
       setClientPoints(nextClientPoints);
       setExpandedClientPointId("");
       setClientOrderSummaries({});
@@ -967,22 +1006,22 @@ function App() {
           </div>
         </div>
         <nav className="nav-tabs" aria-label="Разделы панели">
-          <button className={tab === "table" ? "active" : ""} onClick={() => setTab("table")} aria-current={tab === "table" ? "page" : undefined}>
+          {accessibleTabs.includes("table") && <button className={tab === "table" ? "active" : ""} onClick={() => setTab("table")} aria-current={tab === "table" ? "page" : undefined}>
             <ClipboardList size={18} />
             Таблица
-          </button>
-          <button className={tab === "calendar" ? "active" : ""} onClick={() => setTab("calendar")} aria-current={tab === "calendar" ? "page" : undefined}>
+          </button>}
+          {accessibleTabs.includes("calendar") && <button className={tab === "calendar" ? "active" : ""} onClick={() => setTab("calendar")} aria-current={tab === "calendar" ? "page" : undefined}>
             <CalendarDays size={18} />
             Календарь
-          </button>
-          <button className={tab === "clients" ? "active" : ""} onClick={() => setTab("clients")} aria-current={tab === "clients" ? "page" : undefined}>
+          </button>}
+          {accessibleTabs.includes("clients") && <button className={tab === "clients" ? "active" : ""} onClick={() => setTab("clients")} aria-current={tab === "clients" ? "page" : undefined}>
             <Building2 size={18} />
             Клиенты
-          </button>
-          <button className={tab === "smartup" ? "active" : ""} onClick={() => setTab("smartup")} aria-current={tab === "smartup" ? "page" : undefined}>
+          </button>}
+          {accessibleTabs.includes("smartup") && <button className={tab === "smartup" ? "active" : ""} onClick={() => setTab("smartup")} aria-current={tab === "smartup" ? "page" : undefined}>
             <RefreshCw size={18} />
             Smartup
-          </button>
+          </button>}
         </nav>
         <div className="sidebar-status">
           <Server size={18} />
@@ -991,32 +1030,32 @@ function App() {
             <strong>{config.apiUrl ? config.apiUrl.replace(/^https?:\/\//, "") : SAME_ORIGIN_API_LABEL}</strong>
           </div>
         </div>
-        <div className={`nav-history ${historyNavOpen || isHistoryTab(tab) ? "open" : ""}`}>
+        {HISTORY_TABS.some((item) => accessibleTabs.includes(item)) && <div className={`nav-history ${historyNavOpen || isHistoryTab(tab) ? "open" : ""}`}>
           <button className={isHistoryTab(tab) ? "active" : ""} onClick={() => setHistoryNavOpen((current) => !current)} aria-expanded={historyNavOpen || isHistoryTab(tab)}>
             {historyNavOpen || isHistoryTab(tab) ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
             История действий
           </button>
           {(historyNavOpen || isHistoryTab(tab)) && (
             <div className="nav-history-items">
-              <button className={tab === "imports" ? "active" : ""} onClick={() => { setTab("imports"); setHistoryNavOpen(true); }} aria-current={tab === "imports" ? "page" : undefined}>
+              {accessibleTabs.includes("imports") && <button className={tab === "imports" ? "active" : ""} onClick={() => { setTab("imports"); setHistoryNavOpen(true); }} aria-current={tab === "imports" ? "page" : undefined}>
                 <FileSpreadsheet size={17} />
                 Импорты
-              </button>
-              <button className={tab === "skladbotDryRun" ? "active" : ""} onClick={() => { setTab("skladbotDryRun"); setHistoryNavOpen(true); }} aria-current={tab === "skladbotDryRun" ? "page" : undefined}>
+              </button>}
+              {accessibleTabs.includes("skladbotDryRun") && <button className={tab === "skladbotDryRun" ? "active" : ""} onClick={() => { setTab("skladbotDryRun"); setHistoryNavOpen(true); }} aria-current={tab === "skladbotDryRun" ? "page" : undefined}>
                 <SquareCode size={17} />
                 SkladBot dry-run
-              </button>
-              <button className={tab === "incidents" ? "active" : ""} onClick={() => { setTab("incidents"); setHistoryNavOpen(true); }} aria-current={tab === "incidents" ? "page" : undefined}>
+              </button>}
+              {accessibleTabs.includes("incidents") && <button className={tab === "incidents" ? "active" : ""} onClick={() => { setTab("incidents"); setHistoryNavOpen(true); }} aria-current={tab === "incidents" ? "page" : undefined}>
                 <AlertCircle size={17} />
                 Инциденты
-              </button>
-              <button className={tab === "activity" ? "active" : ""} onClick={() => { setTab("activity"); setHistoryNavOpen(true); }} aria-current={tab === "activity" ? "page" : undefined}>
+              </button>}
+              {accessibleTabs.includes("activity") && <button className={tab === "activity" ? "active" : ""} onClick={() => { setTab("activity"); setHistoryNavOpen(true); }} aria-current={tab === "activity" ? "page" : undefined}>
                 <History size={17} />
                 Активность
-              </button>
+              </button>}
             </div>
           )}
-        </div>
+        </div>}
       </aside>
 
       <main className="workspace">
@@ -1060,7 +1099,7 @@ function App() {
           </div>
         )}
 
-        <section className="stats-section" aria-label="Информация за день">
+        {authPermissions.includes("admin:read") && <section className="stats-section" aria-label="Информация за день">
           <div className="stats-section-head">
             <h2>Информация за день</h2>
             <span>{formatDate(dashboardSummary?.report_date ?? reportDate)}</span>
@@ -1072,9 +1111,17 @@ function App() {
             <Metric icon={<Activity size={20} />} label="Заказов" value={dayTotals?.orders ?? 0} />
             <Metric icon={<RotateCcw size={20} />} label="Возвратов" value={dayTotals?.returned_orders ?? 0} tone={(dayTotals?.returned_orders ?? 0) > 0 ? "warn" : undefined} />
           </div>
-        </section>
+        </section>}
 
-        {tab === "table" && (
+        {accessibleTabs.length === 0 && (
+          <section className="empty-state" role="status">
+            <Lock size={24} />
+            <h2>Нет доступных разделов</h2>
+            <p>Для этой роли не назначены разрешения веб-панели. Обратитесь к администратору.</p>
+          </section>
+        )}
+
+        {accessibleTabs.includes("table") && tab === "table" && (
           <section className="table-panel">
             <div className="panel-header table-panel-header">
               <div>
@@ -1185,7 +1232,7 @@ function App() {
           </section>
         )}
 
-        {tab === "clients" && (
+        {accessibleTabs.includes("clients") && tab === "clients" && (
           <ClientsPanel
             points={filteredClientPoints}
             summary={clientPointSummary}
@@ -1215,7 +1262,7 @@ function App() {
           />
         )}
 
-        {tab === "calendar" && (
+        {accessibleTabs.includes("calendar") && tab === "calendar" && (
           <LogisticsCalendarPanel
             calendar={logisticsCalendar}
             month={calendarMonth}
@@ -1228,7 +1275,7 @@ function App() {
           />
         )}
 
-        {tab === "imports" && (
+        {accessibleTabs.includes("imports") && tab === "imports" && (
           <section className="table-panel">
             <div className="panel-header">
               <h2>История импортов</h2>
@@ -1248,11 +1295,11 @@ function App() {
           </section>
         )}
 
-        {tab === "smartup" && (
+        {accessibleTabs.includes("smartup") && tab === "smartup" && (
           <SmartupAutoImportPanel history={smartupHistory} />
         )}
 
-        {tab === "skladbotDryRun" && (
+        {accessibleTabs.includes("skladbotDryRun") && tab === "skladbotDryRun" && (
           <SkladBotDryRunPanel
             dryRuns={dryRuns}
             imports={imports}
@@ -1262,7 +1309,7 @@ function App() {
           />
         )}
 
-        {tab === "incidents" && (
+        {accessibleTabs.includes("incidents") && tab === "incidents" && (
           <AdminCenterPanel
             incidents={filteredIncidents}
             allIncidents={incidents}
@@ -1293,7 +1340,7 @@ function App() {
           />
         )}
 
-        {tab === "activity" && (
+        {accessibleTabs.includes("activity") && tab === "activity" && (
           <section className="table-panel">
             <div className="panel-header">
               <h2>Последняя активность</h2>
@@ -3028,7 +3075,7 @@ function ActivityList({ items }: { items: AdminActivity[] }) {
           <div>
             <strong>{item.action}</strong>
             <span>{[item.entity_type, shortId(item.entity_id)].filter(Boolean).join(" / ") || "-"}</span>
-            <ActivityPayload payload={item.payload} />
+            <ActivityPayload payload={item.payload} actorSubject={item.actor_subject} />
           </div>
           <time>{formatDateTime(item.created_at)}</time>
         </div>
@@ -3038,8 +3085,8 @@ function ActivityList({ items }: { items: AdminActivity[] }) {
   );
 }
 
-function ActivityPayload({ payload }: { payload: Record<string, unknown> }) {
-  const chips = auditPayloadChips(payload);
+function ActivityPayload({ payload, actorSubject = "" }: { payload: Record<string, unknown>; actorSubject?: string }) {
+  const chips = auditPayloadChips(payload, actorSubject);
   if (chips.length === 0) return null;
   return (
     <div className="activity-details">
@@ -3241,7 +3288,17 @@ function makeIdempotencyKey() {
 }
 
 function isHistoryTab(value: Tab) {
-  return ["imports", "skladbotDryRun", "incidents", "activity"].includes(value);
+  return HISTORY_TABS.includes(value);
+}
+
+function accessibleTabsForPermissions(permissions: string[]): Tab[] {
+  const tabs: Tab[] = [];
+  if (permissions.includes("admin:read")) tabs.push("table");
+  if (permissions.includes("client_points:read")) tabs.push("calendar", "clients");
+  if (permissions.includes("admin:read")) tabs.push("smartup");
+  if (permissions.includes("imports:read")) tabs.push("imports");
+  if (permissions.includes("admin:read")) tabs.push("skladbotDryRun", "incidents", "activity");
+  return tabs;
 }
 
 function weekdayLabel(value: number) {
@@ -3361,12 +3418,12 @@ function readImportDryRunSummary(item: ImportRecord): Record<string, unknown> | 
     : null;
 }
 
-function auditPayloadChips(payload: Record<string, unknown>) {
+function auditPayloadChips(payload: Record<string, unknown>, actorSubject = "") {
   const affectedOrderIds = stringArray(payload.affected_order_ids);
   const affectedItemIds = stringArray(payload.affected_item_ids);
   const chips = [
     { label: "Причина", value: stringField(payload, "reason") },
-    { label: "Кто", value: stringField(payload, "actor") },
+    { label: "Кто", value: actorSubject || stringField(payload, "authenticated_subject") },
     { label: "Источник", value: stringField(payload, "source") },
     { label: "Idempotency", value: compactId(stringField(payload, "idempotency_key")) },
     { label: "Заказов", value: affectedOrderIds.length ? String(affectedOrderIds.length) : "" },

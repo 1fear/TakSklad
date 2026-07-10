@@ -430,6 +430,16 @@ class ServicePrincipalToken(Base):
 
 class AuditLog(Base):
     __tablename__ = "audit_log"
+    __table_args__ = (
+        CheckConstraint(
+            "actor_user_id IS NULL OR actor_service_principal_id IS NULL",
+            name="ck_audit_log_single_authenticated_actor",
+        ),
+        CheckConstraint(
+            "actor_subject IS NULL OR trim(actor_subject) <> ''",
+            name="ck_audit_log_actor_subject_nonblank",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
     actor_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID_TYPE, ForeignKey("users.id", ondelete="SET NULL"))
@@ -437,6 +447,7 @@ class AuditLog(Base):
         UUID_TYPE,
         ForeignKey("service_principals.id", ondelete="SET NULL"),
     )
+    actor_subject: Mapped[str | None] = mapped_column(String(120))
     action: Mapped[str] = mapped_column(String(120), nullable=False)
     entity_type: Mapped[str | None] = mapped_column(String(80))
     entity_id: Mapped[str | None] = mapped_column(String(120))

@@ -10,6 +10,7 @@ import httpx
 from sqlalchemy import desc, or_, select, text
 from sqlalchemy.orm import selectinload
 
+from .audit_identity import AuditActor, set_audit_actor
 from .db import SessionLocal
 from .google_sheets_pending import queue_google_sheets_export
 from .models import AuditLog, Order, OrderItem
@@ -1071,7 +1072,7 @@ def request_match_diagnostics(order, request):
     }
 
 
-def update_orders_from_skladbot():
+def update_orders_from_skladbot(audit_actor: AuditActor | None = None):
     checked_at = datetime.now(timezone.utc).isoformat()
     updated = 0
     matched = 0
@@ -1081,6 +1082,8 @@ def update_orders_from_skladbot():
     pending = 0
 
     with SessionLocal() as db:
+        if audit_actor is not None:
+            set_audit_actor(db, audit_actor)
         if not try_acquire_skladbot_sync_lock(db):
             logging.info("SkladBot worker: another sync is already running, skip")
             return {"requests": 0, "updated": 0, "matched": 0, "not_found": 0, "multiple": 0, "busy": True}

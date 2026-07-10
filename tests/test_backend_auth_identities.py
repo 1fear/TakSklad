@@ -241,10 +241,13 @@ class BackendAuthIdentityTests(unittest.TestCase):
             "TAKSKLAD_ENV": "test",
             "TAKSKLAD_IDENTITY_AUTH_ENABLED": "true",
             "TAKSKLAD_WEB_SESSION_SECRET": "independent-synthetic-session-secret",
+            "TAKSKLAD_WEB_COOKIE_SECURE": "false",
         })
         request = SimpleNamespace(
             client=SimpleNamespace(host="203.0.113.17"),
             cookies={},
+            headers={"host": "testserver", "origin": "http://testserver"},
+            url=SimpleNamespace(netloc="testserver", scheme="http"),
             state=SimpleNamespace(),
         )
         response = Response()
@@ -279,7 +282,15 @@ class BackendAuthIdentityTests(unittest.TestCase):
             )
             cookie.load(relogin_response.headers["set-cookie"])
             fresh_token = cookie[SESSION_COOKIE_NAME].value
-            logout_request = SimpleNamespace(cookies={SESSION_COOKIE_NAME: fresh_token})
+            logout_request = SimpleNamespace(
+                cookies={SESSION_COOKIE_NAME: fresh_token},
+                headers={
+                    "host": "testserver",
+                    "origin": "http://testserver",
+                    "X-TakSklad-CSRF": backend_main.csrf_token_for_session(app_settings, fresh_token),
+                },
+                url=SimpleNamespace(netloc="testserver", scheme="http"),
+            )
             backend_main.web_logout(logout_request, Response(), db=self.db)
             with self.assertRaises(IdentityAuthError):
                 backend_main.read_web_session(logout_request, db=self.db)
@@ -304,6 +315,7 @@ class BackendAuthIdentityTests(unittest.TestCase):
                 url=SimpleNamespace(path=path),
                 method=method,
                 cookies={},
+                scope={},
                 state=SimpleNamespace(),
             )
 
@@ -331,9 +343,15 @@ class BackendAuthIdentityTests(unittest.TestCase):
                 now=NOW,
                 secret_factory=lambda _count: FIXED_SECRET + "-worker",
             )
+            reconciliation_preview = backend_main.require_service_token(
+                request_for("/api/v1/reports/reconciliation/day"),
+                f"Bearer {worker_token.token}",
+                db=self.db,
+            )
+            self.assertEqual(reconciliation_preview.source, "service-principal")
             with self.assertRaises(HTTPException) as reconciliation_denied:
                 backend_main.require_service_token(
-                    request_for("/api/v1/reports/reconciliation/day"),
+                    request_for("/api/v1/reports/reconciliation/day", method="POST"),
                     f"Bearer {worker_token.token}",
                     db=self.db,
                 )

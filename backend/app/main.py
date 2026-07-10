@@ -10,7 +10,13 @@ from datetime import date, datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 
+from .access_policy import (
+    AUTH_PROTECTED,
+    SAFE_METHODS,
+    route_policy,
+)
 from .admin_service import build_admin_table
+from .audit_identity import AUDIT_ACTOR_INFO_KEY, bind_audit_actor
 from .client_points_service import (
     ClientPointApiError,
     get_client_point_order_summary,
@@ -49,6 +55,14 @@ from .auth_identities import (
     revoke_user_session,
     validate_user_session,
 )
+from .csrf import (
+    CSRF_ERROR_DETAIL,
+    CSRF_HEADER_NAME,
+    ORIGIN_ERROR_DETAIL,
+    browser_origin_matches,
+    csrf_token_for_session,
+    csrf_token_matches,
+)
 from .kiz_reports_service import (
     build_kiz_date_range_report_xlsx,
     build_kiz_date_report_xlsx,
@@ -80,7 +94,7 @@ from .orders_service import lookup_kiz_availability as lookup_kiz_availability_i
 from .orders_service import lookup_return_order as lookup_return_order_in_db
 from .orders_service import mark_order_returned as mark_order_returned_in_db
 from .orders_service import undo_scan as undo_scan_in_db
-from .reconciliation_service import ReconciliationError, run_daily_reconciliation
+from .reconciliation_service import ReconciliationError, preview_daily_reconciliation, run_daily_reconciliation
 from .reports_service import build_dashboard_day_summary, build_day_report
 from .skladbot_request_dry_run import list_skladbot_dry_runs, rebuild_skladbot_dry_run
 from .skladbot_worker import update_orders_from_skladbot
@@ -129,11 +143,9 @@ from .login_limiter import (
     LoginLimiterCapacityExceeded,
     LoginRateLimited,
 )
-from .models import User
+from .models import AuditLog, User
 from .settings import APP_VERSION, load_settings, validate_backend_settings
 from .web_auth import (
-    PERMISSION_ADMIN_WRITE,
-    PERMISSION_CLIENT_POINTS_WRITE,
     ROLE_ADMIN,
     SESSION_COOKIE_NAME,
     WebAuthError,
@@ -170,7 +182,7 @@ def configure_cors(app_instance: FastAPI, app_settings) -> None:
         allow_origins=list(app_settings.cors_origins),
         allow_credentials=False,
         allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type"],
+        allow_headers=["Authorization", "Content-Type", CSRF_HEADER_NAME],
     )
 
 
@@ -218,6 +230,7 @@ class AuthContext:
     principal_id: str = ""
     token_id: str = ""
     session_id: str = ""
+    user_id: str = ""
 
 
 def bearer_token(authorization: str | None) -> str:
@@ -227,40 +240,20 @@ def bearer_token(authorization: str | None) -> str:
     return token.strip()
 
 
-def required_service_scope(request: Request) -> str:
-    path = request.url.path
-    method = request.method.upper()
-    if path == "/api/v1/orders/active":
-        return "orders:read"
-    if path.startswith("/api/v1/admin/orders/") and path.endswith("/delete-active"):
-        return "orders:delete_active"
-    if path.startswith("/api/v1/admin/"):
-        return "admin:read" if method == "GET" else PERMISSION_ADMIN_WRITE
-    if path == "/api/v1/sync/sources":
-        return "sync:run"
-    if path.startswith("/api/v1/scans/undo"):
-        return "scans:undo"
-    if path.startswith("/api/v1/scans"):
-        return "scans:create"
-    if path.startswith("/api/v1/orders/") and path.endswith("/complete"):
-        return "orders:complete"
-    if path.startswith("/api/v1/returns"):
-        return "returns:read" if method == "GET" else "returns:write"
-    if path.startswith("/api/v1/kiz/"):
-        return "kiz:read"
-    if path == "/api/v1/imports/preview":
-        return "imports:preview"
-    if path.startswith("/api/v1/imports"):
-        return "imports:read" if method == "GET" else "imports:create"
-    if path == "/api/v1/reports/reconciliation/day":
-        return "reconciliation:run"
-    if path.startswith("/api/v1/reports/"):
-        return "reports:read"
-    if path.startswith("/api/v1/logistics/"):
-        return "logistics:read"
-    if path.startswith("/api/v1/diagnostics/"):
-        return "diagnostics:read"
-    return ""
+def request_route_template(request: Request) -> str:
+    scope = getattr(request, "scope", None)
+    route = scope.get("route") if isinstance(scope, dict) else None
+    return str(getattr(route, "path", "") or getattr(getattr(request, "url", None), "path", "") or "")
+
+
+def policy_for_request(request: Request):
+    policy = route_policy(request.method, request_route_template(request))
+    if policy is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="API route authorization policy is missing",
+        )
+    return policy
 
 
 def cache_auth_context(request: Request, context: AuthContext) -> AuthContext:
@@ -276,35 +269,45 @@ def read_auth_context(request: Request, authorization: str | None = None, db=Non
         return cached
 
     raw_bearer = bearer_token(authorization)
-    if settings.identity_auth_enabled and db is not None and raw_bearer.startswith("tks."):
-        try:
-            verified = authenticate_service_token(db, raw_bearer)
-            db.commit()
-            return cache_auth_context(request, AuthContext(
-                login=verified.principal_identifier,
-                role=verified.principal_kind,
-                permissions=tuple(sorted(verified.scopes)),
-                source="service-principal",
-                principal_id=str(verified.principal_id),
-                token_id=str(verified.token_id),
-            ))
-        except IdentityAuthError:
-            db.rollback()
+    if raw_bearer:
+        if settings.identity_auth_enabled and db is not None and raw_bearer.startswith("tks."):
+            try:
+                verified = authenticate_service_token(
+                    db,
+                    raw_bearer,
+                    touch_last_used=request.method.upper() not in SAFE_METHODS,
+                )
+                return cache_auth_context(request, AuthContext(
+                    login=verified.principal_identifier,
+                    role=verified.principal_kind,
+                    permissions=tuple(sorted(verified.scopes)),
+                    source="service-principal",
+                    principal_id=str(verified.principal_id),
+                    token_id=str(verified.token_id),
+                ))
+            except IdentityAuthError as exc:
+                db.rollback()
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid service token") from exc
 
-    if legacy_service_token_matches(authorization):
-        if settings.legacy_auth_mode == "shadow":
-            logging.warning("Legacy service credential matched in shadow-only mode")
-        elif legacy_auth_window_active():
-            return cache_auth_context(request, AuthContext(
-                login="legacy-service-token",
-                role=ROLE_ADMIN,
-                permissions=role_permissions(ROLE_ADMIN),
-                source="legacy-service-token",
-            ))
+        if legacy_service_token_matches(authorization):
+            if settings.legacy_auth_mode == "shadow":
+                logging.warning("Legacy service credential matched in shadow-only mode")
+            elif legacy_auth_window_active():
+                return cache_auth_context(request, AuthContext(
+                    login="legacy-service-token",
+                    role=ROLE_ADMIN,
+                    permissions=role_permissions(ROLE_ADMIN),
+                    source="legacy-service-token",
+                ))
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid service token")
 
     if settings.web_auth_enabled or settings.identity_auth_enabled:
         try:
-            payload = read_web_session(request, db=db)
+            payload = read_web_session(
+                request,
+                db=db,
+                touch_last_used=request.method.upper() not in SAFE_METHODS,
+            )
             role = normalize_role(payload.get("role"))
             return cache_auth_context(request, AuthContext(
                 login=payload.get("sub") or "",
@@ -312,6 +315,7 @@ def read_auth_context(request: Request, authorization: str | None = None, db=Non
                 permissions=role_permissions(role),
                 source="web-session",
                 session_id=str(payload.get("sid") or ""),
+                user_id=str(payload.get("uid") or ""),
             ))
         except (WebAuthError, IdentityAuthError):
             if db is not None:
@@ -340,23 +344,21 @@ def require_service_token(
     authorization: str | None = Header(default=None),
     db=Depends(get_db),
 ):
+    policy = policy_for_request(request)
+    if policy.authentication != AUTH_PROTECTED:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Invalid protected route policy")
     auth_context = read_auth_context(request, authorization, db=db)
     if auth_context.source == "service-principal":
-        required_scope = required_service_scope(request)
-        if not required_scope or required_scope not in auth_context.permissions:
+        if not policy.service_scope or policy.service_scope not in auth_context.permissions:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Service principal scope denied")
-    return auth_context
-
-
-def require_permission(
-    permission: str,
-    request: Request,
-    authorization: str | None = Header(default=None),
-    db=None,
-):
-    auth_context = read_auth_context(request, authorization, db=db)
-    if permission not in auth_context.permissions:
+    elif auth_context.source == "legacy-service-token":
+        if not legacy_auth_window_active():
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Legacy service credential denied")
+    elif not policy.web_permission or policy.web_permission not in auth_context.permissions:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permissions")
+    bind_audit_actor(db, auth_context)
+    if policy.mutates and auth_context.source == "web-session":
+        require_browser_request_security(request)
     return auth_context
 
 
@@ -365,12 +367,7 @@ def require_admin_write_permission(
     authorization: str | None = Header(default=None),
     db=Depends(get_db),
 ):
-    auth_context = read_auth_context(request, authorization, db=db)
-    if auth_context.source == "service-principal":
-        required_scope = required_service_scope(request)
-        if required_scope and required_scope in auth_context.permissions:
-            return auth_context
-    return require_permission(PERMISSION_ADMIN_WRITE, request, authorization, db=db)
+    return require_service_token(request, authorization, db=db)
 
 
 def require_client_points_write_permission(
@@ -378,7 +375,21 @@ def require_client_points_write_permission(
     authorization: str | None = Header(default=None),
     db=Depends(get_db),
 ):
-    return require_permission(PERMISSION_CLIENT_POINTS_WRITE, request, authorization, db=db)
+    return require_service_token(request, authorization, db=db)
+
+
+def require_browser_request_security(request: Request) -> None:
+    session_token = request.cookies.get(SESSION_COOKIE_NAME)
+    candidate = request.headers.get(CSRF_HEADER_NAME)
+    if not browser_origin_matches(request, settings):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=ORIGIN_ERROR_DETAIL)
+    if not csrf_token_matches(settings, session_token, candidate):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=CSRF_ERROR_DETAIL)
+
+
+def require_browser_origin(request: Request) -> None:
+    if not browser_origin_matches(request, settings):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=ORIGIN_ERROR_DETAIL)
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -401,7 +412,12 @@ def readiness(response: Response, db=Depends(get_db)):
 auth_api = APIRouter(prefix="/api/v1/auth")
 
 
-def auth_session_read(payload):
+def prevent_auth_response_caching(response: Response) -> None:
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+
+
+def auth_session_read(payload, session_token: str = ""):
     expires_at = datetime.fromtimestamp(int(payload.get("exp") or 0), timezone.utc)
     role = normalize_role(payload.get("role"))
     return AuthSessionRead(
@@ -410,14 +426,14 @@ def auth_session_read(payload):
         role=role,
         permissions=list(role_permissions(role)),
         expires_at=expires_at,
+        csrf_token=csrf_token_for_session(settings, session_token),
     )
 
 
-def read_web_session(request: Request, db=None):
+def read_web_session(request: Request, db=None, *, touch_last_used: bool = True):
     token = request.cookies.get(SESSION_COOKIE_NAME)
     if settings.identity_auth_enabled and db is not None and str(token or "").startswith("tks."):
-        verified = validate_user_session(db, token)
-        db.commit()
+        verified = validate_user_session(db, token, touch_last_used=touch_last_used)
         return {
             "sub": verified.username,
             "role": verified.role,
@@ -433,6 +449,8 @@ def read_web_session(request: Request, db=None):
 
 @auth_api.post("/login", response_model=AuthSessionRead)
 def web_login(payload: AuthLoginRequest, request: Request, response: Response, db=Depends(get_db)):
+    prevent_auth_response_caching(response)
+    require_browser_origin(request)
     login_key = login_attempt_key(request, payload.login)
     ensure_login_not_locked(login_key)
     try:
@@ -477,7 +495,7 @@ def web_login(payload: AuthLoginRequest, request: Request, response: Response, d
         secure=settings.web_cookie_secure,
         samesite="lax",
     )
-    return auth_session_read(session_payload)
+    return auth_session_read(session_payload, token)
 
 
 def login_attempt_key(request: Request, login):
@@ -554,7 +572,14 @@ def clear_login_failures(key):
 
 @auth_api.post("/logout", response_model=AuthSessionRead)
 def web_logout(request: Request, response: Response, db=Depends(get_db)):
+    prevent_auth_response_caching(response)
     token = request.cookies.get(SESSION_COOKIE_NAME)
+    try:
+        read_web_session(request, db=db, touch_last_used=False)
+    except (WebAuthError, IdentityAuthError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated") from exc
+    require_browser_request_security(request)
     if settings.identity_auth_enabled and str(token or "").startswith("tks."):
         try:
             revoke_user_session(db, token)
@@ -566,9 +591,11 @@ def web_logout(request: Request, response: Response, db=Depends(get_db)):
 
 
 @auth_api.get("/session", response_model=AuthSessionRead)
-def web_session(request: Request, db=Depends(get_db)):
+def web_session(request: Request, response: Response, db=Depends(get_db)):
+    prevent_auth_response_caching(response)
     try:
-        return auth_session_read(read_web_session(request, db=db))
+        token = request.cookies.get(SESSION_COOKIE_NAME) or ""
+        return auth_session_read(read_web_session(request, db=db, touch_last_used=False), token)
     except (WebAuthError, IdentityAuthError):
         db.rollback()
         return AuthSessionRead(authenticated=False)
@@ -577,11 +604,13 @@ def web_session(request: Request, db=Depends(get_db)):
 @auth_api.get("/check")
 def web_auth_check(request: Request, db=Depends(get_db)):
     try:
-        read_web_session(request, db=db)
+        read_web_session(request, db=db, touch_last_used=False)
     except (WebAuthError, IdentityAuthError) as exc:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated") from exc
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    response = Response(status_code=status.HTTP_204_NO_CONTENT)
+    prevent_auth_response_caching(response)
+    return response
 
 
 app.include_router(auth_api)
@@ -915,6 +944,15 @@ def sync_sources(skladbot: bool = True, wait_skladbot: bool = False, db=Depends(
             "skladbot": {"status": "skipped", "message": "Sync already in progress"},
         }
 
+    audit_actor = db.info.get(AUDIT_ACTOR_INFO_KEY)
+    if audit_actor is not None:
+        db.add(AuditLog(
+            action="sync_sources_requested",
+            entity_type="sync",
+            entity_id="sources",
+            payload={"skladbot": bool(skladbot), "wait_skladbot": bool(wait_skladbot)},
+        ))
+        db.commit()
     errors = []
     try:
         try:
@@ -939,13 +977,13 @@ def sync_sources(skladbot: bool = True, wait_skladbot: bool = False, db=Depends(
 
         if skladbot and wait_skladbot:
             try:
-                skladbot_result = update_orders_from_skladbot()
+                skladbot_result = update_orders_from_skladbot(**({"audit_actor": audit_actor} if audit_actor else {}))
                 skladbot_result = {"status": "completed", **skladbot_result}
             except Exception as exc:
                 skladbot_result = {"status": "error", "error": str(exc)}
                 errors.append("skladbot")
         elif skladbot:
-            skladbot_result = start_skladbot_sync_background()
+            skladbot_result = start_skladbot_sync_background(audit_actor=audit_actor)
         else:
             skladbot_result = {"status": "skipped"}
 
@@ -960,13 +998,13 @@ def sync_sources(skladbot: bool = True, wait_skladbot: bool = False, db=Depends(
         sync_sources_lock.release()
 
 
-def start_skladbot_sync_background():
+def start_skladbot_sync_background(audit_actor=None):
     if not skladbot_sync_lock.acquire(blocking=False):
         return {"status": "busy", "message": "SkladBot sync already in progress"}
 
     def worker():
         try:
-            update_orders_from_skladbot()
+            update_orders_from_skladbot(**({"audit_actor": audit_actor} if audit_actor else {}))
         finally:
             skladbot_sync_lock.release()
 
@@ -1068,6 +1106,14 @@ def day_report(report_date: str | None = None, db=Depends(get_db)):
 
 @api.get("/reports/reconciliation/day", dependencies=[Depends(require_admin_write_permission)])
 def reconciliation_day_report(report_date: str | None = None, db=Depends(get_db)):
+    try:
+        return preview_daily_reconciliation(db=db, report_date=report_date)
+    except ReconciliationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@api.post("/reports/reconciliation/day", dependencies=[Depends(require_admin_write_permission)])
+def execute_reconciliation_day_report(report_date: str | None = None, db=Depends(get_db)):
     try:
         return run_daily_reconciliation(db=db, report_date=report_date, alert_chat_ids=[])
     except ReconciliationError as exc:

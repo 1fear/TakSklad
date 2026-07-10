@@ -170,6 +170,9 @@ export type AdminActivity = {
   action: string;
   entity_type: string;
   entity_id: string;
+  actor_subject: string;
+  actor_user_id: string;
+  actor_service_principal_id: string;
   payload: Record<string, unknown>;
   created_at: string | null;
 };
@@ -406,6 +409,7 @@ export type AdminTable = {
 export type ApiConfig = {
   apiUrl: string;
   token: string;
+  csrfToken: string;
 };
 
 export type AdminTableRequest = {
@@ -426,6 +430,7 @@ export type AuthSession = {
   role: string;
   permissions: string[];
   expires_at: string | null;
+  csrf_token: string;
 };
 
 type RequestOptions = {
@@ -437,13 +442,15 @@ type RequestOptions = {
 export class ApiRequestError extends Error {
   status: number;
   statusText: string;
+  code: string;
 
-  constructor(status: number, statusText: string, detail: string) {
+  constructor(status: number, statusText: string, detail: string, code = "") {
     const prefix = `${status} ${statusText}`.trim();
     super(detail ? `${prefix}: ${detail}` : prefix || "Ошибка запроса");
     this.name = "ApiRequestError";
     this.status = status;
     this.statusText = statusText;
+    this.code = code;
   }
 }
 
@@ -510,15 +517,20 @@ export async function apiRequest<T>(
   options: RequestOptions = {},
 ): Promise<T> {
   const apiUrl = config.apiUrl.replace(/\/$/, "");
+  const method = (options.method ?? "GET").toUpperCase();
+  const bearerRequest = Boolean(config.token);
+  const unsafeCookieRequest = !bearerRequest && !["GET", "HEAD", "OPTIONS"].includes(method);
+  ensureCookieApiIsSameOrigin(apiUrl, bearerRequest);
   const timeoutMs = options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   const controller = timeoutMs > 0 ? new AbortController() : undefined;
   const timeoutId = controller ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
   const response = await fetch(`${apiUrl}${path}`, {
-    method: options.method ?? "GET",
-    credentials: "include",
+    method,
+    credentials: bearerRequest ? "omit" : "same-origin",
     headers: {
       "Content-Type": "application/json",
       ...(config.token ? { Authorization: `Bearer ${config.token}` } : {}),
+      ...(unsafeCookieRequest && config.csrfToken ? { "X-TakSklad-CSRF": config.csrfToken } : {}),
     },
     body: options.body ? JSON.stringify(options.body) : undefined,
     signal: controller?.signal,
@@ -533,18 +545,35 @@ export async function apiRequest<T>(
 
   if (!response.ok) {
     let detail = `${response.status} ${response.statusText}`;
+    let code = "";
     const body = await response.text();
     if (body) {
       try {
-        detail = formatApiErrorDetail(JSON.parse(body));
+        const payload = JSON.parse(body);
+        detail = formatApiErrorDetail(payload);
+        code = apiErrorCode(payload);
       } catch {
         detail = formatTextApiErrorDetail(response.status, body);
       }
     }
-    throw new ApiRequestError(response.status, response.statusText, detail);
+    throw new ApiRequestError(response.status, response.statusText, detail, code);
   }
 
   return response.json() as Promise<T>;
+}
+
+function apiErrorCode(payload: unknown): string {
+  if (!isRecord(payload)) return "";
+  const detail = isRecord(payload.detail) ? payload.detail : payload;
+  return typeof detail.code === "string" ? detail.code : "";
+}
+
+function ensureCookieApiIsSameOrigin(apiUrl: string, bearerRequest: boolean) {
+  if (bearerRequest || !apiUrl || typeof window === "undefined") return;
+  const target = new URL(apiUrl, window.location.origin);
+  if (target.origin !== window.location.origin) {
+    throw new Error("Cookie-сессия разрешена только для same-origin API.");
+  }
 }
 
 function isAbortError(error: unknown) {
@@ -802,8 +831,9 @@ export function syncSources(config: ApiConfig, options: { skladbot?: boolean; wa
 
 export async function downloadDiagnosticsLog(config: ApiConfig) {
   const apiUrl = config.apiUrl.replace(/\/$/, "");
+  ensureCookieApiIsSameOrigin(apiUrl, Boolean(config.token));
   const response = await fetch(`${apiUrl}/api/v1/diagnostics/logs`, {
-    credentials: "include",
+    credentials: config.token ? "omit" : "same-origin",
     headers: {
       ...(config.token ? { Authorization: `Bearer ${config.token}` } : {}),
     },

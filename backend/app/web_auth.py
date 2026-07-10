@@ -9,15 +9,18 @@ from dataclasses import dataclass
 
 from sqlalchemy import select
 
+from .access_policy import (
+    PERMISSION_ADMIN_WRITE,
+    PERMISSION_CLIENT_POINTS_WRITE,
+    ROLE_ADMIN,
+    ROLE_DENIED,
+    ROLE_LOGISTICS_SLOTS,
+    ROLE_OPERATOR,
+    permissions_for_role,
+)
+
 
 SESSION_COOKIE_NAME = "taksklad_web_session"
-ROLE_ADMIN = "admin"
-ROLE_LOGISTICS_SLOTS = "logistics_slots"
-ROLE_OPERATOR = "operator"
-PERMISSION_ADMIN_WRITE = "admin:write"
-PERMISSION_CLIENT_POINTS_WRITE = "client_points:write"
-
-
 @dataclass(frozen=True)
 class AuthIdentity:
     login: str
@@ -43,9 +46,12 @@ def authenticate_web_user(settings, login, password, db=None):
     if db is not None:
         user = find_active_db_user(db, normalized_login)
         if user and user.password_hash and verify_password(str(password or ""), user.password_hash):
+            role = normalize_role(user.role)
+            if role == ROLE_DENIED:
+                raise WebAuthError("invalid credentials")
             return AuthIdentity(
                 login=user.username,
-                role=normalize_role(user.role),
+                role=role,
                 user_id=user.id,
                 auth_version=int(getattr(user, "auth_version", 0) or 0),
             )
@@ -140,20 +146,11 @@ def normalize_session_role(settings, payload):
 
 def normalize_role(value):
     role = str(value or "").strip().casefold().replace("-", "_")
-    if role in {"admin", "administrator", "owner"}:
-        return ROLE_ADMIN
-    if role in {"logistics_slots", "logistics", "logistic_slots", "client_points"}:
-        return ROLE_LOGISTICS_SLOTS
-    return role or ROLE_OPERATOR
+    return role if role in {ROLE_ADMIN, ROLE_LOGISTICS_SLOTS, ROLE_OPERATOR} else ROLE_DENIED
 
 
 def role_permissions(role):
-    normalized_role = normalize_role(role)
-    if normalized_role == ROLE_ADMIN:
-        return (PERMISSION_ADMIN_WRITE, PERMISSION_CLIENT_POINTS_WRITE)
-    if normalized_role == ROLE_LOGISTICS_SLOTS:
-        return (PERMISSION_CLIENT_POINTS_WRITE,)
-    return ()
+    return permissions_for_role(normalize_role(role))
 
 
 def constant_time_equals(left, right):

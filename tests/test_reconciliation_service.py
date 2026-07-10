@@ -6,8 +6,8 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from backend.app.models import Base, Incident, Order, OrderItem, PendingEvent
-from backend.app.reconciliation_service import parse_report_date, run_daily_reconciliation
+from backend.app.models import AuditLog, Base, Incident, Order, OrderItem, PendingEvent
+from backend.app.reconciliation_service import parse_report_date, preview_daily_reconciliation, run_daily_reconciliation
 
 
 class ReconciliationServiceTests(unittest.TestCase):
@@ -166,6 +166,41 @@ class ReconciliationServiceTests(unittest.TestCase):
             self.assertEqual(payload["chat_id"], "-5271267499")
             self.assertIn("Что сделать:", payload["text"])
             self.assertIn("daily_reconciliation", payload["text"])
+
+    def test_preview_reports_candidates_without_database_mutation(self):
+        with self.SessionLocal() as db:
+            self.add_order(
+                db,
+                source_import_id="preview-import",
+                source_order_id="preview-order",
+                skladbot_request_number="",
+                skladbot_request_id="",
+                skladbot_status="",
+            )
+            db.commit()
+            before = {
+                "incidents": db.query(Incident).count(),
+                "events": db.query(PendingEvent).count(),
+                "audits": db.query(AuditLog).count(),
+            }
+
+            result = preview_daily_reconciliation(
+                db=db,
+                report_date=date(2026, 6, 10),
+                google_records=[],
+            )
+            db.rollback()
+            after = {
+                "incidents": db.query(Incident).count(),
+                "events": db.query(PendingEvent).count(),
+                "audits": db.query(AuditLog).count(),
+            }
+
+        self.assertEqual(result["mode"], "preview")
+        self.assertEqual(result["status"], "action_required")
+        self.assertTrue(result["incidents"])
+        self.assertEqual(result["alerts"], [])
+        self.assertEqual(after, before)
 
     def test_reconciliation_google_down_records_mirror_issue_without_failed_db_workflow(self):
         with self.SessionLocal() as db:

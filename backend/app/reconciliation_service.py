@@ -55,6 +55,57 @@ def run_daily_reconciliation(
         )
 
 
+def preview_daily_reconciliation(
+    *,
+    db: Session | None = None,
+    report_date=None,
+    google_records=None,
+    google_error: str = "",
+    detail_limit: int = 20,
+) -> dict:
+    parsed_date = parse_report_date(report_date)
+    if db is not None:
+        return build_daily_reconciliation_preview(
+            db,
+            parsed_date,
+            google_records=google_records,
+            google_error=google_error,
+            detail_limit=detail_limit,
+        )
+    with SessionLocal() as session:
+        return build_daily_reconciliation_preview(
+            session,
+            parsed_date,
+            google_records=google_records,
+            google_error=google_error,
+            detail_limit=detail_limit,
+        )
+
+
+def build_daily_reconciliation_preview(
+    db: Session,
+    report_date: date,
+    *,
+    google_records=None,
+    google_error: str = "",
+    detail_limit: int = 20,
+) -> dict:
+    evaluation = evaluate_daily_reconciliation(
+        db,
+        report_date,
+        google_records=google_records,
+        google_error=google_error,
+        detail_limit=detail_limit,
+    )
+    return reconciliation_result(
+        report_date,
+        evaluation,
+        incidents=[preview_incident_summary(report_date, spec) for spec in evaluation["incident_specs"]],
+        alerts=[],
+        mode="preview",
+    )
+
+
 def build_daily_reconciliation(
     db: Session,
     report_date: date,
@@ -62,6 +113,36 @@ def build_daily_reconciliation(
     google_records=None,
     google_error: str = "",
     alert_chat_ids=None,
+    detail_limit: int = 20,
+) -> dict:
+    evaluation = evaluate_daily_reconciliation(
+        db,
+        report_date,
+        google_records=google_records,
+        google_error=google_error,
+        detail_limit=detail_limit,
+    )
+    incidents = [
+        upsert_reconciliation_incident(db, report_date, spec)
+        for spec in evaluation["incident_specs"]
+    ]
+    alerts = queue_reconciliation_alerts(db, report_date, incidents, alert_chat_ids or [])
+    db.commit()
+    return reconciliation_result(
+        report_date,
+        evaluation,
+        incidents=[incident_to_summary(incident) for incident in incidents],
+        alerts=alerts,
+        mode="execute",
+    )
+
+
+def evaluate_daily_reconciliation(
+    db: Session,
+    report_date: date,
+    *,
+    google_records=None,
+    google_error: str = "",
     detail_limit: int = 20,
 ) -> dict:
     detail_limit = max(1, min(int(detail_limit or 20), 100))
@@ -79,25 +160,38 @@ def build_daily_reconciliation(
     skladbot_summary = summarize_skladbot_gaps(orders, detail_limit)
     db_summary = summarize_db_orders(orders, db_items)
 
-    incident_specs = build_incident_specs(report_date, google_summary, skladbot_summary)
-    incidents = [
-        upsert_reconciliation_incident(db, report_date, spec)
-        for spec in incident_specs
-    ]
-    alerts = queue_reconciliation_alerts(db, report_date, incidents, alert_chat_ids or [])
-    status = reconciliation_status(google_summary, skladbot_summary)
-    db.commit()
-
     return {
-        "source": "postgres",
-        "status": status,
-        "report_date": report_date.isoformat(),
-        "generated_at": datetime.now(timezone.utc).isoformat(),
         "db": db_summary,
         "google": google_summary,
         "skladbot": skladbot_summary,
-        "incidents": [incident_to_summary(incident) for incident in incidents],
+        "incident_specs": build_incident_specs(report_date, google_summary, skladbot_summary),
+        "status": reconciliation_status(google_summary, skladbot_summary),
+    }
+
+
+def reconciliation_result(report_date: date, evaluation: dict, *, incidents: list[dict], alerts: list[dict], mode: str) -> dict:
+    return {
+        "source": "postgres",
+        "mode": mode,
+        "status": evaluation["status"],
+        "report_date": report_date.isoformat(),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "db": evaluation["db"],
+        "google": evaluation["google"],
+        "skladbot": evaluation["skladbot"],
+        "incidents": incidents,
         "alerts": alerts,
+    }
+
+
+def preview_incident_summary(report_date: date, spec: dict) -> dict:
+    return {
+        "id": "",
+        "source": RECONCILIATION_SOURCE,
+        "severity": spec["severity"],
+        "status": "candidate",
+        "title": spec["title"],
+        "external_ref": f"reconciliation:{report_date.isoformat()}:{spec['kind']}",
     }
 
 

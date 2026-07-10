@@ -166,6 +166,7 @@ def validate_user_session(
     *,
     now: datetime | None = None,
     touch_interval_seconds: int = DEFAULT_LAST_USED_TOUCH_SECONDS,
+    touch_last_used: bool = True,
 ) -> VerifiedUserSession:
     now = _utc(now)
     session_id = _parse_token(token, TOKEN_PREFIX)
@@ -184,8 +185,9 @@ def validate_user_session(
     ):
         raise IdentityAuthError("invalid user session")
 
-    _touch(session, now, touch_interval_seconds)
-    db.flush()
+    if touch_last_used:
+        _touch(session, now, touch_interval_seconds)
+        db.flush()
     return VerifiedUserSession(
         session_id=session.id,
         user_id=user.id,
@@ -247,6 +249,7 @@ def authenticate_service_token(
     required_scope: str | None = None,
     now: datetime | None = None,
     touch_interval_seconds: int = DEFAULT_LAST_USED_TOUCH_SECONDS,
+    touch_last_used: bool = True,
 ) -> VerifiedServiceIdentity:
     now = _utc(now)
     token_id = _parse_token(token, TOKEN_PREFIX)
@@ -269,9 +272,10 @@ def authenticate_service_token(
     if required_scope and required_scope not in scopes:
         raise IdentityScopeError("service principal scope denied")
 
-    _touch(stored, now, touch_interval_seconds)
-    _touch(principal, now, touch_interval_seconds)
-    db.flush()
+    if touch_last_used:
+        _touch(stored, now, touch_interval_seconds)
+        _touch(principal, now, touch_interval_seconds)
+        db.flush()
     return VerifiedServiceIdentity(
         principal_id=principal.id,
         principal_identifier=principal.identifier,

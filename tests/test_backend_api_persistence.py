@@ -850,10 +850,12 @@ class BackendApiPersistenceTests(unittest.TestCase):
             session_before = self.client.get("/api/v1/auth/session")
             self.assertEqual(session_before.status_code, 200)
             self.assertFalse(session_before.json()["authenticated"])
+            self.assertEqual(session_before.headers["cache-control"], "no-store")
 
             bad_login = self.client.post(
                 "/api/v1/auth/login",
                 json={"login": "998000000000", "password": "wrong-password"},
+                headers={"Origin": "http://testserver"},
             )
             self.assertEqual(bad_login.status_code, 401)
             self.assertNotIn(SESSION_COOKIE_NAME, bad_login.cookies)
@@ -861,10 +863,14 @@ class BackendApiPersistenceTests(unittest.TestCase):
             login = self.client.post(
                 "/api/v1/auth/login",
                 json={"login": "998000000000", "password": "test-password"},
+                headers={"Origin": "http://testserver"},
             )
             self.assertEqual(login.status_code, 200)
             self.assertTrue(login.json()["authenticated"])
             self.assertEqual(login.json()["login"], "998000000000")
+            self.assertTrue(login.json()["csrf_token"])
+            self.assertEqual(login.headers["cache-control"], "no-store")
+            self.assertEqual(login.headers["pragma"], "no-cache")
             self.assertIn(SESSION_COOKIE_NAME, login.cookies)
             set_cookie = login.headers["set-cookie"]
             self.assertIn("HttpOnly", set_cookie)
@@ -873,7 +879,13 @@ class BackendApiPersistenceTests(unittest.TestCase):
             check = self.client.get("/api/v1/auth/check")
             self.assertEqual(check.status_code, 204)
 
-            logout = self.client.post("/api/v1/auth/logout")
+            logout = self.client.post(
+                "/api/v1/auth/logout",
+                headers={
+                    "Origin": "http://testserver",
+                    "X-TakSklad-CSRF": login.json()["csrf_token"],
+                },
+            )
             self.assertEqual(logout.status_code, 200)
             self.assertFalse(logout.json()["authenticated"])
 
@@ -901,6 +913,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             login = self.client.post(
                 "/api/v1/auth/login",
                 json={"login": "998000000000", "password": "test-password"},
+                headers={"Origin": "http://testserver"},
             )
             self.assertEqual(login.status_code, 200)
 
@@ -929,6 +942,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             login = self.client.post(
                 "/api/v1/auth/login",
                 json={"login": "998000000000", "password": "test-password"},
+                headers={"Origin": "http://testserver"},
             )
             self.assertEqual(login.status_code, 200)
 
@@ -962,16 +976,20 @@ class BackendApiPersistenceTests(unittest.TestCase):
             login = self.client.post(
                 "/api/v1/auth/login",
                 json={"login": "998933456753", "password": "limited-password"},
+                headers={"Origin": "http://testserver"},
             )
             self.assertEqual(login.status_code, 200)
             login_payload = login.json()
             self.assertTrue(login_payload["authenticated"])
             self.assertEqual(login_payload["login"], "998933456753")
             self.assertEqual(login_payload["role"], "logistics_slots")
-            self.assertEqual(login_payload["permissions"], ["client_points:write"])
+            self.assertEqual(
+                login_payload["permissions"],
+                ["client_points:read", "client_points:write", "logistics:read"],
+            )
 
             table = self.client.get("/api/v1/admin/table")
-            self.assertEqual(table.status_code, 200)
+            self.assertEqual(table.status_code, 403)
 
             timeslot = self.client.post(
                 "/api/v1/admin/client-points/timeslot",
@@ -982,6 +1000,10 @@ class BackendApiPersistenceTests(unittest.TestCase):
                     "delivery_to": "12:00",
                     "actor": "web",
                     "reason": "limited user update",
+                },
+                headers={
+                    "Origin": "http://testserver",
+                    "X-TakSklad-CSRF": login_payload["csrf_token"],
                 },
             )
             self.assertEqual(timeslot.status_code, 200)
@@ -4363,7 +4385,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertIn("Invalid report_date", response.json()["detail"])
 
     def test_reconciliation_report_endpoint_is_db_first_and_does_not_alert(self):
-        with mock.patch("backend.app.main.run_daily_reconciliation") as reconcile:
+        with mock.patch("backend.app.main.preview_daily_reconciliation") as reconcile:
             reconcile.return_value = {
                 "source": "postgres",
                 "status": "ok",
@@ -4378,7 +4400,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(response.json()["alerts"], [])
         reconcile.assert_called_once()
         self.assertEqual(reconcile.call_args.kwargs["report_date"], "2026-06-10")
-        self.assertEqual(reconcile.call_args.kwargs["alert_chat_ids"], [])
+        self.assertNotIn("alert_chat_ids", reconcile.call_args.kwargs)
 
     def test_reconciliation_report_endpoint_records_google_down_as_mirror_issue(self):
         with self.SessionLocal() as db:
@@ -4413,6 +4435,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["source"], "postgres")
+        self.assertEqual(payload["mode"], "preview")
         self.assertEqual(payload["status"], "mirror_issue")
         self.assertEqual(payload["google"]["status"], "error")
         self.assertEqual(payload["skladbot"]["missing_request_orders"], 0)
@@ -4423,9 +4446,10 @@ class BackendApiPersistenceTests(unittest.TestCase):
             incidents = db.execute(select(Incident).where(Incident.source == "daily_reconciliation")).scalars().all()
             notifications = db.execute(select(PendingEvent).where(PendingEvent.event_type == "telegram_notification")).scalars().all()
 
-        self.assertEqual(len(incidents), 1)
-        self.assertEqual(incidents[0].severity, "warning")
-        self.assertEqual(incidents[0].external_ref, "reconciliation:2026-06-10:google_mirror_unavailable")
+        self.assertEqual(len(payload["incidents"]), 1)
+        self.assertEqual(payload["incidents"][0]["severity"], "warning")
+        self.assertEqual(payload["incidents"][0]["status"], "candidate")
+        self.assertEqual(incidents, [])
         self.assertEqual(notifications, [])
 
     def test_diagnostics_logs_include_failed_events_import_errors_and_redact_secrets(self):

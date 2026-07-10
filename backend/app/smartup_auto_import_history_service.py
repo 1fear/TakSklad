@@ -45,6 +45,9 @@ def list_smartup_auto_import_history(db: Session, limit: int | None = None) -> d
                 action=row.action,
                 entity_type=row.entity_type or "",
                 entity_id=row.entity_id or "",
+                actor_subject=row.actor_subject or "",
+                actor_user_id=str(row.actor_user_id or ""),
+                actor_service_principal_id=str(row.actor_service_principal_id or ""),
                 payload=sanitize_history_payload(row.payload),
                 created_at=row.created_at,
             )
