@@ -147,6 +147,35 @@
       "version": "3.12-slim"
     },
     {
+      "bom-ref": "pkg:oci/tecnativa/docker-socket-proxy@sha256:1f3a6f303320723d199d2316a3e82b2e2685d86c275d5e3deeaf182573b47476?tag=v0.4.2",
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://github.com/Tecnativa/docker-socket-proxy/releases/tag/v0.4.2"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "1f3a6f303320723d199d2316a3e82b2e2685d86c275d5e3deeaf182573b47476"
+        }
+      ],
+      "name": "tecnativa/docker-socket-proxy",
+      "properties": [
+        {
+          "name": "taksklad:immutable-reference",
+          "value": "tecnativa/docker-socket-proxy:v0.4.2@sha256:1f3a6f303320723d199d2316a3e82b2e2685d86c275d5e3deeaf182573b47476"
+        },
+        {
+          "name": "taksklad:source-manifest",
+          "value": "supply-chain/immutable-refs.json"
+        }
+      ],
+      "purl": "pkg:oci/tecnativa/docker-socket-proxy@sha256:1f3a6f303320723d199d2316a3e82b2e2685d86c275d5e3deeaf182573b47476?tag=v0.4.2",
+      "type": "container",
+      "version": "v0.4.2"
+    },
+    {
       "bom-ref": "pkg:oci/traefik@sha256:f5dba1e65167778cd5f8d1b463fc5d200f49d40c6458fc9f4b391a68ebfb9534?tag=v3.6",
       "externalReferences": [
         {
@@ -184,6 +213,7 @@
         "pkg:oci/node@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2?tag=22-alpine",
         "pkg:oci/postgres@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777?tag=16-alpine",
         "pkg:oci/python@sha256:423ed6ab25b1921a477529254bfeeabf5855151dc2c3141699a1bfc852199fbf?tag=3.12-slim",
+        "pkg:oci/tecnativa/docker-socket-proxy@sha256:1f3a6f303320723d199d2316a3e82b2e2685d86c275d5e3deeaf182573b47476?tag=v0.4.2",
         "pkg:oci/traefik@sha256:f5dba1e65167778cd5f8d1b463fc5d200f49d40c6458fc9f4b391a68ebfb9534?tag=v3.6"
       ],
       "ref": "pkg:generic/taksklad-container-images@phase-21"

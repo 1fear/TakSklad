@@ -820,6 +820,15 @@ def scan_container_and_workflow_config(root: Path) -> list[Finding]:
                         )
                     )
                 if "/var/run/docker.sock" in stripped:
+                    restricted_proxy = (
+                        relative == "deploy/traefik/docker-compose.yml"
+                        and stripped == "- /var/run/docker.sock:/var/run/docker.sock:ro"
+                        and "  docker-socket-proxy:\n" in text
+                        and '      POST: "0"' in text
+                        and "      DOCKER_HOST: tcp://docker-socket-proxy:2375" in text
+                    )
+                    if restricted_proxy:
+                        continue
                     if not stripped.endswith(":ro"):
                         severity = "critical"
                         rule_id = "container-config.docker-socket-write"

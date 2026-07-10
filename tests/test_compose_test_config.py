@@ -18,7 +18,7 @@ class ComposeTestConfigTests(unittest.TestCase):
             content = output.read_text(encoding="utf-8")
             self.assertGreater(count, 10)
             self.assertIn("TAKSKLAD_ENV=test", content)
-            self.assertIn(f"TAKSKLAD_ENV_FILE={output.resolve()}", content)
+            self.assertNotIn("TAKSKLAD_ENV_FILE", content)
             self.assertNotIn("private_key", content.lower())
             if os.name != "nt":
                 self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o600)

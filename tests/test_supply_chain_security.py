@@ -69,7 +69,7 @@ class SupplyChainSecurityTests(unittest.TestCase):
             self.assertEqual(set(counts), set(SBOM_FILENAMES))
             self.assertEqual(counts["taksklad-desktop.cdx.json"], 35)
             self.assertEqual(counts["taksklad-backend.cdx.json"], 46)
-            self.assertEqual(counts["taksklad-container-images.cdx.json"], 6)
+            self.assertEqual(counts["taksklad-container-images.cdx.json"], 7)
 
             for filename in SBOM_FILENAMES:
                 payload = json.loads((output_dir / filename).read_text(encoding="utf-8"))

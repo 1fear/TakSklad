@@ -1,9 +1,55 @@
 services:
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:v0.4.2@sha256:1f3a6f303320723d199d2316a3e82b2e2685d86c275d5e3deeaf182573b47476
+    restart: unless-stopped
+    init: true
+    environment:
+      ALLOW_RESTARTS: "0"
+      AUTH: "0"
+      CONTAINERS: "1"
+      EVENTS: "1"
+      EXEC: "0"
+      IMAGES: "0"
+      INFO: "1"
+      NETWORKS: "1"
+      PING: "1"
+      POST: "0"
+      SECRETS: "0"
+      SERVICES: "0"
+      SWARM: "0"
+      SYSTEM: "0"
+      TASKS: "0"
+      VERSION: "1"
+      VOLUMES: "0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    read_only: true
+    tmpfs:
+      - /run:rw,nosuid,nodev,size=8m
+      - /tmp:rw,noexec,nosuid,nodev,size=8m
+      - /var/lib/haproxy:rw,nosuid,nodev,size=8m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 64m
+    cpus: 0.25
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "3"
+    networks:
+      - docker-api
+
   traefik:
     image: traefik:v3.6@sha256:f5dba1e65167778cd5f8d1b463fc5d200f49d40c6458fc9f4b391a68ebfb9534
     restart: unless-stopped
+    init: true
     environment:
       DOCKER_API_VERSION: "1.44"
+      DOCKER_HOST: tcp://docker-socket-proxy:2375
     command:
       - --providers.docker=true
       - --providers.docker.exposedbydefault=false
@@ -19,15 +65,31 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - letsencrypt:/letsencrypt
+    depends_on:
+      - docker-socket-proxy
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 256m
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
     networks:
       - traefik
+      - docker-api
 
 volumes:
   letsencrypt:
 
 networks:
+  docker-api:
+    internal: true
   traefik:
     external: true
     name: ${TRAEFIK_NETWORK:-traefik}

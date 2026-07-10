@@ -22,7 +22,6 @@ def render_config(output: Path, contract_path: Path = CONTRACT_PATH) -> int:
         raise ValueError("synthetic config output must not use a forbidden .env* filename")
     contract = json.loads(contract_path.read_text(encoding="utf-8"))
     values = dict(contract.get("compose_test_values") or {})
-    values["TAKSKLAD_ENV_FILE"] = str(output.resolve())
     for key, value in values.items():
         if not KEY_PATTERN.fullmatch(key):
             raise ValueError(f"invalid config key: {key}")

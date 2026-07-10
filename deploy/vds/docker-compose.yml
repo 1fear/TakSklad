@@ -1,13 +1,53 @@
+x-app-hardening: &app-hardening
+  init: true
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,size=64m
+  pids_limit: 256
+  mem_limit: 768m
+  cpus: 1.0
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
 services:
   postgres:
     image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
     restart: unless-stopped
+    init: true
+    user: "70:70"
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - type: volume
+        source: postgres_data
+        target: /var/lib/postgresql/data
+        volume:
+          nocopy: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+      - /var/run/postgresql:rw,nosuid,nodev,size=16m,uid=70,gid=70,mode=0770
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 1g
+    cpus: 1.0
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
@@ -17,12 +57,11 @@ services:
       - taksklad-internal
 
   backend-api:
+    <<: *app-hardening
     build:
       context: ../../backend
       dockerfile: Dockerfile
     restart: unless-stopped
-    env_file:
-      - ${TAKSKLAD_ENV_FILE:-.env}
     environment:
       DATABASE_URL: ${DATABASE_URL}
       TAKSKLAD_ENV: ${TAKSKLAD_ENV}
@@ -84,13 +123,18 @@ services:
       start_period: 20s
 
   frontend:
+    <<: *app-hardening
     build:
       context: ../../frontend
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
       TAKSKLAD_BACKEND_INTERNAL_URL: http://backend-api:8000
-      TAKSKLAD_API_TOKEN: ${TAKSKLAD_API_TOKEN}
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m,uid=101,gid=101,mode=1770
+      - /etc/nginx/conf.d:rw,nosuid,nodev,size=4m,uid=101,gid=101,mode=0755
+      - /var/cache/nginx:rw,nosuid,nodev,size=16m,uid=101,gid=101,mode=0755
+      - /run:rw,nosuid,nodev,size=4m,uid=101,gid=101,mode=0755
     labels:
       - traefik.enable=true
       - traefik.http.routers.taksklad-frontend.rule=Host(`${TAKSKLAD_FRONTEND_HOST}`) || Host(`${TAKSKLAD_FRONTEND_WWW_HOST}`)
@@ -104,7 +148,7 @@ services:
       - traefik.http.middlewares.taksklad-frontend-https-redirect.redirectscheme.scheme=https
       - traefik.http.middlewares.taksklad-frontend-https-redirect.redirectscheme.permanent=true
       - traefik.http.middlewares.taksklad-frontend-csp.headers.contentSecurityPolicy=default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self' data:; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests; block-all-mixed-content
-      - traefik.http.services.taksklad-frontend.loadbalancer.server.port=80
+      - traefik.http.services.taksklad-frontend.loadbalancer.server.port=8080
       - traefik.docker.network=${TRAEFIK_NETWORK:-traefik}
     depends_on:
       backend-api:
@@ -113,20 +157,19 @@ services:
       - taksklad-internal
       - traefik
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/ >/dev/null"]
       interval: 30s
       timeout: 5s
       retries: 5
       start_period: 10s
 
   skladbot-worker:
+    <<: *app-hardening
     build:
       context: ../../backend
       dockerfile: Dockerfile
     restart: unless-stopped
     command: ["python", "-m", "app.skladbot_worker_runner"]
-    env_file:
-      - ${TAKSKLAD_ENV_FILE:-.env}
     environment:
       DATABASE_URL: ${DATABASE_URL}
       TAKSKLAD_TIMEZONE: ${TAKSKLAD_TIMEZONE:-Asia/Tashkent}
@@ -163,13 +206,12 @@ services:
       start_period: 30s
 
   smartup-auto-import-worker:
+    <<: *app-hardening
     build:
       context: ../../backend
       dockerfile: Dockerfile
     restart: unless-stopped
     command: ["python", "-m", "app.smartup_auto_import_worker"]
-    env_file:
-      - ${TAKSKLAD_ENV_FILE:-.env}
     environment:
       DATABASE_URL: ${DATABASE_URL}
       TAKSKLAD_TIMEZONE: ${TAKSKLAD_TIMEZONE:-Asia/Tashkent}
@@ -212,7 +254,9 @@ services:
       TAKSKLAD_DEFAULT_PIECES_PER_BLOCK: ${TAKSKLAD_DEFAULT_PIECES_PER_BLOCK:-10}
       TAKSKLAD_DEFAULT_BLOCK_PRICE: ${TAKSKLAD_DEFAULT_BLOCK_PRICE:-240000}
     volumes:
-      - ../../outputs:/app/outputs
+      - type: bind
+        source: ${TAKSKLAD_OUTPUTS_PATH:-../../outputs}
+        target: /app/outputs
     depends_on:
       postgres:
         condition: service_healthy
@@ -226,13 +270,12 @@ services:
       start_period: 30s
 
   google-sheets-sync-worker:
+    <<: *app-hardening
     build:
       context: ../../backend
       dockerfile: Dockerfile
     restart: unless-stopped
     command: ["python", "-m", "app.google_sheets_sync_worker"]
-    env_file:
-      - ${TAKSKLAD_ENV_FILE:-.env}
     environment:
       DATABASE_URL: ${DATABASE_URL}
       TAKSKLAD_GOOGLE_SPREADSHEET_ID: ${TAKSKLAD_GOOGLE_SPREADSHEET_ID:-}
@@ -254,14 +297,14 @@ services:
       start_period: 30s
 
   telegram-worker:
+    <<: *app-hardening
     build:
       context: ../../backend
       dockerfile: Dockerfile
     restart: unless-stopped
     command: ["python", "-m", "app.telegram_worker"]
-    env_file:
-      - ${TAKSKLAD_ENV_FILE:-.env}
     environment:
+      DATABASE_URL: ${DATABASE_URL}
       TAKSKLAD_API_TOKEN: ${TAKSKLAD_API_TOKEN}
       TAKSKLAD_BACKEND_INTERNAL_URL: http://backend-api:8000
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
@@ -289,9 +332,11 @@ services:
       start_period: 30s
 
   adminer:
+    <<: *app-hardening
     profiles: ["adminer"]
     image: adminer:4@sha256:bb7f148f65aae5916b79a5b7b4ac594f04b17340840cda4c556c84fe4c89b110
     restart: "no"
+    user: "33:33"
     depends_on:
       postgres:
         condition: service_healthy

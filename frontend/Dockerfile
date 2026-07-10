@@ -12,3 +12,9 @@ FROM nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef
 
 COPY nginx.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /app/dist /usr/share/nginx/html
+
+RUN chown -R nginx:nginx /etc/nginx/templates /usr/share/nginx/html
+
+EXPOSE 8080
+
+USER 101:101

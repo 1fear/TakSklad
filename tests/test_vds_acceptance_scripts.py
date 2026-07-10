@@ -121,7 +121,7 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
             1,
         )[0]
 
-        self.assertIn("${TAKSKLAD_ENV_FILE:-.env}", compose)
+        self.assertNotIn("env_file:", compose)
         self.assertIn("YANDEX_GEOCODER_API_KEY: ${YANDEX_GEOCODER_API_KEY:-}", smartup_worker)
         self.assertIn("TAKSKLAD_TIMEZONE: ${TAKSKLAD_TIMEZONE:-Asia/Tashkent}", smartup_worker)
         self.assertIn("TAKSKLAD_DEFAULT_BLOCK_PRICE: ${TAKSKLAD_DEFAULT_BLOCK_PRICE:-240000}", smartup_worker)
@@ -201,7 +201,7 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         self.assertIn("migrations.get('current_revision') == migrations.get('expected_head')", compose)
         self.assertIn("policy.get('mandatory_status') == 'ok'", compose)
         self.assertIn("json.load(response)", compose)
-        self.assertIn("wget -qO- http://127.0.0.1/", compose)
+        self.assertIn("wget -qO- http://127.0.0.1:8080/", compose)
         self.assertGreaterEqual(compose.count("db.execute(text('SELECT 1')).scalar()"), 4)
 
     def test_frontend_uses_same_origin_api_proxy_contract(self):
