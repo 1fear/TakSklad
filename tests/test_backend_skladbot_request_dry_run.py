@@ -891,7 +891,7 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
                 return Response()
 
         with mock.patch.dict("os.environ", {"SKLADBOT_API_TOKEN": "secret-token", "SKLADBOT_API_TOKENS": ""}, clear=False):
-            with mock.patch("backend.app.skladbot_worker.httpx.Client", FakeHttpClient):
+            with mock.patch("backend.app.skladbot_client.httpx.Client", FakeHttpClient):
                 payload = {"customer_id": 6211, "request_type_id": 3389, "products": []}
                 result = SkladBotClient().create_request(payload)
 
@@ -926,7 +926,7 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
             },
             clear=False,
         ):
-            with mock.patch("backend.app.skladbot_worker.httpx.Client", FakeHttpClient):
+            with mock.patch("backend.app.skladbot_client.httpx.Client", FakeHttpClient):
                 with self.assertRaises(httpx.TimeoutException):
                     SkladBotClient().create_request({"customer_id": 6211})
 

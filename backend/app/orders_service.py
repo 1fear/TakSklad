@@ -20,6 +20,17 @@ from .kiz_movements_service import (
 )
 from .models import AuditLog, Order, OrderItem, ScanCode
 from . import outbox_service
+from .order_statuses import (
+    COMPLETED_STATUSES,
+    HIDDEN_ITEM_STATUSES,
+    INACTIVE_ORDER_STATUSES,
+    STATUS_ARCHIVED_NO_KIZ,
+    STATUS_CANCELLED,
+    STATUS_COMPLETED,
+    STATUS_NOT_COMPLETED,
+    STATUS_REMOVED_FROM_GOOGLE,
+    STATUS_RETURNED,
+)
 from .schemas import KizAvailabilityRead, OrderItemRead, OrderRead, ScanCreate, ScanRead, ScanUndo
 from .scan_quantities import (
     SCAN_TYPE_AGGREGATE_BOX,
@@ -31,15 +42,6 @@ from .scan_quantities import (
 )
 
 
-STATUS_COMPLETED = "completed"
-STATUS_NOT_COMPLETED = "not_completed"
-STATUS_RETURNED = "returned"
-STATUS_ARCHIVED_NO_KIZ = "archived_no_kiz"
-STATUS_CANCELLED = "cancelled"
-STATUS_REMOVED_FROM_GOOGLE = "removed_from_google_sheet"
-COMPLETED_STATUSES = (STATUS_COMPLETED, "done", "closed", STATUS_RETURNED)
-INACTIVE_ORDER_STATUSES = (*COMPLETED_STATUSES, STATUS_ARCHIVED_NO_KIZ, STATUS_CANCELLED)
-HIDDEN_ITEM_STATUSES = (STATUS_REMOVED_FROM_GOOGLE,)
 class ApiError(Exception):
     def __init__(self, status_code, detail):
         self.status_code = status_code

@@ -15,9 +15,8 @@ from .event_leases import claim_event_leases, event_leases_enabled, finalize_eve
 from .models import AuditLog, ImportJob, Incident, Order, OrderItem, PendingEvent
 from .outbox_service import queue_outbox_event
 from .representative_contacts import build_representative_comment, find_representative_contact
-from .skladbot_worker import (
-    SkladBotClient,
-    env_int,
+from .skladbot_client import SkladBotClient, env_int, sanitize_skladbot_error
+from .skladbot_contracts import (
     normalize_request_payload,
     normalize_smartup_id,
     normalize_text,
@@ -25,7 +24,6 @@ from .skladbot_worker import (
     product_sku_key,
     request_list_value,
     request_matches_order,
-    sanitize_skladbot_error,
 )
 
 

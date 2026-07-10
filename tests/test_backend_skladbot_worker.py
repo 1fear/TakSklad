@@ -1,5 +1,7 @@
+import ast
 import unittest
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from unittest import mock
 
 from sqlalchemy import create_engine, select
@@ -7,6 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.app.skladbot_diagnostic import diagnose_skladbot_matches
+from backend.app import skladbot_client, skladbot_request_dry_run, skladbot_return_requests, skladbot_worker
 from backend.app.models import AuditLog, Base, Order, OrderItem, PendingEvent
 from backend.app.skladbot_worker import (
     CandidateRequests,
@@ -40,6 +43,35 @@ from backend.app.skladbot_worker import (
 
 
 class BackendSkladBotWorkerTests(unittest.TestCase):
+    def test_skladbot_public_compatibility_uses_explicit_client_boundary(self):
+        self.assertIs(skladbot_worker.SkladBotClient, skladbot_client.SkladBotClient)
+        self.assertIs(skladbot_request_dry_run.SkladBotClient, skladbot_client.SkladBotClient)
+        self.assertIs(skladbot_return_requests.SkladBotClient, skladbot_client.SkladBotClient)
+
+    def test_order_and_skladbot_modules_have_no_forbidden_back_edges(self):
+        module_paths = {
+            name: Path("backend/app") / f"{name}.py"
+            for name in (
+                "orders_service",
+                "skladbot_worker",
+                "skladbot_request_dry_run",
+                "skladbot_return_requests",
+            )
+        }
+
+        def local_imports(path):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            return {
+                node.module.split(".", 1)[0]
+                for node in ast.walk(tree)
+                if isinstance(node, ast.ImportFrom) and node.level == 1 and node.module
+            }
+
+        graph = {name: local_imports(path) & module_paths.keys() for name, path in module_paths.items()}
+        self.assertNotIn("skladbot_worker", graph["skladbot_request_dry_run"])
+        self.assertNotIn("skladbot_worker", graph["skladbot_return_requests"])
+        self.assertNotIn("orders_service", graph["skladbot_worker"])
+
     def test_parse_skladbot_api_tokens_accepts_pool_and_deduplicates(self):
         tokens = parse_skladbot_api_tokens({
             "SKLADBOT_API_TOKEN": "old-token",
@@ -162,7 +194,7 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
             "SKLADBOT_API_TOKEN": "token-a",
             "SKLADBOT_API_TOKENS": "",
             "SKLADBOT_REQUEST_DELAY_SECONDS": "0",
-        }, clear=True), mock.patch("backend.app.skladbot_worker.httpx.Client", FakeHttpClient):
+        }, clear=True), mock.patch("backend.app.skladbot_client.httpx.Client", FakeHttpClient):
             with self.assertRaisesRegex(RuntimeError, "Недостаточно товара"):
                 SkladBotClient().create_request({"customer_id": 6211})
 
@@ -202,8 +234,8 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
             "SKLADBOT_API_TOKENS": "token-a,token-b,token-c",
             "SKLADBOT_API_MAX_RETRIES": "2",
             "SKLADBOT_REQUEST_DELAY_SECONDS": "20",
-        }, clear=True), mock.patch("backend.app.skladbot_worker.httpx.Client", FakeHttpClient), mock.patch(
-            "backend.app.skladbot_worker.time.sleep"
+        }, clear=True), mock.patch("backend.app.skladbot_client.httpx.Client", FakeHttpClient), mock.patch(
+            "backend.app.skladbot_client.time.sleep"
         ) as sleep_mock:
             client = SkladBotClient()
             result = client.get("/requests")
@@ -249,8 +281,8 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
             "SKLADBOT_API_TOKENS": token_pool,
             "SKLADBOT_API_MAX_RETRIES": "2",
             "SKLADBOT_REQUEST_DELAY_SECONDS": "20",
-        }, clear=True), mock.patch("backend.app.skladbot_worker.httpx.Client", FakeHttpClient), mock.patch(
-            "backend.app.skladbot_worker.time.sleep"
+        }, clear=True), mock.patch("backend.app.skladbot_client.httpx.Client", FakeHttpClient), mock.patch(
+            "backend.app.skladbot_client.time.sleep"
         ) as sleep_mock:
             client = SkladBotClient()
             result = client.get("/requests")
@@ -290,8 +322,8 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {
             "SKLADBOT_API_TOKEN": "token-a",
             "SKLADBOT_REQUEST_DELAY_SECONDS": "2",
-        }, clear=True), mock.patch("backend.app.skladbot_worker.httpx.Client", FakeHttpClient), mock.patch(
-            "backend.app.skladbot_worker.time.sleep"
+        }, clear=True), mock.patch("backend.app.skladbot_client.httpx.Client", FakeHttpClient), mock.patch(
+            "backend.app.skladbot_client.time.sleep"
         ) as sleep_mock:
             client = SkladBotClient()
             self.assertEqual(client.get("/requests"), {"ok": True})
@@ -338,7 +370,7 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
             "SKLADBOT_API_TOKENS": "token-a,token-b",
             "SKLADBOT_API_MAX_RETRIES": "2",
             "SKLADBOT_REQUEST_DELAY_SECONDS": "0",
-        }, clear=True), mock.patch("backend.app.skladbot_worker.httpx.Client", FakeHttpClient):
+        }, clear=True), mock.patch("backend.app.skladbot_client.httpx.Client", FakeHttpClient):
             client = SkladBotClient()
             result = client.get("/requests")
 
@@ -380,8 +412,8 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
             "SKLADBOT_API_TOKENS": "token-a,token-b",
             "SKLADBOT_API_MAX_RETRIES": "2",
             "SKLADBOT_REQUEST_DELAY_SECONDS": "1",
-        }, clear=True), mock.patch("backend.app.skladbot_worker.httpx.Client", FakeHttpClient), mock.patch(
-            "backend.app.skladbot_worker.time.sleep"
+        }, clear=True), mock.patch("backend.app.skladbot_client.httpx.Client", FakeHttpClient), mock.patch(
+            "backend.app.skladbot_client.time.sleep"
         ) as sleep_mock:
             client = SkladBotClient()
             result = client.get("/requests")
@@ -426,8 +458,8 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
             "SKLADBOT_API_TOKENS": "token-a,token-b",
             "SKLADBOT_API_MAX_RETRIES": "2",
             "SKLADBOT_REQUEST_DELAY_SECONDS": "2",
-        }, clear=True), mock.patch("backend.app.skladbot_worker.httpx.Client", FakeHttpClient), mock.patch(
-            "backend.app.skladbot_worker.time.sleep"
+        }, clear=True), mock.patch("backend.app.skladbot_client.httpx.Client", FakeHttpClient), mock.patch(
+            "backend.app.skladbot_client.time.sleep"
         ) as sleep_mock:
             client = SkladBotClient()
             result = client.get("/requests")

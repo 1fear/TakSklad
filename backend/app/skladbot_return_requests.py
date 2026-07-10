@@ -18,15 +18,13 @@ from .skladbot_request_dry_run import (
     stable_payload_hash,
     update_event_payload,
 )
-from .skladbot_worker import (
-    SkladBotClient,
-    env_int,
+from .skladbot_client import SkladBotClient, env_int, sanitize_skladbot_error
+from .skladbot_contracts import (
     normalize_request_payload,
     normalize_text,
     parse_int,
     request_list_value,
     request_matches_order,
-    sanitize_skladbot_error,
 )
 
 

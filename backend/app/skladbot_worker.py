@@ -14,7 +14,7 @@ from .audit_identity import AuditActor, set_audit_actor
 from .db import SessionLocal
 from .google_sheets_pending import queue_google_sheets_export
 from .models import AuditLog, Order, OrderItem
-from .orders_service import COMPLETED_STATUSES
+from .order_statuses import COMPLETED_STATUSES
 from .settings import load_settings
 
 
@@ -1070,6 +1070,49 @@ def request_match_diagnostics(order, request):
         "products": product_results,
         "extra_request_products": max(0, len(request_products) - len(used_indexes)),
     }
+
+
+# Compatibility re-exports.  New code imports these boundaries directly;
+# existing callers of backend.app.skladbot_worker keep the same public API.
+from .skladbot_client import (  # noqa: E402
+    SkladBotClient,
+    env_float,
+    env_int,
+    parse_skladbot_api_tokens,
+    sanitize_skladbot_error,
+    skladbot_response_error_text,
+)
+from .skladbot_contracts import (  # noqa: E402
+    address_soft_match,
+    business_timezone,
+    business_today,
+    client_matches,
+    extract_list_items,
+    field_map,
+    get_field,
+    nearest_request_diagnostics,
+    normalize_lookup_text,
+    normalize_payment_type,
+    normalize_request_payload,
+    normalize_smartup_id,
+    normalize_text,
+    order_group_payload,
+    parse_bool,
+    parse_date,
+    parse_datetime_value,
+    parse_int,
+    product_matches,
+    product_sku_key,
+    request_list_value,
+    request_match_diagnostics,
+    request_matches_order,
+    request_smartup_id,
+    request_type_matches,
+    request_value,
+    simplify_tokens,
+    smartup_id_from_comment,
+    text_tokens_match,
+)
 
 
 def update_orders_from_skladbot(audit_actor: AuditActor | None = None):
