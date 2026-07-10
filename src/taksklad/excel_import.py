@@ -3,7 +3,6 @@ from datetime import datetime
 
 from .catalog import calculate_blocks, load_product_catalog, merge_product_catalog_defaults
 from .config import (
-    EXCEL_IMPORT_EXTENSIONS,
     ORDER_DATE_COLUMN,
     SHEET_NAME,
     SPREADSHEET_ID,
@@ -20,9 +19,13 @@ from .sheets import (
     get_existing_order_duplicate_keys,
     get_google_client,
 )
+from .spreadsheet_safety import (
+    SpreadsheetSafetyError,
+    load_safe_workbook,
+    normalize_spreadsheet_filename,
+)
 from .storage import load_data_section, mutate_data_section
 from .utils import (
-    clean_file_name,
     column_index_to_letter,
     file_sha1,
     file_sha256,
@@ -140,8 +143,6 @@ def make_source_row_duplicate_key(row):
 
 
 def parse_excel_order_files(file_paths, source_names=None):
-    import openpyxl
-
     catalog = load_product_catalog()
     raw_rows = []
     errors = []
@@ -152,25 +153,22 @@ def parse_excel_order_files(file_paths, source_names=None):
     geocode_cache = {}
     source_names = source_names or {}
     source_names_by_path = {
-        os.path.abspath(path): clean_file_name(name, os.path.basename(path))
+        os.path.abspath(path): name
         for path, name in source_names.items()
     }
 
     for file_path in file_paths:
-        file_name = source_names_by_path.get(os.path.abspath(file_path)) or clean_file_name(os.path.basename(file_path))
-        extension = os.path.splitext(file_name)[1].lower()
-        if extension not in EXCEL_IMPORT_EXTENSIONS:
-            allowed = ", ".join(sorted(EXCEL_IMPORT_EXTENSIONS))
-            errors.append(f"{file_name}: неподдерживаемый формат файла (разрешены {allowed})")
-            continue
+        candidate_name = source_names_by_path.get(os.path.abspath(file_path)) or os.path.basename(file_path)
         try:
-            workbook = openpyxl.load_workbook(file_path, data_only=True, read_only=True)
-        except Exception as exc:
-            errors.append(f"{file_name}: не удалось открыть файл ({exc})")
+            file_name = normalize_spreadsheet_filename(candidate_name)
+            workbook = load_safe_workbook(file_path, file_name=file_name, data_only=True, read_only=True)
+        except SpreadsheetSafetyError as exc:
+            errors.append(str(exc))
             continue
 
         source = detect_excel_source(workbook, file_name)
         if not source:
+            workbook.close()
             errors.append(f"{file_name}: не найден шаблон с обязательными колонками")
             continue
 
@@ -246,6 +244,7 @@ def parse_excel_order_files(file_paths, source_names=None):
                 "source_file_sha256": source_file_sha256,
                 "source_row": row_number,
             })
+        workbook.close()
 
     unique_raw_rows = []
     duplicate_source_rows = []
@@ -413,7 +412,7 @@ def append_import_records(records):
         sheet.batch_update([{
             "range": f"A{start_row}:{end_col}{end_row}",
             "values": rows_to_append,
-        }], value_input_option="USER_ENTERED")
+        }], value_input_option="RAW")
     history_item = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "imported": len(rows_to_append),

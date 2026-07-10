@@ -1,7 +1,37 @@
 from datetime import date, datetime
-from typing import Any
+from decimal import Decimal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
+
+from .input_safety import (
+    MAX_IMPORT_PAYLOAD_BYTES,
+    MAX_IMPORT_ROWS,
+    InputSafetyError,
+    json_encoded_size,
+    normalize_upload_filename,
+    validate_bounded_json_payload,
+    validate_import_row,
+)
+
+
+ImportFieldName = Literal[
+    "Дата заказа", "Дата отгрузки", "Дата получения заказа", "order_date", "date",
+    "Тип оплаты", "payment_type", "payment", "Клиент", "client", "Адрес", "address",
+    "Координаты", "coordinates", "Торговый представитель", "representative", "Товары", "product",
+    "Кол-во ШТ", "quantity_pieces", "quantity", "Кол-во блок", "Кол-во блоков", "quantity_blocks", "blocks",
+    "_pieces_per_block", "pieces_per_block", "Цена за блок", "block_price", "Цена из файла", "unit_price",
+    "Сумма из файла", "Сумма с переоценкой", "imported_line_total", "Сумма позиции", "line_total",
+    "Сумма рассчитанная", "calculated_line_total", "Статус", "status", "ID заказа", "order_id", "external_id",
+    "ID импорта", "import_id", "Источник файла", "source_file", "Строка файла", "source_row",
+    "Ключ исходного документа", "source_batch_key", "Номер заявки SkladBot", "skladbot_request_number",
+    "ID заявки SkladBot", "skladbot_request_id", "Отсканированные коды", "Дата импорта",
+    "Smartup deal_id", "Smartup product_id", "Smartup status", "Smartup delivery_date original",
+    "Smartup delivery_date adjusted", "Smartup delivery_date adjustment_reason",
+    "Smartup delivery_date skipped_dates",
+]
+ImportScalar = str | int | float | bool | date | datetime | Decimal | None
+ImportRow = dict[ImportFieldName, ImportScalar]
 
 
 class HealthResponse(BaseModel):
@@ -309,20 +339,25 @@ class SmartupAutoImportHistoryRead(BaseModel):
 
 
 class IncidentCreate(BaseModel):
-    source: str = Field(min_length=1)
-    severity: str = "warning"
-    status: str = "open"
-    title: str = Field(min_length=1)
-    message: str = ""
-    entity_type: str = ""
-    entity_id: str = ""
-    pending_event_id: str = ""
-    order_id: str = ""
-    order_item_id: str = ""
-    import_id: str = ""
-    scan_code_id: str = ""
-    external_ref: str = ""
+    source: str = Field(min_length=1, max_length=128)
+    severity: str = Field(default="warning", max_length=32)
+    status: str = Field(default="open", max_length=32)
+    title: str = Field(min_length=1, max_length=512)
+    message: str = Field(default="", max_length=16_384)
+    entity_type: str = Field(default="", max_length=128)
+    entity_id: str = Field(default="", max_length=256)
+    pending_event_id: str = Field(default="", max_length=256)
+    order_id: str = Field(default="", max_length=256)
+    order_item_id: str = Field(default="", max_length=256)
+    import_id: str = Field(default="", max_length=256)
+    scan_code_id: str = Field(default="", max_length=256)
+    external_ref: str = Field(default="", max_length=512)
     raw_payload: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("raw_payload", mode="before")
+    @classmethod
+    def bound_raw_payload(cls, value):
+        return validate_bounded_json_payload(value)
 
 
 class IncidentStatusUpdate(BaseModel):
@@ -425,12 +460,17 @@ class ClientPointTimeslotUpdate(BaseModel):
 
 
 class ScanCreate(BaseModel):
-    order_item_id: str
-    code: str = Field(min_length=1)
-    workstation_id: str | None = None
-    scanned_by: str | None = None
+    order_item_id: str = Field(min_length=1, max_length=256)
+    code: str = Field(min_length=1, max_length=512)
+    workstation_id: str | None = Field(default=None, max_length=256)
+    scanned_by: str | None = Field(default=None, max_length=256)
     scanned_at: datetime | None = None
     raw_payload: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("raw_payload", mode="before")
+    @classmethod
+    def bound_raw_payload(cls, value):
+        return validate_bounded_json_payload(value)
 
     @field_validator("code")
     @classmethod
@@ -481,12 +521,31 @@ class KizAvailabilityRead(BaseModel):
 
 
 class ImportCreate(BaseModel):
-    source: str = "excel"
-    filename: str | None = None
-    sha256: str | None = None
-    telegram_chat_id: str | None = None
-    telegram_event_id: str | None = None
-    rows: list[dict[str, Any]] = Field(default_factory=list)
+    source: str = Field(default="excel", min_length=1, max_length=128)
+    filename: str | None = Field(default=None, max_length=128)
+    sha256: str | None = Field(default=None, max_length=64)
+    telegram_chat_id: str | None = Field(default=None, max_length=128)
+    telegram_event_id: str | None = Field(default=None, max_length=256)
+    rows: list[ImportRow] = Field(default_factory=list, max_length=MAX_IMPORT_ROWS)
+
+    @field_validator("filename")
+    @classmethod
+    def safe_filename(cls, value):
+        if value is None:
+            return None
+        return normalize_upload_filename(value)
+
+    @field_validator("rows", mode="before")
+    @classmethod
+    def bound_rows(cls, value):
+        if not isinstance(value, list):
+            raise InputSafetyError("import_rows_type")
+        if len(value) > MAX_IMPORT_ROWS:
+            raise InputSafetyError("import_rows_exceeded")
+        validated = [validate_import_row(row) for row in value]
+        if json_encoded_size(validated) > MAX_IMPORT_PAYLOAD_BYTES:
+            raise InputSafetyError("import_payload_bytes_exceeded")
+        return validated
 
 
 class ImportRead(BaseModel):

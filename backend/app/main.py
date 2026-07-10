@@ -8,7 +8,9 @@ from threading import Lock, Thread
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, Response, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from .access_policy import (
     AUTH_PROTECTED,
@@ -48,6 +50,7 @@ from .incidents_service import (
 from .imports_service import create_import as create_import_in_db
 from .imports_service import list_imports as list_imports_in_db
 from .imports_service import preview_import as preview_import_in_db
+from .input_safety import MAX_REQUEST_BODY_BYTES, RequestBodyLimitMiddleware
 from .auth_identities import (
     IdentityAuthError,
     authenticate_service_token,
@@ -171,6 +174,16 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
 )
+app.add_middleware(RequestBodyLimitMiddleware, max_bytes=MAX_REQUEST_BODY_BYTES)
+
+
+@app.exception_handler(RequestValidationError)
+async def redacted_request_validation_error(_request: Request, _exc: RequestValidationError):
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={"detail": "invalid_request"},
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 def configure_cors(app_instance: FastAPI, app_settings) -> None:

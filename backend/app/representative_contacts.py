@@ -3,11 +3,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from openpyxl import load_workbook
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .models import RepresentativeContact
+from .spreadsheet_safety import load_safe_workbook
 
 
 NAME_HEADERS = ("тп", "торговый представитель", "representative", "name")
@@ -158,48 +158,51 @@ def build_representative_comment(
 
 def import_representative_contacts_from_xlsx(db: Session, xlsx_path: str | Path) -> dict[str, Any]:
     path = Path(xlsx_path)
-    workbook = load_workbook(path, read_only=True, data_only=True)
+    workbook = load_safe_workbook(path, file_name=path.name, read_only=True, data_only=True)
     summary = {"created": 0, "updated": 0, "skipped": 0, "rows": 0}
-    for sheet in workbook.worksheets:
-        rows = sheet.iter_rows(values_only=True)
-        try:
-            header_row = next(rows)
-        except StopIteration:
-            continue
-        headers = {normalize_header(value): index for index, value in enumerate(header_row)}
-        name_index = first_header_index(headers, NAME_HEADERS)
-        if name_index is None:
-            summary["skipped"] += 1
-            continue
-        work_phone_index = first_header_index(headers, WORK_PHONE_HEADERS)
-        personal_phone_index = first_header_index(headers, PERSONAL_PHONE_HEADERS)
-        work_zone_index = first_header_index(headers, WORK_ZONE_HEADERS)
-        for row_number, row in enumerate(rows, start=2):
-            summary["rows"] += 1
-            name = cell(row, name_index)
-            normalized_name = normalize_representative_name(name)
-            if not normalized_name:
+    try:
+        for sheet in workbook.worksheets:
+            rows = sheet.iter_rows(values_only=True)
+            try:
+                header_row = next(rows)
+            except StopIteration:
+                continue
+            headers = {normalize_header(value): index for index, value in enumerate(header_row)}
+            name_index = first_header_index(headers, NAME_HEADERS)
+            if name_index is None:
                 summary["skipped"] += 1
                 continue
-            contact = db.execute(
-                select(RepresentativeContact).where(RepresentativeContact.normalized_name == normalized_name)
-            ).scalars().one_or_none()
-            created = contact is None
-            if contact is None:
-                contact = RepresentativeContact(name=name, normalized_name=normalized_name)
-            contact.name = name
-            contact.work_phone = normalize_phone(cell(row, work_phone_index)) or None
-            contact.personal_phone = normalize_phone(cell(row, personal_phone_index)) or None
-            contact.work_zone = cell(row, work_zone_index) or None
-            contact.is_active = True
-            contact.raw_payload = {
-                "source_file": path.name,
-                "source_sheet": sheet.title,
-                "source_row": row_number,
-                "imported_at": datetime.now(timezone.utc).isoformat(),
-            }
-            db.add(contact)
-            summary["created" if created else "updated"] += 1
+            work_phone_index = first_header_index(headers, WORK_PHONE_HEADERS)
+            personal_phone_index = first_header_index(headers, PERSONAL_PHONE_HEADERS)
+            work_zone_index = first_header_index(headers, WORK_ZONE_HEADERS)
+            for row_number, row in enumerate(rows, start=2):
+                summary["rows"] += 1
+                name = cell(row, name_index)
+                normalized_name = normalize_representative_name(name)
+                if not normalized_name:
+                    summary["skipped"] += 1
+                    continue
+                contact = db.execute(
+                    select(RepresentativeContact).where(RepresentativeContact.normalized_name == normalized_name)
+                ).scalars().one_or_none()
+                created = contact is None
+                if contact is None:
+                    contact = RepresentativeContact(name=name, normalized_name=normalized_name)
+                contact.name = name
+                contact.work_phone = normalize_phone(cell(row, work_phone_index)) or None
+                contact.personal_phone = normalize_phone(cell(row, personal_phone_index)) or None
+                contact.work_zone = cell(row, work_zone_index) or None
+                contact.is_active = True
+                contact.raw_payload = {
+                    "source_file": path.name,
+                    "source_sheet": sheet.title,
+                    "source_row": row_number,
+                    "imported_at": datetime.now(timezone.utc).isoformat(),
+                }
+                db.add(contact)
+                summary["created" if created else "updated"] += 1
+    finally:
+        workbook.close()
     return summary
 
 

@@ -1,4 +1,7 @@
 import unittest
+import tempfile
+import zipfile
+from pathlib import Path
 
 from openpyxl import Workbook
 from sqlalchemy import create_engine
@@ -14,6 +17,7 @@ from backend.app.representative_contacts import (
     normalize_phone,
     normalize_representative_name,
 )
+from backend.app.spreadsheet_safety import SpreadsheetSafetyError
 
 
 class RepresentativeContactsTests(unittest.TestCase):
@@ -48,6 +52,21 @@ class RepresentativeContactsTests(unittest.TestCase):
         self.assertEqual(contact.work_zone, "Юнусабад")
         self.assertEqual(by_name.id, contact.id)
         self.assertEqual(by_smartup_full_name.name, "ТП-2 Достон")
+
+    def test_unsafe_xlsx_is_rejected_before_contact_writes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "synthetic.xlsx"
+            with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr("[Content_Types].xml", b"<Types/>")
+                archive.writestr("xl/workbook.xml", b"<workbook/>")
+                archive.writestr("xl/worksheets/sheet1.xml", b"<worksheet><sheetData/></worksheet>")
+                archive.writestr("../secret-customer.txt", b"synthetic")
+
+            with self.SessionLocal() as db:
+                with self.assertRaises(SpreadsheetSafetyError) as raised:
+                    import_representative_contacts_from_xlsx(db, path)
+                self.assertEqual(raised.exception.code, "archive_path_traversal")
+                self.assertEqual(db.query(RepresentativeContact).count(), 0)
 
     def test_comment_keeps_payment_representative_and_phones_without_work_zone(self):
         contact = RepresentativeContact(

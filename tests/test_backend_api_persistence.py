@@ -3355,7 +3355,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
         self.assertEqual(updated, 1)
         self.assertEqual(sheet.updates, [{"range": "D2", "values": [["Ташкент, Чиланзарский район, 10"]]}])
-        self.assertEqual(sheet.value_input_option, "USER_ENTERED")
+        self.assertEqual(sheet.value_input_option, "RAW")
 
     def test_google_sheets_export_updates_gps_address_for_existing_import_id(self):
         class FakeSheet:
@@ -3381,7 +3381,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
         self.assertEqual(updated, 1)
         self.assertEqual(sheet.updates, [{"range": "D2", "values": [["Ташкент, Чиланзарский район, 10"]]}])
-        self.assertEqual(sheet.value_input_option, "USER_ENTERED")
+        self.assertEqual(sheet.value_input_option, "RAW")
 
     def test_google_sheets_export_updates_not_found_address_for_existing_import_id(self):
         class FakeSheet:

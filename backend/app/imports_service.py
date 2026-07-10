@@ -1018,7 +1018,7 @@ def parse_date_value(value):
             return datetime.strptime(text, fmt).date()
         except ValueError:
             pass
-    raise ImportRowError(f"invalid date: {text}")
+    raise ImportRowError("invalid date")
 
 
 def normalize_status(value):

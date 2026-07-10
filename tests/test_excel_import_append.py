@@ -53,14 +53,23 @@ class ExcelImportAppendTests(unittest.TestCase):
             excel_import.ensure_import_sheet_layout = lambda sheet: None
             excel_import.get_existing_import_keys = lambda rows: (set(), set())
             excel_import.get_existing_order_duplicate_keys = lambda rows: set()
-            excel_import.build_import_record_row = lambda record: ["25.05.2026", record["Клиент"]]
+            excel_import.build_import_record_row = lambda record: [
+                "25.05.2026",
+                record["Клиент"],
+                record["Адрес"],
+                record["Торговый представитель"],
+                record["Товары"],
+            ]
             excel_import.load_data_section = lambda key, default=None: []
             excel_import.mutate_data_section = lambda key, mutator, default=None: mutator(default)
 
             result = excel_import.append_import_records([{
                 "ID импорта": "import-1",
                 "ID заказа": "order-1",
-                "Клиент": "Test Client",
+                "Клиент": "=1+1",
+                "Адрес": "+cmd",
+                "Торговый представитель": "-2",
+                "Товары": "@SUM(A1)",
             }])
         finally:
             excel_import.get_google_client = original_get_google_client
@@ -74,6 +83,12 @@ class ExcelImportAppendTests(unittest.TestCase):
         self.assertEqual(result, {"imported": 1, "duplicates": 0})
         self.assertEqual(spreadsheet.requested_titles, [SHEET_NAME])
         self.assertEqual(len(sheet.batch_updates), 1)
+        updates, value_input_option = sheet.batch_updates[0]
+        self.assertEqual(value_input_option, "RAW")
+        self.assertEqual(
+            updates[0]["values"][0][1:],
+            ["=1+1", "+cmd", "-2", "@SUM(A1)"],
+        )
 
 
 if __name__ == "__main__":

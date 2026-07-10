@@ -264,7 +264,7 @@ def get_or_create_telegram_lock_sheet(client):
     if header[:len(TELEGRAM_LOCK_HEADER)] != TELEGRAM_LOCK_HEADER:
         sheet.batch_update(
             [{"range": f"A1:E1", "values": [TELEGRAM_LOCK_HEADER]}],
-            value_input_option="USER_ENTERED",
+            value_input_option="RAW",
         )
     return sheet
 
@@ -279,7 +279,7 @@ def write_telegram_lock_row(sheet, owner_id, owner_label, now_ts):
     ]
     sheet.batch_update(
         [{"range": "A2:E2", "values": [values]}],
-        value_input_option="USER_ENTERED",
+        value_input_option="RAW",
     )
     return values
 
@@ -381,7 +381,7 @@ def _write_telegram_state_row(sheet, last_update_id, owner_label, now_ts):
     ]
     sheet.batch_update(
         [{"range": f"A{TELEGRAM_STATE_ROW}:E{TELEGRAM_STATE_ROW}", "values": [values]}],
-        value_input_option="USER_ENTERED",
+        value_input_option="RAW",
     )
     return values
 
@@ -465,7 +465,7 @@ def ensure_sheet_columns(sheet, columns):
     all_rows = sheet.get_all_values()
     if not all_rows:
         header = list(columns)
-        sheet.append_row(header, value_input_option="USER_ENTERED")
+        sheet.append_row(header, value_input_option="RAW")
         return header
 
     header = [normalize_header_name(col) for col in all_rows[0]]
@@ -473,7 +473,10 @@ def ensure_sheet_columns(sheet, columns):
     for column in columns:
         if column not in header_idx:
             header.append(column)
-            sheet.update_cell(1, len(header), column)
+            sheet.batch_update(
+                [{"range": f"{column_index_to_letter(len(header) - 1)}1", "values": [[column]]}],
+                value_input_option="RAW",
+            )
             header_idx[column] = len(header) - 1
     return header
 
@@ -502,7 +505,7 @@ def ensure_import_sheet_columns(sheet):
     required_len = SERVICE_COLUMN_START_INDEX + len(SERVICE_COLUMNS)
     if not all_rows:
         header = build_import_sheet_header()
-        sheet.append_row(header, value_input_option="USER_ENTERED")
+        sheet.append_row(header, value_input_option="RAW")
         return header
 
     header = [normalize_header_name(col) for col in all_rows[0]]
@@ -517,7 +520,7 @@ def ensure_import_sheet_columns(sheet):
     sheet.batch_update([{
         "range": f"A1:{last_col}1",
         "values": [header],
-    }], value_input_option="USER_ENTERED")
+    }], value_input_option="RAW")
 
     return header
 
@@ -554,7 +557,7 @@ def migrate_legacy_service_columns(sheet):
             break
 
     if updates:
-        sheet.batch_update(updates, value_input_option="USER_ENTERED")
+        sheet.batch_update(updates, value_input_option="RAW")
     if clear_ranges:
         sheet.batch_clear(clear_ranges)
 
@@ -747,7 +750,7 @@ def get_today_orders(apply_skladbot_filter=None, include_rows=False):
                 today_orders.append(record)
 
         if status_updates:
-            sheet.batch_update(status_updates, value_input_option="USER_ENTERED")
+            sheet.batch_update(status_updates, value_input_option="RAW")
 
         if include_rows:
             return today_orders, sheet, all_rows
@@ -1003,7 +1006,7 @@ def mark_return_order_in_gsheet(order, return_reference="", returned_by="desktop
             {"range": f"{column_index_to_letter(returned_by_idx)}{row_number}", "values": [[actor]]},
         ])
 
-    sheet.batch_update(updates, value_input_option="USER_ENTERED")
+    sheet.batch_update(updates, value_input_option="RAW")
 
     returns_sheet = get_or_create_workbook_sheet_like_data(sheet, RETURNS_SHEET_NAME)
     ensure_return_sheet_layout(returns_sheet)
@@ -1013,7 +1016,7 @@ def mark_return_order_in_gsheet(order, return_reference="", returned_by="desktop
     returns_sheet.batch_update([{
         "range": f"A{start_row}:{end_col}{start_row + len(rows_for_returns) - 1}",
         "values": rows_for_returns,
-    }], value_input_option="USER_ENTERED")
+    }], value_input_option="RAW")
 
     updated = dict(order)
     updated["status"] = "returned"
@@ -1112,7 +1115,7 @@ def archive_order_group_to_gsheet(sheet, orders):
             archive_sheet.batch_update([{
                 "range": f"A{archive_start_row}:{end_col}{archive_start_row + len(rows_to_archive) - 1}",
                 "values": rows_to_archive,
-            }], value_input_option="USER_ENTERED")
+            }], value_input_option="RAW")
 
         for row_number in sorted(target_rows, reverse=True):
             sheet.delete_rows(row_number)

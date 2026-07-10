@@ -63,11 +63,14 @@ case "$MODE" in
   rbac-audit)
     TEST_MODULE="tests.test_postgres_rbac_audit"
     ;;
+  input-safety)
+    TEST_MODULE="tests.test_postgres_input_safety"
+    ;;
   all)
-    TEST_MODULE="tests.test_postgres_migrations tests.test_postgres_concurrency tests.test_postgres_readiness tests.test_postgres_queue_concurrency tests.test_postgres_queue_failures tests.test_postgres_import_identity tests.test_postgres_invariants tests.test_postgres_outbox tests.test_postgres_outbox_faults tests.test_postgres_smartup_saga tests.test_postgres_auth_identities tests.test_postgres_rbac_audit"
+    TEST_MODULE="tests.test_postgres_migrations tests.test_postgres_concurrency tests.test_postgres_readiness tests.test_postgres_queue_concurrency tests.test_postgres_queue_failures tests.test_postgres_import_identity tests.test_postgres_invariants tests.test_postgres_outbox tests.test_postgres_outbox_faults tests.test_postgres_smartup_saga tests.test_postgres_auth_identities tests.test_postgres_rbac_audit tests.test_postgres_input_safety"
     ;;
   *)
-    echo "Usage: $0 {seed-reference|migrations|smoke|readiness|queue-concurrency|queue-failures|import-identity|invariants|outbox|outbox-faults|smartup-saga|auth-identities|rbac-audit|all}" >&2
+    echo "Usage: $0 {seed-reference|migrations|smoke|readiness|queue-concurrency|queue-failures|import-identity|invariants|outbox|outbox-faults|smartup-saga|auth-identities|rbac-audit|input-safety|all}" >&2
     exit 2
     ;;
 esac

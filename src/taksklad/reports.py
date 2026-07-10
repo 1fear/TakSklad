@@ -24,6 +24,7 @@ from .scan_quantities import (
     scanned_blocks_for_order_codes,
 )
 from .sheets import validate_sheet_header
+from .spreadsheet_safety import force_workbook_text_literals
 from .utils import (
     get_cell,
     make_hash,
@@ -525,6 +526,7 @@ def create_document_report_excel(sheet, document_key):
                 sheet_name="Недосканировано",
                 index=False,
             )
+        force_workbook_text_literals(writer.book)
 
     return {
         "empty": False,
@@ -684,6 +686,7 @@ def write_day_report_workbook(filename, terminal_rows, transfer_rows, unknown_ro
 
         if unknown_rows:
             pd.DataFrame(unknown_rows).to_excel(writer, sheet_name="Не распознано", index=False)
+        force_workbook_text_literals(writer.book)
 
 
 def filter_report_rows_by_shipment_date(report_rows, shipment_date):

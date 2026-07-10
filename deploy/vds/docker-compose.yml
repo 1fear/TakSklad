@@ -63,8 +63,9 @@ services:
       - traefik.http.routers.taksklad-backend.entrypoints=websecure
       - traefik.http.routers.taksklad-backend.tls.certresolver=letsencrypt
       - traefik.http.routers.taksklad-backend.priority=100
-      - traefik.http.routers.taksklad-backend.middlewares=taksklad-security-headers
+      - traefik.http.routers.taksklad-backend.middlewares=taksklad-request-limit,taksklad-security-headers
       - traefik.http.services.taksklad-backend.loadbalancer.server.port=8000
+      - traefik.http.middlewares.taksklad-request-limit.buffering.maxRequestBodyBytes=33554432
       - traefik.http.middlewares.taksklad-security-headers.headers.stsSeconds=31536000
       - traefik.http.middlewares.taksklad-security-headers.headers.stsIncludeSubdomains=true
       - traefik.http.middlewares.taksklad-security-headers.headers.stsPreload=false

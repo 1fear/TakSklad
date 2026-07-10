@@ -12,6 +12,7 @@ from .models import ImportJob, Order, OrderItem
 from .orders_service import ApiError, COMPLETED_STATUSES
 from .reports_service import payment_group
 from .scan_quantities import scan_block_quantity, scanned_blocks_for_scans
+from .spreadsheet_safety import force_workbook_text_literals
 
 TERMINAL_NO_KIZ_STATUSES = {"archived_no_kiz", "cancelled", "removed_from_google_sheet"}
 SMARTUP_SOURCE_IMPORT_PREFIX = "smartup:"
@@ -217,6 +218,7 @@ def build_kiz_items_report_xlsx(items, source_label, filename):
         autosize_columns(sheet)
 
     buffer = BytesIO()
+    force_workbook_text_literals(workbook)
     workbook.save(buffer)
     return buffer.getvalue(), filename
 

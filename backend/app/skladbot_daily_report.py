@@ -24,6 +24,7 @@ from .skladbot_worker import (
     sanitize_skladbot_error,
 )
 from .representative_contacts import display_representative_name
+from .spreadsheet_safety import force_workbook_text_literals
 
 
 DEFAULT_DAILY_REPORT_REQUEST_TYPE_IDS = (3387, 3388, 3389, 3391, 3403)
@@ -1578,6 +1579,7 @@ def build_skladbot_daily_report_xlsx(report: dict[str, Any]) -> tuple[bytes, str
         autosize_columns(sheet)
     apply_report_template_widths(workbook)
     buffer = BytesIO()
+    force_workbook_text_literals(workbook)
     workbook.save(buffer)
     return buffer.getvalue(), daily_report_filename(report.get("report_date"))
 

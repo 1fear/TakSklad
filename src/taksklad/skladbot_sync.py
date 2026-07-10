@@ -246,7 +246,7 @@ def sync_skladbot_request_numbers(sheet, candidate_requests=None, settings=None,
 
     if updates and not dry_run:
         try:
-            sheet.batch_update(updates, value_input_option="USER_ENTERED")
+            sheet.batch_update(updates, value_input_option="RAW")
         except Exception as exc:
             logging.exception("SkladBot: не удалось записать результат синхронизации в Google Sheets")
             return {

@@ -17,10 +17,11 @@ from . import skladbot_daily_report
 from .db import SessionLocal
 from .event_leases import claim_event_leases, event_leases_enabled, finalize_event_leases
 from .event_queue_service import reset_stale_processing_events
-from .excel_importer import ExcelDateConflictError, excel_file_to_import_payload, is_supported_excel_file_name
+from .excel_importer import ExcelDateConflictError, excel_file_to_import_payload
 from .models import AuditLog, Incident, PendingEvent
 from .redaction import redact_secrets
 from .reconciliation_service import run_daily_reconciliation
+from .spreadsheet_safety import SpreadsheetSafetyError, normalize_spreadsheet_filename
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -91,12 +92,21 @@ def normalize_text(value):
     return str(value or "").strip()
 
 
+def safe_telegram_spreadsheet_filename(value):
+    candidate = normalize_text(value) or "telegram_import.xlsx"
+    try:
+        return normalize_spreadsheet_filename(candidate)
+    except SpreadsheetSafetyError:
+        return ""
+
+
 def telegram_import_failure_message(file_name, reason):
     reason_text = redact_secrets(normalize_text(reason)) or "неизвестная ошибка"
+    safe_file_name = safe_telegram_spreadsheet_filename(file_name) or "telegram_import.xlsx"
     return "\n".join([
         "Не удалось импортировать Excel-файл.",
         "",
-        f"Файл: {normalize_text(file_name) or 'telegram_import.xlsx'}",
+        f"Файл: {safe_file_name}",
         f"Причина: {reason_text}",
         "",
         "Что сделать: исправьте файл и отправьте его заново. Если файл уже в очереди, проверьте Инциденты в web-панели.",
@@ -106,10 +116,11 @@ def telegram_import_failure_message(file_name, reason):
 
 def telegram_import_unconfirmed_message(file_name, reason):
     reason_text = redact_secrets(normalize_text(reason)) or "backend не ответил вовремя"
+    safe_file_name = safe_telegram_spreadsheet_filename(file_name) or "telegram_import.xlsx"
     return "\n".join([
         "Не удалось подтвердить импорт Excel-файла.",
         "",
-        f"Файл: {normalize_text(file_name) or 'telegram_import.xlsx'}",
+        f"Файл: {safe_file_name}",
         f"Причина: {reason_text}",
         "",
         "Что сделать: проверьте web-панель и Последние импорты. До проверки не отправляйте файл повторно, потому что заказ мог уже создаться.",
@@ -127,7 +138,9 @@ def ensure_telegram_import_event_incident(db, event, error):
 
     payload = dict(event.payload or {})
     document = payload.get("document") if isinstance(payload.get("document"), dict) else {}
-    file_name = normalize_text(payload.get("file_name")) or normalize_text(document.get("file_name")) or "telegram_import.xlsx"
+    file_name = safe_telegram_spreadsheet_filename(
+        normalize_text(payload.get("file_name")) or normalize_text(document.get("file_name"))
+    ) or "telegram_import.xlsx"
     incident = Incident(
         source="telegram_import",
         severity="critical",
@@ -2289,10 +2302,12 @@ class TelegramWorker:
                 raise RuntimeError("Не удалось скачать файл из Telegram") from None
 
     def import_telegram_document(self, chat_id, document, shipment_date="", event_id=None):
-        file_name = normalize_text(document.get("file_name")) or "telegram_import.xlsx"
-        if not is_supported_excel_file_name(file_name):
+        file_name = safe_telegram_spreadsheet_filename(document.get("file_name"))
+        if not file_name:
             self.safe_send_message(chat_id, "Файл не импортирован. Отправьте Excel-файл в формате .xlsx или .xlsm.")
-            return False, "unsupported_file_type"
+            return False, "unsafe_filename"
+
+        document = {**document, "file_name": file_name}
 
         suffix = Path(file_name).suffix.lower() or ".xlsx"
         temp_file = tempfile.NamedTemporaryFile(prefix="taksklad_telegram_import_", suffix=suffix, delete=False)
@@ -2432,10 +2447,12 @@ class TelegramWorker:
     def enqueue_telegram_document(self, chat_id, document, update_id=None, shipment_date=""):
         if not self.ensure_admin_chat(chat_id):
             return False
-        file_name = normalize_text(document.get("file_name")) or "telegram_import.xlsx"
-        if not is_supported_excel_file_name(file_name):
+        file_name = safe_telegram_spreadsheet_filename(document.get("file_name"))
+        if not file_name:
             self.safe_send_message(chat_id, "Файл не импортирован. Отправьте Excel-файл в формате .xlsx или .xlsm.")
             return False
+
+        document = {**document, "file_name": file_name}
 
         with SessionLocal() as db:
             existing_event = find_existing_telegram_import_event(db, document, update_id)

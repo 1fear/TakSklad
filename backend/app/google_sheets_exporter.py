@@ -158,7 +158,7 @@ def append_import_records_to_google_sheets(records):
                 "range": f"A{start_row}:{end_col}{end_row}",
                 "values": rows_to_append,
             }],
-            value_input_option="USER_ENTERED",
+            value_input_option="RAW",
         )
 
     return GoogleSheetsExportResult(
@@ -202,7 +202,7 @@ def restore_import_records_to_google_sheets(records):
             rows_to_append.append(row_values)
 
     if updates:
-        sheet.batch_update(updates, value_input_option="USER_ENTERED")
+        sheet.batch_update(updates, value_input_option="RAW")
     if rows_to_append:
         start_row = len(all_rows) + 1
         end_row = start_row + len(rows_to_append) - 1
@@ -212,7 +212,7 @@ def restore_import_records_to_google_sheets(records):
                 "range": f"A{start_row}:{end_col}{end_row}",
                 "values": rows_to_append,
             }],
-            value_input_option="USER_ENTERED",
+            value_input_option="RAW",
         )
 
     return GoogleSheetsExportResult(
@@ -400,7 +400,7 @@ def update_backend_order_item_rows(sheet, items):
             })
 
     if updates:
-        sheet.batch_update(updates, value_input_option="USER_ENTERED")
+        sheet.batch_update(updates, value_input_option="RAW")
     if not updated_rows and missing:
         return GoogleSheetsExportResult(status="missing", error="order item rows not found").as_dict()
     return GoogleSheetsExportResult(status="completed", updated=len(updated_rows)).as_dict()
@@ -458,7 +458,7 @@ def update_backend_orders_skladbot_rows(sheet, orders):
                 })
 
     if updates:
-        sheet.batch_update(updates, value_input_option="USER_ENTERED")
+        sheet.batch_update(updates, value_input_option="RAW")
     return GoogleSheetsExportResult(status="completed", updated=len(updated_rows)).as_dict()
 
 
@@ -652,7 +652,7 @@ def archive_backend_orders_rows(data_sheet, archive_sheet, orders, sheet_status=
         archive_sheet.batch_update([{
             "range": f"A{start_row}:{end_col}{start_row + len(rows_to_archive) - 1}",
             "values": rows_to_archive,
-        }], value_input_option="USER_ENTERED")
+        }], value_input_option="RAW")
 
     for row_number in sorted(rows_to_delete, reverse=True):
         data_sheet.delete_rows(row_number)
@@ -760,16 +760,16 @@ def mark_backend_return_rows(archive_sheet, returns_sheet, order):
         rows_to_returns.append(source_row[:header_len])
 
     if updates:
-        archive_sheet.batch_update(updates, value_input_option="USER_ENTERED")
+        archive_sheet.batch_update(updates, value_input_option="RAW")
     if return_updates:
-        returns_sheet.batch_update(return_updates, value_input_option="USER_ENTERED")
+        returns_sheet.batch_update(return_updates, value_input_option="RAW")
     if rows_to_returns:
         start_row = max(2, len(returns_rows) + 1)
         end_col = column_index_to_letter(header_len - 1)
         returns_sheet.batch_update([{
             "range": f"A{start_row}:{end_col}{start_row + len(rows_to_returns) - 1}",
             "values": rows_to_returns,
-        }], value_input_option="USER_ENTERED")
+        }], value_input_option="RAW")
 
     return GoogleSheetsExportResult(status="completed", updated=len(target_rows)).as_dict()
 
@@ -851,7 +851,7 @@ def update_missing_sheet_addresses(sheet, all_rows, records):
         updated_rows.add(sheet_row_number)
 
     if updates:
-        sheet.batch_update(updates, value_input_option="USER_ENTERED")
+        sheet.batch_update(updates, value_input_option="RAW")
     return len(updates)
 
 
@@ -975,7 +975,7 @@ def ensure_import_sheet_layout(sheet):
     required_len = SERVICE_COLUMN_START_INDEX + len(SERVICE_COLUMNS)
     if not all_rows:
         header = build_import_sheet_header()
-        sheet.append_row(header, value_input_option="USER_ENTERED")
+        sheet.append_row(header, value_input_option="RAW")
         return header
 
     header = [normalize_header_name(col) for col in all_rows[0]]
@@ -991,7 +991,7 @@ def ensure_import_sheet_layout(sheet):
         sheet.batch_update([{
             "range": f"A1:{last_col}1",
             "values": [header],
-        }], value_input_option="USER_ENTERED")
+        }], value_input_option="RAW")
     return header
 
 
@@ -1102,7 +1102,7 @@ def ensure_return_sheet_layout(sheet):
     sheet.batch_update([{
         "range": f"A1:{last_col}1",
         "values": [header],
-    }], value_input_option="USER_ENTERED")
+    }], value_input_option="RAW")
     return header
 
 

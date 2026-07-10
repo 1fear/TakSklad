@@ -7,7 +7,8 @@ from datetime import date, datetime
 from pathlib import Path
 
 import httpx
-import openpyxl
+
+from .spreadsheet_safety import load_safe_workbook, normalize_spreadsheet_filename
 
 
 MAX_HEADER_SCAN_ROWS = 40
@@ -525,8 +526,8 @@ def geocode_address_yandex(address, cache=None):
             else:
                 longitude, latitude = parts[0], parts[1]
                 result = (f"{latitude}, {longitude}", "")
-    except Exception as exc:
-        result = ("", f"{exc.__class__.__name__}: {exc}")
+    except Exception:
+        result = ("", "geocoder_request_failed")
 
     if cache is not None:
         cache[address] = result
@@ -571,8 +572,8 @@ def reverse_geocode_yandex(coordinates, cache=None):
             meta = geo_object.get("metaDataProperty", {}).get("GeocoderMetaData", {})
             address = clean_address_for_display(meta.get("text") or geo_object.get("name"))
             result = (address, "") if address else ("", "Яндекс не вернул адрес")
-    except Exception as exc:
-        result = ("", f"{exc.__class__.__name__}: {exc}")
+    except Exception:
+        result = ("", "geocoder_request_failed")
 
     if cache is not None:
         cache[cache_key] = result
@@ -580,11 +581,8 @@ def reverse_geocode_yandex(coordinates, cache=None):
 
 
 def excel_file_to_import_payload(file_path, file_name=None, source="telegram", shipment_date=None, force_shipment_date=False):
-    file_name = normalize_text(file_name) or Path(file_path).name
-    if not is_supported_excel_file_name(file_name):
-        raise ValueError("Поддерживаются только Excel-файлы .xlsx и .xlsm")
-
-    workbook = openpyxl.load_workbook(file_path, data_only=True, read_only=True)
+    file_name = normalize_spreadsheet_filename(normalize_text(file_name) or Path(file_path).name)
+    workbook = load_safe_workbook(file_path, file_name=file_name, data_only=True, read_only=True)
     try:
         source_info = detect_excel_source(workbook, file_name)
         if not source_info:

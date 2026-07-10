@@ -1,14 +1,18 @@
+import hashlib
 import importlib
 import sys
 import tempfile
 import types
 import unittest
+import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from openpyxl import Workbook, load_workbook
 
 from taksklad.geocoding import clean_geocoded_address
 from taksklad.excel_normalizer import detect_excel_source, is_summary_row
+from taksklad import spreadsheet_safety
 
 
 def import_excel_import():
@@ -105,6 +109,24 @@ class ExcelNormalizerTests(unittest.TestCase):
         self.assertEqual(record["Адрес"], "Адрес 41.373879, 69.322741")
         self.assertEqual(record["Координаты"], "41.373879, 69.322741")
 
+    def test_desktop_parsed_record_satisfies_typed_backend_dto(self):
+        from backend.app.schemas import ImportCreate
+        from taksklad.backend_client import backend_import_records
+
+        excel_import = import_excel_import()
+        excel_import.reverse_geocode_yandex = lambda coords, cache=None: (f"Адрес {coords}", "")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "constructor.xlsx"
+            self.save_constructor_report(path)
+            parsed = excel_import.parse_excel_order_files([str(path)])
+
+        self.assertTrue(parsed["records"])
+        self.assertIn("_source_file_sha256", parsed["records"][0])
+        sanitized = backend_import_records(parsed["records"])
+        payload = ImportCreate(filename="constructor.xlsx", rows=sanitized)
+        self.assertEqual(len(payload.rows), 1)
+        self.assertNotIn("_source_file_sha256", payload.rows[0])
+
     def test_desktop_import_rejects_unsupported_file_extension_before_openpyxl(self):
         excel_import = import_excel_import()
 
@@ -116,9 +138,8 @@ class ExcelNormalizerTests(unittest.TestCase):
         self.assertEqual(result["records"], [])
         self.assertEqual(result["source_rows_count"], 0)
         self.assertEqual(result["files_count"], 1)
-        self.assertIn("legacy_orders.xls: неподдерживаемый формат файла", result["errors"][0])
-        self.assertIn(".xlsm", result["errors"][0])
-        self.assertIn(".xlsx", result["errors"][0])
+        self.assertEqual(result["errors"], ["spreadsheet_rejected:filename_extension"])
+        self.assertNotIn("legacy_orders.xls", result["errors"][0])
 
     def test_desktop_import_marks_missing_address_as_pickup(self):
         excel_import = import_excel_import()
@@ -290,6 +311,175 @@ class ExcelNormalizerTests(unittest.TestCase):
         columns = {"client": 1, "payment": 4, "product": 3, "quantity": 6}
 
         self.assertTrue(is_summary_row(row, columns))
+
+
+class SpreadsheetInputSafetyTests(unittest.TestCase):
+    def save_rows(self, path, row_count=2, column_count=4, cell_value=None):
+        workbook = Workbook(write_only=True)
+        worksheet = workbook.create_sheet("Заявки")
+        for row_number in range(1, row_count + 1):
+            values = [f"value-{row_number}-{column}" for column in range(column_count)]
+            if row_number == 2 and cell_value is not None:
+                values[0] = cell_value
+            worksheet.append(values)
+        workbook.save(path)
+        workbook.close()
+
+    def write_minimal_archive(self, path, extra_members=None):
+        content_types = b'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>'
+        workbook = b'<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"/>'
+        worksheet = b'<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData/></worksheet>'
+        with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("[Content_Types].xml", content_types)
+            archive.writestr("xl/workbook.xml", workbook)
+            archive.writestr("xl/worksheets/sheet1.xml", worksheet)
+            for member_name, content in extra_members or []:
+                archive.writestr(member_name, content)
+
+    def assert_safety_code(self, expected_code, callback):
+        with self.assertRaises(spreadsheet_safety.SpreadsheetSafetyError) as raised:
+            callback()
+        self.assertEqual(raised.exception.code, expected_code)
+        self.assertEqual(str(raised.exception), f"spreadsheet_rejected:{expected_code}")
+
+    def test_filename_rejections_are_fixed_and_redacted(self):
+        invalid_names = {
+            "filename_traversal": ["../customer-secret.xlsx", "folder\\customer-secret.xlsx", "C:customer.xlsx"],
+            "filename_control_character": ["customer\x00secret.xlsx"],
+            "filename_too_long": [f"{'x' * 124}.xlsx"],
+            "filename_extension": ["customer-secret.xls"],
+        }
+        for expected_code, names in invalid_names.items():
+            for name in names:
+                with self.subTest(name=name):
+                    self.assert_safety_code(
+                        expected_code,
+                        lambda value=name: spreadsheet_safety.normalize_spreadsheet_filename(value),
+                    )
+
+    def test_desktop_import_rejects_source_name_traversal_without_echoing_it(self):
+        excel_import = import_excel_import()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "safe.xlsx"
+            self.save_rows(path)
+            unsafe_name = "../customer-secret.xlsx"
+            result = excel_import.parse_excel_order_files(
+                [str(path)],
+                source_names={str(path): unsafe_name},
+            )
+
+        self.assertEqual(result["errors"], ["spreadsheet_rejected:filename_traversal"])
+        self.assertNotIn("customer-secret", result["errors"][0])
+
+    def test_archive_member_path_traversal_is_rejected_before_parser(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "unsafe.xlsx"
+            self.write_minimal_archive(path, [("../customer-secret.txt", b"secret")])
+            self.assert_safety_code(
+                "archive_path_traversal",
+                lambda: spreadsheet_safety.inspect_xlsx_archive(path),
+            )
+
+    def test_excessive_archive_compression_ratio_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "ratio.xlsx"
+            self.write_minimal_archive(path, [("xl/media/padding.bin", b"A" * (1024 * 1024))])
+            with patch("openpyxl.load_workbook") as parser:
+                self.assert_safety_code(
+                    "compression_ratio_exceeded",
+                    lambda: spreadsheet_safety.load_safe_workbook(path),
+                )
+                parser.assert_not_called()
+
+    def test_archive_entry_and_size_limits_are_deterministic(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "bounded.xlsx"
+            self.save_rows(path)
+            cases = [
+                ("archive_entries_exceeded", "MAX_XLSX_ENTRIES", 2),
+                ("compressed_size_exceeded", "MAX_XLSX_COMPRESSED_BYTES", 64),
+                ("uncompressed_size_exceeded", "MAX_XLSX_UNCOMPRESSED_BYTES", 64),
+            ]
+            for expected_code, constant_name, limit in cases:
+                with self.subTest(expected_code=expected_code), patch.object(spreadsheet_safety, constant_name, limit):
+                    self.assert_safety_code(
+                        expected_code,
+                        lambda: spreadsheet_safety.inspect_xlsx_archive(path),
+                    )
+
+    def test_encrypted_member_flag_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "encrypted.xlsx"
+            self.write_minimal_archive(path)
+            content = bytearray(path.read_bytes())
+            offset = 0
+            while True:
+                offset = content.find(b"PK\x03\x04", offset)
+                if offset < 0:
+                    break
+                flags = int.from_bytes(content[offset + 6:offset + 8], "little") | 0x1
+                content[offset + 6:offset + 8] = flags.to_bytes(2, "little")
+                offset += 4
+            offset = 0
+            while True:
+                offset = content.find(b"PK\x01\x02", offset)
+                if offset < 0:
+                    break
+                flags = int.from_bytes(content[offset + 8:offset + 10], "little") | 0x1
+                content[offset + 8:offset + 10] = flags.to_bytes(2, "little")
+                offset += 4
+            path.write_bytes(content)
+
+            self.assert_safety_code(
+                "archive_encrypted",
+                lambda: spreadsheet_safety.inspect_xlsx_archive(path),
+            )
+
+    def test_row_column_and_cell_limits_are_checked_before_openpyxl(self):
+        long_value = "".join(hashlib.sha256(str(index).encode()).hexdigest() for index in range(257))
+        cases = [
+            ("rows_exceeded", 5002, 1, None),
+            ("columns_exceeded", 2, 129, None),
+            ("cell_length_exceeded", 2, 1, long_value),
+        ]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            for index, (expected_code, rows, columns, value) in enumerate(cases):
+                with self.subTest(expected_code=expected_code):
+                    path = Path(tmp_dir) / f"limit-{index}.xlsx"
+                    self.save_rows(path, row_count=rows, column_count=columns, cell_value=value)
+                    self.assert_safety_code(
+                        expected_code,
+                        lambda current_path=path: spreadsheet_safety.load_safe_workbook(current_path),
+                    )
+
+    def test_exact_row_boundary_passes_preflight(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "boundary.xlsx"
+            self.save_rows(path, row_count=spreadsheet_safety.MAX_XLSX_ROWS, column_count=1)
+            evidence = spreadsheet_safety.inspect_xlsx_archive(path)
+
+        self.assertGreater(evidence["entries"], 0)
+        self.assertLessEqual(evidence["compression_ratio"], spreadsheet_safety.MAX_XLSX_COMPRESSION_RATIO)
+
+    def test_desktop_report_writer_keeps_formula_prefixes_as_text(self):
+        from taksklad.reports import write_day_report_workbook
+
+        values = ["=1+1", "+1+1", "-1+1", "@SUM(A1:A2)"]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "report.xlsx"
+            write_day_report_workbook(
+                path,
+                [{"Клиент": value, "Количество": index + 1} for index, value in enumerate(values)],
+                [],
+                [],
+            )
+            workbook = load_workbook(path, data_only=False)
+            try:
+                cells = [workbook["Терминал"].cell(row=index + 2, column=1) for index in range(len(values))]
+                self.assertEqual([cell.value for cell in cells], values)
+                self.assertEqual([cell.data_type for cell in cells], ["s"] * len(values))
+            finally:
+                workbook.close()
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ from .client_points_service import client_point_delivery_slot_map, delivery_slot
 from .models import Order, OrderItem
 from .orders_service import ApiError, STATUS_RETURNED
 from .reports_service import parse_report_date
+from .spreadsheet_safety import force_workbook_text_literals
 
 
 LOGISTICS_HEADERS = [
@@ -168,6 +169,7 @@ def build_logistics_report_xlsx(db: Session, shipment_date: str):
             ])
         autosize_columns(problem_sheet)
     buffer = BytesIO()
+    force_workbook_text_literals(workbook)
     workbook.save(buffer)
     return buffer.getvalue(), logistics_report_filename(report_date)
 

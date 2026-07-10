@@ -23,6 +23,7 @@ class FakeSheet:
         self.col_count = col_count if col_count is not None else max((len(row) for row in rows), default=0)
         self.strict_grid = strict_grid
         self.resize_calls = []
+        self.write_options = []
 
     def get_all_values(self):
         return self.rows
@@ -34,6 +35,7 @@ class FakeSheet:
             self.rows[row_idx].append("")
 
     def append_row(self, row, value_input_option=None):
+        self.write_options.append(value_input_option)
         self.rows.append(list(row))
         self.row_count = max(self.row_count, len(self.rows))
         self.col_count = max(self.col_count, len(row))
@@ -46,6 +48,7 @@ class FakeSheet:
         self.resize_calls.append({"rows": rows, "cols": cols})
 
     def batch_update(self, updates, value_input_option=None):
+        self.write_options.append(value_input_option)
         for update in updates:
             match = re.match(r"([A-Z]+)(\d+)", update["range"])
             if not match:
@@ -163,6 +166,39 @@ class BackendGoogleSheetsExporterTests(unittest.TestCase):
         self.assertEqual(service_account.call_args.args[0], fake_credentials)
         self.assertEqual(service_account.call_args.kwargs["http_client"], exporter.GoogleTimeoutHTTPClient)
         self.assertGreaterEqual(exporter.GOOGLE_API_TIMEOUT_SECONDS, 1)
+
+    def test_append_import_records_writes_formula_prefix_values_as_raw_literals(self):
+        header = exporter.build_import_sheet_header()
+        sheet = FakeSheet("data", [header.copy()])
+        spreadsheet = FakeSpreadsheet({"data": sheet})
+        record = {
+            exporter.ORDER_DATE_COLUMN: "01.06.2026",
+            "Тип оплаты": "Перечисление",
+            "Клиент": "=1+1",
+            "Адрес": "+cmd",
+            "Торговый представитель": "-2",
+            "Товары": "@SUM(A1)",
+            "Кол-во ШТ": 20,
+            "Кол-во блок": 2,
+            "ID заказа": "order-formula-prefixes",
+            "ID импорта": "import-formula-prefixes",
+        }
+
+        with mock.patch.object(
+            exporter,
+            "get_google_client",
+            return_value=SimpleNamespace(open_by_key=lambda _key: spreadsheet),
+        ):
+            result = exporter.append_import_records_to_google_sheets([record])
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual(sheet.write_options, ["RAW"])
+        header_idx = exporter.get_header_index(sheet.rows[0])
+        self.assertEqual(sheet.rows[1][header_idx["Клиент"]], "=1+1")
+        self.assertEqual(sheet.rows[1][header_idx["Адрес"]], "+cmd")
+        self.assertEqual(sheet.rows[1][header_idx["Торговый представитель"]], "-2")
+        self.assertEqual(sheet.rows[1][header_idx["Товары"]], "@SUM(A1)")
 
     def test_update_backend_order_item_row_replaces_codes_and_status_from_backend(self):
         header = exporter.build_import_sheet_header()

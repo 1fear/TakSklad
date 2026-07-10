@@ -115,7 +115,7 @@ class BackendBridgeTests(unittest.TestCase):
         self.assertEqual(rows[0]["Статус"], STATUS_COMPLETED)
 
     def test_preview_import_orders_posts_to_preview_endpoint(self):
-        records = [{"Клиент": "Client"}]
+        records = [{"Клиент": "Client", "_source_file_sha256": ["a" * 64]}]
         with mock.patch.object(backend_client, "backend_request", return_value={"rows_importable": 1}) as request:
             result = backend_client.preview_import_orders(records, filename="orders.xlsx")
 
@@ -126,9 +126,10 @@ class BackendBridgeTests(unittest.TestCase):
             {
                 "source": "excel",
                 "filename": "orders.xlsx",
-                "rows": records,
+                "rows": [{"Клиент": "Client"}],
             },
         )
+        self.assertEqual(records[0]["_source_file_sha256"], ["a" * 64])
 
     def test_backend_queue_drops_non_retryable_duplicate_scan_conflict(self):
         pending = [{

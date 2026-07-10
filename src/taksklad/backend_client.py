@@ -131,6 +131,15 @@ def sync_backend_sources(sync_skladbot=True, wait_skladbot=True):
     return backend_request("POST", f"/api/v1/sync/sources?{query}", timeout=timeout)
 
 
+def backend_import_records(records):
+    """Drop desktop-only metadata before the typed backend import boundary."""
+
+    return [
+        {key: value for key, value in record.items() if key != "_source_file_sha256"}
+        for record in records
+    ]
+
+
 def import_orders(records, filename=None, source="excel"):
     return backend_request(
         "POST",
@@ -138,7 +147,7 @@ def import_orders(records, filename=None, source="excel"):
         {
             "source": source,
             "filename": filename,
-            "rows": records,
+            "rows": backend_import_records(records),
         },
     )
 
@@ -150,7 +159,7 @@ def preview_import_orders(records, filename=None, source="excel"):
         {
             "source": source,
             "filename": filename,
-            "rows": records,
+            "rows": backend_import_records(records),
         },
     )
 

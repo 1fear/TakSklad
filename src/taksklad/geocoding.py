@@ -48,14 +48,13 @@ def reverse_geocode_yandex(coords, cache=None):
     try:
         with urllib.request.urlopen(url, timeout=15) as response:
             data = json.load(response)
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", "replace")[:300]
-        result = (None, f"HTTP {exc.code}: {body}")
+    except urllib.error.HTTPError:
+        result = (None, "geocoder_request_failed")
         if cache is not None:
             cache[normalized_coords] = result
         return result
-    except Exception as exc:
-        result = (None, str(exc))
+    except Exception:
+        result = (None, "geocoder_request_failed")
         if cache is not None:
             cache[normalized_coords] = result
         return result

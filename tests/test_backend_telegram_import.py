@@ -80,6 +80,25 @@ def create_conflicting_date_workbook(path):
 
 
 class BackendTelegramImportTests(unittest.TestCase):
+    def test_unsafe_telegram_filename_is_rejected_before_download_and_redacted(self):
+        worker = TelegramWorker.__new__(TelegramWorker)
+        messages = []
+        worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append(text)
+        worker.download_telegram_document = mock.Mock()
+        worker.backend_post = mock.Mock()
+        unsafe_name = "../secret-customer.xlsx"
+
+        result = worker.import_telegram_document(
+            "123",
+            {"file_name": unsafe_name, "file_id": "synthetic-file"},
+        )
+
+        self.assertEqual(result, (False, "unsafe_filename"))
+        worker.download_telegram_document.assert_not_called()
+        worker.backend_post.assert_not_called()
+        self.assertNotIn(unsafe_name, "\n".join(messages))
+        self.assertNotIn("secret-customer", "\n".join(messages))
+
     def test_telegram_configuration_requires_allowlist_and_admin_subset(self):
         with self.assertRaises(TelegramConfigurationError) as missing_allowed:
             validate_telegram_worker_config("synthetic-token", set(), set())

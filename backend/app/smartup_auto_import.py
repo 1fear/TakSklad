@@ -46,6 +46,7 @@ from .smartup_saga import (
     saga_report,
     smartup_saga_fault,
 )
+from .spreadsheet_safety import force_workbook_text_literals
 
 
 logger = logging.getLogger(__name__)
@@ -1704,6 +1705,7 @@ def write_export_workbook(
         sheet.append([row.get(header, "") for header in EXPORT_WORKBOOK_HEADERS])
     autosize_columns(sheet)
     buffer = BytesIO()
+    force_workbook_text_literals(workbook)
     workbook.save(buffer)
     content = buffer.getvalue()
     path = day_dir / filename

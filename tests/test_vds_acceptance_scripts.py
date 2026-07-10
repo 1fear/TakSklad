@@ -158,7 +158,11 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         compose = (PROJECT_ROOT / "deploy" / "vds" / "docker-compose.yml").read_text(encoding="utf-8")
         nginx = (PROJECT_ROOT / "frontend" / "nginx.conf.template").read_text(encoding="utf-8")
 
-        self.assertIn("traefik.http.routers.taksklad-backend.middlewares=taksklad-security-headers", compose)
+        self.assertIn(
+            "traefik.http.routers.taksklad-backend.middlewares=taksklad-request-limit,taksklad-security-headers",
+            compose,
+        )
+        self.assertIn("traefik.http.middlewares.taksklad-request-limit.buffering.maxRequestBodyBytes=33554432", compose)
         self.assertIn("traefik.http.routers.taksklad-frontend.middlewares=taksklad-security-headers,taksklad-frontend-csp", compose)
         self.assertIn('profiles: ["adminer"]', compose)
         self.assertIn("traefik.enable=false", compose)
