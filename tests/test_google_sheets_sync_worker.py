@@ -13,6 +13,7 @@ from backend.app.google_sheets_sync_worker import (
     RETURN_REFERENCE_COLUMN,
     RETURN_STATUS_COLUMN,
     RETURNED_BY_COLUMN,
+    merge_google_sheet_records,
     run_google_sheets_worker_cycle,
     split_codes,
     sync_google_sheet_to_backend,
@@ -46,6 +47,32 @@ class GoogleSheetsSyncWorkerTests(unittest.TestCase):
     def tearDown(self):
         Base.metadata.drop_all(self.engine)
         self.engine.dispose()
+
+    def test_merge_prefers_active_data_row_over_archived_duplicate(self):
+        active = {
+            "source_import_id": "import-1",
+            "source_order_id": "active-order-1",
+            "order_date": date(2026, 7, 13),
+            "source_sheet": "data",
+        }
+        archived_duplicate = {
+            "source_import_id": "import-1",
+            "source_order_id": "archived-order-1",
+            "order_date": date(2026, 6, 10),
+            "source_sheet": "Архив",
+            "archived": True,
+        }
+        archived_only = {
+            "source_import_id": "import-2",
+            "source_order_id": "archived-order-2",
+            "order_date": date(2026, 6, 11),
+            "source_sheet": "Архив",
+            "archived": True,
+        }
+
+        records = merge_google_sheet_records([active], [archived_duplicate, archived_only])
+
+        self.assertEqual(records, [active, archived_only])
 
     def seed_order(
         self,

@@ -219,23 +219,50 @@ def load_google_sheet_records(sheet=None):
 
     client = get_google_client()
     spreadsheet = client.open_by_key(SPREADSHEET_ID)
-    records = []
     data_sheet = spreadsheet.worksheet(SHEET_NAME)
     ensure_import_sheet_layout(data_sheet)
-    records.extend(parse_sheet_records(data_sheet.get_all_values(), source_sheet=SHEET_NAME))
+    data_records = parse_sheet_records(data_sheet.get_all_values(), source_sheet=SHEET_NAME)
 
     try:
         archive_sheet = spreadsheet.worksheet(ARCHIVE_SHEET_NAME)
     except Exception:
         archive_sheet = None
-    if archive_sheet is not None:
-        ensure_import_sheet_layout(archive_sheet)
-        records.extend(parse_sheet_records(
-            archive_sheet.get_all_values(),
-            source_sheet=ARCHIVE_SHEET_NAME,
-            archived=True,
-        ))
-    return records
+    if archive_sheet is None:
+        return data_records
+    ensure_import_sheet_layout(archive_sheet)
+    archive_records = parse_sheet_records(
+        archive_sheet.get_all_values(),
+        source_sheet=ARCHIVE_SHEET_NAME,
+        archived=True,
+    )
+    return merge_google_sheet_records(data_records, archive_records)
+
+
+def google_sheet_record_identity(record):
+    source_import_id = normalize_text(record.get("source_import_id"))
+    if source_import_id:
+        return "source_import_id", source_import_id
+    source_order_id = normalize_text(record.get("source_order_id"))
+    if source_order_id:
+        return "source_order_id", source_order_id
+    return None
+
+
+def merge_google_sheet_records(data_records, archive_records):
+    data_records = list(data_records or [])
+    active_keys = {
+        key
+        for record in data_records
+        if (key := google_sheet_record_identity(record)) is not None
+    }
+    return [
+        *data_records,
+        *[
+            record
+            for record in (archive_records or [])
+            if google_sheet_record_identity(record) not in active_keys
+        ],
+    ]
 
 
 def parse_sheet_records(all_rows, source_sheet=SHEET_NAME, archived=False):
