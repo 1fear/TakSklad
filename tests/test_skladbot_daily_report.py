@@ -31,6 +31,7 @@ from backend.app.skladbot_daily_report import (
     request_representative_zone,
     summarize_daily_report,
 )
+from backend.app.telegram_scheduled_report_processor import TelegramScheduledReportProcessor
 from backend.app.telegram_worker import (
     SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE,
     TelegramWorker,
@@ -1043,6 +1044,43 @@ class July7MissingTransferBatchClient(FakeSkladBotDailyReportClient):
 
 
 class SkladBotDailyReportTests(unittest.TestCase):
+    def test_scheduled_processor_runs_claim_send_finish_reconcile_in_order(self):
+        processor = TelegramScheduledReportProcessor()
+        processor.skladbot_daily_report_chat_ids = {"chat-2", "chat-1"}
+        calls = []
+        now = datetime(2026, 6, 20, 22, 0, tzinfo=timezone.utc)
+
+        processor.scheduled_skladbot_daily_report_is_due = lambda value: calls.append(("due", value)) or True
+        processor.claim_scheduled_skladbot_daily_report = (
+            lambda chat_id, report_date, now=None: calls.append(("claim", chat_id, report_date, now))
+            or f"event-{chat_id}"
+        )
+
+        def send_report(chat_id, report_date=None, scheduled=False, progress=None, allow_partial=False):
+            calls.append(("send", chat_id, report_date, scheduled))
+            progress("generated", rows=2)
+            return True
+
+        processor.send_skladbot_daily_report = send_report
+        processor.update_scheduled_skladbot_daily_report_progress = (
+            lambda event_id, stage, **fields: calls.append(("progress", event_id, stage, fields))
+        )
+        processor.finish_scheduled_skladbot_daily_report = (
+            lambda event_id, success, error="": calls.append(("finish", event_id, success, error))
+        )
+        processor.run_scheduled_daily_reconciliation = (
+            lambda chat_id, report_date: calls.append(("reconcile", chat_id, report_date))
+        )
+
+        self.assertEqual(processor.send_due_skladbot_daily_reports(now), 2)
+        self.assertEqual([call[0] for call in calls], [
+            "due",
+            "claim", "send", "progress", "finish", "reconcile",
+            "claim", "send", "progress", "finish", "reconcile",
+        ])
+        self.assertEqual([call[1] for call in calls if call[0] == "claim"], ["chat-1", "chat-2"])
+        self.assertTrue(all(call[3] for call in calls if call[0] == "send"))
+
     def test_parses_new_representative_comment_with_phones_without_zone(self):
         request = {
             "comment": (
