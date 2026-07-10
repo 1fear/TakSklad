@@ -1,11 +1,10 @@
 import json
 import logging
-import os
 import urllib.error
 import urllib.parse
 import urllib.request
 
-from .config import YANDEX_GEOCODER_ENV_VAR, YANDEX_GEOCODER_KEY_FILE
+from .secret_store import GEOCODER_API_KEY_SECRET, SecretStoreError, load_secret
 from .utils import normalize_coordinates, normalize_text
 
 
@@ -13,18 +12,11 @@ COUNTRY_PREFIXES = ("узбекистан", "uzbekistan", "o'zbekiston", "oʻzbe
 
 
 def load_yandex_geocoder_key():
-    env_key = normalize_text(os.environ.get(YANDEX_GEOCODER_ENV_VAR))
-    if env_key:
-        return env_key
     try:
-        if os.path.exists(YANDEX_GEOCODER_KEY_FILE):
-            with open(YANDEX_GEOCODER_KEY_FILE, "r", encoding="utf-8") as key_file:
-                file_key = normalize_text(key_file.read())
-            if file_key:
-                return file_key
-    except Exception:
-        logging.exception("Не удалось прочитать ключ Яндекс Геокодера")
-    return ""
+        return normalize_text(load_secret(GEOCODER_API_KEY_SECRET))
+    except SecretStoreError:
+        logging.warning("Безопасное хранилище ключа Геокодера недоступно")
+        return ""
 
 
 def reverse_geocode_yandex(coords, cache=None):

@@ -3,7 +3,6 @@ import hashlib
 import json
 import logging
 import os
-import shutil
 import sqlite3
 import tempfile
 import threading
@@ -19,9 +18,19 @@ from .config import (
     PENDING_TELEGRAM_FILE,
     PRINT_SETTINGS_FILE,
     PRODUCT_CATALOG_FILE,
+    RUNTIME_CONFIG_FILE,
     TAKSKLAD_DATA_FILE,
     TELEGRAM_SETTINGS_FILE,
     TELEGRAM_STATE_FILE,
+    YANDEX_GEOCODER_KEY_FILE,
+)
+from .secret_store import (
+    BACKEND_API_TOKEN_SECRET,
+    GEOCODER_API_KEY_SECRET,
+    GOOGLE_CREDENTIALS_SECRET,
+    TELEGRAM_BOT_TOKEN_SECRET,
+    SecretStoreError,
+    get_secret_store,
 )
 
 
@@ -77,9 +86,14 @@ LAST_APP_DATA_RECOVERY_STATUS = {
     "restored_from": "",
     "queue_counts": {},
 }
+LAST_SECRET_MIGRATION_STATUS = {
+    "status": "not_run",
+    "migrated": 0,
+    "restart_required": False,
+    "error_class": "",
+}
 
 LEGACY_JSON_SECTIONS = {
-    "credentials": CREDENTIALS_FILE,
     "telegram_settings": TELEGRAM_SETTINGS_FILE,
     "pending_saves": PENDING_SAVES_FILE,
     "pending_prints": PENDING_PRINTS_FILE,
@@ -323,6 +337,26 @@ def default_app_data():
     return copy.deepcopy(APP_DATA_DEFAULTS)
 
 
+def sanitize_app_data_secrets(data):
+    sanitized = copy.deepcopy(data) if isinstance(data, dict) else {}
+    sanitized["credentials"] = {}
+    telegram_settings = sanitized.get("telegram_settings")
+    if isinstance(telegram_settings, dict):
+        telegram_settings = dict(telegram_settings)
+        telegram_settings.pop("bot_token", None)
+        telegram_settings.pop("token", None)
+        sanitized["telegram_settings"] = telegram_settings
+    for key in (
+        "backend_api_token",
+        "TAKSKLAD_BACKEND_API_TOKEN",
+        "TAKSKLAD_API_TOKEN",
+        "yandex_geocoder_api_key",
+        "YANDEX_GEOCODER_API_KEY",
+    ):
+        sanitized.pop(key, None)
+    return sanitized
+
+
 def app_data_backup_path(index=1):
     return f"{TAKSKLAD_DATA_FILE}.last_good.{index}.bak"
 
@@ -408,6 +442,7 @@ def _latest_valid_app_data_backup():
 
 
 def _restore_app_data_from_backup(backup_path, data, before_counts=None):
+    data = sanitize_app_data_secrets(data)
     data_dir = os.path.dirname(TAKSKLAD_DATA_FILE)
     os.makedirs(data_dir, exist_ok=True)
     fd, temp_path = tempfile.mkstemp(
@@ -491,9 +526,20 @@ def _backup_current_app_data_if_valid():
 
     backup_path = app_data_backup_path(1)
     try:
-        shutil.copy2(TAKSKLAD_DATA_FILE, backup_path)
-        with open(backup_path, "rb") as backup_file:
-            os.fsync(backup_file.fileno())
+        fd, temp_path = tempfile.mkstemp(
+            prefix=os.path.basename(backup_path) + ".",
+            suffix=".tmp",
+            dir=data_dir,
+            text=True,
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as backup_file:
+                json.dump(sanitize_app_data_secrets(current_data), backup_file, ensure_ascii=False, indent=2)
+                _flush_and_fsync(backup_file)
+            os.replace(temp_path, backup_path)
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
         _restrict_local_data_permissions(backup_path)
         _fsync_directory(data_dir)
     except Exception:
@@ -518,6 +564,7 @@ def _load_json_state_unlocked():
     except Exception as exc:
         logging.error("Не удалось загрузить общий файл данных: %s error=%s", TAKSKLAD_DATA_FILE, type(exc).__name__)
         data = _fallback_to_last_good_backup("degraded", before_counts=app_data_queue_counts({}))
+    data = sanitize_app_data_secrets(data)
     merged = default_app_data()
     for key, value in data.items():
         merged[key] = value
@@ -550,7 +597,7 @@ def _save_app_data_unlocked(data, *, persist_queues=True):
                     _replace_queue_section_unlocked(section, data[section])
         normalized = default_app_data()
         if isinstance(data, dict):
-            normalized.update(data)
+            normalized.update(sanitize_app_data_secrets(data))
         for section in APP_DATA_QUEUE_SECTIONS:
             normalized[section] = []
         normalized["_updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -652,6 +699,311 @@ def credentials_look_valid(credentials):
     )
 
 
+class SecretMigrationError(RuntimeError):
+    pass
+
+
+def get_secret_migration_status():
+    return copy.deepcopy(LAST_SECRET_MIGRATION_STATUS)
+
+
+def _set_secret_migration_status(status, *, migrated=0, restart_required=False, error_class=""):
+    LAST_SECRET_MIGRATION_STATUS.update({
+        "status": status,
+        "migrated": int(migrated or 0),
+        "restart_required": bool(restart_required),
+        "error_class": str(error_class or ""),
+    })
+
+
+def _atomic_write_bytes(path, content):
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(
+        prefix=os.path.basename(path) + ".",
+        suffix=".tmp",
+        dir=directory,
+    )
+    try:
+        with os.fdopen(fd, "wb") as output:
+            output.write(content)
+            _flush_and_fsync(output)
+        os.replace(temp_path, path)
+        _restrict_local_data_permissions(path)
+        _fsync_directory(directory)
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+def _atomic_write_json(path, value):
+    content = json.dumps(value, ensure_ascii=False, indent=2).encode("utf-8")
+    _atomic_write_bytes(path, content)
+
+
+def _optional_file_bytes(path):
+    if not path or not os.path.exists(path):
+        return None
+    with open(path, "rb") as source:
+        return source.read()
+
+
+def _json_from_bytes(content, path):
+    if content is None:
+        return {}
+    try:
+        value = json.loads(content.decode("utf-8"))
+    except Exception as exc:
+        raise SecretMigrationError(f"invalid JSON source class={os.path.basename(path)}") from exc
+    if not isinstance(value, dict):
+        raise SecretMigrationError(f"invalid JSON object class={os.path.basename(path)}")
+    return value
+
+
+def _restore_file_snapshots(snapshots):
+    restore_errors = []
+    for path, content in snapshots.items():
+        try:
+            if content is None:
+                if os.path.exists(path):
+                    os.remove(path)
+                continue
+            _atomic_write_bytes(path, content)
+        except Exception as exc:
+            restore_errors.append(exc)
+    if restore_errors:
+        raise SecretMigrationError("one or more plaintext source restores failed") from restore_errors[0]
+
+
+def _credential_candidate(value, source_class):
+    if value in (None, {}):
+        return None
+    if not isinstance(value, dict) or not credentials_look_valid(value):
+        raise SecretMigrationError(f"invalid Google credential source class={source_class}")
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _settings_token_candidate(value, source_class):
+    if value in (None, {}):
+        return None
+    if not isinstance(value, dict):
+        raise SecretMigrationError(f"invalid Telegram settings source class={source_class}")
+    token = value.get("bot_token") or value.get("token") or ""
+    return str(token).strip() or None
+
+
+def _mapping_token_candidate(value, keys, source_class):
+    if value in (None, {}):
+        return None
+    if not isinstance(value, dict):
+        raise SecretMigrationError(f"invalid token source class={source_class}")
+    for key in keys:
+        token = value.get(key)
+        if token is not None and str(token).strip():
+            return str(token).strip()
+    return None
+
+
+def _first_candidate(values):
+    return next((value for value in values if value), None)
+
+
+def migrate_desktop_secrets(secret_store=None, *, allow_volatile_test_store=False):
+    """Move legacy desktop secrets only after a verified secure-store round trip."""
+    with APP_DATA_LOCK:
+        store = None
+        snapshots = {}
+        secure_snapshots = {}
+        snapshots_complete = False
+        mutation_started = False
+        candidates = {}
+        try:
+            store = secret_store or get_secret_store()
+            backup_paths = [app_data_backup_path(index) for index in range(1, APP_DATA_BACKUP_LIMIT + 1)]
+            source_paths = [
+                TAKSKLAD_DATA_FILE,
+                *backup_paths,
+                CREDENTIALS_FILE,
+                TELEGRAM_SETTINGS_FILE,
+                RUNTIME_CONFIG_FILE,
+                YANDEX_GEOCODER_KEY_FILE,
+            ]
+            snapshots = {path: _optional_file_bytes(path) for path in source_paths}
+            snapshots_complete = True
+            state = _json_from_bytes(snapshots[TAKSKLAD_DATA_FILE], TAKSKLAD_DATA_FILE)
+            backup_states = [
+                _json_from_bytes(snapshots[path], path)
+                for path in backup_paths
+            ]
+            credentials_file = _json_from_bytes(snapshots[CREDENTIALS_FILE], CREDENTIALS_FILE)
+            telegram_file = _json_from_bytes(snapshots[TELEGRAM_SETTINGS_FILE], TELEGRAM_SETTINGS_FILE)
+            runtime_config = _json_from_bytes(snapshots[RUNTIME_CONFIG_FILE], RUNTIME_CONFIG_FILE)
+
+            google_values = [
+                _credential_candidate(state.get("credentials"), "current_state"),
+                _credential_candidate(credentials_file, "credentials_file"),
+            ]
+            telegram_values = [
+                _settings_token_candidate(state.get("telegram_settings"), "current_state"),
+                _settings_token_candidate(telegram_file, "telegram_file"),
+            ]
+            backend_values = [
+                _mapping_token_candidate(
+                    state,
+                    ("backend_api_token", "TAKSKLAD_BACKEND_API_TOKEN", "TAKSKLAD_API_TOKEN"),
+                    "current_state",
+                ),
+                _mapping_token_candidate(
+                    runtime_config,
+                    ("TAKSKLAD_BACKEND_API_TOKEN", "TAKSKLAD_API_TOKEN"),
+                    "runtime_config",
+                ),
+            ]
+            geocoder_values = [
+                _mapping_token_candidate(
+                    state,
+                    ("yandex_geocoder_api_key", "YANDEX_GEOCODER_API_KEY"),
+                    "current_state",
+                )
+            ]
+            for index, backup_state in enumerate(backup_states, start=1):
+                source_class = f"backup_{index}"
+                google_values.append(_credential_candidate(backup_state.get("credentials"), source_class))
+                telegram_values.append(
+                    _settings_token_candidate(backup_state.get("telegram_settings"), source_class)
+                )
+                backend_values.append(
+                    _mapping_token_candidate(
+                        backup_state,
+                        ("backend_api_token", "TAKSKLAD_BACKEND_API_TOKEN", "TAKSKLAD_API_TOKEN"),
+                        source_class,
+                    )
+                )
+                geocoder_values.append(
+                    _mapping_token_candidate(
+                        backup_state,
+                        ("yandex_geocoder_api_key", "YANDEX_GEOCODER_API_KEY"),
+                        source_class,
+                    )
+                )
+
+            geocoder_bytes = snapshots[YANDEX_GEOCODER_KEY_FILE]
+            if geocoder_bytes is not None:
+                try:
+                    geocoder_values.insert(0, geocoder_bytes.decode("utf-8").strip() or None)
+                except UnicodeDecodeError as exc:
+                    raise SecretMigrationError("invalid geocoder source class=geocoder_file") from exc
+
+            selected = {
+                GOOGLE_CREDENTIALS_SECRET: _first_candidate(google_values),
+                TELEGRAM_BOT_TOKEN_SECRET: _first_candidate(telegram_values),
+                BACKEND_API_TOKEN_SECRET: _first_candidate(backend_values),
+                GEOCODER_API_KEY_SECRET: _first_candidate(geocoder_values),
+            }
+            candidates = {name: value for name, value in selected.items() if value}
+            restart_required = BACKEND_API_TOKEN_SECRET in candidates
+
+            store_status = store.status()
+            if (
+                not allow_volatile_test_store
+                and isinstance(store_status, dict)
+                and store_status.get("provider") == "windows_dpapi"
+                and (
+                    not store_status.get("available")
+                    or not store_status.get("persistent")
+                    or store_status.get("state") != "ok"
+                )
+            ):
+                raise SecretMigrationError("production Windows DPAPI store is unavailable")
+            if candidates and not allow_volatile_test_store:
+                if (
+                    not isinstance(store_status, dict)
+                    or not store_status.get("available")
+                    or not store_status.get("persistent")
+                    or store_status.get("provider") != "windows_dpapi"
+                ):
+                    raise SecretMigrationError("secret migration requires persistent Windows DPAPI store")
+
+            secure_snapshots = {name: store.get_text(name) for name in candidates}
+            for name, value in candidates.items():
+                mutation_started = True
+                store.set_text(name, value)
+                if store.get_text(name) != value:
+                    raise SecretMigrationError(f"secure round trip failed key={name}")
+                _storage_fault_hook(f"after_secret_roundtrip:{name}")
+            _storage_fault_hook("after_secret_roundtrip")
+
+            sanitized_state = sanitize_app_data_secrets(state)
+            legacy_telegram_nonsecret = sanitize_app_data_secrets({"telegram_settings": telegram_file}).get(
+                "telegram_settings", {}
+            )
+            if legacy_telegram_nonsecret:
+                current_telegram = sanitized_state.get("telegram_settings")
+                if not isinstance(current_telegram, dict):
+                    current_telegram = {}
+                sanitized_state["telegram_settings"] = {**legacy_telegram_nonsecret, **current_telegram}
+            if snapshots[TAKSKLAD_DATA_FILE] is not None or legacy_telegram_nonsecret:
+                mutation_started = True
+                _atomic_write_json(TAKSKLAD_DATA_FILE, sanitized_state)
+            _storage_fault_hook("after_state_sanitize")
+
+            for path in backup_paths:
+                content = snapshots[path]
+                if content is None:
+                    continue
+                mutation_started = True
+                _atomic_write_json(path, sanitize_app_data_secrets(_json_from_bytes(content, path)))
+            _storage_fault_hook("after_backup_sanitize")
+
+            runtime_sanitized = dict(runtime_config)
+            runtime_sanitized.pop("TAKSKLAD_BACKEND_API_TOKEN", None)
+            runtime_sanitized.pop("TAKSKLAD_API_TOKEN", None)
+            if snapshots[RUNTIME_CONFIG_FILE] is not None:
+                mutation_started = True
+                _atomic_write_json(RUNTIME_CONFIG_FILE, runtime_sanitized)
+            _storage_fault_hook("after_runtime_sanitize")
+
+            for path in (CREDENTIALS_FILE, TELEGRAM_SETTINGS_FILE, YANDEX_GEOCODER_KEY_FILE):
+                if os.path.exists(path):
+                    mutation_started = True
+                    os.remove(path)
+            _storage_fault_hook("after_plaintext_purge")
+        except Exception as exc:
+            restore_errors = []
+            if mutation_started and store is not None:
+                for name, previous_value in secure_snapshots.items():
+                    try:
+                        if previous_value is not None:
+                            store.set_text(name, previous_value)
+                        else:
+                            store.delete(name)
+                    except Exception as restore_exc:
+                        restore_errors.append(restore_exc)
+            if mutation_started and snapshots_complete:
+                try:
+                    _restore_file_snapshots(snapshots)
+                except Exception as restore_exc:
+                    restore_errors.append(restore_exc)
+            if restore_errors:
+                restore_exc = restore_errors[0]
+                _set_secret_migration_status(
+                    "migration_failed_restore_failed",
+                    migrated=0,
+                    error_class=type(restore_exc).__name__,
+                )
+                raise SecretMigrationError("secret migration rollback failed") from restore_exc
+            _set_secret_migration_status("migration_failed", migrated=0, error_class=type(exc).__name__)
+            raise SecretMigrationError("secret migration failed closed") from exc
+
+        status = "migrated_restart_required" if restart_required else "migrated" if candidates else "clean"
+        _set_secret_migration_status(
+            status,
+            migrated=len(candidates),
+            restart_required=restart_required,
+        )
+        return get_secret_migration_status()
+
+
 def migrate_legacy_json_files_to_app_data():
     with APP_DATA_LOCK:
         data = _load_app_data_unlocked()
@@ -676,15 +1028,17 @@ def migrate_legacy_json_files_to_app_data():
 
 
 def load_credentials_data():
-    stored_credentials = load_data_section("credentials", {})
-    if credentials_look_valid(stored_credentials):
-        return stored_credentials
-
-    file_credentials = load_json_file(CREDENTIALS_FILE, {})
-    if credentials_look_valid(file_credentials):
-        return file_credentials
-
-    return file_credentials if isinstance(file_credentials, dict) else {}
+    try:
+        serialized = get_secret_store().get_text(GOOGLE_CREDENTIALS_SECRET)
+    except SecretStoreError:
+        return {}
+    if not serialized:
+        return {}
+    try:
+        credentials = json.loads(serialized)
+    except (TypeError, ValueError):
+        return {}
+    return credentials if credentials_look_valid(credentials) else {}
 
 
 def credentials_available():

@@ -2,8 +2,18 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from taksklad import single_instance, startup_check, storage
+from taksklad.secret_store import (
+    BACKEND_API_TOKEN_SECRET,
+    GOOGLE_CREDENTIALS_SECRET,
+    TELEGRAM_BOT_TOKEN_SECRET,
+    MemorySecretStore,
+    SecretStoreError,
+    reset_secret_store_for_tests,
+    set_secret_store_for_tests,
+)
 
 
 def credentials():
@@ -23,9 +33,10 @@ class StartupCheckTests(unittest.TestCase):
         self.original_backend_only_refresh = startup_check.TAKSKLAD_BACKEND_ONLY_REFRESH
         self.original_backend_emergency_google_fallback = startup_check.TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED
         self.original_backend_url = startup_check.TAKSKLAD_BACKEND_BASE_URL
-        self.original_backend_token = startup_check.TAKSKLAD_BACKEND_API_TOKEN
         self.original_telegram_desktop_polling = startup_check.TELEGRAM_DESKTOP_POLLING_ENABLED
         self.original_geocoder_loader = startup_check.load_yandex_geocoder_key
+        self.secret_store = MemorySecretStore()
+        set_secret_store_for_tests(self.secret_store)
 
     def tearDown(self):
         storage.TAKSKLAD_DATA_FILE = self.original_data_file
@@ -35,9 +46,9 @@ class StartupCheckTests(unittest.TestCase):
         startup_check.TAKSKLAD_BACKEND_ONLY_REFRESH = self.original_backend_only_refresh
         startup_check.TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED = self.original_backend_emergency_google_fallback
         startup_check.TAKSKLAD_BACKEND_BASE_URL = self.original_backend_url
-        startup_check.TAKSKLAD_BACKEND_API_TOKEN = self.original_backend_token
         startup_check.TELEGRAM_DESKTOP_POLLING_ENABLED = self.original_telegram_desktop_polling
         startup_check.load_yandex_geocoder_key = self.original_geocoder_loader
+        reset_secret_store_for_tests()
 
     def test_build_startup_self_check_redacts_runtime_secrets(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -61,12 +72,14 @@ class StartupCheckTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            self.secret_store.set_text(GOOGLE_CREDENTIALS_SECRET, json.dumps(credentials()))
+            self.secret_store.set_text(TELEGRAM_BOT_TOKEN_SECRET, "telegram-token")
+            self.secret_store.set_text(BACKEND_API_TOKEN_SECRET, "backend-token")
             startup_check.TAKSKLAD_BACKEND_ENABLED = True
             startup_check.TAKSKLAD_BACKEND_READ_ORDERS_ENABLED = True
             startup_check.TAKSKLAD_BACKEND_ONLY_REFRESH = True
             startup_check.TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED = False
             startup_check.TAKSKLAD_BACKEND_BASE_URL = "https://api.taksklad.uz/path"
-            startup_check.TAKSKLAD_BACKEND_API_TOKEN = "backend-token"
             startup_check.TELEGRAM_DESKTOP_POLLING_ENABLED = False
             startup_check.load_yandex_geocoder_key = lambda: "geocoder-key"
 
@@ -78,7 +91,7 @@ class StartupCheckTests(unittest.TestCase):
             self.assertEqual(check["version_status"], "checking")
             self.assertEqual(check["app_data_status"], "ok")
             self.assertEqual(check["app_data_restored"], "no")
-            self.assertEqual(check["credentials"], "stored")
+            self.assertEqual(check["credentials"], "secure_store")
             self.assertEqual(check["telegram_enabled"], "yes")
             self.assertEqual(check["telegram_token"], "yes")
             self.assertEqual(check["telegram_chats"], "2")
@@ -97,6 +110,14 @@ class StartupCheckTests(unittest.TestCase):
             self.assertNotIn("backend-token", formatted)
             self.assertNotIn("geocoder-key", formatted)
             self.assertNotIn("secret-code", formatted)
+
+    def test_secret_store_failure_is_not_reported_as_configured(self):
+        with mock.patch.object(
+            startup_check,
+            "load_secret",
+            side_effect=SecretStoreError("synthetic access denial"),
+        ):
+            self.assertFalse(startup_check.secret_available(BACKEND_API_TOKEN_SECRET))
 
     def test_version_update_status_current_manifest_is_non_blocking(self):
         status = startup_check.build_version_update_status(
@@ -197,7 +218,7 @@ class StartupCheckTests(unittest.TestCase):
         self.assertIn(startup_check.APP_VERSION, label)
         self.assertIn("MVP 2.0", label)
 
-    def test_credentials_status_falls_back_to_file(self):
+    def test_credentials_status_does_not_fall_back_to_plaintext_file(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
             storage.TAKSKLAD_DATA_FILE = str(tmp_path / "TakSklad_data.json")
@@ -205,7 +226,7 @@ class StartupCheckTests(unittest.TestCase):
             Path(storage.TAKSKLAD_DATA_FILE).write_text("{}", encoding="utf-8")
             Path(storage.CREDENTIALS_FILE).write_text(json.dumps(credentials()), encoding="utf-8")
 
-            self.assertEqual(startup_check.credentials_status(storage.load_app_data()), "file")
+            self.assertEqual(startup_check.credentials_status(storage.load_app_data()), "missing")
 
     def test_startup_self_check_reports_degraded_app_data_without_payload_values(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -41,6 +41,7 @@ from .storage import (
     reconcile_queue_section,
     save_data_section,
 )
+from .secret_store import SecretStoreError, TELEGRAM_BOT_TOKEN_SECRET, load_secret
 from .utils import (
     clean_file_name,
     is_supported_excel_file_name,
@@ -64,6 +65,10 @@ def load_telegram_settings():
     settings = load_data_section("telegram_settings", {})
     if isinstance(settings, dict):
         defaults.update({key: value for key, value in settings.items() if value is not None})
+    try:
+        defaults["bot_token"] = load_secret(TELEGRAM_BOT_TOKEN_SECRET)
+    except SecretStoreError:
+        defaults["bot_token"] = ""
     return defaults
 
 def get_telegram_chat_ids(settings=None):

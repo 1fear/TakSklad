@@ -2,6 +2,8 @@ import json
 import os
 import sys
 
+from taksklad.secret_store import BACKEND_API_TOKEN_SECRET, SecretStoreError, load_secret
+
 SPREADSHEET_ID = "1hisRZ667qEhsRTfoPzv4r78naYhc9kdzhkmUKvZEUr8"
 SHEET_NAME = "data"
 ARCHIVE_SHEET_NAME = "Архив"
@@ -98,6 +100,7 @@ def _int_setting(runtime_config, env_name, *runtime_names, default=0):
 
 
 APP_DIR = get_app_dir()
+RUNTIME_CONFIG_FILE = os.path.join(APP_DIR, ".env.taksklad-vds-2.0.generated.json")
 RUNTIME_CONFIG = _load_runtime_config(APP_DIR) if getattr(sys, "frozen", False) else {}
 CREDENTIALS_FILE = os.path.join(APP_DIR, "credentials.json")
 TAKSKLAD_DATA_FILE = os.path.join(APP_DIR, "TakSklad_data.json")
@@ -147,12 +150,12 @@ TELEGRAM_LOCK_TTL_SECONDS = 60
 TELEGRAM_LOCK_REFRESH_SECONDS = 20
 TELEGRAM_LOCK_RETRY_SECONDS = 15
 
-TAKSKLAD_BACKEND_API_TOKEN = _string_setting(
-    RUNTIME_CONFIG,
-    "TAKSKLAD_BACKEND_API_TOKEN",
-    "TAKSKLAD_BACKEND_API_TOKEN",
-    "TAKSKLAD_API_TOKEN",
-)
+try:
+    TAKSKLAD_BACKEND_API_TOKEN = (load_secret(BACKEND_API_TOKEN_SECRET) or "").strip()
+except SecretStoreError:
+    if getattr(sys, "frozen", False) and os.name != "nt":
+        raise
+    TAKSKLAD_BACKEND_API_TOKEN = ""
 TAKSKLAD_BACKEND_BASE_URL = _string_setting(
     RUNTIME_CONFIG,
     "TAKSKLAD_BACKEND_BASE_URL",

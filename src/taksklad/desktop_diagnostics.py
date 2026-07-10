@@ -13,6 +13,7 @@ from .backend_client import backend_configured, backend_read_orders_enabled, bac
 from .backend_events import load_pending_backend_events
 from .config import APP_DIR, APP_BUILD_LABEL, APP_VERSION, LOG_FILE, UPDATE_INFO_URL, UPDATE_LOG_FILE
 from .http_client import open_https_url
+from .logging_setup import redact_known_secret_values
 from .orders import get_order_date_value, order_group_key
 from .pending_store import load_pending_prints, load_pending_saves
 from .startup_check import build_startup_self_check, build_version_update_status
@@ -71,7 +72,7 @@ def format_queue_age(seconds):
 
 
 def redact_diagnostic_text(value):
-    text = normalize_text(value)
+    text = redact_known_secret_values(normalize_text(value))
     if not text:
         return ""
     text = re.sub(r"Authorization\s*[:=]\s*Bearer\s+[^\s,;]+", "Authorization: [redacted]", text, flags=re.I)
@@ -345,7 +346,7 @@ def run_readonly_diagnostic_probes():
 
     try:
         check = build_startup_self_check()
-        status = "ok" if check.get("credentials") in {"stored", "file"} else "failed"
+        status = "ok" if check.get("credentials") == "secure_store" else "failed"
         failure_class = "" if status == "ok" else "not_configured"
         probes.append(_probe_result("google_credentials", status, failure_class, target="google"))
     except Exception as exc:

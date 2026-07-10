@@ -22,6 +22,7 @@ FORBIDDEN_DIRECTORY_NAMES = {
 
 FORBIDDEN_BASENAMES = {
     ".env",
+    "credentials.json",
     "local_secrets.md",
     "pending_backend_events.json",
     "pending_prints.json",
@@ -31,6 +32,8 @@ FORBIDDEN_BASENAMES = {
     "telegram_state.json",
     "taksklad.log",
     "taksklad_data.json",
+    "secret-store-v1.json",
+    "secret_store.v1.dpapi",
     "yandex_geocoder_key.txt",
     "пароли.md",
 }

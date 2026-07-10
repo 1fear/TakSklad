@@ -57,7 +57,9 @@ from .pending_store import load_pending_saves
 from .reports import create_day_report_excel
 from .update_service import ensure_windows_desktop_shortcut, maybe_rename_windows_executable
 from .storage import (
+    SecretMigrationError,
     credentials_available,
+    migrate_desktop_secrets,
     migrate_legacy_json_files_to_app_data,
 )
 from .startup_check import log_startup_self_check
@@ -185,14 +187,29 @@ def run_app():
             return 0
 
         ensure_windows_desktop_shortcut()
+        try:
+            secret_migration = migrate_desktop_secrets()
+        except SecretMigrationError:
+            logging.exception("Безопасная миграция desktop-секретов остановила запуск")
+            show_startup_error_message(
+                "Безопасное хранилище недоступно",
+                "Запуск остановлен: секреты не были удалены из исходных файлов. "
+                "Исправьте доступ к защищённому хранилищу и повторите запуск.",
+            )
+            return 3
+        if secret_migration.get("restart_required"):
+            show_startup_error_message(
+                "Секреты защищены",
+                "Миграция завершена. Перезапустите TakSklad, чтобы применить защищённую конфигурацию.",
+            )
+            return 0
         migrate_legacy_json_files_to_app_data()
         log_startup_self_check()
 
         if not credentials_available() and not backend_read_orders_enabled():
             show_startup_error_message(
                 "Ошибка",
-                f"Не найдены учётные данные Google Sheets.\n\n"
-                f"Положите credentials.json рядом с программой или перенесите его в {TAKSKLAD_DATA_FILE}",
+                "Не найдены учётные данные Google Sheets в защищённом хранилище.",
             )
         else:
             app = ScanningApp()

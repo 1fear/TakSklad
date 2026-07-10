@@ -32,6 +32,10 @@ UPDATE_RUNTIME_EXCLUDE_FILES = (
     "TakSklad_queues.sqlite3-shm",
     "credentials.json",
     "telegram_settings.json",
+    "yandex_geocoder_key.txt",
+    ".env.taksklad-vds-2.0.generated.json",
+    "secret-store-v1.json",
+    "secret_store.v1.dpapi",
     "pending_saves.json",
     "pending_prints.json",
     "pending_telegram.json",
@@ -41,6 +45,17 @@ UPDATE_RUNTIME_EXCLUDE_FILES = (
     "import_history.json",
     "print_settings.json",
     "*.log",
+)
+UPDATE_RUNTIME_SECRET_FILES = (
+    "credentials.json",
+    "telegram_settings.json",
+    "yandex_geocoder_key.txt",
+    ".env.taksklad-vds-2.0.generated.json",
+    "secret-store-v1.json",
+    "secret_store.v1.dpapi",
+)
+UPDATE_RUNTIME_PRESERVE_FILES = tuple(
+    name for name in UPDATE_RUNTIME_EXCLUDE_FILES if name not in UPDATE_RUNTIME_SECRET_FILES
 )
 UPDATE_RUNTIME_EXCLUDE_DIRS = (
     "scan_backups",
@@ -341,6 +356,7 @@ def create_windows_onedir_updater(update_zip_path, update_info):
     process_id = os.getpid()
     entrypoint = normalize_text(update_info.get("entrypoint")) or APP_EXECUTABLE_NAME
     runtime_exclude_files = powershell_array(UPDATE_RUNTIME_EXCLUDE_FILES)
+    runtime_preserve_files = powershell_array(UPDATE_RUNTIME_PRESERVE_FILES)
     runtime_exclude_dirs = powershell_array(UPDATE_RUNTIME_EXCLUDE_DIRS)
 
     shortcut_script = write_windows_shortcut_script(
@@ -358,6 +374,7 @@ $EntryPoint = {powershell_single_quoted(entrypoint)}
 $ProcessIdToWait = {process_id}
 $Desktop = [Environment]::GetFolderPath('Desktop')
 $RuntimeExcludeFiles = {runtime_exclude_files}
+$RuntimePreserveFiles = {runtime_preserve_files}
 $RuntimeExcludeDirs = {runtime_exclude_dirs}
 $ParentDir = [IO.Path]::GetDirectoryName($AppDir)
 $UpdateStamp = Get-Date -Format 'yyyyMMdd_HHmmss'
@@ -401,7 +418,7 @@ try {{
   }}
 
   if (Test-Path $AppDir) {{
-    foreach ($Name in $RuntimeExcludeFiles) {{
+    foreach ($Name in $RuntimePreserveFiles) {{
       Get-ChildItem -Path $AppDir -Force -File -Filter $Name -ErrorAction SilentlyContinue |
         Copy-Item -Destination $NewDir -Force
     }}

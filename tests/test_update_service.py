@@ -175,6 +175,10 @@ class UpdateServiceTests(unittest.TestCase):
                 "'TakSklad_queues.sqlite3-shm'",
                 "'credentials.json'",
                 "'telegram_settings.json'",
+                "'yandex_geocoder_key.txt'",
+                "'.env.taksklad-vds-2.0.generated.json'",
+                "'secret-store-v1.json'",
+                "'secret_store.v1.dpapi'",
                 "'pending_saves.json'",
                 "'pending_prints.json'",
                 "'pending_telegram.json'",
@@ -192,6 +196,19 @@ class UpdateServiceTests(unittest.TestCase):
             ):
                 with self.subTest(fragment=fragment):
                     self.assertIn(fragment, script)
+
+            preserve_assignment = next(
+                line for line in script.splitlines() if line.startswith("$RuntimePreserveFiles =")
+            )
+            for secret_name in (
+                "credentials.json",
+                "telegram_settings.json",
+                "yandex_geocoder_key.txt",
+                ".env.taksklad-vds-2.0.generated.json",
+                "secret-store-v1.json",
+                "secret_store.v1.dpapi",
+            ):
+                self.assertNotIn(secret_name, preserve_assignment)
 
             success_block = script.split('Start-Process -FilePath $NewExe', 1)[1].split('} catch {', 1)[0]
             self.assertIn("Previous app dir retained", success_block)

@@ -13,7 +13,6 @@ from .config import (
     LOG_FILE,
     SHEET_NAME,
     SPREADSHEET_ID,
-    TAKSKLAD_BACKEND_API_TOKEN,
     TAKSKLAD_BACKEND_BASE_URL,
     TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED,
     TAKSKLAD_BACKEND_ENABLED,
@@ -23,7 +22,8 @@ from .config import (
     UPDATE_INFO_URL,
 )
 from .geocoding import load_yandex_geocoder_key
-from .telegram_service import get_telegram_chat_ids
+from .telegram_service import get_telegram_chat_ids, load_telegram_settings
+from .secret_store import BACKEND_API_TOKEN_SECRET, SecretStoreError, load_secret
 from .update_service import compare_versions, package_transition_required
 from .utils import normalize_text
 
@@ -36,15 +36,7 @@ def safe_hash(value, length=10):
 
 
 def credentials_status(app_data=None):
-    app_data = app_data if isinstance(app_data, dict) else storage.load_app_data()
-    stored = app_data.get("credentials")
-    if storage.credentials_look_valid(stored):
-        return "stored"
-
-    file_credentials = storage.load_json_file(storage.CREDENTIALS_FILE, {})
-    if storage.credentials_look_valid(file_credentials):
-        return "file"
-    return "missing"
+    return "secure_store" if storage.credentials_available() else "missing"
 
 
 def url_origin(value):
@@ -152,7 +144,7 @@ def build_startup_self_check(version_status=None):
     version_status = version_status if isinstance(version_status, dict) else build_version_update_status()
     app_data = storage.load_app_data()
     app_data_recovery = storage.get_app_data_recovery_status()
-    telegram_settings = app_data.get("telegram_settings") if isinstance(app_data.get("telegram_settings"), dict) else {}
+    telegram_settings = load_telegram_settings()
     telegram_enabled = bool(telegram_settings.get("enabled"))
     telegram_token_configured = bool(normalize_text(telegram_settings.get("bot_token")))
     chat_ids_count = len(get_telegram_chat_ids(telegram_settings))
@@ -192,13 +184,20 @@ def build_startup_self_check(version_status=None):
         "backend_only_refresh": bool_text(TAKSKLAD_BACKEND_ONLY_REFRESH),
         "backend_emergency_google_fallback": bool_text(TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED),
         "backend_origin": url_origin(TAKSKLAD_BACKEND_BASE_URL),
-        "backend_token": bool_text(TAKSKLAD_BACKEND_API_TOKEN),
+        "backend_token": bool_text(secret_available(BACKEND_API_TOKEN_SECRET)),
         "geocoder_key": bool_text(load_yandex_geocoder_key()),
         "pending_saves": str(len(pending_saves) if isinstance(pending_saves, list) else 0),
         "pending_prints": str(len(pending_prints) if isinstance(pending_prints, list) else 0),
         "pending_backend_events": str(len(pending_backend_events) if isinstance(pending_backend_events, list) else 0),
         "pending_telegram": str(len(pending_telegram) if isinstance(pending_telegram, list) else 0),
     }
+
+
+def secret_available(name):
+    try:
+        return bool(normalize_text(load_secret(name)))
+    except SecretStoreError:
+        return False
 
 
 def format_startup_self_check(check):

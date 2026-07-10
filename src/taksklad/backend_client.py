@@ -12,7 +12,6 @@ from .config import (
     STATUS_COLUMN,
     STATUS_COMPLETED,
     STATUS_NOT_COMPLETED,
-    TAKSKLAD_BACKEND_API_TOKEN,
     TAKSKLAD_BACKEND_BASE_URL,
     TAKSKLAD_BACKEND_ENABLED,
     TAKSKLAD_BACKEND_READ_ORDERS_ENABLED,
@@ -20,6 +19,7 @@ from .config import (
 )
 from .http_client import open_https_url
 from .scan_quantities import scan_entries_for_codes
+from .secret_store import BACKEND_API_TOKEN_SECRET, SecretStoreError, load_secret
 from .utils import parse_date_to_standard, split_codes
 
 
@@ -54,8 +54,12 @@ def make_backend_headers():
         "Content-Type": "application/json",
         "User-Agent": "TakSklad-desktop",
     }
-    if TAKSKLAD_BACKEND_API_TOKEN:
-        headers["Authorization"] = f"Bearer {TAKSKLAD_BACKEND_API_TOKEN}"
+    try:
+        token = load_secret(BACKEND_API_TOKEN_SECRET)
+    except SecretStoreError:
+        token = ""
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     return headers
 
 

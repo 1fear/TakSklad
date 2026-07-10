@@ -44,6 +44,9 @@ class WindowsTestBuildHelperTest(unittest.TestCase):
             "credentials.json",
             "telegram_settings.json",
             "yandex_geocoder_key.txt",
+            ".env.taksklad-vds-2.0.generated.json",
+            "secret-store-v1.json",
+            "secret_store.v1.dpapi",
             "pending_saves.json",
             "pending_prints.json",
             "pending_telegram.json",
@@ -52,6 +55,7 @@ class WindowsTestBuildHelperTest(unittest.TestCase):
         ):
             with self.subTest(forbidden_name=forbidden_name):
                 self.assertIn(f'"{forbidden_name}"', script)
+        self.assertIn("Test package contains synthetic secret sentinel", script)
         forbidden_fragments = [
             "gh release upload",
             "TELEGRAM_BOT_TOKEN=",

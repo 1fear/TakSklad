@@ -1,4 +1,5 @@
 import json
+import logging
 import socket
 import ssl
 import tempfile
@@ -9,9 +10,20 @@ from pathlib import Path
 from unittest import mock
 
 from taksklad import desktop_diagnostics
+from taksklad.secret_store import (
+    GOOGLE_CREDENTIALS_SECRET,
+    TELEGRAM_BOT_TOKEN_SECRET,
+    MemorySecretStore,
+    reset_secret_store_for_tests,
+    set_secret_store_for_tests,
+)
+from taksklad.logging_setup import LOG_FORMAT, SecretRedactingFormatter
 
 
 class DesktopDiagnosticsTests(unittest.TestCase):
+    def tearDown(self):
+        reset_secret_store_for_tests()
+
     def test_refresh_diagnostic_summary_uses_counts_without_payload_values(self):
         orders = [
             {
@@ -331,6 +343,66 @@ class DesktopDiagnosticsTests(unittest.TestCase):
             with self.subTest(secret=secret):
                 self.assertNotIn(secret, serialized)
                 self.assertNotIn(secret, saved_text)
+
+    def test_diagnostic_bundle_redacts_registered_arbitrary_sentinel(self):
+        sentinel = "TAKSKLAD" + "_SYNTHETIC_" + "SECRET_SENTINEL_V1"
+        set_secret_store_for_tests(MemorySecretStore({TELEGRAM_BOT_TOKEN_SECRET: sentinel}))
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with mock.patch.object(
+                desktop_diagnostics,
+                "run_readonly_diagnostic_probes",
+                return_value=[{"name": "synthetic", "status": "failed", "detail": sentinel}],
+            ):
+                path, manifest = desktop_diagnostics.write_diagnostic_bundle(output_dir=tmp_dir)
+
+            serialized = json.dumps(manifest, ensure_ascii=False)
+            archive_bytes = Path(path).read_bytes()
+
+        self.assertNotIn(sentinel, serialized)
+        self.assertNotIn(sentinel.encode("utf-8"), archive_bytes)
+        self.assertIn("[redacted-secret]", serialized)
+
+    def test_log_formatter_redacts_registered_arbitrary_sentinel(self):
+        sentinel = "TAKSKLAD" + "_SYNTHETIC_" + "SECRET_SENTINEL_V1"
+        set_secret_store_for_tests(MemorySecretStore({TELEGRAM_BOT_TOKEN_SECRET: sentinel}))
+        record = logging.LogRecord(
+            name="synthetic",
+            level=logging.ERROR,
+            pathname=__file__,
+            lineno=1,
+            msg="synthetic failure %s",
+            args=(sentinel,),
+            exc_info=None,
+        )
+        formatted = SecretRedactingFormatter(LOG_FORMAT).format(record)
+        self.assertNotIn(sentinel, formatted)
+        self.assertIn("[redacted-secret]", formatted)
+
+    def test_log_formatter_redacts_nested_google_credential_components(self):
+        sentinel = "TAKSKLAD" + "_SYNTHETIC_" + "SECRET_SENTINEL_V1"
+        credentials = {
+            "client_email": sentinel + "@example.test",
+            "private_key": "-----BEGIN PRIVATE KEY-----\n" + sentinel + "\n-----END PRIVATE KEY-----\n",
+        }
+        set_secret_store_for_tests(MemorySecretStore({
+            GOOGLE_CREDENTIALS_SECRET: json.dumps(credentials, separators=(",", ":")),
+        }))
+        record = logging.LogRecord(
+            name="synthetic",
+            level=logging.ERROR,
+            pathname=__file__,
+            lineno=1,
+            msg="google failure %s %s",
+            args=(credentials, credentials["private_key"]),
+            exc_info=None,
+        )
+
+        formatted = SecretRedactingFormatter(LOG_FORMAT).format(record)
+
+        self.assertNotIn(sentinel, formatted)
+        self.assertNotIn("BEGIN PRIVATE KEY", formatted)
+        self.assertNotIn(credentials["client_email"], formatted)
+        self.assertIn("[redacted-secret]", formatted)
 
     def test_probe_failure_class_matrix(self):
         self.assertEqual(desktop_diagnostics.classify_probe_exception(socket.gaierror("getaddrinfo failed")), "dns")

@@ -197,6 +197,9 @@ function Assert-TestPackageDoesNotContainLocalSecrets {
         "credentials.json",
         "telegram_settings.json",
         "yandex_geocoder_key.txt",
+        ".env.taksklad-vds-2.0.generated.json",
+        "secret-store-v1.json",
+        "secret_store.v1.dpapi",
         "pending_saves.json",
         "pending_prints.json",
         "pending_telegram.json",
@@ -208,6 +211,14 @@ function Assert-TestPackageDoesNotContainLocalSecrets {
         $Matches = Get-ChildItem -Path $PackageRoot -Recurse -Force -File -Filter $Name -ErrorAction SilentlyContinue
         if ($Matches) {
             throw "Test package contains local runtime/secret file: $($Matches[0].FullName)"
+        }
+    }
+
+    $SyntheticSentinel = "TAKSKLAD" + "_SYNTHETIC_" + "SECRET_SENTINEL_V1"
+    foreach ($File in (Get-ChildItem -Path $PackageRoot -Recurse -Force -File)) {
+        $Content = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($File.FullName))
+        if ($Content.Contains($SyntheticSentinel)) {
+            throw "Test package contains synthetic secret sentinel"
         }
     }
 }

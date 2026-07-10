@@ -10,7 +10,6 @@ from oauth2client.service_account import ServiceAccountCredentials
 
 from .config import (
     ARCHIVE_SHEET_NAME,
-    CREDENTIALS_FILE,
     GOOGLE_API_TIMEOUT_SECONDS,
     GOOGLE_BACKOFF_LOG_INTERVAL_SECONDS,
     GOOGLE_RETRY_COOLDOWN_SECONDS,
@@ -185,7 +184,7 @@ def get_google_client():
     if isinstance(credentials, dict) and credentials.get("client_email"):
         creds = ServiceAccountCredentials.from_json_keyfile_dict(credentials, scope)
     else:
-        creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, scope)
+        raise RuntimeError("Google credentials отсутствуют в защищённом хранилище")
     return gspread.authorize(creds, http_client=GoogleTimeoutHTTPClient)
 
 
@@ -200,7 +199,7 @@ def format_google_sheets_error(exc):
     ):
         return (
             "Нет доступа к Google-таблице. Проверьте, что таблица открыта для "
-            "service account из TakSklad_data.json или credentials.json рядом с приложением."
+            "service account из защищённого хранилища TakSklad."
         )
     if not message:
         return (
@@ -210,8 +209,7 @@ def format_google_sheets_error(exc):
     if "invalid jwt signature" in lower_message or "invalid_grant" in lower_message:
         return (
             "Google-ключ повреждён или устарел: Invalid JWT Signature. "
-            "Запустите новую папку TakSklad с рабочим TakSklad_data.json или положите "
-            "актуальный credentials.json рядом с приложением."
+            "Повторно выполните безопасную настройку Google credentials."
         )
     if "429" in lower_message or "quota" in lower_message or "rate limit" in lower_message:
         return (
