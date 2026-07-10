@@ -1663,6 +1663,27 @@ summary:focus-visible {
   box-shadow: inset 3px 0 0 var(--color-primary);
 }
 
+.admin-center-table .event-row {
+  cursor: default;
+}
+
+.table-row-selector {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.table-row-selector:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
 .admin-detail-panel {
   display: grid;
   align-content: start;

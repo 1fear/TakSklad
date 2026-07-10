@@ -85,7 +85,7 @@ jobs:
           trap - EXIT
 
   frontend:
-    name: Frontend build
+    name: Frontend safety net
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -103,5 +103,23 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci --prefix frontend
 
+      - name: Lint frontend
+        run: npm --prefix frontend run lint
+
+      - name: Type-check frontend
+        run: npm --prefix frontend run typecheck
+
+      - name: Test frontend
+        run: npm --prefix frontend run test
+
+      - name: Enforce frontend coverage
+        run: npm --prefix frontend run test:coverage
+
       - name: Build frontend
         run: npm --prefix frontend run build
+
+      - name: Install synthetic browser
+        run: npx --prefix frontend playwright install --with-deps chromium
+
+      - name: Run synthetic browser smoke
+        run: npm --prefix frontend run e2e -- --grep @smoke

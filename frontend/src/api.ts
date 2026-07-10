@@ -577,7 +577,10 @@ function ensureCookieApiIsSameOrigin(apiUrl: string, bearerRequest: boolean) {
 }
 
 function isAbortError(error: unknown) {
-  return error instanceof DOMException && error.name === "AbortError";
+  return (
+    error instanceof DOMException
+    || (typeof error === "object" && error !== null && "name" in error)
+  ) && error.name === "AbortError";
 }
 
 function formatApiErrorDetail(payload: unknown): string {

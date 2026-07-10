@@ -192,7 +192,7 @@ function App() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
-  const rows = adminTable?.rows ?? [];
+  const rows = useMemo(() => adminTable?.rows ?? [], [adminTable?.rows]);
   const filteredRows = rows;
   const selectedRows = useMemo(
     () => rows.filter((row) => selectedOrderIds.includes(row.order_id)),
@@ -685,7 +685,8 @@ function App() {
     setExpandedClientPointId(point.id);
     setClientOrderSummaryErrors((current) => {
       if (!current[point.id]) return current;
-      const { [point.id]: _removed, ...next } = current;
+      const next = { ...current };
+      delete next[point.id];
       return next;
     });
     if (clientPointActivityCount(point) <= 0 || clientOrderSummaries[point.id]) {
@@ -2751,7 +2752,7 @@ function AdminCenterPanel({
                     }}
                     tabIndex={0}
                     role="button"
-                    aria-selected={(selectedIncidentId || selectedIncident?.id) === incident.id}
+                    aria-pressed={(selectedIncidentId || selectedIncident?.id) === incident.id}
                   >
                     <td>
                       <span className={`status-badge incident-${incident.status}`}>{incidentStatusLabel(incident.status)}</span>
@@ -2789,7 +2790,7 @@ function AdminCenterPanel({
                   <th>Связь</th>
                   <th>Ошибка</th>
                   <th>Возраст</th>
-                  <th></th>
+                  <th>Действие</th>
                 </tr>
               </thead>
               <tbody>
@@ -2798,22 +2799,19 @@ function AdminCenterPanel({
                   return (
                     <tr
                       key={event.id}
-                      className={(selectedEventId || selectedEvent?.id) === event.id ? "selected-row" : ""}
-                      onClick={() => onSelectEvent(event.id)}
-                      onKeyDown={(keyboardEvent) => {
-                        if (keyboardEvent.key === "Enter" || keyboardEvent.key === " ") {
-                          keyboardEvent.preventDefault();
-                          onSelectEvent(event.id);
-                        }
-                      }}
-                      tabIndex={0}
-                      role="button"
-                      aria-selected={(selectedEventId || selectedEvent?.id) === event.id}
+                      className={`event-row ${(selectedEventId || selectedEvent?.id) === event.id ? "selected-row" : ""}`}
                     >
                       <td>
-                        <strong className="cell-title">{event.event_type}</strong>
-                        <span className={`status-badge queue-${event.status}`}>{eventStatusLabel(event.status)}</span>
-                        <span className="table-muted cell-sub">попыток {event.attempts}</span>
+                        <button
+                          type="button"
+                          className="table-row-selector"
+                          onClick={() => onSelectEvent(event.id)}
+                          aria-pressed={(selectedEventId || selectedEvent?.id) === event.id}
+                        >
+                          <strong className="cell-title">{event.event_type}</strong>
+                          <span className={`status-badge queue-${event.status}`}>{eventStatusLabel(event.status)}</span>
+                          <span className="table-muted cell-sub">попыток {event.attempts}</span>
+                        </button>
                       </td>
                       <td>
                         <strong className="cell-title">{linkedEventText(event)}</strong>
@@ -2846,7 +2844,7 @@ function AdminCenterPanel({
           </div>
         </div>
 
-        <aside className="admin-detail-panel">
+        <div className="admin-detail-panel">
           {canAdminWrite && (
             <label className="admin-reason-field">
               <span>Причина действия</span>
@@ -2937,7 +2935,7 @@ function AdminCenterPanel({
               <div className="empty-state">Выберите событие</div>
             )}
           </section>
-        </aside>
+        </div>
       </div>
     </section>
   );
@@ -3213,14 +3211,6 @@ function eventStatusLabel(value: string) {
   if (value === "cancelled") return "Отменено";
   if (value === "dead") return "Dead";
   return value || "-";
-}
-
-function matchesSkladBotFilter(row: AdminTableRow, filter: SkladBotFilter) {
-  const hasNumber = Boolean(row.skladbot_request_number || row.skladbot_request_id);
-  if (filter === "all") return true;
-  if (filter === "found") return hasNumber;
-  if (filter === "missing") return !hasNumber;
-  return ["not_found", "multiple", "error", "pending"].includes(row.skladbot_status);
 }
 
 function scanState(row: AdminTableRow): ScanFilter {
