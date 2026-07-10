@@ -57,6 +57,7 @@ class ReadinessResponse(BaseModel):
     queue: dict[str, Any] = Field(default_factory=dict)
     google_mirror: dict[str, Any] = Field(default_factory=dict)
     imports: dict[str, Any] = Field(default_factory=dict)
+    workers: dict[str, Any] = Field(default_factory=dict)
     policy: dict[str, Any] = Field(default_factory=dict)
 
 

@@ -5,6 +5,7 @@ from unittest import mock
 from sqlalchemy.exc import OperationalError
 
 from backend.app import health_service
+from backend.app.schemas import ReadinessResponse
 
 
 class FailingDatabaseSession:
@@ -40,6 +41,12 @@ class ReadinessPolicyTests(unittest.TestCase):
             "queue": {"hot_path_stale_processing_count": 0, "last_errors": [{"id": "secret-id"}]},
             "google_mirror": {"status": "degraded", "role": "mirror_export", "last_errors": [{"id": "secret-id"}]},
             "imports": {"recent_errors": [{"id": "secret-id"}]},
+            "workers": {
+                "status": "ok",
+                "required": ["google_sheets_sync", "skladbot", "smartup_auto_import", "telegram"],
+                "missing": [],
+                "unhealthy": [],
+            },
             "policy": {"mandatory_status": "ok", "optional_status": "degraded"},
         }
 
@@ -51,6 +58,9 @@ class ReadinessPolicyTests(unittest.TestCase):
         self.assertNotIn("last_errors", public["queue"])
         self.assertNotIn("last_errors", public["google_mirror"])
         self.assertNotIn("recent_errors", public["imports"])
+        serialized = ReadinessResponse.model_validate(public).model_dump()
+        self.assertEqual(serialized["workers"]["status"], "ok")
+        self.assertEqual(serialized["workers"]["required_count"], 4)
         self.assertNotIn("secret-id", str(public))
 
     def test_multiple_migration_rows_are_not_ready(self):
