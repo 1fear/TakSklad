@@ -22,6 +22,7 @@ DIGESTED_IMAGE_RE = re.compile(
 )
 FROM_RE = re.compile(r"^\s*FROM\s+(?:--platform=\S+\s+)?(?P<image>\S+)", re.IGNORECASE)
 COMPOSE_IMAGE_RE = re.compile(r"^\s*image:\s*(?P<image>[^\s#]+)")
+FIRST_PARTY_IMAGE_VARIABLES = {"${TAKSKLAD_BACKEND_IMAGE}", "${TAKSKLAD_FRONTEND_IMAGE}"}
 VERSION_COMMENT_RE = re.compile(r"^v?[0-9][0-9A-Za-z._+-]*$")
 MANIFEST_PATH = Path("supply-chain/immutable-refs.json")
 
@@ -103,6 +104,8 @@ def validate_action_line(line: str, location: str) -> tuple[dict[str, str] | Non
 
 def validate_image_reference(value: str, location: str) -> tuple[dict[str, str] | None, str | None]:
     value = value.strip("'\"")
+    if value in FIRST_PARTY_IMAGE_VARIABLES:
+        return None, None
     parsed = DIGESTED_IMAGE_RE.match(value)
     if not parsed:
         return None, f"{location}: image must include an immutable sha256 digest"
@@ -235,6 +238,8 @@ def validate_repository(root: Path) -> tuple[list[str], dict[str, int]]:
             entry, error = validate_image_reference(value, f"{relative}:{number}")
             if error:
                 errors.append(error)
+                continue
+            if entry is None:
                 continue
             assert entry is not None
             reference = entry["reference"]

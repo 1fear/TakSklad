@@ -1,4 +1,6 @@
 from datetime import datetime, timezone
+import os
+import re
 
 from sqlalchemy import and_, case, func, literal, or_, select, text
 from sqlalchemy.exc import SQLAlchemyError
@@ -25,6 +27,17 @@ SKLADBOT_DAILY_SUCCESS_RESULT_STATUSES = {
     "CATCHUP_SENT_COMPLETE_ONCE",
     "completed_sent",
 }
+SHA256_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+COMMIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+def runtime_build_identity():
+    commit_sha = str(os.environ.get("TAKSKLAD_COMMIT_SHA") or "").strip().lower()
+    image_digest = str(os.environ.get("TAKSKLAD_IMAGE_DIGEST") or "").strip().lower()
+    return {
+        "commit_sha": commit_sha if COMMIT_SHA_RE.fullmatch(commit_sha) else "unknown",
+        "image_digest": image_digest if SHA256_DIGEST_RE.fullmatch(image_digest) else "unknown",
+    }
 
 
 def build_readiness_report(db: Session, app_settings):
@@ -35,6 +48,7 @@ def build_readiness_report(db: Session, app_settings):
         "status": "ok",
         "service": app_settings.service_name,
         "version": APP_VERSION,
+        **runtime_build_identity(),
         "environment": app_settings.environment,
         "database": {"status": "unknown"},
         "migrations": {
@@ -124,6 +138,8 @@ def public_readiness_report(report):
         "status": report.get("status") or "unhealthy",
         "service": report.get("service") or "",
         "version": report.get("version") or "",
+        "commit_sha": report.get("commit_sha") or "unknown",
+        "image_digest": report.get("image_digest") or "unknown",
         "environment": report.get("environment") or "",
         "database": {"status": (report.get("database") or {}).get("status") or "unknown"},
         "migrations": {

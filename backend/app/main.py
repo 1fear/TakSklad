@@ -41,6 +41,7 @@ from .health_service import (
     build_readiness_report,
     public_readiness_report,
     readiness_http_status,
+    runtime_build_identity,
 )
 from .incidents_service import (
     IncidentApiError,
@@ -444,10 +445,12 @@ def require_browser_origin(request: Request) -> None:
 
 @app.get("/health", response_model=HealthResponse)
 def health():
+    build_identity = runtime_build_identity()
     return {
         "status": "ok",
         "service": settings.service_name,
         "version": APP_VERSION,
+        **build_identity,
         "environment": settings.environment,
     }
 

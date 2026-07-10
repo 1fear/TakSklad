@@ -89,7 +89,7 @@ class ImmutableReferenceTests(unittest.TestCase):
         self.assertIn("./tools/generate_sbom.sh --verify", workflow)
         self.assertIn("python3 tools/verify_immutable_refs.py", workflow)
 
-    def test_release_workflow_attests_windows_and_container_subjects_without_push(self):
+    def test_release_workflow_publishes_and_attests_immutable_release_subjects(self):
         workflow = (
             PROJECT_ROOT / ".github" / "workflows" / "build-windows-release.yml"
         ).read_text(encoding="utf-8")
@@ -98,15 +98,19 @@ class ImmutableReferenceTests(unittest.TestCase):
         self.assertGreaterEqual(workflow.count("attestations: write"), 2)
         self.assertGreaterEqual(workflow.count("id-token: write"), 2)
         self.assertIn("dist/TakSklad-windows-x64.zip", workflow)
-        self.assertIn("dist/transition/TakSklad.exe", workflow)
-        self.assertIn("dist/provenance/taksklad-backend.oci.tar", workflow)
-        self.assertIn("dist/provenance/taksklad-frontend.oci.tar", workflow)
+        self.assertIn("dist/TakSklad.exe", workflow)
         self.assertIn("test-artifacts/sbom/", workflow)
         self.assertIn("build-container-subjects:\n    needs: build-windows", workflow)
-        self.assertIn("push: false", workflow)
-        self.assertNotIn("push: true", workflow)
+        self.assertEqual(workflow.count("uses: docker/build-push-action@"), 2)
+        self.assertEqual(workflow.count("push: true"), 2)
+        self.assertIn("subject-digest: ${{ steps.backend.outputs.digest }}", workflow)
+        self.assertIn("subject-digest: ${{ steps.frontend.outputs.digest }}", workflow)
+        self.assertIn("push-to-registry: true", workflow)
+        self.assertNotIn("dist/provenance/taksklad-backend.oci.tar", workflow)
+        self.assertNotIn("dist/provenance/taksklad-frontend.oci.tar", workflow)
         self.assertGreaterEqual(workflow.count("IMMUTABLE_RELEASE_TAG_REQUIRED"), 4)
-        self.assertGreaterEqual(workflow.count("ref: ${{ steps.release.outputs.tag }}"), 2)
+        self.assertEqual(workflow.count("ref: ${{ steps.release.outputs.tag }}"), 1)
+        self.assertIn("ref: ${{ needs.build-windows.outputs.source_sha }}", workflow)
         self.assertGreaterEqual(workflow.count("fetch-tags: true"), 2)
         self.assertIn("steps.source.outputs.sha", workflow)
         self.assertNotIn("/TakSklad/main/version.json", workflow)
@@ -123,7 +127,7 @@ class ImmutableReferenceTests(unittest.TestCase):
         self.assertIn('signature_type = "authenticode"', workflow)
         self.assertIn("signature_required = $true", workflow)
         self.assertIn("dist/version.json", workflow)
-        self.assertEqual(workflow.count("GH_TOKEN: ${{ github.token }}"), 1)
+        self.assertGreaterEqual(workflow.count("GH_TOKEN: ${{ github.token }}"), 3)
         self.assertIn(
             "actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0",
             workflow,

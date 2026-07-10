@@ -38,6 +38,8 @@ class HealthResponse(BaseModel):
     status: str
     service: str
     version: str
+    commit_sha: str = "unknown"
+    image_digest: str = "unknown"
     environment: str
 
 
@@ -47,6 +49,8 @@ class ReadinessResponse(BaseModel):
     status: str
     service: str
     version: str
+    commit_sha: str = "unknown"
+    image_digest: str = "unknown"
     environment: str
     database: dict[str, Any] = Field(default_factory=dict)
     migrations: dict[str, Any] = Field(default_factory=dict)

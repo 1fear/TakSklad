@@ -62,6 +62,25 @@ class WindowsReleaseWorkflowTests(unittest.TestCase):
         self.assertNotIn("& dist\\transition\\TakSklad.exe --smoke-import", workflow)
         self.assertNotIn("& dist\\onedir\\TakSklad\\TakSklad.exe --smoke-import", workflow)
 
+    def test_windows_release_manifest_binds_version_source_lock_and_artifact_hashes(self):
+        workflow = (PROJECT_ROOT / ".github" / "workflows" / "build-windows-release.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("latest_version = $env:TAKSKLAD_APP_VERSION", workflow)
+        self.assertIn("source_sha = $env:SOURCE_SHA", workflow)
+        self.assertIn("dependency_lock_sha256 = $env:TAKSKLAD_DESKTOP_LOCK_SHA256", workflow)
+        self.assertIn("artifact_sha256 = $env:TAKSKLAD_EXE_SHA256", workflow)
+        self.assertIn("artifact_sha256_onedir = $env:TAKSKLAD_ZIP_SHA256", workflow)
+        self.assertIn("WINDOWS_SOURCE_SHA_MISMATCH", workflow)
+        self.assertIn(
+            'for key in ("artifact_sha256", "artifact_sha256_onedir", "dependency_lock_sha256")',
+            workflow,
+        )
+        self.assertIn('"version": windows["latest_version"]', workflow)
+        self.assertIn('"artifact_sha256": windows["artifact_sha256"]', workflow)
+        self.assertIn('"dependency_lock_sha256": windows["dependency_lock_sha256"]', workflow)
+
 
 if __name__ == "__main__":
     unittest.main()

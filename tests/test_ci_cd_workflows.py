@@ -1,7 +1,11 @@
+import copy
+import json
 from pathlib import Path
 import subprocess
 import sys
 import unittest
+
+from tools.github_protection_diff import semantic_diff, validate_manifest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -31,6 +35,31 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn("readiness database contract failed", invalid.stderr)
         self.assertEqual(valid.returncode, 0)
 
+        wrong_identity = subprocess.run(
+            [
+                sys.executable,
+                str(validator),
+                "health",
+                "--expected-sha",
+                "a" * 40,
+                "--expected-digest",
+                f"sha256:{'b' * 64}",
+            ],
+            input=json.dumps(
+                {
+                    "status": "ok",
+                    "commit_sha": "c" * 40,
+                    "image_digest": f"sha256:{'b' * 64}",
+                }
+            ),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertEqual(wrong_identity.returncode, 1)
+        self.assertIn("runtime commit SHA differs from verified manifest", wrong_identity.stderr)
+
     def test_ci_runs_checks_without_production_secrets(self):
         workflow = (PROJECT_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
@@ -53,7 +82,38 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertNotIn("VDS_SSH_KEY", workflow)
         self.assertNotIn("secrets.", workflow)
 
-    def test_production_deploy_is_manual_and_uses_github_environment(self):
+    def test_release_workflow_builds_each_image_once_and_consumes_exact_digests(self):
+        workflow = (PROJECT_ROOT / ".github" / "workflows" / "build-windows-release.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("name: Build Immutable Release", workflow)
+        self.assertIn("build-container-subjects:", workflow)
+        self.assertIn("release-manifest:", workflow)
+        self.assertIn("needs: build-windows", workflow)
+        self.assertIn("- build-container-subjects", workflow)
+        self.assertEqual(workflow.count("uses: docker/build-push-action@"), 2)
+        self.assertEqual(workflow.count("id: backend\n"), 1)
+        self.assertEqual(workflow.count("id: frontend\n"), 1)
+        self.assertIn("backend_digest: ${{ steps.backend.outputs.digest }}", workflow)
+        self.assertIn("frontend_digest: ${{ steps.frontend.outputs.digest }}", workflow)
+        self.assertIn(
+            "BACKEND_DIGEST: ${{ needs.build-container-subjects.outputs.backend_digest }}",
+            workflow,
+        )
+        self.assertIn(
+            "FRONTEND_DIGEST: ${{ needs.build-container-subjects.outputs.frontend_digest }}",
+            workflow,
+        )
+        self.assertIn("subject-digest: ${{ steps.backend.outputs.digest }}", workflow)
+        self.assertIn("subject-digest: ${{ steps.frontend.outputs.digest }}", workflow)
+        self.assertIn('"source_sha": source_sha', workflow)
+        self.assertIn('"digest": backend_digest', workflow)
+        self.assertIn('"digest": frontend_digest', workflow)
+        self.assertIn('"build_on_target": False', workflow)
+        self.assertIn('"alembic_downgrade_allowed": False', workflow)
+
+    def test_production_deploy_is_manual_and_accepts_only_verified_artifact_identity(self):
         workflow = (PROJECT_ROOT / ".github" / "workflows" / "deploy-production.yml").read_text(
             encoding="utf-8"
         )
@@ -69,9 +129,23 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn("VDS_SSH_KEY", workflow)
         self.assertIn("VDS_SSH_KNOWN_HOSTS", workflow)
         self.assertIn("deploy/vds/deploy_from_git.sh", workflow)
-        self.assertIn("TAKSKLAD_DEPLOY_REF", workflow)
-        self.assertIn("TAKSKLAD_DEPLOY_ACCEPTANCE", workflow)
+        self.assertIn("artifact_run_id:", workflow)
+        self.assertIn("source_sha:", workflow)
+        self.assertIn("manifest_sha256:", workflow)
+        self.assertIn("IMMUTABLE_ARTIFACT_RUN_ID_REQUIRED", workflow)
+        self.assertIn("IMMUTABLE_SOURCE_SHA_REQUIRED", workflow)
+        self.assertIn("IMMUTABLE_RELEASE_MANIFEST_SHA256_REQUIRED", workflow)
+        self.assertIn('metadata.get("workflowName") != "Build Immutable Release"', workflow)
+        self.assertIn('metadata.get("conclusion") != "success"', workflow)
+        self.assertIn("gh attestation verify \"$manifest_path\"", workflow)
+        self.assertIn("RELEASE_MANIFEST_SOURCE_SHA_MISMATCH", workflow)
+        self.assertIn("SOURCE_BUILD_DEPLOYMENT_FORBIDDEN", workflow)
+        self.assertIn("ref: ${{ inputs.source_sha }}", workflow)
         self.assertIn("DEPLOY_ACCEPTANCE: required", workflow)
+        self.assertNotIn("TAKSKLAD_DEPLOY_REF", workflow)
+        self.assertNotIn("inputs.ref", workflow)
+        self.assertNotIn("inputs.branch", workflow)
+        self.assertNotIn("inputs.tag", workflow)
         self.assertNotIn("workflow_run:", workflow)
         self.assertNotIn("default: optional", workflow)
         self.assertNotIn("- optional", workflow)
@@ -79,45 +153,64 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertNotIn("\n  push:", workflow)
         self.assertNotIn("password", workflow.lower())
 
-    def test_vds_deploy_script_keeps_backup_migration_and_verification_gates(self):
+    def test_vds_deploy_script_is_artifact_only_and_rolls_back_runtime_without_db_downgrade(self):
         script = (PROJECT_ROOT / "deploy" / "vds" / "deploy_from_git.sh").read_text(encoding="utf-8")
 
-        self.assertIn("git status --short --untracked-files=no", script)
-        self.assertIn("tracked worktree changes must be resolved", script)
-        self.assertIn("restore_point", script)
-        self.assertIn("--exclude '.env'", script)
-        self.assertIn("--exclude '.env.*'", script)
-        self.assertIn("TAKSKLAD_DEPLOY_REMOTE_URL", script)
-        self.assertIn("sync_ref_from_temporary_checkout", script)
-        self.assertIn("App dir is not a git checkout", script)
-        self.assertIn("git clone --no-checkout", script)
-        self.assertIn("rsync -a --delete", script)
-        self.assertIn("--exclude 'outputs'", script)
-        self.assertIn("--exclude 'backups'", script)
-        self.assertIn("--exclude 'node_modules'", script)
-        self.assertIn("--exclude 'dist'", script)
+        self.assertIn("--artifact-manifest", script)
+        self.assertIn("READY_FOR_PRODUCTION_DEPLOY", script)
+        self.assertIn("tools/release_artifacts.py verify", script)
+        self.assertIn("tools/release_artifacts.py emit-shell", script)
+        self.assertIn('docker pull "$TAKSKLAD_BACKEND_IMAGE"', script)
+        self.assertIn('docker pull "$TAKSKLAD_FRONTEND_IMAGE"', script)
         self.assertIn("./deploy/vds/backup_postgres.sh", script)
-        self.assertIn("docker compose --env-file \"$ENV_FILE\" -f \"$COMPOSE_FILE\" build backend-api", script)
         self.assertIn("alembic -c alembic.ini upgrade head", script)
-        self.assertIn("verify_migration_revision_before_activation", script)
-        self.assertIn("--wait --wait-timeout", script)
-        self.assertIn("readiness body contract failed", script)
+        self.assertIn("--no-build --pull never", script)
         self.assertIn("tools/validate_deploy_probe.py", script)
-        self.assertIn("docker compose --env-file \"$ENV_FILE\" -f \"$COMPOSE_FILE\" up -d --build", script)
-        self.assertIn("curl -fsS \"$url\"", script)
+        self.assertIn('--expected-sha "$RELEASE_SOURCE_SHA"', script)
+        self.assertIn('--expected-digest "$RELEASE_BACKEND_DIGEST"', script)
         self.assertIn("TAKSKLAD_DEPLOY_URL_RETRY_ATTEMPTS", script)
         self.assertIn("TAKSKLAD_DEPLOY_URL_RETRY_INTERVAL_SECONDS", script)
-        self.assertIn("check_public_url \"health\" \"$HEALTH_URL\"", script)
-        self.assertIn("check_public_url \"readiness\" \"$READY_URL\"", script)
         self.assertIn("deploy/vds/acceptance_status.sh", script)
         self.assertIn('ACCEPTANCE_MODE="${TAKSKLAD_DEPLOY_ACCEPTANCE:-required}"', script)
         self.assertIn('[[ "$ACCEPTANCE_MODE" == "required" ]] || fail', script)
         self.assertIn("acceptance_status.sh --require-go", script)
+        self.assertIn("rollback_runtime", script)
+        self.assertIn("PREVIOUS_MANIFEST", script)
+        self.assertIn("database schema retained, alembic downgrade=0", script)
+        self.assertIn('install -m 600 "$ARTIFACT_MANIFEST" "$temporary_record"', script)
         self.assertNotIn("continuing because acceptance mode is optional", script)
         self.assertNotIn("optional|required|skip", script)
-        self.assertIn("grep -Ei 'ERROR|CRITICAL|Traceback|Exception|panic'", script)
+        self.assertNotIn("docker compose build", script)
+        self.assertNotIn("compose build", script)
+        self.assertNotIn("up -d --build", script)
+        self.assertNotIn("git clone", script)
+        self.assertNotIn("git fetch", script)
+        self.assertNotIn("git checkout", script)
+        self.assertNotIn("rsync", script)
+        self.assertNotIn("alembic -c alembic.ini downgrade", script)
+        self.assertNotIn("compose run --rm --no-deps backend-api alembic downgrade", script)
         self.assertNotIn("git reset --hard", script)
-        self.assertNotIn(".env.example\" ]] ||", script)
+
+    def test_desired_github_protection_is_fail_closed_and_diff_is_read_only(self):
+        manifest = json.loads(
+            (PROJECT_ROOT / "supply-chain" / "github-protection.json").read_text(encoding="utf-8")
+        )
+        validated = validate_manifest(manifest)
+        self.assertIs(validated["mutation_allowed"], False)
+
+        result = semantic_diff(validated, {"ruleset": None, "environment": None}, source="test")
+        self.assertIs(result["read_only"], True)
+        self.assertEqual(result["mutation_count"], 0)
+        self.assertGreater(result["pending_count"], 0)
+        pending_paths = {item["path"] for item in result["settings"] if item["status"] == "pending"}
+        self.assertIn("branch_ruleset.exists", pending_paths)
+        self.assertIn("environment.can_admins_bypass", pending_paths)
+        self.assertIn("environment.required_reviewers", pending_paths)
+
+        unsafe = copy.deepcopy(manifest)
+        unsafe["environments"][0]["can_admins_bypass"] = True
+        with self.assertRaisesRegex(RuntimeError, "administrator bypass"):
+            validate_manifest(unsafe)
 
     def test_backup_scripts_use_current_stack_path_and_env_overrides(self):
         backup = (PROJECT_ROOT / "deploy" / "vds" / "backup_postgres.sh").read_text(encoding="utf-8")

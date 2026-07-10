@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "repository": "1fear/TakSklad",
+  "mode": "desired-read-only",
+  "mutation_allowed": false,
+  "branch_rulesets": [
+    {
+      "name": "TakSklad main release gate",
+      "target": "branch",
+      "enforcement": "active",
+      "bypass_actors": [],
+      "conditions": {
+        "ref_name": {
+          "include": ["refs/heads/main"],
+          "exclude": []
+        }
+      },
+      "rules": [
+        {"type": "deletion"},
+        {"type": "non_fast_forward"},
+        {"type": "required_linear_history"},
+        {
+          "type": "required_status_checks",
+          "parameters": {
+            "strict_required_status_checks_policy": true,
+            "do_not_enforce_on_create": false,
+            "required_status_checks": [
+              {"context": "Release gate"}
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "environments": [
+    {
+      "name": "production",
+      "wait_timer": 0,
+      "prevent_self_review": false,
+      "can_admins_bypass": false,
+      "required_reviewers": [
+        {"type": "User", "login": "1fear"}
+      ],
+      "deployment_branch_policy": {
+        "protected_branches": true,
+        "custom_branch_policies": false
+      }
+    }
+  ]
+}

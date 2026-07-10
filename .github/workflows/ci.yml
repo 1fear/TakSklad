@@ -174,3 +174,23 @@ jobs:
 
       - name: Run synthetic browser smoke
         run: npm --prefix frontend run e2e -- --grep @smoke
+
+  release-gate:
+    name: Release gate
+    if: always()
+    needs:
+      - backend
+      - container-isolation
+      - frontend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every CI safety net
+        env:
+          BACKEND_RESULT: ${{ needs.backend.result }}
+          CONTAINER_RESULT: ${{ needs.container-isolation.result }}
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
+        run: |
+          set -euo pipefail
+          test "$BACKEND_RESULT" = success
+          test "$CONTAINER_RESULT" = success
+          test "$FRONTEND_RESULT" = success

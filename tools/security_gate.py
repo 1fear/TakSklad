@@ -787,8 +787,13 @@ def scan_container_and_workflow_config(root: Path) -> list[Finding]:
             for line_number, raw in enumerate(lines, start=1):
                 stripped = raw.strip()
                 image_match = re.match(r"^image:\s*([^\s#]+)", stripped)
-                if image_match and not re.fullmatch(
-                    r"[^\s@]+@sha256:[0-9a-f]{64}", image_match.group(1)
+                image_value = image_match.group(1) if image_match else ""
+                first_party_image_variable = image_value in {
+                    "${TAKSKLAD_BACKEND_IMAGE}",
+                    "${TAKSKLAD_FRONTEND_IMAGE}",
+                }
+                if image_match and not first_party_image_variable and not re.fullmatch(
+                    r"[^\s@]+@sha256:[0-9a-f]{64}", image_value
                 ):
                     findings.append(
                         Finding(

@@ -58,6 +58,7 @@ services:
 
   backend-api:
     <<: *app-hardening
+    image: ${TAKSKLAD_BACKEND_IMAGE}
     build:
       context: ../../backend
       dockerfile: Dockerfile
@@ -65,6 +66,8 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL}
       TAKSKLAD_ENV: ${TAKSKLAD_ENV}
+      TAKSKLAD_COMMIT_SHA: ${TAKSKLAD_COMMIT_SHA:-}
+      TAKSKLAD_IMAGE_DIGEST: ${TAKSKLAD_IMAGE_DIGEST:-}
       TAKSKLAD_SERVICE_NAME: ${TAKSKLAD_SERVICE_NAME}
       TAKSKLAD_API_TOKEN: ${TAKSKLAD_API_TOKEN}
       TAKSKLAD_TIMEZONE: ${TAKSKLAD_TIMEZONE:-Asia/Tashkent}
@@ -124,6 +127,7 @@ services:
 
   frontend:
     <<: *app-hardening
+    image: ${TAKSKLAD_FRONTEND_IMAGE}
     build:
       context: ../../frontend
       dockerfile: Dockerfile
@@ -165,6 +169,7 @@ services:
 
   skladbot-worker:
     <<: *app-hardening
+    image: ${TAKSKLAD_BACKEND_IMAGE}
     build:
       context: ../../backend
       dockerfile: Dockerfile
@@ -207,6 +212,7 @@ services:
 
   smartup-auto-import-worker:
     <<: *app-hardening
+    image: ${TAKSKLAD_BACKEND_IMAGE}
     build:
       context: ../../backend
       dockerfile: Dockerfile
@@ -271,6 +277,7 @@ services:
 
   google-sheets-sync-worker:
     <<: *app-hardening
+    image: ${TAKSKLAD_BACKEND_IMAGE}
     build:
       context: ../../backend
       dockerfile: Dockerfile
@@ -298,6 +305,7 @@ services:
 
   telegram-worker:
     <<: *app-hardening
+    image: ${TAKSKLAD_BACKEND_IMAGE}
     build:
       context: ../../backend
       dockerfile: Dockerfile

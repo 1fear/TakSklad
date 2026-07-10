@@ -32,6 +32,8 @@ class ReadinessPolicyTests(unittest.TestCase):
             "status": "degraded",
             "service": "test",
             "version": "test",
+            "commit_sha": "a" * 40,
+            "image_digest": "sha256:" + "b" * 64,
             "environment": "test",
             "database": {"status": "ok", "dialect": "postgresql"},
             "migrations": {"status": "ok", "expected_head": "head", "current_revision": "head"},
@@ -44,6 +46,8 @@ class ReadinessPolicyTests(unittest.TestCase):
         public = health_service.public_readiness_report(detailed)
 
         self.assertEqual(public["status"], "degraded")
+        self.assertEqual(public["commit_sha"], "a" * 40)
+        self.assertEqual(public["image_digest"], "sha256:" + "b" * 64)
         self.assertNotIn("last_errors", public["queue"])
         self.assertNotIn("last_errors", public["google_mirror"])
         self.assertNotIn("recent_errors", public["imports"])
@@ -65,6 +69,28 @@ class ReadinessPolicyTests(unittest.TestCase):
             payload = main.health()
 
         self.assertEqual(payload["status"], "ok")
+        self.assertIn("commit_sha", payload)
+        self.assertIn("image_digest", payload)
+
+    def test_runtime_identity_is_exact_or_unknown(self):
+        with mock.patch.dict(
+            "os.environ",
+            {"TAKSKLAD_COMMIT_SHA": "a" * 40, "TAKSKLAD_IMAGE_DIGEST": "sha256:" + "b" * 64},
+            clear=False,
+        ):
+            self.assertEqual(
+                health_service.runtime_build_identity(),
+                {"commit_sha": "a" * 40, "image_digest": "sha256:" + "b" * 64},
+            )
+        with mock.patch.dict(
+            "os.environ",
+            {"TAKSKLAD_COMMIT_SHA": "main", "TAKSKLAD_IMAGE_DIGEST": "latest"},
+            clear=False,
+        ):
+            self.assertEqual(
+                health_service.runtime_build_identity(),
+                {"commit_sha": "unknown", "image_digest": "unknown"},
+            )
 
 
 if __name__ == "__main__":
