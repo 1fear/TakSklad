@@ -162,6 +162,8 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_orders_status_date ON orders(status, order_date);
+CREATE INDEX IF NOT EXISTS idx_orders_active_page ON orders(order_date, created_at, id)
+WHERE status NOT IN ('completed','done','closed','returned','archived_no_kiz','cancelled');
 CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON order_items(order_id);
 CREATE INDEX IF NOT EXISTS idx_scan_codes_order_item_id ON scan_codes(order_item_id);
 CREATE INDEX IF NOT EXISTS idx_scan_codes_code ON scan_codes(code);
@@ -177,6 +179,9 @@ CREATE INDEX IF NOT EXISTS idx_pending_events_status_updated_at ON pending_event
 CREATE INDEX IF NOT EXISTS idx_pending_events_type_status_created_at ON pending_events(event_type, status, created_at, id);
 CREATE INDEX IF NOT EXISTS idx_pending_events_type_status_updated_at ON pending_events(event_type, status, updated_at, id);
 CREATE INDEX IF NOT EXISTS idx_pending_events_updated_created_at ON pending_events(updated_at, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_pending_events_claim_ordered
+ON pending_events(event_type, available_at, created_at, id)
+INCLUDE (status, lease_expires_at);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_pending_events_idempotency_key ON pending_events(idempotency_key);
 CREATE INDEX IF NOT EXISTS idx_client_points_normalized ON client_points(normalized_client, normalized_address);
 CREATE INDEX IF NOT EXISTS idx_client_points_timeslot ON client_points(delivery_from, delivery_to);

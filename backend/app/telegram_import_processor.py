@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from .db import SessionLocal
 from .event_queue_service import reset_stale_processing_events
@@ -83,7 +83,12 @@ def find_existing_telegram_import_event(db, document, update_id=None):
     update_id = normalize_text(update_id)
     if not file_id and not update_id:
         return None
-    candidates = db.execute(
+    identity_filters = []
+    if update_id:
+        identity_filters.append(PendingEvent.payload["update_id"].as_string() == update_id)
+    if file_id:
+        identity_filters.append(PendingEvent.payload["document"]["file_id"].as_string() == file_id)
+    return db.execute(
         select(PendingEvent)
         .where(PendingEvent.event_type == TELEGRAM_EXCEL_IMPORT_EVENT_TYPE)
         .where(PendingEvent.status.in_((
@@ -94,16 +99,10 @@ def find_existing_telegram_import_event(db, document, update_id=None):
             "completed",
             "failed",
         )))
+        .where(or_(*identity_filters))
         .order_by(PendingEvent.created_at.desc(), PendingEvent.id.desc())
-    ).scalars().all()
-    for event in candidates:
-        payload = event.payload or {}
-        payload_document = payload.get("document") or {}
-        if update_id and normalize_text(payload.get("update_id")) == update_id:
-            return event
-        if file_id and normalize_text(payload_document.get("file_id")) == file_id:
-            return event
-    return None
+        .limit(1)
+    ).scalar_one_or_none()
 
 
 def telegram_import_date_choice_keyboard(event_id, excel_date):
@@ -136,13 +135,13 @@ class TelegramImportProcessor(TelegramProcessorDelegate):
                 select(PendingEvent)
                 .where(PendingEvent.event_type == TELEGRAM_EXCEL_IMPORT_EVENT_TYPE)
                 .where(PendingEvent.status == TELEGRAM_EXCEL_IMPORT_WAITING_SHIPMENT_DATE_STATUS)
+                .where(PendingEvent.payload["chat_id"].as_string() == normalize_text(chat_id))
                 .order_by(PendingEvent.created_at.desc(), PendingEvent.id.desc())
+                .limit(1)
             )
-            events = db.execute(stmt).scalars().all()
-            for event in events:
-                payload = event.payload or {}
-                if normalize_text(payload.get("chat_id")) == normalize_text(chat_id):
-                    return str(event.id), dict(payload)
+            event = db.execute(stmt).scalar_one_or_none()
+            if event is not None:
+                return str(event.id), dict(event.payload or {})
         return "", {}
 
     def cancel_waiting_telegram_imports_for_chat(self, db, chat_id):
@@ -154,6 +153,9 @@ class TelegramImportProcessor(TelegramProcessorDelegate):
                 TELEGRAM_EXCEL_IMPORT_WAITING_SHIPMENT_DATE_STATUS,
                 TELEGRAM_EXCEL_IMPORT_WAITING_DATE_CHOICE_STATUS,
             )))
+            .where(PendingEvent.payload["chat_id"].as_string() == normalized_chat_id)
+            .order_by(PendingEvent.created_at, PendingEvent.id)
+            .limit(200)
         ).scalars().all()
         cancelled = 0
         for event in events:

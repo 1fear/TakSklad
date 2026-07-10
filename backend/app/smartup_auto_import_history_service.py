@@ -1,12 +1,14 @@
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from .admin_service import sanitize_payload
 from .event_queue_service import event_to_queue_read
 from .models import AuditLog, PendingEvent
+from .pagination import CursorError, decode_cursor, encode_cursor, normalize_page_limit
 from .schemas import AdminActivityRead
 from .smartup_auto_import import SMARTUP_AUTO_IMPORT_EVENT_TYPE
 
@@ -15,24 +17,74 @@ DEFAULT_HISTORY_LIMIT = 50
 MAX_HISTORY_LIMIT = 200
 
 
-def list_smartup_auto_import_history(db: Session, limit: int | None = None) -> dict[str, Any]:
+def list_smartup_auto_import_history(
+    db: Session,
+    limit: int | None = None,
+    cursor: str = "",
+) -> dict[str, Any]:
     limit_value = normalize_limit(limit)
     generated_at = datetime.now(timezone.utc)
-    events = db.execute(
+    event_stmt = (
         select(PendingEvent)
         .where(PendingEvent.event_type == SMARTUP_AUTO_IMPORT_EVENT_TYPE)
         .order_by(PendingEvent.created_at.desc(), PendingEvent.id.desc())
-        .limit(limit_value)
-    ).scalars().all()
-    audit_rows = db.execute(
+    )
+    audit_stmt = (
         select(AuditLog)
         .where(or_(
             AuditLog.entity_type == "smartup_auto_import",
             AuditLog.action.like("smartup_auto_import%"),
         ))
         .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
-        .limit(limit_value)
-    ).scalars().all()
+    )
+    event_active = True
+    audit_active = True
+    if cursor:
+        try:
+            event_created, event_id, audit_created, audit_id = decode_cursor(cursor, "admin.smartup_history")
+            event_active = bool(event_created and event_id)
+            audit_active = bool(audit_created and audit_id)
+            if event_active:
+                parsed_event_created = datetime.fromisoformat(str(event_created).replace("Z", "+00:00"))
+                parsed_event_id = uuid.UUID(str(event_id))
+                event_stmt = event_stmt.where(or_(
+                    PendingEvent.created_at < parsed_event_created,
+                    and_(PendingEvent.created_at == parsed_event_created, PendingEvent.id < parsed_event_id),
+                ))
+            if audit_active:
+                parsed_audit_created = datetime.fromisoformat(str(audit_created).replace("Z", "+00:00"))
+                parsed_audit_id = uuid.UUID(str(audit_id))
+                audit_stmt = audit_stmt.where(or_(
+                    AuditLog.created_at < parsed_audit_created,
+                    and_(AuditLog.created_at == parsed_audit_created, AuditLog.id < parsed_audit_id),
+                ))
+        except (CursorError, TypeError, ValueError):
+            raise CursorError("invalid_cursor") from None
+    loaded_events = (
+        db.execute(event_stmt.limit(limit_value + 1)).scalars().all()
+        if event_active else []
+    )
+    loaded_audit = (
+        db.execute(audit_stmt.limit(limit_value + 1)).scalars().all()
+        if audit_active else []
+    )
+    events = loaded_events[:limit_value]
+    audit_rows = loaded_audit[:limit_value]
+    events_more = len(loaded_events) > limit_value
+    audit_more = len(loaded_audit) > limit_value
+    next_cursor = ""
+    if events_more or audit_more:
+        last_event = events[-1] if events_more else None
+        last_audit = audit_rows[-1] if audit_more else None
+        next_cursor = encode_cursor(
+            "admin.smartup_history",
+            [
+                last_event.created_at.isoformat() if last_event else "",
+                str(last_event.id) if last_event else "",
+                last_audit.created_at.isoformat() if last_audit else "",
+                str(last_audit.id) if last_audit else "",
+            ],
+        )
     runs = [smartup_event_to_run_read(event) for event in events]
     return {
         "generated_at": generated_at,
@@ -53,6 +105,10 @@ def list_smartup_auto_import_history(db: Session, limit: int | None = None) -> d
             )
             for row in audit_rows
         ],
+        "limit": limit_value,
+        "row_count": max(len(events), len(audit_rows)),
+        "has_more": bool(next_cursor),
+        "next_cursor": next_cursor,
     }
 
 

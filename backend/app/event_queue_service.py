@@ -6,6 +6,7 @@ from sqlalchemy import and_, desc, func, or_, select
 from sqlalchemy.orm import Session
 
 from .models import AuditLog, PendingEvent
+from .pagination import CursorError, decode_cursor, encode_cursor, normalize_page_limit
 from .redaction import redact_secrets
 
 
@@ -30,23 +31,53 @@ class EventQueueApiError(Exception):
         self.detail = detail
 
 
-def list_event_queue_diagnostics(db: Session, limit=None):
-    row_limit = None if limit is None else max(1, int(limit))
+def list_event_queue_diagnostics(db: Session, limit=None, cursor=""):
+    row_limit = normalize_page_limit(limit, default=200, maximum=200)
     now = datetime.now(timezone.utc)
     summary = build_event_queue_summary(db)
-    stale_processing = list_stale_processing_events(db, now=now, limit=row_limit)
+    stale_processing = list_stale_processing_events(db, now=now, limit=min(row_limit, 50))
     recent_stmt = (
         select(PendingEvent)
         .order_by(desc(PendingEvent.updated_at), desc(PendingEvent.created_at), desc(PendingEvent.id))
     )
-    if row_limit is not None:
-        recent_stmt = recent_stmt.limit(row_limit)
-    recent_events = db.execute(recent_stmt).scalars().all()
+    if cursor:
+        try:
+            cursor_updated_at, cursor_created_at, cursor_id = decode_cursor(cursor, "admin.events")
+            parsed_updated_at = datetime.fromisoformat(str(cursor_updated_at).replace("Z", "+00:00"))
+            parsed_created_at = datetime.fromisoformat(str(cursor_created_at).replace("Z", "+00:00"))
+            parsed_id = uuid.UUID(str(cursor_id))
+        except (CursorError, TypeError, ValueError):
+            raise CursorError("invalid_cursor") from None
+        recent_stmt = recent_stmt.where(or_(
+            PendingEvent.updated_at < parsed_updated_at,
+            and_(
+                PendingEvent.updated_at == parsed_updated_at,
+                PendingEvent.created_at < parsed_created_at,
+            ),
+            and_(
+                PendingEvent.updated_at == parsed_updated_at,
+                PendingEvent.created_at == parsed_created_at,
+                PendingEvent.id < parsed_id,
+            ),
+        ))
+    loaded_events = db.execute(recent_stmt.limit(row_limit + 1)).scalars().all()
+    recent_events = loaded_events[:row_limit]
+    next_cursor = ""
+    if len(loaded_events) > row_limit:
+        last = recent_events[-1]
+        next_cursor = encode_cursor(
+            "admin.events",
+            [last.updated_at.isoformat(), last.created_at.isoformat(), str(last.id)],
+        )
     return {
         "generated_at": now.isoformat(),
         "summary": summary,
         "stale_processing": [event_to_queue_read(event, now=now) for event in stale_processing],
         "recent_events": [event_to_queue_read(event, now=now) for event in recent_events],
+        "limit": row_limit,
+        "row_count": len(recent_events),
+        "has_more": bool(next_cursor),
+        "next_cursor": next_cursor,
     }
 
 
@@ -101,7 +132,7 @@ def build_event_queue_summary(db: Session):
     }
 
 
-def list_stale_processing_events(db: Session, now=None, limit=None):
+def list_stale_processing_events(db: Session, now=None, limit=50):
     now = now or datetime.now(timezone.utc)
     cutoff = now - STALE_PROCESSING_TIMEOUT
     stmt = (
@@ -113,8 +144,7 @@ def list_stale_processing_events(db: Session, now=None, limit=None):
         ))
         .order_by(PendingEvent.updated_at, PendingEvent.created_at)
     )
-    if limit is not None:
-        stmt = stmt.limit(max(1, int(limit)))
+    stmt = stmt.limit(max(1, min(int(limit or 50), 1000)))
     return db.execute(stmt).scalars().all()
 
 
@@ -126,6 +156,7 @@ def reset_stale_processing_events(
     last_error,
     now=None,
     timeout=STALE_PROCESSING_TIMEOUT,
+    limit=200,
 ):
     now = now or datetime.now(timezone.utc)
     cutoff = now - timeout
@@ -140,6 +171,8 @@ def reset_stale_processing_events(
             PendingEvent.lease_expires_at <= now,
             and_(PendingEvent.lease_owner.is_(None), PendingEvent.updated_at < cutoff),
         ))
+        .order_by(PendingEvent.updated_at, PendingEvent.created_at, PendingEvent.id)
+        .limit(max(1, min(int(limit or 200), 1000)))
     ).scalars().all()
     for event in events:
         event.status = "pending"

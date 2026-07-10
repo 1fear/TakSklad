@@ -1,4 +1,5 @@
 import hashlib
+import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import desc, select, text
@@ -30,6 +31,29 @@ def lock_kiz_code_for_transaction(db: Session, code):
     first, second = advisory_lock_keys(normalized)
     db.execute(text("SELECT pg_advisory_xact_lock(:first, :second)"), {"first": first, "second": second})
     return True
+
+
+def lock_kiz_codes_for_transaction(db: Session, codes):
+    normalized_codes = sorted({normalize_kiz_code(code) for code in codes if normalize_kiz_code(code)})
+    if not normalized_codes:
+        return 0
+    if getattr(getattr(db, "bind", None), "dialect", None) is None:
+        return 0
+    if db.bind.dialect.name != "postgresql":
+        return 0
+    parameters = {}
+    values = []
+    for index, code in enumerate(normalized_codes):
+        first, second = advisory_lock_keys(code)
+        parameters[f"first_{index}"] = first
+        parameters[f"second_{index}"] = second
+        values.append(f"(:first_{index}, :second_{index})")
+    db.execute(text(
+        "SELECT pg_advisory_xact_lock(lock_key.first_key, lock_key.second_key) "
+        f"FROM (VALUES {', '.join(values)}) AS lock_key(first_key, second_key) "
+        "ORDER BY lock_key.first_key, lock_key.second_key"
+    ), parameters)
+    return len(normalized_codes)
 
 
 def advisory_lock_keys(value):
@@ -113,6 +137,51 @@ def record_kiz_movement(
     db.add(movement)
     db.flush()
     return movement
+
+
+def record_kiz_movements(db: Session, records):
+    prepared = []
+    for record in records:
+        normalized = normalize_kiz_code(record.get("code"))
+        if normalized:
+            prepared.append((normalized, record))
+    if not prepared:
+        return []
+
+    codes = sorted({code for code, _record in prepared})
+    existing = {
+        row.code: row
+        for row in db.execute(select(KizCode).where(KizCode.code.in_(codes))).scalars()
+    }
+    missing = []
+    for code in codes:
+        if code in existing:
+            continue
+        kiz = KizCode(id=uuid.uuid4(), code=code)
+        existing[code] = kiz
+        missing.append(kiz)
+    if missing:
+        db.add_all(missing)
+
+    movements = []
+    for code, record in prepared:
+        movement = KizMovement(
+            id=uuid.uuid4(),
+            kiz_id=existing[code].id,
+            movement_type=record["movement_type"],
+            order_id=record.get("order_id"),
+            order_item_id=record.get("order_item_id"),
+            scan_code_id=record.get("scan_code_id"),
+            return_reference=str(record.get("return_reference") or "").strip() or None,
+            source=str(record.get("source") or "backend").strip() or "backend",
+            actor=str(record.get("actor") or "").strip() or None,
+            workstation_id=str(record.get("workstation_id") or "").strip() or None,
+            occurred_at=record.get("occurred_at") or datetime.now(timezone.utc),
+            raw_payload=dict(record.get("raw_payload") or {}),
+        )
+        movements.append(movement)
+    db.add_all(movements)
+    return movements
 
 
 def find_same_item_scan(db: Session, *, code, order_item_id):

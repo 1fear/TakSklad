@@ -1,8 +1,8 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import text, select
+from sqlalchemy import and_, case, func, literal, or_, select, text
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from .event_queue_service import (
     build_event_queue_summary,
@@ -17,7 +17,8 @@ from .settings import APP_VERSION
 
 
 EXPECTED_BASELINE_REVISION = "20260616_0001"
-EXPECTED_HEAD_REVISION = "20260710_0011"
+EXPECTED_HEAD_REVISION = "20260710_0014"
+LEGACY_SQLITE_HEAD_REVISION = "20260710_0011"
 TERMINAL_INCIDENT_STATUSES = ("resolved", "ignored", "cancelled")
 SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE = "skladbot_daily_report_send"
 SKLADBOT_DAILY_SUCCESS_RESULT_STATUSES = {
@@ -157,18 +158,28 @@ def read_migration_status(db: Session):
             "error": redact_secrets(exc),
         }
     revision = revisions[0] if len(revisions) == 1 else ",".join(revisions)
+    expected_head = EXPECTED_HEAD_REVISION
+    if (
+        len(revisions) == 1
+        and revision == LEGACY_SQLITE_HEAD_REVISION
+        and db.bind is not None
+        and db.bind.dialect.name == "sqlite"
+    ):
+        # SQLite is the local/offline compatibility store and never receives the
+        # PostgreSQL-only hot-query indexes from 0014. PostgreSQL remains strict.
+        expected_head = LEGACY_SQLITE_HEAD_REVISION
     if not revisions:
         status = "not_stamped"
     elif len(revisions) != 1:
         status = "multiple_revisions"
-    elif revision == EXPECTED_HEAD_REVISION:
+    elif revision == expected_head:
         status = "ok"
     else:
         status = "revision_mismatch"
     return {
         "status": status,
         "expected_baseline": EXPECTED_BASELINE_REVISION,
-        "expected_head": EXPECTED_HEAD_REVISION,
+        "expected_head": expected_head,
         "current_revision": revision,
     }
 
@@ -211,20 +222,80 @@ def build_queue_readiness(db: Session, now=None):
 
 
 def count_unresolved_hot_path_failures(db: Session) -> int:
-    events = db.execute(
-        select(PendingEvent)
-        .where(PendingEvent.status.in_(("failed", "error", "blocked")))
-        .where(PendingEvent.event_type != GOOGLE_SHEETS_EXPORT_EVENT_TYPE)
-        .where(~PendingEvent.id.in_(
+    failed_event = aliased(PendingEvent)
+    successful_event = aliased(PendingEvent)
+    failed_report_date = _payload_text(failed_event, "report_date")
+    successful_report_date = _payload_text(successful_event, "report_date")
+    failed_kind = func.coalesce(
+        func.nullif(_payload_text(failed_event, "kind"), ""),
+        _payload_text(failed_event, "report_kind"),
+        "",
+    )
+    successful_kind = func.coalesce(
+        func.nullif(_payload_text(successful_event, "kind"), ""),
+        _payload_text(successful_event, "report_kind"),
+        "",
+    )
+    failed_chat = _daily_report_chat_key_expression(db, failed_event, failed_report_date)
+    successful_chat = _daily_report_chat_key_expression(db, successful_event, successful_report_date)
+    failed_time = func.coalesce(failed_event.updated_at, failed_event.created_at)
+    successful_time = func.coalesce(successful_event.updated_at, successful_event.created_at)
+    successful_result_status = _payload_text(successful_event, "result_status")
+    successful_later_report = (
+        select(literal(1))
+        .select_from(successful_event)
+        .where(successful_event.event_type == SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE)
+        .where(successful_event.status == "completed")
+        .where(failed_report_date != "")
+        .where(successful_report_date == failed_report_date)
+        .where(or_(failed_kind == "", successful_kind == "", successful_kind == failed_kind))
+        .where(or_(failed_chat == "", successful_chat == "", successful_chat == failed_chat))
+        .where(successful_time > failed_time)
+        .where(or_(
+            successful_event.payload["success"].as_boolean().is_(True),
+            func.lower(_payload_text(successful_event, "success")) == "true",
+            successful_result_status.in_(SKLADBOT_DAILY_SUCCESS_RESULT_STATUSES),
+        ))
+        .correlate(failed_event)
+        .exists()
+    )
+    stmt = (
+        select(func.count(failed_event.id))
+        .select_from(failed_event)
+        .where(failed_event.status.in_(("failed", "error", "blocked")))
+        .where(failed_event.event_type != GOOGLE_SHEETS_EXPORT_EVENT_TYPE)
+        .where(~failed_event.id.in_(
             select(Incident.pending_event_id)
             .where(Incident.pending_event_id.is_not(None))
             .where(Incident.status.in_(TERMINAL_INCIDENT_STATUSES))
         ))
-    ).scalars().all()
-    return sum(
-        1
-        for event in events
-        if not daily_report_failure_resolved_by_later_success(db, event)
+        .where(or_(
+            failed_event.event_type != SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE,
+            ~successful_later_report,
+        ))
+    )
+    return int(db.execute(stmt).scalar_one() or 0)
+
+
+def _payload_text(event, key):
+    return func.coalesce(event.payload[key].as_string(), "")
+
+
+def _daily_report_chat_key_expression(db: Session, event, report_date):
+    payload_chat = _payload_text(event, "chat_id")
+    idempotency_key = func.coalesce(event.idempotency_key, "")
+    if db.bind is not None and db.bind.dialect.name == "postgresql":
+        parsed_chat = func.split_part(idempotency_key, ":", 3)
+    else:
+        chat_start = func.length(literal("skladbot_daily_report:")) + func.length(report_date) + 2
+        remainder = func.substr(idempotency_key, chat_start)
+        parsed_chat = func.substr(remainder, 1, func.instr(remainder, ":") - 1)
+    valid_key = idempotency_key.like(
+        literal("skladbot_daily_report:") + report_date + literal(":%")
+    )
+    return case(
+        (and_(valid_key, parsed_chat != ""), parsed_chat),
+        else_=payload_chat,
     )
 
 
@@ -382,27 +453,25 @@ def sanitize_readiness_event_type(event_type):
 
 def build_google_mirror_readiness(db: Session, now=None):
     now = now or datetime.now(timezone.utc)
-    events = db.execute(
-        select(PendingEvent)
+    status_rows = db.execute(
+        select(PendingEvent.status, func.count(PendingEvent.id))
         .where(PendingEvent.event_type == GOOGLE_SHEETS_EXPORT_EVENT_TYPE)
         .where(PendingEvent.status.in_(("pending", "failed", "processing")))
-        .order_by(PendingEvent.created_at, PendingEvent.id)
-    ).scalars().all()
-    summary = {}
-    for event in events:
-        status = str(event.status or "unknown")
-        summary[status] = int(summary.get(status) or 0) + 1
-    oldest_pending = next(
-        (event for event in events if event.status in ("pending", "failed")),
-        None,
-    )
-    next_attempt_at = min_next_attempt_at(events, now=now)
+        .group_by(PendingEvent.status)
+    ).all()
+    summary = {str(status or "unknown"): int(count or 0) for status, count in status_rows}
+    oldest_pending_at = db.execute(
+        select(func.min(PendingEvent.created_at))
+        .where(PendingEvent.event_type == GOOGLE_SHEETS_EXPORT_EVENT_TYPE)
+        .where(PendingEvent.status.in_(("pending", "failed")))
+    ).scalar_one()
+    next_attempt_at = _next_google_attempt_at(db, now=now)
     return {
-        "status": "degraded" if events else "ok",
+        "status": "degraded" if summary else "ok",
         "role": "mirror_export",
         "event_type": GOOGLE_SHEETS_EXPORT_EVENT_TYPE,
         "summary": dict(sorted(summary.items())),
-        "oldest_pending_age_seconds": event_age_seconds(oldest_pending, now, field="created_at"),
+        "oldest_pending_age_seconds": datetime_age_seconds(oldest_pending_at, now),
         "paused": bool(next_attempt_at),
         "next_attempt_at": next_attempt_at.isoformat() if next_attempt_at else "",
         "last_errors": last_event_errors(
@@ -411,6 +480,30 @@ def build_google_mirror_readiness(db: Session, now=None):
             event_type=GOOGLE_SHEETS_EXPORT_EVENT_TYPE,
         ),
     }
+
+
+def _next_google_attempt_at(db: Session, now=None):
+    now = now or datetime.now(timezone.utc)
+    raw_attempt = PendingEvent.payload["next_attempt_at"].as_string()
+    values = db.execute(
+        select(raw_attempt)
+        .where(PendingEvent.event_type == GOOGLE_SHEETS_EXPORT_EVENT_TYPE)
+        .where(PendingEvent.status.in_(("pending", "failed")))
+        .where(raw_attempt.is_not(None))
+        .where(raw_attempt != "")
+        .where(raw_attempt > now.isoformat())
+        .order_by(raw_attempt)
+        .limit(200)
+    ).scalars().all()
+    attempts = []
+    for value in values:
+        try:
+            attempt = ensure_aware_utc(datetime.fromisoformat(str(value)))
+        except ValueError:
+            continue
+        if attempt and attempt > now:
+            attempts.append(attempt)
+    return min(attempts) if attempts else None
 
 
 def min_next_attempt_at(events, now=None):
@@ -437,6 +530,13 @@ def event_age_seconds(event, now, field="updated_at"):
     if event is None:
         return 0
     value = ensure_aware_utc(getattr(event, field, None) or getattr(event, "updated_at", None))
+    if value is None:
+        return 0
+    return int(max(0, (now - value).total_seconds()))
+
+
+def datetime_age_seconds(value, now):
+    value = ensure_aware_utc(value)
     if value is None:
         return 0
     return int(max(0, (now - value).total_seconds()))

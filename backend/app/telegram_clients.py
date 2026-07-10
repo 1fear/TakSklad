@@ -3,7 +3,18 @@ import urllib.parse
 
 import httpx
 
+from .pagination import NEXT_CURSOR_HEADER
 from .redaction import redact_secrets
+
+
+DEFAULT_PAGE_LIMIT = 200
+DEFAULT_MAX_PAGES = 1000
+PAGINATED_LIST_PATHS = frozenset({
+    "/api/v1/orders/active",
+    "/api/v1/imports",
+    "/api/v1/reports/kiz/dates",
+    "/api/v1/reports/kiz/source-files",
+})
 
 
 TELEGRAM_BUTTON_SHIPMENT_DATE = "Дата отгрузки"
@@ -143,10 +154,43 @@ class BackendApiClient:
         return {"Authorization": f"Bearer {self.token}"} if self.token else {}
 
     def get(self, path, params=None):
+        payload, _next_cursor = self.get_page(path, params=params)
+        return payload
+
+    def get_page(self, path, params=None):
         with self.http.Client(timeout=self.timeout) as client:
             response = client.get(f"{self.base_url}{path}", params=params or {}, headers=self._headers())
             response.raise_for_status()
-            return response.json()
+            return response.json(), str(response.headers.get(NEXT_CURSOR_HEADER, "") or "").strip()
+
+    def get_all(self, path, params=None, *, page_limit=DEFAULT_PAGE_LIMIT, max_pages=DEFAULT_MAX_PAGES):
+        page_limit = _normalize_positive_int(page_limit, DEFAULT_PAGE_LIMIT)
+        max_pages = _normalize_positive_int(max_pages, DEFAULT_MAX_PAGES)
+        base_params = dict(params or {})
+        base_params.pop("cursor", None)
+        base_params["limit"] = page_limit
+        items = []
+        cursor = ""
+        seen_cursors = set()
+
+        for page_number in range(1, max_pages + 1):
+            page_params = {**base_params, **({"cursor": cursor} if cursor else {})}
+            payload, next_cursor = self.get_page(path, params=page_params)
+            if not isinstance(payload, list):
+                raise RuntimeError("Backend pagination returned an invalid list response")
+            items.extend(payload)
+            if not next_cursor:
+                return items
+            if not payload:
+                raise RuntimeError("Backend pagination returned an empty page with continuation")
+            if next_cursor == cursor or next_cursor in seen_cursors:
+                raise RuntimeError("Backend pagination returned a repeated cursor")
+            if page_number >= max_pages:
+                raise RuntimeError("Backend pagination exceeded the page safety limit")
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+
+        raise RuntimeError("Backend pagination exceeded the page safety limit")
 
     def get_bytes(self, path, params=None):
         with self.http.Client(timeout=self.file_timeout) as client:
@@ -160,6 +204,13 @@ class BackendApiClient:
             response = client.post(f"{self.base_url}{path}", json=payload or {}, headers=self._headers())
             response.raise_for_status()
             return response.json()
+
+
+def _normalize_positive_int(value, default):
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return int(default)
 
 
 class TelegramProcessorPorts:
@@ -263,7 +314,10 @@ class TelegramProcessorPorts:
             logging.warning("Telegram worker: failed to configure bot menu", exc_info=True)
 
     def backend_get(self, path, params=None):
-        return self._backend_client().get(path, params)
+        client = self._backend_client()
+        if path in PAGINATED_LIST_PATHS and callable(getattr(client, "get_all", None)):
+            return client.get_all(path, params)
+        return client.get(path, params)
 
     def backend_get_bytes(self, path, params=None):
         return self._backend_client().get_bytes(path, params)

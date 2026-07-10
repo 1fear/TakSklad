@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -240,13 +240,24 @@ def create_skladbot_dry_run_for_import(
     return summary
 
 
-def list_skladbot_dry_runs(db: Session, import_id: str | None = None) -> list[dict[str, Any]]:
-    events = list_skladbot_dry_run_events(db, import_id)
+def list_skladbot_dry_runs(
+    db: Session,
+    import_id: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    row_limit = max(1, min(int(limit or 200), 200))
+    row_offset = max(0, int(offset or 0))
+    events = list_skladbot_dry_run_events(db, import_id, limit=200)
     result = []
+    seen = 0
     for event in events:
         payload = event.payload or {}
         generated_at = payload.get("generated_at") or None
         for row in payload.get("dry_runs") or []:
+            if seen < row_offset:
+                seen += 1
+                continue
             event_id = str(event.id)
             order_id = str(row.get("order_id") or "")
             result.append({
@@ -267,6 +278,9 @@ def list_skladbot_dry_runs(db: Session, import_id: str | None = None) -> list[di
                 "payload": row.get("payload") or {},
                 "generated_at": generated_at,
             })
+            seen += 1
+            if len(result) >= row_limit:
+                return result
     return result
 
 
@@ -288,7 +302,14 @@ def rebuild_skladbot_dry_run(db: Session, dry_run_id: str) -> list[dict[str, Any
 
 
 def list_orders_for_import(db: Session, import_id: str) -> list[tuple[Order, list[Any]]]:
-    stmt = select(Order).options(selectinload(Order.items)).order_by(Order.created_at.asc(), Order.client.asc())
+    import_id = normalize_text(import_id)
+    stmt = (
+        select(Order)
+        .join(OrderItem, OrderItem.order_id == Order.id)
+        .options(selectinload(Order.items))
+        .where(OrderItem.raw_payload["backend_import_id"].as_string() == import_id)
+        .order_by(Order.created_at.asc(), Order.client.asc(), Order.id.asc())
+    )
     orders = db.execute(stmt).scalars().unique().all()
     matched_orders = []
     for order in orders:
@@ -308,20 +329,24 @@ def find_skladbot_dry_run_event(db: Session, import_id: str) -> PendingEvent | N
     return events[0] if events else None
 
 
-def list_skladbot_dry_run_events(db: Session, import_id: str | None = None) -> list[PendingEvent]:
+def list_skladbot_dry_run_events(
+    db: Session,
+    import_id: str | None = None,
+    *,
+    limit: int = 50,
+) -> list[PendingEvent]:
     stmt = (
         select(PendingEvent)
         .where(PendingEvent.event_type == SKLADBOT_REQUEST_DRY_RUN_EVENT_TYPE)
         .order_by(PendingEvent.created_at.desc(), PendingEvent.id.desc())
     )
-    events = db.execute(stmt).scalars().all()
-    if not import_id:
-        return events
-    return [
-        event
-        for event in events
-        if str((event.payload or {}).get("import_id") or "") == import_id
-    ]
+    if import_id:
+        import_id = normalize_text(import_id)
+        stmt = stmt.where(or_(
+            PendingEvent.aggregate_id == import_id,
+            PendingEvent.payload["import_id"].as_string() == import_id,
+        ))
+    return db.execute(stmt.limit(max(1, min(int(limit or 50), 200)))).scalars().all()
 
 
 def queue_skladbot_create_events(db: Session, import_id: str, dry_runs: list[dict[str, Any]]) -> int:
@@ -837,6 +862,8 @@ def reset_stale_skladbot_create_events(db: Session) -> int:
         .where(PendingEvent.status == "processing")
         .where(PendingEvent.updated_at < cutoff)
         .where((PendingEvent.lease_owner.is_(None)) | (PendingEvent.lease_expires_at <= now))
+        .order_by(PendingEvent.updated_at, PendingEvent.id)
+        .limit(200)
     ).scalars().all()
     if not events:
         return 0
@@ -866,11 +893,11 @@ def reset_stale_skladbot_create_events(db: Session) -> int:
 
 
 def count_pending_skladbot_create_events(db: Session) -> int:
-    return len(db.execute(
-        select(PendingEvent.id)
+    return int(db.execute(
+        select(func.count(PendingEvent.id))
         .where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
         .where(PendingEvent.status.in_(("pending", "failed")))
-    ).scalars().all())
+    ).scalar_one() or 0)
 
 
 def is_skladbot_stock_shortage_error(error: str) -> bool:
@@ -954,6 +981,12 @@ def remove_records_from_pending_google_import_exports(db: Session, records: list
         select(PendingEvent)
         .where(PendingEvent.event_type == "google_sheets_export")
         .where(PendingEvent.status.in_(("pending", "failed")))
+        .where(or_(
+            PendingEvent.action == "google_sheets_import_export",
+            PendingEvent.payload["action"].as_string() == "google_sheets_import_export",
+        ))
+        .order_by(PendingEvent.created_at, PendingEvent.id)
+        .limit(1000)
     ).scalars().all()
     for pending_event in events:
         payload = dict(pending_event.payload or {})

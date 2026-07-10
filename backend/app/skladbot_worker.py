@@ -8,10 +8,11 @@ import importlib
 import logging
 import os
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 
 import httpx
-from sqlalchemy import desc, or_, select, text
+from sqlalchemy import and_, desc, func, or_, select, text
 from sqlalchemy.orm import selectinload
 
 from .audit_identity import AuditActor, set_audit_actor
@@ -64,6 +65,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 
 SKLADBOT_SYNC_LOCK_KEY = 22052631
 SKLADBOT_COMPLETED_BACKFILL_STATUSES = ("completed", "done", "closed")
+SKLADBOT_SYNC_ORDER_LIMIT_ENV = "SKLADBOT_SYNC_ORDER_LIMIT"
 
 class CandidateRequests(list):
     def __init__(
@@ -174,44 +176,69 @@ def completed_backfill_cutoffs(today=None, now=None):
     today = today or business_today(now)
     return today - timedelta(days=days), now - timedelta(days=days)
 
-def load_skladbot_sync_orders(db, now=None):
-    active_orders = db.execute(
-        select(Order)
-        .options(selectinload(Order.items))
-        .where(~Order.status.in_(COMPLETED_STATUSES))
-        .order_by(Order.order_date.asc(), Order.created_at.asc())
-    ).scalars().all()
-
+def load_skladbot_sync_orders(db, now=None, limit=None, cursor=None):
+    limit = max(1, min(int(limit or env_int(SKLADBOT_SYNC_ORDER_LIMIT_ENV, 200)), 1000))
     cutoff_date, cutoff_datetime = completed_backfill_cutoffs(now=now)
-    completed_backfill = []
+    number_value = func.coalesce(Order.raw_payload["skladbot_request_number"].as_string(), "")
+    id_value = func.coalesce(Order.raw_payload["skladbot_request_id"].as_string(), "")
+    completed_condition = and_(
+        Order.status.in_(SKLADBOT_COMPLETED_BACKFILL_STATUSES),
+        or_(Order.updated_at >= cutoff_datetime, Order.order_date >= cutoff_date),
+        or_(number_value == "", id_value == ""),
+    )
+    eligibility = ~Order.status.in_(COMPLETED_STATUSES)
     if completed_backfill_days() > 0:
-        completed_backfill = db.execute(
+        eligibility = or_(eligibility, completed_condition)
+
+    cursor = load_skladbot_order_cursor(db) if cursor is None else cursor
+
+    def execute_batch(after_cursor):
+        stmt = (
             select(Order)
             .options(selectinload(Order.items))
-            .where(Order.status.in_(SKLADBOT_COMPLETED_BACKFILL_STATUSES))
-            .where(
-                or_(
-                    Order.updated_at >= cutoff_datetime,
-                    Order.order_date >= cutoff_date,
-                )
-            )
-            .order_by(Order.updated_at.desc(), Order.created_at.desc())
-        ).scalars().all()
-        completed_backfill = [
-            order
-            for order in completed_backfill
-            if order_needs_skladbot_backfill(order)
-        ]
+            .where(eligibility)
+            .order_by(Order.id)
+            .limit(limit)
+        )
+        parsed_cursor = parse_skladbot_order_cursor(after_cursor)
+        if parsed_cursor is not None:
+            stmt = stmt.where(Order.id > parsed_cursor)
+        return db.execute(stmt).scalars().all()
 
-    seen = set()
-    orders = []
-    for order in [*active_orders, *completed_backfill]:
-        order_id = str(order.id)
-        if order_id in seen:
-            continue
-        seen.add(order_id)
-        orders.append(order)
+    orders = execute_batch(cursor)
+    if not orders and cursor:
+        orders = execute_batch(None)
+    active_orders = [order for order in orders if order.status not in COMPLETED_STATUSES]
+    completed_backfill = [order for order in orders if order.status in SKLADBOT_COMPLETED_BACKFILL_STATUSES]
     return orders, active_orders, completed_backfill
+
+
+def load_skladbot_order_cursor(db):
+    event = db.execute(
+        select(AuditLog)
+        .where(AuditLog.action == "skladbot_worker_sync")
+        .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    payload = event.payload if event is not None and isinstance(event.payload, dict) else {}
+    return normalize_text(payload.get("order_cursor"))
+
+
+def parse_skladbot_order_cursor(value):
+    text_value = normalize_text(value)
+    if not text_value:
+        return None
+    order_id_text = text_value.rsplit("|", 1)[-1]
+    try:
+        return uuid.UUID(order_id_text)
+    except (TypeError, ValueError):
+        return None
+
+
+def skladbot_order_cursor_for_batch(orders):
+    if not orders:
+        return ""
+    return str(orders[-1].id)
 
 def all_orders_have_candidate_match(orders, requests):
     if not orders:
@@ -389,6 +416,20 @@ def update_orders_from_skladbot(audit_actor: AuditActor | None = None):
                     entity_id="worker",
                     payload=google_sheets_result,
                 ))
+                db.add(AuditLog(
+                    action="skladbot_worker_sync",
+                    entity_type="skladbot",
+                    entity_id="worker",
+                    payload={
+                        "requests": 0,
+                        "orders_checked": 0,
+                        "orders_already_numbered": len(orders),
+                        "active_orders": len(active_orders),
+                        "completed_backfill_orders": len(completed_backfill_orders),
+                        "order_cursor": skladbot_order_cursor_for_batch(orders),
+                        "fetch": {},
+                    },
+                ))
                 db.commit()
                 return {
                     "requests": 0,
@@ -456,6 +497,7 @@ def update_orders_from_skladbot(audit_actor: AuditActor | None = None):
                     "multiple": multiple,
                     "incomplete": incomplete,
                     "pending": pending,
+                    "order_cursor": skladbot_order_cursor_for_batch(orders),
                     "fetch": requests.meta() if hasattr(requests, "meta") else {},
                 },
             ))

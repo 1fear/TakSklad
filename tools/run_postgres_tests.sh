@@ -69,11 +69,14 @@ case "$MODE" in
   query-parity)
     TEST_MODULE="tests.test_postgres_query_parity"
     ;;
+  db-resilience)
+    TEST_MODULE="tests.test_postgres_db_resilience"
+    ;;
   all)
-    TEST_MODULE="tests.test_postgres_migrations tests.test_postgres_concurrency tests.test_postgres_readiness tests.test_postgres_queue_concurrency tests.test_postgres_queue_failures tests.test_postgres_import_identity tests.test_postgres_invariants tests.test_postgres_outbox tests.test_postgres_outbox_faults tests.test_postgres_smartup_saga tests.test_postgres_auth_identities tests.test_postgres_rbac_audit tests.test_postgres_input_safety tests.test_postgres_query_parity"
+    TEST_MODULE="tests.test_postgres_migrations tests.test_postgres_concurrency tests.test_postgres_readiness tests.test_postgres_queue_concurrency tests.test_postgres_queue_failures tests.test_postgres_import_identity tests.test_postgres_invariants tests.test_postgres_outbox tests.test_postgres_outbox_faults tests.test_postgres_smartup_saga tests.test_postgres_auth_identities tests.test_postgres_rbac_audit tests.test_postgres_input_safety tests.test_postgres_query_parity tests.test_postgres_db_resilience"
     ;;
   *)
-    echo "Usage: $0 {seed-reference|migrations|smoke|readiness|queue-concurrency|queue-failures|import-identity|invariants|outbox|outbox-faults|smartup-saga|auth-identities|rbac-audit|input-safety|query-parity|all}" >&2
+    echo "Usage: $0 {seed-reference|migrations|smoke|readiness|queue-concurrency|queue-failures|import-identity|invariants|outbox|outbox-faults|smartup-saga|auth-identities|rbac-audit|input-safety|query-parity|db-resilience|all}" >&2
     exit 2
     ;;
 esac

@@ -1,9 +1,9 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import and_, exists, or_, select, tuple_
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from .google_sheets_pending import queue_google_sheets_export
 from .kiz_movements_service import (
@@ -14,11 +14,14 @@ from .kiz_movements_service import (
     kiz_is_available_for_outbound,
     latest_kiz_movement,
     lock_kiz_code_for_transaction,
+    lock_kiz_codes_for_transaction,
     normalize_kiz_code,
     outbound_movement_type_for,
     record_kiz_movement,
+    record_kiz_movements,
 )
 from .models import AuditLog, Order, OrderItem, ScanCode
+from .pagination import CursorError, decode_cursor, encode_cursor, normalize_page_limit
 from . import outbox_service
 from .order_statuses import (
     COMPLETED_STATUSES,
@@ -56,28 +59,75 @@ def parse_uuid(value, field_name="id"):
         raise ApiError(422, f"Invalid {field_name}") from exc
 
 
-def list_active_orders(db: Session):
-    stmt = (
+def list_active_orders_page(db: Session, *, limit=50, cursor=""):
+    row_limit = normalize_page_limit(limit, default=50, maximum=200)
+    id_stmt = (
+        select(Order.id, Order.order_date, Order.created_at)
+        .where(~Order.status.in_(INACTIVE_ORDER_STATUSES))
+        .where(exists(select(OrderItem.id).where(OrderItem.order_id == Order.id)))
+        .order_by(Order.order_date.asc().nulls_last(), Order.created_at.asc(), Order.id.asc())
+        .limit(row_limit + 1)
+    )
+    if cursor:
+        try:
+            cursor_date, cursor_created_at, cursor_id = decode_cursor(cursor, "orders.active")
+            parsed_date = date.fromisoformat(str(cursor_date)) if cursor_date else None
+            parsed_created_at = datetime.fromisoformat(str(cursor_created_at).replace("Z", "+00:00"))
+            parsed_id = uuid.UUID(str(cursor_id))
+        except (CursorError, TypeError, ValueError):
+            raise CursorError("invalid_cursor") from None
+        if parsed_date is None:
+            id_stmt = id_stmt.where(and_(
+                Order.order_date.is_(None),
+                tuple_(Order.created_at, Order.id) > tuple_(parsed_created_at, parsed_id),
+            ))
+        else:
+            id_stmt = id_stmt.where(or_(
+                Order.order_date > parsed_date,
+                Order.order_date.is_(None),
+                and_(
+                    Order.order_date == parsed_date,
+                    tuple_(Order.created_at, Order.id) > tuple_(parsed_created_at, parsed_id),
+                ),
+            ))
+    id_rows = db.execute(id_stmt).all()
+    page_rows = id_rows[:row_limit]
+    page_ids = [row.id for row in page_rows]
+    if not page_ids:
+        return [], "", row_limit
+    orders = db.execute(
         select(Order)
         .options(selectinload(Order.items).selectinload(OrderItem.scan_codes))
-        .where(~Order.status.in_(INACTIVE_ORDER_STATUSES))
-        .order_by(Order.order_date.asc(), Order.created_at.asc())
-    )
-    active_orders = []
-    for order in db.execute(stmt).scalars().all():
-        read_order = order_to_read(order)
-        if read_order.items:
-            active_orders.append(read_order)
-    return active_orders
+        .where(Order.id.in_(page_ids))
+    ).scalars().all()
+    by_id = {order.id: order for order in orders}
+    result = [order_to_read(by_id[order_id]) for order_id in page_ids]
+    next_cursor = ""
+    if len(id_rows) > row_limit:
+        last = page_rows[-1]
+        next_cursor = encode_cursor(
+            "orders.active",
+            [
+                last.order_date.isoformat() if last.order_date else "",
+                last.created_at.isoformat(),
+                str(last.id),
+            ],
+        )
+    return result, next_cursor, row_limit
 
 
-def list_returned_orders(db: Session, limit=50):
+def list_active_orders(db: Session, limit=50):
+    return list_active_orders_page(db, limit=limit)[0]
+
+
+def list_returned_orders(db: Session, limit=50, offset=0):
     stmt = (
         select(Order)
         .options(selectinload(Order.items).selectinload(OrderItem.scan_codes))
         .where(Order.status == STATUS_RETURNED)
         .order_by(Order.updated_at.desc(), Order.order_date.desc(), Order.created_at.desc())
-        .limit(max(1, min(int(limit or 50), 200)))
+        .limit(max(1, min(int(limit or 50), 201)))
+        .offset(max(0, int(offset or 0)))
     )
     return [order_to_read(order) for order in db.execute(stmt).scalars().all()]
 
@@ -143,9 +193,9 @@ def create_scan(db: Session, payload: ScanCreate):
 
     item = db.execute(
         select(OrderItem)
-        .options(selectinload(OrderItem.order))
+        .options(joinedload(OrderItem.order))
         .where(OrderItem.id == order_item_id)
-        .with_for_update()
+        .with_for_update(of=OrderItem)
     ).scalar_one_or_none()
     if item is None:
         raise ApiError(404, "Order item not found")
@@ -267,6 +317,7 @@ def create_scan(db: Session, payload: ScanCreate):
         entity_id=str(item.id),
         idempotency_key=f"outbox:scan:create:{scan_id}",
     )
+    response = scan_to_read(scan, item)
 
     try:
         outbox_service.outbox_fault("before_commit", "scan")
@@ -284,9 +335,6 @@ def create_scan(db: Session, payload: ScanCreate):
                 return existing_scan_response_or_error(db, other_item_scan, item)
         raise ApiError(409, "Code already scanned") from exc
 
-    db.refresh(scan)
-    db.refresh(item)
-    response = scan_to_read(scan, item)
     return response
 
 
@@ -464,10 +512,10 @@ def complete_order(db: Session, order_id):
     parsed_order_id = parse_uuid(order_id, "order_id")
     order = db.execute(
         select(Order)
-        .options(selectinload(Order.items).selectinload(OrderItem.scan_codes))
+        .options(joinedload(Order.items).joinedload(OrderItem.scan_codes))
         .where(Order.id == parsed_order_id)
-        .with_for_update()
-    ).scalar_one_or_none()
+        .with_for_update(of=Order)
+    ).unique().scalar_one_or_none()
     if order is None:
         raise ApiError(404, "Order not found")
     if order.status in (STATUS_ARCHIVED_NO_KIZ, STATUS_CANCELLED):
@@ -522,11 +570,10 @@ def complete_order(db: Session, order_id):
         entity_id=str(order.id),
         idempotency_key=f"outbox:order:complete:{order.id}",
     )
+    response = order_to_read(order)
     outbox_service.outbox_fault("before_commit", "complete")
     db.commit()
     outbox_service.outbox_fault("after_commit", "complete")
-    db.refresh(order)
-    response = order_to_read(order)
     return response
 
 
@@ -594,28 +641,29 @@ def mark_order_returned(db: Session, order_id, return_reference="", returned_by=
     from .skladbot_return_requests import queue_skladbot_return_request_create
 
     event = queue_skladbot_return_request_create(db, order, confirmed)
-    return_movements = []
+    movement_records = []
     for item in order.items:
         for scan in item.scan_codes or []:
-            lock_kiz_code_for_transaction(db, scan.code)
-            movement = record_kiz_movement(
-                db,
-                code=scan.code,
-                movement_type=MOVEMENT_RETURN,
-                order_id=order.id,
-                order_item_id=item.id,
-                scan_code_id=scan.id,
-                return_reference=raw_payload["return_reference"],
-                source="backend",
-                actor=raw_payload["returned_by"],
-                occurred_at=returned_at,
-                raw_payload={
+            movement_records.append({
+                "code": scan.code,
+                "movement_type": MOVEMENT_RETURN,
+                "order_id": order.id,
+                "order_item_id": item.id,
+                "scan_code_id": scan.id,
+                "return_reference": raw_payload["return_reference"],
+                "source": "backend",
+                "actor": raw_payload["returned_by"],
+                "occurred_at": returned_at,
+                "raw_payload": {
                     "return_reference": raw_payload["return_reference"],
                     "returned_by": raw_payload["returned_by"],
                 },
-            )
-            if movement is not None:
-                return_movements.append(str(movement.id))
+            })
+    lock_kiz_codes_for_transaction(db, (record["code"] for record in movement_records))
+    return_movements = [
+        str(movement.id)
+        for movement in record_kiz_movements(db, movement_records)
+    ]
 
     db.add(AuditLog(
         action="order_returned",
@@ -644,11 +692,10 @@ def mark_order_returned(db: Session, order_id, return_reference="", returned_by=
         entity_id=str(order.id),
         idempotency_key=f"outbox:order:return:{order.id}",
     )
+    response = order_to_read(order)
     outbox_service.outbox_fault("before_commit", "return")
     db.commit()
     outbox_service.outbox_fault("after_commit", "return")
-    db.refresh(order)
-    response = order_to_read(order)
     return response
 
 

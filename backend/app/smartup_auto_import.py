@@ -883,32 +883,26 @@ def prepare_orphaned_smartup_sagas(
     slot_label: str,
     target_delivery_date: date | None,
 ) -> list[PendingEvent]:
-    existing_keys = set(db.execute(
-        select(PendingEvent.idempotency_key)
-        .where(PendingEvent.event_type == "smartup_deal_saga")
-    ).scalars().all())
+    export_iso = export_date.isoformat()
+    normalized_slot = normalize_text(slot_label)
+    expected_target = target_delivery_date.isoformat() if target_delivery_date else ""
+    metadata_expr = ImportJob.raw_payload["smartup_auto"]
     imports = db.execute(
         select(ImportJob)
         .where(ImportJob.source == SMARTUP_AUTO_IMPORT_SOURCE)
+        .where(ImportJob.status.in_(("completed", "completed_with_errors")))
+        .where(ImportJob.rows_imported > 0)
+        .where(metadata_expr["export_date"].as_string() == export_iso)
+        .where(metadata_expr["slot"].as_string() == normalized_slot)
+        .where(metadata_expr["target_delivery_date"].as_string() == expected_target)
+        .where(metadata_expr["saga_mode"].as_string() == "enforced")
         .order_by(ImportJob.created_at, ImportJob.id)
     ).scalars().all()
-    orphan_snapshots = []
+    candidates = []
     seen_deals = set()
     for import_job in imports:
         raw_payload = import_job.raw_payload or {}
         metadata = raw_payload.get("smartup_auto") if isinstance(raw_payload.get("smartup_auto"), dict) else {}
-        if normalize_text(metadata.get("export_date")) != export_date.isoformat():
-            continue
-        if normalize_text(metadata.get("slot")) != normalize_text(slot_label):
-            continue
-        metadata_target = normalize_text(metadata.get("target_delivery_date"))
-        expected_target = target_delivery_date.isoformat() if target_delivery_date else ""
-        if metadata_target != expected_target:
-            continue
-        if normalize_saga_mode(metadata.get("saga_mode")) != "enforced":
-            continue
-        if import_job.status not in {"completed", "completed_with_errors"} or int(import_job.rows_imported or 0) <= 0:
-            continue
         for deal_id in sorted({normalize_text(value) for value in metadata.get("deal_ids") or [] if normalize_text(value)}):
             key = saga_idempotency_key(
                 export_date=export_date,
@@ -917,10 +911,10 @@ def prepare_orphaned_smartup_sagas(
                 deal_id=deal_id,
                 target_status=config.waiting_status_code,
             )
-            if key in existing_keys or deal_id in seen_deals:
+            if deal_id in seen_deals:
                 continue
             seen_deals.add(deal_id)
-            orphan_snapshots.append({
+            candidates.append((key, {
                 "delivery_date": normalize_text((metadata.get("delivery_dates") or [""])[0]),
                 "import_id": str(import_job.id),
                 "status": import_job.status,
@@ -931,7 +925,16 @@ def prepare_orphaned_smartup_sagas(
                 "duplicate_rows": int(raw_payload.get("duplicate_rows") or 0),
                 "invalid_rows": int(raw_payload.get("invalid_rows") or 0),
                 "deal_ids": [deal_id],
-            })
+            }))
+    candidate_keys = [key for key, _snapshot in candidates]
+    existing_keys = set()
+    if candidate_keys:
+        existing_keys = set(db.execute(
+            select(PendingEvent.idempotency_key)
+            .where(PendingEvent.event_type == "smartup_deal_saga")
+            .where(PendingEvent.idempotency_key.in_(candidate_keys))
+        ).scalars())
+    orphan_snapshots = [snapshot for key, snapshot in candidates if key not in existing_keys]
     if not orphan_snapshots:
         return []
     return prepare_deal_sagas(
@@ -1458,17 +1461,16 @@ def find_existing_smartup_logistics_report_audit(db: Session, delivery_date: str
 
 
 def delivery_dates_for_export_date(db: Session, export_date: date) -> list[str]:
+    export_iso = export_date.isoformat()
     imports = db.execute(
         select(ImportJob)
         .where(ImportJob.source == SMARTUP_AUTO_IMPORT_SOURCE)
+        .where(ImportJob.raw_payload["smartup_auto"]["export_date"].as_string() == export_iso)
         .order_by(ImportJob.created_at.asc())
     ).scalars().all()
     result = set()
-    export_iso = export_date.isoformat()
     for import_job in imports:
         metadata = (import_job.raw_payload or {}).get("smartup_auto") or {}
-        if metadata.get("export_date") != export_iso:
-            continue
         for value in metadata.get("delivery_dates") or []:
             parsed = parse_smartup_date(value)
             if parsed:

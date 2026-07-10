@@ -23,6 +23,11 @@ from .secret_store import BACKEND_API_TOKEN_SECRET, SecretStoreError, load_secre
 from .utils import parse_date_to_standard, split_codes
 
 
+NEXT_CURSOR_HEADER = "X-TakSklad-Next-Cursor"
+DEFAULT_PAGE_LIMIT = 200
+DEFAULT_MAX_PAGES = 1000
+
+
 class BackendApiError(RuntimeError):
     def __init__(self, message, status_code=None, detail=None):
         self.status_code = status_code
@@ -64,6 +69,11 @@ def make_backend_headers():
 
 
 def backend_request(method, path, payload=None, timeout=None):
+    result, _headers = backend_request_page(method, path, payload=payload, timeout=timeout)
+    return result
+
+
+def backend_request_page(method, path, payload=None, timeout=None):
     if not TAKSKLAD_BACKEND_BASE_URL:
         raise BackendApiError("Backend URL не настроен")
 
@@ -82,8 +92,8 @@ def backend_request(method, path, payload=None, timeout=None):
         with open_https_url(request, timeout=timeout or TAKSKLAD_BACKEND_TIMEOUT_SECONDS) as response:
             raw = response.read().decode("utf-8")
             if not raw:
-                return {}
-            return json.loads(raw)
+                return {}, response.headers
+            return json.loads(raw), response.headers
     except urllib.error.HTTPError as exc:
         detail = read_error_detail(exc)
         raise BackendApiError(
@@ -94,6 +104,60 @@ def backend_request(method, path, payload=None, timeout=None):
     except Exception as exc:
         logging.info("Backend request failed: %s %s", method, path, exc_info=True)
         raise BackendApiError(str(exc)) from exc
+
+
+def backend_request_all_pages(path, *, page_limit=DEFAULT_PAGE_LIMIT, max_pages=DEFAULT_MAX_PAGES, timeout=None):
+    page_limit = _normalize_positive_int(page_limit, DEFAULT_PAGE_LIMIT)
+    max_pages = _normalize_positive_int(max_pages, DEFAULT_MAX_PAGES)
+    items = []
+    cursor = ""
+    seen_cursors = set()
+
+    for page_number in range(1, max_pages + 1):
+        page_path = _paginated_path(path, limit=page_limit, cursor=cursor)
+        payload, headers = backend_request_page("GET", page_path, timeout=timeout)
+        if not isinstance(payload, list):
+            raise BackendApiError("Backend pagination returned an invalid list response")
+        items.extend(payload)
+        next_cursor = str(headers.get(NEXT_CURSOR_HEADER, "") or "").strip()
+        if not next_cursor:
+            return items
+        if not payload:
+            raise BackendApiError("Backend pagination returned an empty page with continuation")
+        if next_cursor == cursor or next_cursor in seen_cursors:
+            raise BackendApiError("Backend pagination returned a repeated cursor")
+        if page_number >= max_pages:
+            raise BackendApiError("Backend pagination exceeded the page safety limit")
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
+
+    raise BackendApiError("Backend pagination exceeded the page safety limit")
+
+
+def _paginated_path(path, *, limit, cursor=""):
+    parts = urllib.parse.urlsplit(str(path or ""))
+    query = [
+        (key, value)
+        for key, value in urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
+        if key not in {"limit", "cursor"}
+    ]
+    query.append(("limit", str(limit)))
+    if cursor:
+        query.append(("cursor", cursor))
+    return urllib.parse.urlunsplit((
+        parts.scheme,
+        parts.netloc,
+        parts.path,
+        urllib.parse.urlencode(query),
+        parts.fragment,
+    ))
+
+
+def _normalize_positive_int(value, default):
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return int(default)
 
 
 def read_error_detail(exc):
@@ -119,7 +183,7 @@ def format_backend_error(status_code, detail):
 
 
 def fetch_active_orders():
-    return backend_request("GET", "/api/v1/orders/active")
+    return backend_request_all_pages("/api/v1/orders/active")
 
 
 def sync_backend_sources(sync_skladbot=True, wait_skladbot=True):

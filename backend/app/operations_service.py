@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from .health_service import build_readiness_report, event_age_seconds
@@ -80,14 +80,24 @@ def count_event_types(by_type, event_types):
 
 
 def queue_attention_items(db: Session, now):
-    events = db.execute(
-        select(PendingEvent)
+    action_expr = PendingEvent.payload["action"].as_string()
+    rows = db.execute(
+        select(
+            PendingEvent.event_type,
+            PendingEvent.status,
+            action_expr.label("action"),
+            func.count(PendingEvent.id).label("event_count"),
+            func.min(PendingEvent.created_at).label("oldest_created_at"),
+            func.max(PendingEvent.attempts).label("max_attempts"),
+            func.max(case((PendingEvent.last_error.is_not(None), 1), else_=0)).label("has_error"),
+        )
         .where(PendingEvent.status.in_(ACTIVE_EVENT_STATUSES))
-        .order_by(PendingEvent.created_at, PendingEvent.id)
-    ).scalars().all()
+        .group_by(PendingEvent.event_type, PendingEvent.status, action_expr)
+        .order_by(PendingEvent.event_type, PendingEvent.status, action_expr)
+    ).all()
     grouped = {}
-    for event in events:
-        category, impact, title, next_action = classify_event(event)
+    for event_type, status, action, event_count, oldest_created_at, max_attempts, has_error in rows:
+        category, impact, title, next_action = classify_event_values(event_type, action)
         key = (category, impact, title, next_action)
         item = grouped.setdefault(key, {
             "category": category,
@@ -99,11 +109,16 @@ def queue_attention_items(db: Session, now):
             "next_action": next_action,
             "details": [],
         })
-        item["count"] += 1
-        age = event_age_seconds(event, now, field="created_at")
+        item["count"] += int(event_count or 0)
+        age = int(max(0, (now - ensure_aware_utc(oldest_created_at)).total_seconds())) if oldest_created_at else 0
         item["oldest_age_seconds"] = max(item["oldest_age_seconds"], age)
         if len(item["details"]) < 3:
-            item["details"].append(event_detail(event))
+            detail = f"type={redact_secrets(event_type or '')} status={status or ''} attempts<={int(max_attempts or 0)}"
+            if action:
+                detail += f" action={redact_secrets(action)}"
+            if has_error:
+                detail += " error=present"
+            item["details"].append(detail)
     return list(grouped.values())
 
 
@@ -111,6 +126,12 @@ def classify_event(event):
     event_type = str(event.event_type or "")
     payload = event.payload if isinstance(event.payload, dict) else {}
     action = str(payload.get("action") or "")
+    return classify_event_values(event_type, action)
+
+
+def classify_event_values(event_type, action):
+    event_type = str(event_type or "")
+    action = str(action or "")
     if event_type == "google_sheets_export":
         return (
             "google_mirror",
@@ -229,3 +250,11 @@ def build_operations_telegram_summary(items):
 
 def severity_order(value):
     return {"critical": 0, "warning": 1, "info": 2}.get(str(value or ""), 3)
+
+
+def ensure_aware_utc(value):
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)

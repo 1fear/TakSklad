@@ -711,6 +711,24 @@ def plan_accounting(node):
     return int(rows), int(buffers)
 
 
+def plan_paths(node):
+    node_types = []
+    indexes = []
+
+    def visit(current):
+        node_type = str(current.get("Node Type") or "")
+        index_name = str(current.get("Index Name") or "")
+        if node_type and node_type not in node_types:
+            node_types.append(node_type)
+        if index_name and index_name not in indexes:
+            indexes.append(index_name)
+        for child in current.get("Plans") or []:
+            visit(child)
+
+    visit(node)
+    return node_types, indexes
+
+
 def capture_explain(database_url, profile_name, context):
     plans = {}
     summaries = {}
@@ -724,12 +742,15 @@ def capture_explain(database_url, profile_name, context):
                 payload = row[0]
                 root = payload[0]["Plan"]
                 rows_examined, buffers_examined = plan_accounting(root)
+                node_types, indexes = plan_paths(root)
                 plans[workload] = payload
                 summaries[workload] = {
                     "execution_time_ms": round(float(payload[0].get("Execution Time") or 0), 3),
                     "planning_time_ms": round(float(payload[0].get("Planning Time") or 0), 3),
                     "rows_examined": rows_examined,
                     "buffers_examined": buffers_examined,
+                    "node_types": node_types,
+                    "indexes": indexes,
                 }
             finally:
                 connection.rollback()

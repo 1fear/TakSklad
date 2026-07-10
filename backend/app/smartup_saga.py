@@ -214,8 +214,18 @@ def record_shadow_results(db: Session, events: list[PendingEvent], response: dic
 
 
 def mark_skladbot_results(db: Session, events: list[PendingEvent]) -> None:
+    import_ids = sorted({
+        normalize_text((event.payload or {}).get("import_id"))
+        for event in events
+        if normalize_text((event.payload or {}).get("import_id"))
+    })
+    if not import_ids:
+        return
     create_events = db.execute(
-        select(PendingEvent).where(PendingEvent.event_type == "skladbot_request_create")
+        select(PendingEvent)
+        .where(PendingEvent.event_type == "skladbot_request_create")
+        .where(PendingEvent.payload["import_id"].as_string().in_(import_ids))
+        .order_by(PendingEvent.created_at, PendingEvent.id)
     ).scalars().all()
     by_import = {}
     for create_event in create_events:
@@ -246,19 +256,17 @@ def load_slot_sagas(
     slot_label: str,
     target_delivery_date: date | None,
 ) -> list[PendingEvent]:
+    target_text = target_delivery_date.isoformat() if target_delivery_date else ""
     events = db.execute(
         select(PendingEvent)
         .where(PendingEvent.event_type == SMARTUP_DEAL_SAGA_EVENT_TYPE)
         .where(PendingEvent.status.in_(("pending", "failed", "processing")))
+        .where(PendingEvent.payload["export_date"].as_string() == export_date.isoformat())
+        .where(PendingEvent.payload["slot"].as_string() == normalize_text(slot_label))
+        .where(PendingEvent.payload["target_delivery_date"].as_string() == target_text)
         .order_by(PendingEvent.created_at, PendingEvent.id)
     ).scalars().all()
-    target_text = target_delivery_date.isoformat() if target_delivery_date else ""
-    return [
-        event for event in events
-        if normalize_text((event.payload or {}).get("export_date")) == export_date.isoformat()
-        and normalize_text((event.payload or {}).get("slot")) == normalize_text(slot_label)
-        and normalize_text((event.payload or {}).get("target_delivery_date")) == target_text
-    ]
+    return list(events)
 
 
 def imports_from_sagas(events: list[PendingEvent]) -> list[dict]:

@@ -7,12 +7,16 @@ from datetime import date, datetime
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import Session, selectinload
 
-from .client_points_service import sync_client_point_from_import_row
+from .client_points_service import (
+    prefetch_client_points_for_import,
+    sync_client_point_from_import_row_cached,
+)
 from .google_sheets_exporter import make_sheet_record
 from .google_sheets_pending import (
     queue_google_sheets_export,
 )
 from .models import AuditLog, ImportFile, ImportJob, Incident, Order, OrderItem, PendingEvent
+from .pagination import CursorError, decode_cursor, encode_cursor, normalize_page_limit
 from . import outbox_service
 from .orders_service import STATUS_COMPLETED, STATUS_NOT_COMPLETED, STATUS_RETURNED
 from .schemas import ImportCreate, ImportPreviewResult, ImportRead, ImportResult
@@ -146,6 +150,10 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
     acquire_import_identity_locks(db, row_locks)
     prefetch_existing_items(db, (row for _index, _raw, row in prepared_rows), existing_items)
     prefetch_active_orders(db, (row["order_key"] for _index, _raw, row in prepared_rows), order_by_key)
+    client_points_by_key = prefetch_client_points_for_import(
+        db,
+        (row for _index, _raw, row in prepared_rows),
+    )
 
     for _index, raw_row, row in prepared_rows:
 
@@ -153,7 +161,7 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
             duplicate_rows += 1
             continue
 
-        sync_client_point_from_import_row(db, row)
+        sync_client_point_from_import_row_cached(db, row, client_points_by_key)
 
         google_sheets_records.append(
             make_sheet_record(
@@ -184,6 +192,7 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
         order = find_active_order_by_key(db, order_key, order_by_key)
         if order is None:
             order = Order(
+                id=uuid.uuid4(),
                 source=import_job.source,
                 external_id=order_key,
                 import_order_key=order_key,
@@ -203,7 +212,6 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
                 ),
             )
             db.add(order)
-            db.flush()
             order_by_key[order_key] = order
             orders_created += 1
 
@@ -525,9 +533,45 @@ def chunk_outbox_records(records):
     return chunks
 
 
-def list_imports(db: Session):
-    stmt = select(ImportJob).order_by(ImportJob.created_at.desc())
-    return [
+def list_imports_page(
+    db: Session,
+    *,
+    limit=50,
+    cursor="",
+    import_id="",
+    telegram_event_id="",
+):
+    row_limit = normalize_page_limit(limit)
+    filters = {
+        "import_id": normalize_text(import_id),
+        "telegram_event_id": normalize_text(telegram_event_id),
+    }
+    stmt = select(ImportJob)
+    if filters["import_id"]:
+        try:
+            stmt = stmt.where(ImportJob.id == uuid.UUID(filters["import_id"]))
+        except ValueError:
+            raise CursorError("invalid_cursor") from None
+    if filters["telegram_event_id"]:
+        stmt = stmt.where(
+            ImportJob.raw_payload["telegram_event_id"].as_string() == filters["telegram_event_id"]
+        )
+    if cursor:
+        try:
+            cursor_created_at, cursor_id = decode_cursor(cursor, "imports", filters=filters)
+            parsed_created_at = datetime.fromisoformat(str(cursor_created_at).replace("Z", "+00:00"))
+            parsed_id = uuid.UUID(str(cursor_id))
+        except (CursorError, TypeError, ValueError):
+            raise CursorError("invalid_cursor") from None
+        stmt = stmt.where(or_(
+            ImportJob.created_at < parsed_created_at,
+            and_(ImportJob.created_at == parsed_created_at, ImportJob.id < parsed_id),
+        ))
+    rows = db.execute(
+        stmt.order_by(ImportJob.created_at.desc(), ImportJob.id.desc()).limit(row_limit + 1)
+    ).scalars().all()
+    page_rows = rows[:row_limit]
+    result = [
         ImportRead(
             id=str(row.id),
             source=row.source,
@@ -537,8 +581,21 @@ def list_imports(db: Session):
             raw_payload=row.raw_payload,
             created_at=row.created_at,
         )
-        for row in db.execute(stmt).scalars()
+        for row in page_rows
     ]
+    next_cursor = ""
+    if len(rows) > row_limit:
+        last = page_rows[-1]
+        next_cursor = encode_cursor(
+            "imports",
+            [last.created_at.isoformat(), str(last.id)],
+            filters=filters,
+        )
+    return result, next_cursor, row_limit
+
+
+def list_imports(db: Session, limit=None):
+    return list_imports_page(db, limit=limit or 200)[0]
 
 
 def acquire_import_identity_lock(db: Session, namespace: str, value: str):

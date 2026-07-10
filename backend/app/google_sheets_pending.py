@@ -6,7 +6,7 @@ from threading import Lock
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from .event_leases import claim_event_leases, event_leases_enabled, finalize_event_leases
@@ -24,7 +24,7 @@ from .google_sheets_exporter import (
     sync_backend_order_item_to_google_sheets,
 )
 from .models import AuditLog, Order, OrderItem, PendingEvent
-from .outbox_service import find_active_outbox_event, queue_outbox_event, reactivate_outbox_event
+from .outbox_service import queue_outbox_event, reactivate_outbox_event
 
 
 GOOGLE_SHEETS_EXPORT_EVENT_TYPE = "google_sheets_export"
@@ -49,6 +49,7 @@ SCAN_EXPORT_TERMINAL_STATUSES = {
 }
 LOCAL_EXPORT_LOCK = Lock()
 STALE_PROCESSING_EXPORT_TIMEOUT = timedelta(minutes=10)
+STALE_PROCESSING_RESET_BATCH_SIZE = 200
 logger = logging.getLogger(__name__)
 PAYLOAD_IDEMPOTENT_EXPORT_ACTIONS = {
     "google_sheets_import_export",
@@ -77,24 +78,45 @@ def queue_google_sheets_export(db: Session, action, entity_type, entity_id, resu
         "last_result": result or {},
     }
     idempotency_key = google_sheets_export_idempotency_key(action, entity_type, entity_id, payload)
+    multi_chunk_intent = int((payload or {}).get("chunk_count") or 0) > 1
+    active_lookup_performed = bool(idempotency_key and not multi_chunk_intent)
     if idempotency_key:
         event_payload["idempotency_key"] = idempotency_key
+        predicates = [PendingEvent.idempotency_key == idempotency_key]
+        if not multi_chunk_intent:
+            predicates.append(
+                (PendingEvent.event_type == GOOGLE_SHEETS_EXPORT_EVENT_TYPE)
+                & (PendingEvent.action == action)
+                & (PendingEvent.aggregate_type == entity_type)
+                & (PendingEvent.aggregate_id == entity_id)
+                & PendingEvent.status.in_(("pending", "failed"))
+            )
         existing_by_key = db.execute(
-            select(PendingEvent).where(PendingEvent.idempotency_key == idempotency_key)
+            select(PendingEvent)
+            .where(or_(*predicates))
+            .order_by(
+                case((PendingEvent.idempotency_key == idempotency_key, 0), else_=1),
+                PendingEvent.created_at,
+                PendingEvent.id,
+            )
+            .limit(1)
         ).scalar_one_or_none()
         if existing_by_key is not None:
+            event_payload["idempotency_key"] = existing_by_key.idempotency_key or idempotency_key
             if existing_by_key.status in ("pending", "failed"):
                 reactivate_outbox_event(existing_by_key, event_payload, format_export_error(result))
             return existing_by_key
-    multi_chunk_intent = int((payload or {}).get("chunk_count") or 0) > 1
-    if not multi_chunk_intent:
-        existing = find_active_outbox_event(
-            db,
-            event_type=GOOGLE_SHEETS_EXPORT_EVENT_TYPE,
-            action=action,
-            aggregate_type=entity_type,
-            aggregate_id=entity_id,
-        )
+    if not multi_chunk_intent and not active_lookup_performed:
+        existing = db.execute(
+            select(PendingEvent)
+            .where(PendingEvent.event_type == GOOGLE_SHEETS_EXPORT_EVENT_TYPE)
+            .where(PendingEvent.action == action)
+            .where(PendingEvent.aggregate_type == entity_type)
+            .where(PendingEvent.aggregate_id == entity_id)
+            .where(PendingEvent.status.in_(("pending", "failed")))
+            .order_by(PendingEvent.created_at, PendingEvent.id)
+            .limit(1)
+        ).scalar_one_or_none()
         if existing is not None:
             event_payload["idempotency_key"] = existing.idempotency_key or idempotency_key
             return reactivate_outbox_event(existing, event_payload, format_export_error(result))
@@ -136,17 +158,13 @@ def mark_google_sheets_export_synced(db: Session, action, entity_id, result=None
     if not action or not entity_id:
         return 0
 
-    candidate_events = db.execute(
+    events = db.execute(
         select(PendingEvent)
         .where(PendingEvent.event_type == GOOGLE_SHEETS_EXPORT_EVENT_TYPE)
         .where(PendingEvent.status.in_(("pending", "failed")))
+        .where(PendingEvent.payload["action"].as_string() == action)
+        .where(PendingEvent.payload["entity_id"].as_string() == entity_id)
     ).scalars().all()
-    events = [
-        event
-        for event in candidate_events
-        if (event.payload or {}).get("action") == action
-        and str((event.payload or {}).get("entity_id") or "") == entity_id
-    ]
     for event in events:
         event.status = "completed"
         event.last_error = ""
@@ -543,15 +561,20 @@ def google_sheets_export_event_ready(event: PendingEvent, now=None):
 
 def google_sheets_export_cooldown_until(db: Session, now=None):
     now = now or datetime.now(timezone.utc)
-    attempts = []
-    events = db.execute(
-        select(PendingEvent)
+    raw_attempt = PendingEvent.payload["next_attempt_at"].as_string()
+    values = db.execute(
+        select(raw_attempt)
         .where(PendingEvent.event_type == GOOGLE_SHEETS_EXPORT_EVENT_TYPE)
         .where(PendingEvent.status.in_(("pending", "failed")))
+        .where(raw_attempt.is_not(None))
+        .where(raw_attempt != "")
+        .where(raw_attempt > now.isoformat())
+        .order_by(raw_attempt)
+        .limit(200)
     ).scalars().all()
-    for event in events:
-        payload = event.payload or {}
-        next_attempt_at = str(payload.get("next_attempt_at") or "").strip()
+    attempts = []
+    for value in values:
+        next_attempt_at = str(value or "").strip()
         if not next_attempt_at:
             continue
         try:
@@ -574,6 +597,8 @@ def reset_stale_processing_export_events(db: Session):
         .where(PendingEvent.status == "processing")
         .where(PendingEvent.updated_at < cutoff)
         .where((PendingEvent.lease_owner.is_(None)) | (PendingEvent.lease_expires_at <= now))
+        .order_by(PendingEvent.updated_at, PendingEvent.id)
+        .limit(STALE_PROCESSING_RESET_BATCH_SIZE)
     ).scalars().all()
     if not events:
         return 0
@@ -601,12 +626,11 @@ def reset_stale_processing_export_events(db: Session):
 
 
 def count_pending_export_events(db: Session):
-    events = db.execute(
-        select(PendingEvent)
+    return int(db.execute(
+        select(func.count(PendingEvent.id))
         .where(PendingEvent.event_type == GOOGLE_SHEETS_EXPORT_EVENT_TYPE)
         .where(PendingEvent.status.in_(("pending", "failed")))
-    ).scalars().unique().all()
-    return len(events)
+    ).scalar_one() or 0)
 
 
 def run_google_sheets_export_event(db: Session, event: PendingEvent):
@@ -708,6 +732,8 @@ def run_google_sheets_export_event(db: Session, event: PendingEvent):
 def load_skladbot_export_orders(db: Session, payload):
     order_ids = [parse_uuid(value) for value in (payload.get("order_ids") or [])]
     order_ids = [value for value in order_ids if value is not None]
+    if not order_ids:
+        return []
     include_inactive = bool(payload.get("include_inactive")) and bool(order_ids)
     stmt = (
         select(Order)
@@ -715,8 +741,7 @@ def load_skladbot_export_orders(db: Session, payload):
     )
     if not include_inactive:
         stmt = stmt.where(~Order.status.in_(SKLADBOT_EXPORT_INACTIVE_ORDER_STATUSES))
-    if order_ids:
-        stmt = stmt.where(Order.id.in_(order_ids))
+    stmt = stmt.where(Order.id.in_(order_ids))
     return db.execute(stmt).scalars().all()
 
 

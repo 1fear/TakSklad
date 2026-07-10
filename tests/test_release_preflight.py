@@ -120,7 +120,7 @@ class ReleasePreflightTests(unittest.TestCase):
             return "shadow_diagnostics backend_active_orders_source google_mirror_lag_seconds hot_path_stale_processing telegram_worker_state\n"
         if path_text.endswith("backend/app/health_service.py"):
             return (
-                'EXPECTED_HEAD_REVISION = "20260710_0011"\n'
+                'EXPECTED_HEAD_REVISION = "20260710_0014"\n'
                 'report["ready"] = True\n'
                 'report["status"] = "unhealthy"\n'
                 'report["status"] = "degraded"\n'

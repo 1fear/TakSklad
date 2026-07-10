@@ -2,8 +2,8 @@ import hashlib
 import re
 from datetime import date, datetime, timezone
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy import String, case, func, literal, or_, select, union
+from sqlalchemy.orm import Session
 
 from .models import AuditLog, ClientPoint, Order, OrderItem
 from .orders_service import STATUS_RETURNED
@@ -20,46 +20,160 @@ class ClientPointApiError(Exception):
         self.detail = detail
 
 
-def list_client_points(db: Session, query="", custom_timeslot=None, limit=None):
+def register_sqlite_normalizers(db: Session) -> None:
+    if db.bind is None or db.bind.dialect.name != "sqlite":
+        return
+    connection = db.connection().connection
+    driver_connection = getattr(connection, "driver_connection", connection)
+    driver_connection.create_function("taksklad_point_key", 1, point_key, deterministic=True)
+    driver_connection.create_function("taksklad_search_text", 1, normalize_search_text, deterministic=True)
+
+
+def sql_point_key(db: Session, column):
+    if db.bind is not None and db.bind.dialect.name == "sqlite":
+        register_sqlite_normalizers(db)
+        return func.taksklad_point_key(column, type_=String())
+    lowered = func.lower(func.replace(func.coalesce(column, ""), "ё", "е"))
+    return func.regexp_replace(lowered, r"[^0-9a-zа-я]+", "", "g", type_=String())
+
+
+def sql_search_text(db: Session, value):
+    if db.bind is not None and db.bind.dialect.name == "sqlite":
+        register_sqlite_normalizers(db)
+        return func.taksklad_search_text(value, type_=String())
+    return func.lower(func.replace(func.coalesce(value, ""), "ё", "е"), type_=String())
+
+
+def sql_returned_order_predicate():
+    return_status = func.lower(func.coalesce(Order.raw_payload["return_status"].as_string(), ""))
+    return or_(
+        func.lower(func.coalesce(Order.status, "")) == STATUS_RETURNED,
+        return_status.in_(("returned", "return", "возврат")),
+    )
+
+
+def list_client_points(db: Session, query="", custom_timeslot=None, limit=None, offset=0):
     row_limit = None if limit is None else max(1, int(limit))
-    order_meta = build_order_point_meta(db)
-    saved_points = db.execute(
-        select(ClientPoint).order_by(ClientPoint.client_name.asc(), ClientPoint.address.asc(), ClientPoint.id.asc())
-    ).scalars().all()
+    row_offset = max(0, int(offset or 0))
+    order_aggregate, order_display, order_coordinates, order_representative = order_point_ctes(db)
+    saved_key = sql_point_key(db, ClientPoint.client_name)
+    saved_ranked = select(
+        ClientPoint.id.label("id"),
+        saved_key.label("point_key"),
+        ClientPoint.client_name.label("client_name"),
+        ClientPoint.point_name.label("point_name"),
+        ClientPoint.address.label("address"),
+        ClientPoint.coordinates.label("coordinates"),
+        ClientPoint.representative.label("representative"),
+        ClientPoint.delivery_from.label("delivery_from"),
+        ClientPoint.delivery_to.label("delivery_to"),
+        ClientPoint.is_active.label("is_active"),
+        ClientPoint.created_at.label("created_at"),
+        ClientPoint.updated_at.label("updated_at"),
+        func.row_number().over(
+            partition_by=saved_key,
+            order_by=(
+                ClientPoint.client_name.desc(),
+                ClientPoint.address.desc(),
+                ClientPoint.id.desc(),
+            ),
+        ).label("saved_rank"),
+    ).cte("client_point_saved_ranked")
+    saved = select(saved_ranked).where(saved_ranked.c.saved_rank == 1).cte("client_point_saved")
+    point_keys = union(
+        select(order_aggregate.c.point_key),
+        select(saved.c.point_key),
+    ).cte("client_point_keys")
 
-    rows_by_key = {
-        key: derived_point_to_read(key, meta)
-        for key, meta in order_meta.items()
-    }
-    for point in saved_points:
-        key = point_key(point.client_name)
-        rows_by_key[key] = client_point_to_read(point, order_meta.get(key), source="saved")
-
-    rows = list(rows_by_key.values())
+    is_saved = saved.c.id.is_not(None)
+    client_name = func.coalesce(saved.c.client_name, order_display.c.client_name, "")
+    point_name = func.coalesce(saved.c.point_name, "")
+    address = func.coalesce(saved.c.address, order_display.c.address, "")
+    coordinates = func.coalesce(
+        func.nullif(saved.c.coordinates, ""),
+        order_coordinates.c.coordinates,
+        "",
+    )
+    representative = func.coalesce(
+        func.nullif(saved.c.representative, ""),
+        order_representative.c.representative,
+        "",
+    )
+    delivery_from = func.coalesce(func.nullif(saved.c.delivery_from, ""), DEFAULT_DELIVERY_FROM)
+    delivery_to = func.coalesce(func.nullif(saved.c.delivery_to, ""), DEFAULT_DELIVERY_TO)
+    has_custom_timeslot = or_(
+        delivery_from != DEFAULT_DELIVERY_FROM,
+        delivery_to != DEFAULT_DELIVERY_TO,
+    )
+    searchable = (
+        client_name + literal(" ") + point_name + literal(" ") + address
+        + literal(" ") + representative + literal(" ") + coordinates
+    )
+    statement = (
+        select(
+            point_keys.c.point_key,
+            saved.c.id,
+            client_name.label("client_name"),
+            point_name.label("point_name"),
+            address.label("address"),
+            coordinates.label("coordinates"),
+            representative.label("representative"),
+            delivery_from.label("delivery_from"),
+            delivery_to.label("delivery_to"),
+            func.coalesce(saved.c.is_active, True).label("is_active"),
+            is_saved.label("is_saved"),
+            has_custom_timeslot.label("has_custom_timeslot"),
+            func.coalesce(order_aggregate.c.orders_count, 0).label("orders_count"),
+            func.coalesce(order_aggregate.c.returned_orders_count, 0).label("returned_orders_count"),
+            order_aggregate.c.last_order_date,
+            saved.c.created_at,
+            saved.c.updated_at,
+        )
+        .select_from(point_keys)
+        .outerjoin(order_aggregate, order_aggregate.c.point_key == point_keys.c.point_key)
+        .outerjoin(order_display, order_display.c.point_key == point_keys.c.point_key)
+        .outerjoin(order_coordinates, order_coordinates.c.point_key == point_keys.c.point_key)
+        .outerjoin(order_representative, order_representative.c.point_key == point_keys.c.point_key)
+        .outerjoin(saved, saved.c.point_key == point_keys.c.point_key)
+    )
     normalized_query = normalize_search_text(query)
     if normalized_query:
-        rows = [
-            row for row in rows
-            if normalized_query in normalize_search_text(
-                " ".join([
-                    row["client_name"],
-                    row["point_name"],
-                    row["address"],
-                    row["representative"],
-                    row["coordinates"],
-                ])
-            )
-        ]
+        statement = statement.where(sql_search_text(db, searchable).contains(normalized_query, autoescape=True))
     if custom_timeslot is not None:
-        expected = bool(custom_timeslot)
-        rows = [row for row in rows if row["has_custom_timeslot"] == expected]
+        statement = statement.where(has_custom_timeslot.is_(bool(custom_timeslot)))
+    statement = statement.order_by(
+        case((has_custom_timeslot, 0), else_=1),
+        sql_search_text(db, client_name).asc(),
+        sql_search_text(db, address).asc(),
+    )
+    if row_limit is not None:
+        statement = statement.limit(row_limit)
+    if row_offset:
+        statement = statement.offset(row_offset)
 
-    rows.sort(key=lambda row: (
-        not row["has_custom_timeslot"],
-        row["client_name"].casefold(),
-        row["address"].casefold(),
-    ))
-    return rows if row_limit is None else rows[:row_limit]
+    rows = []
+    for row in db.execute(statement).mappings():
+        saved_point = bool(row["is_saved"])
+        rows.append({
+            "id": str(row["id"]) if saved_point else f"derived:{stable_point_id(row['point_key'])}",
+            "client_name": row["client_name"] or "",
+            "point_name": row["point_name"] or "",
+            "address": row["address"] or "",
+            "coordinates": row["coordinates"] or "",
+            "representative": row["representative"] or "",
+            "delivery_from": row["delivery_from"] or DEFAULT_DELIVERY_FROM,
+            "delivery_to": row["delivery_to"] or DEFAULT_DELIVERY_TO,
+            "is_active": bool(row["is_active"]),
+            "is_saved": saved_point,
+            "source": "saved" if saved_point else "orders",
+            "has_custom_timeslot": bool(row["has_custom_timeslot"]),
+            "orders_count": int(row["orders_count"] or 0),
+            "returned_orders_count": int(row["returned_orders_count"] or 0),
+            "last_order_date": row["last_order_date"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        })
+    return rows
 
 
 def update_client_point_timeslot(db: Session, payload):
@@ -126,17 +240,58 @@ def update_client_point_timeslot(db: Session, payload):
     ))
     db.commit()
     db.refresh(point)
-    return client_point_to_read(point, build_order_point_meta(db).get(key), source="saved")
+    return client_point_to_read(point, build_order_point_meta(db, key).get(key), source="saved")
 
 
 def sync_client_point_from_import_row(db: Session, row):
+    return sync_client_point_from_import_row_cached(db, row)
+
+
+def prefetch_client_points_for_import(db: Session, rows):
+    normalized_clients = {
+        point_key(row.get("client"))
+        for row in rows
+        if normalize_text(row.get("client"))
+        and normalize_text(row.get("address"))
+        and not is_pickup_address(row.get("address"))
+    }
+    cache = {key: None for key in normalized_clients}
+    if not normalized_clients:
+        return cache
+
+    statement = (
+        select(ClientPoint)
+        .where(ClientPoint.normalized_client.in_(normalized_clients))
+        .order_by(
+            ClientPoint.updated_at.desc(),
+            ClientPoint.created_at.desc(),
+            ClientPoint.id.asc(),
+        )
+    )
+    with db.no_autoflush:
+        points = db.execute(statement).scalars()
+        for point in points:
+            key = point_key(point.client_name)
+            if key in cache and cache[key] is None:
+                cache[key] = point
+    return cache
+
+
+def sync_client_point_from_import_row_cached(db: Session, row, cache=None):
     client_name = normalize_text(row.get("client"))
     address = normalize_text(row.get("address"))
     if not client_name or not address or is_pickup_address(address):
         return None
     key = point_key(client_name)
     normalized_address = normalize_lookup_text(address)
-    point = find_client_point(db, key, normalized_address)
+    if cache is None:
+        point = find_client_point(db, key, normalized_address)
+    elif key in cache:
+        point = cache[key]
+    else:
+        with db.no_autoflush:
+            point = find_client_point(db, key, normalized_address)
+        cache[key] = point
     if point is None:
         point = ClientPoint(
             client_name=client_name,
@@ -152,6 +307,8 @@ def sync_client_point_from_import_row(db: Session, row):
             raw_payload={"source": "import"},
         )
         db.add(point)
+        if cache is not None:
+            cache[key] = point
         return point
     point.client_name = client_name
     point.normalized_client = key
@@ -168,6 +325,8 @@ def sync_client_point_from_import_row(db: Session, row):
         "source": "import",
         "last_import_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
+    if cache is not None:
+        cache[key] = point
     return point
 
 
@@ -186,41 +345,111 @@ def delivery_slot_for_order(order, slot_map):
     return slot_map.get(point_key(order.client), (DEFAULT_DELIVERY_FROM, DEFAULT_DELIVERY_TO))
 
 
-def build_order_point_meta(db: Session):
-    rows = db.execute(
-        select(Order)
-        .order_by(Order.client.asc(), Order.address.asc(), Order.order_date.asc(), Order.created_at.asc())
-    ).scalars().all()
+def order_point_ctes(db: Session):
+    order_key = sql_point_key(db, Order.client)
+    coordinates = func.coalesce(Order.raw_payload["coordinates"].as_string(), "")
+    representative = func.coalesce(Order.representative, "")
+    returned = sql_returned_order_predicate()
+    legacy_order = (
+        Order.client.asc(),
+        Order.address.asc(),
+        case((Order.order_date.is_(None), 1), else_=0),
+        Order.order_date.asc(),
+        Order.created_at.asc(),
+        Order.id.asc(),
+    )
+    ranked = select(
+        order_key.label("point_key"),
+        Order.client.label("client_name"),
+        Order.address.label("address"),
+        coordinates.label("coordinates"),
+        representative.label("representative"),
+        Order.order_date.label("order_date"),
+        returned.label("is_returned"),
+        func.row_number().over(
+            partition_by=order_key,
+            order_by=(
+                case((Order.order_date.is_(None), 1), else_=0),
+                Order.order_date.desc(),
+                Order.client.asc(),
+                Order.address.asc(),
+                Order.created_at.asc(),
+                Order.id.asc(),
+            ),
+        ).label("display_rank"),
+        func.row_number().over(
+            partition_by=order_key,
+            order_by=(case((func.trim(coordinates) == "", 1), else_=0), *legacy_order),
+        ).label("coordinates_rank"),
+        func.row_number().over(
+            partition_by=order_key,
+            order_by=(case((func.trim(representative) == "", 1), else_=0), *legacy_order),
+        ).label("representative_rank"),
+    ).where(order_key != "").cte("client_point_order_ranked")
+    aggregate = (
+        select(
+            ranked.c.point_key,
+            func.sum(case((ranked.c.is_returned, 0), else_=1)).label("orders_count"),
+            func.sum(case((ranked.c.is_returned, 1), else_=0)).label("returned_orders_count"),
+            func.max(ranked.c.order_date).label("last_order_date"),
+        )
+        .group_by(ranked.c.point_key)
+        .cte("client_point_order_aggregate")
+    )
+    display = select(
+        ranked.c.point_key,
+        ranked.c.client_name,
+        ranked.c.address,
+    ).where(ranked.c.display_rank == 1).cte("client_point_order_display")
+    first_coordinates = select(
+        ranked.c.point_key,
+        ranked.c.coordinates,
+    ).where(
+        ranked.c.coordinates_rank == 1,
+        func.trim(ranked.c.coordinates) != "",
+    ).cte("client_point_order_coordinates")
+    first_representative = select(
+        ranked.c.point_key,
+        ranked.c.representative,
+    ).where(
+        ranked.c.representative_rank == 1,
+        func.trim(ranked.c.representative) != "",
+    ).cte("client_point_order_representative")
+    return aggregate, display, first_coordinates, first_representative
+
+
+def build_order_point_meta(db: Session, normalized_client=None):
+    aggregate, display, coordinates, representative = order_point_ctes(db)
+    statement = (
+        select(
+            aggregate.c.point_key,
+            display.c.client_name,
+            display.c.address,
+            coordinates.c.coordinates,
+            representative.c.representative,
+            aggregate.c.orders_count,
+            aggregate.c.returned_orders_count,
+            aggregate.c.last_order_date,
+        )
+        .join(display, display.c.point_key == aggregate.c.point_key)
+        .outerjoin(coordinates, coordinates.c.point_key == aggregate.c.point_key)
+        .outerjoin(representative, representative.c.point_key == aggregate.c.point_key)
+    )
+    if normalized_client is not None:
+        statement = statement.where(aggregate.c.point_key == point_key(normalized_client))
     meta_by_key = {}
-    for order in rows:
-        client_name = normalize_text(order.client)
-        address = normalize_text(order.address)
-        if not client_name or not address:
-            continue
-        raw_payload = order.raw_payload or {}
-        key = point_key(client_name)
-        meta = meta_by_key.setdefault(key, {
-            "client_name": client_name,
+    for row in db.execute(statement).mappings():
+        key = row["point_key"]
+        meta_by_key[key] = {
+            "client_name": row["client_name"] or "",
             "point_name": "",
-            "address": address,
-            "coordinates": "",
-            "representative": "",
-            "orders_count": 0,
-            "returned_orders_count": 0,
-            "last_order_date": None,
-        })
-        if is_returned_order(order):
-            meta["returned_orders_count"] += 1
-        else:
-            meta["orders_count"] += 1
-        if order.order_date and (meta["last_order_date"] is None or order.order_date > meta["last_order_date"]):
-            meta["last_order_date"] = order.order_date
-            meta["client_name"] = client_name
-            meta["address"] = address
-        if not meta["coordinates"] and normalize_text(raw_payload.get("coordinates")):
-            meta["coordinates"] = normalize_text(raw_payload.get("coordinates"))
-        if not meta["representative"] and normalize_text(order.representative):
-            meta["representative"] = normalize_text(order.representative)
+            "address": row["address"] or "",
+            "coordinates": row["coordinates"] or "",
+            "representative": row["representative"] or "",
+            "orders_count": int(row["orders_count"] or 0),
+            "returned_orders_count": int(row["returned_orders_count"] or 0),
+            "last_order_date": row["last_order_date"],
+        }
     return meta_by_key
 
 
@@ -235,15 +464,44 @@ def get_client_point_order_summary(
         raise ClientPointApiError(422, "date_from must be earlier than date_to")
 
     normalized_client = point_key(requested_client_name)
-    query = (
-        select(Order)
-        .options(selectinload(Order.items))
-        .order_by(Order.order_date.desc(), Order.created_at.desc())
-    )
+    point_filter = sql_point_key(db, Order.client) == normalized_client
+    order_filters = [point_filter]
     if date_from:
-        query = query.where(Order.order_date >= date_from)
+        order_filters.append(Order.order_date >= date_from)
     if date_to:
-        query = query.where(Order.order_date <= date_to)
+        order_filters.append(Order.order_date <= date_to)
+
+    returned = sql_returned_order_predicate()
+    order_rows = db.execute(
+        select(
+            Order.order_date.label("shipment_date"),
+            Order.payment_type.label("payment_type"),
+            returned.label("is_returned"),
+            func.count(Order.id).label("orders_count"),
+        )
+        .where(*order_filters)
+        .group_by(Order.order_date, Order.payment_type, returned)
+    ).mappings()
+    display_client_name = db.execute(
+        select(Order.client)
+        .where(*order_filters)
+        .order_by(Order.order_date.asc(), Order.created_at.asc())
+        .limit(1)
+    ).scalar_one_or_none() or requested_client_name
+    product_name = func.coalesce(func.nullif(func.trim(OrderItem.product), ""), "Без названия")
+    item_rows = db.execute(
+        select(
+            Order.order_date.label("shipment_date"),
+            product_name.label("product"),
+            func.count(OrderItem.id).label("positions_count"),
+            func.coalesce(func.sum(OrderItem.quantity_blocks), 0).label("quantity_blocks"),
+            func.coalesce(func.sum(OrderItem.quantity_pieces), 0).label("quantity_pieces"),
+        )
+        .select_from(Order)
+        .join(OrderItem, OrderItem.order_id == Order.id)
+        .where(*order_filters)
+        .group_by(Order.order_date, product_name)
+    ).mappings()
 
     totals = {
         "orders_count": 0,
@@ -253,15 +511,11 @@ def get_client_point_order_summary(
         "quantity_pieces": 0,
     }
     dates_by_key = {}
-    display_client_name = requested_client_name
-
-    for order in db.execute(query).scalars().all():
-        if point_key(order.client) != normalized_client:
-            continue
-        display_client_name = normalize_text(order.client) or display_client_name
-        date_key = order.order_date.isoformat() if order.order_date else ""
+    for row in order_rows:
+        shipment_date = row["shipment_date"]
+        date_key = shipment_date.isoformat() if shipment_date else ""
         date_row = dates_by_key.setdefault(date_key, {
-            "shipment_date": order.order_date,
+            "shipment_date": shipment_date,
             "payment_types": set(),
             "orders_count": 0,
             "returned_orders_count": 0,
@@ -270,34 +524,36 @@ def get_client_point_order_summary(
             "quantity_pieces": 0,
             "products_by_name": {},
         })
-        payment_type = normalize_text(order.payment_type)
+        payment_type = normalize_text(row["payment_type"])
         if payment_type:
             date_row["payment_types"].add(payment_type)
-        if is_returned_order(order):
-            totals["returned_orders_count"] += 1
-            date_row["returned_orders_count"] += 1
+        order_count = int(row["orders_count"] or 0)
+        if row["is_returned"]:
+            totals["returned_orders_count"] += order_count
+            date_row["returned_orders_count"] += order_count
         else:
-            totals["orders_count"] += 1
-            date_row["orders_count"] += 1
-        for item in sorted(order.items, key=lambda value: (normalize_text(value.product).casefold(), str(value.id))):
-            product_name = normalize_text(item.product) or "Без названия"
-            product = date_row["products_by_name"].setdefault(product_name, {
-                "product": product_name,
-                "positions_count": 0,
-                "quantity_blocks": 0,
-                "quantity_pieces": 0,
-            })
-            quantity_blocks = int(item.quantity_blocks or 0)
-            quantity_pieces = int(item.quantity_pieces or 0)
-            totals["positions_count"] += 1
-            totals["quantity_blocks"] += quantity_blocks
-            totals["quantity_pieces"] += quantity_pieces
-            date_row["positions_count"] += 1
-            date_row["quantity_blocks"] += quantity_blocks
-            date_row["quantity_pieces"] += quantity_pieces
-            product["positions_count"] += 1
-            product["quantity_blocks"] += quantity_blocks
-            product["quantity_pieces"] += quantity_pieces
+            totals["orders_count"] += order_count
+            date_row["orders_count"] += order_count
+
+    for row in item_rows:
+        shipment_date = row["shipment_date"]
+        date_key = shipment_date.isoformat() if shipment_date else ""
+        date_row = dates_by_key[date_key]
+        positions_count = int(row["positions_count"] or 0)
+        quantity_blocks = int(row["quantity_blocks"] or 0)
+        quantity_pieces = int(row["quantity_pieces"] or 0)
+        totals["positions_count"] += positions_count
+        totals["quantity_blocks"] += quantity_blocks
+        totals["quantity_pieces"] += quantity_pieces
+        date_row["positions_count"] += positions_count
+        date_row["quantity_blocks"] += quantity_blocks
+        date_row["quantity_pieces"] += quantity_pieces
+        date_row["products_by_name"][row["product"]] = {
+            "product": row["product"],
+            "positions_count": positions_count,
+            "quantity_blocks": quantity_blocks,
+            "quantity_pieces": quantity_pieces,
+        }
 
     dates = sorted(
         dates_by_key.values(),
@@ -335,30 +591,6 @@ def get_client_point_order_summary(
     }
 
 
-def derived_point_to_read(key, meta):
-    delivery_from = DEFAULT_DELIVERY_FROM
-    delivery_to = DEFAULT_DELIVERY_TO
-    return {
-        "id": f"derived:{stable_point_id(key)}",
-        "client_name": meta.get("client_name") or "",
-        "point_name": meta.get("point_name") or "",
-        "address": meta.get("address") or "",
-        "coordinates": meta.get("coordinates") or "",
-        "representative": meta.get("representative") or "",
-        "delivery_from": delivery_from,
-        "delivery_to": delivery_to,
-        "is_active": True,
-        "is_saved": False,
-        "source": "orders",
-        "has_custom_timeslot": False,
-        "orders_count": int(meta.get("orders_count") or 0),
-        "returned_orders_count": int(meta.get("returned_orders_count") or 0),
-        "last_order_date": meta.get("last_order_date"),
-        "created_at": None,
-        "updated_at": None,
-    }
-
-
 def client_point_to_read(point: ClientPoint, meta=None, source="saved"):
     meta = meta or {}
     delivery_from = point.delivery_from or DEFAULT_DELIVERY_FROM
@@ -382,14 +614,6 @@ def client_point_to_read(point: ClientPoint, meta=None, source="saved"):
         "created_at": point.created_at,
         "updated_at": point.updated_at,
     }
-
-
-def is_returned_order(order: Order) -> bool:
-    raw_payload = order.raw_payload or {}
-    return (
-        normalize_text(order.status).casefold() == STATUS_RETURNED
-        or normalize_text(raw_payload.get("return_status")).casefold() in {"returned", "return", "возврат"}
-    )
 
 
 def point_key(client_name):

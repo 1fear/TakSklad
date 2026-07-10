@@ -40,30 +40,36 @@ def claim_event_leases(
         return []
     if not owner:
         raise ValueError("lease owner is required")
-    now = now or db.execute(select(func.now())).scalar_one()
-    expires_at = now + lease_duration
+    is_postgresql = db.bind is not None and db.bind.dialect.name == "postgresql"
+    if now is None and is_postgresql:
+        now_value = func.now()
+        expires_at = func.now() + lease_duration
+    else:
+        now_value = now or db.execute(select(func.now())).scalar_one()
+        expires_at = now_value + lease_duration
     eligible = or_(
         and_(
             PendingEvent.status.in_(CLAIMABLE_EVENT_STATUSES),
-            PendingEvent.available_at <= now,
+            PendingEvent.available_at <= now_value,
         ),
         and_(
             PendingEvent.status == "processing",
             PendingEvent.lease_expires_at.is_not(None),
-            PendingEvent.lease_expires_at <= now,
+            PendingEvent.lease_expires_at <= now_value,
         ),
     )
     try:
-        if db.bind is not None and db.bind.dialect.name == "postgresql":
+        if is_postgresql:
             statement = build_postgres_claim_statement(
                 event_types=event_types,
                 owner=owner,
                 limit=limit,
-                now=now,
+                now=now_value,
                 expires_at=expires_at,
-                eligible=eligible,
             )
-            events = db.execute(statement).scalars().all()
+            events = db.execute(
+                statement.execution_options(synchronize_session=False)
+            ).scalars().all()
         else:
             events = db.execute(
                 select(PendingEvent)
@@ -78,7 +84,7 @@ def claim_event_leases(
                 event.lease_owner = owner
                 event.lease_expires_at = expires_at
                 event.completed_at = None
-                event.updated_at = now
+                event.updated_at = now_value
         db.commit()
     except Exception:
         db.rollback()

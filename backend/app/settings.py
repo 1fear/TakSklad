@@ -11,6 +11,21 @@ MIN_SESSION_SECRET_BYTES = 32
 MIN_SESSION_SECRET_DISTINCT_CHARACTERS = 8
 VALID_LEGACY_AUTH_MODES = frozenset({"enforce", "shadow", "disabled"})
 MAX_SERVICE_TOKEN_ROTATION_OVERLAP_SECONDS = 3600
+DATABASE_INTEGER_SETTINGS = {
+    "TAKSKLAD_DB_POOL_SIZE": ("db_pool_size", 2, 1, 20),
+    "TAKSKLAD_DB_MAX_OVERFLOW": ("db_max_overflow", 1, 0, 20),
+    "TAKSKLAD_DB_POOL_TIMEOUT_SECONDS": ("db_pool_timeout_seconds", 2, 1, 30),
+    "TAKSKLAD_DB_POOL_RECYCLE_SECONDS": ("db_pool_recycle_seconds", 1800, 60, 86400),
+    "TAKSKLAD_DB_CONNECT_TIMEOUT_SECONDS": ("db_connect_timeout_seconds", 5, 1, 30),
+    "TAKSKLAD_DB_STATEMENT_TIMEOUT_MS": ("db_statement_timeout_ms", 5000, 100, 60000),
+    "TAKSKLAD_DB_LOCK_TIMEOUT_MS": ("db_lock_timeout_ms", 2000, 50, 10000),
+    "TAKSKLAD_DB_IDLE_TRANSACTION_TIMEOUT_MS": (
+        "db_idle_transaction_timeout_ms",
+        10000,
+        1000,
+        300000,
+    ),
+}
 
 
 class ConfigurationError(RuntimeError):
@@ -25,6 +40,14 @@ class Settings:
     environment: str
     environment_explicit: bool
     database_url: str
+    db_pool_size: int
+    db_max_overflow: int
+    db_pool_timeout_seconds: int
+    db_pool_recycle_seconds: int
+    db_connect_timeout_seconds: int
+    db_statement_timeout_ms: int
+    db_lock_timeout_ms: int
+    db_idle_transaction_timeout_ms: int
     api_token: str
     cors_origins: tuple[str, ...]
     timezone: str
@@ -81,6 +104,30 @@ def parse_int(value, default):
         return default
 
 
+def load_database_settings(environ):
+    values = {}
+    errors = []
+    for setting_name, (field_name, default, minimum, maximum) in DATABASE_INTEGER_SETTINGS.items():
+        raw_value = str(environ.get(setting_name, "") or "").strip()
+        try:
+            value = default if not raw_value else int(raw_value)
+        except ValueError:
+            errors.append(setting_name)
+            continue
+        if value < minimum or value > maximum:
+            errors.append(setting_name)
+            continue
+        values[field_name] = value
+    if errors:
+        raise ConfigurationError(errors)
+    if values["db_lock_timeout_ms"] >= values["db_statement_timeout_ms"]:
+        raise ConfigurationError((
+            "TAKSKLAD_DB_LOCK_TIMEOUT_MS",
+            "TAKSKLAD_DB_STATEMENT_TIMEOUT_MS",
+        ))
+    return values
+
+
 def mask_secret_url(url):
     parts = urlsplit(str(url or ""))
     if not parts.password:
@@ -95,6 +142,7 @@ def mask_secret_url(url):
 def load_settings(environ=None):
     environ = os.environ if environ is None else environ
     raw_environment = environ.get("TAKSKLAD_ENV", "")
+    database_settings = load_database_settings(environ)
     return Settings(
         service_name=environ.get("TAKSKLAD_SERVICE_NAME", "taksklad-backend"),
         environment=str(raw_environment or "local").strip() or "local",
@@ -103,6 +151,7 @@ def load_settings(environ=None):
             "DATABASE_URL",
             "postgresql+psycopg://taksklad:taksklad@postgres:5432/taksklad",
         ),
+        **database_settings,
         api_token=environ.get("TAKSKLAD_API_TOKEN", "").strip(),
         cors_origins=parse_csv(environ.get("TAKSKLAD_CORS_ORIGINS", "")),
         timezone=environ.get("TAKSKLAD_TIMEZONE", "Asia/Tashkent").strip() or "Asia/Tashkent",

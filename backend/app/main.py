@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request,
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import SQLAlchemyError
 
 from .access_policy import (
     AUTH_PROTECTED,
@@ -26,6 +27,7 @@ from .client_points_service import (
     update_client_point_timeslot as update_client_point_timeslot_in_db,
 )
 from .db import get_db
+from .db_errors import database_error_response
 from .diagnostics_service import build_backend_diagnostics_log
 from .event_queue_service import (
     EventQueueApiError,
@@ -48,7 +50,7 @@ from .incidents_service import (
     update_incident_status as update_incident_status_in_db,
 )
 from .imports_service import create_import as create_import_in_db
-from .imports_service import list_imports as list_imports_in_db
+from .imports_service import list_imports_page as list_imports_page_in_db
 from .imports_service import preview_import as preview_import_in_db
 from .input_safety import MAX_REQUEST_BODY_BYTES, RequestBodyLimitMiddleware
 from .auth_identities import (
@@ -89,9 +91,10 @@ from .order_actions_service import (
     resync_order_skladbot as resync_order_skladbot_in_db,
 )
 from .operations_service import build_operations_attention
+from .pagination import CursorError, decode_cursor, encode_cursor, normalize_page_limit, set_pagination_headers
 from .orders_service import ApiError, complete_order as complete_order_in_db
 from .orders_service import create_scan as create_scan_in_db
-from .orders_service import list_active_orders as list_active_orders_in_db
+from .orders_service import list_active_orders_page as list_active_orders_page_in_db
 from .orders_service import list_returned_orders as list_returned_orders_in_db
 from .orders_service import lookup_kiz_availability as lookup_kiz_availability_in_db
 from .orders_service import lookup_return_order as lookup_return_order_in_db
@@ -186,6 +189,20 @@ async def redacted_request_validation_error(_request: Request, _exc: RequestVali
     )
 
 
+@app.exception_handler(CursorError)
+async def invalid_cursor_error(_request: Request, _exc: CursorError):
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={"detail": "invalid_cursor"},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.exception_handler(SQLAlchemyError)
+async def sanitized_database_error(_request: Request, exc: SQLAlchemyError):
+    return database_error_response(exc)
+
+
 def configure_cors(app_instance: FastAPI, app_settings) -> None:
     if not app_settings.cors_origins:
         return
@@ -196,10 +213,30 @@ def configure_cors(app_instance: FastAPI, app_settings) -> None:
         allow_credentials=False,
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", CSRF_HEADER_NAME],
+        expose_headers=["X-TakSklad-Next-Cursor", "X-TakSklad-Page-Limit"],
     )
 
 
 configure_cors(app, settings)
+
+
+def paginate_materialized(rows, *, scope, response, limit, cursor="", default=50, maximum=200):
+    row_limit = normalize_page_limit(limit, default=default, maximum=maximum)
+    offset = 0
+    if cursor:
+        try:
+            (offset_value,) = decode_cursor(cursor, scope)
+            offset = int(offset_value)
+            if offset < 0:
+                raise ValueError
+        except (CursorError, TypeError, ValueError):
+            raise CursorError("invalid_cursor") from None
+    page = list(rows[offset:offset + row_limit])
+    next_cursor = ""
+    if offset + len(page) < len(rows):
+        next_cursor = encode_cursor(scope, [offset + len(page)])
+    set_pagination_headers(response, next_cursor=next_cursor, limit=row_limit)
+    return page
 
 
 @app.on_event("startup")
@@ -633,14 +670,23 @@ api = APIRouter(prefix="/api/v1", dependencies=[Depends(require_service_token)])
 
 
 @api.get("/orders/active")
-def list_active_orders(db=Depends(get_db)) -> list[OrderRead]:
-    return list_active_orders_in_db(db)
+def list_active_orders(
+    response: Response,
+    limit: int = 50,
+    cursor: str = "",
+    db=Depends(get_db),
+) -> list[OrderRead]:
+    rows, next_cursor, row_limit = list_active_orders_page_in_db(db, limit=limit, cursor=cursor)
+    set_pagination_headers(response, next_cursor=next_cursor, limit=row_limit)
+    return rows
 
 
 @api.get("/admin/table", response_model=AdminTableRead)
 def admin_table(
-    limit: int | None = None,
+    response: Response,
+    limit: int = 500,
     offset: int = 0,
+    cursor: str = "",
     activity_limit: int = 30,
     status_bucket: str = "",
     shipment_date: str = "",
@@ -651,10 +697,30 @@ def admin_table(
     google_sheet_status: str = "",
     db=Depends(get_db),
 ):
-    return build_admin_table(
+    row_limit = normalize_page_limit(limit, default=500, maximum=500)
+    filters = {
+        "status_bucket": status_bucket,
+        "shipment_date": shipment_date,
+        "search": search,
+        "scan_state": scan_state,
+        "skladbot_filter": skladbot_filter,
+        "google_status": google_sheet_status or google_status,
+    }
+    row_offset = max(0, int(offset or 0))
+    if cursor:
+        if row_offset:
+            raise CursorError("invalid_cursor")
+        try:
+            (offset_value,) = decode_cursor(cursor, "admin.table", filters=filters)
+            row_offset = int(offset_value)
+            if row_offset < 0:
+                raise ValueError
+        except (CursorError, TypeError, ValueError):
+            raise CursorError("invalid_cursor") from None
+    result = build_admin_table(
         db,
-        limit=limit,
-        offset=offset,
+        limit=row_limit,
+        offset=row_offset,
         activity_limit=activity_limit,
         status_bucket=status_bucket,
         shipment_date=shipment_date,
@@ -663,6 +729,14 @@ def admin_table(
         skladbot_filter=skladbot_filter,
         google_status=google_sheet_status or google_status,
     )
+    if result.has_more:
+        result.next_cursor = encode_cursor(
+            "admin.table",
+            [row_offset + result.row_count],
+            filters=filters,
+        )
+    set_pagination_headers(response, next_cursor=result.next_cursor, limit=row_limit)
+    return result
 
 
 @api.get("/admin/dashboard/day-summary", response_model=DashboardDaySummaryRead)
@@ -675,12 +749,41 @@ def admin_dashboard_day_summary(report_date: str | None = None, db=Depends(get_d
 
 @api.get("/admin/client-points", response_model=list[ClientPointRead])
 def admin_client_points(
+    response: Response,
     query: str = "",
     custom_timeslot: bool | None = None,
-    limit: int | None = None,
+    limit: int = 2000,
+    cursor: str = "",
     db=Depends(get_db),
 ):
-    return list_client_points_in_db(db, query=query, custom_timeslot=custom_timeslot, limit=limit)
+    row_limit = normalize_page_limit(limit, default=2000, maximum=2000)
+    filters = {"query": query, "custom_timeslot": custom_timeslot}
+    offset = 0
+    if cursor:
+        try:
+            (offset_value,) = decode_cursor(cursor, "admin.client_points", filters=filters)
+            offset = int(offset_value)
+            if offset < 0:
+                raise ValueError
+        except (CursorError, TypeError, ValueError):
+            raise CursorError("invalid_cursor") from None
+    loaded = list_client_points_in_db(
+        db,
+        query=query,
+        custom_timeslot=custom_timeslot,
+        limit=row_limit + 1,
+        offset=offset,
+    )
+    rows = loaded[:row_limit]
+    next_cursor = ""
+    if len(loaded) > row_limit:
+        next_cursor = encode_cursor(
+            "admin.client_points",
+            [offset + len(rows)],
+            filters=filters,
+        )
+    set_pagination_headers(response, next_cursor=next_cursor, limit=row_limit)
+    return rows
 
 
 @api.get("/admin/client-points/order-summary", response_model=ClientPointOrderSummaryRead)
@@ -731,8 +834,19 @@ def retry_pending_google_exports(limit: int = 50, db=Depends(get_db)):
 
 
 @api.get("/admin/events", response_model=EventQueueDiagnosticsRead)
-def admin_event_queue(limit: int | None = None, db=Depends(get_db)):
-    return list_event_queue_diagnostics(db, limit=limit)
+def admin_event_queue(
+    response: Response,
+    limit: int = 200,
+    cursor: str = "",
+    db=Depends(get_db),
+):
+    result = list_event_queue_diagnostics(
+        db,
+        limit=normalize_page_limit(limit, default=200, maximum=200),
+        cursor=cursor,
+    )
+    set_pagination_headers(response, next_cursor=result["next_cursor"], limit=result["limit"])
+    return result
 
 
 @api.get("/admin/operations", response_model=OperationsAttentionRead)
@@ -741,8 +855,19 @@ def admin_operations(db=Depends(get_db)):
 
 
 @api.get("/admin/smartup-auto-imports/history", response_model=SmartupAutoImportHistoryRead)
-def admin_smartup_auto_import_history(limit: int | None = None, db=Depends(get_db)):
-    return list_smartup_auto_import_history(db, limit=limit)
+def admin_smartup_auto_import_history(
+    response: Response,
+    limit: int = 50,
+    cursor: str = "",
+    db=Depends(get_db),
+):
+    result = list_smartup_auto_import_history(
+        db,
+        limit=normalize_page_limit(limit),
+        cursor=cursor,
+    )
+    set_pagination_headers(response, next_cursor=result["next_cursor"], limit=result["limit"])
+    return result
 
 
 @api.get("/admin/events/{event_id}", response_model=EventQueueEventRead)
@@ -780,17 +905,19 @@ def admin_create_incident(payload: IncidentCreate, db=Depends(get_db)):
 
 @api.get("/admin/incidents", response_model=IncidentListRead)
 def admin_incidents(
+    response: Response,
     status: str | None = None,
     severity: str | None = None,
     source: str | None = None,
     entity_type: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
-    limit: int | None = None,
+    limit: int = 200,
+    cursor: str = "",
     db=Depends(get_db),
 ):
     try:
-        return list_incidents_in_db(
+        result = list_incidents_in_db(
             db,
             status=status,
             severity=severity,
@@ -798,8 +925,15 @@ def admin_incidents(
             entity_type=entity_type,
             date_from=date_from,
             date_to=date_to,
-            limit=limit,
+            limit=normalize_page_limit(limit, default=200, maximum=200),
+            cursor=cursor,
         )
+        set_pagination_headers(
+            response,
+            next_cursor=result["next_cursor"],
+            limit=result["limit"],
+        )
+        return result
     except IncidentApiError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
@@ -932,8 +1066,40 @@ def resync_order_skladbot(order_id: str, payload: AdminOrderActionRequest, db=De
 
 
 @api.get("/admin/skladbot/dry-runs", response_model=list[SkladBotDryRunRead])
-def admin_skladbot_dry_runs(import_id: str | None = None, db=Depends(get_db)):
-    return list_skladbot_dry_runs(db, import_id=import_id)
+def admin_skladbot_dry_runs(
+    response: Response,
+    import_id: str | None = None,
+    limit: int = 50,
+    cursor: str = "",
+    db=Depends(get_db),
+):
+    row_limit = normalize_page_limit(limit)
+    filters = {"import_id": import_id or ""}
+    offset = 0
+    if cursor:
+        try:
+            (offset_value,) = decode_cursor(cursor, "admin.skladbot_dry_runs", filters=filters)
+            offset = int(offset_value)
+            if offset < 0:
+                raise ValueError
+        except (CursorError, TypeError, ValueError):
+            raise CursorError("invalid_cursor") from None
+    loaded = list_skladbot_dry_runs(
+        db,
+        import_id=import_id,
+        limit=min(row_limit + 1, 200),
+        offset=offset,
+    )
+    rows = loaded[:row_limit]
+    next_cursor = ""
+    if len(loaded) > row_limit:
+        next_cursor = encode_cursor(
+            "admin.skladbot_dry_runs",
+            [offset + len(rows)],
+            filters=filters,
+        )
+    set_pagination_headers(response, next_cursor=next_cursor, limit=row_limit)
+    return rows
 
 
 @api.post(
@@ -1026,8 +1192,27 @@ def start_skladbot_sync_background(audit_actor=None):
 
 
 @api.get("/returns", response_model=list[OrderRead])
-def list_returns(limit: int = 50, db=Depends(get_db)):
-    return list_returned_orders_in_db(db, limit=limit)
+def list_returns(
+    response: Response,
+    limit: int = 50,
+    cursor: str = "",
+    db=Depends(get_db),
+):
+    row_limit = normalize_page_limit(limit)
+    offset = 0
+    if cursor:
+        try:
+            (offset_value,) = decode_cursor(cursor, "returns")
+            offset = int(offset_value)
+            if offset < 0:
+                raise ValueError
+        except (CursorError, TypeError, ValueError):
+            raise CursorError("invalid_cursor") from None
+    loaded = list_returned_orders_in_db(db, limit=row_limit + 1, offset=offset)
+    rows = loaded[:row_limit]
+    next_cursor = encode_cursor("returns", [offset + len(rows)]) if len(loaded) > row_limit else ""
+    set_pagination_headers(response, next_cursor=next_cursor, limit=row_limit)
+    return rows
 
 
 @api.post(
@@ -1105,8 +1290,23 @@ def preview_import(payload: ImportCreate, db=Depends(get_db)):
 
 
 @api.get("/imports", response_model=list[ImportRead])
-def list_imports(db=Depends(get_db)):
-    return list_imports_in_db(db)
+def list_imports(
+    response: Response,
+    limit: int = 50,
+    cursor: str = "",
+    import_id: str = "",
+    telegram_event_id: str = "",
+    db=Depends(get_db),
+):
+    rows, next_cursor, row_limit = list_imports_page_in_db(
+        db,
+        limit=limit,
+        cursor=cursor,
+        import_id=import_id,
+        telegram_event_id=telegram_event_id,
+    )
+    set_pagination_headers(response, next_cursor=next_cursor, limit=row_limit)
+    return rows
 
 
 @api.get("/reports/day", response_model=DayReportRead)
@@ -1134,13 +1334,36 @@ def execute_reconciliation_day_report(report_date: str | None = None, db=Depends
 
 
 @api.get("/reports/kiz/source-files")
-def kiz_source_files(db=Depends(get_db)) -> list[dict]:
-    return list_completed_kiz_source_files(db)
+def kiz_source_files(
+    response: Response,
+    limit: int = 50,
+    cursor: str = "",
+    db=Depends(get_db),
+) -> list[dict]:
+    return paginate_materialized(
+        list_completed_kiz_source_files(db),
+        scope="reports.kiz.source_files",
+        response=response,
+        limit=limit,
+        cursor=cursor,
+    )
 
 
 @api.get("/reports/kiz/dates")
-def kiz_dates(db=Depends(get_db)) -> list[dict]:
-    return list_completed_kiz_dates(db)
+def kiz_dates(
+    response: Response,
+    limit: int = 90,
+    cursor: str = "",
+    db=Depends(get_db),
+) -> list[dict]:
+    return paginate_materialized(
+        list_completed_kiz_dates(db),
+        scope="reports.kiz.dates",
+        response=response,
+        limit=limit,
+        cursor=cursor,
+        default=90,
+    )
 
 
 @api.get("/reports/kiz/date")
@@ -1192,8 +1415,20 @@ def kiz_source_file_report(source_file: str, source_key: str | None = None, db=D
 
 
 @api.get("/logistics/dates")
-def logistics_dates(db=Depends(get_db)) -> list[str]:
-    return list_logistics_dates(db)
+def logistics_dates(
+    response: Response,
+    limit: int = 31,
+    cursor: str = "",
+    db=Depends(get_db),
+) -> list[str]:
+    return paginate_materialized(
+        list_logistics_dates(db),
+        scope="logistics.dates",
+        response=response,
+        limit=limit,
+        cursor=cursor,
+        default=31,
+    )
 
 
 @api.get("/logistics/report")
@@ -1214,7 +1449,10 @@ def logistics_report(shipment_date: str, db=Depends(get_db)):
 
 @api.get("/diagnostics/logs")
 def diagnostics_logs(limit: int = 100, db=Depends(get_db)):
-    content, filename = build_backend_diagnostics_log(db, limit=limit)
+    content, filename = build_backend_diagnostics_log(
+        db,
+        limit=normalize_page_limit(limit, default=100, maximum=500),
+    )
     return Response(
         content=content,
         media_type="text/plain; charset=utf-8",

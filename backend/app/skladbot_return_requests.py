@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from .event_leases import claim_event_leases, event_leases_enabled, finalize_event_leases
@@ -32,6 +32,7 @@ SKLADBOT_RETURN_REQUEST_CREATE_EVENT_TYPE = "skladbot_return_request_create"
 SKLADBOT_RETURN_REQUEST_TYPE_ID = 3403
 SKLADBOT_RETURN_REQUEST_CREATE_LIMIT_ENV = "SKLADBOT_RETURN_REQUEST_CREATE_LIMIT"
 STALE_SKLADBOT_RETURN_CREATE_TIMEOUT = timedelta(minutes=10)
+SKLADBOT_RETURN_STALE_RESET_LIMIT_ENV = "SKLADBOT_RETURN_STALE_RESET_LIMIT"
 
 
 def skladbot_return_create_idempotency_key(order_id: str) -> str:
@@ -200,13 +201,19 @@ def select_pending_skladbot_return_create_events(db: Session, limit: int) -> lis
 def reset_stale_skladbot_return_create_events(db: Session) -> int:
     now = datetime.now(timezone.utc)
     cutoff = now - STALE_SKLADBOT_RETURN_CREATE_TIMEOUT
-    events = db.execute(
+    limit = max(1, min(env_int(SKLADBOT_RETURN_STALE_RESET_LIMIT_ENV, 100), 1000))
+    stmt = (
         select(PendingEvent)
         .where(PendingEvent.event_type == SKLADBOT_RETURN_REQUEST_CREATE_EVENT_TYPE)
         .where(PendingEvent.status == "processing")
         .where(PendingEvent.updated_at < cutoff)
         .where((PendingEvent.lease_owner.is_(None)) | (PendingEvent.lease_expires_at <= now))
-    ).scalars().all()
+        .order_by(PendingEvent.updated_at, PendingEvent.created_at, PendingEvent.id)
+        .limit(limit)
+    )
+    if db.bind.dialect.name == "postgresql":
+        stmt = stmt.with_for_update(skip_locked=True)
+    events = db.execute(stmt).scalars().all()
     if not events:
         return 0
     for event in events:
@@ -234,11 +241,11 @@ def reset_stale_skladbot_return_create_events(db: Session) -> int:
 
 
 def count_pending_skladbot_return_create_events(db: Session) -> int:
-    return len(db.execute(
-        select(PendingEvent.id)
+    return int(db.execute(
+        select(func.count(PendingEvent.id))
         .where(PendingEvent.event_type == SKLADBOT_RETURN_REQUEST_CREATE_EVENT_TYPE)
         .where(PendingEvent.status.in_(("pending", "failed")))
-    ).scalars().all())
+    ).scalar_one())
 
 
 def process_skladbot_return_create_event(db: Session, event: PendingEvent, client: Any) -> dict[str, Any]:

@@ -1,10 +1,11 @@
 import logging
 import os
 import time
+import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import desc, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy import and_, desc, func, or_, select
+from sqlalchemy.orm import Session, aliased, joinedload, selectinload
 
 from .db import SessionLocal
 from .google_sheets_exporter import (
@@ -43,6 +44,7 @@ from .google_sheets_pending import (
     process_pending_google_sheets_exports,
     retry_after_seconds_from_error,
 )
+from .imports_service import source_import_lookup_key
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -52,6 +54,9 @@ ORDER_DATE_COLUMN = "Дата отгрузки"
 LEGACY_ORDER_DATE_COLUMN = "Дата получения заказа"
 STATUS_COLUMN = "Статус"
 DEFAULT_BLOCK_PRICE = 240000
+GOOGLE_BACKEND_LOOKUP_BATCH_SIZE = 500
+GOOGLE_BACKEND_RECONCILE_BATCH_SIZE = 200
+GOOGLE_BACKEND_RECONCILE_CURSOR_ACTION = "google_sheets_backend_missing_reconciliation_cursor"
 ARCHIVE_SHEET_NAME = "Архив"
 RETURN_STATUS_COLUMN = "Статус возврата"
 RETURN_DATE_COLUMN = "Дата возврата"
@@ -153,7 +158,7 @@ def sync_google_sheet_to_backend(db: Session, sheet=None, now=None, archive_comp
     if not records:
         return build_result(rows=0)
 
-    item_index = load_item_index(db)
+    item_index = load_item_index(db, records)
     result = build_result(rows=len(records))
     completed_order_ids_to_archive = set()
     matched_item_ids = set()
@@ -298,22 +303,131 @@ def parse_sheet_date(value):
     return None
 
 
-def load_item_index(db: Session):
-    orders = db.execute(
-        select(Order)
-        .options(selectinload(Order.items).selectinload(OrderItem.scan_codes))
-    ).scalars().all()
-    index = {"source_import_id": {}, "source_order_id": {}}
-    for order in orders:
-        for item in order.items:
+def load_item_index(db: Session, records=None, batch_size=GOOGLE_BACKEND_LOOKUP_BATCH_SIZE):
+    source_import_ids = sorted({
+        normalize_text(record.get("source_import_id"))
+        for record in records or []
+        if normalize_text(record.get("source_import_id"))
+    })
+    source_order_ids = sorted({
+        normalize_text(record.get("source_order_id"))
+        for record in records or []
+        if normalize_text(record.get("source_order_id"))
+    })
+    index = {
+        "source_import_id": {},
+        "source_order_id": {},
+        "_sheet_source_import_ids": set(source_import_ids),
+        "_sheet_source_order_ids": set(source_order_ids),
+    }
+    batch_size = max(1, min(int(batch_size or GOOGLE_BACKEND_LOOKUP_BATCH_SIZE), 1000))
+    seen_item_ids = set()
+
+    def add_items(items):
+        for item in items:
+            if item.id in seen_item_ids:
+                continue
+            seen_item_ids.add(item.id)
             raw_payload = item.raw_payload or {}
-            source_import_id = normalize_text(raw_payload.get("source_import_id"))
+            source_import_id = normalize_text(item.source_import_id) or normalize_text(raw_payload.get("source_import_id"))
             source_order_id = normalize_text(raw_payload.get("source_order_id"))
             if source_import_id:
                 index["source_import_id"].setdefault(source_import_id, item)
             if source_order_id:
                 index["source_order_id"].setdefault(source_order_id, item)
+
+    options = (joinedload(OrderItem.order), selectinload(OrderItem.scan_codes))
+    for start in range(0, len(source_import_ids), batch_size):
+        batch = source_import_ids[start:start + batch_size]
+        source_keys = [source_import_lookup_key(value) for value in batch]
+        add_items(db.execute(
+            select(OrderItem)
+            .options(*options)
+            .where(OrderItem.source_import_key.in_(source_keys))
+            .order_by(OrderItem.created_at, OrderItem.id)
+        ).scalars().all())
+        missing = [value for value in batch if value not in index["source_import_id"]]
+        if missing:
+            legacy_value = OrderItem.raw_payload["source_import_id"].as_string()
+            ranked = (
+                select(
+                    OrderItem.id.label("item_id"),
+                    func.row_number().over(
+                        partition_by=legacy_value,
+                        order_by=(OrderItem.created_at, OrderItem.id),
+                    ).label("identity_rank"),
+                )
+                .where(OrderItem.source_import_key.is_(None))
+                .where(legacy_value.in_(missing))
+                .subquery()
+            )
+            add_items(db.execute(
+                select(OrderItem)
+                .options(*options)
+                .join(ranked, ranked.c.item_id == OrderItem.id)
+                .where(ranked.c.identity_rank == 1)
+                .order_by(OrderItem.created_at, OrderItem.id)
+            ).scalars().all())
+
+    for start in range(0, len(source_order_ids), batch_size):
+        batch = [value for value in source_order_ids[start:start + batch_size] if value not in index["source_order_id"]]
+        if not batch:
+            continue
+        source_order_value = OrderItem.raw_payload["source_order_id"].as_string()
+        ranked = (
+            select(
+                OrderItem.id.label("item_id"),
+                func.row_number().over(
+                    partition_by=source_order_value,
+                    order_by=(OrderItem.created_at, OrderItem.id),
+                ).label("identity_rank"),
+            )
+            .where(source_order_value.in_(batch))
+            .subquery()
+        )
+        add_items(db.execute(
+            select(OrderItem)
+            .options(*options)
+            .join(ranked, ranked.c.item_id == OrderItem.id)
+            .where(ranked.c.identity_rank == 1)
+            .order_by(OrderItem.created_at, OrderItem.id)
+        ).scalars().all())
     return index
+
+
+def load_missing_reconciliation_batch(db: Session, cursor="", batch_size=GOOGLE_BACKEND_RECONCILE_BATCH_SIZE):
+    """Load at most one stable batch; the caller persists the next cursor."""
+    batch_size = max(1, min(int(batch_size or GOOGLE_BACKEND_RECONCILE_BATCH_SIZE), 1000))
+    terminal_statuses = (
+        *COMPLETED_STATUSES,
+        STATUS_ARCHIVED_NO_KIZ,
+        STATUS_CANCELLED,
+        STATUS_REMOVED_FROM_GOOGLE,
+    )
+    source_order_id = OrderItem.raw_payload["source_order_id"].as_string()
+
+    def execute_batch(after_cursor):
+        stmt = (
+            select(OrderItem)
+            .where(~OrderItem.status.in_(terminal_statuses))
+            .where(or_(
+                OrderItem.source_import_id.is_not(None),
+                and_(source_order_id.is_not(None), source_order_id != ""),
+            ))
+            .order_by(OrderItem.id)
+            .limit(batch_size)
+        )
+        if after_cursor:
+            try:
+                stmt = stmt.where(OrderItem.id > uuid.UUID(str(after_cursor)))
+            except (TypeError, ValueError):
+                pass
+        return db.execute(stmt).scalars().all()
+
+    items = execute_batch(cursor)
+    if not items and cursor:
+        items = execute_batch("")
+    return items
 
 
 def find_item_for_record(record, item_index):
@@ -703,30 +817,93 @@ def archive_completed_orders_from_data_sheet(db: Session, order_ids, result):
 
 
 def mark_backend_items_missing_from_google(db: Session, item_index, matched_item_ids, result, now):
-    seen = set()
-    for source_index in item_index.values():
-        for item in source_index.values():
-            if item.id in seen or item.id in matched_item_ids:
-                continue
-            seen.add(item.id)
-            if item.status in COMPLETED_STATUSES or item.status in (
-                STATUS_ARCHIVED_NO_KIZ,
-                STATUS_CANCELLED,
-                STATUS_REMOVED_FROM_GOOGLE,
-            ):
-                continue
-            result["conflicts"] += 1
-            add_sync_conflict_audit(
-                db,
-                entity_id=str(item.id),
-                payload={
-                    "order_id": str(item.order_id),
-                    "reason": "backend item is missing from Google Sheets; VDS kept item active because Postgres is source of truth",
-                    "source_import_id": (item.raw_payload or {}).get("source_import_id"),
-                    "source_order_id": (item.raw_payload or {}).get("source_order_id"),
-                    "scanned_blocks": item.scanned_blocks,
-                },
-            )
+    cursor = load_missing_reconciliation_cursor(db)
+    batch = load_missing_reconciliation_batch(db, cursor=cursor)
+    sheet_import_ids = set(item_index.get("_sheet_source_import_ids") or ())
+    sheet_order_ids = set(item_index.get("_sheet_source_order_ids") or ())
+    missing_items = []
+    for item in batch:
+        raw_payload = item.raw_payload or {}
+        source_import_id = normalize_text(item.source_import_id) or normalize_text(raw_payload.get("source_import_id"))
+        source_order_id = normalize_text(raw_payload.get("source_order_id"))
+        if item.id in matched_item_ids:
+            continue
+        if source_import_id and source_import_id in sheet_import_ids:
+            continue
+        if not source_import_id and source_order_id and source_order_id in sheet_order_ids:
+            continue
+        missing_items.append(item)
+
+    previous_by_entity = latest_missing_conflict_audits(db, [str(item.id) for item in missing_items])
+    for item in missing_items:
+        result["conflicts"] += 1
+        entity_id = str(item.id)
+        payload = {
+            "order_id": str(item.order_id),
+            "reason": "backend item is missing from Google Sheets; VDS kept item active because Postgres is source of truth",
+            "source_import_id": item.source_import_id or (item.raw_payload or {}).get("source_import_id"),
+            "source_order_id": (item.raw_payload or {}).get("source_order_id"),
+            "scanned_blocks": item.scanned_blocks,
+        }
+        previous = previous_by_entity.get(entity_id)
+        if previous is None or (previous.payload or {}) != payload:
+            db.add(AuditLog(
+                action="google_sheets_backend_sync_conflict",
+                entity_type="order_item",
+                entity_id=entity_id,
+                payload=payload,
+            ))
+
+    if batch:
+        db.add(AuditLog(
+            action=GOOGLE_BACKEND_RECONCILE_CURSOR_ACTION,
+            entity_type="google_sheets",
+            entity_id=SHEET_NAME,
+            payload={
+                "cursor": str(batch[-1].id),
+                "checked": len(batch),
+                "missing": len(missing_items),
+                "checked_at": now.isoformat(),
+            },
+        ))
+
+
+def load_missing_reconciliation_cursor(db: Session):
+    row = db.execute(
+        select(AuditLog)
+        .where(AuditLog.action == GOOGLE_BACKEND_RECONCILE_CURSOR_ACTION)
+        .where(AuditLog.entity_type == "google_sheets")
+        .where(AuditLog.entity_id == SHEET_NAME)
+        .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    return normalize_text((row.payload or {}).get("cursor")) if row is not None else ""
+
+
+def latest_missing_conflict_audits(db: Session, entity_ids):
+    entity_ids = list(dict.fromkeys(entity_ids or []))
+    if not entity_ids:
+        return {}
+    row = aliased(AuditLog)
+    candidate = aliased(AuditLog)
+    latest_id = (
+        select(candidate.id)
+        .where(candidate.action == "google_sheets_backend_sync_conflict")
+        .where(candidate.entity_type == "order_item")
+        .where(candidate.entity_id == row.entity_id)
+        .order_by(candidate.created_at.desc(), candidate.id.desc())
+        .limit(1)
+        .correlate(row)
+        .scalar_subquery()
+    )
+    rows = db.execute(
+        select(row)
+        .where(row.action == "google_sheets_backend_sync_conflict")
+        .where(row.entity_type == "order_item")
+        .where(row.entity_id.in_(entity_ids))
+        .where(row.id == latest_id)
+    ).scalars().all()
+    return {audit.entity_id: audit for audit in rows}
 
 
 def should_record_sync_summary(result):

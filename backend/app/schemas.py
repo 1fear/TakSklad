@@ -197,6 +197,7 @@ class AdminTableRead(BaseModel):
     row_count: int = 0
     total_rows: int = 0
     has_more: bool = False
+    next_cursor: str = ""
 
 
 class AdminOrderActionRequest(BaseModel):
@@ -280,6 +281,10 @@ class EventQueueDiagnosticsRead(BaseModel):
     summary: dict[str, Any] = Field(default_factory=dict)
     stale_processing: list[EventQueueEventRead] = Field(default_factory=list)
     recent_events: list[EventQueueEventRead] = Field(default_factory=list)
+    limit: int = 50
+    row_count: int = 0
+    has_more: bool = False
+    next_cursor: str = ""
 
 
 class OperationsAttentionItemRead(BaseModel):
@@ -336,6 +341,10 @@ class SmartupAutoImportHistoryRead(BaseModel):
     runs: list[SmartupAutoImportRunRead] = Field(default_factory=list)
     events: list[EventQueueEventRead] = Field(default_factory=list)
     audit: list[AdminActivityRead] = Field(default_factory=list)
+    limit: int = 50
+    row_count: int = 0
+    has_more: bool = False
+    next_cursor: str = ""
 
 
 class IncidentCreate(BaseModel):
@@ -391,6 +400,10 @@ class IncidentRead(BaseModel):
 class IncidentListRead(BaseModel):
     items: list[IncidentRead] = Field(default_factory=list)
     summary: dict[str, Any] = Field(default_factory=dict)
+    limit: int = 50
+    row_count: int = 0
+    has_more: bool = False
+    next_cursor: str = ""
 
 
 class ClientPointOrderProductRead(BaseModel):

@@ -1,10 +1,11 @@
 import uuid
 from datetime import date, datetime, time, timezone
 
-from sqlalchemy import desc, select
+from sqlalchemy import and_, desc, func, or_, select
 from sqlalchemy.orm import Session
 
 from .models import AuditLog, Incident
+from .pagination import CursorError, decode_cursor, encode_cursor, normalize_page_limit
 from .redaction import redact_secrets
 
 
@@ -62,6 +63,7 @@ def list_incidents(
     date_from=None,
     date_to=None,
     limit=None,
+    cursor="",
 ):
     stmt = select(Incident)
     if normalize_text(status):
@@ -78,13 +80,54 @@ def list_incidents(
         stmt = stmt.where(Incident.created_at >= from_dt)
     if to_dt is not None:
         stmt = stmt.where(Incident.created_at <= to_dt)
+    filters = {
+        "status": normalize_text(status),
+        "severity": normalize_text(severity),
+        "source": normalize_text(source),
+        "entity_type": normalize_text(entity_type),
+        "date_from": normalize_text(date_from),
+        "date_to": normalize_text(date_to),
+    }
+    if cursor:
+        try:
+            cursor_updated_at, cursor_created_at, cursor_id = decode_cursor(
+                cursor,
+                "admin.incidents",
+                filters=filters,
+            )
+            parsed_updated_at = datetime.fromisoformat(str(cursor_updated_at).replace("Z", "+00:00"))
+            parsed_created_at = datetime.fromisoformat(str(cursor_created_at).replace("Z", "+00:00"))
+            parsed_id = uuid.UUID(str(cursor_id))
+        except (CursorError, TypeError, ValueError):
+            raise CursorError("invalid_cursor") from None
+        stmt = stmt.where(or_(
+            Incident.updated_at < parsed_updated_at,
+            and_(Incident.updated_at == parsed_updated_at, Incident.created_at < parsed_created_at),
+            and_(
+                Incident.updated_at == parsed_updated_at,
+                Incident.created_at == parsed_created_at,
+                Incident.id < parsed_id,
+            ),
+        ))
+    row_limit = normalize_page_limit(limit, default=200, maximum=200)
     stmt = stmt.order_by(desc(Incident.updated_at), desc(Incident.created_at), desc(Incident.id))
-    if limit is not None:
-        stmt = stmt.limit(max(1, int(limit)))
-    incidents = db.execute(stmt).scalars().all()
+    loaded = db.execute(stmt.limit(row_limit + 1)).scalars().all()
+    incidents = loaded[:row_limit]
+    next_cursor = ""
+    if len(loaded) > row_limit:
+        last = incidents[-1]
+        next_cursor = encode_cursor(
+            "admin.incidents",
+            [last.updated_at.isoformat(), last.created_at.isoformat(), str(last.id)],
+            filters=filters,
+        )
     return {
         "items": [incident_to_read(incident) for incident in incidents],
         "summary": build_incident_summary(db),
+        "limit": row_limit,
+        "row_count": len(incidents),
+        "has_more": bool(next_cursor),
+        "next_cursor": next_cursor,
     }
 
 
@@ -128,15 +171,17 @@ def update_incident_status(db: Session, incident_id, payload):
 
 
 def build_incident_summary(db: Session):
-    rows = db.execute(select(Incident.status, Incident.severity)).all()
+    status_rows = db.execute(
+        select(Incident.status, func.count(Incident.id)).group_by(Incident.status)
+    ).all()
+    severity_rows = db.execute(
+        select(Incident.severity, func.count(Incident.id)).group_by(Incident.severity)
+    ).all()
     summary = {
-        "total": len(rows),
-        "by_status": {},
-        "by_severity": {},
+        "total": sum(int(count or 0) for _status, count in status_rows),
+        "by_status": {status or "": int(count or 0) for status, count in status_rows},
+        "by_severity": {severity or "": int(count or 0) for severity, count in severity_rows},
     }
-    for status, severity in rows:
-        summary["by_status"][status or ""] = summary["by_status"].get(status or "", 0) + 1
-        summary["by_severity"][severity or ""] = summary["by_severity"].get(severity or "", 0) + 1
     return summary
 
 

@@ -40,15 +40,6 @@ def queue_outbox_event(
     })
     ensure_payload_size(event_payload)
 
-    existing = db.execute(
-        select(PendingEvent).where(PendingEvent.idempotency_key == idempotency_key)
-    ).scalar_one_or_none()
-    if existing is not None:
-        existing.action = existing.action or action
-        existing.aggregate_type = existing.aggregate_type or aggregate_type
-        existing.aggregate_id = existing.aggregate_id or aggregate_id
-        return existing
-
     values = {
         "id": uuid.uuid4(),
         "event_type": event_type,
@@ -68,15 +59,28 @@ def queue_outbox_event(
             insert_factory(PendingEvent)
             .values(**values)
             .on_conflict_do_nothing(index_elements=[PendingEvent.idempotency_key])
-            .returning(PendingEvent.id)
+            .returning(PendingEvent)
         )
         with db.no_autoflush:
-            inserted_id = db.execute(statement).scalar_one_or_none()
-        resolved_id = inserted_id or db.execute(
-            select(PendingEvent.id).where(PendingEvent.idempotency_key == idempotency_key)
+            inserted = db.execute(statement).scalar_one_or_none()
+        if inserted is not None:
+            return inserted
+        existing = db.execute(
+            select(PendingEvent).where(PendingEvent.idempotency_key == idempotency_key)
         ).scalar_one()
-        return db.get(PendingEvent, resolved_id)
+        existing.action = existing.action or action
+        existing.aggregate_type = existing.aggregate_type or aggregate_type
+        existing.aggregate_id = existing.aggregate_id or aggregate_id
+        return existing
 
+    existing = db.execute(
+        select(PendingEvent).where(PendingEvent.idempotency_key == idempotency_key)
+    ).scalar_one_or_none()
+    if existing is not None:
+        existing.action = existing.action or action
+        existing.aggregate_type = existing.aggregate_type or aggregate_type
+        existing.aggregate_id = existing.aggregate_id or aggregate_id
+        return existing
     event = PendingEvent(**values)
     db.add(event)
     db.flush()
