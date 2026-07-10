@@ -15,6 +15,7 @@ from backend.app import telegram_worker as telegram_worker_module
 from backend.app import excel_importer
 from backend.app.excel_importer import excel_file_to_import_payload
 from backend.app.models import AuditLog, Base, Incident, PendingEvent
+from backend.app.telegram_admin_processor import TelegramAdminProcessor
 from backend.app.telegram_import_processor import TelegramImportProcessor
 from backend.app.telegram_report_processor import TelegramReportProcessor
 from backend.app.telegram_worker import (
@@ -82,6 +83,40 @@ def create_conflicting_date_workbook(path):
 
 
 class BackendTelegramImportTests(unittest.TestCase):
+    def test_admin_processor_sends_notification_with_characterized_ordered_calls(self):
+        processor = TelegramAdminProcessor()
+        calls = []
+        events = [{
+            "id": "notification-1",
+            "payload": {"chat_id": "allowed", "text": "Synthetic notification"},
+            "lease_owner": "lease-1",
+        }]
+
+        processor.reset_stale_telegram_notification_events = lambda: calls.append(("reset",))
+
+        def take_next():
+            calls.append(("take",))
+            return events.pop(0) if events else None
+
+        processor.take_next_telegram_notification_event = take_next
+        processor.is_allowed_chat = lambda chat_id: calls.append(("authorize", chat_id)) or chat_id == "allowed"
+        processor.send_message = lambda chat_id, text: calls.append(("send_message", chat_id, text))
+        processor.finish_telegram_notification_event = (
+            lambda event_id, success, error="", failure_status="failed", lease_owner="": calls.append(
+                ("finish", event_id, success, error, failure_status, lease_owner)
+            )
+        )
+
+        self.assertEqual(processor.process_pending_telegram_notifications(), 1)
+        self.assertEqual(calls, [
+            ("reset",),
+            ("take",),
+            ("authorize", "allowed"),
+            ("send_message", "allowed", "Synthetic notification"),
+            ("finish", "notification-1", True, "", "failed", "lease-1"),
+            ("take",),
+        ])
+
     def test_report_processor_builds_kiz_menu_with_characterized_ordered_calls(self):
         processor = TelegramReportProcessor()
         calls = []
