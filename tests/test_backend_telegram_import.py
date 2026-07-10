@@ -15,6 +15,7 @@ from backend.app import telegram_worker as telegram_worker_module
 from backend.app import excel_importer
 from backend.app.excel_importer import excel_file_to_import_payload
 from backend.app.models import AuditLog, Base, Incident, PendingEvent
+from backend.app.telegram_import_processor import TelegramImportProcessor
 from backend.app.telegram_worker import (
     TELEGRAM_BUTTON_IMPORTS,
     TELEGRAM_BUTTON_KIZ_BY_FILES,
@@ -80,6 +81,42 @@ def create_conflicting_date_workbook(path):
 
 
 class BackendTelegramImportTests(unittest.TestCase):
+    def test_import_processor_runs_queue_with_characterized_ordered_calls(self):
+        processor = TelegramImportProcessor()
+        calls = []
+        events = [
+            {"id": "event-1", "payload": {"chat_id": "admin", "document": {"file_name": "one.xlsx"}}},
+            {"id": "event-2", "payload": {"chat_id": "denied", "document": {"file_name": "two.xlsx"}}},
+        ]
+
+        processor.reset_stale_telegram_import_events = lambda: calls.append(("reset",))
+
+        def take_next():
+            calls.append(("take",))
+            return events.pop(0) if events else None
+
+        processor.take_next_telegram_import_event = take_next
+        processor.is_admin_chat = lambda chat_id: calls.append(("authorize", chat_id)) or chat_id == "admin"
+        processor.import_telegram_document = lambda chat_id, document, shipment_date="", event_id=None: (
+            calls.append(("import", chat_id, document["file_name"], shipment_date, event_id)) or (True, "")
+        )
+        processor.finish_telegram_import_event = lambda event_id, success, error="": calls.append(
+            ("finish", event_id, success, error)
+        )
+
+        self.assertEqual(processor.process_queued_telegram_imports(), 2)
+        self.assertEqual(calls, [
+            ("reset",),
+            ("take",),
+            ("authorize", "admin"),
+            ("import", "admin", "one.xlsx", "", "event-1"),
+            ("finish", "event-1", True, ""),
+            ("take",),
+            ("authorize", "denied"),
+            ("finish", "event-2", False, "telegram import chat is not authorized"),
+            ("take",),
+        ])
+
     def test_unsafe_telegram_filename_is_rejected_before_download_and_redacted(self):
         worker = TelegramWorker.__new__(TelegramWorker)
         messages = []
