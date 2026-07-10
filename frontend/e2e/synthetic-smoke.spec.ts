@@ -71,9 +71,9 @@ test("@smoke incidents and client-point actions stay inside synthetic API", asyn
   await page.getByRole("button", { name: "Клиенты" }).click();
   await expect(page.getByRole("heading", { name: "Клиенты и таймслоты" })).toBeVisible();
   await page.getByLabel("Поиск клиентов").fill("Альфа");
-  await page.getByRole("button", { name: "Редактировать" }).click();
+  await page.getByRole("button", { name: /Редактировать таймслот/ }).click();
   await page.getByLabel("Доставка с").fill("09:00");
-  await page.getByRole("button", { name: "Сохранить" }).click();
+  await page.getByRole("button", { name: /Сохранить таймслот/ }).click();
   await expect.poll(() => api.clientUpdates).toBe(1);
   await expect(page.getByRole("status")).toContainText("Таймслот сохранен");
 

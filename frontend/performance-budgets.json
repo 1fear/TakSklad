@@ -1,0 +1,11 @@
+{
+  "initialJavaScriptGzipBytes": 102400,
+  "javaScriptChunkGzipBytes": 102400,
+  "cssChunkGzipBytes": 102400,
+  "largestContentfulPaintMs": 2500,
+  "interactionToNextPaintMs": 200,
+  "cumulativeLayoutShift": 0.1,
+  "lighthousePerformance": 0.9,
+  "lighthouseAccessibility": 1,
+  "lighthouseBestPractices": 0.95
+}

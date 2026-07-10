@@ -20,6 +20,30 @@ describe("focused accessibility characterization", () => {
     expect(results).toHaveNoViolations();
   });
 
+  it("connects an assertive login error to both invalid credentials fields", async () => {
+    server.use(
+      http.get("/api/v1/auth/session", () => HttpResponse.json(anonymousSession)),
+      http.post("/api/v1/auth/login", () => HttpResponse.json({ message: "Неверные данные" }, { status: 401 })),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole("heading", { name: "Вход в панель" });
+
+    const phone = screen.getByRole("textbox", { name: "Телефон" });
+    const password = screen.getByLabelText("Пароль");
+    await user.type(phone, "+998901234567");
+    await user.type(password, "wrong-password");
+    await user.click(screen.getByRole("button", { name: "Войти" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveAttribute("id", "login-error");
+    expect(alert).toHaveAttribute("aria-live", "assertive");
+    expect(phone).toHaveAttribute("aria-invalid", "true");
+    expect(phone).toHaveAttribute("aria-describedby", "login-error");
+    expect(password).toHaveAttribute("aria-invalid", "true");
+    expect(password).toHaveAttribute("aria-describedby", "login-error");
+  });
+
   it("has no automated axe violations on navigation and the orders table", async () => {
     const { container } = render(<App />);
     await screen.findByRole("heading", { name: "Позиции заказов" });
@@ -42,6 +66,9 @@ describe("focused accessibility characterization", () => {
     await user.click(screen.getByRole("button", { name: "История действий" }));
     await user.click(screen.getByRole("button", { name: "Инциденты" }));
     await screen.findByRole("heading", { name: "Инциденты и очередь" });
+    expect(container.querySelector("tr[role='button']")).toBeNull();
+    expect(screen.getByRole("button", { name: /Открыть инцидент/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Открыть событие/ })).toBeInTheDocument();
     expect(await axe(container)).toHaveNoViolations();
   });
 });

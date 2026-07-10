@@ -7,7 +7,7 @@
   --color-border-soft: #e0e2dc;
   --color-primary: #16635b;
   --color-primary-soft: #f0f4ee;
-  --focus-ring: 0 0 0 3px rgba(22, 99, 91, 0.18);
+  --focus-ring: 0 0 0 3px rgba(22, 99, 91, 0.34);
   color: #202326;
   background: #f4f5f3;
   font-family:
@@ -58,8 +58,14 @@ input:focus-visible,
 select:focus-visible,
 textarea:focus-visible,
 summary:focus-visible {
-  outline: 0;
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
   box-shadow: var(--focus-ring);
+}
+
+.topbar h1:focus {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 4px;
 }
 
 .app-shell {
@@ -877,7 +883,7 @@ summary:focus-visible {
 .panel-subtitle {
   display: block;
   margin-top: 4px;
-  color: #7a7f74;
+  color: var(--color-muted);
   font-size: 13px;
 }
 
@@ -1649,16 +1655,12 @@ summary:focus-visible {
   min-width: 900px;
 }
 
-.admin-center-table tr {
-  cursor: pointer;
-}
-
 .admin-center-table tr:hover,
-.admin-center-table tr:focus-visible {
+.admin-center-table tr:focus-within {
   background: #f7faf8;
 }
 
-.admin-center-table tr:focus-visible {
+.admin-center-table tr:focus-within {
   outline: 0;
   box-shadow: inset 3px 0 0 var(--color-primary);
 }

@@ -141,7 +141,7 @@ describe("authenticated control-surface characterization", () => {
     await user.click(screen.getByRole("checkbox", { name: `Выбрать заказ ${firstAdminRow.client}` }));
     await user.click(screen.getByRole("button", { name: "В архив без КИЗов" }));
 
-    expect(await screen.findByText("Заказ перенесен в архив без КИЗов")).toBeInTheDocument();
+    expect(await screen.findByRole("status")).toHaveTextContent("Заказ перенесен в архив без КИЗов");
     expect(actionBody).toMatchObject({
       reason: "Синтетическая причина",
       actor: "web",
@@ -149,6 +149,24 @@ describe("authenticated control-surface characterization", () => {
       expected_updated_at: firstAdminRow.updated_at,
     });
     expect(actionBody?.idempotency_key).toEqual(expect.any(String));
+  });
+
+  it("announces a failed order action through an assertive alert", async () => {
+    server.use(
+      http.post("/api/v1/admin/orders/:orderId/archive-without-kiz", () => (
+        HttpResponse.json({ message: "Синтетическая ошибка действия" }, { status: 500 })
+      )),
+    );
+    vi.spyOn(window, "prompt").mockReturnValue("Синтетическая причина");
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const { user } = await renderAuthenticatedApp();
+
+    await user.click(screen.getByRole("checkbox", { name: `Выбрать заказ ${firstAdminRow.client}` }));
+    await user.click(screen.getByRole("button", { name: "В архив без КИЗов" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveAttribute("aria-live", "assertive");
+    expect(alert).toHaveTextContent("Синтетическая ошибка действия");
   });
 
   it("filters incidents and resolves the selected incident with an explicit reason", async () => {
@@ -192,7 +210,7 @@ describe("authenticated control-surface characterization", () => {
     await user.click(screen.getByRole("button", { name: "Клиенты" }));
 
     expect(await screen.findByRole("heading", { name: "Клиенты и таймслоты" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "2 заказов · 1 возвратов" }));
+    await user.click(screen.getByRole("button", { name: /История заказов Клиент Альфа: 2 заказов · 1 возвратов/ }));
     expect(await screen.findByText("Тестовый товар")).toBeInTheDocument();
     expect(screen.getByText("Заказ 1 · SkladBot: WH-R-TEST-1")).toBeInTheDocument();
     expect(screen.getByText("Заказ 2 · SkladBot: ID 1002")).toBeInTheDocument();
@@ -203,11 +221,11 @@ describe("authenticated control-surface characterization", () => {
     expect(screen.getByText("Нет данных")).toBeInTheDocument();
     await user.clear(clientSearch);
 
-    await user.click(screen.getByRole("button", { name: "Редактировать" }));
+    await user.click(screen.getByRole("button", { name: /Редактировать таймслот/ }));
     const from = screen.getByLabelText("Доставка с");
     await user.clear(from);
     await user.type(from, "10:30");
-    await user.click(screen.getByRole("button", { name: "Сохранить" }));
+    await user.click(screen.getByRole("button", { name: /Сохранить таймслот/ }));
 
     expect(await screen.findByText("Таймслот сохранен")).toBeInTheDocument();
     expect(timeslotBody).toMatchObject({

@@ -17,7 +17,7 @@ export default defineConfig({
       // operator workflow. The stateful App surface is protected by focused
       // characterization, accessibility and browser suites instead of a noisy
       // line-coverage target over its rendering branches.
-      include: ["src/api.ts"],
+      include: ["src/api.ts", "src/api/**/*.ts"],
       exclude: [
         "src/**/*.test.{ts,tsx}",
         "src/__tests__/**",

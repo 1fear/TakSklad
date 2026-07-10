@@ -10,7 +10,9 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "a11y": "vitest run --config vitest.a11y.config.ts",
+    "test:a11y": "vitest run --config vitest.a11y.config.ts",
     "e2e": "env -u NO_COLOR playwright test",
+    "perf": "node scripts/run-performance.mjs",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 0.0.0.0"
   },
@@ -41,6 +43,7 @@
     "globals": "17.7.0",
     "jest-axe": "10.0.0",
     "jsdom": "29.1.1",
+    "lighthouse": "13.4.0",
     "msw": "2.15.0",
     "typescript-eslint": "8.63.0",
     "vitest": "4.1.10"
