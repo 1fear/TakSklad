@@ -731,6 +731,9 @@ def queue_claim_50(db, _context, iteration):
 
 
 WORKLOADS = {
+    # Measure the latency-sensitive queue claim before the intentionally heavy
+    # 1000-row import so every fresh run has the same uncontaminated start.
+    "queue_claim_50": queue_claim_50,
     "scan_db": scan_db,
     "complete_db": complete_db,
     "return_db": return_db,
@@ -739,7 +742,6 @@ WORKLOADS = {
     "day_report": day_report,
     "dashboard_report": dashboard_report,
     "import_1000": import_1000,
-    "queue_claim_50": queue_claim_50,
 }
 
 

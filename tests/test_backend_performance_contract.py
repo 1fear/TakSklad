@@ -40,6 +40,8 @@ class BackendPerformanceContractTests(unittest.TestCase):
 
     def test_workload_budgets_cover_real_service_paths(self):
         self.assertEqual(set(benchmark_backend.WORKLOADS), set(self.budgets["workloads"]))
+        self.assertEqual(next(iter(benchmark_backend.WORKLOADS)), "queue_claim_50")
+        self.assertEqual(next(reversed(benchmark_backend.WORKLOADS)), "import_1000")
         self.assertEqual(10, self.budgets["regression_limit_percent"])
         self.assertEqual(3000, self.budgets["workloads"]["import_1000"]["p95_ms"])
         self.assertNotIn("return_lookup_db", benchmark_backend.WORKLOADS)
