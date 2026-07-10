@@ -1,0 +1,39 @@
+{
+  "actual_postgresql_restore": true,
+  "actual_production_readiness": false,
+  "archive_sha256": "bc0b80bf0939361be1454c25614dde5acccb70f5bf4bec07b601f75b34a410c9",
+  "backup_id": "taksklad-postgres-20260710T191012Z-synthetic-11293",
+  "completed_at": "2026-07-10T19:10:14Z",
+  "counts": {
+    "imports": 0,
+    "order_items": 0,
+    "orders": 0,
+    "scan_codes": 0,
+    "synthetic_restore_probe": 1
+  },
+  "customer_content_in_evidence": false,
+  "disposable_cleanup_count": 0,
+  "drill_id": "restore-20260710T191012Z",
+  "drill_mode": "disposable-postgresql-custom-archive",
+  "duration_seconds": 2.53,
+  "invariants": {
+    "archive_checksum": true,
+    "archive_list_checksum": true,
+    "migration_head_current": true,
+    "no_orphans": true,
+    "synthetic_primary_key_count": true
+  },
+  "isolated": true,
+  "migration_head": "20260710_0014",
+  "migration_head_assertion": "restored-database",
+  "network_mode": "none",
+  "production_touched": false,
+  "readiness": {
+    "database": "ok",
+    "migrations": "ok"
+  },
+  "rto_met": true,
+  "rto_target_minutes": 30,
+  "schema": "taksklad-restore-drill-evidence-v2",
+  "source_backup_contains_customer_content": false
+}

@@ -1,0 +1,23 @@
+{
+  "backup_id": "taksklad-postgres-20260710T190848Z-synthetic-10263",
+  "contains_customer_content": false,
+  "external_mutations": 0,
+  "mode": "local-test-bucket",
+  "object": {
+    "checksum_verified": true,
+    "decrypt_verified_source_sha256": "d20ac5b95a7f5ecd693453c4add411c7af3e57caebbeab2adc8b543bf9b071ee",
+    "encrypted": true,
+    "encryption": "AES-256-CBC-PBKDF2-200000",
+    "name": "taksklad-postgres-20260710T190848Z-synthetic-10263.dump.enc",
+    "sha256": "f89425f1e8a28719383525841e48c4b642aa25b90b3d371431632350d0dc799a"
+  },
+  "recoverable": true,
+  "recovery_key": {
+    "mode": "0600",
+    "name": "taksklad-postgres-20260710T190848Z-synthetic-10263.recovery-key",
+    "retained": true,
+    "sha256": "254aba76e254a6655fe03ea2fb276bf4819f10dda1af69b9c624d1000771f9fb",
+    "vault": "separate-local-simulated-key-vault"
+  },
+  "schema_version": 1
+}
