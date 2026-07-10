@@ -199,6 +199,10 @@ class PendingEvent(Base):
         Index("idx_pending_events_updated_created_at", "updated_at", "created_at", "id"),
         Index("idx_pending_events_claim", "event_type", "status", "available_at", "created_at", "id"),
         Index("idx_pending_events_lease_expiry", "status", "lease_expires_at", "id"),
+        Index(
+            "idx_pending_events_action_aggregate_status",
+            "action", "aggregate_type", "aggregate_id", "status", "created_at", "id",
+        ),
         Index("uq_pending_events_idempotency_key", "idempotency_key", unique=True),
         CheckConstraint(
             "status IN ('pending','failed','error','processing','completed','blocked','dead','cancelled',"
@@ -210,6 +214,9 @@ class PendingEvent(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
     event_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    action: Mapped[str | None] = mapped_column(String(80))
+    aggregate_type: Mapped[str | None] = mapped_column(String(80))
+    aggregate_id: Mapped[str | None] = mapped_column(String(180))
     idempotency_key: Mapped[str | None] = mapped_column(String(180))
     status: Mapped[str] = mapped_column(String(40), nullable=False, default="pending")
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

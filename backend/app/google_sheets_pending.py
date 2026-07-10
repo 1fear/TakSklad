@@ -24,6 +24,7 @@ from .google_sheets_exporter import (
     sync_backend_order_item_to_google_sheets,
 )
 from .models import AuditLog, Order, OrderItem, PendingEvent
+from .outbox_service import find_active_outbox_event, queue_outbox_event, reactivate_outbox_event
 
 
 GOOGLE_SHEETS_EXPORT_EVENT_TYPE = "google_sheets_export"
@@ -69,11 +70,11 @@ def queue_google_sheets_export(db: Session, action, entity_type, entity_id, resu
         return None
 
     event_payload = {
+        **(payload or {}),
         "action": action,
         "entity_type": entity_type,
         "entity_id": entity_id,
         "last_result": result or {},
-        **(payload or {}),
     }
     idempotency_key = google_sheets_export_idempotency_key(action, entity_type, entity_id, payload)
     if idempotency_key:
@@ -83,50 +84,34 @@ def queue_google_sheets_export(db: Session, action, entity_type, entity_id, resu
         ).scalar_one_or_none()
         if existing_by_key is not None:
             if existing_by_key.status in ("pending", "failed"):
-                existing_by_key.payload = {**(existing_by_key.payload or {}), **event_payload}
-                existing_by_key.status = "pending"
-                existing_by_key.available_at = datetime.now(timezone.utc)
-                existing_by_key.lease_owner = None
-                existing_by_key.lease_expires_at = None
-                existing_by_key.completed_at = None
-                existing_by_key.last_error = format_export_error(result)
+                reactivate_outbox_event(existing_by_key, event_payload, format_export_error(result))
             return existing_by_key
+    multi_chunk_intent = int((payload or {}).get("chunk_count") or 0) > 1
+    if not multi_chunk_intent:
+        existing = find_active_outbox_event(
+            db,
+            event_type=GOOGLE_SHEETS_EXPORT_EVENT_TYPE,
+            action=action,
+            aggregate_type=entity_type,
+            aggregate_id=entity_id,
+        )
+        if existing is not None:
+            event_payload["idempotency_key"] = existing.idempotency_key or idempotency_key
+            return reactivate_outbox_event(existing, event_payload, format_export_error(result))
 
-    candidate_events = db.execute(
-        select(PendingEvent)
-        .where(PendingEvent.event_type == GOOGLE_SHEETS_EXPORT_EVENT_TYPE)
-        .where(PendingEvent.status.in_(("pending", "failed")))
-    ).scalars().all()
-    existing = next(
-        (
-            event
-            for event in candidate_events
-            if (event.payload or {}).get("action") == action
-            and str((event.payload or {}).get("entity_id") or "") == entity_id
-        ),
-        None,
+    event_key = idempotency_key or (
+        f"google_sheets:{action}:{entity_type}:{entity_id}:event:{uuid.uuid4()}"
     )
-    if existing is not None:
-        existing.payload = {**(existing.payload or {}), **event_payload}
-        existing.status = "pending"
-        existing.available_at = datetime.now(timezone.utc)
-        existing.lease_owner = None
-        existing.lease_expires_at = None
-        existing.completed_at = None
-        existing.last_error = format_export_error(result)
-        return existing
-
-    event = PendingEvent(
+    return queue_outbox_event(
+        db,
         event_type=GOOGLE_SHEETS_EXPORT_EVENT_TYPE,
-        idempotency_key=idempotency_key or None,
-        status="pending",
-        attempts=0,
+        action=action,
+        aggregate_type=entity_type,
+        aggregate_id=entity_id,
+        idempotency_key=event_key,
         payload=event_payload,
         last_error=format_export_error(result),
     )
-    db.add(event)
-    db.flush()
-    return event
 
 
 def google_sheets_export_idempotency_key(action, entity_type, entity_id, payload):

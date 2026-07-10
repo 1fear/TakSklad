@@ -61,6 +61,8 @@ Run the read-only preflight before scheduling this migration:
 
 The preflight only counts violations in a repeatable-read, read-only transaction. It does not repair, delete, merge, or execute DDL. Any nonzero invariant count is a hard stop: keep the database at `20260710_0009`, investigate the reported class, and use a separately reviewed forward data repair. The migration uses `NOT VALID` checks followed by validation, two-second lock timeouts, bounded statement timeouts, and concurrent unique-index creation. A lock timeout or validation failure must leave the previous head active; retry only after the blocker or data violation is resolved. Production execution still requires a verified backup, an approved maintenance window, and explicit production authorization.
 
+Revision `20260710_0011` expands `pending_events` with nullable `action`, `aggregate_type`, and `aggregate_id` columns, backfills legacy rows from their existing payload, and adds a concurrent composite lookup index. Column creation and invalid-index recovery are retry-safe if the concurrent step is interrupted after the expand transaction commits. Producers dual-write the normalized identity and the legacy payload keys, so current consumers remain compatible. The application owns the transaction: warehouse mutation, audit row, and all external intents commit together; consumers retain honest at-least-once delivery and must remain idempotent.
+
 ## Invariant Preflight
 
 Before adding future uniqueness constraints for KIZ scans or pending-event idempotency, run:

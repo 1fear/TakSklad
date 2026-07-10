@@ -210,6 +210,9 @@ class ActiveOrderDeleteResult(BaseModel):
 class EventQueueEventRead(BaseModel):
     id: str
     event_type: str
+    action: str = ""
+    aggregate_type: str = ""
+    aggregate_id: str = ""
     status: str
     attempts: int
     last_error: str = ""

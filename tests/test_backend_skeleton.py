@@ -39,6 +39,7 @@ class BackendSkeletonTests(unittest.TestCase):
             "backend/migrations/versions/20260710_0008_pending_event_leases.py",
             "backend/migrations/versions/20260710_0009_import_identity.py",
             "backend/migrations/versions/20260710_0010_data_invariants.py",
+            "backend/migrations/versions/20260710_0011_atomic_outbox.py",
             "docs/database-migrations-runbook.md",
             "deploy/vds/docker-compose.yml",
             "deploy/vds/config-contract.json",
@@ -133,6 +134,7 @@ class BackendSkeletonTests(unittest.TestCase):
         pending_event_leases = (ROOT_DIR / "backend/migrations/versions/20260710_0008_pending_event_leases.py").read_text(encoding="utf-8").lower()
         import_identity = (ROOT_DIR / "backend/migrations/versions/20260710_0009_import_identity.py").read_text(encoding="utf-8").lower()
         data_invariants = (ROOT_DIR / "backend/migrations/versions/20260710_0010_data_invariants.py").read_text(encoding="utf-8").lower()
+        atomic_outbox = (ROOT_DIR / "backend/migrations/versions/20260710_0011_atomic_outbox.py").read_text(encoding="utf-8").lower()
 
         for table_name in [
             "orders",
@@ -217,6 +219,10 @@ class BackendSkeletonTests(unittest.TestCase):
         self.assertIn("pending event lease migration is forward-only", pending_event_leases)
         self.assertIn("import identity expand migration is forward-only", import_identity)
         self.assertIn("warehouse invariant migration is forward-only", data_invariants)
+        self.assertIn('revision = "20260710_0011"', atomic_outbox)
+        self.assertIn('down_revision = "20260710_0010"', atomic_outbox)
+        self.assertIn("create index concurrently", atomic_outbox)
+        self.assertIn("atomic outbox migration is forward-only", atomic_outbox)
 
     def test_deploy_runbook_uses_alembic_for_normal_production_upgrades(self):
         runbook = (ROOT_DIR / "docs/deploy-rollback-runbook.md").read_text(encoding="utf-8")

@@ -184,7 +184,7 @@ class PostgresInvariantTests(unittest.TestCase):
             self.assertEqual(gate_report["automatic_repairs"], 0)
             self.assertTrue(gate_report["zero_mutation"])
             with self.assertRaises(AssertionError):
-                run_alembic(url, "upgrade", "head")
+                run_alembic(url, "upgrade", "20260710_0010")
             self.assertEqual(scalar(url, "SELECT version_num FROM alembic_version"), "20260710_0009")
             self.assertEqual(scalar(url, "SELECT count(*) FROM orders"), before)
         finally:
@@ -202,7 +202,7 @@ class PostgresInvariantTests(unittest.TestCase):
         def migrate():
             started = time.monotonic()
             try:
-                run_alembic(url, "upgrade", "head")
+                run_alembic(url, "upgrade", "20260710_0010")
                 result["status"] = "unexpected_pass"
             except AssertionError as exc:
                 result["status"] = "timeout"
@@ -224,7 +224,7 @@ class PostgresInvariantTests(unittest.TestCase):
             indexes = {item["name"] for item in inspector.get_indexes("orders")}
             self.assertNotIn("ck_order_items_quantities_nonnegative", constraints)
             self.assertNotIn("uq_orders_active_import_order_key", indexes)
-            run_alembic(url, "upgrade", "head")
+            run_alembic(url, "upgrade", "20260710_0010")
             self.assertEqual(scalar(url, "SELECT version_num FROM alembic_version"), "20260710_0010")
             self.assertEqual(scalar(
                 url,
@@ -279,7 +279,7 @@ class PostgresInvariantTests(unittest.TestCase):
                     FROM generate_series(1,5000)
                 """))
             started = time.monotonic()
-            run_alembic(url, "upgrade", "head")
+            run_alembic(url, "upgrade", "20260710_0010")
             elapsed = time.monotonic() - started
             self.assertEqual(scalar(url, "SELECT version_num FROM alembic_version"), "20260710_0010")
             self.assertLess(elapsed, 30)

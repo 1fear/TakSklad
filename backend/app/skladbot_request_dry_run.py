@@ -13,6 +13,7 @@ from .google_sheets_exporter import make_sheet_record
 from .google_sheets_pending import queue_google_sheets_export
 from .event_leases import claim_event_leases, event_leases_enabled, finalize_event_leases
 from .models import AuditLog, ImportJob, Incident, Order, OrderItem, PendingEvent
+from .outbox_service import queue_outbox_event
 from .representative_contacts import build_representative_comment, find_representative_contact
 from .skladbot_worker import (
     SkladBotClient,
@@ -213,6 +214,9 @@ def create_skladbot_dry_run_for_import(
     if existing_event is None:
         event = PendingEvent(
             event_type=SKLADBOT_REQUEST_DRY_RUN_EVENT_TYPE,
+            action=SKLADBOT_REQUEST_DRY_RUN_EVENT_TYPE,
+            aggregate_type="import",
+            aggregate_id=import_id,
             status="completed",
             attempts=0,
             payload=event_payload,
@@ -222,6 +226,9 @@ def create_skladbot_dry_run_for_import(
         db.flush()
     else:
         event = existing_event
+        event.action = event.action or SKLADBOT_REQUEST_DRY_RUN_EVENT_TYPE
+        event.aggregate_type = event.aggregate_type or "import"
+        event.aggregate_id = event.aggregate_id or import_id
         event.status = "completed"
         event.attempts = 0
         event.payload = event_payload
@@ -335,11 +342,13 @@ def queue_skladbot_create_events(db: Session, import_id: str, dry_runs: list[dic
             continue
 
         now = datetime.now(timezone.utc).isoformat()
-        event = PendingEvent(
+        event = queue_outbox_event(
+            db,
             event_type=SKLADBOT_REQUEST_CREATE_EVENT_TYPE,
+            action=SKLADBOT_REQUEST_CREATE_EVENT_TYPE,
+            aggregate_type="order",
+            aggregate_id=order_id,
             idempotency_key=idempotency_key,
-            status="pending",
-            attempts=0,
             payload={
                 "version": 1,
                 "import_id": import_id,
@@ -350,10 +359,7 @@ def queue_skladbot_create_events(db: Session, import_id: str, dry_runs: list[dic
                 "queued_at": now,
                 "create_status": "queued",
             },
-            last_error=None,
         )
-        db.add(event)
-        db.flush()
         row["status"] = "queued"
         row["create_event_id"] = str(event.id)
         row["error"] = ""

@@ -48,11 +48,17 @@ case "$MODE" in
   invariants)
     TEST_MODULE="tests.test_postgres_invariants"
     ;;
+  outbox)
+    TEST_MODULE="tests.test_postgres_outbox"
+    ;;
+  outbox-faults)
+    TEST_MODULE="tests.test_postgres_outbox_faults"
+    ;;
   all)
-    TEST_MODULE="tests.test_postgres_migrations tests.test_postgres_concurrency tests.test_postgres_readiness tests.test_postgres_queue_concurrency tests.test_postgres_queue_failures tests.test_postgres_import_identity tests.test_postgres_invariants"
+    TEST_MODULE="tests.test_postgres_migrations tests.test_postgres_concurrency tests.test_postgres_readiness tests.test_postgres_queue_concurrency tests.test_postgres_queue_failures tests.test_postgres_import_identity tests.test_postgres_invariants tests.test_postgres_outbox tests.test_postgres_outbox_faults"
     ;;
   *)
-    echo "Usage: $0 {seed-reference|migrations|smoke|readiness|queue-concurrency|queue-failures|import-identity|invariants|all}" >&2
+    echo "Usage: $0 {seed-reference|migrations|smoke|readiness|queue-concurrency|queue-failures|import-identity|invariants|outbox|outbox-faults|all}" >&2
     exit 2
     ;;
 esac

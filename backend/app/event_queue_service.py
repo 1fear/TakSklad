@@ -235,6 +235,9 @@ def event_to_queue_read(event: PendingEvent, now=None):
     return {
         "id": str(event.id),
         "event_type": event.event_type,
+        "action": event.action or str(payload.get("action") or event.event_type),
+        "aggregate_type": event.aggregate_type or str(payload.get("entity_type") or ""),
+        "aggregate_id": event.aggregate_id or str(payload.get("entity_id") or ""),
         "status": event.status,
         "attempts": int(event.attempts or 0),
         "last_error": redact_secrets(event.last_error or ""),

@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session, selectinload
 from .event_leases import claim_event_leases, event_leases_enabled, finalize_event_leases
 from .google_sheets_pending import queue_google_sheets_export
 from .models import AuditLog, Order, PendingEvent
+from .outbox_service import queue_outbox_event
 from .representative_contacts import build_representative_comment, find_representative_contact
 from .skladbot_request_dry_run import (
     SKLADBOT_CUSTOMER_ID,
@@ -50,18 +51,14 @@ def queue_skladbot_return_request_create(
 
     order_id = str(order.id)
     idempotency_key = skladbot_return_create_idempotency_key(order_id)
-    existing = db.execute(
-        select(PendingEvent).where(PendingEvent.idempotency_key == idempotency_key)
-    ).scalar_one_or_none()
-    if existing is not None:
-        return existing
-
     now = datetime.now(timezone.utc).isoformat()
-    event = PendingEvent(
+    event = queue_outbox_event(
+        db,
         event_type=SKLADBOT_RETURN_REQUEST_CREATE_EVENT_TYPE,
+        action=SKLADBOT_RETURN_REQUEST_CREATE_EVENT_TYPE,
+        aggregate_type="order",
+        aggregate_id=order_id,
         idempotency_key=idempotency_key,
-        status="pending",
-        attempts=0,
         payload={
             "version": 1,
             "order_id": order_id,
@@ -70,10 +67,7 @@ def queue_skladbot_return_request_create(
             "queued_at": now,
             "create_status": "queued",
         },
-        last_error=None,
     )
-    db.add(event)
-    db.flush()
     raw_payload.update({
         "skladbot_return_request_status": "queued",
         "skladbot_return_create_event_id": str(event.id),

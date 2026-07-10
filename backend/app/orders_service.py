@@ -1,5 +1,4 @@
 import uuid
-import logging
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -20,6 +19,7 @@ from .kiz_movements_service import (
     record_kiz_movement,
 )
 from .models import AuditLog, Order, OrderItem, ScanCode
+from . import outbox_service
 from .schemas import KizAvailabilityRead, OrderItemRead, OrderRead, ScanCreate, ScanRead, ScanUndo
 from .scan_quantities import (
     SCAN_TYPE_AGGREGATE_BOX,
@@ -40,9 +40,6 @@ STATUS_REMOVED_FROM_GOOGLE = "removed_from_google_sheet"
 COMPLETED_STATUSES = (STATUS_COMPLETED, "done", "closed", STATUS_RETURNED)
 INACTIVE_ORDER_STATUSES = (*COMPLETED_STATUSES, STATUS_ARCHIVED_NO_KIZ, STATUS_CANCELLED)
 HIDDEN_ITEM_STATUSES = (STATUS_REMOVED_FROM_GOOGLE,)
-logger = logging.getLogger(__name__)
-
-
 class ApiError(Exception):
     def __init__(self, status_code, detail):
         self.status_code = status_code
@@ -261,9 +258,18 @@ def create_scan(db: Session, payload: ScanCreate):
             "block_quantity": block_quantity,
         },
     ))
+    queue_order_google_intent(
+        db,
+        action="google_sheets_scan_export",
+        entity_type="order_item",
+        entity_id=str(item.id),
+        idempotency_key=f"outbox:scan:create:{scan_id}",
+    )
 
     try:
+        outbox_service.outbox_fault("before_commit", "scan")
         db.commit()
+        outbox_service.outbox_fault("after_commit", "scan")
     except IntegrityError as exc:
         db.rollback()
         item = db.execute(select(OrderItem).where(OrderItem.id == order_item_id)).scalar_one_or_none()
@@ -279,7 +285,6 @@ def create_scan(db: Session, payload: ScanCreate):
     db.refresh(scan)
     db.refresh(item)
     response = scan_to_read(scan, item)
-    export_order_item_scan_to_google_sheets_best_effort(db, item.id)
     return response
 
 
@@ -363,7 +368,16 @@ def undo_scan(db: Session, payload: ScanUndo):
             "block_quantity": scan_block_quantity(scan),
         },
     ))
+    queue_order_google_intent(
+        db,
+        action="google_sheets_scan_export",
+        entity_type="order_item",
+        entity_id=str(item.id),
+        idempotency_key=f"outbox:scan:undo:{movement.id}",
+    )
+    outbox_service.outbox_fault("before_commit", "scan")
     db.commit()
+    outbox_service.outbox_fault("after_commit", "scan")
     db.refresh(item)
     response = ScanRead(
         id=str(scan_id),
@@ -375,7 +389,6 @@ def undo_scan(db: Session, payload: ScanUndo):
         scan_type=(scan.raw_payload or {}).get("scan_type") or "unit",
         block_quantity=scan_block_quantity(scan),
     )
-    export_order_item_scan_to_google_sheets_best_effort(db, item.id)
     return response
 
 
@@ -460,7 +473,16 @@ def complete_order(db: Session, order_id):
     if order.status in COMPLETED_STATUSES:
         response = order_to_read(order)
         if order.status != STATUS_RETURNED:
-            export_order_archive_to_google_sheets_best_effort(db, order.id)
+            queue_order_google_intent(
+                db,
+                action="google_sheets_archive_export",
+                entity_type="order",
+                entity_id=str(order.id),
+                idempotency_key=f"outbox:order:complete:{order.id}",
+            )
+            outbox_service.outbox_fault("before_commit", "complete")
+            db.commit()
+            outbox_service.outbox_fault("after_commit", "complete")
         return response
 
     incomplete_items = [
@@ -491,10 +513,18 @@ def complete_order(db: Session, order_id):
         entity_id=str(order.id),
         payload={"items_count": len(order.items)},
     ))
+    queue_order_google_intent(
+        db,
+        action="google_sheets_archive_export",
+        entity_type="order",
+        entity_id=str(order.id),
+        idempotency_key=f"outbox:order:complete:{order.id}",
+    )
+    outbox_service.outbox_fault("before_commit", "complete")
     db.commit()
+    outbox_service.outbox_fault("after_commit", "complete")
     db.refresh(order)
     response = order_to_read(order)
-    export_order_archive_to_google_sheets_best_effort(db, order.id)
     return response
 
 
@@ -598,11 +628,25 @@ def mark_order_returned(db: Session, order_id, return_reference="", returned_by=
             "kiz_return_movements": return_movements,
         },
     ))
+    queue_order_google_intent(
+        db,
+        action="google_sheets_archive_export",
+        entity_type="order",
+        entity_id=str(order.id),
+        idempotency_key=f"outbox:order:return-archive:{order.id}",
+    )
+    queue_order_google_intent(
+        db,
+        action="google_sheets_return_export",
+        entity_type="order",
+        entity_id=str(order.id),
+        idempotency_key=f"outbox:order:return:{order.id}",
+    )
+    outbox_service.outbox_fault("before_commit", "return")
     db.commit()
+    outbox_service.outbox_fault("after_commit", "return")
     db.refresh(order)
     response = order_to_read(order)
-    export_order_archive_to_google_sheets_best_effort(db, order.id)
-    export_order_return_to_google_sheets_best_effort(db, order.id)
     return response
 
 
@@ -654,69 +698,35 @@ def validate_return_confirmed_items(order, confirmed_items):
     return confirmed
 
 
-def export_order_item_scan_to_google_sheets_best_effort(db: Session, item_id):
-    item = db.execute(
-        select(OrderItem)
-        .options(selectinload(OrderItem.order), selectinload(OrderItem.scan_codes))
-        .where(OrderItem.id == item_id)
-    ).scalar_one_or_none()
-    if item is None:
-        return
-    record_google_sheets_export_result(
+def queue_order_google_intent(db: Session, action, entity_type, entity_id, idempotency_key):
+    result = {"status": "queued", "queued": True, "error": ""}
+    event = queue_google_sheets_export(
         db,
-        action="google_sheets_scan_export",
-        entity_type="order_item",
-        entity_id=str(item.id),
+        action,
+        entity_type,
+        entity_id,
+        result=result,
+        payload={"idempotency_key": idempotency_key},
     )
-
-
-def export_order_archive_to_google_sheets_best_effort(db: Session, order_id):
-    order = db.execute(
-        select(Order)
-        .options(selectinload(Order.items).selectinload(OrderItem.scan_codes))
-        .where(Order.id == order_id)
-    ).scalar_one_or_none()
-    if order is None:
-        return
-    record_google_sheets_export_result(
-        db,
-        action="google_sheets_archive_export",
-        entity_type="order",
-        entity_id=str(order.id),
-    )
-
-
-def export_order_return_to_google_sheets_best_effort(db: Session, order_id):
-    order = db.execute(
-        select(Order)
-        .options(selectinload(Order.items).selectinload(OrderItem.scan_codes))
-        .where(Order.id == order_id)
-    ).scalar_one_or_none()
-    if order is None:
-        return
-    record_google_sheets_export_result(
-        db,
-        action="google_sheets_return_export",
-        entity_type="order",
-        entity_id=str(order.id),
-    )
+    result = {**result, "pending_event_id": str(event.id) if event else ""}
+    db.add(AuditLog(
+        action=action,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        payload=result,
+    ))
+    return event
 
 
 def record_google_sheets_export_result(db: Session, action, entity_type, entity_id):
-    result = {"status": "queued", "queued": True, "error": ""}
-    try:
-        event = queue_google_sheets_export(db, action, entity_type, entity_id, result=result)
-        result = {**result, "pending_event_id": str(event.id) if event else ""}
-        db.add(AuditLog(
-            action=action,
-            entity_type=entity_type,
-            entity_id=entity_id,
-            payload=result,
-        ))
-        db.commit()
-    except Exception:
-        logger.exception("Failed to store Google Sheets export audit: %s", action)
-        db.rollback()
+    """Legacy commit-free adapter; the caller owns the surrounding transaction."""
+    return queue_order_google_intent(
+        db,
+        action=action,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        idempotency_key=f"outbox:projection:{action}:{entity_type}:{entity_id}:{uuid.uuid4()}",
+    )
 
 
 def return_lookup_matches(order, lookup):

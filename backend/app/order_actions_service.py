@@ -326,9 +326,8 @@ def reset_order_for_rescan(db: Session, order_id, payload):
             },
         ),
     ))
-    db.commit()
-    db.refresh(order)
     queue_order_projection_to_google(db, order, action="google_sheets_restore_order_export")
+    db.commit()
     db.refresh(order)
     return order_to_read(order)
 
@@ -380,9 +379,8 @@ def restore_order(db: Session, order_id, payload):
             },
         ),
     ))
-    db.commit()
-    db.refresh(order)
     queue_order_projection_to_google(db, order, action="google_sheets_restore_order_export")
+    db.commit()
     db.refresh(order)
     return order_to_read(order)
 
@@ -430,8 +428,6 @@ def resync_order_to_google(db: Session, order_id, payload=None):
         entity_id=str(order.id),
         payload=admin_audit_payload("order_google_resync_requested", context, order=order),
     ))
-    db.commit()
-
     if order.status not in INACTIVE_ORDER_STATUSES:
         for item in order.items:
             record_google_sheets_export_result(
@@ -469,6 +465,7 @@ def resync_order_to_google(db: Session, order_id, payload=None):
             entity_id=str(order.id),
         )
 
+    db.commit()
     db.refresh(order)
     return order_to_read(order)
 
@@ -490,7 +487,6 @@ def queue_order_projection_to_google(db: Session, order, action="google_sheets_r
         entity_id=str(order.id),
         payload={**result, "pending_event_id": str(event.id) if event else ""},
     ))
-    db.commit()
 
 
 def order_item_to_sheet_record(order, item):
@@ -559,15 +555,13 @@ def apply_terminal_no_kiz_action(db: Session, order_id, payload, context, target
             },
         ),
     ))
-    db.commit()
-    db.refresh(order)
-
     record_google_sheets_export_result(
         db,
         action=google_action,
         entity_type="order",
         entity_id=str(order.id),
     )
+    db.commit()
     db.refresh(order)
     return order_to_read(order)
 

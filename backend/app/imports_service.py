@@ -1,6 +1,5 @@
 import hashlib
 import json
-import logging
 import uuid
 from datetime import date, datetime
 
@@ -13,6 +12,7 @@ from .google_sheets_pending import (
     queue_google_sheets_export,
 )
 from .models import AuditLog, ImportFile, ImportJob, Incident, Order, OrderItem, PendingEvent
+from . import outbox_service
 from .orders_service import STATUS_COMPLETED, STATUS_NOT_COMPLETED, STATUS_RETURNED
 from .schemas import ImportCreate, ImportPreviewResult, ImportRead, ImportResult
 from .skladbot_request_dry_run import (
@@ -21,8 +21,6 @@ from .skladbot_request_dry_run import (
     skladbot_create_idempotency_key,
 )
 
-
-logger = logging.getLogger(__name__)
 
 ORDER_DATE_FIELDS = ("Дата отгрузки", "Дата получения заказа", "order_date", "date")
 PAYMENT_FIELDS = ("Тип оплаты", "payment_type", "payment")
@@ -261,8 +259,6 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
         entity_id=str(import_job.id),
         payload=import_job.raw_payload,
     ))
-    db.commit()
-    db.refresh(import_job)
     google_sheets_result = export_import_records_to_google_sheets(
         db,
         google_sheets_records,
@@ -272,51 +268,20 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
         **(import_job.raw_payload or {}),
         "google_sheets": google_sheets_result,
     }
+    db.flush()
+    skladbot_dry_run_result = create_skladbot_dry_run_for_import(
+        db,
+        str(import_job.id),
+        force_mode=skladbot_create_mode,
+    )
+    import_job.raw_payload = {
+        **(import_job.raw_payload or {}),
+        "skladbot_dry_run": skladbot_dry_run_result,
+    }
+    outbox_service.outbox_fault("before_commit", "import")
     db.commit()
+    outbox_service.outbox_fault("after_commit", "import")
     db.refresh(import_job)
-    import_job_id = import_job.id
-    try:
-        skladbot_dry_run_result = create_skladbot_dry_run_for_import(
-            db,
-            str(import_job_id),
-            force_mode=skladbot_create_mode,
-        )
-        import_job.raw_payload = {
-            **(import_job.raw_payload or {}),
-            "skladbot_dry_run": skladbot_dry_run_result,
-        }
-        db.commit()
-        db.refresh(import_job)
-    except Exception as exc:
-        db.rollback()
-        logger.exception("SkladBot dry-run failed for import %s", import_job_id)
-        skladbot_dry_run_result = {
-            "status": "error",
-            "mode": "dry_run",
-            "orders": 0,
-            "ready": 0,
-            "blocked": 0,
-            "already_linked": 0,
-            "event_id": "",
-            "error": str(exc)[:500],
-        }
-        import_job = db.get(ImportJob, import_job_id)
-        import_job.raw_payload = {
-            **(import_job.raw_payload or {}),
-            "skladbot_dry_run": skladbot_dry_run_result,
-        }
-        db.add(AuditLog(
-            action="skladbot_request_dry_run_failed",
-            entity_type="import",
-            entity_id=str(import_job_id),
-            payload={
-                "import_id": str(import_job_id),
-                "status": "error",
-                "error": str(exc)[:500],
-            },
-        ))
-        db.commit()
-        db.refresh(import_job)
     return ImportResult(
         id=str(import_job.id),
         source=import_job.source,
@@ -484,74 +449,52 @@ def export_import_records_to_google_sheets(db: Session, records, import_job_id="
         "error": "",
         "queued": True,
     }
-    try:
-        event = queue_google_sheets_export(
+    chunks = chunk_outbox_records(records)
+    events = [
+        queue_google_sheets_export(
             db,
             "google_sheets_import_export",
             "import",
             import_job_id,
             result=result,
-            payload={"records": records},
-        )
-        return {**result, "pending_event_id": str(event.id) if event else ""}
-    except Exception as exc:
-        logger.exception("Failed to queue Google Sheets import export for import %s", import_job_id)
-        db.rollback()
-        error = normalize_text(exc)[:500] or exc.__class__.__name__
-        record_google_sheets_import_export_failure(db, import_job_id, error, len(records))
-        return {
-            "status": "error",
-            "imported": 0,
-            "duplicates": 0,
-            "updated": 0,
-            "error": error,
-            "queued": False,
-            "pending_event_id": "",
-        }
-
-
-def record_google_sheets_import_export_failure(db: Session, import_job_id, error, records_count):
-    import_uuid = parse_optional_uuid(import_job_id)
-    entity_id = normalize_text(import_job_id)
-    try:
-        existing_incident = None
-        if import_uuid is not None:
-            existing_incident = db.execute(
-                select(Incident)
-                .where(Incident.import_id == import_uuid)
-                .where(Incident.source == "google_sheets_import_export")
-                .where(Incident.status == "open")
-            ).scalar_one_or_none()
-        if existing_incident is None:
-            db.add(Incident(
-                source="google_sheets_import_export",
-                severity="warning",
-                status="open",
-                title="Google Sheets import export failed",
-                message=error,
-                entity_type="import",
-                entity_id=entity_id,
-                import_id=import_uuid,
-                raw_payload={
-                    "import_id": entity_id,
-                    "records_count": records_count,
-                    "error": error,
-                },
-            ))
-        db.add(AuditLog(
-            action="google_sheets_import_export_failed",
-            entity_type="import",
-            entity_id=entity_id,
             payload={
-                "status": "error",
-                "records_count": records_count,
-                "error": error,
+                "records": chunk,
+                "chunk_index": index,
+                "chunk_count": len(chunks),
             },
-        ))
-        db.commit()
-    except Exception:
-        logger.exception("Failed to record Google Sheets import export failure for import %s", import_job_id)
-        db.rollback()
+        )
+        for index, chunk in enumerate(chunks, start=1)
+    ]
+    event_ids = [str(event.id) for event in events if event is not None]
+    return {
+        **result,
+        "pending_event_id": event_ids[0] if event_ids else "",
+        "pending_event_ids": event_ids,
+        "events_queued": len(event_ids),
+    }
+
+
+def chunk_outbox_records(records):
+    maximum = outbox_service.MAX_OUTBOX_PAYLOAD_BYTES - (64 * 1024)
+    chunks = []
+    current = []
+    current_bytes = len(b'{"records":[]}')
+    for record in records:
+        sanitized_record = outbox_service.sanitize_outbox_payload(record)
+        encoded_record = json.dumps(
+            sanitized_record, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"),
+        ).encode("utf-8")
+        separator_bytes = 1 if current else 0
+        if current and current_bytes + separator_bytes + len(encoded_record) > maximum:
+            chunks.append(current)
+            current = [record]
+            current_bytes = len(b'{"records":[]}') + len(encoded_record)
+        else:
+            current.append(record)
+            current_bytes += separator_bytes + len(encoded_record)
+    if current:
+        chunks.append(current)
+    return chunks
 
 
 def list_imports(db: Session):
