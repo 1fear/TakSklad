@@ -115,7 +115,7 @@ def build_postgres_claim_statement(*, event_types, owner, limit, now, expires_at
     )
     return (
         update(PendingEvent)
-        .where(PendingEvent.id.in_(select(candidates.c.id)))
+        .where(PendingEvent.id == candidates.c.id)
         .values(
             status="processing",
             attempts=PendingEvent.attempts + 1,

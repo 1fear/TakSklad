@@ -10,10 +10,12 @@ from .google_sheets_pending import queue_google_sheets_export
 from .kiz_movements_service import (
     MOVEMENT_RETURN,
     MOVEMENT_UNDO,
+    find_item_scans,
     find_other_item_scan,
     find_same_item_scan,
     kiz_is_available_for_outbound,
     latest_kiz_movement,
+    lookup_kiz_state,
     lock_kiz_code_for_transaction,
     lock_kiz_codes_for_transaction,
     normalize_kiz_code,
@@ -202,12 +204,11 @@ def create_scan(db: Session, payload: ScanCreate):
         raise ApiError(404, "Order item not found")
 
     lock_kiz_code_for_transaction(db, code)
-    same_item_scan = find_same_item_scan(db, code=code, order_item_id=item.id)
+    same_item_scan, other_item_scan = find_item_scans(db, code=code, order_item_id=item.id)
     if same_item_scan is not None:
         return scan_to_read(same_item_scan, item)
 
-    other_item_scan = find_other_item_scan(db, code=code, order_item_id=item.id)
-    latest_movement = latest_kiz_movement(db, code)
+    kiz_code, latest_movement = lookup_kiz_state(db, code)
     if other_item_scan is not None and latest_movement is None:
         return existing_scan_response_or_error(db, other_item_scan, item)
     if other_item_scan is not None and not kiz_is_available_for_outbound(latest_movement):
@@ -288,6 +289,7 @@ def create_scan(db: Session, payload: ScanCreate):
             "scan_type": scan_metadata["scan_type"],
             "block_quantity": block_quantity,
         },
+        kiz_code=kiz_code,
     )
 
     item.scanned_blocks += block_quantity

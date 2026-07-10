@@ -2,7 +2,7 @@ import hashlib
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import desc, select, text
+from sqlalchemy import case, desc, func, select, text
 from sqlalchemy.orm import Session
 
 from .models import KizCode, KizMovement, ScanCode
@@ -14,6 +14,7 @@ MOVEMENT_RETURN = "return"
 MOVEMENT_UNDO = "undo"
 MOVEMENT_RESET = "reset"
 AVAILABLE_FOR_OUTBOUND_MOVEMENTS = {MOVEMENT_RETURN, MOVEMENT_UNDO, MOVEMENT_RESET}
+_KIZ_CODE_NOT_PROVIDED = object()
 
 
 def normalize_kiz_code(code):
@@ -92,6 +93,22 @@ def latest_kiz_movement(db: Session, code):
     ).scalar_one_or_none()
 
 
+def lookup_kiz_state(db: Session, code):
+    """Load the code row and its latest movement in one indexed round trip."""
+
+    normalized = normalize_kiz_code(code)
+    if not normalized:
+        return None, None
+    row = db.execute(
+        select(KizCode, KizMovement)
+        .outerjoin(KizMovement, KizMovement.kiz_id == KizCode.id)
+        .where(KizCode.code == normalized)
+        .order_by(desc(KizMovement.occurred_at), desc(KizMovement.id))
+        .limit(1)
+    ).first()
+    return row if row is not None else (None, None)
+
+
 def kiz_is_available_for_outbound(movement):
     return movement is None or movement.movement_type in AVAILABLE_FOR_OUTBOUND_MOVEMENTS
 
@@ -116,11 +133,19 @@ def record_kiz_movement(
     workstation_id="",
     occurred_at=None,
     raw_payload=None,
+    kiz_code=_KIZ_CODE_NOT_PROVIDED,
 ):
     normalized = normalize_kiz_code(code)
     if not normalized:
         return None
-    kiz = ensure_kiz_code(db, normalized)
+    if kiz_code is _KIZ_CODE_NOT_PROVIDED:
+        kiz = ensure_kiz_code(db, normalized)
+    elif kiz_code is None:
+        kiz = KizCode(code=normalized)
+        db.add(kiz)
+        db.flush()
+    else:
+        kiz = kiz_code
     movement = KizMovement(
         kiz_id=kiz.id,
         movement_type=movement_type,
@@ -202,3 +227,31 @@ def find_other_item_scan(db: Session, *, code, order_item_id):
         .order_by(desc(ScanCode.scanned_at), desc(ScanCode.id))
         .limit(1)
     ).scalar_one_or_none()
+
+
+def find_item_scans(db: Session, *, code, order_item_id):
+    """Return latest same-item and other-item scans with one database query."""
+
+    match_kind = case(
+        (ScanCode.order_item_id == order_item_id, "same"),
+        else_="other",
+    )
+    ranked = (
+        select(
+            ScanCode.id.label("scan_id"),
+            match_kind.label("match_kind"),
+            func.row_number().over(
+                partition_by=match_kind,
+                order_by=(desc(ScanCode.scanned_at), desc(ScanCode.id)),
+            ).label("match_rank"),
+        )
+        .where(ScanCode.code == normalize_kiz_code(code))
+        .subquery()
+    )
+    rows = db.execute(
+        select(ScanCode, ranked.c.match_kind)
+        .join(ranked, ranked.c.scan_id == ScanCode.id)
+        .where(ranked.c.match_rank == 1)
+    ).all()
+    by_kind = {match: scan for scan, match in rows}
+    return by_kind.get("same"), by_kind.get("other")
