@@ -22,8 +22,9 @@ export const defaultHandlers = [
   http.post("/api/v1/auth/login", () => HttpResponse.json(authenticatedSession)),
   http.post("/api/v1/auth/logout", () => HttpResponse.json({ ...authenticatedSession, authenticated: false })),
   http.get("/api/v1/admin/table", ({ request }) => {
-    const offset = Number(new URL(request.url).searchParams.get("offset") || "0");
-    if (offset > 0) {
+    const url = new URL(request.url);
+    const offset = Number(url.searchParams.get("offset") || "0");
+    if (url.searchParams.get("cursor") || offset > 0) {
       return HttpResponse.json(adminTable([secondAdminRow], {
         offset,
         total_rows: 2,
@@ -31,7 +32,11 @@ export const defaultHandlers = [
         has_more: false,
       }));
     }
-    return HttpResponse.json(adminTable([firstAdminRow], { total_rows: 2, has_more: true }));
+    return HttpResponse.json(adminTable([firstAdminRow], {
+      total_rows: 2,
+      has_more: true,
+      next_cursor: "synthetic-page-2",
+    }));
   }),
   http.get("/api/v1/admin/dashboard/day-summary", () => HttpResponse.json(dashboardSummary)),
   http.get("/api/v1/imports", () => HttpResponse.json([])),

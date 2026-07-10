@@ -1,12 +1,15 @@
-from datetime import datetime, timezone
+import uuid
+from datetime import date, datetime, timezone
 
 from sqlalchemy import BigInteger, String, and_, case, cast, exists, func, literal, or_, select
 from sqlalchemy.dialects.postgresql import JSONPATH
 from sqlalchemy.orm import Session, aliased
 
 from .models import AuditLog, Order, OrderItem, PendingEvent, ScanCode
+from .pagination import CursorError, decode_cursor, encode_cursor
 from .orders_service import (
     COMPLETED_STATUSES,
+    INACTIVE_ORDER_STATUSES,
     STATUS_COMPLETED,
     STATUS_ARCHIVED_NO_KIZ,
     STATUS_CANCELLED,
@@ -14,12 +17,29 @@ from .orders_service import (
     STATUS_RETURNED,
     parse_int,
 )
-from .schemas import AdminActivityRead, AdminTableRead, AdminTableRow, AdminTableTotals
+from .schemas import (
+    AdminActivityRead,
+    AdminOrderCapabilityRead,
+    AdminTableRead,
+    AdminTableRow,
+    AdminTableTotals,
+)
 from .redaction import redact_secrets
 
 
 GOOGLE_EXPORT_EVENT_TYPE = "google_sheets_export"
 PENDING_STATUSES = ("pending", "failed")
+ADMIN_TABLE_CURSOR_SCOPE = "admin.table.v2"
+ADMIN_ACTION_KEYS = (
+    "resync",
+    "archive",
+    "completeWithoutKiz",
+    "cancel",
+    "deleteActive",
+    "resetRescan",
+    "restore",
+    "resyncSkladBot",
+)
 
 
 def build_admin_table(
@@ -33,10 +53,28 @@ def build_admin_table(
     scan_state="",
     skladbot_filter="",
     google_status="",
+    cursor="",
 ):
     row_limit = max(1, int(limit or 500))
     row_offset = max(0, int(offset or 0))
     activity_row_limit = max(0, min(int(30 if activity_limit is None else activity_limit), 100))
+
+    cursor_filters = {
+        "status_bucket": status_bucket,
+        "shipment_date": shipment_date,
+        "search": search,
+        "scan_state": scan_state,
+        "skladbot_filter": skladbot_filter,
+        "google_status": google_status,
+    }
+    snapshot = None
+    after = None
+    stable_page = row_offset == 0
+    if cursor:
+        if row_offset:
+            raise CursorError("invalid_cursor")
+        snapshot, after, row_offset = decode_admin_table_cursor(cursor, cursor_filters)
+        stable_page = True
 
     expressions = admin_sql_expressions(db)
     predicates = admin_sql_filter_predicates(
@@ -48,10 +86,39 @@ def build_admin_table(
         skladbot_filter=skladbot_filter,
         google_status=google_status,
     )
+    if snapshot is not None:
+        predicates = (
+            *predicates,
+            Order.created_at <= snapshot[0],
+            OrderItem.created_at <= snapshot[1],
+        )
     totals, total_rows = query_admin_totals(db, expressions, predicates)
     pending_total = query_admin_pending_total(db, predicates)
     totals.pending_google_exports = pending_total
-    rows = query_admin_page(db, expressions, predicates, limit=row_limit, offset=row_offset)
+    raw_rows = query_admin_page(
+        db,
+        expressions,
+        predicates,
+        limit=row_limit + 1,
+        offset=0 if stable_page else row_offset,
+        after=after,
+    )
+    has_more = len(raw_rows) > row_limit
+    visible_rows = raw_rows[:row_limit]
+    rows = [admin_sql_row_to_read(row) for row in visible_rows]
+    order_capabilities = admin_order_capabilities_from_rows(visible_rows)
+    next_cursor = ""
+    if has_more and stable_page and visible_rows:
+        snapshot = snapshot or (
+            visible_rows[-1]["_snapshot_order_created_at"],
+            visible_rows[-1]["_snapshot_item_created_at"],
+        )
+        next_cursor = encode_admin_table_cursor(
+            snapshot,
+            visible_rows[-1],
+            row_offset + len(visible_rows),
+            cursor_filters,
+        )
 
     return AdminTableRead(
         generated_at=datetime.now(timezone.utc),
@@ -62,12 +129,167 @@ def build_admin_table(
         offset=row_offset,
         row_count=len(rows),
         total_rows=total_rows,
-        has_more=row_offset + len(rows) < total_rows,
+        has_more=has_more,
+        next_cursor=next_cursor,
+        order_capabilities=order_capabilities,
     )
 
 
+def decode_admin_table_cursor(cursor, filters):
+    try:
+        keys = decode_cursor(cursor, ADMIN_TABLE_CURSOR_SCOPE, filters=filters)
+        if len(keys) != 8:
+            raise ValueError
+        snapshot = (parse_cursor_datetime(keys[0]), parse_cursor_datetime(keys[1]))
+        order_date = date.fromisoformat(keys[2]) if keys[2] else None
+        after = (
+            order_date,
+            parse_cursor_datetime(keys[3]),
+            uuid.UUID(str(keys[4])),
+            parse_cursor_datetime(keys[5]),
+            uuid.UUID(str(keys[6])),
+        )
+        logical_offset = int(keys[7])
+        if logical_offset < 0:
+            raise ValueError
+        return snapshot, after, logical_offset
+    except (CursorError, TypeError, ValueError):
+        raise CursorError("invalid_cursor") from None
+
+
+def parse_cursor_datetime(value):
+    text = str(value or "").strip()
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    parsed = datetime.fromisoformat(text)
+    if parsed.tzinfo is None:
+        raise ValueError("cursor datetime must include timezone")
+    return parsed
+
+
+def encode_admin_table_cursor(snapshot, row, logical_offset, filters):
+    order_date = row["order_date"]
+    return encode_cursor(
+        ADMIN_TABLE_CURSOR_SCOPE,
+        [
+            snapshot[0].isoformat(),
+            snapshot[1].isoformat(),
+            order_date.isoformat() if order_date else None,
+            row["created_at"].isoformat(),
+            str(row["order_id"]),
+            row["_cursor_item_created_at"].isoformat(),
+            str(row["item_id"]),
+            int(logical_offset),
+        ],
+        filters=filters,
+    )
+
+
+def admin_table_after_predicate(after):
+    cursor_date, order_created_at, order_id, item_created_at, item_id = after
+    item_tail = or_(
+        OrderItem.created_at > item_created_at,
+        and_(OrderItem.created_at == item_created_at, OrderItem.id > item_id),
+    )
+    order_tail = or_(
+        Order.created_at > order_created_at,
+        and_(
+            Order.created_at == order_created_at,
+            or_(Order.id > order_id, and_(Order.id == order_id, item_tail)),
+        ),
+    )
+    if cursor_date is None:
+        return and_(Order.order_date.is_(None), order_tail)
+    return or_(
+        Order.order_date > cursor_date,
+        Order.order_date.is_(None),
+        and_(Order.order_date == cursor_date, order_tail),
+    )
+
+
+def admin_order_capabilities_from_rows(rows):
+    result = {}
+    for row in rows:
+        order_id = str(row["order_id"])
+        if order_id in result:
+            continue
+        status = normalize_text(row["order_status"])
+        planned_blocks = int(row["_order_planned_blocks"] or 0)
+        scanned_blocks = int(row["_order_scanned_blocks"] or 0)
+        scan_codes_count = int(row["_order_scan_codes_count"] or 0)
+        pending_google_exports = int(row["_order_pending_google_exports"] or 0)
+        active = status not in INACTIVE_ORDER_STATUSES
+        no_scans = scanned_blocks == 0 and scan_codes_count == 0
+        allowed = {
+            "resync": True,
+            "archive": active and no_scans,
+            "completeWithoutKiz": active and pending_google_exports == 0,
+            "cancel": active and no_scans,
+            "deleteActive": active and no_scans,
+            "resetRescan": status != STATUS_RETURNED,
+            "restore": status in (STATUS_ARCHIVED_NO_KIZ, STATUS_CANCELLED),
+            "resyncSkladBot": True,
+        }
+        reasons = {key: "" for key in ADMIN_ACTION_KEYS}
+        if not active:
+            reasons["archive"] = "Доступно только для активного заказа"
+            reasons["completeWithoutKiz"] = "Доступно только для активных заказов"
+            reasons["cancel"] = "Доступно только для активного заказа"
+            reasons["deleteActive"] = "Доступно только для активного заказа"
+        if active and not no_scans:
+            reasons["archive"] = "В заказе уже есть отсканированные КИЗы"
+            reasons["cancel"] = "В заказе уже есть отсканированные КИЗы"
+            reasons["deleteActive"] = "В заказе уже есть отсканированные КИЗы"
+        if active and pending_google_exports > 0:
+            reasons["completeWithoutKiz"] = "Сначала обработайте Google очередь"
+        if status == STATUS_RETURNED:
+            reasons["resetRescan"] = "Возвраты нельзя сбрасывать на пересканирование"
+        if not allowed["restore"]:
+            reasons["restore"] = "Доступно только для отмененных заказов или архива без КИЗов"
+        result[order_id] = AdminOrderCapabilityRead(
+            order_id=order_id,
+            items_count=int(row["_order_items_count"] or 0),
+            planned_blocks=planned_blocks,
+            scanned_blocks=scanned_blocks,
+            scan_codes_count=scan_codes_count,
+            pending_google_exports=pending_google_exports,
+            allowed=allowed,
+            disabled_reasons=reasons,
+        )
+    return result
+
+
 def admin_sql_expressions(db: Session):
-    pending_count = pending_google_count_for_row(db, Order.id, OrderItem.id)
+    row_pending_count = pending_google_count_for_row(db, Order.id, OrderItem.id)
+    order_pending_count = pending_google_count_for_order(db, Order.id)
+    aggregate_item = aliased(OrderItem)
+    aggregate_scan = aliased(ScanCode)
+    items_count = (
+        select(func.count(aggregate_item.id))
+        .where(aggregate_item.order_id == Order.id)
+        .correlate(Order)
+        .scalar_subquery()
+    )
+    planned_blocks = (
+        select(func.coalesce(func.sum(aggregate_item.quantity_blocks), 0))
+        .where(aggregate_item.order_id == Order.id)
+        .correlate(Order)
+        .scalar_subquery()
+    )
+    scanned_blocks = (
+        select(func.coalesce(func.sum(aggregate_item.scanned_blocks), 0))
+        .where(aggregate_item.order_id == Order.id)
+        .correlate(Order)
+        .scalar_subquery()
+    )
+    scan_codes_count = (
+        select(func.count(aggregate_scan.id))
+        .select_from(aggregate_scan)
+        .join(aggregate_item, aggregate_item.id == aggregate_scan.order_item_id)
+        .where(aggregate_item.order_id == Order.id)
+        .correlate(Order)
+        .scalar_subquery()
+    )
     status_value = case(
         (Order.status == STATUS_RETURNED, "returned"),
         (OrderItem.status == STATUS_REMOVED_FROM_GOOGLE, "removed_from_google"),
@@ -89,7 +311,7 @@ def admin_sql_expressions(db: Session):
     skladbot_status = json_text(Order.raw_payload, "skladbot_status")
     synced_at = json_text(OrderItem.raw_payload, "google_sheet_synced_at")
     google_value = case(
-        (pending_count > 0, "pending"),
+        (row_pending_count > 0, "pending"),
         (OrderItem.status == STATUS_REMOVED_FROM_GOOGLE, "removed_from_google"),
         (func.trim(synced_at) != "", "synced"),
         else_="unknown",
@@ -100,7 +322,8 @@ def admin_sql_expressions(db: Session):
         else_=0,
     )
     return {
-        "pending_count": pending_count,
+        "pending_count": row_pending_count,
+        "order_pending_count": order_pending_count,
         "status_bucket": status_value,
         "scan_state": scan_value,
         "request_number": request_number,
@@ -110,6 +333,10 @@ def admin_sql_expressions(db: Session):
         "remaining_blocks": remaining,
         "block_price": safe_json_int(db, OrderItem.raw_payload, "block_price"),
         "line_total": safe_json_int(db, OrderItem.raw_payload, "line_total"),
+        "order_items_count": items_count,
+        "order_planned_blocks": planned_blocks,
+        "order_scanned_blocks": scanned_blocks,
+        "order_scan_codes_count": scan_codes_count,
     }
 
 
@@ -225,7 +452,7 @@ def query_admin_pending_total(db: Session, predicates):
     return int(total or 0)
 
 
-def query_admin_page(db: Session, expressions, predicates, *, limit: int, offset: int):
+def query_admin_page(db: Session, expressions, predicates, *, limit: int, offset: int, after=None):
     scan_count = (
         select(func.count(ScanCode.id))
         .where(ScanCode.order_item_id == OrderItem.id)
@@ -269,11 +496,23 @@ def query_admin_page(db: Session, expressions, predicates, *, limit: int, offset
             json_text(Order.raw_payload, "return_reference").label("return_reference"),
             Order.created_at,
             Order.updated_at,
+            OrderItem.created_at.label("_cursor_item_created_at"),
+            expressions["order_items_count"].label("_order_items_count"),
+            expressions["order_planned_blocks"].label("_order_planned_blocks"),
+            expressions["order_scanned_blocks"].label("_order_scanned_blocks"),
+            expressions["order_scan_codes_count"].label("_order_scan_codes_count"),
+            expressions["order_pending_count"].label("_order_pending_google_exports"),
+            func.max(Order.created_at).over().label("_snapshot_order_created_at"),
+            func.max(OrderItem.created_at).over().label("_snapshot_item_created_at"),
         )
         .select_from(Order)
         .join(OrderItem, OrderItem.order_id == Order.id)
         .where(*predicates)
-        .order_by(
+    )
+    if after is not None:
+        stmt = stmt.where(admin_table_after_predicate(after))
+    stmt = (
+        stmt.order_by(
             Order.order_date.asc().nulls_last(),
             Order.created_at.asc(),
             Order.id.asc(),
@@ -283,11 +522,22 @@ def query_admin_page(db: Session, expressions, predicates, *, limit: int, offset
         .offset(offset)
         .limit(limit)
     )
-    return [admin_sql_row_to_read(row) for row in db.execute(stmt).mappings().all()]
+    return list(db.execute(stmt).mappings().all())
 
 
 def admin_sql_row_to_read(row):
     values = dict(row)
+    for field in (
+        "_cursor_item_created_at",
+        "_order_items_count",
+        "_order_planned_blocks",
+        "_order_scanned_blocks",
+        "_order_scan_codes_count",
+        "_order_pending_google_exports",
+        "_snapshot_order_created_at",
+        "_snapshot_item_created_at",
+    ):
+        values.pop(field, None)
     values["order_id"] = str(values["order_id"])
     values["item_id"] = str(values["item_id"])
     values["coordinates"] = normalize_text(values["coordinates"])
@@ -305,6 +555,49 @@ def admin_sql_row_to_read(row):
     ):
         values[field] = int(values[field] or 0)
     return AdminTableRow(**values)
+
+
+def pending_google_count_for_order(db: Session, order_id):
+    event = aliased(PendingEvent)
+    linked_item = aliased(OrderItem)
+    entity_id = func.trim(json_text(event.payload, "entity_id"))
+    order_text = cast(order_id, String)
+    if db.get_bind().dialect.name == "postgresql":
+        item_match = exists(
+            select(literal(1))
+            .select_from(linked_item)
+            .where(linked_item.order_id == order_id)
+            .where(cast(linked_item.id, String) == entity_id)
+        ).correlate(event, Order)
+        direct_match = entity_id == order_text
+        order_ids_contains = func.jsonb_path_exists(
+            event.payload,
+            cast("$.order_ids[*] ? (@ == $order_id)", JSONPATH),
+            func.jsonb_build_object("order_id", order_text),
+        )
+    else:
+        normalized_entity_id = func.replace(entity_id, "-", "")
+        normalized_order_id = func.replace(order_text, "-", "")
+        item_match = exists(
+            select(literal(1))
+            .select_from(linked_item)
+            .where(linked_item.order_id == order_id)
+            .where(func.replace(cast(linked_item.id, String), "-", "") == normalized_entity_id)
+        ).correlate(event, Order)
+        direct_match = normalized_entity_id == normalized_order_id
+        order_ids = func.json_each(event.payload, "$.order_ids").table_valued("key", "value").alias()
+        order_ids_contains = exists(
+            select(literal(1))
+            .select_from(order_ids)
+            .where(func.replace(cast(order_ids.c.value, String), "-", "") == normalized_order_id)
+        ).correlate(event, Order)
+    return (
+        select(func.count(event.id))
+        .where(*pending_event_base_predicates(event))
+        .where(or_(direct_match, item_match, order_ids_contains))
+        .correlate(Order)
+        .scalar_subquery()
+    )
 
 
 def pending_google_count_for_row(db: Session, order_id, item_id):

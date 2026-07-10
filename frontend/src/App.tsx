@@ -30,10 +30,11 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import { Fragment, FormEvent, useEffect, useMemo, useState } from "react";
+import { Fragment, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   AdminIncident,
   AdminActivity,
+  AdminOrderCapability,
   AdminTable,
   AdminTableRow,
   AdminBulkActionResult,
@@ -85,6 +86,14 @@ import {
   updateClientPointTimeslot,
   updateIncidentStatus,
 } from "./api";
+import {
+  RequestCoordinator,
+  SEARCH_DEBOUNCE_MS,
+  TtlCache,
+  scheduleTashkentMidnightRefresh,
+  tashkentBusinessDate,
+  tashkentBusinessMonth,
+} from "./data-flow";
 import "./styles.css";
 
 type Tab = "table" | "calendar" | "clients" | "smartup" | "imports" | "skladbotDryRun" | "incidents" | "activity";
@@ -115,6 +124,7 @@ type ActionState = {
 
 const SAME_ORIGIN_API_LABEL = "same-origin /api";
 const ADMIN_TABLE_PAGE_SIZE = 500;
+const PANEL_CACHE_TTL_MS = 30_000;
 
 function defaultClientPointDraft(): ClientPointFormDraft {
   return {
@@ -131,11 +141,11 @@ function loadConfig(): ApiConfig {
   return { apiUrl: defaultApiUrl(), token: "", csrfToken: "" };
 }
 
-function todayIso() {
-  return new Date().toISOString().slice(0, 10);
-}
-
 function App() {
+  const [requestCoordinator] = useState(() => new RequestCoordinator());
+  const [panelCache] = useState(() => new TtlCache<string, unknown>(PANEL_CACHE_TTL_MS));
+  const filterRequestInitialized = useRef(false);
+  const midnightRefreshRef = useRef<(businessDate: string) => void>(() => undefined);
   const [config, setConfig] = useState<ApiConfig>(() => loadConfig());
   const [adminTable, setAdminTable] = useState<AdminTable | null>(null);
   const [imports, setImports] = useState<ImportRecord[]>([]);
@@ -149,8 +159,8 @@ function App() {
   const [incidents, setIncidents] = useState<AdminIncident[]>([]);
   const [incidentSummary, setIncidentSummary] = useState<Record<string, unknown>>({});
   const [dashboardSummary, setDashboardSummary] = useState<DashboardDaySummary | null>(null);
-  const [reportDate] = useState(todayIso());
-  const [calendarMonth, setCalendarMonth] = useState(todayIso().slice(0, 7));
+  const [reportDate, setReportDate] = useState(tashkentBusinessDate);
+  const [calendarMonth, setCalendarMonth] = useState(tashkentBusinessMonth);
   const [shipmentDateFilter, setShipmentDateFilter] = useState("");
   const [search, setSearch] = useState("");
   const [clientSearch, setClientSearch] = useState("");
@@ -166,7 +176,7 @@ function App() {
   const [tab, setTab] = useState<Tab>("table");
   const [historyNavOpen, setHistoryNavOpen] = useState(false);
   const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([]);
-  const [selectedCalendarDate, setSelectedCalendarDate] = useState(todayIso());
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState(tashkentBusinessDate);
   const [selectedIncidentId, setSelectedIncidentId] = useState("");
   const [selectedEventId, setSelectedEventId] = useState("");
   const [editingClientPointId, setEditingClientPointId] = useState("");
@@ -208,8 +218,8 @@ function App() {
     [rows, selectedOrderIds],
   );
   const selectedActionState = useMemo(
-    () => buildActionState(selectedOrderIds, selectedRows),
-    [selectedOrderIds, selectedRows],
+    () => buildActionState(selectedOrderIds, adminTable?.order_capabilities ?? {}),
+    [selectedOrderIds, adminTable?.order_capabilities],
   );
   const filteredIncidents = useMemo(
     () => filterIncidents(incidents, {
@@ -253,13 +263,14 @@ function App() {
   );
   const totalAdminRows = adminTable?.total_rows ?? rows.length;
   const canAdminWrite = authPermissions.includes("admin:write");
-  const canClientPointsRead = authPermissions.includes("client_points:read");
   const canEditClientPoints = authPermissions.includes("client_points:write");
   const dayTotals = dashboardSummary?.totals;
 
-  function adminTableRequest(offset = 0): Parameters<typeof getAdminTable>[1] {
+  function adminTableRequest(offset = 0, cursor = "", signal?: AbortSignal): Parameters<typeof getAdminTable>[1] {
     const request = {
       offset,
+      cursor: cursor || undefined,
+      signal,
       limit: ADMIN_TABLE_PAGE_SIZE,
       search: search.trim() || undefined,
       shipmentDate: shipmentDateFilter || undefined,
@@ -272,6 +283,9 @@ function App() {
   }
 
   function clearProtectedPanelState() {
+    requestCoordinator.clear();
+    panelCache.clear();
+    filterRequestInitialized.current = false;
     setAdminTable(null);
     setImports([]);
     setDryRuns([]);
@@ -334,154 +348,224 @@ function App() {
     return null;
   }
 
-  async function refreshAll(activeConfig = config, showNotice = true, activePermissions = authPermissions) {
+  async function refreshAll(
+    activeConfig = config,
+    showNotice = true,
+    activePermissions = authPermissions,
+    activeReportDate = reportDate,
+  ) {
     setLoading(true);
     setError("");
     if (showNotice) setNotice("");
+    const tableRequest = requestCoordinator.begin("admin-table");
+    const dashboardRequest = requestCoordinator.begin("dashboard");
     try {
       if (!activePermissions.includes("admin:read")) {
+        tableRequest.finish();
+        dashboardRequest.finish();
         setAdminTable(null);
         setDashboardSummary(null);
         setSelectedOrderIds([]);
         setNotice("Ограниченный доступ: административные таблицы скрыты для этой роли.");
-        void refreshPanelContext(activeConfig, activePermissions);
+        void loadVisiblePanel(tab, activeConfig, activePermissions);
         return;
       }
       const [nextAdminTable, nextDashboardSummary] = await Promise.all([
-        getAdminTable(activeConfig, adminTableRequest(0)),
-        getDashboardDaySummary(activeConfig, reportDate),
+        getAdminTable(activeConfig, adminTableRequest(0, "", tableRequest.signal)),
+        getDashboardDaySummary(activeConfig, activeReportDate, dashboardRequest.signal),
       ]);
-      setAdminTable(nextAdminTable);
-      setDashboardSummary(nextDashboardSummary);
-      setSelectedOrderIds((current) => current.filter((id) => nextAdminTable.rows.some((row) => row.order_id === id)));
-      if (showNotice) {
+      const tableCommitted = tableRequest.commit(nextAdminTable, (value) => {
+        setAdminTable(value);
+        setSelectedOrderIds((current) => current.filter((id) => value.rows.some((row) => row.order_id === id)));
+      });
+      const dashboardCommitted = dashboardRequest.commit(nextDashboardSummary, setDashboardSummary);
+      if (showNotice && tableCommitted && dashboardCommitted) {
         setNotice(`Обновлено: ${new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}`);
       }
-      void refreshPanelContext(activeConfig, activePermissions);
     } catch (refreshError) {
-      if (refreshError instanceof ApiRequestError && refreshError.status === 401) {
+      const requestWasCancelled = tableRequest.signal.aborted || dashboardRequest.signal.aborted;
+      tableRequest.abort();
+      dashboardRequest.abort();
+      if (requestWasCancelled) {
+        return;
+      } else if (refreshError instanceof ApiRequestError && refreshError.status === 401) {
         expireSession();
       } else {
         showActionError(refreshError, "Не удалось загрузить данные");
       }
     } finally {
-      setLoading(false);
+      tableRequest.finish();
+      dashboardRequest.finish();
+      if (!requestCoordinator.isActive("admin-table") && !requestCoordinator.isActive("dashboard")) {
+        setLoading(false);
+      }
     }
   }
 
-  async function refreshPanelContext(activeConfig = config, activePermissions = authPermissions) {
+  midnightRefreshRef.current = (businessDate) => {
+    if (authenticated) void refreshAll(config, false, authPermissions, businessDate);
+  };
+
+  async function loadCachedPanel<Value>(
+    resource: string,
+    loader: (signal: AbortSignal) => Promise<Value>,
+    apply: (value: Value) => void,
+    force = false,
+  ) {
+    const cached = force ? undefined : panelCache.get(resource) as Value | undefined;
+    if (cached !== undefined) {
+      apply(cached);
+      return;
+    }
+    const request = requestCoordinator.begin(resource);
+    try {
+      const value = await loader(request.signal);
+      request.commit(value, (committed) => {
+        panelCache.set(resource, committed);
+        apply(committed);
+      });
+    } catch (panelError) {
+      if (!request.signal.aborted) ignoreOptionalPanelError(panelError);
+    } finally {
+      request.finish();
+    }
+  }
+
+  async function loadVisiblePanel(
+    activeTab = tab,
+    activeConfig = config,
+    activePermissions = authPermissions,
+    force = false,
+  ) {
     const has = (permission: string) => activePermissions.includes(permission);
-    const [nextImports, nextClientPoints, nextReadiness, nextEventQueue, nextOperationsAttention, nextSmartupHistory, nextLogisticsCalendar, nextIncidents] = await Promise.all([
-      has("imports:read") ? listImports(activeConfig).catch(ignoreOptionalPanelError) : Promise.resolve(null),
-      has("client_points:read") ? listClientPoints(activeConfig).catch(ignoreOptionalPanelError) : Promise.resolve(null),
-      has("diagnostics:read") ? getReadiness(activeConfig).catch(ignoreOptionalPanelError) : Promise.resolve(null),
-      has("admin:read") ? getAdminEvents(activeConfig).catch(ignoreOptionalPanelError) : Promise.resolve(null),
-      has("admin:read") ? getOperationsAttention(activeConfig).catch(ignoreOptionalPanelError) : Promise.resolve(null),
-      has("admin:read") ? getSmartupAutoImportHistory(activeConfig).catch(ignoreOptionalPanelError) : Promise.resolve(null),
-      has("client_points:read") ? getLogisticsCalendar(activeConfig, calendarMonth).catch(ignoreOptionalPanelError) : Promise.resolve(null),
-      has("admin:read") ? getAdminIncidents(activeConfig).catch(ignoreOptionalPanelError) : Promise.resolve(null),
-    ]);
-    if (nextImports) setImports(nextImports);
-    if (nextClientPoints) {
-      setClientPoints(nextClientPoints);
-      setExpandedClientPointId("");
-      setClientOrderSummaries({});
-      setClientOrderSummaryErrors({});
+    if (activeTab === "clients" && has("client_points:read")) {
+      await loadCachedPanel("client-points", (signal) => listClientPoints(activeConfig, {}, signal), (value) => {
+        setClientPoints(value);
+        setExpandedClientPointId("");
+        setClientOrderSummaries({});
+        setClientOrderSummaryErrors({});
+      }, force);
+    } else if (activeTab === "calendar" && has("client_points:read")) {
+      await loadCachedPanel(`calendar:${calendarMonth}`, (signal) => getLogisticsCalendar(activeConfig, calendarMonth, signal), setLogisticsCalendar, force);
+    } else if (activeTab === "smartup" && has("admin:read")) {
+      await loadCachedPanel("smartup-history", (signal) => getSmartupAutoImportHistory(activeConfig, 50, signal), setSmartupHistory, force);
+    } else if (activeTab === "imports" && has("imports:read")) {
+      await loadCachedPanel("imports", (signal) => listImports(activeConfig, signal), setImports, force);
+    } else if (activeTab === "skladbotDryRun" && has("admin:read")) {
+      await Promise.all([
+        has("imports:read") ? loadCachedPanel("imports", (signal) => listImports(activeConfig, signal), setImports, force) : Promise.resolve(),
+        loadCachedPanel("dry-runs", (signal) => listSkladBotDryRuns(activeConfig, "", signal), setDryRuns, force),
+      ]);
+    } else if (activeTab === "incidents" && has("admin:read")) {
+      await Promise.all([
+        loadCachedPanel("incidents", (signal) => getAdminIncidents(activeConfig, {}, signal), (value) => {
+          setIncidents(value.items);
+          setIncidentSummary(value.summary);
+          setSelectedIncidentId((current) => current && value.items.some((item) => item.id === current) ? current : "");
+        }, force),
+        loadCachedPanel("events", (signal) => getAdminEvents(activeConfig, signal), (value) => {
+          setEventQueue(value);
+          setSelectedEventId((current) => current && value.recent_events.some((event) => event.id === current) ? current : "");
+        }, force),
+      ]);
+    } else if (activeTab === "activity" && has("admin:read")) {
+      await Promise.all([
+        has("diagnostics:read") ? loadCachedPanel("readiness", (signal) => getReadiness(activeConfig, signal), setReadiness, force) : Promise.resolve(),
+        loadCachedPanel("events", (signal) => getAdminEvents(activeConfig, signal), setEventQueue, force),
+        loadCachedPanel("operations", (signal) => getOperationsAttention(activeConfig, signal), setOperationsAttention, force),
+      ]);
     }
-    if (nextReadiness) setReadiness(nextReadiness);
-    if (nextEventQueue) {
-      setEventQueue(nextEventQueue);
-      setSelectedEventId((current) => current && nextEventQueue.recent_events.some((event) => event.id === current) ? current : "");
-    }
-    if (nextOperationsAttention) setOperationsAttention(nextOperationsAttention);
-    if (nextSmartupHistory) setSmartupHistory(nextSmartupHistory);
-    if (nextLogisticsCalendar) setLogisticsCalendar(nextLogisticsCalendar);
-    if (nextIncidents) {
-      setIncidents(nextIncidents.items);
-      setIncidentSummary(nextIncidents.summary);
-      setSelectedIncidentId((current) => current && nextIncidents.items.some((item) => item.id === current) ? current : "");
-    }
-    if (has("admin:read")) void refreshDryRuns(activeConfig);
   }
 
   async function refreshAdminTable(activeConfig = config, showNotice = false) {
+    const request = requestCoordinator.begin("admin-table");
     setLoading(true);
     setError("");
     if (showNotice) setNotice("");
     try {
-      const nextAdminTable = await getAdminTable(activeConfig, adminTableRequest(0));
-      setAdminTable(nextAdminTable);
-      setSelectedOrderIds((current) => current.filter((id) => nextAdminTable.rows.some((row) => row.order_id === id)));
-      if (showNotice) {
+      const nextAdminTable = await getAdminTable(activeConfig, adminTableRequest(0, "", request.signal));
+      const committed = request.commit(nextAdminTable, (value) => {
+        setAdminTable(value);
+        setSelectedOrderIds((current) => current.filter((id) => value.rows.some((row) => row.order_id === id)));
+      });
+      if (showNotice && committed) {
         setNotice(`Таблица обновлена: ${new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}`);
       }
     } catch (refreshError) {
-      if (refreshError instanceof ApiRequestError && refreshError.status === 401) {
+      if (request.signal.aborted) {
+        return;
+      } else if (refreshError instanceof ApiRequestError && refreshError.status === 401) {
         expireSession();
       } else {
         showActionError(refreshError, "Не удалось загрузить таблицу");
       }
     } finally {
-      setLoading(false);
+      request.finish();
+      if (!requestCoordinator.isActive("admin-table")) setLoading(false);
     }
   }
 
   async function refreshDryRuns(activeConfig = config) {
-    try {
-      setDryRuns(await listSkladBotDryRuns(activeConfig));
-    } catch (dryRunError) {
-      if (dryRunError instanceof ApiRequestError && dryRunError.status === 401) {
-        expireSession();
-      } else {
-        showActionError(dryRunError, "Не удалось загрузить SkladBot dry-run");
-      }
-      setDryRuns([]);
-    }
+    panelCache.invalidate("dry-runs");
+    await loadCachedPanel("dry-runs", (signal) => listSkladBotDryRuns(activeConfig, "", signal), setDryRuns, true);
+  }
+
+  async function refreshClientPoints(activeConfig = config) {
+    panelCache.invalidate("client-points");
+    await loadCachedPanel("client-points", (signal) => listClientPoints(activeConfig, {}, signal), (value) => {
+      setClientPoints(value);
+      setExpandedClientPointId("");
+      setClientOrderSummaries({});
+      setClientOrderSummaryErrors({});
+    }, true);
   }
 
   async function loadMoreAdminRows(activeConfig = config) {
     if (!adminTable?.has_more || loading) return;
+    const request = requestCoordinator.begin("admin-table");
     setLoading(true);
     setError("");
     setNotice("");
     try {
-      const nextPage = await getAdminTable(activeConfig, adminTableRequest(adminTable.rows.length));
-      setAdminTable((current) => {
+      const nextPage = await getAdminTable(
+        activeConfig,
+        adminTableRequest(adminTable.rows.length, adminTable.next_cursor, request.signal),
+      );
+      const committed = request.commit(nextPage, (value) => setAdminTable((current) => {
         if (!current) return nextPage;
         const existingItemIds = new Set(current.rows.map((row) => row.item_id));
-        const appendedRows = nextPage.rows.filter((row) => !existingItemIds.has(row.item_id));
+        const appendedRows = value.rows.filter((row) => !existingItemIds.has(row.item_id));
         const mergedRows = [...current.rows, ...appendedRows];
         return {
-          ...nextPage,
+          ...value,
           rows: mergedRows,
           offset: 0,
           row_count: mergedRows.length,
-          recent_activity: nextPage.recent_activity.length ? nextPage.recent_activity : current.recent_activity,
+          order_capabilities: { ...current.order_capabilities, ...value.order_capabilities },
+          recent_activity: value.recent_activity.length ? value.recent_activity : current.recent_activity,
         };
-      });
-      setNotice(`Загружено ${formatNumber(Math.min(nextPage.offset + nextPage.row_count, nextPage.total_rows))} из ${formatNumber(nextPage.total_rows)}`);
+      }));
+      if (committed) {
+        setNotice(`Загружено ${formatNumber(Math.min(adminTable.rows.length + nextPage.row_count, nextPage.total_rows))} из ${formatNumber(nextPage.total_rows)}`);
+      }
     } catch (pageError) {
-      if (pageError instanceof ApiRequestError && pageError.status === 401) {
+      if (request.signal.aborted) {
+        return;
+      } else if (pageError instanceof ApiRequestError && pageError.status === 401) {
         expireSession();
       } else {
         showActionError(pageError, "Не удалось догрузить таблицу");
       }
     } finally {
-      setLoading(false);
+      request.finish();
+      if (!requestCoordinator.isActive("admin-table")) setLoading(false);
     }
   }
 
   async function refreshLogisticsCalendar(activeConfig = config, month = calendarMonth) {
-    try {
-      setLogisticsCalendar(await getLogisticsCalendar(activeConfig, month));
-    } catch (calendarError) {
-      if (calendarError instanceof ApiRequestError && calendarError.status === 401) {
-        expireSession();
-      } else {
-        showActionError(calendarError, "Не удалось загрузить календарь логистики");
-      }
-      setLogisticsCalendar(null);
-    }
+    const resource = `calendar:${month}`;
+    panelCache.invalidate(resource);
+    await loadCachedPanel(resource, (signal) => getLogisticsCalendar(activeConfig, month, signal), setLogisticsCalendar, true);
   }
 
   async function saveLogisticsCalendarDay(day: LogisticsCalendarDay, isNonWorking: boolean, reason: string) {
@@ -507,19 +591,45 @@ function App() {
   }
 
   useEffect(() => {
-    if (!authenticated || !canClientPointsRead) return;
-    void refreshLogisticsCalendar(config, calendarMonth);
+    if (!authenticated) return;
+    const resources = panelResourcesForTab(tab, calendarMonth);
+    void loadVisiblePanel(tab, config, authPermissions);
+    return () => {
+      for (const resource of resources) requestCoordinator.abort(resource);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [calendarMonth, authenticated, canClientPointsRead]);
+  }, [tab, calendarMonth, authenticated, config, authPermissions, requestCoordinator]);
 
   useEffect(() => {
-    if (!authenticated || !adminTable) return;
+    if (!authenticated || tab !== "table" || !adminTable) return;
+    if (!filterRequestInitialized.current) {
+      filterRequestInitialized.current = true;
+      return;
+    }
+    requestCoordinator.abort("admin-table");
     const timeoutId = window.setTimeout(() => {
       void refreshAdminTable(config);
-    }, 300);
-    return () => window.clearTimeout(timeoutId);
+    }, SEARCH_DEBOUNCE_MS);
+    return () => {
+      window.clearTimeout(timeoutId);
+      requestCoordinator.abort("admin-table");
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, statusFilter, shipmentDateFilter, scanFilter, skladbotFilter, googleFilter]);
+  }, [search, statusFilter, shipmentDateFilter, scanFilter, skladbotFilter, googleFilter, authenticated, tab, adminTable !== null]);
+
+  useEffect(() => scheduleTashkentMidnightRefresh(() => {
+    const nextDate = tashkentBusinessDate();
+    const previousDate = reportDate;
+    setReportDate(nextDate);
+    setSelectedCalendarDate((current) => current === previousDate ? nextDate : current);
+    setCalendarMonth((current) => current === previousDate.slice(0, 7) ? nextDate.slice(0, 7) : current);
+    midnightRefreshRef.current(nextDate);
+  }), [reportDate]);
+
+  useEffect(() => () => {
+    requestCoordinator.clear();
+    panelCache.clear();
+  }, [panelCache, requestCoordinator]);
 
   useEffect(() => {
     const visible = new Set(visibleOrderIds);
@@ -595,17 +705,19 @@ function App() {
   }
 
   async function logout() {
+    const logoutConfig = config;
     setBusyAction("logout");
+    setConfig((current) => ({ ...current, csrfToken: "" }));
+    setAuthenticated(false);
+    setAuthUser("");
+    setAuthRole("");
+    setAuthPermissions([]);
+    clearProtectedPanelState();
     try {
-      await logoutWeb(config);
-      setConfig((current) => ({ ...current, csrfToken: "" }));
-      setAuthenticated(false);
-      setAuthUser("");
-      setAuthRole("");
-      setAuthPermissions([]);
-      clearProtectedPanelState();
+      await logoutWeb(logoutConfig);
     } catch (logoutFailure) {
-      showActionError(logoutFailure, "Не удалось завершить серверную сессию. Повторите выход.");
+      const message = logoutFailure instanceof Error ? logoutFailure.message : "";
+      setLoginError(message || "Сервер не подтвердил выход. Войдите снова перед продолжением.");
     } finally {
       setBusyAction("");
     }
@@ -638,6 +750,7 @@ function App() {
     setNotice("");
     try {
       const result = await retryPendingGoogle(config);
+      panelCache.clear();
       await refreshAll();
       setNotice(`Google очередь: ${String(result.status || "completed")}`);
     } catch (actionError) {
@@ -653,6 +766,7 @@ function App() {
     setNotice("");
     try {
       const result = await syncSources(config, { skladbot: true, waitSkladbot: false });
+      panelCache.clear();
       await refreshAll(config, false);
       const status = String(result.status || "completed");
       const skladbotStatus = String(result.skladbot?.status || "unknown");
@@ -694,15 +808,20 @@ function App() {
     }
     setClientOrderSummaryLoadingId(point.id);
     setError("");
+    const request = requestCoordinator.begin("client-order-summary");
     try {
-      const summary = await getClientPointOrderSummary(config, point.client_name);
-      setClientOrderSummaries((current) => ({ ...current, [point.id]: summary }));
+      const summary = await getClientPointOrderSummary(config, point.client_name, request.signal);
+      request.commit(summary, (value) => {
+        setClientOrderSummaries((current) => ({ ...current, [point.id]: value }));
+      });
     } catch (actionError) {
+      if (request.signal.aborted) return;
       const message = actionError instanceof Error ? actionError.message : "Не удалось загрузить историю заказов клиента";
       setClientOrderSummaryErrors((current) => ({ ...current, [point.id]: message }));
       showActionError(actionError, "Не удалось загрузить историю заказов клиента");
     } finally {
-      setClientOrderSummaryLoadingId("");
+      request.finish();
+      if (!requestCoordinator.isActive("client-order-summary")) setClientOrderSummaryLoadingId("");
     }
   }
 
@@ -729,10 +848,7 @@ function App() {
         actor: "web",
         reason: "Изменение таймслота точки в web-панели",
       });
-      const nextClientPoints = await listClientPoints(config);
-      setClientPoints(nextClientPoints);
-      setExpandedClientPointId("");
-      setClientOrderSummaries({});
+      await refreshClientPoints(config);
       setEditingClientPointId("");
       setClientSlotDraft({ deliveryFrom: "", deliveryTo: "" });
       setNotice("Таймслот сохранен");
@@ -767,10 +883,7 @@ function App() {
         actor: "web",
         reason: "Ручное добавление точки в web-панели",
       });
-      const nextClientPoints = await listClientPoints(config);
-      setClientPoints(nextClientPoints);
-      setExpandedClientPointId("");
-      setClientOrderSummaries({});
+      await refreshClientPoints(config);
       setNewClientPointDraft(defaultClientPointDraft());
       setClientPointCreateOpen(false);
       setNotice("Точка добавлена");
@@ -798,10 +911,7 @@ function App() {
         actor: "web",
         reason: "Сброс таймслота точки до значения по умолчанию",
       });
-      const nextClientPoints = await listClientPoints(config);
-      setClientPoints(nextClientPoints);
-      setExpandedClientPointId("");
-      setClientOrderSummaries({});
+      await refreshClientPoints(config);
       setEditingClientPointId("");
       setClientSlotDraft({ deliveryFrom: "", deliveryTo: "" });
       setNotice("Таймслот сброшен до 10:00-18:00");
@@ -867,7 +977,8 @@ function App() {
         source: "web",
       });
       setAdminActionReason("");
-      await refreshAll(config, false);
+      panelCache.invalidate("incidents");
+      await loadVisiblePanel("incidents", config, authPermissions, true);
       setNotice(status === "resolved" ? "Инцидент закрыт" : "Инцидент проигнорирован");
     } catch (actionError) {
       showActionError(actionError, "Не удалось обновить инцидент");
@@ -897,7 +1008,8 @@ function App() {
         idempotency_key: makeIdempotencyKey(),
       });
       setAdminActionReason("");
-      await refreshAll(config, false);
+      panelCache.invalidate("events");
+      await loadVisiblePanel("incidents", config, authPermissions, true);
       setNotice("Событие возвращено в очередь");
     } catch (actionError) {
       showActionError(actionError, "Не удалось повторить событие");
@@ -963,10 +1075,12 @@ function App() {
         await resyncSkladBotOrder(config, primaryRow.order_id, payload);
       }
       setSelectedOrderIds([]);
+      panelCache.clear();
       await refreshAll();
       setNotice(bulkResult ? bulkCompleteSuccessText(bulkResult) : actionSuccessText(kind));
     } catch (actionError) {
       const actionMessage = actionError instanceof Error ? actionError.message : "Действие не выполнено";
+      panelCache.clear();
       await refreshAll(config, false);
       if (actionError instanceof ApiRequestError && actionError.status === 401) {
         expireSession();
@@ -1463,22 +1577,17 @@ function LoginScreen({
   );
 }
 
-function buildActionState(selectedOrderIds: string[], selectedRows: AdminTableRow[]): ActionState {
-  const disabledReason: Record<OrderActionKind, string> = {
-    resync: "",
-    archive: "",
-    completeWithoutKiz: "",
-    cancel: "",
-    deleteActive: "",
-    resetRescan: "",
-    restore: "",
-    resyncSkladBot: "",
-  };
+function buildActionState(
+  selectedOrderIds: string[],
+  capabilities: Record<string, AdminOrderCapability>,
+): ActionState {
   const selectedCount = selectedOrderIds.length;
-  const plannedBlocks = selectedRows.reduce((sum, row) => sum + row.quantity_blocks, 0);
-  const scannedBlocks = selectedRows.reduce((sum, row) => sum + row.scanned_blocks, 0);
-  const scanCodes = selectedRows.reduce((sum, row) => sum + row.scan_codes_count, 0);
-  const pendingGoogleExports = Math.max(0, ...selectedRows.map((row) => row.pending_google_exports));
+  const selectedCapabilities = selectedOrderIds
+    .map((orderId) => capabilities[orderId])
+    .filter((value): value is AdminOrderCapability => Boolean(value));
+  const plannedBlocks = selectedCapabilities.reduce((sum, value) => sum + value.planned_blocks, 0);
+  const scannedBlocks = selectedCapabilities.reduce((sum, value) => sum + value.scanned_blocks, 0);
+  const pendingGoogleExports = Math.max(0, ...selectedCapabilities.map((value) => value.pending_google_exports));
 
   if (selectedCount === 0) {
     const reason = "Выберите заказ";
@@ -1490,8 +1599,8 @@ function buildActionState(selectedOrderIds: string[], selectedRows: AdminTableRo
       pendingGoogleExports,
     };
   }
-  if (selectedRows.length === 0) {
-    const reason = "Заказ не найден в текущих данных";
+  if (selectedCapabilities.length !== selectedCount) {
+    const reason = "Backend не вернул полные возможности заказа";
     return {
       selectedCount,
       disabledReason: actionDisabledReasons(reason),
@@ -1500,48 +1609,23 @@ function buildActionState(selectedOrderIds: string[], selectedRows: AdminTableRo
       pendingGoogleExports,
     };
   }
-  if (pendingGoogleExports > 0) {
-    disabledReason.resync = "Сначала обработайте Google очередь";
-    disabledReason.archive = "Сначала обработайте Google очередь";
-    disabledReason.completeWithoutKiz = "Сначала обработайте Google очередь";
-    disabledReason.cancel = "Сначала обработайте Google очередь";
-    disabledReason.deleteActive = "Сначала обработайте Google очередь";
-    disabledReason.resetRescan = "Сначала обработайте Google очередь";
-    disabledReason.restore = "Сначала обработайте Google очередь";
-    disabledReason.resyncSkladBot = "Сначала обработайте Google очередь";
-  }
-  const allActive = selectedRows.every((row) => row.status_bucket === "active");
-  if (!allActive) {
-    disabledReason.archive = "Доступно только для активного заказа";
-    disabledReason.completeWithoutKiz = "Доступно только для активных заказов";
-    disabledReason.cancel = "Доступно только для активного заказа";
-    disabledReason.deleteActive = "Доступно только для активного заказа";
-    disabledReason.resyncSkladBot = "Доступно только для активного заказа";
-  }
+  const disabledReason = actionDisabledReasons("");
   if (selectedCount > 1) {
     const reason = "Выберите один заказ";
-    disabledReason.resync = reason;
-    disabledReason.archive = reason;
-    disabledReason.cancel = reason;
-    disabledReason.deleteActive = reason;
-    disabledReason.resetRescan = reason;
-    disabledReason.restore = reason;
-    disabledReason.resyncSkladBot = reason;
-  }
-  if (selectedRows.some((row) => row.status_bucket === "returned")) {
-    disabledReason.resetRescan = "Возвраты нельзя сбрасывать на пересканирование";
-  }
-  const canRestore = selectedRows.every((row) => row.status_bucket === "archive_no_kiz" || row.status_bucket === "cancelled");
-  if (!canRestore) {
-    disabledReason.restore = "Доступно только для отмененных заказов или архива без КИЗов";
-  }
-  if (scannedBlocks > 0 || scanCodes > 0) {
-    disabledReason.archive = "В заказе уже есть отсканированные КИЗы";
-    disabledReason.cancel = "В заказе уже есть отсканированные КИЗы";
-    disabledReason.deleteActive = "В заказе уже есть отсканированные КИЗы";
-  }
-  if (selectedRows.some((row) => row.status_bucket === "removed_from_google")) {
-    disabledReason.resync = "Заказ удален из Google";
+    for (const action of ["resync", "archive", "cancel", "deleteActive", "resetRescan", "restore", "resyncSkladBot"] as OrderActionKind[]) {
+      disabledReason[action] = reason;
+    }
+    const blocked = selectedCapabilities.find((value) => !value.allowed.completeWithoutKiz);
+    disabledReason.completeWithoutKiz = blocked
+      ? blocked.disabled_reasons.completeWithoutKiz || "Backend запретил закрытие без КИЗов"
+      : "";
+  } else {
+    const capability = selectedCapabilities[0];
+    for (const action of Object.keys(disabledReason) as OrderActionKind[]) {
+      disabledReason[action] = capability.allowed[action]
+        ? ""
+        : capability.disabled_reasons[action] || "Backend запретил действие";
+    }
   }
 
   return { selectedCount, disabledReason, plannedBlocks, scannedBlocks, pendingGoogleExports };
@@ -3287,6 +3371,17 @@ function makeIdempotencyKey() {
 
 function isHistoryTab(value: Tab) {
   return HISTORY_TABS.includes(value);
+}
+
+function panelResourcesForTab(value: Tab, calendarMonth: string) {
+  if (value === "clients") return ["client-points"];
+  if (value === "calendar") return [`calendar:${calendarMonth}`];
+  if (value === "smartup") return ["smartup-history"];
+  if (value === "imports") return ["imports"];
+  if (value === "skladbotDryRun") return ["imports", "dry-runs"];
+  if (value === "incidents") return ["incidents", "events"];
+  if (value === "activity") return ["readiness", "events", "operations"];
+  return [];
 }
 
 function accessibleTabsForPermissions(permissions: string[]): Tab[] {

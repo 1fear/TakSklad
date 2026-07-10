@@ -87,3 +87,32 @@ test("@smoke incidents and client-point actions stay inside synthetic API", asyn
   await expect.poll(() => api.incidentUpdates).toBe(1);
   await expect(page.getByRole("status")).toContainText("Инцидент закрыт");
 });
+
+test("@network-contract critical requests stay bounded and hidden panels stay lazy", async ({ page }) => {
+  const api = await installSyntheticApi(page);
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "Позиции заказов" })).toBeVisible();
+
+  const critical = api.requests.filter((request) => (
+    request.includes("/api/v1/admin/table")
+    || request.includes("/api/v1/admin/dashboard/day-summary")
+  ));
+  expect(critical).toHaveLength(2);
+  expect(api.requests.filter((request) => request.includes("/api/v1/auth/session"))).toHaveLength(1);
+  for (const hiddenPath of ["/api/v1/imports", "/api/v1/admin/client-points", "/api/v1/admin/events", "/api/v1/admin/incidents"]) {
+    expect(api.requests.some((request) => request.includes(hiddenPath))).toBe(false);
+  }
+
+  const tableRequestsBeforeSearch = api.requests.filter((request) => request.includes("/api/v1/admin/table")).length;
+  const search = page.getByLabel("Поиск заказов");
+  await search.fill("А");
+  await search.fill("Аль");
+  await search.fill("Альфа");
+  await expect(page.getByText("Результат Альфа").first()).toBeVisible();
+  expect(api.requests.filter((request) => request.includes("/api/v1/admin/table")).length).toBe(tableRequestsBeforeSearch + 1);
+
+  await page.getByRole("button", { name: "Клиенты" }).click();
+  await expect(page.getByRole("heading", { name: "Клиенты и таймслоты" })).toBeVisible();
+  await expect.poll(() => api.requests.filter((request) => request === "GET /api/v1/admin/client-points").length).toBe(1);
+  expect(api.requests.some((request) => request.includes("/api/v1/imports"))).toBe(false);
+});

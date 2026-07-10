@@ -117,6 +117,17 @@ describe("API request transport contract", () => {
     await expect(api.apiRequest(cookieConfig, "/offline")).rejects.toBe(failure);
   });
 
+  it("preserves an explicit caller abort instead of misreporting a timeout", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new DOMException("caller cancelled", "AbortError"));
+
+    await expect(api.apiRequest(cookieConfig, "/cancelled", { signal: controller.signal })).rejects.toMatchObject({
+      name: "AbortError",
+      message: "caller cancelled",
+    });
+  });
+
   it.each([
     {
       name: "plain detail",
@@ -291,6 +302,9 @@ describe("API endpoint wrapper contracts", () => {
     expect(lastRequest(fetchSpy).url).toContain(
       "search=%D0%9A%D0%BB%D0%B8%D0%B5%D0%BD%D1%82+%26+%D0%9A%D0%BE&scan_state=partial&skladbot_filter=linked&google_sheet_status=pending",
     );
+
+    await api.getAdminTable(cookieConfig, { cursor: "opaque-next", offset: 999 });
+    expect(lastRequest(fetchSpy).url).toBe("/api/v1/admin/table?cursor=opaque-next&activity_limit=30");
   });
 
   it("builds client-point query variants", async () => {

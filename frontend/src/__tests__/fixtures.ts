@@ -95,6 +95,38 @@ export function adminTable(
   rows: AdminTableRow[] = [firstAdminRow],
   overrides: Partial<AdminTable> = {},
 ): AdminTable {
+  const orderCapabilities = Object.fromEntries(Array.from(new Set(rows.map((row) => row.order_id))).map((orderId) => {
+    const orderRows = rows.filter((row) => row.order_id === orderId);
+    const allowed = {
+      resync: true,
+      archive: true,
+      completeWithoutKiz: true,
+      cancel: true,
+      deleteActive: true,
+      resetRescan: true,
+      restore: false,
+      resyncSkladBot: true,
+    };
+    return [orderId, {
+      order_id: orderId,
+      items_count: orderRows.length,
+      planned_blocks: orderRows.reduce((sum, row) => sum + row.quantity_blocks, 0),
+      scanned_blocks: orderRows.reduce((sum, row) => sum + row.scanned_blocks, 0),
+      scan_codes_count: orderRows.reduce((sum, row) => sum + row.scan_codes_count, 0),
+      pending_google_exports: Math.max(0, ...orderRows.map((row) => row.pending_google_exports)),
+      allowed,
+      disabled_reasons: {
+        resync: "",
+        archive: "",
+        completeWithoutKiz: "",
+        cancel: "",
+        deleteActive: "",
+        resetRescan: "",
+        restore: "Доступно только для отмененных заказов или архива без КИЗов",
+        resyncSkladBot: "",
+      },
+    }];
+  }));
   return {
     generated_at: "2026-07-10T09:00:00Z",
     totals: {
@@ -116,6 +148,8 @@ export function adminTable(
     row_count: rows.length,
     total_rows: rows.length,
     has_more: false,
+    next_cursor: "",
+    order_capabilities: orderCapabilities,
     ...overrides,
   };
 }

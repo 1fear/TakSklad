@@ -187,6 +187,17 @@ class AdminActivityRead(BaseModel):
     created_at: datetime | None = None
 
 
+class AdminOrderCapabilityRead(BaseModel):
+    order_id: str
+    items_count: int = 0
+    planned_blocks: int = 0
+    scanned_blocks: int = 0
+    scan_codes_count: int = 0
+    pending_google_exports: int = 0
+    allowed: dict[str, bool] = Field(default_factory=dict)
+    disabled_reasons: dict[str, str] = Field(default_factory=dict)
+
+
 class AdminTableRead(BaseModel):
     generated_at: datetime
     totals: AdminTableTotals
@@ -198,6 +209,7 @@ class AdminTableRead(BaseModel):
     total_rows: int = 0
     has_more: bool = False
     next_cursor: str = ""
+    order_capabilities: dict[str, AdminOrderCapabilityRead] = Field(default_factory=dict)
 
 
 class AdminOrderActionRequest(BaseModel):

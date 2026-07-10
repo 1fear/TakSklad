@@ -698,25 +698,10 @@ def admin_table(
     db=Depends(get_db),
 ):
     row_limit = normalize_page_limit(limit, default=500, maximum=500)
-    filters = {
-        "status_bucket": status_bucket,
-        "shipment_date": shipment_date,
-        "search": search,
-        "scan_state": scan_state,
-        "skladbot_filter": skladbot_filter,
-        "google_status": google_sheet_status or google_status,
-    }
     row_offset = max(0, int(offset or 0))
     if cursor:
         if row_offset:
             raise CursorError("invalid_cursor")
-        try:
-            (offset_value,) = decode_cursor(cursor, "admin.table", filters=filters)
-            row_offset = int(offset_value)
-            if row_offset < 0:
-                raise ValueError
-        except (CursorError, TypeError, ValueError):
-            raise CursorError("invalid_cursor") from None
     result = build_admin_table(
         db,
         limit=row_limit,
@@ -728,13 +713,8 @@ def admin_table(
         scan_state=scan_state,
         skladbot_filter=skladbot_filter,
         google_status=google_sheet_status or google_status,
+        cursor=cursor,
     )
-    if result.has_more:
-        result.next_cursor = encode_cursor(
-            "admin.table",
-            [row_offset + result.row_count],
-            filters=filters,
-        )
     set_pagination_headers(response, next_cursor=result.next_cursor, limit=row_limit)
     return result
 

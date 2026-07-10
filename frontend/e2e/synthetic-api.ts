@@ -52,6 +52,34 @@ function orderRow(id: string, client: string, itemId = `${id}-item`) {
 }
 
 function adminTable(rows = [orderRow("order-1", "Альфа Тест")], hasMore = true, offset = 0) {
+  const orderCapabilities = Object.fromEntries(rows.map((row) => [row.order_id, {
+    order_id: row.order_id,
+    items_count: 1,
+    planned_blocks: row.quantity_blocks,
+    scanned_blocks: row.scanned_blocks,
+    scan_codes_count: row.scan_codes_count,
+    pending_google_exports: row.pending_google_exports,
+    allowed: {
+      resync: true,
+      archive: true,
+      completeWithoutKiz: true,
+      cancel: true,
+      deleteActive: true,
+      resetRescan: true,
+      restore: false,
+      resyncSkladBot: true,
+    },
+    disabled_reasons: {
+      resync: "",
+      archive: "",
+      completeWithoutKiz: "",
+      cancel: "",
+      deleteActive: "",
+      resetRescan: "",
+      restore: "Доступно только для отмененных заказов или архива без КИЗов",
+      resyncSkladBot: "",
+    },
+  }]));
   return {
     generated_at: now,
     totals: {
@@ -73,6 +101,8 @@ function adminTable(rows = [orderRow("order-1", "Альфа Тест")], hasMore
     row_count: rows.length,
     total_rows: hasMore ? 2 : rows.length,
     has_more: hasMore,
+    next_cursor: hasMore ? "synthetic-next-page" : "",
+    order_capabilities: orderCapabilities,
   };
 }
 
@@ -227,9 +257,10 @@ export async function installSyntheticApi(page: Page, options: SyntheticApiOptio
       }
       if (options.empty) return json(route, adminTable([], false));
       const offset = Number(url.searchParams.get("offset") ?? 0);
+      const cursor = url.searchParams.get("cursor");
       const search = url.searchParams.get("search");
       if (search) return json(route, adminTable([orderRow("order-search", `Результат ${search}`)], false));
-      return json(route, offset > 0 ? adminTable([orderRow("order-2", "Бета Тест")], false, offset) : adminTable());
+      return json(route, cursor || offset > 0 ? adminTable([orderRow("order-2", "Бета Тест")], false, offset) : adminTable());
     }
     if (path === "/api/v1/admin/dashboard/day-summary") return json(route, daySummary);
     if (path === "/api/v1/imports") return json(route, []);

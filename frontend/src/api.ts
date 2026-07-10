@@ -412,6 +412,19 @@ export type AdminTable = {
   row_count: number;
   total_rows: number;
   has_more: boolean;
+  next_cursor: string;
+  order_capabilities: Record<string, AdminOrderCapability>;
+};
+
+export type AdminOrderCapability = {
+  order_id: string;
+  items_count: number;
+  planned_blocks: number;
+  scanned_blocks: number;
+  scan_codes_count: number;
+  pending_google_exports: number;
+  allowed: Record<string, boolean>;
+  disabled_reasons: Record<string, string>;
 };
 
 export type ApiConfig = {
@@ -423,6 +436,7 @@ export type ApiConfig = {
 export type AdminTableRequest = {
   limit?: number;
   offset?: number;
+  cursor?: string;
   activityLimit?: number;
   statusBucket?: string;
   shipmentDate?: string;
@@ -430,6 +444,7 @@ export type AdminTableRequest = {
   scanState?: string;
   skladbotFilter?: string;
   googleSheetStatus?: string;
+  signal?: AbortSignal;
 };
 
 export type AuthSession = {
@@ -445,6 +460,7 @@ type RequestOptions = {
   method?: string;
   body?: unknown;
   timeoutMs?: number;
+  signal?: AbortSignal;
 };
 
 export class ApiRequestError extends Error {
@@ -530,8 +546,11 @@ export async function apiRequest<T>(
   const unsafeCookieRequest = !bearerRequest && !["GET", "HEAD", "OPTIONS"].includes(method);
   ensureCookieApiIsSameOrigin(apiUrl, bearerRequest);
   const timeoutMs = options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
-  const controller = timeoutMs > 0 ? new AbortController() : undefined;
-  const timeoutId = controller ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
+  const timeoutController = timeoutMs > 0 ? new AbortController() : undefined;
+  const signal = timeoutController && options.signal
+    ? AbortSignal.any([timeoutController.signal, options.signal])
+    : timeoutController?.signal ?? options.signal;
+  const timeoutId = timeoutController ? setTimeout(() => timeoutController.abort(), timeoutMs) : undefined;
   const response = await fetch(`${apiUrl}${path}`, {
     method,
     credentials: bearerRequest ? "omit" : "same-origin",
@@ -541,9 +560,12 @@ export async function apiRequest<T>(
       ...(unsafeCookieRequest && config.csrfToken ? { "X-TakSklad-CSRF": config.csrfToken } : {}),
     },
     body: options.body ? JSON.stringify(options.body) : undefined,
-    signal: controller?.signal,
+    signal,
   }).catch((error) => {
-    if (isAbortError(error)) {
+    if (isAbortError(error) && options.signal?.aborted) {
+      throw error;
+    }
+    if (isAbortError(error) && (!options.signal || timeoutController?.signal.aborted)) {
       throw new Error(`Запрос ${path} не ответил за ${Math.round(timeoutMs / 1000)} сек.`);
     }
     throw error;
@@ -660,10 +682,10 @@ export function listActiveOrders(config: ApiConfig) {
 }
 
 export function getAdminTable(config: ApiConfig, options: AdminTableRequest = {}) {
-  const query = new URLSearchParams({
-    offset: String(options.offset ?? 0),
-    activity_limit: String(options.activityLimit ?? 30),
-  });
+  const query = new URLSearchParams();
+  if (options.cursor) query.set("cursor", options.cursor);
+  else query.set("offset", String(options.offset ?? 0));
+  query.set("activity_limit", String(options.activityLimit ?? 30));
   if (options.limit !== undefined) query.set("limit", String(options.limit));
   if (options.statusBucket) query.set("status_bucket", options.statusBucket);
   if (options.shipmentDate) query.set("shipment_date", options.shipmentDate);
@@ -671,30 +693,30 @@ export function getAdminTable(config: ApiConfig, options: AdminTableRequest = {}
   if (options.scanState) query.set("scan_state", options.scanState);
   if (options.skladbotFilter) query.set("skladbot_filter", options.skladbotFilter);
   if (options.googleSheetStatus) query.set("google_sheet_status", options.googleSheetStatus);
-  return apiRequest<AdminTable>(config, `/api/v1/admin/table?${query.toString()}`);
+  return apiRequest<AdminTable>(config, `/api/v1/admin/table?${query.toString()}`, { signal: options.signal });
 }
 
-export function getDashboardDaySummary(config: ApiConfig, reportDate: string) {
+export function getDashboardDaySummary(config: ApiConfig, reportDate: string, signal?: AbortSignal) {
   const query = reportDate ? `?report_date=${encodeURIComponent(reportDate)}` : "";
-  return apiRequest<DashboardDaySummary>(config, `/api/v1/admin/dashboard/day-summary${query}`);
+  return apiRequest<DashboardDaySummary>(config, `/api/v1/admin/dashboard/day-summary${query}`, { signal });
 }
 
-export function getAdminEvents(config: ApiConfig) {
-  return apiRequest<EventQueueDiagnostics>(config, "/api/v1/admin/events");
+export function getAdminEvents(config: ApiConfig, signal?: AbortSignal) {
+  return apiRequest<EventQueueDiagnostics>(config, "/api/v1/admin/events", { signal });
 }
 
-export function getOperationsAttention(config: ApiConfig) {
-  return apiRequest<OperationsAttention>(config, "/api/v1/admin/operations");
+export function getOperationsAttention(config: ApiConfig, signal?: AbortSignal) {
+  return apiRequest<OperationsAttention>(config, "/api/v1/admin/operations", { signal });
 }
 
-export function getSmartupAutoImportHistory(config: ApiConfig, limit = 50) {
+export function getSmartupAutoImportHistory(config: ApiConfig, limit = 50, signal?: AbortSignal) {
   const query = new URLSearchParams({ limit: String(limit) });
-  return apiRequest<SmartupAutoImportHistory>(config, `/api/v1/admin/smartup-auto-imports/history?${query.toString()}`);
+  return apiRequest<SmartupAutoImportHistory>(config, `/api/v1/admin/smartup-auto-imports/history?${query.toString()}`, { signal });
 }
 
-export function getLogisticsCalendar(config: ApiConfig, month = "") {
+export function getLogisticsCalendar(config: ApiConfig, month = "", signal?: AbortSignal) {
   const query = month ? `?month=${encodeURIComponent(month)}` : "";
-  return apiRequest<LogisticsCalendar>(config, `/api/v1/admin/logistics-calendar${query}`);
+  return apiRequest<LogisticsCalendar>(config, `/api/v1/admin/logistics-calendar${query}`, { signal });
 }
 
 export function updateLogisticsCalendarDay(config: ApiConfig, payload: LogisticsCalendarDayUpdatePayload) {
@@ -704,22 +726,22 @@ export function updateLogisticsCalendarDay(config: ApiConfig, payload: Logistics
   });
 }
 
-export function getAdminIncidents(config: ApiConfig, params: Record<string, string> = {}) {
+export function getAdminIncidents(config: ApiConfig, params: Record<string, string> = {}, signal?: AbortSignal) {
   const query = new URLSearchParams(params);
-  return apiRequest<AdminIncidentsResponse>(config, `/api/v1/admin/incidents?${query.toString()}`);
+  return apiRequest<AdminIncidentsResponse>(config, `/api/v1/admin/incidents?${query.toString()}`, { signal });
 }
 
-export function listClientPoints(config: ApiConfig, params: { query?: string; customTimeslot?: boolean; limit?: number } = {}) {
+export function listClientPoints(config: ApiConfig, params: { query?: string; customTimeslot?: boolean; limit?: number } = {}, signal?: AbortSignal) {
   const query = new URLSearchParams();
   if (params.limit !== undefined) query.set("limit", String(params.limit));
   if (params.query) query.set("query", params.query);
   if (params.customTimeslot !== undefined) query.set("custom_timeslot", params.customTimeslot ? "true" : "false");
-  return apiRequest<ClientPoint[]>(config, `/api/v1/admin/client-points?${query.toString()}`);
+  return apiRequest<ClientPoint[]>(config, `/api/v1/admin/client-points?${query.toString()}`, { signal });
 }
 
-export function getClientPointOrderSummary(config: ApiConfig, clientName: string) {
+export function getClientPointOrderSummary(config: ApiConfig, clientName: string, signal?: AbortSignal) {
   const query = new URLSearchParams({ client_name: clientName });
-  return apiRequest<ClientPointOrderSummary>(config, `/api/v1/admin/client-points/order-summary?${query.toString()}`);
+  return apiRequest<ClientPointOrderSummary>(config, `/api/v1/admin/client-points/order-summary?${query.toString()}`, { signal });
 }
 
 export function updateClientPointTimeslot(config: ApiConfig, payload: ClientPointTimeslotPayload) {
@@ -743,12 +765,12 @@ export function retryAdminEvent(config: ApiConfig, eventId: string, payload: Eve
   });
 }
 
-export function getReadiness(config: ApiConfig) {
-  return apiRequest<ReadinessResponse>(config, "/api/v1/readiness");
+export function getReadiness(config: ApiConfig, signal?: AbortSignal) {
+  return apiRequest<ReadinessResponse>(config, "/api/v1/readiness", { signal });
 }
 
-export function getAuthSession(config: ApiConfig) {
-  return apiRequest<AuthSession>(config, "/api/v1/auth/session");
+export function getAuthSession(config: ApiConfig, signal?: AbortSignal) {
+  return apiRequest<AuthSession>(config, "/api/v1/auth/session", { signal });
 }
 
 export function loginWeb(config: ApiConfig, login: string, password: string) {
@@ -865,13 +887,13 @@ export function getDayReport(config: ApiConfig, reportDate: string) {
   return apiRequest<DayReport>(config, `/api/v1/reports/day${query}`);
 }
 
-export function listImports(config: ApiConfig) {
-  return apiRequest<ImportRecord[]>(config, "/api/v1/imports");
+export function listImports(config: ApiConfig, signal?: AbortSignal) {
+  return apiRequest<ImportRecord[]>(config, "/api/v1/imports", { signal });
 }
 
-export function listSkladBotDryRuns(config: ApiConfig, importId = "") {
+export function listSkladBotDryRuns(config: ApiConfig, importId = "", signal?: AbortSignal) {
   const query = importId ? `?import_id=${encodeURIComponent(importId)}` : "";
-  return apiRequest<SkladBotDryRun[]>(config, `/api/v1/admin/skladbot/dry-runs${query}`);
+  return apiRequest<SkladBotDryRun[]>(config, `/api/v1/admin/skladbot/dry-runs${query}`, { signal });
 }
 
 export function rebuildSkladBotDryRun(config: ApiConfig, dryRunId: string) {

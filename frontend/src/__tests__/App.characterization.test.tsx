@@ -104,16 +104,16 @@ describe("authenticated control-surface characterization", () => {
         const url = new URL(request.url);
         requests.push(url);
         const offset = Number(url.searchParams.get("offset") || "0");
-        return offset > 0
+        return url.searchParams.get("cursor") || offset > 0
           ? HttpResponse.json(adminTable([secondAdminRow], { offset, row_count: 1, total_rows: 2, has_more: false }))
-          : HttpResponse.json(adminTable([firstAdminRow], { total_rows: 2, has_more: true }));
+          : HttpResponse.json(adminTable([firstAdminRow], { total_rows: 2, has_more: true, next_cursor: "synthetic-page-2" }));
       }),
     );
     const { user } = await renderAuthenticatedApp();
 
     await user.click(screen.getByRole("button", { name: /Загрузить еще 1/ }));
     expect(await screen.findByText(secondAdminRow.client)).toBeInTheDocument();
-    expect(requests.some((url) => url.searchParams.get("offset") === "1")).toBe(true);
+    expect(requests.some((url) => url.searchParams.get("cursor") === "synthetic-page-2")).toBe(true);
 
     await user.type(screen.getByRole("searchbox", { name: "Поиск заказов" }), "Альфа");
     await user.selectOptions(screen.getByLabelText("Фильтр сканирования"), "not_started");
