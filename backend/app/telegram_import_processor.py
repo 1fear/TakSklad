@@ -1,15 +1,18 @@
 import logging
+import os
 import tempfile
-import urllib.parse
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 from sqlalchemy import select
 
+from .db import SessionLocal
 from .event_queue_service import reset_stale_processing_events
-from .excel_importer import ExcelDateConflictError
+from .excel_importer import ExcelDateConflictError, excel_file_to_import_payload
 from .models import AuditLog, Incident, PendingEvent
+from .telegram_clients import ExternalTimeoutError, TelegramProcessorDelegate
+from .telegram_common import normalize_text, parse_date_from_text, parse_int
 from .telegram_import_messages import (
     safe_telegram_spreadsheet_filename,
     telegram_import_failure_message,
@@ -23,43 +26,6 @@ TELEGRAM_EXCEL_IMPORT_WAITING_DATE_CHOICE_STATUS = "waiting_date_choice"
 TELEGRAM_EXCEL_IMPORT_ACTIVE_STATUSES = ("pending",)
 TELEGRAM_EXCEL_DATE_CHOICE_USE_EXCEL_PREFIX = "excel_date:use_excel:"
 TELEGRAM_EXCEL_DATE_CHOICE_CANCEL_PREFIX = "excel_date:cancel:"
-
-
-def _worker_dependency(name):
-    # Resolve at call time so legacy tests and callers patching telegram_worker globals
-    # keep controlling the inherited processor behavior.
-    from . import telegram_worker
-
-    return getattr(telegram_worker, name)
-
-
-class _LazyDependency:
-    def __init__(self, name):
-        self.name = name
-
-    def __call__(self, *args, **kwargs):
-        return _worker_dependency(self.name)(*args, **kwargs)
-
-    def __getattr__(self, name):
-        return getattr(_worker_dependency(self.name), name)
-
-
-SessionLocal = _LazyDependency("SessionLocal")
-excel_file_to_import_payload = _LazyDependency("excel_file_to_import_payload")
-httpx = _LazyDependency("httpx")
-os = _LazyDependency("os")
-
-
-def normalize_text(value):
-    return str(value or "").strip()
-
-
-def parse_date_from_text(value):
-    return _worker_dependency("parse_date_from_text")(value)
-
-
-def parse_int(value):
-    return _worker_dependency("parse_int")(value)
 
 
 def telegram_inline_keyboard(button_rows):
@@ -154,9 +120,18 @@ def telegram_import_date_choice_keyboard(event_id, excel_date):
     ])
 
 
-class TelegramImportProcessor:
+class TelegramImportProcessor(TelegramProcessorDelegate):
+    def __init__(self, *, ports=None, owner=None, **port_dependencies):
+        TelegramProcessorDelegate.__init__(self, ports=ports, owner=owner, **port_dependencies)
+
+    def _import_session_factory(self):
+        return getattr(self, "session_factory", None) or SessionLocal
+
+    def _excel_import_parser(self):
+        return getattr(self, "excel_import_parser", None) or excel_file_to_import_payload
+
     def take_waiting_telegram_import_for_date(self, chat_id):
-        with SessionLocal() as db:
+        with self._import_session_factory()() as db:
             stmt = (
                 select(PendingEvent)
                 .where(PendingEvent.event_type == TELEGRAM_EXCEL_IMPORT_EVENT_TYPE)
@@ -219,7 +194,7 @@ class TelegramImportProcessor:
             self.safe_send_message(chat_id, "Не удалось найти ожидающий импорт. Отправьте Excel-файл заново.")
             return True
 
-        with SessionLocal() as db:
+        with self._import_session_factory()() as db:
             event = db.get(PendingEvent, event_uuid)
             if event is None or event.event_type != TELEGRAM_EXCEL_IMPORT_EVENT_TYPE:
                 self.safe_send_message(chat_id, "Ожидающий импорт не найден. Отправьте Excel-файл заново.")
@@ -273,7 +248,7 @@ class TelegramImportProcessor:
         event_uuid = self.parse_telegram_import_event_id(event_id)
         if event_uuid is None:
             return False
-        with SessionLocal() as db:
+        with self._import_session_factory()() as db:
             event = db.get(PendingEvent, event_uuid)
             if event is None:
                 return False
@@ -293,7 +268,7 @@ class TelegramImportProcessor:
         event_uuid = self.parse_telegram_import_event_id(event_id)
         if event_uuid is None:
             return False, {}, "Кнопка устарела: некорректный ID импорта."
-        with SessionLocal() as db:
+        with self._import_session_factory()() as db:
             event = db.get(PendingEvent, event_uuid)
             if event is None or event.event_type != TELEGRAM_EXCEL_IMPORT_EVENT_TYPE:
                 return False, {}, "Кнопка устарела: импорт не найден."
@@ -361,36 +336,6 @@ class TelegramImportProcessor:
         )
         return True
 
-    def telegram_file_info(self, file_id):
-        file_id = normalize_text(file_id)
-        if not file_id:
-            raise ValueError("Telegram не передал file_id документа")
-        result = self.telegram_request("getFile", {"file_id": file_id})
-        if not isinstance(result, dict) or not normalize_text(result.get("file_path")):
-            raise RuntimeError("Telegram не вернул путь к файлу")
-        return result
-
-    def download_telegram_document(self, document, destination_path):
-        file_info = self.telegram_file_info(document.get("file_id"))
-        file_path = normalize_text(file_info.get("file_path"))
-        quoted_path = urllib.parse.quote(file_path, safe="/")
-        url = f"https://api.telegram.org/file/bot{self.token}/{quoted_path}"
-        with httpx.Client(timeout=self.file_timeout, follow_redirects=True) as client:
-            try:
-                with client.stream("GET", url) as response:
-                    response.raise_for_status()
-                    total = 0
-                    with open(destination_path, "wb") as output:
-                        for chunk in response.iter_bytes(chunk_size=1024 * 1024):
-                            if not chunk:
-                                continue
-                            total += len(chunk)
-                            if self.max_file_size and total > self.max_file_size:
-                                raise ValueError("Файл слишком большой для Telegram import")
-                            output.write(chunk)
-            except httpx.HTTPError:
-                raise RuntimeError("Не удалось скачать файл из Telegram") from None
-
     def import_telegram_document(self, chat_id, document, shipment_date="", event_id=None):
         file_name = safe_telegram_spreadsheet_filename(document.get("file_name"))
         if not file_name:
@@ -407,7 +352,7 @@ class TelegramImportProcessor:
         try:
             self.safe_send_message(chat_id, f"Начинаю импорт Excel-файла из очереди: {file_name}")
             self.download_telegram_document(document, temp_path)
-            import_payload = excel_file_to_import_payload(
+            import_payload = self._excel_import_parser()(
                 temp_path,
                 file_name=file_name,
                 source="telegram",
@@ -423,7 +368,7 @@ class TelegramImportProcessor:
             recovered_after_timeout = False
             try:
                 result = self.backend_post("/api/v1/imports", import_payload)
-            except httpx.TimeoutException as exc:
+            except ExternalTimeoutError as exc:
                 recovered = None
                 try:
                     recovered = self.find_backend_import_by_telegram_event_id(event_id)
@@ -544,7 +489,7 @@ class TelegramImportProcessor:
 
         document = {**document, "file_name": file_name}
 
-        with SessionLocal() as db:
+        with self._import_session_factory()() as db:
             existing_event = find_existing_telegram_import_event(db, document, update_id)
             if existing_event is not None:
                 if existing_event.status == "failed":
@@ -625,7 +570,7 @@ class TelegramImportProcessor:
         return True
 
     def take_next_telegram_import_event(self):
-        with SessionLocal() as db:
+        with self._import_session_factory()() as db:
             stmt = (
                 select(PendingEvent)
                 .where(PendingEvent.event_type == TELEGRAM_EXCEL_IMPORT_EVENT_TYPE)
@@ -646,7 +591,7 @@ class TelegramImportProcessor:
             return {"id": event_id, "payload": payload}
 
     def finish_telegram_import_event(self, event_id, success, error=""):
-        with SessionLocal() as db:
+        with self._import_session_factory()() as db:
             event = db.get(PendingEvent, event_id if isinstance(event_id, uuid.UUID) else uuid.UUID(str(event_id)))
             if event is None:
                 return
@@ -657,7 +602,7 @@ class TelegramImportProcessor:
             db.commit()
 
     def reset_stale_telegram_import_events(self):
-        with SessionLocal() as db:
+        with self._import_session_factory()() as db:
             return reset_stale_processing_events(
                 db,
                 event_types=(TELEGRAM_EXCEL_IMPORT_EVENT_TYPE,),

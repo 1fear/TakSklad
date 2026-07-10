@@ -1621,6 +1621,28 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
             "sync": {"updated": 3},
         })
 
+    def test_legacy_worker_entrypoint_delegates_once_to_runner(self):
+        runner = mock.Mock()
+        runner.main.return_value = "completed"
+
+        with mock.patch.object(skladbot_worker, "_load_worker_runner", return_value=runner) as load_runner:
+            result = skladbot_worker.main()
+
+        load_runner.assert_called_once_with()
+        runner.main.assert_called_once_with()
+        self.assertEqual(result, "completed")
+
+    def test_legacy_worker_interval_delegates_once_to_runner(self):
+        runner = mock.Mock()
+        runner.worker_interval_seconds.return_value = 120
+
+        with mock.patch.object(skladbot_worker, "_load_worker_runner", return_value=runner) as load_runner:
+            result = skladbot_worker.worker_interval_seconds()
+
+        load_runner.assert_called_once_with()
+        runner.worker_interval_seconds.assert_called_once_with()
+        self.assertEqual(result, 120)
+
     def test_postgres_skladbot_lock_is_transaction_scoped(self):
         db = mock.Mock()
         db.bind.dialect.name = "postgresql"

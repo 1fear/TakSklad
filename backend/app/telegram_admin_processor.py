@@ -1,10 +1,31 @@
 import logging
+import urllib.parse
 import uuid
 from datetime import datetime, timedelta, timezone
 
+import httpx
 from sqlalchemy import select
 
+from .db import SessionLocal
+from .event_leases import claim_event_leases, event_leases_enabled, finalize_event_leases
+from .event_queue_service import reset_stale_processing_events
 from .models import AuditLog, PendingEvent
+from .telegram_clients import TelegramProcessorDelegate
+from .telegram_common import display_date, normalize_text, parse_date_from_text, parse_int, text_matches
+from .telegram_manual_support import (
+    build_manual_import_payload,
+    manual_address_and_coordinates,
+    manual_order_summary,
+    order_planned_blocks,
+    order_scanned_blocks,
+    telegram_manual_add_next_keyboard,
+    telegram_manual_delete_confirm_keyboard,
+    telegram_manual_delete_keyboard,
+    telegram_manual_menu_keyboard,
+    telegram_manual_payment_keyboard,
+    telegram_manual_product_keyboard,
+)
+from .telegram_report_processor import backend_failure_message, backend_http_error_detail
 
 
 TELEGRAM_MANUAL_CALLBACK_PREFIX = "manual:"
@@ -25,51 +46,13 @@ TELEGRAM_MANUAL_PAYMENT_TYPES = {
 }
 
 
-def _worker_dependency(name):
-    from . import telegram_worker
+class TelegramAdminProcessor(TelegramProcessorDelegate):
+    def __init__(self, *, ports=None, owner=None, **port_dependencies):
+        TelegramProcessorDelegate.__init__(self, ports=ports, owner=owner, **port_dependencies)
 
-    return getattr(telegram_worker, name)
+    def _admin_session_factory(self):
+        return getattr(self, "session_factory", None) or SessionLocal
 
-
-class _LazyDependency:
-    def __init__(self, name):
-        self.name = name
-
-    def __call__(self, *args, **kwargs):
-        return _worker_dependency(self.name)(*args, **kwargs)
-
-    def __getattr__(self, name):
-        return getattr(_worker_dependency(self.name), name)
-
-
-SessionLocal = _LazyDependency("SessionLocal")
-httpx = _LazyDependency("httpx")
-urllib = _LazyDependency("urllib")
-claim_event_leases = _LazyDependency("claim_event_leases")
-event_leases_enabled = _LazyDependency("event_leases_enabled")
-finalize_event_leases = _LazyDependency("finalize_event_leases")
-reset_stale_processing_events = _LazyDependency("reset_stale_processing_events")
-normalize_text = _LazyDependency("normalize_text")
-parse_date_from_text = _LazyDependency("parse_date_from_text")
-parse_int = _LazyDependency("parse_int")
-display_date = _LazyDependency("display_date")
-text_matches = _LazyDependency("text_matches")
-manual_address_and_coordinates = _LazyDependency("manual_address_and_coordinates")
-manual_order_summary = _LazyDependency("manual_order_summary")
-build_manual_import_payload = _LazyDependency("build_manual_import_payload")
-order_scanned_blocks = _LazyDependency("order_scanned_blocks")
-order_planned_blocks = _LazyDependency("order_planned_blocks")
-telegram_manual_menu_keyboard = _LazyDependency("telegram_manual_menu_keyboard")
-telegram_manual_payment_keyboard = _LazyDependency("telegram_manual_payment_keyboard")
-telegram_manual_product_keyboard = _LazyDependency("telegram_manual_product_keyboard")
-telegram_manual_add_next_keyboard = _LazyDependency("telegram_manual_add_next_keyboard")
-telegram_manual_delete_keyboard = _LazyDependency("telegram_manual_delete_keyboard")
-telegram_manual_delete_confirm_keyboard = _LazyDependency("telegram_manual_delete_confirm_keyboard")
-backend_http_error_detail = _LazyDependency("backend_http_error_detail")
-backend_failure_message = _LazyDependency("backend_failure_message")
-
-
-class TelegramAdminProcessor:
     def chat_state_event_type(self, chat_id):
         return f"{TELEGRAM_CHAT_STATE_EVENT_PREFIX}{chat_id}"
 
@@ -89,14 +72,14 @@ class TelegramAdminProcessor:
         return False
 
     def get_chat_state(self, chat_id):
-        with SessionLocal() as db:
+        with self._admin_session_factory()() as db:
             state = db.execute(
                 select(PendingEvent).where(PendingEvent.event_type == self.chat_state_event_type(chat_id))
             ).scalars().first()
             return dict(state.payload or {}) if state else {}
 
     def save_chat_state(self, chat_id, payload):
-        with SessionLocal() as db:
+        with self._admin_session_factory()() as db:
             state = db.execute(
                 select(PendingEvent).where(PendingEvent.event_type == self.chat_state_event_type(chat_id))
             ).scalars().first()
@@ -515,7 +498,7 @@ class TelegramAdminProcessor:
         return True
 
     def take_next_telegram_notification_event(self):
-        with SessionLocal() as db:
+        with self._admin_session_factory()() as db:
             if event_leases_enabled():
                 owner = f"telegram-notification:{uuid.uuid4()}"
                 events = claim_event_leases(
@@ -549,7 +532,7 @@ class TelegramAdminProcessor:
     def finish_telegram_notification_event(
         self, event_id, success, error="", failure_status="failed", lease_owner="",
     ):
-        with SessionLocal() as db:
+        with self._admin_session_factory()() as db:
             event = db.get(PendingEvent, event_id if isinstance(event_id, uuid.UUID) else uuid.UUID(str(event_id)))
             if event is None:
                 return
@@ -585,7 +568,7 @@ class TelegramAdminProcessor:
     def reset_stale_telegram_notification_events(self):
         if event_leases_enabled():
             return 0
-        with SessionLocal() as db:
+        with self._admin_session_factory()() as db:
             return reset_stale_processing_events(
                 db,
                 event_types=(TELEGRAM_NOTIFICATION_EVENT_TYPE,),
@@ -655,7 +638,7 @@ class TelegramAdminProcessor:
 
     def load_offset(self):
         try:
-            with SessionLocal() as db:
+            with self._admin_session_factory()() as db:
                 state = db.execute(
                     select(PendingEvent).where(PendingEvent.event_type == "telegram_worker_state")
                 ).scalars().first()
@@ -666,7 +649,7 @@ class TelegramAdminProcessor:
 
     def save_offset(self):
         try:
-            with SessionLocal() as db:
+            with self._admin_session_factory()() as db:
                 state = db.execute(
                     select(PendingEvent).where(PendingEvent.event_type == "telegram_worker_state")
                 ).scalars().first()

@@ -12,6 +12,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.app import telegram_worker as telegram_worker_module
+from backend.app import telegram_scheduled_report_processor as telegram_scheduled_report_processor_module
 from backend.app.health_service import build_readiness_report
 from backend.app.models import Base, PendingEvent
 from backend.app.skladbot_daily_report import (
@@ -2344,11 +2345,11 @@ class SkladBotDailyReportTests(unittest.TestCase):
         )
         Base.metadata.create_all(engine)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-        original_session_local = telegram_worker_module.SessionLocal
+        original_session_local = telegram_scheduled_report_processor_module.SessionLocal
         original_collect = telegram_worker_module.skladbot_daily_report.collect_skladbot_daily_report
         original_build_xlsx = telegram_worker_module.skladbot_daily_report.build_skladbot_daily_report_xlsx
         try:
-            telegram_worker_module.SessionLocal = SessionLocal
+            telegram_scheduled_report_processor_module.SessionLocal = SessionLocal
 
             def fake_collect(report_date=None):
                 return {
@@ -2398,7 +2399,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
             self.assertEqual((events[0].payload or {}).get("report_kind"), "daily_skladbot")
             self.assertTrue((events[0].payload or {}).get("report_version"))
         finally:
-            telegram_worker_module.SessionLocal = original_session_local
+            telegram_scheduled_report_processor_module.SessionLocal = original_session_local
             telegram_worker_module.skladbot_daily_report.collect_skladbot_daily_report = original_collect
             telegram_worker_module.skladbot_daily_report.build_skladbot_daily_report_xlsx = original_build_xlsx
 
@@ -2410,12 +2411,12 @@ class SkladBotDailyReportTests(unittest.TestCase):
         )
         Base.metadata.create_all(engine)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-        original_session_local = telegram_worker_module.SessionLocal
+        original_session_local = telegram_scheduled_report_processor_module.SessionLocal
         original_collect = telegram_worker_module.skladbot_daily_report.collect_skladbot_daily_report
         original_build_xlsx = telegram_worker_module.skladbot_daily_report.build_skladbot_daily_report_xlsx
-        original_reconciliation = telegram_worker_module.run_daily_reconciliation
+        original_reconciliation = telegram_scheduled_report_processor_module.run_daily_reconciliation
         try:
-            telegram_worker_module.SessionLocal = SessionLocal
+            telegram_scheduled_report_processor_module.SessionLocal = SessionLocal
             messages = []
             documents = []
             reconciliations = []
@@ -2451,7 +2452,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
 
             telegram_worker_module.skladbot_daily_report.collect_skladbot_daily_report = fake_collect
             telegram_worker_module.skladbot_daily_report.build_skladbot_daily_report_xlsx = lambda _report: (b"xlsx", "daily.xlsx")
-            telegram_worker_module.run_daily_reconciliation = lambda **kwargs: reconciliations.append(kwargs)
+            telegram_scheduled_report_processor_module.run_daily_reconciliation = lambda **kwargs: reconciliations.append(kwargs)
 
             worker = TelegramWorker.__new__(TelegramWorker)
             worker.skladbot_daily_report_enabled = True
@@ -2485,10 +2486,10 @@ class SkladBotDailyReportTests(unittest.TestCase):
             self.assertEqual(len(reported_events), 1)
             self.assertEqual((reported_events[0].payload or {}).get("request_id"), 404)
         finally:
-            telegram_worker_module.SessionLocal = original_session_local
+            telegram_scheduled_report_processor_module.SessionLocal = original_session_local
             telegram_worker_module.skladbot_daily_report.collect_skladbot_daily_report = original_collect
             telegram_worker_module.skladbot_daily_report.build_skladbot_daily_report_xlsx = original_build_xlsx
-            telegram_worker_module.run_daily_reconciliation = original_reconciliation
+            telegram_scheduled_report_processor_module.run_daily_reconciliation = original_reconciliation
 
     def test_telegram_manual_skladbot_daily_rejects_invalid_date(self):
         worker = TelegramWorker.__new__(TelegramWorker)
@@ -2517,9 +2518,9 @@ class SkladBotDailyReportTests(unittest.TestCase):
         )
         Base.metadata.create_all(engine)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-        original_session_local = telegram_worker_module.SessionLocal
+        original_session_local = telegram_scheduled_report_processor_module.SessionLocal
         try:
-            telegram_worker_module.SessionLocal = SessionLocal
+            telegram_scheduled_report_processor_module.SessionLocal = SessionLocal
             worker = TelegramWorker.__new__(TelegramWorker)
             worker.skladbot_daily_report_enabled = True
             worker.skladbot_daily_report_chat_ids = {"123"}
@@ -2541,7 +2542,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
             self.assertEqual(events[0].status, "completed")
             self.assertEqual(sends, [("123", date(2026, 6, 8), True)])
         finally:
-            telegram_worker_module.SessionLocal = original_session_local
+            telegram_scheduled_report_processor_module.SessionLocal = original_session_local
 
     def test_scheduled_report_runs_reconciliation_for_configured_chat(self):
         engine = create_engine(
@@ -2551,12 +2552,12 @@ class SkladBotDailyReportTests(unittest.TestCase):
         )
         Base.metadata.create_all(engine)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-        original_session_local = telegram_worker_module.SessionLocal
-        original_reconciliation = telegram_worker_module.run_daily_reconciliation
+        original_session_local = telegram_scheduled_report_processor_module.SessionLocal
+        original_reconciliation = telegram_scheduled_report_processor_module.run_daily_reconciliation
         try:
-            telegram_worker_module.SessionLocal = SessionLocal
+            telegram_scheduled_report_processor_module.SessionLocal = SessionLocal
             reconciliations = []
-            telegram_worker_module.run_daily_reconciliation = (
+            telegram_scheduled_report_processor_module.run_daily_reconciliation = (
                 lambda report_date=None, alert_chat_ids=None: reconciliations.append((report_date, list(alert_chat_ids or []))) or {"status": "ok"}
             )
             worker = TelegramWorker.__new__(TelegramWorker)
@@ -2576,8 +2577,8 @@ class SkladBotDailyReportTests(unittest.TestCase):
             self.assertEqual(sends, [("-5271267499", date(2026, 6, 8), True)])
             self.assertEqual(reconciliations, [(date(2026, 6, 8), ["-5271267499"])])
         finally:
-            telegram_worker_module.SessionLocal = original_session_local
-            telegram_worker_module.run_daily_reconciliation = original_reconciliation
+            telegram_scheduled_report_processor_module.SessionLocal = original_session_local
+            telegram_scheduled_report_processor_module.run_daily_reconciliation = original_reconciliation
 
     def test_scheduled_report_sends_reconciliation_to_configured_private_chat(self):
         engine = create_engine(
@@ -2587,12 +2588,12 @@ class SkladBotDailyReportTests(unittest.TestCase):
         )
         Base.metadata.create_all(engine)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-        original_session_local = telegram_worker_module.SessionLocal
-        original_reconciliation = telegram_worker_module.run_daily_reconciliation
+        original_session_local = telegram_scheduled_report_processor_module.SessionLocal
+        original_reconciliation = telegram_scheduled_report_processor_module.run_daily_reconciliation
         try:
-            telegram_worker_module.SessionLocal = SessionLocal
+            telegram_scheduled_report_processor_module.SessionLocal = SessionLocal
             reconciliations = []
-            telegram_worker_module.run_daily_reconciliation = (
+            telegram_scheduled_report_processor_module.run_daily_reconciliation = (
                 lambda report_date=None, alert_chat_ids=None: reconciliations.append((report_date, list(alert_chat_ids or []))) or {"status": "ok"}
             )
             worker = TelegramWorker.__new__(TelegramWorker)
@@ -2612,8 +2613,8 @@ class SkladBotDailyReportTests(unittest.TestCase):
             self.assertEqual(sends, [("-5271267499", date(2026, 6, 8), True)])
             self.assertEqual(reconciliations, [(date(2026, 6, 8), ["999"])])
         finally:
-            telegram_worker_module.SessionLocal = original_session_local
-            telegram_worker_module.run_daily_reconciliation = original_reconciliation
+            telegram_scheduled_report_processor_module.SessionLocal = original_session_local
+            telegram_scheduled_report_processor_module.run_daily_reconciliation = original_reconciliation
 
     def test_scheduled_report_marks_stale_processing_failed_without_same_day_retry(self):
         engine = create_engine(
@@ -2623,9 +2624,9 @@ class SkladBotDailyReportTests(unittest.TestCase):
         )
         Base.metadata.create_all(engine)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-        original_session_local = telegram_worker_module.SessionLocal
+        original_session_local = telegram_scheduled_report_processor_module.SessionLocal
         try:
-            telegram_worker_module.SessionLocal = SessionLocal
+            telegram_scheduled_report_processor_module.SessionLocal = SessionLocal
             worker = TelegramWorker.__new__(TelegramWorker)
             worker.skladbot_daily_report_hour = 22
             worker.skladbot_daily_report_minute = 0
@@ -2660,7 +2661,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
             self.assertTrue((event.payload or {}).get("finished_at"))
             self.assertNotIn("chat_id", event.payload or {})
         finally:
-            telegram_worker_module.SessionLocal = original_session_local
+            telegram_scheduled_report_processor_module.SessionLocal = original_session_local
 
     def test_scheduled_report_claim_payload_does_not_store_chat_id(self):
         engine = create_engine(
@@ -2670,9 +2671,9 @@ class SkladBotDailyReportTests(unittest.TestCase):
         )
         Base.metadata.create_all(engine)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-        original_session_local = telegram_worker_module.SessionLocal
+        original_session_local = telegram_scheduled_report_processor_module.SessionLocal
         try:
-            telegram_worker_module.SessionLocal = SessionLocal
+            telegram_scheduled_report_processor_module.SessionLocal = SessionLocal
             worker = TelegramWorker.__new__(TelegramWorker)
             worker.skladbot_daily_report_hour = 22
             worker.skladbot_daily_report_minute = 0
@@ -2690,7 +2691,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
             self.assertEqual(payload.get("mode"), "scheduled")
             self.assertNotIn("chat_id", payload)
         finally:
-            telegram_worker_module.SessionLocal = original_session_local
+            telegram_scheduled_report_processor_module.SessionLocal = original_session_local
 
     def test_same_day_corrected_report_does_not_auto_send(self):
         engine = create_engine(
@@ -2700,9 +2701,9 @@ class SkladBotDailyReportTests(unittest.TestCase):
         )
         Base.metadata.create_all(engine)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-        original_session_local = telegram_worker_module.SessionLocal
+        original_session_local = telegram_scheduled_report_processor_module.SessionLocal
         try:
-            telegram_worker_module.SessionLocal = SessionLocal
+            telegram_scheduled_report_processor_module.SessionLocal = SessionLocal
             worker = TelegramWorker.__new__(TelegramWorker)
             worker.skladbot_daily_report_enabled = True
             worker.skladbot_daily_report_chat_ids = {"123"}
@@ -2725,7 +2726,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
             now = datetime(2026, 6, 8, 22, 20, tzinfo=ZoneInfo("Asia/Tashkent"))
             self.assertEqual(worker.send_due_skladbot_daily_reports(now=now), 0)
         finally:
-            telegram_worker_module.SessionLocal = original_session_local
+            telegram_scheduled_report_processor_module.SessionLocal = original_session_local
 
     def test_same_day_corrected_report_creates_manual_recovery_needed_status(self):
         engine = create_engine(
@@ -2735,9 +2736,9 @@ class SkladBotDailyReportTests(unittest.TestCase):
         )
         Base.metadata.create_all(engine)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-        original_session_local = telegram_worker_module.SessionLocal
+        original_session_local = telegram_scheduled_report_processor_module.SessionLocal
         try:
-            telegram_worker_module.SessionLocal = SessionLocal
+            telegram_scheduled_report_processor_module.SessionLocal = SessionLocal
             worker = TelegramWorker.__new__(TelegramWorker)
             worker.skladbot_daily_report_hour = 22
             worker.skladbot_daily_report_minute = 0
@@ -2765,7 +2766,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
             self.assertEqual((event.payload or {}).get("same_day_existing_event_status"), "failed")
 
         finally:
-            telegram_worker_module.SessionLocal = original_session_local
+            telegram_scheduled_report_processor_module.SessionLocal = original_session_local
 
     def test_same_day_corrected_report_version_key_possible_but_operator_only(self):
         worker = TelegramWorker.__new__(TelegramWorker)
@@ -2786,9 +2787,9 @@ class SkladBotDailyReportTests(unittest.TestCase):
         )
         Base.metadata.create_all(engine)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-        original_session_local = telegram_worker_module.SessionLocal
+        original_session_local = telegram_scheduled_report_processor_module.SessionLocal
         try:
-            telegram_worker_module.SessionLocal = SessionLocal
+            telegram_scheduled_report_processor_module.SessionLocal = SessionLocal
             worker = TelegramWorker.__new__(TelegramWorker)
             worker.skladbot_daily_report_hour = 22
             worker.skladbot_daily_report_minute = 0
@@ -2818,7 +2819,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
             self.assertEqual(event.attempts, 1)
             self.assertEqual(event.last_error, "telegram_send_failed")
         finally:
-            telegram_worker_module.SessionLocal = original_session_local
+            telegram_scheduled_report_processor_module.SessionLocal = original_session_local
 
     def test_stale_same_day_event_not_retried_automatically(self):
         self.test_scheduled_report_failed_claim_does_not_auto_retry_same_day()
@@ -2938,12 +2939,12 @@ class SkladBotDailyReportTests(unittest.TestCase):
         )
         Base.metadata.create_all(engine)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-        original_session_local = telegram_worker_module.SessionLocal
+        original_session_local = telegram_scheduled_report_processor_module.SessionLocal
         original_collect = telegram_worker_module.skladbot_daily_report.collect_skladbot_daily_report
         original_build_xlsx = telegram_worker_module.skladbot_daily_report.build_skladbot_daily_report_xlsx
-        original_reconciliation = telegram_worker_module.run_daily_reconciliation
+        original_reconciliation = telegram_scheduled_report_processor_module.run_daily_reconciliation
         try:
-            telegram_worker_module.SessionLocal = SessionLocal
+            telegram_scheduled_report_processor_module.SessionLocal = SessionLocal
             calls = []
             reconciliations = []
 
@@ -2967,7 +2968,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
 
             telegram_worker_module.skladbot_daily_report.collect_skladbot_daily_report = fake_collect
             telegram_worker_module.skladbot_daily_report.build_skladbot_daily_report_xlsx = lambda _report: (_ for _ in ()).throw(AssertionError("xlsx must not be built"))
-            telegram_worker_module.run_daily_reconciliation = lambda **kwargs: reconciliations.append(kwargs)
+            telegram_scheduled_report_processor_module.run_daily_reconciliation = lambda **kwargs: reconciliations.append(kwargs)
 
             worker = TelegramWorker.__new__(TelegramWorker)
             worker.skladbot_daily_report_enabled = True
@@ -2992,10 +2993,10 @@ class SkladBotDailyReportTests(unittest.TestCase):
             self.assertTrue((events[0].payload or {}).get("finished_at"))
             self.assertEqual((events[0].payload or {}).get("success"), False)
         finally:
-            telegram_worker_module.SessionLocal = original_session_local
+            telegram_scheduled_report_processor_module.SessionLocal = original_session_local
             telegram_worker_module.skladbot_daily_report.collect_skladbot_daily_report = original_collect
             telegram_worker_module.skladbot_daily_report.build_skladbot_daily_report_xlsx = original_build_xlsx
-            telegram_worker_module.run_daily_reconciliation = original_reconciliation
+            telegram_scheduled_report_processor_module.run_daily_reconciliation = original_reconciliation
 
     def test_scheduled_blocks_partial_report_no_telegram_send(self):
         engine = create_engine(
@@ -3005,12 +3006,12 @@ class SkladBotDailyReportTests(unittest.TestCase):
         )
         Base.metadata.create_all(engine)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-        original_session_local = telegram_worker_module.SessionLocal
+        original_session_local = telegram_scheduled_report_processor_module.SessionLocal
         original_collect = telegram_worker_module.skladbot_daily_report.collect_skladbot_daily_report
         original_build_xlsx = telegram_worker_module.skladbot_daily_report.build_skladbot_daily_report_xlsx
-        original_reconciliation = telegram_worker_module.run_daily_reconciliation
+        original_reconciliation = telegram_scheduled_report_processor_module.run_daily_reconciliation
         try:
-            telegram_worker_module.SessionLocal = SessionLocal
+            telegram_scheduled_report_processor_module.SessionLocal = SessionLocal
             calls = []
             reconciliations = []
 
@@ -3037,10 +3038,10 @@ class SkladBotDailyReportTests(unittest.TestCase):
                     },
                 }
 
-            telegram_worker_module.SessionLocal = SessionLocal
+            telegram_scheduled_report_processor_module.SessionLocal = SessionLocal
             telegram_worker_module.skladbot_daily_report.collect_skladbot_daily_report = fake_collect
             telegram_worker_module.skladbot_daily_report.build_skladbot_daily_report_xlsx = lambda _report: (_ for _ in ()).throw(AssertionError("xlsx must not be built"))
-            telegram_worker_module.run_daily_reconciliation = lambda **kwargs: reconciliations.append(kwargs)
+            telegram_scheduled_report_processor_module.run_daily_reconciliation = lambda **kwargs: reconciliations.append(kwargs)
 
             worker = TelegramWorker.__new__(TelegramWorker)
             worker.skladbot_daily_report_enabled = True
@@ -3064,10 +3065,10 @@ class SkladBotDailyReportTests(unittest.TestCase):
             self.assertIn("included=0 excluded=1", events[0].last_error)
             self.assertTrue((events[0].payload or {}).get("finished_at"))
         finally:
-            telegram_worker_module.SessionLocal = original_session_local
+            telegram_scheduled_report_processor_module.SessionLocal = original_session_local
             telegram_worker_module.skladbot_daily_report.collect_skladbot_daily_report = original_collect
             telegram_worker_module.skladbot_daily_report.build_skladbot_daily_report_xlsx = original_build_xlsx
-            telegram_worker_module.run_daily_reconciliation = original_reconciliation
+            telegram_scheduled_report_processor_module.run_daily_reconciliation = original_reconciliation
 
     def test_scheduled_report_partial_detail_coverage_marks_failed_without_send(self):
         engine = create_engine(
@@ -3077,10 +3078,10 @@ class SkladBotDailyReportTests(unittest.TestCase):
         )
         Base.metadata.create_all(engine)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-        original_session_local = telegram_worker_module.SessionLocal
+        original_session_local = telegram_scheduled_report_processor_module.SessionLocal
         original_collect = telegram_worker_module.skladbot_daily_report.collect_skladbot_daily_report
         try:
-            telegram_worker_module.SessionLocal = SessionLocal
+            telegram_scheduled_report_processor_module.SessionLocal = SessionLocal
 
             def fake_collect(report_date=None):
                 return {
@@ -3119,7 +3120,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
             self.assertIn("coverage_status=partial", event.last_error)
             self.assertTrue((event.payload or {}).get("finished_at"))
         finally:
-            telegram_worker_module.SessionLocal = original_session_local
+            telegram_scheduled_report_processor_module.SessionLocal = original_session_local
             telegram_worker_module.skladbot_daily_report.collect_skladbot_daily_report = original_collect
 
     def test_scheduled_report_generation_exception_marks_failed_without_send(self):
@@ -3130,10 +3131,10 @@ class SkladBotDailyReportTests(unittest.TestCase):
         )
         Base.metadata.create_all(engine)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-        original_session_local = telegram_worker_module.SessionLocal
+        original_session_local = telegram_scheduled_report_processor_module.SessionLocal
         original_collect = telegram_worker_module.skladbot_daily_report.collect_skladbot_daily_report
         try:
-            telegram_worker_module.SessionLocal = SessionLocal
+            telegram_scheduled_report_processor_module.SessionLocal = SessionLocal
 
             def fail_collect(report_date=None):
                 raise RuntimeError("report generation failed")
@@ -3157,7 +3158,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
             self.assertIn("report generation failed", event.last_error)
             self.assertTrue((event.payload or {}).get("finished_at"))
         finally:
-            telegram_worker_module.SessionLocal = original_session_local
+            telegram_scheduled_report_processor_module.SessionLocal = original_session_local
             telegram_worker_module.skladbot_daily_report.collect_skladbot_daily_report = original_collect
 
     def test_scheduled_report_runtime_timeout_marks_failed_without_send(self):
@@ -3168,10 +3169,10 @@ class SkladBotDailyReportTests(unittest.TestCase):
         )
         Base.metadata.create_all(engine)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-        original_session_local = telegram_worker_module.SessionLocal
+        original_session_local = telegram_scheduled_report_processor_module.SessionLocal
         original_collect = telegram_worker_module.skladbot_daily_report.collect_skladbot_daily_report
         try:
-            telegram_worker_module.SessionLocal = SessionLocal
+            telegram_scheduled_report_processor_module.SessionLocal = SessionLocal
 
             def timeout_collect(report_date=None):
                 raise telegram_worker_module.skladbot_daily_report.SkladBotDailyReportTimeout(
@@ -3198,7 +3199,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
             self.assertEqual((event.payload or {}).get("success"), False)
             self.assertNotIn("chat_id", event.payload or {})
         finally:
-            telegram_worker_module.SessionLocal = original_session_local
+            telegram_scheduled_report_processor_module.SessionLocal = original_session_local
             telegram_worker_module.skladbot_daily_report.collect_skladbot_daily_report = original_collect
 
     def test_runtime_timeout_marks_event_failed_no_reported(self):
@@ -3212,12 +3213,12 @@ class SkladBotDailyReportTests(unittest.TestCase):
         )
         Base.metadata.create_all(engine)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-        original_session_local = telegram_worker_module.SessionLocal
+        original_session_local = telegram_scheduled_report_processor_module.SessionLocal
         original_collect = telegram_worker_module.skladbot_daily_report.collect_skladbot_daily_report
         original_build_xlsx = telegram_worker_module.skladbot_daily_report.build_skladbot_daily_report_xlsx
-        original_reconciliation = telegram_worker_module.run_daily_reconciliation
+        original_reconciliation = telegram_scheduled_report_processor_module.run_daily_reconciliation
         try:
-            telegram_worker_module.SessionLocal = SessionLocal
+            telegram_scheduled_report_processor_module.SessionLocal = SessionLocal
             messages = []
             documents = []
             reconciliations = []
@@ -3242,7 +3243,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
 
             telegram_worker_module.skladbot_daily_report.collect_skladbot_daily_report = fake_collect
             telegram_worker_module.skladbot_daily_report.build_skladbot_daily_report_xlsx = lambda _report: (b"xlsx", "daily.xlsx")
-            telegram_worker_module.run_daily_reconciliation = lambda **kwargs: reconciliations.append(kwargs)
+            telegram_scheduled_report_processor_module.run_daily_reconciliation = lambda **kwargs: reconciliations.append(kwargs)
 
             worker = TelegramWorker.__new__(TelegramWorker)
             worker.skladbot_daily_report_enabled = True
@@ -3271,10 +3272,10 @@ class SkladBotDailyReportTests(unittest.TestCase):
             self.assertEqual(events[0].status, "failed")
             self.assertIn("sendDocument timeout", events[0].last_error)
         finally:
-            telegram_worker_module.SessionLocal = original_session_local
+            telegram_scheduled_report_processor_module.SessionLocal = original_session_local
             telegram_worker_module.skladbot_daily_report.collect_skladbot_daily_report = original_collect
             telegram_worker_module.skladbot_daily_report.build_skladbot_daily_report_xlsx = original_build_xlsx
-            telegram_worker_module.run_daily_reconciliation = original_reconciliation
+            telegram_scheduled_report_processor_module.run_daily_reconciliation = original_reconciliation
 
     def test_send_document_fail_marks_event_failed_no_reported(self):
         self.test_scheduled_report_send_document_failure_marks_failed_without_reported_or_reconciliation()
@@ -3287,9 +3288,9 @@ class SkladBotDailyReportTests(unittest.TestCase):
         )
         Base.metadata.create_all(engine)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-        original_session_local = telegram_worker_module.SessionLocal
+        original_session_local = telegram_scheduled_report_processor_module.SessionLocal
         try:
-            telegram_worker_module.SessionLocal = SessionLocal
+            telegram_scheduled_report_processor_module.SessionLocal = SessionLocal
             worker = TelegramWorker.__new__(TelegramWorker)
             event_uuid = uuid.uuid4()
             event_id = str(event_uuid)
@@ -3334,7 +3335,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
             self.assertNotIn("api_key", payload)
             self.assertNotIn("progress_chat_id", payload)
         finally:
-            telegram_worker_module.SessionLocal = original_session_local
+            telegram_scheduled_report_processor_module.SessionLocal = original_session_local
 
     def test_no_sensitive_progress_payload(self):
         self.test_scheduled_report_progress_payload_does_not_store_chat_or_secret_fields()

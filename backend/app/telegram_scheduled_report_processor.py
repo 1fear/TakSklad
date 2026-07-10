@@ -7,8 +7,13 @@ from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import select
 
+from . import skladbot_daily_report
+from .db import SessionLocal
 from .models import AuditLog, PendingEvent
 from .redaction import redact_secrets
+from .reconciliation_service import run_daily_reconciliation
+from .telegram_clients import TelegramProcessorDelegate
+from .telegram_common import iso_date_from_display, normalize_text, parse_dates_from_text, parse_int
 
 
 SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE = "skladbot_daily_report_send"
@@ -20,31 +25,6 @@ SCHEDULED_DAILY_PAYLOAD_SECRET_KEY_PARTS = (
     "chat", "token", "secret", "password", "authorization", "credential",
     "api_key", "apikey", "jwt", "raw", "payload",
 )
-
-
-def _worker_dependency(name):
-    from . import telegram_worker
-    return getattr(telegram_worker, name)
-
-
-class _LazyDependency:
-    def __init__(self, name):
-        self.name = name
-
-    def __call__(self, *args, **kwargs):
-        return _worker_dependency(self.name)(*args, **kwargs)
-
-    def __getattr__(self, name):
-        return getattr(_worker_dependency(self.name), name)
-
-
-SessionLocal = _LazyDependency("SessionLocal")
-skladbot_daily_report = _LazyDependency("skladbot_daily_report")
-run_daily_reconciliation = _LazyDependency("run_daily_reconciliation")
-normalize_text = _LazyDependency("normalize_text")
-parse_dates_from_text = _LazyDependency("parse_dates_from_text")
-parse_int = _LazyDependency("parse_int")
-iso_date_from_display = _LazyDependency("iso_date_from_display")
 
 
 def command_date_or_today(text):
@@ -114,7 +94,9 @@ def skladbot_report_version(report):
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
 
 
-def mark_skladbot_daily_report_requests_reported(report, chat_id=None, mode="scheduled", report_kind="daily_skladbot"):
+def mark_skladbot_daily_report_requests_reported(
+    report, chat_id=None, mode="scheduled", report_kind="daily_skladbot", session_factory=None,
+):
     report_date = coerce_report_date(report.get("report_date") or skladbot_daily_report.business_today())
     report_version = skladbot_report_version(report)
     rows = []
@@ -137,7 +119,7 @@ def mark_skladbot_daily_report_requests_reported(report, chat_id=None, mode="sch
     if not rows:
         return 0
     saved = 0
-    with SessionLocal() as db:
+    with (session_factory or SessionLocal)() as db:
         for row in rows:
             key = skladbot_reported_request_key(
                 row["request_id"],
@@ -224,7 +206,19 @@ def safe_scheduled_skladbot_daily_report_payload(payload):
     return safe_payload
 
 
-class TelegramScheduledReportProcessor:
+class TelegramScheduledReportProcessor(TelegramProcessorDelegate):
+    def __init__(self, *, ports=None, owner=None, **port_dependencies):
+        TelegramProcessorDelegate.__init__(self, ports=ports, owner=owner, **port_dependencies)
+
+    def _scheduled_session_factory(self):
+        return getattr(self, "session_factory", None) or SessionLocal
+
+    def _skladbot_daily_report_module(self):
+        return getattr(self, "skladbot_report_module", None) or skladbot_daily_report
+
+    def _daily_reconciliation_callback(self):
+        return getattr(self, "daily_reconciliation_callback", None) or run_daily_reconciliation
+
     def send_skladbot_daily_report(self, chat_id, report_date=None, scheduled=False, progress=None, allow_partial=False):
         def emit_progress(stage, **fields):
             logging.info(
@@ -235,12 +229,13 @@ class TelegramScheduledReportProcessor:
             if progress is not None:
                 progress(stage, **fields)
 
-        report_date = coerce_report_date(report_date or skladbot_daily_report.business_today())
+        report_module = self._skladbot_daily_report_module()
+        report_date = coerce_report_date(report_date or report_module.business_today())
         report_date_text = report_date.strftime("%d.%m.%Y")
         if not scheduled:
             self.safe_send_message(chat_id, f"Собираю SkladBot отчет за {report_date_text}.")
         emit_progress("scheduled job started", report_date=report_date.isoformat(), scheduled=bool(scheduled))
-        report = skladbot_daily_report.collect_skladbot_daily_report(
+        report = report_module.collect_skladbot_daily_report(
             report_date=report_date,
         )
         report_date = coerce_report_date(report.get("report_date") or report_date)
@@ -262,9 +257,9 @@ class TelegramScheduledReportProcessor:
                 self.safe_send_message(chat_id, manual_skladbot_daily_partial_warning(report, blocker))
                 return False
             self.safe_send_message(chat_id, manual_skladbot_daily_partial_override_warning(report, blocker))
-        content, filename = skladbot_daily_report.build_skladbot_daily_report_xlsx(report)
+        content, filename = report_module.build_skladbot_daily_report_xlsx(report)
         emit_progress("xlsx created", report_date=report_date.isoformat(), filename=filename, bytes=len(content))
-        message = skladbot_daily_report.build_skladbot_daily_report_message(report)
+        message = report_module.build_skladbot_daily_report_message(report)
         if scheduled:
             emit_progress("telegram sendMessage started", report_date=report_date.isoformat())
             self.send_message(chat_id, message)
@@ -286,7 +281,9 @@ class TelegramScheduledReportProcessor:
                 caption=f"SkladBot отчет за {report_date_text}",
             )
         if document is not None and scheduled:
-            reported_count = mark_skladbot_daily_report_requests_reported(report, chat_id=chat_id, mode="scheduled")
+            reported_count = mark_skladbot_daily_report_requests_reported(
+                report, chat_id=chat_id, mode="scheduled", session_factory=self._scheduled_session_factory(),
+            )
             emit_progress(
                 "reported mark success",
                 report_date=report_date.isoformat(),
@@ -299,9 +296,10 @@ class TelegramScheduledReportProcessor:
             return False
         if not getattr(self, "skladbot_daily_report_chat_ids", set()):
             return False
-        now = now or datetime.now(skladbot_daily_report.business_timezone())
+        report_module = self._skladbot_daily_report_module()
+        now = now or datetime.now(report_module.business_timezone())
         if now.tzinfo is None:
-            now = now.replace(tzinfo=skladbot_daily_report.business_timezone())
+            now = now.replace(tzinfo=report_module.business_timezone())
         scheduled_minutes = getattr(self, "skladbot_daily_report_hour", 22) * 60 + getattr(self, "skladbot_daily_report_minute", 0)
         current_minutes = now.hour * 60 + now.minute
         return current_minutes >= scheduled_minutes
@@ -310,10 +308,10 @@ class TelegramScheduledReportProcessor:
         return f"skladbot_daily_report:{report_date.isoformat()}:{chat_id}:{mode}:{report_kind}:{report_version}"
 
     def claim_scheduled_skladbot_daily_report(self, chat_id, report_date, now=None):
-        now = now or datetime.now(skladbot_daily_report.business_timezone())
+        now = now or datetime.now(self._skladbot_daily_report_module().business_timezone())
         now_utc = ensure_aware_utc(now.astimezone(timezone.utc) if now.tzinfo else now)
         idempotency_key = self.skladbot_daily_report_idempotency_key(chat_id, report_date)
-        with SessionLocal() as db:
+        with self._scheduled_session_factory()() as db:
             event = db.execute(
                 select(PendingEvent).where(PendingEvent.idempotency_key == idempotency_key)
             ).scalars().first()
@@ -437,7 +435,7 @@ class TelegramScheduledReportProcessor:
                 continue
             if isinstance(value, (str, int, float, bool)) or value is None:
                 safe_fields[key_text] = value
-        with SessionLocal() as db:
+        with self._scheduled_session_factory()() as db:
             event = db.get(PendingEvent, event_uuid)
             if event is None or event.status != "processing":
                 return
@@ -451,7 +449,7 @@ class TelegramScheduledReportProcessor:
     def finish_scheduled_skladbot_daily_report(self, event_id, success, error=""):
         if not event_id:
             return
-        with SessionLocal() as db:
+        with self._scheduled_session_factory()() as db:
             event = db.get(PendingEvent, event_id if isinstance(event_id, uuid.UUID) else uuid.UUID(str(event_id)))
             if event is None:
                 return
@@ -476,7 +474,7 @@ class TelegramScheduledReportProcessor:
             return None
         alert_chat_ids = sorted(getattr(self, "daily_reconciliation_chat_ids", set()) or {str(chat_id)})
         try:
-            return run_daily_reconciliation(report_date=report_date, alert_chat_ids=alert_chat_ids)
+            return self._daily_reconciliation_callback()(report_date=report_date, alert_chat_ids=alert_chat_ids)
         except Exception as exc:
             logging.exception("Telegram worker: scheduled daily reconciliation failed")
             return {
@@ -485,7 +483,7 @@ class TelegramScheduledReportProcessor:
             }
 
     def send_due_skladbot_daily_reports(self, now=None):
-        now = now or datetime.now(skladbot_daily_report.business_timezone())
+        now = now or datetime.now(self._skladbot_daily_report_module().business_timezone())
         if not self.scheduled_skladbot_daily_report_is_due(now):
             return 0
         report_date = now.date()

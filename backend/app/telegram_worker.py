@@ -4,19 +4,24 @@ import json
 import os
 import re
 import time
-import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 
-import httpx
-
 from . import skladbot_daily_report
-from . import telegram_runtime_dependencies
-from .event_leases import claim_event_leases, event_leases_enabled, finalize_event_leases
-from .event_queue_service import reset_stale_processing_events
-from .excel_importer import excel_file_to_import_payload
 from .redaction import redact_secrets
 from .reconciliation_service import run_daily_reconciliation
 from .telegram_admin_processor import TelegramAdminProcessor
+from .telegram_clients import TelegramProcessorPorts, telegram_main_reply_keyboard
+from .telegram_common import (
+    normalize_text,
+    telegram_inline_keyboard,
+    text_matches,
+    parse_date_from_text,
+    parse_dates_from_text,
+    parse_int,
+    format_money,
+    iso_date_from_display,
+    display_date,
+)
 from .telegram_manual_support import (
     TELEGRAM_MANUAL_BLOCK_PRICE,
     TELEGRAM_MANUAL_PIECES_PER_BLOCK,
@@ -76,9 +81,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-SessionLocal = telegram_runtime_dependencies.SessionLocal
-
-
 TELEGRAM_BUTTON_SHIPMENT_DATE = "Дата отгрузки"
 TELEGRAM_BUTTON_LOGISTICS_REPORT = "Отчёт логистики"
 TELEGRAM_BUTTON_KIZ_BY_FILES = "Выгрузка КИЗов"
@@ -120,11 +122,8 @@ SCHEDULED_DAILY_PAYLOAD_SECRET_KEY_PARTS = (
     "payload",
 )
 TELEGRAM_DATE_MENU_RECENT_LIMIT = 7
-DATE_PATTERN = re.compile(r"(?<!\d)(\d{1,2})[._/-](\d{1,2})[._/-](\d{2,4})(?!\d)")
 
 
-def normalize_text(value):
-    return str(value or "").strip()
 
 
 def parse_chat_ids(value):
@@ -183,28 +182,6 @@ def parse_bool_flag(value, default=False):
     return text in {"1", "true", "yes", "on", "да"}
 
 
-def telegram_inline_keyboard(button_rows):
-    return {"inline_keyboard": button_rows}
-
-
-def telegram_main_reply_keyboard():
-    return {
-        "keyboard": [
-            [
-                {"text": TELEGRAM_BUTTON_LOGISTICS_REPORT},
-                {"text": TELEGRAM_BUTTON_KIZ_BY_FILES},
-            ],
-            [
-                {"text": TELEGRAM_BUTTON_STATUS},
-                {"text": TELEGRAM_BUTTON_IMPORTS},
-            ],
-            [
-                {"text": TELEGRAM_BUTTON_SHIPMENT_DATE},
-                {"text": TELEGRAM_BUTTON_MANUAL},
-            ],
-        ],
-        "resize_keyboard": True,
-    }
 
 
 
@@ -221,77 +198,20 @@ def telegram_main_reply_keyboard():
 
 
 
-def text_matches(value, *variants):
-    normalized = normalize_text(value).casefold()
-    return normalized in {normalize_text(variant).casefold() for variant in variants}
 
 
-def parse_date_from_text(value):
-    text = normalize_text(value)
-    match = DATE_PATTERN.search(text)
-    if not match:
-        return ""
-    day, month, year = match.groups()
-    if len(year) == 2:
-        year = "20" + year
-    try:
-        parsed = datetime.strptime(f"{int(day):02d}.{int(month):02d}.{year}", "%d.%m.%Y")
-    except ValueError:
-        return ""
-    return parsed.strftime("%d.%m.%Y")
 
 
-def parse_dates_from_text(value):
-    result = []
-    for match in DATE_PATTERN.finditer(normalize_text(value)):
-        day, month, year = match.groups()
-        if len(year) == 2:
-            year = "20" + year
-        try:
-            parsed = datetime.strptime(f"{int(day):02d}.{int(month):02d}.{year}", "%d.%m.%Y")
-        except ValueError:
-            continue
-        iso = parsed.strftime("%Y-%m-%d")
-        if iso not in result:
-            result.append(iso)
-    return result
 
 
-def parse_int(value):
-    text = normalize_text(value).replace(" ", "").replace(",", ".")
-    if not text:
-        return 0
-    try:
-        return int(float(text))
-    except ValueError:
-        return 0
 
 
-def format_money(value):
-    return f"{parse_int(value):,}".replace(",", " ")
 
 
-def iso_date_from_display(value):
-    parsed = parse_date_from_text(value)
-    if parsed:
-        return datetime.strptime(parsed, "%d.%m.%Y").strftime("%Y-%m-%d")
-    text = normalize_text(value)
-    try:
-        return datetime.strptime(text, "%Y-%m-%d").strftime("%Y-%m-%d")
-    except ValueError:
-        return ""
 
 
-def display_date(value):
-    text = normalize_text(value)
-    if not text:
-        return ""
-    try:
-        return datetime.strptime(text, "%Y-%m-%d").strftime("%d.%m.%Y")
-    except ValueError:
-        pass
-    parsed = parse_date_from_text(text)
-    return parsed or text
+
+
 
 
 
@@ -350,13 +270,17 @@ def json_dumps(value):
 
 
 
-class TelegramWorker(
-    TelegramScheduledReportProcessor,
-    TelegramAdminProcessor,
-    TelegramImportProcessor,
-    TelegramReportProcessor,
-):
-    def __init__(self):
+class TelegramWorker:
+    def __init__(
+        self,
+        *,
+        telegram_api_client=None,
+        backend_api_client=None,
+        session_factory=None,
+        excel_import_parser=None,
+        skladbot_report_module=None,
+        daily_reconciliation_callback=None,
+    ):
         self.token = normalize_text(os.environ.get("TELEGRAM_BOT_TOKEN"))
         self.allowed_chat_ids = parse_chat_ids(os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS"))
         self.admin_chat_ids = parse_chat_ids(os.environ.get("TELEGRAM_ADMIN_CHAT_IDS"))
@@ -381,139 +305,78 @@ class TelegramWorker(
             self.skladbot_daily_report_chat_ids,
             self.daily_reconciliation_chat_ids,
         )
+        self._initialize_processors(
+            telegram_api_client=telegram_api_client,
+            backend_api_client=backend_api_client,
+            session_factory=session_factory,
+            excel_import_parser=excel_import_parser,
+            skladbot_report_module=skladbot_report_module,
+            daily_reconciliation_callback=daily_reconciliation_callback,
+        )
         self.offset = self.load_offset() or int(os.environ.get("TELEGRAM_WORKER_INITIAL_OFFSET", "0") or "0")
         self.bot_menu_ready = False
+        self._processor_ports.bot_menu_ready = False
         self.manual_flow_cache = {}
 
     @property
     def configured(self):
         return bool(getattr(self, "token", ""))
 
-    def telegram_request(self, method, payload=None, timeout=None):
-        with httpx.Client(timeout=timeout or self.timeout) as client:
-            try:
-                response = client.post(f"https://api.telegram.org/bot{self.token}/{method}", json=payload or {})
-                response.raise_for_status()
-            except httpx.HTTPStatusError as exc:
-                detail = redact_secrets(exc.response.text[:300] if exc.response is not None else "")
-                raise RuntimeError(f"Telegram API request failed: {method}: HTTP {exc.response.status_code} {detail}") from None
-            except httpx.HTTPError as exc:
-                raise RuntimeError(f"Telegram API request failed: {method}: {exc.__class__.__name__}") from None
-            data = response.json()
-            if not data.get("ok"):
-                raise RuntimeError(redact_secrets(data))
-            return data.get("result")
-
-    def ensure_bot_menu(self):
-        if getattr(self, "bot_menu_ready", False):
-            return
-        try:
-            self.telegram_request("deleteMyCommands", {})
-            self.telegram_request("setChatMenuButton", {"menu_button": {"type": "default"}})
-            self.bot_menu_ready = True
-        except Exception:
-            logging.warning("Telegram worker: failed to configure bot menu", exc_info=True)
-
-    def backend_get(self, path, params=None):
-        headers = {}
-        if self.backend_token:
-            headers["Authorization"] = f"Bearer {self.backend_token}"
-        with httpx.Client(timeout=self.timeout) as client:
-            response = client.get(f"{self.backend_url}{path}", params=params or {}, headers=headers)
-            response.raise_for_status()
-            return response.json()
-
-    def backend_get_bytes(self, path, params=None):
-        headers = {}
-        if self.backend_token:
-            headers["Authorization"] = f"Bearer {self.backend_token}"
-        with httpx.Client(timeout=self.file_timeout) as client:
-            response = client.get(f"{self.backend_url}{path}", params=params or {}, headers=headers)
-            response.raise_for_status()
-            return response.content, response.headers
-
-    def backend_post(self, path, payload=None):
-        headers = {}
-        if self.backend_token:
-            headers["Authorization"] = f"Bearer {self.backend_token}"
-        timeout = getattr(self, "import_timeout", self.timeout) if path == "/api/v1/imports" else self.timeout
-        with httpx.Client(timeout=timeout) as client:
-            response = client.post(f"{self.backend_url}{path}", json=payload or {}, headers=headers)
-            response.raise_for_status()
-            return response.json()
-
-    def send_message(self, chat_id, text, reply_markup=None):
-        payload = {
-            "chat_id": chat_id,
-            "text": text[:3900],
-        }
-        if reply_markup is not None:
-            payload["reply_markup"] = reply_markup
-        return self.telegram_request("sendMessage", payload)
-
-    def send_document(self, chat_id, content, filename, caption=""):
-        with httpx.Client(timeout=self.file_timeout) as client:
-            files = {"document": (filename, content)}
-            data = {"chat_id": chat_id, "caption": caption[:1000]}
-            try:
-                response = client.post(f"https://api.telegram.org/bot{self.token}/sendDocument", data=data, files=files)
-                response.raise_for_status()
-            except httpx.HTTPStatusError as exc:
-                status_code = exc.response.status_code if exc.response is not None else ""
-                detail = redact_secrets(exc.response.text[:300] if exc.response is not None else "")
-                raise RuntimeError(f"Telegram API request failed: sendDocument: HTTP {status_code} {detail}") from None
-            except httpx.HTTPError as exc:
-                raise RuntimeError(f"Telegram API request failed: sendDocument: {exc.__class__.__name__}") from None
-            payload = response.json()
-            if not payload.get("ok"):
-                raise RuntimeError(redact_secrets(payload))
-            return payload.get("result")
-
-    def safe_send_document(self, chat_id, content, filename, caption=""):
-        try:
-            return self.send_document(chat_id, content, filename, caption=caption)
-        except Exception as exc:
-            logging.warning("Telegram worker: failed to send document: %s", redact_secrets(exc))
-            self.safe_send_message(chat_id, f"Не удалось отправить файл: {filename}")
-            return None
-
-    def safe_send_message(self, chat_id, text, reply_markup=None):
-        try:
-            if reply_markup is None:
-                return self.send_message(chat_id, text)
-            return self.send_message(chat_id, text, reply_markup=reply_markup)
-        except Exception:
-            logging.warning("Telegram worker: failed to send message", exc_info=True)
-            return None
-
-    def send_main_menu(self, chat_id, text=""):
-        lines = [
-            normalize_text(text) or "Меню TakSklad",
-            "",
-            "Excel-файл можно просто отправить в этот чат. Бот попросит дату отгрузки перед импортом.",
-        ]
-        self.safe_send_message(chat_id, "\n".join(lines), reply_markup=telegram_main_reply_keyboard())
-
-    def send_date_help(self, chat_id):
-        current_date = self.get_chat_shipment_date(chat_id)
-        self.safe_send_message(
-            chat_id,
-            "\n".join([
-                "Дата отгрузки задаётся после загрузки каждого Excel-файла.",
-                "Отправьте дату одним сообщением в формате ДД.ММ.ГГГГ.",
-                "Пример: 09.06.2026",
-                f"Сохранённая дата чата: {current_date or 'не задана'}",
-            ]),
+    def _initialize_processors(self, **dependencies):
+        ports = TelegramProcessorPorts(
+            telegram_api_client=dependencies.get("telegram_api_client", self.__dict__.get("telegram_api_client")),
+            backend_api_client=dependencies.get("backend_api_client", self.__dict__.get("backend_api_client")),
+            session_factory=dependencies.get("session_factory", self.__dict__.get("session_factory")),
+            excel_import_parser=dependencies.get("excel_import_parser", self.__dict__.get("excel_import_parser")),
+            skladbot_report_module=dependencies.get("skladbot_report_module", self.__dict__.get("skladbot_report_module")),
+            daily_reconciliation_callback=dependencies.get(
+                "daily_reconciliation_callback", self.__dict__.get("daily_reconciliation_callback"),
+            ),
+            token=self.__dict__.get("token", ""),
+            backend_url=self.__dict__.get("backend_url", "http://backend-api:8000"),
+            backend_token=self.__dict__.get("backend_token", ""),
+            timeout=self.__dict__.get("timeout", 20),
+            import_timeout=self.__dict__.get("import_timeout", 120),
+            file_timeout=self.__dict__.get("file_timeout", 120),
+            max_file_size=self.__dict__.get("max_file_size", 20 * 1024 * 1024),
+            allowed_chat_ids=self.__dict__.get("allowed_chat_ids", set()),
+            admin_chat_ids=self.__dict__.get("admin_chat_ids", set()),
+            owner=self,
         )
+        ports.bot_menu_ready = bool(self.__dict__.get("bot_menu_ready", False))
+        scheduled = TelegramScheduledReportProcessor(ports=ports, owner=self)
+        admin = TelegramAdminProcessor(ports=ports, owner=self)
+        importer = TelegramImportProcessor(ports=ports, owner=self)
+        report = TelegramReportProcessor(ports=ports, owner=self)
+        ports.get_chat_state = admin.get_chat_state
+        ports.save_chat_state = admin.save_chat_state
+        ports.get_chat_shipment_date = admin.get_chat_shipment_date
+        self._processor_ports = ports
+        self._processors = (scheduled, admin, importer, report)
 
-    def answer_callback_query(self, callback_query_id, text=""):
-        callback_query_id = normalize_text(callback_query_id)
-        if not callback_query_id:
-            return None
-        payload = {"callback_query_id": callback_query_id}
-        if normalize_text(text):
-            payload["text"] = normalize_text(text)[:200]
-        return self.telegram_request("answerCallbackQuery", payload)
+    def __getattr__(self, name):
+        if name.startswith("_processor"):
+            raise AttributeError(name)
+        if "_processors" not in self.__dict__:
+            self._initialize_processors()
+        for processor in self._processors:
+            if name in type(processor).__dict__:
+                return getattr(processor, name)
+        if hasattr(TelegramProcessorPorts, name) or name in self._processor_ports.__dict__:
+            return getattr(self._processor_ports, name)
+        raise AttributeError(name)
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -597,11 +460,7 @@ class TelegramWorker(
         self.ensure_bot_menu()
         poll_timeout = max(1, min(self.poll_timeout, max(1, self.timeout - 5)))
         try:
-            updates = self.telegram_request("getUpdates", {
-                "offset": self.offset + 1 if self.offset else None,
-                "timeout": poll_timeout,
-                "allowed_updates": ["message", "callback_query"],
-            }, timeout=poll_timeout + 5) or []
+            updates = self.poll_updates(self.offset, poll_timeout)
         except RuntimeError as exc:
             if "getUpdates" not in normalize_text(exc) or "HTTP 409" not in normalize_text(exc):
                 raise

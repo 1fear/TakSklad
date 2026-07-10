@@ -6,10 +6,13 @@ from pathlib import Path
 from tools.check_code_organization import (
     build_dependency_graph,
     forbidden_order_skladbot_sccs,
+    forbidden_telegram_processor_back_edges,
+    forbidden_telegram_worker_sccs,
     load_exceptions,
     orchestrator_method_violations,
     run_checks,
     telegram_persistence_findings,
+    telegram_port_boundary_violations,
 )
 
 
@@ -45,6 +48,31 @@ class CodeOrganizationGuardTests(unittest.TestCase):
         self.assertEqual(graph["orders_service"], {"skladbot_worker"})
         self.assertEqual(graph["skladbot_worker"], {"orders_service"})
         self.assertEqual(forbidden_order_skladbot_sccs(graph), [["orders_service", "skladbot_worker"]])
+
+    def test_processor_back_edge_and_worker_scc_are_forbidden(self):
+        root = self.make_repo()
+        app = root / "backend" / "app"
+        (app / "telegram_worker.py").write_text(
+            "from .telegram_import_processor import TelegramImportProcessor\n"
+            "class TelegramWorker:\n    def poll_once(self):\n        return None\n",
+            encoding="utf-8",
+        )
+        (app / "telegram_import_processor.py").write_text(
+            "def dependency():\n    from . import telegram_worker\n    return telegram_worker\n"
+            "class TelegramImportProcessor:\n    pass\n",
+            encoding="utf-8",
+        )
+
+        graph = build_dependency_graph(app)
+
+        self.assertEqual(
+            forbidden_telegram_processor_back_edges(graph),
+            [("telegram_import_processor", "telegram_worker")],
+        )
+        self.assertEqual(
+            forbidden_telegram_worker_sccs(graph),
+            [["telegram_import_processor", "telegram_worker"]],
+        )
 
     def test_processor_line_limit_fails_without_exception(self):
         root = self.make_repo()
@@ -114,6 +142,21 @@ class CodeOrganizationGuardTests(unittest.TestCase):
         self.assertTrue(any("select()" in item for item in findings))
         self.assertTrue(any(".commit()" in item for item in findings))
 
+    def test_telegram_orchestrator_rejects_indirect_session_service_locator(self):
+        root = self.make_repo()
+        path = root / "backend" / "app" / "telegram_worker.py"
+        path.write_text(
+            "from . import telegram_runtime_dependencies\n"
+            "SessionLocal = telegram_runtime_dependencies.SessionLocal\n",
+            encoding="utf-8",
+        )
+
+        findings = telegram_persistence_findings(path)
+
+        self.assertTrue(any("service locator .telegram_runtime_dependencies" in item for item in findings))
+        self.assertTrue(any("assigns indirect SessionLocal" in item for item in findings))
+        self.assertTrue(any("accesses indirect .SessionLocal" in item for item in findings))
+
     def test_telegram_orchestrator_rejects_domain_methods(self):
         root = self.make_repo()
         app = root / "backend" / "app"
@@ -130,6 +173,94 @@ class CodeOrganizationGuardTests(unittest.TestCase):
 
         self.assertEqual(len(violations), 1)
         self.assertIn("import_customer_orders", violations[0].message)
+
+    def test_telegram_orchestrator_rejects_transport_and_payload_methods(self):
+        root = self.make_repo()
+        app = root / "backend" / "app"
+        (app / "telegram_worker.py").write_text(
+            "class TelegramWorker:\n"
+            "    def poll_once(self):\n"
+            "        return None\n"
+            "    def telegram_request(self, method, payload):\n"
+            "        return payload\n"
+            "    def send_message(self, chat_id, text):\n"
+            "        return {'chat_id': chat_id, 'text': text}\n"
+            "    def backend_post(self, path, payload):\n"
+            "        return payload\n",
+            encoding="utf-8",
+        )
+
+        violations = orchestrator_method_violations(root, app)
+
+        self.assertEqual(len(violations), 1)
+        self.assertIn("backend_post", violations[0].message)
+        self.assertIn("send_message", violations[0].message)
+        self.assertIn("telegram_request", violations[0].message)
+
+    def test_telegram_boundary_rejects_inherited_transport_and_implicit_processor_ports(self):
+        root = self.make_repo()
+        app = root / "backend" / "app"
+        (app / "telegram_worker.py").write_text(
+            "import httpx\n"
+            "class TelegramWorker(TelegramTransportAdapter):\n"
+            "    def poll_once(self):\n"
+            "        return self.telegram_request('getUpdates', {'allowed_updates': []})\n",
+            encoding="utf-8",
+        )
+        (app / "telegram_import_processor.py").write_text(
+            "import httpx\n"
+            "class TelegramImportProcessor:\n"
+            "    endpoint = 'https://api.telegram.org/file/botTOKEN/path'\n",
+            encoding="utf-8",
+        )
+
+        violations = telegram_port_boundary_violations(root, app)
+        messages = [violation.message for violation in violations]
+
+        self.assertTrue(any("must use composition" in message for message in messages))
+        self.assertTrue(any("constructs generic Telegram requests" in message for message in messages))
+        self.assertTrue(any("imports transport modules" in message for message in messages))
+        self.assertTrue(any("must declare TelegramProcessorDelegate" in message for message in messages))
+        self.assertTrue(any("processor owns Telegram HTTP details" in message for message in messages))
+
+    def test_telegram_boundary_accepts_explicit_processor_ports_and_client_polling(self):
+        root = self.make_repo()
+        app = root / "backend" / "app"
+        (app / "telegram_worker.py").write_text(
+            "class TelegramWorker:\n"
+            "    def poll_once(self):\n"
+            "        return self.poll_updates(0, 5)\n",
+            encoding="utf-8",
+        )
+        (app / "telegram_import_processor.py").write_text(
+            "from .telegram_clients import TelegramProcessorDelegate\n"
+            "class TelegramImportProcessor(TelegramProcessorDelegate):\n"
+            "    pass\n",
+            encoding="utf-8",
+        )
+
+        self.assertEqual(telegram_port_boundary_violations(root, app), [])
+
+    def test_telegram_boundary_rejects_transitive_processor_delegate_inheritance(self):
+        root = self.make_repo()
+        app = root / "backend" / "app"
+        (app / "telegram_worker.py").write_text(
+            "class TelegramWorker(TelegramImportProcessor):\n"
+            "    def poll_once(self):\n"
+            "        return None\n",
+            encoding="utf-8",
+        )
+        (app / "telegram_import_processor.py").write_text(
+            "from .telegram_clients import TelegramProcessorDelegate\n"
+            "class TelegramImportProcessor(TelegramProcessorDelegate):\n"
+            "    pass\n",
+            encoding="utf-8",
+        )
+
+        violations = telegram_port_boundary_violations(root, app)
+
+        self.assertEqual(len(violations), 1)
+        self.assertIn("must use composition", violations[0].message)
 
     def test_unused_exception_fails_guard(self):
         root = self.make_repo()

@@ -4,6 +4,7 @@ import unittest
 from unittest import mock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import openpyxl
 import httpx
@@ -12,12 +13,17 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.app import telegram_worker as telegram_worker_module
+from backend.app import telegram_admin_processor as telegram_admin_processor_module
+from backend.app import telegram_import_processor as telegram_import_processor_module
+from backend.app import telegram_clients as telegram_clients_module
 from backend.app import excel_importer
 from backend.app.excel_importer import excel_file_to_import_payload
 from backend.app.models import AuditLog, Base, Incident, PendingEvent
 from backend.app.telegram_admin_processor import TelegramAdminProcessor
+from backend.app.telegram_clients import BackendApiClient, TelegramApiClient
 from backend.app.telegram_import_processor import TelegramImportProcessor
 from backend.app.telegram_report_processor import TelegramReportProcessor
+from backend.app.telegram_scheduled_report_processor import TelegramScheduledReportProcessor
 from backend.app.telegram_worker import (
     TELEGRAM_BUTTON_IMPORTS,
     TELEGRAM_BUTTON_KIZ_BY_FILES,
@@ -83,6 +89,125 @@ def create_conflicting_date_workbook(path):
 
 
 class BackendTelegramImportTests(unittest.TestCase):
+    def test_all_processors_execute_with_constructor_injected_ports(self):
+        telegram_calls = []
+        backend_calls = []
+
+        class FakeTelegramClient:
+            def send_message(self, chat_id, text, reply_markup=None):
+                telegram_calls.append(("message", chat_id, text, reply_markup))
+                return {"message_id": len(telegram_calls)}
+
+            def send_document(self, chat_id, content, filename, caption=""):
+                telegram_calls.append(("document", chat_id, content, filename, caption))
+                return {"document_id": len(telegram_calls)}
+
+            def download_file(self, file_id, destination_path, max_file_size=0):
+                telegram_calls.append(("download", file_id, max_file_size))
+                Path(destination_path).write_bytes(b"synthetic-xlsx")
+
+        class FakeBackendClient:
+            def get(self, path, params=None):
+                backend_calls.append(("get", path, params))
+                return [{"date": "2026-06-01", "planned_blocks": 2, "scanned_blocks": 1}]
+
+            def get_bytes(self, path, params=None):
+                backend_calls.append(("get_bytes", path, params))
+                return b"file", {}
+
+            def post(self, path, payload=None):
+                backend_calls.append(("post", path, payload))
+                return {"ok": True}
+
+        telegram_client = FakeTelegramClient()
+        backend_client = FakeBackendClient()
+        report = TelegramReportProcessor(
+            telegram_api_client=telegram_client, backend_api_client=backend_client,
+        )
+        admin = TelegramAdminProcessor(
+            telegram_api_client=telegram_client,
+            allowed_chat_ids={"allowed"},
+            admin_chat_ids=set(),
+        )
+        importer = TelegramImportProcessor(
+            telegram_api_client=telegram_client, backend_api_client=backend_client, max_file_size=64,
+        )
+        scheduled = TelegramScheduledReportProcessor(telegram_api_client=telegram_client)
+
+        report.show_kiz_dates("chat")
+        self.assertFalse(admin.ensure_admin_chat("allowed"))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            destination = Path(temp_dir) / "orders.xlsx"
+            importer.download_telegram_document({"file_id": "file-1"}, destination)
+            self.assertEqual(destination.read_bytes(), b"synthetic-xlsx")
+        self.assertIsNotNone(scheduled.safe_send_message("chat", "scheduled-ready"))
+
+        self.assertEqual(backend_calls, [
+            ("get", "/api/v1/reports/kiz/dates", None),
+            ("get_bytes", "/api/v1/reports/kiz/date", {"shipment_date": "2026-06-01"}),
+        ])
+        self.assertEqual([call[0] for call in telegram_calls], ["document", "message", "download", "message"])
+        self.assertEqual(telegram_calls[2], ("download", "file-1", 64))
+
+    def test_explicit_external_clients_build_exact_requests_once(self):
+        calls = []
+
+        class FakeResponse:
+            content = b"xlsx"
+            headers = {"Content-Type": "application/octet-stream"}
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"ok": True, "result": {"message_id": 7}}
+
+        class FakeClient:
+            def __init__(self, timeout=None):
+                self.timeout = timeout
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def post(self, url, **kwargs):
+                calls.append(("post", self.timeout, url, kwargs))
+                return FakeResponse()
+
+            def get(self, url, **kwargs):
+                calls.append(("get", self.timeout, url, kwargs))
+                return FakeResponse()
+
+        fake_http = SimpleNamespace(
+            Client=FakeClient,
+            HTTPError=httpx.HTTPError,
+            HTTPStatusError=httpx.HTTPStatusError,
+        )
+        telegram_client = TelegramApiClient("bot-token", timeout=9, http_client_module=fake_http)
+        backend_client = BackendApiClient(
+            "http://backend:8000", token="api-token", timeout=11, import_timeout=33,
+            http_client_module=fake_http,
+        )
+
+        self.assertEqual(telegram_client.send_message("123", "hello"), {"message_id": 7})
+        self.assertEqual(backend_client.post("/api/v1/imports", {"rows": []}), {"ok": True, "result": {"message_id": 7}})
+        self.assertEqual(telegram_client.poll_updates(4, 7), {"message_id": 7})
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(calls[0], (
+            "post", 9, "https://api.telegram.org/botbot-token/sendMessage",
+            {"json": {"chat_id": "123", "text": "hello"}},
+        ))
+        self.assertEqual(calls[1], (
+            "post", 33, "http://backend:8000/api/v1/imports",
+            {"json": {"rows": []}, "headers": {"Authorization": "Bearer api-token"}},
+        ))
+        self.assertEqual(calls[2], (
+            "post", 12, "https://api.telegram.org/botbot-token/getUpdates",
+            {"json": {"offset": 5, "timeout": 7, "allowed_updates": ["message", "callback_query"]}},
+        ))
+
     def test_admin_processor_sends_notification_with_characterized_ordered_calls(self):
         processor = TelegramAdminProcessor()
         calls = []
@@ -224,7 +349,7 @@ class BackendTelegramImportTests(unittest.TestCase):
             {"TELEGRAM_BOT_TOKEN": "synthetic-token"},
             clear=True,
         ), mock.patch.object(
-            TelegramWorker,
+            TelegramAdminProcessor,
             "load_offset",
             side_effect=AssertionError("database must not be touched"),
         ):
@@ -418,7 +543,7 @@ class BackendTelegramImportTests(unittest.TestCase):
         )
         Base.metadata.create_all(engine)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-        original_session_local = telegram_worker_module.SessionLocal
+        original_session_local = telegram_admin_processor_module.SessionLocal
         try:
             with SessionLocal() as db:
                 event = PendingEvent(
@@ -442,7 +567,7 @@ class BackendTelegramImportTests(unittest.TestCase):
                 sent.append((chat_id, text))
 
             worker.send_message = fake_send
-            telegram_worker_module.SessionLocal = SessionLocal
+            telegram_admin_processor_module.SessionLocal = SessionLocal
 
             with mock.patch.dict("os.environ", {"TAKSKLAD_EVENT_LEASES_ENABLED": "1"}, clear=False):
                 processed = worker.process_pending_telegram_notifications()
@@ -458,7 +583,7 @@ class BackendTelegramImportTests(unittest.TestCase):
             self.assertIsNone(event.lease_owner)
             self.assertIsNotNone(event.completed_at)
         finally:
-            telegram_worker_module.SessionLocal = original_session_local
+            telegram_admin_processor_module.SessionLocal = original_session_local
             Base.metadata.drop_all(engine)
             engine.dispose()
 
@@ -470,7 +595,7 @@ class BackendTelegramImportTests(unittest.TestCase):
         )
         Base.metadata.create_all(engine)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-        original_session_local = telegram_worker_module.SessionLocal
+        original_session_local = telegram_admin_processor_module.SessionLocal
         try:
             with SessionLocal() as db:
                 db.add_all([
@@ -492,7 +617,7 @@ class BackendTelegramImportTests(unittest.TestCase):
             worker.allowed_chat_ids = set()
             worker.admin_chat_ids = set()
             worker.send_message = lambda chat_id, text: sent.append((chat_id, text))
-            telegram_worker_module.SessionLocal = SessionLocal
+            telegram_admin_processor_module.SessionLocal = SessionLocal
 
             processed = worker.process_pending_telegram_notifications()
 
@@ -512,29 +637,23 @@ class BackendTelegramImportTests(unittest.TestCase):
             self.assertEqual([audit.action for audit in audits], ["telegram_notification_blocked", "telegram_notification_blocked"])
             self.assertEqual({audit.entity_id for audit in audits}, {str(event.id) for event in events})
         finally:
-            telegram_worker_module.SessionLocal = original_session_local
+            telegram_admin_processor_module.SessionLocal = original_session_local
             Base.metadata.drop_all(engine)
             engine.dispose()
 
     def test_telegram_worker_send_message_does_not_force_keyboard_by_default(self):
         worker = TelegramWorker.__new__(TelegramWorker)
-        worker.token = "telegram-token"
-        worker.timeout = 20
         calls = []
 
-        def fake_telegram_request(method, payload):
-            calls.append((method, payload))
-            return {"ok": True}
-
-        worker.telegram_request = fake_telegram_request
+        worker.telegram_api_client = SimpleNamespace(
+            send_message=lambda chat_id, text, reply_markup=None: calls.append(
+                (chat_id, text, reply_markup)
+            ) or {"ok": True},
+        )
 
         worker.send_message("123", "hello")
 
-        self.assertEqual(calls[0][0], "sendMessage")
-        payload = calls[0][1]
-        self.assertEqual(payload["chat_id"], "123")
-        self.assertEqual(payload["text"], "hello")
-        self.assertNotIn("reply_markup", payload)
+        self.assertEqual(calls, [("123", "hello", None)])
 
     def test_telegram_worker_start_message_uses_hideable_reply_keyboard(self):
         worker = TelegramWorker.__new__(TelegramWorker)
@@ -655,7 +774,7 @@ class BackendTelegramImportTests(unittest.TestCase):
         worker.token = "telegram-token"
         worker.file_timeout = 120
         captured = {}
-        original_client = telegram_worker_module.httpx.Client
+        original_client = telegram_clients_module.httpx.Client
 
         class FakeResponse:
             def raise_for_status(self):
@@ -681,11 +800,11 @@ class BackendTelegramImportTests(unittest.TestCase):
                 return FakeResponse()
 
         try:
-            telegram_worker_module.httpx.Client = FakeClient
+            telegram_clients_module.httpx.Client = FakeClient
 
             result = worker.send_document("123", b"excel", "orders.xlsx", caption="done")
         finally:
-            telegram_worker_module.httpx.Client = original_client
+            telegram_clients_module.httpx.Client = original_client
 
         self.assertEqual(result, {"message_id": 1})
         self.assertEqual(captured["data"]["chat_id"], "123")
@@ -697,11 +816,12 @@ class BackendTelegramImportTests(unittest.TestCase):
         worker = TelegramWorker.__new__(TelegramWorker)
         calls = []
 
-        def fake_telegram_request(method, payload):
-            calls.append((method, payload))
-            return True
-
-        worker.telegram_request = fake_telegram_request
+        worker.telegram_api_client = SimpleNamespace(
+            configure_menu=lambda: calls.extend([
+                ("deleteMyCommands", {}),
+                ("setChatMenuButton", {"menu_button": {"type": "default"}}),
+            ]),
+        )
 
         worker.ensure_bot_menu()
         worker.ensure_bot_menu()
@@ -1371,14 +1491,14 @@ class BackendTelegramImportTests(unittest.TestCase):
         )
         Base.metadata.create_all(engine)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-        original_session_local = telegram_worker_module.SessionLocal
+        original_session_local = telegram_import_processor_module.SessionLocal
         try:
             messages = []
             worker = TelegramWorker.__new__(TelegramWorker)
             worker.allowed_chat_ids = {"123"}
             worker.admin_chat_ids = {"123"}
             worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
-            telegram_worker_module.SessionLocal = SessionLocal
+            telegram_import_processor_module.SessionLocal = SessionLocal
 
             result = worker.enqueue_telegram_document(
                 "123",
@@ -1397,7 +1517,7 @@ class BackendTelegramImportTests(unittest.TestCase):
             self.assertIn("Укажите дату отгрузки", messages[0][1])
             self.assertIn("ДД.ММ.ГГГГ", messages[0][1])
         finally:
-            telegram_worker_module.SessionLocal = original_session_local
+            telegram_import_processor_module.SessionLocal = original_session_local
             Base.metadata.drop_all(engine)
             engine.dispose()
 
@@ -1409,7 +1529,7 @@ class BackendTelegramImportTests(unittest.TestCase):
         )
         Base.metadata.create_all(engine)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-        original_session_local = telegram_worker_module.SessionLocal
+        original_session_local = telegram_import_processor_module.SessionLocal
         try:
             with SessionLocal() as db:
                 event = PendingEvent(
@@ -1432,7 +1552,7 @@ class BackendTelegramImportTests(unittest.TestCase):
             worker.admin_chat_ids = {"123"}
             worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
             worker.process_queued_telegram_imports = lambda: processed.append(True)
-            telegram_worker_module.SessionLocal = SessionLocal
+            telegram_import_processor_module.SessionLocal = SessionLocal
 
             worker.handle_update({
                 "update_id": 78,
@@ -1453,7 +1573,7 @@ class BackendTelegramImportTests(unittest.TestCase):
             self.assertEqual(processed, [True])
             self.assertIn("Дата принята", messages[0][1])
         finally:
-            telegram_worker_module.SessionLocal = original_session_local
+            telegram_import_processor_module.SessionLocal = original_session_local
             Base.metadata.drop_all(engine)
             engine.dispose()
 
@@ -1465,7 +1585,7 @@ class BackendTelegramImportTests(unittest.TestCase):
         )
         Base.metadata.create_all(engine)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-        original_session_local = telegram_worker_module.SessionLocal
+        original_session_local = telegram_import_processor_module.SessionLocal
         try:
             now = datetime.now(timezone.utc)
             with SessionLocal() as db:
@@ -1492,7 +1612,7 @@ class BackendTelegramImportTests(unittest.TestCase):
             worker.admin_chat_ids = {"123"}
             worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
             worker.process_queued_telegram_imports = lambda: processed.append(True)
-            telegram_worker_module.SessionLocal = SessionLocal
+            telegram_import_processor_module.SessionLocal = SessionLocal
 
             worker.enqueue_telegram_document(
                 "123",
@@ -1516,7 +1636,7 @@ class BackendTelegramImportTests(unittest.TestCase):
             self.assertIn("Файл: new.xlsx", messages[-1][1])
             self.assertNotIn("Файл: old.xlsx", messages[-1][1])
         finally:
-            telegram_worker_module.SessionLocal = original_session_local
+            telegram_import_processor_module.SessionLocal = original_session_local
             Base.metadata.drop_all(engine)
             engine.dispose()
 
@@ -1528,7 +1648,7 @@ class BackendTelegramImportTests(unittest.TestCase):
         )
         Base.metadata.create_all(engine)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-        original_session_local = telegram_worker_module.SessionLocal
+        original_session_local = telegram_import_processor_module.SessionLocal
         try:
             with SessionLocal() as db:
                 event = PendingEvent(
@@ -1551,7 +1671,7 @@ class BackendTelegramImportTests(unittest.TestCase):
             worker.admin_chat_ids = {"123"}
             worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
             worker.process_queued_telegram_imports = lambda: processed.append(True)
-            telegram_worker_module.SessionLocal = SessionLocal
+            telegram_import_processor_module.SessionLocal = SessionLocal
 
             worker.handle_update({
                 "update_id": 79,
@@ -1569,7 +1689,7 @@ class BackendTelegramImportTests(unittest.TestCase):
             self.assertIn("Ожидаю дату отгрузки", messages[0][1])
             self.assertIn("ДД.ММ.ГГГГ", messages[0][1])
         finally:
-            telegram_worker_module.SessionLocal = original_session_local
+            telegram_import_processor_module.SessionLocal = original_session_local
             Base.metadata.drop_all(engine)
             engine.dispose()
 
@@ -1618,12 +1738,12 @@ class BackendTelegramImportTests(unittest.TestCase):
                 "errors": ["Bearer secret-service-token failed for 0104006396053978217SECRETKIZVALUE"],
             }
 
-        original_excel_to_payload = telegram_worker_module.excel_file_to_import_payload
+        original_excel_to_payload = telegram_import_processor_module.excel_file_to_import_payload
         try:
             worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
             worker.download_telegram_document = lambda document, temp_path: Path(temp_path).write_bytes(b"xlsx")
             worker.backend_post = fake_backend_post
-            telegram_worker_module.excel_file_to_import_payload = lambda *args, **kwargs: {
+            telegram_import_processor_module.excel_file_to_import_payload = lambda *args, **kwargs: {
                 "rows": [{"Клиент": "Broken"}],
                 "meta": {"source_rows_count": 1, "shipment_date": "09.06.2026"},
             }
@@ -1635,7 +1755,7 @@ class BackendTelegramImportTests(unittest.TestCase):
                 event_id=event_id,
             )
         finally:
-            telegram_worker_module.excel_file_to_import_payload = original_excel_to_payload
+            telegram_import_processor_module.excel_file_to_import_payload = original_excel_to_payload
 
         self.assertEqual(result[0], False)
         self.assertEqual(backend_payloads[0][0], "/api/v1/imports")
@@ -1681,13 +1801,13 @@ class BackendTelegramImportTests(unittest.TestCase):
                 },
             }]
 
-        original_excel_to_payload = telegram_worker_module.excel_file_to_import_payload
+        original_excel_to_payload = telegram_import_processor_module.excel_file_to_import_payload
         try:
             worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
             worker.download_telegram_document = lambda document, temp_path: Path(temp_path).write_bytes(b"xlsx")
             worker.backend_post = fake_backend_post
             worker.backend_get = fake_backend_get
-            telegram_worker_module.excel_file_to_import_payload = lambda *args, **kwargs: {
+            telegram_import_processor_module.excel_file_to_import_payload = lambda *args, **kwargs: {
                 "rows": [{"Клиент": "Client", "Кол-во блок": 2}],
                 "meta": {"source_rows_count": 1, "shipment_date": "09.06.2026"},
             }
@@ -1699,7 +1819,7 @@ class BackendTelegramImportTests(unittest.TestCase):
                 event_id=event_id,
             )
         finally:
-            telegram_worker_module.excel_file_to_import_payload = original_excel_to_payload
+            telegram_import_processor_module.excel_file_to_import_payload = original_excel_to_payload
 
         self.assertEqual(result, (True, ""))
         text = messages[-1][1]
@@ -1721,13 +1841,13 @@ class BackendTelegramImportTests(unittest.TestCase):
         def fake_backend_get(path, params=None):
             return []
 
-        original_excel_to_payload = telegram_worker_module.excel_file_to_import_payload
+        original_excel_to_payload = telegram_import_processor_module.excel_file_to_import_payload
         try:
             worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
             worker.download_telegram_document = lambda document, temp_path: Path(temp_path).write_bytes(b"xlsx")
             worker.backend_post = fake_backend_post
             worker.backend_get = fake_backend_get
-            telegram_worker_module.excel_file_to_import_payload = lambda *args, **kwargs: {
+            telegram_import_processor_module.excel_file_to_import_payload = lambda *args, **kwargs: {
                 "rows": [{"Клиент": "Client", "Кол-во блок": 2}],
                 "meta": {"source_rows_count": 1, "shipment_date": "09.06.2026"},
             }
@@ -1739,7 +1859,7 @@ class BackendTelegramImportTests(unittest.TestCase):
                 event_id="11111111-1111-1111-1111-111111111111",
             )
         finally:
-            telegram_worker_module.excel_file_to_import_payload = original_excel_to_payload
+            telegram_import_processor_module.excel_file_to_import_payload = original_excel_to_payload
 
         self.assertFalse(result[0])
         text = messages[-1][1]
@@ -1755,7 +1875,7 @@ class BackendTelegramImportTests(unittest.TestCase):
         )
         Base.metadata.create_all(engine)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-        original_session_local = telegram_worker_module.SessionLocal
+        original_session_local = telegram_import_processor_module.SessionLocal
         try:
             with SessionLocal() as db:
                 event = PendingEvent(
@@ -1774,7 +1894,7 @@ class BackendTelegramImportTests(unittest.TestCase):
                 event_id = str(event.id)
 
             worker = TelegramWorker.__new__(TelegramWorker)
-            telegram_worker_module.SessionLocal = SessionLocal
+            telegram_import_processor_module.SessionLocal = SessionLocal
 
             worker.finish_telegram_import_event(event_id, False, "parser failed")
             worker.finish_telegram_import_event(event_id, False, "parser failed again")
@@ -1793,7 +1913,7 @@ class BackendTelegramImportTests(unittest.TestCase):
             self.assertEqual(str(incidents[0].pending_event_id), event_id)
             self.assertEqual(len(audits), 1)
         finally:
-            telegram_worker_module.SessionLocal = original_session_local
+            telegram_import_processor_module.SessionLocal = original_session_local
             Base.metadata.drop_all(engine)
             engine.dispose()
 
@@ -1805,7 +1925,7 @@ class BackendTelegramImportTests(unittest.TestCase):
         )
         Base.metadata.create_all(engine)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-        original_session_local = telegram_worker_module.SessionLocal
+        original_session_local = telegram_import_processor_module.SessionLocal
         try:
             now = datetime.now(timezone.utc)
             with SessionLocal() as db:
@@ -1846,7 +1966,7 @@ class BackendTelegramImportTests(unittest.TestCase):
             worker.import_telegram_document = lambda chat_id, document, shipment_date="", event_id="": imported.append(
                 (chat_id, document["file_name"], shipment_date, event_id)
             ) or (True, "")
-            telegram_worker_module.SessionLocal = SessionLocal
+            telegram_import_processor_module.SessionLocal = SessionLocal
 
             processed = worker.process_queued_telegram_imports()
 
@@ -1861,7 +1981,7 @@ class BackendTelegramImportTests(unittest.TestCase):
             self.assertEqual(pending_event.status, "completed")
             self.assertEqual(pending_event.attempts, 1)
         finally:
-            telegram_worker_module.SessionLocal = original_session_local
+            telegram_import_processor_module.SessionLocal = original_session_local
             Base.metadata.drop_all(engine)
             engine.dispose()
 
@@ -1873,7 +1993,7 @@ class BackendTelegramImportTests(unittest.TestCase):
         )
         Base.metadata.create_all(engine)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-        original_session_local = telegram_worker_module.SessionLocal
+        original_session_local = telegram_import_processor_module.SessionLocal
         try:
             with SessionLocal() as db:
                 db.add(PendingEvent(
@@ -1899,7 +2019,7 @@ class BackendTelegramImportTests(unittest.TestCase):
                 lambda chat_id, document, shipment_date="", event_id="":
                 import_calls.append((chat_id, shipment_date, event_id)) or (True, "")
             )
-            telegram_worker_module.SessionLocal = SessionLocal
+            telegram_import_processor_module.SessionLocal = SessionLocal
 
             processed = worker.process_queued_telegram_imports()
 
@@ -1914,7 +2034,7 @@ class BackendTelegramImportTests(unittest.TestCase):
             self.assertEqual(import_calls[0][0], "123")
             self.assertEqual(import_calls[0][1], "09.06.2026")
         finally:
-            telegram_worker_module.SessionLocal = original_session_local
+            telegram_import_processor_module.SessionLocal = original_session_local
             Base.metadata.drop_all(engine)
             engine.dispose()
 
@@ -1926,7 +2046,7 @@ class BackendTelegramImportTests(unittest.TestCase):
         )
         Base.metadata.create_all(engine)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-        original_session_local = telegram_worker_module.SessionLocal
+        original_session_local = telegram_admin_processor_module.SessionLocal
         try:
             with SessionLocal() as db:
                 db.add(PendingEvent(
@@ -1944,7 +2064,7 @@ class BackendTelegramImportTests(unittest.TestCase):
             worker.admin_chat_ids = {"123"}
             worker.allowed_chat_ids = {"123"}
             worker.send_message = lambda chat_id, text: sent.append((chat_id, text))
-            telegram_worker_module.SessionLocal = SessionLocal
+            telegram_admin_processor_module.SessionLocal = SessionLocal
 
             processed = worker.process_pending_telegram_notifications()
 
@@ -1958,7 +2078,7 @@ class BackendTelegramImportTests(unittest.TestCase):
             self.assertEqual(event.last_error, "")
             self.assertEqual((event.payload or {}).get("reset_reason"), "stale Telegram notification reset")
         finally:
-            telegram_worker_module.SessionLocal = original_session_local
+            telegram_admin_processor_module.SessionLocal = original_session_local
             Base.metadata.drop_all(engine)
             engine.dispose()
 
@@ -2083,7 +2203,7 @@ class BackendTelegramImportTests(unittest.TestCase):
         )
         Base.metadata.create_all(engine)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-        original_session_local = telegram_worker_module.SessionLocal
+        original_session_local = telegram_import_processor_module.SessionLocal
         try:
             with SessionLocal() as db:
                 event = PendingEvent(
@@ -2108,7 +2228,7 @@ class BackendTelegramImportTests(unittest.TestCase):
             worker.admin_chat_ids = {"123"}
             worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
             worker.process_queued_telegram_imports = lambda: processed.append(True)
-            telegram_worker_module.SessionLocal = SessionLocal
+            telegram_import_processor_module.SessionLocal = SessionLocal
 
             result = worker.confirm_telegram_import_excel_date("123", event_id)
 
@@ -2124,7 +2244,7 @@ class BackendTelegramImportTests(unittest.TestCase):
             self.assertEqual(processed, [True])
             self.assertIn("Импорт будет выполнен по дате из Excel", messages[0][1])
         finally:
-            telegram_worker_module.SessionLocal = original_session_local
+            telegram_import_processor_module.SessionLocal = original_session_local
             Base.metadata.drop_all(engine)
             engine.dispose()
 
@@ -2136,7 +2256,7 @@ class BackendTelegramImportTests(unittest.TestCase):
         )
         Base.metadata.create_all(engine)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-        original_session_local = telegram_worker_module.SessionLocal
+        original_session_local = telegram_import_processor_module.SessionLocal
         try:
             with SessionLocal() as db:
                 event = PendingEvent(
@@ -2159,7 +2279,7 @@ class BackendTelegramImportTests(unittest.TestCase):
             worker.allowed_chat_ids = {"123"}
             worker.admin_chat_ids = {"123"}
             worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
-            telegram_worker_module.SessionLocal = SessionLocal
+            telegram_import_processor_module.SessionLocal = SessionLocal
 
             result = worker.cancel_telegram_import_date_choice("123", event_id)
 
@@ -2174,7 +2294,7 @@ class BackendTelegramImportTests(unittest.TestCase):
             self.assertEqual(payload["date_choice_resolution"]["action"], "cancel")
             self.assertIn("Импорт отменён", messages[0][1])
         finally:
-            telegram_worker_module.SessionLocal = original_session_local
+            telegram_import_processor_module.SessionLocal = original_session_local
             Base.metadata.drop_all(engine)
             engine.dispose()
 
@@ -2481,7 +2601,7 @@ class BackendTelegramImportTests(unittest.TestCase):
         messages = []
 
         def fake_backend_get_bytes(path, params=None):
-            raise telegram_worker_module.httpx.ConnectError("backend down")
+            raise httpx.ConnectError("backend down")
 
         worker.backend_get_bytes = fake_backend_get_bytes
         worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
@@ -2571,12 +2691,6 @@ class BackendTelegramImportTests(unittest.TestCase):
             },
         ]
 
-        def fake_telegram_request(method, payload=None, timeout=None):
-            if method == "getUpdates":
-                self.assertEqual(payload["allowed_updates"], ["message", "callback_query"])
-                return updates
-            raise AssertionError(method)
-
         def fake_show_logistics_dates(chat_id):
             raise RuntimeError("backend temporary unavailable")
 
@@ -2590,7 +2704,9 @@ class BackendTelegramImportTests(unittest.TestCase):
         def fake_save_offset():
             saved_offsets.append(worker.offset)
 
-        worker.telegram_request = fake_telegram_request
+        worker.telegram_api_client = SimpleNamespace(
+            poll_updates=lambda offset, timeout: updates,
+        )
         worker.show_logistics_dates = fake_show_logistics_dates
         worker.safe_send_message = fake_error
         worker.enqueue_telegram_document = fake_enqueue
@@ -2619,13 +2735,12 @@ class BackendTelegramImportTests(unittest.TestCase):
         worker.offset = 0
         calls = []
 
-        def fake_telegram_request(method, payload=None, timeout=None):
-            if method == "getUpdates":
-                raise RuntimeError("Telegram API request failed: getUpdates: HTTP 409 Conflict")
-            raise AssertionError(method)
-
         worker.ensure_bot_menu = lambda: None
-        worker.telegram_request = fake_telegram_request
+        worker.telegram_api_client = SimpleNamespace(
+            poll_updates=lambda offset, timeout: (_ for _ in ()).throw(
+                RuntimeError("Telegram API request failed: getUpdates: HTTP 409 Conflict")
+            ),
+        )
         worker.process_queued_telegram_imports = lambda: calls.append("imports") or 0
         worker.process_pending_telegram_notifications = lambda: calls.append("notifications") or 0
         worker.send_due_skladbot_daily_reports = lambda: calls.append("daily") or 0

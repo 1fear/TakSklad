@@ -35,23 +35,13 @@ PERSISTENCE_CALLS = {
 }
 TELEGRAM_ORCHESTRATOR_METHODS = {
     "__init__",
-    "answer_callback_query",
-    "backend_get",
-    "backend_get_bytes",
-    "backend_post",
+    "__getattr__",
+    "_initialize_processors",
     "configured",
-    "ensure_bot_menu",
     "handle_callback_query",
     "handle_update",
     "notify_update_error",
     "poll_once",
-    "safe_send_document",
-    "safe_send_message",
-    "send_date_help",
-    "send_document",
-    "send_main_menu",
-    "send_message",
-    "telegram_request",
 }
 
 
@@ -74,6 +64,8 @@ class Violation:
 class CheckResult:
     graph: dict[str, set[str]] = field(default_factory=dict)
     order_skladbot_sccs: list[list[str]] = field(default_factory=list)
+    telegram_worker_sccs: list[list[str]] = field(default_factory=list)
+    telegram_processor_back_edges: list[tuple[str, str]] = field(default_factory=list)
     line_counts: dict[str, tuple[int, int]] = field(default_factory=dict)
     violations: list[Violation] = field(default_factory=list)
     applied_exceptions: list[ExceptionEntry] = field(default_factory=list)
@@ -194,6 +186,28 @@ def forbidden_order_skladbot_sccs(graph: dict[str, set[str]]) -> list[list[str]]
     ]
 
 
+def is_telegram_processor(name: str) -> bool:
+    return name.startswith("telegram_") and name.endswith("_processor")
+
+
+def forbidden_telegram_processor_back_edges(graph: dict[str, set[str]]) -> list[tuple[str, str]]:
+    return sorted(
+        (name, "telegram_worker")
+        for name, targets in graph.items()
+        if is_telegram_processor(name) and "telegram_worker" in targets
+    )
+
+
+def forbidden_telegram_worker_sccs(graph: dict[str, set[str]]) -> list[list[str]]:
+    return [
+        component
+        for component in strongly_connected_components(graph)
+        if len(component) > 1
+        and "telegram_worker" in component
+        and any(is_telegram_processor(name) for name in component)
+    ]
+
+
 def normalize_repo_path(root: Path, path: Path) -> str:
     return path.resolve().relative_to(root.resolve()).as_posix()
 
@@ -241,12 +255,26 @@ def telegram_persistence_findings(path: Path) -> list[str]:
                 findings.add(f"line {node.lineno}: imports ORM module {imported_module}")
             if node.level == 1 and imported_module in {"db", "models"}:
                 findings.add(f"line {node.lineno}: imports persistence module .{imported_module}")
+            if node.level == 1 and imported_module.endswith("runtime_dependencies"):
+                findings.add(f"line {node.lineno}: imports persistence service locator .{imported_module}")
+            if node.level == 1 and not imported_module:
+                for imported_symbol in imported_symbols:
+                    if imported_symbol.endswith("runtime_dependencies"):
+                        findings.add(
+                            f"line {node.lineno}: imports persistence service locator .{imported_symbol}"
+                        )
             if "SessionLocal" in imported_symbols:
                 findings.add(f"line {node.lineno}: imports SessionLocal")
         elif isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name == "sqlalchemy" or alias.name.startswith("sqlalchemy."):
                     findings.add(f"line {node.lineno}: imports ORM module {alias.name}")
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if any(isinstance(target, ast.Name) and target.id == "SessionLocal" for target in targets):
+                findings.add(f"line {node.lineno}: assigns indirect SessionLocal service locator")
+        elif isinstance(node, ast.Attribute) and node.attr == "SessionLocal":
+            findings.add(f"line {node.lineno}: accesses indirect .SessionLocal service locator")
         elif isinstance(node, ast.Call):
             if isinstance(node.func, ast.Name) and node.func.id in PERSISTENCE_CALLS:
                 findings.add(f"line {node.lineno}: calls persistence function {node.func.id}()")
@@ -301,6 +329,117 @@ def orchestrator_method_violations(root: Path, app_dir: Path) -> list[Violation]
         path=relative,
         message=f"{relative}: domain methods remain in orchestrator: {', '.join(domain_methods)}",
     )]
+
+
+def ast_name(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        prefix = ast_name(node.value)
+        return f"{prefix}.{node.attr}" if prefix else node.attr
+    return ""
+
+
+def telegram_port_boundary_violations(root: Path, app_dir: Path) -> list[Violation]:
+    violations: list[Violation] = []
+    worker_path = app_dir / "telegram_worker.py"
+    if worker_path.exists():
+        tree = ast.parse(worker_path.read_text(encoding="utf-8"), filename=str(worker_path))
+        worker = next(
+            (node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "TelegramWorker"),
+            None,
+        )
+        if worker is not None:
+            forbidden_bases = sorted(ast_name(base) for base in worker.bases if ast_name(base))
+            if forbidden_bases:
+                relative = normalize_repo_path(root, worker_path)
+                violations.append(Violation(
+                    rule="telegram_explicit_ports",
+                    path=relative,
+                    message=(
+                        f"{relative}: TelegramWorker must use composition, not inherit processors/ports: "
+                        f"{', '.join(forbidden_bases)}"
+                    ),
+                ))
+            raw_calls = sorted({
+                node.lineno
+                for node in ast.walk(worker)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "telegram_request"
+            })
+            if raw_calls:
+                relative = normalize_repo_path(root, worker_path)
+                violations.append(Violation(
+                    rule="telegram_external_payload_ownership",
+                    path=relative,
+                    message=(
+                        f"{relative}: TelegramWorker constructs generic Telegram requests at lines "
+                        f"{','.join(str(line) for line in raw_calls)}"
+                    ),
+                ))
+        transport_imports = []
+        for node in tree.body:
+            if isinstance(node, ast.Import):
+                transport_imports.extend(
+                    alias.name for alias in node.names if alias.name in {"httpx", "urllib", "urllib.parse"}
+                )
+            elif isinstance(node, ast.ImportFrom) and node.module in {"httpx", "urllib", "urllib.parse"}:
+                transport_imports.append(node.module)
+        if transport_imports:
+            relative = normalize_repo_path(root, worker_path)
+            violations.append(Violation(
+                rule="telegram_external_payload_ownership",
+                path=relative,
+                message=(
+                    f"{relative}: TelegramWorker imports transport modules: "
+                    f"{', '.join(sorted(set(transport_imports)))}"
+                ),
+            ))
+
+    processor_classes = {
+        "telegram_admin_processor.py": "TelegramAdminProcessor",
+        "telegram_import_processor.py": "TelegramImportProcessor",
+        "telegram_report_processor.py": "TelegramReportProcessor",
+        "telegram_scheduled_report_processor.py": "TelegramScheduledReportProcessor",
+    }
+    for filename, class_name in processor_classes.items():
+        path = app_dir / filename
+        if not path.exists():
+            continue
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(path))
+        processor = next(
+            (node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == class_name),
+            None,
+        )
+        relative = normalize_repo_path(root, path)
+        bases = {ast_name(base) for base in processor.bases} if processor is not None else set()
+        if processor is None or "TelegramProcessorDelegate" not in bases:
+            violations.append(Violation(
+                rule="telegram_explicit_ports",
+                path=relative,
+                message=f"{relative}: {class_name} must declare TelegramProcessorDelegate",
+            ))
+        if filename == "telegram_import_processor.py":
+            forbidden_imports = []
+            for node in tree.body:
+                if isinstance(node, ast.Import):
+                    forbidden_imports.extend(
+                        alias.name for alias in node.names if alias.name in {"httpx", "urllib", "urllib.parse"}
+                    )
+                elif isinstance(node, ast.ImportFrom) and node.module in {"httpx", "urllib", "urllib.parse"}:
+                    forbidden_imports.append(node.module)
+            if forbidden_imports or "api.telegram.org" in source:
+                details = sorted(set(forbidden_imports))
+                if "api.telegram.org" in source:
+                    details.append("api.telegram.org")
+                violations.append(Violation(
+                    rule="telegram_external_payload_ownership",
+                    path=relative,
+                    message=f"{relative}: processor owns Telegram HTTP details: {', '.join(details)}",
+                ))
+    return violations
 
 
 def load_exceptions(path: Path) -> tuple[list[ExceptionEntry], list[str]]:
@@ -371,6 +510,8 @@ def run_checks(root: Path, exception_path: Path) -> CheckResult:
 
     result.graph = build_dependency_graph(app_dir)
     result.order_skladbot_sccs = forbidden_order_skladbot_sccs(result.graph)
+    result.telegram_worker_sccs = forbidden_telegram_worker_sccs(result.graph)
+    result.telegram_processor_back_edges = forbidden_telegram_processor_back_edges(result.graph)
     result.line_counts = collect_line_counts(root, app_dir)
     raw_violations: list[Violation] = []
     for component in result.order_skladbot_sccs:
@@ -379,9 +520,22 @@ def run_checks(root: Path, exception_path: Path) -> CheckResult:
             path="backend/app",
             message=f"forbidden order/SkladBot dependency cycle: {' -> '.join(component)}",
         ))
+    for component in result.telegram_worker_sccs:
+        raw_violations.append(Violation(
+            rule="telegram_worker_cycle",
+            path="backend/app",
+            message=f"forbidden Telegram worker/processor dependency cycle: {' -> '.join(component)}",
+        ))
+    for source, target in result.telegram_processor_back_edges:
+        raw_violations.append(Violation(
+            rule="telegram_processor_back_edge",
+            path=f"backend/app/{source}.py",
+            message=f"forbidden Telegram processor back-edge: {source} -> {target}",
+        ))
     raw_violations.extend(size_violations(result.line_counts))
     raw_violations.extend(persistence_violations(root, app_dir))
     raw_violations.extend(orchestrator_method_violations(root, app_dir))
+    raw_violations.extend(telegram_port_boundary_violations(root, app_dir))
 
     resolved_exception_path = exception_path if exception_path.is_absolute() else root / exception_path
     exceptions, exception_errors = load_exceptions(resolved_exception_path)
@@ -404,6 +558,12 @@ def print_result(result: CheckResult) -> None:
     emit(f"CODE_ORGANIZATION_ORDER_SKLADBOT_SCCS count={len(result.order_skladbot_sccs)}")
     for component in result.order_skladbot_sccs:
         emit(f"CODE_ORGANIZATION_SCC modules={','.join(component)}")
+    emit(f"CODE_ORGANIZATION_TELEGRAM_WORKER_SCCS count={len(result.telegram_worker_sccs)}")
+    for component in result.telegram_worker_sccs:
+        emit(f"CODE_ORGANIZATION_TELEGRAM_SCC modules={','.join(component)}")
+    emit(f"CODE_ORGANIZATION_TELEGRAM_BACK_EDGES count={len(result.telegram_processor_back_edges)}")
+    for source, target in result.telegram_processor_back_edges:
+        emit(f"CODE_ORGANIZATION_TELEGRAM_BACK_EDGE source={source} target={target}")
     applied_keys = {(entry.rule, entry.path) for entry in result.applied_exceptions}
     failed_keys = {(violation.rule, violation.path) for violation in result.violations}
     for path, (lines, limit) in sorted(result.line_counts.items()):

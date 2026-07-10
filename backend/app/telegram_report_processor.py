@@ -1,6 +1,17 @@
 from datetime import datetime, timezone
+import urllib.parse
 
+import httpx
 from .redaction import redact_secrets
+from .telegram_clients import TelegramProcessorDelegate
+from .telegram_common import (
+    display_date,
+    format_money,
+    iso_date_from_display,
+    normalize_text,
+    parse_int,
+    telegram_inline_keyboard,
+)
 
 
 TELEGRAM_BUTTON_KIZ_BY_FILES = "Выгрузка КИЗов"
@@ -8,48 +19,6 @@ TELEGRAM_KIZ_FILE_PREFIX = "КИЗ файл "
 TELEGRAM_KIZ_DATE_PREFIX = "КИЗ дата "
 TELEGRAM_KIZ_RANGE_CALLBACK_PREFIX = "kiz_range:"
 TELEGRAM_DATE_MENU_RECENT_LIMIT = 7
-
-
-def _worker_dependency(name):
-    from . import telegram_worker
-
-    return getattr(telegram_worker, name)
-
-
-class _LazyDependency:
-    def __init__(self, name):
-        self.name = name
-
-    def __getattr__(self, name):
-        return getattr(_worker_dependency(self.name), name)
-
-
-httpx = _LazyDependency("httpx")
-urllib = _LazyDependency("urllib")
-
-
-def normalize_text(value):
-    return _worker_dependency("normalize_text")(value)
-
-
-def parse_int(value):
-    return _worker_dependency("parse_int")(value)
-
-
-def format_money(value):
-    return _worker_dependency("format_money")(value)
-
-
-def iso_date_from_display(value):
-    return _worker_dependency("iso_date_from_display")(value)
-
-
-def display_date(value):
-    return _worker_dependency("display_date")(value)
-
-
-def telegram_inline_keyboard(button_rows):
-    return _worker_dependency("telegram_inline_keyboard")(button_rows)
 
 
 def kiz_progress_completed(item):
@@ -178,7 +147,10 @@ def summarize_active_orders_by_date(orders):
     return summary
 
 
-class TelegramReportProcessor:
+class TelegramReportProcessor(TelegramProcessorDelegate):
+    def __init__(self, *, ports=None, owner=None, **port_dependencies):
+        TelegramProcessorDelegate.__init__(self, ports=ports, owner=owner, **port_dependencies)
+
     def logistics_date_keyboard(self, dates):
         rows = []
         for date_value in dates:

@@ -4,6 +4,7 @@ External HTTP and pure payload/matching contracts live in dedicated modules.
 The scheduling loop lives in skladbot_worker_runner.
 """
 
+import importlib
 import logging
 import os
 import time
@@ -572,3 +573,21 @@ def release_skladbot_sync_lock(db):
     if db.bind.dialect.name != "postgresql":
         return
     return
+
+
+def _load_worker_runner():
+    return importlib.import_module(".skladbot_worker_runner", __package__)
+
+
+def worker_interval_seconds():
+    """Compatibility shim for callers of the historical worker module."""
+    return _load_worker_runner().worker_interval_seconds()
+
+
+def main():
+    """Compatibility entrypoint; scheduling ownership remains in the runner."""
+    return _load_worker_runner().main()
+
+
+if __name__ == "__main__":
+    main()
