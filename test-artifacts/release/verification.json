@@ -4,7 +4,7 @@
   "github_identity_verified": false,
   "oci_tar_files_retained": false,
   "production_deployable": false,
-  "source_sha": "f19973e1cf9c87164b9a7150b6ddf5508e9f7a85",
+  "source_sha": "83d7c1af2f76c992aeedad4829b39144d19d0e7e",
   "status": "pass",
   "subjects": {
     "local/taksklad-backend": "92ccba0f11241aab9c8bcfc64b23af40bded6616aca4497ce5f3b988475e1872",

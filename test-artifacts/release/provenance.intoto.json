@@ -4,7 +4,7 @@
     "buildDefinition": {
       "buildType": "https://taksklad.local/phase23/release-artifacts/v1",
       "externalParameters": {
-        "sourceSha": "f19973e1cf9c87164b9a7150b6ddf5508e9f7a85"
+        "sourceSha": "83d7c1af2f76c992aeedad4829b39144d19d0e7e"
       },
       "internalParameters": {
         "dirtyWorkingTreeUsed": false,
@@ -17,7 +17,7 @@
         "id": "https://taksklad.local/builders/local-phase23"
       },
       "metadata": {
-        "invocationId": "local-f19973e1cf9c87164b9a7150b6ddf5508e9f7a85"
+        "invocationId": "local-83d7c1af2f76c992aeedad4829b39144d19d0e7e"
       }
     }
   },
