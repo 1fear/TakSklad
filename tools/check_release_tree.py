@@ -65,6 +65,16 @@ def status_changes(root: Path) -> list[Change]:
     return sorted(changes, key=lambda item: item.path)
 
 
+def exclude_prefixes(changes: list[Change], prefixes: list[str]) -> list[Change]:
+    """Exclude declared generated evidence from ownership hash comparisons only."""
+
+    normalized = tuple(prefix.replace("\\", "/").lstrip("./").rstrip("/") + "/" for prefix in prefixes)
+    return [
+        change for change in changes
+        if not any(change.path.replace("\\", "/").startswith(prefix) for prefix in normalized)
+    ]
+
+
 def staged_changes(root: Path) -> list[Change]:
     payload = run_git(root, "diff", "--cached", "--name-status", "-z", "--no-renames")
     fields = [field for field in payload.split(b"\0") if field]
@@ -160,6 +170,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--path-only", action="store_true")
     parser.add_argument("--write-owned-manifest", action="store_true")
     parser.add_argument("--compare-owned-manifest", action="store_true")
+    parser.add_argument("--exclude-prefix", action="append", default=[])
     return parser.parse_args(argv)
 
 
@@ -174,12 +185,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         changes = staged_changes(root) if args.staged else status_changes(root)
         problems = strict_problems(changes, staged=args.staged) if args.strict else []
+        owned_changes = exclude_prefixes(changes, args.exclude_prefix)
         if args.write_owned_manifest:
             if problems:
                 raise RuntimeError("strict release-tree checks failed before manifest write")
-            write_manifest(root, manifest_path, changes)
+            write_manifest(root, manifest_path, owned_changes)
         if args.compare_owned_manifest:
-            problems.extend(compare_manifest(root, manifest_path, changes))
+            problems.extend(compare_manifest(root, manifest_path, owned_changes))
     except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
         sys.stderr.write(f"release-tree: error: {exc}\n")
         return 2

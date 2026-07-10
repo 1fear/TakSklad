@@ -108,6 +108,24 @@ class ReleaseTreeCliTests(unittest.TestCase):
         self.assertEqual(compared.returncode, 1)
         self.assertIn("allowed path/status/hash set drifted", compared.stderr)
 
+    def test_owned_manifest_can_exclude_generated_evidence_prefix(self):
+        manifest = self.root.parent / f"{self.root.name}-owned.json"
+        self.addCleanup(manifest.unlink, missing_ok=True)
+        evidence = self.root / "test-artifacts" / "release-rehearsal" / "summary.json"
+        evidence.parent.mkdir(parents=True)
+        evidence.write_text("first\n", encoding="utf-8")
+        written = self.run_checker(
+            "--strict", "--write-owned-manifest", "--manifest", str(manifest),
+            "--exclude-prefix", "test-artifacts/release-rehearsal/",
+        )
+        self.assertEqual(written.returncode, 0, written.stdout + written.stderr)
+        evidence.write_text("second\n", encoding="utf-8")
+        compared = self.run_checker(
+            "--strict", "--compare-owned-manifest", "--manifest", str(manifest),
+            "--exclude-prefix", "test-artifacts/release-rehearsal/",
+        )
+        self.assertEqual(compared.returncode, 0, compared.stdout + compared.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

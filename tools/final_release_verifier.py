@@ -130,7 +130,7 @@ def load_identity(manifest_path: Path = RELEASE_MANIFEST) -> dict[str, str]:
 # suites replace repeated subsets; immutable verification replaces rebuilds.
 GATES = [
     ("source-tree", "source_integrity", "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python tools/check_release_tree.py --strict --path-only"),
-    ("owned-tree", "source_integrity", "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python tools/check_release_tree.py --compare-owned-manifest --strict"),
+    ("owned-tree", "source_integrity", "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python tools/check_release_tree.py --compare-owned-manifest --strict --exclude-prefix test-artifacts/release-rehearsal/"),
     ("diff-check", "source_integrity", "git diff --check"),
     ("python-tests", "code_quality", "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python -m unittest discover -s tests"),
     ("python-compile", "code_quality", "PYTHONPYCACHEPREFIX=/tmp/taksklad-phase26-pycache PYTHONPATH=. .venv/bin/python -m compileall -q main.py sitecustomize.py taksklad src/taksklad backend/app backend/migrations tools tests"),
