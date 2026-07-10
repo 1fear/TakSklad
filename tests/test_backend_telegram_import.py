@@ -16,6 +16,7 @@ from backend.app import excel_importer
 from backend.app.excel_importer import excel_file_to_import_payload
 from backend.app.models import AuditLog, Base, Incident, PendingEvent
 from backend.app.telegram_import_processor import TelegramImportProcessor
+from backend.app.telegram_report_processor import TelegramReportProcessor
 from backend.app.telegram_worker import (
     TELEGRAM_BUTTON_IMPORTS,
     TELEGRAM_BUTTON_KIZ_BY_FILES,
@@ -81,6 +82,35 @@ def create_conflicting_date_workbook(path):
 
 
 class BackendTelegramImportTests(unittest.TestCase):
+    def test_report_processor_builds_kiz_menu_with_characterized_ordered_calls(self):
+        processor = TelegramReportProcessor()
+        calls = []
+        dates = [
+            {"date": "2026-06-02", "planned_blocks": 3, "scanned_blocks": 1, "remaining_blocks": 2},
+            {"date": "2026-06-01", "planned_blocks": 2, "scanned_blocks": 2, "remaining_blocks": 0},
+        ]
+
+        processor.backend_get = lambda path: calls.append(("backend_get", path)) or dates
+        processor.get_chat_state = lambda chat_id: calls.append(("get_chat_state", chat_id)) or {"kept": True}
+        processor.save_chat_state = lambda chat_id, state: calls.append(("save_chat_state", chat_id, state))
+        processor.safe_send_message = lambda chat_id, text, reply_markup=None: calls.append(
+            ("safe_send_message", chat_id, text, reply_markup)
+        )
+
+        processor.show_kiz_dates("chat-1")
+
+        self.assertEqual([call[0] for call in calls], [
+            "backend_get",
+            "get_chat_state",
+            "save_chat_state",
+            "safe_send_message",
+        ])
+        self.assertEqual(calls[0], ("backend_get", "/api/v1/reports/kiz/dates"))
+        self.assertEqual(calls[2][2]["kept"], True)
+        self.assertEqual([item["date"] for item in calls[2][2]["kiz_dates"]], ["2026-06-01", "2026-06-02"])
+        self.assertIn("Выберите дату отгрузки", calls[3][2])
+        self.assertEqual(len(calls[3][3]["inline_keyboard"]), 3)
+
     def test_import_processor_runs_queue_with_characterized_ordered_calls(self):
         processor = TelegramImportProcessor()
         calls = []
