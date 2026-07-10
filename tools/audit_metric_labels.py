@@ -124,10 +124,10 @@ def main(argv: list[str] | None = None) -> int:
             sys.stderr.write(f"METRIC_LABEL_AUDIT_ERROR {error}\n")
         sys.stderr.write(f"METRIC_LABEL_AUDIT_FAIL forbidden_count={len(errors)}\n")
         return 1
-    print(
+    sys.stdout.write(
         f"METRIC_LABEL_AUDIT_OK signals={signal_count} maximum_series={maximum_series} "
         f"scanned_log_sources={len(BACKEND_LOG_SOURCES)} scanned_log_calls={log_calls} "
-        "forbidden_label_count=0 forbidden_log_count=0"
+        "forbidden_label_count=0 forbidden_log_count=0\n"
     )
     return 0
 

@@ -110,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
     if not 1 <= args.timeout_seconds <= 300:
         parser.error("timeout must be between 1 and 300 seconds")
     result = run_smoke(args.timeout_seconds)
-    print("ALERT_SMOKE_OK " + " ".join(f"{key}={value}" for key, value in result.items()))
+    sys.stdout.write("ALERT_SMOKE_OK " + " ".join(f"{key}={value}" for key, value in result.items()) + "\n")
     return 0
 
 

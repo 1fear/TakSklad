@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from backend.app.imports_service import create_import
 from backend.app.google_sheets_pending import process_pending_google_sheets_exports
 from backend.app.models import Base, ImportJob, PendingEvent
+from backend.app.skladbot_return_requests import process_pending_skladbot_return_request_creates
 from backend.app.observability_context import (
     CorrelationIdMiddleware,
     bind_pending_event,
@@ -126,6 +127,40 @@ class ObservabilityCorrelationTests(unittest.TestCase):
             ):
                 result = process_pending_google_sheets_exports(db, limit=1)
             self.assertEqual(result["synced"], 1)
+            self.assertEqual(observed, [expected])
+        finally:
+            if producer_token is not None:
+                reset_correlation_id(producer_token)
+            engine.dispose()
+
+    def test_skladbot_return_event_rebinds_producer_id_at_external_boundary(self):
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        expected = "55555555-5555-4555-8555-555555555555"
+        producer_token = bind_correlation_id(expected)
+        try:
+            with Session(engine) as db:
+                db.add(PendingEvent(
+                    event_type="skladbot_return_request_create",
+                    status="pending",
+                    payload={"order_id": "synthetic"},
+                ))
+                db.commit()
+            reset_correlation_id(producer_token)
+            producer_token = None
+            observed = []
+
+            def fake_external_boundary(_db, _event, _client):
+                observed.append(current_correlation_id())
+                return {"status": "blocked", "error": "synthetic"}
+
+            fake_client = mock.Mock(configured=True)
+            with Session(engine) as db, mock.patch(
+                "backend.app.skladbot_return_requests.process_skladbot_return_create_event",
+                side_effect=fake_external_boundary,
+            ):
+                result = process_pending_skladbot_return_request_creates(db, client=fake_client, limit=1)
+            self.assertEqual(result["blocked"], 1)
             self.assertEqual(observed, [expected])
         finally:
             if producer_token is not None:

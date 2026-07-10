@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
 
 
@@ -74,7 +75,7 @@ def main() -> int:
     parser.add_argument("--at")
     args = parser.parse_args()
     payload = write_marker(args.path, args.kind, at=args.at)
-    print(f"MAINTENANCE_MARKER_OK kind={args.kind} fields={len(payload)} path={args.path}")
+    sys.stdout.write(f"MAINTENANCE_MARKER_OK kind={args.kind} fields={len(payload)} path={args.path}\n")
     return 0
 
 

@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from typing import Any
+import logging
 import uuid
 
 from sqlalchemy import func, select
@@ -8,6 +9,7 @@ from sqlalchemy.orm import Session, selectinload
 from .event_leases import claim_event_leases, event_leases_enabled, finalize_event_leases
 from .google_sheets_pending import queue_google_sheets_export
 from .models import AuditLog, Order, PendingEvent
+from .observability_context import bind_pending_event, log_trace
 from .outbox_service import queue_outbox_event
 from .representative_contacts import build_representative_comment, find_representative_contact
 from .skladbot_request_dry_run import (
@@ -33,6 +35,7 @@ SKLADBOT_RETURN_REQUEST_TYPE_ID = 3403
 SKLADBOT_RETURN_REQUEST_CREATE_LIMIT_ENV = "SKLADBOT_RETURN_REQUEST_CREATE_LIMIT"
 STALE_SKLADBOT_RETURN_CREATE_TIMEOUT = timedelta(minutes=10)
 SKLADBOT_RETURN_STALE_RESET_LIMIT_ENV = "SKLADBOT_RETURN_STALE_RESET_LIMIT"
+logger = logging.getLogger(__name__)
 
 
 def skladbot_return_create_idempotency_key(order_id: str) -> str:
@@ -158,11 +161,19 @@ def process_pending_skladbot_return_request_creates(
             event.status = "processing"
             event.attempts = int(event.attempts or 0) + 1
             db.commit()
-        try:
-            event_result = process_skladbot_return_create_event(db, event, client)
-        except Exception as exc:
-            event_result = {"status": "create_failed", "error": sanitize_skladbot_error(exc)}
-        finish_skladbot_return_create_event(db, event, event_result, result)
+        with bind_pending_event(event):
+            log_trace(logger, "event_processing_started", event_type="skladbot_return_request_create")
+            try:
+                event_result = process_skladbot_return_create_event(db, event, client)
+            except Exception as exc:
+                event_result = {"status": "create_failed", "error": sanitize_skladbot_error(exc)}
+            finish_skladbot_return_create_event(db, event, event_result, result)
+            log_trace(
+                logger,
+                "event_processing_finished",
+                event_type="skladbot_return_request_create",
+                result=event_result.get("status") or "failed",
+            )
 
     if result["failed"]:
         result["status"] = "completed_with_errors"

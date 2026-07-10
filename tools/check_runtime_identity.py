@@ -130,7 +130,7 @@ def inspect_candidate() -> dict[str, str]:
         for _ in range(40):
             probe = run([
                 "docker", "exec", container, "python", "-c",
-                "import json; from urllib.request import urlopen; print(json.dumps(json.load(urlopen('http://127.0.0.1:8000/health', timeout=2)), sort_keys=True))",
+                "import json,sys; from urllib.request import urlopen; sys.stdout.write(json.dumps(json.load(urlopen('http://127.0.0.1:8000/health', timeout=2)), sort_keys=True))",
             ], timeout=10)
             if probe.returncode == 0:
                 actual = json.loads(probe.stdout.strip().splitlines()[-1])
@@ -164,10 +164,10 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
         sys.stderr.write(f"RUNTIME_IDENTITY_FAIL error={exc}\n")
         return 1
-    print(
+    sys.stdout.write(
         "RUNTIME_IDENTITY_OK "
         + " ".join(f"{key}={value}" for key, value in result.items())
-        + " endpoint=http://127.0.0.1:8000/health authority=disposable-local-image"
+        + " endpoint=http://127.0.0.1:8000/health authority=disposable-local-image\n"
     )
     return 0
 
