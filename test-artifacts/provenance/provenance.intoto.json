@@ -13,7 +13,7 @@
           "frontend": "cd5b005b797afda1add6b6325a9a6efb2ecd65c1210da3f04e245fda4ee64c13"
         },
         "dirtyCandidate": true,
-        "sourceCommit": "c736b56b227f2f58de78b8021f9b60d992145483"
+        "sourceCommit": "ca3e337efc64cd3a7e40d2ac69ab4bfb806292e6"
       },
       "resolvedDependencies": [
         {
@@ -26,7 +26,7 @@
         "id": "local-test://taksklad/release-rehearsal"
       },
       "metadata": {
-        "invocationId": "local-test:sha256:84b33cea3bc00c21efcf7a1934fe55c5e4fd18adf815974a7d4ae6697d6c5988"
+        "invocationId": "local-test:sha256:c3c32cf318757f4ca686a839685c2a218e37d75893b10db9b92bd73cd46cb331"
       }
     }
   },
@@ -34,19 +34,19 @@
   "subject": [
     {
       "digest": {
-        "sha256": "c713304f5460cdd79e965a84b5e1fd8ef12cbd3a79afc371d95029bebc32b8bd"
+        "sha256": "13b991d2d1ef29547985fd64efdb5041e11a6f31d5d841f1afc4787a522e343b"
       },
       "name": "TakSklad-synthetic-signed.exe"
     },
     {
       "digest": {
-        "sha256": "f5626bd9783bcf2bf9beea06a3ce36c267c8f3605eb52292c52b4c9be752af9c"
+        "sha256": "385b85e710c28f6ff200bac7c76d1f8e415c2c90487a81666b2fc021da75b21e"
       },
       "name": "taksklad-backend.oci.tar"
     },
     {
       "digest": {
-        "sha256": "261eb3ba5e03fdd69aa92a6285c8ed09ed06ba4f6b041df523aa833782153b81"
+        "sha256": "7d33ce1f49e88023b5f8692a8404af859400090a1d14b441db6ce8412d846326"
       },
       "name": "taksklad-frontend.oci.tar"
     }

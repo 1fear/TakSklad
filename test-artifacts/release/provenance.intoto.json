@@ -4,7 +4,7 @@
     "buildDefinition": {
       "buildType": "https://taksklad.local/phase23/release-artifacts/v1",
       "externalParameters": {
-        "sourceSha": "c736b56b227f2f58de78b8021f9b60d992145483"
+        "sourceSha": "ca3e337efc64cd3a7e40d2ac69ab4bfb806292e6"
       },
       "internalParameters": {
         "dirtyWorkingTreeUsed": false,
@@ -17,7 +17,7 @@
         "id": "https://taksklad.local/builders/local-phase23"
       },
       "metadata": {
-        "invocationId": "local-c736b56b227f2f58de78b8021f9b60d992145483"
+        "invocationId": "local-ca3e337efc64cd3a7e40d2ac69ab4bfb806292e6"
       }
     }
   },
@@ -37,7 +37,7 @@
     },
     {
       "digest": {
-        "sha256": "c713304f5460cdd79e965a84b5e1fd8ef12cbd3a79afc371d95029bebc32b8bd"
+        "sha256": "13b991d2d1ef29547985fd64efdb5041e11a6f31d5d841f1afc4787a522e343b"
       },
       "name": "test-artifacts/provenance/TakSklad-synthetic-signed.exe"
     }
