@@ -466,7 +466,7 @@ def main(argv: list[str] | None = None) -> int:
     marker = "REHEARSE_DEPLOY_OK" if args.command == "deploy" else "REHEARSE_ROLLBACK_OK"
     ordered = (
         ("source_sha", "backend_digest", "frontend_digest", "schema_revision", "migration_seconds",
-         "backfill_seconds", "readiness", "worker_heartbeats", "synthetic_rows", "cleanup_zero",
+         "migration_budget_seconds", "backfill_seconds", "readiness", "worker_heartbeats", "synthetic_rows", "cleanup_zero",
          "production_mutations", "external_sends")
         if args.command == "deploy"
         else ("source_sha", "candidate_backend_digest", "previous_backend_digest", "rollback_seconds",

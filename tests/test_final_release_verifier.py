@@ -80,7 +80,8 @@ class FinalReleaseVerifierTests(unittest.TestCase):
                 return 0, (
                     f"REHEARSE_DEPLOY_OK source_sha={IDENTITY['source_sha']} "
                     f"backend_digest={IDENTITY['backend_digest']} frontend_digest={IDENTITY['frontend_digest']} "
-                    "migration_seconds=1 backfill_seconds=2 readiness=green worker_heartbeats=green "
+                    "migration_seconds=1 migration_budget_seconds=120 backfill_seconds=2 "
+                    "readiness=green worker_heartbeats=green "
                     "production_mutations=0 external_sends=0"
                 ), 0.1
             if "rehearse_rollback" in command:

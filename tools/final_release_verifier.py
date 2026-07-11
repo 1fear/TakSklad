@@ -224,6 +224,10 @@ def _require_rehearsal_result(
     mismatches = [key for key, value in expected.items() if result.get(key) != value]
     if mismatches:
         raise VerificationError("rehearsal result mismatch: " + ",".join(sorted(mismatches)))
+    if not rollback and float(result.get("migration_seconds", "inf")) > float(
+        result.get("migration_budget_seconds", "0")
+    ):
+        raise VerificationError("migration exceeded declared rehearsal budget")
     if rollback and float(result.get("rollback_seconds", "inf")) > 300:
         raise VerificationError("rollback exceeded 300 seconds")
 
