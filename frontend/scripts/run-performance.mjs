@@ -87,6 +87,28 @@ const commandEnvironment = {
 };
 delete commandEnvironment.NO_COLOR;
 
+function bundledHeadlessShell() {
+  const chromePath = chromium.executablePath();
+  const revision = chromePath.match(/chromium-(\d+)/)?.[1];
+  if (!revision) throw new Error(`Cannot resolve Playwright Chromium revision from ${chromePath}`);
+  const marker = `chromium-${revision}`;
+  const cacheRoot = chromePath.slice(0, chromePath.indexOf(marker));
+  const shellRoot = resolve(cacheRoot, `chromium_headless_shell-${revision}`);
+  const candidates = [];
+  const visit = (directory) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = resolve(directory, entry.name);
+      if (entry.isDirectory()) visit(path);
+      else if (["chrome-headless-shell", "chrome-headless-shell.exe", "headless_shell"].includes(entry.name)) candidates.push(path);
+    }
+  };
+  if (existsSync(shellRoot)) visit(shellRoot);
+  if (candidates.length !== 1) {
+    throw new Error(`Expected one Playwright Chromium headless shell for revision ${revision}, found ${candidates.length}`);
+  }
+  return candidates[0];
+}
+
 const server = spawn(process.execPath, [resolve(frontendRoot, "scripts/performance-server.mjs")], {
   cwd: frontendRoot,
   env: commandEnvironment,
@@ -110,9 +132,10 @@ async function waitForPerformanceServer() {
 await waitForPerformanceServer();
 
 const lighthouseRawPath = resolve(artifactRoot, "lighthouse-raw.json");
+const lighthouseChromePath = bundledHeadlessShell();
 const lighthouseEnvironment = {
   ...commandEnvironment,
-  CHROME_PATH: chromium.executablePath(),
+  CHROME_PATH: lighthouseChromePath,
 };
 const lighthouse = spawnSync(
   resolve(frontendRoot, "node_modules/.bin/lighthouse"),
@@ -127,7 +150,7 @@ const lighthouse = spawnSync(
     "--disable-full-page-screenshot",
     "--no-enable-error-reporting",
     "--quiet",
-    "--chrome-flags=--headless=new --disable-background-networking --disable-component-update --disable-default-apps --disable-dev-shm-usage --no-first-run",
+    "--chrome-flags=--headless --disable-background-networking --disable-component-update --disable-default-apps --disable-dev-shm-usage --no-first-run",
   ],
   {
     cwd: frontendRoot,
@@ -199,7 +222,7 @@ if (existsSync(lighthouseRawPath)) {
       http_error_responses: httpErrorResponses,
     },
     browser: {
-      chrome_path_source: "playwright.chromium.executablePath()",
+      chrome_path_source: "Playwright bundled Chromium headless shell",
       runtime_user_agent: lhr.environment?.hostUserAgent ?? null,
     },
     raw_json_path: lighthouseRawPath,
