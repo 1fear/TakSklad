@@ -126,6 +126,22 @@ class ReleaseTreeCliTests(unittest.TestCase):
         )
         self.assertEqual(compared.returncode, 0, compared.stdout + compared.stderr)
 
+    def test_owned_manifest_can_exclude_one_generated_evidence_path(self):
+        manifest = self.root.parent / f"{self.root.name}-owned-exact.json"
+        self.addCleanup(manifest.unlink, missing_ok=True)
+        evidence = self.root / "test-artifacts" / "phase24" / "offsite.json"
+        evidence.parent.mkdir(parents=True)
+        evidence.write_text("first\n", encoding="utf-8")
+        arguments = (
+            "--strict", "--manifest", str(manifest),
+            "--exclude-path", "test-artifacts/phase24/offsite.json",
+        )
+        written = self.run_checker("--write-owned-manifest", *arguments)
+        self.assertEqual(written.returncode, 0, written.stdout + written.stderr)
+        evidence.write_text("second\n", encoding="utf-8")
+        compared = self.run_checker("--compare-owned-manifest", *arguments)
+        self.assertEqual(compared.returncode, 0, compared.stdout + compared.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

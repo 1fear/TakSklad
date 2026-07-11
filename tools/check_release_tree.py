@@ -65,13 +65,15 @@ def status_changes(root: Path) -> list[Change]:
     return sorted(changes, key=lambda item: item.path)
 
 
-def exclude_prefixes(changes: list[Change], prefixes: list[str]) -> list[Change]:
+def exclude_owned_evidence(changes: list[Change], prefixes: list[str], paths: list[str]) -> list[Change]:
     """Exclude declared generated evidence from ownership hash comparisons only."""
 
     normalized = tuple(prefix.replace("\\", "/").lstrip("./").rstrip("/") + "/" for prefix in prefixes)
+    exact = {path.replace("\\", "/").lstrip("./") for path in paths}
     return [
         change for change in changes
-        if not any(change.path.replace("\\", "/").startswith(prefix) for prefix in normalized)
+        if change.path.replace("\\", "/") not in exact
+        and not any(change.path.replace("\\", "/").startswith(prefix) for prefix in normalized)
     ]
 
 
@@ -171,6 +173,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--write-owned-manifest", action="store_true")
     parser.add_argument("--compare-owned-manifest", action="store_true")
     parser.add_argument("--exclude-prefix", action="append", default=[])
+    parser.add_argument("--exclude-path", action="append", default=[])
     return parser.parse_args(argv)
 
 
@@ -185,7 +188,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         changes = staged_changes(root) if args.staged else status_changes(root)
         problems = strict_problems(changes, staged=args.staged) if args.strict else []
-        owned_changes = exclude_prefixes(changes, args.exclude_prefix)
+        owned_changes = exclude_owned_evidence(changes, args.exclude_prefix, args.exclude_path)
         if args.write_owned_manifest:
             if problems:
                 raise RuntimeError("strict release-tree checks failed before manifest write")
