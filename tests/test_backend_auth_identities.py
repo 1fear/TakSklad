@@ -296,12 +296,14 @@ class BackendAuthIdentityTests(unittest.TestCase):
                 backend_main.read_web_session(logout_request, db=self.db)
 
     def test_request_scope_matrix_and_legacy_shadow_are_enforced(self):
+        auth_now = datetime.now(timezone.utc)
         principal = self.add_principal(scopes=["orders:read"])
+        principal.expires_at = auth_now + timedelta(days=30)
         issued = issue_service_token(
             self.db,
             principal,
-            expires_at=NOW + timedelta(days=1),
-            now=NOW,
+            expires_at=auth_now + timedelta(days=1),
+            now=auth_now,
             secret_factory=self.secret_factory,
         )
         identity_settings = load_settings({
@@ -336,11 +338,12 @@ class BackendAuthIdentityTests(unittest.TestCase):
             self.assertEqual(denied.exception.status_code, 403)
 
             worker = self.add_principal(kind="worker", scopes=["reports:read"], suffix="reconciliation")
+            worker.expires_at = auth_now + timedelta(days=30)
             worker_token = issue_service_token(
                 self.db,
                 worker,
-                expires_at=NOW + timedelta(days=1),
-                now=NOW,
+                expires_at=auth_now + timedelta(days=1),
+                now=auth_now,
                 secret_factory=lambda _count: FIXED_SECRET + "-worker",
             )
             reconciliation_preview = backend_main.require_service_token(
