@@ -89,7 +89,9 @@ def claim_event_leases(
     except Exception:
         db.rollback()
         raise
-    return sorted(events, key=lambda event: (event.available_at, event.created_at, event.id))
+    # Candidate selection already applies the fairness order before locking.
+    # Consumers do not require a second ordering pass over the claimed batch.
+    return events
 
 
 def build_postgres_claim_statement(*, event_types, owner, limit, now, expires_at, eligible=None):
