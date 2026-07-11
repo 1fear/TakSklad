@@ -211,6 +211,29 @@ def run_command(command: str, environment: dict[str, str], timeout: int = 3600) 
         return 124, sanitize(str(exc.stdout or "") + "\ncommand timed out"), round(time.monotonic() - started, 3)
 
 
+def wait_for_rehearsal_quiescence(
+    *, max_load_per_cpu: float = 0.25, timeout_seconds: int = 3600,
+) -> dict[str, Any]:
+    cpu_count = max(1, int(os.cpu_count() or 1))
+    started = time.monotonic()
+    while True:
+        load_1m = float(os.getloadavg()[0])
+        load_per_cpu = load_1m / cpu_count
+        waited = round(time.monotonic() - started, 3)
+        if load_per_cpu <= max_load_per_cpu:
+            return {
+                "status": "quiescent", "waited_seconds": waited,
+                "load_1m": round(load_1m, 3), "load_per_cpu": round(load_per_cpu, 4),
+                "max_load_per_cpu": max_load_per_cpu,
+            }
+        if waited >= timeout_seconds:
+            raise VerificationError(
+                f"rehearsal host did not quiesce: load_per_cpu={load_per_cpu:.4f} "
+                f"limit={max_load_per_cpu:.4f}"
+            )
+        time.sleep(5.0)
+
+
 def _copy_overlay(relative: str, destination_root: Path) -> None:
     source = ROOT / relative
     destination = destination_root / relative
@@ -355,6 +378,7 @@ def run_rehearsals(
     identity: dict[str, str] | None = None,
     workspace_factory: Callable[[str, Path], dict[str, Any]] = prepare_clean_worktree,
     workspace_cleanup: Callable[[Path], bool] = cleanup_clean_worktree,
+    quiescence_waiter: Callable[[], dict[str, Any]] = wait_for_rehearsal_quiescence,
 ) -> dict[str, Any]:
     if repeat != 3 or not same_artifact:
         raise VerificationError("Phase 26 requires --repeat 3 --same-artifact")
@@ -393,6 +417,11 @@ def run_rehearsals(
         try:
             workspace = workspace_factory(identity["source_sha"], gate_root)
             for gate_id, domain, command in gates:
+                precondition = (
+                    quiescence_waiter()
+                    if gate_id in {"desktop-storage-performance", "backend-performance"}
+                    else None
+                )
                 exit_code, output, duration = runner(command, environment, 3600)
                 status = "pass" if exit_code == 0 else "fail"
                 matrix[gate_id][run_id] = status
@@ -400,6 +429,7 @@ def run_rehearsals(
                     "id": gate_id, "domain": domain, "command": command,
                     "status": status, "exit_code": exit_code,
                     "duration_seconds": duration, "output_tail": output,
+                    "precondition": precondition,
                 })
                 if exit_code:
                     run_ok = False

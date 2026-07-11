@@ -15,6 +15,7 @@ from tools.final_release_verifier import (
     mandatory_commands,
     run_rehearsals,
     sanitize,
+    wait_for_rehearsal_quiescence,
 )
 
 
@@ -105,6 +106,14 @@ class FinalReleaseVerifierTests(unittest.TestCase):
         self.assertTrue(_is_declared_clean_change("frontend/node_modules"))
         self.assertFalse(_is_declared_clean_change("frontend/src/App.tsx"))
 
+    @patch("tools.final_release_verifier.os.cpu_count", return_value=8)
+    @patch("tools.final_release_verifier.os.getloadavg", return_value=(1.6, 2.0, 2.2))
+    def test_rehearsal_cooldown_requires_stricter_load_than_benchmark(self, _load, _cpu):
+        result = wait_for_rehearsal_quiescence()
+        self.assertEqual(result["status"], "quiescent")
+        self.assertEqual(result["load_per_cpu"], 0.2)
+        self.assertEqual(result["max_load_per_cpu"], 0.25)
+
     def test_three_fresh_runs_have_same_identity_and_zero_external_effects(self):
         roots = []
 
@@ -135,6 +144,7 @@ class FinalReleaseVerifierTests(unittest.TestCase):
                 gates=[("safe-gate", "code_quality", "true")], runner=runner, identity=IDENTITY,
                 workspace_factory=self.fake_workspace_factory,
                 workspace_cleanup=self.fake_workspace_cleanup,
+                quiescence_waiter=lambda: {"status": "quiescent", "waited_seconds": 0},
             )
             manifests = [json.loads((output / f"run-{number}.json").read_text()) for number in range(1, 4)]
             matrix = json.loads((output / "gate-matrix.json").read_text())
@@ -163,6 +173,7 @@ class FinalReleaseVerifierTests(unittest.TestCase):
                 gates=[("fails", "security", "false")], runner=runner, identity=IDENTITY,
                 workspace_factory=self.fake_workspace_factory,
                 workspace_cleanup=self.fake_workspace_cleanup,
+                quiescence_waiter=lambda: {"status": "quiescent", "waited_seconds": 0},
             )
         self.assertEqual(summary["status"], "fail")
         self.assertEqual(len(summary["runs"]), 1)
@@ -191,6 +202,7 @@ class FinalReleaseVerifierTests(unittest.TestCase):
                 gates=[("safe", "code_quality", "true")], runner=runner, identity=IDENTITY,
                 workspace_factory=self.fake_workspace_factory,
                 workspace_cleanup=lambda destination: False,
+                quiescence_waiter=lambda: {"status": "quiescent", "waited_seconds": 0},
             )
         self.assertEqual(summary["status"], "fail")
         self.assertEqual(len(summary["runs"]), 1)
