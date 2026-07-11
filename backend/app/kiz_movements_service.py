@@ -164,7 +164,41 @@ def record_kiz_movement(
     return movement
 
 
-def record_kiz_movements(db: Session, records):
+def locked_existing_kiz_ids(db: Session, codes):
+    """Acquire ordered PostgreSQL advisory locks and load KIZ ids in one trip."""
+
+    codes = sorted({normalize_kiz_code(code) for code in codes if normalize_kiz_code(code)})
+    if not codes:
+        return {}
+    if db.bind.dialect.name != "postgresql":
+        return {
+            code: kiz_id
+            for code, kiz_id in db.execute(
+                select(KizCode.code, KizCode.id).where(KizCode.code.in_(codes))
+            ).all()
+        }
+
+    parameters = {}
+    values = []
+    for index, code in enumerate(codes):
+        first, second = advisory_lock_keys(code)
+        parameters.update({
+            f"code_{index}": code,
+            f"first_{index}": first,
+            f"second_{index}": second,
+        })
+        values.append(f"(:code_{index}, :first_{index}, :second_{index})")
+    rows = db.execute(text(
+        "SELECT lock_key.code, kiz_codes.id, "
+        "pg_advisory_xact_lock(lock_key.first_key, lock_key.second_key) AS lock_acquired "
+        f"FROM (VALUES {', '.join(values)}) AS lock_key(code, first_key, second_key) "
+        "LEFT JOIN kiz_codes ON kiz_codes.code = lock_key.code "
+        "ORDER BY lock_key.first_key, lock_key.second_key"
+    ), parameters).all()
+    return {str(code): kiz_id for code, kiz_id, _lock_acquired in rows if kiz_id is not None}
+
+
+def record_kiz_movements(db: Session, records, *, lock_codes=False):
     prepared = []
     for record in records:
         normalized = normalize_kiz_code(record.get("code"))
@@ -174,16 +208,21 @@ def record_kiz_movements(db: Session, records):
         return []
 
     codes = sorted({code for code, _record in prepared})
-    existing = {
-        row.code: row
-        for row in db.execute(select(KizCode).where(KizCode.code.in_(codes))).scalars()
-    }
+    if lock_codes:
+        existing_ids = locked_existing_kiz_ids(db, codes)
+    else:
+        existing_ids = {
+            code: kiz_id
+            for code, kiz_id in db.execute(
+                select(KizCode.code, KizCode.id).where(KizCode.code.in_(codes))
+            ).all()
+        }
     missing = []
     for code in codes:
-        if code in existing:
+        if code in existing_ids:
             continue
         kiz = KizCode(id=uuid.uuid4(), code=code)
-        existing[code] = kiz
+        existing_ids[code] = kiz.id
         missing.append(kiz)
     if missing:
         db.add_all(missing)
@@ -192,7 +231,7 @@ def record_kiz_movements(db: Session, records):
     for code, record in prepared:
         movement = KizMovement(
             id=uuid.uuid4(),
-            kiz_id=existing[code].id,
+            kiz_id=existing_ids[code],
             movement_type=record["movement_type"],
             order_id=record.get("order_id"),
             order_item_id=record.get("order_item_id"),

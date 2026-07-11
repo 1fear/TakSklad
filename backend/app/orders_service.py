@@ -17,7 +17,6 @@ from .kiz_movements_service import (
     latest_kiz_movement,
     lookup_kiz_state,
     lock_kiz_code_for_transaction,
-    lock_kiz_codes_for_transaction,
     normalize_kiz_code,
     outbound_movement_type_for,
     record_kiz_movement,
@@ -682,10 +681,9 @@ def mark_order_returned(db: Session, order_id, return_reference="", returned_by=
                     "returned_by": raw_payload["returned_by"],
                 },
             })
-    lock_kiz_codes_for_transaction(db, (record["code"] for record in movement_records))
     return_movements = [
         str(movement.id)
-        for movement in record_kiz_movements(db, movement_records)
+        for movement in record_kiz_movements(db, movement_records, lock_codes=True)
     ]
 
     db.add(AuditLog(
