@@ -6,7 +6,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tools.final_release_verifier import (
+    GATES,
     VerificationError,
+    _is_declared_clean_change,
+    _is_declared_evidence,
     isolated_environment,
     load_identity,
     mandatory_commands,
@@ -27,6 +30,23 @@ IDENTITY = {
 
 
 class FinalReleaseVerifierTests(unittest.TestCase):
+    @staticmethod
+    def fake_workspace_factory(source_sha, destination):
+        destination.mkdir(parents=True)
+        return {
+            "source_sha": source_sha,
+            "detached": True,
+            "runtime_source_drift": 0,
+            "evidence_overlay_paths": [],
+            "changed_evidence_paths": [],
+        }
+
+    @staticmethod
+    def fake_workspace_cleanup(destination):
+        if destination.exists():
+            destination.rmdir()
+        return not destination.exists()
+
     def test_isolated_environment_does_not_inherit_credentials(self):
         with patch.dict("os.environ", {"PATH": "/bin", "TELEGRAM_TOKEN": "forbidden", "DATABASE_URL": "forbidden"}, clear=True):
             environment = isolated_environment(Path("/tmp/synthetic"), "run-1")
@@ -69,6 +89,20 @@ class FinalReleaseVerifierTests(unittest.TestCase):
             with self.assertRaises(VerificationError):
                 run_rehearsals(repeat=2, same_artifact=True, output_dir=Path(temporary), gates=[], identity=IDENTITY)
 
+    def test_owned_tree_gate_preserves_exact_phase_one_command(self):
+        command = next(command for gate_id, _, command in GATES if gate_id == "owned-tree")
+        self.assertTrue(command.endswith("tools/check_release_tree.py --compare-owned-manifest --strict"))
+        self.assertNotIn("--exclude", command)
+
+    def test_clean_worktree_overlay_allowlist_rejects_runtime_paths(self):
+        self.assertTrue(_is_declared_evidence("test-artifacts/release.json"))
+        self.assertTrue(_is_declared_evidence("test-artifacts/provenance/verification.json"))
+        self.assertFalse(_is_declared_evidence("backend/app/logistics_service.py"))
+        self.assertFalse(_is_declared_evidence("tests/test_backend_api_persistence.py"))
+        self.assertTrue(_is_declared_clean_change(".venv"))
+        self.assertTrue(_is_declared_clean_change("frontend/node_modules"))
+        self.assertFalse(_is_declared_clean_change("frontend/src/App.tsx"))
+
     def test_three_fresh_runs_have_same_identity_and_zero_external_effects(self):
         roots = []
 
@@ -97,6 +131,8 @@ class FinalReleaseVerifierTests(unittest.TestCase):
             summary = run_rehearsals(
                 repeat=3, same_artifact=True, output_dir=output,
                 gates=[("safe-gate", "code_quality", "true")], runner=runner, identity=IDENTITY,
+                workspace_factory=self.fake_workspace_factory,
+                workspace_cleanup=self.fake_workspace_cleanup,
             )
             manifests = [json.loads((output / f"run-{number}.json").read_text()) for number in range(1, 4)]
             matrix = json.loads((output / "gate-matrix.json").read_text())
@@ -106,6 +142,8 @@ class FinalReleaseVerifierTests(unittest.TestCase):
         self.assertEqual(len(set(roots)), 3)
         self.assertTrue(all(item["identity"] == IDENTITY for item in manifests))
         self.assertTrue(all(item["fresh_environment"]["cleanup_zero"] for item in manifests))
+        self.assertTrue(all(item["clean_worktree"]["source_sha"] == IDENTITY["source_sha"] for item in manifests))
+        self.assertTrue(all(item["clean_worktree"]["runtime_source_drift"] == 0 for item in manifests))
         self.assertEqual(summary["production_mutations"], 0)
         self.assertEqual(summary["external_sends"], 0)
         self.assertEqual(summary["timings"]["migration_seconds"]["p95"], 1.0)
@@ -120,10 +158,40 @@ class FinalReleaseVerifierTests(unittest.TestCase):
             summary = run_rehearsals(
                 repeat=3, same_artifact=True, output_dir=Path(temporary),
                 gates=[("fails", "security", "false")], runner=runner, identity=IDENTITY,
+                workspace_factory=self.fake_workspace_factory,
+                workspace_cleanup=self.fake_workspace_cleanup,
             )
         self.assertEqual(summary["status"], "fail")
         self.assertEqual(len(summary["runs"]), 1)
         self.assertFalse(summary["all_gates_passed"])
+
+    def test_worktree_cleanup_failure_marks_run_failed(self):
+        def runner(command, environment, timeout):
+            if "rehearse_deploy" in command:
+                return 0, (
+                    f"REHEARSE_DEPLOY_OK source_sha={IDENTITY['source_sha']} "
+                    f"backend_digest={IDENTITY['backend_digest']} frontend_digest={IDENTITY['frontend_digest']} "
+                    "migration_seconds=1 migration_budget_seconds=120 readiness=green worker_heartbeats=green "
+                    "production_mutations=0 external_sends=0"
+                ), 0.1
+            if "rehearse_rollback" in command:
+                return 0, (
+                    f"REHEARSE_ROLLBACK_OK source_sha={IDENTITY['source_sha']} "
+                    f"candidate_backend_digest={IDENTITY['backend_digest']} rollback_seconds=1 "
+                    "database_downgrade=0 data_loss=0 production_mutations=0 external_sends=0"
+                ), 0.1
+            return 0, "PASS", 0.1
+
+        with tempfile.TemporaryDirectory() as temporary:
+            summary = run_rehearsals(
+                repeat=3, same_artifact=True, output_dir=Path(temporary),
+                gates=[("safe", "code_quality", "true")], runner=runner, identity=IDENTITY,
+                workspace_factory=self.fake_workspace_factory,
+                workspace_cleanup=lambda destination: False,
+            )
+        self.assertEqual(summary["status"], "fail")
+        self.assertEqual(len(summary["runs"]), 1)
+        self.assertFalse(summary["runs"][0]["status"] == "pass")
 
     def test_duplicate_gate_ids_are_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:

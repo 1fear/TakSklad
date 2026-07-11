@@ -30,6 +30,15 @@ ENV_ALLOWLIST = (
     "PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL", "TERM",
     "DOCKER_HOST", "XDG_RUNTIME_DIR", "SSH_AUTH_SOCK",
 )
+EVIDENCE_OVERLAYS = (
+    "test-artifacts/release.json",
+    "test-artifacts/release",
+    "test-artifacts/provenance",
+    "test-artifacts/sbom",
+    "test-artifacts/windows-signing-contract.json",
+)
+IGNORED_OVERLAYS = (".release-state/performance",)
+DEPENDENCY_LINKS = (".venv", "frontend/node_modules")
 
 
 class VerificationError(RuntimeError):
@@ -130,7 +139,7 @@ def load_identity(manifest_path: Path = RELEASE_MANIFEST) -> dict[str, str]:
 # suites replace repeated subsets; immutable verification replaces rebuilds.
 GATES = [
     ("source-tree", "source_integrity", "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python tools/check_release_tree.py --strict --path-only"),
-    ("owned-tree", "source_integrity", "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python tools/check_release_tree.py --compare-owned-manifest --strict --exclude-prefix test-artifacts/release-rehearsal/ --exclude-prefix test-artifacts/disaster-recovery/ --exclude-prefix test-artifacts/phase24/offsite-test-bucket/ --exclude-path test-artifacts/phase24/offsite-backup-evidence.json"),
+    ("owned-tree", "source_integrity", "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python tools/check_release_tree.py --compare-owned-manifest --strict"),
     ("diff-check", "source_integrity", "git diff --check"),
     ("python-tests", "code_quality", "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python -m unittest discover -s tests"),
     ("python-compile", "code_quality", "PYTHONPYCACHEPREFIX=/tmp/taksklad-phase26-pycache PYTHONPATH=. .venv/bin/python -m compileall -q main.py sitecustomize.py taksklad src/taksklad backend/app backend/migrations tools tests"),
@@ -186,14 +195,110 @@ def mandatory_commands(phase_dir: Path | None = None) -> list[str]:
 
 def run_command(command: str, environment: dict[str, str], timeout: int = 3600) -> tuple[int, str, float]:
     started = time.monotonic()
+    gate_root = Path(environment.get("TAKSKLAD_GATE_ROOT", ROOT))
     try:
         completed = subprocess.run(
-            ["bash", "-lc", command], cwd=ROOT, env=environment, text=True,
+            ["bash", "-lc", command], cwd=gate_root, env=environment, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout, check=False,
         )
         return completed.returncode, sanitize(completed.stdout), round(time.monotonic() - started, 3)
     except subprocess.TimeoutExpired as exc:
         return 124, sanitize(str(exc.stdout or "") + "\ncommand timed out"), round(time.monotonic() - started, 3)
+
+
+def _copy_overlay(relative: str, destination_root: Path) -> None:
+    source = ROOT / relative
+    destination = destination_root / relative
+    if not source.exists():
+        raise VerificationError(f"required clean-worktree overlay is missing: {relative}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if source.is_dir():
+        shutil.copytree(source, destination, dirs_exist_ok=True)
+    else:
+        shutil.copy2(source, destination)
+
+
+def _status_paths(root: Path) -> list[str]:
+    completed = subprocess.run(
+        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames"],
+        cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    if completed.returncode:
+        raise VerificationError("cannot inspect clean worktree status")
+    return sorted(
+        item.decode("utf-8", errors="surrogateescape")[3:]
+        for item in completed.stdout.split(b"\0") if item
+    )
+
+
+def _is_declared_evidence(path: str) -> bool:
+    normalized = path.replace("\\", "/")
+    return any(normalized == item or normalized.startswith(item.rstrip("/") + "/") for item in EVIDENCE_OVERLAYS)
+
+
+def _is_declared_clean_change(path: str) -> bool:
+    normalized = path.replace("\\", "/")
+    return _is_declared_evidence(normalized) or normalized in DEPENDENCY_LINKS
+
+
+def prepare_clean_worktree(source_sha: str, destination: Path) -> dict[str, Any]:
+    added = subprocess.run(
+        ["git", "worktree", "add", "--detach", "--force", str(destination), source_sha],
+        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False,
+    )
+    if added.returncode:
+        raise VerificationError("cannot create detached release worktree: " + sanitize(added.stdout))
+    try:
+        for relative in EVIDENCE_OVERLAYS + IGNORED_OVERLAYS:
+            _copy_overlay(relative, destination)
+        for relative in DEPENDENCY_LINKS:
+            source = ROOT / relative
+            target = destination / relative
+            if not source.exists():
+                raise VerificationError(f"required local dependency tree is missing: {relative}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.symlink_to(source, target_is_directory=True)
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=destination, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, check=False,
+        )
+        if head.returncode or head.stdout.strip() != source_sha:
+            raise VerificationError("clean worktree HEAD does not match release source_sha")
+        changed_paths = _status_paths(destination)
+        unexpected = [path for path in changed_paths if not _is_declared_clean_change(path)]
+        if unexpected:
+            raise VerificationError("runtime/source drift in clean worktree: " + ", ".join(unexpected))
+        manifest = subprocess.run(
+            [str(destination / ".venv/bin/python"), "tools/check_release_tree.py", "--write-owned-manifest", "--strict"],
+            cwd=destination,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": "."},
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False,
+        )
+        if manifest.returncode:
+            raise VerificationError("cannot seal strict owned manifest: " + sanitize(manifest.stdout))
+        return {
+            "source_sha": source_sha,
+            "detached": True,
+            "runtime_source_drift": 0,
+            "evidence_overlay_paths": list(EVIDENCE_OVERLAYS),
+            "dependency_links": list(DEPENDENCY_LINKS),
+            "changed_allowed_paths": changed_paths,
+        }
+    except BaseException:
+        cleanup_clean_worktree(destination)
+        raise
+
+
+def cleanup_clean_worktree(destination: Path) -> bool:
+    removed = subprocess.run(
+        ["git", "worktree", "remove", "--force", str(destination)], cwd=ROOT,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False,
+    )
+    subprocess.run(
+        ["git", "worktree", "prune"], cwd=ROOT, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, check=False,
+    )
+    return removed.returncode == 0 and not destination.exists()
 
 
 def _parse_ok_line(output: str, prefix: str) -> dict[str, str]:
@@ -243,6 +348,8 @@ def run_rehearsals(
     gates: list[tuple[str, str, str]] | None = None,
     runner: Callable[[str, dict[str, str], int], tuple[int, str, float]] = run_command,
     identity: dict[str, str] | None = None,
+    workspace_factory: Callable[[str, Path], dict[str, Any]] = prepare_clean_worktree,
+    workspace_cleanup: Callable[[Path], bool] = cleanup_clean_worktree,
 ) -> dict[str, Any]:
     if repeat != 3 or not same_artifact:
         raise VerificationError("Phase 26 requires --repeat 3 --same-artifact")
@@ -266,12 +373,18 @@ def run_rehearsals(
     for run_number in range(1, repeat + 1):
         run_id = f"run-{run_number}"
         temporary = Path(tempfile.mkdtemp(prefix=f"taksklad-phase26-{run_number}-", dir=ROOT / ".release-state"))
+        worktree_parent = Path(tempfile.mkdtemp(prefix=f"taksklad-phase26-source-{run_number}-"))
+        gate_root = worktree_parent / "source"
+        workspace: dict[str, Any] = {}
+        cleanup_ok = False
         environment = isolated_environment(temporary, run_id)
+        environment["TAKSKLAD_GATE_ROOT"] = str(gate_root)
         results = []
         run_ok = True
         deploy: dict[str, Any] = {}
         rollback: dict[str, Any] = {}
         try:
+            workspace = workspace_factory(identity["source_sha"], gate_root)
             for gate_id, domain, command in gates:
                 exit_code, output, duration = runner(command, environment, 3600)
                 status = "pass" if exit_code == 0 else "fail"
@@ -306,9 +419,18 @@ def run_rehearsals(
                     _require_rehearsal_result(rollback, identity, rollback=True)
         finally:
             shutil.rmtree(temporary, ignore_errors=True)
+            cleanup_ok = workspace_cleanup(gate_root)
+            shutil.rmtree(worktree_parent, ignore_errors=True)
+            cleanup_ok = cleanup_ok and not worktree_parent.exists()
+            if workspace and not cleanup_ok:
+                run_ok = False
         manifest = {
             "schema_version": 1, "run_id": run_id, "status": "pass" if run_ok else "fail",
-            "fresh_environment": {"id": run_id, "type": "temporary-isolated", "cleanup_zero": not temporary.exists()},
+            "fresh_environment": {
+                "id": run_id, "type": "temporary-isolated-clean-worktree",
+                "cleanup_zero": not temporary.exists() and cleanup_ok,
+            },
+            "clean_worktree": {**workspace, "cleanup_zero": cleanup_ok},
             "identity": identity, "gates": results, "deploy": deploy, "rollback": rollback,
             "production_mutations": 0, "external_sends": 0, "production_deploys": 0,
         }
