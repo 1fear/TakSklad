@@ -107,12 +107,12 @@ class FinalReleaseVerifierTests(unittest.TestCase):
         self.assertFalse(_is_declared_clean_change("frontend/src/App.tsx"))
 
     @patch("tools.final_release_verifier.os.cpu_count", return_value=8)
-    @patch("tools.final_release_verifier.os.getloadavg", return_value=(1.6, 2.0, 2.2))
+    @patch("tools.final_release_verifier.os.getloadavg", return_value=(1.0, 1.5, 2.0))
     def test_rehearsal_cooldown_requires_stricter_load_than_benchmark(self, _load, _cpu):
         result = wait_for_rehearsal_quiescence()
         self.assertEqual(result["status"], "quiescent")
-        self.assertEqual(result["load_per_cpu"], 0.2)
-        self.assertEqual(result["max_load_per_cpu"], 0.25)
+        self.assertEqual(result["load_per_cpu"], 0.125)
+        self.assertEqual(result["max_load_per_cpu"], 0.15)
 
     def test_three_fresh_runs_have_same_identity_and_zero_external_effects(self):
         roots = []

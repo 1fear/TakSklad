@@ -146,6 +146,7 @@ GATES = [
     ("source-tree", "source_integrity", "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python tools/check_release_tree.py --strict --path-only"),
     ("owned-tree", "source_integrity", "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python tools/check_release_tree.py --compare-owned-manifest --strict"),
     ("diff-check", "source_integrity", "git diff --check"),
+    ("backend-performance", "performance", "PYTHONPATH=. .venv/bin/python tools/benchmark_backend.py compare --profile reference --repeat 3 --assert-budgets"),
     ("python-tests", "code_quality", "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python -m unittest discover -s tests"),
     ("python-compile", "code_quality", "PYTHONPYCACHEPREFIX=/tmp/taksklad-phase26-pycache PYTHONPATH=. .venv/bin/python -m compileall -q main.py sitecustomize.py taksklad src/taksklad backend/app backend/migrations tools tests"),
     ("code-organization", "code_quality", "PYTHONPATH=. .venv/bin/python tools/check_code_organization.py --strict"),
@@ -153,7 +154,6 @@ GATES = [
     ("data-invariants", "data_integrity", "./tools/check_data_invariants.sh --database-url test-harness --read-only"),
     ("identity-backfill-dry-run", "migration", "PYTHONPATH=. .venv/bin/python tools/import_identity_backfill.py --dry-run --database-url test-harness"),
     ("desktop-storage-performance", "performance", "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python tools/benchmark_desktop_storage.py --synthetic-events 10000 --assert-p95-ms 25 --assert-no-loss"),
-    ("backend-performance", "performance", "PYTHONPATH=. .venv/bin/python tools/benchmark_backend.py compare --profile reference --repeat 3 --assert-budgets"),
     ("backend-query-plan", "performance", "PYTHONPATH=. .venv/bin/python tools/benchmark_backend.py explain --profile stress --format json"),
     ("backend-import-performance", "performance", "PYTHONPATH=. .venv/bin/python tools/benchmark_backend.py compare --workload import"),
     ("import-limits", "performance", "PYTHONPATH=. .venv/bin/python tools/benchmark_import_limits.py --profile maximum-valid --assert-budgets"),
@@ -212,7 +212,7 @@ def run_command(command: str, environment: dict[str, str], timeout: int = 3600) 
 
 
 def wait_for_rehearsal_quiescence(
-    *, max_load_per_cpu: float = 0.25, timeout_seconds: int = 3600,
+    *, max_load_per_cpu: float = 0.15, timeout_seconds: int = 3600,
 ) -> dict[str, Any]:
     cpu_count = max(1, int(os.cpu_count() or 1))
     started = time.monotonic()
