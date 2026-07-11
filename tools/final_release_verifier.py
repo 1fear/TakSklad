@@ -378,7 +378,9 @@ def run_rehearsals(
     for run_number in range(1, repeat + 1):
         run_id = f"run-{run_number}"
         temporary = Path(tempfile.mkdtemp(prefix=f"taksklad-phase26-{run_number}-", dir=ROOT / ".release-state"))
-        worktree_parent = Path(tempfile.mkdtemp(prefix=f"taksklad-phase26-source-{run_number}-"))
+        worktree_parent = Path(tempfile.mkdtemp(
+            prefix=f"taksklad-phase26-source-{run_number}-", dir=ROOT / ".release-state",
+        ))
         gate_root = worktree_parent / "source"
         workspace: dict[str, Any] = {}
         cleanup_ok = False

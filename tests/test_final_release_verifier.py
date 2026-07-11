@@ -146,6 +146,7 @@ class FinalReleaseVerifierTests(unittest.TestCase):
         self.assertTrue(all(item["fresh_environment"]["cleanup_zero"] for item in manifests))
         self.assertTrue(all(item["clean_worktree"]["source_sha"] == IDENTITY["source_sha"] for item in manifests))
         self.assertTrue(all(item["clean_worktree"]["runtime_source_drift"] == 0 for item in manifests))
+        self.assertTrue(all(item["fresh_environment"]["type"] == "temporary-isolated-clean-worktree" for item in manifests))
         self.assertEqual(summary["production_mutations"], 0)
         self.assertEqual(summary["external_sends"], 0)
         self.assertEqual(summary["timings"]["migration_seconds"]["p95"], 1.0)
