@@ -53,6 +53,8 @@ class FinalReleaseVerifierTests(unittest.TestCase):
         self.assertEqual(environment["PATH"], "/bin")
         self.assertNotIn("TELEGRAM_TOKEN", environment)
         self.assertNotIn("DATABASE_URL", environment)
+        self.assertEqual(environment["TAKSKLAD_EVENT_LEASES_ENABLED"], "0")
+        self.assertEqual(environment["SKLADBOT_SKU_MAPPING_JSON"], "")
 
     def test_repository_identity_fails_closed_until_artifact_source_matches_release(self):
         statement = json.loads(Path("test-artifacts/release/provenance.intoto.json").read_text())

@@ -74,6 +74,8 @@ def isolated_environment(temporary: Path, run_id: str) -> dict[str, str]:
         "TAKSKLAD_NO_PRODUCTION": "1", "TAKSKLAD_EXTERNAL_SENDS_DISABLED": "1",
         "TAKSKLAD_ENV": "test", "CI": "true", "TMPDIR": str(temporary),
         "PYTHONDONTWRITEBYTECODE": "1",
+        "TAKSKLAD_EVENT_LEASES_ENABLED": "0",
+        "SKLADBOT_SKU_MAPPING_JSON": "",
     })
     return environment
 
