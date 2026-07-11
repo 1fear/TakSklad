@@ -19,36 +19,36 @@
   "deployable": false,
   "images": {
     "backend": {
-      "digest": "sha256:92ccba0f11241aab9c8bcfc64b23af40bded6616aca4497ce5f3b988475e1872",
+      "digest": "sha256:cd32fe81d5a2a5c8831bf6a8ae9a7875d89143ef954bf5b01e18aa02b1471c8d",
       "name": "local/taksklad-backend",
       "oci_tar_retained": false,
-      "oci_tar_sha256": "a962a3199da47b9c10acaf2c1e4a07e9829b7a0d13cd25448e3ccc883d78e032",
-      "tag": "sha-83d7c1af2f76c992aeedad4829b39144d19d0e7e"
+      "oci_tar_sha256": "067e8a73e0ccd16b13b54b86ae253af79f224554884d0c4e01a0fa08d9d64f4e",
+      "tag": "sha-c736b56b227f2f58de78b8021f9b60d992145483"
     },
     "frontend": {
       "digest": "sha256:c025403158e31bface7844ed5bba8829fca8e41e2f846ae4c5dca1d8a761eab3",
       "name": "local/taksklad-frontend",
       "oci_tar_retained": false,
-      "oci_tar_sha256": "88dc79c6918c365bb827dc56d2e3ef5fc269824a9319c9959eeafcaaaa5111dc",
-      "tag": "sha-83d7c1af2f76c992aeedad4829b39144d19d0e7e"
+      "oci_tar_sha256": "4a77fb0ad6b68fe8fff3295f447860364fa522d15ad9a75864bef8596a72a3c9",
+      "tag": "sha-c736b56b227f2f58de78b8021f9b60d992145483"
     }
   },
   "previous_release": {
-    "backend_digest": "sha256:ab3888cdefbcb432a2ab22fce9059fcaec7a68f511cd1d223472ce61603879f1",
-    "frontend_digest": "sha256:0dab363c6ef08692cd910ba7e9af5b1dadf1423dbc42bf91863efcdaa3246a1e",
+    "backend_digest": "sha256:06fabfa1aa7711a9a5312295d3037561418479b29f3d077f921b2eb4faa18bb2",
+    "frontend_digest": "sha256:80a9933cba8f6ad8ef4407d867f744682d8ec5c2d7bc8210f538c79dd87fc9b0",
     "source": "synthetic-local-dry-run"
   },
-  "release_id": "local-83d7c1af2f76c992aeedad4829b39144d19d0e7e",
+  "release_id": "local-c736b56b227f2f58de78b8021f9b60d992145483",
   "schema_version": 1,
-  "source_sha": "83d7c1af2f76c992aeedad4829b39144d19d0e7e",
+  "source_sha": "c736b56b227f2f58de78b8021f9b60d992145483",
   "windows": {
     "artifact": "test-artifacts/provenance/TakSklad-synthetic-signed.exe",
-    "artifact_sha256": "dc51eb14c4bbca8c04c69b8c9285f7f9b85c62d2a04fc083a4c27ae85831f992",
-    "artifact_source_sha": "b6229ca247056358866c80fce8cb43792808ee80",
+    "artifact_sha256": "c713304f5460cdd79e965a84b5e1fd8ef12cbd3a79afc371d95029bebc32b8bd",
+    "artifact_source_sha": "c736b56b227f2f58de78b8021f9b60d992145483",
     "dependency_lock_sha256": "582eaa79370a79d1eae415c34fc57aecd69dc8d46cf40ef0835562b8f5de01c1",
     "production_certificate_verified": false,
     "production_gate": "WINDOWS_CODESIGN_CERTIFICATE_NOT_AVAILABLE",
-    "release_source_sha": "83d7c1af2f76c992aeedad4829b39144d19d0e7e",
+    "release_source_sha": "c736b56b227f2f58de78b8021f9b60d992145483",
     "signature_status": "Valid",
     "signature_type": "authenticode-local-test",
     "version": "2.0.25"

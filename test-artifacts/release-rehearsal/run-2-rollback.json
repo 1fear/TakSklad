@@ -1,0 +1,22 @@
+{
+  "candidate_backend_digest": "sha256:cd32fe81d5a2a5c8831bf6a8ae9a7875d89143ef954bf5b01e18aa02b1471c8d",
+  "candidate_runtime_image_id": "sha256:96d6b0d1320b49d64923b2c83905117e5d3757eba8b7399917135dc58b801f40",
+  "cleanup_zero": true,
+  "data_loss": 0,
+  "database_downgrade": 0,
+  "environment": "isolated",
+  "external_sends": 0,
+  "max_seconds": 300.0,
+  "previous_backend_digest": "sha256:06fabfa1aa7711a9a5312295d3037561418479b29f3d077f921b2eb4faa18bb2",
+  "previous_runtime_image_id": "sha256:945ec6fad02f852c5698d4051f3e5fc8c28f69c8e6d350fc91089f9bc4545cfd",
+  "previous_source_sha": "c89d253cb190800910d0b5250982dab690900eb9",
+  "production_mutations": 0,
+  "rollback_seconds": 1.013,
+  "schema_after": "20260711_0016",
+  "schema_before": "20260711_0016",
+  "source_sha": "c736b56b227f2f58de78b8021f9b60d992145483",
+  "status": "pass",
+  "synthetic_only": true,
+  "synthetic_rows_after": 1,
+  "synthetic_rows_before": 1
+}

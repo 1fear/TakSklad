@@ -1,9 +1,9 @@
 {
   "actual_postgresql_restore": true,
   "actual_production_readiness": false,
-  "archive_sha256": "14fb28fd6b4c3327e769633e6d554673b902af7df02099a3da248932c67fe57e",
-  "backup_id": "taksklad-postgres-20260710T201636Z-synthetic-46111",
-  "completed_at": "2026-07-10T20:16:40Z",
+  "archive_sha256": "5d41ceba7f9d43f336aa3b6f36bb556aae2fd187c47c4af1569bbbd04ee2a955",
+  "backup_id": "taksklad-postgres-20260711T022610Z-synthetic-71865",
+  "completed_at": "2026-07-11T02:26:13Z",
   "counts": {
     "imports": 0,
     "order_items": 0,
@@ -13,9 +13,9 @@
   },
   "customer_content_in_evidence": false,
   "disposable_cleanup_count": 0,
-  "drill_id": "restore-20260710T201636Z",
+  "drill_id": "restore-20260711T022612Z",
   "drill_mode": "disposable-postgresql-custom-archive",
-  "duration_seconds": 3.251,
+  "duration_seconds": 1.018,
   "invariants": {
     "archive_checksum": true,
     "archive_list_checksum": true,
@@ -24,7 +24,7 @@
     "synthetic_primary_key_count": true
   },
   "isolated": true,
-  "migration_head": "20260711_0015",
+  "migration_head": "20260711_0016",
   "migration_head_assertion": "restored-database",
   "network_mode": "none",
   "production_touched": false,

@@ -9,11 +9,11 @@
       },
       "internalParameters": {
         "candidateInputSha256": {
-          "backend": "bacc61caf539954f0851fdf06109b4550957c09af5784cd96d9216ab812fbc84",
-          "frontend": "2382ee61e2c03f67d7e36b801448a7996f45480516e40a159ef0c53243baa0d9"
+          "backend": "599b33476b8b982c20481cdc7f053bd8232127afe2b735afc2da3e974b5576f2",
+          "frontend": "cd5b005b797afda1add6b6325a9a6efb2ecd65c1210da3f04e245fda4ee64c13"
         },
         "dirtyCandidate": true,
-        "sourceCommit": "b6229ca247056358866c80fce8cb43792808ee80"
+        "sourceCommit": "c736b56b227f2f58de78b8021f9b60d992145483"
       },
       "resolvedDependencies": [
         {
@@ -26,7 +26,7 @@
         "id": "local-test://taksklad/release-rehearsal"
       },
       "metadata": {
-        "invocationId": "local-test:sha256:4d14b044bcbb685e17203f5e3df1c1747b4e07e2553fd47532cb0f9931112fea"
+        "invocationId": "local-test:sha256:84b33cea3bc00c21efcf7a1934fe55c5e4fd18adf815974a7d4ae6697d6c5988"
       }
     }
   },
@@ -34,19 +34,19 @@
   "subject": [
     {
       "digest": {
-        "sha256": "dc51eb14c4bbca8c04c69b8c9285f7f9b85c62d2a04fc083a4c27ae85831f992"
+        "sha256": "c713304f5460cdd79e965a84b5e1fd8ef12cbd3a79afc371d95029bebc32b8bd"
       },
       "name": "TakSklad-synthetic-signed.exe"
     },
     {
       "digest": {
-        "sha256": "345017deb4171058a3c09090f4305b10f8bc6b64dbe2b14c40b83ab82cabbd3f"
+        "sha256": "f5626bd9783bcf2bf9beea06a3ce36c267c8f3605eb52292c52b4c9be752af9c"
       },
       "name": "taksklad-backend.oci.tar"
     },
     {
       "digest": {
-        "sha256": "8b1aac20486872a9a611feaf8bb0c9c507eb01ec90f2da0d4412e410e6ce8cd5"
+        "sha256": "261eb3ba5e03fdd69aa92a6285c8ed09ed06ba4f6b041df523aa833782153b81"
       },
       "name": "taksklad-frontend.oci.tar"
     }

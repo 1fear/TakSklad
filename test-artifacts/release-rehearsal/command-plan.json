@@ -1,0 +1,344 @@
+{
+  "canonical_gate_count": 44,
+  "deduplication": "broad-suite-covers-repeated-subsets",
+  "gates": [
+    {
+      "command": "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python tools/check_release_tree.py --strict --path-only",
+      "domain": "source_integrity",
+      "id": "source-tree"
+    },
+    {
+      "command": "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python tools/check_release_tree.py --compare-owned-manifest --strict --exclude-prefix test-artifacts/release-rehearsal/ --exclude-prefix test-artifacts/disaster-recovery/ --exclude-prefix test-artifacts/phase24/offsite-test-bucket/ --exclude-path test-artifacts/phase24/offsite-backup-evidence.json",
+      "domain": "source_integrity",
+      "id": "owned-tree"
+    },
+    {
+      "command": "git diff --check",
+      "domain": "source_integrity",
+      "id": "diff-check"
+    },
+    {
+      "command": "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python -m unittest discover -s tests",
+      "domain": "code_quality",
+      "id": "python-tests"
+    },
+    {
+      "command": "PYTHONPYCACHEPREFIX=/tmp/taksklad-phase26-pycache PYTHONPATH=. .venv/bin/python -m compileall -q main.py sitecustomize.py taksklad src/taksklad backend/app backend/migrations tools tests",
+      "domain": "code_quality",
+      "id": "python-compile"
+    },
+    {
+      "command": "PYTHONPATH=. .venv/bin/python tools/check_code_organization.py --strict",
+      "domain": "code_quality",
+      "id": "code-organization"
+    },
+    {
+      "command": "./tools/run_postgres_tests.sh all",
+      "domain": "data_integrity",
+      "id": "postgres-all"
+    },
+    {
+      "command": "./tools/check_data_invariants.sh --database-url test-harness --read-only",
+      "domain": "data_integrity",
+      "id": "data-invariants"
+    },
+    {
+      "command": "PYTHONPATH=. .venv/bin/python tools/import_identity_backfill.py --dry-run --database-url test-harness",
+      "domain": "migration",
+      "id": "identity-backfill-dry-run"
+    },
+    {
+      "command": "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python tools/benchmark_desktop_storage.py --synthetic-events 10000 --assert-p95-ms 25 --assert-no-loss",
+      "domain": "performance",
+      "id": "desktop-storage-performance"
+    },
+    {
+      "command": "PYTHONPATH=. .venv/bin/python tools/benchmark_backend.py compare --profile reference --repeat 3 --assert-budgets",
+      "domain": "performance",
+      "id": "backend-performance"
+    },
+    {
+      "command": "PYTHONPATH=. .venv/bin/python tools/benchmark_backend.py explain --profile stress --format json",
+      "domain": "performance",
+      "id": "backend-query-plan"
+    },
+    {
+      "command": "PYTHONPATH=. .venv/bin/python tools/benchmark_backend.py compare --workload import",
+      "domain": "performance",
+      "id": "backend-import-performance"
+    },
+    {
+      "command": "PYTHONPATH=. .venv/bin/python tools/benchmark_import_limits.py --profile maximum-valid --assert-budgets",
+      "domain": "performance",
+      "id": "import-limits"
+    },
+    {
+      "command": "npm --prefix frontend run lint",
+      "domain": "code_quality",
+      "id": "frontend-lint"
+    },
+    {
+      "command": "npm --prefix frontend run typecheck",
+      "domain": "code_quality",
+      "id": "frontend-typecheck"
+    },
+    {
+      "command": "npm --prefix frontend run test:coverage",
+      "domain": "code_quality",
+      "id": "frontend-coverage"
+    },
+    {
+      "command": "npm --prefix frontend run test:a11y",
+      "domain": "browser_a11y",
+      "id": "frontend-a11y"
+    },
+    {
+      "command": "npm --prefix frontend run e2e",
+      "domain": "browser_a11y",
+      "id": "frontend-e2e"
+    },
+    {
+      "command": "npm --prefix frontend run perf",
+      "domain": "performance",
+      "id": "frontend-perf"
+    },
+    {
+      "command": "npm --prefix frontend run build",
+      "domain": "code_quality",
+      "id": "frontend-build"
+    },
+    {
+      "command": "./tools/security_gate.sh --synthetic-fixtures --fail-on high",
+      "domain": "security",
+      "id": "security"
+    },
+    {
+      "command": "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python tools/scan_synthetic_secret_sentinel.py --allowed-tree",
+      "domain": "security",
+      "id": "synthetic-secret-sentinel"
+    },
+    {
+      "command": "PYTHONPATH=. .venv/bin/python tools/run_config_matrix.py --dummy-only",
+      "domain": "security",
+      "id": "config-matrix"
+    },
+    {
+      "command": "PYTHONPATH=. .venv/bin/python tools/manage_service_principals.py plan --dummy-only",
+      "domain": "security",
+      "id": "service-principal-plan"
+    },
+    {
+      "command": "./tools/verify_locked_installs.sh --cold --require-hashes",
+      "domain": "supply_chain",
+      "id": "locked-installs"
+    },
+    {
+      "command": "./tools/generate_sbom.sh --verify",
+      "domain": "supply_chain",
+      "id": "sbom"
+    },
+    {
+      "command": "./tools/verify_release_attestations.sh --local",
+      "domain": "supply_chain",
+      "id": "attestations"
+    },
+    {
+      "command": "./tools/lint_workflows.sh",
+      "domain": "supply_chain",
+      "id": "workflow-lint"
+    },
+    {
+      "command": "PYTHONPATH=. .venv/bin/python tools/release_preflight.py --skip-network",
+      "domain": "source_integrity",
+      "id": "release-preflight"
+    },
+    {
+      "command": "docker compose --env-file /dev/null -f deploy/vds/docker-compose.yml config --no-interpolate --quiet",
+      "domain": "source_integrity",
+      "id": "compose-config"
+    },
+    {
+      "command": "PYTHONPATH=. .venv/bin/python tools/check_container_policy.py --strict",
+      "domain": "security",
+      "id": "container-policy"
+    },
+    {
+      "command": "./tools/run_container_smoke.sh --dummy-config --permission-tests",
+      "domain": "migration",
+      "id": "container-smoke"
+    },
+    {
+      "command": "./tools/run_container_load.sh --assert-resource-limits",
+      "domain": "performance",
+      "id": "container-load"
+    },
+    {
+      "command": "./deploy/vds/backup_postgres.sh --test-mode --synthetic-db",
+      "domain": "disaster_recovery",
+      "id": "backup-create"
+    },
+    {
+      "command": "./deploy/vds/restore_drill.sh --isolated --synthetic-db --assert-invariants",
+      "domain": "disaster_recovery",
+      "id": "restore-drill"
+    },
+    {
+      "command": "./tools/verify_offsite_backup.sh --test-bucket --checksum",
+      "domain": "disaster_recovery",
+      "id": "offsite-backup"
+    },
+    {
+      "command": "./tools/run_pitr_drill.sh --synthetic-db --assert-rpo-minutes 15 --assert-rto-minutes 30",
+      "domain": "disaster_recovery",
+      "id": "pitr-drill"
+    },
+    {
+      "command": "PYTHONPATH=. .venv/bin/python tools/test_worker_heartbeats.py --fault-matrix",
+      "domain": "observability",
+      "id": "worker-heartbeats"
+    },
+    {
+      "command": "PYTHONPATH=. .venv/bin/python tools/audit_metric_labels.py --strict",
+      "domain": "observability",
+      "id": "metric-labels"
+    },
+    {
+      "command": "./tools/run_alert_smoke.sh --synthetic-only --timeout-seconds 300",
+      "domain": "observability",
+      "id": "alert-smoke"
+    },
+    {
+      "command": "./tools/check_runtime_identity.py --local-stack",
+      "domain": "source_integrity",
+      "id": "runtime-identity"
+    }
+  ],
+  "schema_version": 1,
+  "source_mandatory_command_count": 97,
+  "source_mandatory_commands": [
+    "git branch --show-current && git status --porcelain=v1",
+    "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python tools/check_release_tree.py --strict --path-only",
+    "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python tools/run_safe_tests.py",
+    "PYTHONPYCACHEPREFIX=/tmp/taksklad-pycache PYTHONPATH=. .venv/bin/python -m compileall -q main.py sitecustomize.py taksklad src/taksklad backend/app backend/migrations tools tests",
+    "npm --prefix frontend run build",
+    "git diff --check",
+    "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python tools/check_release_tree.py --compare-owned-manifest --strict",
+    "./tools/run_postgres_tests.sh migrations",
+    "./tools/run_postgres_tests.sh smoke",
+    "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python -m unittest discover -s tests",
+    "PYTHONPATH=. .venv/bin/python -m alembic -c backend/alembic.ini heads",
+    "PYTHONPYCACHEPREFIX=/tmp/taksklad-pycache PYTHONPATH=. .venv/bin/python -m compileall -q backend/app backend/migrations tests tools",
+    "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python -m unittest tests.test_backend_api_persistence tests.test_ci_cd_workflows tests.test_release_preflight",
+    "./tools/run_postgres_tests.sh readiness",
+    "bash -n deploy/vds/deploy_from_git.sh deploy/vds/acceptance_status.sh",
+    "docker compose -f deploy/vds/docker-compose.yml config --no-interpolate --quiet",
+    "PYTHONPATH=. .venv/bin/python tools/release_preflight.py --skip-network",
+    "./tools/run_postgres_tests.sh queue-concurrency",
+    "./tools/run_postgres_tests.sh queue-failures",
+    "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python -m unittest tests.test_backend_google_sheets_pending tests.test_backend_skladbot_worker tests.test_backend_skladbot_request_dry_run tests.test_backend_events",
+    "PYTHONPYCACHEPREFIX=/tmp/taksklad-pycache PYTHONPATH=. .venv/bin/python -m compileall -q backend/app backend/migrations tests",
+    "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python -m unittest tests.test_storage_concurrency tests.test_storage_credentials tests.test_desktop_pending_store tests.test_backend_events tests.test_backend_bridge tests.test_startup_check tests.test_desktop_smoke",
+    "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python tools/benchmark_desktop_storage.py --synthetic-events 10000 --assert-p95-ms 25 --assert-no-loss",
+    "PYTHONPYCACHEPREFIX=/tmp/taksklad-pycache PYTHONPATH=. .venv/bin/python -m compileall -q src/taksklad tests tools",
+    "./tools/run_postgres_tests.sh seed-reference",
+    "PYTHONPATH=. .venv/bin/python tools/benchmark_backend.py baseline --profile reference --iterations 100",
+    "PYTHONPATH=. .venv/bin/python tools/benchmark_backend.py explain --profile stress --format json",
+    "PYTHONPATH=. .venv/bin/python tools/benchmark_backend.py validate-manifest",
+    "./tools/run_postgres_tests.sh import-identity",
+    "PYTHONPATH=. .venv/bin/python tools/import_identity_backfill.py --dry-run --database-url test-harness",
+    "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python -m unittest tests.test_backend_api_persistence tests.test_smartup_auto_import",
+    "PYTHONPATH=. .venv/bin/python tools/benchmark_backend.py compare --workload import",
+    "./tools/run_postgres_tests.sh invariants",
+    "./tools/check_data_invariants.sh --database-url test-harness --read-only",
+    "PYTHONPATH=. .venv/bin/python -m alembic -c backend/alembic.ini upgrade head",
+    "./tools/run_postgres_tests.sh outbox",
+    "./tools/run_postgres_tests.sh outbox-faults",
+    "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python -m unittest tests.test_backend_api_persistence tests.test_backend_events tests.test_backend_google_sheets_pending",
+    "./tools/run_postgres_tests.sh smartup-saga",
+    "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python -m unittest tests.test_smartup_auto_import tests.test_backend_skladbot_worker tests.test_backend_skladbot_request_dry_run",
+    "PYTHONPYCACHEPREFIX=/tmp/taksklad-pycache PYTHONPATH=. .venv/bin/python -m compileall -q backend/app tests",
+    "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python -m unittest tests.test_storage_credentials tests.test_startup_check tests.test_desktop_diagnostics tests.test_update_service",
+    "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python tools/scan_synthetic_secret_sentinel.py --allowed-tree",
+    "powershell -File tools/test_windows_secret_store.ps1 -SyntheticOnly",
+    "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python -m unittest tests.test_backend_runtime_config tests.test_backend_cors tests.test_backend_telegram_import tests.test_telegram_lock",
+    "PYTHONPATH=. .venv/bin/python tools/run_config_matrix.py --dummy-only",
+    "PYTHONPYCACHEPREFIX=/tmp/taksklad-pycache PYTHONPATH=. .venv/bin/python -m compileall -q backend/app tests tools",
+    "./tools/run_postgres_tests.sh auth-identities",
+    "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python -m unittest tests.test_backend_api_persistence tests.test_backend_runtime_config tests.test_backend_bridge",
+    "PYTHONPATH=. .venv/bin/python tools/manage_service_principals.py plan --dummy-only",
+    "./tools/run_postgres_tests.sh rbac-audit",
+    "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python -m unittest tests.test_backend_api_persistence tests.test_backend_cors tests.test_reconciliation_service",
+    "./tools/run_postgres_tests.sh input-safety",
+    "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python -m unittest tests.test_backend_telegram_import tests.test_backend_google_sheets_exporter tests.test_excel_import_append tests.test_excel_normalizer",
+    "PYTHONPATH=. .venv/bin/python tools/benchmark_import_limits.py --profile maximum-valid --assert-budgets",
+    "PYTHONPATH=. .venv/bin/python tools/check_code_organization.py --strict",
+    "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python -m unittest tests.test_backend_telegram_import tests.test_skladbot_daily_report tests.test_backend_skladbot_worker tests.test_backend_skladbot_request_dry_run tests.test_smartup_auto_import",
+    "PYTHONPYCACHEPREFIX=/tmp/taksklad-pycache PYTHONPATH=. .venv/bin/python -m compileall -q backend/app src/taksklad tests",
+    "./tools/run_postgres_tests.sh query-parity",
+    "PYTHONPATH=. .venv/bin/python tools/benchmark_backend.py compare --profile reference --repeat 3 --assert-budgets",
+    "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python -m unittest tests.test_backend_api_persistence",
+    "npm ci --prefix frontend",
+    "npm --prefix frontend run lint",
+    "npm --prefix frontend run typecheck",
+    "npm --prefix frontend run test:coverage",
+    "npm --prefix frontend run e2e -- --grep @smoke",
+    "npm --prefix frontend run test -- --run data-flow business-time pagination",
+    "npm --prefix frontend run e2e -- --grep @network-contract",
+    "./tools/run_postgres_tests.sh cursor-capabilities",
+    "npm --prefix frontend run test:a11y",
+    "npm --prefix frontend run e2e",
+    "npm --prefix frontend run perf",
+    "./tools/verify_locked_installs.sh --cold --require-hashes",
+    "npm ci --prefix frontend && npm ls --prefix frontend --all",
+    "./tools/security_gate.sh --synthetic-fixtures --fail-on high",
+    "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python -m unittest tests.test_update_service tests.test_windows_release_workflow",
+    "./tools/generate_sbom.sh --verify",
+    "gh attestation verify --repo 1fear/TakSklad --bundle test-artifacts/attestation-bundle.json",
+    "docker compose -f deploy/vds/docker-compose.yml build --pull",
+    "PYTHONPATH=. .venv/bin/python tools/check_container_policy.py --strict",
+    "./tools/run_container_smoke.sh --dummy-config --permission-tests",
+    "./tools/run_container_load.sh --assert-resource-limits",
+    "./tools/lint_workflows.sh",
+    "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python -m unittest tests.test_ci_cd_workflows tests.test_windows_release_workflow tests.test_release_go_no_go",
+    "./tools/build_release_images.sh --local --sha \"$(git rev-parse HEAD)\"",
+    "./tools/verify_release_attestations.sh --local",
+    "./deploy/vds/deploy_from_git.sh --dry-run --artifact-manifest test-artifacts/release.json",
+    "./deploy/vds/backup_postgres.sh --test-mode --synthetic-db",
+    "./deploy/vds/restore_drill.sh --isolated --synthetic-db --assert-invariants",
+    "./tools/verify_offsite_backup.sh --test-bucket --checksum",
+    "./tools/run_pitr_drill.sh --synthetic-db --assert-rpo-minutes 15 --assert-rto-minutes 30",
+    "find deploy/vds -name '*.sh' -print0 | xargs -0 -n1 bash -n",
+    "./tools/run_postgres_tests.sh observability",
+    "PYTHONPATH=. .venv/bin/python tools/test_worker_heartbeats.py --fault-matrix",
+    "PYTHONPATH=. .venv/bin/python tools/audit_metric_labels.py --strict",
+    "./tools/run_alert_smoke.sh --synthetic-only --timeout-seconds 300",
+    "./tools/check_runtime_identity.py --local-stack"
+  ],
+  "source_phases": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25
+  ]
+}

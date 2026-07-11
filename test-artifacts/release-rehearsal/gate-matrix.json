@@ -1,0 +1,277 @@
+{
+  "all_passed": true,
+  "cells": {
+    "alert-smoke": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "attestations": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "backend-import-performance": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "backend-performance": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "backend-query-plan": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "backup-create": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "code-organization": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "compose-config": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "config-matrix": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "container-load": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "container-policy": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "container-smoke": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "data-invariants": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "desktop-storage-performance": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "diff-check": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "frontend-a11y": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "frontend-build": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "frontend-coverage": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "frontend-e2e": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "frontend-lint": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "frontend-perf": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "frontend-typecheck": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "identity-backfill-dry-run": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "import-limits": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "isolated-deploy": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "isolated-rollback": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "locked-installs": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "metric-labels": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "offsite-backup": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "owned-tree": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "pitr-drill": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "postgres-all": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "python-compile": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "python-tests": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "release-preflight": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "restore-drill": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "runtime-identity": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "sbom": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "security": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "service-principal-plan": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "source-tree": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "synthetic-secret-sentinel": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "worker-heartbeats": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    },
+    "workflow-lint": {
+      "run-1": "pass",
+      "run-2": "pass",
+      "run-3": "pass"
+    }
+  },
+  "gate_ids": [
+    "alert-smoke",
+    "attestations",
+    "backend-import-performance",
+    "backend-performance",
+    "backend-query-plan",
+    "backup-create",
+    "code-organization",
+    "compose-config",
+    "config-matrix",
+    "container-load",
+    "container-policy",
+    "container-smoke",
+    "data-invariants",
+    "desktop-storage-performance",
+    "diff-check",
+    "frontend-a11y",
+    "frontend-build",
+    "frontend-coverage",
+    "frontend-e2e",
+    "frontend-lint",
+    "frontend-perf",
+    "frontend-typecheck",
+    "identity-backfill-dry-run",
+    "import-limits",
+    "isolated-deploy",
+    "isolated-rollback",
+    "locked-installs",
+    "metric-labels",
+    "offsite-backup",
+    "owned-tree",
+    "pitr-drill",
+    "postgres-all",
+    "python-compile",
+    "python-tests",
+    "release-preflight",
+    "restore-drill",
+    "runtime-identity",
+    "sbom",
+    "security",
+    "service-principal-plan",
+    "source-tree",
+    "synthetic-secret-sentinel",
+    "worker-heartbeats",
+    "workflow-lint"
+  ],
+  "runs": [
+    "run-1",
+    "run-2",
+    "run-3"
+  ],
+  "schema_version": 1
+}

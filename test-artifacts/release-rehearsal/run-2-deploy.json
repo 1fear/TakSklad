@@ -1,0 +1,20 @@
+{
+  "backend_digest": "sha256:cd32fe81d5a2a5c8831bf6a8ae9a7875d89143ef954bf5b01e18aa02b1471c8d",
+  "backfill_mutations": 2,
+  "backfill_seconds": 0.013,
+  "cleanup_zero": true,
+  "environment": "isolated",
+  "external_sends": 0,
+  "frontend_digest": "sha256:c025403158e31bface7844ed5bba8829fca8e41e2f846ae4c5dca1d8a761eab3",
+  "migration_budget_seconds": 120.0,
+  "migration_seconds": 0.274,
+  "production_mutations": 0,
+  "readiness": "green",
+  "runtime_backend_image_id": "sha256:9c758f47fc20fd6432218ddb85e63e5bae0c7cb43628d7fb736fd408c555eb27",
+  "schema_revision": "20260711_0016",
+  "source_sha": "c736b56b227f2f58de78b8021f9b60d992145483",
+  "status": "pass",
+  "synthetic_only": true,
+  "synthetic_rows": 1,
+  "worker_heartbeats": "green"
+}

@@ -1,0 +1,62 @@
+{
+  "all_gates_passed": true,
+  "domain_status": {
+    "browser_a11y": "pass",
+    "code_quality": "pass",
+    "data_integrity": "pass",
+    "disaster_recovery": "pass",
+    "migration": "pass",
+    "observability": "pass",
+    "performance": "pass",
+    "security": "pass",
+    "source_integrity": "pass",
+    "supply_chain": "pass"
+  },
+  "environment": "isolated",
+  "external_sends": 0,
+  "identities_equal": true,
+  "identity": {
+    "backend_digest": "sha256:cd32fe81d5a2a5c8831bf6a8ae9a7875d89143ef954bf5b01e18aa02b1471c8d",
+    "frontend_digest": "sha256:c025403158e31bface7844ed5bba8829fca8e41e2f846ae4c5dca1d8a761eab3",
+    "provenance_sha256": "69872e50b2f314a228eb7bf42b44cf36df52fa5fcd73a0d247d830c774e2a543",
+    "release_manifest_sha256": "ded3de72530360c5a00b30a4d623827a9cfb6053091da0f78a8129ad66ed9e47",
+    "sbom_manifest_sha256": "016f75a38d4ef8e9662154ad86ac79b9090f4f5c20dfb945878263ed653aaa37",
+    "source_sha": "c736b56b227f2f58de78b8021f9b60d992145483",
+    "windows_artifact_sha256": "c713304f5460cdd79e965a84b5e1fd8ef12cbd3a79afc371d95029bebc32b8bd"
+  },
+  "production_deploys": 0,
+  "production_mutations": 0,
+  "repeat": 3,
+  "runs": [
+    {
+      "manifest": "run-1.json",
+      "run_id": "run-1",
+      "status": "pass"
+    },
+    {
+      "manifest": "run-2.json",
+      "run_id": "run-2",
+      "status": "pass"
+    },
+    {
+      "manifest": "run-3.json",
+      "run_id": "run-3",
+      "status": "pass"
+    }
+  ],
+  "same_artifact": true,
+  "schema_version": 1,
+  "status": "pass",
+  "timings": {
+    "migration_seconds": {
+      "p50": 0.292,
+      "p95": 0.296,
+      "p99": 0.296
+    },
+    "rollback_seconds": {
+      "p50": 1.013,
+      "p95": 1.284,
+      "p99": 1.284
+    }
+  }
+}
