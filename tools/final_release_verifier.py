@@ -37,7 +37,10 @@ EVIDENCE_OVERLAYS = (
     "test-artifacts/sbom",
     "test-artifacts/windows-signing-contract.json",
 )
-IGNORED_OVERLAYS = (".release-state/performance",)
+IGNORED_OVERLAYS = (
+    ".release-state/performance",
+    ".supergoal/taksklad-full-stabilization-security-per-e9read/phases",
+)
 DEPENDENCY_LINKS = (".venv", "frontend/node_modules")
 
 
