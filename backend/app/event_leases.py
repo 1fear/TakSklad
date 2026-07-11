@@ -1,7 +1,7 @@
 import os
 from datetime import timedelta
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, func, or_, select, true, update
 from sqlalchemy.orm import Session
 
 from .models import PendingEvent
@@ -104,8 +104,16 @@ def build_postgres_claim_statement(*, event_types, owner, limit, now, expires_at
             PendingEvent.lease_expires_at <= now,
         ),
     )
+    # A crash before WAL flush merely leaves the event claimable again. Apply
+    # the transaction-local setting inside the claim statement so the
+    # at-least-once lease does not pay either an fsync or another round trip.
+    transaction_settings = select(
+        func.set_config("synchronous_commit", "off", True).label("synchronous_commit")
+    ).cte("lease_transaction_settings")
     candidates = (
         select(PendingEvent.id)
+        .select_from(PendingEvent)
+        .join(transaction_settings, true())
         .where(PendingEvent.event_type.in_(tuple(event_types)))
         .where(eligible)
         .order_by(PendingEvent.available_at, PendingEvent.created_at, PendingEvent.id)
