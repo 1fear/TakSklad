@@ -734,8 +734,8 @@ WORKLOADS = {
     # Measure the latency-sensitive queue claim before the intentionally heavy
     # 1000-row import so every fresh run has the same uncontaminated start.
     "queue_claim_50": queue_claim_50,
-    "scan_db": scan_db,
     "complete_db": complete_db,
+    "scan_db": scan_db,
     "return_db": return_db,
     "active_orders_first_page": active_orders_first_page,
     "admin_filtered_page": admin_filtered_page,
