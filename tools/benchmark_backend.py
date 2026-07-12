@@ -1044,20 +1044,56 @@ def aggregate_regression_failures(runs, budgets, approved):
     return failures, medians
 
 
-def run_baseline(profile_name, iterations):
+def aggregate_baseline_results(run_results):
+    aggregated = {}
+    for workload in WORKLOADS:
+        first = run_results[0][workload]
+        metrics = {
+            "iterations": first["iterations"],
+            "warmup_iterations": first["warmup_iterations"],
+        }
+        for metric in ("p50_ms", "p95_ms", "p99_ms", "max_ms"):
+            metrics[metric] = round(
+                float(percentile([run[workload][metric] for run in run_results], 50)),
+                3,
+            )
+        for metric in ("query_count", "rows_returned"):
+            metrics[metric] = {
+                key: int(percentile([run[workload][metric][key] for run in run_results], 50))
+                for key in ("min", "median", "max")
+            }
+        aggregated[workload] = metrics
+    return aggregated
+
+
+def run_baseline(profile_name, iterations, repeat):
     if iterations < 100:
         raise ValueError("baseline requires at least 100 measured iterations")
+    if repeat < 3:
+        raise ValueError("baseline requires at least three independent runs")
     profiles = load_json(PROFILES_PATH)
     budgets = load_json(BUDGETS_PATH)
     task_policy = ensure_foreground_task_policy()
-    with disposable_database() as (database_url, runtime):
-        dataset, dataset_path = seed_profile(database_url, profile_name)
-        prepare_profile_benchmark(database_url)
-        profile = profiles["profiles"][profile_name]
-        context = workload_context(database_url, profile)
-        results = measure_profile_workloads(database_url, context, iterations)
-        explain, explain_path = capture_explain(database_url, profile_name, context)
-        host = host_manifest(database_url, runtime)
+    measured_runs = []
+    run_evidence = []
+    for run_number in range(1, repeat + 1):
+        time.sleep(FRESH_RUN_COOLDOWN_SECONDS)
+        quiescence = wait_for_benchmark_quiescence()
+        with disposable_database() as (database_url, runtime):
+            dataset, dataset_path = seed_profile(database_url, profile_name)
+            prepare_profile_benchmark(database_url)
+            profile = profiles["profiles"][profile_name]
+            context = workload_context(database_url, profile)
+            run_results = measure_profile_workloads(database_url, context, iterations)
+            explain, explain_path = capture_explain(database_url, profile_name, context)
+            host = host_manifest(database_url, runtime)
+        measured_runs.append(run_results)
+        run_evidence.append({
+            "run": run_number,
+            "quiescence": quiescence,
+            "results": run_results,
+        })
+    results = aggregate_baseline_results(measured_runs)
     baseline_path = EVIDENCE_DIR / "backend-baseline-approved.json"
     approved = load_json(baseline_path) if baseline_path.exists() else None
     compatibility_failures = baseline_compatibility_failures(approved) if approved else []
@@ -1075,6 +1111,9 @@ def run_baseline(profile_name, iterations):
         "explain_evidence": str(explain_path.relative_to(ROOT)),
         "host": host,
         "task_policy": task_policy,
+        "repeat": repeat,
+        "aggregation": "nearest-rank median across independent runs",
+        "runs": run_evidence,
         "results": results,
         "explain_summaries": explain["summaries"],
         "budgets": budgets,
@@ -1093,6 +1132,7 @@ def run_baseline(profile_name, iterations):
         "status": evidence["assertions"]["status"],
         "profile": profile_name,
         "iterations": iterations,
+        "repeat": repeat,
         "dataset_counts": dataset["table_counts"],
         "results": {name: {key: value for key, value in metrics.items() if key in ("p50_ms", "p95_ms", "p99_ms", "query_count")}
                     for name, metrics in results.items()},
@@ -1415,6 +1455,7 @@ def parse_args():
     baseline_parser = subparsers.add_parser("baseline")
     baseline_parser.add_argument("--profile", choices=("small", "reference", "stress"), required=True)
     baseline_parser.add_argument("--iterations", type=int, default=100)
+    baseline_parser.add_argument("--repeat", type=int, default=3)
     explain_parser = subparsers.add_parser("explain")
     explain_parser.add_argument("--profile", choices=("small", "reference", "stress"), required=True)
     explain_parser.add_argument("--format", choices=("json",), default="json")
@@ -1434,7 +1475,7 @@ def main():
     if args.command == "seed":
         return run_seed(args.profile)
     if args.command == "baseline":
-        return run_baseline(args.profile, args.iterations)
+        return run_baseline(args.profile, args.iterations, args.repeat)
     if args.command == "explain":
         return run_explain(args.profile)
     if args.command == "compare":

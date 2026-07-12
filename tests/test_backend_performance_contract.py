@@ -113,6 +113,28 @@ class BackendPerformanceContractTests(unittest.TestCase):
         self.assertEqual(95, benchmark_backend.percentile(values, 95))
         self.assertEqual(99, benchmark_backend.percentile(values, 99))
 
+    def test_baseline_uses_median_of_three_independent_runs(self):
+        def metrics(value):
+            return {
+                name: {
+                    "iterations": 100,
+                    "warmup_iterations": 10,
+                    "p50_ms": value,
+                    "p95_ms": value,
+                    "p99_ms": value,
+                    "max_ms": value,
+                    "query_count": {"min": value, "median": value, "max": value},
+                    "rows_returned": {"min": value, "median": value, "max": value},
+                }
+                for name in benchmark_backend.WORKLOADS
+            }
+
+        result = benchmark_backend.aggregate_baseline_results(
+            [metrics(10), metrics(30), metrics(20)]
+        )
+        self.assertEqual(result["queue_claim_50"]["p95_ms"], 20.0)
+        self.assertEqual(result["queue_claim_50"]["query_count"]["median"], 20)
+
     def test_return_cleanup_restores_all_phase25_state(self):
         context = {
             "return_order": "synthetic-order",
