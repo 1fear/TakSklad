@@ -156,7 +156,7 @@ def strict_problems(changes: list[Change], *, staged: bool) -> list[str]:
     problems: list[str] = []
     for change in changes:
         reason = forbidden_path_reason(change.path)
-        if reason:
+        if reason and not (staged and change.status == "D"):
             problems.append(f"{change.path}: {reason}")
         if not staged and change.status == "??" and is_runtime_surface(change.path):
             problems.append(f"{change.path}: untracked runtime/source path")

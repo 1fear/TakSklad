@@ -3,7 +3,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools.container_runtime_harness import docker_bind_source, parse_memory_bytes
+from tools.container_runtime_harness import (
+    HarnessError,
+    docker_bind_source,
+    last_integer_line,
+    parse_memory_bytes,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -88,6 +93,12 @@ class ContainerRuntimeHarnessContractTests(unittest.TestCase):
         self.assertEqual(parse_memory_bytes("52.5MiB"), int(52.5 * 1024**2))
         self.assertEqual(parse_memory_bytes("1.25GiB"), int(1.25 * 1024**3))
         self.assertEqual(parse_memory_bytes("unknown"), 0)
+
+    def test_integer_parser_ignores_fresh_image_pull_diagnostics(self):
+        output = "Unable to find image locally\nPull complete\n70\n"
+        self.assertEqual(last_integer_line(output, "postgres uid"), 70)
+        with self.assertRaises(HarnessError):
+            last_integer_line("Pull complete\n", "postgres uid")
 
     def test_darwin_private_var_bind_path_has_explicit_normalizer(self):
         source = (ROOT / "tools/container_runtime_harness.py").read_text(encoding="utf-8")

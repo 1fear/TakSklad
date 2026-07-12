@@ -49,9 +49,8 @@ frontend/tsconfig.tsbuildinfo
 
 .DS_Store
 
-outputs/*
-!outputs/taksklad_acceptance/
-!outputs/taksklad_acceptance/**
+outputs/
+отчеты/
 
 graphify-out/
 graphify-out

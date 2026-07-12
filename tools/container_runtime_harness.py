@@ -251,9 +251,23 @@ def verify_output_volume(scope: DockerScope) -> int:
         return int(output.splitlines()[-1])
 
 
+def last_integer_line(output: str, label: str) -> int:
+    for line in reversed(output.splitlines()):
+        value = line.strip()
+        if value.isdigit():
+            return int(value)
+    raise HarnessError(f"{label}: integer result is missing")
+
+
 def postgres_identity() -> tuple[int, int]:
-    uid = int(run(["docker", "run", "--rm", "--entrypoint", "id", POSTGRES_IMAGE, "-u", "postgres"]).stdout)
-    gid = int(run(["docker", "run", "--rm", "--entrypoint", "id", POSTGRES_IMAGE, "-g", "postgres"]).stdout)
+    uid = last_integer_line(
+        run(["docker", "run", "--rm", "--entrypoint", "id", POSTGRES_IMAGE, "-u", "postgres"]).stdout,
+        "postgres uid",
+    )
+    gid = last_integer_line(
+        run(["docker", "run", "--rm", "--entrypoint", "id", POSTGRES_IMAGE, "-g", "postgres"]).stdout,
+        "postgres gid",
+    )
     return uid, gid
 
 

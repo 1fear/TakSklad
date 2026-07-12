@@ -95,6 +95,19 @@ class ReleaseTreeCliTests(unittest.TestCase):
         self.assertIn("untracked runtime/source path", result.stderr)
         self.assertNotIn("docs/note.md", result.stderr)
 
+    def test_staged_guard_allows_only_deletion_of_tracked_forbidden_path(self):
+        forbidden = self.root / "outputs" / "historical.txt"
+        forbidden.parent.mkdir()
+        forbidden.write_text("synthetic-only\n", encoding="utf-8")
+        subprocess.run(["git", "add", "-f", str(forbidden)], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-qm", "historical fixture"], cwd=self.root, check=True)
+        forbidden.unlink()
+        subprocess.run(["git", "add", "-u"], cwd=self.root, check=True)
+
+        result = self.run_checker("--staged", "--strict", "--path-only")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_owned_manifest_detects_head_and_path_hash_drift(self):
         manifest = self.root / "owned.json"
         written = self.run_checker("--strict", "--write-owned-manifest", "--manifest", str(manifest))
