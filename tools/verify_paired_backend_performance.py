@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -121,15 +122,17 @@ def candidate_absolute_failures(
 ) -> list[str]:
     failures = []
     for pair_number, pair in enumerate(pairs, 1):
-        results = pair["candidate"]["results"]
-        for workload in workloads:
-            for metric, limit in budgets["workloads"][workload].items():
-                value = float(results[workload][metric])
-                if value > float(limit):
-                    failures.append(
-                        f"pair {pair_number} candidate {workload}.{metric}={value} "
-                        f"exceeds absolute budget {limit}"
-                    )
+        races = pair.get("races") or [pair]
+        for race_number, race in enumerate(races, 1):
+            results = race["candidate"]["results"]
+            for workload in workloads:
+                for metric, limit in budgets["workloads"][workload].items():
+                    value = float(results[workload][metric])
+                    if value > float(limit):
+                        failures.append(
+                            f"pair {pair_number} race {race_number} candidate "
+                            f"{workload}.{metric}={value} exceeds absolute budget {limit}"
+                        )
     return failures
 
 
@@ -149,11 +152,19 @@ def aggregate_pair_failures(
         for metric in ("p95_ms", "p99_ms"):
             ratios = []
             for pair in pairs:
-                control = float(pair["control"]["results"][workload][metric])
-                candidate = float(pair["candidate"]["results"][workload][metric])
-                if control <= 0:
-                    raise ValueError(f"paired control metric must be positive: {workload}.{metric}")
-                ratios.append(candidate / control)
+                races = pair.get("races") or [pair]
+                if pair.get("races") is not None and len(races) != 2:
+                    raise ValueError("launch-balanced pair must contain exactly two races")
+                race_ratios = []
+                for race in races:
+                    control = float(race["control"]["results"][workload][metric])
+                    candidate = float(race["candidate"]["results"][workload][metric])
+                    if control <= 0:
+                        raise ValueError(
+                            f"paired control metric must be positive: {workload}.{metric}"
+                        )
+                    race_ratios.append(candidate / control)
+                ratios.append(math.prod(race_ratios) ** (1 / len(race_ratios)))
             median = float(benchmark_backend.percentile(ratios, 50))
             medians[workload][metric] = round(median, 6)
             if median > limit_ratio:
@@ -168,13 +179,19 @@ def parity_failures(
 ) -> list[str]:
     failures = []
     for pair_number, pair in enumerate(pairs, 1):
-        for workload in workloads:
-            control = pair["control"]["results"][workload]
-            candidate = pair["candidate"]["results"][workload]
-            if candidate["query_count"]["median"] > control["query_count"]["median"]:
-                failures.append(f"pair {pair_number} {workload} query-count regression")
-            if candidate["rows_returned"]["median"] != control["rows_returned"]["median"]:
-                failures.append(f"pair {pair_number} {workload} row-count mismatch")
+        races = pair.get("races") or [pair]
+        for race_number, race in enumerate(races, 1):
+            for workload in workloads:
+                control = race["control"]["results"][workload]
+                candidate = race["candidate"]["results"][workload]
+                if candidate["query_count"]["median"] > control["query_count"]["median"]:
+                    failures.append(
+                        f"pair {pair_number} race {race_number} {workload} query-count regression"
+                    )
+                if candidate["rows_returned"]["median"] != control["rows_returned"]["median"]:
+                    failures.append(
+                        f"pair {pair_number} race {race_number} {workload} row-count mismatch"
+                    )
     return failures
 
 
@@ -231,19 +248,29 @@ def _decode_worker(process: subprocess.Popen[str], side: str) -> dict[str, Any]:
 
 
 def run_pair(
-    *, profile: str, control_root: Path, candidate_root: Path, barrier_root: Path,
+    *,
+    profile: str,
+    control_root: Path,
+    candidate_root: Path,
+    barrier_root: Path,
+    candidate_first: bool = False,
 ) -> dict[str, Any]:
     barrier_root.mkdir(parents=True, exist_ok=True)
     environment = worker_environment()
     command = [sys.executable, "-c", WORKER_CODE, profile, str(barrier_root)]
-    control = subprocess.Popen(
-        [*command, "control"], cwd=control_root, env=environment,
-        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    )
-    candidate = subprocess.Popen(
-        [*command, "candidate"], cwd=candidate_root, env=environment,
-        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    )
+    def start(side: str) -> subprocess.Popen[str]:
+        root = candidate_root if side == "candidate" else control_root
+        return subprocess.Popen(
+            [*command, side], cwd=root, env=environment,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+
+    if candidate_first:
+        candidate = start("candidate")
+        control = start("control")
+    else:
+        control = start("control")
+        candidate = start("candidate")
     try:
         control_result = _decode_worker(control, "control")
         candidate_result = _decode_worker(candidate, "candidate")
@@ -293,12 +320,19 @@ def run(profile: str, repeat: int, assert_budgets: bool) -> dict[str, Any]:
         if failures:
             raise PairedPerformanceError("; ".join(failures))
         for pair_number in range(1, repeat + 1):
-            pairs.append(run_pair(
-                profile=profile,
-                control_root=control_root,
-                candidate_root=ROOT,
-                barrier_root=pair_root / f"pair-{pair_number}",
-            ))
+            control_first = run_pair(
+                profile=profile, control_root=control_root, candidate_root=ROOT,
+                barrier_root=pair_root / f"pair-{pair_number}" / "control-first",
+            )
+            candidate_first = run_pair(
+                profile=profile, control_root=control_root, candidate_root=ROOT,
+                barrier_root=pair_root / f"pair-{pair_number}" / "candidate-first",
+                candidate_first=True,
+            )
+            pairs.append({
+                "balance": "geometric mean of control-first and candidate-first races",
+                "races": [control_first, candidate_first],
+            })
     finally:
         if control_root.exists():
             cleanup_ok = remove_control_worktree(control_root)
@@ -323,6 +357,7 @@ def run(profile: str, repeat: int, assert_budgets: bool) -> dict[str, Any]:
         "mode": "concurrent_paired_compare",
         "profile": profile,
         "repeat": repeat,
+        "races_per_pair": 2,
         "control_commit": control_commit,
         "candidate_commit": subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True,
@@ -331,7 +366,10 @@ def run(profile: str, repeat: int, assert_budgets: bool) -> dict[str, Any]:
         "approved_baseline": str(APPROVED_BASELINE.relative_to(ROOT)),
         "approved_baseline_sha256": sha256_file(APPROVED_BASELINE),
         "regression_limit_percent": 10,
-        "pairing": "simultaneous control/candidate with per-workload filesystem barriers",
+        "pairing": (
+            "simultaneous control/candidate with per-workload filesystem barriers and "
+            "swapped launch order"
+        ),
         "measurement_contract_keys": list(MEASUREMENT_CONTRACT_KEYS),
         "median_paired_ratios": median_ratios,
         "pairs": pairs,

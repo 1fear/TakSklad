@@ -57,6 +57,23 @@ class PairedBackendPerformanceTests(unittest.TestCase):
         )
         self.assertTrue(any("median paired ratio" in item and "1.120000" in item for item in failures))
 
+    def test_swapped_launch_order_cancels_process_slot_bias(self):
+        balanced = {
+            "races": [
+                paired.synthetic_pair(control=100, candidate=120),
+                paired.synthetic_pair(control=120, candidate=100),
+            ]
+        }
+        pairs = [balanced, balanced, balanced]
+
+        failures, medians = paired.aggregate_pair_failures(
+            pairs, self.budgets, workloads=("queue_claim_50",),
+        )
+
+        self.assertEqual(failures, [])
+        self.assertEqual(medians["queue_claim_50"]["p95_ms"], 1.0)
+        self.assertEqual(medians["queue_claim_50"]["p99_ms"], 1.0)
+
     def test_candidate_absolute_budget_still_fails(self):
         pair = paired.synthetic_pair(control=50, candidate=101)
         failures = paired.candidate_absolute_failures(
