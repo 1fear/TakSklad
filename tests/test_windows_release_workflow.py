@@ -77,9 +77,64 @@ class WindowsReleaseWorkflowTests(unittest.TestCase):
             'for key in ("artifact_sha256", "artifact_sha256_onedir", "dependency_lock_sha256")',
             workflow,
         )
-        self.assertIn('"version": windows["latest_version"]', workflow)
-        self.assertIn('"artifact_sha256": windows["artifact_sha256"]', workflow)
+        self.assertIn('"version": windows_version', workflow)
+        self.assertIn('"artifact_sha256": windows_exe_sha256', workflow)
+        self.assertIn('"artifact_sha256_onedir": windows_onedir_sha256', workflow)
         self.assertIn('"dependency_lock_sha256": windows["dependency_lock_sha256"]', workflow)
+
+    def test_release_build_requires_exact_tag_draft_and_successful_ci_gate(self):
+        workflow = (PROJECT_ROOT / ".github/workflows/build-windows-release.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotIn("types: [published]", workflow)
+        self.assertIn("ci_run_id:", workflow)
+        self.assertIn("refs/tags/$env:RELEASE_TAG", workflow)
+        self.assertIn("IMMUTABLE_WORKFLOW_SHA_MISMATCH", workflow)
+        self.assertIn("Require exact successful CI Release gate", workflow)
+        self.assertIn('metadata.get("workflowName") != "CI"', workflow)
+        self.assertIn('job.get("name") == "Release gate"', workflow)
+        self.assertIn("CI_RELEASE_GATE_NOT_SUCCESSFUL", workflow)
+        self.assertIn("Require existing empty draft release", workflow)
+        self.assertIn('release.get("isDraft") is not True', workflow)
+        self.assertIn("IMMUTABLE_RELEASE_ASSET_ALREADY_EXISTS", workflow)
+        self.assertIn("taksklad-release-${{ inputs.tag }}", workflow)
+        self.assertIn("Refuse to overwrite existing image tags", workflow)
+        self.assertIn("IMMUTABLE_IMAGE_TAG_ALREADY_EXISTS", workflow)
+        self.assertIn("IMMUTABLE_IMAGE_TAG_ABSENCE_UNVERIFIED", workflow)
+        self.assertNotIn("--clobber", workflow)
+        self.assertIn('gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --verify-tag', workflow)
+
+    def test_unified_manifest_binds_ci_and_all_immutable_subjects(self):
+        workflow = (PROJECT_ROOT / ".github/workflows/build-windows-release.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('"workflow": "CI"', workflow)
+        self.assertIn('"run_id": int(os.environ["CI_RUN_ID"])', workflow)
+        self.assertIn('"head_sha": source_sha', workflow)
+        self.assertIn('"required_check": "Release gate"', workflow)
+        self.assertIn('"artifact": windows_exe', workflow)
+        self.assertIn('"artifact_onedir": windows_onedir', workflow)
+        self.assertIn('"manifest": windows_manifest', workflow)
+        self.assertIn('{"kind": "windows", "name": windows_exe, "sha256": windows_exe_sha256}', workflow)
+        self.assertIn('{"kind": "windows", "name": windows_onedir, "sha256": windows_onedir_sha256}', workflow)
+        self.assertIn('{"kind": "windows", "name": windows_manifest', workflow)
+        self.assertEqual(workflow.count('{"kind": "oci", "name":'), 2)
+
+    def test_production_deploy_reverifies_ci_tag_windows_and_immutable_images(self):
+        workflow = (PROJECT_ROOT / ".github/workflows/deploy-production.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("IMMUTABLE_RELEASE_TAG_VERSION_MISMATCH", workflow)
+        self.assertIn("CI_RELEASE_GATE_NOT_SUCCESSFUL", workflow)
+        self.assertIn("WINDOWS_ATTESTATION_SUBJECTS_MISMATCH", workflow)
+        self.assertIn("OCI_ATTESTATION_SUBJECTS_MISMATCH", workflow)
+        self.assertIn('expected_name = f"ghcr.io/{sys.argv[4].split(\'/\', 1)[0]}/taksklad-{service}"', workflow)
+        self.assertIn("WINDOWS_SUBJECT_SHA256_MISMATCH", workflow)
+        self.assertIn('for subject in TakSklad.exe TakSklad-windows-x64.zip version.json', workflow)
+        self.assertIn("RELEASE_TAG_SOURCE_SHA_MISMATCH", workflow)
 
 
 if __name__ == "__main__":

@@ -11,13 +11,14 @@ POSTGRES_IMAGE="postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e9
 TEST_MODE=false
 SYNTHETIC_DB=false
 SIMULATE_FAILURE=false
+PRUNE_OLD_BACKUPS=true
 container_name=""
 staging_dir=""
 
 usage() {
   cat <<'EOF'
 Usage:
-  backup_postgres.sh
+  backup_postgres.sh [--no-prune]
   backup_postgres.sh --test-mode --synthetic-db [--simulate-failure]
 
 Test mode starts a digest-pinned disposable PostgreSQL with its data directory
@@ -32,6 +33,7 @@ while [[ $# -gt 0 ]]; do
     --test-mode) TEST_MODE=true ;;
     --synthetic-db) SYNTHETIC_DB=true ;;
     --simulate-failure) SIMULATE_FAILURE=true ;;
+    --no-prune) PRUNE_OLD_BACKUPS=false ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -275,7 +277,7 @@ mv "$staging_dir" "$bundle_dir"
 staging_dir=""
 trap - EXIT
 
-if [[ "$TEST_MODE" != true ]]; then
+if [[ "$TEST_MODE" != true && "$PRUNE_OLD_BACKUPS" == true ]]; then
   find "$completed_root" -mindepth 1 -maxdepth 1 -type d -name 'taksklad-postgres-*' \
     -mtime "+$RETENTION_DAYS" -exec rm -rf {} +
 fi

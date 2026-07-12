@@ -23,7 +23,8 @@ usage() {
   cat >&2 <<'EOF'
 Usage:
   deploy_from_git.sh --artifact-manifest PATH
-  deploy_from_git.sh --dry-run --artifact-manifest PATH
+  deploy_from_git.sh --artifact-manifest PATH --acceptance required --wait
+  deploy_from_git.sh --dry-run --artifact-manifest PATH [--acceptance required] [--wait]
 
 Production execution requires TAKSKLAD_PRODUCTION_APPROVAL=READY_FOR_PRODUCTION_DEPLOY.
 Only a verified GitHub/Sigstore release manifest is accepted outside --dry-run.
@@ -44,6 +45,13 @@ while (($#)); do
     --artifact-manifest)
       ARTIFACT_MANIFEST="${2:-}"
       shift 2
+      ;;
+    --acceptance)
+      ACCEPTANCE_MODE="${2:-}"
+      shift 2
+      ;;
+    --wait)
+      shift
       ;;
     -h|--help)
       usage
@@ -150,7 +158,7 @@ rollback_runtime() {
 }
 
 echo "Creating PostgreSQL backup before forward-only migration..."
-./deploy/vds/backup_postgres.sh
+./deploy/vds/backup_postgres.sh --no-prune
 
 echo "Pulling verified immutable image subjects..."
 docker pull "$TAKSKLAD_BACKEND_IMAGE"

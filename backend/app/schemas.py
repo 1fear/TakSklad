@@ -43,6 +43,14 @@ class HealthResponse(BaseModel):
     environment: str
 
 
+class VersionResponse(BaseModel):
+    service: str
+    version: str
+    commit_sha: str
+    image_digest: str
+    environment: str
+
+
 class ReadinessResponse(BaseModel):
     generated_at: datetime
     ready: bool

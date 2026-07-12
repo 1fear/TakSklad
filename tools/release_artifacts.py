@@ -348,9 +348,70 @@ def validate_manifest_shape(manifest: dict[str, Any], *, local: bool) -> None:
                 raise ReleaseArtifactError("production image must use the approved GHCR namespace")
 
 
-def verify_manifest(path: Path, *, local: bool) -> dict[str, Any]:
+def verify_manifest(path: Path, *, local: bool, expected_sha: str | None = None) -> dict[str, Any]:
     manifest = _load_manifest(path)
     validate_manifest_shape(manifest, local=local)
+    if expected_sha is not None:
+        if local:
+            raise ReleaseArtifactError("exact-SHA verification is production-only")
+        if not SHA_RE.fullmatch(expected_sha):
+            raise ReleaseArtifactError("requested source SHA must be exactly 40 lowercase hex characters")
+        current_sha = run(["git", "rev-parse", "HEAD"], timeout=30).stdout.strip()
+        if current_sha != expected_sha:
+            raise ReleaseArtifactError("requested source SHA differs from current commit")
+        if manifest["source_sha"] != expected_sha:
+            raise ReleaseArtifactError("release manifest source SHA differs from requested source SHA")
+        version = str((manifest.get("windows") or {}).get("version") or "")
+        if manifest.get("release_tag") != f"v{version}":
+            raise ReleaseArtifactError("release tag differs from production Windows version")
+        ci = manifest.get("ci") or {}
+        if (
+            ci.get("workflow") != "CI"
+            or ci.get("head_sha") != expected_sha
+            or ci.get("event") != "push"
+            or ci.get("head_branch") != "main"
+            or ci.get("required_check") != "Release gate"
+            or ci.get("conclusion") != "success"
+            or not isinstance(ci.get("run_id"), int)
+            or ci["run_id"] <= 0
+        ):
+            raise ReleaseArtifactError("production manifest CI identity is invalid")
+        for role, image in manifest["images"].items():
+            if image.get("reference") != f"{image.get('name')}@{image.get('digest')}":
+                raise ReleaseArtifactError(f"{role} production reference is not immutable")
+        windows = manifest.get("windows") or {}
+        expected_windows = {
+            "TakSklad.exe": windows.get("artifact_sha256"),
+            "TakSklad-windows-x64.zip": windows.get("artifact_sha256_onedir"),
+            "version.json": windows.get("manifest_sha256"),
+        }
+        if (
+            windows.get("artifact") != "TakSklad.exe"
+            or windows.get("artifact_onedir") != "TakSklad-windows-x64.zip"
+            or windows.get("manifest") != "version.json"
+            or any(not HEX_RE.fullmatch(str(value or "")) for value in expected_windows.values())
+            or windows.get("signature_type") != "authenticode"
+            or windows.get("signature_required") is not True
+            or not HEX_RE.fullmatch(str(windows.get("signer_certificate_sha256") or ""))
+        ):
+            raise ReleaseArtifactError("production Windows subject identity is invalid")
+        subjects = manifest.get("attestation_subjects") or []
+        windows_subjects = {
+            item.get("name"): item.get("sha256")
+            for item in subjects
+            if isinstance(item, dict) and item.get("kind") == "windows"
+        }
+        oci_subjects = {
+            (item.get("name"), item.get("digest"))
+            for item in subjects
+            if isinstance(item, dict) and item.get("kind") == "oci"
+        }
+        expected_oci = {
+            (manifest["images"][role]["reference"], manifest["images"][role]["digest"])
+            for role in ("backend", "frontend")
+        }
+        if windows_subjects != expected_windows or oci_subjects != expected_oci:
+            raise ReleaseArtifactError("production attestation subjects differ from manifest artifacts")
     if local:
         from cryptography.hazmat.primitives import serialization
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -426,7 +487,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     build.add_argument("--evidence-dir", type=Path, default=DEFAULT_EVIDENCE_DIR)
     verify = subparsers.add_parser("verify")
     verify.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
-    verify.add_argument("--local", action="store_true")
+    verify_mode = verify.add_mutually_exclusive_group()
+    verify_mode.add_argument("--local", action="store_true")
+    verify_mode.add_argument("--sha")
     plan = subparsers.add_parser("plan")
     plan.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     plan.add_argument("--local", action="store_true")
@@ -446,10 +509,11 @@ def main(argv: list[str] | None = None) -> int:
                 f"frontend_digest={manifest['images']['frontend']['digest']} dirty_worktree_used=0 oci_tars_retained=0"
             )
         elif args.command == "verify":
-            manifest = verify_manifest(args.manifest.resolve(), local=args.local)
+            manifest = verify_manifest(args.manifest.resolve(), local=args.local, expected_sha=args.sha)
+            subject_count = 3 if args.local else len(manifest.get("attestation_subjects") or [])
             print(
                 "RELEASE_ATTESTATIONS_OK "
-                f"authority={manifest['authority']} subjects=3 source_sha={manifest['source_sha']} "
+                f"authority={manifest['authority']} subjects={subject_count} source_sha={manifest['source_sha']} "
                 f"production_deployable={int(bool(manifest['deployable']))}"
             )
         elif args.command == "plan":

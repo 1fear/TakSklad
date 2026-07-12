@@ -44,6 +44,7 @@ Implemented now:
 
 - `GET /health`
 - `GET /ready`
+- `GET /version`
 - `GET /api/v1/readiness`
 - `GET /api/v1/orders/active`
 - `POST /api/v1/scans`

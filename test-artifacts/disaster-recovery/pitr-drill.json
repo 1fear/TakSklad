@@ -1,12 +1,12 @@
 {
   "actual_postgresql_pitr": true,
   "customer_content_in_evidence": false,
-  "drill_id": "pitr-20260711T022614Z-72039-24195",
+  "drill_id": "pitr-20260712T132707Z-44208-17057",
   "drill_mode": "disposable-postgresql-wal-recovery",
   "event_after_target_count": 0,
   "event_before_target_count": 1,
   "isolated": true,
-  "last_required_event_time": "2026-07-11 02:26:15.81347+00",
+  "last_required_event_time": "2026-07-12 13:27:09.218451+00",
   "postgres_image_pinned": true,
   "production_touched": false,
   "rpo_met": true,
@@ -16,6 +16,6 @@
   "rto_seconds": 1,
   "rto_target_minutes": 30,
   "schema": "taksklad-pitr-drill-evidence-v2",
-  "selected_recovery_target_time": "2026-07-11 02:26:16.878224+00",
+  "selected_recovery_target_time": "2026-07-12 13:27:10.278507+00",
   "wal_archive_file_count": 7
 }

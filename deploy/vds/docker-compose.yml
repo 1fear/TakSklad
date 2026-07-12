@@ -147,7 +147,7 @@ services:
         read_only: true
     labels:
       - traefik.enable=true
-      - traefik.http.routers.taksklad-backend.rule=Host(`${TAKSKLAD_BACKEND_HOST}`) && (PathPrefix(`/api`) || Path(`/health`) || Path(`/ready`))
+      - traefik.http.routers.taksklad-backend.rule=Host(`${TAKSKLAD_BACKEND_HOST}`) && (PathPrefix(`/api`) || Path(`/health`) || Path(`/version`) || Path(`/ready`))
       - traefik.http.routers.taksklad-backend.entrypoints=websecure
       - traefik.http.routers.taksklad-backend.tls.certresolver=letsencrypt
       - traefik.http.routers.taksklad-backend.priority=100

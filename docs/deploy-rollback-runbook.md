@@ -139,9 +139,30 @@ VDS_USER
 VDS_SSH_KEY
 VDS_SSH_KNOWN_HOSTS
 VDS_APP_DIR
+WINDOWS_CODESIGN_PFX_BASE64
+WINDOWS_CODESIGN_PFX_PASSWORD
 ```
 
 `VDS_APP_DIR` можно не задавать, если production app лежит в стандартном пути `/opt/stacks/taksklad/app`. `VDS_SSH_KNOWN_HOSTS` должен содержать known_hosts строку сервера; не использовать `StrictHostKeyChecking=no`.
+
+Windows signing secrets должны соответствовать заранее закреплённому SHA-256 публичного сертификата в `TRUSTED_WINDOWS_SIGNER_CERT_SHA256`. Сам PFX, пароль и private key не сохраняются в repository, release manifest, artifacts или логах.
+
+### Immutable release candidate
+
+Версия собираемого приложения и уже опубликованный update channel разделены. Во время подготовки кандидата `APP_VERSION` может быть `2.0.26`, пока корневой `version.json` продолжает указывать на проверенный `2.0.25`. Это исключает ссылку клиентов на ещё не существующие подписанные файлы.
+
+Безопасная последовательность:
+
+1. получить один финальный candidate SHA и трижды пройти Phase 26 без production;
+2. прогнать `CI / Release gate` на этом SHA во временной release-ветке;
+3. применить защиту `main` и Environment `production` без bypass;
+4. fast-forward отправить тот же SHA в `main` и дождаться exact-SHA CI;
+5. создать новый тег `v<APP_VERSION>` и пустой draft release;
+6. `Build Immutable Release` проверяет CI identity, подписывает Windows-файлы, один раз публикует digest-only образы, attestations и unified `release.json`;
+7. после проверки всех attestations draft публикуется, а update channel обновляется реальными production-хешами отдельным контролируемым promotion-шагом;
+8. production deploy принимает только GitHub/Sigstore manifest, создаёт свежий backup, выполняет count-only preflight, forward-only migration, digest activation и пятиминутный read-only SLO window.
+
+Существующий тег или asset никогда не передвигается и не перезаписывается. `--clobber`, source build на VDS, schema downgrade, restore и автоматический data repair запрещены.
 
 Если `/opt/stacks/taksklad/app` не является git checkout, `deploy/vds/deploy_from_git.sh` делает временный clone из `TAKSKLAD_DEPLOY_REMOTE_URL` и синхронизирует выбранный ref через `rsync --delete`, исключая `.env*`, `outputs`, `backups`, runtime logs, restore points, virtualenv, `node_modules`, `dist`, `__pycache__` и `*.pyc`.
 

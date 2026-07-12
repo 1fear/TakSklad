@@ -65,7 +65,7 @@ jobs:
               raise SystemExit("UNVERIFIED_RELEASE_WORKFLOW")
           if metadata.get("conclusion") != "success":
               raise SystemExit("RELEASE_WORKFLOW_NOT_SUCCESSFUL")
-          if metadata.get("event") not in {"release", "workflow_dispatch"}:
+          if metadata.get("event") != "workflow_dispatch":
               raise SystemExit("UNVERIFIED_RELEASE_EVENT")
           if metadata.get("headSha") != sys.argv[2]:
               raise SystemExit("RELEASE_WORKFLOW_SOURCE_SHA_MISMATCH")
@@ -93,7 +93,7 @@ jobs:
             --signer-workflow "$signer_workflow" \
             --source-digest "$EXPECTED_SOURCE_SHA"
 
-          python3 - "$manifest_path" "$ARTIFACT_RUN_ID" "$EXPECTED_SOURCE_SHA" <<'PY'
+          python3 - "$manifest_path" "$ARTIFACT_RUN_ID" "$EXPECTED_SOURCE_SHA" "$GITHUB_REPOSITORY" <<'PY'
           import json
           import re
           import sys
@@ -106,6 +106,24 @@ jobs:
               raise SystemExit("RELEASE_MANIFEST_RUN_ID_MISMATCH")
           if manifest.get("source_sha") != sys.argv[3]:
               raise SystemExit("RELEASE_MANIFEST_SOURCE_SHA_MISMATCH")
+          if manifest.get("authority") != "github-sigstore" or manifest.get("deployable") is not True:
+              raise SystemExit("PRODUCTION_RELEASE_MANIFEST_REQUIRED")
+          windows = manifest.get("windows") or {}
+          version = str(windows.get("version") or "")
+          release_tag = str(manifest.get("release_tag") or "")
+          if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?", version):
+              raise SystemExit("IMMUTABLE_RELEASE_VERSION_REQUIRED")
+          if release_tag != f"v{version}":
+              raise SystemExit("IMMUTABLE_RELEASE_TAG_VERSION_MISMATCH")
+          ci = manifest.get("ci") or {}
+          if ci.get("workflow") != "CI" or ci.get("required_check") != "Release gate":
+              raise SystemExit("UNVERIFIED_CI_RELEASE_GATE")
+          if ci.get("event") != "push" or ci.get("head_branch") != "main":
+              raise SystemExit("CI_MAIN_PUSH_REQUIRED")
+          if ci.get("conclusion") != "success" or ci.get("head_sha") != sys.argv[3]:
+              raise SystemExit("CI_SOURCE_SHA_MISMATCH")
+          if not isinstance(ci.get("run_id"), int) or ci["run_id"] <= 0:
+              raise SystemExit("IMMUTABLE_CI_RUN_ID_REQUIRED")
           if (manifest.get("deployment_policy") or {}).get("acceptance") != "required":
               raise SystemExit("RELEASE_ACCEPTANCE_MUST_REMAIN_REQUIRED")
           if (manifest.get("deployment_policy") or {}).get("build_on_target") is not False:
@@ -114,11 +132,103 @@ jobs:
               image = (manifest.get("images") or {}).get(service) or {}
               digest = str(image.get("digest") or "")
               reference = str(image.get("reference") or "")
+              expected_name = f"ghcr.io/{sys.argv[4].split('/', 1)[0]}/taksklad-{service}"
               if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
                   raise SystemExit(f"IMMUTABLE_{service.upper()}_DIGEST_REQUIRED")
-              if reference != f"{image.get('name')}@{digest}":
+              if image.get("name") != expected_name or reference != f"{expected_name}@{digest}":
                   raise SystemExit(f"IMMUTABLE_{service.upper()}_REFERENCE_REQUIRED")
+
+          hash_re = re.compile(r"^[0-9a-f]{64}$")
+          expected_windows = {
+              "TakSklad.exe": windows.get("artifact_sha256"),
+              "TakSklad-windows-x64.zip": windows.get("artifact_sha256_onedir"),
+              "version.json": windows.get("manifest_sha256"),
+          }
+          if windows.get("artifact") != "TakSklad.exe" or windows.get("artifact_onedir") != "TakSklad-windows-x64.zip" or windows.get("manifest") != "version.json":
+              raise SystemExit("IMMUTABLE_WINDOWS_SUBJECT_NAMES_REQUIRED")
+          if any(not hash_re.fullmatch(str(value or "")) for value in expected_windows.values()):
+              raise SystemExit("IMMUTABLE_WINDOWS_SUBJECT_HASH_REQUIRED")
+          subjects = manifest.get("attestation_subjects") or []
+          windows_subjects = {
+              item.get("name"): item.get("sha256")
+              for item in subjects
+              if item.get("kind") == "windows"
+          }
+          if windows_subjects != expected_windows:
+              raise SystemExit("WINDOWS_ATTESTATION_SUBJECTS_MISMATCH")
+          expected_oci = {
+              (manifest["images"][service]["reference"], manifest["images"][service]["digest"])
+              for service in ("backend", "frontend")
+          }
+          oci_subjects = {
+              (item.get("name"), item.get("digest"))
+              for item in subjects
+              if item.get("kind") == "oci"
+          }
+          if oci_subjects != expected_oci:
+              raise SystemExit("OCI_ATTESTATION_SUBJECTS_MISMATCH")
           PY
+
+          ci_run_id="$(python3 - "$manifest_path" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          print(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))["ci"]["run_id"])
+          PY
+          )"
+          ci_metadata="$RUNNER_TEMP/ci-run.json"
+          gh run view "$ci_run_id" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json conclusion,event,headBranch,headSha,jobs,workflowName > "$ci_metadata"
+          python3 - "$ci_metadata" "$EXPECTED_SOURCE_SHA" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          metadata = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          if metadata.get("workflowName") != "CI" or metadata.get("conclusion") != "success":
+              raise SystemExit("UNVERIFIED_CI_WORKFLOW")
+          if metadata.get("event") != "push" or metadata.get("headBranch") != "main":
+              raise SystemExit("CI_MAIN_PUSH_REQUIRED")
+          if metadata.get("headSha") != sys.argv[2]:
+              raise SystemExit("CI_SOURCE_SHA_MISMATCH")
+          gates = [job for job in metadata.get("jobs", []) if job.get("name") == "Release gate"]
+          if len(gates) != 1 or gates[0].get("conclusion") != "success":
+              raise SystemExit("CI_RELEASE_GATE_NOT_SUCCESSFUL")
+          PY
+
+          windows_dir="$RUNNER_TEMP/windows-release"
+          mkdir -p "$windows_dir"
+          gh run download "$ARTIFACT_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name taksklad-windows-release \
+            --dir "$windows_dir"
+          python3 - "$manifest_path" "$windows_dir" <<'PY'
+          import hashlib
+          import json
+          import sys
+          from pathlib import Path
+
+          manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          root = Path(sys.argv[2])
+          windows = manifest["windows"]
+          expected = {
+              windows["artifact"]: windows["artifact_sha256"],
+              windows["artifact_onedir"]: windows["artifact_sha256_onedir"],
+              windows["manifest"]: windows["manifest_sha256"],
+          }
+          for name, digest in expected.items():
+              path = root / name
+              if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+                  raise SystemExit(f"WINDOWS_SUBJECT_SHA256_MISMATCH:{name}")
+          PY
+          for subject in TakSklad.exe TakSklad-windows-x64.zip version.json; do
+            gh attestation verify "$windows_dir/$subject" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$signer_workflow" \
+              --source-digest "$EXPECTED_SOURCE_SHA"
+          done
 
           printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
           mapfile -t image_references < <(python3 - "$manifest_path" <<'PY'
@@ -144,7 +254,30 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ inputs.source_sha }}
+          fetch-tags: true
           persist-credentials: false
+
+      - name: Verify release tag resolves to exact source SHA
+        env:
+          EXPECTED_SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          release_tag="$(python3 - "$RELEASE_MANIFEST_PATH" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          print(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))["release_tag"])
+          PY
+          )"
+          git show-ref --verify --quiet "refs/tags/$release_tag" || {
+            echo "IMMUTABLE_RELEASE_TAG_REQUIRED" >&2
+            exit 1
+          }
+          test "$(git rev-parse "refs/tags/$release_tag^{commit}")" = "$EXPECTED_SOURCE_SHA" || {
+            echo "RELEASE_TAG_SOURCE_SHA_MISMATCH" >&2
+            exit 1
+          }
 
       - name: Validate deploy script syntax
         run: bash -n deploy/vds/deploy_from_git.sh
@@ -157,8 +290,15 @@ jobs:
             deploy/vds/docker-compose.yml \
             deploy/vds/acceptance_status.sh \
             deploy/vds/backup_postgres.sh \
+            test-artifacts/disaster-recovery/restore-drill.json \
+            tools/check_data_invariants.py \
+            tools/collect_phase27_evidence.py \
+            tools/live_release_verifier.sh \
+            tools/production_preflight.sh \
+            tools/production_release_checks.py \
             tools/release_artifacts.py \
-            tools/validate_deploy_probe.py
+            tools/validate_deploy_probe.py \
+            tools/write_maintenance_marker.py
 
       - name: Validate required secrets
         env:
@@ -199,18 +339,73 @@ jobs:
           VDS_USER: ${{ secrets.VDS_USER }}
           VDS_APP_DIR: ${{ secrets.VDS_APP_DIR }}
           DEPLOY_ACCEPTANCE: required
+          GH_TOKEN: ${{ github.token }}
+          GHCR_USER: ${{ github.actor }}
           PRODUCTION_APPROVAL: READY_FOR_PRODUCTION_DEPLOY
         run: |
+          set -euo pipefail
           app_dir="${VDS_APP_DIR:-/opt/stacks/taksklad/app}"
           remote="$VDS_USER@$VDS_HOST"
+          remote_docker_config="/tmp/taksklad-ghcr-auth-${GITHUB_RUN_ID}"
+          ssh -i ~/.ssh/taksklad_deploy_key "$remote" \
+            "install -d -m 700 $(printf '%q' "$remote_docker_config")"
+          printf '%s' "$GH_TOKEN" | ssh -i ~/.ssh/taksklad_deploy_key "$remote" \
+            "DOCKER_CONFIG=$(printf '%q' "$remote_docker_config") docker login ghcr.io --username $(printf '%q' "$GHCR_USER") --password-stdin" >/dev/null
+          cleanup_registry_auth() {
+            ssh -i ~/.ssh/taksklad_deploy_key "$remote" \
+              "DOCKER_CONFIG=$(printf '%q' "$remote_docker_config") docker logout ghcr.io >/dev/null 2>&1 || true; rm -rf $(printf '%q' "$remote_docker_config")" || true
+          }
+          trap cleanup_registry_auth EXIT
           ssh -i ~/.ssh/taksklad_deploy_key "$remote" 'bash -s' <<EOF
           set -euo pipefail
           app_dir=$(printf '%q' "$app_dir")
           install -d -m 755 "$app_dir"
           tar -xzf /tmp/taksklad-deploy-control.tar.gz -C "$app_dir" --no-same-owner
+          install -m 600 /tmp/release.json "$app_dir/release.json"
           export TAKSKLAD_DEPLOY_APP_DIR=$(printf '%q' "$app_dir")
           export TAKSKLAD_DEPLOY_ACCEPTANCE=$(printf '%q' "$DEPLOY_ACCEPTANCE")
           export TAKSKLAD_PRODUCTION_APPROVAL=$(printf '%q' "$PRODUCTION_APPROVAL")
-          chmod +x "$app_dir/deploy/vds/deploy_from_git.sh"
-          "$app_dir/deploy/vds/deploy_from_git.sh" --artifact-manifest /tmp/release.json
+          export DOCKER_CONFIG=$(printf '%q' "$remote_docker_config")
+          cd "$app_dir"
+          chmod +x deploy/vds/deploy_from_git.sh tools/production_preflight.sh tools/live_release_verifier.sh
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/release_artifacts.py verify --manifest release.json
+          eval "\$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/release_artifacts.py emit-shell --manifest release.json)"
+          docker pull "\$RELEASE_BACKEND_IMAGE"
+          docker pull "\$RELEASE_FRONTEND_IMAGE"
+          ./deploy/vds/backup_postgres.sh --no-prune
+          install -d -m 700 .release-state
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/collect_phase27_evidence.py \
+            preflight --manifest release.json --output .release-state/production-preflight.json
+          ./tools/production_preflight.sh --read-only --require-current-backup --require-zero-blockers
+          ./deploy/vds/deploy_from_git.sh --artifact-manifest release.json --acceptance required --wait
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/collect_phase27_evidence.py \
+            live --manifest release.json --output .release-state/live-release-verification.json
+          ./tools/live_release_verifier.sh --read-only --same-sha --slo-window
+          install -m 600 .release-state/production-preflight.json /tmp/taksklad-production-preflight.json
+          install -m 600 .release-state/live-release-verification.json /tmp/taksklad-live-release-verification.json
           EOF
+          cleanup_registry_auth
+          trap - EXIT
+
+      - name: Collect sanitized Phase 27 evidence
+        if: always()
+        env:
+          VDS_HOST: ${{ secrets.VDS_HOST }}
+          VDS_USER: ${{ secrets.VDS_USER }}
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/phase27-evidence"
+          mkdir -p "$evidence_dir"
+          for name in production-preflight live-release-verification; do
+            scp -i ~/.ssh/taksklad_deploy_key \
+              "$VDS_USER@$VDS_HOST:/tmp/taksklad-$name.json" "$evidence_dir/$name.json"
+          done
+
+      - name: Upload sanitized Phase 27 evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: taksklad-phase27-production-evidence
+          if-no-files-found: error
+          retention-days: 30
+          path: ${{ runner.temp }}/phase27-evidence/

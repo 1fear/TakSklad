@@ -131,6 +131,7 @@ from .schemas import (
     EventQueueActionRequest,
     EventQueueEventRead,
     HealthResponse,
+    VersionResponse,
     ImportCreate,
     ImportPreviewResult,
     ImportRead,
@@ -461,6 +462,16 @@ def health():
         "service": settings.service_name,
         "version": APP_VERSION,
         **build_identity,
+        "environment": settings.environment,
+    }
+
+
+@app.get("/version", response_model=VersionResponse)
+def version():
+    return {
+        "service": settings.service_name,
+        "version": APP_VERSION,
+        **runtime_build_identity(),
         "environment": settings.environment,
     }
 

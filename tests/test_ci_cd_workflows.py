@@ -205,12 +205,14 @@ class CiCdWorkflowTests(unittest.TestCase):
         script = (PROJECT_ROOT / "deploy" / "vds" / "deploy_from_git.sh").read_text(encoding="utf-8")
 
         self.assertIn("--artifact-manifest", script)
+        self.assertIn("--acceptance", script)
+        self.assertIn("--wait", script)
         self.assertIn("READY_FOR_PRODUCTION_DEPLOY", script)
         self.assertIn("tools/release_artifacts.py verify", script)
         self.assertIn("tools/release_artifacts.py emit-shell", script)
         self.assertIn('docker pull "$TAKSKLAD_BACKEND_IMAGE"', script)
         self.assertIn('docker pull "$TAKSKLAD_FRONTEND_IMAGE"', script)
-        self.assertIn("./deploy/vds/backup_postgres.sh", script)
+        self.assertIn("./deploy/vds/backup_postgres.sh --no-prune", script)
         self.assertIn("alembic -c alembic.ini upgrade head", script)
         self.assertIn("--no-build --pull never", script)
         self.assertIn("tools/validate_deploy_probe.py", script)
@@ -225,6 +227,7 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn("rollback_runtime", script)
         self.assertIn("PREVIOUS_MANIFEST", script)
         self.assertIn("database schema retained, alembic downgrade=0", script)
+        self.assertIn("--acceptance required --wait", script)
         self.assertIn('install -m 600 "$ARTIFACT_MANIFEST" "$temporary_record"', script)
         self.assertNotIn("continuing because acceptance mode is optional", script)
         self.assertNotIn("optional|required|skip", script)
@@ -238,6 +241,28 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertNotIn("alembic -c alembic.ini downgrade", script)
         self.assertNotIn("compose run --rm --no-deps backend-api alembic downgrade", script)
         self.assertNotIn("git reset --hard", script)
+
+    def test_production_workflow_runs_phase27_preflight_deploy_and_live_gates(self):
+        workflow = (PROJECT_ROOT / ".github/workflows/deploy-production.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("tools/collect_phase27_evidence.py", workflow)
+        self.assertIn("./deploy/vds/backup_postgres.sh --no-prune", workflow)
+        self.assertIn(
+            "./tools/production_preflight.sh --read-only --require-current-backup --require-zero-blockers",
+            workflow,
+        )
+        self.assertIn(
+            "./deploy/vds/deploy_from_git.sh --artifact-manifest release.json --acceptance required --wait",
+            workflow,
+        )
+        self.assertIn(
+            "./tools/live_release_verifier.sh --read-only --same-sha --slo-window",
+            workflow,
+        )
+        self.assertIn("taksklad-phase27-production-evidence", workflow)
+        self.assertIn("docker logout ghcr.io", workflow)
 
     def test_desired_github_protection_is_fail_closed_and_diff_is_read_only(self):
         manifest = json.loads(
