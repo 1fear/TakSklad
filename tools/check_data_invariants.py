@@ -15,12 +15,12 @@ from sqlalchemy.engine import make_url
 INVARIANTS = (
     ("order_item_negative_quantities", "SELECT count(*) FROM order_items WHERE quantity_pieces < 0 OR quantity_blocks < 0 OR scanned_blocks < 0"),
     ("order_item_nonpositive_pieces_per_block", "SELECT count(*) FROM order_items WHERE pieces_per_block IS NOT NULL AND pieces_per_block <= 0"),
-    ("order_item_scanned_exceeds_plan", "SELECT count(*) FROM order_items WHERE scanned_blocks > quantity_blocks"),
+    ("order_item_scanned_exceeds_plan", "SELECT count(*) FROM order_items WHERE status='not_completed' AND scanned_blocks > quantity_blocks"),
     ("unsupported_order_status", "SELECT count(*) FROM orders WHERE status NOT IN ('not_completed','completed','done','closed','returned','archived_no_kiz','cancelled')"),
     ("unsupported_item_status", "SELECT count(*) FROM order_items WHERE status NOT IN ('not_completed','completed','done','closed','returned','removed_from_google_sheet','archived_no_kiz','cancelled')"),
     ("unsupported_import_status", "SELECT count(*) FROM imports WHERE status NOT IN ('created','completed','completed_with_errors','failed')"),
     ("invalid_import_row_counts", "SELECT count(*) FROM imports WHERE rows_total < 0 OR rows_imported < 0 OR rows_imported > rows_total"),
-    ("unsupported_event_status", "SELECT count(*) FROM pending_events WHERE status NOT IN ('pending','failed','error','processing','completed','blocked','dead','cancelled','active','waiting_shipment_date','waiting_date_choice')"),
+    ("unsupported_event_status", "SELECT count(*) FROM pending_events WHERE status NOT IN ('pending','failed','error','processing','completed','blocked','dead','cancelled','obsolete','active','waiting_shipment_date','waiting_date_choice')"),
     ("negative_event_attempts", "SELECT count(*) FROM pending_events WHERE attempts < 0"),
     ("source_identity_pair_mismatch", "SELECT count(*) FROM order_items WHERE (source_import_id IS NULL) <> (source_import_key IS NULL)"),
     ("blank_materialized_identity", "SELECT (SELECT count(*) FROM orders WHERE btrim(coalesce(import_order_key,''))='' AND import_order_key IS NOT NULL OR btrim(coalesce(import_source_order_key,''))='' AND import_source_order_key IS NOT NULL) + (SELECT count(*) FROM order_items WHERE btrim(coalesce(import_item_key,''))='' AND import_item_key IS NOT NULL OR btrim(coalesce(source_import_key,''))='' AND source_import_key IS NOT NULL)"),
@@ -30,6 +30,24 @@ INVARIANTS = (
 )
 
 TABLES = ("orders", "order_items", "imports", "import_files", "pending_events")
+IDENTITY_INVARIANT_COLUMNS = {
+    "source_identity_pair_mismatch": {
+        ("order_items", "source_import_id"),
+        ("order_items", "source_import_key"),
+    },
+    "blank_materialized_identity": {
+        ("orders", "import_order_key"),
+        ("orders", "import_source_order_key"),
+        ("order_items", "import_item_key"),
+        ("order_items", "source_import_key"),
+    },
+    "duplicate_active_order_identity": {("orders", "import_order_key")},
+    "duplicate_order_source_identity": {("order_items", "source_import_key")},
+    "duplicate_order_item_fallback_identity": {
+        ("order_items", "source_import_key"),
+        ("order_items", "import_item_key"),
+    },
+}
 
 
 def psycopg_url(database_url):
@@ -40,12 +58,29 @@ def table_counts(connection):
     return {table: int(connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0]) for table in TABLES}
 
 
+def schema_columns(connection):
+    rows = connection.execute(
+        "SELECT table_name, column_name FROM information_schema.columns "
+        "WHERE table_schema = current_schema()"
+    ).fetchall()
+    return {(str(table), str(column)) for table, column in rows if table in TABLES}
+
+
 def run_preflight(database_url):
     with psycopg.connect(psycopg_url(database_url)) as connection:
         connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
         read_only = connection.execute("SHOW transaction_read_only").fetchone()[0]
         before = table_counts(connection)
-        counts = {name: int(connection.execute(statement).fetchone()[0]) for name, statement in INVARIANTS}
+        available_columns = schema_columns(connection)
+        counts = {}
+        deferred = []
+        for name, statement in INVARIANTS:
+            required = IDENTITY_INVARIANT_COLUMNS.get(name, set())
+            if not required.issubset(available_columns):
+                counts[name] = 0
+                deferred.append(name)
+                continue
+            counts[name] = int(connection.execute(statement).fetchone()[0])
         after = table_counts(connection)
         connection.rollback()
     violations = sum(counts.values())
@@ -53,6 +88,9 @@ def run_preflight(database_url):
         "status": "pass" if violations == 0 else "violations",
         "transaction_read_only": read_only,
         "invariants": counts,
+        "evaluated_invariants": sorted(set(counts) - set(deferred)),
+        "deferred_invariants": sorted(deferred),
+        "schema_stage": "pre-expand" if deferred else "expanded",
         "violation_classes": sum(value > 0 for value in counts.values()),
         "violations": violations,
         "table_counts_before": before,

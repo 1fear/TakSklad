@@ -21,7 +21,7 @@ CHECKS = (
     ("order_items", "ck_order_items_pieces_per_block_positive",
      "pieces_per_block IS NULL OR pieces_per_block > 0"),
     ("order_items", "ck_order_items_scanned_within_plan",
-     "scanned_blocks <= quantity_blocks"),
+     "status <> 'not_completed' OR scanned_blocks <= quantity_blocks"),
     ("orders", "ck_orders_supported_status",
      "status IN ('not_completed','completed','done','closed','returned','archived_no_kiz','cancelled')"),
     ("order_items", "ck_order_items_supported_status",
@@ -33,7 +33,7 @@ CHECKS = (
      "rows_total >= 0 AND rows_imported >= 0 AND rows_imported <= rows_total"),
     ("pending_events", "ck_pending_events_supported_status",
      "status IN ('pending','failed','error','processing','completed','blocked','dead','cancelled',"
-     "'active','waiting_shipment_date','waiting_date_choice')"),
+     "'obsolete','active','waiting_shipment_date','waiting_date_choice')"),
     ("pending_events", "ck_pending_events_attempts_nonnegative", "attempts >= 0"),
     ("order_items", "ck_order_items_source_identity_pair",
      "(source_import_id IS NULL AND source_import_key IS NULL) OR "

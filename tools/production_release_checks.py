@@ -17,6 +17,13 @@ from tools.release_artifacts import ReleaseArtifactError, verify_manifest
 ROOT = Path(__file__).resolve().parents[1]
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+PRE_EXPAND_DEFERRED_INVARIANTS = {
+    "source_identity_pair_mismatch",
+    "blank_materialized_identity",
+    "duplicate_active_order_identity",
+    "duplicate_order_source_identity",
+    "duplicate_order_item_fallback_identity",
+}
 HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -124,6 +131,11 @@ def validate_preflight(
     require_zero(invariants.get("violations"), "invariants.violations")
     if invariants.get("zero_mutation") is not True or invariants.get("automatic_repairs") != 0:
         raise ProductionCheckError("invariant preflight was not count-only")
+    deferred_invariants = set(invariants.get("deferred_invariants") or [])
+    if not deferred_invariants.issubset(PRE_EXPAND_DEFERRED_INVARIANTS):
+        raise ProductionCheckError("invariant preflight deferred an unexpected check")
+    if deferred_invariants and migration.get("current_revision") == migration.get("target_revision"):
+        raise ProductionCheckError("target schema cannot retain deferred invariant checks")
     config = evidence.get("config") or {}
     require_zero(config.get("blockers"), "config.blockers")
     readiness = evidence.get("readiness") or {}
@@ -169,6 +181,9 @@ def validate_live(
         raise ProductionCheckError("live database or migration readiness is not green")
     if readiness.get("worker_status") != "ok" or readiness.get("mandatory_status") != "ok":
         raise ProductionCheckError("live workers or mandatory readiness are not green")
+    invariants = evidence.get("invariants") or {}
+    if invariants.get("deferred_invariants"):
+        raise ProductionCheckError("live invariant verification has deferred checks")
     for field in ("queue_blockers", "stale_processing", "active_duplicates", "lost_outbox", "stale_release_blockers"):
         require_zero(evidence.get(field), field)
     alerts = evidence.get("alerts") or {}

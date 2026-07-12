@@ -89,6 +89,7 @@ class ProductionReleaseChecksTests(unittest.TestCase):
                 "worker_status": "ok",
                 "mandatory_status": "ok",
             },
+            "invariants": {"deferred_invariants": []},
             "queue_blockers": 0,
             "stale_processing": 0,
             "active_duplicates": 0,
@@ -131,6 +132,23 @@ class ProductionReleaseChecksTests(unittest.TestCase):
                 max_backup_age_hours=24, max_restore_drill_age_hours=192,
             )
 
+    def test_preflight_allows_only_known_pre_expand_deferred_checks(self):
+        evidence = self.preflight()
+        evidence["invariants"]["deferred_invariants"] = [
+            "duplicate_active_order_identity"
+        ]
+        validate_preflight(
+            evidence, manifest(), require_current_backup=True,
+            require_zero_blockers=True, now=self.now,
+            max_backup_age_hours=24, max_restore_drill_age_hours=192,
+        )
+        evidence["invariants"]["deferred_invariants"] = ["unknown_check"]
+        with self.assertRaises(ProductionCheckError):
+            validate_preflight(
+                evidence, manifest(), require_current_backup=True,
+                require_zero_blockers=True, now=self.now,
+                max_backup_age_hours=24, max_restore_drill_age_hours=192,
+            )
     def test_live_accepts_exact_identity_and_complete_slo_window(self):
         result = validate_live(self.live(), manifest(), require_same_sha=True, require_slo_window=True)
         self.assertEqual(result["source_sha"], SHA)
@@ -141,6 +159,9 @@ class ProductionReleaseChecksTests(unittest.TestCase):
             lambda value: value["runtime"].update(source_sha="d" * 40),
             lambda value: value["readiness"].update(worker_status="unhealthy"),
             lambda value: value["slo"].update(duration_seconds=299),
+            lambda value: value["invariants"].update(
+                deferred_invariants=["duplicate_active_order_identity"]
+            ),
         ):
             evidence = self.live()
             mutate(evidence)

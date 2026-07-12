@@ -11,7 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from tests.postgres_support import create_database, drop_database, run_alembic, scalar
-from tools.check_data_invariants import run_preflight
+from tools.check_data_invariants import IDENTITY_INVARIANT_COLUMNS, run_preflight
 
 
 POSTGRES_AVAILABLE = bool(os.environ.get("TAKSKLAD_TEST_DATABASE_URL"))
@@ -24,6 +24,7 @@ class PostgresInvariantTests(unittest.TestCase):
         "taksklad_phase8_violations",
         "taksklad_phase8_timeout",
         "taksklad_phase8_stress",
+        "taksklad_phase8_pre_expand",
     )
 
     @classmethod
@@ -60,6 +61,12 @@ class PostgresInvariantTests(unittest.TestCase):
                             requires_kiz, status, raw_payload
                         ) VALUES (:order_id,:product,10,1,0,true,:status,'{}'::jsonb)
                     """), {"order_id": order_id, "product": f"SYNTHETIC {status}", "status": status})
+                connection.execute(text("""
+                    INSERT INTO order_items (
+                        order_id, product, quantity_pieces, quantity_blocks, scanned_blocks,
+                        requires_kiz, status, raw_payload
+                    ) VALUES (:order_id,'SYNTHETIC TERMINAL HISTORY',10,1,2,true,'completed','{}'::jsonb)
+                """), {"order_id": order_id})
                 for status in ("created", "completed", "completed_with_errors", "failed"):
                     connection.execute(text("""
                         INSERT INTO imports (source,status,rows_total,rows_imported,raw_payload)
@@ -67,7 +74,7 @@ class PostgresInvariantTests(unittest.TestCase):
                     """), {"status": status})
                 for status in (
                     "pending", "failed", "error", "processing", "completed", "blocked",
-                    "dead", "cancelled", "active", "waiting_shipment_date", "waiting_date_choice",
+                    "dead", "cancelled", "obsolete", "active", "waiting_shipment_date", "waiting_date_choice",
                 ):
                     connection.execute(text("""
                         INSERT INTO pending_events (event_type,status,attempts,payload)
@@ -149,6 +156,13 @@ class PostgresInvariantTests(unittest.TestCase):
                         '00000000-0000-0000-0000-000000000801','SYNTHETIC',-1,1,2,0,true,
                         'unsupported','source-without-key','{}'::jsonb
                     );
+                    INSERT INTO order_items (
+                        order_id, product, quantity_pieces, quantity_blocks, scanned_blocks,
+                        pieces_per_block, requires_kiz, status, raw_payload
+                    ) VALUES (
+                        '00000000-0000-0000-0000-000000000801','SYNTHETIC ACTIVE OVERSCAN',
+                        10,1,2,1,true,'not_completed','{}'::jsonb
+                    );
                     INSERT INTO imports (source,status,rows_total,rows_imported,raw_payload)
                     VALUES ('synthetic','unsupported',1,2,'{}'::jsonb);
                     INSERT INTO pending_events (event_type,status,attempts,payload)
@@ -187,6 +201,28 @@ class PostgresInvariantTests(unittest.TestCase):
                 run_alembic(url, "upgrade", "20260710_0010")
             self.assertEqual(scalar(url, "SELECT version_num FROM alembic_version"), "20260710_0009")
             self.assertEqual(scalar(url, "SELECT count(*) FROM orders"), before)
+        finally:
+            engine.dispose()
+
+    def test_pre_expand_preflight_defers_only_new_identity_columns(self):
+        url = create_database(self.databases[4])
+        run_alembic(url, "upgrade", "20260710_0008")
+        engine = create_engine(url, pool_pre_ping=True)
+        try:
+            with engine.begin() as connection:
+                connection.execute(text("""
+                    INSERT INTO orders (source, payment_type, client, address, status, raw_payload)
+                    VALUES ('synthetic','synthetic','SYNTHETIC PRE EXPAND','SYNTHETIC','unsupported','{}'::jsonb)
+                """))
+            report = run_preflight(url)
+            self.assertEqual(report["schema_stage"], "pre-expand")
+            self.assertEqual(
+                set(report["deferred_invariants"]),
+                set(IDENTITY_INVARIANT_COLUMNS),
+            )
+            self.assertGreater(report["invariants"]["unsupported_order_status"], 0)
+            self.assertEqual(report["violation_classes"], 1)
+            self.assertTrue(report["zero_mutation"])
         finally:
             engine.dispose()
 
