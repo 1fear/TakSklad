@@ -147,6 +147,8 @@ WINDOWS_CODESIGN_PFX_PASSWORD
 
 Windows signing secrets должны соответствовать заранее закреплённому SHA-256 публичного сертификата в `TRUSTED_WINDOWS_SIGNER_CERT_SHA256`. Сам PFX, пароль и private key не сохраняются в repository, release manifest, artifacts или логах.
 
+Для внутреннего сертификата TakSklad публичные копии root CA и code-signing leaf хранятся в `supply-chain/taksklad-internal-windows-root-ca.pem` и `supply-chain/taksklad-internal-windows-codesign.pem`. Release runner сверяет leaf с PFX, временно добавляет root CA в пользовательский `Root`, а leaf — в `TrustedPublisher`, после сборки удаляя оба. Перед установкой подписанного desktop-релиза оператор должен импортировать root CA в `Trusted Root Certification Authorities`, а leaf — в `Trusted Publishers`; приватные ключи на рабочие станции не переносятся.
+
 ### Immutable release candidate
 
 Версия собираемого приложения и уже опубликованный update channel разделены. Во время подготовки кандидата `APP_VERSION` может быть `2.0.26`, пока корневой `version.json` продолжает указывать на проверенный `2.0.25`. Это исключает ссылку клиентов на ещё не существующие подписанные файлы.

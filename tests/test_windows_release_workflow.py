@@ -32,6 +32,13 @@ class WindowsReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("WINDOWS_CODESIGN_CERTIFICATE_SHA256", workflow)
         self.assertGreaterEqual(workflow.count("WINDOWS_CODESIGN_IDENTITY_MISMATCH"), 2)
         self.assertIn("WINDOWS_CODESIGN_IDENTITY_NOT_PINNED", workflow)
+        self.assertIn("taksklad-internal-windows-codesign.pem", workflow)
+        self.assertIn("taksklad-internal-windows-root-ca.pem", workflow)
+        self.assertIn("verify_windows_signing_chain.py --require-leaf", workflow)
+        self.assertIn('@{ Name = "Root"; Certificate = $approvedRootCertificate }', workflow)
+        self.assertIn('@{ Name = "TrustedPublisher"; Certificate = $certificate }', workflow)
+        self.assertIn("WINDOWS_CODESIGN_TEMPORARY_ROOT_THUMBPRINT", workflow)
+        self.assertIn("WINDOWS_CODESIGN_TEMPORARY_PUBLISHER_THUMBPRINT", workflow)
         self.assertGreaterEqual(workflow.count("SignerCertificate.RawData"), 2)
         self.assertGreaterEqual(workflow.count("signer_certificate_sha256"), 2)
 

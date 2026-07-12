@@ -207,6 +207,32 @@ jobs:
           } finally {
             $hasher.Dispose()
           }
+          $approvedCertificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPemFile(
+            "supply-chain\taksklad-internal-windows-codesign.pem"
+          )
+          $approvedHasher = [System.Security.Cryptography.SHA256]::Create()
+          try {
+            $approvedCertificateSha256 = -join ($approvedHasher.ComputeHash($approvedCertificate.RawData) | ForEach-Object { $_.ToString('x2') })
+          } finally {
+            $approvedHasher.Dispose()
+          }
+          if ($approvedCertificateSha256 -ne $certificateSha256) {
+            throw "WINDOWS_CODESIGN_IDENTITY_MISMATCH"
+          }
+          python tools\verify_windows_signing_chain.py --require-leaf $certificateSha256
+          if ($LASTEXITCODE -ne 0) {
+            throw "WINDOWS_CODESIGN_CHAIN_INVALID"
+          }
+          $approvedRootCertificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPemFile(
+            "supply-chain\taksklad-internal-windows-root-ca.pem"
+          )
+          $rootConstraints = @(
+            $approvedRootCertificate.Extensions |
+              Where-Object { $_.Oid.Value -eq "2.5.29.19" }
+          )
+          if ($rootConstraints.Count -ne 1 -or -not $rootConstraints[0].CertificateAuthority) {
+            throw "WINDOWS_CODESIGN_ROOT_CA_INVALID"
+          }
           python tools\verify_windows_signer_allowlist.py --require $certificateSha256
           if ($LASTEXITCODE -ne 0) {
             foreach ($importedCertificate in $certificates) {
@@ -219,6 +245,23 @@ jobs:
           "WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT=$($certificate.Thumbprint)" >> $env:GITHUB_ENV
           "WINDOWS_CODESIGN_CERTIFICATE_SHA256=$certificateSha256" >> $env:GITHUB_ENV
           "WINDOWS_CODESIGN_IMPORTED_THUMBPRINTS=$(@($certificates.Thumbprint) -join ',')" >> $env:GITHUB_ENV
+          "WINDOWS_CODESIGN_TEMPORARY_PUBLISHER_THUMBPRINT=$($certificate.Thumbprint)" >> $env:GITHUB_ENV
+          "WINDOWS_CODESIGN_TEMPORARY_ROOT_THUMBPRINT=$($approvedRootCertificate.Thumbprint)" >> $env:GITHUB_ENV
+          foreach ($storeSpec in @(
+            @{ Name = "Root"; Certificate = $approvedRootCertificate },
+            @{ Name = "TrustedPublisher"; Certificate = $certificate }
+          )) {
+            $store = [System.Security.Cryptography.X509Certificates.X509Store]::new(
+              $storeSpec.Name,
+              [System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser
+            )
+            try {
+              $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+              $store.Add($storeSpec.Certificate)
+            } finally {
+              $store.Close()
+            }
+          }
 
       - name: Prepare PyInstaller import path
         shell: pwsh
@@ -344,6 +387,12 @@ jobs:
                 Remove-Item "Cert:\CurrentUser\My\$thumbprint" -Force -ErrorAction SilentlyContinue
               }
             }
+          }
+          if ($env:WINDOWS_CODESIGN_TEMPORARY_PUBLISHER_THUMBPRINT) {
+            Remove-Item "Cert:\CurrentUser\TrustedPublisher\$env:WINDOWS_CODESIGN_TEMPORARY_PUBLISHER_THUMBPRINT" -Force -ErrorAction SilentlyContinue
+          }
+          if ($env:WINDOWS_CODESIGN_TEMPORARY_ROOT_THUMBPRINT) {
+            Remove-Item "Cert:\CurrentUser\Root\$env:WINDOWS_CODESIGN_TEMPORARY_ROOT_THUMBPRINT" -Force -ErrorAction SilentlyContinue
           }
           if ($env:WINDOWS_CODESIGN_CERTIFICATE_PATH) {
             Remove-Item $env:WINDOWS_CODESIGN_CERTIFICATE_PATH -Force -ErrorAction SilentlyContinue

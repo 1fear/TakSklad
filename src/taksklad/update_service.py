@@ -70,7 +70,9 @@ WINDOWS_CODESIGN_CERTIFICATE_NOT_AVAILABLE = "WINDOWS_CODESIGN_CERTIFICATE_NOT_A
 # Public certificate fingerprints are release inputs, not secrets. Keep this
 # fail-closed until the production certificate is approved and its SHA-256
 # fingerprint is compiled into the released application.
-TRUSTED_WINDOWS_SIGNER_CERT_SHA256 = frozenset()
+TRUSTED_WINDOWS_SIGNER_CERT_SHA256 = frozenset(
+    {"c95ccd968831b3b55a1f2c949e66f3b39c5f69badf29a70887b43a036f14bb19"}
+)
 IMMUTABLE_RELEASE_TAG_RE = re.compile(
     r"^v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?$"
 )

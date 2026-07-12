@@ -1,19 +1,43 @@
+import hashlib
+import ssl
 import tempfile
 import unittest
 from pathlib import Path
 
 from tools.verify_windows_signer_allowlist import load_allowlist
+from tools.verify_windows_signing_chain import verify_chain
 
 
 ROOT = Path(__file__).resolve().parents[1]
 FINGERPRINT = "1" * 64
+APPROVED_FINGERPRINT = (
+    "c95ccd968831b3b55a1f2c949e66f3b39c5f69badf29a70887b43a036f14bb19"
+)
 
 
 class WindowsSignerAllowlistTests(unittest.TestCase):
-    def test_current_source_is_explicitly_fail_closed(self):
+    def test_current_source_pins_only_the_approved_signer(self):
         self.assertEqual(
             load_allowlist(ROOT / "src/taksklad/update_service.py"),
-            frozenset(),
+            frozenset({APPROVED_FINGERPRINT}),
+        )
+
+    def test_committed_public_certificate_matches_the_pinned_fingerprint(self):
+        pem = (
+            ROOT / "supply-chain/taksklad-internal-windows-codesign.pem"
+        ).read_text(encoding="ascii")
+        certificate_der = ssl.PEM_cert_to_DER_cert(pem)
+        self.assertEqual(
+            hashlib.sha256(certificate_der).hexdigest(),
+            APPROVED_FINGERPRINT,
+        )
+
+    def test_committed_internal_ca_chain_is_valid_and_pinned(self):
+        leaf_sha256, root_sha256 = verify_chain()
+        self.assertEqual(leaf_sha256, APPROVED_FINGERPRINT)
+        self.assertEqual(
+            root_sha256,
+            "a6a8df2e724a01ff25ad64eddec1a81e60c9a5658e050636f1630aa9a4fdff8b",
         )
 
     def test_literal_allowlist_entry_is_parsed(self):

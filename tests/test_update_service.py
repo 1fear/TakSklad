@@ -11,6 +11,7 @@ from backend.app.settings import APP_VERSION as BACKEND_APP_VERSION
 from taksklad.config import APP_VERSION
 from taksklad.update_service import (
     MAX_UPDATE_DOWNLOAD_BYTES,
+    TRUSTED_WINDOWS_SIGNER_CERT_SHA256,
     WINDOWS_CODESIGN_CERTIFICATE_NOT_AVAILABLE,
     create_windows_exe_updater,
     create_windows_onedir_updater,
@@ -157,8 +158,18 @@ class UpdateServiceTests(unittest.TestCase):
                         trusted_signers={SYNTHETIC_SIGNER_CERT_SHA256},
                     )
 
-        with self.assertRaisesRegex(RuntimeError, WINDOWS_CODESIGN_CERTIFICATE_NOT_AVAILABLE):
+        with self.assertRaisesRegex(ValueError, "allowlist"):
             validate_update_manifest(manifest)
+
+        approved_signer = next(iter(TRUSTED_WINDOWS_SIGNER_CERT_SHA256))
+        approved_manifest = {
+            **manifest,
+            "signer_certificate_sha256": approved_signer,
+        }
+        self.assertEqual(
+            validate_update_manifest(approved_manifest)[2],
+            approved_signer,
+        )
 
     def test_download_rejects_missing_sha_before_network(self):
         manifest = self._release_manifest(sha256="")
