@@ -1,6 +1,6 @@
 {
   "artifact": "TakSklad-synthetic-signed.exe",
-  "artifact_sha256": "13b991d2d1ef29547985fd64efdb5041e11a6f31d5d841f1afc4787a522e343b",
+  "artifact_sha256": "2fffcef572cd1fb27c98e48b93f2cbcaf95697758436d1026aad333bc24cbfe5",
   "authenticode": {
     "certificate_scope": "local-test",
     "embedded_signature_verified": true,
@@ -22,7 +22,7 @@
   "oci_subjects": {
     "build_output": "type=oci,dest",
     "candidate_input_sha256": {
-      "backend": "599b33476b8b982c20481cdc7f053bd8232127afe2b735afc2da3e974b5576f2",
+      "backend": "5feb48a11c0203a32d643dbbb8349b9f98d3b325e7be90dd44bfddbb487bde50",
       "frontend": "cd5b005b797afda1add6b6325a9a6efb2ecd65c1210da3f04e245fda4ee64c13"
     },
     "context_file_counts": {
@@ -36,10 +36,10 @@
     ],
     "platform": "linux/amd64",
     "sha256": {
-      "taksklad-backend.oci.tar": "385b85e710c28f6ff200bac7c76d1f8e415c2c90487a81666b2fc021da75b21e",
-      "taksklad-frontend.oci.tar": "7d33ce1f49e88023b5f8692a8404af859400090a1d14b441db6ce8412d846326"
+      "taksklad-backend.oci.tar": "bf06095df76fc85d5d400c2d3c98e40e63c512844e875f123977101e6fc339f0",
+      "taksklad-frontend.oci.tar": "1bed65386e3bb8671cd6f0edbf08f7194aeec8ed05269af41c25fa0a4c9725c1"
     },
-    "source_commit": "ca3e337efc64cd3a7e40d2ac69ab4bfb806292e6",
+    "source_commit": "2b73e306e77272b90584b185aacd8d804471a0b3",
     "tar_files_retained": false
   },
   "private_material_retained": false,

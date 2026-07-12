@@ -4,7 +4,7 @@
     "buildDefinition": {
       "buildType": "https://taksklad.local/phase23/release-artifacts/v1",
       "externalParameters": {
-        "sourceSha": "ca3e337efc64cd3a7e40d2ac69ab4bfb806292e6"
+        "sourceSha": "2b73e306e77272b90584b185aacd8d804471a0b3"
       },
       "internalParameters": {
         "dirtyWorkingTreeUsed": false,
@@ -17,7 +17,7 @@
         "id": "https://taksklad.local/builders/local-phase23"
       },
       "metadata": {
-        "invocationId": "local-ca3e337efc64cd3a7e40d2ac69ab4bfb806292e6"
+        "invocationId": "local-2b73e306e77272b90584b185aacd8d804471a0b3"
       }
     }
   },
@@ -25,7 +25,7 @@
   "subject": [
     {
       "digest": {
-        "sha256": "cd32fe81d5a2a5c8831bf6a8ae9a7875d89143ef954bf5b01e18aa02b1471c8d"
+        "sha256": "213e4338e4cfd7fb455ffa7d337534e020f5d95ee85903eba60179d65159e8a4"
       },
       "name": "local/taksklad-backend"
     },
@@ -37,7 +37,7 @@
     },
     {
       "digest": {
-        "sha256": "13b991d2d1ef29547985fd64efdb5041e11a6f31d5d841f1afc4787a522e343b"
+        "sha256": "2fffcef572cd1fb27c98e48b93f2cbcaf95697758436d1026aad333bc24cbfe5"
       },
       "name": "test-artifacts/provenance/TakSklad-synthetic-signed.exe"
     }
