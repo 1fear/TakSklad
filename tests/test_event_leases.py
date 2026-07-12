@@ -3,7 +3,11 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.dialects import postgresql
 
-from backend.app.event_leases import build_postgres_claim_statement, event_leases_enabled
+from backend.app.event_leases import (
+    build_postgres_claim_statement,
+    cached_postgres_claim_statement,
+    event_leases_enabled,
+)
 
 
 class EventLeaseContractTests(unittest.TestCase):
@@ -33,6 +37,18 @@ class EventLeaseContractTests(unittest.TestCase):
         self.assertIn("AVAILABLE_AT", sql)
         self.assertIn("LEASE_EXPIRES_AT", sql)
         self.assertNotIn("PAYLOAD ->", sql)
+
+    def test_postgres_claim_statement_shape_is_cached_without_owner_values(self):
+        first = cached_postgres_claim_statement(
+            event_type_count=1, limit=50, lease_duration_seconds=1800,
+        )
+        second = cached_postgres_claim_statement(
+            event_type_count=1, limit=50, lease_duration_seconds=1800,
+        )
+        self.assertIs(first, second)
+        sql = str(first.compile(dialect=postgresql.dialect()))
+        self.assertIn("lease_owner", sql)
+        self.assertIn("lease_event_type_0", sql)
 
 
 if __name__ == "__main__":

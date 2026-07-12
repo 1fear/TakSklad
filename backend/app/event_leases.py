@@ -1,7 +1,8 @@
 import os
 from datetime import timedelta
+from functools import lru_cache
 
-from sqlalchemy import and_, func, or_, select, true, update
+from sqlalchemy import and_, bindparam, func, or_, select, true, update
 from sqlalchemy.orm import Session
 
 from .models import PendingEvent
@@ -49,15 +50,17 @@ def claim_event_leases(
         expires_at = now_value + lease_duration
     try:
         if is_postgresql:
-            statement = build_postgres_claim_statement(
-                event_types=event_types,
-                owner=owner,
+            statement = cached_postgres_claim_statement(
+                event_type_count=len(event_types),
                 limit=limit,
-                now=now_value,
-                expires_at=expires_at,
+                lease_duration_seconds=int(lease_duration.total_seconds()),
             )
             events = db.execute(
-                statement.execution_options(synchronize_session=False)
+                statement.execution_options(synchronize_session=False),
+                {
+                    **{f"lease_event_type_{index}": value for index, value in enumerate(event_types)},
+                    "lease_owner": owner,
+                },
             ).scalars().all()
         else:
             eligible = or_(
@@ -92,6 +95,22 @@ def claim_event_leases(
     # Candidate selection already applies the fairness order before locking.
     # Consumers do not require a second ordering pass over the claimed batch.
     return events
+
+
+@lru_cache(maxsize=64)
+def cached_postgres_claim_statement(*, event_type_count, limit, lease_duration_seconds):
+    event_types = tuple(
+        bindparam(f"lease_event_type_{index}")
+        for index in range(max(1, int(event_type_count)))
+    )
+    duration = timedelta(seconds=max(1, int(lease_duration_seconds)))
+    return build_postgres_claim_statement(
+        event_types=event_types,
+        owner=bindparam("lease_owner"),
+        limit=max(1, min(int(limit), 1000)),
+        now=func.now(),
+        expires_at=func.now() + duration,
+    )
 
 
 def build_postgres_claim_statement(*, event_types, owner, limit, now, expires_at, eligible=None):
