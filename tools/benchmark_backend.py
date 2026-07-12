@@ -53,7 +53,7 @@ MAX_LOAD_PER_CPU = 0.35
 QUIESCENCE_TIMEOUT_SECONDS = 180
 WORKLOAD_MAINTENANCE = {
     "scan_db": {"interval": 10, "tables": ("audit_log", "kiz_movements", "scan_codes", "kiz_codes", "order_items", "pending_events")},
-    "complete_db": {"interval": 10, "tables": ("audit_log", "order_items", "orders", "pending_events")},
+    "complete_db": {"interval": 1, "tables": ("audit_log", "order_items", "orders", "pending_events")},
     "return_db": {"interval": 10, "tables": ("audit_log", "pending_events", "kiz_movements", "orders")},
     "queue_claim_50": {"interval": 1, "tables": ("pending_events",)},
 }
