@@ -67,6 +67,31 @@ def sha256_file(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def benchmark_contract_hashes():
+    paths = {
+        "runner": Path(__file__),
+        "profiles": PROFILES_PATH,
+        "budgets": BUDGETS_PATH,
+        "event_leases": ROOT / "backend/app/event_leases.py",
+        "imports_service": ROOT / "backend/app/imports_service.py",
+        "kiz_movements_service": ROOT / "backend/app/kiz_movements_service.py",
+        "models": ROOT / "backend/app/models.py",
+        "orders_service": ROOT / "backend/app/orders_service.py",
+        "outbox_service": ROOT / "backend/app/outbox_service.py",
+    }
+    return {name: sha256_file(path) for name, path in paths.items()}
+
+
+def baseline_compatibility_failures(approved):
+    expected = benchmark_contract_hashes()
+    actual = ((approved.get("host") or {}).get("working_tree_source_hashes") or {})
+    return [
+        f"approved baseline contract hash mismatch: {name}"
+        for name, digest in expected.items()
+        if actual.get(name) != digest
+    ]
+
+
 def deterministic_uuid(seed, kind, index):
     return uuid.uuid5(NAMESPACE, f"SYNTHETIC-TAKSKLAD-PERF:{seed}:{kind}:{index}")
 
@@ -976,13 +1001,7 @@ def host_manifest(database_url, runtime):
         "postgres": pg_version,
         "postgres_image": runtime["image"],
         "commit": commit,
-        "working_tree_source_hashes": {
-            "runner": sha256_file(__file__),
-            "profiles": sha256_file(PROFILES_PATH),
-            "budgets": sha256_file(BUDGETS_PATH),
-            "imports_service": sha256_file(ROOT / "backend" / "app" / "imports_service.py"),
-            "models": sha256_file(ROOT / "backend" / "app" / "models.py"),
-        },
+        "working_tree_source_hashes": benchmark_contract_hashes(),
     }
 
 
@@ -1041,7 +1060,12 @@ def run_baseline(profile_name, iterations):
         host = host_manifest(database_url, runtime)
     baseline_path = EVIDENCE_DIR / "backend-baseline-approved.json"
     approved = load_json(baseline_path) if baseline_path.exists() else None
-    failures = assertion_failures(results, budgets, approved=approved)
+    compatibility_failures = baseline_compatibility_failures(approved) if approved else []
+    failures = assertion_failures(
+        results,
+        budgets,
+        approved=None if compatibility_failures else approved,
+    )
     evidence = {
         "schema": 1,
         "mode": "baseline",
@@ -1055,6 +1079,11 @@ def run_baseline(profile_name, iterations):
         "explain_summaries": explain["summaries"],
         "budgets": budgets,
         "assertions": {"status": "pass" if not failures else "fail", "failures": failures},
+        "baseline_compatibility": {
+            "approved_compatible": bool(approved) and not compatibility_failures,
+            "failures": compatibility_failures,
+            "reapproval_required": bool(approved) and bool(compatibility_failures),
+        },
     }
     result_path = EVIDENCE_DIR / "backend-baseline-reference.json"
     result_path.write_text(json.dumps(evidence, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -1072,6 +1101,63 @@ def run_baseline(profile_name, iterations):
     }
     sys.stdout.write(json.dumps(summary, ensure_ascii=False, sort_keys=True) + "\n")
     return 0 if not failures else 1
+
+
+def approve_baseline(reason):
+    reason = str(reason or "").strip()
+    if len(reason) < 12:
+        raise ValueError("baseline approval reason must be at least 12 characters")
+    candidate_path = EVIDENCE_DIR / "backend-baseline-reference.json"
+    approved_path = EVIDENCE_DIR / "backend-baseline-approved.json"
+    if not candidate_path.is_file():
+        raise RuntimeError("baseline candidate is missing; run baseline first")
+    candidate = load_json(candidate_path)
+    errors = []
+    if candidate.get("mode") != "baseline" or candidate.get("profile") != "reference":
+        errors.append("candidate is not a reference baseline")
+    if (candidate.get("assertions") or {}).get("status") != "pass":
+        errors.append("candidate assertions did not pass")
+    errors.extend(baseline_compatibility_failures(candidate))
+    errors.extend(assertion_failures(candidate.get("results") or {}, load_json(BUDGETS_PATH)))
+    current_commit = run_command(["git", "rev-parse", "HEAD"]).strip()
+    if (candidate.get("host") or {}).get("commit") != current_commit:
+        errors.append("candidate commit does not match HEAD")
+    if errors:
+        raise RuntimeError("baseline candidate cannot be approved: " + "; ".join(errors))
+
+    EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
+    previous_sha256 = sha256_file(approved_path) if approved_path.is_file() else None
+    if approved_path.is_file():
+        history_dir = EVIDENCE_DIR / "approved-baseline-history"
+        history_dir.mkdir(parents=True, exist_ok=True)
+        history_path = history_dir / f"{previous_sha256}.json"
+        if not history_path.exists():
+            history_path.write_bytes(approved_path.read_bytes())
+    candidate_sha256 = sha256_file(candidate_path)
+    temporary = approved_path.with_suffix(".json.partial")
+    temporary.write_bytes(candidate_path.read_bytes())
+    os.replace(temporary, approved_path)
+    approval = {
+        "schema": 1,
+        "approved_commit": current_commit,
+        "approved_sha256": candidate_sha256,
+        "previous_sha256": previous_sha256,
+        "reason": reason,
+        "contract_hashes": benchmark_contract_hashes(),
+    }
+    approval_path = EVIDENCE_DIR / "baseline-approval.json"
+    approval_path.write_text(
+        json.dumps(approval, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    sys.stdout.write(json.dumps({
+        "status": "approved",
+        "commit": current_commit,
+        "approved_sha256": candidate_sha256,
+        "previous_sha256": previous_sha256,
+        "evidence": str(approval_path.relative_to(ROOT)),
+    }, ensure_ascii=False, sort_keys=True) + "\n")
+    return 0
 
 
 def run_seed(profile_name):
@@ -1184,6 +1270,12 @@ def run_profile_compare(profile_name, repeat, assert_budgets):
     if not approved_path.exists():
         raise RuntimeError("approved Phase 6 baseline is missing; run baseline first")
     approved = load_json(approved_path)
+    compatibility_failures = baseline_compatibility_failures(approved)
+    if compatibility_failures:
+        raise RuntimeError(
+            "approved performance baseline is incompatible; run and approve a fresh baseline: "
+            + "; ".join(compatibility_failures)
+        )
     task_policy = ensure_foreground_task_policy()
     profile = profiles["profiles"][profile_name]
     runs = []
@@ -1331,6 +1423,8 @@ def parse_args():
     compare_parser.add_argument("--profile", choices=("reference",))
     compare_parser.add_argument("--repeat", type=int, default=1)
     compare_parser.add_argument("--assert-budgets", action="store_true")
+    approve_parser = subparsers.add_parser("approve-baseline")
+    approve_parser.add_argument("--reason", required=True)
     subparsers.add_parser("validate-manifest")
     return parser.parse_args()
 
@@ -1351,6 +1445,8 @@ def main():
         if not args.workload:
             raise ValueError("compare requires --profile or --workload")
         return run_compare(args.workload)
+    if args.command == "approve-baseline":
+        return approve_baseline(args.reason)
     return validate_manifest()
 
 

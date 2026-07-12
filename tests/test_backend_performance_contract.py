@@ -67,6 +67,19 @@ class BackendPerformanceContractTests(unittest.TestCase):
         failures = benchmark_backend.assertion_failures(results, self.budgets, approved=approved)
         self.assertTrue(any("day_report.p95_ms" in failure and "10%" in failure for failure in failures))
 
+    def test_stale_measurement_contract_is_rejected(self):
+        current = benchmark_backend.benchmark_contract_hashes()
+        approved = {
+            "host": {
+                "working_tree_source_hashes": {
+                    **current,
+                    "runner": "0" * 64,
+                }
+            }
+        }
+        failures = benchmark_backend.baseline_compatibility_failures(approved)
+        self.assertEqual(failures, ["approved baseline contract hash mismatch: runner"])
+
     def test_repeated_regression_uses_median_without_dropping_noisy_run(self):
         approved_metrics = {
             name: {"p95_ms": 100, "p99_ms": 100}
@@ -205,6 +218,9 @@ class BackendPerformanceContractTests(unittest.TestCase):
             evidence_dir = Path(temp_dir)
             approved_path = evidence_dir / "backend-baseline-approved.json"
             approved_payload = {
+                "host": {
+                    "working_tree_source_hashes": benchmark_backend.benchmark_contract_hashes(),
+                },
                 "results": {name: copy.deepcopy(metrics) for name in benchmark_backend.WORKLOADS},
             }
             approved_path.write_text(json.dumps(approved_payload), encoding="utf-8")
