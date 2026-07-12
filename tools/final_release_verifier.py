@@ -148,7 +148,7 @@ GATES = [
     ("source-tree", "source_integrity", "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python tools/check_release_tree.py --strict --path-only"),
     ("owned-tree", "source_integrity", "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python tools/check_release_tree.py --compare-owned-manifest --strict"),
     ("diff-check", "source_integrity", "git diff --check"),
-    ("backend-performance", "performance", "PYTHONPATH=. .venv/bin/python tools/benchmark_backend.py compare --profile reference --repeat 3 --assert-budgets"),
+    ("backend-performance", "performance", "PYTHONPATH=. .venv/bin/python tools/verify_paired_backend_performance.py --profile reference --repeat 3 --assert-budgets"),
     ("python-tests", "code_quality", "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python -m unittest discover -s tests"),
     ("python-compile", "code_quality", "PYTHONPYCACHEPREFIX=/tmp/taksklad-phase26-pycache PYTHONPATH=. .venv/bin/python -m compileall -q main.py sitecustomize.py taksklad src/taksklad backend/app backend/migrations tools tests"),
     ("code-organization", "code_quality", "PYTHONPATH=. .venv/bin/python tools/check_code_organization.py --strict"),

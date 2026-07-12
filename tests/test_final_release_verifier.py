@@ -97,6 +97,14 @@ class FinalReleaseVerifierTests(unittest.TestCase):
         self.assertTrue(command.endswith("tools/check_release_tree.py --compare-owned-manifest --strict"))
         self.assertNotIn("--exclude", command)
 
+    def test_backend_performance_gate_uses_concurrent_approved_control(self):
+        command = next(command for gate_id, _, command in GATES if gate_id == "backend-performance")
+        self.assertEqual(
+            command,
+            "PYTHONPATH=. .venv/bin/python tools/verify_paired_backend_performance.py "
+            "--profile reference --repeat 3 --assert-budgets",
+        )
+
     def test_clean_worktree_overlay_allowlist_rejects_runtime_paths(self):
         self.assertTrue(_is_declared_evidence("test-artifacts/release.json"))
         self.assertTrue(_is_declared_evidence("test-artifacts/provenance/verification.json"))
