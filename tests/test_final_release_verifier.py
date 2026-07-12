@@ -112,7 +112,7 @@ class FinalReleaseVerifierTests(unittest.TestCase):
         result = wait_for_rehearsal_quiescence()
         self.assertEqual(result["status"], "quiescent")
         self.assertEqual(result["load_per_cpu"], 0.125)
-        self.assertEqual(result["max_load_per_cpu"], 0.25)
+        self.assertEqual(result["max_load_per_cpu"], 0.15)
 
     def test_three_fresh_runs_have_same_identity_and_zero_external_effects(self):
         roots = []
