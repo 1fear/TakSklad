@@ -58,7 +58,7 @@
   "sbom_subjects": 4,
   "schema_version": 1,
   "score": 100,
-  "source_sha": "c736b56b227f2f58de78b8021f9b60d992145483",
+  "source_sha": "2b73e306e77272b90584b185aacd8d804471a0b3",
   "status": "pass",
   "truth": {
     "code": "confirmed",

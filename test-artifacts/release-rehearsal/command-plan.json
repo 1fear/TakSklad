@@ -8,7 +8,7 @@
       "id": "source-tree"
     },
     {
-      "command": "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python tools/check_release_tree.py --compare-owned-manifest --strict --exclude-prefix test-artifacts/release-rehearsal/ --exclude-prefix test-artifacts/disaster-recovery/ --exclude-prefix test-artifacts/phase24/offsite-test-bucket/ --exclude-path test-artifacts/phase24/offsite-backup-evidence.json",
+      "command": "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python tools/check_release_tree.py --compare-owned-manifest --strict",
       "domain": "source_integrity",
       "id": "owned-tree"
     },
@@ -16,6 +16,11 @@
       "command": "git diff --check",
       "domain": "source_integrity",
       "id": "diff-check"
+    },
+    {
+      "command": "PYTHONPATH=. .venv/bin/python tools/benchmark_backend.py compare --profile reference --repeat 3 --assert-budgets",
+      "domain": "performance",
+      "id": "backend-performance"
     },
     {
       "command": "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python -m unittest discover -s tests",
@@ -51,11 +56,6 @@
       "command": "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python tools/benchmark_desktop_storage.py --synthetic-events 10000 --assert-p95-ms 25 --assert-no-loss",
       "domain": "performance",
       "id": "desktop-storage-performance"
-    },
-    {
-      "command": "PYTHONPATH=. .venv/bin/python tools/benchmark_backend.py compare --profile reference --repeat 3 --assert-budgets",
-      "domain": "performance",
-      "id": "backend-performance"
     },
     {
       "command": "PYTHONPATH=. .venv/bin/python tools/benchmark_backend.py explain --profile stress --format json",
