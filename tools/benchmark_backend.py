@@ -768,6 +768,12 @@ WORKLOADS = {
     "dashboard_report": dashboard_report,
     "import_1000": import_1000,
 }
+MINIMUM_WORKLOAD_ITERATIONS = {
+    "queue_claim_50": 500,
+    "complete_db": 500,
+    "scan_db": 500,
+    "return_db": 500,
+}
 
 
 def measure_workload(database_url, workload_name, context, iterations, warmup=10):
@@ -847,7 +853,16 @@ def measure_profile_workloads(database_url, context, iterations):
     for workload_name in WORKLOADS:
         time.sleep(WORKLOAD_COOLDOWN_SECONDS)
         quiescence = wait_for_benchmark_quiescence()
-        result = measure_workload(database_url, workload_name, context, iterations)
+        workload_iterations = max(
+            iterations,
+            MINIMUM_WORKLOAD_ITERATIONS.get(workload_name, iterations),
+        )
+        result = measure_workload(
+            database_url,
+            workload_name,
+            context,
+            workload_iterations,
+        )
         result.setdefault("maintenance", {})["pre_workload_cooldown_seconds"] = WORKLOAD_COOLDOWN_SECONDS
         result["maintenance"]["pre_workload_quiescence"] = quiescence
         results[workload_name] = result
@@ -1369,7 +1384,10 @@ def run_profile_compare(profile_name, repeat, assert_budgets):
         "mode": "profile_compare",
         "profile": profile_name,
         "repeat": repeat,
-        "iterations_per_workload_per_run": 100,
+        "iterations_per_workload_per_run": {
+            workload: max(100, MINIMUM_WORKLOAD_ITERATIONS.get(workload, 100))
+            for workload in WORKLOADS
+        },
         "assert_budgets": bool(assert_budgets),
         "task_policy": task_policy,
         "approved_evidence": str(approved_path.relative_to(ROOT)),
@@ -1390,7 +1408,7 @@ def run_profile_compare(profile_name, repeat, assert_budgets):
         "status": evidence["status"],
         "profile": profile_name,
         "repeat": repeat,
-        "iterations_per_workload_per_run": 100,
+        "iterations_per_workload_per_run": evidence["iterations_per_workload_per_run"],
         "summaries": summaries,
         "evidence": str(path.relative_to(ROOT)),
         "failures": enforced_failures,

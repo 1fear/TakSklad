@@ -135,6 +135,17 @@ class BackendPerformanceContractTests(unittest.TestCase):
         self.assertEqual(result["queue_claim_50"]["p95_ms"], 20.0)
         self.assertEqual(result["queue_claim_50"]["query_count"]["median"], 20)
 
+    def test_latency_sensitive_workloads_use_stable_p99_sample_size(self):
+        self.assertEqual(
+            benchmark_backend.MINIMUM_WORKLOAD_ITERATIONS,
+            {
+                "queue_claim_50": 500,
+                "complete_db": 500,
+                "scan_db": 500,
+                "return_db": 500,
+            },
+        )
+
     def test_return_cleanup_restores_all_phase25_state(self):
         context = {
             "return_order": "synthetic-order",
@@ -283,7 +294,10 @@ class BackendPerformanceContractTests(unittest.TestCase):
             task_policy.assert_called_once_with()
             self.assertEqual(sleep.call_count, 3 + 3 * len(benchmark_backend.WORKLOADS))
             self.assertEqual(quiescence.call_count, 3 + 3 * len(benchmark_backend.WORKLOADS))
-            self.assertTrue(all(iterations == 100 for _workload, iterations in measured))
+            self.assertTrue(all(
+                iterations == benchmark_backend.MINIMUM_WORKLOAD_ITERATIONS.get(workload, 100)
+                for workload, iterations in measured
+            ))
             self.assertEqual(json.loads(approved_path.read_text(encoding="utf-8")), approved_payload)
             evidence = json.loads((evidence_dir / "compare-reference.json").read_text(encoding="utf-8"))
             self.assertEqual(evidence["repeat"], 3)
