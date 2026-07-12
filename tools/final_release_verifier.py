@@ -212,7 +212,7 @@ def run_command(command: str, environment: dict[str, str], timeout: int = 3600) 
 
 
 def wait_for_rehearsal_quiescence(
-    *, max_load_per_cpu: float = 0.15, timeout_seconds: int = 3600,
+    *, max_load_per_cpu: float = 0.25, timeout_seconds: int = 3600,
 ) -> dict[str, Any]:
     cpu_count = max(1, int(os.cpu_count() or 1))
     started = time.monotonic()
