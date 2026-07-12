@@ -58,10 +58,10 @@ sha256_file() {
 }
 
 file_size() {
-  if stat -f '%z' "$1" >/dev/null 2>&1; then
-    stat -f '%z' "$1"
-  else
+  if stat -c '%s' "$1" >/dev/null 2>&1; then
     stat -c '%s' "$1"
+  else
+    stat -f '%z' "$1"
   fi
 }
 
@@ -112,7 +112,14 @@ disposable_cleanup_count=-1
 
 if [[ "$TEST_MODE" == true ]]; then
   command -v docker >/dev/null || { echo "docker is required for actual synthetic PostgreSQL" >&2; exit 1; }
-  [[ -x "$APP_DIR/.venv/bin/alembic" ]] || { echo "Project Alembic executable is required" >&2; exit 1; }
+  if [[ -n "${TAKSKLAD_PYTHON_BIN:-}" ]]; then
+    PYTHON_BIN="$TAKSKLAD_PYTHON_BIN"
+  elif [[ -x "$APP_DIR/.venv/bin/python" ]]; then
+    PYTHON_BIN="$APP_DIR/.venv/bin/python"
+  else
+    PYTHON_BIN=python3
+  fi
+  "$PYTHON_BIN" -c 'import alembic' >/dev/null 2>&1 || { echo "Project Alembic module is required" >&2; exit 1; }
 
   source_kind="synthetic-postgresql"
   contains_customer_content=false
@@ -144,11 +151,11 @@ if [[ "$TEST_MODE" == true ]]; then
   database_url="postgresql+psycopg://${synthetic_user}:${synthetic_password}@127.0.0.1:${mapped_port}/${synthetic_database}"
   migration_head="$(
     DATABASE_URL="$database_url" TAKSKLAD_ENV=test PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$APP_DIR/backend" \
-      "$APP_DIR/.venv/bin/alembic" -c "$APP_DIR/backend/alembic.ini" heads | awk 'NR == 1 {print $1}'
+      "$PYTHON_BIN" -m alembic -c "$APP_DIR/backend/alembic.ini" heads | awk 'NR == 1 {print $1}'
   )"
   [[ -n "$migration_head" ]] || { echo "Alembic head was not resolved" >&2; exit 1; }
   DATABASE_URL="$database_url" TAKSKLAD_ENV=test PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$APP_DIR/backend" \
-    "$APP_DIR/.venv/bin/alembic" -c "$APP_DIR/backend/alembic.ini" upgrade head >/dev/null
+    "$PYTHON_BIN" -m alembic -c "$APP_DIR/backend/alembic.ini" upgrade head >/dev/null
 
   current_revision="$(docker exec "$container_name" psql -U "$synthetic_user" -d "$synthetic_database" -At \
     -v ON_ERROR_STOP=1 -c 'select version_num from alembic_version;')"

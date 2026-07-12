@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -30,7 +31,7 @@ class RestoreRecoveryContractTests(unittest.TestCase):
             temp_path = Path(temp)
             env = os.environ.copy()
             env["TAKSKLAD_BACKUP_TEST_DIR"] = str(temp_path / "backups")
-            env["TAKSKLAD_PYTHON_BIN"] = str(PROJECT_ROOT / ".venv" / "bin" / "python")
+            env["TAKSKLAD_PYTHON_BIN"] = sys.executable
             result = self.run_command(
                 [str(RESTORE_DRILL), "--isolated", "--synthetic-db", "--assert-invariants"],
                 env=env,

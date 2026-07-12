@@ -121,7 +121,7 @@ chmod 600 "$encrypted_staging" "$decrypted_probe"
 openssl rand -hex 32 >"$key_partial"
 chmod 600 "$key_partial"
 mv "$key_partial" "$key_file"
-key_mode="$(stat -f '%Lp' "$key_file" 2>/dev/null || stat -c '%a' "$key_file")"
+key_mode="$(stat -c '%a' "$key_file" 2>/dev/null || stat -f '%Lp' "$key_file")"
 [[ "$key_mode" == "600" ]] || { echo "Recovery key permissions are not 0600" >&2; exit 1; }
 openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt \
   -in "$archive_file" -out "$encrypted_staging" -pass "file:$key_file"

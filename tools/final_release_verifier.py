@@ -20,6 +20,7 @@ from typing import Any, Callable
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT / "test-artifacts/release-rehearsal"
 RELEASE_MANIFEST = ROOT / "test-artifacts/release.json"
+MANDATORY_COMMANDS_SNAPSHOT = ROOT / "docs/release/phase-1-25-mandatory-commands.txt"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 HEX_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -64,6 +65,7 @@ def write_json(path: Path, value: Any) -> None:
 def sanitize(text: str) -> str:
     text = SECRET_RE.sub(lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]", text)
     text = text.replace(str(Path.home()), "[HOME]")
+    text = re.sub(r"(?<![A-Za-z0-9_.-])/(?:Users|home)/[^/\s]+", "[HOME]", text)
     return "\n".join(text.splitlines()[-20:])[-4000:]
 
 
@@ -189,7 +191,19 @@ GATES = [
 
 
 def mandatory_commands(phase_dir: Path | None = None) -> list[str]:
+    explicit_phase_dir = phase_dir is not None
     phase_dir = phase_dir or ROOT / ".supergoal/taksklad-full-stabilization-security-per-e9read/phases"
+    if not phase_dir.is_dir():
+        if explicit_phase_dir or not MANDATORY_COMMANDS_SNAPSHOT.is_file():
+            raise VerificationError(f"mandatory phase contract is unavailable: {phase_dir}")
+        commands = [
+            line.strip()
+            for line in MANDATORY_COMMANDS_SNAPSHOT.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        if not commands:
+            raise VerificationError("mandatory phase command snapshot is empty")
+        return list(dict.fromkeys(commands))
     commands = []
     for number in range(1, 26):
         text = (phase_dir / f"phase-{number}.md").read_text(encoding="utf-8")

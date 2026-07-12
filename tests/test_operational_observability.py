@@ -2,6 +2,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -188,7 +189,7 @@ class OperationalObservabilityTests(unittest.TestCase):
 
     def test_mandatory_tools_pass(self):
         commands = (
-            [str(ROOT / ".venv/bin/python"), "tools/audit_metric_labels.py", "--strict"],
+            [sys.executable, "tools/audit_metric_labels.py", "--strict"],
             [str(ROOT / "tools/run_alert_smoke.sh"), "--synthetic-only", "--timeout-seconds", "300"],
             [str(ROOT / "tools/check_runtime_identity.py"), "--local-stack"],
         )
