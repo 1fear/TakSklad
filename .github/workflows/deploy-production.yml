@@ -373,15 +373,15 @@ jobs:
           eval "\$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/release_artifacts.py emit-shell --manifest release.json)"
           docker pull "\$RELEASE_BACKEND_IMAGE"
           docker pull "\$RELEASE_FRONTEND_IMAGE"
-          ./deploy/vds/backup_postgres.sh --no-prune
+          ./deploy/vds/backup_postgres.sh --no-prune </dev/null
           install -d -m 700 .release-state
           PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/collect_phase27_evidence.py \
-            preflight --manifest release.json --output .release-state/production-preflight.json
-          ./tools/production_preflight.sh --read-only --require-current-backup --require-zero-blockers
-          ./deploy/vds/deploy_from_git.sh --artifact-manifest release.json --acceptance required --wait
+            preflight --manifest release.json --output .release-state/production-preflight.json </dev/null
+          ./tools/production_preflight.sh --read-only --require-current-backup --require-zero-blockers </dev/null
+          ./deploy/vds/deploy_from_git.sh --artifact-manifest release.json --acceptance required --wait </dev/null
           PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/collect_phase27_evidence.py \
-            live --manifest release.json --output .release-state/live-release-verification.json
-          ./tools/live_release_verifier.sh --read-only --same-sha --slo-window
+            live --manifest release.json --output .release-state/live-release-verification.json </dev/null
+          ./tools/live_release_verifier.sh --read-only --same-sha --slo-window </dev/null
           install -m 600 .release-state/production-preflight.json /tmp/taksklad-production-preflight.json
           install -m 600 .release-state/live-release-verification.json /tmp/taksklad-live-release-verification.json
           EOF
