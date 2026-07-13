@@ -187,6 +187,19 @@ class OperationalObservabilityTests(unittest.TestCase):
         self.assertLessEqual(smoke["observed_first_monotonic"], smoke["observed_last_monotonic"])
         self.assertEqual(smoke["external_sends"], 0)
 
+    def test_alert_smoke_steps_beyond_float_hold_boundary(self):
+        with mock.patch(
+            "tools.alert_smoke.monotonic",
+            side_effect=[1.123456789, 1.223456789],
+        ):
+            smoke = run_smoke(300)
+
+        self.assertEqual(smoke["alerts"], 8)
+        self.assertEqual(smoke["firing"], 8)
+        self.assertEqual(smoke["resolved"], 8)
+        self.assertLessEqual(smoke["maximum_raise_seconds"], 300)
+        self.assertEqual(smoke["external_sends"], 0)
+
     def test_mandatory_tools_pass(self):
         commands = (
             [sys.executable, "tools/audit_metric_labels.py", "--strict"],

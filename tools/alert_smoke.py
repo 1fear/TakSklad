@@ -66,7 +66,10 @@ def run_smoke(timeout_seconds: int) -> dict:
         for rule in rules:
             failure = emitted_snapshot(rule, failure=True)
             evaluator.evaluate(failure, evaluated_monotonic=synthetic_clock)
-            firing_clock = synthetic_clock + int(rule["for_seconds"])
+            # Evaluate just beyond the hold boundary.  At large/fractional
+            # monotonic values, adding an integer duration and subtracting the
+            # start can round a few ulps below the exact duration.
+            firing_clock = synthetic_clock + int(rule["for_seconds"]) + 0.001
             firing = evaluator.evaluate(failure, evaluated_monotonic=firing_clock)
             if [event["alert"] for event in firing] != [rule["name"]]:
                 raise ValueError(f"synthetic failure did not fire: {rule['name']}")
