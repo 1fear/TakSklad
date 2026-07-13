@@ -256,11 +256,19 @@ jobs:
           "WINDOWS_CODESIGN_IMPORTED_THUMBPRINTS=$(@($certificates.Thumbprint) -join ',')" >> $env:GITHUB_ENV
           "WINDOWS_CODESIGN_TEMPORARY_PUBLISHER_THUMBPRINT=$($certificate.Thumbprint)" >> $env:GITHUB_ENV
           "WINDOWS_CODESIGN_TEMPORARY_ROOT_THUMBPRINT=$($approvedRootCertificate.Thumbprint)" >> $env:GITHUB_ENV
-          certutil.exe -user -f -silent -addstore Root "supply-chain\taksklad-internal-windows-root-ca.pem" | Out-Null
+          $certMgrPath = (Get-Command certmgr.exe -ErrorAction SilentlyContinue).Source
+          if (-not $certMgrPath) {
+            $certMgrPath = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\certmgr.exe" `
+              -ErrorAction SilentlyContinue | Sort-Object FullName | Select-Object -Last 1 -ExpandProperty FullName
+          }
+          if (-not $certMgrPath) {
+            throw "WINDOWS_CERTMGR_NOT_AVAILABLE"
+          }
+          & $certMgrPath /add "supply-chain\taksklad-internal-windows-root-ca.pem" /s /r localMachine root
           if ($LASTEXITCODE -ne 0) {
             throw "WINDOWS_CODESIGN_ROOT_CA_IMPORT_FAILED"
           }
-          certutil.exe -user -f -silent -addstore TrustedPublisher "supply-chain\taksklad-internal-windows-codesign.pem" | Out-Null
+          & $certMgrPath /add "supply-chain\taksklad-internal-windows-codesign.pem" /s /r localMachine trustedpublisher
           if ($LASTEXITCODE -ne 0) {
             throw "WINDOWS_CODESIGN_PUBLISHER_IMPORT_FAILED"
           }
@@ -391,10 +399,10 @@ jobs:
             }
           }
           if ($env:WINDOWS_CODESIGN_TEMPORARY_PUBLISHER_THUMBPRINT) {
-            Remove-Item "Cert:\CurrentUser\TrustedPublisher\$env:WINDOWS_CODESIGN_TEMPORARY_PUBLISHER_THUMBPRINT" -Force -ErrorAction SilentlyContinue
+            Remove-Item "Cert:\LocalMachine\TrustedPublisher\$env:WINDOWS_CODESIGN_TEMPORARY_PUBLISHER_THUMBPRINT" -Force -ErrorAction SilentlyContinue
           }
           if ($env:WINDOWS_CODESIGN_TEMPORARY_ROOT_THUMBPRINT) {
-            Remove-Item "Cert:\CurrentUser\Root\$env:WINDOWS_CODESIGN_TEMPORARY_ROOT_THUMBPRINT" -Force -ErrorAction SilentlyContinue
+            Remove-Item "Cert:\LocalMachine\Root\$env:WINDOWS_CODESIGN_TEMPORARY_ROOT_THUMBPRINT" -Force -ErrorAction SilentlyContinue
           }
           if ($env:WINDOWS_CODESIGN_CERTIFICATE_PATH) {
             Remove-Item $env:WINDOWS_CODESIGN_CERTIFICATE_PATH -Force -ErrorAction SilentlyContinue
