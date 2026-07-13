@@ -343,8 +343,12 @@ class BackendPerformanceContractTests(unittest.TestCase):
                 mock.patch.object(benchmark_backend.time, "sleep"),
                 mock.patch.object(
                     benchmark_backend,
-                    "wait_for_benchmark_quiescence",
-                    return_value={"waited_seconds": 0},
+                    "wait_for_compare_quiescence",
+                    return_value={
+                        "status": "quiescent",
+                        "method": "aggregate-cpu-idle",
+                        "accepted_cpu_busy_percent": [10.0, 11.0, 12.0],
+                    },
                 ) as quiescence,
                 redirect_stdout(io.StringIO()),
             ):
@@ -356,6 +360,10 @@ class BackendPerformanceContractTests(unittest.TestCase):
         self.assertEqual(measure.call_count, 3)
         self.assertEqual(prepare.call_count, 3)
         self.assertEqual(quiescence.call_count, 3)
+        self.assertTrue(all(
+            run["fresh_run_quiescence"]["method"] == "aggregate-cpu-idle"
+            for run in evidence["runs"]
+        ))
         self.assertEqual(evidence["repeat"], 3)
         self.assertEqual(evidence["status"], "pass")
         self.assertEqual(evidence["current"]["p95_ms"], previous["p95_ms"])

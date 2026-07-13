@@ -90,6 +90,7 @@ def _runner_measurement_contract_ast(source: str) -> str:
         "aggregate_workload_results",
         "baseline_compatibility_failures",
         "run_compare",
+        "wait_for_compare_quiescence",
     }
     module = ast.parse(source)
     module.body = [
@@ -191,6 +192,14 @@ def wait_for_benchmark_quiescence():
             )
         time.sleep(1.0)
         waited += 1
+
+
+def wait_for_compare_quiescence():
+    """Use direct aggregate CPU idle for the legacy sequential comparator."""
+
+    from tools import final_release_verifier
+
+    return final_release_verifier.wait_for_rehearsal_quiescence()
 
 
 @contextmanager
@@ -1318,7 +1327,7 @@ def run_compare(workload):
     absolute_failures = []
     for run_number in range(1, repeat + 1):
         time.sleep(FRESH_RUN_COOLDOWN_SECONDS)
-        quiescence = wait_for_benchmark_quiescence()
+        quiescence = wait_for_compare_quiescence()
         with disposable_database() as (database_url, runtime):
             dataset, dataset_path = seed_profile(database_url, "reference")
             prepare_profile_benchmark(database_url)
