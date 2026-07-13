@@ -204,7 +204,7 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn(r'test "\$current_revision" = "\$target_revision"', workflow)
         self.assertIn("PHASE27_RETRY_RUNTIME_OK", workflow)
         self.assertIn("backend-api frontend telegram-worker google-sheets-sync-worker", workflow)
-        self.assertIn("for attempt in \\$(seq 1 36)", workflow)
+        self.assertIn("for attempt in \\$(seq 1 1)", workflow)
         self.assertIn("backend_health", workflow)
         self.assertIn("frontend_health", workflow)
         self.assertIn("RUNTIME_STATE service=", workflow)

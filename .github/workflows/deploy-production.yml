@@ -455,7 +455,7 @@ jobs:
               backend-api frontend telegram-worker google-sheets-sync-worker \
               skladbot-worker smartup-auto-import-worker
             runtime_ready=0
-            for attempt in \$(seq 1 36); do
+            for attempt in \$(seq 1 1); do
               backend_id="\$(docker compose --env-file deploy/vds/.env \
                 -f deploy/vds/docker-compose.yml ps -q backend-api </dev/null)"
               frontend_id="\$(docker compose --env-file deploy/vds/.env \
@@ -477,7 +477,10 @@ jobs:
                 docker logs --tail 200 "\$service_id" 2>&1 | \
                   grep -E 'Invalid configuration:|configuration invalid:' | tail -n 5 || true
               done
-              docker exec "\$backend_id" python -c "import json; from urllib.request import urlopen; p=json.load(urlopen('http://127.0.0.1:8000/ready', timeout=5)); print(json.dumps({'ready':p.get('ready'),'status':p.get('status'),'database':p.get('database'),'migrations':p.get('migrations'),'workers':p.get('workers'),'policy':p.get('policy'),'queue':p.get('queue')}, sort_keys=True))" </dev/null || true
+              docker exec "\$backend_id" python -c "import json; from urllib.error import HTTPError; from urllib.request import urlopen; u='http://127.0.0.1:8000/ready';
+          try: r=urlopen(u, timeout=5)
+          except HTTPError as e: r=e
+          p=json.load(r); print(json.dumps({'ready':p.get('ready'),'status':p.get('status'),'database':p.get('database'),'migrations':p.get('migrations'),'workers':p.get('workers'),'policy':p.get('policy'),'queue':p.get('queue')}, sort_keys=True))" </dev/null || true
               exit 1
             fi
             echo "PHASE27_RETRY_RUNTIME_OK revision=\$current_revision"
