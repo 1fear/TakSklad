@@ -390,12 +390,15 @@ jobs:
             --mount "type=volume,src=\$wal_volume,dst=/wal-archive" \
             "\$postgres_image" sh -ec 'chown -R 70:70 /wal-archive; chmod 700 /wal-archive'
           docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml \
-            up -d --no-build --pull never --wait --wait-timeout 180 postgres
+            up -d --no-deps --no-build --pull never --wait --wait-timeout 180 postgres
           ./deploy/vds/backup_postgres.sh --no-prune </dev/null
           install -d -m 700 .release-state
           PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/collect_phase27_evidence.py \
             preflight --manifest release.json --output .release-state/production-preflight.json </dev/null
           ./tools/production_preflight.sh --read-only --require-current-backup --require-zero-blockers </dev/null
+          sed -i 's/compose up -d --no-build/compose up -d --no-deps --no-build/g' \
+            deploy/vds/deploy_from_git.sh
+          grep -q 'compose up -d --no-deps --no-build' deploy/vds/deploy_from_git.sh
           ./deploy/vds/deploy_from_git.sh --artifact-manifest release.json --acceptance required --wait </dev/null
           PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/collect_phase27_evidence.py \
             live --manifest release.json --output .release-state/live-release-verification.json </dev/null

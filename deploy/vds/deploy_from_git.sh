@@ -152,7 +152,7 @@ rollback_runtime() {
   export TAKSKLAD_IMAGE_DIGEST="$RELEASE_BACKEND_DIGEST"
   docker pull "$TAKSKLAD_BACKEND_IMAGE"
   docker pull "$TAKSKLAD_FRONTEND_IMAGE"
-  compose up -d --no-build --pull never --wait --wait-timeout "$COMPOSE_WAIT_TIMEOUT_SECONDS" \
+  compose up -d --no-deps --no-build --pull never --wait --wait-timeout "$COMPOSE_WAIT_TIMEOUT_SECONDS" \
     backend-api frontend telegram-worker google-sheets-sync-worker skladbot-worker smartup-auto-import-worker
   echo "Runtime rolled back to previous verified digests; database schema retained, alembic downgrade=0."
 }
@@ -168,7 +168,7 @@ echo "Applying forward-only migrations from the verified backend image..."
 compose run --rm --no-deps backend-api alembic -c alembic.ini upgrade head
 
 echo "Activating verified image digests without source build..."
-compose up -d --no-build --pull never --wait --wait-timeout "$COMPOSE_WAIT_TIMEOUT_SECONDS" \
+compose up -d --no-deps --no-build --pull never --wait --wait-timeout "$COMPOSE_WAIT_TIMEOUT_SECONDS" \
   backend-api frontend telegram-worker google-sheets-sync-worker skladbot-worker smartup-auto-import-worker
 
 if ! check_public_url health "$HEALTH_URL" || ! check_public_url readiness "$READY_URL"; then
