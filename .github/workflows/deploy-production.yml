@@ -407,7 +407,7 @@ jobs:
               backend-api frontend telegram-worker google-sheets-sync-worker \
               skladbot-worker smartup-auto-import-worker
             runtime_ready=0
-            for attempt in \$(seq 1 12); do
+            for attempt in \$(seq 1 1); do
               backend_id="\$(docker compose --env-file deploy/vds/.env \
                 -f deploy/vds/docker-compose.yml ps -q backend-api </dev/null)"
               frontend_id="\$(docker compose --env-file deploy/vds/.env \
@@ -426,6 +426,8 @@ jobs:
                   -f deploy/vds/docker-compose.yml ps -q "\$service" </dev/null)"
                 docker inspect --format "RUNTIME_STATE service=\$service status={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} restart_count={{.RestartCount}} exit_code={{.State.ExitCode}}" \
                   "\$service_id" || true
+                docker logs --tail 200 "\$service_id" 2>&1 | \
+                  grep -E 'Invalid configuration:|configuration invalid:' | tail -n 5 || true
               done
               docker exec "\$backend_id" python -c "import json; from urllib.request import urlopen; p=json.load(urlopen('http://127.0.0.1:8000/ready', timeout=5)); print(json.dumps({'ready':p.get('ready'),'status':p.get('status'),'database':p.get('database'),'migrations':p.get('migrations'),'workers':p.get('workers'),'policy':p.get('policy'),'queue':p.get('queue')}, sort_keys=True))" </dev/null || true
               exit 1
