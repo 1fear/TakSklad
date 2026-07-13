@@ -197,6 +197,7 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn("chown -R 70:70 /wal-archive", workflow)
         self.assertIn("up -d --no-deps --no-build --pull never --wait --wait-timeout 180 postgres", workflow)
         self.assertIn("select version_num from alembic_version", workflow)
+        self.assertIn("alembic -c alembic.ini heads </dev/null", workflow)
         self.assertIn(r'test "\$current_revision" = "\$target_revision"', workflow)
         self.assertIn("PHASE27_RETRY_BACKEND_OK", workflow)
         self.assertIn("compose up -d --no-deps --no-build", workflow)
