@@ -264,6 +264,15 @@ jobs:
           if (-not $certMgrPath) {
             throw "WINDOWS_CERTMGR_NOT_AVAILABLE"
           }
+          $signToolPath = (Get-Command signtool.exe -ErrorAction SilentlyContinue).Source
+          if (-not $signToolPath) {
+            $signToolPath = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" `
+              -ErrorAction SilentlyContinue | Sort-Object FullName | Select-Object -Last 1 -ExpandProperty FullName
+          }
+          if (-not $signToolPath) {
+            throw "WINDOWS_SIGNTOOL_NOT_AVAILABLE"
+          }
+          "WINDOWS_SIGNTOOL_PATH=$signToolPath" >> $env:GITHUB_ENV
           & $certMgrPath /add "supply-chain\taksklad-internal-windows-root-ca.pem" /all /s /r localMachine root
           if ($LASTEXITCODE -ne 0) {
             throw "WINDOWS_CODESIGN_ROOT_CA_IMPORT_FAILED"
@@ -309,7 +318,7 @@ jobs:
       - name: Sign and verify transition executable
         shell: pwsh
         run: |
-          & signtool.exe sign /sha1 "$env:WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT" /s My /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com dist\transition\TakSklad.exe
+          & "$env:WINDOWS_SIGNTOOL_PATH" sign /sha1 "$env:WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT" /s My /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com dist\transition\TakSklad.exe
           if ($LASTEXITCODE -ne 0) {
             throw "WINDOWS_CODESIGN_FAILED"
           }
@@ -369,7 +378,7 @@ jobs:
       - name: Sign and verify onedir executable
         shell: pwsh
         run: |
-          & signtool.exe sign /sha1 "$env:WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT" /s My /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com dist\onedir\TakSklad\TakSklad.exe
+          & "$env:WINDOWS_SIGNTOOL_PATH" sign /sha1 "$env:WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT" /s My /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com dist\onedir\TakSklad\TakSklad.exe
           if ($LASTEXITCODE -ne 0) {
             throw "WINDOWS_CODESIGN_FAILED"
           }

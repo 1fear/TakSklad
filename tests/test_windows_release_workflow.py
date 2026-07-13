@@ -36,6 +36,8 @@ class WindowsReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("taksklad-internal-windows-root-ca.pem", workflow)
         self.assertIn("python -m tools.verify_windows_signing_chain --require-leaf", workflow)
         self.assertIn("Get-Command certmgr.exe", workflow)
+        self.assertIn("Get-Command signtool.exe", workflow)
+        self.assertGreaterEqual(workflow.count('"$env:WINDOWS_SIGNTOOL_PATH" sign'), 2)
         self.assertIn('/r localMachine root', workflow)
         self.assertIn('/r localMachine trustedpublisher', workflow)
         self.assertGreaterEqual(workflow.count('/all /s /r localMachine'), 2)
