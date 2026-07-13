@@ -368,6 +368,7 @@ jobs:
           export TAKSKLAD_PRODUCTION_APPROVAL=$(printf '%q' "$PRODUCTION_APPROVAL")
           export DOCKER_CONFIG=$(printf '%q' "$remote_docker_config")
           cd "$app_dir"
+          export PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.
           chmod +x deploy/vds/deploy_from_git.sh tools/production_preflight.sh tools/live_release_verifier.sh
           PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/release_artifacts.py verify --manifest release.json
           eval "\$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/release_artifacts.py emit-shell --manifest release.json)"
