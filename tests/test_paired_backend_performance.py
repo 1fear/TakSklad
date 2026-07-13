@@ -74,6 +74,35 @@ class PairedBackendPerformanceTests(unittest.TestCase):
         self.assertEqual(medians["queue_claim_50"]["p95_ms"], 1.0)
         self.assertEqual(medians["queue_claim_50"]["p99_ms"], 1.0)
 
+    def test_balanced_pair_recomputes_tails_from_pooled_raw_samples(self):
+        balanced = {
+            "races": [
+                paired.synthetic_pair(control=100, candidate=100),
+                paired.synthetic_pair(control=100, candidate=100),
+            ]
+        }
+        for race in balanced["races"]:
+            race["control"]["results"]["queue_claim_50"]["p95_ms"] = 1
+            race["candidate"]["results"]["queue_claim_50"]["p95_ms"] = 1000
+
+        failures, medians = paired.aggregate_pair_failures(
+            [balanced, balanced, balanced],
+            self.budgets,
+            workloads=("queue_claim_50",),
+        )
+
+        self.assertEqual(failures, [])
+        self.assertEqual(medians["queue_claim_50"]["p95_ms"], 1.0)
+
+    def test_balanced_pair_rejects_raw_sample_count_mismatch(self):
+        pair = paired.synthetic_pair(control=100, candidate=100)
+        pair["candidate"]["results"]["queue_claim_50"]["durations_ms"].pop()
+
+        with self.assertRaisesRegex(ValueError, "raw sample count mismatch"):
+            paired.aggregate_pair_failures(
+                [pair, pair, pair], self.budgets, workloads=("queue_claim_50",),
+            )
+
     def test_candidate_absolute_budget_still_fails(self):
         pair = paired.synthetic_pair(control=50, candidate=101)
         failures = paired.candidate_absolute_failures(

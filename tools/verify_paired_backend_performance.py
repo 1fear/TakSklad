@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import math
 import os
 import re
 import shutil
@@ -106,6 +105,7 @@ def synthetic_pair(*, control: float, candidate: float) -> dict[str, Any]:
         return {
             "results": {
                 "queue_claim_50": {
+                    "durations_ms": [value] * 500,
                     "p95_ms": value,
                     "p99_ms": value,
                     "query_count": {"min": 1, "median": 1, "max": 1},
@@ -155,16 +155,25 @@ def aggregate_pair_failures(
                 races = pair.get("races") or [pair]
                 if pair.get("races") is not None and len(races) != 2:
                     raise ValueError("launch-balanced pair must contain exactly two races")
-                race_ratios = []
+                control_samples = []
+                candidate_samples = []
                 for race in races:
-                    control = float(race["control"]["results"][workload][metric])
-                    candidate = float(race["candidate"]["results"][workload][metric])
-                    if control <= 0:
+                    control_durations = race["control"]["results"][workload].get("durations_ms") or []
+                    candidate_durations = race["candidate"]["results"][workload].get("durations_ms") or []
+                    if not control_durations or len(control_durations) != len(candidate_durations):
                         raise ValueError(
-                            f"paired control metric must be positive: {workload}.{metric}"
+                            f"paired raw sample count mismatch: {workload}.{metric}"
                         )
-                    race_ratios.append(candidate / control)
-                ratios.append(math.prod(race_ratios) ** (1 / len(race_ratios)))
+                    control_samples.extend(float(value) for value in control_durations)
+                    candidate_samples.extend(float(value) for value in candidate_durations)
+                percentile = 95 if metric == "p95_ms" else 99
+                control = float(benchmark_backend.percentile(control_samples, percentile))
+                candidate = float(benchmark_backend.percentile(candidate_samples, percentile))
+                if control <= 0:
+                    raise ValueError(
+                        f"paired control metric must be positive: {workload}.{metric}"
+                    )
+                ratios.append(candidate / control)
             median = float(benchmark_backend.percentile(ratios, 50))
             medians[workload][metric] = round(median, 6)
             if median > limit_ratio:
@@ -330,7 +339,7 @@ def run(profile: str, repeat: int, assert_budgets: bool) -> dict[str, Any]:
                 candidate_first=True,
             )
             pairs.append({
-                "balance": "geometric mean of control-first and candidate-first races",
+                "balance": "pooled raw samples from control-first and candidate-first races",
                 "races": [control_first, candidate_first],
             })
     finally:
@@ -368,7 +377,7 @@ def run(profile: str, repeat: int, assert_budgets: bool) -> dict[str, Any]:
         "regression_limit_percent": 10,
         "pairing": (
             "simultaneous control/candidate with per-workload filesystem barriers and "
-            "swapped launch order"
+            "swapped launch order; mirrored raw samples pooled before p95/p99"
         ),
         "measurement_contract_keys": list(MEASUREMENT_CONTRACT_KEYS),
         "median_paired_ratios": median_ratios,
