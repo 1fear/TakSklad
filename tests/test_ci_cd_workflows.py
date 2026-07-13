@@ -193,6 +193,8 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn("DEPLOY_ACCEPTANCE: required", workflow)
         self.assertIn("export PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.", workflow)
         self.assertIn("pull postgres-wal-init postgres", workflow)
+        self.assertIn("com.docker.compose.volume=postgres_wal_archive", workflow)
+        self.assertIn("chown -R 70:70 /wal-archive", workflow)
         self.assertIn("up -d --no-build --pull never --wait --wait-timeout 180 postgres", workflow)
         self.assertIn("backup_postgres.sh --no-prune </dev/null", workflow)
         self.assertIn("deploy_from_git.sh --artifact-manifest release.json --acceptance required --wait </dev/null", workflow)

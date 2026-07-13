@@ -378,6 +378,17 @@ jobs:
           export TAKSKLAD_FRONTEND_IMAGE="\$RELEASE_FRONTEND_IMAGE"
           docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml \
             pull postgres-wal-init postgres
+          wal_volume="\$(docker volume ls \
+            --filter label=com.docker.compose.project=vds \
+            --filter label=com.docker.compose.volume=postgres_wal_archive \
+            --format '{{.Name}}' | head -n 1)"
+          test -n "\$wal_volume"
+          postgres_image="\$(docker compose --env-file deploy/vds/.env \
+            -f deploy/vds/docker-compose.yml config --images | grep '^postgres:' | head -n 1)"
+          test -n "\$postgres_image"
+          docker run --rm --user 0:0 \
+            --mount "type=volume,src=\$wal_volume,dst=/wal-archive" \
+            "\$postgres_image" sh -ec 'chown -R 70:70 /wal-archive; chmod 700 /wal-archive'
           docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml \
             up -d --no-build --pull never --wait --wait-timeout 180 postgres
           ./deploy/vds/backup_postgres.sh --no-prune </dev/null
