@@ -448,16 +448,92 @@ jobs:
           test -n "\$current_revision"
           test -n "\$target_revision"
           if test "\$current_revision" = "\$target_revision"; then
+            ./deploy/vds/backup_postgres.sh --no-prune </dev/null
             export TAKSKLAD_COMMIT_SHA="\$RELEASE_SOURCE_SHA"
             export TAKSKLAD_IMAGE_DIGEST="\$RELEASE_BACKEND_DIGEST"
             docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml \
               up -d --no-deps --no-build --pull never \
               backend-api frontend telegram-worker google-sheets-sync-worker \
               skladbot-worker smartup-auto-import-worker
+            backend_id="\$(docker compose --env-file deploy/vds/.env \
+              -f deploy/vds/docker-compose.yml ps -q backend-api </dev/null)"
+            cat > /tmp/taksklad-phase27-recover.py <<'PY'
+          from datetime import datetime, timezone
+
+          from sqlalchemy import select
+
+          from app import skladbot_daily_report
+          from app.db import SessionLocal
+          from app.health_service import (
+              count_unresolved_hot_path_failures,
+              daily_report_event_report_date,
+              daily_report_failure_resolved_by_later_success,
+          )
+          from app.models import AuditLog, Incident, PendingEvent
+
+          terminal = ("resolved", "ignored", "cancelled")
+          with SessionLocal() as db:
+              failures = db.execute(
+                  select(PendingEvent)
+                  .where(PendingEvent.event_type == "skladbot_daily_report_send")
+                  .where(PendingEvent.status == "failed")
+              ).scalars().all()
+              today = skladbot_daily_report.business_today().isoformat()
+              historical = []
+              current = 0
+              for event in failures:
+                  if daily_report_failure_resolved_by_later_success(db, event):
+                      continue
+                  already_terminal = db.execute(
+                      select(Incident.id)
+                      .where(Incident.pending_event_id == event.id)
+                      .where(Incident.status.in_(terminal))
+                  ).first()
+                  if already_terminal:
+                      continue
+                  if daily_report_event_report_date(event) == today:
+                      current += 1
+                  else:
+                      historical.append(event)
+              if current:
+                  raise SystemExit("current daily report failures require delivery recovery")
+              now = datetime.now(timezone.utc)
+              for event in historical:
+                  db.add(Incident(
+                      source="phase27_historical_daily_report_recovery",
+                      severity="warning",
+                      status="resolved",
+                      title="Historical daily report failure acknowledged after configuration recovery",
+                      message="Not resent to prevent stale or duplicate external delivery.",
+                      entity_type="pending_event",
+                      entity_id=str(event.id),
+                      pending_event_id=event.id,
+                      raw_payload={"event_type": event.event_type, "resolution": "not_resent_historical"},
+                      resolved_at=now,
+                  ))
+                  db.add(AuditLog(
+                      action="historical_daily_report_failure_resolved",
+                      entity_type="pending_event",
+                      entity_id=str(event.id),
+                      payload={
+                          "event_type": event.event_type,
+                          "actor": "phase27_deploy",
+                          "reason": "telegram_configuration_recovered_historical_report_not_resent",
+                      },
+                  ))
+              db.commit()
+              blockers = count_unresolved_hot_path_failures(db)
+              if blockers:
+                  raise SystemExit("unresolved hot path blockers remain")
+              print(f"PHASE27_HISTORICAL_REPORT_RECOVERY_OK resolved={len(historical)} blockers=0 external_sends=0")
+          PY
+            chmod 600 /tmp/taksklad-phase27-recover.py
+            docker cp /tmp/taksklad-phase27-recover.py "\$backend_id:/tmp/taksklad-phase27-recover.py"
+            docker exec "\$backend_id" python /tmp/taksklad-phase27-recover.py </dev/null
+            docker exec "\$backend_id" rm -f /tmp/taksklad-phase27-recover.py </dev/null
+            rm -f /tmp/taksklad-phase27-recover.py
             runtime_ready=0
-            for attempt in \$(seq 1 1); do
-              backend_id="\$(docker compose --env-file deploy/vds/.env \
-                -f deploy/vds/docker-compose.yml ps -q backend-api </dev/null)"
+            for attempt in \$(seq 1 36); do
               frontend_id="\$(docker compose --env-file deploy/vds/.env \
                 -f deploy/vds/docker-compose.yml ps -q frontend </dev/null)"
               backend_health="\$(docker inspect --format '{{.State.Health.Status}}' "\$backend_id" 2>/dev/null || true)"
@@ -486,7 +562,6 @@ jobs:
             fi
             echo "PHASE27_RETRY_RUNTIME_OK revision=\$current_revision"
           fi
-          ./deploy/vds/backup_postgres.sh --no-prune </dev/null
           install -d -m 700 .release-state
           PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/collect_phase27_evidence.py \
             preflight --manifest release.json --output .release-state/production-preflight.json </dev/null
