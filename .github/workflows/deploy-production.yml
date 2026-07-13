@@ -403,9 +403,24 @@ jobs:
             export TAKSKLAD_COMMIT_SHA="\$RELEASE_SOURCE_SHA"
             export TAKSKLAD_IMAGE_DIGEST="\$RELEASE_BACKEND_DIGEST"
             docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml \
-              up -d --no-deps --no-build --pull never --wait --wait-timeout 180 \
+              up -d --no-deps --no-build --pull never \
               backend-api frontend telegram-worker google-sheets-sync-worker \
               skladbot-worker smartup-auto-import-worker
+            runtime_ready=0
+            for attempt in \$(seq 1 36); do
+              backend_id="\$(docker compose --env-file deploy/vds/.env \
+                -f deploy/vds/docker-compose.yml ps -q backend-api </dev/null)"
+              frontend_id="\$(docker compose --env-file deploy/vds/.env \
+                -f deploy/vds/docker-compose.yml ps -q frontend </dev/null)"
+              backend_health="\$(docker inspect --format '{{.State.Health.Status}}' "\$backend_id" 2>/dev/null || true)"
+              frontend_health="\$(docker inspect --format '{{.State.Health.Status}}' "\$frontend_id" 2>/dev/null || true)"
+              if test "\$backend_health" = healthy && test "\$frontend_health" = healthy; then
+                runtime_ready=1
+                break
+              fi
+              sleep 5
+            done
+            test "\$runtime_ready" = 1
             echo "PHASE27_RETRY_RUNTIME_OK revision=\$current_revision"
           fi
           ./deploy/vds/backup_postgres.sh --no-prune </dev/null
