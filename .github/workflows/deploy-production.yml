@@ -369,6 +369,54 @@ jobs:
           export DOCKER_CONFIG=$(printf '%q' "$remote_docker_config")
           cd "$app_dir"
           export PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.
+          install -d -m 700 .release-state
+          env_backup=".release-state/phase27-env-pre-recovery-\$(date -u +%Y%m%dT%H%M%SZ)"
+          install -m 600 deploy/vds/.env "\$env_backup"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+
+          env_path = Path("deploy/vds/.env")
+          container_env = json.loads(subprocess.check_output(
+              ["docker", "inspect", "--format", "{{json .Config.Env}}", "vds-telegram-worker-1"],
+              text=True,
+          ))
+          resolved = dict(item.split("=", 1) for item in container_env if "=" in item)
+
+          def csv_items(value):
+              return [part.strip() for part in str(value or "").split(",") if part.strip()]
+
+          allowed = csv_items(resolved.get("TELEGRAM_ALLOWED_CHAT_IDS"))
+          scheduled = csv_items(resolved.get("SKLADBOT_DAILY_REPORT_CHAT_IDS"))
+          merged = list(dict.fromkeys([*allowed, *scheduled]))
+          if not merged:
+              raise SystemExit("PRODUCTION_CONFIG_RECOVERY_MISSING_TELEGRAM_ALLOWLIST")
+
+          updates = {
+              "TAKSKLAD_LEGACY_AUTH_EXPIRES_AT": "2026-07-17T00:00:00+00:00",
+              "TELEGRAM_ALLOWED_CHAT_IDS": ",".join(merged),
+          }
+          lines = env_path.read_text(encoding="utf-8").splitlines()
+          found = set()
+          output = []
+          for line in lines:
+              key = line.split("=", 1)[0].strip() if "=" in line and not line.lstrip().startswith("#") else ""
+              if key in updates:
+                  output.append(f"{key}={updates[key]}")
+                  found.add(key)
+              else:
+                  output.append(line)
+          for key, value in updates.items():
+              if key not in found:
+                  output.append(f"{key}={value}")
+          temporary = env_path.with_suffix(".env.phase27.tmp")
+          temporary.write_text("\n".join(output) + "\n", encoding="utf-8")
+          os.chmod(temporary, 0o600)
+          os.replace(temporary, env_path)
+          print("PRODUCTION_CONFIG_RECOVERY_OK fields=TAKSKLAD_LEGACY_AUTH_EXPIRES_AT,TELEGRAM_ALLOWED_CHAT_IDS values_redacted=1")
+          PY
           chmod +x deploy/vds/deploy_from_git.sh tools/production_preflight.sh tools/live_release_verifier.sh
           PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/release_artifacts.py verify --manifest release.json
           eval "\$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/release_artifacts.py emit-shell --manifest release.json)"
@@ -407,7 +455,7 @@ jobs:
               backend-api frontend telegram-worker google-sheets-sync-worker \
               skladbot-worker smartup-auto-import-worker
             runtime_ready=0
-            for attempt in \$(seq 1 1); do
+            for attempt in \$(seq 1 36); do
               backend_id="\$(docker compose --env-file deploy/vds/.env \
                 -f deploy/vds/docker-compose.yml ps -q backend-api </dev/null)"
               frontend_id="\$(docker compose --env-file deploy/vds/.env \
