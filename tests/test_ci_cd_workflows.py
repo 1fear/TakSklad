@@ -209,6 +209,7 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn("frontend_health", workflow)
         self.assertIn("RUNTIME_STATE service=", workflow)
         self.assertIn("Invalid configuration:|configuration invalid:", workflow)
+        self.assertIn("HOT_PATH_FAILURE_GROUPS", workflow)
         self.assertIn("compose up -d --no-deps --no-build", workflow)
         self.assertIn("backup_postgres.sh --no-prune </dev/null", workflow)
         self.assertIn("deploy_from_git.sh --artifact-manifest release.json --acceptance required --wait </dev/null", workflow)

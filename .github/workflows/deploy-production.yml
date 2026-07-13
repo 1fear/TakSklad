@@ -481,6 +481,7 @@ jobs:
           try: r=urlopen(u, timeout=5)
           except HTTPError as e: r=e
           p=json.load(r); print(json.dumps({'ready':p.get('ready'),'status':p.get('status'),'database':p.get('database'),'migrations':p.get('migrations'),'workers':p.get('workers'),'policy':p.get('policy'),'queue':p.get('queue')}, sort_keys=True))" </dev/null || true
+              docker exec "\$backend_id" python -c "import json; from sqlalchemy import func, select; from app.db import SessionLocal; from app.models import PendingEvent; db=SessionLocal(); rows=db.execute(select(PendingEvent.event_type, PendingEvent.status, func.count(PendingEvent.id)).where(PendingEvent.status.in_(('failed','error','blocked'))).where(PendingEvent.event_type != 'google_sheets_export').group_by(PendingEvent.event_type, PendingEvent.status).order_by(PendingEvent.event_type, PendingEvent.status)).all(); db.close(); print('HOT_PATH_FAILURE_GROUPS ' + json.dumps([{'event_type':a,'status':b,'count':int(c)} for a,b,c in rows], sort_keys=True))" </dev/null || true
               exit 1
             fi
             echo "PHASE27_RETRY_RUNTIME_OK revision=\$current_revision"
