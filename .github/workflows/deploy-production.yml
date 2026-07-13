@@ -391,6 +391,21 @@ jobs:
             "\$postgres_image" sh -ec 'chown -R 70:70 /wal-archive; chmod 700 /wal-archive'
           docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml \
             up -d --no-deps --no-build --pull never --wait --wait-timeout 180 postgres
+          current_revision="\$(docker compose --env-file deploy/vds/.env \
+            -f deploy/vds/docker-compose.yml exec -T postgres sh -ec \
+            'psql -At -U "\$POSTGRES_USER" -d "\$POSTGRES_DB" -c "select version_num from alembic_version"')"
+          target_revision="\$(docker compose --env-file deploy/vds/.env \
+            -f deploy/vds/docker-compose.yml run --rm --no-deps --pull never \
+            backend-api alembic -c alembic.ini heads | tail -n 1 | awk '{print \$1}')"
+          test -n "\$current_revision"
+          test -n "\$target_revision"
+          if test "\$current_revision" = "\$target_revision"; then
+            export TAKSKLAD_COMMIT_SHA="\$RELEASE_SOURCE_SHA"
+            export TAKSKLAD_IMAGE_DIGEST="\$RELEASE_BACKEND_DIGEST"
+            docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml \
+              up -d --no-deps --no-build --pull never --wait --wait-timeout 180 backend-api
+            echo "PHASE27_RETRY_BACKEND_OK revision=\$current_revision"
+          fi
           ./deploy/vds/backup_postgres.sh --no-prune </dev/null
           install -d -m 700 .release-state
           PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/collect_phase27_evidence.py \
