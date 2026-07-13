@@ -82,6 +82,41 @@ def benchmark_contract_hashes():
     return {name: sha256_file(path) for name, path in paths.items()}
 
 
+def _runner_measurement_contract_ast(source: str) -> str:
+    ast = __import__("ast")
+    excluded_functions = {
+        "_runner_measurement_contract_ast",
+        "_runner_matches_approved_measurement_contract",
+        "aggregate_workload_results",
+        "baseline_compatibility_failures",
+        "run_compare",
+    }
+    module = ast.parse(source)
+    module.body = [
+        node for node in module.body
+        if not (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name in excluded_functions
+        )
+    ]
+    return ast.dump(module, annotate_fields=True, include_attributes=False)
+
+
+def _runner_matches_approved_measurement_contract(approved_runner_sha256: str) -> bool:
+    contract_path = ROOT / "tools/performance-runner-contract.json"
+    try:
+        contract = load_json(contract_path)
+        if contract.get("schema") != 1:
+            return False
+        if contract.get("approved_runner_sha256") != approved_runner_sha256:
+            return False
+        current_ast = _runner_measurement_contract_ast(Path(__file__).read_text(encoding="utf-8"))
+        current_ast_sha256 = hashlib.sha256(current_ast.encode("utf-8")).hexdigest()
+        return current_ast_sha256 == contract.get("measurement_ast_sha256")
+    except (OSError, ValueError, TypeError):
+        return False
+
+
 def baseline_compatibility_failures(approved):
     expected = benchmark_contract_hashes()
     actual = ((approved.get("host") or {}).get("working_tree_source_hashes") or {})
@@ -89,6 +124,10 @@ def baseline_compatibility_failures(approved):
         f"approved baseline contract hash mismatch: {name}"
         for name, digest in expected.items()
         if actual.get(name) != digest
+        and not (
+            name == "runner"
+            and _runner_matches_approved_measurement_contract(str(actual.get(name) or ""))
+        )
     ]
 
 

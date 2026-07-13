@@ -360,6 +360,19 @@ class BackendPerformanceContractTests(unittest.TestCase):
         self.assertEqual(evidence["status"], "pass")
         self.assertEqual(evidence["current"]["p95_ms"], previous["p95_ms"])
 
+    def test_approved_runner_hash_requires_matching_semantic_measurement_contract(self):
+        approved = json.loads(
+            (benchmark_backend.EVIDENCE_DIR / "backend-baseline-approved.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(benchmark_backend.baseline_compatibility_failures(approved), [])
+
+        tampered = copy.deepcopy(approved)
+        tampered["host"]["working_tree_source_hashes"]["runner"] = "0" * 64
+        self.assertIn(
+            "approved baseline contract hash mismatch: runner",
+            benchmark_backend.baseline_compatibility_failures(tampered),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
