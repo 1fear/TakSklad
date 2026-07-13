@@ -225,27 +225,74 @@ def run_command(command: str, environment: dict[str, str], timeout: int = 3600) 
         return 124, sanitize(str(exc.stdout or "") + "\ncommand timed out"), round(time.monotonic() - started, 3)
 
 
+def _read_linux_cpu_times() -> tuple[int, int]:
+    fields = (Path("/proc/stat").read_text(encoding="utf-8").splitlines()[0]).split()
+    if not fields or fields[0] != "cpu":
+        raise VerificationError("cannot read aggregate Linux CPU counters")
+    values = [int(value) for value in fields[1:]]
+    idle = values[3] + (values[4] if len(values) > 4 else 0)
+    return sum(values), idle
+
+
+def system_cpu_busy_percent(sample_seconds: float) -> float:
+    """Measure actual system CPU use without treating blocked tasks as CPU load."""
+    if sys.platform.startswith("linux"):
+        total_before, idle_before = _read_linux_cpu_times()
+        time.sleep(sample_seconds)
+        total_after, idle_after = _read_linux_cpu_times()
+        total_delta = total_after - total_before
+        if total_delta <= 0:
+            raise VerificationError("Linux CPU counters did not advance")
+        idle_delta = max(0, idle_after - idle_before)
+        return max(0.0, min(100.0, 100.0 * (total_delta - idle_delta) / total_delta))
+
+    if sys.platform == "darwin":
+        completed = subprocess.run(
+            ["top", "-l", "2", "-n", "0", "-s", str(max(1, int(round(sample_seconds))))],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            timeout=max(15.0, sample_seconds * 3), check=False,
+        )
+        matches = re.findall(r"CPU usage:.*?([0-9]+(?:\.[0-9]+)?)% idle", completed.stdout)
+        if completed.returncode or not matches:
+            raise VerificationError("cannot sample aggregate macOS CPU idle percentage")
+        return max(0.0, min(100.0, 100.0 - float(matches[-1])))
+
+    raise VerificationError(f"unsupported platform for CPU quiescence sampling: {sys.platform}")
+
+
 def wait_for_rehearsal_quiescence(
-    *, max_load_per_cpu: float = 0.20, timeout_seconds: int = 3600,
+    *, max_cpu_busy_percent: float = 20.0, consecutive_samples: int = 3,
+    sample_seconds: float = 5.0, timeout_seconds: int = 3600,
+    cpu_busy_sampler: Callable[[float], float] | None = None,
 ) -> dict[str, Any]:
-    cpu_count = max(1, int(os.cpu_count() or 1))
+    if consecutive_samples < 1 or sample_seconds < 0 or max_cpu_busy_percent < 0:
+        raise ValueError("invalid CPU quiescence parameters")
+    sampler = cpu_busy_sampler or system_cpu_busy_percent
     started = time.monotonic()
+    accepted: list[float] = []
+    sampled = 0
     while True:
-        load_1m = float(os.getloadavg()[0])
-        load_per_cpu = load_1m / cpu_count
+        cpu_busy_percent = round(float(sampler(sample_seconds)), 3)
+        sampled += 1
         waited = round(time.monotonic() - started, 3)
-        if load_per_cpu <= max_load_per_cpu:
+        if cpu_busy_percent <= max_cpu_busy_percent:
+            accepted.append(cpu_busy_percent)
+        else:
+            accepted.clear()
+        if len(accepted) >= consecutive_samples:
             return {
                 "status": "quiescent", "waited_seconds": waited,
-                "load_1m": round(load_1m, 3), "load_per_cpu": round(load_per_cpu, 4),
-                "max_load_per_cpu": max_load_per_cpu,
+                "method": "aggregate-cpu-idle", "cpu_busy_percent": cpu_busy_percent,
+                "max_cpu_busy_percent": max_cpu_busy_percent,
+                "consecutive_samples": consecutive_samples,
+                "sample_seconds": sample_seconds, "samples_observed": sampled,
+                "accepted_cpu_busy_percent": accepted[-consecutive_samples:],
             }
         if waited >= timeout_seconds:
             raise VerificationError(
-                f"rehearsal host did not quiesce: load_per_cpu={load_per_cpu:.4f} "
-                f"limit={max_load_per_cpu:.4f}"
+                f"rehearsal host did not quiesce: cpu_busy_percent={cpu_busy_percent:.3f} "
+                f"limit={max_cpu_busy_percent:.3f} consecutive={len(accepted)}/{consecutive_samples}"
             )
-        time.sleep(5.0)
 
 
 def _copy_overlay(relative: str, destination_root: Path) -> None:

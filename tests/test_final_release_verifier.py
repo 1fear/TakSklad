@@ -114,13 +114,24 @@ class FinalReleaseVerifierTests(unittest.TestCase):
         self.assertTrue(_is_declared_clean_change("frontend/node_modules"))
         self.assertFalse(_is_declared_clean_change("frontend/src/App.tsx"))
 
-    @patch("tools.final_release_verifier.os.cpu_count", return_value=8)
-    @patch("tools.final_release_verifier.os.getloadavg", return_value=(1.0, 1.5, 2.0))
-    def test_rehearsal_cooldown_requires_stricter_load_than_benchmark(self, _load, _cpu):
-        result = wait_for_rehearsal_quiescence()
+    def test_rehearsal_cooldown_requires_three_direct_cpu_samples(self):
+        samples = iter((19.0, 20.0, 18.5))
+        result = wait_for_rehearsal_quiescence(
+            sample_seconds=0, cpu_busy_sampler=lambda _seconds: next(samples),
+        )
         self.assertEqual(result["status"], "quiescent")
-        self.assertEqual(result["load_per_cpu"], 0.125)
-        self.assertEqual(result["max_load_per_cpu"], 0.20)
+        self.assertEqual(result["method"], "aggregate-cpu-idle")
+        self.assertEqual(result["max_cpu_busy_percent"], 20.0)
+        self.assertEqual(result["consecutive_samples"], 3)
+        self.assertEqual(result["accepted_cpu_busy_percent"], [19.0, 20.0, 18.5])
+
+    def test_rehearsal_cooldown_resets_streak_after_cpu_spike(self):
+        samples = iter((19.0, 20.1, 18.0, 19.0, 20.0))
+        result = wait_for_rehearsal_quiescence(
+            sample_seconds=0, cpu_busy_sampler=lambda _seconds: next(samples),
+        )
+        self.assertEqual(result["samples_observed"], 5)
+        self.assertEqual(result["accepted_cpu_busy_percent"], [18.0, 19.0, 20.0])
 
     def test_three_fresh_runs_have_same_identity_and_zero_external_effects(self):
         roots = []
