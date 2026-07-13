@@ -117,6 +117,7 @@ class WindowsReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("IMMUTABLE_IMAGE_TAG_ALREADY_EXISTS", workflow)
         self.assertIn("IMMUTABLE_IMAGE_TAG_ABSENCE_UNVERIFIED", workflow)
         self.assertNotIn("--clobber", workflow)
+        self.assertIn('gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"', workflow)
         self.assertIn('gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --verify-tag', workflow)
 
     def test_unified_manifest_binds_ci_and_all_immutable_subjects(self):

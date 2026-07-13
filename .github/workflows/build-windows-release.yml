@@ -808,7 +808,7 @@ jobs:
             echo "IMMUTABLE_DRAFT_RELEASE_REQUIRED" >&2
             exit 1
           }
-          gh release upload "$RELEASE_TAG" \
+          gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
             dist/windows/TakSklad-windows-x64.zip \
             dist/windows/TakSklad-windows-x64.zip.sha256.txt \
             dist/windows/TakSklad.exe \
