@@ -229,7 +229,7 @@ jobs:
           if ($approvedCertificateSha256 -ne $certificateSha256) {
             throw "WINDOWS_CODESIGN_IDENTITY_MISMATCH"
           }
-          python tools\verify_windows_signing_chain.py --require-leaf $certificateSha256
+          python -m tools.verify_windows_signing_chain --require-leaf $certificateSha256
           if ($LASTEXITCODE -ne 0) {
             throw "WINDOWS_CODESIGN_CHAIN_INVALID"
           }
@@ -241,7 +241,7 @@ jobs:
           if ($rootConstraints.Count -ne 1 -or -not $rootConstraints[0].CertificateAuthority) {
             throw "WINDOWS_CODESIGN_ROOT_CA_INVALID"
           }
-          python tools\verify_windows_signer_allowlist.py --require $certificateSha256
+          python -m tools.verify_windows_signer_allowlist --require $certificateSha256
           if ($LASTEXITCODE -ne 0) {
             foreach ($importedCertificate in $certificates) {
               Remove-Item "Cert:\CurrentUser\My\$($importedCertificate.Thumbprint)" -Force -ErrorAction SilentlyContinue

@@ -34,7 +34,7 @@ class WindowsReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("WINDOWS_CODESIGN_IDENTITY_NOT_PINNED", workflow)
         self.assertIn("taksklad-internal-windows-codesign.pem", workflow)
         self.assertIn("taksklad-internal-windows-root-ca.pem", workflow)
-        self.assertIn("verify_windows_signing_chain.py --require-leaf", workflow)
+        self.assertIn("python -m tools.verify_windows_signing_chain --require-leaf", workflow)
         self.assertIn('@{ Name = "Root"; Certificate = $approvedRootCertificate }', workflow)
         self.assertIn('@{ Name = "TrustedPublisher"; Certificate = $certificate }', workflow)
         self.assertIn("WINDOWS_CODESIGN_TEMPORARY_ROOT_THUMBPRINT", workflow)
