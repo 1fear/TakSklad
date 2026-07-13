@@ -213,6 +213,7 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn("unresolved_daily_report_historical", workflow)
         self.assertIn("PHASE27_HISTORICAL_REPORT_RECOVERY_OK", workflow)
         self.assertIn("phase27_historical_daily_report_recovery", workflow)
+        self.assertIn('docker exec -i "\\$backend_id" python - < /tmp/taksklad-phase27-recover.py', workflow)
         self.assertIn("for attempt in \\$(seq 1 36)", workflow)
         self.assertIn("compose up -d --no-deps --no-build", workflow)
         self.assertIn("backup_postgres.sh --no-prune </dev/null", workflow)

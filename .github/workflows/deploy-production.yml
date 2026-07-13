@@ -526,11 +526,9 @@ jobs:
               if blockers:
                   raise SystemExit("unresolved hot path blockers remain")
               print(f"PHASE27_HISTORICAL_REPORT_RECOVERY_OK resolved={len(historical)} blockers=0 external_sends=0")
-          PY
+            PY
             chmod 600 /tmp/taksklad-phase27-recover.py
-            docker cp /tmp/taksklad-phase27-recover.py "\$backend_id:/tmp/taksklad-phase27-recover.py"
-            docker exec "\$backend_id" python /tmp/taksklad-phase27-recover.py </dev/null
-            docker exec "\$backend_id" rm -f /tmp/taksklad-phase27-recover.py </dev/null
+            docker exec -i "\$backend_id" python - < /tmp/taksklad-phase27-recover.py
             rm -f /tmp/taksklad-phase27-recover.py
             runtime_ready=0
             for attempt in \$(seq 1 36); do
