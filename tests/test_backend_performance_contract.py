@@ -304,6 +304,62 @@ class BackendPerformanceContractTests(unittest.TestCase):
             self.assertEqual(evidence["status"], "pass")
             self.assertEqual(len(evidence["runs"]), 3)
 
+    def test_import_compare_uses_median_of_three_independent_runs(self):
+        approved_payload = json.loads(
+            (benchmark_backend.EVIDENCE_DIR / "backend-baseline-approved.json").read_text(encoding="utf-8")
+        )
+        previous = approved_payload["results"]["import_1000"]
+
+        def metrics(multiplier):
+            result = copy.deepcopy(previous)
+            for name in ("p50_ms", "p95_ms", "p99_ms", "max_ms"):
+                result[name] = round(float(result[name]) * multiplier, 3)
+            return result
+
+        @contextmanager
+        def fake_database():
+            yield "postgresql+psycopg://synthetic", {"image": "synthetic-postgres"}
+
+        release_state = benchmark_backend.ROOT / ".release-state"
+        release_state.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=release_state) as temp_dir:
+            evidence_dir = Path(temp_dir)
+            approved_path = evidence_dir / "backend-baseline-approved.json"
+            approved_path.write_text(json.dumps(approved_payload), encoding="utf-8")
+            measured = [metrics(1.20), metrics(1.00), metrics(1.00)]
+            with (
+                mock.patch.object(benchmark_backend, "EVIDENCE_DIR", evidence_dir),
+                mock.patch.object(benchmark_backend, "disposable_database", fake_database),
+                mock.patch.object(
+                    benchmark_backend,
+                    "seed_profile",
+                    return_value=({"table_counts": {"orders": 1}}, evidence_dir / "dataset-reference.json"),
+                ),
+                mock.patch.object(benchmark_backend, "workload_context", return_value={}),
+                mock.patch.object(benchmark_backend, "measure_workload", side_effect=measured) as measure,
+                mock.patch.object(benchmark_backend, "prepare_profile_benchmark") as prepare,
+                mock.patch.object(benchmark_backend, "ensure_foreground_task_policy", return_value="synthetic"),
+                mock.patch.object(benchmark_backend, "host_manifest", return_value={"synthetic": True}),
+                mock.patch.object(benchmark_backend.time, "sleep"),
+                mock.patch.object(
+                    benchmark_backend,
+                    "wait_for_benchmark_quiescence",
+                    return_value={"waited_seconds": 0},
+                ) as quiescence,
+                redirect_stdout(io.StringIO()),
+            ):
+                result = benchmark_backend.run_compare("import")
+
+            evidence = json.loads((evidence_dir / "compare-import.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(result, 0)
+        self.assertEqual(measure.call_count, 3)
+        self.assertEqual(prepare.call_count, 3)
+        self.assertEqual(quiescence.call_count, 3)
+        self.assertEqual(evidence["repeat"], 3)
+        self.assertEqual(evidence["status"], "pass")
+        self.assertEqual(evidence["current"]["p95_ms"], previous["p95_ms"])
+
 
 if __name__ == "__main__":
     unittest.main()

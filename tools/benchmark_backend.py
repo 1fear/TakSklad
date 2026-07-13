@@ -1246,8 +1246,27 @@ def run_explain(profile_name):
     return 0
 
 
+def aggregate_workload_results(results):
+    first = results[0]
+    aggregated = {
+        "iterations": first["iterations"],
+        "warmup_iterations": first["warmup_iterations"],
+    }
+    for metric in ("p50_ms", "p95_ms", "p99_ms", "max_ms"):
+        aggregated[metric] = round(
+            float(percentile([result[metric] for result in results], 50)), 3,
+        )
+    for metric in ("query_count", "rows_returned"):
+        aggregated[metric] = {
+            key: int(percentile([result[metric][key] for result in results], 50))
+            for key in ("min", "median", "max")
+        }
+    return aggregated
+
+
 def run_compare(workload):
     workload_name = {"import": "import_1000"}[workload]
+    repeat = 3
     profiles = load_json(PROFILES_PATH)
     budgets = load_json(BUDGETS_PATH)
     approved_path = EVIDENCE_DIR / "backend-baseline-approved.json"
@@ -1255,11 +1274,39 @@ def run_compare(workload):
         raise RuntimeError("approved Phase 6 baseline is missing; run baseline first")
     approved = load_json(approved_path)
     profile = profiles["profiles"]["reference"]
-    with disposable_database() as (database_url, runtime):
-        seed_profile(database_url, "reference")
-        context = workload_context(database_url, profile)
-        result = measure_workload(database_url, workload_name, context, 100)
-        host = host_manifest(database_url, runtime)
+    task_policy = ensure_foreground_task_policy()
+    runs = []
+    absolute_failures = []
+    for run_number in range(1, repeat + 1):
+        time.sleep(FRESH_RUN_COOLDOWN_SECONDS)
+        quiescence = wait_for_benchmark_quiescence()
+        with disposable_database() as (database_url, runtime):
+            dataset, dataset_path = seed_profile(database_url, "reference")
+            prepare_profile_benchmark(database_url)
+            context = workload_context(database_url, profile)
+            measured = measure_workload(database_url, workload_name, context, 100)
+            host = host_manifest(database_url, runtime)
+        run_failures = assertion_failures(
+            {
+                name: measured if name == workload_name else approved["results"][name]
+                for name in budgets["workloads"]
+            },
+            budgets,
+        )
+        absolute_failures.extend(
+            f"run {run_number}: {failure}" for failure in run_failures
+        )
+        runs.append({
+            "run": run_number,
+            "dataset_manifest": str(dataset_path.relative_to(ROOT)),
+            "dataset_counts": dataset["table_counts"],
+            "host": host,
+            "fresh_run_cooldown_seconds": FRESH_RUN_COOLDOWN_SECONDS,
+            "fresh_run_quiescence": quiescence,
+            "result": measured,
+            "absolute_failures": run_failures,
+        })
+    result = aggregate_workload_results([run["result"] for run in runs])
     previous = approved["results"][workload_name]
     delta = {
         metric: round(float(result[metric]) - float(previous[metric]), 3)
@@ -1269,18 +1316,23 @@ def run_compare(workload):
         metric: round(delta[metric] / float(previous[metric]) * 100, 3)
         for metric in delta
     }
-    failures = assertion_failures(
+    aggregate_failures = assertion_failures(
         {name: result if name == workload_name else approved["results"][name]
          for name in budgets["workloads"]},
         budgets,
         approved=approved,
     )
+    failures = absolute_failures + aggregate_failures
     evidence = {
         "schema": 1,
         "mode": "compare",
         "workload": workload_name,
         "profile": "reference",
         "iterations": 100,
+        "repeat": repeat,
+        "aggregation": "nearest-rank median across three independent run percentiles",
+        "task_policy": task_policy,
+        "runs": runs,
         "host": host,
         "approved": {key: previous[key] for key in ("p50_ms", "p95_ms", "p99_ms", "query_count")},
         "current": result,
@@ -1299,6 +1351,8 @@ def run_compare(workload):
     sys.stdout.write(json.dumps({
         "status": evidence["status"],
         "workload": workload_name,
+        "repeat": repeat,
+        "aggregation": evidence["aggregation"],
         "approved": evidence["approved"],
         "current": {key: result[key] for key in ("p50_ms", "p95_ms", "p99_ms", "query_count")},
         "delta_percent": delta_percent,
