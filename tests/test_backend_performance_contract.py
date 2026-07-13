@@ -17,6 +17,28 @@ class BackendPerformanceContractTests(unittest.TestCase):
         self.profiles = benchmark_backend.load_json(benchmark_backend.PROFILES_PATH)
         self.budgets = benchmark_backend.load_json(benchmark_backend.BUDGETS_PATH)
 
+    @staticmethod
+    def synthetic_approved_payload():
+        metrics = {
+            "iterations": 100,
+            "warmup_iterations": 10,
+            "p50_ms": 1,
+            "p95_ms": 1,
+            "p99_ms": 1,
+            "max_ms": 1,
+            "query_count": {"min": 1, "median": 1, "max": 1},
+            "rows_returned": {"min": 1, "median": 1, "max": 1},
+        }
+        return {
+            "host": {
+                "working_tree_source_hashes": benchmark_backend.benchmark_contract_hashes(),
+            },
+            "results": {
+                name: copy.deepcopy(metrics)
+                for name in benchmark_backend.WORKLOADS
+            },
+        }
+
     def test_profiles_are_fixed_synthetic_and_have_exact_hot_sets(self):
         contract = self.profiles["synthetic_contract"]
         self.assertFalse(contract["contains_real_data"])
@@ -305,9 +327,7 @@ class BackendPerformanceContractTests(unittest.TestCase):
             self.assertEqual(len(evidence["runs"]), 3)
 
     def test_import_compare_uses_median_of_three_independent_runs(self):
-        approved_payload = json.loads(
-            (benchmark_backend.EVIDENCE_DIR / "backend-baseline-approved.json").read_text(encoding="utf-8")
-        )
+        approved_payload = self.synthetic_approved_payload()
         previous = approved_payload["results"]["import_1000"]
 
         def metrics(multiplier):
@@ -369,9 +389,7 @@ class BackendPerformanceContractTests(unittest.TestCase):
         self.assertEqual(evidence["current"]["p95_ms"], previous["p95_ms"])
 
     def test_approved_runner_hash_requires_matching_semantic_measurement_contract(self):
-        approved = json.loads(
-            (benchmark_backend.EVIDENCE_DIR / "backend-baseline-approved.json").read_text(encoding="utf-8")
-        )
+        approved = self.synthetic_approved_payload()
         self.assertEqual(benchmark_backend.baseline_compatibility_failures(approved), [])
 
         tampered = copy.deepcopy(approved)
