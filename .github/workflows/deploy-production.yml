@@ -374,6 +374,12 @@ jobs:
           eval "\$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/release_artifacts.py emit-shell --manifest release.json)"
           docker pull "\$RELEASE_BACKEND_IMAGE"
           docker pull "\$RELEASE_FRONTEND_IMAGE"
+          export TAKSKLAD_BACKEND_IMAGE="\$RELEASE_BACKEND_IMAGE"
+          export TAKSKLAD_FRONTEND_IMAGE="\$RELEASE_FRONTEND_IMAGE"
+          docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml \
+            pull postgres-wal-init postgres
+          docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml \
+            up -d --no-build --pull never --wait --wait-timeout 180 postgres
           ./deploy/vds/backup_postgres.sh --no-prune </dev/null
           install -d -m 700 .release-state
           PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/collect_phase27_evidence.py \
