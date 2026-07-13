@@ -1,4 +1,6 @@
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from tools import benchmark_backend
@@ -266,21 +268,52 @@ class PairedBackendPerformanceTests(unittest.TestCase):
         self.assertEqual(environment["TAKSKLAD_NO_PRODUCTION"], "1")
         self.assertEqual(environment["TAKSKLAD_EXTERNAL_SENDS_DISABLED"], "1")
 
-    def test_worker_preserves_quiescence_before_shared_release_barrier(self):
+    def test_worker_uses_shared_release_without_self_observing_quiescence(self):
         worker = paired.WORKER_CODE
 
-        self.assertIn(
-            "original_quiescence = benchmark.wait_for_benchmark_quiescence",
-            worker,
-        )
-        self.assertLess(
-            worker.index("quiescence = original_quiescence()"),
-            worker.index('own.write_text("ready'),
-        )
+        self.assertNotIn("original_quiescence", worker)
+        self.assertNotIn("host_quiescence", worker)
         self.assertIn("time.monotonic() + 0.5", worker)
         self.assertIn("temporary_release.replace(release)", worker)
         self.assertIn("release_at - time.monotonic()", worker)
-        self.assertIn('"host_quiescence": quiescence', worker)
+
+    def test_parent_quiescence_completes_before_workers_spawn(self):
+        events = []
+        quiescence = {
+            "status": "quiescent",
+            "method": "aggregate-cpu-idle",
+            "max_cpu_busy_percent": 20.0,
+        }
+        process = mock.Mock()
+        process.poll.return_value = 0
+
+        def wait_for_quiescence():
+            events.append("quiescence")
+            return quiescence
+
+        def start_worker(*_args, **_kwargs):
+            events.append("spawn")
+            return process
+
+        with tempfile.TemporaryDirectory() as temporary:
+            with (
+                mock.patch.object(paired.subprocess, "Popen", side_effect=start_worker),
+                mock.patch.object(
+                    paired,
+                    "_decode_worker",
+                    side_effect=[{"side": "control"}, {"side": "candidate"}],
+                ),
+            ):
+                result = paired.run_pair(
+                    profile="reference",
+                    control_root=Path(temporary) / "control",
+                    candidate_root=Path(temporary) / "candidate",
+                    barrier_root=Path(temporary) / "barrier",
+                    parent_quiescence_waiter=wait_for_quiescence,
+                )
+
+        self.assertEqual(events, ["quiescence", "spawn", "spawn"])
+        self.assertEqual(result["parent_quiescence"], quiescence)
 
 
 if __name__ == "__main__":

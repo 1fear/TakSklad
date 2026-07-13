@@ -13,9 +13,10 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from tools import benchmark_backend
+from tools import final_release_verifier
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,13 +42,11 @@ from tools import benchmark_backend as benchmark
 profile_name, barrier_root, side = sys.argv[1:4]
 barrier_root = Path(barrier_root)
 barrier_index = 0
-original_quiescence = benchmark.wait_for_benchmark_quiescence
 
 
 def paired_barrier():
     global barrier_index
     barrier_index += 1
-    quiescence = original_quiescence()
     own = barrier_root / f"{barrier_index:02d}-{side}.ready"
     peer_side = "candidate" if side == "control" else "control"
     peer = barrier_root / f"{barrier_index:02d}-{peer_side}.ready"
@@ -76,7 +75,6 @@ def paired_barrier():
     return {
         "paired": True,
         "barrier_index": barrier_index,
-        "host_quiescence": quiescence,
         "shared_release_delay_seconds": 0.5,
     }
 
@@ -287,6 +285,12 @@ def _decode_worker(process: subprocess.Popen[str], side: str) -> dict[str, Any]:
         raise PairedPerformanceError(f"{side} worker returned invalid JSON") from exc
 
 
+def wait_for_parent_quiescence() -> dict[str, Any]:
+    """Prove the host is quiet before paired workers can contribute load."""
+
+    return final_release_verifier.wait_for_rehearsal_quiescence()
+
+
 def run_pair(
     *,
     profile: str,
@@ -294,8 +298,11 @@ def run_pair(
     candidate_root: Path,
     barrier_root: Path,
     candidate_first: bool = False,
+    parent_quiescence_waiter: Callable[[], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     barrier_root.mkdir(parents=True, exist_ok=True)
+    quiescence_waiter = parent_quiescence_waiter or wait_for_parent_quiescence
+    parent_quiescence = quiescence_waiter()
     environment = worker_environment()
     command = [sys.executable, "-c", WORKER_CODE, profile, str(barrier_root)]
     def start(side: str) -> subprocess.Popen[str]:
@@ -325,7 +332,11 @@ def run_pair(
                 process.kill()
                 process.communicate()
         raise
-    return {"control": control_result, "candidate": candidate_result}
+    return {
+        "control": control_result,
+        "candidate": candidate_result,
+        "parent_quiescence": parent_quiescence,
+    }
 
 
 def run(profile: str, repeat: int, assert_budgets: bool) -> dict[str, Any]:
@@ -411,7 +422,8 @@ def run(profile: str, repeat: int, assert_budgets: bool) -> dict[str, Any]:
         "approved_baseline_sha256": sha256_file(APPROVED_BASELINE),
         "regression_limit_percent": 10,
         "pairing": (
-            "simultaneous control/candidate with per-workload filesystem barriers and "
+            "parent aggregate CPU quiescence before every mirrored race; simultaneous "
+            "control/candidate with atomic shared-timestamp per-workload barriers and "
             "swapped launch order; mirrored raw samples pooled before p95/p99"
         ),
         "measurement_contract_keys": list(MEASUREMENT_CONTRACT_KEYS),
