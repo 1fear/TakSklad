@@ -38,6 +38,7 @@ class WindowsReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("Get-Command certmgr.exe", workflow)
         self.assertIn('/r localMachine root', workflow)
         self.assertIn('/r localMachine trustedpublisher', workflow)
+        self.assertGreaterEqual(workflow.count('/all /s /r localMachine'), 2)
         self.assertIn("Cert:\\LocalMachine\\Root", workflow)
         self.assertIn("Cert:\\LocalMachine\\TrustedPublisher", workflow)
         self.assertIn("timeout-minutes: 2", workflow)

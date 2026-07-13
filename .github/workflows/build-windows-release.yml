@@ -264,11 +264,11 @@ jobs:
           if (-not $certMgrPath) {
             throw "WINDOWS_CERTMGR_NOT_AVAILABLE"
           }
-          & $certMgrPath /add "supply-chain\taksklad-internal-windows-root-ca.pem" /s /r localMachine root
+          & $certMgrPath /add "supply-chain\taksklad-internal-windows-root-ca.pem" /all /s /r localMachine root
           if ($LASTEXITCODE -ne 0) {
             throw "WINDOWS_CODESIGN_ROOT_CA_IMPORT_FAILED"
           }
-          & $certMgrPath /add "supply-chain\taksklad-internal-windows-codesign.pem" /s /r localMachine trustedpublisher
+          & $certMgrPath /add "supply-chain\taksklad-internal-windows-codesign.pem" /all /s /r localMachine trustedpublisher
           if ($LASTEXITCODE -ne 0) {
             throw "WINDOWS_CODESIGN_PUBLISHER_IMPORT_FAILED"
           }
