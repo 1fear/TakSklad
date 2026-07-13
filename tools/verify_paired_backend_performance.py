@@ -90,13 +90,21 @@ def sha256_file(path: Path) -> str:
 
 
 def measurement_contract_failures(
-    approved: dict[str, Any], current_hashes: dict[str, str],
+    approved: dict[str, Any], current_hashes: dict[str, str], *,
+    allow_candidate_runner_semantic_contract: bool = False,
 ) -> list[str]:
     expected = ((approved.get("host") or {}).get("working_tree_source_hashes") or {})
     return [
         f"paired measurement contract hash mismatch: {key}"
         for key in MEASUREMENT_CONTRACT_KEYS
         if expected.get(key) != current_hashes.get(key)
+        and not (
+            key == "runner"
+            and allow_candidate_runner_semantic_contract
+            and benchmark_backend._runner_matches_approved_measurement_contract(
+                str(expected.get(key) or "")
+            )
+        )
     ]
 
 
@@ -302,7 +310,11 @@ def run(profile: str, repeat: int, assert_budgets: bool) -> dict[str, Any]:
         raise ValueError("Phase 26 paired comparison requires exactly three pairs")
     approved = load_json(APPROVED_BASELINE)
     current_hashes = benchmark_backend.benchmark_contract_hashes()
-    failures = measurement_contract_failures(approved, current_hashes)
+    failures = measurement_contract_failures(
+        approved,
+        current_hashes,
+        allow_candidate_runner_semantic_contract=True,
+    )
     control_commit = str((approved.get("host") or {}).get("commit") or "")
     if not SHA_RE.fullmatch(control_commit):
         raise PairedPerformanceError("approved baseline control commit is invalid")

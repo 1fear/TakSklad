@@ -34,6 +34,132 @@ class PairedBackendPerformanceTests(unittest.TestCase):
             ["paired measurement contract hash mismatch: runner"],
         )
 
+    def test_candidate_runner_can_use_approved_semantic_contract(self):
+        approved = {
+            "host": {
+                "working_tree_source_hashes": {
+                    "runner": "historical-runner",
+                    "profiles": "profiles",
+                    "budgets": "budgets",
+                }
+            }
+        }
+        current = {
+            "runner": "candidate-runner",
+            "profiles": "profiles",
+            "budgets": "budgets",
+        }
+
+        with mock.patch.object(
+            benchmark_backend,
+            "_runner_matches_approved_measurement_contract",
+            return_value=True,
+        ) as semantic_match:
+            failures = paired.measurement_contract_failures(
+                approved,
+                current,
+                allow_candidate_runner_semantic_contract=True,
+            )
+
+        self.assertEqual(failures, [])
+        semantic_match.assert_called_once_with("historical-runner")
+
+    def test_control_runner_still_requires_exact_historical_hash(self):
+        approved = {
+            "host": {
+                "working_tree_source_hashes": {
+                    "runner": "historical-runner",
+                    "profiles": "profiles",
+                    "budgets": "budgets",
+                }
+            }
+        }
+        control = {
+            "runner": "different-control-runner",
+            "profiles": "profiles",
+            "budgets": "budgets",
+        }
+
+        with mock.patch.object(
+            benchmark_backend,
+            "_runner_matches_approved_measurement_contract",
+            return_value=True,
+        ) as semantic_match:
+            failures = paired.measurement_contract_failures(approved, control)
+
+        self.assertEqual(
+            failures,
+            ["paired measurement contract hash mismatch: runner"],
+        )
+        semantic_match.assert_not_called()
+
+    def test_candidate_runner_semantic_mismatch_still_fails(self):
+        approved = {
+            "host": {
+                "working_tree_source_hashes": {
+                    "runner": "historical-runner",
+                    "profiles": "profiles",
+                    "budgets": "budgets",
+                }
+            }
+        }
+        current = {
+            "runner": "candidate-runner",
+            "profiles": "profiles",
+            "budgets": "budgets",
+        }
+
+        with mock.patch.object(
+            benchmark_backend,
+            "_runner_matches_approved_measurement_contract",
+            return_value=False,
+        ):
+            failures = paired.measurement_contract_failures(
+                approved,
+                current,
+                allow_candidate_runner_semantic_contract=True,
+            )
+
+        self.assertEqual(
+            failures,
+            ["paired measurement contract hash mismatch: runner"],
+        )
+
+    def test_candidate_semantic_contract_does_not_waive_profiles_or_budgets(self):
+        approved = {
+            "host": {
+                "working_tree_source_hashes": {
+                    "runner": "historical-runner",
+                    "profiles": "historical-profiles",
+                    "budgets": "historical-budgets",
+                }
+            }
+        }
+        current = {
+            "runner": "candidate-runner",
+            "profiles": "candidate-profiles",
+            "budgets": "candidate-budgets",
+        }
+
+        with mock.patch.object(
+            benchmark_backend,
+            "_runner_matches_approved_measurement_contract",
+            return_value=True,
+        ):
+            failures = paired.measurement_contract_failures(
+                approved,
+                current,
+                allow_candidate_runner_semantic_contract=True,
+            )
+
+        self.assertEqual(
+            failures,
+            [
+                "paired measurement contract hash mismatch: profiles",
+                "paired measurement contract hash mismatch: budgets",
+            ],
+        )
+
     def test_pair_ratios_use_median_and_keep_exact_ten_percent_limit(self):
         pairs = [
             paired.synthetic_pair(control=100, candidate=value)
