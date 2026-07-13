@@ -255,20 +255,13 @@ jobs:
           "WINDOWS_CODESIGN_IMPORTED_THUMBPRINTS=$(@($certificates.Thumbprint) -join ',')" >> $env:GITHUB_ENV
           "WINDOWS_CODESIGN_TEMPORARY_PUBLISHER_THUMBPRINT=$($certificate.Thumbprint)" >> $env:GITHUB_ENV
           "WINDOWS_CODESIGN_TEMPORARY_ROOT_THUMBPRINT=$($approvedRootCertificate.Thumbprint)" >> $env:GITHUB_ENV
-          foreach ($storeSpec in @(
-            @{ Name = "Root"; Certificate = $approvedRootCertificate },
-            @{ Name = "TrustedPublisher"; Certificate = $certificate }
-          )) {
-            $store = [System.Security.Cryptography.X509Certificates.X509Store]::new(
-              $storeSpec.Name,
-              [System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser
-            )
-            try {
-              $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-              $store.Add($storeSpec.Certificate)
-            } finally {
-              $store.Close()
-            }
+          certutil.exe -user -f -addstore Root "supply-chain\taksklad-internal-windows-root-ca.pem" | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            throw "WINDOWS_CODESIGN_ROOT_CA_IMPORT_FAILED"
+          }
+          certutil.exe -user -f -addstore TrustedPublisher "supply-chain\taksklad-internal-windows-codesign.pem" | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            throw "WINDOWS_CODESIGN_PUBLISHER_IMPORT_FAILED"
           }
 
       - name: Prepare PyInstaller import path
