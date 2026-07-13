@@ -152,6 +152,7 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn('"digest": frontend_digest', workflow)
         self.assertIn('"build_on_target": False', workflow)
         self.assertIn('"alembic_downgrade_allowed": False', workflow)
+        self.assertGreaterEqual(workflow.count("fetch-depth: 0"), 2)
 
     def test_production_deploy_is_manual_and_accepts_only_verified_artifact_identity(self):
         workflow = (PROJECT_ROOT / ".github" / "workflows" / "deploy-production.yml").read_text(
@@ -185,6 +186,7 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn("RELEASE_WORKFLOW_SOURCE_SHA_MISMATCH", workflow)
         self.assertIn("SOURCE_BUILD_DEPLOYMENT_FORBIDDEN", workflow)
         self.assertIn("ref: ${{ inputs.source_sha }}", workflow)
+        self.assertIn("fetch-depth: 0", workflow)
         self.assertIn("taksklad-deploy-control.tar.gz", workflow)
         self.assertIn("PRODUCTION_APPROVAL: READY_FOR_PRODUCTION_DEPLOY", workflow)
         self.assertIn("TAKSKLAD_PRODUCTION_APPROVAL", workflow)

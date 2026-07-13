@@ -46,6 +46,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ steps.release.outputs.tag }}
+          fetch-depth: 0
           fetch-tags: true
 
       - name: Resolve immutable source commit
@@ -501,6 +502,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ needs.build-windows.outputs.source_sha }}
+          fetch-depth: 0
           fetch-tags: true
 
       - name: Verify exact release SHA checkout
