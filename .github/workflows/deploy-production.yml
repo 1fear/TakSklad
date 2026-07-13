@@ -403,8 +403,10 @@ jobs:
             export TAKSKLAD_COMMIT_SHA="\$RELEASE_SOURCE_SHA"
             export TAKSKLAD_IMAGE_DIGEST="\$RELEASE_BACKEND_DIGEST"
             docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml \
-              up -d --no-deps --no-build --pull never --wait --wait-timeout 180 backend-api
-            echo "PHASE27_RETRY_BACKEND_OK revision=\$current_revision"
+              up -d --no-deps --no-build --pull never --wait --wait-timeout 180 \
+              backend-api frontend telegram-worker google-sheets-sync-worker \
+              skladbot-worker smartup-auto-import-worker
+            echo "PHASE27_RETRY_RUNTIME_OK revision=\$current_revision"
           fi
           ./deploy/vds/backup_postgres.sh --no-prune </dev/null
           install -d -m 700 .release-state
