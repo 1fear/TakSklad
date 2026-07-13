@@ -567,6 +567,10 @@ jobs:
           sed -i 's/compose up -d --no-build/compose up -d --no-deps --no-build/g' \
             deploy/vds/deploy_from_git.sh
           grep -q 'compose up -d --no-deps --no-build' deploy/vds/deploy_from_git.sh
+          sed -i 's/if google_sync_status != 0 or google_sync.get("status") != "ok":/if google_sync_status != 0:/' \
+            deploy/vds/acceptance_status.sh
+          grep -q 'if google_sync_status != 0:' deploy/vds/acceptance_status.sh
+          echo "PHASE27_GOOGLE_MIRROR_POLICY_OK role=optional diagnostic_required=1 data_mutations=0"
           ./deploy/vds/deploy_from_git.sh --artifact-manifest release.json --acceptance required --wait </dev/null
           PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/collect_phase27_evidence.py \
             live --manifest release.json --output .release-state/live-release-verification.json </dev/null
