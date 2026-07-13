@@ -207,9 +207,19 @@ jobs:
           } finally {
             $hasher.Dispose()
           }
-          $approvedCertificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPemFile(
-            "supply-chain\taksklad-internal-windows-codesign.pem"
-          )
+          function Read-PublicPemCertificate([string]$Path) {
+            $pem = Get-Content $Path -Raw
+            if ($pem -notmatch '(?s)-----BEGIN CERTIFICATE-----(.*?)-----END CERTIFICATE-----') {
+              throw "WINDOWS_CODESIGN_APPROVED_CERTIFICATE_INVALID"
+            }
+            try {
+              $certificateBytes = [Convert]::FromBase64String(($Matches[1] -replace '\s', ''))
+              return [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($certificateBytes)
+            } catch {
+              throw "WINDOWS_CODESIGN_APPROVED_CERTIFICATE_INVALID"
+            }
+          }
+          $approvedCertificate = Read-PublicPemCertificate "supply-chain\taksklad-internal-windows-codesign.pem"
           $approvedHasher = [System.Security.Cryptography.SHA256]::Create()
           try {
             $approvedCertificateSha256 = -join ($approvedHasher.ComputeHash($approvedCertificate.RawData) | ForEach-Object { $_.ToString('x2') })
@@ -223,9 +233,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "WINDOWS_CODESIGN_CHAIN_INVALID"
           }
-          $approvedRootCertificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPemFile(
-            "supply-chain\taksklad-internal-windows-root-ca.pem"
-          )
+          $approvedRootCertificate = Read-PublicPemCertificate "supply-chain\taksklad-internal-windows-root-ca.pem"
           $rootConstraints = @(
             $approvedRootCertificate.Extensions |
               Where-Object { $_.Oid.Value -eq "2.5.29.19" }
