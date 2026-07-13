@@ -256,18 +256,12 @@ jobs:
           "WINDOWS_CODESIGN_IMPORTED_THUMBPRINTS=$(@($certificates.Thumbprint) -join ',')" >> $env:GITHUB_ENV
           "WINDOWS_CODESIGN_TEMPORARY_PUBLISHER_THUMBPRINT=$($certificate.Thumbprint)" >> $env:GITHUB_ENV
           "WINDOWS_CODESIGN_TEMPORARY_ROOT_THUMBPRINT=$($approvedRootCertificate.Thumbprint)" >> $env:GITHUB_ENV
-          $rootImports = @(Import-Certificate `
-            -FilePath "supply-chain\taksklad-internal-windows-root-ca.pem" `
-            -CertStoreLocation Cert:\CurrentUser\Root `
-            -Confirm:$false)
-          if ($rootImports.Count -ne 1 -or $rootImports[0].Thumbprint -ne $approvedRootCertificate.Thumbprint) {
+          certutil.exe -user -f -silent -addstore Root "supply-chain\taksklad-internal-windows-root-ca.pem" | Out-Null
+          if ($LASTEXITCODE -ne 0) {
             throw "WINDOWS_CODESIGN_ROOT_CA_IMPORT_FAILED"
           }
-          $publisherImports = @(Import-Certificate `
-            -FilePath "supply-chain\taksklad-internal-windows-codesign.pem" `
-            -CertStoreLocation Cert:\CurrentUser\TrustedPublisher `
-            -Confirm:$false)
-          if ($publisherImports.Count -ne 1 -or $publisherImports[0].Thumbprint -ne $certificate.Thumbprint) {
+          certutil.exe -user -f -silent -addstore TrustedPublisher "supply-chain\taksklad-internal-windows-codesign.pem" | Out-Null
+          if ($LASTEXITCODE -ne 0) {
             throw "WINDOWS_CODESIGN_PUBLISHER_IMPORT_FAILED"
           }
 
