@@ -266,6 +266,22 @@ class PairedBackendPerformanceTests(unittest.TestCase):
         self.assertEqual(environment["TAKSKLAD_NO_PRODUCTION"], "1")
         self.assertEqual(environment["TAKSKLAD_EXTERNAL_SENDS_DISABLED"], "1")
 
+    def test_worker_preserves_quiescence_before_shared_release_barrier(self):
+        worker = paired.WORKER_CODE
+
+        self.assertIn(
+            "original_quiescence = benchmark.wait_for_benchmark_quiescence",
+            worker,
+        )
+        self.assertLess(
+            worker.index("quiescence = original_quiescence()"),
+            worker.index('own.write_text("ready'),
+        )
+        self.assertIn("time.monotonic() + 0.5", worker)
+        self.assertIn("temporary_release.replace(release)", worker)
+        self.assertIn("release_at - time.monotonic()", worker)
+        self.assertIn('"host_quiescence": quiescence', worker)
+
 
 if __name__ == "__main__":
     unittest.main()

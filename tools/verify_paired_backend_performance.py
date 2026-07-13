@@ -41,21 +41,44 @@ from tools import benchmark_backend as benchmark
 profile_name, barrier_root, side = sys.argv[1:4]
 barrier_root = Path(barrier_root)
 barrier_index = 0
+original_quiescence = benchmark.wait_for_benchmark_quiescence
 
 
 def paired_barrier():
     global barrier_index
     barrier_index += 1
+    quiescence = original_quiescence()
     own = barrier_root / f"{barrier_index:02d}-{side}.ready"
     peer_side = "candidate" if side == "control" else "control"
     peer = barrier_root / f"{barrier_index:02d}-{peer_side}.ready"
+    release = barrier_root / f"{barrier_index:02d}.release"
     own.write_text("ready\n", encoding="utf-8")
     deadline = time.monotonic() + 600
-    while not peer.is_file():
+    if side == "control":
+        while not peer.is_file():
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"paired workload barrier timed out index={barrier_index}")
+            time.sleep(0.01)
+        temporary_release = release.with_suffix(".release.tmp")
+        temporary_release.write_text(
+            f"{time.monotonic() + 0.5:.9f}\n",
+            encoding="utf-8",
+        )
+        temporary_release.replace(release)
+    while not release.is_file():
         if time.monotonic() >= deadline:
             raise RuntimeError(f"paired workload barrier timed out index={barrier_index}")
-        time.sleep(0.05)
-    return {"paired": True, "barrier_index": barrier_index}
+        time.sleep(0.01)
+    release_at = float(release.read_text(encoding="utf-8").strip())
+    remaining = release_at - time.monotonic()
+    if remaining > 0:
+        time.sleep(remaining)
+    return {
+        "paired": True,
+        "barrier_index": barrier_index,
+        "host_quiescence": quiescence,
+        "shared_release_delay_seconds": 0.5,
+    }
 
 
 benchmark.wait_for_benchmark_quiescence = paired_barrier
