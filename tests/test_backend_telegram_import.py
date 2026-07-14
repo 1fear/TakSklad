@@ -1,6 +1,7 @@
 import shutil
 import tempfile
 import unittest
+import uuid
 from unittest import mock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -304,7 +305,7 @@ class BackendTelegramImportTests(unittest.TestCase):
             return events.pop(0) if events else None
 
         processor.take_next_telegram_import_event = take_next
-        processor.is_admin_chat = lambda chat_id: calls.append(("authorize", chat_id)) or chat_id == "admin"
+        processor.is_allowed_chat = lambda chat_id: calls.append(("authorize", chat_id)) or chat_id == "admin"
         processor.import_telegram_document = lambda chat_id, document, shipment_date="", event_id=None: (
             calls.append(("import", chat_id, document["file_name"], shipment_date, event_id)) or (True, "")
         )
@@ -374,9 +375,9 @@ class BackendTelegramImportTests(unittest.TestCase):
             with self.assertRaises(TelegramConfigurationError):
                 TelegramWorker()
 
-    def test_allowed_non_admin_cannot_enqueue_excel_document(self):
+    def test_unauthorized_chat_cannot_enqueue_excel_document(self):
         worker = TelegramWorker.__new__(TelegramWorker)
-        worker.allowed_chat_ids = {"123", "999"}
+        worker.allowed_chat_ids = {"999"}
         worker.admin_chat_ids = {"999"}
         messages = []
         worker.send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text))
@@ -388,11 +389,11 @@ class BackendTelegramImportTests(unittest.TestCase):
         )
 
         self.assertFalse(result)
-        self.assertIn("только администратору", messages[0][1])
+        self.assertEqual(messages, [])
 
-    def test_allowed_non_admin_cannot_confirm_waiting_import_date(self):
+    def test_unauthorized_chat_cannot_confirm_waiting_import_date(self):
         worker = TelegramWorker.__new__(TelegramWorker)
-        worker.allowed_chat_ids = {"123", "999"}
+        worker.allowed_chat_ids = {"999"}
         worker.admin_chat_ids = {"999"}
         messages = []
         worker.send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text))
@@ -403,11 +404,22 @@ class BackendTelegramImportTests(unittest.TestCase):
         result = worker.confirm_waiting_telegram_import_shipment_date("123", "10.07.2026")
 
         self.assertFalse(result)
-        self.assertIn("только администратору", messages[0][1])
+        self.assertEqual(messages, [])
 
-    def test_queued_import_rechecks_current_admin_membership(self):
+    def test_unauthorized_chat_cannot_resolve_import_date_choice(self):
         worker = TelegramWorker.__new__(TelegramWorker)
-        worker.allowed_chat_ids = {"123", "999"}
+        worker.allowed_chat_ids = {"999"}
+        worker.admin_chat_ids = {"999"}
+        worker.resolve_telegram_import_date_choice = lambda *args: self.fail(
+            "unauthorized date choice reached event lookup"
+        )
+
+        self.assertFalse(worker.confirm_telegram_import_excel_date("123", "event-id"))
+        self.assertFalse(worker.cancel_telegram_import_date_choice("123", "event-id"))
+
+    def test_queued_import_rechecks_current_allowed_membership(self):
+        worker = TelegramWorker.__new__(TelegramWorker)
+        worker.allowed_chat_ids = {"999"}
         worker.admin_chat_ids = {"999"}
         events = [{
             "id": "11111111-1111-1111-1111-111111111111",
@@ -1500,6 +1512,27 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertIn("Дата сохранена: 29.05.2026", messages[0][1])
         self.assertIn("бот всё равно спросит дату", messages[0][1])
 
+    def test_allowed_non_admin_cannot_set_standalone_shipment_date(self):
+        worker = TelegramWorker.__new__(TelegramWorker)
+        worker.allowed_chat_ids = {"123"}
+        worker.admin_chat_ids = set()
+        saved = []
+        messages = []
+        worker.set_chat_shipment_date = lambda chat_id, shipment_date: saved.append((chat_id, shipment_date))
+        worker.send_message = lambda chat_id, text: messages.append((chat_id, text))
+        worker.confirm_waiting_telegram_import_shipment_date = lambda chat_id, shipment_date: False
+
+        worker.handle_update({
+            "update_id": 12,
+            "message": {
+                "chat": {"id": 123},
+                "text": "29.05.2026",
+            },
+        })
+
+        self.assertEqual(saved, [])
+        self.assertIn("только администратору", messages[0][1])
+
     def test_telegram_worker_enqueues_excel_document_from_message(self):
         worker = TelegramWorker.__new__(TelegramWorker)
         worker.allowed_chat_ids = {"123"}
@@ -1535,7 +1568,7 @@ class BackendTelegramImportTests(unittest.TestCase):
             messages = []
             worker = TelegramWorker.__new__(TelegramWorker)
             worker.allowed_chat_ids = {"123"}
-            worker.admin_chat_ids = {"123"}
+            worker.admin_chat_ids = set()
             worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
             telegram_import_processor_module.SessionLocal = SessionLocal
 
@@ -1588,7 +1621,7 @@ class BackendTelegramImportTests(unittest.TestCase):
             processed = []
             worker = TelegramWorker.__new__(TelegramWorker)
             worker.allowed_chat_ids = {"123"}
-            worker.admin_chat_ids = {"123"}
+            worker.admin_chat_ids = set()
             worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
             worker.process_queued_telegram_imports = lambda: processed.append(True)
             telegram_import_processor_module.SessionLocal = SessionLocal
@@ -1735,7 +1768,7 @@ class BackendTelegramImportTests(unittest.TestCase):
     def test_telegram_worker_processes_multiple_queued_imports(self):
         worker = TelegramWorker.__new__(TelegramWorker)
         worker.allowed_chat_ids = {"123"}
-        worker.admin_chat_ids = {"123"}
+        worker.admin_chat_ids = set()
         events = [
             {"id": "event-1", "payload": {"chat_id": "123", "document": {"file_name": "a.xlsx"}}},
             {"id": "event-2", "payload": {"chat_id": "123", "document": {"file_name": "b.xlsx"}}},
@@ -2204,7 +2237,7 @@ class BackendTelegramImportTests(unittest.TestCase):
     def test_telegram_worker_handles_date_choice_callbacks(self):
         worker = TelegramWorker.__new__(TelegramWorker)
         worker.allowed_chat_ids = {"123"}
-        worker.admin_chat_ids = {"123"}
+        worker.admin_chat_ids = set()
         answered = []
         confirmed = []
         cancelled = []
@@ -2264,7 +2297,7 @@ class BackendTelegramImportTests(unittest.TestCase):
             processed = []
             worker = TelegramWorker.__new__(TelegramWorker)
             worker.allowed_chat_ids = {"123"}
-            worker.admin_chat_ids = {"123"}
+            worker.admin_chat_ids = set()
             worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
             worker.process_queued_telegram_imports = lambda: processed.append(True)
             telegram_import_processor_module.SessionLocal = SessionLocal
@@ -2316,7 +2349,7 @@ class BackendTelegramImportTests(unittest.TestCase):
             messages = []
             worker = TelegramWorker.__new__(TelegramWorker)
             worker.allowed_chat_ids = {"123"}
-            worker.admin_chat_ids = {"123"}
+            worker.admin_chat_ids = set()
             worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text, reply_markup))
             telegram_import_processor_module.SessionLocal = SessionLocal
 
@@ -2332,6 +2365,52 @@ class BackendTelegramImportTests(unittest.TestCase):
             self.assertEqual(payload["shipment_date"], "08.06.2026")
             self.assertEqual(payload["date_choice_resolution"]["action"], "cancel")
             self.assertIn("Импорт отменён", messages[0][1])
+        finally:
+            telegram_import_processor_module.SessionLocal = original_session_local
+            Base.metadata.drop_all(engine)
+            engine.dispose()
+
+    def test_allowed_chat_cannot_resolve_another_chats_date_choice(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        original_session_local = telegram_import_processor_module.SessionLocal
+        try:
+            with SessionLocal() as db:
+                event = PendingEvent(
+                    event_type=telegram_worker_module.TELEGRAM_EXCEL_IMPORT_EVENT_TYPE,
+                    status=telegram_worker_module.TELEGRAM_EXCEL_IMPORT_WAITING_DATE_CHOICE_STATUS,
+                    payload={
+                        "chat_id": "123",
+                        "file_name": "orders.xlsx",
+                        "document": {"file_name": "orders.xlsx"},
+                        "shipment_date": "08.06.2026",
+                    },
+                )
+                db.add(event)
+                db.commit()
+                event_id = str(event.id)
+
+            messages = []
+            worker = TelegramWorker.__new__(TelegramWorker)
+            worker.allowed_chat_ids = {"123", "456"}
+            worker.admin_chat_ids = set()
+            worker.safe_send_message = lambda chat_id, text, reply_markup=None: messages.append((chat_id, text))
+            worker.process_queued_telegram_imports = lambda: self.fail("cross-chat import was requeued")
+            telegram_import_processor_module.SessionLocal = SessionLocal
+
+            result = worker.confirm_telegram_import_excel_date("456", event_id)
+
+            with SessionLocal() as db:
+                event = db.get(PendingEvent, uuid.UUID(event_id))
+
+            self.assertFalse(result)
+            self.assertEqual(event.status, telegram_worker_module.TELEGRAM_EXCEL_IMPORT_WAITING_DATE_CHOICE_STATUS)
+            self.assertIn("Нет доступа", messages[0][1])
         finally:
             telegram_import_processor_module.SessionLocal = original_session_local
             Base.metadata.drop_all(engine)
