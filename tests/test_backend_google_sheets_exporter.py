@@ -298,6 +298,10 @@ class BackendGoogleSheetsExporterTests(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["updated"], 1)
         self.assertEqual(len(sheet.rows), 2)
+        self.assertEqual(
+            sheet.resize_calls[-1],
+            {"rows": exporter.GOOGLE_SHEET_MIN_ROW_CAPACITY, "cols": len(header)},
+        )
         header_idx = exporter.get_header_index(sheet.rows[0])
         self.assertEqual(sheet.rows[1][header_idx["ID импорта"]], "import-2")
 
@@ -393,6 +397,10 @@ class BackendGoogleSheetsExporterTests(unittest.TestCase):
         self.assertEqual(result["updated"], 2)
         self.assertEqual(len(data_sheet.rows), 1)
         self.assertEqual(len(archive_sheet.rows), 3)
+        self.assertEqual(
+            data_sheet.resize_calls[-1],
+            {"rows": exporter.GOOGLE_SHEET_MIN_ROW_CAPACITY, "cols": len(header)},
+        )
         header_idx = exporter.get_header_index(archive_sheet.rows[0])
         self.assertEqual(archive_sheet.rows[1][header_idx["Отсканированные коды"]], "0101\n0102")
         self.assertEqual(archive_sheet.rows[2][header_idx["Отсканированные коды"]], "0103")
@@ -444,6 +452,27 @@ class BackendGoogleSheetsExporterTests(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["archived"], 2)
         self.assertEqual(archive_sheet.resize_calls[-1], {"rows": 3, "cols": len(header)})
+
+    def test_force_capacity_refreshes_stale_grid_metadata_after_row_delete(self):
+        header = exporter.build_import_sheet_header()
+        sheet = FakeSheet(
+            "data",
+            [header.copy()],
+            row_count=exporter.GOOGLE_SHEET_MIN_ROW_CAPACITY,
+            col_count=len(header),
+        )
+
+        exporter.ensure_sheet_capacity(
+            sheet,
+            rows=exporter.GOOGLE_SHEET_MIN_ROW_CAPACITY,
+            cols=len(header),
+            force=True,
+        )
+
+        self.assertEqual(
+            sheet.resize_calls,
+            [{"rows": exporter.GOOGLE_SHEET_MIN_ROW_CAPACITY, "cols": len(header)}],
+        )
 
     def test_archive_backend_orders_rows_skips_order_already_archived(self):
         header = exporter.build_import_sheet_header()

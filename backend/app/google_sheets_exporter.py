@@ -23,6 +23,7 @@ def env_int(name, default):
 
 
 GOOGLE_API_TIMEOUT_SECONDS = max(1, env_int("TAKSKLAD_GOOGLE_API_TIMEOUT_SECONDS", 8))
+GOOGLE_SHEET_MIN_ROW_CAPACITY = 1000
 
 ORDER_DATE_COLUMN = "Дата отгрузки"
 LEGACY_ORDER_DATE_COLUMN = "Дата получения заказа"
@@ -247,6 +248,13 @@ def delete_import_records_from_google_sheets(records):
 
     for row_number in sorted(rows_to_delete, reverse=True):
         sheet.delete_rows(row_number)
+    if rows_to_delete:
+        ensure_sheet_capacity(
+            sheet,
+            rows=GOOGLE_SHEET_MIN_ROW_CAPACITY,
+            cols=max((len(row) for row in all_rows), default=0),
+            force=True,
+        )
 
     return GoogleSheetsExportResult(
         status="completed",
@@ -658,6 +666,13 @@ def archive_backend_orders_rows(data_sheet, archive_sheet, orders, sheet_status=
 
     for row_number in sorted(rows_to_delete, reverse=True):
         data_sheet.delete_rows(row_number)
+    if rows_to_delete:
+        ensure_sheet_capacity(
+            data_sheet,
+            rows=GOOGLE_SHEET_MIN_ROW_CAPACITY,
+            cols=header_len,
+            force=True,
+        )
 
     updated = sum(int(value.get("updated") or 0) for value in results_by_order_id.values())
     statuses = {str(value.get("status") or "").strip().lower() for value in results_by_order_id.values()}
@@ -1003,12 +1018,12 @@ def ensure_import_sheet_layout(sheet):
     return header
 
 
-def ensure_sheet_capacity(sheet, rows=None, cols=None):
+def ensure_sheet_capacity(sheet, rows=None, cols=None, force=False):
     current_rows = int(getattr(sheet, "row_count", 0) or 0)
     current_cols = int(getattr(sheet, "col_count", 0) or 0)
     target_rows = max(current_rows, int(rows or 0))
     target_cols = max(current_cols, int(cols or 0))
-    if target_rows <= current_rows and target_cols <= current_cols:
+    if not force and target_rows <= current_rows and target_cols <= current_cols:
         return
     resize = getattr(sheet, "resize", None)
     if not callable(resize):
