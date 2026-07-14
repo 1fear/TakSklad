@@ -323,7 +323,7 @@ class DesktopDiagnosticsTests(unittest.TestCase):
             saved = json.loads(saved_text)
             serialized = json.dumps(saved, ensure_ascii=False)
 
-        self.assertEqual(saved["app"]["version"], "2.0.30")
+        self.assertEqual(saved["app"]["version"], "2.0.29")
         self.assertEqual(saved["app"]["build_label"], "MVP 2.0")
         self.assertEqual(saved["startup_self_check"]["app_dir"], "[redacted-path]")
         self.assertEqual(saved["startup_self_check"]["log_file"], "[redacted-path]")

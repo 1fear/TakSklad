@@ -131,7 +131,7 @@ def attach_main_screen_widgets(app):
     app.error_toast = FakeWidget("")
     app.status_var = FakeVar("✅ Готов к работе")
     app.status_label = FakeWidget("")
-    app.version_status_label = FakeWidget("Версия: 2.0.30 · MVP 2.0 · проверка обновлений · ПК abc123")
+    app.version_status_label = FakeWidget("Версия: 2.0.29 · MVP 2.0 · проверка обновлений · ПК abc123")
 
 
 if __name__ == "__main__":

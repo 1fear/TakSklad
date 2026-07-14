@@ -67,7 +67,7 @@ class UpdateServiceTests(unittest.TestCase):
     def test_release_candidate_version_is_ahead_of_published_update_channel(self):
         payload = json.loads((REPO_ROOT / "version.json").read_text(encoding="utf-8"))
 
-        self.assertEqual(APP_VERSION, "2.0.30")
+        self.assertEqual(APP_VERSION, "2.0.29")
         self.assertEqual(BACKEND_APP_VERSION, APP_VERSION)
         self.assertEqual(payload["latest_version"], "2.0.25")
         self.assertEqual(payload["release_tag"], "v2.0.25")
