@@ -533,13 +533,13 @@ class TelegramWorker:
             self.send_date_help(chat_id)
             return
         if text.startswith("/date ") or parse_date_from_text(text) == text:
-            if not self.ensure_admin_chat(chat_id):
-                return
             if text and self.handle_manual_text(chat_id, text):
                 return
             shipment_date = parse_date_from_text(text)
             if shipment_date:
                 if self.confirm_waiting_telegram_import_shipment_date(chat_id, shipment_date):
+                    return
+                if not self.ensure_admin_chat(chat_id):
                     return
                 self.set_chat_shipment_date(chat_id, shipment_date)
                 self.send_message(
@@ -625,7 +625,7 @@ class TelegramWorker:
         if text and self.handle_manual_text(chat_id, text):
             return
 
-        if text and self.is_admin_chat(chat_id) and self.confirm_waiting_telegram_import_shipment_date(chat_id, text):
+        if text and self.confirm_waiting_telegram_import_shipment_date(chat_id, text):
             return
 
         self.send_main_menu(chat_id, "Команда не распознана. Выберите действие в меню:")
@@ -668,16 +668,12 @@ class TelegramWorker:
             self.handle_manual_callback(chat_id, data)
             return
         if data.startswith(TELEGRAM_EXCEL_DATE_CHOICE_USE_EXCEL_PREFIX):
-            if not self.ensure_admin_chat(chat_id):
-                return
             self.confirm_telegram_import_excel_date(
                 chat_id,
                 data.replace(TELEGRAM_EXCEL_DATE_CHOICE_USE_EXCEL_PREFIX, "", 1),
             )
             return
         if data.startswith(TELEGRAM_EXCEL_DATE_CHOICE_CANCEL_PREFIX):
-            if not self.ensure_admin_chat(chat_id):
-                return
             self.cancel_telegram_import_date_choice(
                 chat_id,
                 data.replace(TELEGRAM_EXCEL_DATE_CHOICE_CANCEL_PREFIX, "", 1),
