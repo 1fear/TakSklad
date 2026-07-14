@@ -169,6 +169,8 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn("VDS_USER", workflow)
         self.assertIn("VDS_SSH_KEY", workflow)
         self.assertIn("VDS_SSH_KNOWN_HOSTS", workflow)
+        self.assertIn("ServerAliveInterval=30", workflow)
+        self.assertIn("ServerAliveCountMax=10", workflow)
         self.assertIn("deploy/vds/deploy_from_git.sh", workflow)
         self.assertIn("artifact_run_id:", workflow)
         self.assertIn("source_sha:", workflow)

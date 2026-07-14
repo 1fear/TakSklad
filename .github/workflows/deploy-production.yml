@@ -363,7 +363,9 @@ jobs:
               "DOCKER_CONFIG=$(printf '%q' "$remote_docker_config") docker logout ghcr.io >/dev/null 2>&1 || true; rm -rf $(printf '%q' "$remote_docker_config")" || true
           }
           trap cleanup_registry_auth EXIT
-          ssh -i ~/.ssh/taksklad_deploy_key "$remote" 'bash -s' <<EOF
+          ssh -i ~/.ssh/taksklad_deploy_key \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=10 \
+            "$remote" 'bash -s' <<EOF
           set -euo pipefail
           app_dir=$(printf '%q' "$app_dir")
           install -d -m 755 "$app_dir"
