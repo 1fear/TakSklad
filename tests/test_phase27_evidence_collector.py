@@ -9,6 +9,7 @@ from tools.collect_phase27_evidence import (
     CollectionError,
     latest_backup,
     live_runtime_invariants,
+    fetch_json_with_retry,
     percentile,
     readiness_summary,
     restore_drill,
@@ -117,6 +118,20 @@ class Phase27EvidenceCollectorTests(unittest.TestCase):
         self.assertEqual(mocked.call_args_list[0].args[0][-3:], ["ps", "-q", "backend-api"])
         self.assertEqual(mocked.call_args_list[1].args[0][:4], ["docker", "exec", "-i", "backend-container"])
         self.assertIn("Count-only PostgreSQL invariant preflight", mocked.call_args_list[1].kwargs["input_text"])
+
+    def test_public_probe_retries_transient_readiness_failure(self):
+        expected = (200, {"ready": True}, 1.0)
+        with (
+            patch(
+                "tools.collect_phase27_evidence.fetch_json",
+                side_effect=[CollectionError("HTTP probe failed status=503"), expected],
+            ) as mocked,
+            patch("tools.collect_phase27_evidence.time.sleep") as slept,
+        ):
+            result = fetch_json_with_retry("https://example.invalid/ready", attempts=2, interval_seconds=0.1)
+        self.assertEqual(result, expected)
+        self.assertEqual(mocked.call_count, 2)
+        slept.assert_called_once_with(0.1)
 
 
 if __name__ == "__main__":

@@ -73,6 +73,23 @@ def fetch_json(url: str, *, timeout: float = 10) -> tuple[int, dict[str, Any], f
     return status, value, (time.monotonic() - started) * 1000
 
 
+def fetch_json_with_retry(
+    url: str,
+    *,
+    attempts: int = 30,
+    interval_seconds: float = 2,
+) -> tuple[int, dict[str, Any], float]:
+    last_error: CollectionError | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return fetch_json(url)
+        except CollectionError as exc:
+            last_error = exc
+            if attempt < attempts:
+                time.sleep(interval_seconds)
+    raise last_error or CollectionError("HTTP probe did not run")
+
+
 def percentile(values: list[float], percentile_value: float) -> float:
     ordered = sorted(values)
     if not ordered:
@@ -249,7 +266,7 @@ def common(manifest: dict[str, Any], mode: str) -> dict[str, Any]:
 
 
 def collect_preflight(args: argparse.Namespace, manifest: dict[str, Any]) -> dict[str, Any]:
-    ready_status, ready, _ = fetch_json(args.ready_url)
+    ready_status, ready, _ = fetch_json_with_retry(args.ready_url)
     summary = readiness_summary(ready, ready_status)
     invariants, target_revision, observed = candidate_preflight(args, manifest)
     blockers = int(invariants.get("violations") or 0)
