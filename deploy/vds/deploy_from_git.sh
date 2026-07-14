@@ -176,9 +176,25 @@ TAKSKLAD_OUTPUT_PERMISSIONS_IMAGE="$TAKSKLAD_BACKEND_IMAGE" \
 echo "Applying forward-only migrations from the verified backend image..."
 compose run --rm --no-deps backend-api alembic -c alembic.ini upgrade head
 
+echo "Quiescing background workers before runtime replacement..."
+if ! compose stop -t 45 \
+  telegram-worker google-sheets-sync-worker skladbot-worker smartup-auto-import-worker; then
+  rollback_runtime || true
+  fail "background workers could not be quiesced; previous runtime selected when available"
+fi
+
+echo "Recovering leases owned by the stopped worker processes..."
+if ! compose run --rm --no-deps backend-api python -m app.event_lease_recovery; then
+  rollback_runtime || true
+  fail "in-flight event leases could not be recovered; previous runtime selected when available"
+fi
+
 echo "Activating verified image digests without source build..."
-compose up -d --no-deps --no-build --pull never --wait --wait-timeout "$COMPOSE_WAIT_TIMEOUT_SECONDS" \
-  backend-api frontend telegram-worker google-sheets-sync-worker skladbot-worker smartup-auto-import-worker
+if ! compose up -d --no-deps --no-build --pull never --wait --wait-timeout "$COMPOSE_WAIT_TIMEOUT_SECONDS" \
+  backend-api frontend telegram-worker google-sheets-sync-worker skladbot-worker smartup-auto-import-worker; then
+  rollback_runtime || true
+  fail "candidate containers failed to activate; previous runtime selected when available"
+fi
 
 if ! check_public_url health "$HEALTH_URL" || ! check_public_url readiness "$READY_URL"; then
   rollback_runtime || true

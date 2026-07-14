@@ -5,13 +5,20 @@ from functools import lru_cache
 from sqlalchemy import and_, bindparam, func, or_, select, true, update
 from sqlalchemy.orm import Session
 
-from .models import PendingEvent
+from .models import AuditLog, PendingEvent
 
 
 EVENT_LEASES_ENABLED_ENV = "TAKSKLAD_EVENT_LEASES_ENABLED"
 DEFAULT_EVENT_LEASE_DURATION = timedelta(minutes=30)
 CLAIMABLE_EVENT_STATUSES = ("pending", "failed")
 TERMINAL_EVENT_STATUSES = ("completed", "blocked", "dead", "cancelled")
+DEPLOY_RECOVERABLE_EVENT_TYPES = (
+    "google_sheets_export",
+    "telegram_excel_import",
+    "telegram_notification",
+    "skladbot_request_create",
+    "skladbot_return_request_create",
+)
 
 
 class LeaseOwnershipError(RuntimeError):
@@ -34,7 +41,11 @@ def claim_event_leases(
     now=None,
     lease_duration=DEFAULT_EVENT_LEASE_DURATION,
 ):
-    event_types = tuple(str(value or "").strip() for value in event_types or () if str(value or "").strip())
+    event_types = tuple(
+        str(value or "").strip()
+        for value in event_types or ()
+        if str(value or "").strip()
+    )
     owner = str(owner or "").strip()
     limit = max(1, min(int(limit or 1), 1000))
     if not event_types:
@@ -246,3 +257,63 @@ def recover_expired_event_leases(db: Session, *, event_types, now=None):
         db.rollback()
         raise
     return int(result.rowcount or 0)
+
+
+def recover_inflight_event_leases_after_worker_stop(
+    db: Session,
+    *,
+    event_types=DEPLOY_RECOVERABLE_EVENT_TYPES,
+    now=None,
+):
+    """Requeue leases whose worker processes were intentionally stopped for deploy."""
+    event_types = tuple(str(value or "").strip() for value in event_types or () if str(value or "").strip())
+    if not event_types:
+        return 0
+    now = now or db.execute(select(func.now())).scalar_one()
+    reason = "in-flight event lease recovered after deploy worker stop"
+    try:
+        grouped = db.execute(
+            select(PendingEvent.event_type, func.count(PendingEvent.id))
+            .where(PendingEvent.event_type.in_(event_types))
+            .where(PendingEvent.status == "processing")
+            .where(PendingEvent.lease_owner.is_not(None))
+            .group_by(PendingEvent.event_type)
+            .order_by(PendingEvent.event_type)
+        ).all()
+        result = db.execute(
+            update(PendingEvent)
+            .where(PendingEvent.event_type.in_(event_types))
+            .where(PendingEvent.status == "processing")
+            .where(PendingEvent.lease_owner.is_not(None))
+            .values(
+                status="pending",
+                lease_owner=None,
+                lease_expires_at=None,
+                available_at=now,
+                completed_at=None,
+                last_error=reason,
+                updated_at=now,
+            )
+        )
+        recovered = int(result.rowcount or 0)
+        if recovered:
+            db.add(
+                AuditLog(
+                    action="deploy_worker_lease_recovery",
+                    entity_type="pending_event",
+                    entity_id="deploy",
+                    payload={
+                        "reason": reason,
+                        "recovered": recovered,
+                        "event_type_counts": {
+                            str(event_type): int(count or 0)
+                            for event_type, count in grouped
+                        },
+                    },
+                )
+            )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return recovered
