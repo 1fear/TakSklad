@@ -617,8 +617,18 @@ jobs:
           print(
               "PHASE27_LIVE_SLO_SUMMARY "
               f"status={slo.get('status')} duration_seconds={slo.get('duration_seconds')} "
-              f"samples={slo.get('samples')} errors={slo.get('errors')} "
+              f"cycles={slo.get('cycles')} samples={slo.get('samples')} errors={slo.get('errors')} "
+              f"endpoint_errors={json.dumps(slo.get('endpoint_errors') or {}, sort_keys=True, separators=(',', ':'))} "
+              f"endpoint_statuses={json.dumps(slo.get('endpoint_statuses') or {}, sort_keys=True, separators=(',', ':'))} "
+              f"terminated_early={slo.get('terminated_early')} "
               f"latency_p95_ms={slo.get('latency_p95_ms')} budget_ms={slo.get('latency_budget_ms')}"
+          )
+          workers = evidence.get("worker_runtime") or {}
+          print(
+              "PHASE27_WORKER_READINESS "
+              f"status={workers.get('status')} unhealthy={json.dumps(workers.get('unhealthy') or [], separators=(',', ':'))} "
+              f"missing={json.dumps(workers.get('missing') or [], separators=(',', ':'))} "
+              f"workers={json.dumps(workers.get('workers') or [], sort_keys=True, separators=(',', ':'))}"
           )
           PY
           ./tools/live_release_verifier.sh --read-only --same-sha --slo-window </dev/null

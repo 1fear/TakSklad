@@ -65,7 +65,11 @@ def fetch_json(url: str, *, timeout: float = 10) -> tuple[int, dict[str, Any], f
             status = int(response.status)
             value = json.load(response)
     except HTTPError as exc:
-        raise CollectionError(f"HTTP probe failed status={exc.code}") from exc
+        try:
+            value = json.load(exc)
+        except (json.JSONDecodeError, UnicodeDecodeError) as decode_exc:
+            raise CollectionError(f"HTTP probe failed status={exc.code}") from decode_exc
+        status = int(exc.code)
     except (URLError, TimeoutError, json.JSONDecodeError) as exc:
         raise CollectionError(f"HTTP probe failed: {type(exc).__name__}") from exc
     if not isinstance(value, dict):
@@ -82,7 +86,10 @@ def fetch_json_with_retry(
     last_error: CollectionError | None = None
     for attempt in range(1, attempts + 1):
         try:
-            return fetch_json(url)
+            result = fetch_json(url)
+            if result[0] == 200:
+                return result
+            raise CollectionError(f"HTTP probe failed status={result[0]}")
         except CollectionError as exc:
             last_error = exc
             if attempt < attempts:
@@ -187,6 +194,43 @@ def live_runtime_invariants(args: argparse.Namespace, manifest: dict[str, Any]) 
     if report.get("zero_mutation") is not True or report.get("status") != "pass":
         raise CollectionError("live invariant verification is not green")
     return report
+
+
+def live_worker_readiness(args: argparse.Namespace, manifest: dict[str, Any]) -> dict[str, Any]:
+    """Read bounded worker-heartbeat state from the running backend."""
+    compose, environment = compose_base(args, manifest)
+    container_id = run(
+        compose + ["ps", "-q", "backend-api"],
+        environment=environment,
+        timeout=30,
+    ).strip()
+    if not container_id:
+        raise CollectionError("running backend container is missing")
+    code = (
+        "import json; "
+        "from app.db import SessionLocal; "
+        "from app.settings import load_settings; "
+        "from app.worker_observability import build_worker_readiness; "
+        "settings=load_settings(); db=SessionLocal(); "
+        "result=build_worker_readiness(db, required_workers=settings.worker_heartbeat_required_names); db.close(); "
+        "bounded={'status':result.get('status'),'required':result.get('required'),'missing':result.get('missing'),"
+        "'unhealthy':result.get('unhealthy'),'workers':[{'worker_name':row.get('worker_name'),"
+        "'status':row.get('status'),'age_seconds':row.get('age_seconds'),"
+        "'unhealthy_after_seconds':row.get('unhealthy_after_seconds')} for row in result.get('workers',[])]}; "
+        "print(json.dumps(bounded,sort_keys=True))"
+    )
+    output = run(
+        ["docker", "exec", container_id, "python", "-c", code],
+        environment=environment,
+        timeout=30,
+    )
+    try:
+        result = json.loads(output.splitlines()[-1])
+    except (json.JSONDecodeError, IndexError) as exc:
+        raise CollectionError("worker readiness output is invalid") from exc
+    if not isinstance(result, dict):
+        raise CollectionError("worker readiness output is invalid")
+    return result
 
 
 def latest_backup(path: Path) -> dict[str, Any]:
@@ -302,28 +346,51 @@ def collect_preflight(args: argparse.Namespace, manifest: dict[str, Any]) -> dic
 def collect_live(args: argparse.Namespace, manifest: dict[str, Any]) -> dict[str, Any]:
     started = time.monotonic()
     latencies: list[float] = []
-    errors = 0
+    endpoint_errors = {"health": 0, "ready": 0, "version": 0}
+    endpoint_statuses: dict[str, dict[str, int]] = {name: {} for name in endpoint_errors}
+    consecutive_failed_cycles = 0
+    cycles = 0
+    terminated_early = False
     last_health: dict[str, Any] = {}
     last_ready: dict[str, Any] = {}
     health_status = ready_status = 0
     while True:
-        try:
-            health_status, last_health, latency = fetch_json(args.health_url)
-            latencies.append(latency)
-            ready_status, last_ready, latency = fetch_json(args.ready_url)
-            latencies.append(latency)
-            version_status, version, latency = fetch_json(args.version_url)
-            latencies.append(latency)
-            if version_status != 200 or version.get("commit_sha") != manifest["source_sha"]:
-                errors += 1
-        except CollectionError:
-            errors += 1
+        cycles += 1
+        cycle_failed = False
+        for name, url in (
+            ("health", args.health_url),
+            ("ready", args.ready_url),
+            ("version", args.version_url),
+        ):
+            try:
+                status, payload, latency = fetch_json(url)
+                latencies.append(latency)
+                status_key = str(status)
+                endpoint_statuses[name][status_key] = endpoint_statuses[name].get(status_key, 0) + 1
+                if name == "health":
+                    health_status, last_health = status, payload
+                elif name == "ready":
+                    ready_status, last_ready = status, payload
+                invalid_identity = name == "version" and payload.get("commit_sha") != manifest["source_sha"]
+                if status != 200 or invalid_identity:
+                    endpoint_errors[name] += 1
+                    cycle_failed = True
+            except CollectionError:
+                endpoint_errors[name] += 1
+                endpoint_statuses[name]["transport_error"] = endpoint_statuses[name].get("transport_error", 0) + 1
+                cycle_failed = True
+        consecutive_failed_cycles = consecutive_failed_cycles + 1 if cycle_failed else 0
         elapsed = time.monotonic() - started
         if elapsed >= args.slo_seconds:
             break
+        if consecutive_failed_cycles >= args.fail_fast_consecutive_errors:
+            terminated_early = True
+            break
         time.sleep(min(args.sample_interval_seconds, max(0.0, args.slo_seconds - elapsed)))
     invariants = live_runtime_invariants(args, manifest)
+    worker_runtime = live_worker_readiness(args, manifest)
     summary = readiness_summary(last_ready, ready_status)
+    errors = sum(endpoint_errors.values())
     report = common(manifest, "live-release-verification")
     report.update(
         {
@@ -340,11 +407,16 @@ def collect_live(args: argparse.Namespace, manifest: dict[str, Any]) -> dict[str
             "lost_outbox": 0,
             "stale_release_blockers": summary["queue_blockers"] + summary["stale_processing"],
             "alerts": {"firing_mandatory": 0 if summary["mandatory_status"] == "ok" else 1},
+            "worker_runtime": worker_runtime,
             "slo": {
                 "status": "pass" if errors == 0 else "fail",
                 "duration_seconds": int(time.monotonic() - started),
+                "cycles": cycles,
                 "samples": len(latencies),
                 "errors": errors,
+                "endpoint_errors": endpoint_errors,
+                "endpoint_statuses": endpoint_statuses,
+                "terminated_early": terminated_early,
                 "latency_p50_ms": round(statistics.median(latencies), 3) if latencies else 0,
                 "latency_p95_ms": percentile(latencies, 0.95),
                 "latency_budget_ms": args.latency_budget_ms,
@@ -374,6 +446,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--migration-budget-seconds", type=float, default=120)
     parser.add_argument("--slo-seconds", type=int, default=300)
     parser.add_argument("--sample-interval-seconds", type=float, default=10)
+    parser.add_argument("--fail-fast-consecutive-errors", type=int, default=3)
     parser.add_argument("--latency-budget-ms", type=float, default=500)
     return parser.parse_args()
 

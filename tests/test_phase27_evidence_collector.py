@@ -9,6 +9,7 @@ from tools.collect_phase27_evidence import (
     CollectionError,
     latest_backup,
     live_runtime_invariants,
+    live_worker_readiness,
     fetch_json_with_retry,
     percentile,
     readiness_summary,
@@ -118,6 +119,28 @@ class Phase27EvidenceCollectorTests(unittest.TestCase):
         self.assertEqual(mocked.call_args_list[0].args[0][-3:], ["ps", "-q", "backend-api"])
         self.assertEqual(mocked.call_args_list[1].args[0][:4], ["docker", "exec", "-i", "backend-container"])
         self.assertIn("Count-only PostgreSQL invariant preflight", mocked.call_args_list[1].kwargs["input_text"])
+
+    def test_live_worker_readiness_is_bounded_and_uses_running_backend(self):
+        args = SimpleNamespace(env_file=Path("deploy/vds/.env"), compose_file=Path("deploy/vds/docker-compose.yml"))
+        manifest = {
+            "source_sha": "a" * 40,
+            "images": {
+                "backend": {"reference": "backend@example", "digest": "sha256:" + "b" * 64},
+                "frontend": {"reference": "frontend@example"},
+            },
+        }
+        worker_state = {
+            "status": "unhealthy",
+            "required": ["telegram"],
+            "missing": [],
+            "unhealthy": ["telegram"],
+            "workers": [{"worker_name": "telegram", "status": "stale", "age_seconds": 50, "unhealthy_after_seconds": 45}],
+        }
+        with patch("tools.collect_phase27_evidence.run", side_effect=["backend-container", json.dumps(worker_state)]) as mocked:
+            result = live_worker_readiness(args, manifest)
+        self.assertEqual(result, worker_state)
+        self.assertEqual(mocked.call_args_list[1].args[0][:3], ["docker", "exec", "backend-container"])
+        self.assertNotIn("last_success_at", mocked.call_args_list[1].args[0][-1])
 
     def test_public_probe_retries_transient_readiness_failure(self):
         expected = (200, {"ready": True}, 1.0)
