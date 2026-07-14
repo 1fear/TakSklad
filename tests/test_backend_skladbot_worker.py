@@ -37,6 +37,7 @@ from backend.app.skladbot_worker import (
     request_unloading_date_matches_active_orders,
     sanitize_skladbot_error,
     try_acquire_skladbot_sync_lock,
+    release_skladbot_transaction_for_external_fetch,
     update_orders_from_skladbot,
 )
 from backend.app.skladbot_worker_runner import run_worker_cycle, worker_interval_seconds
@@ -1620,6 +1621,13 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
             "return": {"checked": 2},
             "sync": {"updated": 3},
         })
+
+    def test_external_fetch_boundary_releases_database_transaction(self):
+        db = mock.Mock()
+
+        release_skladbot_transaction_for_external_fetch(db)
+
+        self.assertEqual(db.method_calls, [mock.call.expunge_all(), mock.call.commit()])
 
     def test_legacy_worker_entrypoint_delegates_once_to_runner(self):
         runner = mock.Mock()

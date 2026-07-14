@@ -443,10 +443,34 @@ def update_orders_from_skladbot(audit_actor: AuditActor | None = None):
                     "google_sheets_export": google_sheets_result,
                 }
 
+            fetch_cursor = load_skladbot_fetch_cursor(db)
+            snapshot_order_ids = [order.id for order in orders]
+            release_skladbot_transaction_for_external_fetch(db)
             requests = fetch_candidate_requests(
                 orders=orders_to_check,
-                start_after_request_id=load_skladbot_fetch_cursor(db),
+                start_after_request_id=fetch_cursor,
             )
+            if not try_acquire_skladbot_sync_lock(db):
+                logging.info("SkladBot worker: another sync started during external fetch, skip stale apply")
+                return {
+                    "requests": len(requests),
+                    "updated": 0,
+                    "matched": 0,
+                    "not_found": 0,
+                    "multiple": 0,
+                    "busy": True,
+                }
+            orders = db.execute(
+                select(Order)
+                .options(selectinload(Order.items))
+                .where(Order.id.in_(snapshot_order_ids))
+                .order_by(Order.id)
+            ).scalars().all()
+            active_orders = [order for order in orders if order.status not in COMPLETED_STATUSES]
+            completed_backfill_orders = [
+                order for order in orders if order.status in SKLADBOT_COMPLETED_BACKFILL_STATUSES
+            ]
+            orders_to_check = [order for order in orders if order_needs_skladbot_backfill(order)]
 
             for order in orders_to_check:
                 matches = [request for request in requests if request_matches_order(order, request)]
@@ -610,6 +634,12 @@ def try_acquire_skladbot_sync_lock(db):
         text("SELECT pg_try_advisory_xact_lock(:lock_key)"),
         {"lock_key": SKLADBOT_SYNC_LOCK_KEY},
     ).scalar())
+
+
+def release_skladbot_transaction_for_external_fetch(db):
+    """Release the read transaction before waiting on remote SkladBot APIs."""
+    db.expunge_all()
+    db.commit()
 
 def release_skladbot_sync_lock(db):
     if db.bind.dialect.name != "postgresql":
