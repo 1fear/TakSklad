@@ -153,6 +153,7 @@ def append_import_records_to_google_sheets(records):
         start_row = len(all_rows) + 1
         end_row = start_row + len(rows_to_append) - 1
         end_col = column_index_to_letter(len(rows_to_append[0]) - 1)
+        ensure_sheet_capacity(sheet, rows=end_row, cols=len(rows_to_append[0]))
         sheet.batch_update(
             [{
                 "range": f"A{start_row}:{end_col}{end_row}",
@@ -207,6 +208,7 @@ def restore_import_records_to_google_sheets(records):
         start_row = len(all_rows) + 1
         end_row = start_row + len(rows_to_append) - 1
         end_col = column_index_to_letter(len(rows_to_append[0]) - 1)
+        ensure_sheet_capacity(sheet, rows=end_row, cols=len(rows_to_append[0]))
         sheet.batch_update(
             [{
                 "range": f"A{start_row}:{end_col}{end_row}",
@@ -766,6 +768,11 @@ def mark_backend_return_rows(archive_sheet, returns_sheet, order):
     if rows_to_returns:
         start_row = max(2, len(returns_rows) + 1)
         end_col = column_index_to_letter(header_len - 1)
+        ensure_sheet_capacity(
+            returns_sheet,
+            rows=start_row + len(rows_to_returns) - 1,
+            cols=header_len,
+        )
         returns_sheet.batch_update([{
             "range": f"A{start_row}:{end_col}{start_row + len(rows_to_returns) - 1}",
             "values": rows_to_returns,
@@ -988,6 +995,7 @@ def ensure_import_sheet_layout(sheet):
 
     if header != original_header:
         last_col = column_index_to_letter(len(header) - 1)
+        ensure_sheet_capacity(sheet, rows=1, cols=len(header))
         sheet.batch_update([{
             "range": f"A1:{last_col}1",
             "values": [header],

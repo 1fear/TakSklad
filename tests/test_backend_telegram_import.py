@@ -851,6 +851,25 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertEqual(calls[1], ("setChatMenuButton", {"menu_button": {"type": "default"}}))
         self.assertTrue(worker.bot_menu_ready)
 
+    def test_telegram_menu_rate_limit_uses_bounded_backoff_without_traceback(self):
+        configure_menu = mock.Mock(
+            side_effect=RuntimeError(
+                'Telegram API request failed: deleteMyCommands: HTTP 429 {"retry_after":557}'
+            )
+        )
+        ports = telegram_clients_module.TelegramProcessorPorts(
+            telegram_api_client=SimpleNamespace(configure_menu=configure_menu),
+        )
+
+        with mock.patch.object(telegram_clients_module.time, "monotonic", side_effect=[100, 101, 700]), self.assertLogs(level="WARNING") as logs:
+            ports.ensure_bot_menu()
+            ports.ensure_bot_menu()
+            ports.ensure_bot_menu()
+
+        self.assertEqual(configure_menu.call_count, 2)
+        self.assertEqual(ports.bot_menu_retry_at, 1257)
+        self.assertNotIn("Traceback", "\n".join(logs.output))
+
     def test_telegram_worker_menu_command_shows_hideable_reply_keyboard(self):
         worker = TelegramWorker.__new__(TelegramWorker)
         worker.allowed_chat_ids = {"123"}

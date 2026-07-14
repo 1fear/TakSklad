@@ -289,6 +289,10 @@ class CiCdWorkflowTests(unittest.TestCase):
         )
 
         self.assertIn("tools/collect_phase27_evidence.py", workflow)
+        self.assertIn(
+            "rm -f /tmp/taksklad-production-preflight.json /tmp/taksklad-live-release-verification.json",
+            workflow,
+        )
         self.assertIn("./deploy/vds/backup_postgres.sh --no-prune", workflow)
         self.assertIn(
             "./tools/production_preflight.sh --read-only --require-current-backup --require-zero-blockers",

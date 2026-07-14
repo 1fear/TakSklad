@@ -169,7 +169,13 @@ class BackendGoogleSheetsExporterTests(unittest.TestCase):
 
     def test_append_import_records_writes_formula_prefix_values_as_raw_literals(self):
         header = exporter.build_import_sheet_header()
-        sheet = FakeSheet("data", [header.copy()])
+        sheet = FakeSheet(
+            "data",
+            [header.copy()],
+            row_count=1,
+            col_count=len(header),
+            strict_grid=True,
+        )
         spreadsheet = FakeSpreadsheet({"data": sheet})
         record = {
             exporter.ORDER_DATE_COLUMN: "01.06.2026",
@@ -193,6 +199,7 @@ class BackendGoogleSheetsExporterTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["imported"], 1)
+        self.assertEqual(sheet.resize_calls[-1], {"rows": 2, "cols": len(header)})
         self.assertEqual(sheet.write_options, ["RAW"])
         header_idx = exporter.get_header_index(sheet.rows[0])
         self.assertEqual(sheet.rows[1][header_idx["Клиент"]], "=1+1")
@@ -243,6 +250,34 @@ class BackendGoogleSheetsExporterTests(unittest.TestCase):
         header_idx = exporter.get_header_index(sheet.rows[0])
         self.assertEqual(sheet.rows[1][header_idx["Отсканированные коды"]], "")
         self.assertEqual(sheet.rows[1][header_idx["Статус"]], "Не выполнено")
+
+    def test_restore_import_records_resizes_grid_before_append(self):
+        header = exporter.build_import_sheet_header()
+        sheet = FakeSheet(
+            "data",
+            [header.copy()],
+            row_count=1,
+            col_count=len(header),
+            strict_grid=True,
+        )
+        spreadsheet = FakeSpreadsheet({"data": sheet})
+        record = {
+            "Дата отгрузки": "01.06.2026",
+            "Тип оплаты": "Перечисление",
+            "Клиент": "Client",
+            "Товары": "Product",
+            "Кол-во ШТ": 20,
+            "Кол-во блок": 2,
+            "ID заказа": "order-new",
+            "ID импорта": "import-new",
+        }
+
+        with mock.patch.object(exporter, "get_google_client", return_value=SimpleNamespace(open_by_key=lambda _key: spreadsheet)):
+            result = exporter.restore_import_records_to_google_sheets([record])
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual(sheet.resize_calls[-1], {"rows": 2, "cols": len(header)})
 
     def test_delete_import_records_removes_matching_rows_from_data_sheet(self):
         header = exporter.build_import_sheet_header()

@@ -1,4 +1,6 @@
 import logging
+import re
+import time
 import urllib.parse
 
 import httpx
@@ -16,6 +18,14 @@ PAGINATED_LIST_PATHS = frozenset({
     "/api/v1/reports/kiz/dates",
     "/api/v1/reports/kiz/source-files",
 })
+
+
+def telegram_menu_retry_seconds(error) -> int:
+    message = str(error or "")
+    match = re.search(r'(?:retry after|"retry_after"\s*:\s*)(\d+)', message, flags=re.IGNORECASE)
+    if match:
+        return max(60, min(int(match.group(1)), 3600))
+    return 300
 
 
 TELEGRAM_BUTTON_SHIPMENT_DATE = "Дата отгрузки"
@@ -320,11 +330,19 @@ class TelegramProcessorPorts:
     def ensure_bot_menu(self):
         if getattr(self, "bot_menu_ready", False):
             return
+        now = time.monotonic()
+        if now < float(getattr(self, "bot_menu_retry_at", 0) or 0):
+            return
         try:
             self._telegram_client().configure_menu()
             self.bot_menu_ready = True
-        except Exception:
-            logging.warning("Telegram worker: failed to configure bot menu", exc_info=True)
+        except Exception as exc:
+            retry_seconds = telegram_menu_retry_seconds(exc)
+            self.bot_menu_retry_at = now + retry_seconds
+            logging.warning(
+                "Telegram worker: bot menu configuration deferred retry_in_seconds=%s",
+                retry_seconds,
+            )
 
     def backend_get(self, path, params=None):
         client = self._backend_client()

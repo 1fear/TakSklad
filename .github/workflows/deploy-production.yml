@@ -367,6 +367,7 @@ jobs:
             -o ServerAliveInterval=30 -o ServerAliveCountMax=10 \
             "$remote" 'bash -s' <<EOF
           set -euo pipefail
+          rm -f /tmp/taksklad-production-preflight.json /tmp/taksklad-live-release-verification.json
           app_dir=$(printf '%q' "$app_dir")
           install -d -m 755 "$app_dir"
           tar -xzf /tmp/taksklad-deploy-control.tar.gz -C "$app_dir" --no-same-owner
