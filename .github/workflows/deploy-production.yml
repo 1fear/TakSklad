@@ -284,8 +284,14 @@ jobs:
         run: bash -n deploy/vds/deploy_from_git.sh
 
       - name: Package exact-SHA deployment control plane
+        env:
+          DEPLOY_CONTROL_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          [[ "$DEPLOY_CONTROL_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git cat-file -e "$DEPLOY_CONTROL_SHA^{commit}"
+          git show "$DEPLOY_CONTROL_SHA:tools/collect_phase27_evidence.py" > tools/collect_phase27_evidence.py
+          grep -q 'def live_runtime_invariants' tools/collect_phase27_evidence.py
           tar -czf "$RUNNER_TEMP/taksklad-deploy-control.tar.gz" \
             deploy/vds/deploy_from_git.sh \
             deploy/vds/docker-compose.yml \

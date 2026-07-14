@@ -1,9 +1,19 @@
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
-from tools.collect_phase27_evidence import CollectionError, latest_backup, percentile, readiness_summary, restore_drill, run
+from tools.collect_phase27_evidence import (
+    CollectionError,
+    latest_backup,
+    live_runtime_invariants,
+    percentile,
+    readiness_summary,
+    restore_drill,
+    run,
+)
 
 
 class Phase27EvidenceCollectorTests(unittest.TestCase):
@@ -86,6 +96,27 @@ class Phase27EvidenceCollectorTests(unittest.TestCase):
             run(["sh", "-c", "echo token=synthetic-sensitive-value; exit 7"])
         self.assertNotIn("synthetic-sensitive-value", str(raised.exception))
         self.assertIn("token=[REDACTED]", str(raised.exception))
+
+    def test_run_can_stream_read_only_tool_over_stdin(self):
+        output = run(["sh", "-c", "read value; printf '%s' \"$value\""], input_text="runtime-invariant\n")
+        self.assertEqual(output, "runtime-invariant")
+
+    def test_live_invariants_use_running_backend_without_ephemeral_compose_run(self):
+        args = SimpleNamespace(env_file=Path("deploy/vds/.env"), compose_file=Path("deploy/vds/docker-compose.yml"))
+        manifest = {
+            "source_sha": "a" * 40,
+            "images": {
+                "backend": {"reference": "backend@example", "digest": "sha256:" + "b" * 64},
+                "frontend": {"reference": "frontend@example"},
+            },
+        }
+        responses = ["backend-container", json.dumps({"status": "pass", "zero_mutation": True})]
+        with patch("tools.collect_phase27_evidence.run", side_effect=responses) as mocked:
+            result = live_runtime_invariants(args, manifest)
+        self.assertEqual(result["status"], "pass")
+        self.assertEqual(mocked.call_args_list[0].args[0][-3:], ["ps", "-q", "backend-api"])
+        self.assertEqual(mocked.call_args_list[1].args[0][:4], ["docker", "exec", "-i", "backend-container"])
+        self.assertIn("Count-only PostgreSQL invariant preflight", mocked.call_args_list[1].kwargs["input_text"])
 
 
 if __name__ == "__main__":

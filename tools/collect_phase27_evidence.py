@@ -33,12 +33,19 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def run(command: list[str], *, environment: dict[str, str] | None = None, timeout: int = 180) -> str:
+def run(
+    command: list[str],
+    *,
+    environment: dict[str, str] | None = None,
+    timeout: int = 180,
+    input_text: str | None = None,
+) -> str:
     completed = subprocess.run(
         command,
         cwd=ROOT,
         env=environment,
         text=True,
+        input=input_text,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         timeout=timeout,
@@ -135,6 +142,34 @@ def candidate_preflight(args: argparse.Namespace, manifest: dict[str, Any]) -> t
     if not target_revision:
         raise CollectionError("candidate migration head is missing")
     return invariants, target_revision, round(time.monotonic() - started, 3)
+
+
+def live_runtime_invariants(args: argparse.Namespace, manifest: dict[str, Any]) -> dict[str, Any]:
+    compose, environment = compose_base(args, manifest)
+    container_id = run(
+        compose + ["ps", "-q", "backend-api"],
+        environment=environment,
+        timeout=30,
+    ).strip()
+    if not container_id:
+        raise CollectionError("running backend container is missing")
+    invariant_tool = (ROOT / "tools/check_data_invariants.py").read_text(encoding="utf-8")
+    output = run(
+        [
+            "docker", "exec", "-i", container_id, "sh", "-ec",
+            'python - --database-url "$DATABASE_URL" --read-only',
+        ],
+        environment=environment,
+        input_text=invariant_tool,
+        timeout=120,
+    )
+    try:
+        report = json.loads(output.splitlines()[-1])
+    except (json.JSONDecodeError, IndexError) as exc:
+        raise CollectionError("live invariant output is invalid") from exc
+    if report.get("zero_mutation") is not True or report.get("status") != "pass":
+        raise CollectionError("live invariant verification is not green")
+    return report
 
 
 def latest_backup(path: Path) -> dict[str, Any]:
@@ -270,7 +305,7 @@ def collect_live(args: argparse.Namespace, manifest: dict[str, Any]) -> dict[str
         if elapsed >= args.slo_seconds:
             break
         time.sleep(min(args.sample_interval_seconds, max(0.0, args.slo_seconds - elapsed)))
-    invariants, _, _ = candidate_preflight(args, manifest)
+    invariants = live_runtime_invariants(args, manifest)
     summary = readiness_summary(last_ready, ready_status)
     report = common(manifest, "live-release-verification")
     report.update(

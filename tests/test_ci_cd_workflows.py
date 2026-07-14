@@ -188,6 +188,8 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn("ref: ${{ inputs.source_sha }}", workflow)
         self.assertIn("fetch-depth: 0", workflow)
         self.assertIn("taksklad-deploy-control.tar.gz", workflow)
+        self.assertIn("DEPLOY_CONTROL_SHA: ${{ github.sha }}", workflow)
+        self.assertIn("def live_runtime_invariants", workflow)
         self.assertIn("PRODUCTION_APPROVAL: READY_FOR_PRODUCTION_DEPLOY", workflow)
         self.assertIn("TAKSKLAD_PRODUCTION_APPROVAL", workflow)
         self.assertIn("DEPLOY_ACCEPTANCE: required", workflow)
