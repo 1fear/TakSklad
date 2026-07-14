@@ -571,6 +571,7 @@ jobs:
           install -d -m 700 .release-state
           PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/collect_phase27_evidence.py \
             preflight --manifest release.json --output .release-state/production-preflight.json </dev/null
+          install -m 600 .release-state/production-preflight.json /tmp/taksklad-production-preflight.json
           ./tools/production_preflight.sh --read-only --require-current-backup --require-zero-blockers </dev/null
           sed -i 's/compose up -d --no-build/compose up -d --no-deps --no-build/g' \
             deploy/vds/deploy_from_git.sh
@@ -582,9 +583,21 @@ jobs:
           ./deploy/vds/deploy_from_git.sh --artifact-manifest release.json --acceptance required --wait </dev/null
           PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/collect_phase27_evidence.py \
             live --manifest release.json --output .release-state/live-release-verification.json </dev/null
-          ./tools/live_release_verifier.sh --read-only --same-sha --slo-window </dev/null
-          install -m 600 .release-state/production-preflight.json /tmp/taksklad-production-preflight.json
           install -m 600 .release-state/live-release-verification.json /tmp/taksklad-live-release-verification.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          evidence = json.loads(Path(".release-state/live-release-verification.json").read_text(encoding="utf-8"))
+          slo = evidence.get("slo") or {}
+          print(
+              "PHASE27_LIVE_SLO_SUMMARY "
+              f"status={slo.get('status')} duration_seconds={slo.get('duration_seconds')} "
+              f"samples={slo.get('samples')} errors={slo.get('errors')} "
+              f"latency_p95_ms={slo.get('latency_p95_ms')} budget_ms={slo.get('latency_budget_ms')}"
+          )
+          PY
+          ./tools/live_release_verifier.sh --read-only --same-sha --slo-window </dev/null
           EOF
           cleanup_registry_auth
           trap - EXIT
