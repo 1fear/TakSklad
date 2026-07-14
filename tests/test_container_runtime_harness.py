@@ -39,6 +39,7 @@ class ContainerRuntimeHarnessContractTests(unittest.TestCase):
         self.assertIn("$PARENT_CANONICAL/outputs", source)
         self.assertIn("TAKSKLAD_PHASE22_SYNTHETIC_OUTPUT_ROOT", source)
         self.assertIn("--cap-add CHOWN", source)
+        self.assertIn("TAKSKLAD_OUTPUT_PERMISSIONS_IMAGE", source)
         self.assertIn("path_value_redacted=1", source)
         self.assertNotIn("docker volume rm", source)
 

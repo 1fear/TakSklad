@@ -63,7 +63,7 @@ fi
   exit 2
 }
 
-IMAGE="vds-backend-api:latest"
+IMAGE="${TAKSKLAD_OUTPUT_PERMISSIONS_IMAGE:-vds-backend-api:latest}"
 docker image inspect "$IMAGE" >/dev/null
 MOUNT_SOURCE="$TARGET_CANONICAL"
 if [[ "$(uname -s)" == "Darwin" && "$MOUNT_SOURCE" == /private/var/* ]]; then

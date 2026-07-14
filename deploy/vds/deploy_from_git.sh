@@ -164,6 +164,15 @@ echo "Pulling verified immutable image subjects..."
 docker pull "$TAKSKLAD_BACKEND_IMAGE"
 docker pull "$TAKSKLAD_FRONTEND_IMAGE"
 
+echo "Reconciling writable output ownership for non-root workers..."
+install -d -m 755 "$APP_DIR/outputs"
+TAKSKLAD_OUTPUT_PERMISSIONS_IMAGE="$TAKSKLAD_BACKEND_IMAGE" \
+  ./tools/reconcile_output_permissions.sh \
+    --path "$APP_DIR/outputs" \
+    --expected-parent "$APP_DIR" \
+    --apply \
+    --confirm PHASE22_CHANGE_OUTPUT_OWNER
+
 echo "Applying forward-only migrations from the verified backend image..."
 compose run --rm --no-deps backend-api alembic -c alembic.ini upgrade head
 

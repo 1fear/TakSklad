@@ -40,6 +40,16 @@ class ContainerPolicyTests(unittest.TestCase):
         self.assertEqual(len(rows), 7)
         self.assertEqual(next(row for row in rows if row.service == "frontend").sensitive_names, ())
 
+    def test_postgres_wal_init_can_reconcile_existing_directory_mode(self):
+        payload = yaml.safe_load(
+            (ROOT / "deploy" / "vds" / "docker-compose.yml").read_text(encoding="utf-8")
+        )
+        service = payload["services"]["postgres-wal-init"]
+        self.assertEqual(service["user"], "0:0")
+        self.assertIn("CHOWN", service["cap_add"])
+        self.assertIn("FOWNER", service["cap_add"])
+        self.assertEqual(service["restart"], "no")
+
     def test_read_only_bind_is_not_classified_as_writable(self):
         temporary, root = self.make_root()
         with temporary:

@@ -5,7 +5,7 @@ from datetime import datetime
 from urllib.parse import urlsplit, urlunsplit
 
 
-APP_VERSION = "2.0.30"
+APP_VERSION = "2.0.31"
 VALID_ENVIRONMENTS = frozenset({"local", "test", "production"})
 MIN_SESSION_SECRET_BYTES = 32
 MIN_SESSION_SECRET_DISTINCT_CHARACTERS = 8

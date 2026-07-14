@@ -159,7 +159,7 @@ class StartupCheckTests(unittest.TestCase):
     def test_version_update_status_outdated_without_workflow_block_is_non_blocking(self):
         status = startup_check.build_version_update_status(
             {
-                "latest_version": "2.0.31",
+                "latest_version": "2.0.32",
                 "min_supported_version": startup_check.APP_VERSION,
                 "mandatory": False,
                 "block_workflow": False,
@@ -170,12 +170,12 @@ class StartupCheckTests(unittest.TestCase):
 
         self.assertEqual(status["state"], "outdated")
         self.assertEqual(status["blocking"], "no")
-        self.assertIn("Доступно обновление 2.0.31", label)
+        self.assertIn("Доступно обновление 2.0.32", label)
 
     def test_version_update_status_mandatory_without_block_workflow_is_non_blocking(self):
         status = startup_check.build_version_update_status(
             {
-                "latest_version": "2.0.31",
+                "latest_version": "2.0.32",
                 "min_supported_version": startup_check.APP_VERSION,
                 "mandatory": True,
                 "block_workflow": False,
