@@ -580,7 +580,31 @@ jobs:
             deploy/vds/acceptance_status.sh
           grep -q 'if google_sync_status != 0:' deploy/vds/acceptance_status.sh
           echo "PHASE27_GOOGLE_MIRROR_POLICY_OK role=optional diagnostic_required=1 data_mutations=0"
-          ./deploy/vds/deploy_from_git.sh --artifact-manifest release.json --acceptance required --wait </dev/null
+          deployment_record=/opt/stacks/taksklad/deployments/current-release.json
+          if python3 - "\$deployment_record" release.json <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          deployed_path = Path(sys.argv[1])
+          expected_path = Path(sys.argv[2])
+          if not deployed_path.is_file():
+              raise SystemExit(1)
+          deployed = json.loads(deployed_path.read_text(encoding="utf-8"))
+          expected = json.loads(expected_path.read_text(encoding="utf-8"))
+          same = deployed.get("source_sha") == expected.get("source_sha")
+          for service in ("backend", "frontend"):
+              same = same and (
+                  ((deployed.get("images") or {}).get(service) or {}).get("digest")
+                  == ((expected.get("images") or {}).get(service) or {}).get("digest")
+              )
+          raise SystemExit(0 if same else 1)
+          PY
+          then
+            echo "PHASE27_DEPLOY_REUSED exact_manifest=1 mutation=0"
+          else
+            ./deploy/vds/deploy_from_git.sh --artifact-manifest release.json --acceptance required --wait </dev/null
+          fi
           PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/collect_phase27_evidence.py \
             live --manifest release.json --output .release-state/live-release-verification.json </dev/null
           install -m 600 .release-state/live-release-verification.json /tmp/taksklad-live-release-verification.json
