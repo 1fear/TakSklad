@@ -104,7 +104,6 @@ class Phase27EvidenceCollectorTests(unittest.TestCase):
         self.assertEqual(output, "runtime-invariant")
 
     def test_live_invariants_use_running_backend_without_ephemeral_compose_run(self):
-        args = SimpleNamespace(env_file=Path("deploy/vds/.env"), compose_file=Path("deploy/vds/docker-compose.yml"))
         manifest = {
             "source_sha": "a" * 40,
             "images": {
@@ -113,15 +112,20 @@ class Phase27EvidenceCollectorTests(unittest.TestCase):
             },
         }
         responses = ["backend-container", json.dumps({"status": "pass", "zero_mutation": True})]
-        with patch("tools.collect_phase27_evidence.run", side_effect=responses) as mocked:
-            result = live_runtime_invariants(args, manifest)
+        with tempfile.TemporaryDirectory() as temp:
+            env_file = Path(temp) / ".env"
+            compose_file = Path(temp) / "compose.yml"
+            env_file.touch()
+            compose_file.touch()
+            args = SimpleNamespace(env_file=env_file, compose_file=compose_file)
+            with patch("tools.collect_phase27_evidence.run", side_effect=responses) as mocked:
+                result = live_runtime_invariants(args, manifest)
         self.assertEqual(result["status"], "pass")
         self.assertEqual(mocked.call_args_list[0].args[0][-3:], ["ps", "-q", "backend-api"])
         self.assertEqual(mocked.call_args_list[1].args[0][:4], ["docker", "exec", "-i", "backend-container"])
         self.assertIn("Count-only PostgreSQL invariant preflight", mocked.call_args_list[1].kwargs["input_text"])
 
     def test_live_worker_readiness_is_bounded_and_uses_running_backend(self):
-        args = SimpleNamespace(env_file=Path("deploy/vds/.env"), compose_file=Path("deploy/vds/docker-compose.yml"))
         manifest = {
             "source_sha": "a" * 40,
             "images": {
@@ -136,8 +140,14 @@ class Phase27EvidenceCollectorTests(unittest.TestCase):
             "unhealthy": ["telegram"],
             "workers": [{"worker_name": "telegram", "status": "stale", "age_seconds": 50, "unhealthy_after_seconds": 45}],
         }
-        with patch("tools.collect_phase27_evidence.run", side_effect=["backend-container", json.dumps(worker_state)]) as mocked:
-            result = live_worker_readiness(args, manifest)
+        with tempfile.TemporaryDirectory() as temp:
+            env_file = Path(temp) / ".env"
+            compose_file = Path(temp) / "compose.yml"
+            env_file.touch()
+            compose_file.touch()
+            args = SimpleNamespace(env_file=env_file, compose_file=compose_file)
+            with patch("tools.collect_phase27_evidence.run", side_effect=["backend-container", json.dumps(worker_state)]) as mocked:
+                result = live_worker_readiness(args, manifest)
         self.assertEqual(result, worker_state)
         self.assertEqual(mocked.call_args_list[1].args[0][:3], ["docker", "exec", "backend-container"])
         self.assertNotIn("last_success_at", mocked.call_args_list[1].args[0][-1])
