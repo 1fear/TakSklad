@@ -18,7 +18,7 @@ from .backend_flow import (
     order_uses_backend_scan_path,
     unsaved_backend_scan_codes,
 )
-from .config import BG_MAIN, FG_MUTED, STATUS_COLUMN, SUCCESS
+from .config import BG_MAIN, FG_MUTED, STATUS_COLUMN, STATUS_COMPLETED, SUCCESS
 from .desktop_scan_rules import (
     build_product_result,
     find_code_owner_in_orders,
@@ -43,7 +43,7 @@ from .scan_quantities import (
     scan_product_mismatch,
 )
 from .sheets import update_scanned_codes_to_gsheet
-from .utils import normalize_kiz_code, validate_kiz_code
+from .utils import normalize_kiz_code, normalize_text, validate_kiz_code
 
 
 class ScanningActionsMixin:
@@ -320,20 +320,37 @@ class ScanningActionsMixin:
             ScanningActionsMixin.reject_scan(self, "Код уже отсканирован в этой позиции")
             return
 
-        if code in self.all_existing_codes:
-            existing_order = find_code_owner_in_orders(code, self.today_orders)
-            reuse_status = {} if existing_order else backend_duplicate_scan_reuse_status(self.current_order, code)
-            if not existing_order and reuse_status.get("available"):
+        duplicate_in_completed_orders = any(
+            code in completed.get("Коды", [])
+            for completed in self.completed_orders
+        )
+        if code in self.all_existing_codes or duplicate_in_completed_orders:
+            existing_order = (
+                find_code_owner_in_orders(code, self.today_orders)
+                if code in self.all_existing_codes
+                else {}
+            )
+            existing_order_is_finished = bool(existing_order) and (
+                is_terminal_scan_state(existing_order)
+                or normalize_text(existing_order.get(STATUS_COLUMN)).casefold()
+                == normalize_text(STATUS_COMPLETED).casefold()
+            )
+            active_existing_order = bool(existing_order) and not existing_order_is_finished
+            reuse_status = (
+                {}
+                if active_existing_order
+                else backend_duplicate_scan_reuse_status(self.current_order, code)
+            )
+            if not active_existing_order and reuse_status.get("available"):
                 self.all_existing_codes.discard(code)
-                logging.info("Backend released KIZ for re-scan after return/undo/reset; ignoring stale desktop duplicate cache")
+                logging.info("Backend released KIZ for re-scan after return/undo/reset; ignoring stale desktop duplicate state")
             else:
-                ScanningActionsMixin.reject_scan(self, format_duplicate_scan_message(code, existing_order, reuse_status))
-                self.log_duplicate_code_async(code)
-                return
-
-        for completed in self.completed_orders:
-            if code in completed.get("Коды", []):
-                ScanningActionsMixin.reject_scan(self, "Код уже использован в другом задании сегодня")
+                if code in self.all_existing_codes:
+                    message = format_duplicate_scan_message(code, existing_order, reuse_status)
+                    self.log_duplicate_code_async(code)
+                else:
+                    message = "Код уже использован в другом задании сегодня"
+                ScanningActionsMixin.reject_scan(self, message)
                 return
 
         if not write_scan_backup("scan", self.current_order, code=code, codes=self.scanned_codes + [code]):

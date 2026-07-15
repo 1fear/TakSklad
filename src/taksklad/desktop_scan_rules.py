@@ -171,6 +171,7 @@ def find_code_owner_in_orders(code, orders):
             "order_date_display": get_order_date_value(order) or "",
             "product": order.get("Товары", ""),
             "skladbot_request_number": order.get(SKLADBOT_REQUEST_NUMBER_COLUMN, ""),
+            STATUS_COLUMN: order.get(STATUS_COLUMN, ""),
         }
     return {}
 
