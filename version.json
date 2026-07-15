@@ -1,17 +1,17 @@
 {
-  "latest_version": "2.0.33",
-  "release_tag": "v2.0.33",
-  "min_supported_version": "2.0.33",
+  "latest_version": "2.0.34",
+  "release_tag": "v2.0.34",
+  "min_supported_version": "2.0.34",
   "mandatory": true,
   "block_workflow": true,
   "package_type": "onefile_exe",
   "entrypoint": "TakSklad.exe",
-  "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.33/TakSklad.exe",
-  "sha256": "192276bd88358d77ff44994432d320810e3397bce4d12a701a3861d4a03b52b5",
-  "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.33/TakSklad-windows-x64.zip",
-  "sha256_onedir": "843143845bab542f4abd18e0284cdffc63e6d7537d855c5058c0d23e751f604b",
+  "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.34/TakSklad.exe",
+  "sha256": "994e13161ad57e8ff55e46cdb316f0fd281198bc4049aa0ad0c53a59c6bbf95f",
+  "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.34/TakSklad-windows-x64.zip",
+  "sha256_onedir": "0c77bb49ad6dc0a6aef4d576ebe9d8c5e7c75145b024ac993da8d05aa4e4d84f",
   "signature_type": "authenticode",
   "signature_required": true,
   "signer_certificate_sha256": "c95ccd968831b3b55a1f2c949e66f3b39c5f69badf29a70887b43a036f14bb19",
-  "message": "TakSklad 2.0.33: обязательное обновление. Возвратные КИЗы снова можно пробивать в новые заказы после подтвержденного return, undo или reset; активные дубли остаются заблокированы."
+  "message": "TakSklad 2.0.34: обязательное обновление. Локальная запись старого заказа больше не блокирует КИЗ, если backend подтверждает return, undo или reset; активные исходящие дубли остаются заблокированы."
 }
