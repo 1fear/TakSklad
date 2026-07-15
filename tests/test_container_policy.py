@@ -50,6 +50,50 @@ class ContainerPolicyTests(unittest.TestCase):
         self.assertIn("FOWNER", service["cap_add"])
         self.assertEqual(service["restart"], "no")
 
+    def test_telegram_worker_receives_complete_daily_report_environment(self):
+        payload = yaml.safe_load(
+            (ROOT / "deploy" / "vds" / "docker-compose.yml").read_text(encoding="utf-8")
+        )
+        service = payload["services"]["telegram-worker"]
+        environment = service["environment"]
+        required = {
+            "TAKSKLAD_TIMEZONE",
+            "SKLADBOT_API_TOKEN",
+            "SKLADBOT_API_TOKENS",
+            "SKLADBOT_API_BASE_URL",
+            "SKLADBOT_API_TIMEOUT_SECONDS",
+            "SKLADBOT_API_MAX_RETRIES",
+            "SKLADBOT_REQUEST_DELAY_SECONDS",
+            "SKLADBOT_MAX_COOLDOWN_WAIT_SECONDS",
+            "SKLADBOT_CUSTOMER_ID",
+            "SKLADBOT_REQUESTS_LIMIT",
+            "SKLADBOT_DAILY_REPORT_ENABLED",
+            "SKLADBOT_DAILY_REPORT_CHAT_IDS",
+            "SKLADBOT_DAILY_REPORT_HOUR",
+            "SKLADBOT_DAILY_REPORT_MINUTE",
+            "SKLADBOT_DAILY_REPORT_RETRY_MINUTES",
+            "SKLADBOT_DAILY_REPORT_STALE_TTL_MINUTES",
+            "SKLADBOT_DAILY_REPORT_REQUEST_TYPE_IDS",
+            "SKLADBOT_DAILY_REPORT_REQUESTS_LIMIT",
+            "SKLADBOT_DAILY_REPORT_MAX_PAGES",
+            "SKLADBOT_DAILY_REPORT_DETAIL_LIMIT",
+            "SKLADBOT_DAILY_REPORT_OUT_OF_SCOPE_DETAIL_SAMPLE_LIMIT",
+            "SKLADBOT_DAILY_REPORT_MAX_RUNTIME_SECONDS",
+            "SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS",
+            "SKLADBOT_DAILY_REPORT_429_RETRIES",
+            "SKLADBOT_DAILY_REPORT_429_RETRY_SECONDS",
+            "SKLADBOT_DAILY_REPORT_READ_POST_RETRIES",
+            "SKLADBOT_DAILY_REPORT_READ_POST_RETRY_SECONDS",
+            "SKLADBOT_DAILY_REPORT_MOVEMENTS_LIMIT",
+            "SKLADBOT_DAILY_REPORT_PRODUCTS_LIMIT",
+            "SKLADBOT_DAILY_REPORT_STOCK_LIMIT",
+        }
+        self.assertEqual(required - set(environment), set())
+        self.assertNotIn("env_file", service)
+        self.assertEqual(
+            environment["SKLADBOT_DAILY_REPORT_ENABLED"],
+            "${SKLADBOT_DAILY_REPORT_ENABLED:-false}",
+        )
     def test_read_only_bind_is_not_classified_as_writable(self):
         temporary, root = self.make_root()
         with temporary:

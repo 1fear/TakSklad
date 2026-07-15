@@ -64,6 +64,7 @@ class ReadinessResponse(BaseModel):
     migrations: dict[str, Any] = Field(default_factory=dict)
     queue: dict[str, Any] = Field(default_factory=dict)
     google_mirror: dict[str, Any] = Field(default_factory=dict)
+    google_backend_sync: dict[str, Any] = Field(default_factory=dict)
     imports: dict[str, Any] = Field(default_factory=dict)
     workers: dict[str, Any] = Field(default_factory=dict)
     policy: dict[str, Any] = Field(default_factory=dict)
@@ -614,6 +615,7 @@ class ImportResult(BaseModel):
     items_created: int
     duplicate_rows: int
     invalid_rows: int
+    resolved_order_ids: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     backend_address_updates: int = 0
     google_sheets_status: str = ""

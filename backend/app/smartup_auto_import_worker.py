@@ -5,12 +5,14 @@ from datetime import datetime
 
 from .db import SessionLocal
 from .smartup_auto_import import (
+    SmartupClient,
     build_smartup_auto_import_status,
     load_smartup_auto_import_config,
     parse_slot_time,
     parse_smartup_date,
     run_due_smartup_auto_imports,
     run_scheduled_smartup_auto_import_slot,
+    sweep_incomplete_smartup_fulfillments,
     worker_sleep,
 )
 from .worker_observability import observed_worker_cycle
@@ -36,8 +38,20 @@ def main(argv: list[str] | None = None) -> int:
                         logging.info("Smartup auto import worker is disabled")
                         disabled_logged = True
                 else:
+                    try:
+                        with SessionLocal() as db:
+                            sweep_result = sweep_incomplete_smartup_fulfillments(
+                                db,
+                                config,
+                                client=SmartupClient(config),
+                            )
+                    except Exception:
+                        sweep_result = {"status": "failed"}
+                        logging.exception("Smartup fulfillment sweep failed; scheduled slots remain enabled")
                     with SessionLocal() as db:
                         results = run_due_smartup_auto_imports(db, config)
+                    if sweep_result.get("status") not in {"idle", "skipped"}:
+                        logging.info("Smartup fulfillment sweep: %s", sweep_result)
                     for result in results:
                         logging.info("Smartup auto import worker: %s", result)
         except Exception:

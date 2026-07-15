@@ -2,9 +2,9 @@ import logging
 import os
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import and_, desc, func, or_, select
+from sqlalchemy import and_, desc, func, or_, select, text
 from sqlalchemy.orm import Session, aliased, joinedload, selectinload
 
 from .db import SessionLocal
@@ -25,7 +25,7 @@ from .kiz_movements_service import (
     find_same_item_scan,
     kiz_is_available_for_outbound,
     latest_kiz_movement,
-    lock_kiz_code_for_transaction,
+    lock_kiz_codes_for_transaction,
     outbound_movement_type_for,
     record_kiz_movement,
 )
@@ -56,6 +56,7 @@ STATUS_COLUMN = "Статус"
 DEFAULT_BLOCK_PRICE = 240000
 GOOGLE_BACKEND_LOOKUP_BATCH_SIZE = 500
 GOOGLE_BACKEND_RECONCILE_BATCH_SIZE = 200
+GOOGLE_BACKEND_MUTATION_BATCH_SIZE = 32
 GOOGLE_BACKEND_RECONCILE_CURSOR_ACTION = "google_sheets_backend_missing_reconciliation_cursor"
 ARCHIVE_SHEET_NAME = "Архив"
 RETURN_STATUS_COLUMN = "Статус возврата"
@@ -89,8 +90,175 @@ def backend_sync_rate_limit_cooldown_seconds(worker_interval=None):
     return max(30, env_int("GOOGLE_SHEETS_BACKEND_SYNC_RATE_LIMIT_COOLDOWN_SECONDS", max(worker_interval, 300)))
 
 
+def backend_sync_database_error_cooldown_seconds(worker_interval=None):
+    worker_interval = max(30, int(worker_interval or 60))
+    return max(
+        60,
+        env_int("GOOGLE_SHEETS_BACKEND_SYNC_DB_ERROR_COOLDOWN_SECONDS", max(worker_interval * 4, 900)),
+    )
+
+
+def backend_sync_mutation_batch_size(value=None):
+    configured = (
+        env_int("GOOGLE_SHEETS_BACKEND_SYNC_MUTATION_BATCH_SIZE", GOOGLE_BACKEND_MUTATION_BATCH_SIZE)
+        if value is None
+        else int(value)
+    )
+    return max(1, min(configured, GOOGLE_BACKEND_MUTATION_BATCH_SIZE))
+
+
 def skipped_backend_sync_result(reason):
     return {**build_result(rows=0), "status": "skipped", "reason": reason}
+
+
+def is_postgres_lock_capacity_error(exc):
+    current = exc
+    seen = set()
+    messages = []
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        messages.append(str(current or "").casefold())
+        sqlstate = normalize_text(
+            getattr(current, "sqlstate", None)
+            or getattr(current, "pgcode", None)
+        )
+        if sqlstate == "53200":
+            return True
+        current = getattr(current, "orig", None) or getattr(current, "__cause__", None)
+    message = " ".join(messages)
+    return (
+        "out of shared memory" in message
+        and (
+            "max_locks_per_transaction" in message
+            or "lock table" in message
+            or "advisory" in message
+        )
+    )
+
+
+def persist_backend_sync_circuit_signal(db: Session, *, reason, cooldown_seconds, error):
+    opened_at = datetime.now(timezone.utc)
+    payload = {
+            "reason": normalize_text(reason),
+            "cooldown_seconds": int(cooldown_seconds),
+            "error_class": error.__class__.__name__,
+            "opened_at": opened_at.isoformat(),
+            "retry_at": (opened_at + timedelta(seconds=int(cooldown_seconds))).isoformat(),
+    }
+    try:
+        db.add(AuditLog(
+            action="google_sheets_backend_sync_circuit_open",
+            entity_type="google_sheets",
+            entity_id=SHEET_NAME,
+            payload=payload,
+        ))
+        db.commit()
+        return True
+    except Exception:
+        db.rollback()
+        logging.exception("Google Sheets backend sync: primary circuit-open persistence failed")
+    try:
+        with SessionLocal() as recovery_db:
+            recovery_db.add(AuditLog(
+                action="google_sheets_backend_sync_circuit_open",
+                entity_type="google_sheets",
+                entity_id=SHEET_NAME,
+                payload=payload,
+            ))
+            recovery_db.commit()
+        return True
+    except Exception:
+        logging.exception("Google Sheets backend sync: fail-closed circuit persistence failed")
+        return False
+
+
+def backend_sync_circuit_state(db: Session, *, now=None):
+    now = now or datetime.now(timezone.utc)
+    event = db.execute(
+        select(AuditLog)
+        .where(AuditLog.action.in_((
+            "google_sheets_backend_sync_circuit_open",
+            "google_sheets_backend_sync_circuit_closed",
+        )))
+        .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    action = getattr(event, "action", "") if event is not None else ""
+    if action not in {
+        "google_sheets_backend_sync_circuit_open",
+        "google_sheets_backend_sync_circuit_closed",
+    }:
+        return {"state": "closed", "retry_at": None, "reason": ""}
+    if action == "google_sheets_backend_sync_circuit_closed":
+        return {"state": "closed", "retry_at": None, "reason": ""}
+    payload = event.payload if isinstance(event.payload, dict) else {}
+    try:
+        retry_at = datetime.fromisoformat(normalize_text(payload.get("retry_at")))
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=timezone.utc)
+    except ValueError:
+        opened_at = event.created_at
+        if opened_at is not None and opened_at.tzinfo is None:
+            opened_at = opened_at.replace(tzinfo=timezone.utc)
+        retry_at = opened_at + timedelta(seconds=max(0, int(payload.get("cooldown_seconds") or 0)))
+    return {
+        "state": "open" if retry_at and retry_at > now else "half_open",
+        "retry_at": retry_at,
+        "reason": normalize_text(payload.get("reason")),
+    }
+
+
+def acquire_backend_sync_probe_lock(db: Session):
+    bind = db.get_bind()
+    if getattr(getattr(bind, "dialect", None), "name", "") != "postgresql":
+        return True, None
+    connection = bind.connect()
+    try:
+        acquired = bool(connection.execute(
+            text("SELECT pg_try_advisory_lock(hashtextextended(:identity, 0))"),
+            {"identity": "taksklad:google:backend-sync-half-open:v1"},
+        ).scalar())
+        connection.commit()
+    except Exception:
+        try:
+            connection.invalidate()
+        finally:
+            connection.close()
+        raise
+    if not acquired:
+        connection.close()
+        return False, None
+    return True, connection
+
+
+def release_backend_sync_probe_lock(connection):
+    if connection is None:
+        return
+    try:
+        connection.execute(
+            text("SELECT pg_advisory_unlock(hashtextextended(:identity, 0))"),
+            {"identity": "taksklad:google:backend-sync-half-open:v1"},
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def persist_backend_sync_circuit_closed(db: Session, result):
+    db.add(AuditLog(
+        action="google_sheets_backend_sync_circuit_closed",
+        entity_type="google_sheets",
+        entity_id=SHEET_NAME,
+        payload={
+            "closed_at": datetime.now(timezone.utc).isoformat(),
+            "result": {
+                "rows": int((result or {}).get("rows") or 0),
+                "matched": int((result or {}).get("matched") or 0),
+                "mutation_batches": int((result or {}).get("mutation_batches") or 0),
+            },
+        },
+    ))
+    db.commit()
 
 
 def run_google_sheets_worker_cycle(
@@ -100,6 +268,7 @@ def run_google_sheets_worker_cycle(
     next_backend_sync_at=0.0,
     backend_sync_interval=None,
     rate_limit_cooldown=None,
+    database_error_cooldown=None,
     now_monotonic=None,
     pending_processor=process_pending_google_sheets_exports,
     cooldown_reader=google_sheets_export_cooldown_until,
@@ -113,6 +282,10 @@ def run_google_sheets_worker_cycle(
     )
     backend_sync_interval = max(30, int(backend_sync_interval or backend_sync_interval_seconds()))
     rate_limit_cooldown = max(30, int(rate_limit_cooldown or backend_sync_rate_limit_cooldown_seconds()))
+    database_error_cooldown = max(
+        60,
+        int(database_error_cooldown or backend_sync_database_error_cooldown_seconds()),
+    )
     backend_syncer = sync_google_sheet_to_backend if backend_syncer is None else backend_syncer
 
     pending_result = pending_processor(db)
@@ -135,22 +308,88 @@ def run_google_sheets_worker_cycle(
     if now_monotonic < float(next_backend_sync_at or 0):
         return pending_result, skipped_backend_sync_result("cooldown"), next_backend_sync_at
 
+    circuit = backend_sync_circuit_state(db)
+    if circuit["state"] == "open":
+        return (
+            pending_result,
+            {
+                **skipped_backend_sync_result("circuit_open"),
+                "circuit_open": True,
+                "retry_at": circuit["retry_at"].isoformat() if circuit["retry_at"] else "",
+            },
+            next_backend_sync_at,
+        )
+    probe_connection = None
+    if circuit["state"] == "half_open":
+        acquired, probe_connection = acquire_backend_sync_probe_lock(db)
+        if not acquired:
+            return pending_result, skipped_backend_sync_result("half_open_probe_locked"), next_backend_sync_at
     try:
         result = backend_syncer(db)
     except Exception as exc:
-        if not is_google_rate_limit_error(exc):
-            raise
-        cooldown = retry_after_seconds_from_error(exc, default=rate_limit_cooldown)
-        logging.warning("Google Sheets backend sync paused after rate limit: %s", exc)
-        return (
-            pending_result,
-            {**build_result(rows=0), "status": "paused", "reason": "rate_limited", "error": str(exc)},
-            now_monotonic + cooldown,
-        )
-    return pending_result, result, now_monotonic + backend_sync_interval
+        if is_google_rate_limit_error(exc):
+            cooldown = retry_after_seconds_from_error(exc, default=rate_limit_cooldown)
+            logging.warning("Google Sheets backend sync paused after rate limit: %s", exc)
+            response = (
+                pending_result,
+                {**build_result(rows=0), "status": "paused", "reason": "rate_limited", "error": str(exc)},
+                now_monotonic + cooldown,
+            )
+            return response
+        if is_postgres_lock_capacity_error(exc):
+            db.rollback()
+            persisted = persist_backend_sync_circuit_signal(
+                db,
+                reason="postgres_lock_capacity",
+                cooldown_seconds=database_error_cooldown,
+                error=exc,
+            )
+            if not persisted:
+                logging.critical("Google Sheets backend sync is fail-closed: circuit signal is not durable")
+                return (
+                    pending_result,
+                    {
+                        **build_result(rows=0),
+                        "status": "paused",
+                        "reason": "circuit_persistence_failed",
+                        "circuit_open": False,
+                        "error_class": exc.__class__.__name__,
+                    },
+                    now_monotonic + database_error_cooldown,
+                )
+            logging.error(
+                "Google Sheets backend sync circuit opened for %s seconds after PostgreSQL lock capacity error",
+                database_error_cooldown,
+            )
+            response = (
+                pending_result,
+                {
+                    **build_result(rows=0),
+                    "status": "paused",
+                    "reason": "postgres_lock_capacity",
+                    "circuit_open": True,
+                    "retry_after_seconds": database_error_cooldown,
+                    "error_class": exc.__class__.__name__,
+                },
+                now_monotonic + database_error_cooldown,
+            )
+            return response
+        raise
+    else:
+        if circuit["state"] == "half_open":
+            persist_backend_sync_circuit_closed(db, result)
+        return pending_result, result, now_monotonic + backend_sync_interval
+    finally:
+        release_backend_sync_probe_lock(probe_connection)
 
 
-def sync_google_sheet_to_backend(db: Session, sheet=None, now=None, archive_completed_data_rows=None):
+def sync_google_sheet_to_backend(
+    db: Session,
+    sheet=None,
+    now=None,
+    archive_completed_data_rows=None,
+    mutation_batch_size=None,
+):
     now = now or datetime.now(timezone.utc)
     if archive_completed_data_rows is None:
         archive_completed_data_rows = sheet is None
@@ -159,6 +398,7 @@ def sync_google_sheet_to_backend(db: Session, sheet=None, now=None, archive_comp
         return build_result(rows=0)
 
     item_index = load_item_index(db, records)
+    mutation_batch_size = backend_sync_mutation_batch_size(mutation_batch_size)
     result = build_result(rows=len(records))
     completed_order_ids_to_archive = set()
     matched_item_ids = set()
@@ -169,11 +409,19 @@ def sync_google_sheet_to_backend(db: Session, sheet=None, now=None, archive_comp
             continue
 
         matched_item_ids.add(item.id)
-        item_result = apply_record_to_item(db, item, record, now)
+        item_result = apply_record_to_item(
+            db,
+            item,
+            record,
+            now,
+            mutation_batch_size=mutation_batch_size,
+        )
         result["matched"] += 1
         result["orders_updated"] += 1 if item_result["order_changed"] else 0
         result["items_updated"] += 1 if item_result["item_changed"] else 0
         result["conflicts"] += len(item_result["conflicts"])
+        result["mutation_codes"] += item_result["mutation_codes"]
+        result["mutation_batches"] += item_result["mutation_batches"]
         if (
             archive_completed_data_rows
             and record.get("source_sheet") == SHEET_NAME
@@ -204,6 +452,8 @@ def build_result(rows=0):
         "conflicts": 0,
         "archived": 0,
         "removed": 0,
+        "mutation_codes": 0,
+        "mutation_batches": 0,
     }
 
 
@@ -469,7 +719,14 @@ def find_item_for_record(record, item_index):
     return None
 
 
-def apply_record_to_item(db: Session, item: OrderItem, record, now):
+def apply_record_to_item(
+    db: Session,
+    item: OrderItem,
+    record,
+    now,
+    *,
+    mutation_batch_size=GOOGLE_BACKEND_MUTATION_BATCH_SIZE,
+):
     order = item.order
     conflicts = []
     return_fields_allowed = google_return_fields_allowed(order, record)
@@ -483,7 +740,15 @@ def apply_record_to_item(db: Session, item: OrderItem, record, now):
 
     order_changed = update_order_fields(order, record, apply_returns=return_fields_allowed)
     item_changed = update_item_fields(item, record, conflicts)
-    scans_changed = update_item_scans_from_record(db, item, record, conflicts, now)
+    scan_result = update_item_scans_from_record(
+        db,
+        item,
+        record,
+        conflicts,
+        now,
+        mutation_batch_size=mutation_batch_size,
+    )
+    scans_changed = scan_result["changed"]
     status_changed = update_status_from_record(order, item, record, allow_return=return_fields_allowed)
 
     if order_changed or status_changed:
@@ -522,6 +787,8 @@ def apply_record_to_item(db: Session, item: OrderItem, record, now):
         "order_changed": order_changed,
         "item_changed": item_changed or scans_changed or status_changed,
         "conflicts": conflicts,
+        "mutation_codes": scan_result["mutation_codes"],
+        "mutation_batches": scan_result["mutation_batches"],
     }
 
 
@@ -700,83 +967,142 @@ def split_codes(value):
     ]
 
 
-def update_item_scans_from_record(db: Session, item: OrderItem, record, conflicts, now):
+def update_item_scans_from_record(
+    db: Session,
+    item: OrderItem,
+    record,
+    conflicts,
+    now,
+    *,
+    mutation_batch_size=GOOGLE_BACKEND_MUTATION_BATCH_SIZE,
+):
     scanned_codes = list(dict.fromkeys(record.get("scanned_codes") or []))
     if not scanned_codes:
-        return False
+        return {"changed": False, "mutation_codes": 0, "mutation_batches": 0}
 
     existing_for_item = {scan.code for scan in item.scan_codes}
+    mutation_codes = tuple(sorted(
+        code
+        for code in scanned_codes
+        if code not in existing_for_item
+    ))
+    if not mutation_codes:
+        return {"changed": False, "mutation_codes": 0, "mutation_batches": 0}
+
+    mutation_batch_size = backend_sync_mutation_batch_size(mutation_batch_size)
     changed = False
-    for code in scanned_codes:
-        lock_kiz_code_for_transaction(db, code)
-        if code in existing_for_item:
-            continue
-        same_item_scan = find_same_item_scan(db, code=code, order_item_id=item.id)
-        if same_item_scan is not None:
+    mutation_batches = 0
+    mutation_codes_committed = 0
+    for start in range(0, len(mutation_codes), mutation_batch_size):
+        batch = mutation_codes[start:start + mutation_batch_size]
+        lock_kiz_codes_for_transaction(db, batch)
+        for code in batch:
+            same_item_scan = find_same_item_scan(db, code=code, order_item_id=item.id)
+            if same_item_scan is not None:
+                existing_for_item.add(code)
+                continue
+            other_item_scan = find_other_item_scan(db, code=code, order_item_id=item.id)
+            latest_movement = latest_kiz_movement(db, code)
+            if (
+                other_item_scan is not None
+                and (
+                    latest_movement is None
+                    or not kiz_is_available_for_outbound(latest_movement)
+                )
+            ):
+                conflicts.append({
+                    "field": "scanned_codes",
+                    "code": code,
+                    "reason": "code already exists for another order item",
+                })
+                continue
+            if (
+                other_item_scan is None
+                and latest_movement is not None
+                and not kiz_is_available_for_outbound(latest_movement)
+            ):
+                conflicts.append({
+                    "field": "scanned_codes",
+                    "code": code,
+                    "reason": "code already exists for another order item",
+                })
+                continue
+            scan = ScanCode(
+                order_item_id=item.id,
+                code=code,
+                source="google_sheets",
+                scanned_at=now,
+                raw_payload={
+                    "google_sheet_row_number": record.get("row_number"),
+                    "google_sheet_source_sheet": record.get("source_sheet") or SHEET_NAME,
+                    **scan_metadata_for_code(code),
+                },
+            )
+            item.scan_codes.append(scan)
+            db.flush()
+            record_kiz_movement(
+                db,
+                code=code,
+                movement_type=outbound_movement_type_for(latest_movement),
+                order_id=item.order_id,
+                order_item_id=item.id,
+                scan_code_id=scan.id,
+                source="google_sheets",
+                occurred_at=now,
+                raw_payload={
+                    "google_sheet_row_number": record.get("row_number"),
+                    "google_sheet_source_sheet": record.get("source_sheet") or SHEET_NAME,
+                    "previous_movement_type": latest_movement.movement_type if latest_movement else "",
+                },
+            )
             existing_for_item.add(code)
-            continue
-        other_item_scan = find_other_item_scan(db, code=code, order_item_id=item.id)
-        latest_movement = latest_kiz_movement(db, code)
-        if other_item_scan is not None and latest_movement is None:
-            conflicts.append({
-                "field": "scanned_codes",
-                "code": code,
-                "reason": "code already exists for another order item",
-            })
-            continue
-        if other_item_scan is not None and not kiz_is_available_for_outbound(latest_movement):
-            conflicts.append({
-                "field": "scanned_codes",
-                "code": code,
-                "reason": "code already exists for another order item",
-            })
-            continue
-        if other_item_scan is None and latest_movement is not None and not kiz_is_available_for_outbound(latest_movement):
-            conflicts.append({
-                "field": "scanned_codes",
-                "code": code,
-                "reason": "code already exists for another order item",
-            })
-            continue
-        scan = ScanCode(
-            order_item_id=item.id,
-            code=code,
-            source="google_sheets",
-            scanned_at=now,
-            raw_payload={
-                "google_sheet_row_number": record.get("row_number"),
-                "google_sheet_source_sheet": record.get("source_sheet") or SHEET_NAME,
-                **scan_metadata_for_code(code),
-            },
-        )
-        item.scan_codes.append(scan)
-        db.flush()
-        record_kiz_movement(
-            db,
-            code=code,
-            movement_type=outbound_movement_type_for(latest_movement),
-            order_id=item.order_id,
-            order_item_id=item.id,
-            scan_code_id=scan.id,
-            source="google_sheets",
-            occurred_at=now,
-            raw_payload={
-                "google_sheet_row_number": record.get("row_number"),
-                "google_sheet_source_sheet": record.get("source_sheet") or SHEET_NAME,
-                "previous_movement_type": latest_movement.movement_type if latest_movement else "",
-            },
-        )
-        existing_for_item.add(code)
-        changed = True
+            changed = True
 
-    if conflicts:
-        return changed
+        new_scanned_blocks = max(item.scanned_blocks, scanned_blocks_for_scans(item.scan_codes))
+        if item.scanned_blocks != new_scanned_blocks:
+            item.scanned_blocks = new_scanned_blocks
+            changed = True
+        update_status_from_record(item.order, item, record, allow_return=google_return_fields_allowed(item.order, record))
+        if conflicts:
+            add_sync_conflict_audit(
+                db,
+                entity_id=str(item.id),
+                payload={
+                    "order_id": str(item.order_id),
+                    "row_number": record["row_number"],
+                    "source_import_id": record.get("source_import_id"),
+                    "conflicts": conflicts,
+                },
+            )
+        mutation_batches += 1
+        mutation_codes_committed += len(batch)
+        db.add(AuditLog(
+            action="google_sheets_backend_sync_checkpoint",
+            entity_type="order_item",
+            entity_id=str(item.id),
+            payload={
+                "checkpoint_scope": "mutation_batch_consistent_state",
+                "order_id": str(item.order_id),
+                "row_number": record.get("row_number"),
+                "source_sheet": record.get("source_sheet") or SHEET_NAME,
+                "batch_number": mutation_batches,
+                "batch_size": len(batch),
+                "mutation_codes_committed": mutation_codes_committed,
+                "last_code": batch[-1],
+                "order_status": item.order.status,
+                "item_status": item.status,
+                "quantity_blocks": int(item.quantity_blocks or 0),
+                "scanned_blocks": int(item.scanned_blocks or 0),
+                "conflict_count": len(conflicts),
+            },
+        ))
+        db.commit()
 
-    new_scanned_blocks = max(item.scanned_blocks, scanned_blocks_for_scans(item.scan_codes))
-    if item.scanned_blocks != new_scanned_blocks:
-        item.scanned_blocks = new_scanned_blocks
-        changed = True
-    return changed
+    return {
+        "changed": changed,
+        "mutation_codes": len(mutation_codes),
+        "mutation_batches": mutation_batches,
+    }
 
 
 def update_status_from_record(order: Order, item: OrderItem, record, allow_return=True):
@@ -972,6 +1298,7 @@ def main():
     once = normalize_text(os.environ.get("GOOGLE_SHEETS_SYNC_ONCE")).casefold() in {"1", "true", "yes", "да"}
     backend_sync_interval = backend_sync_interval_seconds(interval)
     rate_limit_cooldown = backend_sync_rate_limit_cooldown_seconds(interval)
+    database_error_cooldown = backend_sync_database_error_cooldown_seconds(interval)
     next_backend_sync_at = 0.0
     while True:
         try:
@@ -981,10 +1308,11 @@ def main():
                         db,
                         backend_sync_interval=backend_sync_interval,
                         rate_limit_cooldown=rate_limit_cooldown,
+                        database_error_cooldown=database_error_cooldown,
                         next_backend_sync_at=next_backend_sync_at,
                     )
                 logging.info(
-                    "Google Sheets sync: pending_status=%s backend_status=%s pending_synced=%s pending_failed=%s rows=%s matched=%s missing=%s orders_updated=%s items_updated=%s conflicts=%s archived=%s removed=%s",
+                    "Google Sheets sync: pending_status=%s backend_status=%s pending_synced=%s pending_failed=%s rows=%s matched=%s missing=%s orders_updated=%s items_updated=%s conflicts=%s archived=%s removed=%s mutation_codes=%s mutation_batches=%s circuit_open=%s",
                     pending_result.get("status", ""),
                     result.get("status", "completed"),
                     pending_result["synced"],
@@ -997,6 +1325,9 @@ def main():
                     result["conflicts"],
                     result["archived"],
                     result["removed"],
+                    result["mutation_codes"],
+                    result["mutation_batches"],
+                    result.get("circuit_open", False),
                 )
         except Exception:
             logging.exception("Google Sheets sync worker failed")

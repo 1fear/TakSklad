@@ -18,7 +18,7 @@ from sqlalchemy.orm import selectinload
 from .audit_identity import AuditActor, set_audit_actor
 from .db import SessionLocal
 from .google_sheets_pending import queue_google_sheets_export
-from .models import AuditLog, Order, OrderItem
+from .models import AuditLog, Order, OrderItem, PendingEvent
 from .order_statuses import COMPLETED_STATUSES
 from .skladbot_client import (
     SkladBotClient,
@@ -52,6 +52,7 @@ from .skladbot_contracts import (
     request_list_value,
     request_match_diagnostics,
     request_matches_order,
+    request_has_exact_taksklad_marker,
     request_smartup_id,
     request_type_matches,
     request_value,
@@ -475,33 +476,92 @@ def update_orders_from_skladbot(audit_actor: AuditActor | None = None):
             for order in orders_to_check:
                 matches = [request for request in requests if request_matches_order(order, request)]
                 raw_payload = dict(order.raw_payload or {})
+                create_state = normalize_text(raw_payload.get("skladbot_status"))
+                create_event = None
+                active_create_processing = False
+                if create_state in {"create_queued", "ambiguous", "blocked_stock", "create_failed"}:
+                    create_event_id = normalize_text(raw_payload.get("skladbot_create_event_id"))
+                    try:
+                        create_event = db.get(PendingEvent, uuid.UUID(create_event_id)) if create_event_id else None
+                    except ValueError:
+                        create_event = None
+                    marker = normalize_text((create_event.payload or {}).get("taksklad_marker")) if create_event else ""
+                    matches = [
+                        request
+                        for request in requests
+                        if marker and request_has_exact_taksklad_marker(request, marker)
+                    ]
+                    active_create_processing = bool(create_event and create_event.status == "processing")
+                    if active_create_processing:
+                        matches = []
                 raw_payload["skladbot_checked_at"] = checked_at
-                if len(matches) == 1:
+                if active_create_processing:
+                    pending += 1
+                elif len(matches) == 1:
                     request = matches[0]
-                    raw_payload["skladbot_request_number"] = request.get("number") or ""
-                    raw_payload["skladbot_request_id"] = str(request.get("id") or "")
-                    raw_payload["skladbot_status"] = "found"
-                    raw_payload["skladbot_raw"] = request.get("raw") or {}
+                    if create_event is not None and create_state in {
+                        "create_queued", "ambiguous", "blocked_stock", "create_failed"
+                    }:
+                        from .skladbot_request_dry_run import save_skladbot_create_result
+
+                        event_payload = create_event.payload or {}
+                        save_skladbot_create_result(
+                            db,
+                            order,
+                            create_event,
+                            event_payload.get("request_payload") or {},
+                            request,
+                            status="created_recovered",
+                        )
+                        raw_payload = dict(order.raw_payload or {})
+                        raw_payload["skladbot_checked_at"] = checked_at
+                        create_event.status = "completed"
+                        create_event.last_error = None
+                        create_event.completed_at = datetime.now(timezone.utc)
+                        create_event.lease_owner = None
+                        create_event.lease_expires_at = None
+                    else:
+                        raw_payload["skladbot_request_number"] = request.get("number") or ""
+                        raw_payload["skladbot_request_id"] = str(request.get("id") or "")
+                        raw_payload["skladbot_status"] = "found"
+                        raw_payload["skladbot_raw"] = request.get("raw") or {}
                     matched += 1
                 elif len(matches) > 1:
-                    raw_payload["skladbot_status"] = "multiple"
+                    protected = create_state in {"create_queued", "ambiguous", "blocked_stock", "create_failed"}
+                    raw_payload["skladbot_status"] = "ambiguous" if protected else "multiple"
                     raw_payload["skladbot_candidates"] = [
                         {"id": request.get("id"), "number": request.get("number")}
                         for request in matches[:10]
                     ]
                     raw_payload["skladbot_nearest"] = nearest_request_diagnostics(order, requests)
+                    if protected and create_event is not None:
+                        from .skladbot_request_dry_run import (
+                            ensure_skladbot_create_incident,
+                            transition_linked_fulfillment,
+                        )
+                        error = "Multiple SkladBot requests have the same exact TakSklad marker"
+                        create_event.status = "blocked"
+                        create_event.last_error = error
+                        transition_linked_fulfillment(db, create_event, "skladbot_ambiguous", error=error)
+                        ensure_skladbot_create_incident(
+                            db, order, create_event, error, status="manual_review"
+                        )
                     multiple += 1
                 elif not getattr(requests, "complete", True):
-                    raw_payload["skladbot_status"] = "pending"
-                    raw_payload.pop("skladbot_error", None)
+                    if create_state not in {"create_queued", "ambiguous", "blocked_stock", "create_failed"}:
+                        raw_payload["skladbot_status"] = "pending"
+                        raw_payload.pop("skladbot_error", None)
                     raw_payload["skladbot_fetch"] = requests.meta() if hasattr(requests, "meta") else {}
                     raw_payload["skladbot_nearest"] = nearest_request_diagnostics(order, requests)
                     incomplete += 1
                     pending += 1
                 else:
-                    raw_payload["skladbot_status"] = "not_found"
+                    if create_state not in {"create_queued", "ambiguous", "blocked_stock", "create_failed"}:
+                        raw_payload["skladbot_status"] = "not_found"
+                        not_found += 1
+                    else:
+                        pending += 1
                     raw_payload["skladbot_nearest"] = nearest_request_diagnostics(order, requests)
-                    not_found += 1
                 order.raw_payload = raw_payload
                 updated += 1
 

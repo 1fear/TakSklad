@@ -14,7 +14,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from backend.app.models import AuditLog, Base, ImportJob, LogisticsCalendarDay, Order, PendingEvent
+from backend.app.models import AuditLog, Base, ImportJob, LogisticsCalendarDay, Order, PendingEvent, SmartupFulfillment
 from backend.app.smartup_auto_import import (
     SmartupClient,
     SmartupAutoImportConfig,
@@ -38,6 +38,7 @@ from backend.app.smartup_auto_import import (
     send_final_logistics_reports,
     smartup_advisory_lock_key,
     smartup_slot_idempotency_key,
+    sweep_incomplete_smartup_fulfillments,
 )
 from backend.app import smartup_auto_import_worker
 from backend.app.kiz_reports_service import list_completed_kiz_source_files
@@ -462,6 +463,55 @@ class SmartupAutoImportTests(unittest.TestCase):
         self.assertEqual(captured["json"]["delivery_date"], "02.07.2026")
         self.assertEqual(captured["json"]["statuses"], ["B#N"])
 
+    def test_smartup_status_readback_queries_exact_deals_without_write(self):
+        captured = []
+
+        class FakeResponse:
+            text = "{}"
+
+            def __init__(self, deal_id):
+                self.deal_id = deal_id
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                statuses = {"642": "B#W", "643": "B#N"}
+                return {"order": [{"deal_id": self.deal_id, "status": statuses[self.deal_id]}]}
+
+        class FakeHttpClient:
+            def __init__(self, timeout):
+                self.timeout = timeout
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def post(self, url, headers, json, auth):
+                captured.append({"url": url, "headers": headers, "json": json, "auth": auth})
+                return FakeResponse(json["deal_id"])
+
+        config = self.config(
+            "/tmp",
+            smartup_base_url="https://smartup.example",
+            smartup_username="user",
+            smartup_password="password",
+        )
+
+        with mock.patch("backend.app.smartup_auto_import.httpx.Client", FakeHttpClient):
+            statuses = SmartupClient(config).get_deal_statuses(["642", "643", "642", " "])
+
+        self.assertEqual(statuses, {"642": "B#W", "643": "B#N"})
+        self.assertEqual([request["json"]["deal_id"] for request in captured], ["642", "643"])
+        for request in captured:
+            self.assertEqual(request["url"], "https://smartup.example/b/trade/txs/tdeal/order$export")
+            self.assertEqual(request["json"]["begin_deal_date"], "")
+            self.assertEqual(request["json"]["end_deal_date"], "")
+            self.assertEqual(request["json"]["delivery_date"], "")
+            self.assertEqual(request["json"]["statuses"], ["B#N", "B#W"])
+
     def test_build_import_rows_reverse_geocodes_smartup_coordinates_without_address(self):
         config = self.config("/tmp")
         order = sample_order(delivery_address_full="", delivery_address_short="")
@@ -582,7 +632,10 @@ class SmartupAutoImportTests(unittest.TestCase):
             self.assertEqual(orders[0].payment_type, "Терминал")
             self.assertEqual(order_source_id, "smartup:642")
             self.assertEqual(item_source_ids, ["smartup:642"])
-            self.assertEqual(dry_runs[0]["payload"]["comment"], "Терминал\nТП\nSmartup ID: smartup:642")
+            self.assertRegex(
+                dry_runs[0]["payload"]["comment"],
+                r"^Терминал\nТП\nSmartup ID: smartup:642\nTakSklad ref: TSF-[A-F0-9]{24}$",
+            )
             self.assertEqual(len(imports), 1)
             self.assertEqual((imports[0].raw_payload["smartup_auto"]["delivery_dates"]), ["2026-06-26"])
 
@@ -1109,7 +1162,7 @@ class SmartupAutoImportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             config = self.config(tmp_dir, backend_import_enabled=True, change_status_enabled=True)
             sender = FakeTelegramSender()
-            with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "dry_run"}, clear=False):
+            with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "enabled"}, clear=False):
                 with self.SessionLocal() as db:
                     with self.assertRaisesRegex(SmartupAutoImportError, "status change unavailable"):
                         run_scheduled_smartup_auto_import_slot(
@@ -1140,16 +1193,22 @@ class SmartupAutoImportTests(unittest.TestCase):
                     ).scalars().all()
                     orders = db.execute(select(Order)).scalars().all()
                     imports = db.execute(select(ImportJob)).scalars().all()
+                    create_events = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
+                    ).scalars().all()
 
             self.assertEqual(result["status"], "completed")
             self.assertEqual(result["imports"][0]["orders_created"], 0)
             self.assertEqual(result["imports"][0]["duplicate_rows"], 1)
+            self.assertEqual(result["imports"][0]["resolved_order_ids"], [str(orders[0].id)])
             self.assertEqual(retry_client.changed, [(["642"], "B#W")])
             self.assertEqual(len(events), 1)
             self.assertEqual(events[0].status, "completed")
             self.assertEqual(events[0].attempts, 2)
             self.assertEqual(len(orders), 1)
             self.assertEqual(len(imports), 2)
+            self.assertEqual(len(create_events), 1)
+            self.assertEqual(create_events[0].aggregate_id, str(orders[0].id))
 
     def test_enforced_saga_persists_intent_before_change_and_queues_one_skladbot_key(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1199,26 +1258,9 @@ class SmartupAutoImportTests(unittest.TestCase):
             self.assertEqual((sagas[0].payload or {}).get("skladbot_event_key"), creates[0].idempotency_key)
             self.assertEqual(len(result["smartup_saga"]["workflow_key_hashes"]), 1)
 
-    def test_saga_mode_rejects_non_fake_side_effect_clients(self):
+    def test_saga_mode_rejects_inline_skladbot_processing(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             fake = FakeSmartupClient([sample_order()])
-            telegram_config = self.config(
-                tmp_dir,
-                backend_import_enabled=True,
-                change_status_enabled=True,
-                saga_mode="enforced",
-                client_chat_id="synthetic-chat",
-            )
-            with self.SessionLocal() as db:
-                with self.assertRaisesRegex(SmartupAutoImportError, "fake sender"):
-                    run_smartup_auto_import_once(
-                        db,
-                        telegram_config,
-                        now=datetime(2026, 6, 25, 12, 0, tzinfo=ZoneInfo("Asia/Tashkent")),
-                        slot_label="12:00",
-                        smartup_client=fake,
-                    )
-
             processing_config = self.config(
                 tmp_dir,
                 backend_import_enabled=True,
@@ -1351,6 +1393,48 @@ class SmartupAutoImportTests(unittest.TestCase):
             self.assertEqual(len(creates), 1)
             self.assertEqual(len(slots), 1)
             self.assertEqual(slots[0].attempts, 2)
+
+    def test_fulfillment_sweeper_recovers_without_original_schedule_slot(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = self.config(
+                tmp_dir,
+                backend_import_enabled=True,
+                change_status_enabled=True,
+                saga_mode="enforced",
+            )
+            fake = FakeSmartupClient([sample_order()])
+
+            def inject_fault(boundary, _deal_id):
+                if boundary == "smartup_to_local":
+                    raise RuntimeError("synthetic lost Smartup response")
+
+            with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "enabled"}, clear=False):
+                with self.SessionLocal() as db, mock.patch(
+                    "backend.app.smartup_saga.smartup_saga_fault",
+                    side_effect=inject_fault,
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "lost Smartup response"):
+                        run_smartup_auto_import_once(
+                            db,
+                            config,
+                            now=datetime(2026, 6, 25, 12, 0, tzinfo=ZoneInfo("Asia/Tashkent")),
+                            slot_label="12:00",
+                            smartup_client=fake,
+                            telegram_sender=FakeTelegramSender(),
+                        )
+
+                with self.SessionLocal() as db:
+                    sweep = sweep_incomplete_smartup_fulfillments(db, config, client=fake)
+                    fulfillment = db.execute(select(SmartupFulfillment)).scalar_one()
+                    creates = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
+                    ).scalars().all()
+
+            self.assertEqual(sweep["status"], "completed")
+            self.assertEqual(fake.changed, [(["642"], "B#W")])
+            self.assertEqual(fake.status_reads, [["642"]])
+            self.assertEqual(fulfillment.state, "skladbot_create_queued")
+            self.assertEqual(len(creates), 1)
 
     def test_enforced_saga_keeps_slot_retryable_until_skladbot_key_exists(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

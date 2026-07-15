@@ -9,22 +9,40 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.orm.attributes import flag_modified
 
-from .google_sheets_exporter import make_sheet_record
 from .google_sheets_pending import queue_google_sheets_export
 from .event_leases import claim_event_leases, event_leases_enabled, finalize_event_leases
-from .models import AuditLog, ImportJob, Incident, Order, OrderItem, PendingEvent
+from .models import (
+    AuditLog,
+    ImportJob,
+    Incident,
+    Order,
+    OrderItem,
+    PendingEvent,
+    SmartupFulfillment,
+    SmartupFulfillmentOrder,
+)
 from .observability_context import bind_pending_event
 from .outbox_service import queue_outbox_event
 from .representative_contacts import build_representative_comment, find_representative_contact
-from .skladbot_client import SkladBotClient, env_int, sanitize_skladbot_error
+from .skladbot_client import (
+    SkladBotApiError,
+    SkladBotClient,
+    SkladBotErrorKind,
+    env_int,
+    sanitize_skladbot_error,
+)
 from .skladbot_contracts import (
+    build_taksklad_marker,
+    is_stock_shortage_text,
     normalize_request_payload,
     normalize_smartup_id,
     normalize_text,
     parse_int,
     product_sku_key,
     request_list_value,
+    request_has_exact_taksklad_marker,
     request_matches_order,
+    taksklad_marker_from_comment,
 )
 
 
@@ -37,7 +55,6 @@ SKLADBOT_REQUEST_TYPE_ID = 3389
 SKLADBOT_REQUEST_CREATE_LIMIT_ENV = "SKLADBOT_REQUEST_CREATE_LIMIT"
 SKLADBOT_SKU_MAPPING_JSON_ENV = "SKLADBOT_SKU_MAPPING_JSON"
 STALE_SKLADBOT_CREATE_TIMEOUT = timedelta(minutes=10)
-GOOGLE_DELETE_IMPORT_RECORDS_ACTION = "google_sheets_delete_import_records_export"
 TELEGRAM_NOTIFICATION_EVENT_TYPE = "telegram_notification"
 
 DEFAULT_SKU_MAPPING = {
@@ -241,6 +258,119 @@ def create_skladbot_dry_run_for_import(
     return summary
 
 
+def create_skladbot_dry_run_for_orders(
+    db: Session,
+    order_ids: list[str],
+    *,
+    import_id: str = "",
+    force_mode: str | None = None,
+) -> dict[str, Any]:
+    """Build or queue SkladBot creates for explicit canonical orders.
+
+    This path is intentionally independent from ``backend_import_id`` so a
+    duplicate-only retry can resume fulfillment for the original Order rows.
+    """
+    configured_mode = normalize_text(force_mode).lower() if force_mode is not None else skladbot_create_requests_mode()
+    if configured_mode not in {"dry_run", "enabled", "disabled"}:
+        configured_mode = skladbot_create_requests_mode()
+    if configured_mode == "disabled":
+        return {**default_summary(mode="disabled"), "status": "disabled", "event_id": ""}
+
+    import_id = normalize_text(import_id)
+    normalized_order_ids = normalize_explicit_order_ids(order_ids)
+    if not normalized_order_ids:
+        raise ValueError("At least one canonical order id is required")
+    orders = list_orders_for_ids(db, normalized_order_ids)
+    found_order_ids = {str(order.id) for order, _items in orders}
+    missing_order_ids = [order_id for order_id in normalized_order_ids if order_id not in found_order_ids]
+    if missing_order_ids:
+        raise ValueError(f"Canonical orders not found: {', '.join(missing_order_ids)}")
+
+    batch_key = explicit_order_batch_key(import_id, normalized_order_ids)
+    existing_event = db.execute(
+        select(PendingEvent)
+        .where(PendingEvent.event_type == SKLADBOT_REQUEST_DRY_RUN_EVENT_TYPE)
+        .where(PendingEvent.aggregate_type == "order_batch")
+        .where(PendingEvent.aggregate_id == batch_key)
+        .order_by(PendingEvent.created_at.desc(), PendingEvent.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if existing_event is not None:
+        dry_runs = list((existing_event.payload or {}).get("dry_runs") or [])
+        if configured_mode == "enabled":
+            queue_skladbot_create_events(db, import_id, dry_runs)
+        summary = summarize_dry_runs(dry_runs, mode=configured_mode)
+        summary["event_id"] = str(existing_event.id)
+        existing_event.payload = {
+            **(existing_event.payload or {}),
+            "configured_mode": configured_mode,
+            "would_post": configured_mode == "enabled",
+            "summary": summary,
+            "dry_runs": dry_runs,
+        }
+        return {**summary, "status": "deduplicated"}
+
+    dry_runs = [
+        build_order_dry_run(
+            order,
+            items,
+            import_id,
+            index,
+            representative_contact=find_representative_contact(db, order.representative),
+        )
+        for index, (order, items) in enumerate(orders, start=1)
+    ]
+    queued = 0
+    if configured_mode == "enabled":
+        queued = queue_skladbot_create_events(db, import_id, dry_runs)
+    summary = summarize_dry_runs(dry_runs, mode=configured_mode)
+    summary["events_queued"] = queued
+    generated_at = datetime.now(timezone.utc).isoformat()
+    event = PendingEvent(
+        event_type=SKLADBOT_REQUEST_DRY_RUN_EVENT_TYPE,
+        action=SKLADBOT_REQUEST_DRY_RUN_EVENT_TYPE,
+        aggregate_type="order_batch",
+        aggregate_id=batch_key,
+        status="completed",
+        attempts=0,
+        payload={
+            "version": 2,
+            "mode": configured_mode,
+            "configured_mode": configured_mode,
+            "dry_run": configured_mode != "enabled",
+            "would_post": configured_mode == "enabled",
+            "import_id": import_id,
+            "explicit_order_ids": normalized_order_ids,
+            "generated_at": generated_at,
+            "summary": summary,
+            "dry_runs": dry_runs,
+        },
+    )
+    db.add(event)
+    db.flush()
+    summary = {**summary, "event_id": str(event.id)}
+    event.payload = {**event.payload, "summary": summary}
+    add_skladbot_dry_run_audit(db, import_id, str(event.id), summary, dry_runs)
+    return summary
+
+
+def normalize_explicit_order_ids(order_ids: list[str]) -> list[str]:
+    normalized = []
+    for raw_order_id in order_ids or []:
+        order_id = normalize_text(raw_order_id)
+        try:
+            canonical = str(uuid.UUID(order_id))
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise ValueError(f"Invalid canonical order id: {order_id or '<empty>'}") from exc
+        if canonical not in normalized:
+            normalized.append(canonical)
+    return normalized
+
+
+def explicit_order_batch_key(import_id: str, order_ids: list[str]) -> str:
+    return f"skladbot:orders:{stable_payload_hash({'import_id': import_id, 'order_ids': sorted(order_ids)})[:32]}"
+
+
 def list_skladbot_dry_runs(
     db: Session,
     import_id: str | None = None,
@@ -325,6 +455,23 @@ def list_orders_for_import(db: Session, import_id: str) -> list[tuple[Order, lis
     return matched_orders
 
 
+def list_orders_for_ids(db: Session, order_ids: list[str]) -> list[tuple[Order, list[Any]]]:
+    if not order_ids:
+        return []
+    order_uuid_by_id = {order_id: uuid.UUID(order_id) for order_id in order_ids}
+    orders = db.execute(
+        select(Order)
+        .options(selectinload(Order.items))
+        .where(Order.id.in_(tuple(order_uuid_by_id.values())))
+    ).scalars().unique().all()
+    by_id = {str(order.id): order for order in orders}
+    return [
+        (by_id[order_id], list(by_id[order_id].items))
+        for order_id in order_ids
+        if order_id in by_id
+    ]
+
+
 def find_skladbot_dry_run_event(db: Session, import_id: str) -> PendingEvent | None:
     events = list_skladbot_dry_run_events(db, import_id)
     return events[0] if events else None
@@ -359,7 +506,8 @@ def queue_skladbot_create_events(db: Session, import_id: str, dry_runs: list[dic
         payload = row.get("payload") or {}
         if not order_id or not payload:
             continue
-        idempotency_key = skladbot_create_idempotency_key(order_id)
+        taksklad_marker = taksklad_marker_from_comment(payload.get("comment"))
+        idempotency_key = skladbot_create_idempotency_key(order_id, marker=taksklad_marker)
         existing = find_skladbot_create_event_by_key(db, idempotency_key)
         if existing is not None:
             apply_existing_create_event_to_dry_run(row, existing)
@@ -380,10 +528,19 @@ def queue_skladbot_create_events(db: Session, import_id: str, dry_runs: list[dic
                 "idempotency_key": idempotency_key,
                 "request_payload": payload,
                 "request_payload_hash": stable_payload_hash(payload),
+                "taksklad_marker": taksklad_marker,
                 "queued_at": now,
                 "create_status": "queued",
             },
         )
+        order = db.get(Order, uuid.UUID(order_id))
+        if order is not None:
+            order_payload = dict(order.raw_payload or {})
+            order_payload["skladbot_status"] = "create_queued"
+            order_payload["skladbot_create_event_id"] = str(event.id)
+            order_payload["skladbot_create_idempotency_key"] = idempotency_key
+            order.raw_payload = order_payload
+            flag_modified(order, "raw_payload")
         row["status"] = "queued"
         row["create_event_id"] = str(event.id)
         row["error"] = ""
@@ -424,7 +581,7 @@ def apply_existing_create_event_to_dry_run(row: dict[str, Any], event: PendingEv
         row["error"] = ""
         return
     if event.status == "blocked":
-        row["status"] = "blocked"
+        row["status"] = create_status if create_status in {"blocked_stock", "ambiguous"} else "blocked"
         row["error"] = normalize_text(event.last_error)
         return
     if event.status == "failed":
@@ -435,7 +592,11 @@ def apply_existing_create_event_to_dry_run(row: dict[str, Any], event: PendingEv
     row["error"] = ""
 
 
-def skladbot_create_idempotency_key(order_id: str) -> str:
+def skladbot_create_idempotency_key(order_id: str, *, marker: str = "") -> str:
+    normalized_marker = taksklad_marker_from_comment(marker)
+    if normalized_marker:
+        marker_id = normalized_marker.rsplit("-", 1)[-1]
+        return f"skladbot:create:v2:marker:{marker_id}:order:{normalize_text(order_id)}"
     return f"skladbot:create:v1:order:{normalize_text(order_id)}"
 
 
@@ -650,6 +811,7 @@ def build_skladbot_payload(
     smartup_id = order_smartup_id(order)
     if smartup_id:
         comment = append_comment_line(comment, f"Smartup ID: {smartup_id}")
+    comment = append_comment_line(comment, order_taksklad_marker(order))
     return {
         "customer_id": SKLADBOT_CUSTOMER_ID,
         "request_type_id": SKLADBOT_REQUEST_TYPE_ID,
@@ -674,6 +836,29 @@ def build_skladbot_payload(
             for product in products
         ],
     }
+
+
+def order_taksklad_marker(order: Order) -> str:
+    raw_payload = order.raw_payload or {}
+    workflow_reference = next(
+        (
+            normalize_text(raw_payload.get(key))
+            for key in (
+                "smartup_fulfillment_key",
+                "fulfillment_key",
+                "workflow_key",
+                "source_identity_key",
+            )
+            if normalize_text(raw_payload.get(key))
+        ),
+        "",
+    )
+    reference = (
+        f"{workflow_reference}:order:{order.id}"
+        if workflow_reference
+        else f"order:{order.id}"
+    )
+    return build_taksklad_marker(reference)
 
 
 def order_smartup_id(order: Order) -> str:
@@ -834,6 +1019,8 @@ def default_create_processing_result(status: str = "completed") -> dict[str, Any
         "recovered": 0,
         "already_linked": 0,
         "blocked": 0,
+        "ambiguous": 0,
+        "stock_shortage_blocked": 0,
         "stock_shortage_cancelled": 0,
         "failed": 0,
         "remaining": 0,
@@ -902,118 +1089,24 @@ def count_pending_skladbot_create_events(db: Session) -> int:
     ).scalar_one() or 0)
 
 
-def is_skladbot_stock_shortage_error(error: str) -> bool:
-    text = normalize_text(error).casefold().replace("ё", "е")
-    if not text:
-        return False
-    direct_phrases = (
-        "не хватает",
-        "не хватило",
-        "недостаточно",
-        "insufficient stock",
-        "not enough stock",
-        "not enough quantity",
-        "not enough products",
-    )
-    if any(phrase in text for phrase in direct_phrases):
-        return True
-    if "недостат" in text and any(word in text for word in ("товар", "остат", "склад", "количеств")):
-        return True
-    if "остат" in text and "меньш" in text and any(word in text for word in ("товар", "количеств", "заявк")):
-        return True
-    return False
-
-
-def order_has_scans(order: Order) -> bool:
-    for item in order.items or []:
-        if int(item.scanned_blocks or 0) > 0:
-            return True
-        if getattr(item, "scan_codes", None):
-            return True
-    return False
-
-
-def build_order_google_delete_records(order: Order) -> list[dict[str, Any]]:
-    records = []
-    order_raw = dict(order.raw_payload or {})
-    for item in order.items or []:
-        item_raw = dict(item.raw_payload or {})
-        item_key = (
-            normalize_text(item_raw.get("item_key"))
-            or normalize_text(item_raw.get("source_import_id"))
-            or str(item.id)
-        )
-        source_file = normalize_text(item_raw.get("source_file"))
-        row = {
-            "order_date": order.order_date,
-            "payment_type": order.payment_type,
-            "client": order.client,
-            "address": order.address,
-            "representative": order.representative,
-            "product": item.product,
-            "quantity_pieces": item.quantity_pieces,
-            "quantity_blocks": item.quantity_blocks,
-            "status": item.status,
-            "source_order_id": normalize_text(item_raw.get("source_order_id")),
-            "source_import_id": normalize_text(item_raw.get("source_import_id")),
-            "source_file": source_file,
-            "source_row": item_raw.get("source_row"),
-            "skladbot_request_number": normalize_text(order_raw.get("skladbot_request_number")),
-            "skladbot_request_id": normalize_text(order_raw.get("skladbot_request_id")),
-        }
-        records.append(make_sheet_record(row, item_key=item_key, filename=source_file))
-    return records
-
-
-def record_matches_google_targets(record: dict[str, Any], import_ids: set[str], order_ids: set[str]) -> bool:
-    import_id = normalize_text(record.get("ID импорта"))
-    order_id = normalize_text(record.get("ID заказа"))
-    return bool((import_id and import_id in import_ids) or (order_id and order_id in order_ids))
-
-
-def remove_records_from_pending_google_import_exports(db: Session, records: list[dict[str, Any]]) -> dict[str, int]:
-    import_ids = {normalize_text(record.get("ID импорта")) for record in records if normalize_text(record.get("ID импорта"))}
-    order_ids = {normalize_text(record.get("ID заказа")) for record in records if normalize_text(record.get("ID заказа"))}
-    if not import_ids and not order_ids:
-        return {"removed": 0, "completed_events": 0}
-
-    removed = 0
-    completed_events = 0
-    events = db.execute(
-        select(PendingEvent)
-        .where(PendingEvent.event_type == "google_sheets_export")
-        .where(PendingEvent.status.in_(("pending", "failed")))
-        .where(or_(
-            PendingEvent.action == "google_sheets_import_export",
-            PendingEvent.payload["action"].as_string() == "google_sheets_import_export",
-        ))
-        .order_by(PendingEvent.created_at, PendingEvent.id)
-        .limit(1000)
-    ).scalars().all()
-    for pending_event in events:
-        payload = dict(pending_event.payload or {})
-        if payload.get("action") != "google_sheets_import_export":
-            continue
-        original_records = list(payload.get("records") or [])
-        if not original_records:
-            continue
-        kept_records = [
-            record
-            for record in original_records
-            if not record_matches_google_targets(record, import_ids, order_ids)
-        ]
-        if len(kept_records) == len(original_records):
-            continue
-        removed += len(original_records) - len(kept_records)
-        payload["records"] = kept_records
-        payload["stock_shortage_removed_records"] = removed
-        pending_event.payload = payload
-        if not kept_records:
-            pending_event.status = "completed"
-            pending_event.last_error = ""
-            completed_events += 1
-        db.add(pending_event)
-    return {"removed": removed, "completed_events": completed_events}
+def classify_skladbot_create_exception(error: Exception) -> str:
+    if isinstance(error, SkladBotApiError):
+        if error.kind == SkladBotErrorKind.STOCK_SHORTAGE and not error.ambiguous:
+            return "stock_shortage"
+        if error.kind == SkladBotErrorKind.RATE_LIMIT and not error.ambiguous:
+            return "rate_limited"
+        return "ambiguous" if error.ambiguous else "failed"
+    if isinstance(error, (TimeoutError, ConnectionError)):
+        return "ambiguous"
+    text = normalize_text(error)
+    lowered = text.casefold()
+    if "timeout" in lowered or "timed out" in lowered or "connection reset" in lowered:
+        return "ambiguous"
+    if any(f"http {status}" in lowered for status in range(500, 600)):
+        return "ambiguous"
+    if is_stock_shortage_text(text) and any(f"http {status}" in lowered for status in range(400, 500)):
+        return "stock_shortage"
+    return "failed"
 
 
 def order_import_job(db: Session, order: Order, event: PendingEvent) -> ImportJob | None:
@@ -1044,7 +1137,7 @@ def first_order_source_file(order: Order) -> str:
 
 def build_stock_shortage_notification_text(order: Order, error: str) -> str:
     lines = [
-        "Заказ отменён из-за недостатка товара",
+        "Заказ заблокирован из-за недостатка товара",
         "",
         f"Клиент: {order.client}",
         f"Дата отгрузки: {format_order_date_for_message(order.order_date) or 'не указана'}",
@@ -1064,7 +1157,7 @@ def build_stock_shortage_notification_text(order: Order, error: str) -> str:
         "",
         f"Причина SkladBot: {normalize_text(error)}",
         "",
-        "SkladBot заявку не создал. Заказ удалён из активной БД и поставлено удаление из Google Sheets.",
+        "SkladBot заявку не создал. Заказ не удалён, Google Sheets не изменён; нужна ручная проверка.",
     ])
     return "\n".join(lines)
 
@@ -1088,7 +1181,7 @@ def queue_stock_shortage_notification(
         status="pending",
         idempotency_key=idempotency_key,
         payload={
-            "kind": "skladbot_stock_shortage_cancelled_order",
+            "kind": "skladbot_stock_shortage_blocked_order",
             "chat_id": chat_id,
             "order_id": str(order.id),
             "import_id": str(import_job.id) if import_job else normalize_text((event.payload or {}).get("import_id")),
@@ -1174,67 +1267,68 @@ def ensure_skladbot_create_incident(
     return incident
 
 
-def cancel_unscanned_order_after_skladbot_stock_shortage(
+def block_order_after_skladbot_stock_shortage(
     db: Session,
     order: Order,
     event: PendingEvent,
     error: str,
 ) -> dict[str, Any]:
-    if order_has_scans(order):
-        guarded_error = f"{normalize_text(error)}; автоотмена пропущена, потому что у заказа уже есть сканы"
-        mark_order_skladbot_create_failed(order, event, guarded_error)
-        ensure_skladbot_create_incident(db, order, event, guarded_error, status="manual_review")
-        return {"status": "create_failed", "error": guarded_error, "order_id": str(order.id)}
-
     import_job = order_import_job(db, order, event)
-    incident = ensure_skladbot_create_incident(db, order, event, error, status="open")
-    records = build_order_google_delete_records(order)
-    pending_google_cleanup = remove_records_from_pending_google_import_exports(db, records)
+    mark_order_skladbot_create_blocked(order, event, error, status="blocked_stock")
+    incident = ensure_skladbot_create_incident(db, order, event, error, status="manual_review")
     google_event = queue_google_sheets_export(
         db,
-        GOOGLE_DELETE_IMPORT_RECORDS_ACTION,
-        "order",
+        "google_sheets_skladbot_export",
+        "skladbot",
         str(order.id),
         result={"status": "queued", "updated": 0, "error": ""},
         payload={
-            "records": records,
-            "reason": "skladbot_stock_shortage",
+            "order_ids": [str(order.id)],
+            "include_inactive": True,
+            "include_archive": True,
         },
     )
     notification_event = queue_stock_shortage_notification(db, order, event, import_job, error)
     update_event_payload(event, {
-        "create_status": "cancelled_stock_shortage",
+        "create_status": "blocked_stock",
         "error": normalize_text(error),
-        "stock_shortage_cancelled_at": datetime.now(timezone.utc).isoformat(),
-        "google_delete_event_id": str(google_event.id) if google_event else "",
+        "stock_shortage_blocked_at": datetime.now(timezone.utc).isoformat(),
+        "google_status_event_id": str(google_event.id) if google_event else "",
         "telegram_notification_event_id": str(notification_event.id) if notification_event else "",
-        "pending_google_cleanup": pending_google_cleanup,
     })
+    transition_linked_fulfillment(db, event, "blocked_stock", error=error)
     order_id = str(order.id)
     db.add(AuditLog(
-        action="skladbot_stock_shortage_order_cancelled",
+        action="skladbot_stock_shortage_order_blocked",
         entity_type="order",
         entity_id=order_id,
         payload={
             "order_id": order_id,
             "import_id": str(import_job.id) if import_job else normalize_text((event.payload or {}).get("import_id")),
             "error": normalize_text(error),
-            "google_records": len(records),
-            "google_delete_event_id": str(google_event.id) if google_event else "",
+            "google_status_event_id": str(google_event.id) if google_event else "",
             "telegram_notification_event_id": str(notification_event.id) if notification_event else "",
             "incident_id": str(incident.id) if incident.id else "",
         },
     ))
-    db.delete(order)
     return {
-        "status": "cancelled_stock_shortage",
+        "status": "blocked_stock",
         "order_id": order_id,
         "error": normalize_text(error),
-        "google_delete_event_id": str(google_event.id) if google_event else "",
+        "google_status_event_id": str(google_event.id) if google_event else "",
         "telegram_notification_event_id": str(notification_event.id) if notification_event else "",
         "incident_id": str(incident.id) if incident.id else "",
-        "records": len(records),
     }
+
+
+def cancel_unscanned_order_after_skladbot_stock_shortage(
+    db: Session,
+    order: Order,
+    event: PendingEvent,
+    error: str,
+) -> dict[str, Any]:
+    """Legacy name retained; stock shortage is now non-destructive."""
+    return block_order_after_skladbot_stock_shortage(db, order, event, error)
 
 
 def process_skladbot_create_event(db: Session, event: PendingEvent, client: Any) -> dict[str, Any]:
@@ -1261,6 +1355,12 @@ def process_skladbot_create_event(db: Session, event: PendingEvent, client: Any)
             "created_request_number": existing_number,
             "completed_at": datetime.now(timezone.utc).isoformat(),
         })
+        transition_linked_fulfillment(
+            db,
+            event,
+            "skladbot_created",
+            remote_request_id=existing_id or existing_number,
+        )
         return {
             "status": "already_linked",
             "request_id": existing_id,
@@ -1277,18 +1377,39 @@ def process_skladbot_create_event(db: Session, event: PendingEvent, client: Any)
     )
     if dry_run.get("status") != "ready":
         error = normalize_text(dry_run.get("error")) or "SkladBot payload is blocked"
-        mark_order_skladbot_create_failed(order, event, error)
+        mark_order_skladbot_create_failed(db, order, event, error)
         return {"status": "blocked", "error": error, "order_id": str(order.id)}
 
     request_payload = dry_run.get("payload") or {}
     request_payload_hash = stable_payload_hash(request_payload)
+    event_marker = normalize_text(payload.get("taksklad_marker"))
+    taksklad_marker = event_marker or taksklad_marker_from_comment(request_payload.get("comment"))
     update_event_payload(event, {
         "request_payload": request_payload,
         "request_payload_hash": request_payload_hash,
+        "taksklad_marker": taksklad_marker,
     })
 
+    if normalize_text(payload.get("post_state")) == "ambiguous" or normalize_text(payload.get("create_status")) == "ambiguous":
+        existing_request = reconcile_ambiguous_skladbot_request(order, event, client, taksklad_marker)
+        if existing_request:
+            return save_skladbot_create_result(
+                db,
+                order,
+                event,
+                request_payload,
+                existing_request,
+                status="created_recovered",
+            )
+        error = normalize_text(payload.get("error")) or "SkladBot POST result is ambiguous; exact marker was not found"
+        return mark_skladbot_create_ambiguous(db, order, event, error)
+
     if int(event.attempts or 0) > 1:
-        existing_request = find_existing_skladbot_request_for_order(order, client)
+        legacy_marker = event_marker
+        existing_request = (
+            find_existing_skladbot_request_for_order(order, client, marker=legacy_marker)
+            if legacy_marker else None
+        )
         if existing_request:
             return save_skladbot_create_result(
                 db,
@@ -1299,10 +1420,21 @@ def process_skladbot_create_event(db: Session, event: PendingEvent, client: Any)
                 status="created_recovered",
             )
 
+    update_event_payload(event, {
+        "post_state": "started",
+        "post_started_at": datetime.now(timezone.utc).isoformat(),
+    })
+    transition_linked_fulfillment(db, event, "skladbot_post_started")
+    db.commit()
+
     try:
         response = client.create_request(request_payload)
     except Exception as exc:
-        existing_request = find_existing_skladbot_request_for_order(order, client)
+        classification = classify_skladbot_create_exception(exc)
+        existing_request = (
+            find_existing_skladbot_request_for_order(order, client, marker=taksklad_marker)
+            if taksklad_marker else None
+        )
         if existing_request:
             return save_skladbot_create_result(
                 db,
@@ -1313,16 +1445,36 @@ def process_skladbot_create_event(db: Session, event: PendingEvent, client: Any)
                 status="created_recovered",
             )
         error = sanitize_skladbot_error(exc)
-        if is_skladbot_stock_shortage_error(error):
-            return cancel_unscanned_order_after_skladbot_stock_shortage(db, order, event, error)
-        mark_order_skladbot_create_failed(order, event, error)
+        if classification == "stock_shortage":
+            update_event_payload(event, {"post_state": "rejected"})
+            return block_order_after_skladbot_stock_shortage(db, order, event, error)
+        if classification == "ambiguous":
+            update_event_payload(event, {"post_state": "ambiguous"})
+            return mark_skladbot_create_ambiguous(db, order, event, error)
+        if classification == "rate_limited":
+            retry_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+            event.available_at = retry_at
+            raw_payload = dict(order.raw_payload or {})
+            raw_payload["skladbot_status"] = "create_queued"
+            raw_payload["skladbot_error"] = error
+            order.raw_payload = raw_payload
+            flag_modified(order, "raw_payload")
+            update_event_payload(event, {
+                "post_state": "retry_scheduled",
+                "create_status": "queued",
+                "retry_at": retry_at.isoformat(),
+            })
+            transition_linked_fulfillment(db, event, "skladbot_create_queued", error=error)
+            return {"status": "retry_scheduled", "error": error, "order_id": str(order.id)}
+        update_event_payload(event, {"post_state": "failed_confirmed"})
+        mark_order_skladbot_create_failed(db, order, event, error)
         ensure_skladbot_create_incident(db, order, event, error, status="open")
-        return {"status": "create_failed", "error": error, "order_id": str(order.id)}
+        return {"status": "blocked", "error": error, "order_id": str(order.id)}
 
     response_request = normalize_created_request_response(response)
     request_id = parse_int(response_request.get("id"))
     if request_id <= 0:
-        existing_request = find_existing_skladbot_request_for_order(order, client)
+        existing_request = find_existing_skladbot_request_for_order(order, client, marker=taksklad_marker)
         if existing_request:
             return save_skladbot_create_result(
                 db,
@@ -1333,14 +1485,18 @@ def process_skladbot_create_event(db: Session, event: PendingEvent, client: Any)
                 status="created_recovered",
             )
         error = "SkladBot create response did not include request id"
-        mark_order_skladbot_create_failed(order, event, error)
-        ensure_skladbot_create_incident(db, order, event, error, status="open")
-        return {"status": "create_failed", "error": error, "order_id": str(order.id)}
+        update_event_payload(event, {"post_state": "ambiguous"})
+        return mark_skladbot_create_ambiguous(db, order, event, error)
+
+    update_event_payload(event, {
+        "post_state": "response_received",
+        "post_response_request_id": request_id,
+    })
 
     try:
         detail = client.get_request_detail(request_id)
     except Exception as exc:
-        existing_request = find_existing_skladbot_request_for_order(order, client)
+        existing_request = find_existing_skladbot_request_for_order(order, client, marker=taksklad_marker)
         if existing_request:
             return save_skladbot_create_result(
                 db,
@@ -1351,14 +1507,13 @@ def process_skladbot_create_event(db: Session, event: PendingEvent, client: Any)
                 status="created_recovered",
             )
         error = f"SkladBot created request {request_id}, but canonical detail failed: {sanitize_skladbot_error(exc)}"
-        mark_order_skladbot_create_failed(order, event, error)
-        ensure_skladbot_create_incident(db, order, event, error, status="open")
-        return {"status": "create_failed", "error": error, "order_id": str(order.id)}
+        update_event_payload(event, {"post_state": "ambiguous"})
+        return mark_skladbot_create_ambiguous(db, order, event, error)
 
     request = normalize_request_payload({"id": request_id}, detail)
     request_number = normalize_text(request.get("number"))
     if not request_number:
-        existing_request = find_existing_skladbot_request_for_order(order, client)
+        existing_request = find_existing_skladbot_request_for_order(order, client, marker=taksklad_marker)
         if existing_request and normalize_text(existing_request.get("number")):
             return save_skladbot_create_result(
                 db,
@@ -1369,9 +1524,8 @@ def process_skladbot_create_event(db: Session, event: PendingEvent, client: Any)
                 status="created_recovered",
             )
         error = f"SkladBot created request {request_id}, but canonical WH-R is empty"
-        mark_order_skladbot_create_failed(order, event, error)
-        ensure_skladbot_create_incident(db, order, event, error, status="open")
-        return {"status": "create_failed", "error": error, "order_id": str(order.id)}
+        update_event_payload(event, {"post_state": "ambiguous"})
+        return mark_skladbot_create_ambiguous(db, order, event, error)
 
     return save_skladbot_create_result(
         db,
@@ -1396,12 +1550,37 @@ def normalize_created_request_response(response: Any) -> dict[str, Any]:
     }
 
 
-def find_existing_skladbot_request_for_order(order: Order, client: Any) -> dict[str, Any] | None:
+def reconcile_ambiguous_skladbot_request(
+    order: Order,
+    event: PendingEvent,
+    client: Any,
+    marker: str,
+) -> dict[str, Any] | None:
+    request_id = parse_int((event.payload or {}).get("post_response_request_id"))
+    if request_id > 0:
+        try:
+            detail = client.get_request_detail(request_id)
+        except Exception:
+            detail = None
+        if detail:
+            request = normalize_request_payload({"id": request_id}, detail)
+            if request_has_exact_taksklad_marker(request, marker) and normalize_text(request.get("number")):
+                return request
+    return find_existing_skladbot_request_for_order(order, client, marker=marker)
+
+
+def find_existing_skladbot_request_for_order(
+    order: Order,
+    client: Any,
+    *,
+    marker: str = "",
+) -> dict[str, Any] | None:
     try:
         list_items = client.list_requests()
     except Exception:
         return None
-    detail_limit = max(1, min(env_int("SKLADBOT_CREATE_RECONCILE_DETAIL_LIMIT", 30), 100))
+    exact_marker = taksklad_marker_from_comment(marker)
+    detail_limit = None if exact_marker else max(1, min(env_int("SKLADBOT_CREATE_RECONCILE_DETAIL_LIMIT", 30), 100))
     checked = 0
     for item in list_items:
         request_id = parse_int(request_list_value(item, "id"))
@@ -1413,9 +1592,11 @@ def find_existing_skladbot_request_for_order(order: Order, client: Any) -> dict[
             continue
         checked += 1
         request = normalize_request_payload(item, detail)
-        if request_matches_order(order, request):
+        if exact_marker and request_has_exact_taksklad_marker(request, exact_marker):
             return request
-        if checked >= detail_limit:
+        if not exact_marker and request_matches_order(order, request):
+            return request
+        if detail_limit is not None and checked >= detail_limit:
             break
     return None
 
@@ -1432,6 +1613,9 @@ def save_skladbot_create_result(
     checked_at = datetime.now(timezone.utc).isoformat()
     request_id = normalize_text(request.get("id"))
     request_number = normalize_text(request.get("number"))
+    if not request_id or not request_number:
+        error = "Exact SkladBot match is incomplete: canonical request id and WH-R are required"
+        return mark_skladbot_create_ambiguous(db, order, event, error)
     raw_payload = dict(order.raw_payload or {})
     raw_payload.update({
         "skladbot_request_id": request_id,
@@ -1465,11 +1649,25 @@ def save_skladbot_create_result(
     )
     update_event_payload(event, {
         "create_status": status,
+        "post_state": "completed",
         "created_request_id": request_id,
         "created_request_number": request_number,
         "completed_at": checked_at,
         "response_summary": safe_skladbot_response_summary(response),
     })
+    transition_linked_fulfillment(
+        db,
+        event,
+        "skladbot_created",
+        remote_request_id=request_id,
+    )
+    for incident in db.execute(
+        select(Incident)
+        .where(Incident.pending_event_id == event.id)
+        .where(Incident.source == "skladbot_create")
+    ).scalars().all():
+        incident.status = "resolved"
+        incident.resolved_at = datetime.now(timezone.utc)
     return {
         "status": status,
         "request_id": request_id,
@@ -1478,7 +1676,7 @@ def save_skladbot_create_result(
     }
 
 
-def mark_order_skladbot_create_failed(order: Order, event: PendingEvent, error: str) -> None:
+def mark_order_skladbot_create_failed(db: Session, order: Order, event: PendingEvent, error: str) -> None:
     raw_payload = dict(order.raw_payload or {})
     raw_payload["skladbot_status"] = "create_failed"
     raw_payload["skladbot_checked_at"] = datetime.now(timezone.utc).isoformat()
@@ -1491,6 +1689,86 @@ def mark_order_skladbot_create_failed(order: Order, event: PendingEvent, error: 
         "create_status": "create_failed",
         "error": normalize_text(error),
     })
+    transition_linked_fulfillment(db, event, "manual_review", error=error)
+
+
+def mark_order_skladbot_create_blocked(
+    order: Order,
+    event: PendingEvent,
+    error: str,
+    *,
+    status: str,
+) -> None:
+    raw_payload = dict(order.raw_payload or {})
+    raw_payload["skladbot_status"] = status
+    raw_payload["skladbot_checked_at"] = datetime.now(timezone.utc).isoformat()
+    raw_payload["skladbot_error"] = normalize_text(error)
+    raw_payload["skladbot_create_event_id"] = str(event.id)
+    raw_payload["skladbot_create_idempotency_key"] = event.idempotency_key or ""
+    order.raw_payload = raw_payload
+    flag_modified(order, "raw_payload")
+    update_event_payload(event, {
+        "create_status": status,
+        "error": normalize_text(error),
+    })
+
+
+def transition_linked_fulfillment(
+    db: Session,
+    event: PendingEvent,
+    target_state: str,
+    *,
+    error: str = "",
+    remote_request_id: str = "",
+) -> None:
+    link = db.execute(
+        select(SmartupFulfillmentOrder).where(SmartupFulfillmentOrder.skladbot_event_id == event.id)
+    ).scalar_one_or_none()
+    if link is None:
+        return
+    fulfillment = db.get(SmartupFulfillment, link.fulfillment_id)
+    if fulfillment is None:
+        return
+    from .smartup_saga import link_fulfillment_order_event, transition_fulfillment_order
+
+    state_map = {
+        "skladbot_create_queued": "create_queued",
+        "skladbot_post_started": "post_started",
+        "skladbot_created": "created",
+        "skladbot_ambiguous": "ambiguous",
+        "blocked_stock": "blocked_stock",
+        "manual_review": "manual_review",
+    }
+    link_fulfillment_order_event(
+        db,
+        fulfillment,
+        link.order_id,
+        create_event=event,
+        remote_request_id=remote_request_id or None,
+    )
+    transition_fulfillment_order(
+        db,
+        link,
+        state_map[target_state],
+        error=error,
+        remote_request_id=remote_request_id,
+    )
+
+
+def mark_skladbot_create_ambiguous(
+    db: Session,
+    order: Order,
+    event: PendingEvent,
+    error: str,
+) -> dict[str, Any]:
+    mark_order_skladbot_create_blocked(order, event, error, status="ambiguous")
+    update_event_payload(event, {
+        "post_state": "ambiguous",
+        "ambiguous_at": datetime.now(timezone.utc).isoformat(),
+    })
+    transition_linked_fulfillment(db, event, "skladbot_ambiguous", error=error)
+    ensure_skladbot_create_incident(db, order, event, error, status="manual_review")
+    return {"status": "ambiguous", "error": normalize_text(error), "order_id": str(order.id)}
 
 
 def finish_skladbot_create_event(
@@ -1511,10 +1789,17 @@ def finish_skladbot_create_event(
             result["recovered"] += 1
         else:
             result["already_linked"] += 1
-    elif status == "blocked":
+    elif status in {"blocked", "blocked_stock", "ambiguous"}:
         final_status = "blocked"
         final_error = normalize_text(event_result.get("error"))
         result["blocked"] += 1
+        if status == "blocked_stock":
+            result["stock_shortage_blocked"] += 1
+        elif status == "ambiguous":
+            result["ambiguous"] += 1
+    elif status == "retry_scheduled":
+        final_status = "pending"
+        final_error = normalize_text(event_result.get("error"))
     elif status == "cancelled_stock_shortage":
         final_status = "completed"
         result["stock_shortage_cancelled"] += 1

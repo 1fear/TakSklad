@@ -5,13 +5,42 @@ import logging
 import os
 import re
 import time
+from enum import Enum
 from typing import Protocol, runtime_checkable
 
 import httpx
 
 from .observability_context import current_correlation_id
 
-from .skladbot_contracts import extract_list_items, normalize_text, parse_int
+from .skladbot_contracts import extract_list_items, is_stock_shortage_text, normalize_text, parse_int
+
+
+class SkladBotErrorKind(str, Enum):
+    AUTH = "auth"
+    RATE_LIMIT = "rate_limit"
+    STOCK_SHORTAGE = "stock_shortage"
+    CLIENT = "client"
+    SERVER = "server"
+    TIMEOUT = "timeout"
+    NETWORK = "network"
+    UNKNOWN = "unknown"
+
+
+class SkladBotApiError(RuntimeError):
+    """Typed SkladBot failure with explicit write-ambiguity semantics."""
+
+    def __init__(
+        self,
+        message,
+        *,
+        kind=SkladBotErrorKind.UNKNOWN,
+        status_code=None,
+        ambiguous=False,
+    ):
+        super().__init__(sanitize_skladbot_error(message))
+        self.kind = SkladBotErrorKind(kind)
+        self.status_code = int(status_code) if status_code is not None else None
+        self.ambiguous = bool(ambiguous)
 
 
 @runtime_checkable
@@ -96,6 +125,29 @@ def skladbot_response_error_text(response):
     if body:
         return sanitize_skladbot_error(f"SkladBot API HTTP {status_code}: {body}")
     return sanitize_skladbot_error(f"SkladBot API HTTP {status_code}")
+
+
+def skladbot_response_error(response, *, write=False):
+    status_code = int(getattr(response, "status_code", 0) or 0)
+    message = skladbot_response_error_text(response)
+    if status_code in {401, 403}:
+        kind = SkladBotErrorKind.AUTH
+    elif status_code == 429:
+        kind = SkladBotErrorKind.RATE_LIMIT
+    elif status_code >= 500:
+        kind = SkladBotErrorKind.SERVER
+    elif 400 <= status_code < 500 and is_stock_shortage_text(message):
+        kind = SkladBotErrorKind.STOCK_SHORTAGE
+    elif 400 <= status_code < 500:
+        kind = SkladBotErrorKind.CLIENT
+    else:
+        kind = SkladBotErrorKind.UNKNOWN
+    return SkladBotApiError(
+        message,
+        kind=kind,
+        status_code=status_code or None,
+        ambiguous=bool(write and status_code >= 500),
+    )
 
 
 class SkladBotClient:
@@ -203,7 +255,7 @@ class SkladBotClient:
                             "X-Correlation-ID": current_correlation_id(),
                         },
                     )
-                except httpx.TimeoutException:
+                except httpx.TimeoutException as exc:
                     cooldown = max(1.0, self.request_delay)
                     self.mark_token_cooldown(token_index, cooldown)
                     self.advance_token(token_index)
@@ -217,7 +269,11 @@ class SkladBotClient:
                         )
                         self.retry_sleep(cooldown)
                         continue
-                    raise
+                    raise SkladBotApiError(
+                        "SkladBot API timeout",
+                        kind=SkladBotErrorKind.TIMEOUT,
+                        ambiguous=False,
+                    ) from exc
                 last_response = response
                 if response.status_code in {401, 403}:
                     self.mark_token_disabled(token_index)
@@ -230,7 +286,7 @@ class SkladBotClient:
                     )
                     if attempt + 1 < max_attempts and len(self.disabled_token_indexes) < len(self.tokens):
                         continue
-                    raise RuntimeError(skladbot_response_error_text(response))
+                    raise skladbot_response_error(response)
                 if response.status_code == 429 and attempt + 1 < max_attempts:
                     retry_after = parse_int(response.headers.get("Retry-After"))
                     sleep_for = retry_after if retry_after > 0 else max(1.0, self.request_delay * 4 * (attempt + 1))
@@ -262,10 +318,10 @@ class SkladBotClient:
                     self.retry_sleep(sleep_for)
                     continue
                 if response.status_code >= 400:
-                    raise RuntimeError(skladbot_response_error_text(response))
+                    raise skladbot_response_error(response)
                 return response.json()
         if last_response is not None:
-            raise RuntimeError(skladbot_response_error_text(last_response))
+            raise skladbot_response_error(last_response)
         raise RuntimeError("SkladBot API request failed")
 
     def post(self, path, payload=None):
@@ -287,11 +343,24 @@ class SkladBotClient:
                         "X-Correlation-ID": current_correlation_id(),
                     },
                 )
-            except httpx.TimeoutException:
+            except httpx.TimeoutException as exc:
                 cooldown = max(1.0, self.request_delay)
                 self.mark_token_cooldown(token_index, cooldown)
                 self.advance_token(token_index)
-                raise
+                raise SkladBotApiError(
+                    "SkladBot API POST timeout",
+                    kind=SkladBotErrorKind.TIMEOUT,
+                    ambiguous=True,
+                ) from exc
+            except httpx.TransportError as exc:
+                cooldown = max(1.0, self.request_delay)
+                self.mark_token_cooldown(token_index, cooldown)
+                self.advance_token(token_index)
+                raise SkladBotApiError(
+                    "SkladBot API POST network error",
+                    kind=SkladBotErrorKind.NETWORK,
+                    ambiguous=True,
+                ) from exc
             if response.status_code in {401, 403}:
                 self.mark_token_disabled(token_index)
                 self.advance_token(token_index)
@@ -322,7 +391,7 @@ class SkladBotClient:
                     len(self.tokens),
                 )
             if response.status_code >= 400:
-                raise RuntimeError(skladbot_response_error_text(response))
+                raise skladbot_response_error(response, write=True)
             return response.json()
 
     def list_requests(self, type_id=None):

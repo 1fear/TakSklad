@@ -1,45 +1,85 @@
-# Smartup per-deal saga
+# Smartup fulfillment saga
 
-## Safety boundary
+## Назначение и граница безопасности
 
-Phase 10 is synthetic-only. `SMARTUP_AUTO_IMPORT_SAGA_MODE=shadow|enforced` requires an explicitly injected fake client (`smartup_saga_fake = True`). The default and rollback value is `disabled`. No real Smartup, SkladBot or Telegram call is part of the phase verifier.
+Production-safe режим — `SMARTUP_AUTO_IMPORT_SAGA_MODE=enforced`. Он запрещает считать слот завершённым, пока для каждого подтверждённого Smartup deal не выполнено одно из условий:
 
-Runtime flags remain independent:
+- канонический TakSklad-заказ уже связан с заявкой SkladBot;
+- для него существует ровно один durable `skladbot_request_create` intent.
 
-- `SMARTUP_AUTO_IMPORT_BACKEND_IMPORT_ENABLED` controls local import;
-- `SMARTUP_AUTO_IMPORT_CHANGE_STATUS_ENABLED` gates the status workflow;
-- `SMARTUP_AUTO_IMPORT_SAGA_MODE=disabled|shadow|enforced` selects legacy, observation or saga ownership;
-- `SMARTUP_AUTO_IMPORT_PROCESS_SKLADBOT_NOW=false` keeps durable create events queued instead of processing them immediately.
+Флаги независимы:
 
-Rollback for this phase: set saga mode to `disabled`. A production rollout is not authorized here.
+- `SMARTUP_AUTO_IMPORT_BACKEND_IMPORT_ENABLED` — локальный импорт;
+- `SMARTUP_AUTO_IMPORT_CHANGE_STATUS_ENABLED` — Smartup status write;
+- `SMARTUP_AUTO_IMPORT_SAGA_MODE=disabled|shadow|enforced` — legacy, наблюдение или владение workflow;
+- `SMARTUP_AUTO_IMPORT_PROCESS_SKLADBOT_NOW=false` — обязательное значение для saga: внешний POST выполняет отдельный worker.
 
-## Durable state machine
+Default и быстрый rollback — `disabled`. Переключение режима не удаляет fulfillment/event/order данные. После rollback незавершённые durable записи остаются для расследования.
 
-Each deal has one `pending_events` row with event type `smartup_deal_saga`. Its stable workflow identity is a SHA-256 digest of export date, scheduled slot, target delivery date, deal ID and target status. Import part, workbook hash and import UUID do not affect the identity, so a retried scheduled slot cannot create another workflow.
+## Business identity и данные
 
-| State | Durable fact | Allowed next step |
+Authoritative таблицы:
+
+- `smartup_fulfillments` — один workflow на `source_scope + deal_id + request_type + revision`;
+- `smartup_fulfillment_orders` — 1:N связь workflow с каноническими `Order.id`, собственным state, SkladBot create-event и remote request ID;
+- `pending_events` типа `smartup_deal_saga` — переходный outbox/compatibility слой.
+
+Workflow key не зависит от даты запуска, слота, Excel-файла, номера части и retry ImportJob. Payload hash фиксирует deal, целевой статус, дату отгрузки и канонические Order ID. Изменение payload в той же revision переводит workflow в `payload_mismatch`, а не создаёт второй внешний процесс.
+
+Duplicate-only retry обязан вернуть `ImportResult.resolved_order_ids`; SkladBot queue строится по этим Order ID, а не по новому пустому ImportJob.
+
+## State machine
+
+| State | Durable факт | Следующий безопасный шаг |
 |---|---|---|
-| `intent_persisted` | Import snapshot and target status committed | Commit `remote_write_started`, then fake write |
-| `remote_write_started` | A write may already have reached Smartup | Read-reconcile; never write blindly |
-| `remote_failed` | Per-deal result was negative or ambiguous | Read-reconcile; retry only after a concrete non-target status |
-| `remote_confirmed` | Write response or read confirms target | Queue/find the SkladBot create event |
-| `skladbot_pending` | Target is confirmed but exactly one key is not yet durable | Retry local queueing |
-| `skladbot_queued` | Exactly one durable SkladBot key is linked | Complete |
+| `local_ready` | Order, mapping и intent сохранены | Зафиксировать `smartup_write_started`, затем write |
+| `smartup_write_started` | Write мог дойти до Smartup | Только exact deal read-back |
+| `smartup_ambiguous` | Результат не доказан | Backoff + read-back; без blind retry |
+| `smartup_confirmed` | Ответ или read-back подтвердил `B#W` | Создать/найти SkladBot intent по Order ID |
+| `skladbot_create_queued` | Durable create intent существует | SkladBot worker выполняет POST |
+| `skladbot_post_started` | POST мог дойти до SkladBot | Exact marker reconciliation |
+| `skladbot_ambiguous` | Результат POST не доказан | Manual review или exact marker match; без повторного POST |
+| `skladbot_created` | Canonical WH-R/ID сохранён | Terminal success |
+| `blocked_stock` | SkladBot подтвердил shortage 4xx | Сохранить Order, incident/manual review |
+| `payload_mismatch`, `blocked_validation`, `manual_review` | Автоматическое продолжение небезопасно | Решение оператора |
 
-Shadow mode records `shadow_intent -> shadow_observed` while the legacy fake flow owns the decision. Disabled mode creates no saga rows.
+Consistency sweeper запускается каждым циклом Smartup worker в `enforced` и восстанавливает незавершённые workflow независимо от исходного слота.
 
-## Failure boundaries
+## Smartup retry rule
 
-| Injected boundary | State after failure | Recovery |
-|---|---|---|
-| import → intent | Original Smartup import and its slot/deal metadata remain committed; saga transaction is absent | Retry discovers the orphan import before export, reuses its import UUID and creates the same stable workflow |
-| intent → Smartup | `remote_write_started`, remote call count 0 | Read current status, then write only if a concrete non-target status is observed |
-| Smartup → local | `remote_write_started`, remote may already be target | Read target, record `remote_confirmed`, write count remains unchanged |
-| local → SkladBot | `remote_confirmed` | Create/find the existing stable SkladBot event and link its key |
-| partial batch | One explicit state/result per deal | Resume only unresolved deals |
+Перед повтором после `smartup_write_started`/ошибки выполняется read-only `order$export` по точному `deal_id`:
 
-An empty or inconclusive reconciliation result stays `remote_failed`; it does not permit a duplicate status write.
+- `B#W` — write не повторять, перейти в `smartup_confirmed`;
+- подтверждённый исходный статус — разрешён один новый write после durable transition;
+- пустой/неоднозначный ответ — оставить workflow ambiguous с backoff/manual review.
 
-## Evidence handling
+## SkladBot retry rule
 
-Saga reports expose hashes of workflow keys, counts and states. Tests may compare the actual local event key in memory, but transcript evidence must use only its SHA-256 hash or a redacted prefix. Raw credentials, auth headers and production deal data are forbidden.
+В comment каждого create payload добавляется `TakSklad ref: TSF-<24 hex>`. Timeout, network и 5xx считаются ambiguous. После них разрешён только поиск exact marker; blind POST запрещён. Текущий list API не доказывает исчерпывающую пагинацию, поэтому отсутствие marker не является доказательством отсутствия заявки и требует manual review.
+
+Stock shortage признаётся только по детерминированному 4xx. Order/OrderItem/Google-строка не удаляются; ставится `blocked_stock`, incident и уведомление.
+
+## Google → backend circuit breaker
+
+- Неизменившиеся KИЗ отбрасываются до advisory lock.
+- Новые коды обрабатываются стабильными партиями максимум 32 с commit/audit checkpoint.
+- `out of shared memory/max_locks_per_transaction` открывает circuit на минимум 900 секунд.
+- Circuit хранится в audit log, переживает restart и после cooldown допускает только один half-open probe под advisory lease; закрывается только успешным sync.
+- Outbound Google export продолжает работать; reverse sync возвращает `paused`.
+- `/ready` показывает `google_backend_sync.circuit_open=true` как optional degraded.
+
+## Rollout и rollback
+
+1. Backup PostgreSQL и фиксация текущих image digests/commit SHA.
+2. Deploy кода с `SMARTUP_AUTO_IMPORT_SAGA_MODE=disabled` и Google reverse sync выключенным.
+3. `alembic upgrade head`; ожидаемый head — `20260715_0017`.
+4. Проверить `/ready`, worker heartbeat, отсутствие migration/queue errors.
+5. Включить `enforced`, оставить `SMARTUP_AUTO_IMPORT_PROCESS_SKLADBOT_NOW=false`.
+6. Canary: один тестовый/следующий реальный deal; доказать `Order → fulfillment → create event → WH-R` и отсутствие второго Smartup write.
+7. Только после canary вернуть `TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED=true`; проверить batches ≤32, circuit closed и стабильные locks.
+
+Stop conditions: migration mismatch, `payload_mismatch`, ambiguous Smartup/SkladBot, coverage invariant failure, повторный `out of shared memory`, рост duplicate WH-R или неизвестное физическое состояние. При stop: выключить reverse sync, вернуть saga mode `disabled`, не удалять durable записи и не повторять внешние POST вручную без read-back.
+
+## Evidence
+
+Статус-команда показывает fulfillment state counts и `fulfillment_manual_review`. В evidence разрешены counts, state, hash workflow key и redacted IDs. Credentials, auth headers, client payloads и production markers публиковать нельзя.
