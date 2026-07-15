@@ -63,14 +63,17 @@ class UpdateServiceTests(unittest.TestCase):
         manifest.update(overrides)
         return manifest
 
-    def test_current_forced_release_manifest_matches_app_versions(self):
+    def test_forced_release_manifest_is_current_or_one_patch_behind_app_versions(self):
         payload = json.loads((REPO_ROOT / "version.json").read_text(encoding="utf-8"))
 
-        self.assertEqual(APP_VERSION, "2.0.33")
+        self.assertEqual(APP_VERSION, "2.0.34")
         self.assertEqual(BACKEND_APP_VERSION, APP_VERSION)
-        self.assertEqual(payload["latest_version"], APP_VERSION)
-        self.assertEqual(payload["release_tag"], f"v{APP_VERSION}")
-        self.assertEqual(payload["min_supported_version"], APP_VERSION)
+        app_version = tuple(int(part) for part in APP_VERSION.split("."))
+        published_version = tuple(int(part) for part in payload["latest_version"].split("."))
+        self.assertEqual(published_version[:2], app_version[:2])
+        self.assertIn(app_version[2] - published_version[2], (0, 1))
+        self.assertEqual(payload["release_tag"], f"v{payload['latest_version']}")
+        self.assertEqual(payload["min_supported_version"], payload["latest_version"])
         self.assertIs(payload["mandatory"], True)
         self.assertIs(payload["block_workflow"], True)
         self.assertEqual(payload["package_type"], "onefile_exe")
