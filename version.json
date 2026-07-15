@@ -1,18 +1,17 @@
 {
-  "latest_version": "2.0.25",
-  "release_tag": "v2.0.25",
-  "min_supported_version": "2.0.25",
+  "latest_version": "2.0.33",
+  "release_tag": "v2.0.33",
+  "min_supported_version": "2.0.33",
   "mandatory": true,
   "block_workflow": true,
   "package_type": "onefile_exe",
   "entrypoint": "TakSklad.exe",
-  "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.25/TakSklad.exe",
-  "sha256": "32fdef699d44cc7c565c18367d331e3b05dba78cf05802b6050664950cd2b31a",
-  "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.25/TakSklad-windows-x64.zip",
-  "sha256_onedir": "2e49825d25c6c3332f20984f4b4998e223c65500714bd66f1a9763be493e218d",
+  "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.33/TakSklad.exe",
+  "sha256": "192276bd88358d77ff44994432d320810e3397bce4d12a701a3861d4a03b52b5",
+  "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.33/TakSklad-windows-x64.zip",
+  "sha256_onedir": "843143845bab542f4abd18e0284cdffc63e6d7537d855c5058c0d23e751f604b",
   "signature_type": "authenticode",
   "signature_required": true,
-  "signer_certificate_sha256": "",
-  "signing_status": "WINDOWS_CODESIGN_CERTIFICATE_NOT_AVAILABLE",
-  "message": "TakSklad 2.0.25: обязательное обновление. Исправляет ложную блокировку КИЗа после возврата, отмены или reset, когда desktop видел stale duplicate-cache."
+  "signer_certificate_sha256": "c95ccd968831b3b55a1f2c949e66f3b39c5f69badf29a70887b43a036f14bb19",
+  "message": "TakSklad 2.0.33: обязательное обновление. Возвратные КИЗы снова можно пробивать в новые заказы после подтвержденного return, undo или reset; активные дубли остаются заблокированы."
 }
