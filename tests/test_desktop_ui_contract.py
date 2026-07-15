@@ -6,7 +6,17 @@ from unittest import mock
 
 from taksklad import app_day_end, app_returns, app_runtime, app_telegram
 from taksklad import main as main_module
-from taksklad.config import ACCENT, BG_MAIN, DANGER, ERROR_FG, FG_MUTED, FG_TEXT, WARNING
+from taksklad.config import (
+    ACCENT,
+    BG_MAIN,
+    DANGER,
+    ERROR_FG,
+    FG_MUTED,
+    FG_TEXT,
+    STATUS_COLUMN,
+    STATUS_COMPLETED,
+    WARNING,
+)
 from taksklad.config import SKLADBOT_REQUEST_NUMBER_COLUMN
 from taksklad.app_day_end import build_backend_status
 from taksklad import backend_client
@@ -429,7 +439,7 @@ class DesktopUiContractTests(unittest.TestCase):
         duplicate_guards = [
             "if code in self.scanned_codes:",
             "if code in self.all_existing_codes:",
-            "for completed in self.completed_orders:",
+            "duplicate_in_completed_orders = any(",
         ]
 
         for guard in duplicate_guards:
@@ -660,23 +670,94 @@ class DesktopUiContractTests(unittest.TestCase):
             "Товары": "Chapman Green OP 20",
             "_backend_order_item_id": "item-green",
         }
+        stale_completed_owner = {
+            "Клиент": "Returned Client",
+            "Дата отгрузки": "15.07.2026",
+            "Товары": "Chapman Green OP 20",
+            "Отсканированные коды": code,
+            STATUS_COLUMN: STATUS_COMPLETED,
+        }
+        scenarios = (
+            ({code}, []),
+            (set(), []),
+            ({code}, [stale_completed_owner]),
+        )
+        for initial_codes, today_orders in scenarios:
+            with self.subTest(initial_codes=initial_codes, today_orders=today_orders):
+                fake = SimpleNamespace(
+                    ensure_update_allowed=lambda: True,
+                    operation_in_progress=False,
+                    current_order=order,
+                    current_product_idx=0,
+                    current_legal_entity_orders=[order],
+                    scanned_codes=[],
+                    all_existing_codes=set(initial_codes),
+                    today_orders=today_orders,
+                    completed_orders=[{"Коды": [code]}],
+                    scan_entry=FakeWidget(code),
+                    progress_label=FakeWidget(),
+                    last_code_label=FakeWidget(),
+                    status_var=FakeVar(),
+                    status_label=FakeWidget(),
+                    next_product_btn=FakeWidget(),
+                    finish_btn=FakeWidget(),
+                    show_error=mock.Mock(),
+                    show_busy_error=mock.Mock(),
+                    log_duplicate_code_async=mock.Mock(),
+                )
+
+                with (
+                    mock.patch(
+                        "taksklad.app_scanning.backend_duplicate_scan_reuse_status",
+                        return_value={
+                            "checked": True,
+                            "available": True,
+                            "latest_movement_type": "return",
+                            "reason": "latest movement is return",
+                        },
+                    ) as reuse_status,
+                    mock.patch("taksklad.app_scanning.write_scan_backup", return_value=True) as write_backup,
+                    mock.patch("taksklad.app_scanning.queue_backend_scan") as queue_scan,
+                ):
+                    ScanningApp.on_scan(fake)
+
+                reuse_status.assert_called_once_with(order, code)
+                write_backup.assert_called_once()
+                queue_scan.assert_called_once_with(order, code)
+                fake.show_error.assert_not_called()
+                fake.log_duplicate_code_async.assert_not_called()
+                self.assertEqual(fake.scanned_codes, [code])
+                self.assertIn(code, fake.all_existing_codes)
+                self.assertTrue(fake.scan_entry.deleted)
+                self.assertTrue(fake.scan_entry.focused)
+
+    def test_scan_keeps_completed_order_duplicate_when_backend_does_not_release(self):
+        class FakeWidget:
+            def __init__(self, value=""):
+                self.value = value
+                self.deleted = False
+
+            def get(self):
+                return self.value
+
+            def delete(self, *_args):
+                self.deleted = True
+
+        code = "0104006396104441-TEST-GREEN"
+        order = {
+            "Кол-во блок": 1,
+            "Товары": "Chapman Green OP 20",
+            "_backend_order_item_id": "item-green",
+        }
         fake = SimpleNamespace(
             ensure_update_allowed=lambda: True,
             operation_in_progress=False,
             current_order=order,
-            current_product_idx=0,
-            current_legal_entity_orders=[order],
             scanned_codes=[],
-            all_existing_codes={code},
+            all_existing_codes=set(),
             today_orders=[],
-            completed_orders=[],
+            completed_orders=[{"Коды": [code]}],
             scan_entry=FakeWidget(code),
-            progress_label=FakeWidget(),
-            last_code_label=FakeWidget(),
-            status_var=FakeVar(),
-            status_label=FakeWidget(),
-            next_product_btn=FakeWidget(),
-            finish_btn=FakeWidget(),
             show_error=mock.Mock(),
             show_busy_error=mock.Mock(),
             log_duplicate_code_async=mock.Mock(),
@@ -687,25 +768,22 @@ class DesktopUiContractTests(unittest.TestCase):
                 "taksklad.app_scanning.backend_duplicate_scan_reuse_status",
                 return_value={
                     "checked": True,
-                    "available": True,
-                    "latest_movement_type": "return",
-                    "reason": "latest movement is return",
+                    "available": False,
+                    "latest_movement_type": "outbound",
+                    "reason": "latest movement is outbound",
                 },
             ) as reuse_status,
-            mock.patch("taksklad.app_scanning.write_scan_backup", return_value=True) as write_backup,
+            mock.patch("taksklad.app_scanning.write_scan_backup") as write_backup,
             mock.patch("taksklad.app_scanning.queue_backend_scan") as queue_scan,
         ):
             ScanningApp.on_scan(fake)
 
         reuse_status.assert_called_once_with(order, code)
-        write_backup.assert_called_once()
-        queue_scan.assert_called_once_with(order, code)
-        fake.show_error.assert_not_called()
-        fake.log_duplicate_code_async.assert_not_called()
-        self.assertEqual(fake.scanned_codes, [code])
-        self.assertIn(code, fake.all_existing_codes)
+        write_backup.assert_not_called()
+        queue_scan.assert_not_called()
+        fake.show_error.assert_called_once_with("Код уже использован в другом задании сегодня", popup=True)
+        self.assertEqual(fake.scanned_codes, [])
         self.assertTrue(fake.scan_entry.deleted)
-        self.assertTrue(fake.scan_entry.focused)
 
     def test_scan_keeps_active_order_duplicate_block_even_if_backend_reusable_check_would_pass(self):
         class FakeWidget:
