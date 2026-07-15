@@ -12,6 +12,8 @@ from taksklad.config import APP_VERSION
 from taksklad.update_service import (
     MAX_UPDATE_DOWNLOAD_BYTES,
     TRUSTED_WINDOWS_SIGNER_CERT_SHA256,
+    WINDOWS_AUTHENTICODE_PINNED_CHAIN_STATUSES,
+    WINDOWS_AUTHENTICODE_PINNED_STATUSES,
     create_windows_exe_updater,
     create_windows_onedir_updater,
     download_update_file,
@@ -66,7 +68,7 @@ class UpdateServiceTests(unittest.TestCase):
     def test_forced_release_manifest_is_current_or_one_patch_behind_app_versions(self):
         payload = json.loads((REPO_ROOT / "version.json").read_text(encoding="utf-8"))
 
-        self.assertEqual(APP_VERSION, "2.0.34")
+        self.assertEqual(APP_VERSION, "2.0.35")
         self.assertEqual(BACKEND_APP_VERSION, APP_VERSION)
         app_version = tuple(int(part) for part in APP_VERSION.split("."))
         published_version = tuple(int(part) for part in payload["latest_version"].split("."))
@@ -254,7 +256,7 @@ class UpdateServiceTests(unittest.TestCase):
                     SYNTHETIC_SIGNER_CERT_SHA256,
                 )
 
-    def test_authenticode_verifier_accepts_only_exact_valid_status(self):
+    def test_authenticode_verifier_accepts_exact_pinned_valid_status(self):
         completed = mock.Mock(
             returncode=0,
             stdout=f"Valid\n{SYNTHETIC_SIGNER_CERT_SHA256}\n",
@@ -271,6 +273,77 @@ class UpdateServiceTests(unittest.TestCase):
         command = run.call_args.args[0]
         self.assertIn("Get-AuthenticodeSignature", command[-2])
         self.assertEqual(command[-1], "TakSklad.synthetic.exe")
+
+    def test_authenticode_verifier_accepts_exact_pinned_not_trusted_status(self):
+        completed = mock.Mock(
+            returncode=0,
+            stdout=f"NotTrusted\n{SYNTHETIC_SIGNER_CERT_SHA256}\nCHAIN:PartialChain\n",
+            stderr="",
+        )
+        with mock.patch("taksklad.update_service.os.name", "nt"), \
+                mock.patch("taksklad.update_service.subprocess.run", return_value=completed):
+            self.assertTrue(
+                verify_windows_authenticode_signature(
+                    "TakSklad.synthetic.exe",
+                    SYNTHETIC_SIGNER_CERT_SHA256,
+                )
+            )
+        self.assertEqual(
+            WINDOWS_AUTHENTICODE_PINNED_STATUSES,
+            frozenset({"Valid", "NotTrusted", "UnknownError"}),
+        )
+        self.assertEqual(
+            WINDOWS_AUTHENTICODE_PINNED_CHAIN_STATUSES,
+            frozenset({"PartialChain"}),
+        )
+
+    def test_authenticode_verifier_accepts_pinned_unknown_error_partial_chain(self):
+        completed = mock.Mock(
+            returncode=0,
+            stdout=f"UnknownError\n{SYNTHETIC_SIGNER_CERT_SHA256}\nCHAIN:PartialChain\n",
+            stderr="",
+        )
+        with mock.patch("taksklad.update_service.os.name", "nt"), \
+                mock.patch("taksklad.update_service.subprocess.run", return_value=completed):
+            self.assertTrue(
+                verify_windows_authenticode_signature(
+                    "TakSklad.synthetic.exe",
+                    SYNTHETIC_SIGNER_CERT_SHA256,
+                )
+            )
+
+    def test_authenticode_verifier_rejects_unknown_error_without_partial_chain(self):
+        for chain_statuses in ("", "NotTimeValid", "PartialChain,NotTimeValid", "Revoked"):
+            with self.subTest(chain_statuses=chain_statuses):
+                completed = mock.Mock(
+                    returncode=0,
+                    stdout=(
+                        f"UnknownError\n{SYNTHETIC_SIGNER_CERT_SHA256}\n"
+                        f"CHAIN:{chain_statuses}\n"
+                    ),
+                    stderr="",
+                )
+                with mock.patch("taksklad.update_service.os.name", "nt"), \
+                        mock.patch("taksklad.update_service.subprocess.run", return_value=completed):
+                    with self.assertRaisesRegex(ValueError, "Authenticode"):
+                        verify_windows_authenticode_signature(
+                            "TakSklad.synthetic.exe",
+                            SYNTHETIC_SIGNER_CERT_SHA256,
+                        )
+
+    def test_authenticode_verifier_rejects_not_trusted_other_publisher(self):
+        completed = mock.Mock(
+            returncode=0,
+            stdout=f"NotTrusted\n{'2' * 64}\nCHAIN:PartialChain\n",
+            stderr="",
+        )
+        with mock.patch("taksklad.update_service.os.name", "nt"), \
+                mock.patch("taksklad.update_service.subprocess.run", return_value=completed):
+            with self.assertRaisesRegex(ValueError, "недоверенным издателем"):
+                verify_windows_authenticode_signature(
+                    "TakSklad.synthetic.exe",
+                    SYNTHETIC_SIGNER_CERT_SHA256,
+                )
 
     def test_authenticode_verifier_rejects_other_valid_publisher(self):
         completed = mock.Mock(
@@ -386,10 +459,19 @@ class UpdateServiceTests(unittest.TestCase):
             staged_copy = script.index("robocopy $SourceDir $NewDir")
             self.assertLess(signature_check, staged_copy)
             self.assertIn("SignatureStatus]::Valid", script)
+            self.assertIn("SignatureStatus]::NotTrusted", script)
+            self.assertIn("SignatureStatus]::UnknownError", script)
+            self.assertIn("X509RevocationMode]::NoCheck", script)
+            self.assertIn("$ChainStatuses[0] -ne 'PartialChain'", script)
+            self.assertIn("$AcceptedSignatureStatuses -notcontains $Signature.Status", script)
             self.assertIn("$ExpectedSignerCertificateSha256", script)
             self.assertIn(SYNTHETIC_SIGNER_CERT_SHA256, script)
             self.assertIn("SignerCertificate.RawData", script)
             self.assertIn("недоверенным издателем", script)
+            self.assertLess(
+                script.index("$SignerCertificateSha256 -ne $ExpectedSignerCertificateSha256"),
+                script.index("$AcceptedSignatureStatuses -notcontains $Signature.Status"),
+            )
 
             for fragment in (
                 "'TakSklad_data.json'",

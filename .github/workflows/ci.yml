@@ -175,6 +175,61 @@ jobs:
       - name: Run synthetic browser smoke
         run: npm --prefix frontend run e2e -- --grep @smoke
 
+  windows-authenticode:
+    name: Windows Authenticode clean-host
+    runs-on: windows-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Verify published update with pinned internal signer
+        shell: powershell
+        run: |
+          $manifest = Get-Content version.json -Raw | ConvertFrom-Json
+          $artifactPath = Join-Path $env:RUNNER_TEMP "TakSklad-published-update.exe"
+          Invoke-WebRequest -Uri $manifest.download_url -OutFile $artifactPath
+          $actualSha256 = (Get-FileHash $artifactPath -Algorithm SHA256).Hash.ToLower()
+          if ($actualSha256 -ne $manifest.sha256) {
+            throw "WINDOWS_UPDATE_SHA256_MISMATCH"
+          }
+          $signature = Get-AuthenticodeSignature -LiteralPath $artifactPath
+          Write-Host ("Authenticode status={0}; message={1}" -f $signature.Status, $signature.StatusMessage)
+          if ($null -eq $signature.SignerCertificate) {
+            throw "WINDOWS_UPDATE_SIGNER_MISSING"
+          }
+          $hasher = [System.Security.Cryptography.SHA256]::Create()
+          try {
+            $signerSha256 = -join ($hasher.ComputeHash($signature.SignerCertificate.RawData) | ForEach-Object { $_.ToString('x2') })
+          } finally {
+            $hasher.Dispose()
+          }
+          if ($signerSha256 -ne $manifest.signer_certificate_sha256) {
+            throw "WINDOWS_UPDATE_SIGNER_MISMATCH"
+          }
+          $chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain
+          try {
+            $chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
+            $null = $chain.Build($signature.SignerCertificate)
+            $chainStatuses = @($chain.ChainStatus | ForEach-Object { $_.Status.ToString() } | Sort-Object -Unique)
+          } finally {
+            $chain.Dispose()
+          }
+          Write-Host ("Authenticode chain statuses={0}" -f ($chainStatuses -join ','))
+          $acceptedStatuses = @(
+            [System.Management.Automation.SignatureStatus]::Valid,
+            [System.Management.Automation.SignatureStatus]::NotTrusted,
+            [System.Management.Automation.SignatureStatus]::UnknownError
+          )
+          if ($acceptedStatuses -notcontains $signature.Status) {
+            throw "WINDOWS_UPDATE_SIGNATURE_INVALID: $($signature.Status)"
+          }
+          if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -and
+              ($chainStatuses.Count -ne 1 -or $chainStatuses[0] -ne 'PartialChain')) {
+            throw "WINDOWS_UPDATE_CHAIN_INVALID: $($chainStatuses -join ',')"
+          }
+
   release-gate:
     name: Release gate
     if: always()
@@ -182,6 +237,7 @@ jobs:
       - backend
       - container-isolation
       - frontend
+      - windows-authenticode
     runs-on: ubuntu-latest
     steps:
       - name: Require every CI safety net
@@ -189,8 +245,10 @@ jobs:
           BACKEND_RESULT: ${{ needs.backend.result }}
           CONTAINER_RESULT: ${{ needs.container-isolation.result }}
           FRONTEND_RESULT: ${{ needs.frontend.result }}
+          WINDOWS_AUTHENTICODE_RESULT: ${{ needs.windows-authenticode.result }}
         run: |
           set -euo pipefail
           test "$BACKEND_RESULT" = success
           test "$CONTAINER_RESULT" = success
           test "$FRONTEND_RESULT" = success
+          test "$WINDOWS_AUTHENTICODE_RESULT" = success

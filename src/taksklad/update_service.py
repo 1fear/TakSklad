@@ -67,6 +67,14 @@ UPDATE_RUNTIME_EXCLUDE_DIRS = (
 MAX_UPDATE_DOWNLOAD_BYTES = 512 * 1024 * 1024
 UPDATE_SIGNATURE_TYPE = "authenticode"
 WINDOWS_CODESIGN_CERTIFICATE_NOT_AVAILABLE = "WINDOWS_CODESIGN_CERTIFICATE_NOT_AVAILABLE"
+# The release certificate chains to TakSklad's internal CA, which is intentionally
+# not installed into warehouse workstations. Depending on Windows, PowerShell
+# reports NotTrusted or UnknownError on a clean PC. Those statuses are accepted
+# only when a no-revocation X509Chain check fails solely with PartialChain and the
+# exact compiled-in leaf certificate fingerprint matches. HashMismatch, missing
+# signatures, expired certificates, and every other chain status remain closed.
+WINDOWS_AUTHENTICODE_PINNED_STATUSES = frozenset({"Valid", "NotTrusted", "UnknownError"})
+WINDOWS_AUTHENTICODE_PINNED_CHAIN_STATUSES = frozenset({"PartialChain"})
 # Public certificate fingerprints are release inputs, not secrets. Keep this
 # fail-closed until the production certificate is approved and its SHA-256
 # fingerprint is compiled into the released application.
@@ -230,12 +238,19 @@ def verify_windows_authenticode_signature(artifact_path, expected_signer_certifi
         "$signature = Get-AuthenticodeSignature -LiteralPath $Path; "
         "$status = $signature.Status.ToString(); "
         "$fingerprint = ''; "
+        "$chainStatuses = @(); "
         "if ($null -ne $signature.SignerCertificate) { "
         "$hasher = [System.Security.Cryptography.SHA256]::Create(); "
         "try { $bytes = $hasher.ComputeHash($signature.SignerCertificate.RawData) } "
         "finally { $hasher.Dispose() }; "
-        "$fingerprint = -join ($bytes | ForEach-Object { $_.ToString('x2') }) }; "
-        "Write-Output $status; Write-Output $fingerprint }"
+        "$fingerprint = -join ($bytes | ForEach-Object { $_.ToString('x2') }); "
+        "$chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain; "
+        "try { $chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck; "
+        "$null = $chain.Build($signature.SignerCertificate); "
+        "$chainStatuses = @($chain.ChainStatus | ForEach-Object { $_.Status.ToString() } | Sort-Object -Unique) } "
+        "finally { $chain.Dispose() } }; "
+        "Write-Output $status; Write-Output $fingerprint; "
+        "Write-Output ('CHAIN:' + ($chainStatuses -join ',')) }"
     )
     completed = subprocess.run(
         [
@@ -255,9 +270,23 @@ def verify_windows_authenticode_signature(artifact_path, expected_signer_certifi
     )
     output_lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
     signature_status = output_lines[0] if output_lines else ""
-    signer_certificate_sha256 = output_lines[1].lower() if len(output_lines) == 2 else ""
-    if completed.returncode != 0 or signature_status != "Valid":
-        raise ValueError("Authenticode-подпись обновления недействительна")
+    signer_certificate_sha256 = output_lines[1].lower() if len(output_lines) >= 2 else ""
+    chain_line = output_lines[2] if len(output_lines) == 3 else ""
+    chain_statuses = frozenset(
+        status for status in chain_line.removeprefix("CHAIN:").split(",") if status
+    ) if chain_line.startswith("CHAIN:") else frozenset()
+    signature_is_valid = signature_status == "Valid"
+    signature_is_pinned_internal_ca = (
+        signature_status in WINDOWS_AUTHENTICODE_PINNED_STATUSES - {"Valid"}
+        and chain_statuses == WINDOWS_AUTHENTICODE_PINNED_CHAIN_STATUSES
+    )
+    if completed.returncode != 0 or not (
+        signature_is_valid or signature_is_pinned_internal_ca
+    ):
+        status_detail = signature_status or "Unknown"
+        raise ValueError(
+            f"Authenticode-подпись обновления недействительна: {status_detail}"
+        )
     if signer_certificate_sha256 != expected_signer_certificate_sha256:
         raise ValueError("Authenticode-подпись создана недоверенным издателем")
     return True
@@ -536,9 +565,6 @@ try {{
     throw "В архиве обновления не найден $EntryPoint"
   }}
   $Signature = Get-AuthenticodeSignature -LiteralPath (Join-Path $SourceDir $EntryPoint)
-  if ($Signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {{
-    throw "Authenticode-подпись обновления недействительна: $($Signature.Status)"
-  }}
   if ($null -eq $Signature.SignerCertificate) {{
     throw "Authenticode-подпись обновления не содержит сертификат издателя"
   }}
@@ -550,6 +576,26 @@ try {{
   }}
   if ($SignerCertificateSha256 -ne $ExpectedSignerCertificateSha256) {{
     throw "Authenticode-подпись создана недоверенным издателем"
+  }}
+  $Chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain
+  try {{
+    $Chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
+    $null = $Chain.Build($Signature.SignerCertificate)
+    $ChainStatuses = @($Chain.ChainStatus | ForEach-Object {{ $_.Status.ToString() }} | Sort-Object -Unique)
+  }} finally {{
+    $Chain.Dispose()
+  }}
+  $AcceptedSignatureStatuses = @(
+    [System.Management.Automation.SignatureStatus]::Valid,
+    [System.Management.Automation.SignatureStatus]::NotTrusted,
+    [System.Management.Automation.SignatureStatus]::UnknownError
+  )
+  if ($AcceptedSignatureStatuses -notcontains $Signature.Status) {{
+    throw "Authenticode-подпись обновления недействительна: $($Signature.Status)"
+  }}
+  if ($Signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -and
+      ($ChainStatuses.Count -ne 1 -or $ChainStatuses[0] -ne 'PartialChain')) {{
+    throw "Authenticode-цепочка обновления недействительна: $($ChainStatuses -join ',')"
   }}
 
   if (Test-Path $NewDir) {{

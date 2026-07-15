@@ -48,6 +48,13 @@ class WindowsReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("WINDOWS_CODESIGN_TEMPORARY_PUBLISHER_THUMBPRINT", workflow)
         self.assertGreaterEqual(workflow.count("SignerCertificate.RawData"), 2)
         self.assertGreaterEqual(workflow.count("signer_certificate_sha256"), 2)
+        self.assertIn("Verify clean-workstation pinned Authenticode status", workflow)
+        self.assertIn("WINDOWS_CODESIGN_CLEAN_HOST_IDENTITY_MISMATCH", workflow)
+        self.assertIn("SignatureStatus]::NotTrusted", workflow)
+        self.assertIn("SignatureStatus]::UnknownError", workflow)
+        self.assertIn("X509RevocationMode]::NoCheck", workflow)
+        self.assertIn("WINDOWS_CODESIGN_CLEAN_HOST_CHAIN_UNEXPECTED", workflow)
+        self.assertIn("$chainStatuses[0] -ne 'PartialChain'", workflow)
 
     def test_windows_release_collects_taksklad_package_and_smoke_tests_exe(self):
         workflow = (PROJECT_ROOT / ".github" / "workflows" / "build-windows-release.yml").read_text(
