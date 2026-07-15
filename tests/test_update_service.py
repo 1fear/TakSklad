@@ -68,7 +68,7 @@ class UpdateServiceTests(unittest.TestCase):
     def test_forced_release_manifest_is_current_or_one_patch_behind_app_versions(self):
         payload = json.loads((REPO_ROOT / "version.json").read_text(encoding="utf-8"))
 
-        self.assertEqual(APP_VERSION, "2.0.36")
+        self.assertEqual(APP_VERSION, "2.0.37")
         self.assertEqual(BACKEND_APP_VERSION, APP_VERSION)
         app_version = tuple(int(part) for part in APP_VERSION.split("."))
         published_version = tuple(int(part) for part in payload["latest_version"].split("."))

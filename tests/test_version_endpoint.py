@@ -19,7 +19,7 @@ class VersionEndpointTests(unittest.TestCase):
 
             payload = version()
 
-        self.assertEqual(payload["version"], "2.0.36")
+        self.assertEqual(payload["version"], "2.0.37")
         self.assertEqual(payload["commit_sha"], "a" * 40)
         self.assertEqual(payload["image_digest"], "sha256:" + "b" * 64)
         self.assertNotIn("database", payload)
