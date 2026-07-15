@@ -12,7 +12,6 @@ from taksklad.config import APP_VERSION
 from taksklad.update_service import (
     MAX_UPDATE_DOWNLOAD_BYTES,
     TRUSTED_WINDOWS_SIGNER_CERT_SHA256,
-    WINDOWS_CODESIGN_CERTIFICATE_NOT_AVAILABLE,
     create_windows_exe_updater,
     create_windows_onedir_updater,
     download_update_file,
@@ -64,25 +63,22 @@ class UpdateServiceTests(unittest.TestCase):
         manifest.update(overrides)
         return manifest
 
-    def test_release_candidate_version_is_ahead_of_published_update_channel(self):
+    def test_current_forced_release_manifest_matches_app_versions(self):
         payload = json.loads((REPO_ROOT / "version.json").read_text(encoding="utf-8"))
 
         self.assertEqual(APP_VERSION, "2.0.33")
         self.assertEqual(BACKEND_APP_VERSION, APP_VERSION)
-        self.assertEqual(payload["latest_version"], "2.0.25")
-        self.assertEqual(payload["release_tag"], "v2.0.25")
-        self.assertEqual(payload["min_supported_version"], "2.0.25")
+        self.assertEqual(payload["latest_version"], APP_VERSION)
+        self.assertEqual(payload["release_tag"], f"v{APP_VERSION}")
+        self.assertEqual(payload["min_supported_version"], APP_VERSION)
         self.assertIs(payload["mandatory"], True)
         self.assertIs(payload["block_workflow"], True)
         self.assertEqual(payload["package_type"], "onefile_exe")
         self.assertEqual(payload["entrypoint"], "TakSklad.exe")
         self.assertEqual(payload["signature_type"], "authenticode")
         self.assertIs(payload["signature_required"], True)
-        self.assertEqual(payload["signer_certificate_sha256"], "")
-        self.assertEqual(
-            payload["signing_status"],
-            WINDOWS_CODESIGN_CERTIFICATE_NOT_AVAILABLE,
-        )
+        approved_signer = next(iter(TRUSTED_WINDOWS_SIGNER_CERT_SHA256))
+        self.assertEqual(payload["signer_certificate_sha256"], approved_signer)
 
         for url_field in ("download_url", "download_url_onedir"):
             with self.subTest(url_field=url_field):
@@ -91,11 +87,7 @@ class UpdateServiceTests(unittest.TestCase):
         for sha_field in ("sha256", "sha256_onedir"):
             with self.subTest(sha_field=sha_field):
                 validate_update_sha256(payload[sha_field])
-        with self.assertRaisesRegex(
-            (ValueError, RuntimeError),
-            f"SHA256|{WINDOWS_CODESIGN_CERTIFICATE_NOT_AVAILABLE}",
-        ):
-            validate_update_manifest(payload)
+        self.assertEqual(validate_update_manifest(payload)[2], approved_signer)
 
     def test_update_download_url_accepts_github_release_asset(self):
         validate_update_download_url(
