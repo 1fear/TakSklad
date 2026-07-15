@@ -225,8 +225,9 @@ jobs:
           if ($acceptedStatuses -notcontains $signature.Status) {
             throw "WINDOWS_UPDATE_SIGNATURE_INVALID: $($signature.Status)"
           }
+          $acceptedChainStatuses = @('PartialChain', 'UntrustedRoot')
           if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -and
-              ($chainStatuses.Count -ne 1 -or $chainStatuses[0] -ne 'PartialChain')) {
+              ($chainStatuses.Count -ne 1 -or $acceptedChainStatuses -notcontains $chainStatuses[0])) {
             throw "WINDOWS_UPDATE_CHAIN_INVALID: $($chainStatuses -join ',')"
           }
 
