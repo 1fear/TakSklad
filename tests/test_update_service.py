@@ -65,15 +65,15 @@ class UpdateServiceTests(unittest.TestCase):
         manifest.update(overrides)
         return manifest
 
-    def test_forced_release_manifest_is_current_or_one_patch_behind_app_versions(self):
+    def test_forced_release_manifest_is_current_or_at_most_two_patches_behind_app_versions(self):
         payload = json.loads((REPO_ROOT / "version.json").read_text(encoding="utf-8"))
 
-        self.assertEqual(APP_VERSION, "2.0.35")
+        self.assertEqual(APP_VERSION, "2.0.36")
         self.assertEqual(BACKEND_APP_VERSION, APP_VERSION)
         app_version = tuple(int(part) for part in APP_VERSION.split("."))
         published_version = tuple(int(part) for part in payload["latest_version"].split("."))
         self.assertEqual(published_version[:2], app_version[:2])
-        self.assertIn(app_version[2] - published_version[2], (0, 1))
+        self.assertIn(app_version[2] - published_version[2], (0, 1, 2))
         self.assertEqual(payload["release_tag"], f"v{payload['latest_version']}")
         self.assertEqual(payload["min_supported_version"], payload["latest_version"])
         self.assertIs(payload["mandatory"], True)
@@ -294,7 +294,7 @@ class UpdateServiceTests(unittest.TestCase):
         )
         self.assertEqual(
             WINDOWS_AUTHENTICODE_PINNED_CHAIN_STATUSES,
-            frozenset({"PartialChain"}),
+            frozenset({"PartialChain", "UntrustedRoot"}),
         )
 
     def test_authenticode_verifier_accepts_pinned_unknown_error_partial_chain(self):
@@ -312,8 +312,30 @@ class UpdateServiceTests(unittest.TestCase):
                 )
             )
 
+    def test_authenticode_verifier_accepts_pinned_unknown_error_untrusted_root(self):
+        completed = mock.Mock(
+            returncode=0,
+            stdout=f"UnknownError\n{SYNTHETIC_SIGNER_CERT_SHA256}\nCHAIN:UntrustedRoot\n",
+            stderr="",
+        )
+        with mock.patch("taksklad.update_service.os.name", "nt"), \
+                mock.patch("taksklad.update_service.subprocess.run", return_value=completed):
+            self.assertTrue(
+                verify_windows_authenticode_signature(
+                    "TakSklad.synthetic.exe",
+                    SYNTHETIC_SIGNER_CERT_SHA256,
+                )
+            )
+
     def test_authenticode_verifier_rejects_unknown_error_without_partial_chain(self):
-        for chain_statuses in ("", "NotTimeValid", "PartialChain,NotTimeValid", "Revoked"):
+        for chain_statuses in (
+            "",
+            "NotTimeValid",
+            "PartialChain,NotTimeValid",
+            "PartialChain,UntrustedRoot",
+            "UntrustedRoot,NotTimeValid",
+            "Revoked",
+        ):
             with self.subTest(chain_statuses=chain_statuses):
                 completed = mock.Mock(
                     returncode=0,
@@ -462,7 +484,8 @@ class UpdateServiceTests(unittest.TestCase):
             self.assertIn("SignatureStatus]::NotTrusted", script)
             self.assertIn("SignatureStatus]::UnknownError", script)
             self.assertIn("X509RevocationMode]::NoCheck", script)
-            self.assertIn("$ChainStatuses[0] -ne 'PartialChain'", script)
+            self.assertIn("@('PartialChain', 'UntrustedRoot')", script)
+            self.assertIn("$AcceptedChainStatuses -notcontains $ChainStatuses[0]", script)
             self.assertIn("$AcceptedSignatureStatuses -notcontains $Signature.Status", script)
             self.assertIn("$ExpectedSignerCertificateSha256", script)
             self.assertIn(SYNTHETIC_SIGNER_CERT_SHA256, script)

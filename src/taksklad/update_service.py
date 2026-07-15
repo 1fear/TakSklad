@@ -70,11 +70,12 @@ WINDOWS_CODESIGN_CERTIFICATE_NOT_AVAILABLE = "WINDOWS_CODESIGN_CERTIFICATE_NOT_A
 # The release certificate chains to TakSklad's internal CA, which is intentionally
 # not installed into warehouse workstations. Depending on Windows, PowerShell
 # reports NotTrusted or UnknownError on a clean PC. Those statuses are accepted
-# only when a no-revocation X509Chain check fails solely with PartialChain and the
-# exact compiled-in leaf certificate fingerprint matches. HashMismatch, missing
-# signatures, expired certificates, and every other chain status remain closed.
+# only when a no-revocation X509Chain check fails solely with PartialChain or
+# UntrustedRoot and the exact compiled-in leaf certificate fingerprint matches.
+# HashMismatch, missing signatures, expired certificates, and every other chain
+# status remain closed.
 WINDOWS_AUTHENTICODE_PINNED_STATUSES = frozenset({"Valid", "NotTrusted", "UnknownError"})
-WINDOWS_AUTHENTICODE_PINNED_CHAIN_STATUSES = frozenset({"PartialChain"})
+WINDOWS_AUTHENTICODE_PINNED_CHAIN_STATUSES = frozenset({"PartialChain", "UntrustedRoot"})
 # Public certificate fingerprints are release inputs, not secrets. Keep this
 # fail-closed until the production certificate is approved and its SHA-256
 # fingerprint is compiled into the released application.
@@ -278,7 +279,8 @@ def verify_windows_authenticode_signature(artifact_path, expected_signer_certifi
     signature_is_valid = signature_status == "Valid"
     signature_is_pinned_internal_ca = (
         signature_status in WINDOWS_AUTHENTICODE_PINNED_STATUSES - {"Valid"}
-        and chain_statuses == WINDOWS_AUTHENTICODE_PINNED_CHAIN_STATUSES
+        and len(chain_statuses) == 1
+        and chain_statuses <= WINDOWS_AUTHENTICODE_PINNED_CHAIN_STATUSES
     )
     if completed.returncode != 0 or not (
         signature_is_valid or signature_is_pinned_internal_ca
@@ -593,8 +595,9 @@ try {{
   if ($AcceptedSignatureStatuses -notcontains $Signature.Status) {{
     throw "Authenticode-подпись обновления недействительна: $($Signature.Status)"
   }}
+  $AcceptedChainStatuses = @('PartialChain', 'UntrustedRoot')
   if ($Signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -and
-      ($ChainStatuses.Count -ne 1 -or $ChainStatuses[0] -ne 'PartialChain')) {{
+      ($ChainStatuses.Count -ne 1 -or $AcceptedChainStatuses -notcontains $ChainStatuses[0])) {{
     throw "Authenticode-цепочка обновления недействительна: $($ChainStatuses -join ',')"
   }}
 

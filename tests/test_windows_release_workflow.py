@@ -54,7 +54,8 @@ class WindowsReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("SignatureStatus]::UnknownError", workflow)
         self.assertIn("X509RevocationMode]::NoCheck", workflow)
         self.assertIn("WINDOWS_CODESIGN_CLEAN_HOST_CHAIN_UNEXPECTED", workflow)
-        self.assertIn("$chainStatuses[0] -ne 'PartialChain'", workflow)
+        self.assertIn("@('PartialChain', 'UntrustedRoot')", workflow)
+        self.assertIn("$acceptedChainStatuses -notcontains $chainStatuses[0]", workflow)
 
     def test_windows_release_collects_taksklad_package_and_smoke_tests_exe(self):
         workflow = (PROJECT_ROOT / ".github" / "workflows" / "build-windows-release.yml").read_text(

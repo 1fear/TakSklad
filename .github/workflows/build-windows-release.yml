@@ -456,7 +456,8 @@ jobs:
             if ($acceptedStatuses -notcontains $signature.Status) {
               throw "WINDOWS_CODESIGN_CLEAN_HOST_STATUS_UNEXPECTED: $($signature.Status)"
             }
-            if ($chainStatuses.Count -ne 1 -or $chainStatuses[0] -ne 'PartialChain') {
+            $acceptedChainStatuses = @('PartialChain', 'UntrustedRoot')
+            if ($chainStatuses.Count -ne 1 -or $acceptedChainStatuses -notcontains $chainStatuses[0]) {
               throw "WINDOWS_CODESIGN_CLEAN_HOST_CHAIN_UNEXPECTED: $($chainStatuses -join ',')"
             }
           }
