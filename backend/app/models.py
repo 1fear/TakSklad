@@ -54,6 +54,7 @@ class Order(Base):
     updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     items: Mapped[list["OrderItem"]] = relationship(back_populates="order", cascade="all, delete-orphan")
+    fulfillment_links: Mapped[list["SmartupFulfillmentOrder"]] = relationship(back_populates="order")
 
 
 class OrderItem(Base):
@@ -252,6 +253,115 @@ def _persist_pending_event_correlation(_mapper, _connection, target: PendingEven
     from .observability_context import pending_event_correlation_id
 
     pending_event_correlation_id(target)
+
+
+class SmartupFulfillment(Base):
+    __tablename__ = "smartup_fulfillments"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_scope",
+            "deal_id",
+            "request_type",
+            "revision",
+            name="uq_smartup_fulfillments_business_identity",
+        ),
+        UniqueConstraint("workflow_key", name="uq_smartup_fulfillments_workflow_key"),
+        UniqueConstraint("legacy_saga_event_id", name="uq_smartup_fulfillments_legacy_saga_event"),
+        Index("idx_smartup_fulfillments_state_available", "state", "available_at", "id"),
+        Index("idx_smartup_fulfillments_deal", "source_scope", "deal_id", "revision"),
+        CheckConstraint(
+            "state IN ("
+            "'local_ready','smartup_write_started','smartup_confirmed','skladbot_create_queued',"
+            "'skladbot_post_started','skladbot_created','smartup_ambiguous','skladbot_ambiguous',"
+            "'blocked_validation','blocked_stock','payload_mismatch','manual_review','cancelled'"
+            ")",
+            name="ck_smartup_fulfillments_supported_state",
+        ),
+        CheckConstraint("revision > 0", name="ck_smartup_fulfillments_revision_positive"),
+        CheckConstraint(
+            "retry_attempts >= 0 AND reconciliation_attempts >= 0",
+            name="ck_smartup_fulfillments_attempts_nonnegative",
+        ),
+        CheckConstraint("length(payload_hash) = 64", name="ck_smartup_fulfillments_payload_hash_length"),
+        CheckConstraint(
+            "trim(workflow_key) <> '' AND trim(source_scope) <> '' AND trim(deal_id) <> '' "
+            "AND trim(request_type) <> '' AND trim(target_status) <> ''",
+            name="ck_smartup_fulfillments_identity_nonblank",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    workflow_key: Mapped[str] = mapped_column(String(180), nullable=False)
+    source_scope: Mapped[str] = mapped_column(String(160), nullable=False)
+    deal_id: Mapped[str] = mapped_column(String(180), nullable=False)
+    request_type: Mapped[str] = mapped_column(String(60), nullable=False, default="shipment")
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    target_status: Mapped[str] = mapped_column(String(80), nullable=False)
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(40), nullable=False, default="local_ready")
+    retry_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    reconciliation_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    available_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    state_changed_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    canonical_import_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID_TYPE,
+        ForeignKey("imports.id", ondelete="SET NULL"),
+    )
+    legacy_saga_event_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID_TYPE,
+        ForeignKey("pending_events.id", ondelete="SET NULL"),
+    )
+    last_error: Mapped[str | None] = mapped_column(Text)
+    raw_payload: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    order_links: Mapped[list["SmartupFulfillmentOrder"]] = relationship(
+        back_populates="fulfillment",
+        cascade="all, delete-orphan",
+    )
+
+
+class SmartupFulfillmentOrder(Base):
+    __tablename__ = "smartup_fulfillment_orders"
+    __table_args__ = (
+        UniqueConstraint("fulfillment_id", "order_id", name="uq_smartup_fulfillment_orders_mapping"),
+        UniqueConstraint("skladbot_event_id", name="uq_smartup_fulfillment_orders_skladbot_event"),
+        UniqueConstraint("remote_request_id", name="uq_smartup_fulfillment_orders_remote_request"),
+        Index("idx_smartup_fulfillment_orders_order", "order_id", "fulfillment_id"),
+        CheckConstraint(
+            "(remote_request_id IS NULL OR trim(remote_request_id) <> '')",
+            name="ck_smartup_fulfillment_orders_remote_request_nonblank",
+        ),
+        CheckConstraint(
+            "state IN ('pending','create_queued','post_started','created','ambiguous','blocked_stock','manual_review')",
+            name="ck_smartup_fulfillment_orders_supported_state",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    fulfillment_id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE,
+        ForeignKey("smartup_fulfillments.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    order_id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE,
+        ForeignKey("orders.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    skladbot_event_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID_TYPE,
+        ForeignKey("pending_events.id", ondelete="SET NULL"),
+    )
+    remote_request_id: Mapped[str | None] = mapped_column(String(180))
+    state: Mapped[str] = mapped_column(String(40), nullable=False, default="pending")
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    fulfillment: Mapped[SmartupFulfillment] = relationship(back_populates="order_links")
+    order: Mapped[Order] = relationship(back_populates="fulfillment_links")
 
 
 class WorkerHeartbeat(Base):

@@ -13,6 +13,7 @@ from backend.app.google_sheets_sync_worker import (
     RETURN_REFERENCE_COLUMN,
     RETURN_STATUS_COLUMN,
     RETURNED_BY_COLUMN,
+    backend_sync_mutation_batch_size,
     merge_google_sheet_records,
     run_google_sheets_worker_cycle,
     split_codes,
@@ -277,6 +278,98 @@ class GoogleSheetsSyncWorkerTests(unittest.TestCase):
         self.assertGreaterEqual(next_backend_sync_at, 189)
         backend_syncer.assert_not_called()
 
+    def test_worker_cycle_rolls_back_and_opens_circuit_after_postgres_lock_capacity_error(self):
+        db = mock.Mock()
+        pending_processor = mock.Mock(return_value={"status": "completed", "synced": 0, "failed": 0})
+        backend_syncer = mock.Mock(side_effect=RuntimeError(
+            "out of shared memory; You might need to increase max_locks_per_transaction"
+        ))
+
+        _pending_result, result, next_backend_sync_at = run_google_sheets_worker_cycle(
+            db,
+            backend_sync_enabled=True,
+            next_backend_sync_at=0,
+            backend_sync_interval=300,
+            rate_limit_cooldown=120,
+            database_error_cooldown=600,
+            now_monotonic=100,
+            pending_processor=pending_processor,
+            cooldown_reader=mock.Mock(return_value=None),
+            backend_syncer=backend_syncer,
+        )
+
+        self.assertEqual(result["status"], "paused")
+        self.assertEqual(result["reason"], "postgres_lock_capacity")
+        self.assertTrue(result["circuit_open"])
+        self.assertEqual(next_backend_sync_at, 700)
+        db.rollback.assert_called_once_with()
+        db.add.assert_called_once()
+        db.commit.assert_called_once_with()
+
+    def test_worker_restart_honors_durable_open_circuit(self):
+        now = datetime.now(timezone.utc)
+        with self.SessionLocal() as db:
+            db.add(AuditLog(
+                action="google_sheets_backend_sync_circuit_open",
+                entity_type="google_sheets",
+                entity_id="data",
+                created_at=now,
+                payload={
+                    "reason": "postgres_lock_capacity",
+                    "opened_at": now.isoformat(),
+                    "retry_at": (now + timedelta(minutes=15)).isoformat(),
+                    "cooldown_seconds": 900,
+                },
+            ))
+            db.commit()
+            backend_syncer = mock.Mock()
+            _pending, result, _next = run_google_sheets_worker_cycle(
+                db,
+                backend_sync_enabled=True,
+                next_backend_sync_at=0,
+                now_monotonic=0,
+                pending_processor=mock.Mock(return_value={"status": "completed"}),
+                cooldown_reader=mock.Mock(return_value=None),
+                backend_syncer=backend_syncer,
+            )
+
+        self.assertEqual(result["reason"], "circuit_open")
+        backend_syncer.assert_not_called()
+
+    def test_half_open_circuit_closes_only_after_successful_probe(self):
+        now = datetime.now(timezone.utc)
+        with self.SessionLocal() as db:
+            db.add(AuditLog(
+                action="google_sheets_backend_sync_circuit_open",
+                entity_type="google_sheets",
+                entity_id="data",
+                created_at=now - timedelta(minutes=20),
+                payload={
+                    "reason": "postgres_lock_capacity",
+                    "opened_at": (now - timedelta(minutes=20)).isoformat(),
+                    "retry_at": (now - timedelta(minutes=5)).isoformat(),
+                    "cooldown_seconds": 900,
+                },
+            ))
+            db.commit()
+            backend_syncer = mock.Mock(return_value={"rows": 1, "matched": 1, "mutation_batches": 0})
+            _pending, result, _next = run_google_sheets_worker_cycle(
+                db,
+                backend_sync_enabled=True,
+                next_backend_sync_at=0,
+                now_monotonic=0,
+                pending_processor=mock.Mock(return_value={"status": "completed"}),
+                cooldown_reader=mock.Mock(return_value=None),
+                backend_syncer=backend_syncer,
+            )
+            actions = db.execute(
+                select(AuditLog.action)
+                .where(AuditLog.action.like("google_sheets_backend_sync_circuit_%"))
+            ).scalars().all()
+
+        self.assertEqual(result["matched"], 1)
+        self.assertIn("google_sheets_backend_sync_circuit_closed", actions)
+
     def test_sync_skips_repeated_noop_summary_audit(self):
         self.seed_order()
         sheet = self.make_sheet()
@@ -522,6 +615,124 @@ class GoogleSheetsSyncWorkerTests(unittest.TestCase):
             self.assertEqual([scan.code for scan in codes], ["0101", "0102"])
             self.assertEqual(codes[0].source, "google_sheets")
             self.assertEqual(item.scanned_blocks, 2)
+            self.assertEqual(item.status, "completed")
+            self.assertEqual(order.status, "completed")
+
+    def test_sync_does_not_lock_unchanged_existing_same_item_kiz(self):
+        _order_id, item_id = self.seed_order(quantity_blocks=1, scanned_blocks=1)
+        with self.SessionLocal() as db:
+            db.add(ScanCode(
+                order_item_id=uuid.UUID(item_id),
+                code="0101",
+                source="google_sheets",
+                scanned_at=datetime(2026, 7, 15, tzinfo=timezone.utc),
+                raw_payload={},
+            ))
+            db.commit()
+
+        with mock.patch(
+            "backend.app.google_sheets_sync_worker.lock_kiz_codes_for_transaction"
+        ) as lock_codes:
+            with self.SessionLocal() as db:
+                result = sync_google_sheet_to_backend(
+                    db,
+                    sheet=self.make_sheet(
+                        **{
+                            "Товары": "Chapman Brown OP 20",
+                            "Кол-во ШТ": 10,
+                            "Кол-во блок": 1,
+                            "Отсканированные коды": "0101",
+                        }
+                    ),
+                )
+
+        self.assertEqual(result["matched"], 1)
+        lock_codes.assert_not_called()
+
+    def test_sync_commits_new_kiz_mutations_in_bounded_checkpointed_batches(self):
+        codes = [f"01{index:04d}" for index in range(70)]
+        self.seed_order(quantity_blocks=len(codes))
+        sheet = self.make_sheet(
+            **{
+                "Товары": "Chapman Brown OP 20",
+                "Кол-во ШТ": len(codes) * 10,
+                "Кол-во блок": len(codes),
+                "Отсканированные коды": "\n".join(reversed(codes)),
+            }
+        )
+
+        with mock.patch(
+            "backend.app.google_sheets_sync_worker.lock_kiz_codes_for_transaction",
+            side_effect=lambda _db, codes: len(codes),
+        ) as lock_codes:
+            with self.SessionLocal() as db:
+                result = sync_google_sheet_to_backend(db, sheet=sheet, mutation_batch_size=250)
+
+        self.assertEqual(backend_sync_mutation_batch_size(250), 32)
+        self.assertEqual(result["mutation_codes"], 70)
+        self.assertEqual(result["mutation_batches"], 3)
+        self.assertEqual(lock_codes.call_args_list[0].args[1], tuple(codes[:32]))
+        self.assertEqual(lock_codes.call_args_list[1].args[1], tuple(codes[32:64]))
+        self.assertEqual(lock_codes.call_args_list[2].args[1], tuple(codes[64:]))
+        with self.SessionLocal() as db:
+            checkpoints = db.execute(
+                select(AuditLog)
+                .where(AuditLog.action == "google_sheets_backend_sync_checkpoint")
+            ).scalars().all()
+            checkpoints.sort(key=lambda row: row.payload["batch_number"])
+            self.assertEqual([row.payload["batch_size"] for row in checkpoints], [32, 32, 6])
+            self.assertEqual([row.payload["mutation_codes_committed"] for row in checkpoints], [32, 64, 70])
+
+    def test_sync_resumes_after_a_later_kiz_batch_fails(self):
+        codes = [f"02{index:04d}" for index in range(40)]
+        self.seed_order(quantity_blocks=len(codes))
+        sheet = self.make_sheet(
+            **{
+                "Товары": "Chapman Brown OP 20",
+                "Кол-во ШТ": len(codes) * 10,
+                "Кол-во блок": len(codes),
+                "Отсканированные коды": "\n".join(codes),
+            }
+        )
+        lock_calls = 0
+
+        def fail_second_batch(_db, batch):
+            nonlocal lock_calls
+            lock_calls += 1
+            if lock_calls == 2:
+                raise RuntimeError(
+                    "out of shared memory; You might need to increase max_locks_per_transaction"
+                )
+            return len(batch)
+
+        with mock.patch(
+            "backend.app.google_sheets_sync_worker.lock_kiz_codes_for_transaction",
+            side_effect=fail_second_batch,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "out of shared memory"):
+                with self.SessionLocal() as db:
+                    sync_google_sheet_to_backend(db, sheet=sheet)
+
+        with self.SessionLocal() as db:
+            persisted_after_failure = db.execute(select(ScanCode)).scalars().all()
+            self.assertEqual(len(persisted_after_failure), 32)
+
+        with mock.patch(
+            "backend.app.google_sheets_sync_worker.lock_kiz_codes_for_transaction",
+            side_effect=lambda _db, batch: len(batch),
+        ) as resumed_lock:
+            with self.SessionLocal() as db:
+                resumed = sync_google_sheet_to_backend(db, sheet=sheet)
+
+        self.assertEqual(resumed["mutation_codes"], 8)
+        self.assertEqual(resumed["mutation_batches"], 1)
+        self.assertEqual(resumed_lock.call_args.args[1], tuple(codes[32:]))
+        with self.SessionLocal() as db:
+            all_codes = db.execute(select(ScanCode).order_by(ScanCode.code)).scalars().all()
+            item = db.execute(select(OrderItem)).scalar_one()
+            order = db.execute(select(Order)).scalar_one()
+            self.assertEqual([row.code for row in all_codes], codes)
+            self.assertEqual(item.scanned_blocks, 40)
             self.assertEqual(item.status, "completed")
             self.assertEqual(order.status, "completed")
 

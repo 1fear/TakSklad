@@ -96,6 +96,7 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
     orders_created = 0
     items_created = 0
     backend_address_updates = 0
+    resolved_order_ids: set[uuid.UUID] = set()
     google_sheets_records = []
 
     import_job = ImportJob(
@@ -182,6 +183,7 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
         existing_item = find_existing_item_for_row(db, row, existing_items)
         if existing_item is not None:
             duplicate_rows += 1
+            resolved_order_ids.add(existing_item.order_id)
             if update_existing_order_address(existing_item.order, row):
                 backend_address_updates += 1
             continue
@@ -218,6 +220,8 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
             db.add(order)
             order_by_key[order_key] = order
             orders_created += 1
+
+        resolved_order_ids.add(order.id)
 
         db.add(OrderItem(
             order_id=order.id,
@@ -266,6 +270,7 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
         "duplicate_rows": duplicate_rows,
         "invalid_rows": invalid_rows,
         "backend_address_updates": backend_address_updates,
+        "resolved_order_ids": sorted(str(order_id) for order_id in resolved_order_ids),
         "errors": errors,
     }
     ensure_import_incident(db, import_job)
@@ -343,6 +348,7 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
         items_created=items_created,
         duplicate_rows=duplicate_rows,
         invalid_rows=invalid_rows,
+        resolved_order_ids=sorted(str(order_id) for order_id in resolved_order_ids),
         errors=errors,
         backend_address_updates=backend_address_updates,
         google_sheets_status=google_sheets_result.get("status", ""),
@@ -777,7 +783,10 @@ def has_skladbot_create_event(db: Session, order) -> bool:
     event_id = db.execute(
         select(PendingEvent.id)
         .where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
-        .where(PendingEvent.idempotency_key == skladbot_create_idempotency_key(order_id))
+        .where(or_(
+            and_(PendingEvent.aggregate_type == "order", PendingEvent.aggregate_id == order_id),
+            PendingEvent.idempotency_key == skladbot_create_idempotency_key(order_id),
+        ))
         .limit(1)
     ).scalar_one_or_none()
     return event_id is not None

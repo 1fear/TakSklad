@@ -89,6 +89,7 @@ required_fragments = [
     ("compose smartup service", compose, "smartup-auto-import-worker"),
     ("compose backend import gate", compose, "SMARTUP_AUTO_IMPORT_BACKEND_IMPORT_ENABLED"),
     ("compose change status gate", compose, "SMARTUP_AUTO_IMPORT_CHANGE_STATUS_ENABLED"),
+    ("compose durable saga gate", smartup_worker_compose, "SMARTUP_AUTO_IMPORT_SAGA_MODE"),
     ("compose client chat route", compose, "SMARTUP_AUTO_IMPORT_CLIENT_CHAT_ID"),
     ("compose logistics chat route", compose, "SMARTUP_AUTO_IMPORT_LOGISTICS_CHAT_ID"),
     ("compose smartup geocoder key", smartup_worker_compose, "YANDEX_GEOCODER_API_KEY"),

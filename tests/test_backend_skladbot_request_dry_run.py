@@ -12,13 +12,15 @@ from sqlalchemy.pool import StaticPool
 
 from backend.app.db import get_db
 from backend.app.main import app, require_service_token
-from backend.app.models import AuditLog, Base, ImportJob, Incident, Order, OrderItem, PendingEvent, RepresentativeContact, ScanCode
+from backend.app.models import AuditLog, Base, ImportJob, Incident, Order, OrderItem, PendingEvent, RepresentativeContact, ScanCode, SmartupFulfillment, SmartupFulfillmentOrder
 from backend.app.representative_contacts import normalize_representative_name
 from backend.app.settings import load_settings
+from backend.app.skladbot_client import SkladBotApiError, SkladBotErrorKind
 from backend.app.skladbot_request_dry_run import (
     SKLADBOT_REQUEST_CREATE_EVENT_TYPE,
     SKLADBOT_REQUEST_DRY_RUN_EVENT_TYPE,
     create_skladbot_dry_run_for_import,
+    create_skladbot_dry_run_for_orders,
     list_skladbot_dry_runs,
     process_pending_skladbot_request_creates,
 )
@@ -28,6 +30,12 @@ from backend.app.skladbot_return_requests import (
     queue_skladbot_return_request_create,
 )
 from backend.app.skladbot_worker import SkladBotClient
+from backend.app.smartup_saga import (
+    get_or_create_fulfillment,
+    link_fulfillment_order_event,
+    link_fulfillment_orders,
+    transition_fulfillment,
+)
 
 
 class BackendSkladBotRequestDryRunTests(unittest.TestCase):
@@ -162,7 +170,8 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
         self.assertEqual(row["payload"]["customer_id"], 6211)
         self.assertEqual(row["payload"]["request_type_id"], 3389)
         self.assertIs(row["payload"]["notify"], True)
-        self.assertEqual(row["payload"]["fields"]["comment"]["value"], "Перечисление\nТП1")
+        self.assertTrue(row["payload"]["fields"]["comment"]["value"].startswith("Перечисление\nТП1\n"))
+        self.assertRegex(row["payload"]["fields"]["comment"]["value"], r"(?m)^TakSklad ref: TSF-[A-F0-9]{24}$")
         self.assertEqual(row["payload"]["fields"]["unloading_date"]["value"], "2026-06-05")
         self.assertEqual(
             [product["product_data_id"] for product in row["payload"]["products"]],
@@ -297,8 +306,8 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
             db.commit()
             row = list_skladbot_dry_runs(db, import_id)[0]
 
-        self.assertEqual(row["payload"]["comment"], "Терминал\nТП1")
-        self.assertEqual(row["payload"]["fields"]["comment"]["value"], "Терминал\nТП1")
+        self.assertTrue(row["payload"]["comment"].startswith("Терминал\nТП1\n"))
+        self.assertEqual(row["payload"]["fields"]["comment"]["value"], row["payload"]["comment"])
 
     def test_smartup_order_payload_adds_smartup_id_to_comment(self):
         import_id, order_id = self.seed_import_order()
@@ -314,8 +323,10 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
             db.commit()
             row = list_skladbot_dry_runs(db, import_id)[0]
 
-        self.assertEqual(row["payload"]["comment"], "Перечисление\nТП1\nSmartup ID: smartup:259704266")
-        self.assertEqual(row["payload"]["fields"]["comment"]["value"], "Перечисление\nТП1\nSmartup ID: smartup:259704266")
+        self.assertTrue(
+            row["payload"]["comment"].startswith("Перечисление\nТП1\nSmartup ID: smartup:259704266\n")
+        )
+        self.assertEqual(row["payload"]["fields"]["comment"]["value"], row["payload"]["comment"])
 
     def test_skladbot_payload_uses_contact_for_tp_code_and_phones_without_work_zone(self):
         import_id, _order_id = self.seed_import_order(
@@ -337,12 +348,13 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
             db.commit()
             row = list_skladbot_dry_runs(db, import_id)[0]
 
-        self.assertEqual(
-            row["payload"]["fields"]["comment"]["value"],
+        self.assertTrue(
+            row["payload"]["fields"]["comment"]["value"].startswith(
             "Терминал\n"
             "ТП1 Суюнбеков Умид\n"
             "Рабочий номер: +998 91 111 11 11\n"
-            "Личный номер: +998 90 222 22 22",
+            "Личный номер: +998 90 222 22 22\n"
+            )
         )
 
     def test_payload_uses_all_order_items_even_if_import_added_one_item(self):
@@ -485,6 +497,39 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
         self.assertEqual(second["status"], "deduplicated")
         self.assertEqual(len(events), 1)
 
+    def test_explicit_order_dry_run_queues_canonical_order_for_duplicate_only_retry_import(self):
+        _original_import_id, order_id = self.seed_import_order()
+        with self.SessionLocal() as db:
+            retry_import = ImportJob(
+                source="smartup",
+                status="completed",
+                rows_total=2,
+                rows_imported=0,
+                raw_payload={"smartup_deal_id": "259704266", "duplicate_rows": 2},
+            )
+            db.add(retry_import)
+            db.flush()
+            retry_import_id = str(retry_import.id)
+
+            summary = create_skladbot_dry_run_for_orders(
+                db,
+                [order_id],
+                import_id=retry_import_id,
+                force_mode="enabled",
+            )
+            db.commit()
+            create_event = db.execute(
+                select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
+            ).scalar_one()
+
+        self.assertEqual(summary["orders"], 1)
+        self.assertEqual(summary["queued"], 1)
+        self.assertEqual(summary["ready"], 0)
+        self.assertEqual(create_event.aggregate_id, order_id)
+        self.assertEqual(create_event.payload["order_id"], order_id)
+        self.assertEqual(create_event.payload["import_id"], retry_import_id)
+        self.assertRegex(create_event.payload["taksklad_marker"], r"^TakSklad ref: TSF-[A-F0-9]{24}$")
+
     def test_enabled_mode_queues_create_event_without_posting_inline(self):
         import_id, _order_id = self.seed_import_order()
 
@@ -556,9 +601,33 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
             with mock.patch("backend.app.skladbot_request_dry_run.SkladBotClient", return_value=fake_client):
                 with self.SessionLocal() as db:
                     summary = create_skladbot_dry_run_for_import(db, import_id)
+                    create_event = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
+                    ).scalar_one()
+                    fulfillment = get_or_create_fulfillment(
+                        db,
+                        source_scope="smartup:synthetic",
+                        deal_id="synthetic-deal",
+                        target_status="B#W",
+                        payload={"deal_id": "synthetic-deal", "order_ids": [order_id]},
+                        canonical_import_id=uuid.UUID(import_id),
+                    )
+                    link_fulfillment_orders(db, fulfillment, [uuid.UUID(order_id)])
+                    transition_fulfillment(db, fulfillment, "smartup_write_started")
+                    transition_fulfillment(db, fulfillment, "smartup_confirmed")
+                    link_fulfillment_order_event(
+                        db,
+                        fulfillment,
+                        uuid.UUID(order_id),
+                        create_event=create_event,
+                    )
+                    transition_fulfillment(db, fulfillment, "skladbot_create_queued")
+                    db.commit()
                     process_result = process_pending_skladbot_request_creates(db, client=fake_client)
                     db.commit()
                     order = db.get(Order, uuid.UUID(order_id))
+                    fulfillment = db.execute(select(SmartupFulfillment)).scalar_one()
+                    fulfillment_remote_request_id = fulfillment.order_links[0].remote_request_id
                     dry_run_event = db.execute(
                         select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_REQUEST_DRY_RUN_EVENT_TYPE)
                     ).scalar_one()
@@ -588,6 +657,100 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
         self.assertIsNone(create_event.lease_owner)
         self.assertIsNotNone(create_event.completed_at)
         self.assertEqual(create_event.payload["create_status"], "created")
+        self.assertEqual(fulfillment.state, "skladbot_created")
+        self.assertEqual(fulfillment_remote_request_id, "777")
+
+    def test_multi_order_fulfillment_waits_for_every_skladbot_request(self):
+        first_import_id, first_order_id = self.seed_import_order()
+        _second_import_id, second_order_id = self.seed_import_order()
+
+        class FakeSkladBotClient:
+            def __init__(self):
+                self.payloads = {}
+                self.next_id = 800
+
+            @property
+            def configured(self):
+                return True
+
+            def create_request(self, payload):
+                self.next_id += 1
+                self.payloads[self.next_id] = payload
+                return {"data": {"id": self.next_id, "delivery_number": f"WH-R-{self.next_id}"}}
+
+            def get_request_detail(self, request_id):
+                payload = self.payloads[request_id]
+                return {
+                    "id": request_id,
+                    "delivery_number": f"WH-R-{request_id}",
+                    "fields": [
+                        {"field": "address", "value": payload["fields"]["address"]["value"]},
+                        {"field": "company_name", "value": payload["fields"]["company_name"]["value"]},
+                        {"field": "unloading_date", "value": payload["fields"]["unloading_date"]["value"]},
+                        {"field": "comment", "value": payload["comment"]},
+                    ],
+                    "products": [
+                        {"name": item["comment"], "barcode": item["barcode"], "amount": item["amount"]}
+                        for item in payload["products"]
+                    ],
+                }
+
+            def list_requests(self):
+                return []
+
+        fake_client = FakeSkladBotClient()
+        order_ids = [uuid.UUID(first_order_id), uuid.UUID(second_order_id)]
+        with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "enabled"}, clear=False):
+            with self.SessionLocal() as db:
+                create_skladbot_dry_run_for_orders(
+                    db,
+                    [first_order_id, second_order_id],
+                    import_id=first_import_id,
+                )
+                events = db.execute(
+                    select(PendingEvent)
+                    .where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
+                    .order_by(PendingEvent.aggregate_id)
+                ).scalars().all()
+                markers = {
+                    line
+                    for event in events
+                    for line in ((event.payload or {}).get("request_payload") or {}).get("comment", "").splitlines()
+                    if line.startswith("TakSklad ref:")
+                }
+                fulfillment = get_or_create_fulfillment(
+                    db,
+                    source_scope="smartup:synthetic",
+                    deal_id="synthetic-multi-order-deal",
+                    target_status="B#W",
+                    payload={"deal_id": "synthetic-multi-order-deal", "order_ids": sorted(map(str, order_ids))},
+                )
+                link_fulfillment_orders(db, fulfillment, order_ids)
+                transition_fulfillment(db, fulfillment, "smartup_write_started")
+                transition_fulfillment(db, fulfillment, "smartup_confirmed")
+                for event in events:
+                    link_fulfillment_order_event(
+                        db,
+                        fulfillment,
+                        uuid.UUID(event.aggregate_id),
+                        create_event=event,
+                    )
+                transition_fulfillment(db, fulfillment, "skladbot_create_queued")
+                db.commit()
+
+                result = process_pending_skladbot_request_creates(db, client=fake_client)
+                db.commit()
+                db.refresh(fulfillment)
+                links = db.execute(
+                    select(SmartupFulfillmentOrder)
+                    .where(SmartupFulfillmentOrder.fulfillment_id == fulfillment.id)
+                ).scalars().all()
+
+        self.assertEqual(result["created"], 2)
+        self.assertEqual(len(markers), 2)
+        self.assertEqual(fulfillment.state, "skladbot_created")
+        self.assertEqual({link.state for link in links}, {"created"})
+        self.assertEqual(len({link.remote_request_id for link in links}), 2)
 
     def test_enabled_mode_does_not_save_wh_r_without_canonical_detail(self):
         import_id, order_id = self.seed_import_order()
@@ -623,10 +786,11 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
                     ).scalar_one()
 
         self.assertEqual(summary["queued"], 1)
-        self.assertEqual(process_result["failed"], 1)
+        self.assertEqual(process_result["failed"], 0)
+        self.assertEqual(process_result["ambiguous"], 1)
         self.assertEqual(fake_client.create_calls, 1)
-        self.assertEqual(create_event.status, "failed")
-        self.assertEqual(order.raw_payload["skladbot_status"], "create_failed")
+        self.assertEqual(create_event.status, "blocked")
+        self.assertEqual(order.raw_payload["skladbot_status"], "ambiguous")
         self.assertNotEqual(order.raw_payload.get("skladbot_request_number"), "WH-R-STALE")
 
     def test_enabled_mode_deduplicates_after_created_order_number(self):
@@ -669,11 +833,15 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
         import_id, order_id = self.seed_import_order()
 
         class FakeSkladBotClient:
+            def __init__(self):
+                self.marker = ""
+
             @property
             def configured(self):
                 return True
 
             def create_request(self, payload):
+                self.marker = next(line for line in payload["comment"].splitlines() if line.startswith("TakSklad ref:"))
                 raise TimeoutError("temporary timeout")
 
             def list_requests(self):
@@ -688,7 +856,7 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
                         {"field": "address", "value": "Ташкент, улица Тестовая, 1"},
                         {"field": "company_name", "value": '"TEST CLIENT" MCHJ'},
                         {"field": "unloading_date", "value": "2026-06-05"},
-                        {"field": "comment", "value": "Перечисление"},
+                        {"field": "comment", "value": f"Перечисление\n{self.marker}"},
                     ],
                     "products": [
                         {"name": "Chapman RED OP 20", "barcode": "4006396053947", "amount": 2},
@@ -708,6 +876,138 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
         self.assertEqual(process_result["recovered"], 1)
         self.assertEqual(order.raw_payload["skladbot_request_number"], "WH-R-779")
         self.assertEqual(order.raw_payload["skladbot_status"], "created_recovered")
+
+    def test_ambiguous_timeout_without_exact_marker_blocks_and_never_blind_reposts(self):
+        import_id, order_id = self.seed_import_order()
+
+        class FakeSkladBotClient:
+            def __init__(self):
+                self.create_calls = 0
+
+            @property
+            def configured(self):
+                return True
+
+            def create_request(self, payload):
+                self.create_calls += 1
+                raise SkladBotApiError(
+                    "SkladBot POST timeout",
+                    kind=SkladBotErrorKind.TIMEOUT,
+                    ambiguous=True,
+                )
+
+            def list_requests(self):
+                return [{"id": 779, "delivery_number": "WH-R-779", "type": "3PL отгрузка"}]
+
+            def get_request_detail(self, request_id):
+                return {
+                    "id": request_id,
+                    "delivery_number": "WH-R-779",
+                    "type": "3PL отгрузка",
+                    "fields": [
+                        {"field": "address", "value": "Ташкент, улица Тестовая, 1"},
+                        {"field": "company_name", "value": '"TEST CLIENT" MCHJ'},
+                        {"field": "unloading_date", "value": "2026-06-05"},
+                        {"field": "comment", "value": "Перечисление\nТП1\nTakSklad ref: TSF-WRONG"},
+                    ],
+                    "products": [
+                        {"name": "Chapman RED OP 20", "barcode": "4006396053947", "amount": 2},
+                        {"name": "Chapman Brown OP 20", "barcode": "4006396053978", "amount": 3},
+                    ],
+                }
+
+        fake_client = FakeSkladBotClient()
+        with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "enabled"}, clear=False):
+            with self.SessionLocal() as db:
+                create_skladbot_dry_run_for_import(db, import_id)
+                first_result = process_pending_skladbot_request_creates(db, client=fake_client)
+                event = db.execute(
+                    select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
+                ).scalar_one()
+                event.status = "failed"
+                event.available_at = event.created_at
+                db.commit()
+                second_result = process_pending_skladbot_request_creates(db, client=fake_client)
+                db.commit()
+                order = db.get(Order, uuid.UUID(order_id))
+                event = db.execute(
+                    select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
+                ).scalar_one()
+                event_status = event.status
+                event_payload = dict(event.payload or {})
+                incident = db.execute(select(Incident).where(Incident.source == "skladbot_create")).scalar_one()
+
+        self.assertEqual(fake_client.create_calls, 1)
+        self.assertEqual(first_result["ambiguous"], 1)
+        self.assertEqual(second_result["ambiguous"], 1)
+        self.assertEqual(order.raw_payload["skladbot_status"], "ambiguous")
+        self.assertEqual(event_status, "blocked")
+        self.assertEqual(event_payload["create_status"], "ambiguous")
+        self.assertEqual(incident.status, "manual_review")
+
+    def test_ambiguous_retry_recovers_only_by_exact_taksklad_marker(self):
+        import_id, order_id = self.seed_import_order()
+
+        class FakeSkladBotClient:
+            def __init__(self):
+                self.create_calls = 0
+                self.list_calls = 0
+                self.marker = ""
+
+            @property
+            def configured(self):
+                return True
+
+            def create_request(self, payload):
+                self.create_calls += 1
+                self.marker = next(line for line in payload["comment"].splitlines() if line.startswith("TakSklad ref:"))
+                raise SkladBotApiError(
+                    "SkladBot POST HTTP 503",
+                    kind=SkladBotErrorKind.SERVER,
+                    status_code=503,
+                    ambiguous=True,
+                )
+
+            def list_requests(self):
+                self.list_calls += 1
+                if self.list_calls == 1:
+                    return []
+                return [{"id": 880, "delivery_number": "WH-R-880", "type": "3PL отгрузка"}]
+
+            def get_request_detail(self, request_id):
+                return {
+                    "id": request_id,
+                    "delivery_number": "WH-R-880",
+                    "type": "3PL отгрузка",
+                    "fields": [
+                        {"field": "comment", "value": f"Перечисление\nТП1\n{self.marker}"},
+                    ],
+                    "products": [],
+                }
+
+        fake_client = FakeSkladBotClient()
+        with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "enabled"}, clear=False):
+            with self.SessionLocal() as db:
+                create_skladbot_dry_run_for_import(db, import_id)
+                first_result = process_pending_skladbot_request_creates(db, client=fake_client)
+                event = db.execute(
+                    select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
+                ).scalar_one()
+                event.status = "failed"
+                event.available_at = event.created_at
+                db.commit()
+                second_result = process_pending_skladbot_request_creates(db, client=fake_client)
+                db.commit()
+                order = db.get(Order, uuid.UUID(order_id))
+                event_status = db.execute(
+                    select(PendingEvent.status).where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
+                ).scalar_one()
+
+        self.assertEqual(first_result["ambiguous"], 1)
+        self.assertEqual(second_result["recovered"], 1)
+        self.assertEqual(fake_client.create_calls, 1)
+        self.assertEqual(order.raw_payload["skladbot_request_number"], "WH-R-880")
+        self.assertEqual(event_status, "completed")
 
     def test_enabled_mode_records_error_without_breaking_import(self):
         import_id, order_id = self.seed_import_order()
@@ -732,11 +1032,11 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
                     order = db.get(Order, uuid.UUID(order_id))
 
         self.assertEqual(summary["queued"], 1)
-        self.assertEqual(process_result["failed"], 1)
+        self.assertEqual(process_result["blocked"], 1)
         self.assertEqual(order.raw_payload["skladbot_status"], "create_failed")
         self.assertNotIn("skladbot_request_number", {k: v for k, v in order.raw_payload.items() if v})
 
-    def test_stock_shortage_create_failure_removes_unscanned_order_and_queues_cleanup(self):
+    def test_stock_shortage_create_failure_blocks_unscanned_order_without_deleting_data(self):
         import_id, order_id = self.seed_import_order(telegram_chat_id="123")
 
         class FakeSkladBotClient:
@@ -745,7 +1045,12 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
                 return True
 
             def create_request(self, payload):
-                raise RuntimeError("Недостаточно товара на складе для создания заявки")
+                raise SkladBotApiError(
+                    "SkladBot API HTTP 422: Недостаточно товара на складе для создания заявки",
+                    kind=SkladBotErrorKind.STOCK_SHORTAGE,
+                    status_code=422,
+                    ambiguous=False,
+                )
 
             def list_requests(self):
                 return []
@@ -757,7 +1062,7 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
                     process_result = process_pending_skladbot_request_creates(db, client=FakeSkladBotClient())
                     db.commit()
                     order = db.get(Order, uuid.UUID(order_id))
-                    item_count = db.execute(select(OrderItem)).scalars().all()
+                    items = db.execute(select(OrderItem)).scalars().all()
                     create_event = db.execute(
                         select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
                     ).scalar_one()
@@ -770,20 +1075,20 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
                     incident = db.execute(select(Incident).where(Incident.source == "skladbot_create")).scalar_one()
 
         self.assertEqual(summary["queued"], 1)
-        self.assertEqual(process_result["stock_shortage_cancelled"], 1)
+        self.assertEqual(process_result["stock_shortage_blocked"], 1)
+        self.assertEqual(process_result["stock_shortage_cancelled"], 0)
         self.assertEqual(process_result["failed"], 0)
-        self.assertIsNone(order)
-        self.assertEqual(item_count, [])
-        self.assertEqual(create_event.status, "completed")
-        self.assertEqual(create_event.payload["create_status"], "cancelled_stock_shortage")
-        self.assertEqual(
-            sorted(event.payload["action"] for event in google_events),
-            ["google_sheets_delete_import_records_export"],
-        )
-        self.assertEqual(len(google_events[0].payload["records"]), 2)
+        self.assertIsNotNone(order)
+        self.assertEqual(len(items), 2)
+        self.assertEqual(order.raw_payload["skladbot_status"], "blocked_stock")
+        self.assertEqual(create_event.status, "blocked")
+        self.assertEqual(create_event.payload["create_status"], "blocked_stock")
+        self.assertEqual([event.payload["action"] for event in google_events], ["google_sheets_skladbot_export"])
+        self.assertEqual(google_events[0].payload["order_ids"], [order_id])
         self.assertEqual(telegram_event.payload["chat_id"], "123")
-        self.assertIn("Заказ отменён из-за недостатка товара", telegram_event.payload["text"])
-        self.assertEqual(incident.status, "open")
+        self.assertIn("Заказ заблокирован из-за недостатка товара", telegram_event.payload["text"])
+        self.assertIn("не удалён", telegram_event.payload["text"])
+        self.assertEqual(incident.status, "manual_review")
         self.assertEqual(incident.pending_event_id, create_event.id)
         self.assertEqual(str(incident.import_id), import_id)
         self.assertEqual(incident.raw_payload["source_file"], "orders.xlsx")
@@ -806,7 +1111,12 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
                 return True
 
             def create_request(self, payload):
-                raise RuntimeError("Недостаточно товара на складе для создания заявки")
+                raise SkladBotApiError(
+                    "SkladBot API HTTP 422: Недостаточно товара на складе для создания заявки",
+                    kind=SkladBotErrorKind.STOCK_SHORTAGE,
+                    status_code=422,
+                    ambiguous=False,
+                )
 
             def list_requests(self):
                 return []
@@ -828,17 +1138,18 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
                     select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
                 ).scalar_one()
 
-        self.assertEqual(process_result["failed"], 1)
+        self.assertEqual(process_result["failed"], 0)
+        self.assertEqual(process_result["stock_shortage_blocked"], 1)
         self.assertEqual(process_result["stock_shortage_cancelled"], 0)
         self.assertIsNotNone(order)
-        self.assertEqual(order.raw_payload["skladbot_status"], "create_failed")
-        self.assertEqual(google_events, [])
-        self.assertEqual(telegram_events, [])
-        self.assertEqual(create_event.status, "failed")
+        self.assertEqual(order.raw_payload["skladbot_status"], "blocked_stock")
+        self.assertEqual([event.payload["action"] for event in google_events], ["google_sheets_skladbot_export"])
+        self.assertEqual(len(telegram_events), 1)
+        self.assertEqual(create_event.status, "blocked")
         self.assertEqual(incident.status, "manual_review")
         self.assertEqual(incident.pending_event_id, create_event.id)
         self.assertEqual(str(incident.order_id), order_id)
-        self.assertIn("автоотмена пропущена", incident.message)
+        self.assertIn("Недостаточно товара", incident.message)
 
     def test_logistics_report_excludes_stock_shortage_blocked_order(self):
         _import_id, order_id = self.seed_import_order()
@@ -900,7 +1211,7 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
         self.assertEqual(captured["headers"]["Authorization"], "Bearer secret-token")
         self.assertEqual(captured["json"], payload)
 
-    def test_skladbot_client_post_does_not_retry_after_timeout(self):
+    def test_skladbot_client_post_classifies_timeout_as_ambiguous_without_retry(self):
         calls = {"count": 0}
 
         class FakeHttpClient:
@@ -927,10 +1238,64 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
             clear=False,
         ):
             with mock.patch("backend.app.skladbot_client.httpx.Client", FakeHttpClient):
-                with self.assertRaises(httpx.TimeoutException):
+                with self.assertRaises(SkladBotApiError) as raised:
                     SkladBotClient().create_request({"customer_id": 6211})
 
         self.assertEqual(calls["count"], 1)
+        self.assertEqual(raised.exception.kind, SkladBotErrorKind.TIMEOUT)
+        self.assertTrue(raised.exception.ambiguous)
+
+    def test_skladbot_client_post_classifies_5xx_as_ambiguous_not_stock_shortage(self):
+        class FakeHttpClient:
+            def __init__(self, timeout):
+                self.timeout = timeout
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def post(self, url, json=None, headers=None):
+                return httpx.Response(
+                    503,
+                    json={"detail": "Недостаточно товара на складе"},
+                    request=httpx.Request("POST", url),
+                )
+
+        with mock.patch.dict("os.environ", {"SKLADBOT_API_TOKEN": "token", "SKLADBOT_API_TOKENS": ""}, clear=False):
+            with mock.patch("backend.app.skladbot_client.httpx.Client", FakeHttpClient):
+                with self.assertRaises(SkladBotApiError) as raised:
+                    SkladBotClient().create_request({"customer_id": 6211})
+
+        self.assertEqual(raised.exception.kind, SkladBotErrorKind.SERVER)
+        self.assertTrue(raised.exception.ambiguous)
+
+    def test_skladbot_client_post_classifies_deterministic_4xx_stock_shortage(self):
+        class FakeHttpClient:
+            def __init__(self, timeout):
+                self.timeout = timeout
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def post(self, url, json=None, headers=None):
+                return httpx.Response(
+                    422,
+                    json={"detail": "Недостаточно товара на складе"},
+                    request=httpx.Request("POST", url),
+                )
+
+        with mock.patch.dict("os.environ", {"SKLADBOT_API_TOKEN": "token", "SKLADBOT_API_TOKENS": ""}, clear=False):
+            with mock.patch("backend.app.skladbot_client.httpx.Client", FakeHttpClient):
+                with self.assertRaises(SkladBotApiError) as raised:
+                    SkladBotClient().create_request({"customer_id": 6211})
+
+        self.assertEqual(raised.exception.kind, SkladBotErrorKind.STOCK_SHORTAGE)
+        self.assertFalse(raised.exception.ambiguous)
 
     def test_import_endpoint_creates_dry_run_event_audit_and_keeps_would_post_false(self):
         response = self.client.post("/api/v1/imports", json={

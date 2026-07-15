@@ -27,23 +27,24 @@ from .imports_service import create_import, preview_import
 from .excel_importer import reverse_geocode_yandex
 from .logistics_calendar_service import is_logistics_non_working_day, resolve_effective_delivery_date
 from .logistics_service import build_logistics_report_xlsx
-from .models import AuditLog, ImportJob, PendingEvent
+from .models import AuditLog, ImportJob, PendingEvent, SmartupFulfillment
 from .schemas import ImportCreate
 from .redaction import redact_secrets
 from .skladbot_request_dry_run import (
     SKLADBOT_REQUEST_CREATE_EVENT_TYPE,
     create_skladbot_dry_run_for_import,
+    create_skladbot_dry_run_for_orders,
     process_pending_skladbot_request_creates,
 )
 from .smartup_saga import (
     execute_status_sagas,
     imports_from_sagas,
+    load_recoverable_fulfillment_events,
     load_slot_sagas,
     mark_skladbot_results,
     normalize_saga_mode,
     prepare_deal_sagas,
     record_shadow_results,
-    saga_idempotency_key,
     saga_report,
     smartup_saga_fault,
 )
@@ -215,6 +216,50 @@ class SmartupClient:
             "status": status_code,
         }
 
+    def get_deal_statuses(self, deal_ids: list[str]) -> dict[str, str]:
+        """Read back exact Smartup deals before deciding whether a write may be retried."""
+        unique_deal_ids: list[str] = []
+        seen: set[str] = set()
+        for deal_id in deal_ids:
+            normalized = normalize_text(deal_id)
+            if normalized and normalized not in seen:
+                unique_deal_ids.append(normalized)
+                seen.add(normalized)
+
+        statuses: dict[str, str] = {}
+        readable_statuses = list(
+            dict.fromkeys(
+                status
+                for status in (self.config.new_status_code, self.config.waiting_status_code)
+                if normalize_text(status)
+            )
+        )
+        for deal_id in unique_deal_ids:
+            payload = {
+                "filial_code": self.config.smartup_filial_code,
+                "external_id": "",
+                "deal_id": deal_id,
+                "begin_deal_date": "",
+                "end_deal_date": "",
+                "delivery_date": "",
+                "begin_created_on": "",
+                "end_created_on": "",
+                "begin_modified_on": "",
+                "end_modified_on": "",
+                "statuses": readable_statuses,
+            }
+            if self.config.smartup_filial_code:
+                payload["filial_codes"] = [{"filial_code": self.config.smartup_filial_code}]
+            response = self._post(SMARTUP_EXPORT_REQUEST_PATH, payload)
+            exact_orders = [
+                order
+                for order in extract_smartup_orders(response)
+                if normalize_text(order.get("deal_id")) == deal_id
+            ]
+            if exact_orders:
+                statuses[deal_id] = smartup_status(exact_orders[0])
+        return statuses
+
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         headers = {
             "Accept": "application/json",
@@ -247,6 +292,17 @@ class SmartupClient:
         if not isinstance(data, dict):
             raise SmartupAutoImportError(f"Smartup API {path} вернул неожиданный формат")
         return data
+
+
+def smartup_source_scope(config: SmartupAutoImportConfig) -> str:
+    """Stable non-secret identity for a Smartup project/filial boundary."""
+    identity = "|".join((
+        normalize_text(config.smartup_base_url).rstrip("/").casefold(),
+        normalize_text(config.smartup_project_code).casefold(),
+        normalize_text(config.smartup_filial_id).casefold(),
+        normalize_text(config.smartup_filial_code).casefold(),
+    ))
+    return f"smartup:{hashlib.sha256(identity.encode('utf-8')).hexdigest()}"
 
 
 STATUS_CHANGE_DEAL_ID_KEYS = ("deal_id", "dealId", "external_id", "externalId", "order_id", "id", "code")
@@ -547,7 +603,7 @@ def run_smartup_auto_import_once(
     export_date = local_now.date()
     export_date_display = format_display_date(export_date)
     client = smartup_client or SmartupClient(config)
-    require_fake_saga_clients(config, smartup_client, telegram_sender)
+    require_fake_saga_clients(config, client, telegram_sender)
 
     if config.saga_mode == "enforced":
         prepare_orphaned_smartup_sagas(
@@ -695,6 +751,7 @@ def run_smartup_auto_import_once(
             slot_label=slot_label,
             target_delivery_date=target_delivery_date,
             mode=config.saga_mode,
+            source_scope=smartup_source_scope(config),
         )
     if config.saga_mode == "enforced":
         status_change = execute_status_sagas(
@@ -721,6 +778,7 @@ def run_smartup_auto_import_once(
         db,
         imports,
         successful_deal_ids=status_change_successful_deal_ids(status_change, unique_deal_ids(selected_orders)),
+        commit=not bool(saga_events),
     )
     if saga_events:
         mark_skladbot_results(db, saga_events)
@@ -787,22 +845,16 @@ def require_fake_saga_clients(
     smartup_client: Any | None,
     telegram_sender: Any | None,
 ) -> None:
+    del telegram_sender  # Telegram delivery is independent from saga safety.
     if config.saga_mode == "disabled":
         return
-    if smartup_client is None or not bool(getattr(smartup_client, "smartup_saga_fake", False)):
-        raise SmartupAutoImportError(
-            "Smartup saga shadow/enforced в Phase 10 разрешена только с явно внедренным fake client"
-        )
+    if smartup_client is None or not callable(getattr(smartup_client, "change_status", None)):
+        raise SmartupAutoImportError("Smartup saga требует client.change_status")
     if config.saga_mode == "enforced" and not callable(getattr(smartup_client, "get_deal_statuses", None)):
-        raise SmartupAutoImportError("Smartup saga fake client должен поддерживать get_deal_statuses")
+        raise SmartupAutoImportError("Smartup saga enforced требует client.get_deal_statuses")
     if config.process_skladbot_now:
         raise SmartupAutoImportError(
             "Smartup saga в Phase 10 запрещает немедленную обработку SkladBot; разрешена только durable queue"
-        )
-    telegram_configured = any((config.client_chat_id, config.logistics_chat_id, config.alert_chat_id))
-    if telegram_configured and not bool(getattr(telegram_sender, "smartup_saga_fake", False)):
-        raise SmartupAutoImportError(
-            "Smartup saga с Telegram-настройками в Phase 10 требует явно внедренный fake sender"
         )
 
 
@@ -840,6 +892,7 @@ def recover_smartup_slot_sagas(
             status_change,
             [event.aggregate_id for event in saga_events],
         ),
+        commit=False,
     )
     mark_skladbot_results(db, saga_events)
     assert_enforced_sagas_complete(saga_events, config.saga_mode)
@@ -863,14 +916,113 @@ def recover_smartup_slot_sagas(
     return result
 
 
+def sweep_incomplete_smartup_fulfillments(
+    db: Session,
+    config: SmartupAutoImportConfig,
+    *,
+    client: Any | None = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """Recover durable Smartup/SkladBot gaps without depending on the original slot."""
+    if config.saga_mode != "enforced":
+        return {"status": "skipped", "reason": "saga_not_enforced", "workflows": 0}
+    lock_acquired, lock_connection = acquire_smartup_fulfillment_sweep_lock(db)
+    if not lock_acquired:
+        return {"status": "skipped", "reason": "sweep_locked", "workflows": 0}
+    try:
+        smartup_client = client or SmartupClient(config)
+        events = load_recoverable_fulfillment_events(
+            db,
+            source_scope=smartup_source_scope(config),
+            limit=limit,
+        )
+        if not events:
+            return {"status": "idle", "workflows": 0, "queued": 0, "unresolved": 0}
+        status_change = execute_status_sagas(
+            db,
+            smartup_client,
+            events,
+            target_status=config.waiting_status_code,
+            successful_ids=status_change_successful_deal_ids,
+            failed_ids=status_change_failed_deal_ids,
+        )
+        successful_deal_ids = status_change_successful_deal_ids(
+            status_change,
+            [event.aggregate_id for event in events],
+        )
+        imports = queue_skladbot_after_smartup_status(
+            db,
+            imports_from_sagas(events),
+            successful_deal_ids=successful_deal_ids,
+            commit=False,
+        )
+        mark_skladbot_results(db, events)
+        unresolved = [
+            event
+            for event in events
+            if normalize_text((event.payload or {}).get("saga_state")) != "skladbot_queued"
+        ]
+        result = {
+            "status": "completed" if not unresolved else "incomplete",
+            "workflows": len(events),
+            "queued": len(events) - len(unresolved),
+            "unresolved": len(unresolved),
+            "imports": imports,
+            "status_change": status_change,
+        }
+        record_smartup_audit(db, "smartup_fulfillment_sweep", result)
+        return result
+    finally:
+        release_smartup_fulfillment_sweep_lock(lock_connection)
+
+
+def acquire_smartup_fulfillment_sweep_lock(db: Session) -> tuple[bool, Any | None]:
+    bind = db.get_bind()
+    if getattr(getattr(bind, "dialect", None), "name", "") != "postgresql":
+        return True, None
+    connection = bind.connect()
+    try:
+        acquired = bool(connection.execute(
+            text("SELECT pg_try_advisory_lock(hashtextextended(:identity, 0))"),
+            {"identity": "taksklad:smartup:fulfillment-sweep:v1"},
+        ).scalar())
+        connection.commit()
+    except Exception:
+        connection.close()
+        raise
+    if not acquired:
+        connection.close()
+        return False, None
+    return True, connection
+
+
+def release_smartup_fulfillment_sweep_lock(lock_connection: Any | None) -> None:
+    if lock_connection is None:
+        return
+    try:
+        lock_connection.execute(
+            text("SELECT pg_advisory_unlock(hashtextextended(:identity, 0))"),
+            {"identity": "taksklad:smartup:fulfillment-sweep:v1"},
+        )
+        lock_connection.commit()
+    finally:
+        lock_connection.close()
+
+
 def assert_enforced_sagas_complete(events: list[PendingEvent], mode: str) -> None:
     if mode != "enforced":
         return
-    incomplete = [
-        event for event in events
-        if normalize_text((event.payload or {}).get("saga_state")) != "skladbot_queued"
-        or int((event.payload or {}).get("skladbot_event_count") or 0) != 1
-    ]
+    incomplete = []
+    for event in events:
+        payload = event.payload or {}
+        expected_count = int(payload.get("skladbot_expected_order_count") or 0)
+        covered_count = int(payload.get("skladbot_covered_order_count") or 0)
+        legacy_complete = expected_count == 0 and int(payload.get("skladbot_event_count") or 0) == 1
+        coverage_complete = expected_count > 0 and covered_count == expected_count
+        if normalize_text(payload.get("saga_state")) != "skladbot_queued" or not (
+            coverage_complete or legacy_complete
+        ):
+            incomplete.append(event)
     if incomplete:
         raise SmartupAutoImportError(
             f"Smartup saga SkladBot intent incomplete: {len(incomplete)} deal(s) remain retryable"
@@ -906,17 +1058,10 @@ def prepare_orphaned_smartup_sagas(
         raw_payload = import_job.raw_payload or {}
         metadata = raw_payload.get("smartup_auto") if isinstance(raw_payload.get("smartup_auto"), dict) else {}
         for deal_id in sorted({normalize_text(value) for value in metadata.get("deal_ids") or [] if normalize_text(value)}):
-            key = saga_idempotency_key(
-                export_date=export_date,
-                slot_label=slot_label,
-                target_delivery_date=target_delivery_date,
-                deal_id=deal_id,
-                target_status=config.waiting_status_code,
-            )
             if deal_id in seen_deals:
                 continue
             seen_deals.add(deal_id)
-            candidates.append((key, {
+            candidates.append({
                 "delivery_date": normalize_text((metadata.get("delivery_dates") or [""])[0]),
                 "import_id": str(import_job.id),
                 "status": import_job.status,
@@ -927,27 +1072,20 @@ def prepare_orphaned_smartup_sagas(
                 "duplicate_rows": int(raw_payload.get("duplicate_rows") or 0),
                 "invalid_rows": int(raw_payload.get("invalid_rows") or 0),
                 "deal_ids": [deal_id],
-            }))
-    candidate_keys = [key for key, _snapshot in candidates]
-    existing_keys = set()
-    if candidate_keys:
-        existing_keys = set(db.execute(
-            select(PendingEvent.idempotency_key)
-            .where(PendingEvent.event_type == "smartup_deal_saga")
-            .where(PendingEvent.idempotency_key.in_(candidate_keys))
-        ).scalars())
-    orphan_snapshots = [snapshot for key, snapshot in candidates if key not in existing_keys]
-    if not orphan_snapshots:
+                "resolved_order_ids": list(raw_payload.get("resolved_order_ids") or []),
+            })
+    if not candidates:
         return []
     return prepare_deal_sagas(
         db,
-        orphan_snapshots,
+        candidates,
         source_batch_key=f"orphan-recovery:{export_date.isoformat()}:{slot_label}",
         target_status=config.waiting_status_code,
         export_date=export_date,
         slot_label=slot_label,
         target_delivery_date=target_delivery_date,
         mode="enforced",
+        source_scope=smartup_source_scope(config),
     )
 
 
@@ -1045,6 +1183,7 @@ def create_smartup_import(
         "items_created": import_result.items_created,
         "duplicate_rows": import_result.duplicate_rows,
         "invalid_rows": import_result.invalid_rows,
+        "resolved_order_ids": list(import_result.resolved_order_ids),
         "skladbot_dry_run_status": import_result.skladbot_dry_run_status,
         "skladbot_dry_run_ready": import_result.skladbot_dry_run_ready,
         "skladbot_dry_run_blocked": import_result.skladbot_dry_run_blocked,
@@ -1058,6 +1197,7 @@ def queue_skladbot_after_smartup_status(
     imports: list[dict[str, Any]],
     *,
     successful_deal_ids: list[str] | None = None,
+    commit: bool = True,
 ) -> list[dict[str, Any]]:
     successful_deal_id_set = {normalize_text(value) for value in successful_deal_ids or [] if normalize_text(value)}
     results = []
@@ -1078,7 +1218,19 @@ def queue_skladbot_after_smartup_status(
             results.append(item)
             continue
         try:
-            queue_result = create_skladbot_dry_run_for_import(db, import_id)
+            resolved_order_ids = [
+                normalize_text(value)
+                for value in item.get("resolved_order_ids") or []
+                if normalize_text(value)
+            ]
+            if resolved_order_ids:
+                queue_result = create_skladbot_dry_run_for_orders(
+                    db,
+                    resolved_order_ids,
+                    import_id=import_id,
+                )
+            else:
+                queue_result = create_skladbot_dry_run_for_import(db, import_id)
             import_job = db.get(ImportJob, uuid.UUID(import_id))
             if import_job is not None:
                 import_job.raw_payload = {
@@ -1086,7 +1238,8 @@ def queue_skladbot_after_smartup_status(
                     "skladbot_dry_run": queue_result,
                 }
                 db.add(import_job)
-            db.commit()
+            if commit:
+                db.commit()
             updated = {
                 **item,
                 "skladbot_dry_run_status": queue_result.get("status", ""),
@@ -2080,8 +2233,21 @@ def build_smartup_auto_import_status(
         .where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
         .where(PendingEvent.status.in_(("pending", "processing", "failed")))
     ).scalar_one()
+    fulfillment_rows = db.execute(
+        select(SmartupFulfillment.state, func.count(SmartupFulfillment.id))
+        .group_by(SmartupFulfillment.state)
+    ).all()
+    fulfillment_states = {
+        normalize_text(state): int(count or 0)
+        for state, count in fulfillment_rows
+        if normalize_text(state)
+    }
+    manual_review_count = sum(
+        fulfillment_states.get(state, 0)
+        for state in ("smartup_ambiguous", "skladbot_ambiguous", "blocked_stock", "payload_mismatch", "manual_review")
+    )
     return {
-        "status": "failed" if validation_errors else "ok",
+        "status": "failed" if validation_errors or manual_review_count else "ok",
         "configuration": {
             "enabled": config.enabled,
             "backend_import_enabled": config.backend_import_enabled,
@@ -2112,6 +2278,8 @@ def build_smartup_auto_import_status(
         },
         "queues": {
             "pending_skladbot_request_creates": int(pending_skladbot_creates or 0),
+            "fulfillment_states": dict(sorted(fulfillment_states.items())),
+            "fulfillment_manual_review": manual_review_count,
         },
         "last_events": [summarize_smartup_auto_import_event(event) for event in last_events],
     }
@@ -2138,9 +2306,8 @@ def smartup_auto_import_status_findings(config: SmartupAutoImportConfig) -> tupl
     if config.process_skladbot_now:
         warnings.append("SMARTUP_AUTO_IMPORT_PROCESS_SKLADBOT_NOW=true: SkladBot create queue обрабатывается сразу")
     if config.saga_mode in {"shadow", "enforced"}:
-        warnings.append(
-            "SMARTUP_AUTO_IMPORT_SAGA_MODE активен только для явно внедренного fake client в Phase 10"
-        )
+        if config.saga_mode == "shadow":
+            warnings.append("SMARTUP_AUTO_IMPORT_SAGA_MODE=shadow не блокирует legacy completion invariant")
     return errors, warnings
 
 

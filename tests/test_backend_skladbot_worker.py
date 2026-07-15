@@ -1043,6 +1043,50 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
             Base.metadata.drop_all(engine)
             engine.dispose()
 
+    def test_incomplete_fetch_does_not_overwrite_create_queue_state(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        try:
+            with SessionLocal() as db:
+                order = Order(
+                    order_date=date(2026, 5, 29),
+                    payment_type="Перечисление",
+                    client='"TEST CLIENT" MCHJ',
+                    address="Address",
+                    representative="Rep",
+                    status="not_completed",
+                    raw_payload={"skladbot_status": "create_queued"},
+                )
+                order.items = [OrderItem(
+                    product="Chapman Brown OP 20",
+                    quantity_blocks=2,
+                    status="not_completed",
+                    raw_payload={"source_import_id": "import-1", "source_order_id": "order-1"},
+                )]
+                db.add(order)
+                db.commit()
+
+            incomplete_requests = CandidateRequests([], complete=False, reason="detail_limit_reached")
+            with mock.patch("backend.app.skladbot_worker.SessionLocal", SessionLocal), mock.patch(
+                "backend.app.skladbot_worker.fetch_candidate_requests",
+                return_value=incomplete_requests,
+            ):
+                result = update_orders_from_skladbot()
+
+            self.assertEqual(result["pending"], 1)
+            with SessionLocal() as db:
+                order = db.execute(select(Order)).scalar_one()
+                self.assertEqual(order.raw_payload["skladbot_status"], "create_queued")
+                self.assertEqual(order.raw_payload["skladbot_fetch"]["reason"], "detail_limit_reached")
+        finally:
+            Base.metadata.drop_all(engine)
+            engine.dispose()
+
     def test_load_skladbot_fetch_cursor_reads_last_checked_request_id(self):
         engine = create_engine(
             "sqlite+pysqlite:///:memory:",

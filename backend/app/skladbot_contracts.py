@@ -5,6 +5,7 @@ orchestration.  API clients and queue processors can share these helpers
 without creating a worker/service import cycle.
 """
 
+import hashlib
 import os
 import re
 from datetime import datetime, timezone
@@ -31,10 +32,53 @@ SMARTUP_ID_KEYS = (
 SMARTUP_COMMENT_ID_RE = re.compile(
     r"(?im)^\s*(?:smartup(?:\s+deal[_ ]?id|\s+id)?|id\s+smartup|id\s+заявки\s+smartup)\s*[:#-]\s*([^\s;]+)\s*$"
 )
+TAKSKLAD_MARKER_RE = re.compile(r"(?im)^\s*TakSklad\s+ref:\s*(TSF-[A-F0-9]{24})\s*$")
 
 
 def normalize_text(value):
     return str(value or "").strip()
+
+
+def build_taksklad_marker(reference):
+    """Build a stable, non-sensitive marker for exact create reconciliation."""
+    normalized = normalize_text(reference)
+    if not normalized:
+        return ""
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24].upper()
+    return f"TakSklad ref: TSF-{digest}"
+
+
+def taksklad_marker_from_comment(comment):
+    match = TAKSKLAD_MARKER_RE.search(normalize_text(comment))
+    return f"TakSklad ref: {match.group(1).upper()}" if match else ""
+
+
+def request_has_exact_taksklad_marker(request, marker):
+    expected = taksklad_marker_from_comment(marker)
+    actual = taksklad_marker_from_comment((request or {}).get("comment"))
+    return bool(expected and actual and expected == actual)
+
+
+def is_stock_shortage_text(value):
+    text = normalize_text(value).casefold().replace("ё", "е")
+    if not text:
+        return False
+    direct_phrases = (
+        "не хватает",
+        "не хватило",
+        "недостаточно",
+        "insufficient stock",
+        "not enough stock",
+        "not enough quantity",
+        "not enough products",
+    )
+    if any(phrase in text for phrase in direct_phrases):
+        return True
+    if "недостат" in text and any(word in text for word in ("товар", "остат", "склад", "количеств")):
+        return True
+    return "остат" in text and "меньш" in text and any(
+        word in text for word in ("товар", "количеств", "заявк")
+    )
 
 
 def normalize_lookup_text(value):

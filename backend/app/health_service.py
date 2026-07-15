@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import os
 import re
 
@@ -13,14 +13,14 @@ from .event_queue_service import (
     list_stale_processing_events,
 )
 from .google_sheets_pending import GOOGLE_SHEETS_EXPORT_EVENT_TYPE
-from .models import ImportJob, Incident, PendingEvent
+from .models import AuditLog, ImportJob, Incident, PendingEvent
 from .redaction import redact_secrets
 from .settings import APP_VERSION
 from .worker_observability import build_worker_readiness
 
 
 EXPECTED_BASELINE_REVISION = "20260616_0001"
-EXPECTED_HEAD_REVISION = "20260711_0016"
+EXPECTED_HEAD_REVISION = "20260715_0017"
 LEGACY_SQLITE_HEAD_REVISION = "20260710_0011"
 TERMINAL_INCIDENT_STATUSES = ("resolved", "ignored", "cancelled")
 SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE = "skladbot_daily_report_send"
@@ -74,9 +74,10 @@ def build_readiness_report(db: Session, app_settings):
             "next_attempt_at": "",
             "last_errors": [],
         },
+        "google_backend_sync": {"status": "unknown", "circuit_open": False, "retry_at": ""},
         "policy": {
             "mandatory": ["database", "migrations", "hot_path_queue", "imports", "worker_main_loops"],
-            "optional": ["google_mirror"],
+            "optional": ["google_mirror", "google_backend_sync"],
             "mandatory_status": "unknown",
             "optional_status": "unknown",
         },
@@ -98,6 +99,7 @@ def build_readiness_report(db: Session, app_settings):
     try:
         report["queue"] = build_queue_readiness(db, now=now)
         report["google_mirror"] = build_google_mirror_readiness(db, now=now)
+        report["google_backend_sync"] = build_google_backend_sync_readiness(db, now=now)
         report["imports"] = build_import_error_readiness(db)
         configured_required_workers = getattr(app_settings, "worker_heartbeat_required_names", ())
         report["workers"] = build_worker_readiness(
@@ -122,7 +124,10 @@ def build_readiness_report(db: Session, app_settings):
         or report["imports"]["recent_errors"]
         or report["workers"].get("status") != "ok"
     )
-    optional_degraded = report["google_mirror"].get("status") != "ok"
+    optional_degraded = (
+        report["google_mirror"].get("status") != "ok"
+        or report["google_backend_sync"].get("status") != "ok"
+    )
     report["ready"] = not bool(mandatory_failed)
     report["policy"]["mandatory_status"] = "unhealthy" if mandatory_failed else "ok"
     report["policy"]["optional_status"] = "degraded" if optional_degraded else "ok"
@@ -140,6 +145,7 @@ def readiness_http_status(report):
 def public_readiness_report(report):
     queue = report.get("queue") or {}
     google_mirror = report.get("google_mirror") or {}
+    google_backend_sync = report.get("google_backend_sync") or {}
     imports = report.get("imports") or {}
     workers = report.get("workers") or {}
     return {
@@ -164,6 +170,10 @@ def public_readiness_report(report):
         "google_mirror": {
             "status": google_mirror.get("status") or "unknown",
             "role": google_mirror.get("role") or "mirror_export",
+        },
+        "google_backend_sync": {
+            "status": google_backend_sync.get("status") or "unknown",
+            "circuit_open": bool(google_backend_sync.get("circuit_open")),
         },
         "imports": {"recent_error_count": len(imports.get("recent_errors") or [])},
         "workers": {
@@ -511,6 +521,38 @@ def build_google_mirror_readiness(db: Session, now=None):
             now=now,
             event_type=GOOGLE_SHEETS_EXPORT_EVENT_TYPE,
         ),
+    }
+
+
+def build_google_backend_sync_readiness(db: Session, now=None):
+    now = now or datetime.now(timezone.utc)
+    event = db.execute(
+        select(AuditLog)
+        .where(AuditLog.action.in_((
+            "google_sheets_backend_sync_circuit_open",
+            "google_sheets_backend_sync_circuit_closed",
+        )))
+        .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if event is None or event.action == "google_sheets_backend_sync_circuit_closed":
+        return {"status": "ok", "circuit_open": False, "retry_at": "", "reason": ""}
+    payload = event.payload if isinstance(event.payload, dict) else {}
+    opened_at_raw = str(payload.get("opened_at") or "").strip()
+    try:
+        opened_at = ensure_aware_utc(datetime.fromisoformat(opened_at_raw))
+    except ValueError:
+        opened_at = ensure_aware_utc(event.created_at)
+    cooldown_seconds = max(0, int(payload.get("cooldown_seconds") or 0))
+    retry_at = opened_at + timedelta(seconds=cooldown_seconds) if opened_at else None
+    circuit_open = True
+    circuit_state = "open" if retry_at and retry_at > now else "half_open"
+    return {
+        "status": "degraded",
+        "circuit_open": circuit_open,
+        "circuit_state": circuit_state,
+        "retry_at": retry_at.isoformat() if retry_at else "",
+        "reason": str(payload.get("reason") or ""),
     }
 
 
