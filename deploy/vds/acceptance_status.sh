@@ -343,12 +343,12 @@ paused_rollout = (
     and not version_info.get("download_url_onedir_set")
 )
 forced_rollout = (
-    version_info.get("latest_version") == "2.0.34"
-    and version_info.get("min_supported_version") == "2.0.34"
+    version_info.get("latest_version") == "2.0.36"
+    and version_info.get("min_supported_version") == "2.0.36"
     and version_info.get("mandatory") is True
 )
 if not paused_rollout and not forced_rollout:
-    errors.append("version.json must be paused 1.1.7 rollout or forced 2.0.34 rollout")
+    errors.append("version.json must be paused 1.1.7 rollout or forced 2.0.36 rollout")
 if forced_rollout:
     if version_info.get("package_type") != "onefile_exe":
         errors.append("version.json package_type must be onefile_exe")
