@@ -472,7 +472,9 @@ class TelegramScheduledReportProcessor(TelegramProcessorDelegate):
     def run_scheduled_daily_reconciliation(self, chat_id, report_date):
         if not getattr(self, "daily_reconciliation_enabled", False):
             return None
-        alert_chat_ids = sorted(getattr(self, "daily_reconciliation_chat_ids", set()) or {str(chat_id)})
+        admin_chat_ids = set(getattr(self, "admin_chat_ids", set()))
+        configured_chat_ids = set(getattr(self, "daily_reconciliation_chat_ids", set()))
+        alert_chat_ids = sorted((configured_chat_ids & admin_chat_ids) or admin_chat_ids)
         try:
             return self._daily_reconciliation_callback()(report_date=report_date, alert_chat_ids=alert_chat_ids)
         except Exception as exc:

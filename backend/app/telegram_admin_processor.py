@@ -578,11 +578,11 @@ class TelegramAdminProcessor(TelegramProcessorDelegate):
             )
 
     def telegram_notification_targets(self, payload):
-        chat_id = normalize_text((payload or {}).get("chat_id"))
-        if chat_id:
-            return [chat_id]
-        fallback = sorted(getattr(self, "admin_chat_ids", set()) or getattr(self, "allowed_chat_ids", set()))
-        return [normalize_text(value) for value in fallback if normalize_text(value)]
+        admins = sorted(getattr(self, "admin_chat_ids", set()))
+        requested_chat_id = normalize_text((payload or {}).get("chat_id"))
+        if requested_chat_id in admins:
+            return [requested_chat_id]
+        return [normalize_text(value) for value in admins if normalize_text(value)]
 
     def process_pending_telegram_notifications(self):
         self.reset_stale_telegram_notification_events()
@@ -605,7 +605,7 @@ class TelegramAdminProcessor(TelegramProcessorDelegate):
                 )
                 processed += 1
                 continue
-            if any(not self.is_allowed_chat(chat_id) for chat_id in targets):
+            if any(not self.is_admin_chat(chat_id) for chat_id in targets):
                 self.finish_telegram_notification_event(
                     event["id"],
                     False,
