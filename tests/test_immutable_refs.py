@@ -146,11 +146,16 @@ class ImmutableReferenceTests(unittest.TestCase):
             "$signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid",
             transition_valid + 1,
         )
+        clean_workstation_pinned = workflow.index(
+            "- name: Verify clean-workstation pinned Authenticode status"
+        )
         attestation = workflow.index("- name: Attest Windows release subjects")
 
         self.assertLess(missing_certificate, transition_valid)
         self.assertLess(transition_valid, onedir_valid)
-        self.assertLess(onedir_valid, attestation)
+        self.assertLess(onedir_valid, clean_workstation_pinned)
+        self.assertLess(clean_workstation_pinned, attestation)
+        self.assertIn("SignatureStatus]::NotTrusted", workflow)
         self.assertIn("secrets.WINDOWS_CODESIGN_PFX_BASE64", workflow)
         self.assertIn("secrets.WINDOWS_CODESIGN_PFX_PASSWORD", workflow)
         self.assertNotIn("Write-Output $env:WINDOWS_CODESIGN", workflow)

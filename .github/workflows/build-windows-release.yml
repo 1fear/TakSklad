@@ -418,6 +418,49 @@ jobs:
             Remove-Item $env:WINDOWS_CODESIGN_CERTIFICATE_PATH -Force -ErrorAction SilentlyContinue
           }
 
+      - name: Verify clean-workstation pinned Authenticode status
+        shell: powershell
+        run: |
+          $artifactPaths = @(
+            "dist\transition\TakSklad.exe",
+            "dist\onedir\TakSklad\TakSklad.exe"
+          )
+          foreach ($artifactPath in $artifactPaths) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $artifactPath
+            Write-Host ("Authenticode status={0}; message={1}" -f $signature.Status, $signature.StatusMessage)
+            if ($null -eq $signature.SignerCertificate) {
+              throw "WINDOWS_CODESIGN_CLEAN_HOST_SIGNER_MISSING"
+            }
+            $hasher = [System.Security.Cryptography.SHA256]::Create()
+            try {
+              $signerSha256 = -join ($hasher.ComputeHash($signature.SignerCertificate.RawData) | ForEach-Object { $_.ToString('x2') })
+            } finally {
+              $hasher.Dispose()
+            }
+            if ($signerSha256 -ne $env:WINDOWS_CODESIGN_CERTIFICATE_SHA256) {
+              throw "WINDOWS_CODESIGN_CLEAN_HOST_IDENTITY_MISMATCH"
+            }
+            $chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain
+            try {
+              $chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
+              $null = $chain.Build($signature.SignerCertificate)
+              $chainStatuses = @($chain.ChainStatus | ForEach-Object { $_.Status.ToString() } | Sort-Object -Unique)
+            } finally {
+              $chain.Dispose()
+            }
+            Write-Host ("Authenticode chain statuses={0}" -f ($chainStatuses -join ','))
+            $acceptedStatuses = @(
+              [System.Management.Automation.SignatureStatus]::NotTrusted,
+              [System.Management.Automation.SignatureStatus]::UnknownError
+            )
+            if ($acceptedStatuses -notcontains $signature.Status) {
+              throw "WINDOWS_CODESIGN_CLEAN_HOST_STATUS_UNEXPECTED: $($signature.Status)"
+            }
+            if ($chainStatuses.Count -ne 1 -or $chainStatuses[0] -ne 'PartialChain') {
+              throw "WINDOWS_CODESIGN_CLEAN_HOST_CHAIN_UNEXPECTED: $($chainStatuses -join ',')"
+            }
+          }
+
       - name: Package onedir app
         shell: pwsh
         run: |
