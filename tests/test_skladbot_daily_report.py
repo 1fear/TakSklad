@@ -2544,7 +2544,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
         finally:
             telegram_scheduled_report_processor_module.SessionLocal = original_session_local
 
-    def test_scheduled_report_runs_reconciliation_for_configured_chat(self):
+    def test_scheduled_report_routes_reconciliation_to_admin_chat(self):
         engine = create_engine(
             "sqlite+pysqlite:///:memory:",
             connect_args={"check_same_thread": False},
@@ -2568,6 +2568,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
             worker.skladbot_daily_report_retry_minutes = 15
             worker.daily_reconciliation_enabled = True
             worker.daily_reconciliation_chat_ids = set()
+            worker.admin_chat_ids = {"999"}
             sends = []
             worker.send_skladbot_daily_report = lambda chat_id, report_date=None, scheduled=False, **_kwargs: sends.append((chat_id, report_date, scheduled)) or True
 
@@ -2575,7 +2576,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
             self.assertEqual(worker.send_due_skladbot_daily_reports(now=now), 1)
 
             self.assertEqual(sends, [("-5271267499", date(2026, 6, 8), True)])
-            self.assertEqual(reconciliations, [(date(2026, 6, 8), ["-5271267499"])])
+            self.assertEqual(reconciliations, [(date(2026, 6, 8), ["999"])])
         finally:
             telegram_scheduled_report_processor_module.SessionLocal = original_session_local
             telegram_scheduled_report_processor_module.run_daily_reconciliation = original_reconciliation
@@ -2604,6 +2605,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
             worker.skladbot_daily_report_retry_minutes = 15
             worker.daily_reconciliation_enabled = True
             worker.daily_reconciliation_chat_ids = {"999"}
+            worker.admin_chat_ids = {"999"}
             sends = []
             worker.send_skladbot_daily_report = lambda chat_id, report_date=None, scheduled=False, **_kwargs: sends.append((chat_id, report_date, scheduled)) or True
 

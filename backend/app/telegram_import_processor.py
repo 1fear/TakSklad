@@ -172,7 +172,7 @@ class TelegramImportProcessor(TelegramProcessorDelegate):
         return cancelled
 
     def confirm_waiting_telegram_import_shipment_date(self, chat_id, shipment_date):
-        if not self.is_allowed_chat(chat_id):
+        if not self.is_admin_chat(chat_id):
             return False
         parsed_date = parse_date_from_text(shipment_date)
         event_id, payload = self.take_waiting_telegram_import_for_date(chat_id)
@@ -300,7 +300,7 @@ class TelegramImportProcessor(TelegramProcessorDelegate):
             return True, payload, ""
 
     def confirm_telegram_import_excel_date(self, chat_id, event_id):
-        if not self.is_allowed_chat(chat_id):
+        if not self.is_admin_chat(chat_id):
             return False
         success, payload, error = self.resolve_telegram_import_date_choice(chat_id, event_id, "use_excel")
         if not success:
@@ -321,7 +321,7 @@ class TelegramImportProcessor(TelegramProcessorDelegate):
         return True
 
     def cancel_telegram_import_date_choice(self, chat_id, event_id):
-        if not self.is_allowed_chat(chat_id):
+        if not self.is_admin_chat(chat_id):
             return False
         success, payload, error = self.resolve_telegram_import_date_choice(chat_id, event_id, "cancel")
         if not success:
@@ -483,7 +483,7 @@ class TelegramImportProcessor(TelegramProcessorDelegate):
         return None
 
     def enqueue_telegram_document(self, chat_id, document, update_id=None, shipment_date=""):
-        if not self.is_allowed_chat(chat_id):
+        if not self.is_admin_chat(chat_id):
             return False
         file_name = safe_telegram_spreadsheet_filename(document.get("file_name"))
         if not file_name:
@@ -623,7 +623,7 @@ class TelegramImportProcessor(TelegramProcessorDelegate):
             payload = event.get("payload") or {}
             chat_id = normalize_text(payload.get("chat_id"))
             document = payload.get("document") or {}
-            if not self.is_allowed_chat(chat_id):
+            if not self.is_admin_chat(chat_id):
                 self.finish_telegram_import_event(
                     event["id"],
                     False,

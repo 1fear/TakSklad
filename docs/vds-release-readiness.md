@@ -78,7 +78,10 @@
 
 ### Telegram Excel Import
 
-Telegram worker на VDS принимает Excel-документы из разрешённых `TELEGRAM_ALLOWED_CHAT_IDS`.
+Telegram worker на VDS принимает Excel-документы, команды и callback-кнопки только из
+`TELEGRAM_ADMIN_CHAT_IDS`. Чаты из `TELEGRAM_ALLOWED_CHAT_IDS`, которые не входят в
+админский список, считаются `outbound-only`: бот может отправлять туда настроенные
+отчёты, но молча игнорирует входящие сообщения и файлы.
 
 Управление в Telegram:
 
@@ -87,7 +90,7 @@ Telegram worker на VDS принимает Excel-документы из раз
 - системная кнопка меню команд Telegram настроена через `setMyCommands` и `setChatMenuButton`;
 - команды меню: `/date`, `/logistics`, `/kiz_files`, `/status`;
 - админские текстовые команды `/health`, `/imports` и `/logs` сохранены как скрытый fallback;
-- если задан `TELEGRAM_ADMIN_CHAT_IDS`, скрытые админские команды доступны только указанным chat_id;
+- все входящие команды и Excel-файлы доступны только chat ID из `TELEGRAM_ADMIN_CHAT_IDS`;
 - Excel-файлы можно просто отправлять или пересылать в чат.
 
 Поддерживается:

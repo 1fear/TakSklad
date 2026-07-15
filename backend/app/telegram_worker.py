@@ -168,7 +168,7 @@ def validate_telegram_worker_config(
         errors.append("TELEGRAM_ADMIN_CHAT_IDS")
     if not scheduled.issubset(allowed):
         errors.append("SKLADBOT_DAILY_REPORT_CHAT_IDS")
-    if not reconciliation.issubset(allowed):
+    if not reconciliation.issubset(admins):
         errors.append("TAKSKLAD_DAILY_RECONCILIATION_CHAT_IDS")
     if errors:
         raise TelegramConfigurationError(errors)
@@ -486,7 +486,7 @@ class TelegramWorker:
         chat_id = str(chat.get("id") or "")
         if not chat_id:
             return
-        if not self.is_allowed_chat(chat_id):
+        if not self.is_admin_chat(chat_id):
             return
         reason = redact_secrets(normalize_text(exc))
         if len(reason) > 500:
@@ -513,6 +513,9 @@ class TelegramWorker:
         chat_id = str(chat.get("id") or "")
         if not self.is_allowed_chat(chat_id):
             logging.warning("Telegram worker denied unauthorized chat")
+            return
+        if not self.is_admin_chat(chat_id):
+            logging.info("Telegram worker ignored inbound message from outbound-only chat")
             return
 
         text = normalize_text(message.get("text"))
@@ -637,6 +640,9 @@ class TelegramWorker:
         chat_id = str(chat.get("id") or "")
         if not self.is_allowed_chat(chat_id):
             logging.warning("Telegram worker denied unauthorized callback")
+            return
+        if not self.is_admin_chat(chat_id):
+            logging.info("Telegram worker ignored callback from outbound-only chat")
             return
 
         data = normalize_text(callback_query.get("data"))
