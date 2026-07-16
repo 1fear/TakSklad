@@ -883,8 +883,8 @@ def classify_target(
             or not order_is_returned(owner.order)
             or len(owner_outbounds) != 1
             or owner_outbounds[0].id != previous.id
-            or len(owner_returns) != 1
-            or len(future_owner_returns) != 1
+            or not owner_returns
+            or len(future_owner_returns) != len(owner_returns)
             or prerequisite_at <= movement_time(previous)
             or prerequisite_at >= return_at - timedelta(microseconds=1)
         ):
