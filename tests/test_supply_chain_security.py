@@ -67,7 +67,7 @@ class SupplyChainSecurityTests(unittest.TestCase):
             counts = generate(ROOT, output_dir)
 
             self.assertEqual(set(counts), set(SBOM_FILENAMES))
-            self.assertEqual(counts["taksklad-desktop.cdx.json"], 18)
+            self.assertEqual(counts["taksklad-desktop.cdx.json"], 21)
             self.assertEqual(counts["taksklad-backend.cdx.json"], 33)
             self.assertEqual(counts["taksklad-container-images.cdx.json"], 7)
 
