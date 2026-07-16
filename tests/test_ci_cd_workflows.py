@@ -306,11 +306,19 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn("tools/collect_phase27_evidence.py", workflow)
         self.assertIn('git show "$DEPLOY_CONTROL_SHA:deploy/vds/deploy_from_git.sh"', workflow)
         self.assertIn('git show "$DEPLOY_CONTROL_SHA:deploy/vds/acceptance_status.sh"', workflow)
+        self.assertIn('git show "$DEPLOY_CONTROL_SHA:tools/google_cutover_audit.py"', workflow)
         self.assertIn("previous runtime migration head does not match the retained database schema", workflow)
         self.assertIn("structurally complete forced rollout", workflow)
         self.assertIn(
-            "rm -f /tmp/taksklad-production-preflight.json /tmp/taksklad-live-release-verification.json",
+            "rm -f /tmp/taksklad-google-cutover-audit.json",
             workflow,
+        )
+        self.assertIn("tools/google_cutover_audit.py", workflow)
+        self.assertIn("GOOGLE_TO_POSTGRES_CUTOVER_AUDIT_BLOCKED", workflow)
+        self.assertIn('payload.get("blockers") != 0', workflow)
+        self.assertLess(
+            workflow.index("tools/google_cutover_audit.py"),
+            workflow.index("phase27-env-pre-recovery"),
         )
         self.assertIn("./deploy/vds/backup_postgres.sh --no-prune", workflow)
         self.assertIn(

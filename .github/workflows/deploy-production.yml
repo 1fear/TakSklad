@@ -293,6 +293,7 @@ jobs:
           git show "$DEPLOY_CONTROL_SHA:deploy/vds/deploy_from_git.sh" > deploy/vds/deploy_from_git.sh
           git show "$DEPLOY_CONTROL_SHA:deploy/vds/acceptance_status.sh" > deploy/vds/acceptance_status.sh
           git show "$DEPLOY_CONTROL_SHA:tools/collect_phase27_evidence.py" > tools/collect_phase27_evidence.py
+          git show "$DEPLOY_CONTROL_SHA:tools/google_cutover_audit.py" > tools/google_cutover_audit.py
           bash -n deploy/vds/deploy_from_git.sh deploy/vds/acceptance_status.sh
           grep -q 'previous runtime migration head does not match the retained database schema' deploy/vds/deploy_from_git.sh
           grep -q 'structurally complete forced rollout' deploy/vds/acceptance_status.sh
@@ -305,6 +306,7 @@ jobs:
             test-artifacts/disaster-recovery/restore-drill.json \
             tools/check_data_invariants.py \
             tools/collect_phase27_evidence.py \
+            tools/google_cutover_audit.py \
             tools/live_release_verifier.sh \
             tools/production_preflight.sh \
             tools/production_release_checks.py \
@@ -372,7 +374,8 @@ jobs:
             -o ServerAliveInterval=30 -o ServerAliveCountMax=10 \
             "$remote" 'bash -s' <<EOF
           set -euo pipefail
-          rm -f /tmp/taksklad-production-preflight.json /tmp/taksklad-live-release-verification.json
+          rm -f /tmp/taksklad-google-cutover-audit.json \
+            /tmp/taksklad-production-preflight.json /tmp/taksklad-live-release-verification.json
           app_dir=$(printf '%q' "$app_dir")
           install -d -m 755 "$app_dir"
           tar -xzf /tmp/taksklad-deploy-control.tar.gz -C "$app_dir" --no-same-owner
@@ -384,6 +387,43 @@ jobs:
           cd "$app_dir"
           export PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.
           install -d -m 700 .release-state
+          compose_project="\$(docker compose --env-file deploy/vds/.env \
+            -f deploy/vds/docker-compose.yml config --format json | \
+            python3 -c 'import json,sys; name=str((json.load(sys.stdin) or {}).get("name") or "").strip(); assert name; print(name)')"
+          legacy_backend_id="\$(docker ps -q \
+            --filter label=com.docker.compose.project=\$compose_project \
+            --filter label=com.docker.compose.service=backend-api | head -n 1)"
+          test -n "\$legacy_backend_id"
+          set +e
+          docker exec -i "\$legacy_backend_id" python - \
+            < tools/google_cutover_audit.py \
+            > .release-state/google-cutover-audit.json
+          google_audit_status="\$?"
+          set -e
+          install -m 600 .release-state/google-cutover-audit.json /tmp/taksklad-google-cutover-audit.json
+          python3 - .release-state/google-cutover-audit.json "\$google_audit_status" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          status = int(sys.argv[2])
+          if status != 0 or payload.get("safe_to_cutover") is not True or payload.get("blockers") != 0:
+              raise SystemExit("GOOGLE_TO_POSTGRES_CUTOVER_AUDIT_BLOCKED")
+          allowed = {
+              "schema_version", "mode", "safe_to_cutover", "records_total", "active_records",
+              "returned_records", "active_missing_backend", "returned_missing_backend",
+              "active_codes_missing_backend", "returned_codes_missing_backend",
+              "returned_orders_not_marked", "returned_codes_without_return_movement", "blockers",
+          }
+          if set(payload) - allowed:
+              raise SystemExit("GOOGLE_CUTOVER_AUDIT_CONTAINS_UNSAFE_FIELDS")
+          print(
+              "GOOGLE_TO_POSTGRES_CUTOVER_AUDIT_OK "
+              f"records={payload['records_total']} active={payload['active_records']} "
+              f"returned={payload['returned_records']} blockers=0 values_redacted=1"
+          )
+          PY
           env_backup=".release-state/phase27-env-pre-recovery-\$(date -u +%Y%m%dT%H%M%SZ)"
           install -m 600 deploy/vds/.env "\$env_backup"
           python3 - <<'PY'
@@ -697,7 +737,7 @@ jobs:
           set -euo pipefail
           evidence_dir="$RUNNER_TEMP/phase27-evidence"
           mkdir -p "$evidence_dir"
-          for name in production-preflight live-release-verification; do
+          for name in google-cutover-audit production-preflight live-release-verification; do
             scp -i ~/.ssh/taksklad_deploy_key \
               "$VDS_USER@$VDS_HOST:/tmp/taksklad-$name.json" "$evidence_dir/$name.json"
           done

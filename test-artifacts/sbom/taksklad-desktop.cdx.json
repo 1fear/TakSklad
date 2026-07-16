@@ -36,6 +36,44 @@
       "version": "2026.6.17"
     },
     {
+      "bom-ref": "pkg:pypi/cffi@2.0.0#marker-c6b50dd04f99",
+      "name": "cffi",
+      "properties": [
+        {
+          "name": "taksklad:source-lock",
+          "value": "requirements/desktop.lock"
+        },
+        {
+          "name": "taksklad:distribution-hash-count",
+          "value": "84"
+        },
+        {
+          "name": "taksklad:environment-marker",
+          "value": "platform_python_implementation != 'PyPy'"
+        }
+      ],
+      "purl": "pkg:pypi/cffi@2.0.0",
+      "type": "library",
+      "version": "2.0.0"
+    },
+    {
+      "bom-ref": "pkg:pypi/cryptography@49.0.0",
+      "name": "cryptography",
+      "properties": [
+        {
+          "name": "taksklad:source-lock",
+          "value": "requirements/desktop.lock"
+        },
+        {
+          "name": "taksklad:distribution-hash-count",
+          "value": "46"
+        }
+      ],
+      "purl": "pkg:pypi/cryptography@49.0.0",
+      "type": "library",
+      "version": "49.0.0"
+    },
+    {
       "bom-ref": "pkg:pypi/et-xmlfile@2.0.0",
       "name": "et-xmlfile",
       "properties": [
@@ -178,6 +216,27 @@
       "purl": "pkg:pypi/pillow@12.3.0",
       "type": "library",
       "version": "12.3.0"
+    },
+    {
+      "bom-ref": "pkg:pypi/pycparser@3.0#marker-fd5930026c64",
+      "name": "pycparser",
+      "properties": [
+        {
+          "name": "taksklad:source-lock",
+          "value": "requirements/desktop.lock"
+        },
+        {
+          "name": "taksklad:distribution-hash-count",
+          "value": "2"
+        },
+        {
+          "name": "taksklad:environment-marker",
+          "value": "implementation_name != 'PyPy' and platform_python_implementation != 'PyPy'"
+        }
+      ],
+      "purl": "pkg:pypi/pycparser@3.0",
+      "type": "library",
+      "version": "3.0"
     },
     {
       "bom-ref": "pkg:pypi/pyinstaller-hooks-contrib@2026.6",
@@ -325,6 +384,8 @@
       "dependsOn": [
         "pkg:pypi/altgraph@0.17.5",
         "pkg:pypi/certifi@2026.6.17",
+        "pkg:pypi/cffi@2.0.0#marker-c6b50dd04f99",
+        "pkg:pypi/cryptography@49.0.0",
         "pkg:pypi/et-xmlfile@2.0.0",
         "pkg:pypi/macholib@1.16.4#marker-834c4e291afc",
         "pkg:pypi/numpy@2.0.2",
@@ -333,6 +394,7 @@
         "pkg:pypi/pandas@2.3.3",
         "pkg:pypi/pefile@2024.8.26#marker-ab0b932958ff",
         "pkg:pypi/pillow@12.3.0",
+        "pkg:pypi/pycparser@3.0#marker-fd5930026c64",
         "pkg:pypi/pyinstaller-hooks-contrib@2026.6",
         "pkg:pypi/pyinstaller@6.21.0",
         "pkg:pypi/python-dateutil@2.9.0.post0",
