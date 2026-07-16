@@ -24,7 +24,12 @@ TELEGRAM_CHILD = (
     "parse_chat_ids(os.environ.get('TELEGRAM_ALLOWED_CHAT_IDS')), "
     "parse_chat_ids(os.environ.get('TELEGRAM_ADMIN_CHAT_IDS')), "
     "parse_chat_ids(os.environ.get('SKLADBOT_DAILY_REPORT_CHAT_IDS')), "
-    "parse_chat_ids(os.environ.get('TAKSKLAD_DAILY_RECONCILIATION_CHAT_IDS')))"
+    "parse_chat_ids(os.environ.get('TAKSKLAD_DAILY_RECONCILIATION_CHAT_IDS')), "
+    "environment=os.environ.get('TAKSKLAD_ENV'), "
+    "daily_report_enabled=os.environ.get('SKLADBOT_DAILY_REPORT_ENABLED', '').casefold() in {'1','true','yes','on'}, "
+    "skladbot_api_tokens=tuple(value.strip() for value in os.environ.get('SKLADBOT_API_TOKENS', '').replace(';', ',').split(',') if value.strip()), "
+    "daily_report_environ=os.environ, "
+    "automation_alert_chat_id=os.environ.get('TAKSKLAD_AUTOMATION_ALERT_CHAT_ID'))"
 )
 
 
@@ -121,8 +126,40 @@ def matrix_cases() -> tuple[MatrixCase, ...]:
                 "TELEGRAM_BOT_TOKEN": bot_token,
                 "TELEGRAM_ALLOWED_CHAT_IDS": "1001,2002",
                 "TELEGRAM_ADMIN_CHAT_IDS": "2002",
+                "TAKSKLAD_AUTOMATION_ALERT_CHAT_ID": "2002",
                 "SKLADBOT_DAILY_REPORT_CHAT_IDS": "1001",
                 "TAKSKLAD_DAILY_RECONCILIATION_CHAT_IDS": "2002",
+            },
+            0,
+        ),
+        MatrixCase(
+            "telegram_production_missing_personal_alert",
+            TELEGRAM_CHILD,
+            {
+                "TAKSKLAD_ENV": "production",
+                "TAKSKLAD_TIMEZONE": "Asia/Tashkent",
+                "TELEGRAM_BOT_TOKEN": bot_token,
+                "TELEGRAM_ALLOWED_CHAT_IDS": "1001",
+                "TELEGRAM_ADMIN_CHAT_IDS": "1001",
+                "SKLADBOT_DAILY_REPORT_ENABLED": "true",
+                "SKLADBOT_DAILY_REPORT_CHAT_IDS": "1001",
+                "SKLADBOT_API_TOKENS": "synthetic-skladbot-token",
+            },
+            1,
+        ),
+        MatrixCase(
+            "telegram_production_valid",
+            TELEGRAM_CHILD,
+            {
+                "TAKSKLAD_ENV": "production",
+                "TAKSKLAD_TIMEZONE": "Asia/Tashkent",
+                "TELEGRAM_BOT_TOKEN": bot_token,
+                "TELEGRAM_ALLOWED_CHAT_IDS": "1001",
+                "TELEGRAM_ADMIN_CHAT_IDS": "1001",
+                "TAKSKLAD_AUTOMATION_ALERT_CHAT_ID": "1001",
+                "SKLADBOT_DAILY_REPORT_ENABLED": "true",
+                "SKLADBOT_DAILY_REPORT_CHAT_IDS": "1001",
+                "SKLADBOT_API_TOKENS": "synthetic-skladbot-token",
             },
             0,
         ),

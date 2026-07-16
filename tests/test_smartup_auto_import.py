@@ -23,12 +23,17 @@ from backend.app.smartup_auto_import import (
     SMARTUP_LOGISTICS_REPORT_EVENT_TYPE,
     build_smartup_auto_import_status,
     build_import_rows,
+    delivery_dates_for_auto_logistics,
     delivery_dates_for_export_date,
     filter_smartup_orders,
+    load_smartup_auto_import_config,
+    parse_csv_values,
     parse_disabled_weekdays,
+    parse_int,
     preview_delivery_groups,
     prepare_orphaned_smartup_sagas,
     run_due_smartup_auto_imports,
+    run_due_smartup_logistics_reports,
     run_smartup_auto_import_once,
     run_scheduled_smartup_auto_import_slot,
     acquire_smartup_slot_advisory_lock,
@@ -36,7 +41,9 @@ from backend.app.smartup_auto_import import (
     scheduled_smartup_target_delivery_date,
     scheduled_smartup_target_delivery_dates,
     send_final_logistics_reports,
+    smartup_auto_import_status_findings,
     smartup_advisory_lock_key,
+    smartup_route_fingerprint,
     smartup_slot_idempotency_key,
     sweep_incomplete_smartup_fulfillments,
 )
@@ -112,6 +119,13 @@ class FailingSmartupClient:
         raise SmartupAutoImportError("Smartup test failure")
 
 
+class SensitiveFailingSmartupClient:
+    def export_orders(self, export_date, *, target_delivery_date=None):
+        raise SmartupAutoImportError(
+            "Bearer bearer-secret token=token-secret chat_id=-1001002"
+        )
+
+
 class FailingStatusChangeSmartupClient(FakeSmartupClient):
     def change_status(self, deal_ids, status_code):
         self.changed.append((list(deal_ids), status_code))
@@ -145,6 +159,18 @@ class FakeTelegramSender:
     def send_document(self, chat_id, content, filename, caption=""):
         self.documents.append((chat_id, content, filename, caption))
         return {"ok": True}
+
+
+class FailOnceTelegramSender(FakeTelegramSender):
+    def __init__(self):
+        super().__init__()
+        self.failures_remaining = 1
+
+    def send_document(self, chat_id, content, filename, caption=""):
+        if self.failures_remaining:
+            self.failures_remaining -= 1
+            raise SmartupAutoImportError("synthetic Telegram send failure")
+        return super().send_document(chat_id, content, filename, caption)
 
 
 class FakeScalarResult:
@@ -217,6 +243,7 @@ class SmartupAutoImportTests(unittest.TestCase):
             "enabled": True,
             "smartup_username": "user",
             "smartup_password": "password",
+            "route_fingerprint_key": "synthetic-unit-route-key",
             "output_dir": Path(output_dir),
         }
         values.update(overrides)
@@ -1073,12 +1100,12 @@ class SmartupAutoImportTests(unittest.TestCase):
             ["2026-07-06"],
         ])
         self.assertEqual([item["logistics_reports"] for item in result[:3]], [[], [], []])
-        self.assertEqual(result[3]["status"], "final_logistics_reports")
+        self.assertEqual(result[3]["status"], "logistics_due")
         self.assertEqual(result[3]["delivery_dates"], ["2026-07-06"])
         self.assertEqual(result[3]["logistics_reports"][0]["status"], "sent")
         self.assertEqual(result[3]["logistics_reports"][0]["delivery_date"], "2026-07-06")
         self.assertEqual(len(imports), 3)
-        self.assertEqual(second_result[3]["status"], "final_logistics_reports")
+        self.assertEqual(second_result[3]["status"], "logistics_due")
         self.assertEqual(second_result[3]["delivery_dates"], ["2026-07-06"])
         self.assertEqual(second_result[3]["logistics_reports"][0]["status"], "skipped")
         self.assertEqual(second_result[3]["logistics_reports"][0]["reason"], "already_sent")
@@ -1095,8 +1122,8 @@ class SmartupAutoImportTests(unittest.TestCase):
         ]
         self.assertEqual(len(logistics_documents), 1)
         _chat_id, content, filename, caption = logistics_documents[0]
-        self.assertEqual(filename, "TakSklad_логистика_06.07.2026.xlsx")
-        self.assertIn("Отчёт логистики за 06.07.2026", caption)
+        self.assertEqual(filename, "TakSklad_логистика_06.07.2026_AUTO.xlsx")
+        self.assertIn("AUTO Smartup", caption)
         self.assert_xlsx_has_no_orphaned_pane_selections(content)
         workbook = openpyxl.load_workbook(BytesIO(content), data_only=True)
         self.assertIn("Orders", workbook.sheetnames)
@@ -1134,8 +1161,9 @@ class SmartupAutoImportTests(unittest.TestCase):
                 entity_id="2026-07-06",
                 payload={
                     "status": "sent",
+                    "route_fingerprint": smartup_route_fingerprint(config, "logistics"),
                     "delivery_date": "2026-07-06",
-                    "filename": "TakSklad_логистика_06.07.2026.xlsx",
+                    "filename": "TakSklad_логистика_06.07.2026_AUTO.xlsx",
                 },
             ))
             db.commit()
@@ -1658,12 +1686,30 @@ class SmartupAutoImportTests(unittest.TestCase):
                 extra_delivery_dates=["2026-06-27"],
                 telegram_sender=sender,
             )
+            second = send_final_logistics_reports(
+                db,
+                config,
+                export_date=date(2026, 6, 26),
+                extra_delivery_dates=["2026-06-27"],
+                telegram_sender=sender,
+            )
+            audits = db.execute(
+                select(AuditLog).where(AuditLog.action == "smartup_auto_import_logistics_report")
+            ).scalars().all()
+            events = db.execute(
+                select(PendingEvent).where(PendingEvent.event_type == SMARTUP_LOGISTICS_REPORT_EVENT_TYPE)
+            ).scalars().all()
 
-        self.assertEqual(result, [{
-            "status": "skipped",
-            "delivery_date": "2026-06-27",
-            "reason": "non_working_logistics_day",
-        }])
+        self.assertEqual(result[0]["status"], "skipped")
+        self.assertEqual(result[0]["delivery_date"], "2026-06-27")
+        self.assertEqual(result[0]["reason"], "non_working_logistics_day")
+        self.assertEqual(result[0]["provenance"], "auto_smartup")
+        self.assertEqual(result[0]["route_role"], "logistics")
+        self.assertTrue(result[0]["route_fingerprint"].startswith("hmac-sha256:v1:"))
+        self.assertEqual(second[0]["reason"], "already_sent")
+        self.assertEqual(len(audits), 1)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].status, "completed")
         self.assertEqual(sender.documents, [])
 
     def test_disabled_weekdays_parser_accepts_numbers_and_labels(self):
@@ -1673,7 +1719,7 @@ class SmartupAutoImportTests(unittest.TestCase):
     def test_scheduled_slot_failure_sends_telegram_alert(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             sender = FakeTelegramSender()
-            config = self.config(tmp_dir, alert_chat_id="-1003515369435")
+            config = self.config(tmp_dir, alert_chat_id="1001", admin_chat_ids=("1001",))
             with self.SessionLocal() as db:
                 with self.assertRaisesRegex(SmartupAutoImportError, "test failure"):
                     run_scheduled_smartup_auto_import_slot(
@@ -1688,9 +1734,592 @@ class SmartupAutoImportTests(unittest.TestCase):
 
             self.assertEqual(len(events), 1)
             self.assertEqual(events[0].status, "failed")
-            self.assertEqual(sender.messages[0][0], "-1003515369435")
+            self.assertEqual(sender.messages[0][0], "1001")
             self.assertIn("15:00", sender.messages[0][1])
             self.assertIn("Smartup test failure", sender.messages[0][1])
+
+    def test_smartup_alert_message_redacts_secrets_and_chat_id(self):
+        sender = FakeTelegramSender()
+        config = self.config(
+            "/tmp",
+            alert_chat_id="1001",
+            admin_chat_ids=("1001",),
+        )
+        with self.SessionLocal() as db:
+            with self.assertRaises(SmartupAutoImportError):
+                run_scheduled_smartup_auto_import_slot(
+                    db,
+                    config,
+                    now=datetime(2026, 6, 25, 15, 0, tzinfo=ZoneInfo("Asia/Tashkent")),
+                    slot_label="15:00",
+                    smartup_client=SensitiveFailingSmartupClient(),
+                    telegram_sender=sender,
+                )
+
+        sent_text = sender.messages[0][1]
+        self.assertNotIn("bearer-secret", sent_text)
+        self.assertNotIn("token-secret", sent_text)
+        self.assertNotIn("-1001002", sent_text)
+        self.assertIn("Bearer ***", sent_text)
+        self.assertIn("chat_id=***", sent_text)
+
+    def test_parse_int_nonempty_regression_and_csv_values(self):
+        self.assertEqual(parse_int("60", 7), 60)
+        self.assertEqual(parse_int("10,9", 7), 10)
+        self.assertEqual(parse_int("invalid", 7), 7)
+        self.assertEqual(parse_csv_values("1001, 1002,1001"), ("1001", "1002"))
+
+    def test_production_route_contract_is_fail_closed_and_redacted(self):
+        valid = self.config(
+            "/tmp",
+            environment_name="production",
+            backend_import_enabled=True,
+            change_status_enabled=True,
+            skladbot_create_requests_mode="enabled",
+            client_chat_id="-1001001",
+            logistics_chat_id="-1001001",
+            alert_chat_id="1003",
+            admin_chat_ids=("1003",),
+            telegram_bot_token="bot123:synthetic-token",
+        )
+        valid.validate_for_run()
+
+        invalid = self.config(
+            "/tmp",
+            environment_name="production",
+            backend_import_enabled=True,
+            change_status_enabled=True,
+            skladbot_create_requests_mode="enabled",
+            client_chat_id="not-a-chat",
+            logistics_chat_id="-1002",
+            alert_chat_id="-1002",
+            legacy_alert_chat_id="1009",
+            admin_chat_ids=("1003",),
+            telegram_bot_token="bot123:synthetic-token",
+        )
+        errors, _warnings = smartup_auto_import_status_findings(invalid)
+        rendered = json.dumps(errors, ensure_ascii=False)
+
+        self.assertIn("numeric chat ID", rendered)
+        self.assertIn("group-like", rendered)
+        self.assertIn("personal-like", rendered)
+        self.assertIn("должен отличаться", rendered)
+        self.assertIn("TELEGRAM_ADMIN_CHAT_IDS", rendered)
+        self.assertIn("должен быть пустым или совпадать", rendered)
+        for raw_id in ("-1002", "1009"):
+            self.assertNotIn(raw_id, rendered)
+
+    def test_production_route_contract_requires_unified_personal_alert(self):
+        config = self.config(
+            "/tmp",
+            environment_name="production",
+            backend_import_enabled=True,
+            change_status_enabled=True,
+            skladbot_create_requests_mode="enabled",
+            client_chat_id="-1001001",
+            logistics_chat_id="-1001002",
+            alert_chat_id="",
+            admin_chat_ids=("1003",),
+            telegram_bot_token="bot123:synthetic-token",
+        )
+
+        errors, _warnings = smartup_auto_import_status_findings(config)
+
+        self.assertTrue(any("TAKSKLAD_AUTOMATION_ALERT_CHAT_ID" in item for item in errors))
+
+    def test_loader_maps_unified_alert_admin_hmac_and_exact_recovery_date(self):
+        config = load_smartup_auto_import_config({
+            "TAKSKLAD_ENV": "production",
+            "SMARTUP_AUTO_IMPORT_ENABLED": "true",
+            "SMARTUP_AUTO_IMPORT_BACKEND_IMPORT_ENABLED": "true",
+            "SMARTUP_AUTO_IMPORT_CHANGE_STATUS_ENABLED": "true",
+            "SKLADBOT_CREATE_REQUESTS_MODE": "enabled",
+            "SMARTUP_USERNAME": "synthetic-user",
+            "SMARTUP_PASSWORD": "synthetic-password",
+            "TELEGRAM_BOT_TOKEN": "bot123:synthetic-token",
+            "SMARTUP_AUTO_IMPORT_CLIENT_CHAT_ID": "-1001001",
+            "SMARTUP_AUTO_IMPORT_LOGISTICS_CHAT_ID": "-1001001",
+            "TAKSKLAD_AUTOMATION_ALERT_CHAT_ID": "1002",
+            "SMARTUP_AUTO_IMPORT_ALERT_CHAT_ID": "1002",
+            "TELEGRAM_ADMIN_CHAT_IDS": "1002",
+            "SMARTUP_AUTO_IMPORT_ROUTE_FINGERPRINT_KEY": "synthetic-route-key",
+            "SMARTUP_AUTO_IMPORT_LOGISTICS_ROUTE_RECOVERY_EXPORT_DATE": "2026-07-16",
+        })
+
+        config.validate_for_run()
+        self.assertEqual(config.alert_chat_id, "1002")
+        self.assertEqual(config.legacy_alert_chat_id, "1002")
+        self.assertEqual(config.admin_chat_ids, ("1002",))
+        self.assertEqual(config.logistics_route_recovery_export_date, "2026-07-16")
+
+    def test_production_status_blocks_enabled_backend_import_and_create_mode_resets(self):
+        common = {
+            "environment_name": "production",
+            "backend_import_enabled": True,
+            "change_status_enabled": True,
+            "skladbot_create_requests_mode": "enabled",
+            "client_chat_id": "-1001001",
+            "logistics_chat_id": "-1001001",
+            "alert_chat_id": "1002",
+            "admin_chat_ids": ("1002",),
+            "telegram_bot_token": "bot123:synthetic-token",
+        }
+        enabled_reset = self.config("/tmp", **{**common, "enabled": False})
+        backend_reset = self.config("/tmp", **{**common, "backend_import_enabled": False})
+        create_mode_reset = self.config("/tmp", **{**common, "skladbot_create_requests_mode": "dry_run"})
+
+        enabled_errors, _warnings = smartup_auto_import_status_findings(enabled_reset)
+        backend_errors, _warnings = smartup_auto_import_status_findings(backend_reset)
+        create_errors, _warnings = smartup_auto_import_status_findings(create_mode_reset)
+
+        self.assertTrue(any("SMARTUP_AUTO_IMPORT_ENABLED=true" in item for item in enabled_errors))
+        self.assertTrue(any("BACKEND_IMPORT_ENABLED=true" in item for item in backend_errors))
+        self.assertTrue(any("SKLADBOT_CREATE_REQUESTS_MODE=enabled" in item for item in create_errors))
+
+    def test_production_status_requires_three_unique_slots_with_final_included(self):
+        common = {
+            "environment_name": "production",
+            "backend_import_enabled": True,
+            "change_status_enabled": True,
+            "skladbot_create_requests_mode": "enabled",
+            "client_chat_id": "-1001001",
+            "logistics_chat_id": "-1001001",
+            "alert_chat_id": "1002",
+            "admin_chat_ids": ("1002",),
+            "telegram_bot_token": "bot123:synthetic-token",
+        }
+        two_slots = self.config("/tmp", **{**common, "schedule_times": ("12:00", "17:50")})
+        duplicate_slots = self.config(
+            "/tmp",
+            **{**common, "schedule_times": ("12:00", "12:00", "17:50")},
+        )
+        missing_final = self.config(
+            "/tmp",
+            **{**common, "schedule_times": ("12:00", "15:00", "17:00")},
+        )
+
+        two_errors, _warnings = smartup_auto_import_status_findings(two_slots)
+        duplicate_errors, _warnings = smartup_auto_import_status_findings(duplicate_slots)
+        missing_final_errors, _warnings = smartup_auto_import_status_findings(missing_final)
+
+        self.assertTrue(any("ровно 3 уникальных" in item for item in two_errors))
+        self.assertTrue(any("ровно 3 уникальных" in item for item in duplicate_errors))
+        self.assertTrue(any("FINAL_TIME" in item for item in missing_final_errors))
+
+    def test_smartup_error_never_falls_back_to_logistics_route(self):
+        sender = FakeTelegramSender()
+        config = self.config("/tmp", logistics_chat_id="-1001002", alert_chat_id="")
+        with self.SessionLocal() as db:
+            with self.assertRaisesRegex(SmartupAutoImportError, "test failure"):
+                run_scheduled_smartup_auto_import_slot(
+                    db,
+                    config,
+                    now=datetime(2026, 6, 25, 15, 0, tzinfo=ZoneInfo("Asia/Tashkent")),
+                    slot_label="15:00",
+                    smartup_client=FailingSmartupClient(),
+                    telegram_sender=sender,
+                )
+
+        self.assertEqual(sender.messages, [])
+
+    def test_route_correction_resends_with_safe_identity_and_no_raw_chat_id(self):
+        sender = FakeTelegramSender()
+        first_config = self.config("/tmp", logistics_chat_id="-1001002")
+        corrected_config = self.config(
+            "/tmp",
+            logistics_chat_id="-1001003",
+            logistics_route_recovery_export_date="2026-06-25",
+        )
+        with mock.patch(
+            "backend.app.smartup_auto_import.build_logistics_report_xlsx",
+            return_value=(b"xlsx", "TakSklad_логистика_26.06.2026.xlsx"),
+        ):
+            with self.SessionLocal() as db:
+                first = send_final_logistics_reports(
+                    db,
+                    first_config,
+                    export_date=date(2026, 6, 25),
+                    extra_delivery_dates=["2026-06-26"],
+                    telegram_sender=sender,
+                )
+                corrected = send_final_logistics_reports(
+                    db,
+                    corrected_config,
+                    export_date=date(2026, 6, 25),
+                    extra_delivery_dates=["2026-06-26"],
+                    telegram_sender=sender,
+                )
+                corrected_again = send_final_logistics_reports(
+                    db,
+                    corrected_config,
+                    export_date=date(2026, 6, 25),
+                    extra_delivery_dates=["2026-06-26"],
+                    telegram_sender=sender,
+                )
+                events = db.execute(
+                    select(PendingEvent).where(PendingEvent.event_type == SMARTUP_LOGISTICS_REPORT_EVENT_TYPE)
+                ).scalars().all()
+                audits = db.execute(
+                    select(AuditLog).where(AuditLog.action == "smartup_auto_import_logistics_report")
+                ).scalars().all()
+
+        self.assertEqual(first[0]["status"], "sent")
+        self.assertEqual(corrected[0]["status"], "sent")
+        self.assertEqual(corrected_again[0]["reason"], "already_sent")
+        self.assertEqual(len(sender.documents), 2)
+        self.assertEqual(len(events), 2)
+        self.assertNotEqual(events[0].idempotency_key, events[1].idempotency_key)
+        safe_evidence = json.dumps(
+            {"events": [event.payload for event in events], "audits": [audit.payload for audit in audits]},
+            ensure_ascii=False,
+            default=str,
+        )
+        self.assertNotIn("-1001002", safe_evidence)
+        self.assertNotIn("-1001003", safe_evidence)
+        self.assertIn("auto_smartup", safe_evidence)
+
+    def test_legacy_audits_skip_history_and_exact_recovery_resends_once(self):
+        sender = FakeTelegramSender()
+        config = self.config(
+            "/tmp",
+            logistics_chat_id="-1001002",
+            logistics_route_recovery_export_date="2026-07-16",
+        )
+        with mock.patch(
+            "backend.app.smartup_auto_import.build_logistics_report_xlsx",
+            return_value=(b"xlsx", "TakSklad_логистика.xlsx"),
+        ):
+            with self.SessionLocal() as db:
+                for delivery_date in ("2026-07-16", "2026-07-17"):
+                    db.add(AuditLog(
+                        action="smartup_auto_import_logistics_report",
+                        entity_type="delivery_date",
+                        entity_id=delivery_date,
+                        payload={
+                            "status": "sent",
+                            "delivery_date": delivery_date,
+                            "filename": f"TakSklad_логистика_{delivery_date}.xlsx",
+                        },
+                    ))
+                db.commit()
+
+                historical = send_final_logistics_reports(
+                    db,
+                    config,
+                    export_date=date(2026, 7, 15),
+                    extra_delivery_dates=["2026-07-16"],
+                    telegram_sender=sender,
+                )
+                recovered = send_final_logistics_reports(
+                    db,
+                    config,
+                    export_date=date(2026, 7, 16),
+                    extra_delivery_dates=["2026-07-17"],
+                    telegram_sender=sender,
+                )
+                recovered_again = send_final_logistics_reports(
+                    db,
+                    config,
+                    export_date=date(2026, 7, 16),
+                    extra_delivery_dates=["2026-07-17"],
+                    telegram_sender=sender,
+                )
+                events = db.execute(
+                    select(PendingEvent).where(PendingEvent.event_type == SMARTUP_LOGISTICS_REPORT_EVENT_TYPE)
+                ).scalars().all()
+
+        self.assertEqual(historical[0]["reason"], "legacy_assumed_delivered")
+        self.assertEqual(recovered[0]["status"], "sent")
+        self.assertEqual(recovered_again[0]["reason"], "already_sent")
+        self.assertEqual(len(sender.documents), 1)
+        self.assertEqual(len(events), 2)
+        historical_event = next(
+            event for event in events if (event.payload or {}).get("export_date") == "2026-07-15"
+        )
+        self.assertEqual(
+            historical_event.payload["legacy_delivery_state"],
+            "legacy_unproven_assumed_delivered",
+        )
+
+    def test_midnight_catchup_recovers_only_exact_export_date(self):
+        sender = FakeTelegramSender()
+        config = self.config(
+            "/tmp",
+            backend_import_enabled=True,
+            change_status_enabled=True,
+            logistics_chat_id="-1001002",
+            logistics_catchup_days=2,
+            logistics_route_recovery_export_date="2026-07-16",
+        )
+        with mock.patch(
+            "backend.app.smartup_auto_import.build_logistics_report_xlsx",
+            return_value=(b"xlsx", "TakSklad_логистика.xlsx"),
+        ):
+            with self.SessionLocal() as db:
+                for delivery_date in (date(2026, 7, 16), date(2026, 7, 17)):
+                    db.add(Order(
+                        source="smartup_auto",
+                        order_date=delivery_date,
+                        payment_type="Терминал",
+                        client=f"Catchup {delivery_date.isoformat()}",
+                        address="Ташкент",
+                        status="not_completed",
+                        raw_payload={},
+                    ))
+                    db.add(AuditLog(
+                        action="smartup_auto_import_logistics_report",
+                        entity_type="delivery_date",
+                        entity_id=delivery_date.isoformat(),
+                        payload={"status": "sent", "delivery_date": delivery_date.isoformat()},
+                    ))
+                db.commit()
+
+                now = datetime(2026, 7, 17, 0, 5, tzinfo=ZoneInfo("Asia/Tashkent"))
+                first = run_due_smartup_logistics_reports(
+                    db,
+                    config,
+                    now=now,
+                    telegram_sender=sender,
+                )
+                second = run_due_smartup_logistics_reports(
+                    db,
+                    config,
+                    now=now + timedelta(seconds=30),
+                    telegram_sender=sender,
+                )
+
+        self.assertEqual([item["export_date"] for item in first], ["2026-07-15", "2026-07-16"])
+        self.assertEqual(first[0]["logistics_reports"][0]["reason"], "legacy_assumed_delivered")
+        self.assertEqual(first[1]["logistics_reports"][0]["status"], "sent")
+        self.assertEqual(
+            [item["logistics_reports"][0]["reason"] for item in second],
+            ["already_sent", "already_sent"],
+        )
+        self.assertEqual(len(sender.documents), 1)
+
+    def test_failed_logistics_send_retries_after_backoff_and_alerts_admin(self):
+        sender = FailOnceTelegramSender()
+        config = self.config(
+            "/tmp",
+            logistics_chat_id="-1001002",
+            alert_chat_id="1001",
+            admin_chat_ids=("1001",),
+            logistics_retry_base_seconds=60,
+            logistics_max_attempts=3,
+        )
+        first_at = datetime(2026, 6, 25, 18, 0, tzinfo=timezone.utc)
+        with mock.patch(
+            "backend.app.smartup_auto_import.build_logistics_report_xlsx",
+            return_value=(b"xlsx", "TakSklad_логистика_26.06.2026.xlsx"),
+        ):
+            with self.SessionLocal() as db:
+                first = send_final_logistics_reports(
+                    db,
+                    config,
+                    export_date=date(2026, 6, 25),
+                    extra_delivery_dates=["2026-06-26"],
+                    telegram_sender=sender,
+                    now=first_at,
+                )
+                during_backoff = send_final_logistics_reports(
+                    db,
+                    config,
+                    export_date=date(2026, 6, 25),
+                    extra_delivery_dates=["2026-06-26"],
+                    telegram_sender=sender,
+                    now=first_at + timedelta(seconds=30),
+                )
+                retried = send_final_logistics_reports(
+                    db,
+                    config,
+                    export_date=date(2026, 6, 25),
+                    extra_delivery_dates=["2026-06-26"],
+                    telegram_sender=sender,
+                    now=first_at + timedelta(seconds=61),
+                )
+                event = db.execute(
+                    select(PendingEvent).where(PendingEvent.event_type == SMARTUP_LOGISTICS_REPORT_EVENT_TYPE)
+                ).scalar_one()
+
+        self.assertEqual(first[0]["status"], "failed")
+        self.assertEqual(during_backoff[0]["reason"], "retry_backoff")
+        self.assertEqual(retried[0]["status"], "sent")
+        self.assertEqual(event.status, "completed")
+        self.assertEqual(event.attempts, 2)
+        self.assertEqual([message[0] for message in sender.messages], ["1001"])
+        self.assertEqual(len(sender.documents), 1)
+
+    def test_logistics_retry_attempt_cap_is_enforced(self):
+        sender = FailOnceTelegramSender()
+        config = self.config(
+            "/tmp",
+            logistics_chat_id="-1001002",
+            logistics_retry_base_seconds=1,
+            logistics_max_attempts=1,
+        )
+        first_at = datetime(2026, 6, 25, 18, 0, tzinfo=timezone.utc)
+        with mock.patch(
+            "backend.app.smartup_auto_import.build_logistics_report_xlsx",
+            return_value=(b"xlsx", "TakSklad_логистика_26.06.2026.xlsx"),
+        ):
+            with self.SessionLocal() as db:
+                send_final_logistics_reports(
+                    db,
+                    config,
+                    export_date=date(2026, 6, 25),
+                    extra_delivery_dates=["2026-06-26"],
+                    telegram_sender=sender,
+                    now=first_at,
+                )
+                capped = send_final_logistics_reports(
+                    db,
+                    config,
+                    export_date=date(2026, 6, 25),
+                    extra_delivery_dates=["2026-06-26"],
+                    telegram_sender=sender,
+                    now=first_at + timedelta(seconds=2),
+                )
+                status = build_smartup_auto_import_status(db, config)
+
+        self.assertEqual(capped[0]["reason"], "retry_exhausted")
+        self.assertEqual(status["status"], "failed")
+        self.assertEqual(status["queues"]["logistics_retry_exhausted"], 1)
+        self.assertEqual(status["last_logistics_events"][0]["route_role"], "logistics")
+
+    def test_old_route_exhaustion_does_not_block_completed_current_route(self):
+        config = self.config(
+            "/tmp",
+            logistics_chat_id="-1001002",
+            logistics_max_attempts=2,
+        )
+        current_fingerprint = smartup_route_fingerprint(config, "logistics")
+        with self.SessionLocal() as db:
+            db.add_all([
+                PendingEvent(
+                    event_type=SMARTUP_LOGISTICS_REPORT_EVENT_TYPE,
+                    idempotency_key="smartup:logistics_report:v2:old-route",
+                    status="failed",
+                    attempts=2,
+                    payload={
+                        "route_fingerprint": "hmac-sha256:v1:old-route-fingerprint",
+                        "route_role": "logistics",
+                    },
+                ),
+                PendingEvent(
+                    event_type=SMARTUP_LOGISTICS_REPORT_EVENT_TYPE,
+                    idempotency_key="smartup:logistics_report:v2:legacy-no-route",
+                    status="failed",
+                    attempts=2,
+                    payload={"route_role": "logistics"},
+                ),
+                PendingEvent(
+                    event_type=SMARTUP_LOGISTICS_REPORT_EVENT_TYPE,
+                    idempotency_key="smartup:logistics_report:v2:current-route",
+                    status="completed",
+                    attempts=1,
+                    payload={
+                        "route_fingerprint": current_fingerprint,
+                        "route_role": "logistics",
+                    },
+                ),
+            ])
+            db.commit()
+
+            status = build_smartup_auto_import_status(db, config)
+
+        self.assertEqual(status["status"], "ok")
+        self.assertEqual(status["queues"]["logistics_retry_exhausted"], 0)
+        self.assertEqual(status["queues"]["logistics_delivery_states"]["failed"], 2)
+
+    def test_missed_window_catchup_uses_order_truth_without_smartup_import_event(self):
+        sender = FakeTelegramSender()
+        config = self.config(
+            "/tmp",
+            backend_import_enabled=True,
+            change_status_enabled=True,
+            logistics_chat_id="-1001002",
+        )
+        with mock.patch(
+            "backend.app.smartup_auto_import.build_logistics_report_xlsx",
+            return_value=(b"xlsx", "TakSklad_логистика_26.06.2026.xlsx"),
+        ):
+            with self.SessionLocal() as db:
+                db.add(Order(
+                    source="smartup_auto",
+                    order_date=date(2026, 6, 26),
+                    payment_type="Терминал",
+                    client="Catchup client",
+                    address="Ташкент",
+                    status="not_completed",
+                    raw_payload={},
+                ))
+                db.commit()
+                self.assertEqual(db.execute(select(ImportJob)).scalars().all(), [])
+
+                result = run_due_smartup_logistics_reports(
+                    db,
+                    config,
+                    now=datetime(2026, 6, 25, 18, 30, tzinfo=ZoneInfo("Asia/Tashkent")),
+                    telegram_sender=sender,
+                )
+
+        self.assertEqual(result[0]["status"], "logistics_due")
+        self.assertEqual(result[0]["delivery_dates"], ["2026-06-26"])
+        self.assertEqual(result[0]["logistics_reports"][0]["status"], "sent")
+        self.assertEqual(len(sender.documents), 1)
+
+    def test_due_logistics_continues_when_same_poll_smartup_slot_fails(self):
+        sender = FakeTelegramSender()
+        config = self.config(
+            "/tmp",
+            backend_import_enabled=True,
+            change_status_enabled=True,
+            logistics_chat_id="-1001002",
+        )
+        with mock.patch(
+            "backend.app.smartup_auto_import.build_logistics_report_xlsx",
+            return_value=(b"xlsx", "TakSklad_логистика_26.06.2026.xlsx"),
+        ):
+            with self.SessionLocal() as db:
+                db.add(Order(
+                    source="smartup_auto",
+                    order_date=date(2026, 6, 26),
+                    payment_type="Терминал",
+                    client="Independent logistics client",
+                    address="Ташкент",
+                    status="not_completed",
+                    raw_payload={},
+                ))
+                db.commit()
+
+                with self.assertRaisesRegex(
+                    SmartupAutoImportError,
+                    "independent logistics recovery was still evaluated",
+                ):
+                    run_due_smartup_auto_imports(
+                        db,
+                        config,
+                        now=datetime(2026, 6, 25, 17, 50, tzinfo=ZoneInfo("Asia/Tashkent")),
+                        smartup_client=FailingSmartupClient(),
+                        telegram_sender=sender,
+                    )
+                logistics_events = db.execute(
+                    select(PendingEvent)
+                    .where(PendingEvent.event_type == SMARTUP_LOGISTICS_REPORT_EVENT_TYPE)
+                ).scalars().all()
+
+        self.assertEqual(len(logistics_events), 1)
+        self.assertEqual(logistics_events[0].status, "completed")
+        self.assertEqual(len(sender.documents), 1)
+
+    def test_logistics_due_time_defaults_to_final_slot_time(self):
+        config = self.config(
+            "/tmp",
+            final_time="18:15",
+            logistics_due_time="",
+        )
+
+        self.assertEqual(config.effective_logistics_due_time, "18:15")
 
     def test_smartup_advisory_lock_key_is_stable_signed_bigint(self):
         first = smartup_advisory_lock_key(datetime(2026, 6, 25).date(), "17:50")

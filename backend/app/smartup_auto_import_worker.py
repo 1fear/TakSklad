@@ -107,7 +107,7 @@ def run_status(args: argparse.Namespace, config) -> int:
     with SessionLocal() as db:
         result = build_smartup_auto_import_status(db, config, limit=args.limit)
     print(json.dumps(result, ensure_ascii=False, default=str, indent=2))
-    return 0
+    return 0 if result.get("status") == "ok" else 1
 
 
 if __name__ == "__main__":

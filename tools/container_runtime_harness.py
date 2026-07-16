@@ -474,6 +474,7 @@ def start_worker_probes(scope: DockerScope, network: str, database_url: str) -> 
         "telegram-worker": (
             ["python", "-m", "app.telegram_worker"],
             {
+                "TAKSKLAD_AUTOMATION_ALERT_CHAT_ID": "",
                 "TELEGRAM_ADMIN_CHAT_IDS": "",
                 "TELEGRAM_ALLOWED_CHAT_IDS": "",
                 "TELEGRAM_BOT_TOKEN": "",

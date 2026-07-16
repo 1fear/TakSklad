@@ -99,6 +99,12 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         self.assertIn("set_cell(row, 31, quantity_blocks)", smartup_automation_script)
         self.assertIn("Smartup runtime status is required but skipped", smartup_automation_script)
         self.assertIn('"status": "failed" if errors else "ok"', smartup_automation_script)
+        self.assertIn("TAKSKLAD_AUTOMATION_ALERT_CHAT_ID", smartup_automation_script)
+        self.assertIn("SMARTUP_AUTO_IMPORT_ROUTE_FINGERPRINT_KEY", smartup_automation_script)
+        self.assertIn("run_due_smartup_logistics_reports", smartup_automation_script)
+        self.assertIn("smartup:logistics_report:v2", smartup_automation_script)
+        self.assertIn("production runtime contract", smartup_automation_script)
+        self.assertIn("production three-slot invariant", smartup_automation_script)
 
     def test_vds_compose_passes_geocoder_and_block_price_to_import_worker(self):
         compose = (PROJECT_ROOT / "deploy" / "vds" / "docker-compose.yml").read_text(encoding="utf-8")
@@ -111,6 +117,19 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         self.assertNotIn("env_file:", compose)
         self.assertIn("YANDEX_GEOCODER_API_KEY: ${YANDEX_GEOCODER_API_KEY:-}", smartup_worker)
         self.assertIn("TAKSKLAD_TIMEZONE: ${TAKSKLAD_TIMEZONE:-Asia/Tashkent}", smartup_worker)
+        self.assertIn("TAKSKLAD_ENV: ${TAKSKLAD_ENV}", smartup_worker)
+        self.assertIn(
+            "TAKSKLAD_AUTOMATION_ALERT_CHAT_ID: ${TAKSKLAD_AUTOMATION_ALERT_CHAT_ID:-}",
+            smartup_worker,
+        )
+        self.assertIn("TELEGRAM_ADMIN_CHAT_IDS: ${TELEGRAM_ADMIN_CHAT_IDS:-}", smartup_worker)
+        self.assertIn(
+            "SMARTUP_AUTO_IMPORT_ROUTE_FINGERPRINT_KEY: ${SMARTUP_AUTO_IMPORT_ROUTE_FINGERPRINT_KEY:-}",
+            smartup_worker,
+        )
+        self.assertIn("SMARTUP_AUTO_IMPORT_LOGISTICS_DUE_TIME", smartup_worker)
+        self.assertIn("SMARTUP_AUTO_IMPORT_LOGISTICS_ROUTE_RECOVERY_EXPORT_DATE", smartup_worker)
+        self.assertIn("app.smartup_auto_import_worker status --json", smartup_worker)
         self.assertIn("TAKSKLAD_DEFAULT_BLOCK_PRICE: ${TAKSKLAD_DEFAULT_BLOCK_PRICE:-240000}", smartup_worker)
         self.assertIn("SKLADBOT_WORKER_INTERVAL_SECONDS: ${SKLADBOT_WORKER_INTERVAL_SECONDS:-60}", compose)
         self.assertIn('command: ["python", "-m", "app.skladbot_worker_runner"]', compose)
@@ -132,6 +151,11 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         self.assertEqual(test_values["SKLADBOT_DETAIL_LIMIT"], "10")
         self.assertEqual(test_values["SKLADBOT_COMPLETED_BACKFILL_DAYS"], "2")
         self.assertEqual(test_values["TAKSKLAD_ENV"], "test")
+        self.assertEqual(test_values["TAKSKLAD_AUTOMATION_ALERT_CHAT_ID"], "1001")
+        self.assertEqual(
+            test_values["SMARTUP_AUTO_IMPORT_ROUTE_FINGERPRINT_KEY"],
+            "synthetic-only-route-fingerprint-key",
+        )
         self.assertNotIn("TAKSKLAD_ADMINER_HOST", test_values)
         self.assertEqual(test_values["TELEGRAM_ADMIN_CHAT_IDS"], "1001")
         self.assertIn(

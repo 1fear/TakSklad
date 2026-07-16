@@ -221,12 +221,12 @@ class TelegramReportProcessor(TelegramProcessorDelegate):
                 f"Не удалось выгрузить отчёт логистики за {report_date}: backend временно недоступен ({exc.__class__.__name__})",
             )
             return False
-        filename = f"TakSklad_логистика_{report_date}.xlsx"
+        filename = f"TakSklad_логистика_{report_date}_MANUAL.xlsx"
         self.safe_send_document(
             chat_id,
             content,
             filename,
-            caption=f"Отчёт логистики за {report_date}",
+            caption=f"MANUAL /logistics · Отчёт логистики за {report_date}",
         )
         return True
 

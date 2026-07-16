@@ -132,6 +132,7 @@ COVERAGE_FIELDS = [
     "max_pages_reached",
     "movement_pages_fetched",
     "movements_rows_returned",
+    "duplicate_movement_ids",
     "movements_limit",
     "movements_truncation_possible",
     "products_rows_returned",
@@ -783,6 +784,7 @@ def default_coverage(
         "max_pages_reached": False,
         "movement_pages_fetched": 0,
         "movements_rows_returned": 0,
+        "duplicate_movement_ids": 0,
         "movements_limit": 0,
         "movements_truncation_possible": False,
         "products_rows_returned": 0,
@@ -1188,6 +1190,7 @@ def fetch_daily_movements(
     if coverage is not None:
         coverage["movements_limit"] = limit
     result = []
+    seen_movement_ids = set()
     for movement_type, direction in (("in", "Приход"), ("out", "Расход")):
         try:
             payload = read_style_post(client, "/warehouse/transactions", {
@@ -1214,6 +1217,13 @@ def fetch_daily_movements(
             if isinstance(item, dict):
                 movement = normalize_movement(item, direction)
                 if movement_on_report_date(movement, report_date):
+                    movement_id = normalize_text(movement.get("source_id"))
+                    if movement_id and movement_id in seen_movement_ids:
+                        if coverage is not None:
+                            coverage["duplicate_movement_ids"] += 1
+                        continue
+                    if movement_id:
+                        seen_movement_ids.add(movement_id)
                     result.append(movement)
     result.sort(key=lambda item: (normalize_text(item.get("date")), normalize_text(item.get("request_number"))))
     return result
@@ -1244,6 +1254,7 @@ def normalize_movement(item: dict[str, Any], direction: str) -> dict[str, Any]:
     }
     movement_id = first_text(item, "id", "uuid", "movement_id", "transaction_id")
     row["source_type"] = "movement"
+    row["source_id"] = movement_id
     if movement_id:
         row["source_identity_key"] = f"movement:{movement_id}"
     else:
@@ -1571,7 +1582,22 @@ def build_skladbot_daily_report_xlsx(report: dict[str, Any]) -> tuple[bytes, str
     write_summary_sheet(summary_sheet, report)
     write_requests_sheet(workbook.create_sheet("Заявки"), report.get("requests") or [])
     write_request_products_sheet(workbook.create_sheet("Товары заявок"), report.get("requests") or [])
+    write_movements_sheet(workbook.create_sheet("Движения"), report.get("movements") or [])
     write_stock_sheet(workbook.create_sheet("Остатки"), report)
+    write_coverage_sheet(workbook.create_sheet("Покрытие"), report)
+    write_excluded_requests_sheet(
+        workbook.create_sheet("Исключенные заявки"),
+        report.get("excluded_requests") or [],
+    )
+    write_date_diagnostics_sheet(
+        workbook.create_sheet("Диагностика дат"),
+        report.get("date_diagnostics") or [],
+    )
+    write_errors_sheet(
+        workbook.create_sheet("Ошибки"),
+        report.get("errors") or [],
+        report.get("api_errors") or [],
+    )
     for sheet in workbook.worksheets:
         autosize_columns(sheet)
     apply_report_template_widths(workbook)
@@ -1598,10 +1624,23 @@ def write_summary_sheet(sheet, report: dict[str, Any]) -> None:
             parse_int(category_counts.get(category)),
         ])
     sheet.append(["Актуальный остаток", parse_int(summary.get("stock_total")), None])
-    apply_header_style(sheet)
+    sheet.append([])
+    sheet.append(["Движения", "Количество", "Строк"])
+    sheet.append([
+        "Приход",
+        parse_int(summary.get("movement_in_amount")),
+        parse_int(summary.get("movement_in_rows")),
+    ])
+    sheet.append([
+        "Расход",
+        parse_int(summary.get("movement_out_amount")),
+        parse_int(summary.get("movement_out_rows")),
+    ])
+    apply_header_style(sheet, rows=(1, 8))
     for cell in ("A6", "B6"):
         sheet[cell].font = Font(bold=True)
     apply_thin_border(sheet, "A2:C6")
+    apply_thin_border(sheet, "A9:C10")
 
 
 def write_requests_sheet(sheet, requests: list[dict[str, Any]]) -> None:
@@ -1814,6 +1853,13 @@ def build_skladbot_daily_report_message(report: dict[str, Any]) -> str:
         f"Отгрузка в браке: {category_counts.get(REQUEST_CATEGORY_DEFECT_SHIPMENT, 0)} заявок, {blocks.get(REQUEST_CATEGORY_DEFECT_SHIPMENT, 0)} блоков",
         f"Возврат: {category_counts.get(REQUEST_CATEGORY_RETURN, 0)} заявок, {blocks.get(REQUEST_CATEGORY_RETURN, 0)} блоков",
         f"Приемка: {category_counts.get(REQUEST_CATEGORY_RECEIVING, 0)} заявок, {blocks.get(REQUEST_CATEGORY_RECEIVING, 0)} блоков",
+        (
+            "Движения: "
+            f"приход {parse_int(summary.get('movement_in_rows'))} строк / "
+            f"{parse_int(summary.get('movement_in_amount'))} кол-во; "
+            f"расход {parse_int(summary.get('movement_out_rows'))} строк / "
+            f"{parse_int(summary.get('movement_out_amount'))} кол-во"
+        ),
         f"Актуальный остаток: {summary.get('stock_total', 0)}",
     ]
     return "\n".join(lines)
@@ -1887,6 +1933,7 @@ def apply_report_template_widths(workbook: Workbook) -> None:
         "Сводка": {"A": 28, "B": 13, "C": 10},
         "Заявки": {"A": 10, "B": 13, "C": 11, "D": 20, "E": 11, "F": 10, "G": 15, "H": 17, "I": 15, "J": 45, "K": 24, "L": 33, "M": 60, "N": 13, "O": 12, "P": 12, "Q": 12, "R": 10, "S": 24},
         "Товары заявок": {"A": 13, "B": 11, "C": 20, "D": 15, "E": 45, "F": 24, "G": 36, "H": 17, "I": 15, "J": 12, "K": 13, "L": 12, "M": 12},
+        "Движения": {"A": 13, "B": 20, "C": 20, "D": 18, "E": 29, "F": 36, "G": 15, "H": 16, "I": 12, "J": 14, "K": 14},
         "Остатки": {"A": 29, "B": 10, "C": 13, "D": 13, "E": 13, "F": 17, "G": 21, "H": 10},
     }
     for sheet_name, widths in widths_by_sheet.items():
