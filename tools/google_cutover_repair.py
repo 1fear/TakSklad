@@ -26,6 +26,28 @@ NAMESPACE = uuid.UUID("b9080367-802f-5ca4-8673-dfa7adb7a846")
 RETURN_MARKERS = {"возврат", "returned", "return"}
 OUTBOUND_MOVEMENTS = {"outbound", "re_outbound"}
 AVAILABLE_MOVEMENTS = {"return", "undo", "reset"}
+IDENTITY_DIAGNOSTIC_FIELDS = (
+    "identity_no_strong_id_records",
+    "identity_not_found_records",
+    "identity_product_quantity_mismatch_records",
+    "identity_multiple_records",
+    "identity_order_not_returned_records",
+)
+AMBIGUOUS_ERRORS = {
+    "target_missing_movement_timestamp",
+    "target_return_crosses_later_movement",
+    "missing_scan_return_boundary_conflict",
+}
+OTHER_ERRORS = {
+    "multiple_item_scans",
+    "missing_outbound",
+    "outbound_owner_mismatch",
+    "busy_before_missing_scan",
+    "scan_without_outbound",
+    "scanned_blocks_exceed_plan",
+    "return_reference_too_long",
+    "returned_by_too_long",
+}
 
 
 def backend_module(name):
@@ -126,27 +148,38 @@ def match_records_to_items(db, records):
             by_order[source_order_id].append(item)
 
     matched = []
-    identity_conflicts = 0
+    identity_diagnostics = {field: 0 for field in IDENTITY_DIAGNOSTIC_FIELDS}
     for record in records:
         source_import_id = normalize(record.get("source_import_id"))
         source_order_id = normalize(record.get("source_order_id"))
         if source_import_id:
+            pool = by_import.get(source_import_id, [])
             candidates = [
-                item for item in by_import.get(source_import_id, [])
+                item for item in pool
                 if product_quantity_match(item, record)
             ]
         elif source_order_id:
+            pool = by_order.get(source_order_id, [])
             candidates = [
-                item for item in by_order.get(source_order_id, [])
+                item for item in pool
                 if product_quantity_match(item, record)
             ]
         else:
+            pool = []
             candidates = []
         item = candidates[0] if len(candidates) == 1 else None
         if is_returned_record(record) and len(candidates) != 1:
-            identity_conflicts += 1
+            if not source_import_id and not source_order_id:
+                field = "identity_no_strong_id_records"
+            elif not pool:
+                field = "identity_not_found_records"
+            elif not candidates:
+                field = "identity_product_quantity_mismatch_records"
+            else:
+                field = "identity_multiple_records"
+            identity_diagnostics[field] += 1
         matched.append((record, item))
-    return matched, identity_conflicts
+    return matched, identity_diagnostics
 
 
 def load_records_and_items(db):
@@ -274,8 +307,6 @@ def classify_target(item, record, code, scans_by_code, movements_by_code):
     if len(normalize(record.get("returned_by"))) > 120:
         return None, "returned_by_too_long"
     movements = list(movements_by_code.get(code) or [])
-    if any(movement_time(movement) is None for movement in movements):
-        return None, "ambiguous_chronology"
     item_scans = [scan for scan in (item.scan_codes or []) if normalize(scan.code) == code]
     if len(item_scans) > 1:
         return None, "multiple_item_scans"
@@ -284,29 +315,41 @@ def classify_target(item, record, code, scans_by_code, movements_by_code):
         scan = item_scans[0]
         outbound_movements = movements_for_scan(movements, scan, OUTBOUND_MOVEMENTS)
         return_movements = movements_for_scan(movements, scan, {"return"})
+        if return_movements:
+            anomaly = False
+            if any(movement_time(movement) is None for movement in movements):
+                anomaly = True
+            elif len(outbound_movements) != 1 or len(return_movements) != 1:
+                anomaly = True
+            else:
+                outbound = outbound_movements[0]
+                existing_return = return_movements[0]
+                outbound_at = movement_time(outbound)
+                existing_return_at = movement_time(existing_return)
+                if (
+                    not movement_matches_item(outbound, item)
+                    or not movement_matches_item(existing_return, item)
+                    or existing_return_at <= outbound_at
+                ):
+                    anomaly = True
+                else:
+                    between = [
+                        movement for movement in movements
+                        if movement.id not in {outbound.id, existing_return.id}
+                        and outbound_at <= movement_time(movement) <= existing_return_at
+                    ]
+                    anomaly = bool(between)
+            return {
+                "kind": "already_repaired",
+                "preexisting_anomaly": anomaly,
+            }, ""
+        if any(movement_time(movement) is None for movement in movements):
+            return None, "target_missing_movement_timestamp"
         if len(outbound_movements) != 1:
             return None, "missing_outbound"
         outbound = outbound_movements[0]
         if not movement_matches_item(outbound, item):
             return None, "outbound_owner_mismatch"
-        if return_movements:
-            if len(return_movements) != 1:
-                return None, "ambiguous_chronology"
-            existing_return = return_movements[0]
-            if not movement_matches_item(existing_return, item):
-                return None, "return_owner_mismatch"
-            outbound_at = movement_time(outbound)
-            existing_return_at = movement_time(existing_return)
-            if outbound_at is None or existing_return_at is None or existing_return_at <= outbound_at:
-                return None, "ambiguous_chronology"
-            between = [
-                movement for movement in movements
-                if movement.id not in {outbound.id, existing_return.id}
-                and outbound_at <= movement_time(movement) <= existing_return_at
-            ]
-            if between:
-                return None, "ambiguous_chronology"
-            return {"kind": "already_repaired"}, ""
         outbound_at = movement_time(outbound)
         candidate_return_at = return_at
         adjusted = False
@@ -318,7 +361,7 @@ def classify_target(item, record, code, scans_by_code, movements_by_code):
             if movement.id != outbound.id and movement_time(movement) >= outbound_at
         ]
         if later and candidate_return_at >= movement_time(later[0]):
-            return None, "ambiguous_chronology"
+            return None, "target_return_crosses_later_movement"
         return {
             "kind": "missing_return",
             "code": code,
@@ -337,6 +380,8 @@ def classify_target(item, record, code, scans_by_code, movements_by_code):
     # Missing historical scan. Existing lifecycle is allowed only when it is
     # chronologically compatible: the code was free before this return and any
     # later outbound remains later than the inserted return.
+    if any(movement_time(movement) is None for movement in movements):
+        return None, "target_missing_movement_timestamp"
     before = [movement for movement in movements if movement_time(movement) < return_at]
     after = [movement for movement in movements if movement_time(movement) >= return_at]
     previous = before[-1] if before else None
@@ -347,11 +392,11 @@ def classify_target(item, record, code, scans_by_code, movements_by_code):
         if outbound is None:
             return None, "scan_without_outbound"
     if after and movement_time(after[0]) <= return_at:
-        return None, "ambiguous_chronology"
+        return None, "missing_scan_return_boundary_conflict"
 
     scan_at = return_at - timedelta(microseconds=1)
     if previous is not None and movement_time(previous) >= scan_at:
-        return None, "ambiguous_chronology"
+        return None, "missing_scan_return_boundary_conflict"
     outbound_type = "re_outbound" if previous is not None and normalize(previous.movement_type) == "return" else "outbound"
     metadata = scan_metadata_for_code(code)
     synthetic_scan = SimpleNamespace(code=code, raw_payload=metadata)
@@ -375,7 +420,15 @@ def classify_target(item, record, code, scans_by_code, movements_by_code):
     }, ""
 
 
-def build_repair_plan(records_and_items, scans_by_code, movements_by_code, *, identity_conflicts=0):
+def build_repair_plan(
+    records_and_items,
+    scans_by_code,
+    movements_by_code,
+    *,
+    identity_conflicts=0,
+    identity_diagnostics=None,
+):
+    identity_diagnostics = dict(identity_diagnostics or {})
     counts = {
         "returned_code_occurrences": 0,
         "already_repaired_occurrences": 0,
@@ -386,6 +439,11 @@ def build_repair_plan(records_and_items, scans_by_code, movements_by_code, *, id
         "unparseable_returned_at": 0,
         "ambiguous_chronology": 0,
         "other_conflicts": 0,
+        "preexisting_anomaly_occurrences": 0,
+        "code_owner_conflicts": 0,
+        "divergent_duplicate_targets": 0,
+        **{field: int(identity_diagnostics.get(field) or 0) for field in IDENTITY_DIAGNOSTIC_FIELDS},
+        **{f"{error}_occurrences": 0 for error in sorted(AMBIGUOUS_ERRORS | OTHER_ERRORS)},
     }
     candidates_by_target = {}
     code_owner = {}
@@ -393,7 +451,9 @@ def build_repair_plan(records_and_items, scans_by_code, movements_by_code, *, id
         if not is_returned_record(record):
             continue
         if item is None or not order_is_returned(item.order):
-            counts["identity_conflicts"] += int(item is not None)
+            if item is not None:
+                counts["identity_conflicts"] += 1
+                counts["identity_order_not_returned_records"] += 1
             continue
         for code in dict.fromkeys(
             normalize(value)
@@ -404,19 +464,26 @@ def build_repair_plan(records_and_items, scans_by_code, movements_by_code, *, id
             owner = code_owner.setdefault(code, str(item.id))
             if owner != str(item.id):
                 counts["other_conflicts"] += 1
+                counts["code_owner_conflicts"] += 1
                 continue
             target_key = (str(item.id), code)
             candidate, error = classify_target(item, record, code, scans_by_code, movements_by_code)
             if candidate is not None and candidate.get("kind") == "already_repaired":
                 counts["already_repaired_occurrences"] += 1
+                counts["preexisting_anomaly_occurrences"] += int(
+                    bool(candidate.get("preexisting_anomaly"))
+                )
                 continue
             if error:
                 if error == "unparseable_returned_at":
                     counts["unparseable_returned_at"] += 1
-                elif error == "ambiguous_chronology":
+                elif error in AMBIGUOUS_ERRORS:
                     counts["ambiguous_chronology"] += 1
+                    counts[f"{error}_occurrences"] += 1
                 else:
                     counts["other_conflicts"] += 1
+                    if error in OTHER_ERRORS:
+                        counts[f"{error}_occurrences"] += 1
                 continue
             field = f"{candidate['kind']}_occurrences"
             counts[field] += 1
@@ -427,6 +494,7 @@ def build_repair_plan(records_and_items, scans_by_code, movements_by_code, *, id
                     != equivalent_candidate_payload(candidate)
                 ):
                     counts["other_conflicts"] += 1
+                    counts["divergent_duplicate_targets"] += 1
             else:
                 candidates_by_target[target_key] = candidate
 
@@ -652,13 +720,14 @@ def expected_counts_match(summary, args):
 
 
 def create_plan(db):
-    records_and_items, identity_conflicts = load_records_and_items(db)
+    records_and_items, identity_diagnostics = load_records_and_items(db)
     scans_by_code, movements_by_code = load_runtime_state(db, records_and_items)
     return build_repair_plan(
         records_and_items,
         scans_by_code,
         movements_by_code,
-        identity_conflicts=identity_conflicts,
+        identity_conflicts=sum(identity_diagnostics.values()),
+        identity_diagnostics=identity_diagnostics,
     )
 
 
