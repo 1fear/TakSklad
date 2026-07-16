@@ -1,0 +1,417 @@
+name: Repair Google Cutover Returns
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_missing_scans:
+        description: Exact counts-only audit value for returned codes missing backend scans
+        required: true
+      expected_missing_returns:
+        description: Exact counts-only audit value for existing scans missing return movement
+        required: true
+      approval:
+        description: Exact one-shot production repair approval token
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: taksklad-production
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    name: One-shot return lifecycle repair
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    steps:
+      - name: Checkout exact main control plane
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Validate explicit scope
+        env:
+          EXPECTED_MISSING_SCANS: ${{ inputs.expected_missing_scans }}
+          EXPECTED_MISSING_RETURNS: ${{ inputs.expected_missing_returns }}
+          REPAIR_APPROVAL: ${{ inputs.approval }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_MISSING_SCANS" =~ ^[0-9]+$ ]]
+          [[ "$EXPECTED_MISSING_RETURNS" =~ ^[0-9]+$ ]]
+          test "$EXPECTED_MISSING_SCANS" = 7
+          test "$EXPECTED_MISSING_RETURNS" = 22
+          test "$REPAIR_APPROVAL" = GOOGLE_CUTOVER_RETURN_REPAIR_APPROVED
+
+      - name: Package audited repair control plane
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          for name in ("tools/google_cutover_repair.py", "tools/google_cutover_audit.py"):
+              path = Path(name)
+              compile(path.read_text(encoding="utf-8"), str(path), "exec")
+          PY
+          bash -n deploy/vds/backup_postgres.sh
+          tar -czf "$RUNNER_TEMP/taksklad-google-return-repair.tar.gz" \
+            deploy/vds/backup_postgres.sh \
+            deploy/vds/docker-compose.yml \
+            tools/google_cutover_audit.py \
+            tools/google_cutover_repair.py \
+            tools/write_maintenance_marker.py
+
+      - name: Validate required production access
+        env:
+          VDS_HOST: ${{ secrets.VDS_HOST }}
+          VDS_USER: ${{ secrets.VDS_USER }}
+          VDS_SSH_KEY: ${{ secrets.VDS_SSH_KEY }}
+          VDS_SSH_KNOWN_HOSTS: ${{ secrets.VDS_SSH_KNOWN_HOSTS }}
+        run: |
+          test -n "$VDS_HOST"
+          test -n "$VDS_USER"
+          test -n "$VDS_SSH_KEY"
+          test -n "$VDS_SSH_KNOWN_HOSTS"
+
+      - name: Install SSH key
+        env:
+          VDS_SSH_KEY: ${{ secrets.VDS_SSH_KEY }}
+          VDS_SSH_KNOWN_HOSTS: ${{ secrets.VDS_SSH_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$VDS_SSH_KEY" > ~/.ssh/taksklad_repair_key
+          chmod 600 ~/.ssh/taksklad_repair_key
+          printf '%s\n' "$VDS_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Copy repair bundle to VDS
+        env:
+          VDS_HOST: ${{ secrets.VDS_HOST }}
+          VDS_USER: ${{ secrets.VDS_USER }}
+        run: |
+          scp -i ~/.ssh/taksklad_repair_key \
+            "$RUNNER_TEMP/taksklad-google-return-repair.tar.gz" \
+            "$VDS_USER@$VDS_HOST:/tmp/"
+
+      - name: Plan, isolate, backup, repair and audit
+        env:
+          VDS_HOST: ${{ secrets.VDS_HOST }}
+          VDS_USER: ${{ secrets.VDS_USER }}
+          VDS_APP_DIR: ${{ secrets.VDS_APP_DIR }}
+          EXPECTED_MISSING_SCANS: ${{ inputs.expected_missing_scans }}
+          EXPECTED_MISSING_RETURNS: ${{ inputs.expected_missing_returns }}
+          REPAIR_APPROVAL: ${{ inputs.approval }}
+        run: |
+          set -euo pipefail
+          remote="$VDS_USER@$VDS_HOST"
+          app_dir="${VDS_APP_DIR:-/opt/stacks/taksklad/app}"
+          ssh -i ~/.ssh/taksklad_repair_key \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=10 \
+            "$remote" 'bash -s' <<EOF
+          set -euo pipefail
+          app_dir=$(printf '%q' "$app_dir")
+          expected_missing_scans=$(printf '%q' "$EXPECTED_MISSING_SCANS")
+          expected_missing_returns=$(printf '%q' "$EXPECTED_MISSING_RETURNS")
+          repair_approval=$(printf '%q' "$REPAIR_APPROVAL")
+          run_dir="/tmp/taksklad-google-return-repair-${GITHUB_RUN_ID}"
+          rm -rf "\$run_dir"
+          install -d -m 700 "\$run_dir"
+          tar -xzf /tmp/taksklad-google-return-repair.tar.gz -C "\$run_dir" --no-same-owner
+          chmod 700 "\$run_dir/deploy/vds/backup_postgres.sh"
+          rm -f /tmp/taksklad-google-return-repair-plan.json \
+            /tmp/taksklad-google-return-repair-result.json \
+            /tmp/taksklad-google-return-repair-audit.json
+
+          compose_project="\$(docker compose --env-file "\$app_dir/deploy/vds/.env" \
+            -f "\$app_dir/deploy/vds/docker-compose.yml" config --format json | \
+            python3 -c 'import json,sys; value=str((json.load(sys.stdin) or {}).get("name") or "").strip(); assert value; print(value)')"
+          mapfile -t backend_ids < <(docker ps -q \
+            --filter label=com.docker.compose.project=\$compose_project \
+            --filter label=com.docker.compose.service=backend-api)
+          test "\${#backend_ids[@]}" -eq 1
+          backend_id="\${backend_ids[0]}"
+
+          docker exec -i "\$backend_id" python - \
+            --plan \
+            --expected-missing-scans "\$expected_missing_scans" \
+            --expected-missing-returns "\$expected_missing_returns" \
+            < "\$run_dir/tools/google_cutover_repair.py" \
+            > "\$run_dir/repair-plan.json"
+          python3 - "\$run_dir/repair-plan.json" "\$expected_missing_scans" "\$expected_missing_returns" <<'PY'
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          if payload.get("safe_to_repair") is not True or payload.get("conflicts") != 0:
+              raise SystemExit("GOOGLE_RETURN_REPAIR_PLAN_BLOCKED")
+          if payload.get("missing_scan_occurrences") != int(sys.argv[2]):
+              raise SystemExit("GOOGLE_RETURN_REPAIR_MISSING_SCAN_COUNT_CHANGED")
+          if payload.get("missing_return_occurrences") != int(sys.argv[3]):
+              raise SystemExit("GOOGLE_RETURN_REPAIR_MISSING_RETURN_COUNT_CHANGED")
+          if not re.fullmatch(r"[0-9a-f]{64}", str(payload.get("plan_sha256") or "")):
+              raise SystemExit("GOOGLE_RETURN_REPAIR_PLAN_SHA_REQUIRED")
+          allowed = {
+              "schema_version", "mode", "returned_code_occurrences", "already_repaired_occurrences",
+              "missing_scan_occurrences", "missing_return_occurrences", "duplicate_occurrences",
+              "identity_conflicts", "unparseable_returned_at", "ambiguous_chronology",
+              "other_conflicts", "missing_scan_targets", "missing_return_targets", "scan_inserts",
+              "outbound_inserts", "return_inserts", "conflicts", "mutations_expected",
+              "safe_to_repair", "plan_sha256",
+          }
+          if set(payload) - allowed:
+              raise SystemExit("GOOGLE_RETURN_REPAIR_PLAN_UNSAFE_FIELDS")
+          print(
+              "GOOGLE_RETURN_REPAIR_PLAN_OK "
+              f"missing_scan_occurrences={payload['missing_scan_occurrences']} "
+              f"missing_return_occurrences={payload['missing_return_occurrences']} "
+              f"missing_scan_targets={payload['missing_scan_targets']} "
+              f"missing_return_targets={payload['missing_return_targets']} "
+              f"duplicates={payload['duplicate_occurrences']} conflicts=0 values_redacted=1"
+          )
+          PY
+          plan_sha="\$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["plan_sha256"])' "\$run_dir/repair-plan.json")"
+          install -m 600 "\$run_dir/repair-plan.json" /tmp/taksklad-google-return-repair-plan.json
+
+          service_names=(backend-api frontend telegram-worker skladbot-worker smartup-auto-import-worker google-sheets-sync-worker)
+          writer_ids=()
+          for service in "\${service_names[@]}"; do
+            mapfile -t service_ids < <(docker ps -q \
+              --filter label=com.docker.compose.project=\$compose_project \
+              --filter label=com.docker.compose.service=\$service)
+            test "\${#service_ids[@]}" -eq 1
+            writer_ids+=("\${service_ids[0]}")
+          done
+          test "\${writer_ids[0]}" = "\$backend_id"
+          internal_network="\${compose_project}_taksklad-internal"
+          docker network inspect "\$internal_network" >/dev/null
+          legacy_image="\$(docker inspect --format '{{.Image}}' "\$backend_id")"
+          test -n "\$legacy_image"
+          legacy_env_file="\$run_dir/legacy-backend.env"
+          legacy_env_json="\$run_dir/legacy-backend-env.json"
+          cleanup_legacy_env() {
+            rm -f "\$legacy_env_file" "\$legacy_env_json"
+          }
+          trap cleanup_legacy_env EXIT
+          docker inspect --format '{{json .Config.Env}}' "\$backend_id" > "\$legacy_env_json"
+          chmod 600 "\$legacy_env_json"
+          python3 - "\$legacy_env_json" "\$legacy_env_file" <<'PY'
+          import json
+          import os
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as source:
+              values = json.load(source)
+          path = sys.argv[2]
+          fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          with os.fdopen(fd, "w", encoding="utf-8") as handle:
+              for value in values:
+                  if "\n" in value or "\r" in value:
+                      raise SystemExit("LEGACY_ENV_MULTILINE_VALUE_FORBIDDEN")
+                  handle.write(value + "\n")
+          PY
+          rm -f "\$legacy_env_json"
+          run_legacy_script() {
+            script_path="\$1"
+            shift
+            docker run --rm \
+              --network "\$internal_network" \
+              --env-file "\$legacy_env_file" \
+              --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+              --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m \
+              --pids-limit 256 --memory 768m --cpus 1.0 \
+              "\$legacy_image" python - "\$@" < "\$script_path"
+          }
+          isolation_active=0
+          repair_committed=0
+          restore_legacy_runtime() {
+            set +e
+            if test "\$isolation_active" = 1; then
+              if test "\${#writer_ids[@]}" -gt 0; then
+                docker start "\${writer_ids[@]}" >/dev/null
+              fi
+            fi
+            set -e
+          }
+          stop_legacy_runtime() {
+            set +e
+            if test "\${#writer_ids[@]}" -gt 0; then
+              docker stop -t 45 "\${writer_ids[@]}" >/dev/null
+            fi
+            set -e
+          }
+          repair_exit() {
+            rc="\$?"
+            if test "\$isolation_active" = 1; then
+              if test "\$repair_committed" = 0; then
+                restore_legacy_runtime
+              else
+                stop_legacy_runtime
+                echo "GOOGLE_RETURN_REPAIR_POST_COMMIT_FAILURE_LEFT_IN_MAINTENANCE" >&2
+              fi
+            fi
+            cleanup_legacy_env
+            exit "\$rc"
+          }
+          trap repair_exit EXIT
+
+          isolation_active=1
+          docker stop -t 45 "\${writer_ids[@]}" >/dev/null
+          for writer_id in "\${writer_ids[@]}"; do
+            test "\$(docker inspect --format '{{.State.Running}}' "\$writer_id")" = false
+          done
+          for service in "\${service_names[@]}"; do
+            test -z "\$(docker ps -q \
+              --filter label=com.docker.compose.project=\$compose_project \
+              --filter label=com.docker.compose.service=\$service)"
+          done
+          echo "GOOGLE_RETURN_REPAIR_WRITER_DRAIN_OK stopped=\${#writer_ids[@]} backend_running=0"
+
+          TAKSKLAD_ENV_FILE="\$app_dir/deploy/vds/.env" \
+          TAKSKLAD_COMPOSE_FILE="\$run_dir/deploy/vds/docker-compose.yml" \
+          TAKSKLAD_MAINTENANCE_MARKER=/run/taksklad-observability/maintenance.json \
+            "\$run_dir/deploy/vds/backup_postgres.sh" --no-prune </dev/null
+
+          repair_committed=1
+          run_legacy_script "\$run_dir/tools/google_cutover_repair.py" \
+            --apply \
+            --approval "\$repair_approval" \
+            --expected-plan-sha "\$plan_sha" \
+            --expected-missing-scans "\$expected_missing_scans" \
+            --expected-missing-returns "\$expected_missing_returns" \
+            > "\$run_dir/repair-result.json"
+          python3 - "\$run_dir/repair-result.json" "\$run_dir/repair-plan.json" "\$plan_sha" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          plan = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+          allowed = {
+              "schema_version", "mode", "safe_to_repair", "plan_sha256", "conflicts",
+              "scan_inserts", "outbound_inserts", "return_inserts", "mutations_applied",
+          }
+          if set(payload) - allowed:
+              raise SystemExit("GOOGLE_RETURN_REPAIR_RESULT_UNSAFE_FIELDS")
+          if payload.get("safe_to_repair") is not True or payload.get("conflicts") != 0:
+              raise SystemExit("GOOGLE_RETURN_REPAIR_APPLY_BLOCKED")
+          if payload.get("plan_sha256") != sys.argv[3]:
+              raise SystemExit("GOOGLE_RETURN_REPAIR_APPLY_SHA_MISMATCH")
+          for field in ("scan_inserts", "outbound_inserts", "return_inserts"):
+              if payload.get(field) != plan.get(field):
+                  raise SystemExit("GOOGLE_RETURN_REPAIR_APPLY_MUTATION_COUNT_MISMATCH")
+          print(
+              "GOOGLE_RETURN_REPAIR_APPLY_OK "
+              f"scan_inserts={payload['scan_inserts']} outbound_inserts={payload['outbound_inserts']} "
+              f"return_inserts={payload['return_inserts']} values_redacted=1"
+          )
+          PY
+          install -m 600 "\$run_dir/repair-result.json" /tmp/taksklad-google-return-repair-result.json
+
+          run_legacy_script "\$run_dir/tools/google_cutover_audit.py" \
+            > "\$run_dir/final-audit.json"
+          python3 - "\$run_dir/final-audit.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          if payload.get("safe_to_cutover") is not True or payload.get("blockers") != 0:
+              raise SystemExit("GOOGLE_RETURN_REPAIR_FINAL_AUDIT_BLOCKED")
+          print(
+              "GOOGLE_RETURN_REPAIR_FINAL_AUDIT_OK "
+              f"records={payload['records_total']} active={payload['active_records']} "
+              f"returned={payload['returned_records']} blockers=0 values_redacted=1"
+          )
+          PY
+          install -m 600 "\$run_dir/final-audit.json" /tmp/taksklad-google-return-repair-audit.json
+
+          restore_legacy_runtime
+          for attempt in \$(seq 1 48); do
+            healthy=1
+            for writer_id in "\${writer_ids[@]}"; do
+              status="\$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "\$writer_id")"
+              if test "\$status" != healthy && test "\$status" != running; then
+                healthy=0
+              fi
+            done
+            if test "\$healthy" = 1; then
+              echo "GOOGLE_RETURN_REPAIR_LEGACY_RUNTIME_RESTORED_OK services=\${#writer_ids[@]}"
+              break
+            fi
+            if test "\$attempt" = 48; then
+              echo "GOOGLE_RETURN_REPAIR_LEGACY_RUNTIME_RESTORE_TIMEOUT" >&2
+              exit 1
+            fi
+            sleep 5
+          done
+          python3 - <<'PY'
+          import json
+          import time
+          from urllib.request import urlopen
+
+          for attempt in range(30):
+              try:
+                  with urlopen("https://api.taksklad.uz/ready", timeout=10) as response:
+                      payload = json.load(response)
+                  if response.status == 200 and payload.get("ready") is True:
+                      print("GOOGLE_RETURN_REPAIR_SERVER_PUBLIC_RUNTIME_OK")
+                      raise SystemExit(0)
+              except Exception:
+                  if attempt == 29:
+                      raise
+              time.sleep(2)
+          raise SystemExit("GOOGLE_RETURN_REPAIR_SERVER_PUBLIC_RUNTIME_TIMEOUT")
+          PY
+          isolation_active=0
+          cleanup_legacy_env
+          trap - EXIT
+          EOF
+
+      - name: Verify public legacy runtime restored
+        run: |
+          python3 - <<'PY'
+          import json
+          import time
+          from urllib.request import urlopen
+
+          for attempt in range(30):
+              try:
+                  with urlopen("https://api.taksklad.uz/ready", timeout=10) as response:
+                      payload = json.load(response)
+                  if response.status == 200 and payload.get("ready") is True:
+                      print("GOOGLE_RETURN_REPAIR_PUBLIC_RUNTIME_OK")
+                      raise SystemExit(0)
+              except Exception:
+                  if attempt == 29:
+                      raise
+              time.sleep(2)
+          raise SystemExit("GOOGLE_RETURN_REPAIR_PUBLIC_RUNTIME_TIMEOUT")
+          PY
+
+      - name: Collect sanitized repair evidence
+        if: always()
+        env:
+          VDS_HOST: ${{ secrets.VDS_HOST }}
+          VDS_USER: ${{ secrets.VDS_USER }}
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/google-return-repair-evidence"
+          mkdir -p "$evidence_dir"
+          for name in plan result audit; do
+            scp -i ~/.ssh/taksklad_repair_key \
+              "$VDS_USER@$VDS_HOST:/tmp/taksklad-google-return-repair-$name.json" \
+              "$evidence_dir/$name.json" || true
+          done
+          test -f "$evidence_dir/plan.json"
+
+      - name: Upload sanitized repair evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: taksklad-google-return-repair-evidence
+          path: ${{ runner.temp }}/google-return-repair-evidence
+          if-no-files-found: error
+          retention-days: 14
