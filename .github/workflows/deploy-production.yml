@@ -578,8 +578,17 @@ jobs:
             echo "PHASE27_RETRY_RUNTIME_OK revision=\$current_revision"
           fi
           install -d -m 700 .release-state
+          preflight_backend_id="\$(docker compose --env-file deploy/vds/.env \
+            -f deploy/vds/docker-compose.yml ps -q backend-api </dev/null)"
+          test -n "\$preflight_backend_id"
+          docker exec "\$preflight_backend_id" python -c \
+            "import json; from urllib.request import urlopen; print(json.dumps(json.load(urlopen('http://127.0.0.1:8000/ready', timeout=5)), sort_keys=True))" \
+            > .release-state/current-ready.json
+          chmod 600 .release-state/current-ready.json
           PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/collect_phase27_evidence.py \
-            preflight --manifest release.json --output .release-state/production-preflight.json </dev/null
+            preflight --manifest release.json --ready-json .release-state/current-ready.json \
+            --output .release-state/production-preflight.json </dev/null
+          rm -f .release-state/current-ready.json
           install -m 600 .release-state/production-preflight.json /tmp/taksklad-production-preflight.json
           ./tools/production_preflight.sh --read-only --require-current-backup --require-zero-blockers </dev/null
           sed -i 's/compose up -d --no-build/compose up -d --no-deps --no-build/g' \

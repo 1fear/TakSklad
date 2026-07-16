@@ -308,6 +308,8 @@ class CiCdWorkflowTests(unittest.TestCase):
             "./tools/production_preflight.sh --read-only --require-current-backup --require-zero-blockers",
             workflow,
         )
+        self.assertIn("--ready-json .release-state/current-ready.json", workflow)
+        self.assertIn("http://127.0.0.1:8000/ready", workflow)
         self.assertIn(
             "./deploy/vds/deploy_from_git.sh --artifact-manifest release.json --acceptance required --wait",
             workflow,
