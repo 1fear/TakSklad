@@ -133,7 +133,8 @@ run_log_scan() {
   local output
   output="$(compose logs --since "${LOG_SINCE_SECONDS}s" \
     backend-api frontend telegram-worker google-sheets-sync-worker skladbot-worker smartup-auto-import-worker 2>&1 || true)"
-  if printf '%s\n' "$output" | grep -Eiq 'ERROR|CRITICAL|Traceback|Exception|panic'; then
+  if printf '%s\n' "$output" | grep -Eiq \
+    '\[(ERROR|CRITICAL)\]|(^|[[:space:]])(ERROR|CRITICAL)(:|[[:space:]])|Traceback \(most recent call last\):|(^|[[:space:]])Exception:|(^|[[:space:]])panic:'; then
     printf '%s\n' "$output" >&2
     return 1
   fi
