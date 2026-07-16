@@ -403,7 +403,7 @@ jobs:
           run_legacy_script() {
             script_path="\$1"
             shift
-            docker run --rm \
+            docker run --rm -i \
               --network "\$internal_network" \
               --env-file "\$legacy_env_file" \
               --read-only --cap-drop ALL --security-opt no-new-privileges:true \
