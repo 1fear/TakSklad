@@ -30,7 +30,7 @@ from tools.release_artifacts import verify_manifest
 
 
 POSTGRES_IMAGE = "postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777"
-EXPECTED_HEAD = "20260715_0017"
+EXPECTED_HEAD = "20260716_0018"
 MIGRATION_START = "20260710_0013"
 KNOWN_WORKERS = ("google_sheets_sync", "skladbot", "smartup_auto_import", "telegram")
 DEFAULT_MIGRATION_BUDGET_SECONDS = 120.0

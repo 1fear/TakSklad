@@ -72,7 +72,7 @@ Stock shortage признаётся только по детерминирова
 
 1. Backup PostgreSQL и фиксация текущих image digests/commit SHA.
 2. Deploy кода с `SMARTUP_AUTO_IMPORT_SAGA_MODE=disabled` и Google reverse sync выключенным.
-3. `alembic upgrade head`; ожидаемый head — `20260715_0017`.
+3. `alembic upgrade head`; ожидаемый head — `20260716_0018`.
 4. Проверить `/ready`, worker heartbeat, отсутствие migration/queue errors.
 5. Включить `enforced`, оставить `SMARTUP_AUTO_IMPORT_PROCESS_SKLADBOT_NOW=false`.
 6. Canary: один тестовый/следующий реальный deal; доказать `Order → fulfillment → create event → WH-R` и отсутствие второго Smartup write.

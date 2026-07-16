@@ -2,6 +2,17 @@
 
 Документ фиксирует ход работ: что сделано, что не сделано, какие ошибки найдены, какие решения приняты и что требует проверки. Новые записи добавляются сверху.
 
+## 2026-07-16
+
+### SkladBot readiness flapping fix
+
+- Причина: SkladBot cycle мог работать дольше `2 * interval + grace` (135 секунд), но heartbeat age считался от `last_cycle_started_at`; живой worker временно становился `stale`, и `/ready` возвращал 503.
+- Решение: progress-aware heartbeat с correlation-scoped updates, суммарным HTTP retry/backoff budget до 120 секунд на read, best-effort callback и throttling; независимый background ticker не добавлялся, поэтому реально зависший вызов или oversized `Retry-After` остаётся fail-closed.
+- Миграция: `20260716_0018` backfill-ит существующие rows и сохраняет server default для совместимости старого writer. После production migration rollback на image с head `0017` запрещён; recovery — только fix-forward.
+- Release source подготовлен как `2.0.39`; root `version.json` не менялся и desktop update channel не продвигался.
+- Локально подтверждено: Python 1308 OK (79 skipped), PostgreSQL 82 OK, frontend build OK, Alembic single head, shell syntax и Compose config OK.
+- Не подтверждено на этом этапе: PR/merge, immutable release, production migration/runtime и 5-minute live SLO.
+
 ## 2026-07-06
 
 ### Daily SkladBot audit closeout

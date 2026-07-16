@@ -3,7 +3,7 @@ import json
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
@@ -29,6 +29,7 @@ from .skladbot_client import (
     SkladBotClient,
     SkladBotErrorKind,
     env_int,
+    notify_skladbot_progress,
     sanitize_skladbot_error,
 )
 from .skladbot_contracts import (
@@ -966,11 +967,12 @@ def process_pending_skladbot_request_creates(
     db: Session,
     client: Any | None = None,
     limit: int | None = None,
+    progress_callback: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     if skladbot_create_requests_mode() != "enabled":
         return default_create_processing_result(status="disabled")
 
-    client = client or SkladBotClient()
+    client = client or SkladBotClient(progress_callback=progress_callback)
     if not getattr(client, "configured", False):
         return default_create_processing_result(status="not_configured")
 
@@ -991,7 +993,7 @@ def process_pending_skladbot_request_creates(
         result["remaining"] = count_pending_skladbot_create_events(db)
         return result
 
-    for event in events:
+    for index, event in enumerate(events, start=1):
         if not event.lease_owner:
             event.status = "processing"
             event.attempts = int(event.attempts or 0) + 1
@@ -1004,6 +1006,8 @@ def process_pending_skladbot_request_creates(
                 event_result = {"status": "create_failed", "error": sanitize_skladbot_error(exc)}
 
             finish_skladbot_create_event(db, event, event_result, result)
+        if progress_callback is not None:
+            notify_skladbot_progress(progress_callback, f"create_events_processed:{index}")
 
     if result["failed"]:
         result["status"] = "completed_with_errors"

@@ -147,7 +147,7 @@ DEPLOY_RUNBOOK_REQUIRED_FRAGMENTS = {
 }
 DEPLOYMENT_READINESS_CONTRACT_FRAGMENTS = {
     Path("backend/app/health_service.py"): [
-        'EXPECTED_HEAD_REVISION = "20260715_0017"',
+        'EXPECTED_HEAD_REVISION = "20260716_0018"',
         'report["ready"]',
         'report["status"] = "unhealthy"',
         'report["status"] = "degraded"',

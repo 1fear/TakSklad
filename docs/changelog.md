@@ -2,6 +2,25 @@
 
 Здесь фиксируются все правки в коде TakSklad: что менялось, в каком файле, зачем, и какие тесты это покрывают. Записи идут от новых к старым.
 
+## 2026-07-16
+
+### Progress-aware SkladBot worker readiness
+
+**Что стало:**
+
+- Worker heartbeat хранит `last_progress_at` и безопасную bounded-фазу; readiness и метрики используют фактический прогресс, а не только начало цикла.
+- SkladBot отмечает прогресс после завершённых процессоров, событий и HTTP attempts; retry backoff ограничен суммарным бюджетом 120 секунд на HTTP read и разбит на короткие progress-aware интервалы.
+- Progress/result привязаны к correlation ID цикла: старый overlapping worker не может освежить или завершить новый цикл.
+- Heartbeat callback best-effort и не меняет результат складской операции; записи ограничены одним обновлением не чаще пяти секунд.
+- Добавлена миграция `20260716_0018` с backfill и server default для совместимости старого writer; runtime version поднята до `2.0.39`, public desktop channel не менялся.
+
+**Проверки:**
+
+- `python -m unittest discover -s tests` — 1308 tests OK, 79 skipped.
+- `./tools/run_postgres_tests.sh all` — 82 tests OK.
+- `npm --prefix frontend run build` — OK.
+- Alembic — единственный head `20260716_0018`; shell syntax и Docker Compose config — OK.
+
 ## 2026-07-09
 
 ### Daily SkladBot created-date requests in regular scope

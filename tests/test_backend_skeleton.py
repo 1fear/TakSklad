@@ -49,6 +49,7 @@ class BackendSkeletonTests(unittest.TestCase):
             "backend/migrations/versions/20260711_0015_worker_heartbeats.py",
             "backend/migrations/versions/20260711_0016_narrow_pending_event_claim_indexes.py",
             "backend/migrations/versions/20260715_0017_smartup_fulfillments.py",
+            "backend/migrations/versions/20260716_0018_worker_heartbeat_progress.py",
             "docs/database-migrations-runbook.md",
             "deploy/vds/docker-compose.yml",
             "deploy/vds/config-contract.json",

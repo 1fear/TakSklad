@@ -11,6 +11,7 @@ from sqlalchemy.pool import StaticPool
 from backend.app.skladbot_diagnostic import diagnose_skladbot_matches
 from backend.app import skladbot_client, skladbot_request_dry_run, skladbot_return_requests, skladbot_worker
 from backend.app.models import AuditLog, Base, Order, OrderItem, PendingEvent
+from backend.app.skladbot_client import SkladBotApiError, SkladBotErrorKind
 from backend.app.skladbot_worker import (
     CandidateRequests,
     SkladBotClient,
@@ -238,14 +239,28 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
         }, clear=True), mock.patch("backend.app.skladbot_client.httpx.Client", FakeHttpClient), mock.patch(
             "backend.app.skladbot_client.time.sleep"
         ) as sleep_mock:
-            client = SkladBotClient()
+            progress = mock.Mock()
+            client = SkladBotClient(progress_callback=progress)
             result = client.get("/requests")
 
         self.assertEqual(result, {"ok": True})
         self.assertEqual(calls, ["Bearer token-a", "Bearer token-b"])
-        sleep_mock.assert_called_once_with(30.0)
+        self.assertEqual([call.args[0] for call in sleep_mock.call_args_list], [5.0] * 6)
+        self.assertEqual(
+            [call.args[0] for call in progress.call_args_list],
+            [
+                "http_get_attempt_completed",
+                "http_get_backoff_progress",
+                "http_get_backoff_progress",
+                "http_get_backoff_progress",
+                "http_get_backoff_progress",
+                "http_get_backoff_progress",
+                "http_get_backoff_progress",
+                "http_get_attempt_completed",
+            ],
+        )
 
-    def test_skladbot_client_can_reach_tenth_token_despite_default_retry_setting(self):
+    def test_skladbot_client_caps_total_retry_backoff_across_token_pool(self):
         calls = []
 
         class FakeResponse:
@@ -273,9 +288,7 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
 
             def get(self, url, params=None, headers=None):
                 calls.append(headers["Authorization"])
-                if len(calls) < 10:
-                    return FakeResponse(429, headers={"Retry-After": "30"})
-                return FakeResponse(200, payload={"ok": True})
+                return FakeResponse(429, headers={"Retry-After": "30"})
 
         token_pool = ",".join(f"token-{index}" for index in range(1, 11))
         with mock.patch.dict("os.environ", {
@@ -286,12 +299,115 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
             "backend.app.skladbot_client.time.sleep"
         ) as sleep_mock:
             client = SkladBotClient()
-            result = client.get("/requests")
+            with self.assertRaises(SkladBotApiError) as caught:
+                client.get("/requests")
+
+        self.assertEqual(caught.exception.kind, SkladBotErrorKind.RATE_LIMIT)
+        self.assertEqual(caught.exception.status_code, 429)
+        self.assertEqual(len(calls), 5)
+        self.assertEqual(calls[-1], "Bearer token-5")
+        self.assertEqual([call.args[0] for call in sleep_mock.call_args_list], [5.0] * 24)
+
+    def test_skladbot_client_rejects_oversized_retry_after_without_progress_pulses(self):
+        class FakeResponse:
+            status_code = 429
+            headers = {"Retry-After": "86400"}
+
+            @staticmethod
+            def json():
+                return {}
+
+        class FakeHttpClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            @staticmethod
+            def get(url, params=None, headers=None):
+                return FakeResponse()
+
+        with (
+            mock.patch.dict(
+                "os.environ",
+                {
+                    "SKLADBOT_API_TOKENS": "only-token",
+                    "SKLADBOT_API_MAX_RETRIES": "1",
+                    "SKLADBOT_REQUEST_DELAY_SECONDS": "0",
+                },
+                clear=True,
+            ),
+            mock.patch("backend.app.skladbot_client.httpx.Client", FakeHttpClient),
+            mock.patch("backend.app.skladbot_client.time.sleep") as sleep_mock,
+        ):
+            progress = mock.Mock()
+            with self.assertRaises(SkladBotApiError) as caught:
+                SkladBotClient(progress_callback=progress).get("/requests")
+
+        self.assertEqual(caught.exception.kind, SkladBotErrorKind.RATE_LIMIT)
+        self.assertEqual(caught.exception.status_code, 429)
+        sleep_mock.assert_not_called()
+        self.assertEqual(
+            [call.args[0] for call in progress.call_args_list],
+            ["http_get_attempt_completed"],
+        )
+
+    def test_skladbot_client_honors_full_retry_after_with_one_token(self):
+        calls = []
+        clock = {"value": 0.0}
+
+        class FakeResponse:
+            def __init__(self, status_code, payload=None, headers=None):
+                self.status_code = status_code
+                self._payload = payload or {}
+                self.headers = headers or {}
+
+            def json(self):
+                return self._payload
+
+        class FakeHttpClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def get(self, url, params=None, headers=None):
+                calls.append(headers["Authorization"])
+                if len(calls) == 1:
+                    return FakeResponse(429, headers={"Retry-After": "30"})
+                return FakeResponse(200, payload={"ok": True})
+
+        def advance_clock(seconds):
+            clock["value"] += seconds
+
+        with (
+            mock.patch.dict(
+                "os.environ",
+                {
+                    "SKLADBOT_API_TOKENS": "only-token",
+                    "SKLADBOT_API_MAX_RETRIES": "1",
+                    "SKLADBOT_REQUEST_DELAY_SECONDS": "0",
+                },
+                clear=True,
+            ),
+            mock.patch("backend.app.skladbot_client.httpx.Client", FakeHttpClient),
+            mock.patch("backend.app.skladbot_client.time.monotonic", side_effect=lambda: clock["value"]),
+            mock.patch("backend.app.skladbot_client.time.sleep", side_effect=advance_clock) as sleep_mock,
+        ):
+            result = SkladBotClient().get("/requests")
 
         self.assertEqual(result, {"ok": True})
-        self.assertEqual(len(calls), 10)
-        self.assertEqual(calls[-1], "Bearer token-10")
-        self.assertEqual([call.args[0] for call in sleep_mock.call_args_list], [30.0] * 9)
+        self.assertEqual(calls, ["Bearer only-token", "Bearer only-token"])
+        self.assertEqual([call.args[0] for call in sleep_mock.call_args_list], [5.0] * 6)
+        self.assertEqual(clock["value"], 30.0)
 
     def test_skladbot_client_throttles_successive_successful_requests(self):
         calls = []
@@ -1665,6 +1781,69 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
             "return": {"checked": 2},
             "sync": {"updated": 3},
         })
+
+    def test_worker_runner_reports_completed_processor_progress(self):
+        context = mock.MagicMock()
+        context.__enter__.return_value = object()
+        progress = mock.Mock()
+
+        run_worker_cycle(
+            session_factory=lambda: context,
+            create_processor=mock.Mock(return_value={"checked": 0}),
+            return_processor=mock.Mock(return_value={"checked": 0}),
+            sync_processor=mock.Mock(return_value={"updated": 0}),
+            progress_callback=progress,
+        )
+
+        self.assertEqual(
+            [call.args[0] for call in progress.call_args_list],
+            [
+                "create_processor_finished",
+                "return_processor_finished",
+                "sync_processor_finished",
+            ],
+        )
+
+    def test_worker_runner_passes_progress_into_default_processors(self):
+        context = mock.MagicMock()
+        context.__enter__.return_value = object()
+        progress = mock.Mock()
+        with (
+            mock.patch(
+                "backend.app.skladbot_worker_runner.process_pending_skladbot_request_creates",
+                return_value={"checked": 0},
+            ) as create_processor,
+            mock.patch(
+                "backend.app.skladbot_worker_runner.process_pending_skladbot_return_request_creates",
+                return_value={"checked": 0},
+            ) as return_processor,
+            mock.patch(
+                "backend.app.skladbot_worker_runner.update_orders_from_skladbot",
+                return_value={"updated": 0},
+            ) as sync_processor,
+        ):
+            run_worker_cycle(session_factory=lambda: context, progress_callback=progress)
+
+        create_processor.assert_called_once_with(context.__enter__.return_value, progress_callback=progress)
+        return_processor.assert_called_once_with(context.__enter__.return_value, progress_callback=progress)
+        sync_processor.assert_called_once_with(progress_callback=progress)
+
+    def test_worker_runner_progress_failure_does_not_change_business_result(self):
+        context = mock.MagicMock()
+        context.__enter__.return_value = object()
+
+        result = run_worker_cycle(
+            session_factory=lambda: context,
+            create_processor=mock.Mock(return_value={"checked": 1}),
+            return_processor=mock.Mock(return_value={"checked": 1}),
+            sync_processor=mock.Mock(return_value={"updated": 1}),
+            progress_callback=mock.Mock(side_effect=RuntimeError("heartbeat unavailable")),
+            raise_on_error=True,
+        )
+
+        self.assertEqual(result["create"], {"checked": 1})
+        self.assertEqual(result["return"], {"checked": 1})
+        self.assertEqual(result["sync"], {"updated": 1})
 
     def test_external_fetch_boundary_releases_database_transaction(self):
         db = mock.Mock()
