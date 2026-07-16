@@ -75,6 +75,7 @@ class GoogleCutoverRepairWorkflowTests(unittest.TestCase):
         self.assertIn('test "\\${#backend_ids[@]}" -eq 1', workflow)
         self.assertIn("service_names=(backend-api frontend telegram-worker", workflow)
         self.assertIn("run_legacy_script", workflow)
+        self.assertIn("docker run --rm -i", workflow)
         self.assertIn("GOOGLE_RETURN_REPAIR_WRITER_DRAIN_OK", workflow)
         self.assertIn("backup_postgres.sh\" --no-prune", workflow)
         self.assertIn("GOOGLE_RETURN_REPAIR_FINAL_AUDIT_OK", workflow)
