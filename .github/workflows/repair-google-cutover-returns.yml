@@ -162,13 +162,36 @@ jobs:
               "identity_no_strong_id_records", "identity_not_found_records",
               "identity_product_quantity_mismatch_records", "identity_multiple_records",
               "identity_order_not_returned_records",
+              "identity_multiple_with_return_codes_records",
+              "identity_multiple_unique_scan_owner_records",
+              "identity_multiple_unique_row_owner_records",
+              "identity_multiple_codes_without_candidate_scan_occurrences",
+              "identity_multiple_codes_with_multiple_candidate_scans_occurrences",
+              "identity_multiple_codes_split_candidate_records",
+              "identity_multiple_pool_size_two_records",
+              "identity_multiple_pool_size_three_plus_records",
+              "identity_multiple_unique_both_source_ids_records",
+              "identity_multiple_unique_source_file_row_records",
+              "identity_multiple_single_unique_signal_records",
+              "identity_multiple_signal_agreement_records",
+              "identity_multiple_signal_conflict_records",
+              "identity_multiple_legacy_first_matches_signal_records",
               "target_missing_movement_timestamp_occurrences",
               "target_return_crosses_later_movement_occurrences",
+              "target_return_crosses_later_re_outbound_other_item_occurrences",
+              "target_return_crosses_later_outbound_other_item_occurrences",
+              "target_return_crosses_later_available_movement_occurrences",
+              "target_return_crosses_later_same_item_movement_occurrences",
+              "target_return_crosses_later_other_movement_occurrences",
               "missing_scan_return_boundary_conflict_occurrences",
               "multiple_item_scans_occurrences", "missing_outbound_occurrences",
               "outbound_owner_mismatch_occurrences", "busy_before_missing_scan_occurrences",
               "scan_without_outbound_occurrences", "scanned_blocks_exceed_plan_occurrences",
               "return_reference_too_long_occurrences", "returned_by_too_long_occurrences",
+              "code_owner_conflict_both_items_have_scan_occurrences",
+              "code_owner_conflict_only_first_item_has_scan_occurrences",
+              "code_owner_conflict_only_current_item_has_scan_occurrences",
+              "code_owner_conflict_neither_item_has_scan_occurrences",
           }
           if set(payload) - allowed:
               raise SystemExit("GOOGLE_RETURN_REPAIR_PLAN_UNSAFE_FIELDS")
@@ -189,15 +212,37 @@ jobs:
               f"identity_not_found={payload.get('identity_not_found_records', -1)} "
               f"identity_product_quantity_mismatch={payload.get('identity_product_quantity_mismatch_records', -1)} "
               f"identity_multiple={payload.get('identity_multiple_records', -1)} "
+              f"identity_multiple_unique_scan_owner={payload.get('identity_multiple_unique_scan_owner_records', -1)} "
+              f"identity_multiple_unique_row_owner={payload.get('identity_multiple_unique_row_owner_records', -1)} "
+              f"identity_multiple_codes_without_candidate_scan={payload.get('identity_multiple_codes_without_candidate_scan_occurrences', -1)} "
+              f"identity_multiple_codes_with_multiple_candidate_scans={payload.get('identity_multiple_codes_with_multiple_candidate_scans_occurrences', -1)} "
+              f"identity_multiple_codes_split_candidate={payload.get('identity_multiple_codes_split_candidate_records', -1)} "
+              f"identity_multiple_pool_two={payload.get('identity_multiple_pool_size_two_records', -1)} "
+              f"identity_multiple_pool_three_plus={payload.get('identity_multiple_pool_size_three_plus_records', -1)} "
+              f"identity_multiple_unique_both_source_ids={payload.get('identity_multiple_unique_both_source_ids_records', -1)} "
+              f"identity_multiple_unique_source_file_row={payload.get('identity_multiple_unique_source_file_row_records', -1)} "
+              f"identity_multiple_single_unique_signal={payload.get('identity_multiple_single_unique_signal_records', -1)} "
+              f"identity_multiple_signal_agreement={payload.get('identity_multiple_signal_agreement_records', -1)} "
+              f"identity_multiple_signal_conflict={payload.get('identity_multiple_signal_conflict_records', -1)} "
+              f"identity_multiple_legacy_first_matches_signal={payload.get('identity_multiple_legacy_first_matches_signal_records', -1)} "
               f"identity_order_not_returned={payload.get('identity_order_not_returned_records', -1)} "
               f"unparseable_returned_at={payload.get('unparseable_returned_at', -1)} "
               f"ambiguous_chronology={payload.get('ambiguous_chronology', -1)} "
               f"target_missing_movement_timestamp={payload.get('target_missing_movement_timestamp_occurrences', -1)} "
               f"target_return_crosses_later_movement={payload.get('target_return_crosses_later_movement_occurrences', -1)} "
+              f"crosses_later_re_outbound_other_item={payload.get('target_return_crosses_later_re_outbound_other_item_occurrences', -1)} "
+              f"crosses_later_outbound_other_item={payload.get('target_return_crosses_later_outbound_other_item_occurrences', -1)} "
+              f"crosses_later_available_movement={payload.get('target_return_crosses_later_available_movement_occurrences', -1)} "
+              f"crosses_later_same_item={payload.get('target_return_crosses_later_same_item_movement_occurrences', -1)} "
+              f"crosses_later_other_movement={payload.get('target_return_crosses_later_other_movement_occurrences', -1)} "
               f"missing_scan_return_boundary_conflict={payload.get('missing_scan_return_boundary_conflict_occurrences', -1)} "
               f"other_conflicts={payload.get('other_conflicts', -1)} "
               f"missing_outbound={payload.get('missing_outbound_occurrences', -1)} "
               f"outbound_owner_mismatch={payload.get('outbound_owner_mismatch_occurrences', -1)} "
+              f"code_owner_both_have_scan={payload.get('code_owner_conflict_both_items_have_scan_occurrences', -1)} "
+              f"code_owner_only_first_has_scan={payload.get('code_owner_conflict_only_first_item_has_scan_occurrences', -1)} "
+              f"code_owner_only_current_has_scan={payload.get('code_owner_conflict_only_current_item_has_scan_occurrences', -1)} "
+              f"code_owner_neither_has_scan={payload.get('code_owner_conflict_neither_item_has_scan_occurrences', -1)} "
               f"preexisting_anomalies={payload.get('preexisting_anomaly_occurrences', -1)} "
               f"conflicts={payload.get('conflicts', -1)} values_redacted=1"
           )

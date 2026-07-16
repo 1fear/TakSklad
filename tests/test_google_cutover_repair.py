@@ -11,6 +11,7 @@ from tools.google_cutover_repair import (
     apply_candidates,
     build_repair_plan,
     deterministic_uuid,
+    match_records_to_items,
     normalize,
     parse_returned_at,
 )
@@ -161,6 +162,10 @@ class GoogleCutoverRepairTests(unittest.TestCase):
         self.assertEqual(candidates, [])
         self.assertFalse(summary["safe_to_repair"])
         self.assertEqual(summary["ambiguous_chronology"], 1)
+        self.assertEqual(
+            summary["target_return_crosses_later_re_outbound_other_item_occurrences"],
+            1,
+        )
         self.assertEqual(summary["target_return_crosses_later_movement_occurrences"], 1)
 
     def test_duplicate_occurrence_is_one_unique_target_but_keeps_audit_counts(self):
@@ -228,6 +233,94 @@ class GoogleCutoverRepairTests(unittest.TestCase):
         self.assertEqual(summary["identity_conflicts"], 10)
         for field, expected in diagnostics.items():
             self.assertEqual(summary[field], expected)
+
+    def test_ambiguous_identity_diagnostics_find_unique_scan_and_row_owner(self):
+        code = "KIZ-IDENTITY-DIAGNOSTIC"
+        first = SimpleNamespace(
+            id="candidate-1",
+            source_import_id="shared-import",
+            raw_payload={
+                "source_import_id": "shared-import",
+                "source_order_id": "shared-order",
+                "google_sheet_row_number": 42,
+                "google_sheet_source_sheet": "Архив",
+                "source_file": "return-source.xlsx",
+                "source_row": "77",
+            },
+            product="Chapman Red OP 20",
+            quantity_blocks=10,
+            quantity_pieces=100,
+            scan_codes=[scan("scan-owner", code)],
+        )
+        second = SimpleNamespace(
+            id="candidate-2",
+            source_import_id="shared-import",
+            raw_payload={
+                "source_import_id": "shared-import",
+                "source_order_id": "other-order",
+            },
+            product="Chapman Red OP 20",
+            quantity_blocks=10,
+            quantity_pieces=100,
+            scan_codes=[],
+        )
+        scalar_result = SimpleNamespace(all=lambda: [first, second])
+        db = SimpleNamespace(execute=lambda _statement: SimpleNamespace(scalars=lambda: scalar_result))
+        google_record = {
+            **record(code),
+            "source_import_id": "shared-import",
+            "source_order_id": "shared-order",
+            "source_file": "return-source.xlsx",
+            "source_row": "77",
+            "row_number": 42,
+            "source_sheet": "Архив",
+        }
+
+        matched, diagnostics = match_records_to_items(db, [google_record])
+
+        self.assertIsNone(matched[0][1])
+        self.assertEqual(diagnostics["identity_multiple_records"], 1)
+        self.assertEqual(diagnostics["identity_multiple_unique_scan_owner_records"], 1)
+        self.assertEqual(diagnostics["identity_multiple_unique_row_owner_records"], 1)
+        self.assertEqual(diagnostics["identity_multiple_unique_both_source_ids_records"], 1)
+        self.assertEqual(diagnostics["identity_multiple_unique_source_file_row_records"], 1)
+        self.assertEqual(diagnostics["identity_multiple_signal_agreement_records"], 1)
+        self.assertEqual(diagnostics["identity_multiple_single_unique_signal_records"], 0)
+        self.assertEqual(diagnostics["identity_multiple_signal_conflict_records"], 0)
+        self.assertEqual(
+            diagnostics["identity_multiple_codes_without_candidate_scan_occurrences"],
+            0,
+        )
+
+    def test_ambiguous_identity_one_signal_is_not_reported_as_agreement(self):
+        code = "KIZ-ONE-IDENTITY-SIGNAL"
+        first = SimpleNamespace(
+            id="candidate-1",
+            source_import_id="shared-import",
+            raw_payload={"source_import_id": "shared-import"},
+            product="Chapman Red OP 20",
+            quantity_blocks=10,
+            quantity_pieces=100,
+            scan_codes=[scan("scan-owner", code)],
+        )
+        second = SimpleNamespace(
+            id="candidate-2",
+            source_import_id="shared-import",
+            raw_payload={"source_import_id": "shared-import"},
+            product="Chapman Red OP 20",
+            quantity_blocks=10,
+            quantity_pieces=100,
+            scan_codes=[],
+        )
+        scalar_result = SimpleNamespace(all=lambda: [first, second])
+        db = SimpleNamespace(execute=lambda _statement: SimpleNamespace(scalars=lambda: scalar_result))
+        google_record = {**record(code), "source_import_id": "shared-import"}
+
+        _matched, diagnostics = match_records_to_items(db, [google_record])
+
+        self.assertEqual(diagnostics["identity_multiple_single_unique_signal_records"], 1)
+        self.assertEqual(diagnostics["identity_multiple_signal_agreement_records"], 0)
+        self.assertEqual(diagnostics["identity_multiple_signal_conflict_records"], 0)
 
     def test_oversized_return_metadata_fails_closed_before_database_write(self):
         oversized = record("KIZ-LONG")

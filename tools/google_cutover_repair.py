@@ -26,16 +26,41 @@ NAMESPACE = uuid.UUID("b9080367-802f-5ca4-8673-dfa7adb7a846")
 RETURN_MARKERS = {"возврат", "returned", "return"}
 OUTBOUND_MOVEMENTS = {"outbound", "re_outbound"}
 AVAILABLE_MOVEMENTS = {"return", "undo", "reset"}
-IDENTITY_DIAGNOSTIC_FIELDS = (
+BLOCKING_IDENTITY_DIAGNOSTIC_FIELDS = (
     "identity_no_strong_id_records",
     "identity_not_found_records",
     "identity_product_quantity_mismatch_records",
     "identity_multiple_records",
     "identity_order_not_returned_records",
 )
+IDENTITY_INFO_FIELDS = (
+    "identity_multiple_with_return_codes_records",
+    "identity_multiple_unique_scan_owner_records",
+    "identity_multiple_unique_row_owner_records",
+    "identity_multiple_codes_without_candidate_scan_occurrences",
+    "identity_multiple_codes_with_multiple_candidate_scans_occurrences",
+    "identity_multiple_codes_split_candidate_records",
+    "identity_multiple_pool_size_two_records",
+    "identity_multiple_pool_size_three_plus_records",
+    "identity_multiple_unique_both_source_ids_records",
+    "identity_multiple_unique_source_file_row_records",
+    "identity_multiple_single_unique_signal_records",
+    "identity_multiple_signal_agreement_records",
+    "identity_multiple_signal_conflict_records",
+    "identity_multiple_legacy_first_matches_signal_records",
+)
+IDENTITY_DIAGNOSTIC_FIELDS = (
+    *BLOCKING_IDENTITY_DIAGNOSTIC_FIELDS,
+    *IDENTITY_INFO_FIELDS,
+)
 AMBIGUOUS_ERRORS = {
     "target_missing_movement_timestamp",
     "target_return_crosses_later_movement",
+    "target_return_crosses_later_re_outbound_other_item",
+    "target_return_crosses_later_outbound_other_item",
+    "target_return_crosses_later_available_movement",
+    "target_return_crosses_later_same_item_movement",
+    "target_return_crosses_later_other_movement",
     "missing_scan_return_boundary_conflict",
 }
 OTHER_ERRORS = {
@@ -152,18 +177,20 @@ def match_records_to_items(db, records):
     for record in records:
         source_import_id = normalize(record.get("source_import_id"))
         source_order_id = normalize(record.get("source_order_id"))
+        import_candidates = [
+            item for item in by_import.get(source_import_id, [])
+            if product_quantity_match(item, record)
+        ] if source_import_id else []
+        order_candidates = [
+            item for item in by_order.get(source_order_id, [])
+            if product_quantity_match(item, record)
+        ] if source_order_id else []
         if source_import_id:
             pool = by_import.get(source_import_id, [])
-            candidates = [
-                item for item in pool
-                if product_quantity_match(item, record)
-            ]
+            candidates = import_candidates
         elif source_order_id:
             pool = by_order.get(source_order_id, [])
-            candidates = [
-                item for item in pool
-                if product_quantity_match(item, record)
-            ]
+            candidates = order_candidates
         else:
             pool = []
             candidates = []
@@ -178,6 +205,96 @@ def match_records_to_items(db, records):
             else:
                 field = "identity_multiple_records"
             identity_diagnostics[field] += 1
+            if len(candidates) > 1:
+                if len(candidates) == 2:
+                    identity_diagnostics["identity_multiple_pool_size_two_records"] += 1
+                else:
+                    identity_diagnostics["identity_multiple_pool_size_three_plus_records"] += 1
+                codes = list(dict.fromkeys(
+                    normalize(value)
+                    for value in (record.get("scanned_codes") or [])
+                    if normalize(value)
+                ))
+                if codes:
+                    identity_diagnostics["identity_multiple_with_return_codes_records"] += 1
+                unique_scan_owners = []
+                signal_owner_ids = []
+                for code in codes:
+                    owners = [
+                        candidate
+                        for candidate in candidates
+                        if any(normalize(scan.code) == code for scan in (candidate.scan_codes or []))
+                    ]
+                    if not owners:
+                        identity_diagnostics[
+                            "identity_multiple_codes_without_candidate_scan_occurrences"
+                        ] += 1
+                    elif len(owners) > 1:
+                        identity_diagnostics[
+                            "identity_multiple_codes_with_multiple_candidate_scans_occurrences"
+                        ] += 1
+                    else:
+                        unique_scan_owners.append(owners[0])
+                if codes and len(unique_scan_owners) == len(codes):
+                    owner_ids = {str(candidate.id) for candidate in unique_scan_owners}
+                    if len(owner_ids) == 1:
+                        identity_diagnostics["identity_multiple_unique_scan_owner_records"] += 1
+                        signal_owner_ids.append(next(iter(owner_ids)))
+                    else:
+                        identity_diagnostics["identity_multiple_codes_split_candidate_records"] += 1
+
+                record_row = int(record.get("row_number") or 0)
+                record_sheet = normalize(record.get("source_sheet"))
+                row_matches = []
+                if record_row > 0 and record_sheet:
+                    for candidate in candidates:
+                        payload = candidate.raw_payload if isinstance(candidate.raw_payload, dict) else {}
+                        if (
+                            int(payload.get("google_sheet_row_number") or 0) == record_row
+                            and normalize(payload.get("google_sheet_source_sheet")) == record_sheet
+                        ):
+                            row_matches.append(candidate)
+                if len(row_matches) == 1:
+                    identity_diagnostics["identity_multiple_unique_row_owner_records"] += 1
+                    signal_owner_ids.append(str(row_matches[0].id))
+
+                if source_import_id and source_order_id:
+                    order_ids = {str(candidate.id) for candidate in order_candidates}
+                    both_id_matches = [
+                        candidate
+                        for candidate in import_candidates
+                        if str(candidate.id) in order_ids
+                    ]
+                    if len(both_id_matches) == 1:
+                        identity_diagnostics["identity_multiple_unique_both_source_ids_records"] += 1
+                        signal_owner_ids.append(str(both_id_matches[0].id))
+
+                source_file = normalize(record.get("source_file"))
+                source_row = normalize(record.get("source_row"))
+                source_matches = []
+                if source_file and source_row:
+                    for candidate in candidates:
+                        payload = candidate.raw_payload if isinstance(candidate.raw_payload, dict) else {}
+                        if (
+                            normalize(payload.get("source_file")) == source_file
+                            and normalize(payload.get("source_row")) == source_row
+                        ):
+                            source_matches.append(candidate)
+                if len(source_matches) == 1:
+                    identity_diagnostics["identity_multiple_unique_source_file_row_records"] += 1
+                    signal_owner_ids.append(str(source_matches[0].id))
+
+                distinct_signal_owners = set(signal_owner_ids)
+                if len(signal_owner_ids) == 1:
+                    identity_diagnostics["identity_multiple_single_unique_signal_records"] += 1
+                elif len(signal_owner_ids) >= 2 and len(distinct_signal_owners) == 1:
+                    identity_diagnostics["identity_multiple_signal_agreement_records"] += 1
+                    if pool and str(pool[0].id) in distinct_signal_owners:
+                        identity_diagnostics[
+                            "identity_multiple_legacy_first_matches_signal_records"
+                        ] += 1
+                elif len(distinct_signal_owners) > 1:
+                    identity_diagnostics["identity_multiple_signal_conflict_records"] += 1
         matched.append((record, item))
     return matched, identity_diagnostics
 
@@ -361,7 +478,19 @@ def classify_target(item, record, code, scans_by_code, movements_by_code):
             if movement.id != outbound.id and movement_time(movement) >= outbound_at
         ]
         if later and candidate_return_at >= movement_time(later[0]):
-            return None, "target_return_crosses_later_movement"
+            next_movement = later[0]
+            next_type = normalize(next_movement.movement_type)
+            if movement_matches_item(next_movement, item):
+                error = "target_return_crosses_later_same_item_movement"
+            elif next_type == "re_outbound":
+                error = "target_return_crosses_later_re_outbound_other_item"
+            elif next_type == "outbound":
+                error = "target_return_crosses_later_outbound_other_item"
+            elif next_type in AVAILABLE_MOVEMENTS:
+                error = "target_return_crosses_later_available_movement"
+            else:
+                error = "target_return_crosses_later_other_movement"
+            return None, error
         return {
             "kind": "missing_return",
             "code": code,
@@ -441,6 +570,10 @@ def build_repair_plan(
         "other_conflicts": 0,
         "preexisting_anomaly_occurrences": 0,
         "code_owner_conflicts": 0,
+        "code_owner_conflict_both_items_have_scan_occurrences": 0,
+        "code_owner_conflict_only_first_item_has_scan_occurrences": 0,
+        "code_owner_conflict_only_current_item_has_scan_occurrences": 0,
+        "code_owner_conflict_neither_item_has_scan_occurrences": 0,
         "divergent_duplicate_targets": 0,
         **{field: int(identity_diagnostics.get(field) or 0) for field in IDENTITY_DIAGNOSTIC_FIELDS},
         **{f"{error}_occurrences": 0 for error in sorted(AMBIGUOUS_ERRORS | OTHER_ERRORS)},
@@ -461,10 +594,22 @@ def build_repair_plan(
             if normalize(value)
         ):
             counts["returned_code_occurrences"] += 1
-            owner = code_owner.setdefault(code, str(item.id))
-            if owner != str(item.id):
+            item_has_scan = any(
+                normalize(scan.code) == code for scan in (item.scan_codes or [])
+            )
+            owner = code_owner.setdefault(code, (str(item.id), item_has_scan))
+            if owner[0] != str(item.id):
                 counts["other_conflicts"] += 1
                 counts["code_owner_conflicts"] += 1
+                if owner[1] and item_has_scan:
+                    field = "code_owner_conflict_both_items_have_scan_occurrences"
+                elif owner[1]:
+                    field = "code_owner_conflict_only_first_item_has_scan_occurrences"
+                elif item_has_scan:
+                    field = "code_owner_conflict_only_current_item_has_scan_occurrences"
+                else:
+                    field = "code_owner_conflict_neither_item_has_scan_occurrences"
+                counts[field] += 1
                 continue
             target_key = (str(item.id), code)
             candidate, error = classify_target(item, record, code, scans_by_code, movements_by_code)
@@ -480,6 +625,11 @@ def build_repair_plan(
                 elif error in AMBIGUOUS_ERRORS:
                     counts["ambiguous_chronology"] += 1
                     counts[f"{error}_occurrences"] += 1
+                    if (
+                        error.startswith("target_return_crosses_later_")
+                        and error != "target_return_crosses_later_movement"
+                    ):
+                        counts["target_return_crosses_later_movement_occurrences"] += 1
                 else:
                     counts["other_conflicts"] += 1
                     if error in OTHER_ERRORS:
@@ -726,7 +876,10 @@ def create_plan(db):
         records_and_items,
         scans_by_code,
         movements_by_code,
-        identity_conflicts=sum(identity_diagnostics.values()),
+        identity_conflicts=sum(
+            identity_diagnostics[field]
+            for field in BLOCKING_IDENTITY_DIAGNOSTIC_FIELDS
+        ),
         identity_diagnostics=identity_diagnostics,
     )
 
