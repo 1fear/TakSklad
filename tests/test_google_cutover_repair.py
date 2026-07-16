@@ -192,16 +192,22 @@ class GoogleCutoverRepairTests(unittest.TestCase):
             item_id=owner.id, order_id=owner.order.id,
             at=datetime(2026, 7, 9, 8, tzinfo=UTC),
         )
+        future_owner_return = movement(
+            "owner-future-return", "return", scan_id=owner_scan.id,
+            item_id=owner.id, order_id=owner.order.id,
+            at=datetime(2026, 7, 11, 8, tzinfo=UTC),
+        )
 
         summary, candidates = build_repair_plan(
             [(record(code), target)],
             {code: [owner_scan]},
-            {code: [owner_outbound]},
+            {code: [owner_outbound, future_owner_return]},
             relevant_items={str(owner.id): owner, str(target.id): target},
         )
 
         self.assertTrue(summary["safe_to_repair"])
         self.assertEqual(summary["prerequisite_return_inserts"], 1)
+        self.assertEqual(summary["preexisting_future_owner_return_occurrences"], 1)
         self.assertEqual(summary["return_inserts"], 2)
         self.assertEqual(candidates[0]["outbound_type"], "re_outbound")
         self.assertIs(candidates[0]["prerequisite_return"]["item"], owner)
@@ -216,10 +222,10 @@ class GoogleCutoverRepairTests(unittest.TestCase):
             {},
             {},
             scope_diagnostics={
-                "legacy_missing_scan_occurrences": 7,
+                "legacy_missing_scan_occurrences": 8,
                 "legacy_missing_return_occurrences": 22,
-                "legacy_target_occurrences": 29,
-                "legacy_target_unique_codes": 28,
+                "legacy_target_occurrences": 30,
+                "legacy_target_unique_codes": 29,
                 "scope_conflicts": 1,
             },
         )
@@ -245,11 +251,16 @@ class GoogleCutoverRepairTests(unittest.TestCase):
             item_id=owner.id, order_id=owner.order.id,
             at=datetime(2026, 7, 9, 8, tzinfo=UTC),
         )
+        future_owner_return = movement(
+            "owner-future-return", "return", scan_id=owner_scan.id,
+            item_id=owner.id, order_id=owner.order.id,
+            at=datetime(2026, 7, 11, 8, tzinfo=UTC),
+        )
 
         summary, candidates = build_repair_plan(
             [(record(code), target)],
             {code: [owner_scan]},
-            {code: [owner_outbound]},
+            {code: [owner_outbound, future_owner_return]},
             relevant_items={str(owner.id): owner},
         )
 
@@ -841,7 +852,16 @@ class GoogleCutoverRepairTests(unittest.TestCase):
                 scan_code_id=owner_scan.id, source="test", actor="test",
                 occurred_at=datetime(2026, 7, 9, 8, tzinfo=UTC), raw_payload={},
             )
-            db.add_all([owner_order, target_order, owner_item, target_item, owner_scan, kiz, owner_outbound])
+            owner_future_return = KizMovement(
+                id=uuid.uuid4(), kiz_id=kiz.id, movement_type="return",
+                order_id=owner_order.id, order_item_id=owner_item.id,
+                scan_code_id=owner_scan.id, source="test", actor="test",
+                occurred_at=datetime(2026, 7, 11, 8, tzinfo=UTC), raw_payload={},
+            )
+            db.add_all([
+                owner_order, target_order, owner_item, target_item, owner_scan,
+                kiz, owner_outbound, owner_future_return,
+            ])
             db.flush()
             prerequisite_at = datetime(2026, 7, 9, 8, tzinfo=UTC) + timedelta(microseconds=1)
             scan_at = datetime(2026, 7, 10, 4, 59, 59, 999999, tzinfo=UTC)
@@ -856,6 +876,7 @@ class GoogleCutoverRepairTests(unittest.TestCase):
                     "item": owner_item, "scan": owner_scan,
                     "outbound": owner_outbound, "return_at": prerequisite_at,
                     "timestamp_provenance": "backend_order",
+                    "future_returns": [owner_future_return],
                 },
             }
 
@@ -873,7 +894,7 @@ class GoogleCutoverRepairTests(unittest.TestCase):
             ).scalars().all()
             self.assertEqual(
                 [row.movement_type for row in movements],
-                ["outbound", "return", "re_outbound", "return"],
+                ["outbound", "return", "re_outbound", "return", "return"],
             )
 
     def test_commit_failure_rolls_back_every_repair_row(self):

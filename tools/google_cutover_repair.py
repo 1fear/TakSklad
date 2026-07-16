@@ -687,6 +687,13 @@ def candidate_payload(candidate):
             "prerequisite_timestamp_provenance": prerequisite[
                 "timestamp_provenance"
             ],
+            "prerequisite_future_returns": [
+                {
+                    "id": str(value.id),
+                    "occurred_at": movement_time(value).isoformat(),
+                }
+                for value in prerequisite.get("future_returns") or []
+            ],
         })
     return payload
 
@@ -845,6 +852,10 @@ def classify_target(
             movements_for_scan(movements, owner_scan, OUTBOUND_MOVEMENTS)
             if owner_scan is not None else []
         )
+        future_owner_returns = [
+            value for value in owner_returns
+            if movement_time(value) >= return_at
+        ]
         owner_returned_at, owner_return_provenance = (
             parse_returned_at(owner.order, {})
             if owner is not None else (None, "")
@@ -872,7 +883,8 @@ def classify_target(
             or not order_is_returned(owner.order)
             or len(owner_outbounds) != 1
             or owner_outbounds[0].id != previous.id
-            or owner_returns
+            or len(owner_returns) != 1
+            or len(future_owner_returns) != 1
             or prerequisite_at <= movement_time(previous)
             or prerequisite_at >= return_at - timedelta(microseconds=1)
         ):
@@ -883,6 +895,7 @@ def classify_target(
             "outbound": previous,
             "return_at": prerequisite_at,
             "timestamp_provenance": owner_return_provenance,
+            "future_returns": future_owner_returns,
         }
     else:
         prerequisite_return = None
@@ -1114,6 +1127,7 @@ def build_repair_plan(
         "scope_conflicts": int(scope_diagnostics.get("scope_conflicts") or 0),
         "prerequisite_return_inserts": 0,
         "reconstructed_prerequisite_occurrences": 0,
+        "preexisting_future_owner_return_occurrences": 0,
         "reconstructed_chronology_occurrences": 0,
         **{field: int(identity_diagnostics.get(field) or 0) for field in IDENTITY_DIAGNOSTIC_FIELDS},
         **{f"{error}_occurrences": 0 for error in sorted(AMBIGUOUS_ERRORS | OTHER_ERRORS)},
@@ -1220,6 +1234,11 @@ def build_repair_plan(
                 (candidate.get("prerequisite_return") or {}).get(
                     "timestamp_provenance"
                 ) == "reconstructed_boundary_before_legacy_target"
+            )
+            counts["preexisting_future_owner_return_occurrences"] += len(
+                (candidate.get("prerequisite_return") or {}).get(
+                    "future_returns"
+                ) or []
             )
             counts["reconstructed_chronology_occurrences"] += int(
                 candidate.get("timestamp_provenance")
@@ -1428,6 +1447,26 @@ def apply_candidates(db, candidates, summary):
                 or prerequisite["return_at"] >= candidate["scan_at"]
             ):
                 raise RuntimeError("repair prerequisite return invariant failed")
+            for future_return in prerequisite.get("future_returns") or []:
+                stored_future_return = db.get(KizMovement, future_return.id)
+                if (
+                    stored_future_return is None
+                    or normalize(stored_future_return.movement_type) != "return"
+                    or str(stored_future_return.order_id)
+                    != str(prerequisite_item.order.id)
+                    or str(stored_future_return.order_item_id)
+                    != str(prerequisite_item.id)
+                    or str(stored_future_return.scan_code_id)
+                    != str(prerequisite_scan.id)
+                    or not stored_timestamp_matches(
+                        stored_future_return.occurred_at,
+                        movement_time(future_return),
+                    )
+                    or movement_time(future_return) <= candidate["return_at"]
+                ):
+                    raise RuntimeError(
+                        "repair future owner return invariant failed"
+                    )
         scan_id = (
             candidate["scan"].id
             if candidate.get("scan") is not None
@@ -1489,6 +1528,11 @@ def apply_candidates(db, candidates, summary):
                 ),
                 "reconstructed_prerequisite_occurrences": int(
                     summary.get("reconstructed_prerequisite_occurrences") or 0
+                ),
+                "preexisting_future_owner_return_occurrences": int(
+                    summary.get(
+                        "preexisting_future_owner_return_occurrences"
+                    ) or 0
                 ),
                 "legacy_target_unique_codes": int(
                     summary.get("legacy_target_unique_codes") or 0
