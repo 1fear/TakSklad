@@ -1,0 +1,150 @@
+name: Audit Google Cutover Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      approval:
+        description: Exact read-only production audit approval token
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: taksklad-production
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: Read-only counts audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Checkout exact audit control plane
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Validate explicit read-only scope
+        env:
+          AUDIT_APPROVAL: ${{ inputs.approval }}
+        run: test "$AUDIT_APPROVAL" = GOOGLE_CUTOVER_READ_ONLY_AUDIT_APPROVED
+
+      - name: Validate required production access
+        env:
+          VDS_HOST: ${{ secrets.VDS_HOST }}
+          VDS_USER: ${{ secrets.VDS_USER }}
+          VDS_SSH_KEY: ${{ secrets.VDS_SSH_KEY }}
+          VDS_SSH_KNOWN_HOSTS: ${{ secrets.VDS_SSH_KNOWN_HOSTS }}
+        run: |
+          test -n "$VDS_HOST"
+          test -n "$VDS_USER"
+          test -n "$VDS_SSH_KEY"
+          test -n "$VDS_SSH_KNOWN_HOSTS"
+
+      - name: Install SSH key
+        env:
+          VDS_SSH_KEY: ${{ secrets.VDS_SSH_KEY }}
+          VDS_SSH_KNOWN_HOSTS: ${{ secrets.VDS_SSH_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$VDS_SSH_KEY" > ~/.ssh/taksklad_audit_key
+          chmod 600 ~/.ssh/taksklad_audit_key
+          printf '%s\n' "$VDS_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Copy read-only audit to VDS
+        env:
+          VDS_HOST: ${{ secrets.VDS_HOST }}
+          VDS_USER: ${{ secrets.VDS_USER }}
+        run: |
+          scp -i ~/.ssh/taksklad_audit_key tools/google_cutover_audit.py \
+            "$VDS_USER@$VDS_HOST:/tmp/taksklad-google-cutover-audit.py"
+
+      - name: Run and sanitize production audit
+        env:
+          VDS_HOST: ${{ secrets.VDS_HOST }}
+          VDS_USER: ${{ secrets.VDS_USER }}
+          VDS_APP_DIR: ${{ secrets.VDS_APP_DIR }}
+        run: |
+          set -euo pipefail
+          remote="$VDS_USER@$VDS_HOST"
+          app_dir="${VDS_APP_DIR:-/opt/stacks/taksklad/app}"
+          ssh -i ~/.ssh/taksklad_audit_key \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=10 \
+            "$remote" 'bash -s' <<EOF
+          set -euo pipefail
+          app_dir=$(printf '%q' "$app_dir")
+          compose_project="\$(docker compose --env-file "\$app_dir/deploy/vds/.env" \
+            -f "\$app_dir/deploy/vds/docker-compose.yml" config --format json | \
+            python3 -c 'import json,sys; value=str((json.load(sys.stdin) or {}).get("name") or "").strip(); assert value; print(value)')"
+          mapfile -t backend_ids < <(docker ps -q \
+            --filter label=com.docker.compose.project=\$compose_project \
+            --filter label=com.docker.compose.service=backend-api)
+          test "\${#backend_ids[@]}" -eq 1
+          raw=/tmp/taksklad-google-cutover-audit-raw.json
+          evidence=/tmp/taksklad-google-cutover-audit.json
+          rm -f "\$raw" "\$evidence"
+          set +e
+          docker exec -i "\${backend_ids[0]}" python - \
+            < /tmp/taksklad-google-cutover-audit.py > "\$raw"
+          audit_rc="\$?"
+          set -e
+          test -s "\$raw"
+          python3 - "\$raw" "\$evidence" "\$audit_rc" <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          allowed = {
+              "schema_version", "mode", "safe_to_cutover", "records_total",
+              "active_records", "returned_records", "active_missing_backend",
+              "returned_missing_backend", "active_codes_missing_backend",
+              "returned_codes_missing_backend", "returned_orders_not_marked",
+              "returned_codes_without_return_movement", "blockers", "audit_error_type",
+          }
+          if set(payload) - allowed:
+              raise SystemExit("GOOGLE_CUTOVER_AUDIT_UNSAFE_FIELDS")
+          if not isinstance(payload.get("blockers"), int):
+              raise SystemExit("GOOGLE_CUTOVER_AUDIT_BLOCKER_COUNT_REQUIRED")
+          fd = os.open(sys.argv[2], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          with os.fdopen(fd, "w", encoding="utf-8") as handle:
+              json.dump(payload, handle, sort_keys=True)
+              handle.write("\n")
+          print(
+              "GOOGLE_CUTOVER_AUDIT_COUNTS "
+              f"safe={payload.get('safe_to_cutover')} blockers={payload['blockers']} "
+              f"returned_missing_backend={payload.get('returned_missing_backend', -1)} "
+              f"returned_codes_missing_backend={payload.get('returned_codes_missing_backend', -1)} "
+              f"returned_orders_not_marked={payload.get('returned_orders_not_marked', -1)} "
+              f"returned_codes_without_return={payload.get('returned_codes_without_return_movement', -1)} "
+              "values_redacted=1"
+          )
+          if int(sys.argv[3]) not in (0, 3):
+              raise SystemExit("GOOGLE_CUTOVER_AUDIT_EXECUTION_ERROR")
+          PY
+          exit "\$audit_rc"
+          EOF
+
+      - name: Collect sanitized audit evidence
+        if: always()
+        env:
+          VDS_HOST: ${{ secrets.VDS_HOST }}
+          VDS_USER: ${{ secrets.VDS_USER }}
+        run: |
+          install -d -m 700 "$RUNNER_TEMP/google-cutover-audit-evidence"
+          scp -i ~/.ssh/taksklad_audit_key \
+            "$VDS_USER@$VDS_HOST:/tmp/taksklad-google-cutover-audit.json" \
+            "$RUNNER_TEMP/google-cutover-audit-evidence/audit.json"
+
+      - name: Upload sanitized audit evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: taksklad-google-cutover-audit-evidence
+          path: ${{ runner.temp }}/google-cutover-audit-evidence
+          if-no-files-found: error
+          retention-days: 14
