@@ -195,7 +195,7 @@ class GoogleCutoverRepairTests(unittest.TestCase):
         future_owner_return = movement(
             "owner-future-return", "return", scan_id=owner_scan.id,
             item_id=owner.id, order_id=owner.order.id,
-            at=datetime(2026, 7, 11, 8, tzinfo=UTC),
+            at=datetime(2026, 7, 10, 5, tzinfo=UTC),
         )
 
         summary, candidates = build_repair_plan(
@@ -208,12 +208,24 @@ class GoogleCutoverRepairTests(unittest.TestCase):
         self.assertTrue(summary["safe_to_repair"])
         self.assertEqual(summary["prerequisite_return_inserts"], 1)
         self.assertEqual(summary["preexisting_future_owner_return_occurrences"], 1)
+        self.assertEqual(
+            summary["reconstructed_missing_scan_boundary_occurrences"],
+            1,
+        )
         self.assertEqual(summary["return_inserts"], 2)
         self.assertEqual(candidates[0]["outbound_type"], "re_outbound")
         self.assertIs(candidates[0]["prerequisite_return"]["item"], owner)
         self.assertLess(
             candidates[0]["prerequisite_return"]["return_at"],
             candidates[0]["scan_at"],
+        )
+        self.assertLess(
+            candidates[0]["return_at"],
+            future_owner_return.occurred_at,
+        )
+        self.assertEqual(
+            candidates[0]["timestamp_provenance"],
+            "reconstructed_before_future_owner_return",
         )
 
     def test_legacy_scope_mismatch_blocks_before_write(self):

@@ -856,6 +856,29 @@ def classify_target(
             movements_for_scan(movements, owner_scan, OUTBOUND_MOVEMENTS)
             if owner_scan is not None else []
         )
+        owner_returns_after_original_target = [
+            value for value in owner_returns
+            if movement_time(value) >= return_at
+        ]
+        if (
+            owner_returns
+            and len(owner_returns_after_original_target) == len(owner_returns)
+        ):
+            earliest_future_return_at = min(
+                movement_time(value)
+                for value in owner_returns_after_original_target
+            )
+            if earliest_future_return_at <= candidate_return_at:
+                candidate_return_at = (
+                    earliest_future_return_at - timedelta(microseconds=1)
+                )
+                candidate_scan_at = (
+                    earliest_future_return_at - timedelta(microseconds=2)
+                )
+                candidate_timestamp_provenance = (
+                    "reconstructed_before_future_owner_return"
+                )
+                candidate_timestamp_adjusted = True
         owner_returned_at, owner_return_provenance = (
             parse_returned_at(owner.order, {})
             if owner is not None else (None, "")
@@ -873,7 +896,7 @@ def classify_target(
             or prerequisite_at <= movement_time(previous)
             or prerequisite_at >= candidate_scan_at
         ):
-            prerequisite_at = return_at - timedelta(microseconds=2)
+            prerequisite_at = candidate_scan_at - timedelta(microseconds=1)
             owner_return_provenance = (
                 "reconstructed_boundary_before_legacy_target"
             )
@@ -1260,8 +1283,7 @@ def build_repair_plan(
                 ) or []
             )
             counts["reconstructed_missing_scan_boundary_occurrences"] += int(
-                candidate.get("timestamp_provenance")
-                == "reconstructed_after_previous_outbound"
+                bool(candidate.get("timestamp_adjusted"))
             )
             counts["reconstructed_chronology_occurrences"] += int(
                 candidate.get("timestamp_provenance")
