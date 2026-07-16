@@ -322,6 +322,10 @@ class CiCdWorkflowTests(unittest.TestCase):
             workflow,
         )
         self.assertIn("tools/google_cutover_audit.py", workflow)
+        self.assertIn("tools/verify_postgres_only_cutover.py", workflow)
+        self.assertIn("POSTGRES_ONLY_CUTOVER_REUSED", workflow)
+        self.assertIn("GOOGLE_TO_POSTGRES_CUTOVER_STATE_UNVERIFIED", workflow)
+        self.assertIn("importlib.util.find_spec('app.google_sheets_sync_worker')", workflow)
         self.assertIn("GOOGLE_TO_POSTGRES_CUTOVER_AUDIT_BLOCKED", workflow)
         self.assertIn('payload.get("blockers") != 0', workflow)
         self.assertLess(
