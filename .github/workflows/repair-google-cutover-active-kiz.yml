@@ -1,0 +1,540 @@
+name: Repair Active Google-only KIZ for DB Cutover
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_active_missing:
+        description: Exact global-audit active Google-only KIZ count
+        required: true
+        default: "6"
+      approval:
+        description: Exact one-shot active KIZ repair approval token
+        required: true
+      observed_at:
+        description: Stable UTC transaction timestamp used by plan and apply
+        required: true
+      expected_plan_sha:
+        description: SHA-256 from prior read-only run; empty creates evidence only
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: taksklad-production
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    name: Transfer exact active Google-only KIZ lifecycle
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    steps:
+      - name: Checkout exact main control plane
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Validate explicit scope
+        env:
+          EXPECTED_ACTIVE_MISSING: ${{ inputs.expected_active_missing }}
+          REPAIR_APPROVAL: ${{ inputs.approval }}
+          OBSERVED_AT: ${{ inputs.observed_at }}
+          EXPECTED_PLAN_SHA: ${{ inputs.expected_plan_sha }}
+          DISPATCH_REF: ${{ github.ref }}
+          DISPATCH_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$DISPATCH_REF" = refs/heads/main
+          test "$DISPATCH_SHA" = "$(git rev-parse HEAD)"
+          test "$EXPECTED_ACTIVE_MISSING" = 6
+          test "$REPAIR_APPROVAL" = GOOGLE_CUTOVER_ACTIVE_KIZ_REPAIR_APPROVED
+          python3 - "$OBSERVED_AT" "$EXPECTED_PLAN_SHA" <<'PY'
+          import datetime
+          import re
+          import sys
+
+          observed = sys.argv[1]
+          if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z", observed):
+              raise SystemExit("ACTIVE_KIZ_OBSERVED_AT_INVALID")
+          parsed = datetime.datetime.fromisoformat(observed[:-1] + "+00:00")
+          now = datetime.datetime.now(datetime.timezone.utc)
+          if parsed > now + datetime.timedelta(minutes=5) or parsed < now - datetime.timedelta(hours=2):
+              raise SystemExit("ACTIVE_KIZ_OBSERVED_AT_OUT_OF_RANGE")
+          if sys.argv[2] and not re.fullmatch(r"[0-9a-f]{64}", sys.argv[2]):
+              raise SystemExit("ACTIVE_KIZ_EXPECTED_PLAN_SHA_INVALID")
+          PY
+
+      - name: Package audited control plane
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          for name in (
+              "tools/google_cutover_active_kiz_repair.py",
+              "tools/google_cutover_audit.py",
+              "tools/postgres_quiescence_check.py",
+          ):
+              path = Path(name)
+              compile(path.read_text(encoding="utf-8"), str(path), "exec")
+          PY
+          bash -n deploy/vds/backup_postgres.sh
+          tar -czf "$RUNNER_TEMP/taksklad-active-kiz-repair.tar.gz" \
+            deploy/vds/backup_postgres.sh \
+            deploy/vds/docker-compose.yml \
+            tools/google_cutover_active_kiz_repair.py \
+            tools/google_cutover_audit.py \
+            tools/postgres_quiescence_check.py \
+            tools/write_maintenance_marker.py
+
+      - name: Validate production access
+        env:
+          VDS_HOST: ${{ secrets.VDS_HOST }}
+          VDS_USER: ${{ secrets.VDS_USER }}
+          VDS_SSH_KEY: ${{ secrets.VDS_SSH_KEY }}
+          VDS_SSH_KNOWN_HOSTS: ${{ secrets.VDS_SSH_KNOWN_HOSTS }}
+        run: |
+          test -n "$VDS_HOST"
+          test -n "$VDS_USER"
+          test -n "$VDS_SSH_KEY"
+          test -n "$VDS_SSH_KNOWN_HOSTS"
+
+      - name: Install SSH key
+        env:
+          VDS_SSH_KEY: ${{ secrets.VDS_SSH_KEY }}
+          VDS_SSH_KNOWN_HOSTS: ${{ secrets.VDS_SSH_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$VDS_SSH_KEY" > ~/.ssh/taksklad_active_repair_key
+          chmod 600 ~/.ssh/taksklad_active_repair_key
+          printf '%s\n' "$VDS_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Copy repair bundle to VDS
+        env:
+          VDS_HOST: ${{ secrets.VDS_HOST }}
+          VDS_USER: ${{ secrets.VDS_USER }}
+        run: |
+          scp -i ~/.ssh/taksklad_active_repair_key \
+            "$RUNNER_TEMP/taksklad-active-kiz-repair.tar.gz" \
+            "$VDS_USER@$VDS_HOST:/tmp/"
+
+      - name: Audit, plan, isolate, backup, repair and verify
+        env:
+          VDS_HOST: ${{ secrets.VDS_HOST }}
+          VDS_USER: ${{ secrets.VDS_USER }}
+          VDS_APP_DIR: ${{ secrets.VDS_APP_DIR }}
+          EXPECTED_ACTIVE_MISSING: ${{ inputs.expected_active_missing }}
+          REPAIR_APPROVAL: ${{ inputs.approval }}
+          OBSERVED_AT: ${{ inputs.observed_at }}
+          EXPECTED_PLAN_SHA: ${{ inputs.expected_plan_sha }}
+        run: |
+          set -euo pipefail
+          remote="$VDS_USER@$VDS_HOST"
+          app_dir="${VDS_APP_DIR:-/opt/stacks/taksklad/app}"
+          ssh -i ~/.ssh/taksklad_active_repair_key \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=10 \
+            "$remote" 'bash -s' <<EOF
+          set -euo pipefail
+          app_dir=$(printf '%q' "$app_dir")
+          expected_active_missing=$(printf '%q' "$EXPECTED_ACTIVE_MISSING")
+          repair_approval=$(printf '%q' "$REPAIR_APPROVAL")
+          observed_at=$(printf '%q' "$OBSERVED_AT")
+          expected_plan_sha=$(printf '%q' "$EXPECTED_PLAN_SHA")
+          run_dir="/tmp/taksklad-active-kiz-repair-${GITHUB_RUN_ID}"
+          rm -rf "\$run_dir"
+          install -d -m 700 "\$run_dir"
+          tar -xzf /tmp/taksklad-active-kiz-repair.tar.gz -C "\$run_dir" --no-same-owner
+          chmod 700 "\$run_dir/deploy/vds/backup_postgres.sh"
+          rm -f /tmp/taksklad-active-kiz-repair-{initial-audit,plan,result,verification,final-audit}.json
+
+          compose_project="\$(docker compose --env-file "\$app_dir/deploy/vds/.env" \
+            -f "\$app_dir/deploy/vds/docker-compose.yml" config --format json | \
+            python3 -c 'import json,sys; value=str((json.load(sys.stdin) or {}).get("name") or "").strip(); assert value; print(value)')"
+          mapfile -t backend_ids < <(docker ps -q \
+            --filter label=com.docker.compose.project=\$compose_project \
+            --filter label=com.docker.compose.service=backend-api)
+          test "\${#backend_ids[@]}" -eq 1
+          backend_id="\${backend_ids[0]}"
+
+          set +e
+          docker exec -i "\$backend_id" python - < "\$run_dir/tools/google_cutover_audit.py" \
+            > "\$run_dir/initial-audit.json"
+          initial_audit_rc="\$?"
+          set -e
+          python3 - "\$run_dir/initial-audit.json" "\$initial_audit_rc" \
+            /tmp/taksklad-active-kiz-repair-initial-audit.json <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          allowed = {
+              "schema_version", "mode", "safe_to_cutover", "records_total", "active_records",
+              "returned_records", "active_missing_backend", "returned_missing_backend",
+              "active_codes_missing_backend", "returned_codes_missing_backend",
+              "returned_orders_not_marked", "returned_codes_without_return_movement", "blockers",
+          }
+          if set(payload) != allowed:
+              raise SystemExit("ACTIVE_KIZ_INITIAL_AUDIT_FIELDS_INVALID")
+          fd = os.open(sys.argv[3], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          with os.fdopen(fd, "w", encoding="utf-8") as handle:
+              json.dump(payload, handle, sort_keys=True)
+              handle.write("\n")
+          expected = {
+              "active_missing_backend": 0,
+              "returned_missing_backend": 0,
+              "active_codes_missing_backend": 6,
+              "returned_codes_missing_backend": 0,
+              "returned_orders_not_marked": 0,
+              "returned_codes_without_return_movement": 0,
+              "blockers": 6,
+          }
+          if int(sys.argv[2]) != 3 or any(payload.get(key) != value for key, value in expected.items()):
+              raise SystemExit("ACTIVE_KIZ_INITIAL_AUDIT_SCOPE_CHANGED")
+          print("ACTIVE_KIZ_INITIAL_AUDIT_OK blockers=6 values_redacted=1")
+          PY
+
+          set +e
+          docker exec -i "\$backend_id" python - \
+            --plan --expected-active-missing "\$expected_active_missing" --observed-at "\$observed_at" \
+            < "\$run_dir/tools/google_cutover_active_kiz_repair.py" > "\$run_dir/repair-plan.json"
+          plan_rc="\$?"
+          set -e
+          python3 - "\$run_dir/repair-plan.json" "\$plan_rc" \
+            /tmp/taksklad-active-kiz-repair-plan.json "\$expected_plan_sha" <<'PY'
+          import json
+          import os
+          import re
+          import sys
+          from pathlib import Path
+
+          payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          allowed = {
+              "schema_version", "mode", "active_records_total", "active_missing_item_records",
+              "identity_no_strong_id_records", "identity_not_unique_records",
+              "identity_mapping_mismatch_records", "identity_product_quantity_mismatch_records",
+              "identity_hash_mismatch_records", "active_missing_code_occurrences",
+              "active_missing_unique_codes", "active_missing_unique_item_codes",
+              "duplicate_target_occurrences", "identity_conflicts",
+              "existing_same_item_scan_occurrences",
+              "existing_other_item_scan_without_available_movement_occurrences",
+              "busy_kiz_occurrences", "movement_timestamp_conflicts",
+              "movement_scan_owner_conflicts", "product_mismatch_occurrences",
+              "inactive_order_occurrences", "inactive_item_occurrences",
+              "non_kiz_item_occurrences", "missing_item_timestamp_occurrences",
+              "scanned_blocks_exceed_plan_occurrences", "completed_item_under_plan_occurrences",
+              "invalid_block_quantity_occurrences", "unknown_product_occurrences",
+              "orphan_registry_occurrences", "malformed_lifecycle_occurrences",
+              "live_scan_after_undo_reset_occurrences", "multiple_live_scans_occurrences",
+              "counter_inconsistency_occurrences", "non_active_order_occurrences",
+              "non_active_item_occurrences", "outbound_inserts", "re_outbound_inserts",
+              "scan_inserts", "kiz_code_inserts", "item_scanned_blocks_updates",
+              "item_status_updates", "scope_conflicts", "conflicts", "mutations_expected",
+              "safe_to_repair", "google_snapshot_sha256", "plan_sha256",
+          }
+          if set(payload) != allowed:
+              raise SystemExit("ACTIVE_KIZ_PLAN_FIELDS_INVALID")
+          fd = os.open(sys.argv[3], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          with os.fdopen(fd, "w", encoding="utf-8") as handle:
+              json.dump(payload, handle, sort_keys=True)
+              handle.write("\n")
+          if int(sys.argv[2]) != 0 or payload.get("safe_to_repair") is not True or payload.get("conflicts") != 0:
+              raise SystemExit("ACTIVE_KIZ_PLAN_BLOCKED")
+          for field in (
+              "active_missing_code_occurrences", "active_missing_unique_codes",
+              "active_missing_unique_item_codes", "scan_inserts",
+          ):
+              if payload.get(field) != 6:
+                  raise SystemExit("ACTIVE_KIZ_PLAN_SCOPE_CHANGED")
+          if payload.get("outbound_inserts", 0) + payload.get("re_outbound_inserts", 0) != 6:
+              raise SystemExit("ACTIVE_KIZ_PLAN_MOVEMENT_SCOPE_CHANGED")
+          for field in ("plan_sha256", "google_snapshot_sha256"):
+              if not re.fullmatch(r"[0-9a-f]{64}", str(payload.get(field) or "")):
+                  raise SystemExit("ACTIVE_KIZ_PLAN_SHA_INVALID")
+          if not sys.argv[4]:
+              raise SystemExit("ACTIVE_KIZ_EXPECTED_PLAN_SHA_REQUIRED")
+          if payload["plan_sha256"] != sys.argv[4]:
+              raise SystemExit("ACTIVE_KIZ_EXPECTED_PLAN_SHA_MISMATCH")
+          print("ACTIVE_KIZ_PLAN_OK targets=6 conflicts=0 values_redacted=1")
+          PY
+          plan_sha="\$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["plan_sha256"])' "\$run_dir/repair-plan.json")"
+          snapshot_sha="\$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["google_snapshot_sha256"])' "\$run_dir/repair-plan.json")"
+
+          service_names=(backend-api frontend telegram-worker skladbot-worker smartup-auto-import-worker google-sheets-sync-worker)
+          writer_ids=()
+          for service in "\${service_names[@]}"; do
+            mapfile -t service_ids < <(docker ps -q \
+              --filter label=com.docker.compose.project=\$compose_project \
+              --filter label=com.docker.compose.service=\$service)
+            test "\${#service_ids[@]}" -eq 1
+            writer_ids+=("\${service_ids[0]}")
+          done
+          test "\${writer_ids[0]}" = "\$backend_id"
+          internal_network="\${compose_project}_taksklad-internal"
+          docker network inspect "\$internal_network" >/dev/null
+          legacy_image="\$(docker inspect --format '{{.Image}}' "\$backend_id")"
+          test -n "\$legacy_image"
+          legacy_env_file="\$run_dir/legacy-backend.env"
+          legacy_env_json="\$run_dir/legacy-backend-env.json"
+          docker inspect --format '{{json .Config.Env}}' "\$backend_id" > "\$legacy_env_json"
+          python3 - "\$legacy_env_json" "\$legacy_env_file" <<'PY'
+          import json
+          import os
+          import sys
+
+          values = json.loads(open(sys.argv[1], encoding="utf-8").read())
+          fd = os.open(sys.argv[2], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          with os.fdopen(fd, "w", encoding="utf-8") as handle:
+              for value in values:
+                  if "\n" in value or "\r" in value:
+                      raise SystemExit("LEGACY_ENV_MULTILINE_VALUE_FORBIDDEN")
+                  handle.write(value + "\n")
+          PY
+          rm -f "\$legacy_env_json"
+          run_legacy_script() {
+            script_path="\$1"
+            shift
+            docker run --rm -i --network "\$internal_network" --env-file "\$legacy_env_file" \
+              --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+              --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m --pids-limit 256 --memory 768m --cpus 1.0 \
+              "\$legacy_image" python - "\$@" < "\$script_path"
+          }
+          isolation_active=0
+          write_attempted=0
+          restore_legacy_runtime() {
+            set +e
+            docker start "\${writer_ids[@]}" >/dev/null
+            set -e
+          }
+          stop_legacy_runtime() {
+            set +e
+            docker stop -t 45 "\${writer_ids[@]}" >/dev/null
+            set -e
+          }
+          repair_exit() {
+            rc="\$?"
+            if test "\$isolation_active" = 1; then
+              if test "\$write_attempted" = 0; then
+                restore_legacy_runtime
+              else
+                stop_legacy_runtime
+                echo "ACTIVE_KIZ_POST_WRITE_FAILURE_LEFT_IN_MAINTENANCE" >&2
+              fi
+            fi
+            rm -f "\$legacy_env_file"
+            exit "\$rc"
+          }
+          trap repair_exit EXIT
+
+          isolation_active=1
+          docker stop -t 45 "\${writer_ids[@]}" >/dev/null
+          for writer_id in "\${writer_ids[@]}"; do
+            test "\$(docker inspect --format '{{.State.Running}}' "\$writer_id")" = false
+          done
+          for service in "\${service_names[@]}"; do
+            test -z "\$(docker ps -q \
+              --filter label=com.docker.compose.project=\$compose_project \
+              --filter label=com.docker.compose.service=\$service)"
+          done
+          echo "ACTIVE_KIZ_WRITER_DRAIN_OK stopped=6"
+
+          run_legacy_script "\$run_dir/tools/google_cutover_active_kiz_repair.py" \
+            --plan --expected-active-missing "\$expected_active_missing" --observed-at "\$observed_at" \
+            > "\$run_dir/drained-plan.json"
+          python3 - "\$run_dir/drained-plan.json" "\$plan_sha" "\$snapshot_sha" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          if payload.get("safe_to_repair") is not True or payload.get("conflicts") != 0:
+              raise SystemExit("ACTIVE_KIZ_DRAINED_PLAN_BLOCKED")
+          if payload.get("plan_sha256") != sys.argv[2] or payload.get("google_snapshot_sha256") != sys.argv[3]:
+              raise SystemExit("ACTIVE_KIZ_DRAINED_SNAPSHOT_CHANGED")
+          print("ACTIVE_KIZ_DRAINED_PLAN_OK snapshot_unchanged=1 values_redacted=1")
+          PY
+          run_legacy_script "\$run_dir/tools/postgres_quiescence_check.py" > "\$run_dir/quiescence.json"
+          python3 - "\$run_dir/quiescence.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          if set(payload) != {"schema_version", "mode", "other_active_client_transactions", "quiescent"}:
+              raise SystemExit("ACTIVE_KIZ_QUIESCENCE_FIELDS_INVALID")
+          if payload.get("quiescent") is not True or payload.get("other_active_client_transactions") != 0:
+              raise SystemExit("ACTIVE_KIZ_DATABASE_NOT_QUIESCENT")
+          print("ACTIVE_KIZ_DATABASE_QUIESCENT_OK other_active=0")
+          PY
+
+          TAKSKLAD_ENV_FILE="\$app_dir/deploy/vds/.env" \
+          TAKSKLAD_COMPOSE_FILE="\$run_dir/deploy/vds/docker-compose.yml" \
+          TAKSKLAD_MAINTENANCE_MARKER=/run/taksklad-observability/maintenance.json \
+            "\$run_dir/deploy/vds/backup_postgres.sh" --no-prune </dev/null
+
+          for service in "\${service_names[@]}"; do
+            test -z "\$(docker ps -q \
+              --filter label=com.docker.compose.project=\$compose_project \
+              --filter label=com.docker.compose.service=\$service)"
+          done
+          run_legacy_script "\$run_dir/tools/postgres_quiescence_check.py" > "\$run_dir/post-backup-quiescence.json"
+          python3 - "\$run_dir/post-backup-quiescence.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          if payload.get("quiescent") is not True or payload.get("other_active_client_transactions") != 0:
+              raise SystemExit("ACTIVE_KIZ_POST_BACKUP_DATABASE_NOT_QUIESCENT")
+          print("ACTIVE_KIZ_POST_BACKUP_QUIESCENCE_OK services_running=0 other_active=0")
+          PY
+
+          write_attempted=1
+          run_legacy_script "\$run_dir/tools/google_cutover_active_kiz_repair.py" \
+            --apply --approval "\$repair_approval" --expected-plan-sha "\$plan_sha" \
+            --expected-active-missing "\$expected_active_missing" --observed-at "\$observed_at" \
+            > "\$run_dir/repair-result.json"
+          python3 - "\$run_dir/repair-result.json" "\$run_dir/repair-plan.json" <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+          result = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          plan = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+          allowed = {
+              "schema_version", "mode", "safe_to_repair", "plan_sha256", "conflicts",
+              "scan_inserts", "outbound_inserts", "re_outbound_inserts", "kiz_code_inserts",
+              "item_scanned_blocks_updates", "item_status_updates", "target_audit_inserts",
+              "mutations_applied",
+          }
+          if set(result) != allowed:
+              raise SystemExit("ACTIVE_KIZ_RESULT_FIELDS_INVALID")
+          if result.get("safe_to_repair") is not True or result.get("conflicts") != 0:
+              raise SystemExit("ACTIVE_KIZ_APPLY_BLOCKED")
+          if result.get("plan_sha256") != plan.get("plan_sha256"):
+              raise SystemExit("ACTIVE_KIZ_APPLY_SHA_MISMATCH")
+          for field in (
+              "scan_inserts", "outbound_inserts", "re_outbound_inserts", "kiz_code_inserts",
+              "item_scanned_blocks_updates", "item_status_updates",
+          ):
+              if result.get(field) != plan.get(field):
+                  raise SystemExit("ACTIVE_KIZ_APPLY_COUNT_MISMATCH")
+          if result.get("target_audit_inserts") != 6 or result.get("mutations_applied") != 12:
+              raise SystemExit("ACTIVE_KIZ_APPLY_SCOPE_CHANGED")
+          fd = os.open("/tmp/taksklad-active-kiz-repair-result.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          with os.fdopen(fd, "w", encoding="utf-8") as handle:
+              json.dump(result, handle, sort_keys=True)
+              handle.write("\n")
+          print("ACTIVE_KIZ_APPLY_OK scans=6 movements=6 target_audits=6 values_redacted=1")
+          PY
+
+          run_legacy_script "\$run_dir/tools/google_cutover_active_kiz_repair.py" \
+            --verify --expected-plan-sha "\$plan_sha" \
+            --expected-active-missing "\$expected_active_missing" --observed-at "\$observed_at" \
+            > "\$run_dir/verification.json"
+          python3 - "\$run_dir/verification.json" <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+          payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          allowed = {
+              "schema_version", "mode", "safe_to_repair", "plan_sha256", "target_audits",
+              "batch_audits", "unique_codes", "unique_items", "verified_scans",
+              "verified_movements", "verified_latest_movements", "verified_code_hashes",
+              "verified_item_counters", "conflicts",
+          }
+          if set(payload) != allowed:
+              raise SystemExit("ACTIVE_KIZ_VERIFICATION_FIELDS_INVALID")
+          if payload.get("safe_to_repair") is not True or payload.get("conflicts") != 0:
+              raise SystemExit("ACTIVE_KIZ_INDEPENDENT_VERIFICATION_BLOCKED")
+          for field in (
+              "target_audits", "unique_codes", "verified_scans", "verified_movements",
+              "verified_latest_movements", "verified_code_hashes",
+          ):
+              if payload.get(field) != 6:
+                  raise SystemExit("ACTIVE_KIZ_INDEPENDENT_VERIFICATION_COUNT_CHANGED")
+          if payload.get("batch_audits") != 1 or payload.get("verified_item_counters", 0) < 1:
+              raise SystemExit("ACTIVE_KIZ_INDEPENDENT_VERIFICATION_INCOMPLETE")
+          fd = os.open("/tmp/taksklad-active-kiz-repair-verification.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          with os.fdopen(fd, "w", encoding="utf-8") as handle:
+              json.dump(payload, handle, sort_keys=True)
+              handle.write("\n")
+          print("ACTIVE_KIZ_INDEPENDENT_VERIFICATION_OK targets=6 conflicts=0 values_redacted=1")
+          PY
+
+          run_legacy_script "\$run_dir/tools/google_cutover_audit.py" > "\$run_dir/final-audit.json"
+          python3 - "\$run_dir/final-audit.json" <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+          payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          allowed = {
+              "schema_version", "mode", "safe_to_cutover", "records_total", "active_records",
+              "returned_records", "active_missing_backend", "returned_missing_backend",
+              "active_codes_missing_backend", "returned_codes_missing_backend",
+              "returned_orders_not_marked", "returned_codes_without_return_movement", "blockers",
+          }
+          if set(payload) != allowed or payload.get("safe_to_cutover") is not True or payload.get("blockers") != 0:
+              raise SystemExit("ACTIVE_KIZ_FINAL_AUDIT_BLOCKED")
+          for field in (
+              "active_missing_backend", "returned_missing_backend", "active_codes_missing_backend",
+              "returned_codes_missing_backend", "returned_orders_not_marked",
+              "returned_codes_without_return_movement",
+          ):
+              if payload.get(field) != 0:
+                  raise SystemExit("ACTIVE_KIZ_FINAL_AUDIT_FIELD_NONZERO")
+          fd = os.open("/tmp/taksklad-active-kiz-repair-final-audit.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          with os.fdopen(fd, "w", encoding="utf-8") as handle:
+              json.dump(payload, handle, sort_keys=True)
+              handle.write("\n")
+          print("ACTIVE_KIZ_FINAL_AUDIT_OK blockers=0 values_redacted=1")
+          PY
+
+          docker start "\$backend_id" >/dev/null
+          for attempt in \$(seq 1 36); do
+            status="\$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "\$backend_id")"
+            if test "\$status" = healthy || test "\$status" = running; then
+              echo "ACTIVE_KIZ_LEGACY_BACKEND_ONLY_READY other_legacy_writers_stopped=5"
+              break
+            fi
+            if test "\$attempt" = 36; then
+              raise="ACTIVE_KIZ_LEGACY_BACKEND_START_TIMEOUT"
+              echo "\$raise" >&2
+              exit 1
+            fi
+            sleep 5
+          done
+          isolation_active=0
+          rm -f "\$legacy_env_file"
+          trap - EXIT
+          EOF
+
+      - name: Collect sanitized evidence
+        if: always()
+        env:
+          VDS_HOST: ${{ secrets.VDS_HOST }}
+          VDS_USER: ${{ secrets.VDS_USER }}
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/active-kiz-repair-evidence"
+          mkdir -p "$evidence_dir"
+          for name in initial-audit plan result verification final-audit; do
+            scp -i ~/.ssh/taksklad_active_repair_key \
+              "$VDS_USER@$VDS_HOST:/tmp/taksklad-active-kiz-repair-$name.json" \
+              "$evidence_dir/$name.json" || true
+          done
+          test -f "$evidence_dir/initial-audit.json"
+          test -f "$evidence_dir/plan.json"
+
+      - name: Upload sanitized evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: taksklad-active-kiz-repair-evidence
+          path: ${{ runner.temp }}/active-kiz-repair-evidence
+          if-no-files-found: error
+          retention-days: 14
