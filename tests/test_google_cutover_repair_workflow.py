@@ -31,7 +31,7 @@ class GoogleCutoverRepairWorkflowTests(unittest.TestCase):
         self.assertIn("expected_plan_sha:", workflow)
         self.assertIn("GOOGLE_RETURN_REPAIR_EXPECTED_PLAN_SHA_REQUIRED", workflow)
         self.assertIn("GOOGLE_RETURN_REPAIR_EXPECTED_PLAN_SHA_MISMATCH", workflow)
-        self.assertIn("test \"$EXPECTED_MISSING_SCANS\" = 7", workflow)
+        self.assertIn("test \"$EXPECTED_MISSING_SCANS\" = 8", workflow)
         self.assertIn("test \"$EXPECTED_MISSING_RETURNS\" = 22", workflow)
         self.assertIn("tools/google_cutover_repair.py", workflow)
         self.assertIn("--expected-plan-sha", workflow)

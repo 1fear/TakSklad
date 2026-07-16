@@ -228,13 +228,16 @@ class GoogleCutoverRepairTests(unittest.TestCase):
         self.assertFalse(summary["safe_to_repair"])
         self.assertEqual(summary["scope_conflicts"], 1)
 
-    def test_missing_scan_without_trusted_time_uses_reconstructed_boundary(self):
+    def test_missing_scan_with_out_of_interval_owner_time_uses_reconstructed_boundary(self):
         code = "KIZ-BUSY-NO-TRUSTED-TIME"
         target = item(item_id="target-item")
         target.order = order("target-order")
         owner_scan = scan("owner-scan", code)
         owner = item(item_id="owner-item", scans=[owner_scan], scanned_blocks=1)
-        owner.order = order("owner-order", returned_at="")
+        owner.order = order(
+            "owner-order",
+            returned_at="2026-07-10T10:00:00+05:00",
+        )
         owner.raw_payload = {}
         owner.source_import_id = ""
         owner_outbound = movement(

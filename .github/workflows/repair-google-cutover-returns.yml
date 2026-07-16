@@ -46,7 +46,7 @@ jobs:
           set -euo pipefail
           [[ "$EXPECTED_MISSING_SCANS" =~ ^[0-9]+$ ]]
           [[ "$EXPECTED_MISSING_RETURNS" =~ ^[0-9]+$ ]]
-          test "$EXPECTED_MISSING_SCANS" = 7
+          test "$EXPECTED_MISSING_SCANS" = 8
           test "$EXPECTED_MISSING_RETURNS" = 22
           test "$REPAIR_APPROVAL" = GOOGLE_CUTOVER_RETURN_REPAIR_APPROVED
           if test -n "$EXPECTED_PLAN_SHA"; then
@@ -316,13 +316,13 @@ jobs:
               raise SystemExit("GOOGLE_RETURN_REPAIR_MISSING_SCAN_COUNT_CHANGED")
           if payload.get("missing_return_occurrences") != int(sys.argv[3]):
               raise SystemExit("GOOGLE_RETURN_REPAIR_MISSING_RETURN_COUNT_CHANGED")
-          if payload.get("legacy_target_occurrences") != 29:
+          if payload.get("legacy_target_occurrences") != 30:
               raise SystemExit("GOOGLE_RETURN_REPAIR_TARGET_COUNT_CHANGED")
-          if payload.get("legacy_target_unique_codes") != 29:
+          if payload.get("legacy_target_unique_codes") != 30:
               raise SystemExit("GOOGLE_RETURN_REPAIR_UNIQUE_CODE_COUNT_CHANGED")
-          if payload.get("prerequisite_return_inserts") != 7:
+          if payload.get("prerequisite_return_inserts") != 8:
               raise SystemExit("GOOGLE_RETURN_REPAIR_PREREQUISITE_COUNT_CHANGED")
-          if payload.get("reconstructed_prerequisite_occurrences") != 7:
+          if payload.get("reconstructed_prerequisite_occurrences") != 8:
               raise SystemExit("GOOGLE_RETURN_REPAIR_RECONSTRUCTED_PREREQUISITE_COUNT_CHANGED")
           if payload.get("reconstructed_chronology_occurrences") != 5:
               raise SystemExit("GOOGLE_RETURN_REPAIR_CHRONOLOGY_COUNT_CHANGED")
