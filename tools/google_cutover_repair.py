@@ -351,6 +351,59 @@ def load_records_and_items(db):
     return match_records_to_items(db, records)
 
 
+def select_legacy_repair_targets(db, records, movements_by_code):
+    worker = backend_module("google_sheets_sync_worker")
+    item_index = worker.load_item_index(db, records)
+    targets = []
+    missing_scans = 0
+    missing_returns = 0
+    codes = []
+    for record in records:
+        if not is_returned_record(record):
+            continue
+        item = worker.find_item_for_record(record, item_index)
+        if item is None:
+            continue
+        item_scans = {
+            normalize(scan.code): scan
+            for scan in (item.scan_codes or [])
+            if normalize(scan.code)
+        }
+        for code in dict.fromkeys(
+            normalize(value)
+            for value in (record.get("scanned_codes") or [])
+            if normalize(value)
+        ):
+            scan = item_scans.get(code)
+            if scan is None:
+                missing_scans += 1
+            else:
+                returns = movements_for_scan(
+                    list(movements_by_code.get(code) or []),
+                    scan,
+                    {"return"},
+                )
+                if returns:
+                    continue
+                missing_returns += 1
+            targets.append(({**record, "scanned_codes": [code]}, item))
+            codes.append(code)
+    unique_codes = len(set(codes))
+    scope_conflicts = int(
+        missing_scans != 7
+        or missing_returns != 22
+        or len(targets) != 29
+        or unique_codes != 29
+    )
+    return targets, {
+        "legacy_missing_scan_occurrences": missing_scans,
+        "legacy_missing_return_occurrences": missing_returns,
+        "legacy_target_occurrences": len(targets),
+        "legacy_target_unique_codes": unique_codes,
+        "scope_conflicts": scope_conflicts,
+    }
+
+
 def load_runtime_state(db, records_and_items, identity_contexts=None, all_items=None):
     from sqlalchemy import select
 
@@ -417,6 +470,14 @@ def load_runtime_state(db, records_and_items, identity_contexts=None, all_items=
 
 def movement_time(movement):
     return aware_utc(movement.occurred_at)
+
+
+def stored_timestamp_matches(stored, expected):
+    if stored is None:
+        return False
+    if getattr(stored, "tzinfo", None) is None:
+        return stored == expected.replace(tzinfo=None)
+    return aware_utc(stored) == expected
 
 
 def movement_for_scan(movements, scan, movement_types):
@@ -570,7 +631,7 @@ def enrich_identity_lifecycle_diagnostics(identity_diagnostics, contexts, moveme
 
 
 def candidate_payload(candidate):
-    return {
+    payload = {
         "code": candidate["code"],
         "order_id": str(candidate["item"].order.id),
         "item_id": str(candidate["item"].id),
@@ -605,6 +666,24 @@ def candidate_payload(candidate):
         "source_sheet": normalize(candidate["record"].get("source_sheet")),
         "row_number": int(candidate["record"].get("row_number") or 0),
     }
+    prerequisite = candidate.get("prerequisite_return")
+    if prerequisite is not None:
+        payload.update({
+            "prerequisite_order_id": str(prerequisite["item"].order.id),
+            "prerequisite_item_id": str(prerequisite["item"].id),
+            "prerequisite_scan_id": str(prerequisite["scan"].id),
+            "prerequisite_outbound_id": str(prerequisite["outbound"].id),
+            "prerequisite_return_id": str(deterministic_uuid(
+                "movement",
+                prerequisite["scan"].id,
+                "return",
+            )),
+            "prerequisite_return_at": prerequisite["return_at"].isoformat(),
+            "prerequisite_timestamp_provenance": prerequisite[
+                "timestamp_provenance"
+            ],
+        })
+    return payload
 
 
 def equivalent_candidate_payload(candidate):
@@ -620,7 +699,16 @@ def plan_hash(candidates):
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def classify_target(item, record, code, scans_by_code, movements_by_code):
+def classify_target(
+    item,
+    record,
+    code,
+    scans_by_code,
+    movements_by_code,
+    *,
+    relevant_items=None,
+    audit_return_times=None,
+):
     scan_quantities = backend_module("scan_quantities")
     scan_metadata_for_code = scan_quantities.scan_metadata_for_code
     scanned_blocks_for_scans = scan_quantities.scanned_blocks_for_scans
@@ -689,17 +777,29 @@ def classify_target(item, record, code, scans_by_code, movements_by_code):
         if later and candidate_return_at >= movement_time(later[0]):
             next_movement = later[0]
             next_type = normalize(next_movement.movement_type)
-            if movement_matches_item(next_movement, item):
-                error = "target_return_crosses_later_same_item_movement"
-            elif next_type == "re_outbound":
-                error = "target_return_crosses_later_re_outbound_other_item"
-            elif next_type == "outbound":
-                error = "target_return_crosses_later_outbound_other_item"
-            elif next_type in AVAILABLE_MOVEMENTS:
-                error = "target_return_crosses_later_available_movement"
+            next_at = movement_time(next_movement)
+            reconstructed_at = next_at - timedelta(microseconds=1)
+            if (
+                not movement_matches_item(next_movement, item)
+                and next_type in AVAILABLE_MOVEMENTS
+                and reconstructed_at > outbound_at
+            ):
+                candidate_return_at = reconstructed_at
+                timestamp_provenance = "reconstructed_before_available_movement"
+                adjusted = True
+                later = []
             else:
-                error = "target_return_crosses_later_other_movement"
-            return None, error
+                if movement_matches_item(next_movement, item):
+                    error = "target_return_crosses_later_same_item_movement"
+                elif next_type == "re_outbound":
+                    error = "target_return_crosses_later_re_outbound_other_item"
+                elif next_type == "outbound":
+                    error = "target_return_crosses_later_outbound_other_item"
+                elif next_type in AVAILABLE_MOVEMENTS:
+                    error = "target_return_crosses_later_available_movement"
+                else:
+                    error = "target_return_crosses_later_other_movement"
+                return None, error
         return {
             "kind": "missing_return",
             "code": code,
@@ -724,7 +824,55 @@ def classify_target(item, record, code, scans_by_code, movements_by_code):
     after = [movement for movement in movements if movement_time(movement) >= return_at]
     previous = before[-1] if before else None
     if previous is not None and normalize(previous.movement_type) not in AVAILABLE_MOVEMENTS:
-        return None, "busy_before_missing_scan"
+        owner = (relevant_items or {}).get(str(previous.order_item_id or ""))
+        owner_scan = None
+        if owner is not None:
+            owner_scan = next((
+                scan for scan in (owner.scan_codes or [])
+                if normalize(scan.code) == code
+                and str(scan.id) == str(previous.scan_code_id or "")
+            ), None)
+        owner_returns = (
+            movements_for_scan(movements, owner_scan, {"return"})
+            if owner_scan is not None else []
+        )
+        owner_outbounds = (
+            movements_for_scan(movements, owner_scan, OUTBOUND_MOVEMENTS)
+            if owner_scan is not None else []
+        )
+        owner_returned_at, owner_return_provenance = (
+            parse_returned_at(owner.order, {})
+            if owner is not None else (None, "")
+        )
+        if owner is not None and owner_returned_at is None:
+            audit_times = sorted(set(
+                (audit_return_times or {}).get(str(owner.order.id), [])
+            ))
+            if len(audit_times) == 1:
+                owner_returned_at = audit_times[0]
+                owner_return_provenance = "owner_audit_log"
+        prerequisite_at = owner_returned_at
+        if (
+            owner is None
+            or owner_scan is None
+            or not order_is_returned(owner.order)
+            or len(owner_outbounds) != 1
+            or owner_outbounds[0].id != previous.id
+            or owner_returns
+            or prerequisite_at is None
+            or prerequisite_at <= movement_time(previous)
+            or prerequisite_at >= return_at - timedelta(microseconds=1)
+        ):
+            return None, "busy_before_missing_scan"
+        prerequisite_return = {
+            "item": owner,
+            "scan": owner_scan,
+            "outbound": previous,
+            "return_at": prerequisite_at,
+            "timestamp_provenance": owner_return_provenance,
+        }
+    else:
+        prerequisite_return = None
     for scan in scans_by_code.get(code) or []:
         outbound = movement_for_scan(movements, scan, OUTBOUND_MOVEMENTS)
         if outbound is None:
@@ -735,7 +883,15 @@ def classify_target(item, record, code, scans_by_code, movements_by_code):
     scan_at = return_at - timedelta(microseconds=1)
     if previous is not None and movement_time(previous) >= scan_at:
         return None, "missing_scan_return_boundary_conflict"
-    outbound_type = "re_outbound" if previous is not None and normalize(previous.movement_type) == "return" else "outbound"
+    outbound_type = (
+        "re_outbound"
+        if previous is not None
+        and (
+            normalize(previous.movement_type) == "return"
+            or prerequisite_return is not None
+        )
+        else "outbound"
+    )
     metadata = scan_metadata_for_code(code)
     synthetic_scan = SimpleNamespace(code=code, raw_payload=metadata)
     computed_blocks = scanned_blocks_for_scans([*(item.scan_codes or []), synthetic_scan])
@@ -755,6 +911,7 @@ def classify_target(item, record, code, scans_by_code, movements_by_code):
         "timestamp_provenance": timestamp_provenance,
         "timestamp_adjusted": False,
         "new_scanned_blocks": new_scanned_blocks,
+        "prerequisite_return": prerequisite_return,
     }, ""
 
 
@@ -878,8 +1035,10 @@ def build_repair_plan(
     identity_diagnostics=None,
     audit_return_times=None,
     relevant_items=None,
+    scope_diagnostics=None,
 ):
     identity_diagnostics = dict(identity_diagnostics or {})
+    scope_diagnostics = dict(scope_diagnostics or {})
     counts = {
         "returned_code_occurrences": 0,
         "already_repaired_occurrences": 0,
@@ -897,6 +1056,21 @@ def build_repair_plan(
         "code_owner_conflict_only_current_item_has_scan_occurrences": 0,
         "code_owner_conflict_neither_item_has_scan_occurrences": 0,
         "divergent_duplicate_targets": 0,
+        "legacy_missing_scan_occurrences": int(
+            scope_diagnostics.get("legacy_missing_scan_occurrences") or 0
+        ),
+        "legacy_missing_return_occurrences": int(
+            scope_diagnostics.get("legacy_missing_return_occurrences") or 0
+        ),
+        "legacy_target_occurrences": int(
+            scope_diagnostics.get("legacy_target_occurrences") or 0
+        ),
+        "legacy_target_unique_codes": int(
+            scope_diagnostics.get("legacy_target_unique_codes") or 0
+        ),
+        "scope_conflicts": int(scope_diagnostics.get("scope_conflicts") or 0),
+        "prerequisite_return_inserts": 0,
+        "reconstructed_chronology_occurrences": 0,
         **{field: int(identity_diagnostics.get(field) or 0) for field in IDENTITY_DIAGNOSTIC_FIELDS},
         **{f"{error}_occurrences": 0 for error in sorted(AMBIGUOUS_ERRORS | OTHER_ERRORS)},
         **{field: 0 for field in TARGET_DIAGNOSTIC_FIELDS},
@@ -951,7 +1125,15 @@ def build_repair_plan(
                 counts[lifecycle_field] += 1
                 continue
             target_key = (str(item.id), code)
-            candidate, error = classify_target(item, record, code, scans_by_code, movements_by_code)
+            candidate, error = classify_target(
+                item,
+                record,
+                code,
+                scans_by_code,
+                movements_by_code,
+                relevant_items=relevant_items,
+                audit_return_times=audit_return_times,
+            )
             if candidate is not None and candidate.get("kind") == "already_repaired":
                 counts["already_repaired_occurrences"] += 1
                 counts["preexisting_anomaly_occurrences"] += int(
@@ -987,6 +1169,13 @@ def build_repair_plan(
                 continue
             field = f"{candidate['kind']}_occurrences"
             counts[field] += 1
+            counts["prerequisite_return_inserts"] += int(
+                candidate.get("prerequisite_return") is not None
+            )
+            counts["reconstructed_chronology_occurrences"] += int(
+                candidate.get("timestamp_provenance")
+                == "reconstructed_before_available_movement"
+            )
             if target_key in candidates_by_target:
                 counts["duplicate_occurrences"] += 1
                 if (
@@ -1001,6 +1190,7 @@ def build_repair_plan(
     candidates = list(candidates_by_target.values())
     conflicts = (
         counts["identity_conflicts"]
+        + counts["scope_conflicts"]
         + counts["unparseable_returned_at"]
         + counts["ambiguous_chronology"]
         + counts["other_conflicts"]
@@ -1015,7 +1205,11 @@ def build_repair_plan(
         "missing_return_targets": missing_return_targets,
         "scan_inserts": missing_scan_targets,
         "outbound_inserts": missing_scan_targets,
-        "return_inserts": missing_scan_targets + missing_return_targets,
+        "return_inserts": (
+            missing_scan_targets
+            + missing_return_targets
+            + counts["prerequisite_return_inserts"]
+        ),
         "conflicts": conflicts,
     }
     summary["mutations_expected"] = summary["scan_inserts"] + summary["outbound_inserts"] + summary["return_inserts"]
@@ -1048,6 +1242,42 @@ def apply_candidates(db, candidates, summary):
         code = candidate["code"]
         item = candidate["item"]
         scan = candidate["scan"]
+
+        kiz = db.execute(select(KizCode).where(KizCode.code == code)).scalar_one_or_none()
+        if kiz is None:
+            kiz = KizCode(id=deterministic_uuid("kiz", code), code=code)
+            db.add(kiz)
+            db.flush()
+
+        prerequisite = candidate.get("prerequisite_return")
+        if prerequisite is not None:
+            prerequisite_scan = prerequisite["scan"]
+            prerequisite_return_id = deterministic_uuid(
+                "movement",
+                prerequisite_scan.id,
+                "return",
+            )
+            if db.get(KizMovement, prerequisite_return_id) is None:
+                prerequisite_item = prerequisite["item"]
+                db.add(KizMovement(
+                    id=prerequisite_return_id,
+                    kiz_id=kiz.id,
+                    movement_type="return",
+                    order_id=prerequisite_item.order.id,
+                    order_item_id=prerequisite_item.id,
+                    scan_code_id=prerequisite_scan.id,
+                    source="google_sheets_return_repair",
+                    actor="phase27_deploy",
+                    occurred_at=prerequisite["return_at"],
+                    raw_payload={
+                        "cutover_repair": "historical_google_return_v1",
+                        "timestamp_provenance": (
+                            prerequisite["timestamp_provenance"]
+                        ),
+                    },
+                ))
+                return_inserts += 1
+
         if scan is None:
             scan_id = deterministic_uuid("scan", item.id, code)
             scan = db.get(ScanCode, scan_id)
@@ -1068,12 +1298,6 @@ def apply_candidates(db, candidates, summary):
                 item.scanned_blocks = candidate["new_scanned_blocks"]
                 db.flush()
                 scan_inserts += 1
-
-        kiz = db.execute(select(KizCode).where(KizCode.code == code)).scalar_one_or_none()
-        if kiz is None:
-            kiz = KizCode(id=deterministic_uuid("kiz", code), code=code)
-            db.add(kiz)
-            db.flush()
 
         if candidate["kind"] == "missing_scan":
             outbound_id = deterministic_uuid("movement", scan.id, candidate["outbound_type"])
@@ -1133,6 +1357,28 @@ def apply_candidates(db, candidates, summary):
     db.flush()
     for candidate in candidates:
         item = candidate["item"]
+        prerequisite = candidate.get("prerequisite_return")
+        if prerequisite is not None:
+            prerequisite_item = prerequisite["item"]
+            prerequisite_scan = prerequisite["scan"]
+            prerequisite_return = db.get(
+                KizMovement,
+                deterministic_uuid("movement", prerequisite_scan.id, "return"),
+            )
+            expected_prerequisite_at = prerequisite["return_at"]
+            if (
+                prerequisite_return is None
+                or normalize(prerequisite_return.movement_type) != "return"
+                or str(prerequisite_return.order_id) != str(prerequisite_item.order.id)
+                or str(prerequisite_return.order_item_id) != str(prerequisite_item.id)
+                or str(prerequisite_return.scan_code_id) != str(prerequisite_scan.id)
+                or not stored_timestamp_matches(
+                    prerequisite_return.occurred_at,
+                    expected_prerequisite_at,
+                )
+                or prerequisite["return_at"] >= candidate["scan_at"]
+            ):
+                raise RuntimeError("repair prerequisite return invariant failed")
         scan_id = (
             candidate["scan"].id
             if candidate.get("scan") is not None
@@ -1156,6 +1402,10 @@ def apply_candidates(db, candidates, summary):
                 or str(outbound.order_id) != str(item.order.id)
                 or str(outbound.order_item_id) != str(item.id)
                 or str(outbound.scan_code_id) != str(scan_id)
+                or not stored_timestamp_matches(
+                    outbound.occurred_at,
+                    candidate["scan_at"],
+                )
             ):
                 raise RuntimeError("repair outbound invariant failed")
         returned = db.get(KizMovement, deterministic_uuid("movement", scan_id, "return"))
@@ -1165,6 +1415,11 @@ def apply_candidates(db, candidates, summary):
             or str(returned.order_id) != str(item.order.id)
             or str(returned.order_item_id) != str(item.id)
             or str(returned.scan_code_id) != str(scan_id)
+            or not stored_timestamp_matches(
+                returned.occurred_at,
+                candidate["return_at"],
+            )
+            or candidate["return_at"] <= candidate["scan_at"]
         ):
             raise RuntimeError("repair return invariant failed")
 
@@ -1180,6 +1435,15 @@ def apply_candidates(db, candidates, summary):
                 "scan_inserts": scan_inserts,
                 "outbound_inserts": outbound_inserts,
                 "return_inserts": return_inserts,
+                "prerequisite_return_inserts": int(
+                    summary.get("prerequisite_return_inserts") or 0
+                ),
+                "legacy_target_unique_codes": int(
+                    summary.get("legacy_target_unique_codes") or 0
+                ),
+                "reconstructed_chronology_occurrences": int(
+                    summary.get("reconstructed_chronology_occurrences") or 0
+                ),
                 "values_redacted": True,
             },
         ))
@@ -1227,22 +1491,21 @@ def create_plan(db):
         identity_contexts,
         all_items,
     )
-    enrich_identity_lifecycle_diagnostics(
-        identity_diagnostics,
-        identity_contexts,
+    records = [record for record, _item in records_and_items]
+    repair_targets, scope_diagnostics = select_legacy_repair_targets(
+        db,
+        records,
         movements_by_code,
     )
     return build_repair_plan(
-        records_and_items,
+        repair_targets,
         scans_by_code,
         movements_by_code,
-        identity_conflicts=sum(
-            identity_diagnostics[field]
-            for field in BLOCKING_IDENTITY_DIAGNOSTIC_FIELDS
-        ),
-        identity_diagnostics=identity_diagnostics,
+        identity_conflicts=0,
+        identity_diagnostics={},
         audit_return_times=audit_return_times,
         relevant_items=relevant_items,
+        scope_diagnostics=scope_diagnostics,
     )
 
 
@@ -1274,7 +1537,18 @@ def run(argv=None):
             return 4
 
         lock_kiz_codes_for_transaction(db, [candidate["code"] for candidate in candidates])
-        item_ids = sorted({candidate["item"].id for candidate in candidates}, key=str)
+        item_ids = sorted({
+            item_id
+            for candidate in candidates
+            for item_id in (
+                candidate["item"].id,
+                (
+                    candidate["prerequisite_return"]["item"].id
+                    if candidate.get("prerequisite_return") is not None
+                    else candidate["item"].id
+                ),
+            )
+        }, key=str)
         if item_ids:
             db.execute(select(OrderItem.id).where(OrderItem.id.in_(item_ids)).with_for_update()).all()
         locked_summary, locked_candidates = create_plan(db)

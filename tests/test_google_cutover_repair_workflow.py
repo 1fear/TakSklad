@@ -28,6 +28,9 @@ class GoogleCutoverRepairWorkflowTests(unittest.TestCase):
         self.assertIn("environment: production", workflow)
         self.assertIn("concurrency:\n  group: taksklad-production", workflow)
         self.assertIn("GOOGLE_CUTOVER_RETURN_REPAIR_APPROVED", workflow)
+        self.assertIn("expected_plan_sha:", workflow)
+        self.assertIn("GOOGLE_RETURN_REPAIR_EXPECTED_PLAN_SHA_REQUIRED", workflow)
+        self.assertIn("GOOGLE_RETURN_REPAIR_EXPECTED_PLAN_SHA_MISMATCH", workflow)
         self.assertIn("test \"$EXPECTED_MISSING_SCANS\" = 7", workflow)
         self.assertIn("test \"$EXPECTED_MISSING_RETURNS\" = 22", workflow)
         self.assertIn("tools/google_cutover_repair.py", workflow)
@@ -79,6 +82,10 @@ class GoogleCutoverRepairWorkflowTests(unittest.TestCase):
         self.assertIn("GOOGLE_RETURN_REPAIR_PUBLIC_RUNTIME_OK", workflow)
         self.assertIn("taksklad-google-return-repair-evidence", workflow)
         self.assertLess(workflow.index("--plan"), workflow.index("docker stop -t 45"))
+        self.assertLess(
+            workflow.index("GOOGLE_RETURN_REPAIR_EXPECTED_PLAN_SHA_MISMATCH"),
+            workflow.index("docker stop -t 45"),
+        )
         self.assertLess(workflow.index("GOOGLE_RETURN_REPAIR_WRITER_DRAIN_OK"), workflow.index("backup_postgres.sh\" --no-prune"))
         self.assertLess(workflow.index("backup_postgres.sh\" --no-prune"), workflow.index("--apply"))
         self.assertLess(workflow.index("--apply"), workflow.index("GOOGLE_RETURN_REPAIR_FINAL_AUDIT_OK"))

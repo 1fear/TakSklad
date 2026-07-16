@@ -144,6 +144,116 @@ class GoogleCutoverRepairTests(unittest.TestCase):
         self.assertTrue(summary["safe_to_repair"])
         self.assertLess(candidates[0]["return_at"], later_re_outbound.occurred_at)
 
+    def test_historical_return_is_reconstructed_immediately_before_later_available(self):
+        code = "KIZ-AVAILABLE-BOUNDARY"
+        old_scan = scan("s-old", code)
+        backend_item = item(scans=[old_scan], scanned_blocks=1)
+        backend_item.order.raw_payload["returned_at"] = "2026-07-12T10:00:00+05:00"
+        outbound = movement(
+            "m-out", "outbound", scan_id=old_scan.id,
+            at=datetime(2026, 7, 9, 8, tzinfo=UTC),
+        )
+        later_available = movement(
+            "m-undo", "undo", scan_id="later-scan", item_id="later-item",
+            order_id="later-order", at=datetime(2026, 7, 11, 8, tzinfo=UTC),
+        )
+
+        summary, candidates = plan(
+            [(record(code), backend_item)],
+            {code: [old_scan]},
+            {code: [outbound, later_available]},
+        )
+
+        self.assertTrue(summary["safe_to_repair"])
+        self.assertEqual(summary["reconstructed_chronology_occurrences"], 1)
+        self.assertEqual(
+            candidates[0]["return_at"],
+            later_available.occurred_at - timedelta(microseconds=1),
+        )
+        self.assertEqual(
+            candidates[0]["timestamp_provenance"],
+            "reconstructed_before_available_movement",
+        )
+
+    def test_missing_scan_reconstructs_returned_previous_owner_lifecycle(self):
+        code = "KIZ-BUSY-PREVIOUS"
+        target = item(item_id="target-item")
+        target.order = order("target-order")
+        target.order_id = target.order.id
+        owner_scan = scan("owner-scan", code)
+        owner = item(item_id="owner-item", scans=[owner_scan], scanned_blocks=1)
+        owner.order = order(
+            "owner-order",
+            returned_at="2026-07-09T09:00:00+00:00",
+        )
+        owner.order_id = owner.order.id
+        owner_outbound = movement(
+            "owner-out", "outbound", scan_id=owner_scan.id,
+            item_id=owner.id, order_id=owner.order.id,
+            at=datetime(2026, 7, 9, 8, tzinfo=UTC),
+        )
+
+        summary, candidates = build_repair_plan(
+            [(record(code), target)],
+            {code: [owner_scan]},
+            {code: [owner_outbound]},
+            relevant_items={str(owner.id): owner, str(target.id): target},
+        )
+
+        self.assertTrue(summary["safe_to_repair"])
+        self.assertEqual(summary["prerequisite_return_inserts"], 1)
+        self.assertEqual(summary["return_inserts"], 2)
+        self.assertEqual(candidates[0]["outbound_type"], "re_outbound")
+        self.assertIs(candidates[0]["prerequisite_return"]["item"], owner)
+        self.assertLess(
+            candidates[0]["prerequisite_return"]["return_at"],
+            candidates[0]["scan_at"],
+        )
+
+    def test_legacy_scope_mismatch_blocks_before_write(self):
+        summary, candidates = build_repair_plan(
+            [],
+            {},
+            {},
+            scope_diagnostics={
+                "legacy_missing_scan_occurrences": 7,
+                "legacy_missing_return_occurrences": 22,
+                "legacy_target_occurrences": 29,
+                "legacy_target_unique_codes": 28,
+                "scope_conflicts": 1,
+            },
+        )
+
+        self.assertEqual(candidates, [])
+        self.assertFalse(summary["safe_to_repair"])
+        self.assertEqual(summary["scope_conflicts"], 1)
+
+    def test_missing_scan_without_trusted_previous_return_time_blocks(self):
+        code = "KIZ-BUSY-NO-TRUSTED-TIME"
+        target = item(item_id="target-item")
+        target.order = order("target-order")
+        owner_scan = scan("owner-scan", code)
+        owner = item(item_id="owner-item", scans=[owner_scan], scanned_blocks=1)
+        owner.order = order("owner-order", returned_at="")
+        owner.raw_payload = {}
+        owner.source_import_id = ""
+        owner_outbound = movement(
+            "owner-out", "outbound", scan_id=owner_scan.id,
+            item_id=owner.id, order_id=owner.order.id,
+            at=datetime(2026, 7, 9, 8, tzinfo=UTC),
+        )
+
+        summary, candidates = build_repair_plan(
+            [(record(code), target)],
+            {code: [owner_scan]},
+            {code: [owner_outbound]},
+            relevant_items={str(owner.id): owner},
+        )
+
+        self.assertEqual(candidates, [])
+        self.assertFalse(summary["safe_to_repair"])
+        self.assertEqual(summary["busy_before_missing_scan_occurrences"], 1)
+
     def test_return_that_would_cross_later_outbound_is_blocked(self):
         code = "KIZ-3"
         old_scan = scan("s-old", code)
@@ -674,6 +784,83 @@ class GoogleCutoverRepairTests(unittest.TestCase):
             self.assertEqual(len(db.execute(select(ScanCode)).scalars().all()), 1)
             self.assertEqual(len(db.execute(select(KizMovement)).scalars().all()), 2)
             self.assertEqual(len(db.execute(select(AuditLog)).scalars().all()), 1)
+
+    def test_apply_inserts_prerequisite_return_before_re_outbound(self):
+        from backend.app.models import (
+            Base,
+            KizCode,
+            KizMovement,
+            Order,
+            OrderItem,
+            ScanCode,
+        )
+
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        with Session(engine) as db:
+            owner_order = Order(
+                id=uuid.uuid4(), payment_type="terminal", client="synthetic-owner",
+                address="synthetic", status="returned", raw_payload={"return_status": "returned"},
+            )
+            target_order = Order(
+                id=uuid.uuid4(), payment_type="terminal", client="synthetic-target",
+                address="synthetic", status="returned", raw_payload={"return_status": "returned"},
+            )
+            owner_item = OrderItem(
+                id=uuid.uuid4(), order=owner_order, product="synthetic",
+                quantity_pieces=10, quantity_blocks=1, scanned_blocks=1,
+                requires_kiz=True, status="completed", raw_payload={},
+            )
+            target_item = OrderItem(
+                id=uuid.uuid4(), order=target_order, product="synthetic",
+                quantity_pieces=10, quantity_blocks=1, scanned_blocks=0,
+                requires_kiz=True, status="completed", raw_payload={},
+            )
+            owner_scan = ScanCode(
+                id=uuid.uuid4(), order_item_id=owner_item.id, code="PREREQUISITE-KIZ",
+                source="test", scanned_at=datetime(2026, 7, 9, 7, tzinfo=UTC), raw_payload={},
+            )
+            kiz = KizCode(id=uuid.uuid4(), code="PREREQUISITE-KIZ")
+            owner_outbound = KizMovement(
+                id=uuid.uuid4(), kiz_id=kiz.id, movement_type="outbound",
+                order_id=owner_order.id, order_item_id=owner_item.id,
+                scan_code_id=owner_scan.id, source="test", actor="test",
+                occurred_at=datetime(2026, 7, 9, 8, tzinfo=UTC), raw_payload={},
+            )
+            db.add_all([owner_order, target_order, owner_item, target_item, owner_scan, kiz, owner_outbound])
+            db.flush()
+            prerequisite_at = datetime(2026, 7, 9, 8, tzinfo=UTC) + timedelta(microseconds=1)
+            scan_at = datetime(2026, 7, 10, 4, 59, 59, 999999, tzinfo=UTC)
+            return_at = datetime(2026, 7, 10, 5, tzinfo=UTC)
+            candidate = {
+                "kind": "missing_scan", "code": kiz.code, "record": {},
+                "item": target_item, "scan": None, "outbound_type": "re_outbound",
+                "scan_at": scan_at, "return_at": return_at,
+                "original_return_at": return_at, "timestamp_provenance": "backend_order",
+                "timestamp_adjusted": False, "new_scanned_blocks": 1,
+                "prerequisite_return": {
+                    "item": owner_item, "scan": owner_scan,
+                    "outbound": owner_outbound, "return_at": prerequisite_at,
+                    "timestamp_provenance": "backend_order",
+                },
+            }
+
+            result = apply_candidates(db, [candidate], {
+                "plan_sha256": "c" * 64,
+                "scan_inserts": 1,
+                "outbound_inserts": 1,
+                "return_inserts": 2,
+                "prerequisite_return_inserts": 1,
+            })
+
+            self.assertEqual(result["mutations_applied"], 4)
+            movements = db.execute(
+                select(KizMovement).order_by(KizMovement.occurred_at)
+            ).scalars().all()
+            self.assertEqual(
+                [row.movement_type for row in movements],
+                ["outbound", "return", "re_outbound", "return"],
+            )
 
     def test_commit_failure_rolls_back_every_repair_row(self):
         from backend.app.models import Base, KizMovement, Order, OrderItem, ScanCode
