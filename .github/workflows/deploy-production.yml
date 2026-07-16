@@ -314,6 +314,7 @@ jobs:
             tools/release_artifacts.py \
             tools/validate_daily_report_config.py \
             tools/validate_deploy_probe.py \
+            tools/verify_postgres_only_cutover.py \
             tools/write_maintenance_marker.py
 
       - name: Validate required secrets
@@ -396,12 +397,36 @@ jobs:
             --filter label=com.docker.compose.project=\$compose_project \
             --filter label=com.docker.compose.service=backend-api | head -n 1)"
           test -n "\$legacy_backend_id"
+          retired_google_ids="\$(docker ps -aq \
+            --filter label=com.docker.compose.project=\$compose_project \
+            --filter label=com.docker.compose.service=google-sheets-sync-worker)"
           set +e
-          docker exec -i "\$legacy_backend_id" python - \
-            < tools/google_cutover_audit.py \
-            > .release-state/google-cutover-audit.json
-          google_audit_status="\$?"
+          docker exec "\$legacy_backend_id" python -c \
+            "import importlib.util; raise SystemExit(0 if importlib.util.find_spec('app.google_sheets_sync_worker') else 3)"
+          legacy_google_module_status="\$?"
           set -e
+          if test "\$legacy_google_module_status" -eq 0; then
+            set +e
+            docker exec -i "\$legacy_backend_id" python - \
+              < tools/google_cutover_audit.py \
+              > .release-state/google-cutover-audit.json
+            google_audit_status="\$?"
+            set -e
+          elif test "\$legacy_google_module_status" -eq 3 && test -z "\$retired_google_ids"; then
+            current_version_json=.release-state/predeploy-current-version.json
+            docker exec "\$legacy_backend_id" python -c \
+              "import json; from urllib.request import urlopen; print(json.dumps(json.load(urlopen('http://127.0.0.1:8000/version', timeout=5)), sort_keys=True))" \
+              > "\$current_version_json"
+            python3 tools/verify_postgres_only_cutover.py \
+              --deployment-record /opt/stacks/taksklad/deployments/current-release.json \
+              --version-json "\$current_version_json" \
+              --output .release-state/google-cutover-audit.json
+            rm -f "\$current_version_json"
+            google_audit_status=0
+          else
+            echo "GOOGLE_TO_POSTGRES_CUTOVER_STATE_UNVERIFIED" >&2
+            exit 1
+          fi
           install -m 600 .release-state/google-cutover-audit.json /tmp/taksklad-google-cutover-audit.json
           python3 - .release-state/google-cutover-audit.json "\$google_audit_status" <<'PY'
           import json
@@ -412,6 +437,18 @@ jobs:
           status = int(sys.argv[2])
           if status != 0 or payload.get("safe_to_cutover") is not True or payload.get("blockers") != 0:
               raise SystemExit("GOOGLE_TO_POSTGRES_CUTOVER_AUDIT_BLOCKED")
+          if payload.get("mode") == "already_postgres_only":
+              allowed = {
+                  "schema_version", "mode", "safe_to_cutover", "blockers",
+                  "source_identity_verified", "legacy_module_absent", "retired_worker_absent",
+              }
+              if set(payload) != allowed or not all(
+                  payload.get(field) is True
+                  for field in ("source_identity_verified", "legacy_module_absent", "retired_worker_absent")
+              ):
+                  raise SystemExit("POSTGRES_ONLY_CUTOVER_IDENTITY_INVALID")
+              print("POSTGRES_ONLY_CUTOVER_REUSED identity_verified=1 values_redacted=1")
+              raise SystemExit(0)
           allowed = {
               "schema_version", "mode", "safe_to_cutover", "records_total", "active_records",
               "returned_records", "active_missing_backend", "returned_missing_backend",
