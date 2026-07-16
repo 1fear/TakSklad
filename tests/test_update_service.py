@@ -65,15 +65,17 @@ class UpdateServiceTests(unittest.TestCase):
         manifest.update(overrides)
         return manifest
 
-    def test_forced_release_manifest_is_current_or_one_patch_behind_app_versions(self):
+    def test_forced_release_manifest_is_current_or_two_patches_behind_app_versions(self):
         payload = json.loads((REPO_ROOT / "version.json").read_text(encoding="utf-8"))
 
-        self.assertEqual(APP_VERSION, "2.0.37")
+        self.assertEqual(APP_VERSION, "2.0.38")
         self.assertEqual(BACKEND_APP_VERSION, APP_VERSION)
         app_version = tuple(int(part) for part in APP_VERSION.split("."))
         published_version = tuple(int(part) for part in payload["latest_version"].split("."))
         self.assertEqual(published_version[:2], app_version[:2])
-        self.assertIn(app_version[2] - published_version[2], (0, 1))
+        # Server-only hotfix releases may advance without promoting the forced
+        # desktop channel. Keep that freeze bounded and never allow it ahead.
+        self.assertIn(app_version[2] - published_version[2], (0, 1, 2))
         self.assertEqual(payload["release_tag"], f"v{payload['latest_version']}")
         self.assertEqual(payload["min_supported_version"], payload["latest_version"])
         self.assertIs(payload["mandatory"], True)
