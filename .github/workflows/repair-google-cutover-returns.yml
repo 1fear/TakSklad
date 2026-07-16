@@ -176,6 +176,15 @@ jobs:
               "identity_multiple_signal_agreement_records",
               "identity_multiple_signal_conflict_records",
               "identity_multiple_legacy_first_matches_signal_records",
+              "identity_multiple_all_candidates_complete_records",
+              "identity_multiple_exactly_one_candidate_missing_return_records",
+              "identity_multiple_multiple_candidates_missing_return_records",
+              "identity_multiple_invalid_lifecycle_records",
+              "identity_multiple_source_ids_complete_row_complete_records",
+              "identity_multiple_source_ids_missing_row_complete_records",
+              "identity_multiple_source_ids_complete_row_missing_records",
+              "identity_multiple_source_ids_missing_row_missing_records",
+              "identity_multiple_source_row_lifecycle_invalid_records",
               "target_missing_movement_timestamp_occurrences",
               "target_return_crosses_later_movement_occurrences",
               "target_return_crosses_later_re_outbound_other_item_occurrences",
@@ -192,6 +201,24 @@ jobs:
               "code_owner_conflict_only_first_item_has_scan_occurrences",
               "code_owner_conflict_only_current_item_has_scan_occurrences",
               "code_owner_conflict_neither_item_has_scan_occurrences",
+              "code_owner_conflict_both_complete_occurrences",
+              "code_owner_conflict_first_complete_current_missing_return_occurrences",
+              "code_owner_conflict_first_missing_return_current_complete_occurrences",
+              "code_owner_conflict_both_missing_return_occurrences",
+              "code_owner_conflict_invalid_lifecycle_occurrences",
+              "busy_previous_outbound_occurrences", "busy_previous_re_outbound_occurrences",
+              "busy_previous_owner_order_returned_occurrences",
+              "busy_previous_owner_matches_both_source_ids_occurrences",
+              "busy_previous_owner_matches_google_row_occurrences",
+              "busy_previous_owner_product_quantity_match_occurrences",
+              "busy_previous_owner_scan_matches_movement_occurrences",
+              "cross_later_backend_timestamp_in_interval_occurrences",
+              "cross_later_google_timestamp_in_interval_occurrences",
+              "cross_later_unique_audit_timestamp_in_interval_occurrences",
+              "cross_later_no_trusted_timestamp_in_interval_occurrences",
+              "cross_later_one_unique_trusted_timestamp_in_interval_occurrences",
+              "cross_later_multiple_trusted_timestamps_in_interval_occurrences",
+              "cross_later_all_trusted_timestamps_agree_occurrences",
           }
           if set(payload) - allowed:
               raise SystemExit("GOOGLE_RETURN_REPAIR_PLAN_UNSAFE_FIELDS")
@@ -225,6 +252,10 @@ jobs:
               f"identity_multiple_signal_agreement={payload.get('identity_multiple_signal_agreement_records', -1)} "
               f"identity_multiple_signal_conflict={payload.get('identity_multiple_signal_conflict_records', -1)} "
               f"identity_multiple_legacy_first_matches_signal={payload.get('identity_multiple_legacy_first_matches_signal_records', -1)} "
+              f"identity_multiple_all_complete={payload.get('identity_multiple_all_candidates_complete_records', -1)} "
+              f"identity_multiple_one_missing_return={payload.get('identity_multiple_exactly_one_candidate_missing_return_records', -1)} "
+              f"identity_multiple_many_missing_return={payload.get('identity_multiple_multiple_candidates_missing_return_records', -1)} "
+              f"identity_multiple_invalid_lifecycle={payload.get('identity_multiple_invalid_lifecycle_records', -1)} "
               f"identity_order_not_returned={payload.get('identity_order_not_returned_records', -1)} "
               f"unparseable_returned_at={payload.get('unparseable_returned_at', -1)} "
               f"ambiguous_chronology={payload.get('ambiguous_chronology', -1)} "
@@ -243,6 +274,20 @@ jobs:
               f"code_owner_only_first_has_scan={payload.get('code_owner_conflict_only_first_item_has_scan_occurrences', -1)} "
               f"code_owner_only_current_has_scan={payload.get('code_owner_conflict_only_current_item_has_scan_occurrences', -1)} "
               f"code_owner_neither_has_scan={payload.get('code_owner_conflict_neither_item_has_scan_occurrences', -1)} "
+              f"code_owner_both_complete={payload.get('code_owner_conflict_both_complete_occurrences', -1)} "
+              f"code_owner_first_complete_current_missing={payload.get('code_owner_conflict_first_complete_current_missing_return_occurrences', -1)} "
+              f"code_owner_first_missing_current_complete={payload.get('code_owner_conflict_first_missing_return_current_complete_occurrences', -1)} "
+              f"code_owner_both_missing={payload.get('code_owner_conflict_both_missing_return_occurrences', -1)} "
+              f"code_owner_invalid_lifecycle={payload.get('code_owner_conflict_invalid_lifecycle_occurrences', -1)} "
+              f"busy_prev_outbound={payload.get('busy_previous_outbound_occurrences', -1)} "
+              f"busy_prev_re_outbound={payload.get('busy_previous_re_outbound_occurrences', -1)} "
+              f"busy_prev_owner_returned={payload.get('busy_previous_owner_order_returned_occurrences', -1)} "
+              f"busy_prev_owner_both_ids={payload.get('busy_previous_owner_matches_both_source_ids_occurrences', -1)} "
+              f"busy_prev_owner_row={payload.get('busy_previous_owner_matches_google_row_occurrences', -1)} "
+              f"cross_backend_in_interval={payload.get('cross_later_backend_timestamp_in_interval_occurrences', -1)} "
+              f"cross_google_in_interval={payload.get('cross_later_google_timestamp_in_interval_occurrences', -1)} "
+              f"cross_audit_in_interval={payload.get('cross_later_unique_audit_timestamp_in_interval_occurrences', -1)} "
+              f"cross_no_trusted_time={payload.get('cross_later_no_trusted_timestamp_in_interval_occurrences', -1)} "
               f"preexisting_anomalies={payload.get('preexisting_anomaly_occurrences', -1)} "
               f"conflicts={payload.get('conflicts', -1)} values_redacted=1"
           )

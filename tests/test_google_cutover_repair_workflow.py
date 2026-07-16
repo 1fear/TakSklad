@@ -1,11 +1,25 @@
+import ast
 import unittest
 from pathlib import Path
+
+from tools.google_cutover_repair import build_repair_plan
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class GoogleCutoverRepairWorkflowTests(unittest.TestCase):
+    def test_plan_evidence_allowlist_exactly_matches_counts_only_summary(self):
+        workflow = (ROOT / ".github/workflows/repair-google-cutover-returns.yml").read_text(
+            encoding="utf-8"
+        )
+        start = workflow.index("          allowed = {")
+        end = workflow.index("          }", start) + len("          }")
+        allowed = ast.literal_eval(workflow[start:end].split("=", 1)[1].strip())
+        summary, _candidates = build_repair_plan([], {}, {})
+
+        self.assertEqual(set(summary), allowed)
+
     def test_repair_workflow_is_exact_scope_backup_first_and_fail_closed(self):
         workflow = (ROOT / ".github/workflows/repair-google-cutover-returns.yml").read_text(
             encoding="utf-8"

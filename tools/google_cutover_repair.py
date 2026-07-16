@@ -48,6 +48,15 @@ IDENTITY_INFO_FIELDS = (
     "identity_multiple_signal_agreement_records",
     "identity_multiple_signal_conflict_records",
     "identity_multiple_legacy_first_matches_signal_records",
+    "identity_multiple_all_candidates_complete_records",
+    "identity_multiple_exactly_one_candidate_missing_return_records",
+    "identity_multiple_multiple_candidates_missing_return_records",
+    "identity_multiple_invalid_lifecycle_records",
+    "identity_multiple_source_ids_complete_row_complete_records",
+    "identity_multiple_source_ids_missing_row_complete_records",
+    "identity_multiple_source_ids_complete_row_missing_records",
+    "identity_multiple_source_ids_missing_row_missing_records",
+    "identity_multiple_source_row_lifecycle_invalid_records",
 )
 IDENTITY_DIAGNOSTIC_FIELDS = (
     *BLOCKING_IDENTITY_DIAGNOSTIC_FIELDS,
@@ -73,6 +82,29 @@ OTHER_ERRORS = {
     "return_reference_too_long",
     "returned_by_too_long",
 }
+TARGET_DIAGNOSTIC_FIELDS = (
+    "busy_previous_outbound_occurrences",
+    "busy_previous_re_outbound_occurrences",
+    "busy_previous_owner_order_returned_occurrences",
+    "busy_previous_owner_matches_both_source_ids_occurrences",
+    "busy_previous_owner_matches_google_row_occurrences",
+    "busy_previous_owner_product_quantity_match_occurrences",
+    "busy_previous_owner_scan_matches_movement_occurrences",
+    "cross_later_backend_timestamp_in_interval_occurrences",
+    "cross_later_google_timestamp_in_interval_occurrences",
+    "cross_later_unique_audit_timestamp_in_interval_occurrences",
+    "cross_later_no_trusted_timestamp_in_interval_occurrences",
+    "cross_later_one_unique_trusted_timestamp_in_interval_occurrences",
+    "cross_later_multiple_trusted_timestamps_in_interval_occurrences",
+    "cross_later_all_trusted_timestamps_agree_occurrences",
+)
+CODE_LIFECYCLE_DIAGNOSTIC_FIELDS = (
+    "code_owner_conflict_both_complete_occurrences",
+    "code_owner_conflict_first_complete_current_missing_return_occurrences",
+    "code_owner_conflict_first_missing_return_current_complete_occurrences",
+    "code_owner_conflict_both_missing_return_occurrences",
+    "code_owner_conflict_invalid_lifecycle_occurrences",
+)
 
 
 def backend_module(name):
@@ -100,28 +132,34 @@ def aware_utc(value):
     return value.astimezone(timezone.utc)
 
 
+def parse_timestamp(raw_value):
+    tashkent = ZoneInfo("Asia/Tashkent")
+    text = normalize(raw_value)
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        parsed = None
+    if parsed is not None and parsed.tzinfo is not None:
+        return parsed.astimezone(timezone.utc)
+    for pattern in ("%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M"):
+        try:
+            return datetime.strptime(text, pattern).replace(tzinfo=tashkent).astimezone(timezone.utc)
+        except ValueError:
+            pass
+    return None
+
+
 def parse_returned_at(order, record):
     payload = order.raw_payload if isinstance(order.raw_payload, dict) else {}
-    values = (
+    for raw_value, provenance in (
         (payload.get("returned_at"), "backend_order"),
         (record.get("returned_at"), "google_sheet"),
-    )
-    tashkent = ZoneInfo("Asia/Tashkent")
-    for raw_value, provenance in values:
-        text = normalize(raw_value)
-        if not text:
-            continue
-        try:
-            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        except ValueError:
-            parsed = None
-        if parsed is not None and parsed.tzinfo is not None:
-            return parsed.astimezone(timezone.utc), provenance
-        for pattern in ("%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M"):
-            try:
-                return datetime.strptime(text, pattern).replace(tzinfo=tashkent).astimezone(timezone.utc), provenance
-            except ValueError:
-                pass
+    ):
+        parsed = parse_timestamp(raw_value)
+        if parsed is not None:
+            return parsed, provenance
     return None, ""
 
 
@@ -173,6 +211,7 @@ def match_records_to_items(db, records):
             by_order[source_order_id].append(item)
 
     matched = []
+    identity_contexts = []
     identity_diagnostics = {field: 0 for field in IDENTITY_DIAGNOSTIC_FIELDS}
     for record in records:
         source_import_id = normalize(record.get("source_import_id"))
@@ -206,6 +245,12 @@ def match_records_to_items(db, records):
                 field = "identity_multiple_records"
             identity_diagnostics[field] += 1
             if len(candidates) > 1:
+                identity_contexts.append({
+                    "record": record,
+                    "candidates": candidates,
+                    "import_candidates": import_candidates,
+                    "order_candidates": order_candidates,
+                })
                 if len(candidates) == 2:
                     identity_diagnostics["identity_multiple_pool_size_two_records"] += 1
                 else:
@@ -296,7 +341,9 @@ def match_records_to_items(db, records):
                 elif len(distinct_signal_owners) > 1:
                     identity_diagnostics["identity_multiple_signal_conflict_records"] += 1
         matched.append((record, item))
-    return matched, identity_diagnostics
+    return matched, identity_diagnostics, identity_contexts, {
+        str(item.id): item for item in items
+    }
 
 
 def load_records_and_items(db):
@@ -304,11 +351,16 @@ def load_records_and_items(db):
     return match_records_to_items(db, records)
 
 
-def load_runtime_state(db, records_and_items):
+def load_runtime_state(db, records_and_items, identity_contexts=None, all_items=None):
     from sqlalchemy import select
 
     models = backend_module("models")
-    KizCode, KizMovement, ScanCode = models.KizCode, models.KizMovement, models.ScanCode
+    AuditLog, KizCode, KizMovement, ScanCode = (
+        models.AuditLog,
+        models.KizCode,
+        models.KizMovement,
+        models.ScanCode,
+    )
 
     codes = sorted({
         normalize(code)
@@ -319,6 +371,7 @@ def load_runtime_state(db, records_and_items):
     })
     scans_by_code = defaultdict(list)
     movements_by_code = defaultdict(list)
+    audit_return_times = defaultdict(list)
     if codes:
         for scan in db.execute(
             select(ScanCode)
@@ -333,7 +386,33 @@ def load_runtime_state(db, records_and_items):
             .order_by(KizCode.code, KizMovement.occurred_at, KizMovement.id)
         ).all():
             movements_by_code[normalize(code)].append(movement)
-    return scans_by_code, movements_by_code
+    relevant_items = {
+        str(item.id): item
+        for _record, item in records_and_items
+        if item is not None
+    }
+    for context in identity_contexts or []:
+        for item in context["candidates"]:
+            relevant_items[str(item.id)] = item
+    order_ids = sorted({str(item.order.id) for item in relevant_items.values()})
+    if order_ids:
+        for audit in db.execute(
+            select(AuditLog)
+            .where(AuditLog.action == "order_returned")
+            .where(AuditLog.entity_type == "order")
+            .where(AuditLog.entity_id.in_(order_ids))
+            .order_by(AuditLog.created_at, AuditLog.id)
+        ).scalars():
+            payload = audit.payload if isinstance(audit.payload, dict) else {}
+            parsed = parse_timestamp(payload.get("returned_at"))
+            if parsed is not None:
+                audit_return_times[normalize(audit.entity_id)].append(parsed)
+    return (
+        scans_by_code,
+        movements_by_code,
+        audit_return_times,
+        dict(all_items or relevant_items),
+    )
 
 
 def movement_time(movement):
@@ -358,6 +437,136 @@ def movement_matches_item(movement, item):
         str(movement.order_id or "") == str(item.order.id)
         and str(movement.order_item_id or "") == str(item.id)
     )
+
+
+def item_code_lifecycle_state(item, code, movements_by_code):
+    scans = [
+        scan for scan in (item.scan_codes or [])
+        if normalize(scan.code) == code
+    ]
+    if len(scans) != 1:
+        return "invalid"
+    scan = scans[0]
+    movements = list(movements_by_code.get(code) or [])
+    outbounds = [
+        movement for movement in movements_for_scan(movements, scan, OUTBOUND_MOVEMENTS)
+        if movement_matches_item(movement, item)
+    ]
+    returns = [
+        movement for movement in movements_for_scan(movements, scan, {"return"})
+        if movement_matches_item(movement, item)
+    ]
+    if len(outbounds) != 1:
+        return "invalid"
+    outbound_at = movement_time(outbounds[0])
+    if outbound_at is None:
+        return "invalid"
+    if any(movement_time(movement) is None for movement in movements):
+        return "invalid"
+    if not returns:
+        if any(
+            movement.id != outbounds[0].id
+            and movement_time(movement) >= outbound_at
+            for movement in movements
+        ):
+            return "invalid"
+        return "missing_return"
+    if len(returns) != 1:
+        return "invalid"
+    return_at = movement_time(returns[0])
+    if return_at is None or return_at <= outbound_at:
+        return "invalid"
+    if any(
+        movement.id not in {outbounds[0].id, returns[0].id}
+        and outbound_at <= movement_time(movement) <= return_at
+        for movement in movements
+    ):
+        return "invalid"
+    return "complete"
+
+
+def aggregate_item_record_lifecycle(item, record, movements_by_code):
+    codes = list(dict.fromkeys(
+        normalize(value)
+        for value in (record.get("scanned_codes") or [])
+        if normalize(value)
+    ))
+    if not codes:
+        return "invalid"
+    states = [item_code_lifecycle_state(item, code, movements_by_code) for code in codes]
+    if all(state == "complete" for state in states):
+        return "complete"
+    if all(state == "missing_return" for state in states):
+        return "missing_return"
+    return "invalid"
+
+
+def unique_source_ids_candidate(context):
+    record = context["record"]
+    if not normalize(record.get("source_import_id")) or not normalize(record.get("source_order_id")):
+        return None
+    order_ids = {str(candidate.id) for candidate in context["order_candidates"]}
+    matches = [
+        candidate for candidate in context["import_candidates"]
+        if str(candidate.id) in order_ids
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def unique_google_row_candidate(context):
+    record = context["record"]
+    row_number = int(record.get("row_number") or 0)
+    source_sheet = normalize(record.get("source_sheet"))
+    if row_number <= 0 or not source_sheet:
+        return None
+    matches = []
+    for candidate in context["candidates"]:
+        payload = candidate.raw_payload if isinstance(candidate.raw_payload, dict) else {}
+        if (
+            int(payload.get("google_sheet_row_number") or 0) == row_number
+            and normalize(payload.get("google_sheet_source_sheet")) == source_sheet
+        ):
+            matches.append(candidate)
+    return matches[0] if len(matches) == 1 else None
+
+
+def enrich_identity_lifecycle_diagnostics(identity_diagnostics, contexts, movements_by_code):
+    for context in contexts:
+        record = context["record"]
+        states = {
+            str(candidate.id): aggregate_item_record_lifecycle(candidate, record, movements_by_code)
+            for candidate in context["candidates"]
+        }
+        values = list(states.values())
+        missing_count = sum(value == "missing_return" for value in values)
+        if values and all(value == "complete" for value in values):
+            identity_diagnostics["identity_multiple_all_candidates_complete_records"] += 1
+        elif missing_count == 1 and all(value in {"complete", "missing_return"} for value in values):
+            identity_diagnostics[
+                "identity_multiple_exactly_one_candidate_missing_return_records"
+            ] += 1
+        elif missing_count > 1 and all(value in {"complete", "missing_return"} for value in values):
+            identity_diagnostics["identity_multiple_multiple_candidates_missing_return_records"] += 1
+        else:
+            identity_diagnostics["identity_multiple_invalid_lifecycle_records"] += 1
+
+        source_candidate = unique_source_ids_candidate(context)
+        row_candidate = unique_google_row_candidate(context)
+        if source_candidate is None or row_candidate is None:
+            identity_diagnostics["identity_multiple_source_row_lifecycle_invalid_records"] += 1
+            continue
+        source_state = states.get(str(source_candidate.id), "invalid")
+        row_state = states.get(str(row_candidate.id), "invalid")
+        field = {
+            ("complete", "complete"): "identity_multiple_source_ids_complete_row_complete_records",
+            ("missing_return", "complete"): "identity_multiple_source_ids_missing_row_complete_records",
+            ("complete", "missing_return"): "identity_multiple_source_ids_complete_row_missing_records",
+            ("missing_return", "missing_return"): "identity_multiple_source_ids_missing_row_missing_records",
+        }.get((source_state, row_state))
+        if field:
+            identity_diagnostics[field] += 1
+        else:
+            identity_diagnostics["identity_multiple_source_row_lifecycle_invalid_records"] += 1
 
 
 def candidate_payload(candidate):
@@ -549,6 +758,117 @@ def classify_target(item, record, code, scans_by_code, movements_by_code):
     }, ""
 
 
+def target_error_diagnostics(
+    item,
+    record,
+    code,
+    error,
+    movements_by_code,
+    *,
+    audit_return_times=None,
+    relevant_items=None,
+):
+    diagnostics = {field: 0 for field in TARGET_DIAGNOSTIC_FIELDS}
+    movements = list(movements_by_code.get(code) or [])
+    return_at, _provenance = parse_returned_at(item.order, record)
+    if return_at is None:
+        return diagnostics
+
+    if error == "busy_before_missing_scan":
+        before = [movement for movement in movements if movement_time(movement) < return_at]
+        previous = before[-1] if before else None
+        if previous is None:
+            return diagnostics
+        previous_type = normalize(previous.movement_type)
+        if previous_type == "outbound":
+            diagnostics["busy_previous_outbound_occurrences"] = 1
+        elif previous_type == "re_outbound":
+            diagnostics["busy_previous_re_outbound_occurrences"] = 1
+        owner = (relevant_items or {}).get(str(previous.order_item_id or ""))
+        if owner is None:
+            return diagnostics
+        diagnostics["busy_previous_owner_order_returned_occurrences"] = int(
+            order_is_returned(owner.order)
+        )
+        owner_payload = owner.raw_payload if isinstance(owner.raw_payload, dict) else {}
+        owner_import = normalize(owner.source_import_id) or normalize(owner_payload.get("source_import_id"))
+        owner_order = normalize(owner_payload.get("source_order_id"))
+        diagnostics["busy_previous_owner_matches_both_source_ids_occurrences"] = int(
+            bool(normalize(record.get("source_import_id")))
+            and bool(normalize(record.get("source_order_id")))
+            and owner_import == normalize(record.get("source_import_id"))
+            and owner_order == normalize(record.get("source_order_id"))
+        )
+        diagnostics["busy_previous_owner_product_quantity_match_occurrences"] = int(
+            product_quantity_match(owner, record)
+        )
+        record_row = int(record.get("row_number") or 0)
+        record_sheet = normalize(record.get("source_sheet"))
+        diagnostics["busy_previous_owner_matches_google_row_occurrences"] = int(
+            record_row > 0
+            and bool(record_sheet)
+            and int(owner_payload.get("google_sheet_row_number") or 0) == record_row
+            and normalize(owner_payload.get("google_sheet_source_sheet")) == record_sheet
+        )
+        diagnostics["busy_previous_owner_scan_matches_movement_occurrences"] = int(any(
+            normalize(scan.code) == code and str(scan.id) == str(previous.scan_code_id or "")
+            for scan in (owner.scan_codes or [])
+        ))
+        return diagnostics
+
+    if not error.startswith("target_return_crosses_later_"):
+        return diagnostics
+    item_scans = [scan for scan in (item.scan_codes or []) if normalize(scan.code) == code]
+    if len(item_scans) != 1:
+        return diagnostics
+    outbound_movements = movements_for_scan(movements, item_scans[0], OUTBOUND_MOVEMENTS)
+    if len(outbound_movements) != 1:
+        return diagnostics
+    outbound = outbound_movements[0]
+    outbound_at = movement_time(outbound)
+    later = [
+        movement for movement in movements
+        if movement.id != outbound.id and movement_time(movement) >= outbound_at
+    ]
+    if not later:
+        return diagnostics
+    next_at = movement_time(later[0])
+    if outbound_at is None or next_at is None or next_at <= outbound_at:
+        return diagnostics
+
+    payload = item.order.raw_payload if isinstance(item.order.raw_payload, dict) else {}
+    backend_at = parse_timestamp(payload.get("returned_at"))
+    google_at = parse_timestamp(record.get("returned_at"))
+    audit_values = list((audit_return_times or {}).get(str(item.order.id), []))
+    backend_in = backend_at is not None and outbound_at < backend_at < next_at
+    google_in = google_at is not None and outbound_at < google_at < next_at
+    audit_in = sorted({value for value in audit_values if outbound_at < value < next_at})
+    diagnostics["cross_later_backend_timestamp_in_interval_occurrences"] = int(backend_in)
+    diagnostics["cross_later_google_timestamp_in_interval_occurrences"] = int(google_in)
+    diagnostics["cross_later_unique_audit_timestamp_in_interval_occurrences"] = int(
+        len(audit_in) == 1
+    )
+    trusted = [
+        *([backend_at] if backend_in else []),
+        *([google_at] if google_in else []),
+        *audit_in,
+    ]
+    unique_trusted = set(trusted)
+    diagnostics["cross_later_no_trusted_timestamp_in_interval_occurrences"] = int(
+        not trusted
+    )
+    diagnostics["cross_later_one_unique_trusted_timestamp_in_interval_occurrences"] = int(
+        len(unique_trusted) == 1
+    )
+    diagnostics["cross_later_multiple_trusted_timestamps_in_interval_occurrences"] = int(
+        len(unique_trusted) > 1
+    )
+    diagnostics["cross_later_all_trusted_timestamps_agree_occurrences"] = int(
+        len(trusted) >= 2 and len(unique_trusted) == 1
+    )
+    return diagnostics
+
+
 def build_repair_plan(
     records_and_items,
     scans_by_code,
@@ -556,6 +876,8 @@ def build_repair_plan(
     *,
     identity_conflicts=0,
     identity_diagnostics=None,
+    audit_return_times=None,
+    relevant_items=None,
 ):
     identity_diagnostics = dict(identity_diagnostics or {})
     counts = {
@@ -577,6 +899,8 @@ def build_repair_plan(
         "divergent_duplicate_targets": 0,
         **{field: int(identity_diagnostics.get(field) or 0) for field in IDENTITY_DIAGNOSTIC_FIELDS},
         **{f"{error}_occurrences": 0 for error in sorted(AMBIGUOUS_ERRORS | OTHER_ERRORS)},
+        **{field: 0 for field in TARGET_DIAGNOSTIC_FIELDS},
+        **{field: 0 for field in CODE_LIFECYCLE_DIAGNOSTIC_FIELDS},
     }
     candidates_by_target = {}
     code_owner = {}
@@ -597,8 +921,8 @@ def build_repair_plan(
             item_has_scan = any(
                 normalize(scan.code) == code for scan in (item.scan_codes or [])
             )
-            owner = code_owner.setdefault(code, (str(item.id), item_has_scan))
-            if owner[0] != str(item.id):
+            owner = code_owner.setdefault(code, (item, item_has_scan))
+            if str(owner[0].id) != str(item.id):
                 counts["other_conflicts"] += 1
                 counts["code_owner_conflicts"] += 1
                 if owner[1] and item_has_scan:
@@ -610,6 +934,21 @@ def build_repair_plan(
                 else:
                     field = "code_owner_conflict_neither_item_has_scan_occurrences"
                 counts[field] += 1
+                first_state = item_code_lifecycle_state(owner[0], code, movements_by_code)
+                current_state = item_code_lifecycle_state(item, code, movements_by_code)
+                lifecycle_field = {
+                    ("complete", "complete"): "code_owner_conflict_both_complete_occurrences",
+                    ("complete", "missing_return"): (
+                        "code_owner_conflict_first_complete_current_missing_return_occurrences"
+                    ),
+                    ("missing_return", "complete"): (
+                        "code_owner_conflict_first_missing_return_current_complete_occurrences"
+                    ),
+                    ("missing_return", "missing_return"): (
+                        "code_owner_conflict_both_missing_return_occurrences"
+                    ),
+                }.get((first_state, current_state), "code_owner_conflict_invalid_lifecycle_occurrences")
+                counts[lifecycle_field] += 1
                 continue
             target_key = (str(item.id), code)
             candidate, error = classify_target(item, record, code, scans_by_code, movements_by_code)
@@ -620,6 +959,17 @@ def build_repair_plan(
                 )
                 continue
             if error:
+                diagnostics = target_error_diagnostics(
+                    item,
+                    record,
+                    code,
+                    error,
+                    movements_by_code,
+                    audit_return_times=audit_return_times,
+                    relevant_items=relevant_items,
+                )
+                for field, value in diagnostics.items():
+                    counts[field] += int(value)
                 if error == "unparseable_returned_at":
                     counts["unparseable_returned_at"] += 1
                 elif error in AMBIGUOUS_ERRORS:
@@ -870,8 +1220,18 @@ def expected_counts_match(summary, args):
 
 
 def create_plan(db):
-    records_and_items, identity_diagnostics = load_records_and_items(db)
-    scans_by_code, movements_by_code = load_runtime_state(db, records_and_items)
+    records_and_items, identity_diagnostics, identity_contexts, all_items = load_records_and_items(db)
+    scans_by_code, movements_by_code, audit_return_times, relevant_items = load_runtime_state(
+        db,
+        records_and_items,
+        identity_contexts,
+        all_items,
+    )
+    enrich_identity_lifecycle_diagnostics(
+        identity_diagnostics,
+        identity_contexts,
+        movements_by_code,
+    )
     return build_repair_plan(
         records_and_items,
         scans_by_code,
@@ -881,6 +1241,8 @@ def create_plan(db):
             for field in BLOCKING_IDENTITY_DIAGNOSTIC_FIELDS
         ),
         identity_diagnostics=identity_diagnostics,
+        audit_return_times=audit_return_times,
+        relevant_items=relevant_items,
     )
 
 
