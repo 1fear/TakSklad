@@ -226,6 +226,11 @@ jobs:
               "busy_previous_owner_matches_google_row_occurrences",
               "busy_previous_owner_product_quantity_match_occurrences",
               "busy_previous_owner_scan_matches_movement_occurrences",
+              "busy_previous_owner_exactly_one_outbound_occurrences",
+              "busy_previous_owner_previous_is_latest_outbound_occurrences",
+              "busy_previous_owner_no_return_occurrences",
+              "busy_previous_owner_return_before_target_occurrences",
+              "busy_previous_owner_return_at_or_after_target_occurrences",
               "cross_later_backend_timestamp_in_interval_occurrences",
               "cross_later_google_timestamp_in_interval_occurrences",
               "cross_later_unique_audit_timestamp_in_interval_occurrences",
@@ -303,6 +308,11 @@ jobs:
               f"busy_prev_owner_returned={payload.get('busy_previous_owner_order_returned_occurrences', -1)} "
               f"busy_prev_owner_both_ids={payload.get('busy_previous_owner_matches_both_source_ids_occurrences', -1)} "
               f"busy_prev_owner_row={payload.get('busy_previous_owner_matches_google_row_occurrences', -1)} "
+              f"busy_prev_owner_one_outbound={payload.get('busy_previous_owner_exactly_one_outbound_occurrences', -1)} "
+              f"busy_prev_owner_latest_outbound={payload.get('busy_previous_owner_previous_is_latest_outbound_occurrences', -1)} "
+              f"busy_prev_owner_no_return={payload.get('busy_previous_owner_no_return_occurrences', -1)} "
+              f"busy_prev_owner_return_before_target={payload.get('busy_previous_owner_return_before_target_occurrences', -1)} "
+              f"busy_prev_owner_return_after_target={payload.get('busy_previous_owner_return_at_or_after_target_occurrences', -1)} "
               f"cross_backend_in_interval={payload.get('cross_later_backend_timestamp_in_interval_occurrences', -1)} "
               f"cross_google_in_interval={payload.get('cross_later_google_timestamp_in_interval_occurrences', -1)} "
               f"cross_audit_in_interval={payload.get('cross_later_unique_audit_timestamp_in_interval_occurrences', -1)} "

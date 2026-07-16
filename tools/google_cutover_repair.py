@@ -90,6 +90,11 @@ TARGET_DIAGNOSTIC_FIELDS = (
     "busy_previous_owner_matches_google_row_occurrences",
     "busy_previous_owner_product_quantity_match_occurrences",
     "busy_previous_owner_scan_matches_movement_occurrences",
+    "busy_previous_owner_exactly_one_outbound_occurrences",
+    "busy_previous_owner_previous_is_latest_outbound_occurrences",
+    "busy_previous_owner_no_return_occurrences",
+    "busy_previous_owner_return_before_target_occurrences",
+    "busy_previous_owner_return_at_or_after_target_occurrences",
     "cross_later_backend_timestamp_in_interval_occurrences",
     "cross_later_google_timestamp_in_interval_occurrences",
     "cross_later_unique_audit_timestamp_in_interval_occurrences",
@@ -979,6 +984,36 @@ def target_error_diagnostics(
             normalize(scan.code) == code and str(scan.id) == str(previous.scan_code_id or "")
             for scan in (owner.scan_codes or [])
         ))
+        owner_scan = next((
+            scan for scan in (owner.scan_codes or [])
+            if normalize(scan.code) == code
+            and str(scan.id) == str(previous.scan_code_id or "")
+        ), None)
+        if owner_scan is not None:
+            owner_outbounds = movements_for_scan(
+                movements,
+                owner_scan,
+                OUTBOUND_MOVEMENTS,
+            )
+            owner_returns = movements_for_scan(movements, owner_scan, {"return"})
+            diagnostics[
+                "busy_previous_owner_exactly_one_outbound_occurrences"
+            ] = int(len(owner_outbounds) == 1)
+            diagnostics[
+                "busy_previous_owner_previous_is_latest_outbound_occurrences"
+            ] = int(
+                bool(owner_outbounds)
+                and owner_outbounds[-1].id == previous.id
+            )
+            diagnostics["busy_previous_owner_no_return_occurrences"] = int(
+                not owner_returns
+            )
+            diagnostics[
+                "busy_previous_owner_return_before_target_occurrences"
+            ] = int(any(movement_time(value) < return_at for value in owner_returns))
+            diagnostics[
+                "busy_previous_owner_return_at_or_after_target_occurrences"
+            ] = int(any(movement_time(value) >= return_at for value in owner_returns))
         return diagnostics
 
     if not error.startswith("target_return_crosses_later_"):
