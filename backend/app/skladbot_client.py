@@ -6,6 +6,7 @@ import os
 import re
 import time
 from enum import Enum
+from collections.abc import Callable
 from typing import Protocol, runtime_checkable
 
 import httpx
@@ -98,6 +99,21 @@ def sanitize_skladbot_error(value):
     return text
 
 
+def notify_skladbot_progress(
+    callback: Callable[[str], None] | None,
+    phase: str,
+) -> None:
+    if callback is None:
+        return
+    try:
+        callback(str(phase or "progress")[:120])
+    except Exception as exc:
+        logging.warning(
+            "SkladBot heartbeat progress update failed error_class=%s",
+            exc.__class__.__name__,
+        )
+
+
 def skladbot_response_error_text(response):
     body = ""
     try:
@@ -151,7 +167,10 @@ def skladbot_response_error(response, *, write=False):
 
 
 class SkladBotClient:
-    def __init__(self):
+    MAX_TOTAL_RETRY_BACKOFF_SECONDS = 120.0
+
+    def __init__(self, progress_callback: Callable[[str], None] | None = None):
+        self.progress_callback = progress_callback
         self.tokens = parse_skladbot_api_tokens()
         self.token_index = 0
         self.token_cooldown_until = {}
@@ -165,6 +184,16 @@ class SkladBotClient:
         self.request_delay = max(0.0, env_float("SKLADBOT_REQUEST_DELAY_SECONDS", 0.25))
         self.max_retries = max(0, env_int("SKLADBOT_API_MAX_RETRIES", 2))
         self.max_cooldown_wait = max(0.0, env_float("SKLADBOT_MAX_COOLDOWN_WAIT_SECONDS", 5.0))
+        self.max_total_retry_backoff = min(
+            self.MAX_TOTAL_RETRY_BACKOFF_SECONDS,
+            max(
+                0.0,
+                env_float(
+                    "SKLADBOT_MAX_TOTAL_RETRY_BACKOFF_SECONDS",
+                    self.MAX_TOTAL_RETRY_BACKOFF_SECONDS,
+                ),
+            ),
+        )
         self.last_request_at = 0.0
 
     @property
@@ -230,9 +259,25 @@ class SkladBotClient:
 
     def retry_sleep(self, seconds):
         sleep_for = max(0.0, float(seconds or 0))
-        if sleep_for:
-            time.sleep(sleep_for)
+        while sleep_for > 0:
+            chunk = min(sleep_for, 5.0)
+            time.sleep(chunk)
+            sleep_for -= chunk
+            notify_skladbot_progress(self.progress_callback, "http_get_backoff_progress")
         self.last_request_at = 0.0
+
+    def bounded_retry_sleep(self, seconds, *, total_slept, kind, status_code=None):
+        sleep_for = max(0.0, float(seconds or 0))
+        next_total = float(total_slept or 0) + sleep_for
+        if next_total > self.max_total_retry_backoff:
+            raise SkladBotApiError(
+                "SkladBot API retry backoff budget exceeded",
+                kind=kind,
+                status_code=status_code,
+                ambiguous=False,
+            )
+        self.retry_sleep(sleep_for)
+        return next_total
 
     def get(self, path, params=None):
         if not self.tokens:
@@ -240,6 +285,7 @@ class SkladBotClient:
         url = f"{self.base_url}/{path.lstrip('/')}"
         max_attempts = max(self.max_retries + 1, len(self.tokens))
         last_response = None
+        total_retry_backoff = 0.0
         with httpx.Client(timeout=self.timeout) as client:
             for attempt in range(max_attempts):
                 token_index = self.wait_for_available_token()
@@ -256,6 +302,7 @@ class SkladBotClient:
                         },
                     )
                 except httpx.TimeoutException as exc:
+                    notify_skladbot_progress(self.progress_callback, "http_get_attempt_completed")
                     cooldown = max(1.0, self.request_delay)
                     self.mark_token_cooldown(token_index, cooldown)
                     self.advance_token(token_index)
@@ -267,13 +314,21 @@ class SkladBotClient:
                             attempt + 1,
                             max_attempts - 1,
                         )
-                        self.retry_sleep(cooldown)
+                        total_retry_backoff = self.bounded_retry_sleep(
+                            cooldown,
+                            total_slept=total_retry_backoff,
+                            kind=SkladBotErrorKind.TIMEOUT,
+                        )
                         continue
                     raise SkladBotApiError(
                         "SkladBot API timeout",
                         kind=SkladBotErrorKind.TIMEOUT,
                         ambiguous=False,
                     ) from exc
+                except httpx.TransportError:
+                    notify_skladbot_progress(self.progress_callback, "http_get_attempt_completed")
+                    raise
+                notify_skladbot_progress(self.progress_callback, "http_get_attempt_completed")
                 last_response = response
                 if response.status_code in {401, 403}:
                     self.mark_token_disabled(token_index)
@@ -300,7 +355,12 @@ class SkladBotClient:
                         max_attempts - 1,
                         sleep_for,
                     )
-                    self.retry_sleep(sleep_for)
+                    total_retry_backoff = self.bounded_retry_sleep(
+                        sleep_for,
+                        total_slept=total_retry_backoff,
+                        kind=SkladBotErrorKind.RATE_LIMIT,
+                        status_code=429,
+                    )
                     continue
                 if 500 <= response.status_code < 600 and attempt + 1 < max_attempts:
                     sleep_for = max(1.0, self.request_delay)
@@ -315,7 +375,12 @@ class SkladBotClient:
                         max_attempts - 1,
                         sleep_for,
                     )
-                    self.retry_sleep(sleep_for)
+                    total_retry_backoff = self.bounded_retry_sleep(
+                        sleep_for,
+                        total_slept=total_retry_backoff,
+                        kind=SkladBotErrorKind.SERVER,
+                        status_code=response.status_code,
+                    )
                     continue
                 if response.status_code >= 400:
                     raise skladbot_response_error(response)
@@ -344,6 +409,7 @@ class SkladBotClient:
                     },
                 )
             except httpx.TimeoutException as exc:
+                notify_skladbot_progress(self.progress_callback, "http_post_attempt_completed")
                 cooldown = max(1.0, self.request_delay)
                 self.mark_token_cooldown(token_index, cooldown)
                 self.advance_token(token_index)
@@ -353,6 +419,7 @@ class SkladBotClient:
                     ambiguous=True,
                 ) from exc
             except httpx.TransportError as exc:
+                notify_skladbot_progress(self.progress_callback, "http_post_attempt_completed")
                 cooldown = max(1.0, self.request_delay)
                 self.mark_token_cooldown(token_index, cooldown)
                 self.advance_token(token_index)
@@ -361,6 +428,7 @@ class SkladBotClient:
                     kind=SkladBotErrorKind.NETWORK,
                     ambiguous=True,
                 ) from exc
+            notify_skladbot_progress(self.progress_callback, "http_post_attempt_completed")
             if response.status_code in {401, 403}:
                 self.mark_token_disabled(token_index)
                 self.advance_token(token_index)

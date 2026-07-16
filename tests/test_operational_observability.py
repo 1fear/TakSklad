@@ -93,7 +93,9 @@ class OperationalObservabilityTests(unittest.TestCase):
                     grace_seconds=15,
                     status="success",
                     correlation_id="00000000-0000-4000-8000-000000000001",
-                    last_cycle_started_at=now - timedelta(seconds=10),
+                    last_cycle_started_at=now - timedelta(seconds=30),
+                    last_progress_at=now - timedelta(seconds=10),
+                    last_progress_phase="sync_orders_loaded:33",
                     last_success_at=now - timedelta(seconds=9),
                 ),
             ])

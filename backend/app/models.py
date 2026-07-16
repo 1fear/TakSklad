@@ -381,6 +381,12 @@ class WorkerHeartbeat(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="running")
     correlation_id: Mapped[str] = mapped_column(String(36), nullable=False)
     last_cycle_started_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_progress_at: Mapped[object] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    last_progress_phase: Mapped[str | None] = mapped_column(String(120))
     last_success_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
     last_failure_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
     last_error_class: Mapped[str | None] = mapped_column(String(80))

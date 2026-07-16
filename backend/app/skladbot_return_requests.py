@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 import logging
 import uuid
 
@@ -20,7 +20,7 @@ from .skladbot_request_dry_run import (
     stable_payload_hash,
     update_event_payload,
 )
-from .skladbot_client import SkladBotClient, env_int, sanitize_skladbot_error
+from .skladbot_client import SkladBotClient, env_int, notify_skladbot_progress, sanitize_skladbot_error
 from .skladbot_contracts import (
     normalize_request_payload,
     normalize_text,
@@ -135,8 +135,9 @@ def process_pending_skladbot_return_request_creates(
     db: Session,
     client: Any | None = None,
     limit: int | None = None,
+    progress_callback: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
-    client = client or SkladBotClient()
+    client = client or SkladBotClient(progress_callback=progress_callback)
     if not getattr(client, "configured", False):
         return default_return_create_processing_result(status="not_configured")
 
@@ -156,7 +157,7 @@ def process_pending_skladbot_return_request_creates(
     if not events:
         return result
 
-    for event in events:
+    for index, event in enumerate(events, start=1):
         if not event.lease_owner:
             event.status = "processing"
             event.attempts = int(event.attempts or 0) + 1
@@ -174,6 +175,8 @@ def process_pending_skladbot_return_request_creates(
                 event_type="skladbot_return_request_create",
                 result=event_result.get("status") or "failed",
             )
+        if progress_callback is not None:
+            notify_skladbot_progress(progress_callback, f"return_events_processed:{index}")
 
     if result["failed"]:
         result["status"] = "completed_with_errors"

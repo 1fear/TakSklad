@@ -9,6 +9,7 @@ import logging
 import os
 import time
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -24,6 +25,7 @@ from .skladbot_client import (
     SkladBotClient,
     env_float,
     env_int,
+    notify_skladbot_progress,
     parse_skladbot_api_tokens,
     sanitize_skladbot_error,
     skladbot_response_error_text,
@@ -249,8 +251,14 @@ def all_orders_have_candidate_match(orders, requests):
             return False
     return True
 
-def fetch_candidate_requests(today=None, orders=None, client=None, start_after_request_id=0):
-    client = client or SkladBotClient()
+def fetch_candidate_requests(
+    today=None,
+    orders=None,
+    client=None,
+    start_after_request_id=0,
+    progress_callback: Callable[[str], None] | None = None,
+):
+    client = client or SkladBotClient(progress_callback=progress_callback)
     if not client.configured:
         logging.info("SkladBot worker disabled: SKLADBOT_API_TOKEN is not configured")
         return CandidateRequests([], complete=True)
@@ -303,6 +311,8 @@ def fetch_candidate_requests(today=None, orders=None, client=None, start_after_r
     list_items = rotate_candidate_list_items(list_items, start_after_request_id)
 
     candidate_count = len(list_items)
+    if progress_callback is not None:
+        notify_skladbot_progress(progress_callback, f"remote_candidates_listed:{candidate_count}")
     checked_request_ids = []
     for _priority, _freshness_date, _request_id, item in list_items:
         if details_checked >= detail_limit:
@@ -320,6 +330,8 @@ def fetch_candidate_requests(today=None, orders=None, client=None, start_after_r
                 request_id,
                 exc.response.status_code if exc.response is not None else "unknown",
             )
+            if progress_callback is not None:
+                notify_skladbot_progress(progress_callback, f"remote_details_processed:{details_checked + len(detail_errors)}")
             continue
         except Exception as exc:
             detail_errors.append({"request_id": request_id, "error": sanitize_skladbot_error(exc)})
@@ -328,9 +340,13 @@ def fetch_candidate_requests(today=None, orders=None, client=None, start_after_r
                 request_id,
                 sanitize_skladbot_error(exc),
             )
+            if progress_callback is not None:
+                notify_skladbot_progress(progress_callback, f"remote_details_processed:{details_checked + len(detail_errors)}")
             continue
         if client.request_delay:
             time.sleep(client.request_delay)
+        if progress_callback is not None:
+            notify_skladbot_progress(progress_callback, f"remote_details_processed:{details_checked + len(detail_errors)}")
         request = normalize_request_payload(item, detail)
         if not request_type_matches(request.get("type")):
             continue
@@ -379,7 +395,10 @@ def rotate_candidate_list_items(list_items, start_after_request_id=0):
             return list_items[index + 1:] + list_items[:index + 1]
     return list_items
 
-def update_orders_from_skladbot(audit_actor: AuditActor | None = None):
+def update_orders_from_skladbot(
+    audit_actor: AuditActor | None = None,
+    progress_callback: Callable[[str], None] | None = None,
+):
     checked_at = datetime.now(timezone.utc).isoformat()
     updated = 0
     matched = 0
@@ -395,7 +414,11 @@ def update_orders_from_skladbot(audit_actor: AuditActor | None = None):
             logging.info("SkladBot worker: another sync is already running, skip")
             return {"requests": 0, "updated": 0, "matched": 0, "not_found": 0, "multiple": 0, "busy": True}
         try:
+            if progress_callback is not None:
+                notify_skladbot_progress(progress_callback, "sync_lock_acquired")
             orders, active_orders, completed_backfill_orders = load_skladbot_sync_orders(db)
+            if progress_callback is not None:
+                notify_skladbot_progress(progress_callback, f"sync_orders_loaded:{len(orders)}")
             if not orders:
                 logging.info("SkladBot worker: no active or recent completed backend orders, skip SkladBot API")
                 return {
@@ -432,6 +455,8 @@ def update_orders_from_skladbot(audit_actor: AuditActor | None = None):
                     },
                 ))
                 db.commit()
+                if progress_callback is not None:
+                    notify_skladbot_progress(progress_callback, "google_export_queued")
                 return {
                     "requests": 0,
                     "updated": 0,
@@ -450,6 +475,7 @@ def update_orders_from_skladbot(audit_actor: AuditActor | None = None):
             requests = fetch_candidate_requests(
                 orders=orders_to_check,
                 start_after_request_id=fetch_cursor,
+                progress_callback=progress_callback,
             )
             if not try_acquire_skladbot_sync_lock(db):
                 logging.info("SkladBot worker: another sync started during external fetch, skip stale apply")
@@ -472,8 +498,10 @@ def update_orders_from_skladbot(audit_actor: AuditActor | None = None):
                 order for order in orders if order.status in SKLADBOT_COMPLETED_BACKFILL_STATUSES
             ]
             orders_to_check = [order for order in orders if order_needs_skladbot_backfill(order)]
+            if progress_callback is not None:
+                notify_skladbot_progress(progress_callback, f"sync_snapshot_reloaded:{len(orders)}")
 
-            for order in orders_to_check:
+            for index, order in enumerate(orders_to_check, start=1):
                 matches = [request for request in requests if request_matches_order(order, request)]
                 raw_payload = dict(order.raw_payload or {})
                 create_state = normalize_text(raw_payload.get("skladbot_status"))
@@ -564,6 +592,8 @@ def update_orders_from_skladbot(audit_actor: AuditActor | None = None):
                     raw_payload["skladbot_nearest"] = nearest_request_diagnostics(order, requests)
                 order.raw_payload = raw_payload
                 updated += 1
+                if progress_callback is not None and (index % 25 == 0 or index == len(orders_to_check)):
+                    notify_skladbot_progress(progress_callback, f"sync_orders_processed:{index}")
 
             db.add(AuditLog(
                 action="skladbot_worker_sync",
@@ -600,6 +630,8 @@ def update_orders_from_skladbot(audit_actor: AuditActor | None = None):
                 payload=google_sheets_result,
             ))
             db.commit()
+            if progress_callback is not None:
+                notify_skladbot_progress(progress_callback, "sync_committed")
         finally:
             release_skladbot_sync_lock(db)
 

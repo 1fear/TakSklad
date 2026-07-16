@@ -7,8 +7,8 @@ from tests.postgres_support import create_database, drop_database, run_alembic, 
 
 
 POSTGRES_AVAILABLE = bool(os.environ.get("TAKSKLAD_TEST_DATABASE_URL"))
-CURRENT_HEAD = "20260715_0017"
-PREVIOUS_HEAD = "20260711_0016"
+CURRENT_HEAD = "20260716_0018"
+PREVIOUS_HEAD = "20260715_0017"
 
 
 @unittest.skipUnless(POSTGRES_AVAILABLE, "disposable PostgreSQL URL not provided")
@@ -44,7 +44,7 @@ class PostgresMigrationTests(unittest.TestCase):
         self.assertIn("worker_heartbeats", tables)
         self.assertTrue({
             "worker_name", "interval_seconds", "status", "correlation_id", "last_cycle_started_at",
-            "last_success_at", "last_failure_at",
+            "last_progress_at", "last_progress_phase", "last_success_at", "last_failure_at",
         }.issubset(heartbeat_columns))
         self.assertTrue({"auth_sessions", "service_principals", "service_principal_tokens"}.issubset(tables))
         self.assertTrue({"available_at", "lease_owner", "lease_expires_at", "completed_at"}.issubset(pending_columns))
@@ -84,12 +84,35 @@ class PostgresMigrationTests(unittest.TestCase):
                         '00000000-0000-0000-0000-000000000701', 'SYNTHETIC PRODUCT',
                         10, 1, 0, true, 'not_completed',
                         '{"item_key":"synthetic-legacy-item","source_import_id":"synthetic-legacy-row"}'::jsonb
+                    );
+                    INSERT INTO worker_heartbeats (
+                        worker_name, interval_seconds, grace_seconds, status,
+                        correlation_id, last_cycle_started_at
+                    ) VALUES (
+                        'synthetic_pre_migration', 60, 15, 'running',
+                        '00000000-0000-4000-8000-000000000017',
+                        '2026-07-16T06:00:00+00:00'
                     )
                 """)
         finally:
             engine.dispose()
         run_alembic(url, "upgrade", "head")
         run_alembic(url, "upgrade", "head")
+
+        engine = create_engine(url)
+        try:
+            with engine.begin() as connection:
+                connection.exec_driver_sql("""
+                    INSERT INTO worker_heartbeats (
+                        worker_name, interval_seconds, grace_seconds, status,
+                        correlation_id, last_cycle_started_at
+                    ) VALUES (
+                        'synthetic_legacy_writer', 60, 15, 'running',
+                        '00000000-0000-4000-8000-000000000018', now()
+                    )
+                """)
+        finally:
+            engine.dispose()
 
         self.assertEqual(scalar(url, "SELECT version_num FROM alembic_version"), CURRENT_HEAD)
         self.assertEqual(scalar(url, "SELECT count(*) FROM alembic_version"), 1)
@@ -103,6 +126,17 @@ class PostgresMigrationTests(unittest.TestCase):
             url,
             "SELECT count(*) FROM order_items WHERE raw_payload->>'source_import_id'='synthetic-legacy-row' "
             "AND import_item_key IS NULL AND source_import_key IS NULL AND source_import_id IS NULL",
+        ), 1)
+        self.assertEqual(scalar(
+            url,
+            "SELECT count(*) FROM worker_heartbeats "
+            "WHERE worker_name='synthetic_legacy_writer' AND last_progress_at IS NOT NULL",
+        ), 1)
+        self.assertEqual(scalar(
+            url,
+            "SELECT count(*) FROM worker_heartbeats "
+            "WHERE worker_name='synthetic_pre_migration' "
+            "AND last_progress_at = last_cycle_started_at",
         ), 1)
 
 

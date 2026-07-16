@@ -258,7 +258,10 @@ def runtime_signal_snapshot(db, *, now: datetime | None = None) -> dict:
         "import_age": _age_seconds(latest_import, timestamp),
         "provider_failures": provider_failures,
         "workers": {
-            row.worker_name: _age_seconds(_aware(row.last_cycle_started_at), timestamp)
+            row.worker_name: _age_seconds(
+                _aware(row.last_progress_at or row.last_cycle_started_at),
+                timestamp,
+            )
             for row in workers
             if row.worker_name in WORKER_NAMES
         },
