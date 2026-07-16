@@ -664,6 +664,9 @@ def candidate_payload(candidate):
         "timestamp_provenance": candidate["timestamp_provenance"],
         "timestamp_adjusted": bool(candidate["timestamp_adjusted"]),
         "new_scanned_blocks": int(candidate["new_scanned_blocks"]),
+        "preserved_full_scanned_blocks": bool(
+            candidate.get("preserved_full_scanned_blocks")
+        ),
         "return_reference": normalize(candidate["record"].get("return_reference")),
         "returned_by": normalize(candidate["record"].get("returned_by")),
         "source_import_id": normalize(candidate["record"].get("source_import_id")),
@@ -678,11 +681,15 @@ def candidate_payload(candidate):
             "prerequisite_item_id": str(prerequisite["item"].id),
             "prerequisite_scan_id": str(prerequisite["scan"].id),
             "prerequisite_outbound_id": str(prerequisite["outbound"].id),
-            "prerequisite_return_id": str(deterministic_uuid(
-                "movement",
-                prerequisite["scan"].id,
-                "return",
-            )),
+            "prerequisite_insert": bool(prerequisite.get("insert", True)),
+            "prerequisite_return_id": (
+                str(deterministic_uuid(
+                    "movement",
+                    prerequisite["scan"].id,
+                    "return",
+                ))
+                if prerequisite.get("insert", True) else ""
+            ),
             "prerequisite_return_at": prerequisite["return_at"].isoformat(),
             "prerequisite_timestamp_provenance": prerequisite[
                 "timestamp_provenance"
@@ -835,6 +842,11 @@ def classify_target(
     before = [movement for movement in movements if movement_time(movement) < return_at]
     after = [movement for movement in movements if movement_time(movement) >= return_at]
     previous = before[-1] if before else None
+    candidate_scan_at = return_at - timedelta(microseconds=1)
+    candidate_return_at = return_at
+    candidate_timestamp_provenance = timestamp_provenance
+    candidate_timestamp_adjusted = False
+    reused_owner_return_ids = set()
     if previous is not None and normalize(previous.movement_type) not in AVAILABLE_MOVEMENTS:
         owner = (relevant_items or {}).get(str(previous.order_item_id or ""))
         owner_scan = None
@@ -852,61 +864,74 @@ def classify_target(
             movements_for_scan(movements, owner_scan, OUTBOUND_MOVEMENTS)
             if owner_scan is not None else []
         )
-        future_owner_returns = [
-            value for value in owner_returns
-            if movement_time(value) >= return_at
-        ]
-        owner_returned_at, owner_return_provenance = (
-            parse_returned_at(owner.order, {})
-            if owner is not None else (None, "")
-        )
-        if owner is not None and owner_returned_at is None:
-            audit_times = sorted(set(
-                (audit_return_times or {}).get(str(owner.order.id), [])
-            ))
-            if len(audit_times) == 1:
-                owner_returned_at = audit_times[0]
-                owner_return_provenance = "owner_audit_log"
-        prerequisite_at = owner_returned_at
-        if (
-            prerequisite_at is None
-            or prerequisite_at <= movement_time(previous)
-            or prerequisite_at >= return_at - timedelta(microseconds=1)
-        ):
-            prerequisite_at = return_at - timedelta(microseconds=2)
-            owner_return_provenance = (
-                "reconstructed_boundary_before_legacy_target"
-            )
         if (
             owner is None
             or owner_scan is None
             or not order_is_returned(owner.order)
             or len(owner_outbounds) != 1
             or owner_outbounds[0].id != previous.id
-            or len(owner_returns) != 1
-            or len(future_owner_returns) != 1
-            or prerequisite_at <= movement_time(previous)
-            or prerequisite_at >= return_at - timedelta(microseconds=1)
         ):
             return None, "busy_before_missing_scan"
-        prerequisite_return = {
-            "item": owner,
-            "scan": owner_scan,
-            "outbound": previous,
-            "return_at": prerequisite_at,
-            "timestamp_provenance": owner_return_provenance,
-            "future_returns": future_owner_returns,
-        }
+        if owner_returns:
+            if any(
+                movement_time(value) <= movement_time(previous)
+                for value in owner_returns
+            ):
+                return None, "busy_before_missing_scan"
+            latest_owner_return_at = max(
+                movement_time(value) for value in owner_returns
+            )
+            candidate_scan_at = latest_owner_return_at + timedelta(microseconds=1)
+            candidate_return_at = latest_owner_return_at + timedelta(microseconds=2)
+            candidate_timestamp_provenance = (
+                "reconstructed_after_existing_owner_return"
+            )
+            candidate_timestamp_adjusted = True
+            reused_owner_return_ids = {value.id for value in owner_returns}
+            prerequisite_return = {
+                "item": owner,
+                "scan": owner_scan,
+                "outbound": previous,
+                "insert": False,
+                "return_at": latest_owner_return_at,
+                "timestamp_provenance": "reused_existing_owner_return",
+                "future_returns": owner_returns,
+            }
+        else:
+            prerequisite_at = movement_time(previous) + timedelta(microseconds=1)
+            candidate_scan_at = movement_time(previous) + timedelta(microseconds=2)
+            candidate_return_at = movement_time(previous) + timedelta(microseconds=3)
+            candidate_timestamp_provenance = (
+                "reconstructed_after_previous_outbound"
+            )
+            candidate_timestamp_adjusted = True
+            prerequisite_return = {
+                "item": owner,
+                "scan": owner_scan,
+                "outbound": previous,
+                "insert": True,
+                "return_at": prerequisite_at,
+                "timestamp_provenance": (
+                    "reconstructed_after_previous_outbound"
+                ),
+                "future_returns": [],
+            }
     else:
         prerequisite_return = None
     for scan in scans_by_code.get(code) or []:
         outbound = movement_for_scan(movements, scan, OUTBOUND_MOVEMENTS)
         if outbound is None:
             return None, "scan_without_outbound"
-    if after and movement_time(after[0]) <= return_at:
+    after_without_reused_returns = [
+        value for value in after if value.id not in reused_owner_return_ids
+    ]
+    if (
+        after_without_reused_returns
+        and movement_time(after_without_reused_returns[0]) <= candidate_return_at
+    ):
         return None, "missing_scan_return_boundary_conflict"
 
-    scan_at = return_at - timedelta(microseconds=1)
+    scan_at = candidate_scan_at
     if previous is not None and movement_time(previous) >= scan_at:
         return None, "missing_scan_return_boundary_conflict"
     outbound_type = (
@@ -922,8 +947,12 @@ def classify_target(
     synthetic_scan = SimpleNamespace(code=code, raw_payload=metadata)
     computed_blocks = scanned_blocks_for_scans([*(item.scan_codes or []), synthetic_scan])
     new_scanned_blocks = max(int(item.scanned_blocks or 0), int(computed_blocks or 0))
+    preserved_full_scanned_blocks = False
     if int(item.quantity_blocks or 0) > 0 and new_scanned_blocks > int(item.quantity_blocks or 0):
-        return None, "scanned_blocks_exceed_plan"
+        if int(item.scanned_blocks or 0) != int(item.quantity_blocks or 0):
+            return None, "scanned_blocks_exceed_plan"
+        new_scanned_blocks = int(item.scanned_blocks or 0)
+        preserved_full_scanned_blocks = True
     return {
         "kind": "missing_scan",
         "code": code,
@@ -932,11 +961,12 @@ def classify_target(
         "scan": None,
         "outbound_type": outbound_type,
         "scan_at": scan_at,
-        "return_at": return_at,
+        "return_at": candidate_return_at,
         "original_return_at": return_at,
-        "timestamp_provenance": timestamp_provenance,
-        "timestamp_adjusted": False,
+        "timestamp_provenance": candidate_timestamp_provenance,
+        "timestamp_adjusted": candidate_timestamp_adjusted,
         "new_scanned_blocks": new_scanned_blocks,
+        "preserved_full_scanned_blocks": preserved_full_scanned_blocks,
         "prerequisite_return": prerequisite_return,
     }, ""
 
@@ -1127,7 +1157,10 @@ def build_repair_plan(
         "scope_conflicts": int(scope_diagnostics.get("scope_conflicts") or 0),
         "prerequisite_return_inserts": 0,
         "reconstructed_prerequisite_occurrences": 0,
+        "reused_existing_prerequisite_return_occurrences": 0,
         "preexisting_future_owner_return_occurrences": 0,
+        "reconstructed_missing_scan_boundary_occurrences": 0,
+        "preserved_full_scanned_blocks_occurrences": 0,
         "reconstructed_chronology_occurrences": 0,
         **{field: int(identity_diagnostics.get(field) or 0) for field in IDENTITY_DIAGNOSTIC_FIELDS},
         **{f"{error}_occurrences": 0 for error in sorted(AMBIGUOUS_ERRORS | OTHER_ERRORS)},
@@ -1229,16 +1262,31 @@ def build_repair_plan(
             counts[field] += 1
             counts["prerequisite_return_inserts"] += int(
                 candidate.get("prerequisite_return") is not None
+                and candidate["prerequisite_return"].get("insert", True)
             )
             counts["reconstructed_prerequisite_occurrences"] += int(
                 (candidate.get("prerequisite_return") or {}).get(
                     "timestamp_provenance"
-                ) == "reconstructed_boundary_before_legacy_target"
+                ) in {
+                    "reconstructed_boundary_before_legacy_target",
+                    "reconstructed_after_previous_outbound",
+                }
+            )
+            counts["reused_existing_prerequisite_return_occurrences"] += int(
+                candidate.get("prerequisite_return") is not None
+                and not candidate["prerequisite_return"].get("insert", True)
             )
             counts["preexisting_future_owner_return_occurrences"] += len(
                 (candidate.get("prerequisite_return") or {}).get(
                     "future_returns"
                 ) or []
+            )
+            counts["reconstructed_missing_scan_boundary_occurrences"] += int(
+                candidate.get("kind") == "missing_scan"
+                and bool(candidate.get("timestamp_adjusted"))
+            )
+            counts["preserved_full_scanned_blocks_occurrences"] += int(
+                bool(candidate.get("preserved_full_scanned_blocks"))
             )
             counts["reconstructed_chronology_occurrences"] += int(
                 candidate.get("timestamp_provenance")
@@ -1318,7 +1366,7 @@ def apply_candidates(db, candidates, summary):
             db.flush()
 
         prerequisite = candidate.get("prerequisite_return")
-        if prerequisite is not None:
+        if prerequisite is not None and prerequisite.get("insert", True):
             prerequisite_scan = prerequisite["scan"]
             prerequisite_return_id = deterministic_uuid(
                 "movement",
@@ -1359,6 +1407,9 @@ def apply_candidates(db, candidates, summary):
                     raw_payload={
                         "cutover_repair": "historical_google_return_v1",
                         "timestamp_provenance": "synthetic_before_return",
+                        "preserved_full_scanned_blocks": bool(
+                            candidate.get("preserved_full_scanned_blocks")
+                        ),
                         **scan_metadata_for_code(code),
                     },
                 )
@@ -1429,24 +1480,25 @@ def apply_candidates(db, candidates, summary):
         if prerequisite is not None:
             prerequisite_item = prerequisite["item"]
             prerequisite_scan = prerequisite["scan"]
-            prerequisite_return = db.get(
-                KizMovement,
-                deterministic_uuid("movement", prerequisite_scan.id, "return"),
-            )
-            expected_prerequisite_at = prerequisite["return_at"]
-            if (
-                prerequisite_return is None
-                or normalize(prerequisite_return.movement_type) != "return"
-                or str(prerequisite_return.order_id) != str(prerequisite_item.order.id)
-                or str(prerequisite_return.order_item_id) != str(prerequisite_item.id)
-                or str(prerequisite_return.scan_code_id) != str(prerequisite_scan.id)
-                or not stored_timestamp_matches(
-                    prerequisite_return.occurred_at,
-                    expected_prerequisite_at,
+            if prerequisite.get("insert", True):
+                prerequisite_return = db.get(
+                    KizMovement,
+                    deterministic_uuid("movement", prerequisite_scan.id, "return"),
                 )
-                or prerequisite["return_at"] >= candidate["scan_at"]
-            ):
-                raise RuntimeError("repair prerequisite return invariant failed")
+                expected_prerequisite_at = prerequisite["return_at"]
+                if (
+                    prerequisite_return is None
+                    or normalize(prerequisite_return.movement_type) != "return"
+                    or str(prerequisite_return.order_id) != str(prerequisite_item.order.id)
+                    or str(prerequisite_return.order_item_id) != str(prerequisite_item.id)
+                    or str(prerequisite_return.scan_code_id) != str(prerequisite_scan.id)
+                    or not stored_timestamp_matches(
+                        prerequisite_return.occurred_at,
+                        expected_prerequisite_at,
+                    )
+                    or prerequisite["return_at"] >= candidate["scan_at"]
+                ):
+                    raise RuntimeError("repair prerequisite return invariant failed")
             for future_return in prerequisite.get("future_returns") or []:
                 stored_future_return = db.get(KizMovement, future_return.id)
                 if (
@@ -1462,11 +1514,26 @@ def apply_candidates(db, candidates, summary):
                         stored_future_return.occurred_at,
                         movement_time(future_return),
                     )
-                    or movement_time(future_return) <= candidate["return_at"]
+                    or (
+                        movement_time(future_return) <= candidate["return_at"]
+                        if prerequisite.get("insert", True)
+                        else movement_time(future_return) >= candidate["scan_at"]
+                    )
                 ):
                     raise RuntimeError(
                         "repair future owner return invariant failed"
                     )
+            if (
+                not prerequisite.get("insert", True)
+                and (
+                    not prerequisite.get("future_returns")
+                    or max(
+                        movement_time(value)
+                        for value in prerequisite["future_returns"]
+                    ) != prerequisite["return_at"]
+                )
+            ):
+                raise RuntimeError("repair reused prerequisite invariant failed")
         scan_id = (
             candidate["scan"].id
             if candidate.get("scan") is not None
@@ -1477,6 +1544,8 @@ def apply_candidates(db, candidates, summary):
             stored_scan is None
             or str(stored_scan.order_item_id) != str(item.id)
             or normalize(stored_scan.code) != candidate["code"]
+            or int(item.scanned_blocks or 0)
+            != int(candidate["new_scanned_blocks"])
         ):
             raise RuntimeError("repair scan invariant failed")
         if candidate["kind"] == "missing_scan":
@@ -1529,9 +1598,24 @@ def apply_candidates(db, candidates, summary):
                 "reconstructed_prerequisite_occurrences": int(
                     summary.get("reconstructed_prerequisite_occurrences") or 0
                 ),
+                "reused_existing_prerequisite_return_occurrences": int(
+                    summary.get(
+                        "reused_existing_prerequisite_return_occurrences"
+                    ) or 0
+                ),
                 "preexisting_future_owner_return_occurrences": int(
                     summary.get(
                         "preexisting_future_owner_return_occurrences"
+                    ) or 0
+                ),
+                "reconstructed_missing_scan_boundary_occurrences": int(
+                    summary.get(
+                        "reconstructed_missing_scan_boundary_occurrences"
+                    ) or 0
+                ),
+                "preserved_full_scanned_blocks_occurrences": int(
+                    summary.get(
+                        "preserved_full_scanned_blocks_occurrences"
                     ) or 0
                 ),
                 "legacy_target_unique_codes": int(

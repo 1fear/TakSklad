@@ -172,7 +172,10 @@ jobs:
               "legacy_missing_scan_occurrences", "legacy_missing_return_occurrences",
               "legacy_target_occurrences", "legacy_target_unique_codes", "scope_conflicts",
               "prerequisite_return_inserts", "reconstructed_prerequisite_occurrences",
+              "reused_existing_prerequisite_return_occurrences",
               "preexisting_future_owner_return_occurrences",
+              "reconstructed_missing_scan_boundary_occurrences",
+              "preserved_full_scanned_blocks_occurrences",
               "reconstructed_chronology_occurrences",
               "identity_no_strong_id_records", "identity_not_found_records",
               "identity_product_quantity_mismatch_records", "identity_multiple_records",
@@ -257,7 +260,10 @@ jobs:
               f"legacy_unique_codes={payload.get('legacy_target_unique_codes', -1)} "
               f"prerequisite_returns={payload.get('prerequisite_return_inserts', -1)} "
               f"reconstructed_prerequisites={payload.get('reconstructed_prerequisite_occurrences', -1)} "
+              f"reused_prerequisites={payload.get('reused_existing_prerequisite_return_occurrences', -1)} "
               f"future_owner_returns={payload.get('preexisting_future_owner_return_occurrences', -1)} "
+              f"reconstructed_missing_scan_boundaries={payload.get('reconstructed_missing_scan_boundary_occurrences', -1)} "
+              f"preserved_full_scanned_blocks={payload.get('preserved_full_scanned_blocks_occurrences', -1)} "
               f"reconstructed_chronology={payload.get('reconstructed_chronology_occurrences', -1)} "
               f"duplicates={payload.get('duplicate_occurrences', -1)} "
               f"identity_conflicts={payload.get('identity_conflicts', -1)} "
@@ -332,12 +338,18 @@ jobs:
               raise SystemExit("GOOGLE_RETURN_REPAIR_TARGET_COUNT_CHANGED")
           if payload.get("legacy_target_unique_codes") != 30:
               raise SystemExit("GOOGLE_RETURN_REPAIR_UNIQUE_CODE_COUNT_CHANGED")
-          if payload.get("prerequisite_return_inserts") != 8:
+          if payload.get("prerequisite_return_inserts") != 0:
               raise SystemExit("GOOGLE_RETURN_REPAIR_PREREQUISITE_COUNT_CHANGED")
-          if payload.get("reconstructed_prerequisite_occurrences") != 8:
+          if payload.get("reconstructed_prerequisite_occurrences") != 0:
               raise SystemExit("GOOGLE_RETURN_REPAIR_RECONSTRUCTED_PREREQUISITE_COUNT_CHANGED")
+          if payload.get("reused_existing_prerequisite_return_occurrences") != 8:
+              raise SystemExit("GOOGLE_RETURN_REPAIR_REUSED_PREREQUISITE_COUNT_CHANGED")
           if payload.get("preexisting_future_owner_return_occurrences") != 8:
               raise SystemExit("GOOGLE_RETURN_REPAIR_FUTURE_OWNER_RETURN_COUNT_CHANGED")
+          if payload.get("reconstructed_missing_scan_boundary_occurrences") != 8:
+              raise SystemExit("GOOGLE_RETURN_REPAIR_MISSING_SCAN_BOUNDARY_COUNT_CHANGED")
+          if payload.get("preserved_full_scanned_blocks_occurrences") != 8:
+              raise SystemExit("GOOGLE_RETURN_REPAIR_PRESERVED_SCANNED_BLOCKS_COUNT_CHANGED")
           if payload.get("reconstructed_chronology_occurrences") != 5:
               raise SystemExit("GOOGLE_RETURN_REPAIR_CHRONOLOGY_COUNT_CHANGED")
           if not re.fullmatch(r"[0-9a-f]{64}", str(payload.get("plan_sha256") or "")):

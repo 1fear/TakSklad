@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from tools.google_cutover_repair import (
     apply_candidates,
+    backend_module,
     build_repair_plan,
     deterministic_uuid,
     enrich_identity_lifecycle_diagnostics,
@@ -177,7 +178,7 @@ class GoogleCutoverRepairTests(unittest.TestCase):
 
     def test_missing_scan_reconstructs_returned_previous_owner_lifecycle(self):
         code = "KIZ-BUSY-PREVIOUS"
-        target = item(item_id="target-item")
+        target = item(item_id="target-item", scanned_blocks=10)
         target.order = order("target-order")
         target.order_id = target.order.id
         owner_scan = scan("owner-scan", code)
@@ -195,25 +196,45 @@ class GoogleCutoverRepairTests(unittest.TestCase):
         future_owner_return = movement(
             "owner-future-return", "return", scan_id=owner_scan.id,
             item_id=owner.id, order_id=owner.order.id,
-            at=datetime(2026, 7, 11, 8, tzinfo=UTC),
+            at=datetime(2026, 7, 10, 5, tzinfo=UTC),
         )
 
-        summary, candidates = build_repair_plan(
-            [(record(code), target)],
-            {code: [owner_scan]},
-            {code: [owner_outbound, future_owner_return]},
-            relevant_items={str(owner.id): owner, str(target.id): target},
-        )
+        with mock.patch.object(
+            backend_module("scan_quantities"),
+            "scanned_blocks_for_scans",
+            return_value=11,
+        ):
+            summary, candidates = build_repair_plan(
+                [(record(code), target)],
+                {code: [owner_scan]},
+                {code: [owner_outbound, future_owner_return]},
+                relevant_items={str(owner.id): owner, str(target.id): target},
+            )
 
         self.assertTrue(summary["safe_to_repair"])
-        self.assertEqual(summary["prerequisite_return_inserts"], 1)
+        self.assertEqual(summary["prerequisite_return_inserts"], 0)
+        self.assertEqual(
+            summary["reused_existing_prerequisite_return_occurrences"],
+            1,
+        )
         self.assertEqual(summary["preexisting_future_owner_return_occurrences"], 1)
-        self.assertEqual(summary["return_inserts"], 2)
+        self.assertEqual(
+            summary["reconstructed_missing_scan_boundary_occurrences"],
+            1,
+        )
+        self.assertEqual(summary["preserved_full_scanned_blocks_occurrences"], 1)
+        self.assertEqual(candidates[0]["new_scanned_blocks"], 10)
+        self.assertEqual(summary["return_inserts"], 1)
         self.assertEqual(candidates[0]["outbound_type"], "re_outbound")
         self.assertIs(candidates[0]["prerequisite_return"]["item"], owner)
         self.assertLess(
             candidates[0]["prerequisite_return"]["return_at"],
             candidates[0]["scan_at"],
+        )
+        self.assertLess(future_owner_return.occurred_at, candidates[0]["scan_at"])
+        self.assertEqual(
+            candidates[0]["timestamp_provenance"],
+            "reconstructed_after_existing_owner_return",
         )
 
     def test_legacy_scope_mismatch_blocks_before_write(self):
@@ -249,7 +270,7 @@ class GoogleCutoverRepairTests(unittest.TestCase):
         owner_outbound = movement(
             "owner-out", "outbound", scan_id=owner_scan.id,
             item_id=owner.id, order_id=owner.order.id,
-            at=datetime(2026, 7, 9, 8, tzinfo=UTC),
+            at=datetime(2026, 7, 10, 4, 59, 59, 999999, tzinfo=UTC),
         )
         future_owner_return = movement(
             "owner-future-return", "return", scan_id=owner_scan.id,
@@ -265,10 +286,18 @@ class GoogleCutoverRepairTests(unittest.TestCase):
         )
 
         self.assertTrue(summary["safe_to_repair"])
-        self.assertEqual(summary["reconstructed_prerequisite_occurrences"], 1)
+        self.assertEqual(summary["reconstructed_prerequisite_occurrences"], 0)
+        self.assertEqual(
+            summary["reused_existing_prerequisite_return_occurrences"],
+            1,
+        )
+        self.assertEqual(
+            summary["reconstructed_missing_scan_boundary_occurrences"],
+            1,
+        )
         self.assertEqual(
             candidates[0]["prerequisite_return"]["timestamp_provenance"],
-            "reconstructed_boundary_before_legacy_target",
+            "reused_existing_owner_return",
         )
         self.assertEqual(
             candidates[0]["prerequisite_return"]["return_at"],
@@ -278,6 +307,11 @@ class GoogleCutoverRepairTests(unittest.TestCase):
             candidates[0]["prerequisite_return"]["return_at"],
             candidates[0]["scan_at"],
         )
+        self.assertEqual(
+            candidates[0]["timestamp_provenance"],
+            "reconstructed_after_existing_owner_return",
+        )
+        self.assertTrue(candidates[0]["timestamp_adjusted"])
 
     def test_return_that_would_cross_later_outbound_is_blocked(self):
         code = "KIZ-3"
@@ -810,7 +844,7 @@ class GoogleCutoverRepairTests(unittest.TestCase):
             self.assertEqual(len(db.execute(select(KizMovement)).scalars().all()), 2)
             self.assertEqual(len(db.execute(select(AuditLog)).scalars().all()), 1)
 
-    def test_apply_inserts_prerequisite_return_before_re_outbound(self):
+    def test_apply_reuses_existing_owner_return_before_re_outbound(self):
         from backend.app.models import (
             Base,
             KizCode,
@@ -863,9 +897,9 @@ class GoogleCutoverRepairTests(unittest.TestCase):
                 kiz, owner_outbound, owner_future_return,
             ])
             db.flush()
-            prerequisite_at = datetime(2026, 7, 9, 8, tzinfo=UTC) + timedelta(microseconds=1)
-            scan_at = datetime(2026, 7, 10, 4, 59, 59, 999999, tzinfo=UTC)
-            return_at = datetime(2026, 7, 10, 5, tzinfo=UTC)
+            prerequisite_at = datetime(2026, 7, 11, 8, tzinfo=UTC)
+            scan_at = prerequisite_at + timedelta(microseconds=1)
+            return_at = prerequisite_at + timedelta(microseconds=2)
             candidate = {
                 "kind": "missing_scan", "code": kiz.code, "record": {},
                 "item": target_item, "scan": None, "outbound_type": "re_outbound",
@@ -875,7 +909,8 @@ class GoogleCutoverRepairTests(unittest.TestCase):
                 "prerequisite_return": {
                     "item": owner_item, "scan": owner_scan,
                     "outbound": owner_outbound, "return_at": prerequisite_at,
-                    "timestamp_provenance": "backend_order",
+                    "insert": False,
+                    "timestamp_provenance": "reused_existing_owner_return",
                     "future_returns": [owner_future_return],
                 },
             }
@@ -884,17 +919,17 @@ class GoogleCutoverRepairTests(unittest.TestCase):
                 "plan_sha256": "c" * 64,
                 "scan_inserts": 1,
                 "outbound_inserts": 1,
-                "return_inserts": 2,
-                "prerequisite_return_inserts": 1,
+                "return_inserts": 1,
+                "prerequisite_return_inserts": 0,
             })
 
-            self.assertEqual(result["mutations_applied"], 4)
+            self.assertEqual(result["mutations_applied"], 3)
             movements = db.execute(
                 select(KizMovement).order_by(KizMovement.occurred_at)
             ).scalars().all()
             self.assertEqual(
                 [row.movement_type for row in movements],
-                ["outbound", "return", "re_outbound", "return", "return"],
+                ["outbound", "return", "re_outbound", "return"],
             )
 
     def test_commit_failure_rolls_back_every_repair_row(self):
