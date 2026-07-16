@@ -57,6 +57,7 @@ class ContainerPolicyTests(unittest.TestCase):
         service = payload["services"]["telegram-worker"]
         environment = service["environment"]
         required = {
+            "TAKSKLAD_ENV",
             "TAKSKLAD_TIMEZONE",
             "SKLADBOT_API_TOKEN",
             "SKLADBOT_API_TOKENS",
@@ -72,6 +73,9 @@ class ContainerPolicyTests(unittest.TestCase):
             "SKLADBOT_DAILY_REPORT_HOUR",
             "SKLADBOT_DAILY_REPORT_MINUTE",
             "SKLADBOT_DAILY_REPORT_RETRY_MINUTES",
+            "SKLADBOT_DAILY_REPORT_MAX_ATTEMPTS",
+            "SKLADBOT_DAILY_REPORT_GRACE_MINUTES",
+            "SKLADBOT_DAILY_REPORT_LOOKBACK_DAYS",
             "SKLADBOT_DAILY_REPORT_STALE_TTL_MINUTES",
             "SKLADBOT_DAILY_REPORT_REQUEST_TYPE_IDS",
             "SKLADBOT_DAILY_REPORT_REQUESTS_LIMIT",

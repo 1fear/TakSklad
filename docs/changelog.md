@@ -39,6 +39,22 @@
 - `npm --prefix frontend run build` — OK.
 - Alembic — единственный head `20260716_0018`; shell syntax и Docker Compose config — OK.
 
+### Daily SkladBot fail-closed deploy, catch-up и readiness
+
+**Что стало:**
+
+- Production daily configuration проверяется по rendered telegram-worker environment до любых deploy mutations и повторно при startup worker.
+- TAKSKLAD_ENV явно передается в telegram-worker; production не может молча перейти в disabled daily.
+- Scheduler автоматически выбирает latest due date и догоняет вчерашний пропуск до сегодняшних 22:00.
+- В пределах `SKLADBOT_DAILY_REPORT_LOOKBACK_DAYS` scheduler берет самый старый gap; readiness не становится зеленым при более старом пропуске. Без явной настройки окно равно одному дню, чтобы не отправлять накопившийся многодневный backlog автоматически.
+- Pre-delivery failures получают bounded retry; после начала Telegram delivery автоматический retry запрещен.
+- Fresh processing polling не обновляет lease/stage; manual-recovery marking и audit идемпотентны.
+- Successful manual catch-up считается доставкой той же date + chat и исключает scheduled дубль.
+- /ready возвращает 503 при отсутствии успешного daily event после configured grace.
+- Timezone и числовые schedule/retry/grace/lookback значения проверяются общим strict-контрактом; phase27 валидирует candidate env до замены и откатывает env при post-recovery validation failure.
+- Догоняющий отчёт и runtime-конфигурация восстановлены отдельной контролируемой операцией; production deploy этого code fix выполняется только после Release gate.
+- Runtime release candidate поднят до `2.0.41`; публичный desktop channel остаётся на `2.0.40` до успешной immutable-сборки и отдельного promotion.
+
 ## 2026-07-09
 
 ### Daily SkladBot created-date requests in regular scope

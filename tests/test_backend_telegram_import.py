@@ -376,6 +376,41 @@ class BackendTelegramImportTests(unittest.TestCase):
             ("TAKSKLAD_DAILY_RECONCILIATION_CHAT_IDS",),
         )
 
+    def test_production_telegram_configuration_requires_daily_delivery(self):
+        with self.assertRaises(TelegramConfigurationError) as invalid:
+            validate_telegram_worker_config(
+                "",
+                set(),
+                set(),
+                set(),
+                set(),
+                environment="production",
+                daily_report_enabled=False,
+                skladbot_api_tokens=(),
+            )
+
+        self.assertEqual(
+            invalid.exception.setting_names,
+            (
+                "SKLADBOT_API_TOKEN(S)",
+                "SKLADBOT_DAILY_REPORT_CHAT_IDS",
+                "SKLADBOT_DAILY_REPORT_ENABLED",
+                "TELEGRAM_ALLOWED_CHAT_IDS",
+                "TELEGRAM_BOT_TOKEN",
+            ),
+        )
+
+        self.assertTrue(validate_telegram_worker_config(
+            "synthetic-token",
+            {"1001"},
+            set(),
+            {"1001"},
+            set(),
+            environment="production",
+            daily_report_enabled=True,
+            skladbot_api_tokens=("synthetic-skladbot-token",),
+        ))
+
     def test_telegram_constructor_rejects_invalid_config_before_database_access(self):
         with mock.patch.dict(
             telegram_worker_module.os.environ,

@@ -299,6 +299,7 @@ jobs:
           grep -q 'structurally complete forced rollout' deploy/vds/acceptance_status.sh
           grep -q 'def live_runtime_invariants' tools/collect_phase27_evidence.py
           tar -czf "$RUNNER_TEMP/taksklad-deploy-control.tar.gz" \
+            backend/app/daily_report_config.py \
             deploy/vds/deploy_from_git.sh \
             deploy/vds/docker-compose.yml \
             deploy/vds/acceptance_status.sh \
@@ -311,6 +312,7 @@ jobs:
             tools/production_preflight.sh \
             tools/production_release_checks.py \
             tools/release_artifacts.py \
+            tools/validate_daily_report_config.py \
             tools/validate_deploy_probe.py \
             tools/write_maintenance_marker.py
 
@@ -425,7 +427,18 @@ jobs:
           )
           PY
           env_backup=".release-state/phase27-env-pre-recovery-\$(date -u +%Y%m%dT%H%M%SZ)"
+          candidate_env=".release-state/phase27-env-candidate"
+          env_recovery_applied=0
           install -m 600 deploy/vds/.env "\$env_backup"
+          restore_phase27_env_on_error() {
+            status=\$?
+            if test "\$status" -ne 0 && test "\$env_recovery_applied" -eq 1; then
+              install -m 600 "\$env_backup" deploy/vds/.env
+              echo "PRODUCTION_CONFIG_RECOVERY_ROLLED_BACK values_redacted=1" >&2
+            fi
+            exit "\$status"
+          }
+          trap restore_phase27_env_on_error EXIT
           python3 - <<'PY'
           import json
           import os
@@ -467,16 +480,27 @@ jobs:
           for key, value in updates.items():
               if key not in found:
                   output.append(f"{key}={value}")
-          temporary = env_path.with_suffix(".env.phase27.tmp")
+          temporary = Path(".release-state/phase27-env-candidate")
           temporary.write_text("\n".join(output) + "\n", encoding="utf-8")
           os.chmod(temporary, 0o600)
-          os.replace(temporary, env_path)
           print(
-              "PRODUCTION_CONFIG_RECOVERY_OK "
+              "PRODUCTION_CONFIG_CANDIDATE_READY "
               "fields=TAKSKLAD_LEGACY_AUTH_EXPIRES_AT,TELEGRAM_ALLOWED_CHAT_IDS,"
               "SMARTUP_AUTO_IMPORT_SAGA_MODE,SMARTUP_AUTO_IMPORT_PROCESS_SKLADBOT_NOW values_redacted=1"
           )
           PY
+          docker compose --env-file "\$candidate_env" -f deploy/vds/docker-compose.yml \
+            config --format json | \
+            PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/validate_daily_report_config.py
+          install -m 600 "\$candidate_env" deploy/vds/.env
+          env_recovery_applied=1
+          docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml \
+            config --format json | \
+            PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/validate_daily_report_config.py
+          env_recovery_applied=0
+          trap - EXIT
+          rm -f "\$candidate_env"
+          echo "PRODUCTION_CONFIG_RECOVERY_OK fields=TAKSKLAD_LEGACY_AUTH_EXPIRES_AT,TELEGRAM_ALLOWED_CHAT_IDS,SMARTUP_AUTO_IMPORT_SAGA_MODE,SMARTUP_AUTO_IMPORT_PROCESS_SKLADBOT_NOW values_redacted=1"
           chmod +x deploy/vds/deploy_from_git.sh tools/production_preflight.sh tools/live_release_verifier.sh
           PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/release_artifacts.py verify --manifest release.json
           eval "\$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/release_artifacts.py emit-shell --manifest release.json)"

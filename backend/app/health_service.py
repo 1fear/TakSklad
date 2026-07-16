@@ -1,10 +1,16 @@
 from datetime import datetime, timedelta, timezone
 import os
 import re
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import and_, case, func, literal, or_, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, aliased
+
+from .daily_report_config import (
+    DailyReportConfigurationError,
+    validate_daily_report_schedule_config,
+)
 
 from .event_queue_service import (
     build_event_queue_summary,
@@ -40,8 +46,8 @@ def runtime_build_identity():
     }
 
 
-def build_readiness_report(db: Session, app_settings):
-    now = datetime.now(timezone.utc)
+def build_readiness_report(db: Session, app_settings, now=None):
+    now = now or datetime.now(timezone.utc)
     report = {
         "generated_at": now.isoformat(),
         "ready": False,
@@ -65,8 +71,16 @@ def build_readiness_report(db: Session, app_settings):
         },
         "imports": {"recent_errors": []},
         "workers": {"status": "unknown", "required": [], "missing": [], "unhealthy": [], "workers": []},
+        "daily_report": {"status": "unknown", "due_date": "", "missing_count": 0},
         "policy": {
-            "mandatory": ["database", "migrations", "hot_path_queue", "imports", "worker_main_loops"],
+            "mandatory": [
+                "database",
+                "migrations",
+                "hot_path_queue",
+                "imports",
+                "worker_main_loops",
+                "daily_report_delivery",
+            ],
             "optional": [],
             "mandatory_status": "unknown",
             "optional_status": "unknown",
@@ -95,6 +109,11 @@ def build_readiness_report(db: Session, app_settings):
             required_workers=configured_required_workers,
             now=now,
         )
+        report["daily_report"] = build_daily_report_delivery_readiness(
+            db,
+            app_settings,
+            now=now,
+        )
     except SQLAlchemyError as exc:
         report["status"] = "unhealthy"
         report["database"] = {
@@ -111,6 +130,7 @@ def build_readiness_report(db: Session, app_settings):
         or report["queue"]["hot_path_last_errors"]
         or report["imports"]["recent_errors"]
         or report["workers"].get("status") != "ok"
+        or report["daily_report"].get("status") == "unhealthy"
     )
     report["ready"] = not bool(mandatory_failed)
     report["policy"]["mandatory_status"] = "unhealthy" if mandatory_failed else "ok"
@@ -153,6 +173,11 @@ def public_readiness_report(report):
             "required_count": len(workers.get("required") or []),
             "missing_count": len(workers.get("missing") or []),
             "unhealthy_count": len(workers.get("unhealthy") or []),
+        },
+        "daily_report": {
+            "status": (report.get("daily_report") or {}).get("status") or "unknown",
+            "due_date": (report.get("daily_report") or {}).get("due_date") or "",
+            "missing_count": int((report.get("daily_report") or {}).get("missing_count") or 0),
         },
         "policy": dict(report.get("policy") or {}),
     }
@@ -226,6 +251,110 @@ def build_queue_readiness(db: Session, now=None):
         "last_errors": errors,
         "hot_path_last_errors": hot_path_errors,
         "resolved_historical_errors": resolved_errors,
+    }
+
+
+def build_daily_report_delivery_readiness(db: Session, app_settings, now=None):
+    enabled = bool(getattr(app_settings, "skladbot_daily_report_enabled", False))
+    environment = str(getattr(app_settings, "environment", "") or "").strip().casefold()
+    if not enabled:
+        return {
+            "status": "unhealthy" if environment == "production" else "disabled",
+            "due_date": "",
+            "missing_count": 0,
+        }
+
+    chat_ids = tuple(
+        str(value).strip()
+        for value in getattr(app_settings, "skladbot_daily_report_chat_ids", ()) or ()
+        if str(value).strip()
+    )
+    if not chat_ids:
+        return {"status": "unhealthy", "due_date": "", "missing_count": 0}
+
+    try:
+        schedule_config = validate_daily_report_schedule_config({
+            "TAKSKLAD_TIMEZONE": getattr(app_settings, "timezone", "Asia/Tashkent"),
+            "SKLADBOT_DAILY_REPORT_HOUR": getattr(app_settings, "skladbot_daily_report_hour", 22),
+            "SKLADBOT_DAILY_REPORT_MINUTE": getattr(app_settings, "skladbot_daily_report_minute", 0),
+            "SKLADBOT_DAILY_REPORT_RETRY_MINUTES": getattr(
+                app_settings,
+                "skladbot_daily_report_retry_minutes",
+                15,
+            ),
+            "SKLADBOT_DAILY_REPORT_MAX_ATTEMPTS": getattr(
+                app_settings,
+                "skladbot_daily_report_max_attempts",
+                3,
+            ),
+            "SKLADBOT_DAILY_REPORT_GRACE_MINUTES": getattr(
+                app_settings,
+                "skladbot_daily_report_grace_minutes",
+                30,
+            ),
+            "SKLADBOT_DAILY_REPORT_LOOKBACK_DAYS": getattr(
+                app_settings,
+                "skladbot_daily_report_lookback_days",
+                1,
+            ),
+        })
+    except DailyReportConfigurationError:
+        return {"status": "unhealthy", "due_date": "", "missing_count": len(chat_ids)}
+
+    business_timezone = ZoneInfo(schedule_config.timezone_name)
+    now_utc = ensure_aware_utc(now or datetime.now(timezone.utc))
+    local_now = now_utc.astimezone(business_timezone)
+    scheduled_at = local_now.replace(
+        hour=schedule_config.hour,
+        minute=schedule_config.minute,
+        second=0,
+        microsecond=0,
+    )
+    latest_due_date = (
+        local_now.date()
+        if local_now >= scheduled_at + timedelta(minutes=schedule_config.grace_minutes)
+        else local_now.date() - timedelta(days=1)
+    )
+    first_due_date = latest_due_date - timedelta(days=schedule_config.lookback_days - 1)
+    due_dates = tuple(
+        first_due_date + timedelta(days=offset)
+        for offset in range(schedule_config.lookback_days)
+    )
+    due_date_texts = tuple(value.isoformat() for value in due_dates)
+
+    candidates = db.execute(
+        select(PendingEvent)
+        .where(PendingEvent.event_type == SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE)
+        .where(PendingEvent.status == "completed")
+        .where(or_(
+            *(
+                PendingEvent.idempotency_key.like(f"skladbot_daily_report:{date_text}:%")
+                for date_text in due_date_texts
+            ),
+            PendingEvent.payload["report_date"].as_string().in_(due_date_texts),
+        ))
+        .order_by(PendingEvent.updated_at.desc(), PendingEvent.created_at.desc())
+    ).scalars().all()
+    delivered_pairs = {
+        (daily_report_event_report_date(event), daily_report_event_chat_key(event))
+        for event in candidates
+        if daily_report_event_report_date(event) in due_date_texts
+        and daily_report_event_success(event)
+    }
+    missing_pairs = tuple(
+        (due_date, chat_id)
+        for due_date in due_dates
+        for chat_id in chat_ids
+        if (due_date.isoformat(), chat_id) not in delivered_pairs
+    )
+    oldest_missing_date = min(
+        (due_date for due_date, _chat_id in missing_pairs),
+        default=None,
+    )
+    return {
+        "status": "unhealthy" if missing_pairs else "ok",
+        "due_date": (oldest_missing_date or latest_due_date).isoformat(),
+        "missing_count": len(missing_pairs),
     }
 
 

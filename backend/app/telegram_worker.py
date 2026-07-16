@@ -7,8 +7,14 @@ import time
 from datetime import date, datetime, timedelta, timezone
 
 from . import skladbot_daily_report
+from .daily_report_config import (
+    DailyReportConfigurationError,
+    validate_daily_report_schedule_config,
+    validate_production_daily_report_config,
+)
 from .redaction import redact_secrets
 from .reconciliation_service import run_daily_reconciliation
+from .skladbot_client import parse_skladbot_api_tokens
 from .telegram_admin_processor import TelegramAdminProcessor
 from .telegram_clients import TelegramProcessorPorts, telegram_main_reply_keyboard
 from .telegram_common import (
@@ -146,16 +152,37 @@ def validate_telegram_worker_config(
     admin_chat_ids,
     scheduled_chat_ids=(),
     reconciliation_chat_ids=(),
+    *,
+    environment="",
+    daily_report_enabled=False,
+    skladbot_api_tokens=(),
+    daily_report_environ=None,
 ):
-    if not normalize_text(token):
+    production = normalize_text(environment).casefold() == "production"
+    if not normalize_text(token) and not production:
         return True
     errors = []
     allowed = {str(value) for value in allowed_chat_ids or ()}
     admins = {str(value) for value in admin_chat_ids or ()}
     scheduled = {str(value) for value in scheduled_chat_ids or ()}
     reconciliation = {str(value) for value in reconciliation_chat_ids or ()}
+    if production:
+        contract_environ = daily_report_environ or {
+            "TAKSKLAD_ENV": environment,
+            "TAKSKLAD_TIMEZONE": "Asia/Tashkent",
+            "TELEGRAM_BOT_TOKEN": token,
+            "TELEGRAM_ALLOWED_CHAT_IDS": ",".join(sorted(allowed)),
+            "SKLADBOT_DAILY_REPORT_ENABLED": "true" if daily_report_enabled else "false",
+            "SKLADBOT_DAILY_REPORT_CHAT_IDS": ",".join(sorted(scheduled)),
+            "SKLADBOT_API_TOKENS": ",".join(tuple(skladbot_api_tokens or ())),
+        }
+        try:
+            validate_production_daily_report_config(contract_environ)
+        except DailyReportConfigurationError as exc:
+            errors.extend(exc.setting_names)
     if not allowed:
-        errors.append("TELEGRAM_ALLOWED_CHAT_IDS")
+        if normalize_text(token) or production:
+            errors.append("TELEGRAM_ALLOWED_CHAT_IDS")
     for setting_name, values in (
         ("TELEGRAM_ALLOWED_CHAT_IDS", allowed),
         ("TELEGRAM_ADMIN_CHAT_IDS", admins),
@@ -291,11 +318,18 @@ class TelegramWorker:
         self.file_timeout = int(os.environ.get("TELEGRAM_WORKER_FILE_TIMEOUT_SECONDS", "120") or "120")
         self.poll_timeout = int(os.environ.get("TELEGRAM_WORKER_POLL_TIMEOUT_SECONDS", "15") or "15")
         self.max_file_size = int(os.environ.get("TELEGRAM_WORKER_MAX_FILE_BYTES", str(20 * 1024 * 1024)) or 0)
+        self.environment = normalize_text(os.environ.get("TAKSKLAD_ENV")) or "local"
+        try:
+            daily_report_schedule = validate_daily_report_schedule_config(os.environ)
+        except DailyReportConfigurationError as exc:
+            raise TelegramConfigurationError(exc.setting_names) from exc
         self.skladbot_daily_report_enabled = parse_bool_flag(os.environ.get("SKLADBOT_DAILY_REPORT_ENABLED"))
         self.skladbot_daily_report_chat_ids = parse_chat_ids(os.environ.get("SKLADBOT_DAILY_REPORT_CHAT_IDS"))
-        self.skladbot_daily_report_hour = max(0, min(23, parse_int(os.environ.get("SKLADBOT_DAILY_REPORT_HOUR") or "22")))
-        self.skladbot_daily_report_minute = max(0, min(59, parse_int(os.environ.get("SKLADBOT_DAILY_REPORT_MINUTE") or "0")))
-        self.skladbot_daily_report_retry_minutes = max(1, parse_int(os.environ.get("SKLADBOT_DAILY_REPORT_RETRY_MINUTES") or "15"))
+        self.skladbot_daily_report_hour = daily_report_schedule.hour
+        self.skladbot_daily_report_minute = daily_report_schedule.minute
+        self.skladbot_daily_report_retry_minutes = daily_report_schedule.retry_minutes
+        self.skladbot_daily_report_max_attempts = daily_report_schedule.max_attempts
+        self.skladbot_daily_report_lookback_days = daily_report_schedule.lookback_days
         self.daily_reconciliation_enabled = parse_bool_flag(os.environ.get("TAKSKLAD_DAILY_RECONCILIATION_ENABLED"), default=True)
         self.daily_reconciliation_chat_ids = parse_chat_ids(os.environ.get("TAKSKLAD_DAILY_RECONCILIATION_CHAT_IDS"))
         validate_telegram_worker_config(
@@ -304,6 +338,10 @@ class TelegramWorker:
             self.admin_chat_ids,
             self.skladbot_daily_report_chat_ids,
             self.daily_reconciliation_chat_ids,
+            environment=self.environment,
+            daily_report_enabled=self.skladbot_daily_report_enabled,
+            skladbot_api_tokens=parse_skladbot_api_tokens(),
+            daily_report_environ=os.environ,
         )
         self._initialize_processors(
             telegram_api_client=telegram_api_client,

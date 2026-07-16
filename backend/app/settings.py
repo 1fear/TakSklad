@@ -4,8 +4,19 @@ from dataclasses import dataclass
 from datetime import datetime
 from urllib.parse import urlsplit, urlunsplit
 
+try:
+    from .daily_report_config import (
+        DailyReportConfigurationError,
+        validate_daily_report_schedule_config,
+    )
+except ImportError:  # pragma: no cover - standalone settings verifier compatibility
+    from backend.app.daily_report_config import (
+        DailyReportConfigurationError,
+        validate_daily_report_schedule_config,
+    )
 
-APP_VERSION = "2.0.40"
+
+APP_VERSION = "2.0.41"
 VALID_ENVIRONMENTS = frozenset({"local", "test", "production"})
 MIN_SESSION_SECRET_BYTES = 32
 MIN_SESSION_SECRET_DISTINCT_CHARACTERS = 8
@@ -68,6 +79,14 @@ class Settings:
     legacy_auth_expires_at: str
     service_token_rotation_max_overlap_seconds: int
     worker_heartbeat_required_names: tuple[str, ...]
+    skladbot_daily_report_enabled: bool
+    skladbot_daily_report_chat_ids: tuple[str, ...]
+    skladbot_daily_report_hour: int
+    skladbot_daily_report_minute: int
+    skladbot_daily_report_retry_minutes: int
+    skladbot_daily_report_max_attempts: int
+    skladbot_daily_report_grace_minutes: int
+    skladbot_daily_report_lookback_days: int
 
     @property
     def api_auth_enabled(self):
@@ -143,6 +162,10 @@ def load_settings(environ=None):
     environ = os.environ if environ is None else environ
     raw_environment = environ.get("TAKSKLAD_ENV", "")
     database_settings = load_database_settings(environ)
+    try:
+        daily_report_schedule = validate_daily_report_schedule_config(environ)
+    except DailyReportConfigurationError as exc:
+        raise ConfigurationError(exc.setting_names) from exc
     return Settings(
         service_name=environ.get("TAKSKLAD_SERVICE_NAME", "taksklad-backend"),
         environment=str(raw_environment or "local").strip() or "local",
@@ -154,7 +177,7 @@ def load_settings(environ=None):
         **database_settings,
         api_token=environ.get("TAKSKLAD_API_TOKEN", "").strip(),
         cors_origins=parse_csv(environ.get("TAKSKLAD_CORS_ORIGINS", "")),
-        timezone=environ.get("TAKSKLAD_TIMEZONE", "Asia/Tashkent").strip() or "Asia/Tashkent",
+        timezone=daily_report_schedule.timezone_name,
         web_login=environ.get("TAKSKLAD_WEB_LOGIN", "").strip(),
         web_password_hash=environ.get("TAKSKLAD_WEB_PASSWORD_HASH", "").strip(),
         web_session_secret=environ.get("TAKSKLAD_WEB_SESSION_SECRET", "").strip(),
@@ -190,6 +213,19 @@ def load_settings(environ=None):
             parse_int(environ.get("TAKSKLAD_SERVICE_TOKEN_ROTATION_MAX_OVERLAP_SECONDS"), 900),
         ),
         worker_heartbeat_required_names=parse_csv(environ.get("TAKSKLAD_REQUIRED_WORKERS", "")),
+        skladbot_daily_report_enabled=parse_bool(
+            environ.get("SKLADBOT_DAILY_REPORT_ENABLED"),
+            default=False,
+        ),
+        skladbot_daily_report_chat_ids=parse_csv(
+            environ.get("SKLADBOT_DAILY_REPORT_CHAT_IDS", ""),
+        ),
+        skladbot_daily_report_hour=daily_report_schedule.hour,
+        skladbot_daily_report_minute=daily_report_schedule.minute,
+        skladbot_daily_report_retry_minutes=daily_report_schedule.retry_minutes,
+        skladbot_daily_report_max_attempts=daily_report_schedule.max_attempts,
+        skladbot_daily_report_grace_minutes=daily_report_schedule.grace_minutes,
+        skladbot_daily_report_lookback_days=daily_report_schedule.lookback_days,
     )
 
 
