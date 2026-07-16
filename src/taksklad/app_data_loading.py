@@ -1,7 +1,7 @@
 import logging
 import tkinter as tk
 
-from .backend_client import backend_enabled, backend_read_orders_enabled
+from .backend_client import backend_enabled
 from .backend_events import load_pending_backend_events, sync_pending_backend_events
 from .backend_flow import backend_blocked_scan_events_for_item
 from .config import BG_MAIN, FG_MUTED, STATUS_COLUMN, STATUS_COMPLETED, STATUS_NOT_COMPLETED
@@ -17,7 +17,6 @@ from .desktop_refresh_service import (
     format_refresh_error_message,
 )
 from .orders import get_plan_blocks
-from .pending_store import load_pending_saves
 from .scan_quantities import scan_entries_for_order_codes
 from .utils import normalize_kiz_code, normalize_text
 
@@ -43,7 +42,7 @@ def refresh_order_identity(order):
         return ("source_import", source_import_id)
     row_number = normalize_text(order.get("_row_number") or order.get("row_number"))
     if row_number:
-        return ("google_row", row_number)
+        return ("legacy_row", row_number)
     source_order_id = normalize_text(order.get("ID заказа") or order.get("id") or order.get("_backend_order_id"))
     product = normalize_text(order.get("Товары") or order.get("product"))
     if source_order_id and product:
@@ -99,9 +98,9 @@ class DataLoadingMixin:
             self.show_warning(
                 f"Нет заказов со статусом '{STATUS_NOT_COMPLETED}'.\n\n"
                 f"Проверьте:\n"
-                f"1. В таблице есть строки заказов\n"
-                f"2. Колонка '{STATUS_COLUMN}' не заполнена как '{STATUS_COMPLETED}'\n"
-                f"3. Колонка 'Отсканированные коды' заполнена не полностью"
+                f"1. Заказы импортированы в backend\n"
+                f"2. Заказы не завершены и не возвращены\n"
+                f"3. Связь с backend доступна"
             )
 
 
@@ -171,22 +170,22 @@ class DataLoadingMixin:
             self.today_orders, self.sheet, self.all_existing_codes, self.last_sync_result = result
         else:
             self.today_orders, self.sheet, self.all_existing_codes = result
-            self.last_sync_result = {"synced": 0, "failed": 0, "remaining": len(load_pending_saves())}
+            self.last_sync_result = {"synced": 0, "failed": 0, "remaining": 0, "primary_source": "backend"}
 
         if show_empty_warning and not self.today_orders:
             self.show_warning(
                 f"Нет заказов со статусом '{STATUS_NOT_COMPLETED}'.\n\n"
                 f"Проверьте:\n"
-                f"1. В таблице есть строки заказов\n"
-                f"2. Колонка '{STATUS_COLUMN}' не заполнена как '{STATUS_COMPLETED}'\n"
-                f"3. Колонка 'Отсканированные коды' пустая или заполнена не полностью у активных заказов"
+                f"1. Заказы импортированы в backend\n"
+                f"2. Заказы не завершены и не возвращены\n"
+                f"3. Связь с backend доступна"
             )
         self.update_stats_display()
         log_refresh_diagnostic_summary(
             self.today_orders,
             self.all_existing_codes,
             sync_result=self.last_sync_result,
-            source="backend" if backend_read_orders_enabled() else "google",
+            source="backend",
         )
 
     def _set_refresh_scan_controls(self, *, enabled, message=""):
@@ -288,41 +287,23 @@ class DataLoadingMixin:
             sync_result = self.last_sync_result or {}
             skladbot_result = sync_result.get("skladbot", {}) if isinstance(sync_result, dict) else {}
             backend_result = sync_result.get("backend", {}) if isinstance(sync_result, dict) else {}
-            google_result = sync_result.get("google_sheets", {}) if isinstance(sync_result, dict) else {}
-            if backend_result.get("enabled") and backend_read_orders_enabled():
+            if backend_result.get("enabled"):
                 if backend_result.get("remaining"):
                     status_text = f"⚠️ Список из backend обновлён, очередь backend: {backend_result.get('remaining')}"
                 else:
-                    google_updates = int(google_result.get("orders_updated") or 0) + int(google_result.get("items_updated") or 0)
                     if skladbot_result.get("errors"):
-                        status_text = f"⚠️ Список обновлён из backend, Google правок: {google_updates}, SkladBot недоступен"
+                        status_text = "⚠️ Список обновлён из backend, SkladBot недоступен"
                     elif skladbot_result.get("pending"):
-                        status_text = (
-                            f"✅ Список обновлён из Google/backend, Google правок {google_updates}; "
-                            "SkladBot обновляется в фоне"
-                        )
+                        status_text = "✅ Список обновлён из backend; SkladBot обновляется в фоне"
                     elif skladbot_result.get("enabled"):
                         status_text = (
-                            f"✅ Список обновлён из всех источников: Google правок {google_updates}, "
+                            "✅ Список обновлён из backend: "
                             f"SkladBot найдено {skladbot_result.get('matched', 0)}"
                         )
                     else:
-                        status_text = f"✅ Список заказов обновлён из backend, Google правок: {google_updates}"
-            elif sync_result.get("synced"):
-                status_text = f"✅ Список обновлён, отправлено из очереди: {sync_result['synced']}"
-            elif skladbot_result.get("errors"):
-                status_text = (
-                    "⚠️ Список загружен из Google, SkladBot временно недоступен"
-                )
-            elif skladbot_result.get("enabled"):
-                status_text = (
-                    "✅ Список обновлён, SkladBot: "
-                    f"найдено {skladbot_result.get('matched', 0)}, "
-                    f"не найдено {skladbot_result.get('not_found', 0)}, "
-                    f"дублей {skladbot_result.get('multiple', 0)}"
-                )
+                        status_text = "✅ Список заказов обновлён из backend"
             else:
-                status_text = "✅ Список заказов обновлён"
+                status_text = "✅ Список заказов обновлён из backend"
             if keep_current_selection:
                 reconcile_status = reconcile_result.get("status")
                 if reconcile_status == "terminal":

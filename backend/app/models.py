@@ -39,7 +39,7 @@ class Order(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
-    source: Mapped[str] = mapped_column(String(40), nullable=False, default="google_sheets")
+    source: Mapped[str] = mapped_column(String(40), nullable=False, default="backend")
     external_id: Mapped[str | None] = mapped_column(String(120))
     import_order_key: Mapped[str | None] = mapped_column(String(120))
     import_source_order_key: Mapped[str | None] = mapped_column(String(120))

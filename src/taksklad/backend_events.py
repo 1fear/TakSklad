@@ -39,6 +39,50 @@ def get_pending_backend_codes():
     return codes
 
 
+def migrate_legacy_pending_saves_to_backend_events():
+    """Move convertible pre-DB scan records into the durable backend queue.
+
+    Records without a backend item id are kept untouched and reported as a
+    startup blocker so a legacy queue can never be silently discarded.
+    """
+
+    legacy = load_data_section("pending_saves", [])
+    legacy = legacy if isinstance(legacy, list) else []
+    if not legacy:
+        return {"migrated": 0, "remaining": 0}
+
+    migrated = 0
+    remaining = []
+    for item in legacy:
+        order = item.get("order") or {}
+        order_item_id = normalize_text(order.get("_backend_order_item_id"))
+        codes = split_codes(item.get("codes") or [])
+        if not order_item_id or not codes:
+            remaining.append(item)
+            continue
+        migrated_item = True
+        for code in codes:
+            event_id = add_pending_backend_event(
+                "scan",
+                {
+                    "order_item_id": order_item_id,
+                    "code": normalize_kiz_code(code),
+                    "workstation_id": socket.gethostname(),
+                    "scanned_at": item.get("created_at") or datetime.now().astimezone().isoformat(),
+                },
+            )
+            if not event_id:
+                migrated_item = False
+                break
+        if migrated_item:
+            migrated += 1
+        else:
+            remaining.append(item)
+
+    save_data_section("pending_saves", remaining)
+    return {"migrated": migrated, "remaining": len(remaining)}
+
+
 def make_backend_event_id(event_type, payload):
     return make_hash({
         "type": event_type,

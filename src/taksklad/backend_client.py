@@ -275,6 +275,14 @@ def fetch_returned_orders(limit=50):
     return backend_request("GET", f"/api/v1/returns?{quoted}")
 
 
+def fetch_day_report(report_date=None):
+    query = ""
+    if report_date:
+        value = report_date.isoformat() if hasattr(report_date, "isoformat") else str(report_date)
+        query = "?" + urllib.parse.urlencode({"report_date": value})
+    return backend_request("GET", f"/api/v1/reports/day{query}")
+
+
 def mark_order_returned(order_id, return_reference="", returned_by="desktop", confirmed_items=None):
     return backend_request(
         "POST",

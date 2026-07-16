@@ -4,10 +4,6 @@ import sys
 
 from taksklad.secret_store import BACKEND_API_TOKEN_SECRET, SecretStoreError, load_secret
 
-SPREADSHEET_ID = "1hisRZ667qEhsRTfoPzv4r78naYhc9kdzhkmUKvZEUr8"
-SHEET_NAME = "data"
-ARCHIVE_SHEET_NAME = "Архив"
-RETURNS_SHEET_NAME = "Возвраты"
 APP_NAME = "TakSklad"
 APP_EXECUTABLE_NAME = "TakSklad.exe"
 APP_RELEASE_ZIP_NAME = "TakSklad-windows-x64.zip"
@@ -102,7 +98,6 @@ def _int_setting(runtime_config, env_name, *runtime_names, default=0):
 APP_DIR = get_app_dir()
 RUNTIME_CONFIG_FILE = os.path.join(APP_DIR, ".env.taksklad-vds-2.0.generated.json")
 RUNTIME_CONFIG = _load_runtime_config(APP_DIR) if getattr(sys, "frozen", False) else {}
-CREDENTIALS_FILE = os.path.join(APP_DIR, "credentials.json")
 TAKSKLAD_DATA_FILE = os.path.join(APP_DIR, "TakSklad_data.json")
 # Логи приложения держим в подпапке docs/ рядом с changelog'ом и проектной
 # документацией — единое место для всего, что относится к диагностике и
@@ -126,7 +121,7 @@ TELEGRAM_SETTINGS_FILE = os.path.join(APP_DIR, "telegram_settings.json")
 YANDEX_GEOCODER_KEY_FILE = os.path.join(APP_DIR, "yandex_geocoder_key.txt")
 YANDEX_GEOCODER_ENV_VAR = "YANDEX_GEOCODER_API_KEY"
 
-APP_VERSION = "2.0.39"
+APP_VERSION = "2.0.40"
 APP_BUILD_LABEL = os.environ.get("TAKSKLAD_BUILD_LABEL", "MVP 2.0").strip()
 UPDATE_INFO_URL = os.environ.get(
     "TAKSKLAD_UPDATE_INFO_URL",
@@ -138,17 +133,9 @@ UPDATE_DOWNLOAD_TIMEOUT_SECONDS = 120
 # апдейтер для той же версии чаще одного раза в час. Иначе получаем цикл
 # «упало → старый exe → снова проверка → снова упало».
 UPDATE_RETRY_COOLDOWN_SECONDS = 60 * 60
-GOOGLE_API_TIMEOUT_SECONDS = 30
-GOOGLE_RETRY_COOLDOWN_SECONDS = 60
-GOOGLE_BACKOFF_LOG_INTERVAL_SECONDS = 30
 TELEGRAM_FILE_DOWNLOAD_TIMEOUT_SECONDS = 120
 EXCEL_IMPORT_EXTENSIONS = {".xlsx", ".xlsm"}
 TELEGRAM_SINGLE_LISTENER_LOCK_ENABLED = True
-TELEGRAM_LOCK_SHEET_NAME = "_TakSklad_System"
-TELEGRAM_LOCK_KEY = "telegram_poll"
-TELEGRAM_LOCK_TTL_SECONDS = 60
-TELEGRAM_LOCK_REFRESH_SECONDS = 20
-TELEGRAM_LOCK_RETRY_SECONDS = 15
 
 try:
     TAKSKLAD_BACKEND_API_TOKEN = (load_secret(BACKEND_API_TOKEN_SECRET) or "").strip()
@@ -162,36 +149,13 @@ TAKSKLAD_BACKEND_BASE_URL = _string_setting(
     "TAKSKLAD_BACKEND_BASE_URL",
     default="https://api.taksklad.uz" if TAKSKLAD_BACKEND_API_TOKEN else "",
 ).rstrip("/")
-TAKSKLAD_BACKEND_ENABLED = _bool_setting(
-    RUNTIME_CONFIG,
-    "TAKSKLAD_BACKEND_ENABLED",
-    "TAKSKLAD_BACKEND_ENABLED",
-    default=bool(TAKSKLAD_BACKEND_API_TOKEN),
-)
-TAKSKLAD_BACKEND_READ_ORDERS_ENABLED = _bool_setting(
-    RUNTIME_CONFIG,
-    "TAKSKLAD_BACKEND_READ_ORDERS_ENABLED",
-    "TAKSKLAD_BACKEND_READ_ORDERS_ENABLED",
-    default=TAKSKLAD_BACKEND_ENABLED,
-)
-TAKSKLAD_BACKEND_ONLY_REFRESH = _bool_setting(
-    RUNTIME_CONFIG,
-    "TAKSKLAD_BACKEND_ONLY_REFRESH",
-    "TAKSKLAD_BACKEND_ONLY_REFRESH",
-    default=False,
-)
-TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED = _bool_setting(
-    RUNTIME_CONFIG,
-    "TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED",
-    "TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED",
-    default=False,
-)
-TELEGRAM_DESKTOP_POLLING_ENABLED = _bool_setting(
-    RUNTIME_CONFIG,
-    "TELEGRAM_DESKTOP_POLLING_ENABLED",
-    "TELEGRAM_DESKTOP_POLLING_ENABLED",
-    default=not TAKSKLAD_BACKEND_ENABLED,
-)
+# Desktop 2.x работает только через backend/PostgreSQL. Эти значения намеренно
+# не читаются из env/runtime config: старый Google-режим нельзя вернуть флагом
+# на одном из складских компьютеров.
+TAKSKLAD_BACKEND_ENABLED = True
+TAKSKLAD_BACKEND_READ_ORDERS_ENABLED = True
+TAKSKLAD_BACKEND_ONLY_REFRESH = True
+TELEGRAM_DESKTOP_POLLING_ENABLED = False
 TAKSKLAD_BACKEND_TIMEOUT_SECONDS = _int_setting(
     RUNTIME_CONFIG,
     "TAKSKLAD_BACKEND_TIMEOUT_SECONDS",

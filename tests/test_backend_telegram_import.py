@@ -654,7 +654,7 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertIn("Excel импортирован через Telegram", messages[-1][1])
         self.assertIn("Блоков импортировано: 2", messages[-1][1])
         self.assertIn("Адреса в backend обновлены: 0", messages[-1][1])
-        self.assertIn("Google Sheets: записано 1, повторы 0, адреса обновлены 0", messages[-1][1])
+        self.assertNotIn("Google Sheets", messages[-1][1])
 
     def test_telegram_worker_sends_pending_notification_event(self):
         engine = create_engine(
@@ -1453,7 +1453,7 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertEqual(posts[0][1]["actor"], "telegram")
         self.assertEqual(posts[0][1]["source"], "telegram")
         self.assertEqual(posts[0][1]["idempotency_key"], f"telegram:manual_delete:123:{active_order['id']}")
-        self.assertIn("Заказ удалён из TakSklad", messages[-1][1])
+        self.assertIn("Заказ удалён из базы TakSklad", messages[-1][1])
         self.assertIn("WH-R-123", messages[-1][1])
         self.assertIn("осталась", messages[-1][1])
 

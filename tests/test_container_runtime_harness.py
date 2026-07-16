@@ -73,7 +73,6 @@ class ContainerRuntimeHarnessContractTests(unittest.TestCase):
         for module in (
             "app.skladbot_worker_runner",
             "app.smartup_auto_import_worker",
-            "app.google_sheets_sync_worker",
             "app.telegram_worker",
         ):
             self.assertIn(module, source)

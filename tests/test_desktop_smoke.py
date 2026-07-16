@@ -122,7 +122,7 @@ def attach_main_screen_widgets(app):
     app.completed_count_label = FakeWidget("0")
     app.total_blocks_label = FakeWidget("0")
     app.active_orders_label = FakeWidget("0")
-    app.pending_saves_label = FakeWidget("OK")
+    app.pending_events_label = FakeWidget("OK")
     app.sync_caption_label = FakeWidget("Синхронизация")
     app.backend_status_label = FakeWidget("")
     app.sync_queue_btn = FakeWidget("ОЧЕРЕДИ")
@@ -131,7 +131,7 @@ def attach_main_screen_widgets(app):
     app.error_toast = FakeWidget("")
     app.status_var = FakeVar("✅ Готов к работе")
     app.status_label = FakeWidget("")
-    app.version_status_label = FakeWidget("Версия: 2.0.39 · MVP 2.0 · проверка обновлений · ПК abc123")
+    app.version_status_label = FakeWidget("Версия: 2.0.40 · MVP 2.0 · проверка обновлений · ПК abc123")
 
 
 if __name__ == "__main__":

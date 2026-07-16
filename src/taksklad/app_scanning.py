@@ -29,12 +29,7 @@ from .desktop_scan_rules import (
     scanned_blocks_for_order,
 )
 from .orders import get_order_status, get_plan_blocks
-from .pending_store import (
-    add_pending_save,
-    is_retryable_save_error,
-    update_pending_save_codes_for_undo,
-    write_scan_backup,
-)
+from .pending_store import write_scan_backup
 from .scan_quantities import (
     SCAN_TYPE_AGGREGATE_BOX,
     aggregate_product_mismatch,
@@ -42,7 +37,6 @@ from .scan_quantities import (
     scan_metadata_for_code,
     scan_product_mismatch,
 )
-from .sheets import update_scanned_codes_to_gsheet
 from .utils import normalize_kiz_code, validate_kiz_code
 
 
@@ -190,7 +184,6 @@ class ScanningActionsMixin:
             self.show_error("Нет кодов для отмены")
             return
 
-        previous_codes = self.scanned_codes.copy()
         removed_code = self.scanned_codes.pop()
         remaining_codes = self.scanned_codes.copy()
         was_saved = len(self.scanned_codes) < self.saved_codes_count
@@ -200,16 +193,7 @@ class ScanningActionsMixin:
             self.show_error("Не удалось сохранить локальный backup отмены. Код не отменён")
             return
 
-        pending_updated = update_pending_save_codes_for_undo(
-            self.current_order,
-            previous_codes,
-            remaining_codes,
-            "Откат последнего КИЗа в desktop",
-        )
-        if was_saved and pending_updated:
-            self.saved_codes_count = len(remaining_codes)
-
-        if was_saved and order_uses_backend_scan_path(self.current_order) and not pending_updated:
+        if was_saved and order_uses_backend_scan_path(self.current_order):
             try:
                 undo_backend_scan(self.current_order, removed_code)
             except Exception as exc:
@@ -217,23 +201,10 @@ class ScanningActionsMixin:
                 self.show_error(f"Не удалось отменить код в VDS: {exc}")
                 return
             self.saved_codes_count = len(remaining_codes)
-        elif was_saved and not self.sheet and not pending_updated:
+        elif was_saved:
             self.scanned_codes.append(removed_code)
-            self.show_error("Нет подключения к Google Sheets для отмены уже записанного кода")
+            self.show_error("Позиция не связана с backend. Отмена заблокирована")
             return
-
-        if was_saved and self.sheet and not pending_updated and not order_uses_backend_scan_path(self.current_order):
-            ok, message = update_scanned_codes_to_gsheet(
-                self.sheet,
-                self.current_order,
-                remaining_codes,
-                allow_empty=True,
-            )
-            if not ok:
-                self.scanned_codes.append(removed_code)
-                self.show_error(f"Не удалось отменить код в Google Sheets: {message}")
-                return
-            self.saved_codes_count = len(remaining_codes)
 
         self.current_order["Отсканированные коды"] = "\n".join(remaining_codes)
         self.current_order["_existing_scanned_codes"] = remaining_codes.copy()
@@ -343,6 +314,10 @@ class ScanningActionsMixin:
                 ScanningActionsMixin.reject_scan(self, message)
                 return
 
+        if not order_uses_backend_scan_path(self.current_order):
+            ScanningActionsMixin.reject_scan(self, "Позиция не связана с backend. Сканирование заблокировано")
+            return
+
         if not write_scan_backup("scan", self.current_order, code=code, codes=self.scanned_codes + [code]):
             ScanningActionsMixin.reject_scan(self, "Не удалось сохранить локальный backup. Код не принят")
             return
@@ -404,44 +379,28 @@ class ScanningActionsMixin:
         self.safe_config(self.finish_btn, state="disabled")
 
         def work():
-            if order_uses_backend_scan_path(order):
-                for saved_code in unsaved_backend_scan_codes(order, scanned_codes):
-                    queue_backend_scan(order, saved_code)
-                backend_sync_result = sync_pending_backend_events()
-                blocked_events = backend_blocked_scan_events_for_item(
-                    backend_sync_result,
-                    order.get("_backend_order_item_id"),
-                )
-                if blocked_events:
-                    return {"backend_blocked": True, "blocked_events": blocked_events, "backend": True}
-                blocker = backend_sync_item_blocker(
-                    backend_sync_result,
-                    order.get("_backend_order_item_id"),
-                    load_pending_backend_events(),
-                )
-                if blocker:
-                    raise RuntimeError(blocker)
-                if not write_scan_backup("position_saved_backend", order, codes=scanned_codes):
-                    raise RuntimeError("Коды сохранены в backend, но локальный backup позиции не создан")
-                return {"queued": False, "message": "backend_saved", "backend": True}
-
-            ok = False
-            message = "Нет подключения к Google Sheets"
-            if self.sheet:
-                ok, message = update_scanned_codes_to_gsheet(self.sheet, order, scanned_codes)
-
-            if not ok:
-                if not is_retryable_save_error(message):
-                    raise RuntimeError(message)
-                if not add_pending_save(order, scanned_codes, message):
-                    raise RuntimeError("Google Sheets недоступен, и durable очередь записи не создана")
-                if not write_scan_backup("position_queued", order, codes=scanned_codes):
-                    raise RuntimeError("Google Sheets недоступен, и локальная очередь записи не создана")
-                return {"queued": True, "message": message}
-
-            if not write_scan_backup("position_saved", order, codes=scanned_codes):
-                raise RuntimeError("Коды записаны в Google Sheets, но локальный backup позиции не создан")
-            return {"queued": False, "message": message}
+            if not order_uses_backend_scan_path(order):
+                raise RuntimeError("Позиция не связана с backend. Сохранение КИЗов заблокировано")
+            for saved_code in unsaved_backend_scan_codes(order, scanned_codes):
+                if not queue_backend_scan(order, saved_code):
+                    raise RuntimeError("Не удалось поставить КИЗ в durable backend-очередь")
+            backend_sync_result = sync_pending_backend_events()
+            blocked_events = backend_blocked_scan_events_for_item(
+                backend_sync_result,
+                order.get("_backend_order_item_id"),
+            )
+            if blocked_events:
+                return {"backend_blocked": True, "blocked_events": blocked_events, "backend": True}
+            blocker = backend_sync_item_blocker(
+                backend_sync_result,
+                order.get("_backend_order_item_id"),
+                load_pending_backend_events(),
+            )
+            if blocker:
+                raise RuntimeError(blocker)
+            if not write_scan_backup("position_saved_backend", order, codes=scanned_codes):
+                raise RuntimeError("Коды сохранены в backend, но локальный backup позиции не создан")
+            return {"queued": False, "message": "backend_saved", "backend": True}
 
         def on_success(result):
             if result.get("backend_blocked"):

@@ -11,7 +11,9 @@ Current scope:
 - Docker image definition.
 - Alembic migration baseline for controlled schema upgrades.
 
-This is not a production release yet. The desktop app still works directly with Google Sheets until the backend is deployed, verified, and connected behind feature flags.
+PostgreSQL/backend is the only supported runtime source of truth. Desktop and
+web clients use the backend for orders, scans, returns, imports, and reports;
+Google Sheets is not a runtime fallback.
 
 ## Local Docker Run
 

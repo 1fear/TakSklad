@@ -13,7 +13,6 @@ DEFAULT_EVENT_LEASE_DURATION = timedelta(minutes=30)
 CLAIMABLE_EVENT_STATUSES = ("pending", "failed")
 TERMINAL_EVENT_STATUSES = ("completed", "blocked", "dead", "cancelled")
 DEPLOY_RECOVERABLE_EVENT_TYPES = (
-    "google_sheets_export",
     "telegram_excel_import",
     "telegram_notification",
     "skladbot_request_create",

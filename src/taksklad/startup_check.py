@@ -11,10 +11,7 @@ from .config import (
     APP_BUILD_LABEL,
     APP_VERSION,
     LOG_FILE,
-    SHEET_NAME,
-    SPREADSHEET_ID,
     TAKSKLAD_BACKEND_BASE_URL,
-    TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED,
     TAKSKLAD_BACKEND_ENABLED,
     TAKSKLAD_BACKEND_ONLY_REFRESH,
     TAKSKLAD_BACKEND_READ_ORDERS_ENABLED,
@@ -33,10 +30,6 @@ def safe_hash(value, length=10):
     if not text:
         return ""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:length]
-
-
-def credentials_status(app_data=None):
-    return "secure_store" if storage.credentials_available() else "missing"
 
 
 def url_origin(value):
@@ -149,7 +142,6 @@ def build_startup_self_check(version_status=None):
     telegram_token_configured = bool(normalize_text(telegram_settings.get("bot_token")))
     chat_ids_count = len(get_telegram_chat_ids(telegram_settings))
 
-    pending_saves = app_data.get("pending_saves")
     pending_prints = app_data.get("pending_prints")
     pending_backend_events = app_data.get("pending_backend_events")
     pending_telegram = app_data.get("pending_telegram")
@@ -168,13 +160,10 @@ def build_startup_self_check(version_status=None):
         "frozen": bool_text(getattr(sys, "frozen", False)),
         "app_dir": APP_DIR,
         "log_file": LOG_FILE,
-        "spreadsheet_hash": safe_hash(SPREADSHEET_ID),
-        "sheet": SHEET_NAME,
         "update_origin": url_origin(UPDATE_INFO_URL),
         "app_data": "present" if os.path.exists(storage.TAKSKLAD_DATA_FILE) else "missing",
         "app_data_status": app_data_recovery.get("status") or "unknown",
         "app_data_restored": bool_text(bool(app_data_recovery.get("restored_from"))),
-        "credentials": credentials_status(app_data),
         "telegram_enabled": bool_text(telegram_enabled),
         "telegram_token": bool_text(telegram_token_configured),
         "telegram_chats": str(chat_ids_count),
@@ -182,11 +171,9 @@ def build_startup_self_check(version_status=None):
         "backend_enabled": bool_text(TAKSKLAD_BACKEND_ENABLED),
         "backend_read_orders": bool_text(TAKSKLAD_BACKEND_READ_ORDERS_ENABLED),
         "backend_only_refresh": bool_text(TAKSKLAD_BACKEND_ONLY_REFRESH),
-        "backend_emergency_google_fallback": bool_text(TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED),
         "backend_origin": url_origin(TAKSKLAD_BACKEND_BASE_URL),
         "backend_token": bool_text(secret_available(BACKEND_API_TOKEN_SECRET)),
         "geocoder_key": bool_text(load_yandex_geocoder_key()),
-        "pending_saves": str(len(pending_saves) if isinstance(pending_saves, list) else 0),
         "pending_prints": str(len(pending_prints) if isinstance(pending_prints, list) else 0),
         "pending_backend_events": str(len(pending_backend_events) if isinstance(pending_backend_events, list) else 0),
         "pending_telegram": str(len(pending_telegram) if isinstance(pending_telegram, list) else 0),
@@ -213,9 +200,6 @@ def format_startup_self_check(check):
         "version_block_workflow",
         "version_error_class",
         "frozen",
-        "spreadsheet_hash",
-        "sheet",
-        "credentials",
         "app_data",
         "app_data_status",
         "app_data_restored",
@@ -226,11 +210,9 @@ def format_startup_self_check(check):
         "backend_enabled",
         "backend_read_orders",
         "backend_only_refresh",
-        "backend_emergency_google_fallback",
         "backend_origin",
         "backend_token",
         "geocoder_key",
-        "pending_saves",
         "pending_prints",
         "pending_backend_events",
         "pending_telegram",

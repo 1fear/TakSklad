@@ -1,25 +1,16 @@
-from datetime import datetime
 import tkinter as tk
 
-from .config import ACCENT, BG_CARD, BG_MAIN, FG_MUTED, FG_TEXT, SHEET_NAME, SPREADSHEET_ID
-from .orders import get_order_date_header_index, get_plan_blocks, order_group_key
-from .pending_store import load_pending_prints, load_pending_saves
+from .backend_client import backend_configured, fetch_day_report
+from .backend_events import load_pending_backend_events
+from .config import ACCENT, BG_CARD, BG_MAIN, FG_MUTED, FG_TEXT
+from .orders import get_plan_blocks, order_group_key
+from .pending_store import load_pending_prints
 from .scan_quantities import scanned_blocks_for_order_codes
-from .sheets import get_google_client, validate_sheet_header
 from .ui_widgets import AppButton
-from .utils import get_cell, normalize_payment_type, parse_date_to_standard, split_codes
+from .utils import normalize_payment_type, split_codes
 
 
-def build_control_panel_stats_from_gsheet(sheet):
-    all_rows = sheet.get_all_values()
-    if not all_rows:
-        return {}
-
-    header_idx, missing = validate_sheet_header(all_rows[0])
-    if missing:
-        raise ValueError("В таблице не найдены обязательные колонки: " + ", ".join(missing))
-
-    today_str = datetime.now().strftime("%d.%m.%Y")
+def build_control_panel_stats_from_backend(orders, day_report=None):
     groups = {}
     products = {}
     payments = {"terminal": 0, "transfer": 0, "unknown": 0}
@@ -30,23 +21,19 @@ def build_control_panel_stats_from_gsheet(sheet):
     plan_blocks = 0
     scanned_blocks = 0
 
-    for row in all_rows[1:]:
-        if parse_date_to_standard(get_cell(row, get_order_date_header_index(header_idx))) != today_str:
-            continue
-
+    for order in orders or []:
         positions += 1
-        order = {col_name: get_cell(row, idx) for col_name, idx in header_idx.items()}
         group_key = order_group_key(order)
         groups.setdefault(group_key, {"positions": 0, "completed": 0})
         groups[group_key]["positions"] += 1
 
         blocks = get_plan_blocks(order)
         codes = split_codes(order.get("Отсканированные коды"))
-        codes_count = len(codes)
         scanned_count = scanned_blocks_for_order_codes(order, codes)
         plan_blocks += blocks
         scanned_blocks += scanned_count
-        products[order.get("Товары", "Товар не указан")] = products.get(order.get("Товары", "Товар не указан"), 0) + blocks
+        product = order.get("Товары", "Товар не указан")
+        products[product] = products.get(product, 0) + blocks
         payments[normalize_payment_type(order.get("Тип оплаты"))] += 1
 
         if blocks > 0 and scanned_count >= blocks:
@@ -57,22 +44,22 @@ def build_control_panel_stats_from_gsheet(sheet):
         else:
             new_positions += 1
 
-    completed_groups = sum(1 for group in groups.values() if group["positions"] == group["completed"])
-    active_groups = max(0, len(groups) - completed_groups)
+    totals = (day_report or {}).get("totals") or {}
+    completed_groups = int(totals.get("completed_orders") or 0)
+    active_groups = int(totals.get("active_orders") or len(groups))
     return {
         "positions": positions,
-        "groups": len(groups),
+        "groups": int(totals.get("orders") or len(groups)),
         "active_groups": active_groups,
         "completed_groups": completed_groups,
         "completed_positions": completed_positions,
         "in_progress_positions": in_progress_positions,
         "new_positions": new_positions,
-        "plan_blocks": plan_blocks,
-        "scanned_blocks": scanned_blocks,
-        "remaining_blocks": max(0, plan_blocks - scanned_blocks),
+        "plan_blocks": int(totals.get("planned_blocks") or plan_blocks),
+        "scanned_blocks": int(totals.get("scanned_blocks") or scanned_blocks),
+        "remaining_blocks": int(totals.get("remaining_blocks") or max(0, plan_blocks - scanned_blocks)),
         "payments": payments,
         "products": dict(sorted(products.items(), key=lambda item: item[0].lower())),
-        "pending_saves": len(load_pending_saves()),
         "pending_prints": len(load_pending_prints()),
     }
 
@@ -90,11 +77,9 @@ class ControlPanelMixin:
         self.safe_config(self.control_btn, state="disabled")
 
         def work():
-            sheet = self.sheet
-            if not sheet:
-                client = get_google_client()
-                sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
-            return build_control_panel_stats_from_gsheet(sheet)
+            if not backend_configured():
+                raise RuntimeError("Backend не настроен. Панель недоступна")
+            return build_control_panel_stats_from_backend(self.today_orders, fetch_day_report())
 
         def on_success(stats):
             dialog = tk.Toplevel(self)
@@ -118,7 +103,7 @@ class ControlPanelMixin:
                 ("План блоков", stats.get("plan_blocks", 0)),
                 ("Отсканировано блоков", stats.get("scanned_blocks", 0)),
                 ("Осталось блоков", stats.get("remaining_blocks", 0)),
-                ("Очередь записи", stats.get("pending_saves", 0)),
+                ("Очередь backend", len(load_pending_backend_events())),
                 ("Очередь печати", stats.get("pending_prints", 0)),
             ]
 

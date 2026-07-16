@@ -13,7 +13,6 @@ from .redaction import redact_secrets
 EVENT_QUEUE_ACTIVE_STATUSES = ("pending", "failed", "processing")
 EVENT_QUEUE_TERMINAL_STATUSES = ("completed", "blocked", "dead", "cancelled")
 EVENT_QUEUE_RETRYABLE_TYPES = (
-    "google_sheets_export",
     "telegram_excel_import",
     "telegram_notification",
     "skladbot_request_create",

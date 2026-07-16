@@ -6,6 +6,12 @@ export type OrderItem = {
   scanned_blocks: number;
   status: string;
   scan_codes: string[];
+  scan_entries?: Array<{
+    code: string;
+    scan_type: string;
+    block_quantity: number;
+    scanned_at: string | null;
+  }>;
 };
 
 export type Order = {
@@ -15,10 +21,42 @@ export type Order = {
   client: string;
   address: string;
   representative: string | null;
+  coordinates?: string;
   status: string;
   skladbot_request_number: string;
   skladbot_request_id: string;
+  skladbot_return_request_number?: string;
+  skladbot_return_request_id?: string;
+  skladbot_return_status?: string;
+  return_status?: string;
+  returned_at?: string;
+  return_reference?: string;
   items: OrderItem[];
+};
+
+export type ScanResult = {
+  id: string;
+  order_item_id: string;
+  code: string;
+  scanned_blocks: number;
+  item_status: string;
+};
+
+export type KizAvailability = {
+  code: string;
+  available: boolean;
+  reason: string;
+  latest_movement_type: string;
+  latest_order_item_id: string;
+  existing_order_item_id: string;
+};
+
+export type ReturnConfirmedItem = {
+  item_id: string;
+  product: string;
+  sku?: string;
+  quantity_blocks: number;
+  quantity_pieces?: number;
 };
 
 export type DayReport = {
@@ -85,6 +123,35 @@ export type ImportRecord = {
   created_at: string;
 };
 
+export type ExcelImportPreview = {
+  source: string;
+  status: string;
+  rows_total: number;
+  rows_importable: number;
+  orders_new: number;
+  items_new: number;
+  duplicate_rows: number;
+  invalid_rows: number;
+  duplicate_row_numbers: number[];
+  invalid_row_numbers: number[];
+  errors: string[];
+  backend_address_updates: number;
+};
+
+export type ExcelImportResult = {
+  id: string;
+  source: string;
+  status: string;
+  rows_total: number;
+  rows_imported: number;
+  orders_created: number;
+  items_created: number;
+  duplicate_rows: number;
+  invalid_rows: number;
+  resolved_order_ids: string[];
+  errors: string[];
+};
+
 export type SkladBotDryRunProduct = {
   product: string;
   quantity_blocks: number;
@@ -124,7 +191,6 @@ export type AdminTableTotals = {
   scanned_blocks: number;
   remaining_blocks: number;
   total_price: number;
-  pending_google_exports: number;
 };
 
 export type AdminTableRow = {
@@ -154,10 +220,6 @@ export type AdminTableRow = {
   skladbot_return_request_id: string;
   skladbot_return_status: string;
   source_file: string;
-  google_sheet_status: string;
-  google_sheet_row_number: number | null;
-  google_sheet_synced_at: string;
-  pending_google_exports: number;
   return_status: string;
   returned_at: string;
   return_reference: string;
@@ -221,7 +283,6 @@ export type OperationsAttention = {
   summary: Record<string, unknown>;
   items: OperationsAttentionItem[];
   readiness_status: string;
-  google_mirror_status: string;
   telegram_summary: string;
 };
 
@@ -422,7 +483,6 @@ export type AdminOrderCapability = {
   planned_blocks: number;
   scanned_blocks: number;
   scan_codes_count: number;
-  pending_google_exports: number;
   allowed: Record<string, boolean>;
   disabled_reasons: Record<string, string>;
 };
@@ -445,7 +505,6 @@ export type AdminTableRequest = {
   search?: string;
   scanState?: string;
   skladbotFilter?: string;
-  googleSheetStatus?: string;
   signal?: AbortSignal;
 };
 
@@ -471,7 +530,6 @@ export type ActiveOrderDeleteResult = {
   order_id: string;
   deleted: boolean;
   dry_run: boolean;
-  google_delete_event_id: string;
   skladbot_request_number: string;
   skladbot_request_id: string;
   message: string;
@@ -487,8 +545,6 @@ export type EventQueueActionPayload = {
 export type SyncSourcesResult = {
   status?: string;
   errors?: string[];
-  google_sheets_pending?: Record<string, unknown>;
-  google_sheets?: Record<string, unknown>;
   skladbot?: Record<string, unknown>;
 };
 
@@ -499,8 +555,9 @@ export const plannedAdminActionEndpoints = {
   resyncSkladBot: "/api/v1/admin/orders/{order_id}/resync-skladbot",
 } as const;
 
-export function listActiveOrders(config: ApiConfig) {
-  return apiRequest<Order[]>(config, "/api/v1/orders/active");
+export function listActiveOrders(config: ApiConfig, limit = 500) {
+  const query = new URLSearchParams({ limit: String(limit) });
+  return apiRequest<Order[]>(config, `/api/v1/orders/active?${query.toString()}`);
 }
 
 export function getAdminTable(config: ApiConfig, options: AdminTableRequest = {}) {
@@ -514,7 +571,6 @@ export function getAdminTable(config: ApiConfig, options: AdminTableRequest = {}
   if (options.search) query.set("search", options.search);
   if (options.scanState) query.set("scan_state", options.scanState);
   if (options.skladbotFilter) query.set("skladbot_filter", options.skladbotFilter);
-  if (options.googleSheetStatus) query.set("google_sheet_status", options.googleSheetStatus);
   return apiRequest<AdminTable>(config, `/api/v1/admin/table?${query.toString()}`, { signal: options.signal });
 }
 
@@ -591,19 +647,6 @@ export function getReadiness(config: ApiConfig, signal?: AbortSignal) {
   return apiRequest<ReadinessResponse>(config, "/api/v1/readiness", { signal });
 }
 
-export function retryPendingGoogle(config: ApiConfig) {
-  return apiRequest<Record<string, unknown>>(config, "/api/v1/admin/google/pending/retry", {
-    method: "POST",
-  });
-}
-
-export function resyncGoogleOrder(config: ApiConfig, orderId: string, payload: AdminActionPayload) {
-  return apiRequest<Order>(config, `/api/v1/admin/orders/${orderId}/resync-google`, {
-    method: "POST",
-    body: payload,
-  });
-}
-
 export function archiveOrderWithoutKiz(config: ApiConfig, orderId: string, payload: AdminActionPayload) {
   return apiRequest<Order>(config, `/api/v1/admin/orders/${orderId}/archive-without-kiz`, {
     method: "POST",
@@ -667,6 +710,50 @@ export function syncSources(config: ApiConfig, options: { skladbot?: boolean; wa
   });
 }
 
+export function lookupKizAvailability(config: ApiConfig, code: string, orderItemId = "") {
+  const query = new URLSearchParams({ code });
+  if (orderItemId) query.set("order_item_id", orderItemId);
+  return apiRequest<KizAvailability>(config, `/api/v1/kiz/availability?${query.toString()}`);
+}
+
+export function createScan(config: ApiConfig, payload: {
+  order_item_id: string;
+  code: string;
+  workstation_id?: string;
+  scanned_by?: string;
+}) {
+  return apiRequest<ScanResult>(config, "/api/v1/scans", { method: "POST", body: payload });
+}
+
+export function undoScan(config: ApiConfig, payload: {
+  order_item_id: string;
+  code: string;
+  workstation_id?: string;
+  actor?: string;
+}) {
+  return apiRequest<ScanResult>(config, "/api/v1/scans/undo", { method: "POST", body: payload });
+}
+
+export function completeWarehouseOrder(config: ApiConfig, orderId: string) {
+  return apiRequest<Order>(config, `/api/v1/orders/${encodeURIComponent(orderId)}/complete`, { method: "POST" });
+}
+
+export function lookupReturn(config: ApiConfig, lookup: string) {
+  const query = new URLSearchParams({ lookup });
+  return apiRequest<Order>(config, `/api/v1/returns/lookup?${query.toString()}`);
+}
+
+export function markReturn(config: ApiConfig, orderId: string, payload: {
+  return_reference?: string;
+  returned_by?: string;
+  confirmed_items: ReturnConfirmedItem[];
+}) {
+  return apiRequest<Order>(config, `/api/v1/returns/${encodeURIComponent(orderId)}`, {
+    method: "POST",
+    body: payload,
+  });
+}
+
 export async function downloadDiagnosticsLog(config: ApiConfig) {
   const apiUrl = config.apiUrl.replace(/\/$/, "");
   ensureCookieApiIsSameOrigin(apiUrl, Boolean(config.token));
@@ -694,6 +781,52 @@ export function getDayReport(config: ApiConfig, reportDate: string) {
 
 export function listImports(config: ApiConfig, signal?: AbortSignal) {
   return apiRequest<ImportRecord[]>(config, "/api/v1/imports", { signal });
+}
+
+export async function previewExcelImport(config: ApiConfig, file: File) {
+  const response = await apiRequest<{ preview: ExcelImportPreview }>(config, "/api/v1/imports/excel/preview", {
+    method: "POST",
+    rawBody: file,
+    headers: {
+      "Content-Type": file.type || "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "X-TakSklad-Filename": encodeURIComponent(file.name),
+    },
+    timeoutMs: LONG_REQUEST_TIMEOUT_MS,
+  });
+  return response.preview;
+}
+
+export async function commitExcelImport(config: ApiConfig, file: File) {
+  const response = await apiRequest<{ result: ExcelImportResult }>(config, "/api/v1/imports/excel", {
+    method: "POST",
+    rawBody: file,
+    headers: {
+      "Content-Type": file.type || "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "X-TakSklad-Filename": encodeURIComponent(file.name),
+    },
+    timeoutMs: LONG_REQUEST_TIMEOUT_MS,
+  });
+  return response.result;
+}
+
+export async function downloadAdminOrders(config: ApiConfig, options: AdminTableRequest = {}) {
+  const apiUrl = config.apiUrl.replace(/\/$/, "");
+  ensureCookieApiIsSameOrigin(apiUrl, Boolean(config.token));
+  const query = new URLSearchParams();
+  if (options.statusBucket) query.set("status_bucket", options.statusBucket);
+  if (options.shipmentDate) query.set("shipment_date", options.shipmentDate);
+  if (options.search) query.set("search", options.search);
+  if (options.scanState) query.set("scan_state", options.scanState);
+  if (options.skladbotFilter) query.set("skladbot_filter", options.skladbotFilter);
+  const response = await fetch(`${apiUrl}/api/v1/admin/orders/export.xlsx?${query.toString()}`, {
+    credentials: config.token ? "omit" : "same-origin",
+    headers: config.token ? { Authorization: `Bearer ${config.token}` } : {},
+  });
+  if (!response.ok) throw new ApiRequestError(response.status, response.statusText, "Не удалось выгрузить заказы XLSX");
+  return {
+    blob: await response.blob(),
+    filename: decodeURIComponent(response.headers.get("X-TakSklad-Filename") || "TakSklad_orders.xlsx"),
+  };
 }
 
 export function listSkladBotDryRuns(config: ApiConfig, importId = "", signal?: AbortSignal) {

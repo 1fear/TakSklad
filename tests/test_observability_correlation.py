@@ -8,7 +8,6 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from backend.app.imports_service import create_import
-from backend.app.google_sheets_pending import process_pending_google_sheets_exports
 from backend.app.models import Base, ImportJob, PendingEvent
 from backend.app.skladbot_return_requests import process_pending_skladbot_return_request_creates
 from backend.app.observability_context import (
@@ -93,44 +92,6 @@ class ObservabilityCorrelationTests(unittest.TestCase):
                 self.assertEqual(observed_by_external_client, [expected])
         finally:
             reset_correlation_id(token)
-            engine.dispose()
-
-    def test_google_event_rebinds_producer_id_at_external_call_boundary(self):
-        engine = create_engine("sqlite+pysqlite:///:memory:")
-        Base.metadata.create_all(engine)
-        expected = "44444444-4444-4444-8444-444444444444"
-        producer_token = bind_correlation_id(expected)
-        try:
-            with Session(engine) as db:
-                event = PendingEvent(
-                    event_type="google_sheets_export",
-                    action="synthetic_export",
-                    aggregate_type="synthetic",
-                    aggregate_id="bounded",
-                    status="pending",
-                    payload={"action": "synthetic_export", "entity_type": "synthetic", "entity_id": "bounded"},
-                )
-                db.add(event)
-                db.commit()
-            reset_correlation_id(producer_token)
-            producer_token = None
-
-            observed = []
-
-            def fake_external(_db, _event):
-                observed.append(current_correlation_id())
-                return {"status": "completed"}
-
-            with Session(engine) as db, mock.patch(
-                "backend.app.google_sheets_pending.run_google_sheets_export_event",
-                side_effect=fake_external,
-            ):
-                result = process_pending_google_sheets_exports(db, limit=1)
-            self.assertEqual(result["synced"], 1)
-            self.assertEqual(observed, [expected])
-        finally:
-            if producer_token is not None:
-                reset_correlation_id(producer_token)
             engine.dispose()
 
     def test_skladbot_return_event_rebinds_producer_id_at_external_boundary(self):

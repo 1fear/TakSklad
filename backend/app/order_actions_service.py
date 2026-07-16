@@ -5,10 +5,8 @@ from datetime import datetime, timezone
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session, selectinload
 
-from .google_sheets_pending import queue_google_sheets_export
-from .google_sheets_exporter import make_sheet_record
 from .kiz_movements_service import MOVEMENT_RESET, lock_kiz_code_for_transaction, record_kiz_movement
-from .models import AuditLog, Order, OrderItem, PendingEvent
+from .models import AuditLog, Order, OrderItem
 from .orders_service import (
     ApiError,
     INACTIVE_ORDER_STATUSES,
@@ -19,7 +17,6 @@ from .orders_service import (
     STATUS_CANCELLED,
     order_to_read,
     parse_uuid,
-    record_google_sheets_export_result,
 )
 
 
@@ -32,7 +29,6 @@ def archive_order_without_kiz(db: Session, order_id, payload):
         context,
         target_status=STATUS_ARCHIVED_NO_KIZ,
         audit_action="order_archived_without_kiz",
-        google_action="google_sheets_archive_no_kiz_export",
     )
 
 
@@ -45,7 +41,6 @@ def cancel_order(db: Session, order_id, payload):
         context,
         target_status=STATUS_CANCELLED,
         audit_action="order_cancelled",
-        google_action="google_sheets_cancel_export",
     )
 
 
@@ -59,7 +54,6 @@ def delete_active_order(db: Session, order_id, payload):
             "order_id": order_id_text,
             "deleted": True,
             "dry_run": False,
-            "google_delete_event_id": normalize_text(existing_payload.get("google_delete_event_id")),
             "skladbot_request_number": normalize_text(existing_payload.get("skladbot_request_number")),
             "skladbot_request_id": normalize_text(existing_payload.get("skladbot_request_id")),
             "message": "Order delete already processed for this idempotency key",
@@ -75,33 +69,16 @@ def delete_active_order(db: Session, order_id, payload):
     raw_payload = dict(order.raw_payload or {})
     skladbot_request_number = normalize_text(raw_payload.get("skladbot_request_number"))
     skladbot_request_id = normalize_text(raw_payload.get("skladbot_request_id"))
-    records = [order_item_to_sheet_record(order, item) for item in order.items]
-
     if getattr(payload, "dry_run", False):
         return {
             "order_id": order_id_text,
             "deleted": False,
             "dry_run": True,
-            "google_delete_event_id": "",
             "skladbot_request_number": skladbot_request_number,
             "skladbot_request_id": skladbot_request_id,
             "message": "Order can be deleted",
         }
 
-    event = queue_google_sheets_export(
-        db,
-        "google_sheets_delete_import_records_export",
-        "order",
-        order_id_text,
-        result={"status": "queued", "updated": 0, "error": ""},
-        payload={
-            "records": records,
-            "reason": context["reason"],
-            "actor": context["actor"],
-            "source": context["source"],
-            "idempotency_key": child_admin_idempotency_key(context, "google_delete"),
-        },
-    )
     db.add(AuditLog(
         action="order_deleted_from_active",
         entity_type="order",
@@ -112,8 +89,6 @@ def delete_active_order(db: Session, order_id, payload):
             order=order,
             extra={
                 "items_count": len(order.items),
-                "google_records": len(records),
-                "google_delete_event_id": str(event.id) if event else "",
                 "skladbot_request_number": skladbot_request_number,
                 "skladbot_request_id": skladbot_request_id,
                 "skladbot_left_manual": bool(skladbot_request_number or skladbot_request_id),
@@ -126,10 +101,9 @@ def delete_active_order(db: Session, order_id, payload):
         "order_id": order_id_text,
         "deleted": True,
         "dry_run": False,
-        "google_delete_event_id": str(event.id) if event else "",
         "skladbot_request_number": skladbot_request_number,
         "skladbot_request_id": skladbot_request_id,
-        "message": "Order deleted from active backend and queued for Google Sheets deletion",
+        "message": "Order deleted from active PostgreSQL database",
     }
 
 
@@ -181,7 +155,6 @@ def complete_orders_without_kiz(db: Session, payload):
     now = datetime.now(timezone.utc)
     actor = context["actor"]
     idempotency_key = context["idempotency_key"]
-    export_result = {"status": "queued", "queued": True, "error": ""}
     completed_count = 0
     for order_id in order_ids:
         if order_id in duplicate_ids:
@@ -222,20 +195,6 @@ def complete_orders_without_kiz(db: Session, payload):
                     "items_count": len(order.items),
                 },
             ),
-        ))
-        event = queue_google_sheets_export(
-            db,
-            "google_sheets_archive_export",
-            "order",
-            str(order.id),
-            result=export_result,
-            payload={"idempotency_key": child_admin_idempotency_key(context, f"google_archive:{order.id}")},
-        )
-        db.add(AuditLog(
-            action="google_sheets_archive_export",
-            entity_type="order",
-            entity_id=str(order.id),
-            payload={**export_result, "pending_event_id": str(event.id) if event else ""},
         ))
         completed_count += 1
 
@@ -326,7 +285,6 @@ def reset_order_for_rescan(db: Session, order_id, payload):
             },
         ),
     ))
-    queue_order_projection_to_google(db, order, action="google_sheets_restore_order_export")
     db.commit()
     db.refresh(order)
     return order_to_read(order)
@@ -379,7 +337,6 @@ def restore_order(db: Session, order_id, payload):
             },
         ),
     ))
-    queue_order_projection_to_google(db, order, action="google_sheets_restore_order_export")
     db.commit()
     db.refresh(order)
     return order_to_read(order)
@@ -416,101 +373,7 @@ def resync_order_skladbot(db: Session, order_id, payload=None):
     return order_to_read(refreshed_order)
 
 
-def resync_order_to_google(db: Session, order_id, payload=None):
-    order = get_order_for_action(db, order_id)
-    context = admin_action_context("order_google_resync_requested", [str(order.id)], payload)
-    existing = find_admin_action_audit(db, "order_google_resync_requested", "order", str(order.id), context["idempotency_key"])
-    if existing is not None:
-        return order_to_read(order)
-    db.add(AuditLog(
-        action="order_google_resync_requested",
-        entity_type="order",
-        entity_id=str(order.id),
-        payload=admin_audit_payload("order_google_resync_requested", context, order=order),
-    ))
-    if order.status not in INACTIVE_ORDER_STATUSES:
-        for item in order.items:
-            record_google_sheets_export_result(
-                db,
-                action="google_sheets_scan_export",
-                entity_type="order_item",
-                entity_id=str(item.id),
-            )
-    elif order.status == STATUS_ARCHIVED_NO_KIZ:
-        record_google_sheets_export_result(
-            db,
-            action="google_sheets_archive_no_kiz_export",
-            entity_type="order",
-            entity_id=str(order.id),
-        )
-    elif order.status == STATUS_CANCELLED:
-        record_google_sheets_export_result(
-            db,
-            action="google_sheets_cancel_export",
-            entity_type="order",
-            entity_id=str(order.id),
-        )
-    elif order.status == STATUS_RETURNED:
-        record_google_sheets_export_result(
-            db,
-            action="google_sheets_return_export",
-            entity_type="order",
-            entity_id=str(order.id),
-        )
-    else:
-        record_google_sheets_export_result(
-            db,
-            action="google_sheets_archive_export",
-            entity_type="order",
-            entity_id=str(order.id),
-        )
-
-    db.commit()
-    db.refresh(order)
-    return order_to_read(order)
-
-
-def queue_order_projection_to_google(db: Session, order, action="google_sheets_restore_order_export"):
-    records = [order_item_to_sheet_record(order, item) for item in order.items]
-    result = {"status": "queued", "queued": True, "error": "", "imported": 0, "duplicates": 0, "updated": 0}
-    event = queue_google_sheets_export(
-        db,
-        action,
-        "order",
-        str(order.id),
-        result=result,
-        payload={"records": records},
-    )
-    db.add(AuditLog(
-        action=action,
-        entity_type="order",
-        entity_id=str(order.id),
-        payload={**result, "pending_event_id": str(event.id) if event else ""},
-    ))
-
-
-def order_item_to_sheet_record(order, item):
-    row = {
-        "order_date": order.order_date,
-        "payment_type": order.payment_type,
-        "client": order.client,
-        "address": order.address,
-        "representative": order.representative or "",
-        "product": item.product,
-        "quantity_pieces": item.quantity_pieces,
-        "quantity_blocks": item.quantity_blocks,
-        "status": item.status,
-        "source_order_id": (item.raw_payload or {}).get("source_order_id") or order.external_id or str(order.id),
-        "source_import_id": (item.raw_payload or {}).get("source_import_id") or str(item.id),
-        "source_file": (item.raw_payload or {}).get("source_file") or "",
-        "source_row": (item.raw_payload or {}).get("source_row") or "",
-        "skladbot_request_number": (order.raw_payload or {}).get("skladbot_request_number") or "",
-        "skladbot_request_id": (order.raw_payload or {}).get("skladbot_request_id") or "",
-    }
-    return make_sheet_record(row, item_key=(item.raw_payload or {}).get("item_key") or str(item.id))
-
-
-def apply_terminal_no_kiz_action(db: Session, order_id, payload, context, target_status, audit_action, google_action):
+def apply_terminal_no_kiz_action(db: Session, order_id, payload, context, target_status, audit_action):
     order = get_order_for_action(db, order_id, with_for_update=True)
     existing = find_admin_action_audit(db, audit_action, "order", str(order.id), context["idempotency_key"])
     if existing is not None:
@@ -555,12 +418,6 @@ def apply_terminal_no_kiz_action(db: Session, order_id, payload, context, target
             },
         ),
     ))
-    record_google_sheets_export_result(
-        db,
-        action=google_action,
-        entity_type="order",
-        entity_id=str(order.id),
-    )
     db.commit()
     db.refresh(order)
     return order_to_read(order)
@@ -612,28 +469,7 @@ def validate_complete_without_kiz_order(db: Session, order, payload):
         ensure_expected_updated_at(order, expected_by_order.get(order_id, ""))
     except ApiError as exc:
         errors.append({"order_id": order_id, "message": str(exc.detail)})
-    if pending_google_export_exists(db, order):
-        errors.append({"order_id": order_id, "message": "Order has pending Google export"})
     return errors
-
-
-def pending_google_export_exists(db: Session, order):
-    entity_ids = {str(order.id), *(str(item.id) for item in order.items)}
-    events = db.execute(
-        select(PendingEvent)
-        .where(PendingEvent.event_type == "google_sheets_export")
-        .where(PendingEvent.status.in_(("pending", "failed")))
-    ).scalars().all()
-    for event in events:
-        payload = event.payload or {}
-        if payload.get("action") == "google_sheets_skladbot_export":
-            continue
-        if str(payload.get("entity_id") or "") in entity_ids:
-            return True
-        order_ids = payload.get("order_ids") or []
-        if str(order.id) in {str(value) for value in order_ids}:
-            return True
-    return False
 
 
 def unique_order_ids(order_ids):
@@ -710,16 +546,6 @@ def normalize_admin_idempotency_key(action, key):
     seed = key or uuid.uuid4().hex
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
     return f"admin:{normalize_text(action)[:48]}:{digest}"[:180]
-
-
-def child_admin_idempotency_key(context, suffix):
-    parent = normalize_text((context or {}).get("idempotency_key"))
-    suffix = normalize_text(suffix)
-    key = f"{parent}:{suffix}" if suffix else parent
-    if len(key) <= 180:
-        return key
-    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
-    return f"{parent[:120]}:{digest}"[:180]
 
 
 def find_admin_action_audit(db: Session, action, entity_type, entity_id, idempotency_key):

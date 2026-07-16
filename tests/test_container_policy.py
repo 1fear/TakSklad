@@ -37,7 +37,7 @@ class ContainerPolicyTests(unittest.TestCase):
     def test_current_repository_passes_strict_policy(self):
         errors, rows = validate_repository(ROOT)
         self.assertEqual(errors, [])
-        self.assertEqual(len(rows), 7)
+        self.assertEqual(len(rows), 6)
         self.assertEqual(next(row for row in rows if row.service == "frontend").sensitive_names, ())
 
     def test_postgres_wal_init_can_reconcile_existing_directory_mode(self):

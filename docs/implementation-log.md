@@ -4,6 +4,20 @@
 
 ## 2026-07-16
 
+### PostgreSQL-only cutover implementation
+
+- Google Sheets удалён из backend/desktop runtime, compose, deploy contract, readiness и web API; база PostgreSQL стала единственным operational source of truth.
+- Добавлены серверные XLSX import/export и warehouse web scan/undo/complete/return; desktop работает fail-closed при недоступном backend и не имеет Google fallback.
+- Миграция `20260716_0019` закрывает активные legacy Google events с audit evidence и является forward-only.
+- Сохранён lifecycle-дедуп: `returned` освобождает КИЗ для нового outbound, незавершённое исходящее движение блокирует повтор.
+- Release source подготовлен как `2.0.40`; root `version.json` не меняется до появления подписанных артефактов.
+- Подтверждено локально: Python 1099 OK (77 skipped), PostgreSQL 81 OK,
+  frontend 114 OK + typecheck/lint/build, security gate без blocking findings,
+  SBOM/immutable refs/container policy/release preflight/shell/Compose OK; Alembic
+  имеет единственный head `20260716_0019`.
+- Ещё требуется: PR/CI, immutable release, live data preflight, backup,
+  production migration/deploy и live/operator smoke.
+
 ### SkladBot readiness flapping fix
 
 - Причина: SkladBot cycle мог работать дольше `2 * interval + grace` (135 секунд), но heartbeat age считался от `last_cycle_started_at`; живой worker временно становился `stale`, и `/ready` возвращал 503.

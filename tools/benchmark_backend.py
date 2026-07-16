@@ -640,18 +640,13 @@ def scan_db(db, context, iteration):
     def cleanup():
         rowcounts = cleanup_sql(context, [
             ("DELETE FROM audit_log WHERE action='scan_code_created' AND payload->>'code'=%s", (code,)),
-            ("DELETE FROM audit_log WHERE action='google_sheets_scan_export' AND entity_id=%s",
-             (str(context["scan_item"]),)),
-            ("DELETE FROM pending_events WHERE event_type='google_sheets_export' "
-             "AND action='google_sheets_scan_export' AND aggregate_id=%s",
-             (str(context["scan_item"]),)),
             ("DELETE FROM kiz_movements WHERE scan_code_id IN (SELECT id FROM scan_codes WHERE code=%s)", (code,)),
             ("DELETE FROM scan_codes WHERE code=%s", (code,)),
             ("DELETE FROM kiz_codes WHERE code=%s", (code,)),
             ("UPDATE order_items SET scanned_blocks=%s, status='not_completed' WHERE id=%s",
              (context["base_scanned_blocks"], context["scan_item"])),
         ])
-        expected = [1, 1, 1, 1, 1, 1, 1]
+        expected = [1, 1, 1, 1, 1]
         if rowcounts != expected:
             raise AssertionError(f"scan benchmark cleanup mismatch expected={expected} actual={rowcounts}")
     return 1, cleanup
@@ -665,15 +660,10 @@ def complete_db(db, context, _iteration):
     def cleanup():
         rowcounts = cleanup_sql(context, [
             ("DELETE FROM audit_log WHERE action='order_completed' AND entity_id=%s", (str(context["complete_order"]),)),
-            ("DELETE FROM audit_log WHERE action='google_sheets_archive_export' AND entity_id=%s",
-             (str(context["complete_order"]),)),
-            ("DELETE FROM pending_events WHERE event_type='google_sheets_export' "
-             "AND action='google_sheets_archive_export' AND aggregate_id=%s",
-             (str(context["complete_order"]),)),
             ("UPDATE order_items SET status='not_completed' WHERE order_id=%s", (context["complete_order"],)),
             ("UPDATE orders SET status='not_completed' WHERE id=%s", (context["complete_order"],)),
         ])
-        expected = [1, 1, 1, len(context["return_items"]), 1]
+        expected = [1, len(context["return_items"]), 1]
         if rowcounts != expected:
             raise AssertionError(f"complete benchmark cleanup mismatch expected={expected} actual={rowcounts}")
     return len(result.items), cleanup
@@ -690,8 +680,7 @@ def return_db(db, context, iteration):
     def cleanup():
         rowcounts = cleanup_sql(context, [
             ("DELETE FROM audit_log WHERE action IN ("
-             "'order_returned','skladbot_return_request_create_queued',"
-             "'google_sheets_archive_export','google_sheets_return_export') AND entity_id=%s",
+             "'order_returned','skladbot_return_request_create_queued') AND entity_id=%s",
              (str(context["return_order"]),)),
             ("DELETE FROM pending_events WHERE event_type <> 'synthetic_benchmark'", ()),
             ("DELETE FROM kiz_movements WHERE movement_type='return' AND order_id=%s", (context["return_order"],)),
@@ -702,7 +691,7 @@ def return_db(db, context, iteration):
              "WHERE id=%s", (context["return_order"],)),
         ])
         expected_movements = sum(int(item["quantity_blocks"]) for item in context["return_items"])
-        expected = [4, 3, expected_movements, 1]
+        expected = [2, 1, expected_movements, 1]
         if rowcounts != expected:
             raise AssertionError(f"return benchmark cleanup mismatch expected={expected} actual={rowcounts}")
     return len(result.items), cleanup
@@ -749,14 +738,13 @@ def import_1000(db, context, _iteration):
         sha256=hashlib.sha256(b"synthetic-benchmark-import").hexdigest(),
         rows=context["imports"],
     )
-    google_result = {"status": "synthetic_stub", "imported": 0, "duplicates": 0, "updated": 0, "error": ""}
     skladbot_result = {
         "status": "synthetic_stub", "ready": 0, "blocked": 0,
         "already_linked": 0, "linked_mismatch": 0, "event_id": "",
     }
-    with (
-        patch("backend.app.imports_service.export_import_records_to_google_sheets", return_value=google_result),
-        patch("backend.app.imports_service.create_skladbot_dry_run_for_import", return_value=skladbot_result),
+    with patch(
+        "backend.app.imports_service.create_skladbot_dry_run_for_import",
+        return_value=skladbot_result,
     ):
         result = create_import(db, payload)
 

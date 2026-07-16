@@ -41,7 +41,6 @@ class WindowsTestBuildHelperTest(unittest.TestCase):
             "TakSklad_data.json",
             "TakSklad_data.json.last_good.*.bak",
             "TakSklad_data.json.*.tmp",
-            "credentials.json",
             "telegram_settings.json",
             "yandex_geocoder_key.txt",
             ".env.taksklad-vds-2.0.generated.json",

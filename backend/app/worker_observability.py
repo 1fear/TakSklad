@@ -14,7 +14,6 @@ from .observability_context import bind_correlation_id, current_correlation_id, 
 DEFAULT_GRACE_SECONDS = 15
 LOGGER = logging.getLogger(__name__)
 KNOWN_WORKERS = (
-    "google_sheets_sync",
     "skladbot",
     "smartup_auto_import",
     "telegram",

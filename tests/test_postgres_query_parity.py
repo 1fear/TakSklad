@@ -133,11 +133,6 @@ class PostgresQueryParityTests(unittest.TestCase):
             ))
             db.add_all([
                 PendingEvent(
-                    event_type="google_sheets_export",
-                    status="pending",
-                    payload={"entity_id": str(active.id), "synthetic": True},
-                ),
-                PendingEvent(
                     event_type="synthetic_query_parity",
                     status="failed",
                     payload={"sequence": 1},
@@ -160,12 +155,8 @@ class PostgresQueryParityTests(unittest.TestCase):
                 search="synthetic active",
                 scan_state="",
                 skladbot_filter="found",
-                google_status="pending",
             )
-            pending_events = db.execute(
-                select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")
-            ).scalars().all()
-            expected_totals = build_totals(expected_rows, pending_events)
+            expected_totals = build_totals(expected_rows)
             actual = build_admin_table(
                 db,
                 limit=100,
@@ -174,23 +165,17 @@ class PostgresQueryParityTests(unittest.TestCase):
                 shipment_date=self.report_date.isoformat(),
                 search="synthetic active",
                 skladbot_filter="found",
-                google_status="pending",
             )
 
         self.assertEqual([row.item_id for row in actual.rows], [row.item_id for row in expected_rows])
         self.assertEqual(actual.totals.model_dump(), expected_totals.model_dump())
         self.assertEqual(actual.total_rows, len(expected_rows))
 
-    def test_admin_sql_filter_matrix_preserves_python_contract_and_pending_counts(self):
+    def test_admin_sql_filter_matrix_preserves_python_contract(self):
         with self.SessionLocal() as db:
             active = db.execute(select(Order).where(Order.client == "Synthetic Active")).scalar_one()
             active.raw_payload = {**active.raw_payload, "skladbot_status": "pending"}
             active.items[0].product = "Synthetic 100% Product A"
-            completed = db.execute(select(Order).where(Order.client == "Synthetic Completed")).scalar_one()
-            completed.items[0].raw_payload = {
-                **completed.items[0].raw_payload,
-                "google_sheet_synced_at": "2026-06-01T12:00:00+00:00",
-            }
             removed = Order(
                 source="synthetic",
                 order_date=date(2024, 1, 1),
@@ -226,40 +211,14 @@ class PostgresQueryParityTests(unittest.TestCase):
                 raw_payload={"line_total": 75},
             )]
             db.add_all([removed, returned])
-            db.flush()
-            db.add_all([
-                PendingEvent(
-                    event_type="google_sheets_export",
-                    status="pending",
-                    payload={
-                        "action": "google_sheets_bulk_export",
-                        "entity_id": "synthetic-bulk",
-                        "order_ids": [str(active.id)],
-                    },
-                ),
-                PendingEvent(
-                    event_type="google_sheets_export",
-                    status="pending",
-                    payload={
-                        "action": "google_sheets_skladbot_export",
-                        "entity_id": str(active.items[0].id),
-                    },
-                ),
-            ])
             db.commit()
 
             characterized = build_admin_table(db, limit=100, activity_limit=0)
-            pending_events = [
-                pending for pending in db.execute(
-                    select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")
-                ).scalars().all()
-                if (pending.payload or {}).get("action") != "google_sheets_skladbot_export"
-            ]
             cases = (
                 {"status_bucket": "active"},
                 {"status_bucket": "archive"},
                 {"status_bucket": "returned"},
-                {"status_bucket": "removed_from_google"},
+                {"status_bucket": "cancelled"},
                 {"shipment_date": self.report_date.isoformat()},
                 {"search": "100% product"},
                 {"search": "терминал"},
@@ -270,15 +229,11 @@ class PostgresQueryParityTests(unittest.TestCase):
                 {"skladbot_filter": "found"},
                 {"skladbot_filter": "missing"},
                 {"skladbot_filter": "problem"},
-                {"google_status": "pending"},
-                {"google_status": "synced"},
-                {"google_status": "removed_from_google"},
-                {"google_status": "unknown"},
             )
             for filters in cases:
                 with self.subTest(filters=filters):
                     expected_rows = filter_admin_rows(characterized.rows, **filters)
-                    expected_totals = build_totals(expected_rows, pending_events)
+                    expected_totals = build_totals(expected_rows)
                     actual = build_admin_table(db, limit=100, activity_limit=0, **filters)
                     self.assertEqual(
                         [row.item_id for row in actual.rows],
@@ -286,10 +241,6 @@ class PostgresQueryParityTests(unittest.TestCase):
                     )
                     self.assertEqual(actual.totals.model_dump(), expected_totals.model_dump())
                     self.assertEqual(actual.total_rows, len(expected_rows))
-
-            active_rows = [row for row in characterized.rows if row.client == "Synthetic Active"]
-            self.assertEqual({row.pending_google_exports for row in active_rows}, {2})
-            self.assertEqual(characterized.totals.pending_google_exports, 2)
 
     def test_admin_first_page_query_count_is_constant_when_history_grows(self):
         def measure():
@@ -611,7 +562,7 @@ class PostgresQueryParityTests(unittest.TestCase):
         with self.SessionLocal() as db:
             diagnostics = list_event_queue_diagnostics(db, limit=2)
 
-        self.assertEqual(diagnostics["summary"]["total"], 3)
+        self.assertEqual(diagnostics["summary"]["total"], 2)
         self.assertEqual(len(diagnostics["recent_events"]), 2)
         self.assertEqual(len(diagnostics["stale_processing"]), 0)
 

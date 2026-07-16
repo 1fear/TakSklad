@@ -18,7 +18,6 @@ from sqlalchemy.orm import selectinload
 
 from .audit_identity import AuditActor, set_audit_actor
 from .db import SessionLocal
-from .google_sheets_pending import queue_google_sheets_export
 from .models import AuditLog, Order, OrderItem, PendingEvent
 from .order_statuses import COMPLETED_STATUSES
 from .skladbot_client import (
@@ -433,13 +432,6 @@ def update_orders_from_skladbot(
             orders_to_check = [order for order in orders if order_needs_skladbot_backfill(order)]
             if not orders_to_check:
                 logging.info("SkladBot worker: all active/recent orders already have SkladBot numbers, skip SkladBot API")
-                google_sheets_result = export_skladbot_numbers_to_google_sheets(db, active_orders)
-                db.add(AuditLog(
-                    action="skladbot_google_sheets_export",
-                    entity_type="skladbot",
-                    entity_id="worker",
-                    payload=google_sheets_result,
-                ))
                 db.add(AuditLog(
                     action="skladbot_worker_sync",
                     entity_type="skladbot",
@@ -456,7 +448,7 @@ def update_orders_from_skladbot(
                 ))
                 db.commit()
                 if progress_callback is not None:
-                    notify_skladbot_progress(progress_callback, "google_export_queued")
+                    notify_skladbot_progress(progress_callback, "no_orders_to_match")
                 return {
                     "requests": 0,
                     "updated": 0,
@@ -466,7 +458,6 @@ def update_orders_from_skladbot(
                     "already_numbered": len(orders),
                     "active_orders": len(active_orders),
                     "completed_backfill_orders": len(completed_backfill_orders),
-                    "google_sheets_export": google_sheets_result,
                 }
 
             fetch_cursor = load_skladbot_fetch_cursor(db)
@@ -615,20 +606,6 @@ def update_orders_from_skladbot(
                     "fetch": requests.meta() if hasattr(requests, "meta") else {},
                 },
             ))
-            include_archive = bool(completed_backfill_orders)
-            google_sheets_result = export_skladbot_numbers_to_google_sheets(
-                db,
-                orders,
-                include_inactive=include_archive,
-                include_archive=include_archive,
-                force=True,
-            )
-            db.add(AuditLog(
-                action="skladbot_google_sheets_export",
-                entity_type="skladbot",
-                entity_id="worker",
-                payload=google_sheets_result,
-            ))
             db.commit()
             if progress_callback is not None:
                 notify_skladbot_progress(progress_callback, "sync_committed")
@@ -655,7 +632,6 @@ def update_orders_from_skladbot(
         "active_orders": len(active_orders),
         "completed_backfill_orders": len(completed_backfill_orders),
         "fetch": requests.meta() if hasattr(requests, "meta") else {},
-        "google_sheets_export": google_sheets_result,
     }
 
 def load_skladbot_fetch_cursor(db):
@@ -670,54 +646,6 @@ def load_skladbot_fetch_cursor(db):
     if not isinstance(fetch, dict):
         return 0
     return parse_int(fetch.get("last_checked_request_id"))
-
-def export_skladbot_numbers_to_google_sheets(db, orders, include_inactive=False, include_archive=False, force=False):
-    order_ids = [str(order.id) for order in orders or []]
-    if not order_ids:
-        return {"status": "skipped", "updated": 0, "error": ""}
-    if not force and not include_inactive and not include_archive and recent_skladbot_google_export_exists(db):
-        return {
-            "status": "skipped",
-            "queued": False,
-            "updated": 0,
-            "error": "",
-            "reason": "recent_export_cooldown",
-        }
-    result = {"status": "queued", "queued": True, "updated": 0, "error": ""}
-    event = queue_google_sheets_export(
-        db,
-        "google_sheets_skladbot_export",
-        "skladbot",
-        "active_orders",
-        result=result,
-        payload={
-            "order_ids": order_ids,
-            "include_inactive": bool(include_inactive),
-            "include_archive": bool(include_archive),
-        },
-    )
-    return {**result, "pending_event_id": str(event.id) if event else ""}
-
-def recent_skladbot_google_export_exists(db, min_interval_seconds=None):
-    min_interval_seconds = (
-        skladbot_google_export_min_interval_seconds()
-        if min_interval_seconds is None
-        else int(min_interval_seconds or 0)
-    )
-    if min_interval_seconds <= 0:
-        return False
-    cutoff = datetime.now(timezone.utc) - timedelta(seconds=min_interval_seconds)
-    recent = db.execute(
-        select(AuditLog)
-        .where(AuditLog.action == "skladbot_google_sheets_export")
-        .where(AuditLog.created_at >= cutoff)
-        .order_by(desc(AuditLog.created_at), desc(AuditLog.id))
-        .limit(1)
-    ).scalar_one_or_none()
-    return recent is not None
-
-def skladbot_google_export_min_interval_seconds():
-    return max(0, env_int("SKLADBOT_GOOGLE_EXPORT_MIN_INTERVAL_SECONDS", 300))
 
 def try_acquire_skladbot_sync_lock(db):
     if db.bind.dialect.name != "postgresql":

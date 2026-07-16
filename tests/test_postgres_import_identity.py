@@ -88,12 +88,11 @@ class PostgresImportIdentityTests(unittest.TestCase):
             except Exception as exc:
                 errors.append(exc)
 
-        google_result = {"status": "synthetic_stub", "imported": 0, "duplicates": 0, "updated": 0, "error": ""}
         skladbot_result = {"status": "synthetic_stub", "ready": 0, "blocked": 0, "already_linked": 0,
                             "linked_mismatch": 0, "event_id": ""}
-        with (
-            patch("backend.app.imports_service.export_import_records_to_google_sheets", return_value=google_result),
-            patch("backend.app.imports_service.create_skladbot_dry_run_for_import", return_value=skladbot_result),
+        with patch(
+            "backend.app.imports_service.create_skladbot_dry_run_for_import",
+            return_value=skladbot_result,
         ):
             threads = [threading.Thread(target=worker, daemon=True) for _index in range(2)]
             for thread in threads:
@@ -134,12 +133,11 @@ class PostgresImportIdentityTests(unittest.TestCase):
         )
 
     def test_returned_identity_does_not_block_reimport(self):
-        google_result = {"status": "synthetic_stub", "imported": 0, "duplicates": 0, "updated": 0, "error": ""}
         skladbot_result = {"status": "synthetic_stub", "ready": 0, "blocked": 0, "already_linked": 0,
                             "linked_mismatch": 0, "event_id": ""}
-        with (
-            patch("backend.app.imports_service.export_import_records_to_google_sheets", return_value=google_result),
-            patch("backend.app.imports_service.create_skladbot_dry_run_for_import", return_value=skladbot_result),
+        with patch(
+            "backend.app.imports_service.create_skladbot_dry_run_for_import",
+            return_value=skladbot_result,
         ):
             self.run_import(self.import_payload(sha="b" * 64))
             with self.SessionLocal() as session:

@@ -2,15 +2,12 @@ from datetime import datetime
 import tkinter as tk
 from tkinter import messagebox
 
-from .config import DANGER, ERROR_FG, FG_MUTED, FG_TEXT, SHEET_NAME, SPREADSHEET_ID, SUCCESS, WARNING
-from .backend_client import backend_configured, backend_enabled
+from .config import DANGER, ERROR_FG, FG_MUTED, FG_TEXT, SUCCESS, WARNING
+from .backend_client import backend_configured, backend_enabled, fetch_day_report
 from .backend_events import load_pending_backend_events
 from .orders import order_group_key
-from .pending_store import load_pending_prints, load_pending_saves
-from .reports import create_shift_report_excels_by_order_date, truncate_middle
-from .sheets import get_google_client
-from .telegram_service import load_pending_telegram, send_daily_report_result_to_telegram
-from .utils import normalize_text
+from .pending_store import load_pending_prints
+from .telegram_service import load_pending_telegram
 
 
 def build_backend_status(sync_result=None, pending_backend=0):
@@ -47,34 +44,6 @@ def parse_count(value):
         return 0
 
 
-def format_day_end_telegram_status(telegram_result):
-    if not telegram_result:
-        return "Telegram: статус неизвестен"
-    status = normalize_text(telegram_result.get("status"))
-    message = normalize_text(telegram_result.get("message"))
-    label = {
-        "sent": "отправлен",
-        "queued": "в очереди Telegram",
-        "failed": "не отправлен",
-    }.get(status, "не отправлен")
-    if status in {"queued", "failed"} and message:
-        return f"{label}: {truncate_middle(message, 140)}"
-    return label
-
-
-def format_day_end_report_line(report, telegram_result=None):
-    shipment_date = report.get("shipment_date_display") or report.get("report_date_display")
-    part = report.get("part_number")
-    part_text = f", ч{part}" if part else ""
-    parts = [f"- {shipment_date}{part_text}: {report.get('total_report_rows', 0)} КИЗ"]
-    telegram_status = format_day_end_telegram_status(telegram_result)
-    if telegram_status:
-        parts.append(telegram_status)
-    if report.get("already_exists"):
-        parts.append("уже был сформирован")
-    return ", ".join(parts)
-
-
 class DayEndActionsMixin:
     def update_stats_display(self):
         if not hasattr(self, "completed_count_label"):
@@ -84,19 +53,18 @@ class DayEndActionsMixin:
         self.completed_count_label.config(text=str(completed), fg=FG_TEXT)
         self.total_blocks_label.config(text=str(total_blocks), fg=FG_TEXT)
         active_groups = len({order_group_key(order) for order in self.today_orders})
-        pending_saves = len(load_pending_saves())
         pending_prints = len(load_pending_prints())
         pending_telegram = len(load_pending_telegram())
         pending_backend = len(load_pending_backend_events())
         self.active_orders_label.config(text=str(active_groups), fg=FG_TEXT)
-        pending_total = pending_saves + pending_prints + pending_telegram + pending_backend
+        pending_total = pending_prints + pending_telegram + pending_backend
         sync_caption = getattr(self, "sync_caption_label", None)
         if pending_total:
-            self.pending_saves_label.config(text=str(pending_total), fg=WARNING)
+            self.pending_events_label.config(text=str(pending_total), fg=WARNING)
             if sync_caption:
                 sync_caption.config(text="В очереди")
         else:
-            self.pending_saves_label.config(text="OK", fg=SUCCESS)
+            self.pending_events_label.config(text="OK", fg=SUCCESS)
             if sync_caption:
                 sync_caption.config(text="Синхронизация")
         if hasattr(self, "backend_status_label"):
@@ -122,56 +90,24 @@ class DayEndActionsMixin:
         self.safe_config(self.report_btn, state="disabled")
 
         def work():
-            sheet = self.sheet
-            result = create_shift_report_excels_by_order_date(sheet, scan_date=datetime.now().date())
-            if result.get("empty") and not sheet:
-                client = get_google_client()
-                sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
-                result = create_shift_report_excels_by_order_date(sheet, scan_date=datetime.now().date())
-
-            result["sheet"] = sheet
-            if not result.get("empty"):
-                telegram_results = []
-                for report in result.get("reports") or [result]:
-                    ok, message, status = send_daily_report_result_to_telegram(
-                        report,
-                        reason="Отправлено при ручном закрытии смены",
-                    )
-                    telegram_results.append({
-                        "filename": report.get("filename"),
-                        "shipment_date_display": report.get("shipment_date_display"),
-                        "part_number": report.get("part_number"),
-                        "ok": ok,
-                        "message": message,
-                        "status": status,
-                    })
-                result["telegram_results"] = telegram_results
-            return result
+            if not backend_configured():
+                raise RuntimeError("Backend не настроен. Закрытие смены заблокировано")
+            return fetch_day_report(datetime.now().date())
 
         def on_success(result):
-            self.sheet = result.get("sheet") or self.sheet
-            if result.get("empty"):
+            totals = result.get("totals") or {}
+            if not totals.get("scan_codes"):
                 self.show_warning("За сегодня нет отсканированных КИЗов для отчёта")
                 return
-
-            total_report_rows = result["total_report_rows"]
-            reports = result.get("reports") or [result]
-            telegram_results = result.get("telegram_results") or []
-            report_lines = []
-            for index, report in enumerate(reports, start=1):
-                telegram_result = telegram_results[index - 1] if index <= len(telegram_results) else None
-                report_lines.append(format_day_end_report_line(report, telegram_result))
             self.show_info(
-                f"📊 Отчётов сохранено: {len(reports)}\n\n"
+                "📊 Смена сверена с backend/PostgreSQL\n\n"
                 f"━━━━━━━━━━━━━━━━━━━━\n"
-                f"✅ Строк КИЗов: {total_report_rows}\n"
-                f"📦 Блоков: {total_report_rows}\n"
-                f"🔢 Кодов: {total_report_rows}\n"
-                f"├─ Терминал: {result['terminal_count']} кодов\n"
-                f"├─ Перечисление: {result['transfer_count']} кодов\n"
-                f"└─ Не распознано: {result['unknown_count']} кодов\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n\n"
-                + "\n".join(report_lines),
+                f"✅ КИЗов: {totals.get('scan_codes', 0)}\n"
+                f"📦 Отсканировано блоков: {totals.get('scanned_blocks', 0)}\n"
+                f"📋 Заказов завершено: {totals.get('completed_orders', 0)}\n"
+                f"⏳ Осталось блоков: {totals.get('remaining_blocks', 0)}\n"
+                "━━━━━━━━━━━━━━━━━━━━\n\n"
+                "Excel/Telegram-отчёт формирует серверный worker.",
             )
 
             try:

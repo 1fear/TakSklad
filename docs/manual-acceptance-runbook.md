@@ -299,7 +299,8 @@ Helper по умолчанию смотрит на `https://api.taksklad.uz`, п
 12. Проверить завершение смены.
 13. Отдельно проверить: обновление списка во время сканирования не блокирует ввод КИЗов.
 14. Проверить backend refresh после временного network timeout: с загруженным списком текущая позиция сохраняется, без загруженного списка показывается backend connectivity error.
-15. Проверить Google 429 simulation через backend diagnostics: Google mirror может быть degraded, но скан/finish/Telegram worker не блокируются.
+15. Проверить `retired Google worker absent`: compose и runtime не содержат
+    Google worker, credentials mount или новых `google_sheets_export` событий.
 16. Открыть `Возвраты`.
 17. Найти завершённую заявку по ШК/номеру SkladBot.
 18. Нажать `Принять возврат`.

@@ -10,7 +10,7 @@ from datetime import date, datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.exc import SQLAlchemyError
 
 from .access_policy import (
@@ -19,6 +19,7 @@ from .access_policy import (
     route_policy,
 )
 from .admin_service import build_admin_table
+from .admin_orders_export_service import AdminOrdersExportError, build_admin_orders_xlsx
 from .audit_identity import AUDIT_ACTOR_INFO_KEY, bind_audit_actor
 from .client_points_service import (
     ClientPointApiError,
@@ -35,8 +36,6 @@ from .event_queue_service import (
     list_event_queue_diagnostics,
     retry_event_queue_event as retry_event_queue_event_in_db,
 )
-from .google_sheets_sync_worker import sync_google_sheet_to_backend
-from .google_sheets_pending import process_pending_google_sheets_exports
 from .health_service import (
     build_readiness_report,
     public_readiness_report,
@@ -53,7 +52,9 @@ from .incidents_service import (
 from .imports_service import create_import as create_import_in_db
 from .imports_service import list_imports_page as list_imports_page_in_db
 from .imports_service import preview_import as preview_import_in_db
+from .excel_web_service import parse_raw_excel_upload
 from .input_safety import MAX_REQUEST_BODY_BYTES, RequestBodyLimitMiddleware
+from .spreadsheet_safety import SpreadsheetSafetyError
 from .auth_identities import (
     IdentityAuthError,
     authenticate_service_token,
@@ -88,7 +89,6 @@ from .order_actions_service import (
     delete_active_order as delete_active_order_in_db,
     reset_order_for_rescan as reset_order_for_rescan_in_db,
     restore_order as restore_order_in_db,
-    resync_order_to_google as resync_order_to_google_in_db,
     resync_order_skladbot as resync_order_skladbot_in_db,
 )
 from .operations_service import build_operations_attention
@@ -130,6 +130,8 @@ from .schemas import (
     EventQueueDiagnosticsRead,
     EventQueueActionRequest,
     EventQueueEventRead,
+    ExcelImportCommitResponse,
+    ExcelImportPreviewResponse,
     HealthResponse,
     VersionResponse,
     ImportCreate,
@@ -717,8 +719,6 @@ def admin_table(
     search: str = "",
     scan_state: str = "",
     skladbot_filter: str = "",
-    google_status: str = "",
-    google_sheet_status: str = "",
     db=Depends(get_db),
 ):
     row_limit = normalize_page_limit(limit, default=500, maximum=500)
@@ -736,11 +736,41 @@ def admin_table(
         search=search,
         scan_state=scan_state,
         skladbot_filter=skladbot_filter,
-        google_status=google_sheet_status or google_status,
         cursor=cursor,
     )
     set_pagination_headers(response, next_cursor=result.next_cursor, limit=row_limit)
     return result
+
+
+@api.get("/admin/orders/export.xlsx")
+def export_admin_orders(
+    status_bucket: str = "",
+    shipment_date: str = "",
+    search: str = "",
+    scan_state: str = "",
+    skladbot_filter: str = "",
+    db=Depends(get_db),
+):
+    try:
+        content, filename, row_count = build_admin_orders_xlsx(
+            db,
+            status_bucket=status_bucket,
+            shipment_date=shipment_date,
+            search=search,
+            scan_state=scan_state,
+            skladbot_filter=skladbot_filter,
+        )
+    except AdminOrdersExportError as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    return StreamingResponse(
+        iter((content,)),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+            "X-TakSklad-Filename": quote(filename),
+            "X-TakSklad-Row-Count": str(row_count),
+        },
+    )
 
 
 @api.get("/admin/dashboard/day-summary", response_model=DashboardDaySummaryRead)
@@ -847,11 +877,6 @@ def admin_update_client_point_timeslot(payload: ClientPointTimeslotUpdate, db=De
         return update_client_point_timeslot_in_db(db, payload)
     except ClientPointApiError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
-
-
-@api.post("/admin/google/pending/retry", dependencies=[Depends(require_admin_write_permission)])
-def retry_pending_google_exports(limit: int = 50, db=Depends(get_db)):
-    return process_pending_google_sheets_exports(db, limit=limit)
 
 
 @api.get("/admin/events", response_model=EventQueueDiagnosticsRead)
@@ -1039,18 +1064,6 @@ def delete_active_order(order_id: str, payload: AdminOrderActionRequest, db=Depe
 
 
 @api.post(
-    "/admin/orders/{order_id}/resync-google",
-    response_model=OrderRead,
-    dependencies=[Depends(require_admin_write_permission)],
-)
-def resync_order_to_google(order_id: str, payload: AdminOrderActionRequest | None = None, db=Depends(get_db)):
-    try:
-        return resync_order_to_google_in_db(db, order_id, payload)
-    except ApiError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
-
-
-@api.post(
     "/admin/orders/{order_id}/reset-rescan",
     response_model=OrderRead,
     dependencies=[Depends(require_admin_write_permission)],
@@ -1140,7 +1153,6 @@ def sync_sources(skladbot: bool = True, wait_skladbot: bool = False, db=Depends(
     if not sync_sources_lock.acquire(blocking=False):
         return {
             "status": "busy",
-            "google_sheets": {"status": "skipped", "message": "Sync already in progress"},
             "skladbot": {"status": "skipped", "message": "Sync already in progress"},
         }
 
@@ -1153,45 +1165,21 @@ def sync_sources(skladbot: bool = True, wait_skladbot: bool = False, db=Depends(
             payload={"skladbot": bool(skladbot), "wait_skladbot": bool(wait_skladbot)},
         ))
         db.commit()
-    errors = []
     try:
-        try:
-            pending_google_result = process_pending_google_sheets_exports(db)
-            pending_google_result = {"status": "completed", **pending_google_result}
-        except Exception as exc:
-            pending_google_result = {"status": "error", "error": str(exc)}
-            errors.append("google_sheets_pending")
-
-        if settings.google_to_backend_sync_enabled:
-            try:
-                google_sheets_result = sync_google_sheet_to_backend(db)
-                google_sheets_result = {"status": "completed", **google_sheets_result}
-            except Exception as exc:
-                google_sheets_result = {"status": "error", "error": str(exc)}
-                errors.append("google_sheets")
-        else:
-            google_sheets_result = {
-                "status": "skipped",
-                "message": "Google -> backend sync is disabled; VDS/Postgres is source of truth",
-            }
-
         if skladbot and wait_skladbot:
             try:
                 skladbot_result = update_orders_from_skladbot(**({"audit_actor": audit_actor} if audit_actor else {}))
                 skladbot_result = {"status": "completed", **skladbot_result}
             except Exception as exc:
                 skladbot_result = {"status": "error", "error": str(exc)}
-                errors.append("skladbot")
         elif skladbot:
             skladbot_result = start_skladbot_sync_background(audit_actor=audit_actor)
         else:
             skladbot_result = {"status": "skipped"}
 
         return {
-            "status": "completed_with_errors" if errors else "completed",
-            "errors": errors,
-            "google_sheets_pending": pending_google_result,
-            "google_sheets": google_sheets_result,
+            "status": "completed" if skladbot_result.get("status") != "error" else "completed_with_errors",
+            "errors": ["skladbot"] if skladbot_result.get("status") == "error" else [],
             "skladbot": skladbot_result,
         }
     finally:
@@ -1308,6 +1296,43 @@ def create_import(payload: ImportCreate, db=Depends(get_db)):
 @api.post("/imports/preview", response_model=ImportPreviewResult, dependencies=[Depends(require_admin_write_permission)])
 def preview_import(payload: ImportCreate, db=Depends(get_db)):
     return preview_import_in_db(db, payload)
+
+
+@api.post(
+    "/imports/excel/preview",
+    response_model=ExcelImportPreviewResponse,
+    dependencies=[Depends(require_admin_write_permission)],
+)
+async def preview_excel_import(
+    request: Request,
+    filename: str = Header(..., alias="X-TakSklad-Filename"),
+    db=Depends(get_db),
+):
+    try:
+        payload, meta = parse_raw_excel_upload(await request.body(), filename, source="web")
+    except (SpreadsheetSafetyError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    preview = preview_import_in_db(db, payload)
+    return {"preview": preview, "filename": payload.filename or "", "sha256": payload.sha256 or "", "meta": meta}
+
+
+@api.post(
+    "/imports/excel",
+    response_model=ExcelImportCommitResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_admin_write_permission)],
+)
+async def commit_excel_import(
+    request: Request,
+    filename: str = Header(..., alias="X-TakSklad-Filename"),
+    db=Depends(get_db),
+):
+    try:
+        payload, meta = parse_raw_excel_upload(await request.body(), filename, source="web")
+    except (SpreadsheetSafetyError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    result = create_import_in_db(db, payload)
+    return {"result": result, "filename": payload.filename or "", "sha256": payload.sha256 or "", "meta": meta}
 
 
 @api.get("/imports", response_model=list[ImportRead])

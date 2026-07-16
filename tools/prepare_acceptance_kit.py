@@ -70,7 +70,6 @@ def build_manifest(output_dir=DEFAULT_OUTPUT_DIR, marker=DEFAULT_MARKER, shipmen
             "regenerate": ".venv/bin/python tools/prepare_acceptance_kit.py",
             "local_preflight": ".venv/bin/python tools/release_preflight.py",
             "vds_status": './deploy/vds/acceptance_status.sh',
-            "google_backend_sync": './deploy/vds/verify_google_backend_sync.sh',
             "skladbot_coverage": './deploy/vds/verify_skladbot_coverage.sh',
             "telegram_verify": './deploy/vds/verify_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --expect-orders 1',
             "telegram_wait": './deploy/vds/wait_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --expect-orders 1 --timeout 300 --interval 10',
@@ -142,14 +141,8 @@ cd /opt/taksklad/app
 {manifest["commands"]["vds_status"]}
 ```
 
-Обычный `acceptance_status.sh` проверяет здоровье VDS, Telegram menu, Google Sheets ↔ backend sync, покрытие SkladBot-номерами и показывает блок `release_go_no_go`.
+Обычный `acceptance_status.sh` проверяет здоровье VDS, Telegram menu, PostgreSQL workers, покрытие SkladBot-номерами и показывает блок `release_go_no_go`.
 До ручной приёмки в нём должен быть `status=no_go`.
-Отдельно проверить Google Sheets ↔ backend sync можно так:
-
-```bash
-cd /opt/taksklad/app
-{manifest["commands"]["google_backend_sync"]}
-```
 
 Отдельно проверить покрытие активных заказов номерами SkladBot можно так:
 

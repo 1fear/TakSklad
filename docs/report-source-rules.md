@@ -1,20 +1,21 @@
 # Report Source Rules
 
-Актуально на: 09.07.2026
+Актуально на: 16.07.2026
 
-Цель документа: зафиксировать, откуда отчеты и складской hot path берут данные и как должны вести себя при ошибках. Главное правило: Postgres/backend является source of truth для backend-mode hot path, Google Sheets не является source of truth для отчетов и сканирования, он остается зеркалом/export.
+Цель документа: зафиксировать, откуда отчеты и складской hot path берут данные и как должны вести себя при ошибках. Главное правило: Postgres/backend является единственным operational source of truth. Google Sheets в runtime не используется.
 
 ## Матрица Источников
 
-| Отчет | Endpoint/команда | Основной источник | Google Sheets | Важные правила |
+| Отчет | Endpoint/команда | Основной источник | Важные правила |
 | --- | --- | --- | --- | --- |
-| Отчет за день TakSklad | `GET /api/v1/reports/day` | Postgres: `orders`, `order_items`, `scan_codes` | Не используется | Дата считается в бизнес-таймзоне. В отчет попадают заказы по дате отгрузки и сканы, попавшие в выбранный бизнес-день. |
-| Верхние карточки web-панели | `GET /api/v1/admin/dashboard/day-summary` | Postgres: `order_items.created_at`, `orders`, `order_items`, `scan_codes` | Не используется | Дата считается по дате загрузки позиции в backend. `Всего заказов` - уникальные операционные заказы, у которых есть позиции, загруженные в выбранный день. `Всего блоков` - все блоки в этих загруженных позициях, готовые и активные. `Отскан. блоков` - текущий прогресс сканирования по этим позициям. Возвраты, отмены, архив без КИЗ и строки `removed_from_google_sheet` не учитываются. |
-| Логистика | `GET /api/v1/logistics/report` | Postgres: `orders`, `order_items`, `raw_payload.coordinates`, `client_points` | Не используется | Самовывоз и stock-shortage blocked заказы исключаются. Delivery-заказы с валидными координатами попадают в лист `Orders` нового шаблона: `Тип заказа`, раздельные `ID заявки SkladBot`, `ID заявки Smartup`, `ID источника`, `Имя клиента`, `Заметки`, раздельные `Широта/Долгота (доставка)`, `Адрес доставки`, окна доставки как Excel datetime, `Название товара`, `Вес (кг)`, `Объем (m3)`, `Короба`. Delivery без валидных координат попадают в лист `Требуют координаты` с теми же раздельными ID. Окно доставки берется из сохраненной точки `client_name + address`, fallback остается `10:00-18:00`. Если на дату нет ни одного delivery-кандидата, backend возвращает понятную ошибку. |
-| КИЗы по дате | `GET /api/v1/reports/kiz/date` | Postgres: `order_items.scan_codes`, `orders`, import metadata | Не используется | Выгружаются только КИЗы, записанные в backend. Частичная дата разрешена: выгружается то, что реально отпикано. |
-| КИЗы по файлу | `GET /api/v1/reports/kiz/source-file` | Postgres: `source_file`, `source_batch_key`, `backend_import_id`, `scan_codes` | Не используется | Smartup auto import сохраняет общий `source_batch_key` для всех backend-import из одного XLSX export, поэтому файл `Терминал ДД.ММ.ГГГГ Часть N.xlsx` показывается одной партией. Ручные повторные Excel без batch-key остаются разделены по `backend_import_id`. По файлу требуется завершенность выбранной партии, иначе backend возвращает ошибку. |
-| Ежедневный SkladBot отчет | `/skladbot_daily ДД.ММ.ГГГГ`, schedule `22:00` | SkladBot API: requests/detail, transactions, products/stock | Не используется | `/requests` читается page-based через `page + limit`, без `offset`, с dedupe по request id и stop guards: empty page, short page, repeated page ids, max pages, API error. Primary daily scope: дата создания заявки, надежная `Дата выгрузки` / `unloading_date` из detail или warehouse movement date за дату отчета. В операционные листы `Заявки` и `Товары заявок` попадают строки, которые прошли date eligibility и status eligibility `Выполнена` + `В архиве`; если заявка создана в дату отчета, плановая дата выгрузки не выносит ее в отдельный лист. Non-completed, non-archived, out-of-scope, API-error, missing/conflicting date строки не исчезают: они попадают в diagnostic data и XLSX листы `Контроль покрытия`, `Исключенные заявки`, `Диагностика дат`, `Ошибки`. Telegram summary показывает coverage status, included/excluded counts, API errors и warning для partial/failed отчета. `Сводка` считает операционные request product rows и не является историческим stock snapshot; движения склада остаются отдельным источником и не должны удваивать request product totals. Фактическая приемка для включенных заявок берется из `acceptedAmount`, значение уже в блоках. SkladBot API остается read-only: отчет не меняет заявки, статусы, остатки или движения. |
-| Ежедневная сверка | `GET /api/v1/reports/reconciliation/day`, schedule после SkladBot daily | Postgres: `orders`, `order_items`, SkladBot metadata в `raw_payload` | Только зеркало для сравнения | Основной статус считается по DB. Google-only, DB-only active, status mismatch и WH-R mismatch считаются отдельно. При падении Google создается mirror issue, но DB workflow не считается упавшим. |
+| Отчет за день TakSklad | `GET /api/v1/reports/day` | Postgres: `orders`, `order_items`, `scan_codes` | Дата считается в бизнес-таймзоне. В отчет попадают заказы по дате отгрузки и сканы выбранного бизнес-дня. |
+| Верхние карточки web-панели | `GET /api/v1/admin/dashboard/day-summary` | Postgres: `order_items.created_at`, `orders`, `order_items`, `scan_codes` | Возвраты, отмены и архив без КИЗ не учитываются. |
+| Логистика | `GET /api/v1/logistics/report` | Postgres: `orders`, `order_items`, `raw_payload.coordinates`, `client_points` | Самовывоз и stock-shortage blocked заказы исключаются; строки без координат остаются в диагностическом листе. |
+| КИЗы по дате | `GET /api/v1/reports/kiz/date` | Postgres: `order_items.scan_codes`, `orders`, import metadata | Выгружаются только КИЗы, записанные в backend. |
+| КИЗы по файлу | `GET /api/v1/reports/kiz/source-file` | Postgres: import metadata и `scan_codes` | Для выбранной партии требуется завершённость. |
+| Административный экспорт заказов | `GET /api/v1/admin/orders/export.xlsx` | PostgreSQL с admin-фильтрами | XLSX формируется backend; таблица не является хранилищем. |
+| Ежедневный SkladBot отчет | `/skladbot_daily ДД.ММ.ГГГГ`, schedule `22:00` | SkladBot API: requests/detail, transactions, products/stock | Read-only отчёт; partial/failed coverage блокирует scheduled send. |
+| Ежедневная сверка | `GET /api/v1/reports/reconciliation/day`, schedule после SkladBot daily | PostgreSQL + SkladBot metadata | Сверка не читает Google и не создаёт Google mirror incidents. |
 
 ## Ошибки И Edge Cases
 
@@ -35,8 +36,7 @@
 - В `Сводка` строка `Расчетный начальный остаток` является формулой от актуального конечного остатка и движений/категорий отчета; это не historical opening stock snapshot склада.
 - Этот документ описывает local code/test contract. Production live truth не заявляется без отдельной approved проверки live logs/DB/runtime.
 - Telegram показывает пользователю действие и причину ошибки, но токены, Bearer credentials и длинные КИЗы маскируются.
-- Если Google Sheets недоступен, DB-first отчеты продолжают работать, потому что Google не участвует в чтении отчетов.
-- Ежедневная сверка при недоступном Google создает warning incident `google_mirror_unavailable` и не отправляет critical alert, если в DB/SkladBot нет критичных расхождений.
+- Недоступность Google Sheets не является runtime-событием: у приложения нет Google-клиента и Google worker.
 - Critical alerts ежедневной сверки агрегируются по incident/date/source и содержат прямое следующее действие. Повторный запуск за ту же дату не создает дубль Telegram-события.
 - Для логистики адреса вида `Самовывоз`, `Самовывоз со склада`, `Самовывоз: склад` не должны попадать в маршрут даже при наличии координат.
 - Delivery-заказы без координат не должны исчезать из логистического XLSX: они остаются вне маршрутного листа, но видны логисту в листе `Требуют координаты` с причиной `Нет координат` или `Невалидные координаты`.
@@ -49,4 +49,4 @@
 - `tests.test_backend_api_persistence` проверяет DB day report, web dashboard summary по дате загрузки, business timezone, логистику, таймслоты сохраненных точек, лист `Требуют координаты`, KIZ source/date exports и invalid report date.
 - `tests.test_skladbot_daily_report` проверяет SkladBot daily XLSX, SKU-колонки, `acceptedAmount`, отдельную строку `Отгрузка в браке`, page-based `/requests` crawl, coverage diagnostics, excluded rows, July 7 transfer batch regression с будущей датой выгрузки в обычных `Заявки`/`Товары заявок`, truncation/date-conflict/status partial coverage, read-style POST retry, manual partial block/override, same-day manual recovery marker, summary stock formula semantics, scheduled partial-send block, detail-budget priority, split max-pages counters, source identity keys, scheduled registry и retry на `429`.
 - `tests.test_backend_telegram_import` проверяет Telegram-ошибки логистики/KIZ и ограничение меню последних файлов.
-- `tests.test_reconciliation_service` проверяет DB-first ежедневную сверку, отдельные счетчики Google/DB/WH-R/status, SkladBot gaps, dedupe Telegram alerts и Google-down mirror issue.
+- `tests.test_reconciliation_service` проверяет DB/SkladBot сверку, SkladBot gaps и dedupe Telegram alerts без Google runtime.

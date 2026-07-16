@@ -19,9 +19,7 @@ from .config import (
 )
 from .backend_client import backend_configured
 from .desktop_diagnostics import build_sync_queue_summary, format_sync_queue_summary, write_diagnostic_bundle
-from .sheets import release_telegram_poll_lock
 from .single_instance import release_single_instance_lock
-from .telegram_service import telegram_single_listener_lock_enabled
 from .ui_widgets import AppButton
 from .utils import normalize_text
 
@@ -288,7 +286,6 @@ class AppRuntimeMixin:
     def build_sync_queue_window_summary(self):
         return build_sync_queue_summary(
             sync_result=getattr(self, "last_sync_result", {}),
-            google_available=bool(getattr(self, "sheet", None)),
             backend_available=backend_configured(),
         )
 
@@ -301,8 +298,6 @@ class AppRuntimeMixin:
 
         queues = summary.get("queues") or {}
         self.show_info("Повторяю отправку очередей")
-        if (queues.get("google_saves") or {}).get("count"):
-            self.refresh_from_sheet()
         if (queues.get("backend_scans") or {}).get("count") or (queues.get("backend_completes") or {}).get("count"):
             self.sync_backend_events_async()
         if (queues.get("telegram") or {}).get("count"):
@@ -450,14 +445,6 @@ class AppRuntimeMixin:
                 "Есть несохранённые сканы по текущей позиции.\n\nЗакрыть программу без завершения позиции?"
             ):
                 return
-        if (
-            getattr(self, "telegram_lock_owned_until", 0) > time.time()
-            and telegram_single_listener_lock_enabled()
-        ):
-            try:
-                release_telegram_poll_lock(self.telegram_lock_owner_id)
-            except Exception:
-                logging.info("Telegram: lock не освобождён при закрытии", exc_info=True)
         if getattr(self, "single_instance_lock", None):
             try:
                 release_single_instance_lock(self.single_instance_lock)

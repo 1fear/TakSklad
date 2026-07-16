@@ -11,10 +11,6 @@ from .client_points_service import (
     prefetch_client_points_for_import,
     sync_client_point_from_import_row_cached,
 )
-from .google_sheets_exporter import make_sheet_record
-from .google_sheets_pending import (
-    queue_google_sheets_export,
-)
 from .models import AuditLog, ImportFile, ImportJob, Incident, Order, OrderItem, PendingEvent
 from .observability_context import current_correlation_id, log_trace
 from .pagination import CursorError, decode_cursor, encode_cursor, normalize_page_limit
@@ -97,7 +93,6 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
     items_created = 0
     backend_address_updates = 0
     resolved_order_ids: set[uuid.UUID] = set()
-    google_sheets_records = []
 
     import_job = ImportJob(
         source=normalize_text(payload.source) or "excel",
@@ -168,13 +163,6 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
 
         sync_client_point_from_import_row_cached(db, row, client_points_by_key)
 
-        google_sheets_records.append(
-            make_sheet_record(
-                row,
-                item_key=row["item_key"],
-                filename=payload.filename or "",
-            )
-        )
         if row["item_key"]:
             current_import_item_keys.add(row["item_key"])
         if row["source_import_id"]:
@@ -280,15 +268,6 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
         entity_id=str(import_job.id),
         payload=import_job.raw_payload,
     ))
-    google_sheets_result = export_import_records_to_google_sheets(
-        db,
-        google_sheets_records,
-        import_job_id=str(import_job.id),
-    )
-    import_job.raw_payload = {
-        **(import_job.raw_payload or {}),
-        "google_sheets": google_sheets_result,
-    }
     db.flush()
     try:
         with db.begin_nested():
@@ -351,11 +330,6 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
         resolved_order_ids=sorted(str(order_id) for order_id in resolved_order_ids),
         errors=errors,
         backend_address_updates=backend_address_updates,
-        google_sheets_status=google_sheets_result.get("status", ""),
-        google_sheets_imported=google_sheets_result.get("imported", 0),
-        google_sheets_duplicates=google_sheets_result.get("duplicates", 0),
-        google_sheets_updated=google_sheets_result.get("updated", 0),
-        google_sheets_error=google_sheets_result.get("error", ""),
         skladbot_dry_run_status=skladbot_dry_run_result.get("status", ""),
         skladbot_dry_run_ready=skladbot_dry_run_result.get("ready", 0),
         skladbot_dry_run_blocked=skladbot_dry_run_result.get("blocked", 0),
@@ -487,71 +461,6 @@ def ensure_import_incident(db: Session, import_job: ImportJob):
         },
     ))
     return incident
-
-
-def export_import_records_to_google_sheets(db: Session, records, import_job_id=""):
-    if not records:
-        return {
-            "status": "skipped",
-            "imported": 0,
-            "duplicates": 0,
-            "updated": 0,
-            "error": "",
-        }
-    result = {
-        "status": "queued",
-        "imported": 0,
-        "duplicates": 0,
-        "updated": 0,
-        "error": "",
-        "queued": True,
-    }
-    chunks = chunk_outbox_records(records)
-    events = [
-        queue_google_sheets_export(
-            db,
-            "google_sheets_import_export",
-            "import",
-            import_job_id,
-            result=result,
-            payload={
-                "records": chunk,
-                "chunk_index": index,
-                "chunk_count": len(chunks),
-            },
-        )
-        for index, chunk in enumerate(chunks, start=1)
-    ]
-    event_ids = [str(event.id) for event in events if event is not None]
-    return {
-        **result,
-        "pending_event_id": event_ids[0] if event_ids else "",
-        "pending_event_ids": event_ids,
-        "events_queued": len(event_ids),
-    }
-
-
-def chunk_outbox_records(records):
-    maximum = outbox_service.MAX_OUTBOX_PAYLOAD_BYTES - (64 * 1024)
-    chunks = []
-    current = []
-    current_bytes = len(b'{"records":[]}')
-    for record in records:
-        sanitized_record = outbox_service.sanitize_outbox_payload(record)
-        encoded_record = json.dumps(
-            sanitized_record, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"),
-        ).encode("utf-8")
-        separator_bytes = 1 if current else 0
-        if current and current_bytes + separator_bytes + len(encoded_record) > maximum:
-            chunks.append(current)
-            current = [record]
-            current_bytes = len(b'{"records":[]}') + len(encoded_record)
-        else:
-            current.append(record)
-            current_bytes += separator_bytes + len(encoded_record)
-    if current:
-        chunks.append(current)
-    return chunks
 
 
 def list_imports_page(

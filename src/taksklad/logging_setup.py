@@ -6,7 +6,6 @@ from logging.handlers import RotatingFileHandler
 from .secret_store import (
     BACKEND_API_TOKEN_SECRET,
     GEOCODER_API_KEY_SECRET,
-    GOOGLE_CREDENTIALS_SECRET,
     TELEGRAM_BOT_TOKEN_SECRET,
     SecretStoreError,
     load_secret,
@@ -15,7 +14,6 @@ from .secret_store import (
 
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
 LOG_SECRET_NAMES = (
-    GOOGLE_CREDENTIALS_SECRET,
     TELEGRAM_BOT_TOKEN_SECRET,
     BACKEND_API_TOKEN_SECRET,
     GEOCODER_API_KEY_SECRET,
@@ -32,20 +30,6 @@ def redact_known_secret_values(value):
         if not secret:
             continue
         fragments = {secret}
-        if name == GOOGLE_CREDENTIALS_SECRET:
-            try:
-                payload = json.loads(secret)
-            except (TypeError, ValueError):
-                payload = None
-            stack = [payload]
-            while stack:
-                current = stack.pop()
-                if isinstance(current, dict):
-                    stack.extend(current.values())
-                elif isinstance(current, list):
-                    stack.extend(current)
-                elif isinstance(current, str):
-                    fragments.add(current)
         encoded_fragments = set()
         for fragment in fragments:
             if len(fragment) < 4:

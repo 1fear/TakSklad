@@ -43,7 +43,7 @@ class PostgresReadinessTests(unittest.TestCase):
             stale = build_readiness_report(session, self.settings)
             self.assertFalse(stale["ready"])
             self.assertEqual(readiness_http_status(stale), 503)
-            session.execute(text("UPDATE alembic_version SET version_num = '20260716_0018'"))
+            session.execute(text("UPDATE alembic_version SET version_num = '20260716_0019'"))
             session.commit()
 
     def test_mandatory_queue_failure_is_503(self):

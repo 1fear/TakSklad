@@ -200,7 +200,7 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn("phase27-env-pre-recovery", workflow)
         self.assertIn('"SMARTUP_AUTO_IMPORT_SAGA_MODE": "disabled"', workflow)
         self.assertIn('"SMARTUP_AUTO_IMPORT_PROCESS_SKLADBOT_NOW": "false"', workflow)
-        self.assertIn('"TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED": "false"', workflow)
+        self.assertNotIn("TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED", workflow)
         self.assertIn("export PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.", workflow)
         self.assertIn("pull postgres-wal-init postgres", workflow)
         self.assertIn("com.docker.compose.volume=postgres_wal_archive", workflow)
@@ -210,7 +210,7 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn("alembic -c alembic.ini heads </dev/null", workflow)
         self.assertIn(r'test "\$current_revision" = "\$target_revision"', workflow)
         self.assertIn("PHASE27_RETRY_RUNTIME_OK", workflow)
-        self.assertIn("backend-api frontend telegram-worker google-sheets-sync-worker", workflow)
+        self.assertIn("backend-api frontend telegram-worker skladbot-worker", workflow)
         self.assertIn("for attempt in \\$(seq 1 36)", workflow)
         self.assertIn("backend_health", workflow)
         self.assertIn("frontend_health", workflow)
@@ -220,11 +220,11 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn("unresolved_daily_report_historical", workflow)
         self.assertIn("PHASE27_HISTORICAL_REPORT_RECOVERY_OK", workflow)
         self.assertIn("phase27_historical_daily_report_recovery", workflow)
-        self.assertIn("PHASE27_GOOGLE_MIRROR_POLICY_OK", workflow)
+        self.assertIn("DB_ONLY_RUNTIME_POLICY_OK", workflow)
         self.assertIn("PHASE27_LIVE_SLO_SUMMARY", workflow)
         self.assertIn("PHASE27_DEPLOY_REUSED", workflow)
         self.assertIn("/opt/stacks/taksklad/deployments/current-release.json", workflow)
-        self.assertIn('if google_sync_status != 0:', workflow)
+        self.assertNotIn("google_sync_status", workflow)
         self.assertIn('docker exec -i "\\$backend_id" python - < /tmp/taksklad-phase27-recover.py', workflow)
         self.assertIn("\n          PY\n            chmod 600 /tmp/taksklad-phase27-recover.py", workflow)
         self.assertIn("for attempt in \\$(seq 1 36)", workflow)
@@ -306,11 +306,19 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn("tools/collect_phase27_evidence.py", workflow)
         self.assertIn('git show "$DEPLOY_CONTROL_SHA:deploy/vds/deploy_from_git.sh"', workflow)
         self.assertIn('git show "$DEPLOY_CONTROL_SHA:deploy/vds/acceptance_status.sh"', workflow)
+        self.assertIn('git show "$DEPLOY_CONTROL_SHA:tools/google_cutover_audit.py"', workflow)
         self.assertIn("previous runtime migration head does not match the retained database schema", workflow)
         self.assertIn("structurally complete forced rollout", workflow)
         self.assertIn(
-            "rm -f /tmp/taksklad-production-preflight.json /tmp/taksklad-live-release-verification.json",
+            "rm -f /tmp/taksklad-google-cutover-audit.json",
             workflow,
+        )
+        self.assertIn("tools/google_cutover_audit.py", workflow)
+        self.assertIn("GOOGLE_TO_POSTGRES_CUTOVER_AUDIT_BLOCKED", workflow)
+        self.assertIn('payload.get("blockers") != 0', workflow)
+        self.assertLess(
+            workflow.index("tools/google_cutover_audit.py"),
+            workflow.index("phase27-env-pre-recovery"),
         )
         self.assertIn("./deploy/vds/backup_postgres.sh --no-prune", workflow)
         self.assertIn(

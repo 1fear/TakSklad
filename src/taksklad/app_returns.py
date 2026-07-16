@@ -1,17 +1,12 @@
 import tkinter as tk
 
 from .backend_client import (
-    backend_read_orders_enabled,
+    backend_configured,
     fetch_returned_orders,
     lookup_return_order,
     mark_order_returned,
 )
 from .config import ACCENT, BG_CARD, BG_MAIN, BORDER, FG_MUTED, FG_TEXT
-from .sheets import (
-    fetch_returned_orders_from_gsheet,
-    lookup_return_order_in_gsheet,
-    mark_return_order_in_gsheet,
-)
 from .ui_widgets import AppButton
 from .utils import normalize_text, parse_int_value
 
@@ -71,11 +66,8 @@ def build_return_confirmed_items_for_order(order, selected_item_ids=None):
     selected = None
     if selected_item_ids is not None:
         selected = {normalize_text(item_id) for item_id in selected_item_ids if normalize_text(item_id)}
-    is_google_order = normalize_text(order.get("source")) == "google_sheets" or order.get("_row_numbers")
-    for index, item in enumerate(order.get("items") or [], start=1):
+    for item in order.get("items") or []:
         item_id = normalize_text(item.get("id") or item.get("item_id") or item.get("order_item_id") or item.get("_backend_order_item_id"))
-        if not item_id and is_google_order and not normalize_text(order.get("_backend_order_id")):
-            item_id = f"google_row:{index}"
         if selected is not None and item_id not in selected:
             continue
         product = normalize_text(item.get("product") or item.get("sku") or item.get("Товары"))
@@ -327,13 +319,12 @@ class ReturnsActionsMixin:
             result_var.set("Фиксирую возврат...")
 
             def on_success(updated_order):
-                storage_name = "Google Sheets" if normalize_text(updated_order.get("source")) == "google_sheets" else "backend"
                 return_request = updated_order.get("skladbot_return_request_number") or updated_order.get("skladbot_return_request_id") or "создается в фоне"
                 result_var.set(
                     "Возврат принят.\n\n"
                     f"Заявка: {updated_order.get('skladbot_request_number') or updated_order.get('id')}\n"
                     f"Возврат SkladBot: {return_request}\n"
-                    f"Статус сохранён в {storage_name}."
+                    "Статус сохранён в backend."
                 )
                 refresh_returns_list()
                 self.refresh_from_sheet()
@@ -483,25 +474,23 @@ class ReturnsActionsMixin:
 
 
     def fetch_returns_for_display(self, limit=50):
-        if backend_read_orders_enabled():
-            return fetch_returned_orders(limit=limit)
-        return fetch_returned_orders_from_gsheet(limit=limit)
+        if not backend_configured():
+            raise RuntimeError("Backend не настроен. Возвраты недоступны")
+        return fetch_returned_orders(limit=limit)
 
 
     def lookup_return_for_display(self, lookup):
-        if backend_read_orders_enabled():
-            return lookup_return_order(lookup)
-        return lookup_return_order_in_gsheet(lookup)
+        if not backend_configured():
+            raise RuntimeError("Backend не настроен. Поиск возврата недоступен")
+        return lookup_return_order(lookup)
 
 
     def mark_return_for_display(self, order, return_reference, confirmed_items=None):
-        is_google_order = normalize_text(order.get("source")) == "google_sheets" or order.get("_row_numbers")
-        backend_order_id = normalize_text(order.get("_backend_order_id"))
-        if not is_google_order:
-            backend_order_id = normalize_text(order.get("id") or backend_order_id)
-        backend_reads_enabled = backend_read_orders_enabled()
-        if is_google_order and backend_reads_enabled and not backend_order_id:
-            raise RuntimeError("Возврат нужно провести через backend/order id: у Google-заявки нет _backend_order_id.")
+        if not backend_configured():
+            raise RuntimeError("Backend не настроен. Возврат заблокирован")
+        backend_order_id = normalize_text(order.get("id") or order.get("_backend_order_id"))
+        if not backend_order_id:
+            raise RuntimeError("У заказа нет backend order id. Возврат заблокирован")
 
         if confirmed_items is None:
             payload_items = build_return_confirmed_items_for_order(order)
@@ -516,24 +505,8 @@ class ReturnsActionsMixin:
         if selected_return_is_partial(order, payload_items) and not return_partial_supported(order):
             raise RuntimeError(PARTIAL_RETURN_UNSUPPORTED_MESSAGE)
 
-        if backend_order_id and backend_reads_enabled:
-            return mark_order_returned(
-                backend_order_id,
-                return_reference=return_reference,
-                returned_by=self.telegram_lock_owner_label,
-                confirmed_items=payload_items,
-            )
-
-        if is_google_order:
-            updated_order = mark_return_order_in_gsheet(
-                order,
-                return_reference=return_reference,
-                returned_by=self.telegram_lock_owner_label,
-            )
-            return updated_order
-
         return mark_order_returned(
-            order.get("id"),
+            backend_order_id,
             return_reference=return_reference,
             returned_by=self.telegram_lock_owner_label,
             confirmed_items=payload_items,

@@ -176,15 +176,14 @@ class BackendPerformanceContractTests(unittest.TestCase):
         result = SimpleNamespace(items=[1, 2])
         with (
             mock.patch("backend.app.orders_service.mark_order_returned", return_value=result),
-            mock.patch.object(benchmark_backend, "cleanup_sql", return_value=[4, 3, 5, 1]) as cleanup_sql,
+            mock.patch.object(benchmark_backend, "cleanup_sql", return_value=[2, 1, 5, 1]) as cleanup_sql,
         ):
             _rows, cleanup = benchmark_backend.return_db(mock.Mock(), context, 7)
             cleanup()
 
         statements = "\n".join(statement for statement, _parameters in cleanup_sql.call_args.args[1])
         self.assertIn("skladbot_return_request_create_queued", statements)
-        self.assertIn("google_sheets_archive_export", statements)
-        self.assertIn("google_sheets_return_export", statements)
+        self.assertNotIn("google_sheets", statements)
         self.assertIn("skladbot_return_request_status", statements)
         self.assertIn("skladbot_return_create_event_id", statements)
         self.assertIn("skladbot_return_create_idempotency_key", statements)
@@ -194,29 +193,27 @@ class BackendPerformanceContractTests(unittest.TestCase):
         scan_result = SimpleNamespace()
         with (
             mock.patch("backend.app.orders_service.create_scan", return_value=scan_result),
-            mock.patch.object(benchmark_backend, "cleanup_sql", return_value=[1] * 7) as scan_cleanup_sql,
+            mock.patch.object(benchmark_backend, "cleanup_sql", return_value=[1] * 5) as scan_cleanup_sql,
         ):
             _rows, cleanup = benchmark_backend.scan_db(mock.Mock(), scan_context, 3)
             cleanup()
         scan_statements = "\n".join(
             statement for statement, _parameters in scan_cleanup_sql.call_args.args[1]
         )
-        self.assertIn("google_sheets_scan_export", scan_statements)
-        self.assertIn("pending_events", scan_statements)
+        self.assertNotIn("google_sheets", scan_statements)
 
         complete_context = {"complete_order": "synthetic-order", "return_items": [{}, {}, {}]}
         complete_result = SimpleNamespace(items=[1, 2, 3])
         with (
             mock.patch("backend.app.orders_service.complete_order", return_value=complete_result),
-            mock.patch.object(benchmark_backend, "cleanup_sql", return_value=[1, 1, 1, 3, 1]) as complete_cleanup_sql,
+            mock.patch.object(benchmark_backend, "cleanup_sql", return_value=[1, 3, 1]) as complete_cleanup_sql,
         ):
             _rows, cleanup = benchmark_backend.complete_db(mock.Mock(), complete_context, 4)
             cleanup()
         complete_statements = "\n".join(
             statement for statement, _parameters in complete_cleanup_sql.call_args.args[1]
         )
-        self.assertIn("google_sheets_archive_export", complete_statements)
-        self.assertIn("pending_events", complete_statements)
+        self.assertNotIn("google_sheets", complete_statements)
 
     def test_queue_cleanup_restores_exact_seed_state(self):
         context = {}

@@ -119,11 +119,11 @@ class PostgresRbacAuditTests(unittest.TestCase):
             for role, permissions in ROLE_PERMISSION_MATRIX.items()
         }
 
-        self.assertEqual(len(protected), 52)
+        self.assertEqual(len(protected), 53)
         self.assertEqual({role: len(statuses) for role, statuses in expected.items()}, {
-            "admin": 52,
-            "operator": 52,
-            "logistics_slots": 52,
+            "admin": 53,
+            "operator": 53,
+            "logistics_slots": 53,
         })
         self.assertTrue(all(status == 200 for status in expected["admin"]))
         self.assertIn(403, expected["operator"])
@@ -274,8 +274,7 @@ class PostgresRbacAuditTests(unittest.TestCase):
             "/api/v1/orders/active",
             headers={"Authorization": f"Bearer {token}"},
         )
-        with mock.patch("backend.app.reconciliation_service.load_google_sheet_records", return_value=[]):
-            preview = self.client.get("/api/v1/reports/reconciliation/day?report_date=2026-06-10")
+        preview = self.client.get("/api/v1/reports/reconciliation/day?report_date=2026-06-10")
 
         self.assertEqual(admin_get.status_code, 200)
         self.assertEqual(bearer_get.status_code, 200)

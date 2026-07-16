@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE TABLE IF NOT EXISTS orders (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    source varchar(40) NOT NULL DEFAULT 'google_sheets',
+    source varchar(40) NOT NULL DEFAULT 'backend',
     external_id varchar(120),
     order_date date,
     payment_type varchar(120) NOT NULL,

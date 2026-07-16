@@ -405,20 +405,6 @@ class TelegramImportProcessor(TelegramProcessorDelegate):
                 f"Ошибочные строки: {result.get('invalid_rows', 0)}",
                 f"Статус: {result.get('status', '')}",
             ]
-            google_sheets_status = normalize_text(result.get("google_sheets_status"))
-            if google_sheets_status == "completed":
-                lines.append(
-                    f"Google Sheets: записано {result.get('google_sheets_imported', 0)}, "
-                    f"повторы {result.get('google_sheets_duplicates', 0)}, "
-                    f"адреса обновлены {result.get('google_sheets_updated', 0)}"
-                )
-            elif google_sheets_status == "skipped":
-                lines.append("Google Sheets: новых строк нет")
-            elif google_sheets_status == "disabled":
-                lines.append("Google Sheets: экспорт отключён на backend")
-            elif google_sheets_status == "error":
-                error_text = normalize_text(result.get("google_sheets_error")) or "подробности в логе backend"
-                lines.append(f"Google Sheets: ошибка, строки не записаны ({error_text})")
             errors = result.get("errors") or []
             if warnings:
                 lines.extend(["", "Предупреждения:", "\n".join(warnings[:5])])
@@ -461,7 +447,6 @@ class TelegramImportProcessor(TelegramProcessorDelegate):
             raw_payload = item.get("raw_payload") or {}
             if normalize_text(raw_payload.get("telegram_event_id")) != event_id:
                 continue
-            google_sheets = raw_payload.get("google_sheets") if isinstance(raw_payload.get("google_sheets"), dict) else {}
             return {
                 "id": item.get("id") or "",
                 "source": item.get("source") or raw_payload.get("source") or "telegram",
@@ -474,11 +459,6 @@ class TelegramImportProcessor(TelegramProcessorDelegate):
                 "invalid_rows": raw_payload.get("invalid_rows", 0),
                 "errors": raw_payload.get("errors") or [],
                 "backend_address_updates": raw_payload.get("backend_address_updates", 0),
-                "google_sheets_status": google_sheets.get("status", ""),
-                "google_sheets_imported": google_sheets.get("imported", 0),
-                "google_sheets_duplicates": google_sheets.get("duplicates", 0),
-                "google_sheets_updated": google_sheets.get("updated", 0),
-                "google_sheets_error": google_sheets.get("error", ""),
             }
         return None
 

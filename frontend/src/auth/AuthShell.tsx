@@ -50,7 +50,7 @@ export function LoginScreen({
           <h1>Доступ к заказам, синхронизации и журналу действий</h1>
         </div>
         <div className="login-status-grid">
-          <span><Database size={16} /> Google Sheets</span>
+          <span><Database size={16} /> PostgreSQL</span>
           <span><Server size={16} /> VDS backend</span>
           <span><PackageCheck size={16} /> SkladBot</span>
           <span><History size={16} /> Audit log</span>

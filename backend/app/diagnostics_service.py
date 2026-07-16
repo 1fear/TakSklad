@@ -12,7 +12,6 @@ from .redaction import redact_secrets
 DIAGNOSTIC_AUDIT_ACTIONS = {
     "orders_imported",
     "skladbot_worker_sync",
-    "skladbot_google_sheets_export",
     "order_returned",
     "order_archived_without_kiz",
     "order_cancelled",
@@ -20,7 +19,6 @@ DIAGNOSTIC_AUDIT_ACTIONS = {
     "order_completed_without_kiz",
     "order_reset_for_rescan",
     "order_restored",
-    "order_google_resync_requested",
     "order_skladbot_resync_requested",
 }
 

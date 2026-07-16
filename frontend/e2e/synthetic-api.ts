@@ -4,7 +4,7 @@ export const syntheticUser = {
   authenticated: true,
   login: "+998900000001",
   role: "admin",
-  permissions: ["admin:read", "admin:write", "imports:read", "client_points:read", "client_points:write", "diagnostics:read"],
+  permissions: ["admin:read", "admin:write", "warehouse:read", "warehouse:write", "imports:read", "client_points:read", "client_points:write", "diagnostics:read"],
   expires_at: "2099-01-01T00:00:00Z",
   csrf_token: "synthetic-csrf",
 };
@@ -39,10 +39,6 @@ function orderRow(id: string, client: string, itemId = `${id}-item`) {
     skladbot_return_request_id: "",
     skladbot_return_status: "",
     source_file: "synthetic.xlsx",
-    google_sheet_status: "synced",
-    google_sheet_row_number: 1,
-    google_sheet_synced_at: now,
-    pending_google_exports: 0,
     return_status: "",
     returned_at: "",
     return_reference: "",
@@ -58,9 +54,7 @@ function adminTable(rows = [orderRow("order-1", "Альфа Тест")], hasMore
     planned_blocks: row.quantity_blocks,
     scanned_blocks: row.scanned_blocks,
     scan_codes_count: row.scan_codes_count,
-    pending_google_exports: row.pending_google_exports,
     allowed: {
-      resync: true,
       archive: true,
       completeWithoutKiz: true,
       cancel: true,
@@ -70,7 +64,6 @@ function adminTable(rows = [orderRow("order-1", "Альфа Тест")], hasMore
       resyncSkladBot: true,
     },
     disabled_reasons: {
-      resync: "",
       archive: "",
       completeWithoutKiz: "",
       cancel: "",
@@ -92,7 +85,6 @@ function adminTable(rows = [orderRow("order-1", "Альфа Тест")], hasMore
       scanned_blocks: 0,
       remaining_blocks: hasMore ? 4 : rows.length * 2,
       total_price: hasMore ? 400 : rows.length * 200,
-      pending_google_exports: 0,
     },
     rows,
     recent_activity: [],
@@ -190,12 +182,12 @@ export type SyntheticApiOptions = {
   authenticated?: boolean;
   empty?: boolean;
   initialTableDelayMs?: number;
-  fail?: Partial<Record<"login" | "table" | "resync" | "clientUpdate" | "incidentUpdate", number | "timeout">>;
+  fail?: Partial<Record<"login" | "table" | "scan" | "clientUpdate" | "incidentUpdate", number | "timeout">>;
 };
 
 export type SyntheticApiState = {
   requests: string[];
-  resyncs: number;
+  scans: number;
   clientUpdates: number;
   incidentUpdates: number;
   loggedIn: boolean;
@@ -224,7 +216,7 @@ async function configuredFailure(route: Route, failure: number | "timeout" | und
 export async function installSyntheticApi(page: Page, options: SyntheticApiOptions = {}): Promise<SyntheticApiState> {
   const state: SyntheticApiState = {
     requests: [],
-    resyncs: 0,
+    scans: 0,
     clientUpdates: 0,
     incidentUpdates: 0,
     loggedIn: options.authenticated !== false,
@@ -267,7 +259,7 @@ export async function installSyntheticApi(page: Page, options: SyntheticApiOptio
     if (path === "/api/v1/admin/skladbot/dry-runs") return json(route, []);
     if (path === "/api/v1/readiness") return json(route, { generated_at: now, status: "ok", service: "synthetic", version: "test", environment: "e2e", database: {}, migrations: {}, queue: {}, imports: {} });
     if (path === "/api/v1/admin/events") return json(route, { generated_at: now, summary: { failed: 1 }, stale_processing: [], recent_events: [queueEvent] });
-    if (path === "/api/v1/admin/operations") return json(route, { generated_at: now, status: "attention", summary: {}, items: [], readiness_status: "ok", google_mirror_status: "synthetic", telegram_summary: "synthetic" });
+    if (path === "/api/v1/admin/operations") return json(route, { generated_at: now, status: "attention", summary: {}, items: [], readiness_status: "ok", telegram_summary: "synthetic" });
     if (path === "/api/v1/admin/smartup-auto-imports/history") return json(route, { generated_at: now, summary: {}, runs: [], events: [], audit: [] });
     if (path === "/api/v1/admin/logistics-calendar") return json(route, { generated_at: now, month: "2026-07", default_non_working_weekdays: [6], days: [] });
     if (path === "/api/v1/admin/client-points" && request.method() === "GET") return json(route, options.empty ? [] : [point]);
@@ -287,13 +279,15 @@ export async function installSyntheticApi(page: Page, options: SyntheticApiOptio
       currentIncident = { ...currentIncident, status: payload.status ?? currentIncident.status, resolved_at: now };
       return json(route, currentIncident);
     }
-    if (/^\/api\/v1\/admin\/orders\/[^/]+\/resync-google$/.test(path)) {
-      if (await configuredFailure(route, options.fail?.resync)) return;
-      state.resyncs += 1;
-      return json(route, { id: "order-1", status: "active", items: [] });
+    if (path === "/api/v1/orders/active") return json(route, [{ id: "order-1", order_date: "2026-07-10", payment_type: "Перечисление", client: "Альфа Тест", address: "Синтетическая улица, 1", representative: "Тестовый ТП", status: "active", skladbot_request_number: "WH-R-SYNTHETIC", skladbot_request_id: "synthetic", items: [{ id: "order-1-item", product: "Синтетический товар", quantity_pieces: 20, quantity_blocks: 2, scanned_blocks: state.scans, status: "active", scan_codes: state.scans ? ["0104-synthetic"] : [] }] }]);
+    if (path === "/api/v1/kiz/availability") return json(route, { code: url.searchParams.get("code") || "", available: true, reason: "", latest_movement_type: "", latest_order_item_id: "", existing_order_item_id: "" });
+    if (path === "/api/v1/scans") {
+      if (await configuredFailure(route, options.fail?.scan)) return;
+      state.scans += 1;
+      return json(route, { id: "scan-1", order_item_id: "order-1-item", code: "0104-synthetic", scanned_blocks: state.scans, item_status: "in_progress" }, 201);
     }
+    if (path === "/api/v1/scans/undo") { state.scans = Math.max(0, state.scans - 1); return json(route, { id: "scan-1", order_item_id: "order-1-item", code: "0104-synthetic", scanned_blocks: state.scans, item_status: "active" }); }
     if (/^\/api\/v1\/admin\/events\/[^/]+\/retry$/.test(path)) return json(route, { ...queueEvent, status: "pending" });
-    if (path === "/api/v1/admin/google/pending/retry") return json(route, { status: "completed" });
     if (path === "/api/v1/sync/sources") return json(route, { status: "completed", skladbot: { status: "synthetic" } });
 
     return json(route, { detail: { code: "synthetic_route_missing", message: `${request.method()} ${path} is not mocked` } }, 501);

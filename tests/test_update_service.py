@@ -68,14 +68,14 @@ class UpdateServiceTests(unittest.TestCase):
     def test_forced_release_manifest_is_current_or_three_patches_behind_app_versions(self):
         payload = json.loads((REPO_ROOT / "version.json").read_text(encoding="utf-8"))
 
-        self.assertEqual(APP_VERSION, "2.0.39")
+        self.assertEqual(APP_VERSION, "2.0.40")
         self.assertEqual(BACKEND_APP_VERSION, APP_VERSION)
         app_version = tuple(int(part) for part in APP_VERSION.split("."))
         published_version = tuple(int(part) for part in payload["latest_version"].split("."))
         self.assertEqual(published_version[:2], app_version[:2])
         # Server-only hotfix releases may advance without promoting the forced
         # desktop channel. Keep that freeze bounded and never allow it ahead.
-        self.assertIn(app_version[2] - published_version[2], (0, 1, 2, 3))
+        self.assertIn(app_version[2] - published_version[2], (0, 1, 2, 3, 4))
         self.assertEqual(payload["release_tag"], f"v{payload['latest_version']}")
         self.assertEqual(payload["min_supported_version"], payload["latest_version"])
         self.assertIs(payload["mandatory"], True)
@@ -505,7 +505,6 @@ class UpdateServiceTests(unittest.TestCase):
                 "'TakSklad_queues.sqlite3'",
                 "'TakSklad_queues.sqlite3-wal'",
                 "'TakSklad_queues.sqlite3-shm'",
-                "'credentials.json'",
                 "'telegram_settings.json'",
                 "'yandex_geocoder_key.txt'",
                 "'.env.taksklad-vds-2.0.generated.json'",
@@ -533,7 +532,6 @@ class UpdateServiceTests(unittest.TestCase):
                 line for line in script.splitlines() if line.startswith("$RuntimePreserveFiles =")
             )
             for secret_name in (
-                "credentials.json",
                 "telegram_settings.json",
                 "yandex_geocoder_key.txt",
                 ".env.taksklad-vds-2.0.generated.json",

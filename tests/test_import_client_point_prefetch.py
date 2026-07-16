@@ -102,13 +102,6 @@ class ImportClientPointPrefetchTests(unittest.TestCase):
             if counter["enabled"]:
                 counter["statements"] += 1
 
-        google_result = {
-            "status": "synthetic_stub",
-            "imported": 0,
-            "duplicates": 0,
-            "updated": 0,
-            "error": "",
-        }
         skladbot_result = {
             "status": "synthetic_stub",
             "ready": 0,
@@ -119,10 +112,6 @@ class ImportClientPointPrefetchTests(unittest.TestCase):
         }
         with (
             self.SessionLocal() as db,
-            patch(
-                "backend.app.imports_service.export_import_records_to_google_sheets",
-                return_value=google_result,
-            ),
             patch(
                 "backend.app.imports_service.create_skladbot_dry_run_for_import",
                 return_value=skladbot_result,

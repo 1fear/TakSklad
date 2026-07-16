@@ -253,7 +253,7 @@ describe("API endpoint wrapper contracts", () => {
   });
 
   it.each([
-    ["active orders", () => api.listActiveOrders(cookieConfig), "/api/v1/orders/active"],
+    ["active orders", () => api.listActiveOrders(cookieConfig), "/api/v1/orders/active?limit=500"],
     ["admin events", () => api.getAdminEvents(cookieConfig), "/api/v1/admin/events"],
     ["operations", () => api.getOperationsAttention(cookieConfig), "/api/v1/admin/operations"],
     ["readiness", () => api.getReadiness(cookieConfig), "/api/v1/readiness"],
@@ -272,6 +272,8 @@ describe("API endpoint wrapper contracts", () => {
     ["smartup history default", () => api.getSmartupAutoImportHistory(cookieConfig), "/api/v1/admin/smartup-auto-imports/history?limit=50"],
     ["smartup history limit", () => api.getSmartupAutoImportHistory(cookieConfig, 7), "/api/v1/admin/smartup-auto-imports/history?limit=7"],
     ["client summary", () => api.getClientPointOrderSummary(cookieConfig, "Клиент & Ко"), "/api/v1/admin/client-points/order-summary?client_name=%D0%9A%D0%BB%D0%B8%D0%B5%D0%BD%D1%82+%26+%D0%9A%D0%BE"],
+    ["KIZ availability", () => api.lookupKizAvailability(cookieConfig, "0104-test", "item/1"), "/api/v1/kiz/availability?code=0104-test&order_item_id=item%2F1"],
+    ["return lookup", () => api.lookupReturn(cookieConfig, "WH-R/1"), "/api/v1/returns/lookup?lookup=WH-R%2F1"],
   ])("builds GET endpoint for %s", async (_name, invoke, expectedPath) => {
     const fetchSpy = mockJsonFetch();
     await invoke();
@@ -294,13 +296,12 @@ describe("API endpoint wrapper contracts", () => {
       search: "Клиент & Ко",
       scanState: "partial",
       skladbotFilter: "linked",
-      googleSheetStatus: "pending",
     });
     expect(lastRequest(fetchSpy).url).toContain(
       "/api/v1/admin/table?offset=50&activity_limit=5&limit=25&status_bucket=active&shipment_date=2026-07-10",
     );
     expect(lastRequest(fetchSpy).url).toContain(
-      "search=%D0%9A%D0%BB%D0%B8%D0%B5%D0%BD%D1%82+%26+%D0%9A%D0%BE&scan_state=partial&skladbot_filter=linked&google_sheet_status=pending",
+      "search=%D0%9A%D0%BB%D0%B8%D0%B5%D0%BD%D1%82+%26+%D0%9A%D0%BE&scan_state=partial&skladbot_filter=linked",
     );
 
     await api.getAdminTable(cookieConfig, { cursor: "opaque-next", offset: 999 });
@@ -324,8 +325,6 @@ describe("API endpoint wrapper contracts", () => {
     ["event retry", () => api.retryAdminEvent(cookieConfig, "event/1", { reason: "synthetic" }), "/api/v1/admin/events/event%2F1/retry"],
     ["login", () => api.loginWeb(cookieConfig, "synthetic-user", "synthetic-password"), "/api/v1/auth/login"],
     ["logout", () => api.logoutWeb(cookieConfig), "/api/v1/auth/logout"],
-    ["google retry", () => api.retryPendingGoogle(cookieConfig), "/api/v1/admin/google/pending/retry"],
-    ["google resync", () => api.resyncGoogleOrder(cookieConfig, "order-1", { reason: "synthetic" }), "/api/v1/admin/orders/order-1/resync-google"],
     ["archive", () => api.archiveOrderWithoutKiz(cookieConfig, "order-1", { reason: "synthetic" }), "/api/v1/admin/orders/order-1/archive-without-kiz"],
     ["cancel", () => api.cancelOrder(cookieConfig, "order-1", { reason: "synthetic" }), "/api/v1/admin/orders/order-1/cancel"],
     ["delete", () => api.deleteActiveOrder(cookieConfig, "order-1", { reason: "synthetic" }), "/api/v1/admin/orders/order-1/delete-active"],
@@ -333,6 +332,10 @@ describe("API endpoint wrapper contracts", () => {
     ["restore", () => api.restoreOrder(cookieConfig, "order-1", { reason: "synthetic" }), "/api/v1/admin/orders/order-1/restore"],
     ["skladbot resync", () => api.resyncSkladBotOrder(cookieConfig, "order-1", { reason: "synthetic" }), "/api/v1/admin/orders/order-1/resync-skladbot"],
     ["rebuild dry run", () => api.rebuildSkladBotDryRun(cookieConfig, "dry/run"), "/api/v1/admin/skladbot/dry-runs/dry%2Frun/rebuild"],
+    ["scan", () => api.createScan(cookieConfig, { order_item_id: "item-1", code: "0104-test" }), "/api/v1/scans"],
+    ["scan undo", () => api.undoScan(cookieConfig, { order_item_id: "item-1", code: "0104-test" }), "/api/v1/scans/undo"],
+    ["complete", () => api.completeWarehouseOrder(cookieConfig, "order/1"), "/api/v1/orders/order%2F1/complete"],
+    ["return", () => api.markReturn(cookieConfig, "order/1", { confirmed_items: [] }), "/api/v1/returns/order%2F1"],
   ])("builds POST endpoint for %s", async (_name, invoke, expectedPath) => {
     const fetchSpy = mockJsonFetch();
     await invoke();
@@ -366,6 +369,48 @@ describe("API endpoint wrapper contracts", () => {
     expect(lastRequest(fetchSpy).url).toBe("/api/v1/sync/sources?skladbot=1&wait_skladbot=0");
     await api.syncSources(cookieConfig, { skladbot: false, waitSkladbot: true });
     expect(lastRequest(fetchSpy).url).toBe("/api/v1/sync/sources?skladbot=0&wait_skladbot=1");
+  });
+
+  it("uploads XLSX bytes without parsing them in the browser", async () => {
+    const preview = { status: "previewed", source: "web", rows_total: 1, rows_importable: 1, orders_new: 1, items_new: 1, duplicate_rows: 0, invalid_rows: 0, duplicate_row_numbers: [], invalid_row_numbers: [], errors: [], backend_address_updates: 0 };
+    const fetchSpy = mockJsonFetch({ preview });
+    const file = new File([new Uint8Array([80, 75, 3, 4])], "Заказы 16.07.xlsx", {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+
+    await api.previewExcelImport(cookieConfig, file);
+    let request = lastRequest(fetchSpy);
+    expect(request.url).toBe("/api/v1/imports/excel/preview");
+    expect(request.options.body).toBe(file);
+    expect(request.options.headers).toMatchObject({
+      "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "X-TakSklad-CSRF": "synthetic-csrf",
+      "X-TakSklad-Filename": encodeURIComponent(file.name),
+    });
+
+    fetchSpy.mockImplementationOnce(async () => jsonResponse({ result: { id: "import-1", status: "completed", source: "web", rows_total: 1, rows_imported: 1, orders_created: 1, items_created: 1, duplicate_rows: 0, invalid_rows: 0, resolved_order_ids: [], errors: [] } }));
+    await api.commitExcelImport(cookieConfig, file);
+    request = lastRequest(fetchSpy);
+    expect(request.url).toBe("/api/v1/imports/excel");
+    expect(request.options.body).toBe(file);
+  });
+
+  it("exports only the current DB table filters as XLSX", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("xlsx", {
+      headers: { "X-TakSklad-Filename": "TakSklad_filtered.xlsx" },
+    }));
+
+    const result = await api.downloadAdminOrders(cookieConfig, {
+      statusBucket: "active",
+      shipmentDate: "2026-07-16",
+      search: "Клиент & Ко",
+      scanState: "in_progress",
+      skladbotFilter: "found",
+    });
+
+    expect(lastRequest(fetchSpy).url).toContain("/api/v1/admin/orders/export.xlsx?status_bucket=active&shipment_date=2026-07-16");
+    expect(lastRequest(fetchSpy).url).toContain("search=%D0%9A%D0%BB%D0%B8%D0%B5%D0%BD%D1%82+%26+%D0%9A%D0%BE&scan_state=in_progress&skladbot_filter=found");
+    expect(result.filename).toBe("TakSklad_filtered.xlsx");
   });
 });
 

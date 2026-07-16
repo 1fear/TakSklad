@@ -324,7 +324,7 @@ class LayoutMixin:
         self.completed_count_label, self.completed_count_caption = make_stat_tile(stats_frame, "0", "Выполнено")
         self.total_blocks_label, self.total_blocks_caption = make_stat_tile(stats_frame, "0", "Блоков")
         self.active_orders_label, self.active_orders_caption = make_stat_tile(stats_frame, "0", "Активных заказов")
-        self.pending_saves_label, self.sync_caption_label = make_stat_tile(
+        self.pending_events_label, self.sync_caption_label = make_stat_tile(
             stats_frame,
             "OK",
             "Синхронизация",

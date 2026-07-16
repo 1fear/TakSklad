@@ -6,7 +6,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy.orm.attributes import set_committed_value
 
-from .google_sheets_pending import queue_google_sheets_export
 from .kiz_movements_service import (
     MOVEMENT_RETURN,
     MOVEMENT_UNDO,
@@ -270,6 +269,7 @@ def create_scan(db: Session, payload: ScanCreate):
     )
     db.add(scan)
     db.flush()
+    movement_received_at = datetime.now(timezone.utc)
     movement = record_kiz_movement(
         db,
         code=code,
@@ -280,9 +280,10 @@ def create_scan(db: Session, payload: ScanCreate):
         source="backend",
         actor=payload.scanned_by or "",
         workstation_id=payload.workstation_id or "",
-        occurred_at=scan.scanned_at,
+        occurred_at=movement_received_at,
         raw_payload={
             "scan_source": scan.source,
+            "scanner_scanned_at": scan.scanned_at.isoformat() if scan.scanned_at else "",
             "previous_movement_type": latest_movement.movement_type if latest_movement else "",
             "previous_order_item_id": str(latest_movement.order_item_id or "") if latest_movement else "",
             "scan_type": scan_metadata["scan_type"],
@@ -312,13 +313,6 @@ def create_scan(db: Session, payload: ScanCreate):
             "block_quantity": block_quantity,
         },
     ))
-    queue_order_google_intent(
-        db,
-        action="google_sheets_scan_export",
-        entity_type="order_item",
-        entity_id=str(item.id),
-        idempotency_key=f"outbox:scan:create:{scan_id}",
-    )
     response = scan_to_read(scan, item)
 
     try:
@@ -420,13 +414,6 @@ def undo_scan(db: Session, payload: ScanUndo):
             "block_quantity": scan_block_quantity(scan),
         },
     ))
-    queue_order_google_intent(
-        db,
-        action="google_sheets_scan_export",
-        entity_type="order_item",
-        entity_id=str(item.id),
-        idempotency_key=f"outbox:scan:undo:{movement.id}",
-    )
     outbox_service.outbox_fault("before_commit", "scan")
     db.commit()
     outbox_service.outbox_fault("after_commit", "scan")
@@ -523,19 +510,7 @@ def complete_order(db: Session, order_id):
     if order.status in (STATUS_ARCHIVED_NO_KIZ, STATUS_CANCELLED):
         raise ApiError(409, "Order is not active")
     if order.status in COMPLETED_STATUSES:
-        response = order_to_read(order)
-        if order.status != STATUS_RETURNED:
-            queue_order_google_intent(
-                db,
-                action="google_sheets_archive_export",
-                entity_type="order",
-                entity_id=str(order.id),
-                idempotency_key=f"outbox:order:complete:{order.id}",
-            )
-            outbox_service.outbox_fault("before_commit", "complete")
-            db.commit()
-            outbox_service.outbox_fault("after_commit", "complete")
-        return response
+        return order_to_read(order)
 
     incomplete_items = [
         item
@@ -562,13 +537,6 @@ def complete_order(db: Session, order_id):
         entity_id=str(order.id),
         payload={"items_count": len(order.items)},
     ))
-    queue_order_google_intent(
-        db,
-        action="google_sheets_archive_export",
-        entity_type="order",
-        entity_id=str(order.id),
-        idempotency_key=f"outbox:order:complete:{order.id}",
-    )
     if db.get_bind().dialect.name == "postgresql":
         with db.no_autoflush:
             updated_order_count, updated_item_count = db.execute(text("""
@@ -699,20 +667,6 @@ def mark_order_returned(db: Session, order_id, return_reference="", returned_by=
             "kiz_return_movements": return_movements,
         },
     ))
-    queue_order_google_intent(
-        db,
-        action="google_sheets_archive_export",
-        entity_type="order",
-        entity_id=str(order.id),
-        idempotency_key=f"outbox:order:return-archive:{order.id}",
-    )
-    queue_order_google_intent(
-        db,
-        action="google_sheets_return_export",
-        entity_type="order",
-        entity_id=str(order.id),
-        idempotency_key=f"outbox:order:return:{order.id}",
-    )
     response = order_to_read(order)
     outbox_service.outbox_fault("before_commit", "return")
     db.commit()
@@ -766,37 +720,6 @@ def validate_return_confirmed_items(order, confirmed_items):
     if missing_items:
         raise ApiError(422, f"Return confirmation is incomplete: {', '.join(missing_items)}")
     return confirmed
-
-
-def queue_order_google_intent(db: Session, action, entity_type, entity_id, idempotency_key):
-    result = {"status": "queued", "queued": True, "error": ""}
-    event = queue_google_sheets_export(
-        db,
-        action,
-        entity_type,
-        entity_id,
-        result=result,
-        payload={"idempotency_key": idempotency_key},
-    )
-    result = {**result, "pending_event_id": str(event.id) if event else ""}
-    db.add(AuditLog(
-        action=action,
-        entity_type=entity_type,
-        entity_id=entity_id,
-        payload=result,
-    ))
-    return event
-
-
-def record_google_sheets_export_result(db: Session, action, entity_type, entity_id):
-    """Legacy commit-free adapter; the caller owns the surrounding transaction."""
-    return queue_order_google_intent(
-        db,
-        action=action,
-        entity_type=entity_type,
-        entity_id=entity_id,
-        idempotency_key=f"outbox:projection:{action}:{entity_type}:{entity_id}:{uuid.uuid4()}",
-    )
 
 
 def return_lookup_matches(order, lookup):

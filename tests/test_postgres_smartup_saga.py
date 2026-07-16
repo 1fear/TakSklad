@@ -11,10 +11,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from backend.app.models import ImportJob, Order, PendingEvent, SmartupFulfillment, SmartupFulfillmentOrder
-from backend.app.google_sheets_sync_worker import (
-    acquire_backend_sync_probe_lock,
-    release_backend_sync_probe_lock,
-)
 from backend.app.outbox_service import queue_outbox_event
 from backend.app.smartup_auto_import import (
     acquire_smartup_fulfillment_sweep_lock,
@@ -337,17 +333,6 @@ class PostgresSmartupSagaTests(unittest.TestCase):
                 self.assertIsNone(second_connection)
             finally:
                 release_smartup_fulfillment_sweep_lock(first_connection)
-
-    def test_google_half_open_probe_has_singleton_advisory_lease(self):
-        with self.SessionLocal() as first_session, self.SessionLocal() as second_session:
-            first_acquired, first_connection = acquire_backend_sync_probe_lock(first_session)
-            try:
-                second_acquired, second_connection = acquire_backend_sync_probe_lock(second_session)
-                self.assertTrue(first_acquired)
-                self.assertFalse(second_acquired)
-                self.assertIsNone(second_connection)
-            finally:
-                release_backend_sync_probe_lock(first_connection)
 
     def test_concurrent_order_mapping_is_idempotent(self):
         with self.SessionLocal() as session:

@@ -105,7 +105,8 @@ class EventLeaseContractTests(unittest.TestCase):
             ).scalar_one()
             self.assertEqual(audit.payload["recovered"], 1)
             self.assertEqual(audit.payload["event_type_counts"], {"skladbot_request_create": 1})
-        self.assertIn("google_sheets_export", DEPLOY_RECOVERABLE_EVENT_TYPES)
+        self.assertNotIn("google_sheets_export", DEPLOY_RECOVERABLE_EVENT_TYPES)
+        self.assertIn("skladbot_request_create", DEPLOY_RECOVERABLE_EVENT_TYPES)
 
 
 if __name__ == "__main__":

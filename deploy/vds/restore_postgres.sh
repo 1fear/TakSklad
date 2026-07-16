@@ -6,7 +6,7 @@ APP_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ENV_FILE="${TAKSKLAD_ENV_FILE:-$SCRIPT_DIR/.env}"
 COMPOSE_FILE="${TAKSKLAD_COMPOSE_FILE:-$SCRIPT_DIR/docker-compose.yml}"
 STATE_DIR="${TAKSKLAD_RESTORE_STATE_DIR:-/opt/taksklad/restore-state}"
-WRITER_SERVICES=(backend-api skladbot-worker smartup-auto-import-worker google-sheets-sync-worker telegram-worker)
+WRITER_SERVICES=(backend-api skladbot-worker smartup-auto-import-worker telegram-worker)
 
 usage() {
   cat >&2 <<'EOF'

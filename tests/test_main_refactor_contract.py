@@ -33,7 +33,7 @@ class MainRefactorContractTests(unittest.TestCase):
         self.assertLess(source.index("scan_product_mismatch"), source.index("write_scan_backup"))
         self.assertLess(source.index("scan_product_mismatch"), source.index("queue_backend_scan"))
 
-    def test_finish_prints_before_backend_complete_and_google_archive(self):
+    def test_finish_prints_before_backend_complete(self):
         source = inspect.getsource(ScanningApp.finish_legal_entity)
         print_call = "print_summary(address, summary_products, print_settings=selected_print_settings)"
 
@@ -43,15 +43,14 @@ class MainRefactorContractTests(unittest.TestCase):
         self.assertLess(source.index("add_pending_print"), source.index(print_call))
         self.assertLess(source.index(print_call), source.index("remove_pending_print"))
         self.assertLess(source.index(print_call), source.index("complete_backend_orders_or_raise"))
-        self.assertLess(source.index(print_call), source.index("archive_order_group_to_gsheet"))
+        self.assertNotIn("archive_order_group_to_gsheet", source)
 
-    def test_return_flow_keeps_backend_first_and_google_legacy_fallback(self):
+    def test_return_flow_is_backend_only(self):
         source = inspect.getsource(ScanningApp.mark_return_for_display)
 
-        self.assertIn("backend_read_orders_enabled()", source)
+        self.assertIn("backend_configured()", source)
         self.assertIn("mark_order_returned", source)
-        self.assertIn("mark_return_order_in_gsheet", source)
-        self.assertLess(source.index("mark_order_returned"), source.index("mark_return_order_in_gsheet"))
+        self.assertNotIn("mark_return_order_in_gsheet", source)
 
     def test_product_photo_contract_stays_on_scan_screen(self):
         build_source = inspect.getsource(ScanningApp._build_ui)

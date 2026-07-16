@@ -4,6 +4,24 @@
 
 ## 2026-07-16
 
+### PostgreSQL-only runtime and warehouse web flow
+
+**Что стало:**
+
+- PostgreSQL/backend стал единственным runtime source of truth для заказов, сканов, возвратов, импорта и отчётности; Google Sheets runtime, worker, credentials, fallback и API/UI-контракты удалены.
+- Web-панель получила серверный XLSX preview/import/export и складские действия scan/undo/complete/return без обхода БД.
+- Миграция `20260716_0019` аудируемо закрывает активные legacy `google_sheets_export`; downgrade намеренно запрещён, чтобы rollback не включил старую двустороннюю синхронизацию.
+- Возвратный КИЗ разрешён в новом outbound после подтверждённого `returned`, а активный исходящий дубль остаётся заблокированным.
+- Runtime version поднята до `2.0.40`; public desktop channel продвигается только после сборки и проверки подписанного immutable release.
+
+**Проверки:**
+
+- Python — 1099 tests OK, 77 skipped по окружению.
+- PostgreSQL migration/concurrency/invariant suite — 81 tests OK.
+- Frontend — 114 tests, typecheck, lint и production build OK.
+- Security gate — 0 blocking findings; SBOM, immutable refs, container policy,
+  Alembic single head `20260716_0019`, shell/Compose/release preflight — OK.
+
 ### Progress-aware SkladBot worker readiness
 
 **Что стало:**

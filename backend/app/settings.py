@@ -5,7 +5,7 @@ from datetime import datetime
 from urllib.parse import urlsplit, urlunsplit
 
 
-APP_VERSION = "2.0.39"
+APP_VERSION = "2.0.40"
 VALID_ENVIRONMENTS = frozenset({"local", "test", "production"})
 MIN_SESSION_SECRET_BYTES = 32
 MIN_SESSION_SECRET_DISTINCT_CHARACTERS = 8
@@ -67,7 +67,6 @@ class Settings:
     legacy_auth_mode: str
     legacy_auth_expires_at: str
     service_token_rotation_max_overlap_seconds: int
-    google_to_backend_sync_enabled: bool
     worker_heartbeat_required_names: tuple[str, ...]
 
     @property
@@ -190,10 +189,6 @@ def load_settings(environ=None):
             1,
             parse_int(environ.get("TAKSKLAD_SERVICE_TOKEN_ROTATION_MAX_OVERLAP_SECONDS"), 900),
         ),
-        google_to_backend_sync_enabled=parse_bool(
-            environ.get("TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED"),
-            default=False,
-        ),
         worker_heartbeat_required_names=parse_csv(environ.get("TAKSKLAD_REQUIRED_WORKERS", "")),
     )
 
@@ -201,7 +196,7 @@ def load_settings(environ=None):
 def validate_backend_settings(settings):
     errors = []
     environment = str(settings.environment or "").strip().casefold()
-    known_workers = {"google_sheets_sync", "skladbot", "smartup_auto_import", "telegram"}
+    known_workers = {"skladbot", "smartup_auto_import", "telegram"}
     if any(name not in known_workers for name in settings.worker_heartbeat_required_names):
         errors.append("TAKSKLAD_REQUIRED_WORKERS")
     if not settings.environment_explicit or environment not in VALID_ENVIRONMENTS:

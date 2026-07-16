@@ -471,13 +471,6 @@ def start_worker_probes(scope: DockerScope, network: str, database_url: str) -> 
                 "TAKSKLAD_TIMEZONE": "Asia/Tashkent",
             },
         ),
-        "google-sheets-sync-worker": (
-            ["python", "-m", "app.google_sheets_sync_worker"],
-            {
-                "GOOGLE_SHEETS_SYNC_INTERVAL_SECONDS": "30",
-                "TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED": "false",
-            },
-        ),
         "telegram-worker": (
             ["python", "-m", "app.telegram_worker"],
             {

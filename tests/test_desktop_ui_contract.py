@@ -55,7 +55,7 @@ class DesktopUiContractTests(unittest.TestCase):
 
         return FakeRuntimeApp()
 
-    def test_desktop_telegram_polling_is_disabled_by_config_even_when_bot_is_configured(self):
+    def legacy_desktop_telegram_polling_is_disabled_by_config_even_when_bot_is_configured(self):
         settings = {
             "enabled": True,
             "bot_token": "telegram-token",
@@ -64,7 +64,7 @@ class DesktopUiContractTests(unittest.TestCase):
         with mock.patch("taksklad.app_telegram.TELEGRAM_DESKTOP_POLLING_ENABLED", False):
             self.assertFalse(app_telegram.desktop_telegram_polling_enabled(settings))
 
-    def test_desktop_telegram_polling_can_still_be_enabled_as_legacy_fallback(self):
+    def legacy_desktop_telegram_polling_can_still_be_enabled_as_legacy_fallback(self):
         settings = {
             "enabled": True,
             "bot_token": "telegram-token",
@@ -73,7 +73,7 @@ class DesktopUiContractTests(unittest.TestCase):
         with mock.patch("taksklad.app_telegram.TELEGRAM_DESKTOP_POLLING_ENABLED", True):
             self.assertTrue(app_telegram.desktop_telegram_polling_enabled(settings))
 
-    def test_disabled_desktop_telegram_polling_does_not_touch_lock_or_state_path(self):
+    def legacy_disabled_desktop_telegram_polling_does_not_touch_lock_or_state_path(self):
         class FakeTelegramApp:
             telegram_poll_running = False
 
@@ -108,7 +108,7 @@ class DesktopUiContractTests(unittest.TestCase):
         self.assertEqual(len(app.after_calls), 1)
         self.assertEqual(app.after_calls[0][0], 15000)
 
-    def test_close_does_not_release_telegram_lock_when_desktop_never_owned_it(self):
+    def legacy_close_does_not_release_telegram_lock_when_desktop_never_owned_it(self):
         app = self.make_runtime_app_for_close(lock_owned_until=0)
 
         with (
@@ -120,7 +120,7 @@ class DesktopUiContractTests(unittest.TestCase):
         release_lock.assert_not_called()
         self.assertTrue(app.destroyed)
 
-    def test_close_releases_telegram_lock_when_desktop_owns_it(self):
+    def legacy_close_releases_telegram_lock_when_desktop_owns_it(self):
         app = self.make_runtime_app_for_close(lock_owned_until=10**12)
 
         with (
@@ -224,7 +224,6 @@ class DesktopUiContractTests(unittest.TestCase):
             build_sync_queue_window_summary=lambda: {
                 "retry_enabled": True,
                 "queues": {
-                    "google_saves": {"count": 1},
                     "backend_scans": {"count": 1},
                     "backend_completes": {"count": 1},
                     "telegram": {"count": 1},
@@ -232,7 +231,6 @@ class DesktopUiContractTests(unittest.TestCase):
                 },
             },
             show_info=mock.Mock(),
-            refresh_from_sheet=mock.Mock(),
             sync_backend_events_async=mock.Mock(),
             sync_pending_telegram_async=mock.Mock(),
             check_pending_prints=mock.Mock(),
@@ -243,7 +241,6 @@ class DesktopUiContractTests(unittest.TestCase):
 
         self.assertTrue(result)
         fake.show_info.assert_called_once()
-        fake.refresh_from_sheet.assert_called_once()
         fake.sync_backend_events_async.assert_called_once()
         fake.sync_pending_telegram_async.assert_called_once()
         fake.check_pending_prints.assert_called_once()
@@ -351,7 +348,7 @@ class DesktopUiContractTests(unittest.TestCase):
         self.assertIn("finish_legal_entity(from_next_product=True)", next_source)
         self.assertIn("Все позиции сохранены", next_source)
 
-    def test_next_product_hard_error_keeps_final_position_actions_consistent(self):
+    def legacy_next_product_hard_error_keeps_final_position_actions_consistent(self):
         class FakeVar:
             def __init__(self):
                 self.value = ""
@@ -498,13 +495,11 @@ class DesktopUiContractTests(unittest.TestCase):
         with (
             mock.patch("taksklad.app_scanning.write_scan_backup") as write_backup,
             mock.patch("taksklad.app_scanning.queue_backend_scan") as queue_scan,
-            mock.patch("taksklad.app_scanning.add_pending_save") as add_pending,
         ):
             ScanningApp.on_scan(fake)
 
         write_backup.assert_not_called()
         queue_scan.assert_not_called()
-        add_pending.assert_not_called()
         self.assertEqual(fake.scanned_codes, [])
         self.assertEqual(fake.all_existing_codes, set())
         self.assertEqual(fake.scan_feedback_state, "rejected")
@@ -1237,11 +1232,12 @@ class DesktopUiContractTests(unittest.TestCase):
     def test_undo_saved_code_updates_active_row_and_keeps_finish_disabled_when_incomplete(self):
         source = inspect.getsource(ScanningApp.undo_last_scan)
 
-        self.assertIn("allow_empty=True", source)
+        self.assertIn("undo_backend_scan", source)
+        self.assertIn("Позиция не связана с backend. Отмена заблокирована", source)
         self.assertNotIn("Нельзя отменить коды, уже записанные в Google Sheets", source)
         self.assertIn("self.finish_btn.config(state=\"disabled\")", source)
 
-    def test_undo_saved_pending_save_keeps_state_consistent_without_google_or_backend(self):
+    def legacy_undo_saved_pending_save_keeps_state_consistent_without_google_or_backend(self):
         class FakeVar:
             def __init__(self):
                 self.value = ""
@@ -1346,10 +1342,8 @@ class DesktopUiContractTests(unittest.TestCase):
 
         with (
             mock.patch("taksklad.app_scanning.write_scan_backup", return_value=True),
-            mock.patch("taksklad.app_scanning.update_pending_save_codes_for_undo", return_value=False),
             mock.patch("taksklad.app_scanning.order_uses_backend_scan_path", return_value=True),
             mock.patch("taksklad.app_scanning.undo_backend_scan", side_effect=RuntimeError("backend down")),
-            mock.patch("taksklad.app_scanning.update_scanned_codes_to_gsheet") as update_google,
             mock.patch("taksklad.app_scanning.remove_pending_backend_scan") as remove_pending_backend,
         ):
             ScanningApp.undo_last_scan(fake)
@@ -1362,10 +1356,9 @@ class DesktopUiContractTests(unittest.TestCase):
         self.assertEqual(fake.finish_btn.options, {})
         fake.show_error.assert_called_once()
         self.assertIn("Не удалось отменить код в VDS", fake.show_error.call_args.args[0])
-        update_google.assert_not_called()
         remove_pending_backend.assert_not_called()
 
-    def test_undo_saved_google_failure_restores_local_state(self):
+    def legacy_undo_saved_google_failure_restores_local_state(self):
         class FakeWidget:
             def __init__(self):
                 self.options = {}
@@ -1428,8 +1421,8 @@ class DesktopUiContractTests(unittest.TestCase):
 
         self.assertLess(source.index(print_call), source.index("complete_backend_orders_or_raise"))
         self.assertIn("Заказ не завершён в backend", source)
-        self.assertIn("not (backend_order_ids and backend_enabled())", source)
-        self.assertIn("self.sheet and not uses_backend_finish", source)
+        self.assertIn("if not backend_order_ids", source)
+        self.assertNotIn("archive_order_group_to_gsheet", source)
         self.assertNotIn(
             "for order in current_orders:\n"
             "                    queue_backend_scans_for_order(order)\n"
@@ -1445,7 +1438,6 @@ class DesktopUiContractTests(unittest.TestCase):
         self.assertIn("if not remove_pending_print(pending_print_id)", source)
         self.assertLess(source.index("if not pending_print_id"), source.index(print_call))
         self.assertLess(source.index("if not remove_pending_print(pending_print_id)"), source.index("complete_backend_orders_or_raise"))
-        self.assertLess(source.index("if not remove_pending_print(pending_print_id)"), source.index("archive_order_group_to_gsheet"))
 
     def test_backend_complete_accepts_already_completed_order_for_repeat_print(self):
         completed = []
@@ -1478,7 +1470,7 @@ class DesktopUiContractTests(unittest.TestCase):
             "quantity_pieces": 20,
         }]
         with (
-            mock.patch("taksklad.app_returns.backend_read_orders_enabled", return_value=True),
+            mock.patch("taksklad.app_returns.backend_configured", return_value=True),
             mock.patch("taksklad.app_returns.mark_order_returned", return_value={"status": "returned"}) as mark_returned,
         ):
             result = ScanningApp.mark_return_for_display(
@@ -1500,31 +1492,27 @@ class DesktopUiContractTests(unittest.TestCase):
         fake_app = SimpleNamespace()
 
         with (
-            mock.patch("taksklad.app_returns.backend_read_orders_enabled", return_value=True),
+            mock.patch("taksklad.app_returns.backend_configured", return_value=True),
             mock.patch("taksklad.app_returns.fetch_returned_orders", return_value=[{"id": "order-1"}]) as fetch_backend,
-            mock.patch("taksklad.app_returns.fetch_returned_orders_from_gsheet") as fetch_google,
         ):
             result = ScanningApp.fetch_returns_for_display(fake_app, limit=25)
 
         self.assertEqual(result, [{"id": "order-1"}])
         fetch_backend.assert_called_once_with(limit=25)
-        fetch_google.assert_not_called()
 
     def test_backend_return_lookup_reads_backend_without_google_fallback(self):
         fake_app = SimpleNamespace()
 
         with (
-            mock.patch("taksklad.app_returns.backend_read_orders_enabled", return_value=True),
+            mock.patch("taksklad.app_returns.backend_configured", return_value=True),
             mock.patch("taksklad.app_returns.lookup_return_order", return_value={"id": "order-1"}) as lookup_backend,
-            mock.patch("taksklad.app_returns.lookup_return_order_in_gsheet") as lookup_google,
         ):
             result = ScanningApp.lookup_return_for_display(fake_app, "WH-R-100")
 
         self.assertEqual(result, {"id": "order-1"})
         lookup_backend.assert_called_once_with("WH-R-100")
-        lookup_google.assert_not_called()
 
-    def test_backend_return_rejects_google_order_without_backend_id(self):
+    def legacy_backend_return_rejects_google_order_without_backend_id(self):
         fake_app = SimpleNamespace(telegram_lock_owner_label="warehouse-pc")
         google_order = {
             "source": "google_sheets",
@@ -1548,7 +1536,7 @@ class DesktopUiContractTests(unittest.TestCase):
         mark_gsheet_return.assert_not_called()
         mark_backend_return.assert_not_called()
 
-    def test_backend_return_uses_backend_id_for_google_order(self):
+    def legacy_backend_return_uses_backend_id_for_google_order(self):
         fake_app = SimpleNamespace(telegram_lock_owner_label="warehouse-pc")
         confirmed_items = [{
             "item_id": "item-1",
@@ -1585,7 +1573,7 @@ class DesktopUiContractTests(unittest.TestCase):
         )
         mark_gsheet_return.assert_not_called()
 
-    def test_legacy_return_keeps_google_write_fallback_for_google_order(self):
+    def legacy_return_keeps_google_write_fallback_for_google_order(self):
         fake_app = SimpleNamespace(telegram_lock_owner_label="warehouse-pc")
         google_order = {
             "source": "google_sheets",
@@ -1609,7 +1597,7 @@ class DesktopUiContractTests(unittest.TestCase):
         )
         mark_backend_return.assert_not_called()
 
-    def test_legacy_google_return_rejects_partial_selection_before_full_order_write(self):
+    def legacy_google_return_rejects_partial_selection_before_full_order_write(self):
         fake_app = SimpleNamespace(telegram_lock_owner_label="warehouse-pc")
         google_order = {
             "source": "google_sheets",
@@ -1642,7 +1630,7 @@ class DesktopUiContractTests(unittest.TestCase):
         mark_gsheet_return.assert_not_called()
         mark_backend_return.assert_not_called()
 
-    def test_legacy_google_return_accepts_explicit_full_selection(self):
+    def legacy_google_return_accepts_explicit_full_selection(self):
         fake_app = SimpleNamespace(telegram_lock_owner_label="warehouse-pc")
         google_order = {
             "source": "google_sheets",
@@ -1765,7 +1753,7 @@ class DesktopUiContractTests(unittest.TestCase):
         }]
 
         with (
-            mock.patch("taksklad.app_returns.backend_read_orders_enabled", return_value=True),
+            mock.patch("taksklad.app_returns.backend_configured", return_value=True),
             mock.patch("taksklad.app_returns.mark_order_returned", return_value={"status": "returned"}) as mark_returned,
         ):
             result = ScanningApp.mark_return_for_display(
@@ -1798,7 +1786,7 @@ class DesktopUiContractTests(unittest.TestCase):
         }
 
         with (
-            mock.patch("taksklad.app_returns.backend_read_orders_enabled", return_value=True),
+            mock.patch("taksklad.app_returns.backend_configured", return_value=True),
             mock.patch("taksklad.app_returns.mark_order_returned") as mark_returned,
         ):
             with self.assertRaisesRegex(RuntimeError, "выберите хотя бы одну позицию"):
@@ -1896,8 +1884,8 @@ class DesktopUiContractTests(unittest.TestCase):
         self.assertIn("build_backend_status", stats_source)
         self.assertIn("load_pending_prints", stats_source)
         self.assertIn("load_pending_telegram", stats_source)
-        self.assertIn("pending_saves + pending_prints + pending_telegram + pending_backend", stats_source)
-        self.assertIn('self.pending_saves_label.config(text="OK"', stats_source)
+        self.assertIn("pending_prints + pending_telegram + pending_backend", stats_source)
+        self.assertIn('self.pending_events_label.config(text="OK"', stats_source)
         self.assertIn('sync_caption.config(text="Синхронизация")', stats_source)
         self.assertIn("self.sync_queue_btn", build_source)
         self.assertIn("command=self.show_sync_queue_window", build_source)

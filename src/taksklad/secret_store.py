@@ -26,7 +26,6 @@ from pathlib import Path
 from typing import Mapping, MutableMapping, Optional
 
 
-GOOGLE_CREDENTIALS_SECRET = "google_credentials"
 TELEGRAM_BOT_TOKEN_SECRET = "telegram_bot_token"
 BACKEND_API_TOKEN_SECRET = "backend_api_token"
 GEOCODER_API_KEY_SECRET = "geocoder_api_key"
@@ -119,7 +118,6 @@ class EnvironmentSecretStore:
 
     provider_name = "environment"
     DEFAULT_ENVIRONMENT_MAPPING = {
-        GOOGLE_CREDENTIALS_SECRET: "TAKSKLAD_GOOGLE_CREDENTIALS_JSON",
         TELEGRAM_BOT_TOKEN_SECRET: "TAKSKLAD_TELEGRAM_BOT_TOKEN",
         BACKEND_API_TOKEN_SECRET: "TAKSKLAD_BACKEND_API_TOKEN",
         GEOCODER_API_KEY_SECRET: "YANDEX_GEOCODER_API_KEY",
