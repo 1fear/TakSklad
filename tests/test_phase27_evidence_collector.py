@@ -170,10 +170,13 @@ class Phase27EvidenceCollectorTests(unittest.TestCase):
     def test_readiness_file_supports_internal_preflight_probe(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "ready.json"
-            path.write_text(json.dumps({"ready": True, "status": "ok"}), encoding="utf-8")
+            path.write_text(
+                json.dumps({"http_status": 503, "payload": {"ready": False, "status": "degraded"}}),
+                encoding="utf-8",
+            )
             status, payload, latency = read_json_file(path)
-        self.assertEqual(status, 200)
-        self.assertEqual(payload, {"ready": True, "status": "ok"})
+        self.assertEqual(status, 503)
+        self.assertEqual(payload, {"ready": False, "status": "degraded"})
         self.assertGreaterEqual(latency, 0)
 
     def test_readiness_file_rejects_non_object_payload(self):
@@ -181,6 +184,13 @@ class Phase27EvidenceCollectorTests(unittest.TestCase):
             path = Path(temp) / "ready.json"
             path.write_text("[]", encoding="utf-8")
             with self.assertRaisesRegex(CollectionError, "did not contain an object"):
+                read_json_file(path)
+
+    def test_readiness_file_rejects_invalid_wrapped_status(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "ready.json"
+            path.write_text(json.dumps({"http_status": 0, "payload": {}}), encoding="utf-8")
+            with self.assertRaisesRegex(CollectionError, "HTTP status is invalid"):
                 read_json_file(path)
 
 
