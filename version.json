@@ -1,17 +1,19 @@
 {
-  "latest_version": "2.0.36",
-  "release_tag": "v2.0.36",
-  "min_supported_version": "2.0.36",
+  "latest_version": "2.0.40",
+  "release_tag": "v2.0.40",
+  "min_supported_version": "2.0.40",
   "mandatory": true,
   "block_workflow": true,
   "package_type": "onefile_exe",
   "entrypoint": "TakSklad.exe",
-  "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.36/TakSklad.exe",
-  "sha256": "939d45f25f058b24710f86e3d3549860e7889475157ee8bd687e136a3dfdef23",
-  "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.36/TakSklad-windows-x64.zip",
-  "sha256_onedir": "97b3564d7c2a1b7d16c864be47cd0a41ad0fddec6131896f804317583cd8dc19",
+  "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.40/TakSklad.exe",
+  "sha256": "b3b7e0cf76f41129e68ae87b4de3663e2822d74111c3a3c683197329fcdde0fa",
+  "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.40/TakSklad-windows-x64.zip",
+  "sha256_onedir": "753808d9adfafae05f860db24f0c89290f26baecc63c4ac99063cec14ceca2b9",
   "signature_type": "authenticode",
   "signature_required": true,
   "signer_certificate_sha256": "c95ccd968831b3b55a1f2c949e66f3b39c5f69badf29a70887b43a036f14bb19",
-  "message": "TakSklad 2.0.36: обязательное обновление. Исправлена установка подписанного обновления на чистом Windows; возвратный КИЗ после отмены исходного заказа можно сканировать в новый заказ, активные исходящие дубли остаются заблокированы."
+  "source_sha": "e062cf7ae31c45c82652670a692ba6b4e52dc406",
+  "dependency_lock_sha256": "daf5267266d82990b1b8a327810caa78ccc30e8b7dbb9e399bc6fc9698b13c8c",
+  "message": "TakSklad 2.0.40: обязательное DB-only обновление. Google Sheets выведен из runtime; заказы, сканы и возвраты работают через backend/PostgreSQL. Возвращённый КИЗ можно безопасно сканировать в новый заказ."
 }
