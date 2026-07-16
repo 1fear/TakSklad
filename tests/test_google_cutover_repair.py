@@ -161,6 +161,7 @@ class GoogleCutoverRepairTests(unittest.TestCase):
         self.assertEqual(candidates, [])
         self.assertFalse(summary["safe_to_repair"])
         self.assertEqual(summary["ambiguous_chronology"], 1)
+        self.assertEqual(summary["target_return_crosses_later_movement_occurrences"], 1)
 
     def test_duplicate_occurrence_is_one_unique_target_but_keeps_audit_counts(self):
         code = "KIZ-4"
@@ -189,6 +190,7 @@ class GoogleCutoverRepairTests(unittest.TestCase):
         self.assertEqual(len(candidates), 1)
         self.assertEqual(summary["duplicate_occurrences"], 1)
         self.assertEqual(summary["other_conflicts"], 1)
+        self.assertEqual(summary["divergent_duplicate_targets"], 1)
         self.assertFalse(summary["safe_to_repair"])
 
     def test_unparseable_timestamp_and_ambiguous_identity_fail_closed(self):
@@ -204,6 +206,29 @@ class GoogleCutoverRepairTests(unittest.TestCase):
         self.assertEqual(summary["unparseable_returned_at"], 1)
         self.assertEqual(summary["identity_conflicts"], 1)
 
+    def test_identity_diagnostics_are_counts_only_and_remain_blocking(self):
+        diagnostics = {
+            "identity_no_strong_id_records": 1,
+            "identity_not_found_records": 2,
+            "identity_product_quantity_mismatch_records": 3,
+            "identity_multiple_records": 4,
+            "identity_order_not_returned_records": 0,
+        }
+
+        summary, candidates = build_repair_plan(
+            [],
+            {},
+            {},
+            identity_conflicts=sum(diagnostics.values()),
+            identity_diagnostics=diagnostics,
+        )
+
+        self.assertEqual(candidates, [])
+        self.assertFalse(summary["safe_to_repair"])
+        self.assertEqual(summary["identity_conflicts"], 10)
+        for field, expected in diagnostics.items():
+            self.assertEqual(summary[field], expected)
+
     def test_oversized_return_metadata_fails_closed_before_database_write(self):
         oversized = record("KIZ-LONG")
         oversized["return_reference"] = "x" * 121
@@ -214,6 +239,7 @@ class GoogleCutoverRepairTests(unittest.TestCase):
         self.assertEqual(candidates, [])
         self.assertFalse(summary["safe_to_repair"])
         self.assertEqual(summary["other_conflicts"], 1)
+        self.assertEqual(summary["return_reference_too_long_occurrences"], 1)
 
     def test_existing_outbound_for_other_item_fails_closed(self):
         code = "KIZ-WRONG-OWNER"
@@ -237,8 +263,9 @@ class GoogleCutoverRepairTests(unittest.TestCase):
         self.assertEqual(candidates, [])
         self.assertFalse(summary["safe_to_repair"])
         self.assertEqual(summary["other_conflicts"], 1)
+        self.assertEqual(summary["outbound_owner_mismatch_occurrences"], 1)
 
-    def test_existing_return_with_invalid_chronology_fails_closed(self):
+    def test_preexisting_return_anomaly_is_counted_but_outside_repair_scope(self):
         code = "KIZ-BAD-RETURN"
         existing_scan = scan("s-bad-return", code)
         backend_item = item(scans=[existing_scan], scanned_blocks=1)
@@ -264,8 +291,9 @@ class GoogleCutoverRepairTests(unittest.TestCase):
         )
 
         self.assertEqual(candidates, [])
-        self.assertFalse(summary["safe_to_repair"])
-        self.assertEqual(summary["ambiguous_chronology"], 1)
+        self.assertTrue(summary["safe_to_repair"])
+        self.assertEqual(summary["already_repaired_occurrences"], 1)
+        self.assertEqual(summary["preexisting_anomaly_occurrences"], 1)
 
     def test_plan_hash_covers_mutation_metadata(self):
         code = "KIZ-HASH"

@@ -20,6 +20,20 @@ class GoogleCutoverRepairWorkflowTests(unittest.TestCase):
         self.assertIn("--expected-plan-sha", workflow)
         self.assertIn('plan_rc="\\$?"', workflow)
         self.assertIn("GOOGLE_RETURN_REPAIR_PLAN_COUNTS", workflow)
+        for field in (
+            "preexisting_anomaly_occurrences",
+            "identity_no_strong_id_records",
+            "identity_not_found_records",
+            "identity_product_quantity_mismatch_records",
+            "identity_multiple_records",
+            "identity_order_not_returned_records",
+            "target_missing_movement_timestamp_occurrences",
+            "target_return_crosses_later_movement_occurrences",
+            "missing_scan_return_boundary_conflict_occurrences",
+            "missing_outbound_occurrences",
+            "outbound_owner_mismatch_occurrences",
+        ):
+            self.assertIn(f'"{field}"', workflow)
         self.assertIn("evidence = {key: payload[key] for key in sorted(allowed)", workflow)
         self.assertIn("os.O_EXCL, 0o600", workflow)
         self.assertNotIn('install -m 600 "\\$run_dir/repair-plan.json" /tmp/taksklad-google-return-repair-plan.json', workflow)

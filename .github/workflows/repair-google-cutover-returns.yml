@@ -157,7 +157,18 @@ jobs:
               "identity_conflicts", "unparseable_returned_at", "ambiguous_chronology",
               "other_conflicts", "missing_scan_targets", "missing_return_targets", "scan_inserts",
               "outbound_inserts", "return_inserts", "conflicts", "mutations_expected",
-              "safe_to_repair", "plan_sha256",
+              "safe_to_repair", "plan_sha256", "preexisting_anomaly_occurrences",
+              "code_owner_conflicts", "divergent_duplicate_targets",
+              "identity_no_strong_id_records", "identity_not_found_records",
+              "identity_product_quantity_mismatch_records", "identity_multiple_records",
+              "identity_order_not_returned_records",
+              "target_missing_movement_timestamp_occurrences",
+              "target_return_crosses_later_movement_occurrences",
+              "missing_scan_return_boundary_conflict_occurrences",
+              "multiple_item_scans_occurrences", "missing_outbound_occurrences",
+              "outbound_owner_mismatch_occurrences", "busy_before_missing_scan_occurrences",
+              "scan_without_outbound_occurrences", "scanned_blocks_exceed_plan_occurrences",
+              "return_reference_too_long_occurrences", "returned_by_too_long_occurrences",
           }
           if set(payload) - allowed:
               raise SystemExit("GOOGLE_RETURN_REPAIR_PLAN_UNSAFE_FIELDS")
@@ -174,9 +185,20 @@ jobs:
               f"missing_return_targets={payload.get('missing_return_targets', -1)} "
               f"duplicates={payload.get('duplicate_occurrences', -1)} "
               f"identity_conflicts={payload.get('identity_conflicts', -1)} "
+              f"identity_no_strong_id={payload.get('identity_no_strong_id_records', -1)} "
+              f"identity_not_found={payload.get('identity_not_found_records', -1)} "
+              f"identity_product_quantity_mismatch={payload.get('identity_product_quantity_mismatch_records', -1)} "
+              f"identity_multiple={payload.get('identity_multiple_records', -1)} "
+              f"identity_order_not_returned={payload.get('identity_order_not_returned_records', -1)} "
               f"unparseable_returned_at={payload.get('unparseable_returned_at', -1)} "
               f"ambiguous_chronology={payload.get('ambiguous_chronology', -1)} "
+              f"target_missing_movement_timestamp={payload.get('target_missing_movement_timestamp_occurrences', -1)} "
+              f"target_return_crosses_later_movement={payload.get('target_return_crosses_later_movement_occurrences', -1)} "
+              f"missing_scan_return_boundary_conflict={payload.get('missing_scan_return_boundary_conflict_occurrences', -1)} "
               f"other_conflicts={payload.get('other_conflicts', -1)} "
+              f"missing_outbound={payload.get('missing_outbound_occurrences', -1)} "
+              f"outbound_owner_mismatch={payload.get('outbound_owner_mismatch_occurrences', -1)} "
+              f"preexisting_anomalies={payload.get('preexisting_anomaly_occurrences', -1)} "
               f"conflicts={payload.get('conflicts', -1)} values_redacted=1"
           )
           if int(sys.argv[4]) != 0 or payload.get("safe_to_repair") is not True or payload.get("conflicts") != 0:
