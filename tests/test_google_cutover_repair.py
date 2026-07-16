@@ -1,5 +1,6 @@
 import unittest
 import uuid
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest import mock
@@ -11,9 +12,12 @@ from tools.google_cutover_repair import (
     apply_candidates,
     build_repair_plan,
     deterministic_uuid,
+    enrich_identity_lifecycle_diagnostics,
+    item_code_lifecycle_state,
     match_records_to_items,
     normalize,
     parse_returned_at,
+    target_error_diagnostics,
 )
 
 
@@ -276,7 +280,7 @@ class GoogleCutoverRepairTests(unittest.TestCase):
             "source_sheet": "Архив",
         }
 
-        matched, diagnostics = match_records_to_items(db, [google_record])
+        matched, diagnostics, contexts, items_by_id = match_records_to_items(db, [google_record])
 
         self.assertIsNone(matched[0][1])
         self.assertEqual(diagnostics["identity_multiple_records"], 1)
@@ -287,6 +291,8 @@ class GoogleCutoverRepairTests(unittest.TestCase):
         self.assertEqual(diagnostics["identity_multiple_signal_agreement_records"], 1)
         self.assertEqual(diagnostics["identity_multiple_single_unique_signal_records"], 0)
         self.assertEqual(diagnostics["identity_multiple_signal_conflict_records"], 0)
+        self.assertEqual(len(contexts), 1)
+        self.assertEqual(len(items_by_id), 2)
         self.assertEqual(
             diagnostics["identity_multiple_codes_without_candidate_scan_occurrences"],
             0,
@@ -316,11 +322,190 @@ class GoogleCutoverRepairTests(unittest.TestCase):
         db = SimpleNamespace(execute=lambda _statement: SimpleNamespace(scalars=lambda: scalar_result))
         google_record = {**record(code), "source_import_id": "shared-import"}
 
-        _matched, diagnostics = match_records_to_items(db, [google_record])
+        _matched, diagnostics, contexts, items_by_id = match_records_to_items(db, [google_record])
 
         self.assertEqual(diagnostics["identity_multiple_single_unique_signal_records"], 1)
         self.assertEqual(diagnostics["identity_multiple_signal_agreement_records"], 0)
         self.assertEqual(diagnostics["identity_multiple_signal_conflict_records"], 0)
+        self.assertEqual(len(contexts), 1)
+        self.assertEqual(len(items_by_id), 2)
+
+    def test_identity_lifecycle_diagnostics_distinguish_source_and_row_candidates(self):
+        code = "KIZ-LIFECYCLE-DIAGNOSTIC"
+        source_order = order("order-source")
+        row_order = order("order-row")
+        source_scan = scan("scan-source", code)
+        row_scan = scan("scan-row", code)
+        source_candidate = SimpleNamespace(
+            id="item-source",
+            order=source_order,
+            source_import_id="shared-import",
+            raw_payload={"source_order_id": "source-order"},
+            scan_codes=[source_scan],
+        )
+        row_candidate = SimpleNamespace(
+            id="item-row",
+            order=row_order,
+            source_import_id="shared-import",
+            raw_payload={
+                "source_order_id": "other-order",
+                "google_sheet_row_number": 42,
+                "google_sheet_source_sheet": "Архив",
+            },
+            scan_codes=[row_scan],
+        )
+        google_record = {
+            **record(code),
+            "source_import_id": "shared-import",
+            "source_order_id": "source-order",
+            "row_number": 42,
+            "source_sheet": "Архив",
+        }
+        movements_by_code = {
+            code: [
+                movement(
+                    "source-out",
+                    "outbound",
+                    scan_id=source_scan.id,
+                    item_id=source_candidate.id,
+                    order_id=source_order.id,
+                    at=datetime(2026, 7, 9, 8, tzinfo=UTC),
+                ),
+                movement(
+                    "row-out",
+                    "outbound",
+                    scan_id=row_scan.id,
+                    item_id=row_candidate.id,
+                    order_id=row_order.id,
+                    at=datetime(2026, 7, 10, 9, tzinfo=UTC),
+                ),
+                movement(
+                    "source-return",
+                    "return",
+                    scan_id=source_scan.id,
+                    item_id=source_candidate.id,
+                    order_id=source_order.id,
+                    at=datetime(2026, 7, 10, 8, tzinfo=UTC),
+                ),
+            ]
+        }
+        context = {
+            "record": google_record,
+            "candidates": [source_candidate, row_candidate],
+            "import_candidates": [source_candidate, row_candidate],
+            "order_candidates": [source_candidate],
+        }
+        diagnostics = defaultdict(int)
+
+        enrich_identity_lifecycle_diagnostics(diagnostics, [context], movements_by_code)
+
+        self.assertEqual(item_code_lifecycle_state(source_candidate, code, movements_by_code), "complete")
+        self.assertEqual(item_code_lifecycle_state(row_candidate, code, movements_by_code), "missing_return")
+        self.assertEqual(
+            diagnostics["identity_multiple_exactly_one_candidate_missing_return_records"],
+            1,
+        )
+        self.assertEqual(
+            diagnostics["identity_multiple_source_ids_complete_row_missing_records"],
+            1,
+        )
+
+        overlapping = movement(
+            "later-re-outbound",
+            "re_outbound",
+            scan_id="later-scan",
+            item_id="later-item",
+            order_id="later-order",
+            at=datetime(2026, 7, 11, 9, tzinfo=UTC),
+        )
+        self.assertEqual(
+            item_code_lifecycle_state(
+                row_candidate,
+                code,
+                {code: [*movements_by_code[code], overlapping]},
+            ),
+            "invalid",
+        )
+
+    def test_target_error_diagnostics_use_owner_and_trusted_interval_counts(self):
+        code = "KIZ-TARGET-DIAGNOSTIC"
+        target = item(item_id="target-item")
+        owner_scan = scan("owner-scan", code)
+        owner = item(item_id="owner-item", scans=[owner_scan], scanned_blocks=1)
+        owner.source_import_id = "shared-import"
+        owner.raw_payload = {
+            "source_order_id": "shared-order",
+            "google_sheet_row_number": 42,
+            "google_sheet_source_sheet": "Архив",
+        }
+        owner.order.raw_payload["returned_at"] = "2026-07-10T08:00:00+00:00"
+        owner_outbound = movement(
+            "owner-out",
+            "outbound",
+            scan_id=owner_scan.id,
+            item_id=owner.id,
+            order_id=owner.order.id,
+            at=datetime(2026, 7, 9, 8, tzinfo=UTC),
+        )
+        google_record = {
+            **record(code, returned_at="10.07.2026 10:00:00"),
+            "source_import_id": "shared-import",
+            "source_order_id": "shared-order",
+            "row_number": 42,
+            "source_sheet": "Архив",
+        }
+        busy = target_error_diagnostics(
+            target,
+            google_record,
+            code,
+            "busy_before_missing_scan",
+            {code: [owner_outbound]},
+            relevant_items={str(owner.id): owner},
+        )
+        self.assertEqual(busy["busy_previous_outbound_occurrences"], 1)
+        self.assertEqual(busy["busy_previous_owner_matches_both_source_ids_occurrences"], 1)
+        self.assertEqual(busy["busy_previous_owner_scan_matches_movement_occurrences"], 1)
+        empty_provenance = target_error_diagnostics(
+            target,
+            {**google_record, "row_number": 0, "source_sheet": ""},
+            code,
+            "busy_before_missing_scan",
+            {code: [owner_outbound]},
+            relevant_items={str(owner.id): owner},
+        )
+        self.assertEqual(
+            empty_provenance["busy_previous_owner_matches_google_row_occurrences"],
+            0,
+        )
+
+        target.scan_codes = [owner_scan]
+        target.id = owner.id
+        target.order = owner.order
+        next_undo = movement(
+            "next-undo",
+            "undo",
+            scan_id="another-scan",
+            item_id="another-item",
+            order_id="another-order",
+            at=datetime(2026, 7, 11, 8, tzinfo=UTC),
+        )
+        crossed = target_error_diagnostics(
+            target,
+            {**google_record, "returned_at": "12.07.2026 10:00:00"},
+            code,
+            "target_return_crosses_later_available_movement",
+            {code: [owner_outbound, next_undo]},
+            audit_return_times={
+                str(owner.order.id): [datetime(2026, 7, 10, 8, tzinfo=UTC)]
+            },
+        )
+        self.assertEqual(crossed["cross_later_backend_timestamp_in_interval_occurrences"], 1)
+        self.assertEqual(crossed["cross_later_unique_audit_timestamp_in_interval_occurrences"], 1)
+        self.assertEqual(
+            crossed["cross_later_one_unique_trusted_timestamp_in_interval_occurrences"],
+            1,
+        )
+        self.assertEqual(crossed["cross_later_all_trusted_timestamps_agree_occurrences"], 1)
 
     def test_oversized_return_metadata_fails_closed_before_database_write(self):
         oversized = record("KIZ-LONG")
