@@ -259,6 +259,11 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn('docker pull "$TAKSKLAD_BACKEND_IMAGE"', script)
         self.assertIn('docker pull "$TAKSKLAD_FRONTEND_IMAGE"', script)
         self.assertIn("tools/reconcile_output_permissions.sh", script)
+        self.assertIn("tools/validate_daily_report_config.py", script)
+        self.assertLess(
+            script.index("tools/validate_daily_report_config.py"),
+            script.index("./deploy/vds/backup_postgres.sh --no-prune"),
+        )
         self.assertIn('TAKSKLAD_OUTPUT_PERMISSIONS_IMAGE="$TAKSKLAD_BACKEND_IMAGE"', script)
         self.assertIn("PHASE22_CHANGE_OUTPUT_OWNER", script)
         self.assertIn("compose stop -t 45", script)
@@ -331,6 +336,21 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn("--ready-json .release-state/current-ready.json", workflow)
         self.assertIn("http://127.0.0.1:8000/ready", workflow)
         self.assertIn("except HTTPError as e: r=e", workflow)
+        self.assertIn("tools/validate_daily_report_config.py", workflow)
+        self.assertIn("backend/app/daily_report_config.py", workflow)
+        self.assertIn("phase27-env-candidate", workflow)
+        self.assertIn("PRODUCTION_CONFIG_RECOVERY_ROLLED_BACK", workflow)
+        candidate_validation = workflow.index(
+            'docker compose --env-file "\\$candidate_env"'
+        )
+        env_install = workflow.index(
+            'install -m 600 "\\$candidate_env" deploy/vds/.env'
+        )
+        self.assertLess(candidate_validation, env_install)
+        self.assertLess(
+            workflow.index("tools/validate_daily_report_config.py"),
+            workflow.index("pull postgres-wal-init postgres"),
+        )
         self.assertIn(
             "./deploy/vds/deploy_from_git.sh --artifact-manifest release.json --acceptance required --wait",
             workflow,

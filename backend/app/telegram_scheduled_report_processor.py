@@ -21,6 +21,16 @@ SKLADBOT_DAILY_REPORTED_REQUEST_EVENT_TYPE = "skladbot_daily_reported_request"
 SKLADBOT_DAILY_REPORT_STALE_TTL_MINUTES_ENV = "SKLADBOT_DAILY_REPORT_STALE_TTL_MINUTES"
 SKLADBOT_DAILY_REPORT_STALE_FAILED_ERROR = "STUCK_PROCESSING_AFTER_TTL"
 SKLADBOT_DAILY_REPORT_COVERAGE_FAILED_ERROR = "SKLADBOT_DAILY_REPORT_COVERAGE_NOT_COMPLETE"
+SKLADBOT_DAILY_SUCCESS_RESULT_STATUSES = {
+    "CATCHUP_SENT_COMPLETE_ONCE",
+    "completed_sent",
+}
+SKLADBOT_DAILY_SAFE_RETRY_STAGES = {
+    "scheduled job started",
+    "report generation finished",
+    "scheduled job failed",
+    "xlsx created",
+}
 SCHEDULED_DAILY_PAYLOAD_SECRET_KEY_PARTS = (
     "chat", "token", "secret", "password", "authorization", "credential",
     "api_key", "apikey", "jwt", "raw", "payload",
@@ -51,6 +61,44 @@ def ensure_aware_utc(value):
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def daily_report_event_success(event):
+    if event is None or normalize_text(event.status) != "completed":
+        return False
+    payload = event.payload if isinstance(event.payload, dict) else {}
+    success = payload.get("success")
+    if success is True or normalize_text(success).casefold() == "true":
+        return True
+    return normalize_text(payload.get("result_status")) in SKLADBOT_DAILY_SUCCESS_RESULT_STATUSES
+
+
+def completed_daily_report_delivery_exists(db, chat_id, report_date):
+    prefix = f"skladbot_daily_report:{report_date.isoformat()}:{chat_id}:"
+    candidates = db.execute(
+        select(PendingEvent)
+        .where(PendingEvent.event_type == SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE)
+        .where(PendingEvent.status == "completed")
+        .where(PendingEvent.idempotency_key.like(prefix + "%"))
+        .order_by(PendingEvent.updated_at.desc(), PendingEvent.created_at.desc())
+        .limit(20)
+    ).scalars().all()
+    return any(daily_report_event_success(event) for event in candidates)
+
+
+def failed_daily_report_retry_is_safe(event, now_utc, retry_minutes, max_attempts):
+    payload = event.payload if isinstance(event.payload, dict) else {}
+    stage = normalize_text(payload.get("stage"))
+    if stage not in SKLADBOT_DAILY_SAFE_RETRY_STAGES:
+        return False
+    if int(event.attempts or 0) >= max(1, int(max_attempts)):
+        return False
+    updated_at = ensure_aware_utc(event.updated_at or event.created_at)
+    return bool(
+        updated_at
+        and now_utc
+        and now_utc - updated_at >= timedelta(minutes=max(1, int(retry_minutes)))
+    )
 
 
 def skladbot_reported_request_key(
@@ -297,12 +345,47 @@ class TelegramScheduledReportProcessor(TelegramProcessorDelegate):
         if not getattr(self, "skladbot_daily_report_chat_ids", set()):
             return False
         report_module = self._skladbot_daily_report_module()
-        now = now or datetime.now(report_module.business_timezone())
+        timezone_info = report_module.business_timezone()
+        now = now or datetime.now(timezone_info)
         if now.tzinfo is None:
-            now = now.replace(tzinfo=report_module.business_timezone())
-        scheduled_minutes = getattr(self, "skladbot_daily_report_hour", 22) * 60 + getattr(self, "skladbot_daily_report_minute", 0)
-        current_minutes = now.hour * 60 + now.minute
-        return current_minutes >= scheduled_minutes
+            now = now.replace(tzinfo=timezone_info)
+        else:
+            now = now.astimezone(timezone_info)
+        scheduled_minutes = (
+            getattr(self, "skladbot_daily_report_hour", 22) * 60
+            + getattr(self, "skladbot_daily_report_minute", 0)
+        )
+        return now.hour * 60 + now.minute >= scheduled_minutes
+
+    def latest_due_skladbot_daily_report_date(self, now=None):
+        report_module = self._skladbot_daily_report_module()
+        timezone_info = report_module.business_timezone()
+        now = now or datetime.now(timezone_info)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone_info)
+        else:
+            now = now.astimezone(timezone_info)
+        scheduled_at = now.replace(
+            hour=getattr(self, "skladbot_daily_report_hour", 22),
+            minute=getattr(self, "skladbot_daily_report_minute", 0),
+            second=0,
+            microsecond=0,
+        )
+        return now.date() if now >= scheduled_at else now.date() - timedelta(days=1)
+
+    def oldest_missing_skladbot_daily_report_date(self, chat_id, now=None):
+        latest_due_date = self.latest_due_skladbot_daily_report_date(now)
+        lookback_days = max(
+            1,
+            int(getattr(self, "skladbot_daily_report_lookback_days", 1)),
+        )
+        first_due_date = latest_due_date - timedelta(days=lookback_days - 1)
+        with self._scheduled_session_factory()() as db:
+            for offset in range(lookback_days):
+                candidate_date = first_due_date + timedelta(days=offset)
+                if not completed_daily_report_delivery_exists(db, chat_id, candidate_date):
+                    return candidate_date
+        return None
 
     def skladbot_daily_report_idempotency_key(self, chat_id, report_date, mode="scheduled", report_kind="daily_skladbot", report_version="v2"):
         return f"skladbot_daily_report:{report_date.isoformat()}:{chat_id}:{mode}:{report_kind}:{report_version}"
@@ -312,6 +395,8 @@ class TelegramScheduledReportProcessor(TelegramProcessorDelegate):
         now_utc = ensure_aware_utc(now.astimezone(timezone.utc) if now.tzinfo else now)
         idempotency_key = self.skladbot_daily_report_idempotency_key(chat_id, report_date)
         with self._scheduled_session_factory()() as db:
+            if completed_daily_report_delivery_exists(db, chat_id, report_date):
+                return ""
             event = db.execute(
                 select(PendingEvent).where(PendingEvent.idempotency_key == idempotency_key)
             ).scalars().first()
@@ -330,24 +415,44 @@ class TelegramScheduledReportProcessor(TelegramProcessorDelegate):
                 if updated_at and now_utc and now_utc - updated_at >= timedelta(minutes=stale_minutes):
                     self.fail_stale_scheduled_skladbot_daily_report(db, event, now_utc)
                     db.commit()
-                else:
-                    self.mark_scheduled_skladbot_daily_report_manual_recovery_required(
-                        db,
-                        event,
-                        now_utc,
-                        "skipped_same_day_existing_processing_event",
-                    )
-                    db.commit()
+                    return ""
+                # A fresh processing lease is owned by an active worker. Polling it
+                # must not refresh updated_at or overwrite the last delivery stage,
+                # otherwise the stale detector can never expire the original lease.
                 return ""
             if event is not None and event.status == "failed":
-                self.mark_scheduled_skladbot_daily_report_manual_recovery_required(
-                    db,
+                retry_minutes = max(
+                    1,
+                    int(getattr(self, "skladbot_daily_report_retry_minutes", 15)),
+                )
+                max_attempts = max(
+                    1,
+                    int(getattr(self, "skladbot_daily_report_max_attempts", 3)),
+                )
+                if not failed_daily_report_retry_is_safe(
                     event,
                     now_utc,
-                    "skipped_same_day_existing_failed_event",
-                )
-                db.commit()
-                return ""
+                    retry_minutes,
+                    max_attempts,
+                ):
+                    payload = event.payload if isinstance(event.payload, dict) else {}
+                    stage = normalize_text(payload.get("stage"))
+                    updated_at = ensure_aware_utc(event.updated_at or event.created_at)
+                    waiting_for_retry = bool(
+                        stage in SKLADBOT_DAILY_SAFE_RETRY_STAGES
+                        and int(event.attempts or 0) < max_attempts
+                        and updated_at
+                        and now_utc - updated_at < timedelta(minutes=retry_minutes)
+                    )
+                    if not waiting_for_retry:
+                        self.mark_scheduled_skladbot_daily_report_manual_recovery_required(
+                            db,
+                            event,
+                            now_utc,
+                            "automatic_retry_not_safe_or_exhausted",
+                        )
+                        db.commit()
+                    return ""
             payload = {
                 "report_date": report_date.isoformat(),
                 "mode": "scheduled",
@@ -377,6 +482,8 @@ class TelegramScheduledReportProcessor(TelegramProcessorDelegate):
 
     def mark_scheduled_skladbot_daily_report_manual_recovery_required(self, db, event, now_utc, reason):
         payload = safe_scheduled_skladbot_daily_report_payload(event.payload or {})
+        if payload.get("manual_recovery_required") is True:
+            return False
         payload.update({
             "stage": "manual_recovery_required",
             "result_status": "manual_recovery_required",
@@ -396,16 +503,19 @@ class TelegramScheduledReportProcessor(TelegramProcessorDelegate):
                 "reason": normalize_text(reason),
             },
         ))
+        return True
 
     def fail_stale_scheduled_skladbot_daily_report(self, db, event, now_utc):
         event.status = "failed"
         event.last_error = SKLADBOT_DAILY_REPORT_STALE_FAILED_ERROR
         payload = safe_scheduled_skladbot_daily_report_payload(event.payload or {})
+        stale_origin_stage = normalize_text(payload.get("stage"))
         payload.update({
             "finished_at": now_utc.isoformat() if now_utc else datetime.now(timezone.utc).isoformat(),
             "success": False,
             "error": SKLADBOT_DAILY_REPORT_STALE_FAILED_ERROR,
-            "stage": "stale failed",
+            "stage": stale_origin_stage or "stale failed",
+            "stale_origin_stage": stale_origin_stage,
             "result_status": "failed",
             "stale_failed_at": now_utc.isoformat() if now_utc else datetime.now(timezone.utc).isoformat(),
         })
@@ -486,11 +596,18 @@ class TelegramScheduledReportProcessor(TelegramProcessorDelegate):
 
     def send_due_skladbot_daily_reports(self, now=None):
         now = now or datetime.now(self._skladbot_daily_report_module().business_timezone())
-        if not self.scheduled_skladbot_daily_report_is_due(now):
+        scheduled_now = self.scheduled_skladbot_daily_report_is_due(now)
+        enabled = getattr(self, "skladbot_daily_report_enabled", scheduled_now)
+        if (
+            not enabled
+            or not getattr(self, "skladbot_daily_report_chat_ids", set())
+        ):
             return 0
-        report_date = now.date()
         sent = 0
         for chat_id in sorted(getattr(self, "skladbot_daily_report_chat_ids", set())):
+            report_date = self.oldest_missing_skladbot_daily_report_date(chat_id, now=now)
+            if report_date is None:
+                continue
             event_id = self.claim_scheduled_skladbot_daily_report(chat_id, report_date, now=now)
             if not event_id:
                 continue

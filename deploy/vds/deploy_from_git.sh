@@ -108,6 +108,11 @@ compose() {
   docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
 }
 
+validate_daily_report_config() {
+  compose config --format json | \
+    PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. "$PYTHON_BIN" tools/validate_daily_report_config.py
+}
+
 check_public_url() {
   local label="$1" url="$2" attempt output
   for ((attempt = 1; attempt <= URL_RETRY_ATTEMPTS; attempt += 1)); do
@@ -238,6 +243,7 @@ rollback_runtime() {
 }
 
 verify_db_only_compose
+validate_daily_report_config || fail "production daily-report configuration is incomplete"
 
 echo "Pulling verified immutable image subjects..."
 docker pull "$TAKSKLAD_BACKEND_IMAGE"

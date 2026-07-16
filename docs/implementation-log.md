@@ -27,6 +27,19 @@
 - Локально подтверждено: Python 1308 OK (79 skipped), PostgreSQL 82 OK, frontend build OK, Alembic single head, shell syntax и Compose config OK.
 - Не подтверждено на этом этапе: PR/merge, immutable release, production migration/runtime и 5-minute live SLO.
 
+### Daily SkladBot durable delivery hardening
+
+- Production-конфигурация daily теперь fail-closed: startup telegram-worker и artifact deploy требуют включенный daily, Telegram token/allowlist/chat и SkladBot token; validator работает по rendered Compose и не печатает значения.
+- Deploy запускает validator до backup, migration, остановки workers и runtime replacement.
+- Scheduler до 22:00 выбирает вчерашнюю latest due date, а после 22:00 сегодняшнюю; успешный event любого mode/version для date + chat блокирует дубль.
+- В configured lookback scheduler последовательно закрывает самый старый gap, а readiness считает все отсутствующие date + chat пары.
+- Автоматический retry ограничен тремя попытками и разрешен только для подтвержденно pre-delivery стадий. Неоднозначный результат после начала Telegram send остается manual recovery.
+- Fresh processing poll не меняет `updated_at`/stage; stale lease сохраняет исходную stage. Повторное manual-recovery решение не плодит audit rows.
+- /ready проверяет успешный daily event после 30-минутного grace и возвращает mandatory unhealthy/503 при полном отсутствии запуска.
+- Единый pure-stdlib validator строго проверяет timezone/hour/minute/retry/max-attempts/grace/lookback. Phase27 сначала проверяет candidate env, затем заменяет live env и имеет rollback trap на повторной проверке.
+- Code fix подготовлен в чистом clone. Догоняющая Telegram-отправка и восстановление runtime-конфигурации выполнены отдельно; production deploy кода ожидает Release gate.
+- Release candidate использует runtime version `2.0.41`; public `version.json` остаётся на проверенном `2.0.40` до immutable build и promotion.
+
 ## 2026-07-06
 
 ### Daily SkladBot audit closeout
