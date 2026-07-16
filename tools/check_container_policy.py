@@ -22,7 +22,6 @@ APP_SERVICES = (
     "frontend",
     "skladbot-worker",
     "smartup-auto-import-worker",
-    "google-sheets-sync-worker",
     "telegram-worker",
     "adminer",
 )
@@ -31,7 +30,6 @@ BACKEND_SERVICES = {
     "backend-api",
     "skladbot-worker",
     "smartup-auto-import-worker",
-    "google-sheets-sync-worker",
     "telegram-worker",
 }
 
@@ -39,8 +37,6 @@ EXPECTED_SENSITIVE_NAMES = {
     "backend-api": {
         "DATABASE_URL",
         "TAKSKLAD_API_TOKEN",
-        "TAKSKLAD_GOOGLE_CREDENTIALS_JSON_BASE64",
-        "TAKSKLAD_GOOGLE_SPREADSHEET_ID",
         "TAKSKLAD_WEB_PASSWORD_HASH",
         "TAKSKLAD_WEB_SESSION_SECRET",
         "YANDEX_GEOCODER_API_KEY",
@@ -58,11 +54,6 @@ EXPECTED_SENSITIVE_NAMES = {
         "SMARTUP_USERNAME",
         "TELEGRAM_BOT_TOKEN",
         "YANDEX_GEOCODER_API_KEY",
-    },
-    "google-sheets-sync-worker": {
-        "DATABASE_URL",
-        "TAKSKLAD_GOOGLE_CREDENTIALS_JSON_BASE64",
-        "TAKSKLAD_GOOGLE_SPREADSHEET_ID",
     },
     "telegram-worker": {
         "DATABASE_URL",
@@ -84,7 +75,6 @@ ALLOWED_WRITABLE_TARGETS = {
     "frontend": {"/tmp", "/etc/nginx/conf.d", "/var/cache/nginx", "/run"},
     "skladbot-worker": {"/tmp"},
     "smartup-auto-import-worker": {"/tmp", "/app/outputs"},
-    "google-sheets-sync-worker": {"/tmp"},
     "telegram-worker": {"/tmp"},
     "adminer": {"/tmp"},
 }

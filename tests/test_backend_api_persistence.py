@@ -13,7 +13,6 @@ from sqlalchemy.orm import sessionmaker, selectinload
 from sqlalchemy.pool import StaticPool
 
 from backend.app.db import get_db
-from backend.app.google_sheets_exporter import update_missing_sheet_addresses
 from backend.app.main import (
     app,
     require_admin_write_permission,
@@ -195,7 +194,6 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(payload["totals"]["planned_blocks"], 3)
         self.assertEqual(payload["totals"]["scanned_blocks"], 1)
         self.assertEqual(payload["totals"]["remaining_blocks"], 2)
-        self.assertEqual(payload["totals"]["pending_google_exports"], 1)
 
         row = payload["rows"][0]
         self.assertEqual(row["order_id"], order_id)
@@ -204,7 +202,6 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(row["client"], "Admin Client")
         self.assertEqual(row["product"], "Admin Product")
         self.assertEqual(row["source_file"], "orders.xlsx")
-        self.assertEqual(row["google_sheet_status"], "pending")
         self.assertEqual(row["skladbot_request_number"], "SB-77")
         self.assertEqual(row["line_total"], 720000)
         self.assertEqual(payload["recent_activity"][0]["action"], "admin_test_activity")
@@ -390,7 +387,6 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
         all_response = self.client.get("/api/v1/admin/table")
         self.assertEqual(all_response.status_code, 200)
-        self.assertEqual(all_response.json()["totals"]["pending_google_exports"], 1)
 
         response = self.client.get("/api/v1/admin/table?limit=1&status_bucket=active")
 
@@ -403,7 +399,6 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(payload["rows"][0]["status_bucket"], "active")
         self.assertEqual(payload["totals"]["orders"], 1)
         self.assertEqual(payload["totals"]["active_orders"], 1)
-        self.assertEqual(payload["totals"]["pending_google_exports"], 0)
 
     def test_admin_table_supports_server_side_ui_filters(self):
         with self.SessionLocal() as db:
@@ -463,7 +458,6 @@ class BackendApiPersistenceTests(unittest.TestCase):
                 "search": "needle",
                 "scan_state": "in_progress",
                 "skladbot_filter": "found",
-                "google_sheet_status": "synced",
             },
         )
 
@@ -472,10 +466,9 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(payload["total_rows"], 1)
         self.assertEqual(payload["rows"][0]["client"], "Needle Client")
         self.assertEqual(payload["rows"][0]["product"], "Needle Product")
-        self.assertEqual(payload["rows"][0]["google_sheet_status"], "synced")
         self.assertEqual(payload["rows"][0]["skladbot_request_number"], "WH-R-777")
 
-    def test_admin_table_counts_pending_google_exports_from_order_ids(self):
+    def legacy_admin_table_counts_pending_google_exports_from_order_ids(self):
         order_id, _item_id = self.seed_order()
         with self.SessionLocal() as db:
             db.add(PendingEvent(
@@ -1083,10 +1076,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertEqual(len(db.execute(select(ScanCode)).scalars().all()), 0)
             actions = [row.action for row in db.execute(select(AuditLog)).scalars().all()]
             self.assertIn("order_reset_for_rescan", actions)
-            event = db.execute(
-                select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")
-            ).scalar_one()
-            self.assertEqual(event.payload["action"], "google_sheets_restore_order_export")
+            self.assertEqual(db.execute(select(PendingEvent)).scalars().all(), [])
 
     def test_reset_order_for_rescan_rejects_returned_order(self):
         order_id, _item_id = self.seed_order(status="returned", item_status="returned")
@@ -1112,10 +1102,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(active.status_code, 200)
         self.assertEqual(active.json()[0]["id"], order_id)
         with self.SessionLocal() as db:
-            event = db.execute(
-                select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")
-            ).scalar_one()
-            self.assertEqual(event.payload["action"], "google_sheets_restore_order_export")
+            self.assertEqual(db.execute(select(PendingEvent)).scalars().all(), [])
             actions = [row.action for row in db.execute(select(AuditLog)).scalars().all()]
             self.assertIn("order_restored", actions)
 
@@ -1152,7 +1139,6 @@ class BackendApiPersistenceTests(unittest.TestCase):
         delete_id, _ = self.seed_order()
         reset_id, _ = self.seed_order()
         restore_id, _ = self.seed_order(status="cancelled", item_status="cancelled")
-        resync_google_id, _ = self.seed_order()
         resync_skladbot_id, _ = self.seed_order()
         bulk_id, _ = self.seed_order()
 
@@ -1162,7 +1148,6 @@ class BackendApiPersistenceTests(unittest.TestCase):
             ("post", f"/api/v1/admin/orders/{delete_id}/delete-active", {"actor": "anton"}),
             ("post", f"/api/v1/admin/orders/{reset_id}/reset-rescan", {"actor": "anton"}),
             ("post", f"/api/v1/admin/orders/{restore_id}/restore", {"actor": "anton"}),
-            ("post", f"/api/v1/admin/orders/{resync_google_id}/resync-google", {"actor": "anton"}),
             ("post", f"/api/v1/admin/orders/{resync_skladbot_id}/resync-skladbot", {"actor": "anton"}),
             ("post", "/api/v1/admin/orders/bulk/complete-without-kiz", {"order_ids": [bulk_id], "actor": "anton"}),
         ]
@@ -1211,9 +1196,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertEqual(audit.payload["affected_item_ids"], [item_id])
             self.assertTrue(audit.payload["timestamp"])
             self.assertEqual(audit.payload["raw_context"]["order_status"], "archived_no_kiz")
-            event = db.execute(select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")).scalar_one()
-            self.assertEqual(event.status, "pending")
-            self.assertEqual(event.payload["action"], "google_sheets_archive_no_kiz_export")
+            self.assertEqual(db.execute(select(PendingEvent)).scalars().all(), [])
 
     def test_archive_without_kiz_rejects_order_with_scans(self):
         order_id, _item_id = self.seed_order(scanned_blocks=1)
@@ -1248,7 +1231,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             order = db.get(Order, uuid.UUID(order_id))
             self.assertEqual(order.status, "archived_no_kiz")
 
-    def test_bulk_complete_without_kiz_marks_unscanned_orders_completed_and_queues_archive_export(self):
+    def test_bulk_complete_without_kiz_marks_unscanned_orders_completed_without_projection_events(self):
         first_order_id, _first_item_id = self.seed_order(quantity_blocks=3)
         second_order_id, _second_item_id = self.seed_order(quantity_blocks=1)
 
@@ -1278,9 +1261,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertEqual({item.scanned_blocks for item in items}, {0})
             actions = [row.action for row in db.execute(select(AuditLog)).scalars().all()]
             self.assertEqual(actions.count("order_completed_without_kiz"), 2)
-            events = db.execute(select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")).scalars().all()
-            self.assertEqual(len(events), 2)
-            self.assertEqual({event.payload["action"] for event in events}, {"google_sheets_archive_export"})
+            self.assertEqual(db.execute(select(PendingEvent)).scalars().all(), [])
 
     def test_bulk_complete_without_kiz_accepts_web_z_updated_at_guard(self):
         order_id, _item_id = self.seed_order(quantity_blocks=1)
@@ -1386,11 +1367,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertEqual(scanned_order.status, "completed")
             self.assertEqual(scanned_item.status, "completed")
             self.assertEqual(scanned_item.scanned_blocks, 1)
-            events = db.execute(
-                select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")
-            ).scalars().all()
-            self.assertEqual(len(events), 2)
-            self.assertEqual({event.payload["action"] for event in events}, {"google_sheets_archive_export"})
+            self.assertEqual(db.execute(select(PendingEvent)).scalars().all(), [])
 
     def test_bulk_complete_without_kiz_allows_fully_scanned_order(self):
         order_id, _item_id = self.seed_order(quantity_blocks=2, scanned_blocks=2)
@@ -1413,7 +1390,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertEqual(item.status, "completed")
             self.assertEqual(item.scanned_blocks, 2)
 
-    def test_cancel_order_requires_no_scans_and_queues_google_export_when_google_is_down(self):
+    def test_cancel_order_requires_no_scans_without_projection_event(self):
         order_id, _item_id = self.seed_order(quantity_blocks=4)
 
         response = self.client.post(
@@ -1424,15 +1401,9 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "cancelled")
         with self.SessionLocal() as db:
-            event = db.execute(
-                select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")
-            ).scalar_one()
-            self.assertEqual(event.status, "pending")
-            self.assertEqual(event.payload["action"], "google_sheets_cancel_export")
-            self.assertEqual(event.payload["entity_id"], order_id)
-            self.assertEqual(event.last_error, "")
+            self.assertEqual(db.execute(select(PendingEvent)).scalars().all(), [])
 
-    def test_delete_active_order_removes_unscanned_order_and_queues_google_delete(self):
+    def test_delete_active_order_removes_unscanned_order_without_projection_event(self):
         order_id, item_id = self.seed_order(quantity_blocks=4)
 
         response = self.client.post(
@@ -1451,14 +1422,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
                 db.execute(select(OrderItem).where(OrderItem.id == uuid.UUID(item_id))).scalars().all(),
                 [],
             )
-            event = db.execute(
-                select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")
-            ).scalar_one()
-            self.assertEqual(event.status, "pending")
-            self.assertEqual(event.payload["action"], "google_sheets_delete_import_records_export")
-            self.assertEqual(event.payload["entity_id"], order_id)
-            self.assertEqual(len(event.payload["records"]), 1)
-            self.assertEqual(event.payload["records"][0]["ID заказа"], order_id)
+            self.assertEqual(db.execute(select(PendingEvent)).scalars().all(), [])
             actions = [item.action for item in db.execute(select(AuditLog)).scalars()]
             self.assertIn("order_deleted_from_active", actions)
 
@@ -1483,8 +1447,8 @@ class BackendApiPersistenceTests(unittest.TestCase):
                 1,
             )
             self.assertEqual(
-                len(db.execute(select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")).scalars().all()),
-                1,
+                len(db.execute(select(PendingEvent)).scalars().all()),
+                0,
             )
 
     def test_delete_active_order_rejects_order_with_scans(self):
@@ -1501,7 +1465,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertIsNotNone(db.get(Order, uuid.UUID(order_id)))
             self.assertEqual(db.execute(select(PendingEvent)).scalars().all(), [])
 
-    def test_resync_google_for_active_order_pushes_items_without_archiving_order(self):
+    def legacy_resync_google_for_active_order_pushes_items_without_archiving_order(self):
         order_id, item_id = self.seed_order(quantity_blocks=2)
 
         response = self.client.post(
@@ -1543,14 +1507,12 @@ class BackendApiPersistenceTests(unittest.TestCase):
                 1,
             )
             self.assertEqual(
-                len(db.execute(select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")).scalars().all()),
-                1,
+                len(db.execute(select(PendingEvent)).scalars().all()),
+                0,
             )
 
-    def test_sync_sources_runs_google_sheet_sync_then_skladbot_sync(self):
-        with mock.patch("backend.app.main.sync_google_sheet_to_backend") as google_sync, mock.patch(
-            "backend.app.main.update_orders_from_skladbot"
-        ) as skladbot_sync:
+    def test_sync_sources_runs_skladbot_sync(self):
+        with mock.patch("backend.app.main.update_orders_from_skladbot") as skladbot_sync:
             skladbot_sync.return_value = {
                 "requests": 3,
                 "updated": 2,
@@ -1564,33 +1526,24 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["status"], "completed")
-        self.assertEqual(payload["google_sheets"]["status"], "skipped")
+        self.assertNotIn("google_sheets", payload)
         self.assertEqual(payload["skladbot"]["status"], "completed")
         self.assertEqual(payload["skladbot"]["matched"], 1)
-        google_sync.assert_not_called()
         skladbot_sync.assert_called_once()
 
     def test_sync_sources_can_skip_skladbot(self):
-        with mock.patch("backend.app.main.sync_google_sheet_to_backend") as google_sync, mock.patch(
-            "backend.app.main.update_orders_from_skladbot"
-        ) as skladbot_sync:
-            google_sync.return_value = {"rows": 1, "matched": 1, "orders_updated": 0, "items_updated": 0, "conflicts": 0}
-
+        with mock.patch("backend.app.main.update_orders_from_skladbot") as skladbot_sync:
             response = self.client.post("/api/v1/sync/sources?skladbot=0")
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["status"], "completed")
         self.assertEqual(payload["skladbot"]["status"], "skipped")
-        self.assertEqual(payload["google_sheets"]["status"], "skipped")
-        google_sync.assert_not_called()
+        self.assertNotIn("google_sheets", payload)
         skladbot_sync.assert_not_called()
 
     def test_sync_sources_starts_skladbot_in_background_by_default(self):
-        with mock.patch("backend.app.main.sync_google_sheet_to_backend") as google_sync, mock.patch(
-            "backend.app.main.start_skladbot_sync_background"
-        ) as start_skladbot:
-            google_sync.return_value = {"rows": 1, "matched": 1, "orders_updated": 0, "items_updated": 0, "conflicts": 0}
+        with mock.patch("backend.app.main.start_skladbot_sync_background") as start_skladbot:
             start_skladbot.return_value = {"status": "started", "message": "background"}
 
             response = self.client.post("/api/v1/sync/sources")
@@ -1599,8 +1552,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["status"], "completed")
         self.assertEqual(payload["skladbot"]["status"], "started")
-        self.assertEqual(payload["google_sheets"]["status"], "skipped")
-        google_sync.assert_not_called()
+        self.assertNotIn("google_sheets", payload)
         start_skladbot.assert_called_once()
 
     def test_scan_create_is_idempotent_for_same_item_and_rejects_cross_order_duplicate(self):
@@ -1930,7 +1882,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertEqual(item.scanned_blocks, 1)
             self.assertEqual([scan.code for scan in item.scan_codes], ["010400639605400521UNIT"])
 
-    def test_scan_create_exports_scan_state_to_google_sheets_best_effort(self):
+    def legacy_scan_create_exports_scan_state_to_google_sheets_best_effort(self):
         _, item_id = self.seed_order()
 
         response = self.client.post(
@@ -1948,7 +1900,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertEqual(event.payload["action"], "google_sheets_scan_export")
             self.assertEqual(event.payload["entity_id"], item_id)
 
-    def test_scan_undo_removes_backend_scan_and_queues_google_projection(self):
+    def legacy_scan_undo_removes_backend_scan_and_queues_google_projection(self):
         _order_id, item_id = self.seed_order(quantity_blocks=1)
         create_response = self.client.post(
             "/api/v1/scans",
@@ -1989,7 +1941,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 409)
 
-    def test_scan_create_queues_google_sheets_export_when_google_is_down(self):
+    def legacy_scan_create_queues_google_sheets_export_when_google_is_down(self):
         _, item_id = self.seed_order()
 
         response = self.client.post(
@@ -2011,7 +1963,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             ).scalar_one()
             self.assertTrue(audit.payload["queued"])
 
-    def test_sync_sources_flushes_pending_google_exports_before_google_refresh(self):
+    def legacy_sync_sources_flushes_pending_google_exports_before_google_refresh(self):
         _, item_id = self.seed_order()
         call_order = []
         with self.SessionLocal() as db:
@@ -2057,55 +2009,6 @@ class BackendApiPersistenceTests(unittest.TestCase):
             ).scalar_one()
             self.assertEqual(event.status, "completed")
             self.assertEqual(event.last_error, "")
-
-    def test_pending_google_export_malformed_event_does_not_block_newer_scan_export(self):
-        _, item_id = self.seed_order()
-        from backend.app.google_sheets_pending import process_pending_google_sheets_exports
-
-        with self.SessionLocal() as db:
-            invalid = PendingEvent(
-                event_type="google_sheets_export",
-                status="pending",
-                attempts=0,
-                payload={
-                    "action": "google_sheets_scan_export",
-                    "entity_type": "order_item",
-                    "entity_id": "not-a-uuid",
-                },
-                created_at=datetime.now(timezone.utc) - timedelta(minutes=10),
-            )
-            valid = PendingEvent(
-                event_type="google_sheets_export",
-                status="pending",
-                attempts=0,
-                payload={
-                    "action": "google_sheets_scan_export",
-                    "entity_type": "order_item",
-                    "entity_id": item_id,
-                },
-                created_at=datetime.now(timezone.utc) - timedelta(minutes=5),
-            )
-            db.add_all([invalid, valid])
-            db.commit()
-            invalid_id = invalid.id
-            valid_id = valid.id
-
-            with mock.patch(
-                "backend.app.google_sheets_pending.sync_backend_order_items_to_google_sheets",
-                return_value={"status": "completed", "updated": 1},
-            ):
-                result = process_pending_google_sheets_exports(db, limit=10)
-
-            invalid = db.get(PendingEvent, invalid_id)
-            valid = db.get(PendingEvent, valid_id)
-
-        self.assertEqual(result["status"], "completed_with_errors")
-        self.assertEqual(result["synced"], 1)
-        self.assertEqual(result["failed"], 1)
-        self.assertEqual(invalid.status, "failed")
-        self.assertIn("invalid order item id", invalid.last_error)
-        self.assertEqual(valid.status, "completed")
-        self.assertEqual(valid.last_error, "")
 
     def test_complete_order_requires_required_blocks_and_closes_order(self):
         order_id, item_id = self.seed_order()
@@ -2259,7 +2162,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(payload["totals"]["remaining_blocks"], 3)
         self.assertEqual(payload["totals"]["total_price"], 1920000)
 
-    def test_complete_order_exports_archive_to_google_sheets_best_effort(self):
+    def legacy_complete_order_exports_archive_to_google_sheets_best_effort(self):
         order_id, item_id = self.seed_order()
         for code in ["010000000001", "010000000002"]:
             scan = self.client.post("/api/v1/scans", json={"order_item_id": item_id, "code": code})
@@ -2405,6 +2308,60 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertEqual(first_order.status, "returned")
             self.assertEqual(second_order.status, "not_completed")
 
+    def test_late_scanner_timestamp_after_return_does_not_release_kiz_twice(self):
+        first_order_id, first_item_id = self.seed_order(quantity_blocks=1)
+        code = "01040000000000000041"
+
+        self.assertEqual(self.client.post(
+            "/api/v1/scans",
+            json={"order_item_id": first_item_id, "code": code, "workstation_id": "pc-1"},
+        ).status_code, 201)
+        self.assertEqual(self.client.post(f"/api/v1/orders/{first_order_id}/complete").status_code, 200)
+        self.assertEqual(self.client.post(
+            f"/api/v1/returns/{first_order_id}",
+            json={
+                "return_reference": "WH-R-LATE-410",
+                "returned_by": "warehouse-pc",
+                "confirmed_items": self.confirmed_return_items(first_item_id, blocks=1, pieces=20),
+            },
+        ).status_code, 200)
+
+        _second_order_id, second_item_id = self.seed_order(quantity_blocks=1)
+        late_re_outbound = self.client.post(
+            "/api/v1/scans",
+            json={
+                "order_item_id": second_item_id,
+                "code": code,
+                "workstation_id": "offline-pc",
+                "scanned_at": "2000-01-01T00:00:00+00:00",
+            },
+        )
+        self.assertEqual(late_re_outbound.status_code, 201)
+
+        _third_order_id, third_item_id = self.seed_order(quantity_blocks=1)
+        availability = self.client.get(
+            "/api/v1/kiz/availability",
+            params={"code": code, "order_item_id": third_item_id},
+        )
+        third_scan = self.client.post(
+            "/api/v1/scans",
+            json={"order_item_id": third_item_id, "code": code, "workstation_id": "pc-3"},
+        )
+
+        self.assertEqual(availability.status_code, 200)
+        self.assertFalse(availability.json()["available"])
+        self.assertEqual(availability.json()["latest_movement_type"], "re_outbound")
+        self.assertEqual(third_scan.status_code, 409)
+        with self.SessionLocal() as db:
+            movements = db.execute(
+                select(KizMovement)
+                .join(KizCode, KizMovement.kiz_id == KizCode.id)
+                .where(KizCode.code == code)
+                .order_by(KizMovement.occurred_at, KizMovement.id)
+            ).scalars().all()
+        self.assertEqual([row.movement_type for row in movements], ["outbound", "return", "re_outbound"])
+        self.assertEqual(movements[-1].raw_payload["scanner_scanned_at"], "2000-01-01T00:00:00+00:00")
+
     def test_kiz_availability_reports_returned_code_as_reusable(self):
         first_order_id, first_item_id = self.seed_order(quantity_blocks=1)
         _second_order_id, second_item_id = self.seed_order(quantity_blocks=1)
@@ -2509,7 +2466,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             ).scalars().all()
             self.assertEqual([movement.movement_type for movement in movements], ["outbound"])
 
-    def test_mark_return_exports_archive_and_returns_to_google_sheets_best_effort(self):
+    def legacy_mark_return_exports_archive_and_returns_to_google_sheets_best_effort(self):
         order_id, item_id = self.seed_order(status="completed", scanned_blocks=2, item_status="completed")
         with self.SessionLocal() as db:
             order = db.get(Order, uuid.UUID(order_id))
@@ -2656,8 +2613,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(payload["orders_created"], 1)
         self.assertEqual(payload["items_created"], 2)
         self.assertEqual(payload["duplicate_rows"], 0)
-        self.assertEqual(payload["google_sheets_status"], "queued")
-        self.assertEqual(payload["google_sheets_imported"], 0)
+        self.assertNotIn("google_sheets_status", payload)
 
         active = self.client.get("/api/v1/orders/active")
         self.assertEqual(active.status_code, 200)
@@ -2671,16 +2627,10 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(history.status_code, 200)
         self.assertEqual(len(history.json()), 1)
         self.assertEqual(history.json()[0]["rows_imported"], 2)
-        self.assertEqual(history.json()[0]["raw_payload"]["google_sheets"]["status"], "queued")
+        self.assertNotIn("google_sheets", history.json()[0]["raw_payload"])
         with self.SessionLocal() as db:
-            event = db.execute(select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")).scalar_one()
-            sheet_records = event.payload["records"]
-            self.assertEqual(event.status, "pending")
-            self.assertEqual(event.payload["action"], "google_sheets_import_export")
-            self.assertEqual(len(sheet_records), 2)
-            self.assertEqual(sheet_records[0]["Дата отгрузки"], "30.05.2026")
-            self.assertEqual(sheet_records[0]["Клиент"], "Import Client")
-            self.assertEqual(sheet_records[0]["ID импорта"], "import-row-1")
+            event_types = {row.event_type for row in db.execute(select(PendingEvent)).scalars().all()}
+            self.assertFalse(any(event_type.startswith("google_") for event_type in event_types))
 
     def test_import_skips_duplicate_rows_inside_same_payload(self):
         row = {
@@ -2709,9 +2659,8 @@ class BackendApiPersistenceTests(unittest.TestCase):
         with self.SessionLocal() as db:
             self.assertEqual(len(db.execute(select(Order)).scalars().all()), 1)
             self.assertEqual(len(db.execute(select(OrderItem)).scalars().all()), 1)
-            event = db.execute(select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")).scalar_one()
-            self.assertEqual(len(event.payload["records"]), 1)
-            self.assertEqual(event.payload["records"][0]["ID импорта"], "payload-duplicate-import")
+            event_types = {row.event_type for row in db.execute(select(PendingEvent)).scalars().all()}
+            self.assertFalse(any(event_type.startswith("google_") for event_type in event_types))
 
     def test_import_keeps_same_business_item_when_source_import_id_differs(self):
         base_row = {
@@ -2983,7 +2932,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(item.raw_payload["calculated_line_total"], 12_000_000)
         self.assertEqual(item.raw_payload["line_total"], 11_675_000)
 
-    def test_import_keeps_backend_data_when_google_sheets_export_fails(self):
+    def legacy_import_keeps_backend_data_when_google_sheets_export_fails(self):
         rows = [
             {
                 "Дата отгрузки": "30.05.2026",
@@ -3018,7 +2967,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertEqual(event.payload["action"], "google_sheets_import_export")
             self.assertEqual(len(event.payload["records"]), 1)
 
-    def test_import_queue_failure_rolls_back_backend_data_and_intent_together(self):
+    def legacy_import_queue_failure_rolls_back_backend_data_and_intent_together(self):
         rows = [
             {
                 "Дата отгрузки": "30.05.2026",
@@ -3050,7 +2999,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertEqual(db.execute(select(Incident)).scalars().all(), [])
             self.assertEqual(db.execute(select(AuditLog)).scalars().all(), [])
 
-    def test_duplicate_backend_import_still_can_backfill_google_sheets(self):
+    def legacy_duplicate_backend_import_still_can_backfill_google_sheets(self):
         row = {
             "Дата отгрузки": "30.05.2026",
             "Тип оплаты": "cash",
@@ -3297,7 +3246,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(second.json()["items_created"], 0)
         self.assertEqual(second.json()["duplicate_rows"], 1)
         self.assertEqual(second.json()["backend_address_updates"], 1)
-        self.assertEqual(second.json()["google_sheets_status"], "queued")
+        self.assertNotIn("google_sheets_status", second.json())
         with self.SessionLocal() as db:
             orders = db.execute(select(Order)).scalars().all()
             self.assertEqual(len(orders), 1)
@@ -3350,7 +3299,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertEqual(order.address, "Ташкент, геокодированный адрес 1")
             self.assertEqual(order.raw_payload["address_backfill_source"], "import")
 
-    def test_google_sheets_export_updates_missing_address_for_existing_import_id(self):
+    def legacy_google_sheets_export_updates_missing_address_for_existing_import_id(self):
         class FakeSheet:
             def __init__(self):
                 self.updates = []
@@ -3376,7 +3325,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(sheet.updates, [{"range": "D2", "values": [["Ташкент, Чиланзарский район, 10"]]}])
         self.assertEqual(sheet.value_input_option, "RAW")
 
-    def test_google_sheets_export_updates_gps_address_for_existing_import_id(self):
+    def legacy_google_sheets_export_updates_gps_address_for_existing_import_id(self):
         class FakeSheet:
             def __init__(self):
                 self.updates = []
@@ -3402,7 +3351,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(sheet.updates, [{"range": "D2", "values": [["Ташкент, Чиланзарский район, 10"]]}])
         self.assertEqual(sheet.value_input_option, "RAW")
 
-    def test_google_sheets_export_updates_not_found_address_for_existing_import_id(self):
+    def legacy_google_sheets_export_updates_not_found_address_for_existing_import_id(self):
         class FakeSheet:
             def __init__(self):
                 self.updates = []
@@ -3427,7 +3376,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(updated, 1)
         self.assertEqual(sheet.updates, [{"range": "D2", "values": [["Ташкент, Чиланзарский район, 10"]]}])
 
-    def test_google_sheets_export_updates_coordinate_address_by_business_key_when_ids_changed(self):
+    def legacy_google_sheets_export_updates_coordinate_address_by_business_key_when_ids_changed(self):
         class FakeSheet:
             def __init__(self):
                 self.updates = []
@@ -3478,7 +3427,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(sheet.updates, [{"range": "D2", "values": [["Ташкент, улица Сакичмон, 1/18"]]}])
         self.assertEqual(rows[1][3], "Ташкент, улица Сакичмон, 1/18")
 
-    def test_google_sheets_export_does_not_update_ambiguous_business_key_address(self):
+    def legacy_google_sheets_export_does_not_update_ambiguous_business_key_address(self):
         class FakeSheet:
             def __init__(self):
                 self.updates = []
@@ -4421,7 +4370,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(reconcile.call_args.kwargs["report_date"], "2026-06-10")
         self.assertNotIn("alert_chat_ids", reconcile.call_args.kwargs)
 
-    def test_reconciliation_report_endpoint_records_google_down_as_mirror_issue(self):
+    def legacy_reconciliation_report_endpoint_records_google_down_as_mirror_issue(self):
         with self.SessionLocal() as db:
             order = Order(
                 payment_type="terminal",
@@ -4577,7 +4526,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertNotIn("secret-token", dumped)
         self.assertNotIn("0104006396053978217ABCDE12345678901234567890", dumped)
 
-    def test_admin_operations_summarizes_attention_without_raw_payload_or_telegram_spam(self):
+    def legacy_admin_operations_summarizes_google_attention_without_raw_payload_or_telegram_spam(self):
         with self.SessionLocal() as db:
             db.add(PendingEvent(
                 event_type="google_sheets_export",
@@ -5133,9 +5082,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(payload["migrations"]["current_revision"], "20260710_0011")
         self.assertEqual(payload["queue"]["summary"]["by_type"]["google_sheets_export"]["pending"], 1)
         self.assertEqual(payload["queue"]["summary"]["by_type"]["telegram_chat_state:*"]["pending"], 1)
-        self.assertEqual(payload["google_mirror"]["status"], "degraded")
-        self.assertEqual(payload["google_mirror"]["role"], "mirror_export")
-        self.assertEqual(payload["google_mirror"]["summary"]["pending"], 1)
+        self.assertNotIn("google_mirror", payload)
         self.assertGreaterEqual(payload["queue"]["oldest_pending_age_seconds"], 60)
         self.assertEqual(payload["queue"]["stale_processing_count"], 0)
         dumped = str(payload)
@@ -5148,7 +5095,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertNotIn("'chat_id': '123456789'", dumped)
         self.assertFalse(payload["ready"])
 
-    def test_readiness_keeps_hot_path_ok_when_only_google_mirror_is_degraded(self):
+    def legacy_readiness_keeps_hot_path_ok_when_only_google_mirror_is_degraded(self):
         next_attempt_at = datetime.now(timezone.utc) + timedelta(minutes=5)
         with self.SessionLocal() as db:
             db.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))

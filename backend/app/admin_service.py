@@ -1,11 +1,10 @@
 import uuid
 from datetime import date, datetime, timezone
 
-from sqlalchemy import BigInteger, String, and_, case, cast, exists, func, literal, or_, select
-from sqlalchemy.dialects.postgresql import JSONPATH
+from sqlalchemy import BigInteger, String, and_, case, cast, func, or_, select
 from sqlalchemy.orm import Session, aliased
 
-from .models import AuditLog, Order, OrderItem, PendingEvent, ScanCode
+from .models import AuditLog, Order, OrderItem, ScanCode
 from .pagination import CursorError, decode_cursor, encode_cursor
 from .orders_service import (
     COMPLETED_STATUSES,
@@ -27,8 +26,6 @@ from .schemas import (
 from .redaction import redact_secrets
 
 
-GOOGLE_EXPORT_EVENT_TYPE = "google_sheets_export"
-PENDING_STATUSES = ("pending", "failed")
 ADMIN_TABLE_CURSOR_SCOPE = "admin.table.v2"
 ADMIN_ACTION_KEYS = (
     "resync",
@@ -52,7 +49,6 @@ def build_admin_table(
     search="",
     scan_state="",
     skladbot_filter="",
-    google_status="",
     cursor="",
 ):
     row_limit = max(1, int(limit or 500))
@@ -65,7 +61,6 @@ def build_admin_table(
         "search": search,
         "scan_state": scan_state,
         "skladbot_filter": skladbot_filter,
-        "google_status": google_status,
     }
     snapshot = None
     after = None
@@ -84,7 +79,6 @@ def build_admin_table(
         search=search,
         scan_state=scan_state,
         skladbot_filter=skladbot_filter,
-        google_status=google_status,
     )
     if snapshot is not None:
         predicates = (
@@ -93,8 +87,6 @@ def build_admin_table(
             OrderItem.created_at <= snapshot[1],
         )
     totals, total_rows = query_admin_totals(db, expressions, predicates)
-    pending_total = query_admin_pending_total(db, predicates)
-    totals.pending_google_exports = pending_total
     raw_rows = query_admin_page(
         db,
         expressions,
@@ -217,13 +209,12 @@ def admin_order_capabilities_from_rows(rows):
         planned_blocks = int(row["_order_planned_blocks"] or 0)
         scanned_blocks = int(row["_order_scanned_blocks"] or 0)
         scan_codes_count = int(row["_order_scan_codes_count"] or 0)
-        pending_google_exports = int(row["_order_pending_google_exports"] or 0)
         active = status not in INACTIVE_ORDER_STATUSES
         no_scans = scanned_blocks == 0 and scan_codes_count == 0
         allowed = {
             "resync": True,
             "archive": active and no_scans,
-            "completeWithoutKiz": active and pending_google_exports == 0,
+            "completeWithoutKiz": active,
             "cancel": active and no_scans,
             "deleteActive": active and no_scans,
             "resetRescan": status != STATUS_RETURNED,
@@ -240,8 +231,6 @@ def admin_order_capabilities_from_rows(rows):
             reasons["archive"] = "В заказе уже есть отсканированные КИЗы"
             reasons["cancel"] = "В заказе уже есть отсканированные КИЗы"
             reasons["deleteActive"] = "В заказе уже есть отсканированные КИЗы"
-        if active and pending_google_exports > 0:
-            reasons["completeWithoutKiz"] = "Сначала обработайте Google очередь"
         if status == STATUS_RETURNED:
             reasons["resetRescan"] = "Возвраты нельзя сбрасывать на пересканирование"
         if not allowed["restore"]:
@@ -252,7 +241,6 @@ def admin_order_capabilities_from_rows(rows):
             planned_blocks=planned_blocks,
             scanned_blocks=scanned_blocks,
             scan_codes_count=scan_codes_count,
-            pending_google_exports=pending_google_exports,
             allowed=allowed,
             disabled_reasons=reasons,
         )
@@ -260,8 +248,6 @@ def admin_order_capabilities_from_rows(rows):
 
 
 def admin_sql_expressions(db: Session):
-    row_pending_count = pending_google_count_for_row(db, Order.id, OrderItem.id)
-    order_pending_count = pending_google_count_for_order(db, Order.id)
     aggregate_item = aliased(OrderItem)
     aggregate_scan = aliased(ScanCode)
     items_count = (
@@ -292,7 +278,7 @@ def admin_sql_expressions(db: Session):
     )
     status_value = case(
         (Order.status == STATUS_RETURNED, "returned"),
-        (OrderItem.status == STATUS_REMOVED_FROM_GOOGLE, "removed_from_google"),
+        (OrderItem.status == STATUS_REMOVED_FROM_GOOGLE, "cancelled"),
         (Order.status == STATUS_ARCHIVED_NO_KIZ, "archive_no_kiz"),
         (Order.status == STATUS_CANCELLED, "cancelled"),
         (Order.status.in_((STATUS_COMPLETED, "done", "closed")), "archive"),
@@ -309,27 +295,17 @@ def admin_sql_expressions(db: Session):
     request_number = json_text(Order.raw_payload, "skladbot_request_number")
     request_id = json_text(Order.raw_payload, "skladbot_request_id")
     skladbot_status = json_text(Order.raw_payload, "skladbot_status")
-    synced_at = json_text(OrderItem.raw_payload, "google_sheet_synced_at")
-    google_value = case(
-        (row_pending_count > 0, "pending"),
-        (OrderItem.status == STATUS_REMOVED_FROM_GOOGLE, "removed_from_google"),
-        (func.trim(synced_at) != "", "synced"),
-        else_="unknown",
-    )
     remaining = case(
         (OrderItem.quantity_blocks > OrderItem.scanned_blocks,
          OrderItem.quantity_blocks - OrderItem.scanned_blocks),
         else_=0,
     )
     return {
-        "pending_count": row_pending_count,
-        "order_pending_count": order_pending_count,
         "status_bucket": status_value,
         "scan_state": scan_value,
         "request_number": request_number,
         "request_id": request_id,
         "skladbot_status": skladbot_status,
-        "google_status": google_value,
         "remaining_blocks": remaining,
         "block_price": safe_json_int(db, OrderItem.raw_payload, "block_price"),
         "line_total": safe_json_int(db, OrderItem.raw_payload, "line_total"),
@@ -348,14 +324,12 @@ def admin_sql_filter_predicates(
     search="",
     scan_state="",
     skladbot_filter="",
-    google_status="",
 ):
     status_bucket = normalize_filter_value(status_bucket)
     shipment_date = normalize_filter_value(shipment_date)
     search = normalize_text(search).casefold()
     scan_state = normalize_filter_value(scan_state)
     skladbot_filter = normalize_filter_value(skladbot_filter)
-    google_status = normalize_filter_value(google_status)
     predicates = []
     if status_bucket:
         predicates.append(expressions["status_bucket"] == status_bucket)
@@ -372,8 +346,6 @@ def admin_sql_filter_predicates(
         predicates.append(~has_request)
     elif skladbot_filter == "problem":
         predicates.append(expressions["skladbot_status"].in_(("not_found", "multiple", "error", "pending")))
-    if google_status:
-        predicates.append(expressions["google_status"] == google_status)
     if search:
         search_values = (
             Order.client,
@@ -431,25 +403,8 @@ def query_admin_totals(db: Session, expressions, predicates):
         scanned_blocks=int(values[6] or 0),
         remaining_blocks=int(values[7] or 0),
         total_price=int(values[8] or 0),
-        pending_google_exports=0,
     )
     return totals, totals.items
-
-
-def query_admin_pending_total(db: Session, predicates):
-    matching_row = exists(
-        select(literal(1))
-        .select_from(Order)
-        .join(OrderItem, OrderItem.order_id == Order.id)
-        .where(*predicates)
-        .where(pending_event_link_predicate(db, PendingEvent, Order.id, OrderItem.id))
-    ).correlate(PendingEvent)
-    total = db.execute(
-        select(func.count(PendingEvent.id))
-        .where(*pending_event_base_predicates(PendingEvent))
-        .where(matching_row)
-    ).scalar_one()
-    return int(total or 0)
 
 
 def query_admin_page(db: Session, expressions, predicates, *, limit: int, offset: int, after=None):
@@ -487,10 +442,6 @@ def query_admin_page(db: Session, expressions, predicates, *, limit: int, offset
             json_text(Order.raw_payload, "skladbot_return_request_id").label("skladbot_return_request_id"),
             json_text(Order.raw_payload, "skladbot_return_request_status").label("skladbot_return_status"),
             json_text(OrderItem.raw_payload, "source_file").label("source_file"),
-            expressions["google_status"].label("google_sheet_status"),
-            json_text(OrderItem.raw_payload, "google_sheet_row_number").label("google_sheet_row_number"),
-            json_text(OrderItem.raw_payload, "google_sheet_synced_at").label("google_sheet_synced_at"),
-            expressions["pending_count"].label("pending_google_exports"),
             json_text(Order.raw_payload, "return_status").label("return_status"),
             json_text(Order.raw_payload, "returned_at").label("returned_at"),
             json_text(Order.raw_payload, "return_reference").label("return_reference"),
@@ -501,7 +452,6 @@ def query_admin_page(db: Session, expressions, predicates, *, limit: int, offset
             expressions["order_planned_blocks"].label("_order_planned_blocks"),
             expressions["order_scanned_blocks"].label("_order_scanned_blocks"),
             expressions["order_scan_codes_count"].label("_order_scan_codes_count"),
-            expressions["order_pending_count"].label("_order_pending_google_exports"),
             func.max(Order.created_at).over().label("_snapshot_order_created_at"),
             func.max(OrderItem.created_at).over().label("_snapshot_item_created_at"),
         )
@@ -533,7 +483,6 @@ def admin_sql_row_to_read(row):
         "_order_planned_blocks",
         "_order_scanned_blocks",
         "_order_scan_codes_count",
-        "_order_pending_google_exports",
         "_snapshot_order_created_at",
         "_snapshot_item_created_at",
     ):
@@ -545,101 +494,15 @@ def admin_sql_row_to_read(row):
     for field in (
         "skladbot_request_number", "skladbot_request_id", "skladbot_status",
         "skladbot_return_request_number", "skladbot_return_request_id", "skladbot_return_status",
-        "source_file", "google_sheet_synced_at", "return_status", "returned_at", "return_reference",
+        "source_file", "return_status", "returned_at", "return_reference",
     ):
         values[field] = normalize_text(values[field])
-    values["google_sheet_row_number"] = parse_optional_int(values["google_sheet_row_number"])
     for field in (
         "quantity_pieces", "quantity_blocks", "scanned_blocks", "remaining_blocks",
-        "scan_codes_count", "block_price", "line_total", "pending_google_exports",
+        "scan_codes_count", "block_price", "line_total",
     ):
         values[field] = int(values[field] or 0)
     return AdminTableRow(**values)
-
-
-def pending_google_count_for_order(db: Session, order_id):
-    event = aliased(PendingEvent)
-    linked_item = aliased(OrderItem)
-    entity_id = func.trim(json_text(event.payload, "entity_id"))
-    order_text = cast(order_id, String)
-    if db.get_bind().dialect.name == "postgresql":
-        item_match = exists(
-            select(literal(1))
-            .select_from(linked_item)
-            .where(linked_item.order_id == order_id)
-            .where(cast(linked_item.id, String) == entity_id)
-        ).correlate(event, Order)
-        direct_match = entity_id == order_text
-        order_ids_contains = func.jsonb_path_exists(
-            event.payload,
-            cast("$.order_ids[*] ? (@ == $order_id)", JSONPATH),
-            func.jsonb_build_object("order_id", order_text),
-        )
-    else:
-        normalized_entity_id = func.replace(entity_id, "-", "")
-        normalized_order_id = func.replace(order_text, "-", "")
-        item_match = exists(
-            select(literal(1))
-            .select_from(linked_item)
-            .where(linked_item.order_id == order_id)
-            .where(func.replace(cast(linked_item.id, String), "-", "") == normalized_entity_id)
-        ).correlate(event, Order)
-        direct_match = normalized_entity_id == normalized_order_id
-        order_ids = func.json_each(event.payload, "$.order_ids").table_valued("key", "value").alias()
-        order_ids_contains = exists(
-            select(literal(1))
-            .select_from(order_ids)
-            .where(func.replace(cast(order_ids.c.value, String), "-", "") == normalized_order_id)
-        ).correlate(event, Order)
-    return (
-        select(func.count(event.id))
-        .where(*pending_event_base_predicates(event))
-        .where(or_(direct_match, item_match, order_ids_contains))
-        .correlate(Order)
-        .scalar_subquery()
-    )
-
-
-def pending_google_count_for_row(db: Session, order_id, item_id):
-    event = aliased(PendingEvent)
-    return (
-        select(func.count(event.id))
-        .where(*pending_event_base_predicates(event))
-        .where(pending_event_link_predicate(db, event, order_id, item_id))
-        .correlate(Order, OrderItem)
-        .scalar_subquery()
-    )
-
-
-def pending_event_base_predicates(event):
-    return (
-        event.event_type == GOOGLE_EXPORT_EVENT_TYPE,
-        event.status.in_(PENDING_STATUSES),
-        func.coalesce(json_text(event.payload, "action"), "") != "google_sheets_skladbot_export",
-    )
-
-
-def pending_event_link_predicate(db: Session, event, order_id, item_id):
-    entity_id = func.trim(json_text(event.payload, "entity_id"))
-    order_text = cast(order_id, String)
-    item_text = cast(item_id, String)
-    if db.get_bind().dialect.name == "postgresql":
-        direct_match = or_(entity_id == order_text, entity_id == item_text)
-        order_ids_contains = func.jsonb_path_exists(
-            event.payload,
-            cast("$.order_ids[*] ? (@ == $order_id)", JSONPATH),
-            func.jsonb_build_object("order_id", order_text),
-        )
-    else:
-        normalized_entity_id = func.replace(entity_id, "-", "")
-        direct_match = or_(normalized_entity_id == order_text, normalized_entity_id == item_text)
-        order_ids = func.json_each(event.payload, "$.order_ids").table_valued("key", "value").alias()
-        order_ids_contains = exists(
-            select(literal(1))
-            .select_from(order_ids)
-            .where(func.replace(cast(order_ids.c.value, String), "-", "") == order_text)
-        ).correlate(event, Order)
-    return or_(direct_match, order_ids_contains)
 
 
 def json_text(column, key):
@@ -666,14 +529,12 @@ def filter_admin_rows(
     search="",
     scan_state="",
     skladbot_filter="",
-    google_status="",
 ):
     status_bucket = normalize_filter_value(status_bucket)
     shipment_date = normalize_filter_value(shipment_date)
     search = normalize_text(search).casefold()
     scan_state = normalize_filter_value(scan_state)
     skladbot_filter = normalize_filter_value(skladbot_filter)
-    google_status = normalize_filter_value(google_status)
 
     return [
         row for row in rows
@@ -684,7 +545,6 @@ def filter_admin_rows(
             search=search,
             scan_state=scan_state,
             skladbot_filter=skladbot_filter,
-            google_status=google_status,
         )
     ]
 
@@ -697,7 +557,6 @@ def admin_row_matches_filters(
     search="",
     scan_state="",
     skladbot_filter="",
-    google_status="",
 ):
     if status_bucket and row.status_bucket != status_bucket:
         return False
@@ -706,8 +565,6 @@ def admin_row_matches_filters(
     if scan_state and admin_row_scan_state(row) != scan_state:
         return False
     if skladbot_filter and not admin_row_matches_skladbot_filter(row, skladbot_filter):
-        return False
-    if google_status and row.google_sheet_status != google_status:
         return False
     if search and not admin_row_matches_search(row, search):
         return False
@@ -756,12 +613,11 @@ def normalize_filter_value(value):
     return "" if text == "all" else text
 
 
-def order_item_to_admin_row(order: Order, item: OrderItem, pending_by_entity):
+def order_item_to_admin_row(order: Order, item: OrderItem, _pending_by_entity=None):
     order_raw = order.raw_payload or {}
     item_raw = item.raw_payload or {}
     blocks = int(item.quantity_blocks or 0)
     scanned = int(item.scanned_blocks or 0)
-    pending_count = pending_by_entity.get(str(order.id), 0) + pending_by_entity.get(str(item.id), 0)
 
     return AdminTableRow(
         order_id=str(order.id),
@@ -790,10 +646,6 @@ def order_item_to_admin_row(order: Order, item: OrderItem, pending_by_entity):
         skladbot_return_request_id=normalize_text(order_raw.get("skladbot_return_request_id")),
         skladbot_return_status=normalize_text(order_raw.get("skladbot_return_request_status")),
         source_file=normalize_text(item_raw.get("source_file")),
-        google_sheet_status=google_sheet_status(item, pending_count),
-        google_sheet_row_number=parse_optional_int(item_raw.get("google_sheet_row_number")),
-        google_sheet_synced_at=normalize_text(item_raw.get("google_sheet_synced_at")),
-        pending_google_exports=pending_count,
         return_status=normalize_text(order_raw.get("return_status")),
         returned_at=normalize_text(order_raw.get("returned_at")),
         return_reference=normalize_text(order_raw.get("return_reference")),
@@ -806,7 +658,7 @@ def status_bucket(order: Order, item: OrderItem):
     if order.status == STATUS_RETURNED:
         return "returned"
     if item.status == STATUS_REMOVED_FROM_GOOGLE:
-        return "removed_from_google"
+        return "cancelled"
     if order.status == STATUS_ARCHIVED_NO_KIZ:
         return "archive_no_kiz"
     if order.status == STATUS_CANCELLED:
@@ -818,20 +670,8 @@ def status_bucket(order: Order, item: OrderItem):
     return order.status or "other"
 
 
-def google_sheet_status(item: OrderItem, pending_count=0):
-    if pending_count:
-        return "pending"
-    raw_payload = item.raw_payload or {}
-    if item.status == STATUS_REMOVED_FROM_GOOGLE:
-        return "removed_from_google"
-    if normalize_text(raw_payload.get("google_sheet_synced_at")):
-        return "synced"
-    return "unknown"
-
-
-def build_totals(rows, pending_events):
+def build_totals(rows, _pending_events=None):
     order_ids = {row.order_id for row in rows}
-    item_ids = {row.item_id for row in rows}
     active_order_ids = {row.order_id for row in rows if row.status_bucket == "active"}
     archived_order_ids = {row.order_id for row in rows if row.status_bucket == "archive"}
     returned_order_ids = {row.order_id for row in rows if row.status_bucket == "returned"}
@@ -845,19 +685,7 @@ def build_totals(rows, pending_events):
         scanned_blocks=sum(row.scanned_blocks for row in rows),
         remaining_blocks=sum(row.remaining_blocks for row in rows if row.status_bucket == "active"),
         total_price=sum(row.line_total for row in rows),
-        pending_google_exports=count_pending_google_exports_for_rows(pending_events, order_ids, item_ids),
     )
-
-
-def count_pending_google_exports_for_rows(pending_events, order_ids, item_ids):
-    total = 0
-    for event in pending_events:
-        payload = event.payload or {}
-        entity_id = normalize_text(payload.get("entity_id"))
-        event_order_ids = {normalize_text(order_id) for order_id in payload.get("order_ids") or []}
-        if entity_id in order_ids or entity_id in item_ids or event_order_ids.intersection(order_ids):
-            total += 1
-    return total
 
 
 def list_recent_activity(db: Session, limit):

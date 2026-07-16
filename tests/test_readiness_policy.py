@@ -43,7 +43,7 @@ class ReadinessPolicyTests(unittest.TestCase):
             "imports": {"recent_errors": [{"id": "secret-id"}]},
             "workers": {
                 "status": "ok",
-                "required": ["google_sheets_sync", "skladbot", "smartup_auto_import", "telegram"],
+                "required": ["skladbot", "smartup_auto_import", "telegram"],
                 "missing": [],
                 "unhealthy": [],
             },
@@ -56,11 +56,12 @@ class ReadinessPolicyTests(unittest.TestCase):
         self.assertEqual(public["commit_sha"], "a" * 40)
         self.assertEqual(public["image_digest"], "sha256:" + "b" * 64)
         self.assertNotIn("last_errors", public["queue"])
-        self.assertNotIn("last_errors", public["google_mirror"])
+        self.assertNotIn("google_mirror", public)
+        self.assertNotIn("google_backend_sync", public)
         self.assertNotIn("recent_errors", public["imports"])
         serialized = ReadinessResponse.model_validate(public).model_dump()
         self.assertEqual(serialized["workers"]["status"], "ok")
-        self.assertEqual(serialized["workers"]["required_count"], 4)
+        self.assertEqual(serialized["workers"]["required_count"], 3)
         self.assertNotIn("secret-id", str(public))
 
     def test_multiple_migration_rows_are_not_ready(self):

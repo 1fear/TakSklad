@@ -57,10 +57,11 @@ test("@smoke table filters, pagination and order action are deterministic", asyn
 
   await page.getByLabel("Поиск заказов").fill("");
   await expect(page.getByText("Альфа Тест").first()).toBeVisible();
-  await page.getByLabel("Выбрать заказ Альфа Тест").check();
-  await page.getByRole("button", { name: "Ресинк Google" }).click();
-  await expect.poll(() => api.resyncs).toBe(1);
-  await expect(page.getByRole("status")).toContainText("Google");
+  await page.getByRole("button", { name: "Склад" }).click();
+  await page.getByPlaceholder("Отсканируйте код").fill("0104-synthetic");
+  await page.getByRole("button", { name: "Записать" }).click();
+  await expect.poll(() => api.scans).toBe(1);
+  await expect(page.getByRole("status")).toContainText("PostgreSQL");
 });
 
 test("@smoke incidents and client-point actions stay inside synthetic API", async ({ page }) => {

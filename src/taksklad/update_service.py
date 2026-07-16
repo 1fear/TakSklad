@@ -30,7 +30,6 @@ UPDATE_RUNTIME_EXCLUDE_FILES = (
     "TakSklad_queues.sqlite3",
     "TakSklad_queues.sqlite3-wal",
     "TakSklad_queues.sqlite3-shm",
-    "credentials.json",
     "telegram_settings.json",
     "yandex_geocoder_key.txt",
     ".env.taksklad-vds-2.0.generated.json",
@@ -47,7 +46,6 @@ UPDATE_RUNTIME_EXCLUDE_FILES = (
     "*.log",
 )
 UPDATE_RUNTIME_SECRET_FILES = (
-    "credentials.json",
     "telegram_settings.json",
     "yandex_geocoder_key.txt",
     ".env.taksklad-vds-2.0.generated.json",

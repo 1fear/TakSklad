@@ -13,8 +13,8 @@
 ## Читать Сначала
 
 1. `../README.md` - быстрый вход в продукт.
-2. `taksklad-system-stack-overview.md` - актуальная суть приложения, архитектура и стек.
-3. `report-source-rules.md` - правила источников отчетов и DB-first логика.
+2. `db-only-architecture.md` - актуальная DB-only архитектура без Google Sheets.
+3. `report-source-rules.md` - правила источников отчетов и DB-only логика.
 4. `implementation-log.md` - подробная история работ агентов, deploy/evidence и причин изменений.
 5. `changelog.md` - журнал пользовательских и релизных изменений.
 6. `local-development-setup.md` - локальная среда и проверочные команды.
@@ -31,6 +31,7 @@
 | `event-queue-lifecycle.md` | Жизненный цикл очередей и retry. |
 | `windows-backend-acceptance.md` | Windows acceptance для backend flags. |
 | `local-development-setup.md` | Локальная Python/Docker/VDS-compose среда разработки. |
+| `runbook/google-sheets-decommission.md` | Cutover с Google Sheets на PostgreSQL-only, stop conditions и rollback. |
 | `restore-points.md` | Reference по restore/checkpoint; не отправлять наружу без проверки локальных путей и содержимого snapshot. |
 | `taksklad-feature-user-stories.xlsx` | Канонический spreadsheet для полного цикла: user stories, Test Loop, Errors, Sources. |
 
@@ -46,8 +47,9 @@
 
 | Файл | Статус |
 |---|---|
-| `taksklad-system-stack-overview.md` | `ACTIVE`: текущий общий обзор, версия по коду/release manifest `2.0.21` на 22.06.2026. |
-| `report-source-rules.md` | `ACTIVE`: DB-first правила отчетов и источников. |
+| `db-only-architecture.md` | `ACTIVE`: текущая PostgreSQL-only архитектура и release boundary. |
+| `taksklad-system-stack-overview.md` | `HISTORY`: подробный обзор переходного периода с Google mirror; не использовать как runtime truth. |
+| `report-source-rules.md` | `ACTIVE`: DB-only правила отчетов и источников. |
 | `user-business-process-guide.md` | `ACTIVE`/`REFERENCE`: пользовательская инструкция и бизнес-процесс, сверять точечные детали с кодом. |
 | `project-overview.md` | `UPDATE`: обзор продукта, useful background, не source of truth по текущей архитектуре. |
 | `project-architecture.md` | `UPDATE`/`HISTORY`: architecture reference, сверять со stack overview и кодом. |

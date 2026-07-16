@@ -12,12 +12,11 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.models import Base, WorkerHeartbeat
 from backend.app.worker_observability import KNOWN_WORKERS, build_worker_readiness, observed_worker_cycle
-from backend.app import google_sheets_sync_worker, skladbot_worker_runner, smartup_auto_import_worker, telegram_worker
+from backend.app import skladbot_worker_runner, smartup_auto_import_worker, telegram_worker
 
 
 def verify_real_main_loop_sources() -> int:
     entrypoints = {
-        "google_sheets_sync": google_sheets_sync_worker.main,
         "skladbot": skladbot_worker_runner.main,
         "smartup_auto_import": smartup_auto_import_worker.main,
         "telegram": telegram_worker.main,

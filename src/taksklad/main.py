@@ -27,9 +27,8 @@ from .app_scanning import ScanningActionsMixin
 from .app_skladbot import SkladBotActionsMixin
 from .app_telegram import TelegramActionsMixin
 from .app_updates import UpdateMixin
-from .backend_client import backend_read_orders_enabled
+from .backend_client import backend_configured
 from .desktop_refresh_service import (
-    fetch_google_sheet_data,
     fetch_sheet_data,
     fetch_sheet_data_with_sync,
     format_refresh_error_message,
@@ -44,6 +43,7 @@ from .backend_flow import (
     format_backend_blocked_scan_message,
     format_print_failure_after_backend_complete,
 )
+from .backend_events import migrate_legacy_pending_saves_to_backend_events
 from .desktop_scan_rules import (
     build_product_result,
     find_code_owner_in_orders,
@@ -53,12 +53,9 @@ from .desktop_scan_rules import (
     group_finish_blocker,
     is_terminal_scan_state,
 )
-from .pending_store import load_pending_saves
-from .reports import create_day_report_excel
 from .update_service import ensure_windows_desktop_shortcut, maybe_rename_windows_executable
 from .storage import (
     SecretMigrationError,
-    credentials_available,
     migrate_desktop_secrets,
     migrate_legacy_json_files_to_app_data,
 )
@@ -204,13 +201,23 @@ def run_app():
             )
             return 0
         migrate_legacy_json_files_to_app_data()
+        legacy_queue = migrate_legacy_pending_saves_to_backend_events()
+        if legacy_queue.get("remaining"):
+            show_startup_error_message(
+                "Нужна миграция очереди",
+                "Найдены старые несинхронизированные Google-записи без backend id. "
+                "Сканирование остановлено, чтобы не потерять КИЗы. Передайте диагностический пакет разработчику.",
+            )
+            return 5
         log_startup_self_check()
 
-        if not credentials_available() and not backend_read_orders_enabled():
+        if not backend_configured():
             show_startup_error_message(
-                "Ошибка",
-                "Не найдены учётные данные Google Sheets в защищённом хранилище.",
+                "Backend не настроен",
+                "TakSklad работает только через backend/PostgreSQL. "
+                "Проверьте URL сервера и backend API token, затем перезапустите приложение.",
             )
+            return 4
         else:
             app = ScanningApp()
             app.single_instance_lock = instance_result.lock

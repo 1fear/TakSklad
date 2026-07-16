@@ -55,4 +55,4 @@ for schema_file in "$SQL_DIR"/*.sql; do
     psql -U "$POSTGRES_USER" "$POSTGRES_DB" -v ON_ERROR_STOP=1 < "$schema_file"
 done
 
-echo "Schema applied from $SQL_DIR"
+echo "Legacy schema applied from $SQL_DIR. Alembic upgrade to head is mandatory before any runtime writer starts."

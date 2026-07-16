@@ -1,7 +1,5 @@
-from .backend_client import backend_enabled
 from .backend_events import (
     load_pending_backend_events,
-    queue_backend_scans_for_order,
     sync_pending_backend_events,
 )
 from .backend_flow import backend_sync_group_blocker, complete_backend_orders_or_raise
@@ -10,8 +8,6 @@ from .desktop_scan_rules import group_finish_blocker, scanned_blocks_for_order
 from .orders import get_plan_blocks, order_group_key
 from .pending_store import add_pending_print, remove_pending_print, write_scan_backup
 from .printing import print_summary
-from .reports import build_summary_products_from_gsheet
-from .sheets import archive_order_group_to_gsheet, google_backoff_remaining
 from .utils import normalize_text, parse_int_value
 
 
@@ -57,17 +53,13 @@ class FinishActionsMixin:
             for order in current_orders
             if normalize_text(order.get("_backend_order_id"))
         })
-        uses_backend_finish = bool(backend_order_ids and backend_enabled())
-
-        if self.sheet and not uses_backend_finish:
-            google_pause_remaining = google_backoff_remaining()
-            if google_pause_remaining > 0:
-                self.show_error(
-                    f"Google Sheets временно на паузе ({google_pause_remaining} сек.). "
-                    "Завершение и печать запустятся после паузы."
-                )
-                self.finish_btn.config(state="normal")
-                return
+        if not backend_order_ids or any(
+            not normalize_text(order.get("_backend_order_item_id"))
+            for order in current_orders
+        ):
+            self.show_error("Заказ не связан с backend. Завершение заблокировано")
+            self.finish_btn.config(state="normal")
+            return
 
         if not self.confirm_print_settings():
             self.show_error("Печать сводного листа отменена")
@@ -83,17 +75,6 @@ class FinishActionsMixin:
             first_product = current_products[0]
             address = first_product.get('Адрес', 'Адрес не указан')
             summary_products = current_products
-            backend_complete_result = {"completed": 0, "already_completed": 0}
-
-            if self.sheet and not uses_backend_finish:
-                sheet_products = build_summary_products_from_gsheet(
-                    self.sheet,
-                    group_key or order_group_key(first_product)
-                )
-                if sheet_products:
-                    summary_products = sheet_products
-                    first_product = summary_products[0]
-                    address = first_product.get('Адрес', address)
 
             pending_print_id = add_pending_print(address, summary_products)
             if not pending_print_id:
@@ -117,33 +98,24 @@ class FinishActionsMixin:
                     "Заказ не завершён в backend."
                 )
 
-            if uses_backend_finish:
-                backend_sync_result = sync_pending_backend_events()
-                order_item_ids = {
-                    normalize_text(order.get("_backend_order_item_id"))
-                    for order in current_orders
-                    if normalize_text(order.get("_backend_order_item_id"))
-                }
-                blocker = backend_sync_group_blocker(
-                    backend_sync_result,
-                    order_item_ids,
-                    set(backend_order_ids),
-                    load_pending_backend_events(),
+            backend_sync_result = sync_pending_backend_events()
+            order_item_ids = {
+                normalize_text(order.get("_backend_order_item_id"))
+                for order in current_orders
+                if normalize_text(order.get("_backend_order_item_id"))
+            }
+            blocker = backend_sync_group_blocker(
+                backend_sync_result,
+                order_item_ids,
+                set(backend_order_ids),
+                load_pending_backend_events(),
+            )
+            if blocker:
+                raise RuntimeError(
+                    "Сводный лист напечатан, но backend не принял все КИЗы. "
+                    f"{blocker}"
                 )
-                if blocker:
-                    raise RuntimeError(
-                        "Сводный лист напечатан, но backend не принял все КИЗы. "
-                        f"{blocker}"
-                    )
-                backend_complete_result = complete_backend_orders_or_raise(backend_order_ids)
-
-            if self.sheet and not (backend_order_ids and backend_enabled()):
-                ok, archive_message = archive_order_group_to_gsheet(
-                    self.sheet,
-                    current_orders,
-                )
-                if not ok:
-                    raise RuntimeError(archive_message)
+            complete_backend_orders_or_raise(backend_order_ids)
 
             if not write_scan_backup(
                 "address_finished",
@@ -151,10 +123,6 @@ class FinishActionsMixin:
                 codes=[code for product in summary_products for code in product.get("Коды", [])]
             ):
                 raise RuntimeError("Сводка напечатана, но backup завершения заказа не создан")
-
-            if not (backend_order_ids and backend_enabled()):
-                for order in current_orders:
-                    queue_backend_scans_for_order(order)
 
             return {
                 "first_product": first_product,

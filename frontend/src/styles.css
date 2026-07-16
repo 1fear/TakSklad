@@ -1042,6 +1042,169 @@ summary:focus-visible {
   overflow: hidden;
 }
 
+.warehouse-panel {
+  display: grid;
+  gap: 18px;
+  border: 1px solid #e1e5de;
+  border-radius: 16px;
+  padding: 20px;
+  background: #fff;
+}
+
+.excel-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  border-top: 1px solid #eceee8;
+  border-bottom: 1px solid #eceee8;
+  padding: 12px 0;
+}
+
+.excel-file-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  max-width: 300px;
+  cursor: pointer;
+  border: 1px solid #cfd5cc;
+  border-radius: 9px;
+  padding: 7px 11px;
+  background: #fff;
+  color: #303730;
+  font-weight: 700;
+}
+
+.excel-file-button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.excel-file-button input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  clip-path: inset(50%);
+}
+
+.excel-preview {
+  flex-basis: 100%;
+  border-radius: 8px;
+  padding: 9px 11px;
+  font-size: 13px;
+}
+
+.excel-preview.ok {
+  background: #e5f4ea;
+  color: #1d6b3a;
+}
+
+.excel-preview.error {
+  background: #f7e5e1;
+  color: #8a2f22;
+}
+
+.warehouse-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(300px, 0.75fr);
+  gap: 16px;
+}
+
+.warehouse-card {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  border: 1px solid #e6e9e3;
+  border-radius: 12px;
+  padding: 18px;
+  background: #fafbf9;
+}
+
+.warehouse-card h3,
+.warehouse-card p {
+  margin: 0;
+}
+
+.warehouse-card label,
+.warehouse-scan-form,
+.warehouse-return-search,
+.warehouse-return-result {
+  display: grid;
+  gap: 8px;
+}
+
+.warehouse-card label > span {
+  color: #656b63;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.warehouse-card input,
+.warehouse-card select {
+  min-height: 44px;
+  width: 100%;
+  border: 1px solid #cfd5cc;
+  border-radius: 9px;
+  padding: 9px 11px;
+  background: #fff;
+  color: #1f2621;
+}
+
+.warehouse-actions,
+.warehouse-scan-form,
+.warehouse-return-search {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+}
+
+.warehouse-warning,
+.warehouse-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 9px;
+  padding: 10px 12px;
+  background: #fff2d7;
+  color: #795000;
+}
+
+.warehouse-check.ok {
+  background: #e5f4ea;
+  color: #1d6b3a;
+}
+
+.warehouse-check.error {
+  background: #f7e5e1;
+  color: #8a2f22;
+}
+
+.warehouse-meta,
+.warehouse-empty,
+.warehouse-return-result span,
+.warehouse-return-result p {
+  color: #656b63;
+  font-size: 13px;
+}
+
+@media (max-width: 980px) {
+  .warehouse-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .warehouse-actions,
+  .warehouse-scan-form,
+  .warehouse-return-search {
+    grid-template-columns: 1fr;
+  }
+}
+
 .select-col {
   width: 44px;
 }
@@ -1063,8 +1226,7 @@ summary:focus-visible {
 }
 
 .status-col,
-.skladbot-col,
-.google-col {
+.skladbot-col {
   width: 132px;
 }
 
@@ -1163,17 +1325,9 @@ summary:focus-visible {
   color: #8a2f22;
 }
 
-.status-badge.returned,
-.status-badge.google-pending {
+.status-badge.returned {
   background: #fff2d7;
   color: #8a5300;
-}
-
-.status-badge.removed_from_google,
-.status-badge.google-removed_from_google,
-.status-badge.google-unknown {
-  background: #f3e6e2;
-  color: #8a2f22;
 }
 
 .status-badge.dry-run-ready {

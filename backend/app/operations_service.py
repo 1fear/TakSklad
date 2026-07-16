@@ -34,7 +34,6 @@ def build_operations_attention(db: Session, app_settings):
         "summary": summary,
         "items": items,
         "readiness_status": readiness.get("status") or "",
-        "google_mirror_status": (readiness.get("google_mirror") or {}).get("status") or "",
         "shadow_diagnostics": build_shadow_diagnostics(readiness),
         "telegram_summary": build_operations_telegram_summary(items),
     }
@@ -43,12 +42,6 @@ def build_operations_attention(db: Session, app_settings):
 def build_shadow_diagnostics(readiness):
     readiness = readiness if isinstance(readiness, dict) else {}
     queue = readiness.get("queue") if isinstance(readiness.get("queue"), dict) else {}
-    google_mirror = (
-        readiness.get("google_mirror")
-        if isinstance(readiness.get("google_mirror"), dict)
-        else {}
-    )
-    mirror_summary = google_mirror.get("summary") if isinstance(google_mirror.get("summary"), dict) else {}
     by_type = queue.get("summary", {}).get("by_type", {}) if isinstance(queue.get("summary"), dict) else {}
     telegram_events = count_event_types(
         by_type,
@@ -57,12 +50,6 @@ def build_shadow_diagnostics(readiness):
     return {
         "backend_active_orders_source": "postgres_backend",
         "readiness_status": readiness.get("status") or "",
-        "google_mirror_status": google_mirror.get("status") or "",
-        "google_mirror_lag_seconds": int(google_mirror.get("oldest_pending_age_seconds") or 0),
-        "google_mirror_pending_exports": int(mirror_summary.get("pending") or 0),
-        "google_mirror_failed_exports": int(mirror_summary.get("failed") or 0),
-        "google_mirror_processing_exports": int(mirror_summary.get("processing") or 0),
-        "google_mirror_paused": bool(google_mirror.get("paused")),
         "queue_stale_processing": int(queue.get("stale_processing_count") or 0),
         "hot_path_stale_processing": int(queue.get("hot_path_stale_processing_count") or 0),
         "telegram_worker_state": "requires_attention" if telegram_events else "ok",
@@ -132,13 +119,6 @@ def classify_event(event):
 def classify_event_values(event_type, action):
     event_type = str(event_type or "")
     action = str(action or "")
-    if event_type == "google_sheets_export":
-        return (
-            "google_mirror",
-            "mirror",
-            "Google mirror export lag",
-            "Проверить Google quota/доступ; retry export в admin events после восстановления.",
-        )
     if event_type in {"telegram_excel_import", "telegram_notification"}:
         return (
             "telegram",

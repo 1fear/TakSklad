@@ -63,8 +63,6 @@ class ReadinessResponse(BaseModel):
     database: dict[str, Any] = Field(default_factory=dict)
     migrations: dict[str, Any] = Field(default_factory=dict)
     queue: dict[str, Any] = Field(default_factory=dict)
-    google_mirror: dict[str, Any] = Field(default_factory=dict)
-    google_backend_sync: dict[str, Any] = Field(default_factory=dict)
     imports: dict[str, Any] = Field(default_factory=dict)
     workers: dict[str, Any] = Field(default_factory=dict)
     policy: dict[str, Any] = Field(default_factory=dict)
@@ -148,7 +146,6 @@ class AdminTableTotals(BaseModel):
     scanned_blocks: int
     remaining_blocks: int
     total_price: int
-    pending_google_exports: int
 
 
 class AdminTableRow(BaseModel):
@@ -178,10 +175,6 @@ class AdminTableRow(BaseModel):
     skladbot_return_request_id: str = ""
     skladbot_return_status: str = ""
     source_file: str = ""
-    google_sheet_status: str = ""
-    google_sheet_row_number: int | None = None
-    google_sheet_synced_at: str = ""
-    pending_google_exports: int = 0
     return_status: str = ""
     returned_at: str = ""
     return_reference: str = ""
@@ -207,7 +200,6 @@ class AdminOrderCapabilityRead(BaseModel):
     planned_blocks: int = 0
     scanned_blocks: int = 0
     scan_codes_count: int = 0
-    pending_google_exports: int = 0
     allowed: dict[str, bool] = Field(default_factory=dict)
     disabled_reasons: dict[str, str] = Field(default_factory=dict)
 
@@ -262,7 +254,6 @@ class ActiveOrderDeleteResult(BaseModel):
     order_id: str
     deleted: bool = False
     dry_run: bool = False
-    google_delete_event_id: str = ""
     skladbot_request_number: str = ""
     skladbot_request_id: str = ""
     message: str = ""
@@ -330,7 +321,6 @@ class OperationsAttentionRead(BaseModel):
     summary: dict[str, Any] = Field(default_factory=dict)
     items: list[OperationsAttentionItemRead] = Field(default_factory=list)
     readiness_status: str = ""
-    google_mirror_status: str = ""
     shadow_diagnostics: dict[str, Any] = Field(default_factory=dict)
     telegram_summary: str = ""
 
@@ -618,11 +608,6 @@ class ImportResult(BaseModel):
     resolved_order_ids: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     backend_address_updates: int = 0
-    google_sheets_status: str = ""
-    google_sheets_imported: int = 0
-    google_sheets_duplicates: int = 0
-    google_sheets_updated: int = 0
-    google_sheets_error: str = ""
     skladbot_dry_run_status: str = ""
     skladbot_dry_run_ready: int = 0
     skladbot_dry_run_blocked: int = 0
@@ -644,6 +629,20 @@ class ImportPreviewResult(BaseModel):
     invalid_row_numbers: list[int] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     backend_address_updates: int = 0
+
+
+class ExcelImportPreviewResponse(BaseModel):
+    preview: ImportPreviewResult
+    filename: str
+    sha256: str
+    meta: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExcelImportCommitResponse(BaseModel):
+    result: ImportResult
+    filename: str
+    sha256: str
+    meta: dict[str, Any] = Field(default_factory=dict)
 
 
 class SkladBotDryRunProductRead(BaseModel):

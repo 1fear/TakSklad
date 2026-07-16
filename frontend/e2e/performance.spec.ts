@@ -290,7 +290,7 @@ test("@performance keyboard-only login, navigation, selection, action, dropdown 
     pass: false,
     matrix,
     controlled_dropdown_keys: ["ArrowDown", "Home", "End", "Enter", "Escape"],
-    action_requests: { resyncs: 0 },
+    action_requests: { scans: 0 },
   };
   writeFileSync(keyboardPartPath, `${JSON.stringify(keyboardEvidence, null, 2)}\n`);
   const focusByTab = async (locator: ReturnType<typeof page.locator>, step: string) => {
@@ -333,7 +333,7 @@ test("@performance keyboard-only login, navigation, selection, action, dropdown 
   const statusFilter = page.getByLabel("Фильтр статуса заказа");
   await focusByTab(statusFilter, "controlled dropdown");
   await page.keyboard.press("End");
-  await expect(statusFilter).toHaveValue("removed_from_google");
+  await expect(statusFilter).toHaveValue("returned");
   await page.keyboard.press("Home");
   await expect(statusFilter).toHaveValue("all");
   await page.keyboard.press("ArrowDown");
@@ -350,10 +350,17 @@ test("@performance keyboard-only login, navigation, selection, action, dropdown 
   await page.keyboard.press("Space");
   await expect(orderSelector).toBeChecked();
 
-  const action = page.getByRole("button", { name: "Ресинк Google" });
-  await focusByTab(action, "order action");
+  const warehouse = page.getByRole("button", { name: "Склад" });
+  await focusByTab(warehouse, "warehouse navigation");
   await page.keyboard.press("Enter");
-  await expect.poll(() => api.resyncs).toBe(1);
+  await expect(page.getByRole("heading", { name: "Склад · PostgreSQL" })).toBeVisible();
+  const scanInput = page.getByPlaceholder("Отсканируйте код");
+  await focusByTab(scanInput, "KIZ input");
+  await page.keyboard.type("0104-synthetic");
+  const action = page.getByRole("button", { name: "Записать" });
+  await focusByTab(action, "scan action");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => api.scans).toBe(1);
 
   const logout = page.getByRole("button", { name: "Выйти" });
   await focusByTab(logout, "logout");
@@ -362,12 +369,12 @@ test("@performance keyboard-only login, navigation, selection, action, dropdown 
 
   keyboardEvidence = {
     pass: matrix.every((entry) => entry.pass)
-      && api.resyncs === 1
+      && api.scans === 1
       && api.requests.includes("POST /api/v1/auth/login")
       && api.requests.includes("POST /api/v1/auth/logout"),
     matrix,
     controlled_dropdown_keys: ["ArrowDown", "Home", "End", "Enter", "Escape"],
-    action_requests: { resyncs: api.resyncs },
+    action_requests: { scans: api.scans },
   };
   writeFileSync(keyboardPartPath, `${JSON.stringify(keyboardEvidence, null, 2)}\n`);
   expect(keyboardEvidence.pass).toBe(true);

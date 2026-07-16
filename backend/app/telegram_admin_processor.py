@@ -432,7 +432,7 @@ class TelegramAdminProcessor(TelegramProcessorDelegate):
         state = self.get_chat_state(chat_id)
         state["manual_delete_orders"] = []
         self.save_chat_state(chat_id, state)
-        lines = ["Заказ удалён из TakSklad и поставлен на удаление из Google Sheets."]
+        lines = ["Заказ удалён из базы TakSklad."]
         skladbot_number = normalize_text(result.get("skladbot_request_number"))
         if skladbot_number:
             lines.append(f"В SkladBot заявка {skladbot_number} осталась, её нужно удалить вручную.")

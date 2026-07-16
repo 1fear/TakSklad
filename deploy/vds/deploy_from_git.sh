@@ -12,6 +12,7 @@ URL_RETRY_INTERVAL_SECONDS="${TAKSKLAD_DEPLOY_URL_RETRY_INTERVAL_SECONDS:-2}"
 COMPOSE_WAIT_TIMEOUT_SECONDS="${TAKSKLAD_COMPOSE_WAIT_TIMEOUT_SECONDS:-180}"
 LOG_SINCE_SECONDS="${TAKSKLAD_DEPLOY_LOG_SINCE_SECONDS:-120}"
 ACCEPTANCE_MODE="${TAKSKLAD_DEPLOY_ACCEPTANCE:-required}"
+WRITER_SERVICES=(backend-api telegram-worker skladbot-worker smartup-auto-import-worker)
 DRY_RUN=0
 ARTIFACT_MANIFEST=""
 PYTHON_BIN="python3"
@@ -132,12 +133,79 @@ run_acceptance() {
 run_log_scan() {
   local output
   output="$(compose logs --since "${LOG_SINCE_SECONDS}s" \
-    backend-api frontend telegram-worker google-sheets-sync-worker skladbot-worker smartup-auto-import-worker 2>&1 || true)"
+    backend-api frontend telegram-worker skladbot-worker smartup-auto-import-worker 2>&1 || true)"
   if printf '%s\n' "$output" | grep -Eiq \
     '\[(ERROR|CRITICAL)\]|(^|[[:space:]])(ERROR|CRITICAL)(:|[[:space:]])|Traceback \(most recent call last\):|(^|[[:space:]])Exception:|(^|[[:space:]])panic:'; then
     printf '%s\n' "$output" >&2
     return 1
   fi
+}
+
+verify_db_only_compose() {
+  if compose config --services | grep -Fxq "google-sheets-sync-worker"; then
+    fail "Compose still declares the retired google-sheets-sync-worker"
+  fi
+  compose config --format json | python3 -c '
+import json, sys
+config = json.load(sys.stdin)
+environment = ((config.get("services") or {}).get("backend-api") or {}).get("environment") or {}
+required = str(environment.get("TAKSKLAD_REQUIRED_WORKERS") or "")
+workers = {value.strip() for value in required.split(",") if value.strip()}
+if "google_sheets_sync" in workers:
+    raise SystemExit("TAKSKLAD_REQUIRED_WORKERS still requires google_sheets_sync")
+missing = {"skladbot", "smartup_auto_import", "telegram"} - workers
+if missing:
+    raise SystemExit("TAKSKLAD_REQUIRED_WORKERS misses DB runtime workers: " + ",".join(sorted(missing)))
+'
+}
+
+legacy_google_worker_ids() {
+  local project
+  project="$(compose config --format json | python3 -c '
+import json, sys
+name = str((json.load(sys.stdin) or {}).get("name") or "").strip()
+if not name:
+    raise SystemExit("Compose project name is required")
+print(name)
+')"
+  docker ps -aq \
+    --filter "label=com.docker.compose.project=$project" \
+    --filter "label=com.docker.compose.service=google-sheets-sync-worker"
+}
+
+ensure_legacy_google_worker_absent() {
+  [[ -z "$(legacy_google_worker_ids)" ]] || fail "retired google-sheets-sync-worker container still exists"
+}
+
+remove_legacy_google_worker() {
+  local ids
+  ids="$(legacy_google_worker_ids)"
+  if [[ -n "$ids" ]]; then
+    docker container stop -t 45 $ids
+    docker container rm -f $ids
+  fi
+  ensure_legacy_google_worker_absent
+}
+
+ensure_writer_services_stopped() {
+  local running service
+  running="$(compose ps --status running --services)"
+  for service in "${WRITER_SERVICES[@]}"; do
+    if grep -Fxq "$service" <<<"$running"; then
+      fail "legacy writer is still running during DB-only cutover: $service"
+    fi
+  done
+}
+
+active_legacy_google_event_count() {
+  compose exec -T postgres sh -ec \
+    'psql -At -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "select count(*) from pending_events where event_type = '\''google_sheets_export'\'' and status in ('\''pending'\'','\''failed'\'','\''error'\'','\''processing'\'','\''blocked'\'','\''active'\'','\''waiting_shipment_date'\'','\''waiting_date_choice'\'')"'
+}
+
+ensure_no_active_legacy_google_events() {
+  local count
+  count="$(active_legacy_google_event_count)"
+  [[ "$count" == "0" ]] || fail "active legacy Google events remain after cutover migration: $count"
 }
 
 rollback_runtime() {
@@ -164,12 +232,12 @@ rollback_runtime() {
     return 1
   fi
   compose up -d --no-deps --no-build --pull never --wait --wait-timeout "$COMPOSE_WAIT_TIMEOUT_SECONDS" \
-    backend-api frontend telegram-worker google-sheets-sync-worker skladbot-worker smartup-auto-import-worker
-  echo "Runtime rolled back to previous verified digests; database schema retained, alembic downgrade=0."
+    backend-api frontend "${WRITER_SERVICES[@]:1}"
+  ensure_legacy_google_worker_absent
+  echo "Runtime rolled back to previous verified digests without the retired Google worker; database schema retained, alembic downgrade=0."
 }
 
-echo "Creating PostgreSQL backup before forward-only migration..."
-./deploy/vds/backup_postgres.sh --no-prune
+verify_db_only_compose
 
 echo "Pulling verified immutable image subjects..."
 docker pull "$TAKSKLAD_BACKEND_IMAGE"
@@ -184,15 +252,28 @@ TAKSKLAD_OUTPUT_PERMISSIONS_IMAGE="$TAKSKLAD_BACKEND_IMAGE" \
     --apply \
     --confirm PHASE22_CHANGE_OUTPUT_OWNER
 
-echo "Applying forward-only migrations from the verified backend image..."
-compose run --rm --no-deps backend-api alembic -c alembic.ini upgrade head
-
-echo "Quiescing background workers before runtime replacement..."
-if ! compose stop -t 45 \
-  telegram-worker google-sheets-sync-worker skladbot-worker smartup-auto-import-worker; then
+echo "Quiescing every legacy database writer before the DB-only cutover..."
+if ! compose stop -t 45 "${WRITER_SERVICES[@]}"; then
   rollback_runtime || true
-  fail "background workers could not be quiesced; previous runtime selected when available"
+  fail "legacy database writers could not be quiesced; previous runtime selected when available"
 fi
+ensure_writer_services_stopped
+
+echo "Stopping and removing the retired Google Sheets worker before the exact cutover backup..."
+remove_legacy_google_worker
+
+echo "Creating the exact PostgreSQL cutover backup after all legacy writers stopped..."
+if ! ./deploy/vds/backup_postgres.sh --no-prune; then
+  rollback_runtime || true
+  fail "cutover backup failed; previous schema-compatible runtime selected when available"
+fi
+
+echo "Applying forward-only migrations from the verified backend image..."
+if ! compose run --rm --no-deps backend-api alembic -c alembic.ini upgrade head; then
+  rollback_runtime || true
+  fail "forward-only migration failed; previous runtime selected only when schema-compatible"
+fi
+ensure_no_active_legacy_google_events
 
 echo "Recovering leases owned by the stopped worker processes..."
 if ! compose run --rm --no-deps backend-api python -m app.event_lease_recovery; then
@@ -202,10 +283,11 @@ fi
 
 echo "Activating verified image digests without source build..."
 if ! compose up -d --no-deps --no-build --pull never --wait --wait-timeout "$COMPOSE_WAIT_TIMEOUT_SECONDS" \
-  backend-api frontend telegram-worker google-sheets-sync-worker skladbot-worker smartup-auto-import-worker; then
+  backend-api frontend "${WRITER_SERVICES[@]:1}"; then
   rollback_runtime || true
   fail "candidate containers failed to activate; previous runtime selected when available"
 fi
+ensure_legacy_google_worker_absent
 
 if ! check_public_url health "$HEALTH_URL" || ! check_public_url readiness "$READY_URL"; then
   rollback_runtime || true

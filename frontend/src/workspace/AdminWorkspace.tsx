@@ -69,10 +69,8 @@ import {
   rebuildSkladBotDryRun,
   resetOrderForRescan,
   restoreOrder,
-  resyncGoogleOrder,
   resyncSkladBotOrder,
   retryAdminEvent,
-  retryPendingGoogle,
   syncSources,
   updateLogisticsCalendarDay,
   updateClientPointTimeslot,
@@ -87,16 +85,15 @@ import {
   tashkentBusinessMonth,
 } from "../data-flow";
 
-type Tab = "table" | "calendar" | "clients" | "smartup" | "imports" | "skladbotDryRun" | "incidents" | "activity";
+type Tab = "warehouse" | "table" | "calendar" | "clients" | "smartup" | "imports" | "skladbotDryRun" | "incidents" | "activity";
 const HISTORY_TABS: Tab[] = ["imports", "skladbotDryRun", "incidents", "activity"];
-type StatusFilter = "all" | "active" | "archive" | "archive_no_kiz" | "cancelled" | "returned" | "removed_from_google";
+type StatusFilter = "all" | "active" | "archive" | "archive_no_kiz" | "cancelled" | "returned";
 type ScanFilter = "all" | "not_started" | "in_progress" | "completed" | "over_scanned" | "no_plan";
 type SkladBotFilter = "all" | "found" | "missing" | "problem";
-type GoogleFilter = "all" | "synced" | "pending" | "removed_from_google" | "unknown";
 type ClientTimeslotFilter = "all" | "custom" | "default";
 type IncidentStatusFilter = "all" | "open" | "in_progress" | "manual_review" | "resolved" | "ignored" | "cancelled";
 type IncidentSeverityFilter = "all" | "info" | "warning" | "critical";
-type OrderActionKind = "resync" | "archive" | "completeWithoutKiz" | "cancel" | "deleteActive" | "resetRescan" | "restore" | "resyncSkladBot";
+type OrderActionKind = "archive" | "completeWithoutKiz" | "cancel" | "deleteActive" | "resetRescan" | "restore" | "resyncSkladBot";
 type ClientPointFormDraft = {
   clientName: string;
   address: string;
@@ -110,7 +107,6 @@ type ActionState = {
   disabledReason: Record<OrderActionKind, string>;
   plannedBlocks: number;
   scannedBlocks: number;
-  pendingGoogleExports: number;
 };
 
 const SAME_ORIGIN_API_LABEL = "same-origin /api";
@@ -118,6 +114,8 @@ const ADMIN_TABLE_PAGE_SIZE = 500;
 const PANEL_CACHE_TTL_MS = 30_000;
 const ImportHistoryPanel = lazy(() => import("../features/history/ImportHistoryPanel"));
 const SmartupAutoImportPanel = lazy(() => import("../features/smartup/SmartupAutoImportPanel"));
+const WarehousePanel = lazy(() => import("../features/warehouse/WarehousePanel"));
+const ExcelImportControls = lazy(() => import("../features/imports/ExcelImportControls"));
 
 function defaultClientPointDraft(): ClientPointFormDraft {
   return {
@@ -173,7 +171,6 @@ function AdminWorkspace({
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("active");
   const [scanFilter, setScanFilter] = useState<ScanFilter>("all");
   const [skladbotFilter, setSkladbotFilter] = useState<SkladBotFilter>("all");
-  const [googleFilter, setGoogleFilter] = useState<GoogleFilter>("all");
   const [clientTimeslotFilter, setClientTimeslotFilter] = useState<ClientTimeslotFilter>("all");
   const [incidentStatusFilter, setIncidentStatusFilter] = useState<IncidentStatusFilter>("all");
   const [incidentSeverityFilter, setIncidentSeverityFilter] = useState<IncidentSeverityFilter>("all");
@@ -273,7 +270,6 @@ function AdminWorkspace({
       statusBucket: statusFilter !== "all" ? statusFilter : undefined,
       scanState: scanFilter !== "all" ? scanFilter : undefined,
       skladbotFilter: skladbotFilter !== "all" ? skladbotFilter : undefined,
-      googleSheetStatus: googleFilter !== "all" ? googleFilter : undefined,
     };
     return request;
   }
@@ -605,7 +601,7 @@ function AdminWorkspace({
       requestCoordinator.abort("admin-table");
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, statusFilter, shipmentDateFilter, scanFilter, skladbotFilter, googleFilter, tab, adminTable !== null]);
+  }, [search, statusFilter, shipmentDateFilter, scanFilter, skladbotFilter, tab, adminTable !== null]);
 
   useEffect(() => scheduleTashkentMidnightRefresh(() => {
     const nextDate = tashkentBusinessDate();
@@ -667,22 +663,6 @@ function AdminWorkspace({
     });
   }
 
-  async function retryGoogleQueue() {
-    setBusyAction("retry-google");
-    setError("");
-    setNotice("");
-    try {
-      const result = await retryPendingGoogle(config);
-      panelCache.clear();
-      await refreshAll();
-      setNotice(`Google очередь: ${String(result.status || "completed")}`);
-    } catch (actionError) {
-      showActionError(actionError, "Не удалось повторить Google-очередь");
-    } finally {
-      setBusyAction("");
-    }
-  }
-
   async function syncExternalSources() {
     setBusyAction("sync-sources");
     setError("");
@@ -695,7 +675,7 @@ function AdminWorkspace({
       const skladbotStatus = String(result.skladbot?.status || "unknown");
       setNotice(`Источники обновлены или запущены: ${status}, SkladBot ${skladbotStatus}`);
     } catch (actionError) {
-      showActionError(actionError, "Не удалось обновить Google/SkladBot");
+      showActionError(actionError, "Не удалось обновить SkladBot");
     } finally {
       setBusyAction("");
     }
@@ -950,9 +930,7 @@ function AdminWorkspace({
       setError(disabledReason);
       return;
     }
-    const defaultReason = kind === "resync"
-      ? "Ручная синхронизация из web-панели"
-      : kind === "completeWithoutKiz"
+    const defaultReason = kind === "completeWithoutKiz"
         ? "Ручное закрытие выполненных заказов без сканирования КИЗов"
         : kind === "resetRescan"
           ? "Сброс заказа на пересканирование"
@@ -979,9 +957,7 @@ function AdminWorkspace({
           ? { expected_updated_at_by_order: selectedUpdatedAtByOrder(selectedRows) }
           : { expected_updated_at: primaryRow.updated_at || "" }),
       };
-      if (kind === "resync") {
-        await resyncGoogleOrder(config, primaryRow.order_id, payload);
-      } else if (kind === "archive") {
+      if (kind === "archive") {
         await archiveOrderWithoutKiz(config, primaryRow.order_id, payload);
       } else if (kind === "completeWithoutKiz") {
         bulkResult = await completeOrdersWithoutKiz(config, selectedOrderIds, payload);
@@ -1026,6 +1002,10 @@ function AdminWorkspace({
           </div>
         </div>
         <nav className="nav-tabs" aria-label="Разделы панели">
+          {accessibleTabs.includes("warehouse") && <button className={tab === "warehouse" ? "active" : ""} onClick={() => setTab("warehouse")} aria-current={tab === "warehouse" ? "page" : undefined}>
+            <SquareCode size={18} />
+            Склад
+          </button>}
           {accessibleTabs.includes("table") && <button className={tab === "table" ? "active" : ""} onClick={() => setTab("table")} aria-current={tab === "table" ? "page" : undefined}>
             <ClipboardList size={18} />
             Таблица
@@ -1090,16 +1070,10 @@ function AdminWorkspace({
               {authUser ? `${maskLogin(authUser)} · ${roleLabel(authRole)}` : "Вход выполнен"}
             </div>
             {canAdminWrite && (
-              <>
-                <button className="ghost-button" onClick={() => void retryGoogleQueue()} disabled={Boolean(busyAction)} title="Повторить Google-очередь">
-                  {busyAction === "retry-google" ? <Loader2 className="spin" size={18} /> : <Database size={18} />}
-                  Google очередь
-                </button>
-                <button className="ghost-button" onClick={() => void syncExternalSources()} disabled={Boolean(busyAction)} title="Обновить Google Sheets и SkladBot через backend">
-                  {busyAction === "sync-sources" ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
-                  Google/SkladBot
-                </button>
-              </>
+              <button className="ghost-button" onClick={() => void syncExternalSources()} disabled={Boolean(busyAction)} title="Обновить SkladBot через backend">
+                {busyAction === "sync-sources" ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
+                SkladBot
+              </button>
             )}
             <button className="icon-button" onClick={() => void refreshAll()} disabled={loading} title="Обновить">
               {loading ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
@@ -1145,6 +1119,18 @@ function AdminWorkspace({
           </section>
         )}
 
+        {accessibleTabs.includes("warehouse") && tab === "warehouse" && (
+          <Suspense fallback={<PanelFallback label="склад" />}>
+            <WarehousePanel
+              config={config}
+              canWrite={authPermissions.includes("warehouse:write")}
+              actor={authUser || "web"}
+              onError={showActionError}
+              onNotice={(message) => { setError(""); setNotice(message); }}
+            />
+          </Suspense>
+        )}
+
         {accessibleTabs.includes("table") && tab === "table" && (
           <section className="table-panel">
             <div className="panel-header table-panel-header">
@@ -1176,7 +1162,6 @@ function AdminWorkspace({
                 <option value="archive_no_kiz">Архив без КИЗов</option>
                 <option value="cancelled">Отменены</option>
                 <option value="returned">Возвраты</option>
-                <option value="removed_from_google">Удалены из Google</option>
               </SelectFilter>
               <SelectFilter value={scanFilter} onChange={(value) => setScanFilter(value as ScanFilter)} ariaLabel="Фильтр сканирования">
                 <option value="all">Все сканы</option>
@@ -1191,13 +1176,6 @@ function AdminWorkspace({
                 <option value="found">Найдено</option>
                 <option value="missing">Без номера</option>
                 <option value="problem">Проблема</option>
-              </SelectFilter>
-              <SelectFilter value={googleFilter} onChange={(value) => setGoogleFilter(value as GoogleFilter)} ariaLabel="Фильтр Google">
-                <option value="all">Google: все</option>
-                <option value="synced">Синхронизировано</option>
-                <option value="pending">Очередь</option>
-                <option value="removed_from_google">Удалено</option>
-                <option value="unknown">Неизвестно</option>
               </SelectFilter>
               {canAdminWrite && (
                 <button
@@ -1217,13 +1195,23 @@ function AdminWorkspace({
               )}
             </div>
 
+            <Suspense fallback={<PanelFallback label="Excel-инструменты" />}>
+              <ExcelImportControls
+                config={config}
+                canImport={authPermissions.includes("imports:write")}
+                exportFilters={adminTableRequest() ?? {}}
+                onCommitted={() => refreshAll(config, false)}
+                onError={showActionError}
+                onNotice={(message) => { setError(""); setNotice(message); }}
+              />
+            </Suspense>
+
             {canAdminWrite && selectedOrderIds.length > 0 && (
               <ActionBar
                 selectedRows={selectedRows}
                 state={selectedActionState}
                 busyAction={busyAction}
                 onClear={() => setSelectedOrderIds([])}
-                onResync={() => void runOrderAction("resync")}
                 onResetRescan={() => void runOrderAction("resetRescan")}
                 onCompleteWithoutKiz={() => void runOrderAction("completeWithoutKiz")}
                 onArchive={() => void runOrderAction("archive")}
@@ -1382,8 +1370,6 @@ function buildActionState(
     .filter((value): value is AdminOrderCapability => Boolean(value));
   const plannedBlocks = selectedCapabilities.reduce((sum, value) => sum + value.planned_blocks, 0);
   const scannedBlocks = selectedCapabilities.reduce((sum, value) => sum + value.scanned_blocks, 0);
-  const pendingGoogleExports = Math.max(0, ...selectedCapabilities.map((value) => value.pending_google_exports));
-
   if (selectedCount === 0) {
     const reason = "Выберите заказ";
     return {
@@ -1391,7 +1377,6 @@ function buildActionState(
       disabledReason: actionDisabledReasons(reason),
       plannedBlocks,
       scannedBlocks,
-      pendingGoogleExports,
     };
   }
   if (selectedCapabilities.length !== selectedCount) {
@@ -1401,13 +1386,12 @@ function buildActionState(
       disabledReason: actionDisabledReasons(reason),
       plannedBlocks,
       scannedBlocks,
-      pendingGoogleExports,
     };
   }
   const disabledReason = actionDisabledReasons("");
   if (selectedCount > 1) {
     const reason = "Выберите один заказ";
-    for (const action of ["resync", "archive", "cancel", "deleteActive", "resetRescan", "restore", "resyncSkladBot"] as OrderActionKind[]) {
+    for (const action of ["archive", "cancel", "deleteActive", "resetRescan", "restore", "resyncSkladBot"] as OrderActionKind[]) {
       disabledReason[action] = reason;
     }
     const blocked = selectedCapabilities.find((value) => !value.allowed.completeWithoutKiz);
@@ -1423,12 +1407,11 @@ function buildActionState(
     }
   }
 
-  return { selectedCount, disabledReason, plannedBlocks, scannedBlocks, pendingGoogleExports };
+  return { selectedCount, disabledReason, plannedBlocks, scannedBlocks };
 }
 
 function actionDisabledReasons(reason: string): Record<OrderActionKind, string> {
   return {
-    resync: reason,
     archive: reason,
     completeWithoutKiz: reason,
     cancel: reason,
@@ -1447,7 +1430,6 @@ function firstVisibleActionBlockReason(reasons: Record<OrderActionKind, string>)
     reasons.resetRescan,
     reasons.restore,
     reasons.resyncSkladBot,
-    reasons.resync,
     reasons.completeWithoutKiz,
   ].find((reason, index, list) => reason && list.indexOf(reason) === index) || "";
 }
@@ -1467,7 +1449,7 @@ function validateBulkCompleteResult(result: AdminBulkActionResult) {
     throw new Error(bulkCompleteErrorText(result));
   }
   if (result.requested > 0 && result.completed === 0) {
-    throw new Error("Backend не закрыл ни одного заказа. Обновите таблицу и проверьте Google очередь.");
+    throw new Error("Backend не закрыл ни одного заказа. Обновите таблицу и проверьте журнал событий.");
   }
 }
 
@@ -1480,7 +1462,7 @@ function bulkCompleteErrorText(result: AdminBulkActionResult) {
 }
 
 function bulkCompleteSuccessText(result: AdminBulkActionResult) {
-  return `Закрыто ${result.completed} из ${result.requested}, Google архив поставлен в очередь`;
+  return `Закрыто ${result.completed} из ${result.requested}, данные сохранены в PostgreSQL`;
 }
 
 function ActionBar({
@@ -1488,7 +1470,6 @@ function ActionBar({
   state,
   busyAction,
   onClear,
-  onResync,
   onResetRescan,
   onCompleteWithoutKiz,
   onArchive,
@@ -1501,7 +1482,6 @@ function ActionBar({
   state: ActionState;
   busyAction: string;
   onClear: () => void;
-  onResync: () => void;
   onResetRescan: () => void;
   onCompleteWithoutKiz: () => void;
   onArchive: () => void;
@@ -1522,7 +1502,6 @@ function ActionBar({
           {state.selectedCount === 1
             ? `${selectedRows.length} поз., ${state.scannedBlocks}/${state.plannedBlocks} блоков`
             : `${state.selectedCount} заказов`}
-          {state.pendingGoogleExports > 0 ? `, Google очередь ${state.pendingGoogleExports}` : ""}
         </span>
         {visibleBlockReason && (
           <span className="action-warning">
@@ -1532,15 +1511,6 @@ function ActionBar({
         )}
       </div>
       <div className="action-buttons">
-        <button
-          className="ghost-button"
-          onClick={onResync}
-          disabled={isBusy || Boolean(state.disabledReason.resync)}
-          title={state.disabledReason.resync || "Повторно записать заказ в Google"}
-        >
-          {busyAction === "resync" ? <Loader2 className="spin" size={16} /> : <Database size={16} />}
-          Ресинк Google
-        </button>
         <button
           className="ghost-button"
           onClick={onResetRescan}
@@ -1867,7 +1837,6 @@ function AdminRowsTable({
           <col className="blocks-col" />
           <col className="status-col" />
           <col className="skladbot-col" />
-          <col className="google-col" />
           <col className="money-col" />
         </colgroup>
         <thead>
@@ -1887,7 +1856,6 @@ function AdminRowsTable({
             <th>Блоки</th>
             <th>Статус</th>
             <th>SkladBot</th>
-            <th>Google</th>
             <th>Сумма</th>
           </tr>
         </thead>
@@ -1940,21 +1908,13 @@ function AdminRowsTable({
                     </span>
                   )}
                 </td>
-                <td>
-                  <span className={`status-badge google-${row.google_sheet_status}`}>
-                    {googleStatusLabel(row.google_sheet_status)}
-                  </span>
-                  {row.pending_google_exports > 0 && (
-                    <span className="table-muted">в очереди {row.pending_google_exports}</span>
-                  )}
-                </td>
                 <td className="numeric-cell">{formatMoney(row.line_total)}</td>
               </tr>
             );
           })}
           {rows.length === 0 && (
             <tr>
-              <td colSpan={9}>Нет данных</td>
+              <td colSpan={8}>Нет данных</td>
             </tr>
           )}
         </tbody>
@@ -2813,7 +2773,7 @@ function SystemDiagnosticsPanel({
         <DiagnosticCard
           label="Требует внимания"
           value={`${numberField(operationsAttention?.summary, "total")} пунктов`}
-          detail={`hot path ${numberField(operationsAttention?.summary, "hot_path")}, mirror ${numberField(operationsAttention?.summary, "mirror")}`}
+          detail={`hot path ${numberField(operationsAttention?.summary, "hot_path")}`}
           tone={attentionItems.length ? "warn" : "ok"}
         />
       </div>
@@ -3031,12 +2991,10 @@ function statusBucketLabel(value: string) {
   if (value === "archive_no_kiz") return "Архив без КИЗов";
   if (value === "cancelled") return "Отменено";
   if (value === "returned") return "Возврат";
-  if (value === "removed_from_google") return "Удалено";
   return value || "-";
 }
 
 function actionPrompt(kind: OrderActionKind, row: AdminTableRow, selectedCount = 1) {
-  if (kind === "resync") return `Причина ресинка Google для заказа ${row.client}`;
   if (kind === "resetRescan") return `Причина сброса заказа ${row.client} на пересканирование`;
   if (kind === "completeWithoutKiz") return selectedCount > 1
     ? `Причина закрытия ${selectedCount} заказов как выполненных без КИЗов`
@@ -3049,24 +3007,22 @@ function actionPrompt(kind: OrderActionKind, row: AdminTableRow, selectedCount =
 }
 
 function actionConfirmText(kind: OrderActionKind, row: AdminTableRow, selectedCount = 1) {
-  if (kind === "resync") return `Повторно синхронизировать заказ ${row.client} с Google?`;
   if (kind === "resetRescan") return `Сбросить все КИЗы заказа ${row.client} и вернуть его на пересканирование?`;
   if (kind === "completeWithoutKiz") return selectedCount > 1
     ? `Закрыть ${selectedCount} выбранных заказов как выполненные и перенести их в архив?`
     : `Закрыть заказ ${row.client} как выполненный и перенести его в архив?`;
   if (kind === "archive") return `Перенести заказ ${row.client} в архив без КИЗов?`;
-  if (kind === "deleteActive") return `Удалить заказ ${row.client} из активных TakSklad? Заказ и позиции будут удалены из backend, строки Google будут поставлены в очередь на удаление. Если есть SkladBot-заявка, удалите ее вручную.`;
+  if (kind === "deleteActive") return `Удалить заказ ${row.client} из активных TakSklad? Заказ и позиции будут удалены из PostgreSQL. Если есть SkladBot-заявка, удалите ее вручную.`;
   if (kind === "restore") return `Восстановить заказ ${row.client} в активные?`;
   if (kind === "resyncSkladBot") return `Повторно подтянуть SkladBot номер для заказа ${row.client}?`;
   return `Отменить заказ ${row.client}?`;
 }
 
 function actionSuccessText(kind: OrderActionKind) {
-  if (kind === "resync") return "Ресинк Google запущен";
   if (kind === "resetRescan") return "Заказ сброшен на пересканирование";
   if (kind === "completeWithoutKiz") return "Выбранные заказы закрыты как выполненные и отправлены в архив";
   if (kind === "archive") return "Заказ перенесен в архив без КИЗов";
-  if (kind === "deleteActive") return "Активный заказ удален, строки Google поставлены в очередь на удаление";
+  if (kind === "deleteActive") return "Активный заказ удален из PostgreSQL";
   if (kind === "restore") return "Заказ восстановлен";
   if (kind === "resyncSkladBot") return "SkladBot проверка запущена";
   return "Заказ отменен";
@@ -3081,6 +3037,7 @@ function isHistoryTab(value: Tab) {
 }
 
 function panelResourcesForTab(value: Tab, calendarMonth: string) {
+  if (value === "warehouse") return [];
   if (value === "clients") return ["client-points"];
   if (value === "calendar") return [`calendar:${calendarMonth}`];
   if (value === "smartup") return ["smartup-history"];
@@ -3093,6 +3050,7 @@ function panelResourcesForTab(value: Tab, calendarMonth: string) {
 
 function accessibleTabsForPermissions(permissions: string[]): Tab[] {
   const tabs: Tab[] = [];
+  if (permissions.includes("warehouse:read")) tabs.push("warehouse");
   if (permissions.includes("admin:read")) tabs.push("table");
   if (permissions.includes("client_points:read")) tabs.push("calendar", "clients");
   if (permissions.includes("admin:read")) tabs.push("smartup");
@@ -3230,14 +3188,6 @@ function numberField(record: unknown, key: string) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function googleStatusLabel(value: string) {
-  if (value === "synced") return "Синхр.";
-  if (value === "pending") return "Очередь";
-  if (value === "removed_from_google") return "Удалено";
-  if (value === "unknown") return "Неизвестно";
-  return value || "-";
 }
 
 function formatDate(value: string | null) {

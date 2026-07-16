@@ -413,7 +413,6 @@ jobs:
               "TELEGRAM_ALLOWED_CHAT_IDS": ",".join(merged),
               "SMARTUP_AUTO_IMPORT_SAGA_MODE": "disabled",
               "SMARTUP_AUTO_IMPORT_PROCESS_SKLADBOT_NOW": "false",
-              "TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED": "false",
           }
           lines = env_path.read_text(encoding="utf-8").splitlines()
           found = set()
@@ -435,8 +434,7 @@ jobs:
           print(
               "PRODUCTION_CONFIG_RECOVERY_OK "
               "fields=TAKSKLAD_LEGACY_AUTH_EXPIRES_AT,TELEGRAM_ALLOWED_CHAT_IDS,"
-              "SMARTUP_AUTO_IMPORT_SAGA_MODE,SMARTUP_AUTO_IMPORT_PROCESS_SKLADBOT_NOW,"
-              "TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED values_redacted=1"
+              "SMARTUP_AUTO_IMPORT_SAGA_MODE,SMARTUP_AUTO_IMPORT_PROCESS_SKLADBOT_NOW values_redacted=1"
           )
           PY
           chmod +x deploy/vds/deploy_from_git.sh tools/production_preflight.sh tools/live_release_verifier.sh
@@ -470,13 +468,36 @@ jobs:
           test -n "\$current_revision"
           test -n "\$target_revision"
           if test "\$current_revision" = "\$target_revision"; then
+            docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml \
+              stop -t 45 backend-api telegram-worker skladbot-worker smartup-auto-import-worker
+            running_writers="\$(docker compose --env-file deploy/vds/.env \
+              -f deploy/vds/docker-compose.yml ps --status running --services)"
+            for writer in backend-api telegram-worker skladbot-worker smartup-auto-import-worker; do
+              ! grep -Fxq "\$writer" <<<"\$running_writers"
+            done
+            compose_project="\$(docker compose --env-file deploy/vds/.env \
+              -f deploy/vds/docker-compose.yml config --format json | \
+              python3 -c 'import json,sys; name=str((json.load(sys.stdin) or {}).get("name") or "").strip(); assert name; print(name)')"
+            legacy_google_ids="\$(docker ps -aq \
+              --filter label=com.docker.compose.project=\$compose_project \
+              --filter label=com.docker.compose.service=google-sheets-sync-worker)"
+            if test -n "\$legacy_google_ids"; then
+              docker container stop -t 45 \$legacy_google_ids
+              docker container rm -f \$legacy_google_ids
+            fi
+            test -z "\$(docker ps -aq \
+              --filter label=com.docker.compose.project=\$compose_project \
+              --filter label=com.docker.compose.service=google-sheets-sync-worker)"
             ./deploy/vds/backup_postgres.sh --no-prune </dev/null
+            active_legacy_google_events="\$(docker compose --env-file deploy/vds/.env \
+              -f deploy/vds/docker-compose.yml exec -T postgres sh -ec \
+              'psql -At -v ON_ERROR_STOP=1 -U "\$POSTGRES_USER" -d "\$POSTGRES_DB" -c "select count(*) from pending_events where event_type = '\''google_sheets_export'\'' and status in ('\''pending'\'','\''failed'\'','\''error'\'','\''processing'\'','\''blocked'\'','\''active'\'','\''waiting_shipment_date'\'','\''waiting_date_choice'\'')"' </dev/null)"
+            test "\$active_legacy_google_events" = 0
             export TAKSKLAD_COMMIT_SHA="\$RELEASE_SOURCE_SHA"
             export TAKSKLAD_IMAGE_DIGEST="\$RELEASE_BACKEND_DIGEST"
             docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml \
               up -d --no-deps --no-build --pull never \
-              backend-api frontend telegram-worker google-sheets-sync-worker \
-              skladbot-worker smartup-auto-import-worker
+              backend-api frontend telegram-worker skladbot-worker smartup-auto-import-worker
             backend_id="\$(docker compose --env-file deploy/vds/.env \
               -f deploy/vds/docker-compose.yml ps -q backend-api </dev/null)"
             cat > /tmp/taksklad-phase27-recover.py <<'PY'
@@ -565,7 +586,7 @@ jobs:
               sleep 5
             done
             if test "\$runtime_ready" != 1; then
-              for service in backend-api frontend telegram-worker google-sheets-sync-worker skladbot-worker smartup-auto-import-worker; do
+              for service in backend-api frontend telegram-worker skladbot-worker smartup-auto-import-worker; do
                 service_id="\$(docker compose --env-file deploy/vds/.env \
                   -f deploy/vds/docker-compose.yml ps -q "\$service" </dev/null)"
                 docker inspect --format "RUNTIME_STATE service=\$service status={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} restart_count={{.RestartCount}} exit_code={{.State.ExitCode}}" \
@@ -577,7 +598,7 @@ jobs:
           try: r=urlopen(u, timeout=5)
           except HTTPError as e: r=e
           p=json.load(r); print(json.dumps({'ready':p.get('ready'),'status':p.get('status'),'database':p.get('database'),'migrations':p.get('migrations'),'workers':p.get('workers'),'policy':p.get('policy'),'queue':p.get('queue')}, sort_keys=True))" </dev/null || true
-              docker exec "\$backend_id" python -c "import json; from sqlalchemy import func, select; from app import skladbot_daily_report; from app.db import SessionLocal; from app.health_service import daily_report_event_report_date, daily_report_failure_resolved_by_later_success; from app.models import PendingEvent; db=SessionLocal(); rows=db.execute(select(PendingEvent.event_type, PendingEvent.status, func.count(PendingEvent.id)).where(PendingEvent.status.in_(('failed','error','blocked'))).where(PendingEvent.event_type != 'google_sheets_export').group_by(PendingEvent.event_type, PendingEvent.status).order_by(PendingEvent.event_type, PendingEvent.status)).all(); events=db.execute(select(PendingEvent).where(PendingEvent.event_type == 'skladbot_daily_report_send').where(PendingEvent.status == 'failed')).scalars().all(); unresolved=[e for e in events if not daily_report_failure_resolved_by_later_success(db,e)]; today=skladbot_daily_report.business_today().isoformat(); summary={'groups':[{'event_type':a,'status':b,'count':int(c)} for a,b,c in rows], 'unresolved_daily_report_current':sum(daily_report_event_report_date(e) == today for e in unresolved), 'unresolved_daily_report_historical':sum(daily_report_event_report_date(e) != today for e in unresolved)}; db.close(); print('HOT_PATH_FAILURE_GROUPS ' + json.dumps(summary, sort_keys=True))" </dev/null || true
+              docker exec "\$backend_id" python -c "import json; from sqlalchemy import func, select; from app import skladbot_daily_report; from app.db import SessionLocal; from app.health_service import daily_report_event_report_date, daily_report_failure_resolved_by_later_success; from app.models import PendingEvent; db=SessionLocal(); rows=db.execute(select(PendingEvent.event_type, PendingEvent.status, func.count(PendingEvent.id)).where(PendingEvent.status.in_(('failed','error','blocked'))).group_by(PendingEvent.event_type, PendingEvent.status).order_by(PendingEvent.event_type, PendingEvent.status)).all(); events=db.execute(select(PendingEvent).where(PendingEvent.event_type == 'skladbot_daily_report_send').where(PendingEvent.status == 'failed')).scalars().all(); unresolved=[e for e in events if not daily_report_failure_resolved_by_later_success(db,e)]; today=skladbot_daily_report.business_today().isoformat(); summary={'groups':[{'event_type':a,'status':b,'count':int(c)} for a,b,c in rows], 'unresolved_daily_report_current':sum(daily_report_event_report_date(e) == today for e in unresolved), 'unresolved_daily_report_historical':sum(daily_report_event_report_date(e) != today for e in unresolved)}; db.close(); print('HOT_PATH_FAILURE_GROUPS ' + json.dumps(summary, sort_keys=True))" </dev/null || true
               exit 1
             fi
             echo "PHASE27_RETRY_RUNTIME_OK revision=\$current_revision"
@@ -602,10 +623,15 @@ jobs:
           sed -i 's/compose up -d --no-build/compose up -d --no-deps --no-build/g' \
             deploy/vds/deploy_from_git.sh
           grep -q 'compose up -d --no-deps --no-build' deploy/vds/deploy_from_git.sh
-          sed -i 's/if google_sync_status != 0 or google_sync.get("status") != "ok":/if google_sync_status != 0:/' \
-            deploy/vds/acceptance_status.sh
-          grep -q 'if google_sync_status != 0:' deploy/vds/acceptance_status.sh
-          echo "PHASE27_GOOGLE_MIRROR_POLICY_OK role=optional diagnostic_required=1 data_mutations=0"
+          ! docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml config --services | \
+            grep -Fxq google-sheets-sync-worker
+          compose_project="\$(docker compose --env-file deploy/vds/.env \
+            -f deploy/vds/docker-compose.yml config --format json | \
+            python3 -c 'import json,sys; name=str((json.load(sys.stdin) or {}).get("name") or "").strip(); assert name; print(name)')"
+          test -z "\$(docker ps -aq \
+            --filter label=com.docker.compose.project=\$compose_project \
+            --filter label=com.docker.compose.service=google-sheets-sync-worker)"
+          echo "DB_ONLY_RUNTIME_POLICY_OK retired_worker_absent=1"
           deployment_record=/opt/stacks/taksklad/deployments/current-release.json
           if python3 - "\$deployment_record" release.json <<'PY'
           import json

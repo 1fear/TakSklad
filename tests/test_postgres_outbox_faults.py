@@ -1,7 +1,8 @@
 import os
+import threading
 import unittest
 import uuid
-from datetime import date
+from datetime import date, datetime, timezone
 from unittest import mock
 
 from sqlalchemy import create_engine, select, text
@@ -9,7 +10,7 @@ from sqlalchemy.orm import sessionmaker
 
 from backend.app.imports_service import create_import
 from backend.app.models import ImportJob, KizMovement, Order, OrderItem, PendingEvent, ScanCode
-from backend.app.orders_service import complete_order, create_scan, mark_order_returned
+from backend.app.orders_service import ApiError, complete_order, create_scan, lookup_kiz_availability, mark_order_returned
 from backend.app.schemas import ImportCreate, ScanCreate
 from tests.postgres_support import create_database, drop_database, run_alembic
 
@@ -49,7 +50,15 @@ class PostgresOutboxFaultTests(unittest.TestCase):
                 RESTART IDENTITY CASCADE
             """))
 
-    def seed_order(self, *, status="not_completed", scanned_blocks=0, requires_kiz=True, with_scan=False):
+    def seed_order(
+        self,
+        *,
+        status="not_completed",
+        scanned_blocks=0,
+        requires_kiz=True,
+        with_scan=False,
+        quantity_blocks=2,
+    ):
         with self.SessionLocal() as session:
             order = Order(
                 source="synthetic_phase9",
@@ -64,8 +73,8 @@ class PostgresOutboxFaultTests(unittest.TestCase):
             item = OrderItem(
                 order=order,
                 product="Synthetic Product",
-                quantity_pieces=20,
-                quantity_blocks=2,
+                quantity_pieces=quantity_blocks * 10,
+                quantity_blocks=quantity_blocks,
                 pieces_per_block=10,
                 scanned_blocks=scanned_blocks,
                 requires_kiz=requires_kiz,
@@ -121,12 +130,8 @@ class PostgresOutboxFaultTests(unittest.TestCase):
                         expected = 0 if stage == "before_commit" else 1
                         self.assertEqual(len(mutation_count), expected)
                         self.assertEqual(item.scanned_blocks, expected)
-                        self.assertEqual(len(events), expected)
-                        if events:
-                            self.assertEqual(
-                                (events[0].action, events[0].aggregate_type, events[0].aggregate_id),
-                                ("google_sheets_scan_export", "order_item", str(item_id)),
-                            )
+                        self.assertEqual(events, [])
+
                     elif producer == "complete":
                         order_id, _item_id = self.seed_order(requires_kiz=False)
                         self.execute_case(producer, stage, lambda session: complete_order(session, str(order_id)))
@@ -135,12 +140,7 @@ class PostgresOutboxFaultTests(unittest.TestCase):
                             events = observer.execute(select(PendingEvent)).scalars().all()
                         expected = 0 if stage == "before_commit" else 1
                         self.assertEqual(order.status, "not_completed" if not expected else "completed")
-                        self.assertEqual(len(events), expected)
-                        if events:
-                            self.assertEqual(
-                                (events[0].action, events[0].aggregate_type, events[0].aggregate_id),
-                                ("google_sheets_archive_export", "order", str(order_id)),
-                            )
+                        self.assertEqual(events, [])
                     elif producer == "return":
                         order_id, item_id = self.seed_order(
                             status="completed", scanned_blocks=2, requires_kiz=True, with_scan=True,
@@ -167,13 +167,12 @@ class PostgresOutboxFaultTests(unittest.TestCase):
                         durable = stage != "before_commit"
                         self.assertEqual(order.status, "returned" if durable else "completed")
                         self.assertEqual(len(movements), 1 if durable else 0)
-                        self.assertEqual(len(events), 3 if durable else 0)
+                        self.assertEqual(len(events), 1 if durable else 0)
                         if events:
-                            self.assertEqual({event.action for event in events}, {
-                                "skladbot_return_request_create",
-                                "google_sheets_archive_export",
-                                "google_sheets_return_export",
-                            })
+                            self.assertEqual(
+                                {event.action for event in events},
+                                {"skladbot_return_request_create"},
+                            )
                             self.assertTrue(all(
                                 event.aggregate_type == "order" and event.aggregate_id == str(order_id)
                                 for event in events
@@ -203,12 +202,114 @@ class PostgresOutboxFaultTests(unittest.TestCase):
                             items = observer.execute(select(OrderItem)).scalars().all()
                             events = observer.execute(select(PendingEvent)).scalars().all()
                         expected = 0 if stage == "before_commit" else 1
-                        self.assertEqual((len(imports), len(orders), len(items), len(events)), (expected,) * 4)
-                        if events:
-                            self.assertEqual(
-                                (events[0].action, events[0].aggregate_type, events[0].aggregate_id),
-                                ("google_sheets_import_export", "import", str(imports[0].id)),
-                            )
+                        self.assertEqual((len(imports), len(orders), len(items)), (expected,) * 3)
+                        self.assertEqual(events, [])
+
+    def test_late_scanner_timestamp_cannot_make_re_outbound_kiz_available_again(self):
+        self.reset_database()
+        code = "SYNTHETIC-LATE-RETURN-KIZ"
+        first_order_id, first_item_id = self.seed_order(quantity_blocks=1)
+        with self.SessionLocal() as session:
+            create_scan(session, ScanCreate(order_item_id=str(first_item_id), code=code))
+        with self.SessionLocal() as session:
+            complete_order(session, str(first_order_id))
+        with self.SessionLocal() as session:
+            mark_order_returned(
+                session,
+                str(first_order_id),
+                return_reference="SYNTHETIC-LATE-RETURN",
+                returned_by="postgres-test",
+                confirmed_items=[{
+                    "item_id": str(first_item_id),
+                    "product": "Synthetic Product",
+                    "quantity_blocks": 1,
+                    "quantity_pieces": 10,
+                }],
+            )
+
+        _second_order_id, second_item_id = self.seed_order(quantity_blocks=1)
+        with self.SessionLocal() as session:
+            create_scan(session, ScanCreate(
+                order_item_id=str(second_item_id),
+                code=code,
+                scanned_at=datetime(2000, 1, 1, tzinfo=timezone.utc),
+            ))
+
+        _third_order_id, third_item_id = self.seed_order(quantity_blocks=1)
+        with self.SessionLocal() as session:
+            availability = lookup_kiz_availability(session, code, str(third_item_id))
+            self.assertFalse(availability.available)
+            self.assertEqual(availability.latest_movement_type, "re_outbound")
+            with self.assertRaisesRegex(ApiError, "Code already scanned") as blocked:
+                create_scan(session, ScanCreate(order_item_id=str(third_item_id), code=code))
+            self.assertEqual(blocked.exception.status_code, 409)
+
+        with self.SessionLocal() as session:
+            movements = session.execute(
+                select(KizMovement).order_by(KizMovement.occurred_at, KizMovement.id)
+            ).scalars().all()
+        self.assertEqual([row.movement_type for row in movements], ["outbound", "return", "re_outbound"])
+        self.assertEqual(movements[-1].raw_payload["scanner_scanned_at"], "2000-01-01T00:00:00+00:00")
+
+    def test_concurrent_outbound_after_return_allows_exactly_one_new_owner(self):
+        self.reset_database()
+        code = "SYNTHETIC-CONCURRENT-RETURN-KIZ"
+        first_order_id, first_item_id = self.seed_order(quantity_blocks=1)
+        with self.SessionLocal() as session:
+            create_scan(session, ScanCreate(order_item_id=str(first_item_id), code=code))
+        with self.SessionLocal() as session:
+            complete_order(session, str(first_order_id))
+        with self.SessionLocal() as session:
+            mark_order_returned(
+                session,
+                str(first_order_id),
+                return_reference="SYNTHETIC-CONCURRENT-RETURN",
+                returned_by="postgres-test",
+                confirmed_items=[{
+                    "item_id": str(first_item_id),
+                    "product": "Synthetic Product",
+                    "quantity_blocks": 1,
+                    "quantity_pieces": 10,
+                }],
+            )
+
+        _second_order_id, second_item_id = self.seed_order(quantity_blocks=1)
+        _third_order_id, third_item_id = self.seed_order(quantity_blocks=1)
+        barrier = threading.Barrier(2)
+        outcomes = []
+        errors = []
+
+        def scan(item_id):
+            try:
+                with self.SessionLocal() as session:
+                    barrier.wait(timeout=5)
+                    result = create_scan(session, ScanCreate(order_item_id=str(item_id), code=code))
+                    outcomes.append(("created", str(result.order_item_id)))
+            except ApiError as exc:
+                outcomes.append(("blocked", exc.status_code))
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=scan, args=(item_id,), daemon=True)
+            for item_id in (second_item_id, third_item_id)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=15)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(sorted(kind for kind, _value in outcomes), ["blocked", "created"])
+        self.assertEqual([value for kind, value in outcomes if kind == "blocked"], [409])
+        with self.SessionLocal() as session:
+            movements = session.execute(
+                select(KizMovement).order_by(KizMovement.occurred_at, KizMovement.id)
+            ).scalars().all()
+            latest = lookup_kiz_availability(session, code)
+        self.assertEqual([row.movement_type for row in movements], ["outbound", "return", "re_outbound"])
+        self.assertFalse(latest.available)
+        self.assertEqual(latest.latest_movement_type, "re_outbound")
 
 
 if __name__ == "__main__":

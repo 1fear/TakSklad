@@ -10,7 +10,6 @@ import time
 from datetime import datetime
 
 from .config import (
-    CREDENTIALS_FILE,
     IMPORT_HISTORY_FILE,
     PENDING_PRINTS_FILE,
     PENDING_SAVES_FILE,
@@ -27,7 +26,6 @@ from .config import (
 from .secret_store import (
     BACKEND_API_TOKEN_SECRET,
     GEOCODER_API_KEY_SECRET,
-    GOOGLE_CREDENTIALS_SECRET,
     TELEGRAM_BOT_TOKEN_SECRET,
     SecretStoreError,
     get_secret_store,
@@ -57,7 +55,6 @@ def save_json_file(path, data):
 
 
 APP_DATA_DEFAULTS = {
-    "credentials": {},
     "telegram_settings": {},
     "pending_saves": [],
     "pending_prints": [],
@@ -339,7 +336,7 @@ def default_app_data():
 
 def sanitize_app_data_secrets(data):
     sanitized = copy.deepcopy(data) if isinstance(data, dict) else {}
-    sanitized["credentials"] = {}
+    sanitized.pop("credentials", None)
     telegram_settings = sanitized.get("telegram_settings")
     if isinstance(telegram_settings, dict):
         telegram_settings = dict(telegram_settings)
@@ -691,14 +688,6 @@ def should_migrate_section(current_value, default_value):
     return current_value in (None, "", [], {}) or current_value == default_value
 
 
-def credentials_look_valid(credentials):
-    return (
-        isinstance(credentials, dict)
-        and bool(credentials.get("client_email"))
-        and bool(credentials.get("private_key"))
-    )
-
-
 class SecretMigrationError(RuntimeError):
     pass
 
@@ -775,14 +764,6 @@ def _restore_file_snapshots(snapshots):
         raise SecretMigrationError("one or more plaintext source restores failed") from restore_errors[0]
 
 
-def _credential_candidate(value, source_class):
-    if value in (None, {}):
-        return None
-    if not isinstance(value, dict) or not credentials_look_valid(value):
-        raise SecretMigrationError(f"invalid Google credential source class={source_class}")
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-
 def _settings_token_candidate(value, source_class):
     if value in (None, {}):
         return None
@@ -823,7 +804,6 @@ def migrate_desktop_secrets(secret_store=None, *, allow_volatile_test_store=Fals
             source_paths = [
                 TAKSKLAD_DATA_FILE,
                 *backup_paths,
-                CREDENTIALS_FILE,
                 TELEGRAM_SETTINGS_FILE,
                 RUNTIME_CONFIG_FILE,
                 YANDEX_GEOCODER_KEY_FILE,
@@ -835,14 +815,9 @@ def migrate_desktop_secrets(secret_store=None, *, allow_volatile_test_store=Fals
                 _json_from_bytes(snapshots[path], path)
                 for path in backup_paths
             ]
-            credentials_file = _json_from_bytes(snapshots[CREDENTIALS_FILE], CREDENTIALS_FILE)
             telegram_file = _json_from_bytes(snapshots[TELEGRAM_SETTINGS_FILE], TELEGRAM_SETTINGS_FILE)
             runtime_config = _json_from_bytes(snapshots[RUNTIME_CONFIG_FILE], RUNTIME_CONFIG_FILE)
 
-            google_values = [
-                _credential_candidate(state.get("credentials"), "current_state"),
-                _credential_candidate(credentials_file, "credentials_file"),
-            ]
             telegram_values = [
                 _settings_token_candidate(state.get("telegram_settings"), "current_state"),
                 _settings_token_candidate(telegram_file, "telegram_file"),
@@ -868,7 +843,6 @@ def migrate_desktop_secrets(secret_store=None, *, allow_volatile_test_store=Fals
             ]
             for index, backup_state in enumerate(backup_states, start=1):
                 source_class = f"backup_{index}"
-                google_values.append(_credential_candidate(backup_state.get("credentials"), source_class))
                 telegram_values.append(
                     _settings_token_candidate(backup_state.get("telegram_settings"), source_class)
                 )
@@ -895,7 +869,6 @@ def migrate_desktop_secrets(secret_store=None, *, allow_volatile_test_store=Fals
                     raise SecretMigrationError("invalid geocoder source class=geocoder_file") from exc
 
             selected = {
-                GOOGLE_CREDENTIALS_SECRET: _first_candidate(google_values),
                 TELEGRAM_BOT_TOKEN_SECRET: _first_candidate(telegram_values),
                 BACKEND_API_TOKEN_SECRET: _first_candidate(backend_values),
                 GEOCODER_API_KEY_SECRET: _first_candidate(geocoder_values),
@@ -963,7 +936,7 @@ def migrate_desktop_secrets(secret_store=None, *, allow_volatile_test_store=Fals
                 _atomic_write_json(RUNTIME_CONFIG_FILE, runtime_sanitized)
             _storage_fault_hook("after_runtime_sanitize")
 
-            for path in (CREDENTIALS_FILE, TELEGRAM_SETTINGS_FILE, YANDEX_GEOCODER_KEY_FILE):
+            for path in (TELEGRAM_SETTINGS_FILE, YANDEX_GEOCODER_KEY_FILE):
                 if os.path.exists(path):
                     mutation_started = True
                     os.remove(path)
@@ -1025,22 +998,3 @@ def migrate_legacy_json_files_to_app_data():
                 raise OSError(f"failed to migrate JSON data into {TAKSKLAD_DATA_FILE}")
             logging.info("Данные JSON объединены в %s", TAKSKLAD_DATA_FILE)
         return data
-
-
-def load_credentials_data():
-    try:
-        serialized = get_secret_store().get_text(GOOGLE_CREDENTIALS_SECRET)
-    except SecretStoreError:
-        return {}
-    if not serialized:
-        return {}
-    try:
-        credentials = json.loads(serialized)
-    except (TypeError, ValueError):
-        return {}
-    return credentials if credentials_look_valid(credentials) else {}
-
-
-def credentials_available():
-    credentials = load_credentials_data()
-    return credentials_look_valid(credentials)

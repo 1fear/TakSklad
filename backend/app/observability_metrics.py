@@ -195,8 +195,8 @@ class BoundedMetricsRegistry:
 
 registry = BoundedMetricsRegistry()
 
-WORKER_NAMES = frozenset({"google_sheets_sync", "skladbot", "smartup_auto_import", "telegram"})
-PROVIDER_EVENT_PREFIXES = ("google_", "skladbot_", "smartup_", "telegram_")
+WORKER_NAMES = frozenset({"skladbot", "smartup_auto_import", "telegram"})
+PROVIDER_EVENT_PREFIXES = ("skladbot_", "smartup_", "telegram_")
 
 
 def _aware(value: datetime | None) -> datetime | None:

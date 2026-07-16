@@ -87,44 +87,6 @@
       "version": "2026.6.17"
     },
     {
-      "bom-ref": "pkg:pypi/cffi@2.0.0#marker-c6b50dd04f99",
-      "name": "cffi",
-      "properties": [
-        {
-          "name": "taksklad:source-lock",
-          "value": "backend/requirements.lock"
-        },
-        {
-          "name": "taksklad:distribution-hash-count",
-          "value": "84"
-        },
-        {
-          "name": "taksklad:environment-marker",
-          "value": "platform_python_implementation != 'PyPy'"
-        }
-      ],
-      "purl": "pkg:pypi/cffi@2.0.0",
-      "type": "library",
-      "version": "2.0.0"
-    },
-    {
-      "bom-ref": "pkg:pypi/charset-normalizer@3.4.9",
-      "name": "charset-normalizer",
-      "properties": [
-        {
-          "name": "taksklad:source-lock",
-          "value": "backend/requirements.lock"
-        },
-        {
-          "name": "taksklad:distribution-hash-count",
-          "value": "93"
-        }
-      ],
-      "purl": "pkg:pypi/charset-normalizer@3.4.9",
-      "type": "library",
-      "version": "3.4.9"
-    },
-    {
       "bom-ref": "pkg:pypi/click@8.4.2",
       "name": "click",
       "properties": [
@@ -163,23 +125,6 @@
       "version": "0.4.6"
     },
     {
-      "bom-ref": "pkg:pypi/cryptography@49.0.0",
-      "name": "cryptography",
-      "properties": [
-        {
-          "name": "taksklad:source-lock",
-          "value": "backend/requirements.lock"
-        },
-        {
-          "name": "taksklad:distribution-hash-count",
-          "value": "46"
-        }
-      ],
-      "purl": "pkg:pypi/cryptography@49.0.0",
-      "type": "library",
-      "version": "49.0.0"
-    },
-    {
       "bom-ref": "pkg:pypi/et-xmlfile@2.0.0",
       "name": "et-xmlfile",
       "properties": [
@@ -214,40 +159,6 @@
       "version": "0.133.1"
     },
     {
-      "bom-ref": "pkg:pypi/google-auth-oauthlib@1.4.0",
-      "name": "google-auth-oauthlib",
-      "properties": [
-        {
-          "name": "taksklad:source-lock",
-          "value": "backend/requirements.lock"
-        },
-        {
-          "name": "taksklad:distribution-hash-count",
-          "value": "2"
-        }
-      ],
-      "purl": "pkg:pypi/google-auth-oauthlib@1.4.0",
-      "type": "library",
-      "version": "1.4.0"
-    },
-    {
-      "bom-ref": "pkg:pypi/google-auth@2.55.2",
-      "name": "google-auth",
-      "properties": [
-        {
-          "name": "taksklad:source-lock",
-          "value": "backend/requirements.lock"
-        },
-        {
-          "name": "taksklad:distribution-hash-count",
-          "value": "2"
-        }
-      ],
-      "purl": "pkg:pypi/google-auth@2.55.2",
-      "type": "library",
-      "version": "2.55.2"
-    },
-    {
       "bom-ref": "pkg:pypi/greenlet@3.5.3#marker-ba401090686b",
       "name": "greenlet",
       "properties": [
@@ -267,23 +178,6 @@
       "purl": "pkg:pypi/greenlet@3.5.3",
       "type": "library",
       "version": "3.5.3"
-    },
-    {
-      "bom-ref": "pkg:pypi/gspread@6.2.1",
-      "name": "gspread",
-      "properties": [
-        {
-          "name": "taksklad:source-lock",
-          "value": "backend/requirements.lock"
-        },
-        {
-          "name": "taksklad:distribution-hash-count",
-          "value": "2"
-        }
-      ],
-      "purl": "pkg:pypi/gspread@6.2.1",
-      "type": "library",
-      "version": "6.2.1"
     },
     {
       "bom-ref": "pkg:pypi/h11@0.16.0",
@@ -405,23 +299,6 @@
       "version": "3.0.3"
     },
     {
-      "bom-ref": "pkg:pypi/oauthlib@3.3.1",
-      "name": "oauthlib",
-      "properties": [
-        {
-          "name": "taksklad:source-lock",
-          "value": "backend/requirements.lock"
-        },
-        {
-          "name": "taksklad:distribution-hash-count",
-          "value": "2"
-        }
-      ],
-      "purl": "pkg:pypi/oauthlib@3.3.1",
-      "type": "library",
-      "version": "3.3.1"
-    },
-    {
       "bom-ref": "pkg:pypi/openpyxl@3.1.5",
       "name": "openpyxl",
       "properties": [
@@ -475,61 +352,6 @@
       "purl": "pkg:pypi/psycopg@3.2.3",
       "type": "library",
       "version": "3.2.3"
-    },
-    {
-      "bom-ref": "pkg:pypi/pyasn1-modules@0.4.2",
-      "name": "pyasn1-modules",
-      "properties": [
-        {
-          "name": "taksklad:source-lock",
-          "value": "backend/requirements.lock"
-        },
-        {
-          "name": "taksklad:distribution-hash-count",
-          "value": "2"
-        }
-      ],
-      "purl": "pkg:pypi/pyasn1-modules@0.4.2",
-      "type": "library",
-      "version": "0.4.2"
-    },
-    {
-      "bom-ref": "pkg:pypi/pyasn1@0.6.4",
-      "name": "pyasn1",
-      "properties": [
-        {
-          "name": "taksklad:source-lock",
-          "value": "backend/requirements.lock"
-        },
-        {
-          "name": "taksklad:distribution-hash-count",
-          "value": "2"
-        }
-      ],
-      "purl": "pkg:pypi/pyasn1@0.6.4",
-      "type": "library",
-      "version": "0.6.4"
-    },
-    {
-      "bom-ref": "pkg:pypi/pycparser@3.0#marker-fd5930026c64",
-      "name": "pycparser",
-      "properties": [
-        {
-          "name": "taksklad:source-lock",
-          "value": "backend/requirements.lock"
-        },
-        {
-          "name": "taksklad:distribution-hash-count",
-          "value": "2"
-        },
-        {
-          "name": "taksklad:environment-marker",
-          "value": "implementation_name != 'PyPy' and platform_python_implementation != 'PyPy'"
-        }
-      ],
-      "purl": "pkg:pypi/pycparser@3.0",
-      "type": "library",
-      "version": "3.0"
     },
     {
       "bom-ref": "pkg:pypi/pydantic-core@2.27.2",
@@ -598,40 +420,6 @@
       "purl": "pkg:pypi/pyyaml@6.0.3",
       "type": "library",
       "version": "6.0.3"
-    },
-    {
-      "bom-ref": "pkg:pypi/requests-oauthlib@2.0.0",
-      "name": "requests-oauthlib",
-      "properties": [
-        {
-          "name": "taksklad:source-lock",
-          "value": "backend/requirements.lock"
-        },
-        {
-          "name": "taksklad:distribution-hash-count",
-          "value": "2"
-        }
-      ],
-      "purl": "pkg:pypi/requests-oauthlib@2.0.0",
-      "type": "library",
-      "version": "2.0.0"
-    },
-    {
-      "bom-ref": "pkg:pypi/requests@2.34.2",
-      "name": "requests",
-      "properties": [
-        {
-          "name": "taksklad:source-lock",
-          "value": "backend/requirements.lock"
-        },
-        {
-          "name": "taksklad:distribution-hash-count",
-          "value": "2"
-        }
-      ],
-      "purl": "pkg:pypi/requests@2.34.2",
-      "type": "library",
-      "version": "2.34.2"
     },
     {
       "bom-ref": "pkg:pypi/sqlalchemy@2.0.36",
@@ -723,23 +511,6 @@
       "version": "2026.3"
     },
     {
-      "bom-ref": "pkg:pypi/urllib3@2.7.0",
-      "name": "urllib3",
-      "properties": [
-        {
-          "name": "taksklad:source-lock",
-          "value": "backend/requirements.lock"
-        },
-        {
-          "name": "taksklad:distribution-hash-count",
-          "value": "2"
-        }
-      ],
-      "purl": "pkg:pypi/urllib3@2.7.0",
-      "type": "library",
-      "version": "2.7.0"
-    },
-    {
       "bom-ref": "pkg:pypi/uvicorn@0.34.0",
       "name": "uvicorn",
       "properties": [
@@ -820,17 +591,11 @@
         "pkg:pypi/annotated-types@0.7.0",
         "pkg:pypi/anyio@4.14.1",
         "pkg:pypi/certifi@2026.6.17",
-        "pkg:pypi/cffi@2.0.0#marker-c6b50dd04f99",
-        "pkg:pypi/charset-normalizer@3.4.9",
         "pkg:pypi/click@8.4.2",
         "pkg:pypi/colorama@0.4.6#marker-ab0b932958ff",
-        "pkg:pypi/cryptography@49.0.0",
         "pkg:pypi/et-xmlfile@2.0.0",
         "pkg:pypi/fastapi@0.133.1",
-        "pkg:pypi/google-auth-oauthlib@1.4.0",
-        "pkg:pypi/google-auth@2.55.2",
         "pkg:pypi/greenlet@3.5.3#marker-ba401090686b",
-        "pkg:pypi/gspread@6.2.1",
         "pkg:pypi/h11@0.16.0",
         "pkg:pypi/httpcore@1.0.9",
         "pkg:pypi/httptools@0.8.0",
@@ -838,25 +603,18 @@
         "pkg:pypi/idna@3.18",
         "pkg:pypi/mako@1.3.12",
         "pkg:pypi/markupsafe@3.0.3",
-        "pkg:pypi/oauthlib@3.3.1",
         "pkg:pypi/openpyxl@3.1.5",
         "pkg:pypi/psycopg-binary@3.2.3#marker-563b77bbfb54",
         "pkg:pypi/psycopg@3.2.3",
-        "pkg:pypi/pyasn1-modules@0.4.2",
-        "pkg:pypi/pyasn1@0.6.4",
-        "pkg:pypi/pycparser@3.0#marker-fd5930026c64",
         "pkg:pypi/pydantic-core@2.27.2",
         "pkg:pypi/pydantic@2.10.4",
         "pkg:pypi/python-dotenv@1.2.2",
         "pkg:pypi/pyyaml@6.0.3",
-        "pkg:pypi/requests-oauthlib@2.0.0",
-        "pkg:pypi/requests@2.34.2",
         "pkg:pypi/sqlalchemy@2.0.36",
         "pkg:pypi/starlette@1.3.1",
         "pkg:pypi/typing-extensions@4.16.0",
         "pkg:pypi/typing-inspection@0.4.2",
         "pkg:pypi/tzdata@2026.3#marker-ab0b932958ff",
-        "pkg:pypi/urllib3@2.7.0",
         "pkg:pypi/uvicorn@0.34.0",
         "pkg:pypi/uvloop@0.22.1#marker-7e187e9b37ad",
         "pkg:pypi/watchfiles@1.2.0",

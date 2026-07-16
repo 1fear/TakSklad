@@ -71,8 +71,8 @@ class BackendRuntimeConfigTests(unittest.TestCase):
             set_secret_store_for_tests(MemorySecretStore())
             config = load_config_from_app_dir(tmp_dir)
 
-        self.assertFalse(config.TAKSKLAD_BACKEND_ENABLED)
-        self.assertFalse(config.TAKSKLAD_BACKEND_READ_ORDERS_ENABLED)
+        self.assertTrue(config.TAKSKLAD_BACKEND_ENABLED)
+        self.assertTrue(config.TAKSKLAD_BACKEND_READ_ORDERS_ENABLED)
         self.assertEqual(config.TAKSKLAD_BACKEND_BASE_URL, "")
         self.assertEqual(config.TAKSKLAD_BACKEND_API_TOKEN, "")
         self.assertEqual(config.TAKSKLAD_BACKEND_TIMEOUT_SECONDS, 8)
@@ -97,7 +97,7 @@ class BackendRuntimeConfigTests(unittest.TestCase):
                 },
             )
 
-        self.assertFalse(config.TAKSKLAD_BACKEND_ENABLED)
+        self.assertTrue(config.TAKSKLAD_BACKEND_ENABLED)
         self.assertEqual(config.TAKSKLAD_BACKEND_API_TOKEN, "env-token")
         self.assertEqual(config.TAKSKLAD_BACKEND_BASE_URL, "https://example.test/api")
         self.assertEqual(config.TAKSKLAD_BACKEND_TIMEOUT_SECONDS, 12)
@@ -114,13 +114,13 @@ class BackendRuntimeConfigTests(unittest.TestCase):
                     },
                 )
 
-    def test_without_runtime_json_backend_stays_disabled(self):
+    def test_without_runtime_json_backend_stays_fail_closed_without_credentials(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             set_secret_store_for_tests(MemorySecretStore())
             config = load_config_from_app_dir(tmp_dir)
 
-        self.assertFalse(config.TAKSKLAD_BACKEND_ENABLED)
-        self.assertFalse(config.TAKSKLAD_BACKEND_READ_ORDERS_ENABLED)
+        self.assertTrue(config.TAKSKLAD_BACKEND_ENABLED)
+        self.assertTrue(config.TAKSKLAD_BACKEND_READ_ORDERS_ENABLED)
         self.assertEqual(config.TAKSKLAD_BACKEND_BASE_URL, "")
         self.assertEqual(config.TAKSKLAD_BACKEND_API_TOKEN, "")
 

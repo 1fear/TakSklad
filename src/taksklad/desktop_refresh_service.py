@@ -1,8 +1,6 @@
 import logging
 
 from .backend_client import (
-    backend_enabled,
-    backend_read_orders_enabled,
     fetch_backend_sheet_data,
     sync_backend_sources,
 )
@@ -11,28 +9,11 @@ from .backend_events import (
     load_pending_backend_events,
     sync_pending_backend_events,
 )
-from .config import (
-    TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED,
-    TAKSKLAD_BACKEND_ONLY_REFRESH,
-)
-from .pending_store import (
-    get_pending_codes,
-    load_pending_saves,
-    sync_pending_saves,
-)
-from .sheets import get_all_existing_codes, get_today_orders
-from .skladbot_sync import sync_skladbot_request_numbers
 from .utils import normalize_text
 
 
 def backend_only_refresh_enabled():
-    return bool(backend_read_orders_enabled() and TAKSKLAD_BACKEND_ONLY_REFRESH)
-
-
-def backend_google_fallback_enabled():
-    if not backend_only_refresh_enabled():
-        return True
-    return bool(TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED)
+    return True
 
 
 def format_refresh_error_message(exc, has_cached_orders=False):
@@ -47,144 +28,58 @@ def format_refresh_error_message(exc, has_cached_orders=False):
             f"Список заказов пока не загружен: {reason}. "
             "Проверьте связь с backend и повторите обновление."
         )
-    return (
-        f"Список заказов пока не загружен: {reason}. "
-        "Проверьте связь с Google Sheets и повторите обновление."
-    )
-
-
-def fetch_google_sheet_data():
-    today_orders, sheet, all_rows = get_today_orders(apply_skladbot_filter=False, include_rows=True)
-    all_existing_codes = get_all_existing_codes(sheet, all_rows=all_rows) if sheet else set()
-    all_existing_codes.update(get_pending_codes())
-    all_existing_codes.update(get_pending_backend_codes())
-    return today_orders, sheet, all_existing_codes
+    return f"Список заказов пока не загружен: {reason}. Проверьте связь с backend и повторите обновление."
 
 
 def fetch_sheet_data():
-    if backend_read_orders_enabled():
-        try:
-            today_orders, sheet, all_existing_codes = fetch_backend_sheet_data()
-            all_existing_codes.update(get_pending_backend_codes())
-            return today_orders, sheet, all_existing_codes
-        except Exception as exc:
-            if not backend_google_fallback_enabled():
-                logging.warning(
-                    "Backend orders unavailable, Google fallback disabled by backend-only refresh",
-                    exc_info=True,
-                )
-                raise RuntimeError(f"Backend refresh недоступен: {exc}") from exc
-            logging.warning("Backend orders unavailable, fallback to Google Sheets", exc_info=True)
-
     try:
-        return fetch_google_sheet_data()
-    except Exception:
-        if not backend_read_orders_enabled():
-            raise
-        logging.warning("Google Sheets недоступен, загружаем fallback из backend", exc_info=True)
         today_orders, sheet, all_existing_codes = fetch_backend_sheet_data()
         all_existing_codes.update(get_pending_backend_codes())
         return today_orders, sheet, all_existing_codes
+    except Exception as exc:
+        logging.warning("Backend orders unavailable; desktop fails closed", exc_info=True)
+        raise RuntimeError(f"Backend refresh недоступен: {exc}") from exc
 
 
 def fetch_sheet_data_with_sync(sync_skladbot=True):
-    if backend_read_orders_enabled():
-        try:
-            backend_result = sync_pending_backend_events()
-        except Exception as exc:
-            logging.warning("Backend queue sync failed before refresh", exc_info=True)
-            backend_result = {
-                "enabled": True,
-                "synced": 0,
-                "failed": 1,
-                "remaining": len(load_pending_backend_events()),
-                "message": str(exc),
-            }
-
-        try:
-            sources_result = sync_backend_sources(sync_skladbot=sync_skladbot, wait_skladbot=False)
-        except Exception as exc:
-            logging.warning("Backend sources sync failed before backend refresh", exc_info=True)
-            sources_result = {
-                "status": "error",
-                "message": str(exc),
-                "google_sheets": {"status": "unknown", "message": str(exc)},
-                "skladbot": {"status": "unknown", "message": str(exc), "errors": 1},
-            }
-
-        try:
-            today_orders, sheet, all_existing_codes = fetch_backend_sheet_data()
-            all_existing_codes.update(get_pending_backend_codes())
-            google_queue_result = {
-                "synced": 0,
-                "failed": 0,
-                "remaining": len(load_pending_saves()),
-            }
-            primary_source = "backend"
-        except Exception as exc:
-            if not backend_google_fallback_enabled():
-                logging.warning(
-                    "Backend primary refresh failed, Google fallback disabled by backend-only refresh",
-                    exc_info=True,
-                )
-                raise RuntimeError(f"Backend refresh недоступен: {exc}") from exc
-            logging.warning("Backend primary refresh failed, fallback to Google Sheets", exc_info=True)
-            today_orders, sheet, all_existing_codes = fetch_google_sheet_data()
-            google_queue_result = {"synced": 0, "failed": 0, "remaining": len(load_pending_saves())}
-            primary_source = "google_emergency_fallback" if backend_only_refresh_enabled() else "google_fallback"
-
-        sync_result = {
-            "synced": google_queue_result.get("synced", 0),
-            "failed": google_queue_result.get("failed", 0),
-            "remaining": google_queue_result.get("remaining", 0),
-            "dropped": google_queue_result.get("dropped", 0),
-            "backend": backend_result,
-            "sources": sources_result,
-            "primary_source": primary_source,
-            "backend_only_refresh": backend_only_refresh_enabled(),
-            "emergency_google_fallback": bool(TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED),
-            "google_sheets_pending": (
-                sources_result.get("google_sheets_pending", {}) if isinstance(sources_result, dict) else {}
-            ),
-            "google_sheets": sources_result.get("google_sheets", {}) if isinstance(sources_result, dict) else {},
-            "skladbot": backend_skladbot_sync_result(sources_result),
+    try:
+        backend_result = sync_pending_backend_events()
+    except Exception as exc:
+        logging.warning("Backend queue sync failed before refresh", exc_info=True)
+        backend_result = {
+            "enabled": True,
+            "synced": 0,
+            "failed": 1,
+            "remaining": len(load_pending_backend_events()),
+            "message": str(exc),
         }
-        return today_orders, sheet, all_existing_codes, sync_result
 
-    fallback_orders, sheet, all_rows = get_today_orders(apply_skladbot_filter=False, include_rows=True)
-    today_orders = fallback_orders
-    sync_result = sync_pending_saves(sheet)
-    backend_result = sync_pending_backend_events() if backend_enabled() else {"enabled": False}
-    sheet_rows_changed = bool(sync_result.get("synced"))
-    if sync_skladbot:
-        skladbot_result = sync_skladbot_request_numbers(sheet)
-        sheet_rows_changed = sheet_rows_changed or bool(skladbot_result.get("updated"))
-    else:
-        skladbot_result = {
-            "enabled": False,
-            "updated": 0,
-            "matched": 0,
-            "not_found": 0,
-            "multiple": 0,
-            "errors": 0,
-            "message": "SkladBot синхронизируется отдельно",
+    try:
+        sources_result = sync_backend_sources(sync_skladbot=sync_skladbot, wait_skladbot=False)
+    except Exception as exc:
+        logging.warning("Backend sources sync failed before backend refresh", exc_info=True)
+        sources_result = {
+            "status": "error",
+            "message": str(exc),
+            "skladbot": {"status": "error", "message": str(exc), "errors": 1},
         }
-    if sync_skladbot and skladbot_result.get("enabled") and not skladbot_result.get("errors"):
-        today_orders, sheet, all_rows = get_today_orders(apply_skladbot_filter=False, include_rows=True)
-    elif sync_result.get("synced"):
-        today_orders, sheet, all_rows = get_today_orders(apply_skladbot_filter=False, include_rows=True)
-    elif skladbot_result.get("errors"):
-        logging.warning(
-            "SkladBot недоступен, показываем активные Google-заказы без фильтра SkladBot: %s",
-            skladbot_result.get("message", ""),
-        )
-    elif sheet_rows_changed:
-        today_orders, sheet, all_rows = get_today_orders(apply_skladbot_filter=False, include_rows=True)
-    all_existing_codes = get_all_existing_codes(sheet, all_rows=all_rows) if sheet else set()
-    all_existing_codes.update(get_pending_codes())
+
+    try:
+        today_orders, sheet, all_existing_codes = fetch_backend_sheet_data()
+    except Exception as exc:
+        logging.warning("Backend primary refresh failed; desktop fails closed", exc_info=True)
+        raise RuntimeError(f"Backend refresh недоступен: {exc}") from exc
     all_existing_codes.update(get_pending_backend_codes())
-    sync_result["skladbot"] = skladbot_result
-    sync_result["backend"] = backend_result
+    sync_result = {
+        "synced": 0,
+        "failed": 0,
+        "remaining": 0,
+        "backend": backend_result,
+        "sources": sources_result,
+        "primary_source": "backend",
+        "backend_only_refresh": True,
+        "skladbot": backend_skladbot_sync_result(sources_result),
+    }
     return today_orders, sheet, all_existing_codes, sync_result
 
 

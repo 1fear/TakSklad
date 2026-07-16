@@ -15,7 +15,7 @@ from .config import APP_DIR, APP_BUILD_LABEL, APP_VERSION, LOG_FILE, UPDATE_INFO
 from .http_client import open_https_url
 from .logging_setup import redact_known_secret_values
 from .orders import get_order_date_value, order_group_key
-from .pending_store import load_pending_prints, load_pending_saves
+from .pending_store import load_pending_prints
 from .startup_check import build_startup_self_check, build_version_update_status
 from .telegram_service import load_pending_telegram
 from .utils import normalize_text
@@ -173,8 +173,7 @@ def _blocked_backend_events(sync_result, pending_events):
     return result
 
 
-def build_sync_queue_summary(sync_result=None, now=None, google_available=True, backend_available=True):
-    pending_saves = load_pending_saves()
+def build_sync_queue_summary(sync_result=None, now=None, backend_available=True):
     pending_prints = load_pending_prints()
     pending_telegram = load_pending_telegram()
     pending_backend_events = load_pending_backend_events()
@@ -192,7 +191,6 @@ def build_sync_queue_summary(sync_result=None, now=None, google_available=True, 
     ]
 
     queues = {
-        "google_saves": _queue_metrics(pending_saves, title="Google записи", now=now),
         "backend_scans": _queue_metrics(
             backend_scans,
             title="Backend сканы",
@@ -219,9 +217,6 @@ def build_sync_queue_summary(sync_result=None, now=None, google_available=True, 
     elif queues["backend_scans"]["count"] + queues["backend_completes"]["count"] and not backend_available:
         retry_enabled = False
         retry_blocker = "Backend не настроен или недоступен"
-    elif queues["google_saves"]["count"] and not google_available:
-        retry_enabled = False
-        retry_blocker = "Google Sheet ещё не загружен"
     elif total_pending == 0:
         retry_blocker = "Очередей нет"
 
@@ -241,7 +236,7 @@ def format_sync_queue_summary(summary):
         f"Всего в очередях: {int(summary.get('total_pending') or 0)}",
         f"Требуют проверки: {int(summary.get('total_blocked') or 0)}",
     ]
-    for key in ("google_saves", "backend_scans", "backend_completes", "backend_other", "prints", "telegram"):
+    for key in ("backend_scans", "backend_completes", "backend_other", "prints", "telegram"):
         queue = queues.get(key) if isinstance(queues.get(key), dict) else {}
         title = queue.get("title") or key
         parts = [
@@ -344,13 +339,6 @@ def run_readonly_diagnostic_probes():
     else:
         probes.append(_probe_result("backend_health", "skipped", "not_configured", target="backend"))
 
-    try:
-        check = build_startup_self_check()
-        status = "ok" if check.get("credentials") == "secure_store" else "failed"
-        failure_class = "" if status == "ok" else "not_configured"
-        probes.append(_probe_result("google_credentials", status, failure_class, target="google"))
-    except Exception as exc:
-        probes.append(_probe_result("google_credentials", "failed", classify_probe_exception(exc), target="google"))
     return probes
 
 
@@ -363,7 +351,7 @@ def classify_log_line(line):
     if "backend" in text:
         return "backend"
     if "google" in text:
-        return "google"
+        return "legacy"
     if "telegram" in text:
         return "telegram"
     if "update" in text or "обнов" in text:
@@ -471,16 +459,11 @@ def backend_event_diagnostic_counts(events):
     return result
 
 
-def build_refresh_diagnostic_summary(orders, all_existing_codes, sync_result=None, source="google"):
+def build_refresh_diagnostic_summary(orders, all_existing_codes, sync_result=None, source="backend"):
     orders = orders if isinstance(orders, list) else []
     sync_result = sync_result if isinstance(sync_result, dict) else {}
     skladbot_result = sync_result.get("skladbot") if isinstance(sync_result.get("skladbot"), dict) else {}
     backend_result = sync_result.get("backend") if isinstance(sync_result.get("backend"), dict) else {}
-    google_pending_result = (
-        sync_result.get("google_sheets_pending")
-        if isinstance(sync_result.get("google_sheets_pending"), dict)
-        else {}
-    )
     pending_backend_events = load_pending_backend_events()
     groups = {order_group_key(order) for order in orders if isinstance(order, dict)}
     order_dates = {
@@ -489,18 +472,16 @@ def build_refresh_diagnostic_summary(orders, all_existing_codes, sync_result=Non
         if isinstance(order, dict) and normalize_text(get_order_date_value(order))
     }
 
-    primary_source = normalize_text(sync_result.get("primary_source")) or normalize_text(source) or "google"
+    primary_source = normalize_text(sync_result.get("primary_source")) or normalize_text(source) or "backend"
 
     return {
         "source": primary_source,
         "primary_source": primary_source,
         "backend_only_refresh": bool(sync_result.get("backend_only_refresh")),
-        "emergency_google_fallback": bool(sync_result.get("emergency_google_fallback")),
         "orders": len(orders),
         "groups": len(groups),
         "order_dates": len(order_dates),
         "known_codes": len(all_existing_codes or []),
-        "pending_saves": _count_list(load_pending_saves()),
         "pending_prints": _count_list(load_pending_prints()),
         "pending_backend_events": _count_list(pending_backend_events),
         **backend_event_diagnostic_counts(pending_backend_events),
@@ -512,10 +493,6 @@ def build_refresh_diagnostic_summary(orders, all_existing_codes, sync_result=Non
         "backend_synced": int(backend_result.get("synced") or 0),
         "backend_failed": int(backend_result.get("failed") or 0),
         "backend_remaining": int(backend_result.get("remaining") or 0),
-        "google_mirror_status": normalize_text(google_pending_result.get("status")) or "unknown",
-        "google_mirror_synced_exports": int(google_pending_result.get("synced") or 0),
-        "google_mirror_failed_exports": int(google_pending_result.get("failed") or 0),
-        "google_mirror_pending_exports": int(google_pending_result.get("remaining") or 0),
         "skladbot_enabled": bool(skladbot_result.get("enabled")),
         "skladbot_matched": int(skladbot_result.get("matched") or 0),
         "skladbot_not_found": int(skladbot_result.get("not_found") or 0),
@@ -529,12 +506,10 @@ def format_refresh_diagnostic_summary(summary):
         "source",
         "primary_source",
         "backend_only_refresh",
-        "emergency_google_fallback",
         "orders",
         "groups",
         "order_dates",
         "known_codes",
-        "pending_saves",
         "pending_prints",
         "pending_backend_events",
         "pending_backend_scan_events",
@@ -551,10 +526,6 @@ def format_refresh_diagnostic_summary(summary):
         "backend_synced",
         "backend_failed",
         "backend_remaining",
-        "google_mirror_status",
-        "google_mirror_synced_exports",
-        "google_mirror_failed_exports",
-        "google_mirror_pending_exports",
         "skladbot_enabled",
         "skladbot_matched",
         "skladbot_not_found",
@@ -566,7 +537,7 @@ def format_refresh_diagnostic_summary(summary):
     )
 
 
-def log_refresh_diagnostic_summary(orders, all_existing_codes, sync_result=None, source="google"):
+def log_refresh_diagnostic_summary(orders, all_existing_codes, sync_result=None, source="backend"):
     try:
         logging.info(
             format_refresh_diagnostic_summary(

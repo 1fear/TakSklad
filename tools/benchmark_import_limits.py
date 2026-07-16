@@ -105,15 +105,13 @@ def run_maximum_valid(assert_budgets: bool) -> int:
             "sha256": payload["sha256"],
             "rows": import_rows,
         })
-        google_result = {"status": "synthetic_stub", "imported": 0, "duplicates": 0, "updated": 0, "error": ""}
         skladbot_result = {
             "status": "synthetic_stub", "ready": 0, "blocked": 0,
             "already_linked": 0, "linked_mismatch": 0, "event_id": "",
         }
-        with (
-            SessionLocal() as db,
-            patch("backend.app.imports_service.export_import_records_to_google_sheets", return_value=google_result),
-            patch("backend.app.imports_service.create_skladbot_dry_run_for_import", return_value=skladbot_result),
+        with SessionLocal() as db, patch(
+            "backend.app.imports_service.create_skladbot_dry_run_for_import",
+            return_value=skladbot_result,
         ):
             result = create_import(db, validated)
         elapsed = time.perf_counter() - started

@@ -11,7 +11,7 @@ from fastapi import Response
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker
 
-from backend.app.models import Order, OrderItem, PendingEvent, ScanCode
+from backend.app.models import Order, OrderItem, ScanCode
 from backend.app.pagination import CursorError
 from tests.postgres_support import create_database, drop_database, run_alembic
 
@@ -102,7 +102,6 @@ class PostgresCursorCapabilityTests(unittest.TestCase):
         cursor: str = "",
         search: str = "",
         status_bucket: str = "active",
-        google_status: str = "",
     ):
         # Import after the disposable database is migrated; the endpoint is invoked
         # directly with the isolated session and never touches configured runtime data.
@@ -119,8 +118,6 @@ class PostgresCursorCapabilityTests(unittest.TestCase):
             search=search,
             scan_state="",
             skladbot_filter="",
-            google_status=google_status,
-            google_sheet_status="",
             db=db,
         )
 
@@ -186,7 +183,6 @@ class PostgresCursorCapabilityTests(unittest.TestCase):
         self.assertEqual(capability.planned_blocks, 5)
         self.assertEqual(capability.scanned_blocks, 0)
         self.assertEqual(capability.scan_codes_count, 0)
-        self.assertEqual(capability.pending_google_exports, 0)
         self.assertEqual(set(capability.allowed), ACTION_KEYS)
         self.assertEqual(set(capability.disabled_reasons), ACTION_KEYS)
         self.assertTrue(capability.allowed["completeWithoutKiz"])
@@ -226,7 +222,7 @@ class PostgresCursorCapabilityTests(unittest.TestCase):
         self.assertEqual([row.order_id for row in second.rows], [undated_id])
         self.assertFalse(second.next_cursor)
 
-    def test_capability_aggregates_hidden_scans_pending_and_keeps_query_budget(self):
+    def test_capability_aggregates_hidden_scans_and_keeps_query_budget(self):
         with self.SessionLocal() as db:
             order = self.seed_order(
                 db,
@@ -239,12 +235,6 @@ class PostgresCursorCapabilityTests(unittest.TestCase):
             hidden_item = order.items[1]
             hidden_item.scanned_blocks = 1
             hidden_item.scan_codes.append(ScanCode(code="phase19-hidden-kiz", raw_payload={}))
-            db.add(PendingEvent(
-                event_type="google_sheets_export",
-                status="pending",
-                idempotency_key="phase19-hidden-pending",
-                payload={"entity_id": str(hidden_item.id), "action": "google_sheets_archive_export"},
-            ))
             db.commit()
             order_id = str(order.id)
 
@@ -264,44 +254,9 @@ class PostgresCursorCapabilityTests(unittest.TestCase):
         self.assertEqual(capability.planned_blocks, 5)
         self.assertEqual(capability.scanned_blocks, 1)
         self.assertEqual(capability.scan_codes_count, 1)
-        self.assertEqual(capability.pending_google_exports, 1)
         self.assertFalse(capability.allowed["archive"])
-        self.assertFalse(capability.allowed["completeWithoutKiz"])
+        self.assertTrue(capability.allowed["completeWithoutKiz"])
         self.assertLessEqual(len(statements), 3)
-
-    def test_row_google_status_stays_item_scoped_while_capability_is_order_scoped(self):
-        with self.SessionLocal() as db:
-            order = self.seed_order(
-                db,
-                identity=45,
-                shipment_date=date(2026, 6, 20),
-                client="Capability Row Pending",
-                created_at=datetime(2026, 6, 20, 6, 0, tzinfo=timezone.utc),
-                quantities=(2, 3),
-            )
-            pending_item = order.items[1]
-            db.add(PendingEvent(
-                event_type="google_sheets_export",
-                status="pending",
-                idempotency_key="phase19-row-pending",
-                payload={"entity_id": str(pending_item.id), "action": "google_sheets_archive_export"},
-            ))
-            db.commit()
-            order_id = str(order.id)
-            pending_item_id = str(pending_item.id)
-
-            page = self.load_page(db, limit=2, search="Capability Row Pending")
-            filtered = self.load_page(
-                db,
-                limit=2,
-                search="Capability Row Pending",
-                google_status="pending",
-            )
-
-        self.assertEqual([row.pending_google_exports for row in page.rows], [0, 1])
-        self.assertEqual([row.google_sheet_status for row in page.rows], ["unknown", "pending"])
-        self.assertEqual([row.item_id for row in filtered.rows], [pending_item_id])
-        self.assertEqual(page.order_capabilities[order_id].pending_google_exports, 1)
 
     def test_capability_status_matrix_matches_backend_action_contract(self):
         with self.SessionLocal() as db:

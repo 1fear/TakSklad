@@ -9,7 +9,6 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.orm.attributes import flag_modified
 
-from .google_sheets_pending import queue_google_sheets_export
 from .event_leases import claim_event_leases, event_leases_enabled, finalize_event_leases
 from .models import (
     AuditLog,
@@ -1161,7 +1160,7 @@ def build_stock_shortage_notification_text(order: Order, error: str) -> str:
         "",
         f"Причина SkladBot: {normalize_text(error)}",
         "",
-        "SkladBot заявку не создал. Заказ не удалён, Google Sheets не изменён; нужна ручная проверка.",
+        "SkladBot заявку не создал. Заказ не удалён; нужна ручная проверка.",
     ])
     return "\n".join(lines)
 
@@ -1280,24 +1279,11 @@ def block_order_after_skladbot_stock_shortage(
     import_job = order_import_job(db, order, event)
     mark_order_skladbot_create_blocked(order, event, error, status="blocked_stock")
     incident = ensure_skladbot_create_incident(db, order, event, error, status="manual_review")
-    google_event = queue_google_sheets_export(
-        db,
-        "google_sheets_skladbot_export",
-        "skladbot",
-        str(order.id),
-        result={"status": "queued", "updated": 0, "error": ""},
-        payload={
-            "order_ids": [str(order.id)],
-            "include_inactive": True,
-            "include_archive": True,
-        },
-    )
     notification_event = queue_stock_shortage_notification(db, order, event, import_job, error)
     update_event_payload(event, {
         "create_status": "blocked_stock",
         "error": normalize_text(error),
         "stock_shortage_blocked_at": datetime.now(timezone.utc).isoformat(),
-        "google_status_event_id": str(google_event.id) if google_event else "",
         "telegram_notification_event_id": str(notification_event.id) if notification_event else "",
     })
     transition_linked_fulfillment(db, event, "blocked_stock", error=error)
@@ -1310,7 +1296,6 @@ def block_order_after_skladbot_stock_shortage(
             "order_id": order_id,
             "import_id": str(import_job.id) if import_job else normalize_text((event.payload or {}).get("import_id")),
             "error": normalize_text(error),
-            "google_status_event_id": str(google_event.id) if google_event else "",
             "telegram_notification_event_id": str(notification_event.id) if notification_event else "",
             "incident_id": str(incident.id) if incident.id else "",
         },
@@ -1319,7 +1304,6 @@ def block_order_after_skladbot_stock_shortage(
         "status": "blocked_stock",
         "order_id": order_id,
         "error": normalize_text(error),
-        "google_status_event_id": str(google_event.id) if google_event else "",
         "telegram_notification_event_id": str(notification_event.id) if notification_event else "",
         "incident_id": str(incident.id) if incident.id else "",
     }
@@ -1639,18 +1623,6 @@ def save_skladbot_create_result(
     order.raw_payload = raw_payload
     flag_modified(order, "raw_payload")
     db.add(order)
-    queue_google_sheets_export(
-        db,
-        "google_sheets_skladbot_export",
-        "skladbot",
-        str(order.id),
-        result={"status": "queued", "updated": 0, "error": ""},
-        payload={
-            "order_ids": [str(order.id)],
-            "include_inactive": True,
-            "include_archive": True,
-        },
-    )
     update_event_payload(event, {
         "create_status": status,
         "post_state": "completed",

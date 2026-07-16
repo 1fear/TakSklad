@@ -63,7 +63,6 @@ compose = read_text(compose_file)
 source = read_text(app_dir / "backend/app/smartup_auto_import.py")
 worker = read_text(app_dir / "backend/app/smartup_auto_import_worker.py")
 imports = read_text(app_dir / "backend/app/imports_service.py")
-google_sync = read_text(app_dir / "backend/app/google_sheets_sync_worker.py")
 logistics = read_text(app_dir / "backend/app/logistics_service.py")
 
 
@@ -109,7 +108,6 @@ required_fragments = [
     ("delivery-date target guard", source, "target_delivery_date"),
     ("source import id dedupe", imports, "source_import_id"),
     ("repriced totals import", imports, "imported_line_total"),
-    ("repriced totals sync", google_sync, "imported_line_total > 0"),
     ("logistics template boxes header", logistics, '"Короба",'),
     ("logistics boxes from order quantity", logistics, "set_cell(row, 31, quantity_blocks)"),
 ]

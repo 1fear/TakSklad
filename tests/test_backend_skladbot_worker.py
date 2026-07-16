@@ -20,7 +20,6 @@ from backend.app.skladbot_worker import (
     business_today,
     client_matches,
     dynamic_skladbot_lookback_days,
-    export_skladbot_numbers_to_google_sheets,
     fetch_candidate_requests,
     load_skladbot_fetch_cursor,
     load_skladbot_sync_orders,
@@ -81,55 +80,6 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
         })
 
         self.assertEqual(tokens, ["token-1", "token-2", "token-3"])
-
-    def test_skladbot_google_export_skips_recent_noop_export(self):
-        engine = create_engine(
-            "sqlite+pysqlite:///:memory:",
-            connect_args={"check_same_thread": False},
-            poolclass=StaticPool,
-        )
-        Base.metadata.create_all(engine)
-        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-        try:
-            with SessionLocal() as db:
-                order = Order(
-                    order_date=date(2026, 6, 5),
-                    payment_type="Перечисление",
-                    client="Client",
-                    address="Address",
-                    representative="Rep",
-                    status="not_completed",
-                    raw_payload={"skladbot_request_number": "WH-R-1", "skladbot_request_id": "1"},
-                )
-                order.items.append(OrderItem(
-                    product="Chapman Brown OP 20",
-                    quantity_blocks=1,
-                    quantity_pieces=10,
-                    pieces_per_block=10,
-                    scanned_blocks=0,
-                    status="not_completed",
-                    raw_payload={"source_import_id": "import-1", "source_order_id": "order-1"},
-                ))
-                db.add(order)
-                db.add(AuditLog(
-                    action="skladbot_google_sheets_export",
-                    entity_type="skladbot",
-                    entity_id="worker",
-                    payload={"status": "queued"},
-                    created_at=datetime.now(timezone.utc),
-                ))
-                db.commit()
-
-                with mock.patch.dict("os.environ", {"SKLADBOT_GOOGLE_EXPORT_MIN_INTERVAL_SECONDS": "300"}, clear=False):
-                    result = export_skladbot_numbers_to_google_sheets(db, [order])
-                events = db.execute(select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")).scalars().all()
-
-            self.assertEqual(result["status"], "skipped")
-            self.assertEqual(result["reason"], "recent_export_cooldown")
-            self.assertEqual(events, [])
-        finally:
-            Base.metadata.drop_all(engine)
-            engine.dispose()
 
     def test_parse_skladbot_api_tokens_supports_ten_token_pool(self):
         token_pool = ",".join(f"token-{index}" for index in range(1, 11))
@@ -776,7 +726,7 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
         self.assertEqual(nearest[0]["failed_checks"], ["products"])
         self.assertFalse(nearest[0]["products"][0]["matched"])
 
-    def test_update_orders_exports_skladbot_numbers_to_google_sheets(self):
+    def test_update_orders_persists_skladbot_numbers_in_database(self):
         engine = create_engine(
             "sqlite+pysqlite:///:memory:",
             connect_args={"check_same_thread": False},
@@ -827,20 +777,14 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
             self.assertEqual(result["matched"], 1)
             self.assertEqual(result["active_orders"], 1)
             self.assertEqual(result["completed_backfill_orders"], 0)
-            self.assertEqual(result["google_sheets_export"]["status"], "queued")
+            self.assertNotIn("google_sheets_export", result)
             self.assertEqual(len(fetch_candidates.call_args.kwargs["orders"]), 1)
             with SessionLocal() as db:
                 order = db.execute(select(Order)).scalar_one()
                 self.assertEqual(order.raw_payload["skladbot_request_number"], "WH-R-191794")
                 self.assertEqual(order.raw_payload["skladbot_request_id"], "191794")
-                audit = db.execute(
-                    select(AuditLog).where(AuditLog.action == "skladbot_google_sheets_export")
-                ).scalar_one()
-                self.assertEqual(audit.payload["status"], "queued")
-                event = db.execute(select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")).scalar_one()
-                self.assertEqual(event.payload["action"], "google_sheets_skladbot_export")
-                self.assertFalse(event.payload["include_inactive"])
-                self.assertFalse(event.payload["include_archive"])
+                events = db.execute(select(PendingEvent)).scalars().all()
+                self.assertEqual(events, [])
         finally:
             Base.metadata.drop_all(engine)
             engine.dispose()
@@ -902,10 +846,8 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
                 self.assertEqual(order.raw_payload["skladbot_request_number"], "WH-R-191794")
                 self.assertEqual(order.raw_payload["skladbot_request_id"], "191794")
                 self.assertEqual(order.raw_payload["skladbot_status"], "found")
-                event = db.execute(select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")).scalar_one()
-                self.assertEqual(event.payload["action"], "google_sheets_skladbot_export")
-                self.assertTrue(event.payload["include_inactive"])
-                self.assertTrue(event.payload["include_archive"])
+                events = db.execute(select(PendingEvent)).scalars().all()
+                self.assertEqual(events, [])
         finally:
             Base.metadata.drop_all(engine)
             engine.dispose()
@@ -975,7 +917,7 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
             "skladbot_request_id": "191794",
         })))
 
-    def test_update_orders_exports_all_active_orders_to_google_sheets_after_match(self):
+    def test_update_orders_matches_missing_order_without_emitting_projection_events(self):
         engine = create_engine(
             "sqlite+pysqlite:///:memory:",
             connect_args={"check_same_thread": False},
@@ -1042,15 +984,17 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
                 result = update_orders_from_skladbot()
 
             self.assertEqual(result["matched"], 1)
-            self.assertEqual(result["google_sheets_export"]["status"], "queued")
+            self.assertNotIn("google_sheets_export", result)
             with SessionLocal() as db:
-                event = db.execute(select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")).scalar_one()
-                self.assertEqual(len(event.payload["order_ids"]), 2)
+                orders = db.execute(select(Order).order_by(Order.client)).scalars().all()
+                matched = next(order for order in orders if order.client == '"TABACHNAYA LAVKA" MCHJ')
+                self.assertEqual(matched.raw_payload["skladbot_request_number"], "WH-R-191794")
+                self.assertEqual(db.execute(select(PendingEvent)).scalars().all(), [])
         finally:
             Base.metadata.drop_all(engine)
             engine.dispose()
 
-    def test_update_orders_reexports_existing_skladbot_numbers_to_google_sheets(self):
+    def test_update_orders_skips_fetch_for_existing_skladbot_numbers(self):
         engine = create_engine(
             "sqlite+pysqlite:///:memory:",
             connect_args={"check_same_thread": False},
@@ -1093,13 +1037,10 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
                 result = update_orders_from_skladbot()
 
             self.assertEqual(result["already_numbered"], 1)
-            self.assertEqual(result["google_sheets_export"]["status"], "queued")
+            self.assertNotIn("google_sheets_export", result)
             fetch_candidates.assert_not_called()
             with SessionLocal() as db:
-                audit = db.execute(
-                    select(AuditLog).where(AuditLog.action == "skladbot_google_sheets_export")
-                ).scalar_one()
-                self.assertEqual(audit.payload["status"], "queued")
+                self.assertEqual(db.execute(select(PendingEvent)).scalars().all(), [])
         finally:
             Base.metadata.drop_all(engine)
             engine.dispose()

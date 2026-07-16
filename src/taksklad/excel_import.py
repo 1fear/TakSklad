@@ -4,21 +4,12 @@ from datetime import datetime
 from .catalog import calculate_blocks, load_product_catalog, merge_product_catalog_defaults
 from .config import (
     ORDER_DATE_COLUMN,
-    SHEET_NAME,
-    SPREADSHEET_ID,
     STATUS_COLUMN,
     STATUS_NOT_COMPLETED,
 )
 from .excel_normalizer import detect_excel_source, get_source_cell, is_summary_row
 from .geocoding import reverse_geocode_yandex
-from .orders import make_order_duplicate_key, make_order_id
-from .sheets import (
-    build_import_record_row,
-    ensure_import_sheet_layout,
-    get_existing_import_keys,
-    get_existing_order_duplicate_keys,
-    get_google_client,
-)
+from .orders import make_order_id
 from .spreadsheet_safety import (
     SpreadsheetSafetyError,
     load_safe_workbook,
@@ -26,7 +17,6 @@ from .spreadsheet_safety import (
 )
 from .storage import load_data_section, mutate_data_section
 from .utils import (
-    column_index_to_letter,
     file_sha1,
     file_sha256,
     make_hash,
@@ -296,58 +286,6 @@ def parse_excel_order_files(file_paths, source_names=None):
     }
 
 
-def prepare_excel_import(file_paths, source_names=None):
-    parsed = parse_excel_order_files(file_paths, source_names=source_names)
-    client = get_google_client()
-    spreadsheet = client.open_by_key(SPREADSHEET_ID)
-    sheet = spreadsheet.worksheet(SHEET_NAME)
-    ensure_import_sheet_layout(sheet)
-    all_rows = sheet.get_all_values()
-
-    existing_import_ids, existing_order_ids = get_existing_import_keys(all_rows)
-    existing_duplicate_keys = get_existing_order_duplicate_keys(all_rows)
-    new_records = []
-    duplicate_records = []
-
-    for record in parsed["records"]:
-        duplicate_key = make_order_duplicate_key(record)
-        if (
-            record.get("ID импорта") in existing_import_ids
-            or record.get("ID заказа") in existing_order_ids
-            or (duplicate_key and duplicate_key in existing_duplicate_keys)
-        ):
-            duplicate_records.append(record)
-        else:
-            new_records.append(record)
-            if record.get("ID импорта"):
-                existing_import_ids.add(record["ID импорта"])
-            if record.get("ID заказа"):
-                existing_order_ids.add(record["ID заказа"])
-            if duplicate_key:
-                existing_duplicate_keys.add(duplicate_key)
-
-    parsed["new_records"] = new_records
-    parsed["duplicate_records"] = duplicate_records
-    parsed["clients_count"] = len({record.get("Клиент") for record in new_records})
-    parsed["products_count"] = len({record.get("Товары") for record in new_records})
-    parsed["blocks_count"] = sum(parse_int_value(record.get("Кол-во блок")) for record in new_records)
-    parsed["quantity_count"] = sum(parse_int_value(record.get("Кол-во ШТ")) for record in new_records)
-    return parsed
-
-
-def extract_record_file_hashes(records):
-    hashes = set()
-    for record in records:
-        raw_hashes = record.get("_source_file_sha256", [])
-        if isinstance(raw_hashes, str):
-            raw_hashes = [raw_hashes]
-        for file_hash in raw_hashes:
-            normalized_hash = normalize_text(file_hash).lower()
-            if normalized_hash:
-                hashes.add(normalized_hash)
-    return hashes
-
-
 def find_successful_import_by_file_hash(file_hash):
     normalized_target = normalize_text(file_hash).lower()
     if not normalized_target:
@@ -372,63 +310,3 @@ def find_successful_import_by_file_hash(file_hash):
         if normalized_target in entry_hashes:
             return item
     return None
-
-
-def append_import_records(records):
-    if not records:
-        return {"imported": 0, "duplicates": 0}
-
-    client = get_google_client()
-    spreadsheet = client.open_by_key(SPREADSHEET_ID)
-    sheet = spreadsheet.worksheet(SHEET_NAME)
-    ensure_import_sheet_layout(sheet)
-    all_rows = sheet.get_all_values()
-    existing_import_ids, existing_order_ids = get_existing_import_keys(all_rows)
-    existing_duplicate_keys = get_existing_order_duplicate_keys(all_rows)
-
-    rows_to_append = []
-    appended_records = []
-    duplicates = 0
-    for record in records:
-        duplicate_key = make_order_duplicate_key(record)
-        if (
-            record.get("ID импорта") in existing_import_ids
-            or record.get("ID заказа") in existing_order_ids
-            or (duplicate_key and duplicate_key in existing_duplicate_keys)
-        ):
-            duplicates += 1
-            continue
-        rows_to_append.append(build_import_record_row(record))
-        appended_records.append(record)
-        existing_import_ids.add(record.get("ID импорта"))
-        existing_order_ids.add(record.get("ID заказа"))
-        if duplicate_key:
-            existing_duplicate_keys.add(duplicate_key)
-
-    if rows_to_append:
-        start_row = len(all_rows) + 1
-        end_row = start_row + len(rows_to_append) - 1
-        end_col = column_index_to_letter(len(rows_to_append[0]) - 1)
-        sheet.batch_update([{
-            "range": f"A{start_row}:{end_col}{end_row}",
-            "values": rows_to_append,
-        }], value_input_option="RAW")
-    history_item = {
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "imported": len(rows_to_append),
-        "duplicates": duplicates,
-        "sources": sorted({record.get("Источник файла", "") for record in records}),
-        "source_file_hashes_sha256": sorted(extract_record_file_hashes(appended_records)),
-    }
-
-    def append_history(history):
-        history = history if isinstance(history, list) else []
-        history.append(history_item)
-        return history[-200:]
-
-    mutate_data_section("import_history", append_history, default=[])
-
-    return {
-        "imported": len(rows_to_append),
-        "duplicates": duplicates,
-    }

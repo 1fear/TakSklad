@@ -634,9 +634,6 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
                     create_event = db.execute(
                         select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
                     ).scalar_one()
-                    google_event = db.execute(
-                        select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")
-                    ).scalar_one()
 
         self.assertEqual(summary["mode"], "enabled")
         self.assertEqual(summary["queued"], 1)
@@ -649,9 +646,6 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
         self.assertEqual(order.raw_payload["skladbot_request_id"], "777")
         self.assertEqual(order.raw_payload["skladbot_status"], "created")
         self.assertTrue(order.raw_payload["skladbot_created_by_taksklad"])
-        self.assertEqual(google_event.payload["action"], "google_sheets_skladbot_export")
-        self.assertIn(order_id, google_event.payload["order_ids"])
-        self.assertEqual(google_event.payload["entity_id"], order_id)
         self.assertTrue(dry_run_event.payload["would_post"])
         self.assertEqual(create_event.status, "completed")
         self.assertIsNone(create_event.lease_owner)
@@ -1066,9 +1060,6 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
                     create_event = db.execute(
                         select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
                     ).scalar_one()
-                    google_events = db.execute(
-                        select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")
-                    ).scalars().all()
                     telegram_event = db.execute(
                         select(PendingEvent).where(PendingEvent.event_type == "telegram_notification")
                     ).scalar_one()
@@ -1083,8 +1074,6 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
         self.assertEqual(order.raw_payload["skladbot_status"], "blocked_stock")
         self.assertEqual(create_event.status, "blocked")
         self.assertEqual(create_event.payload["create_status"], "blocked_stock")
-        self.assertEqual([event.payload["action"] for event in google_events], ["google_sheets_skladbot_export"])
-        self.assertEqual(google_events[0].payload["order_ids"], [order_id])
         self.assertEqual(telegram_event.payload["chat_id"], "123")
         self.assertIn("Заказ заблокирован из-за недостатка товара", telegram_event.payload["text"])
         self.assertIn("не удалён", telegram_event.payload["text"])
@@ -1127,9 +1116,6 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
                 process_result = process_pending_skladbot_request_creates(db, client=FakeSkladBotClient())
                 db.commit()
                 order = db.get(Order, uuid.UUID(order_id))
-                google_events = db.execute(
-                    select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")
-                ).scalars().all()
                 telegram_events = db.execute(
                     select(PendingEvent).where(PendingEvent.event_type == "telegram_notification")
                 ).scalars().all()
@@ -1143,7 +1129,6 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
         self.assertEqual(process_result["stock_shortage_cancelled"], 0)
         self.assertIsNotNone(order)
         self.assertEqual(order.raw_payload["skladbot_status"], "blocked_stock")
-        self.assertEqual([event.payload["action"] for event in google_events], ["google_sheets_skladbot_export"])
         self.assertEqual(len(telegram_events), 1)
         self.assertEqual(create_event.status, "blocked")
         self.assertEqual(incident.status, "manual_review")
@@ -1364,16 +1349,11 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
         self.assertEqual(payload["skladbot_dry_run_status"], "error")
 
         with self.SessionLocal() as db:
-            google_events = db.execute(
-                select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")
-            ).scalars().all()
             failed_audit = db.execute(
                 select(AuditLog).where(AuditLog.action == "skladbot_request_dry_run_failed")
             ).scalars().all()
             import_job = db.get(ImportJob, uuid.UUID(payload["id"]))
 
-        self.assertEqual(len(google_events), 1)
-        self.assertEqual(google_events[0].payload["action"], "google_sheets_import_export")
         self.assertEqual(len(failed_audit), 1)
         self.assertEqual(import_job.raw_payload["skladbot_dry_run"]["status"], "error")
 
@@ -1468,9 +1448,6 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
                 event = db.execute(
                     select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_RETURN_REQUEST_CREATE_EVENT_TYPE)
                 ).scalar_one()
-                google_event = db.execute(
-                    select(PendingEvent).where(PendingEvent.event_type == "google_sheets_export")
-                ).scalar_one()
 
         self.assertEqual(process_result["created"], 1)
         self.assertEqual(len(fake_client.created_payloads), 1)
@@ -1492,7 +1469,6 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
         self.assertIsNone(event.lease_owner)
         self.assertIsNotNone(event.completed_at)
         self.assertEqual(event.payload["create_status"], "created")
-        self.assertEqual(google_event.payload["action"], "google_sheets_return_export")
 
     def test_return_create_worker_recovers_existing_request_on_retry_without_duplicate_post(self):
         _import_id, order_id = self.seed_import_order()

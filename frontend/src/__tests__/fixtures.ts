@@ -9,6 +9,7 @@ import type {
   EventQueueDiagnostics,
   LogisticsCalendar,
   OperationsAttention,
+  Order,
   ReadinessResponse,
   SmartupAutoImportHistory,
 } from "../api";
@@ -16,6 +17,8 @@ import type {
 export const fullPermissions = [
   "admin:read",
   "admin:write",
+  "warehouse:read",
+  "warehouse:write",
   "imports:read",
   "client_points:read",
   "client_points:write",
@@ -68,10 +71,6 @@ export function adminRow(overrides: Partial<AdminTableRow> = {}): AdminTableRow 
     skladbot_return_request_id: "",
     skladbot_return_status: "",
     source_file: "synthetic.xlsx",
-    google_sheet_status: "synced",
-    google_sheet_row_number: 1,
-    google_sheet_synced_at: "2026-07-10T08:00:00Z",
-    pending_google_exports: 0,
     return_status: "",
     returned_at: "",
     return_reference: "",
@@ -91,6 +90,27 @@ export const secondAdminRow = adminRow({
   skladbot_request_id: "skladbot-2",
 });
 
+export const activeOrder: Order = {
+  id: "order-1",
+  order_date: "2026-07-10",
+  payment_type: "Перечисление",
+  client: "Клиент Альфа",
+  address: "Ташкент, улица Тестовая, 1",
+  representative: "Тестовый ТП",
+  status: "active",
+  skladbot_request_number: "WH-R-TEST-1",
+  skladbot_request_id: "skladbot-1",
+  items: [{
+    id: "item-1",
+    product: "Тестовый товар",
+    quantity_pieces: 20,
+    quantity_blocks: 2,
+    scanned_blocks: 0,
+    status: "active",
+    scan_codes: [],
+  }],
+};
+
 export function adminTable(
   rows: AdminTableRow[] = [firstAdminRow],
   overrides: Partial<AdminTable> = {},
@@ -98,7 +118,6 @@ export function adminTable(
   const orderCapabilities = Object.fromEntries(Array.from(new Set(rows.map((row) => row.order_id))).map((orderId) => {
     const orderRows = rows.filter((row) => row.order_id === orderId);
     const allowed = {
-      resync: true,
       archive: true,
       completeWithoutKiz: true,
       cancel: true,
@@ -113,10 +132,8 @@ export function adminTable(
       planned_blocks: orderRows.reduce((sum, row) => sum + row.quantity_blocks, 0),
       scanned_blocks: orderRows.reduce((sum, row) => sum + row.scanned_blocks, 0),
       scan_codes_count: orderRows.reduce((sum, row) => sum + row.scan_codes_count, 0),
-      pending_google_exports: Math.max(0, ...orderRows.map((row) => row.pending_google_exports)),
       allowed,
       disabled_reasons: {
-        resync: "",
         archive: "",
         completeWithoutKiz: "",
         cancel: "",
@@ -139,7 +156,6 @@ export function adminTable(
       scanned_blocks: rows.reduce((sum, row) => sum + row.scanned_blocks, 0),
       remaining_blocks: rows.reduce((sum, row) => sum + row.remaining_blocks, 0),
       total_price: rows.reduce((sum, row) => sum + row.line_total, 0),
-      pending_google_exports: 0,
     },
     rows,
     recent_activity: [],
@@ -304,7 +320,6 @@ export const operationsAttention: OperationsAttention = {
   summary: { total: 0, hot_path: 0, mirror: 0 },
   items: [],
   readiness_status: "ok",
-  google_mirror_status: "ok",
   telegram_summary: "synthetic",
 };
 

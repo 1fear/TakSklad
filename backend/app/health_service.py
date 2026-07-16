@@ -12,7 +12,6 @@ from .event_queue_service import (
     event_to_queue_read,
     list_stale_processing_events,
 )
-from .google_sheets_pending import GOOGLE_SHEETS_EXPORT_EVENT_TYPE
 from .models import AuditLog, ImportJob, Incident, PendingEvent
 from .redaction import redact_secrets
 from .settings import APP_VERSION
@@ -20,7 +19,7 @@ from .worker_observability import build_worker_readiness
 
 
 EXPECTED_BASELINE_REVISION = "20260616_0001"
-EXPECTED_HEAD_REVISION = "20260716_0018"
+EXPECTED_HEAD_REVISION = "20260716_0019"
 LEGACY_SQLITE_HEAD_REVISION = "20260710_0011"
 TERMINAL_INCIDENT_STATUSES = ("resolved", "ignored", "cancelled")
 SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE = "skladbot_daily_report_send"
@@ -66,18 +65,9 @@ def build_readiness_report(db: Session, app_settings):
         },
         "imports": {"recent_errors": []},
         "workers": {"status": "unknown", "required": [], "missing": [], "unhealthy": [], "workers": []},
-        "google_mirror": {
-            "status": "unknown",
-            "summary": {},
-            "oldest_pending_age_seconds": 0,
-            "paused": False,
-            "next_attempt_at": "",
-            "last_errors": [],
-        },
-        "google_backend_sync": {"status": "unknown", "circuit_open": False, "retry_at": ""},
         "policy": {
             "mandatory": ["database", "migrations", "hot_path_queue", "imports", "worker_main_loops"],
-            "optional": ["google_mirror", "google_backend_sync"],
+            "optional": [],
             "mandatory_status": "unknown",
             "optional_status": "unknown",
         },
@@ -98,8 +88,6 @@ def build_readiness_report(db: Session, app_settings):
     report["migrations"] = read_migration_status(db)
     try:
         report["queue"] = build_queue_readiness(db, now=now)
-        report["google_mirror"] = build_google_mirror_readiness(db, now=now)
-        report["google_backend_sync"] = build_google_backend_sync_readiness(db, now=now)
         report["imports"] = build_import_error_readiness(db)
         configured_required_workers = getattr(app_settings, "worker_heartbeat_required_names", ())
         report["workers"] = build_worker_readiness(
@@ -124,17 +112,11 @@ def build_readiness_report(db: Session, app_settings):
         or report["imports"]["recent_errors"]
         or report["workers"].get("status") != "ok"
     )
-    optional_degraded = (
-        report["google_mirror"].get("status") != "ok"
-        or report["google_backend_sync"].get("status") != "ok"
-    )
     report["ready"] = not bool(mandatory_failed)
     report["policy"]["mandatory_status"] = "unhealthy" if mandatory_failed else "ok"
-    report["policy"]["optional_status"] = "degraded" if optional_degraded else "ok"
+    report["policy"]["optional_status"] = "ok"
     if mandatory_failed:
         report["status"] = "unhealthy"
-    elif optional_degraded:
-        report["status"] = "degraded"
     return report
 
 
@@ -144,8 +126,6 @@ def readiness_http_status(report):
 
 def public_readiness_report(report):
     queue = report.get("queue") or {}
-    google_mirror = report.get("google_mirror") or {}
-    google_backend_sync = report.get("google_backend_sync") or {}
     imports = report.get("imports") or {}
     workers = report.get("workers") or {}
     return {
@@ -166,14 +146,6 @@ def public_readiness_report(report):
             "hot_path_stale_processing_count": int(queue.get("hot_path_stale_processing_count") or 0),
             "hot_path_blocking_count": int(queue.get("hot_path_blocking_count") or 0),
             "hot_path_error_count": len(queue.get("hot_path_last_errors") or []),
-        },
-        "google_mirror": {
-            "status": google_mirror.get("status") or "unknown",
-            "role": google_mirror.get("role") or "mirror_export",
-        },
-        "google_backend_sync": {
-            "status": google_backend_sync.get("status") or "unknown",
-            "circuit_open": bool(google_backend_sync.get("circuit_open")),
         },
         "imports": {"recent_error_count": len(imports.get("recent_errors") or [])},
         "workers": {
@@ -230,10 +202,7 @@ def build_queue_readiness(db: Session, now=None):
     now = now or datetime.now(timezone.utc)
     summary = sanitize_queue_summary(build_event_queue_summary(db))
     stale_processing = list_stale_processing_events(db, now=now, limit=20)
-    hot_path_stale_processing = [
-        event for event in stale_processing
-        if event.event_type != GOOGLE_SHEETS_EXPORT_EVENT_TYPE
-    ]
+    hot_path_stale_processing = list(stale_processing)
     oldest_pending = db.execute(
         select(PendingEvent)
         .where(PendingEvent.status.in_(("pending", "failed")))
@@ -242,10 +211,7 @@ def build_queue_readiness(db: Session, now=None):
     ).scalars().first()
     errors = last_event_errors(db, now=now)
     resolved_errors = resolved_daily_report_errors(db, now=now)
-    hot_path_errors = [
-        event for event in errors
-        if event.get("event_type") != GOOGLE_SHEETS_EXPORT_EVENT_TYPE
-    ]
+    hot_path_errors = list(errors)
     hot_path_blocking_count = count_unresolved_hot_path_failures(db)
     return {
         "summary": summary,
@@ -305,7 +271,6 @@ def count_unresolved_hot_path_failures(db: Session) -> int:
         select(func.count(failed_event.id))
         .select_from(failed_event)
         .where(failed_event.status.in_(("failed", "error", "blocked")))
-        .where(failed_event.event_type != GOOGLE_SHEETS_EXPORT_EVENT_TYPE)
         .where(~failed_event.id.in_(
             select(Incident.pending_event_id)
             .where(Incident.pending_event_id.is_not(None))
@@ -491,93 +456,6 @@ def sanitize_readiness_event_type(event_type):
         return text_value
     prefix = text_value.split(":", 1)[0].strip() or "event"
     return f"{prefix}:*"
-
-
-def build_google_mirror_readiness(db: Session, now=None):
-    now = now or datetime.now(timezone.utc)
-    status_rows = db.execute(
-        select(PendingEvent.status, func.count(PendingEvent.id))
-        .where(PendingEvent.event_type == GOOGLE_SHEETS_EXPORT_EVENT_TYPE)
-        .where(PendingEvent.status.in_(("pending", "failed", "processing")))
-        .group_by(PendingEvent.status)
-    ).all()
-    summary = {str(status or "unknown"): int(count or 0) for status, count in status_rows}
-    oldest_pending_at = db.execute(
-        select(func.min(PendingEvent.created_at))
-        .where(PendingEvent.event_type == GOOGLE_SHEETS_EXPORT_EVENT_TYPE)
-        .where(PendingEvent.status.in_(("pending", "failed")))
-    ).scalar_one()
-    next_attempt_at = _next_google_attempt_at(db, now=now)
-    return {
-        "status": "degraded" if summary else "ok",
-        "role": "mirror_export",
-        "event_type": GOOGLE_SHEETS_EXPORT_EVENT_TYPE,
-        "summary": dict(sorted(summary.items())),
-        "oldest_pending_age_seconds": datetime_age_seconds(oldest_pending_at, now),
-        "paused": bool(next_attempt_at),
-        "next_attempt_at": next_attempt_at.isoformat() if next_attempt_at else "",
-        "last_errors": last_event_errors(
-            db,
-            now=now,
-            event_type=GOOGLE_SHEETS_EXPORT_EVENT_TYPE,
-        ),
-    }
-
-
-def build_google_backend_sync_readiness(db: Session, now=None):
-    now = now or datetime.now(timezone.utc)
-    event = db.execute(
-        select(AuditLog)
-        .where(AuditLog.action.in_((
-            "google_sheets_backend_sync_circuit_open",
-            "google_sheets_backend_sync_circuit_closed",
-        )))
-        .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
-        .limit(1)
-    ).scalar_one_or_none()
-    if event is None or event.action == "google_sheets_backend_sync_circuit_closed":
-        return {"status": "ok", "circuit_open": False, "retry_at": "", "reason": ""}
-    payload = event.payload if isinstance(event.payload, dict) else {}
-    opened_at_raw = str(payload.get("opened_at") or "").strip()
-    try:
-        opened_at = ensure_aware_utc(datetime.fromisoformat(opened_at_raw))
-    except ValueError:
-        opened_at = ensure_aware_utc(event.created_at)
-    cooldown_seconds = max(0, int(payload.get("cooldown_seconds") or 0))
-    retry_at = opened_at + timedelta(seconds=cooldown_seconds) if opened_at else None
-    circuit_open = True
-    circuit_state = "open" if retry_at and retry_at > now else "half_open"
-    return {
-        "status": "degraded",
-        "circuit_open": circuit_open,
-        "circuit_state": circuit_state,
-        "retry_at": retry_at.isoformat() if retry_at else "",
-        "reason": str(payload.get("reason") or ""),
-    }
-
-
-def _next_google_attempt_at(db: Session, now=None):
-    now = now or datetime.now(timezone.utc)
-    raw_attempt = PendingEvent.payload["next_attempt_at"].as_string()
-    values = db.execute(
-        select(raw_attempt)
-        .where(PendingEvent.event_type == GOOGLE_SHEETS_EXPORT_EVENT_TYPE)
-        .where(PendingEvent.status.in_(("pending", "failed")))
-        .where(raw_attempt.is_not(None))
-        .where(raw_attempt != "")
-        .where(raw_attempt > now.isoformat())
-        .order_by(raw_attempt)
-        .limit(200)
-    ).scalars().all()
-    attempts = []
-    for value in values:
-        try:
-            attempt = ensure_aware_utc(datetime.fromisoformat(str(value)))
-        except ValueError:
-            continue
-        if attempt and attempt > now:
-            attempts.append(attempt)
-    return min(attempts) if attempts else None
 
 
 def min_next_attempt_at(events, now=None):

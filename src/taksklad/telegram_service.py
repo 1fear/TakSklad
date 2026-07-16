@@ -12,12 +12,10 @@ from .config import (
     APP_NAME,
     APP_VERSION,
     BACKUP_DIR,
-    CREDENTIALS_FILE,
     DAILY_REPORT_AUTO_SEND_HOUR,
     DAILY_REPORT_AUTO_SEND_MINUTE,
     LOG_FILE,
     PENDING_PRINTS_FILE,
-    PENDING_SAVES_FILE,
     PENDING_TELEGRAM_FILE,
     REPORTS_DIR,
     TAKSKLAD_DATA_FILE,
@@ -104,7 +102,6 @@ def safe_telegram_document_path(path):
         return False
     normalized_path = os.path.abspath(path)
     blocked = {
-        os.path.abspath(CREDENTIALS_FILE),
         os.path.abspath(TELEGRAM_SETTINGS_FILE),
         os.path.abspath(TAKSKLAD_DATA_FILE),
         os.path.abspath(YANDEX_GEOCODER_KEY_FILE),
@@ -574,7 +571,6 @@ def collect_operational_documents(
             documents.append((backup_path, f"{APP_NAME}: backup сканирования за день"))
     if include_pending_files and settings.get("send_pending_files"):
         for path, caption in (
-            (PENDING_SAVES_FILE, f"{APP_NAME}: очередь записи в Google Sheets"),
             (PENDING_PRINTS_FILE, f"{APP_NAME}: очередь печати сводок"),
             (PENDING_TELEGRAM_FILE, f"{APP_NAME}: очередь отправки в Telegram"),
         ):

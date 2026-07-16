@@ -25,9 +25,6 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
             "verify_telegram_menu.sh",
             "telegram menu verifier failed",
             '"telegram_menu"',
-            "verify_google_backend_sync.sh",
-            "google/backend sync verifier failed",
-            '"google_backend_sync"',
             "verify_skladbot_coverage.sh",
             "skladbot coverage verifier failed",
             '"skladbot_coverage"',
@@ -67,9 +64,6 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         telegram_menu_script = (PROJECT_ROOT / "deploy" / "vds" / "verify_telegram_menu.sh").read_text(
             encoding="utf-8"
         )
-        google_sync_script = (PROJECT_ROOT / "deploy" / "vds" / "verify_google_backend_sync.sh").read_text(
-            encoding="utf-8"
-        )
         skladbot_coverage_script = (PROJECT_ROOT / "deploy" / "vds" / "verify_skladbot_coverage.sh").read_text(
             encoding="utf-8"
         )
@@ -87,13 +81,6 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         self.assertIn("getMyCommands", telegram_menu_script)
         self.assertIn("getChatMenuButton", telegram_menu_script)
 
-        self.assertIn("app.google_backend_sync_diagnostic", google_sync_script)
-        self.assertIn("--detail-limit", google_sync_script)
-        self.assertIn("GOOGLE_BACKEND_SYNC_ATTEMPTS", google_sync_script)
-        self.assertIn("GOOGLE_BACKEND_SYNC_RETRY_DELAY_SECONDS", google_sync_script)
-        self.assertIn("Quota exceeded", google_sync_script)
-        self.assertIn("APIError: [429]", google_sync_script)
-
         self.assertIn("app.skladbot_coverage_diagnostic", skladbot_coverage_script)
         self.assertIn("--marker", skladbot_coverage_script)
         self.assertIn("--detail-limit", skladbot_coverage_script)
@@ -107,7 +94,7 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         self.assertIn("failed_preview", smartup_automation_script)
         self.assertIn("target_delivery_date", smartup_automation_script)
         self.assertIn("reverse_geocode_yandex", smartup_automation_script)
-        self.assertIn("imported_line_total > 0", smartup_automation_script)
+        self.assertIn("imported_line_total", smartup_automation_script)
         self.assertIn('"Короба",', smartup_automation_script)
         self.assertIn("set_cell(row, 31, quantity_blocks)", smartup_automation_script)
         self.assertIn("Smartup runtime status is required but skipped", smartup_automation_script)
@@ -119,10 +106,7 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
             (PROJECT_ROOT / "deploy" / "vds" / "config-contract.json").read_text(encoding="utf-8")
         )
         test_values = contract["compose_test_values"]
-        smartup_worker = compose.split("  smartup-auto-import-worker:", 1)[1].split(
-            "\n  google-sheets-sync-worker:",
-            1,
-        )[0]
+        smartup_worker = compose.split("  smartup-auto-import-worker:", 1)[1].split("\n  telegram-worker:", 1)[0]
 
         self.assertNotIn("env_file:", compose)
         self.assertIn("YANDEX_GEOCODER_API_KEY: ${YANDEX_GEOCODER_API_KEY:-}", smartup_worker)
@@ -137,10 +121,6 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         self.assertIn("SKLADBOT_ORDER_CREATE_LEAD_DAYS: ${SKLADBOT_ORDER_CREATE_LEAD_DAYS:-3}", compose)
         self.assertIn("SKLADBOT_DETAIL_LIMIT: ${SKLADBOT_DETAIL_LIMIT:-10}", compose)
         self.assertIn("SKLADBOT_COMPLETED_BACKFILL_DAYS: ${SKLADBOT_COMPLETED_BACKFILL_DAYS:-2}", compose)
-        self.assertIn(
-            "TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED: ${TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED:-false}",
-            compose,
-        )
         self.assertEqual(test_values["YANDEX_GEOCODER_API_KEY"], "")
         self.assertEqual(test_values["TAKSKLAD_TIMEZONE"], "Asia/Tashkent")
         self.assertEqual(test_values["TAKSKLAD_DEFAULT_BLOCK_PRICE"], "240000")
@@ -151,7 +131,6 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         self.assertEqual(test_values["SKLADBOT_ORDER_CREATE_LEAD_DAYS"], "3")
         self.assertEqual(test_values["SKLADBOT_DETAIL_LIMIT"], "10")
         self.assertEqual(test_values["SKLADBOT_COMPLETED_BACKFILL_DAYS"], "2")
-        self.assertEqual(test_values["TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED"], "false")
         self.assertEqual(test_values["TAKSKLAD_ENV"], "test")
         self.assertNotIn("TAKSKLAD_ADMINER_HOST", test_values)
         self.assertEqual(test_values["TELEGRAM_ADMIN_CHAT_IDS"], "1001")
@@ -205,12 +184,37 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         self.assertIn("policy.get('mandatory_status') == 'ok'", compose)
         self.assertIn("json.load(response)", compose)
         self.assertIn("wget -qO- http://127.0.0.1:8080/", compose)
-        self.assertEqual(compose.count("from app.worker_observability import build_worker_readiness"), 4)
-        for worker_name in ("google_sheets_sync", "skladbot", "smartup_auto_import", "telegram"):
+        self.assertEqual(compose.count("from app.worker_observability import build_worker_readiness"), 3)
+        for worker_name in ("skladbot", "smartup_auto_import", "telegram"):
             self.assertIn(f"required_workers=('{worker_name}',)", compose)
         self.assertIn(
-            "TAKSKLAD_REQUIRED_WORKERS:-google_sheets_sync,skladbot,smartup_auto_import,telegram",
+            "TAKSKLAD_REQUIRED_WORKERS:-skladbot,smartup_auto_import,telegram",
             compose,
+        )
+        self.assertNotIn("google-sheets-sync-worker:", compose)
+        self.assertNotIn("TAKSKLAD_GOOGLE_", compose)
+
+    def test_deploy_removes_legacy_google_worker_before_migrations_and_never_rolls_it_back(self):
+        script = (PROJECT_ROOT / "deploy" / "vds" / "deploy_from_git.sh").read_text(encoding="utf-8")
+
+        quiesce = script.index('compose stop -t 45 "${WRITER_SERVICES[@]}"')
+        stopped = script.index("ensure_writer_services_stopped", quiesce)
+        retire = script.index("remove_legacy_google_worker", stopped)
+        backup = script.index("./deploy/vds/backup_postgres.sh --no-prune")
+        migration = script.index("alembic -c alembic.ini upgrade head")
+        zero_active = script.index("ensure_no_active_legacy_google_events", migration)
+        self.assertLess(quiesce, stopped)
+        self.assertLess(stopped, retire)
+        self.assertLess(retire, backup)
+        self.assertLess(backup, migration)
+        self.assertLess(migration, zero_active)
+        self.assertIn('--filter "label=com.docker.compose.service=google-sheets-sync-worker"', script)
+        self.assertIn('--filter "label=com.docker.compose.project=$project"', script)
+        self.assertIn("ensure_legacy_google_worker_absent", script)
+        self.assertIn("verify_db_only_compose", script)
+        self.assertNotIn(
+            "backend-api frontend telegram-worker google-sheets-sync-worker skladbot-worker",
+            script,
         )
 
     def test_frontend_uses_same_origin_api_proxy_contract(self):

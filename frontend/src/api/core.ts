@@ -7,6 +7,8 @@ export type ApiConfig = {
 export type RequestOptions = {
   method?: string;
   body?: unknown;
+  rawBody?: BodyInit;
+  headers?: Record<string, string>;
   timeoutMs?: number;
   signal?: AbortSignal;
 };
@@ -54,11 +56,12 @@ export async function apiRequest<T>(
     method,
     credentials: bearerRequest ? "omit" : "same-origin",
     headers: {
-      "Content-Type": "application/json",
+      ...(options.rawBody === undefined ? { "Content-Type": "application/json" } : {}),
       ...(config.token ? { Authorization: `Bearer ${config.token}` } : {}),
       ...(unsafeCookieRequest && config.csrfToken ? { "X-TakSklad-CSRF": config.csrfToken } : {}),
+      ...(options.headers ?? {}),
     },
-    body: options.body ? JSON.stringify(options.body) : undefined,
+    body: options.rawBody ?? (options.body ? JSON.stringify(options.body) : undefined),
     signal,
   }).catch((error) => {
     if (isAbortError(error) && options.signal?.aborted) throw error;

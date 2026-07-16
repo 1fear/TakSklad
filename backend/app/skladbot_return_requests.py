@@ -7,7 +7,6 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from .event_leases import claim_event_leases, event_leases_enabled, finalize_event_leases
-from .google_sheets_pending import queue_google_sheets_export
 from .models import AuditLog, Order, PendingEvent
 from .observability_context import bind_pending_event, log_trace
 from .outbox_service import queue_outbox_event
@@ -456,13 +455,6 @@ def save_skladbot_return_create_result(
     })
     raw_payload.pop("skladbot_return_error", None)
     order.raw_payload = raw_payload
-    queue_google_sheets_export(
-        db,
-        "google_sheets_return_export",
-        "order",
-        str(order.id),
-        result={"status": "queued", "updated": 0, "error": ""},
-    )
     update_event_payload(event, {
         "create_status": status,
         "created_request_id": request_id,

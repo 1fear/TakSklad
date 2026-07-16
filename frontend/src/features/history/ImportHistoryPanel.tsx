@@ -56,13 +56,11 @@ function importIssuesText(item: ImportRecord) {
   const errors = stringArray(raw.errors);
   const invalidRows = numberField(raw, "invalid_rows");
   const duplicateRows = numberField(raw, "duplicate_rows");
-  const googleError = stringField(raw, "google_sheets_error");
   const summary = readImportDryRunSummary(item);
   const blocked = summary ? numberField(summary, "blocked") + numberField(summary, "create_failed") : 0;
   const mismatch = summary ? numberField(summary, "linked_mismatch") : 0;
   if (invalidRows > 0) issues.push(`ошибочных строк ${invalidRows}`);
   if (duplicateRows > 0) issues.push(`повторов ${duplicateRows}`);
-  if (googleError) issues.push(`Google: ${googleError}`);
   if (blocked > 0) issues.push(`SkladBot blocked ${blocked}`);
   if (mismatch > 0) issues.push(`SkladBot mismatch ${mismatch}`);
   issues.push(...errors.slice(0, 3));
@@ -78,12 +76,6 @@ function readImportDryRunSummary(item: ImportRecord): Record<string, unknown> | 
 
 function stringArray(value: unknown) {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
-}
-
-function stringField(record: unknown, key: string) {
-  if (!record || typeof record !== "object" || Array.isArray(record)) return "";
-  const value = (record as Record<string, unknown>)[key];
-  return typeof value === "string" ? value : "";
 }
 
 function numberField(record: unknown, key: string) {

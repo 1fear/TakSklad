@@ -43,7 +43,6 @@ REQUIRED_FILES = [
     Path("deploy/vds/docker-compose.yml"),
     Path("deploy/vds/verify_acceptance_marker.sh"),
     Path("deploy/vds/wait_acceptance_marker.sh"),
-    Path("deploy/vds/verify_google_backend_sync.sh"),
     Path("deploy/vds/verify_skladbot_coverage.sh"),
     Path("docs/windows-backend-acceptance.md"),
     Path("docs/manual-acceptance-runbook.md"),
@@ -60,8 +59,6 @@ WINDOWS_ACCEPTANCE_HELPER_REQUIRED_FRAGMENTS = [
     "TAKSKLAD_BACKEND_ENABLED",
     "TAKSKLAD_BACKEND_READ_ORDERS_ENABLED",
     "TAKSKLAD_BACKEND_ONLY_REFRESH",
-    "TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED",
-    "TELEGRAM_DESKTOP_POLLING_ENABLED",
 ]
 WINDOWS_TEST_BUILD_REQUIRED_FRAGMENTS = [
     "build_manifest.json",
@@ -83,37 +80,29 @@ EXPECTED_RELEASE_REPO_PATH = f"/1fear/TakSklad/releases/download/{EXPECTED_RELEA
 PAUSED_ROLLOUT_VERSION = "1.1.7"
 BACKEND_ONLY_CONTRACT_FRAGMENTS = {
     Path("src/taksklad/config.py"): [
+        "TAKSKLAD_BACKEND_ENABLED = True",
+        "TAKSKLAD_BACKEND_READ_ORDERS_ENABLED = True",
         "TAKSKLAD_BACKEND_ONLY_REFRESH",
-        "TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED",
         "TELEGRAM_DESKTOP_POLLING_ENABLED",
-        "default=False",
     ],
     Path("src/taksklad/startup_check.py"): [
         "telegram_desktop_polling",
         "backend_only_refresh",
-        "backend_emergency_google_fallback",
+        "pending_backend_events",
     ],
     Path("src/taksklad/desktop_refresh_service.py"): [
         "def backend_only_refresh_enabled",
-        "def backend_google_fallback_enabled",
-        "TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED",
         "Backend refresh недоступен",
-        "google_emergency_fallback",
-    ],
-    Path("src/taksklad/app_runtime.py"): [
-        "telegram_lock_owned_until\", 0) > time.time()",
-        "release_telegram_poll_lock",
+        "pending_backend_events",
     ],
     Path("src/taksklad/desktop_diagnostics.py"): [
         "primary_source",
         "backend_only_refresh",
-        "emergency_google_fallback",
-        "google_mirror_pending_exports",
+        "pending_backend_events",
     ],
     Path("backend/app/operations_service.py"): [
         "shadow_diagnostics",
         "backend_active_orders_source",
-        "google_mirror_lag_seconds",
         "hot_path_stale_processing",
         "telegram_worker_state",
     ],
@@ -121,7 +110,6 @@ BACKEND_ONLY_CONTRACT_FRAGMENTS = {
 DEPLOY_RUNBOOK_REQUIRED_FRAGMENTS = {
     Path("docs/windows-backend-acceptance.md"): [
         "TAKSKLAD_BACKEND_ONLY_REFRESH = \"1\"",
-        "TAKSKLAD_BACKEND_EMERGENCY_GOOGLE_FALLBACK_ENABLED = \"0\"",
         "TELEGRAM_DESKTOP_POLLING_ENABLED = \"0\"",
         "pending_backend_events",
         "pending_saves",
@@ -141,16 +129,15 @@ DEPLOY_RUNBOOK_REQUIRED_FRAGMENTS = {
         "startup diagnostics",
         "backend refresh",
         "network timeout",
-        "Google 429",
+        "retired Google worker absent",
         "dirty tree",
     ],
 }
 DEPLOYMENT_READINESS_CONTRACT_FRAGMENTS = {
     Path("backend/app/health_service.py"): [
-        'EXPECTED_HEAD_REVISION = "20260716_0018"',
+        'EXPECTED_HEAD_REVISION = "20260716_0019"',
         'report["ready"]',
         'report["status"] = "unhealthy"',
-        'report["status"] = "degraded"',
     ],
     Path("deploy/vds/docker-compose.yml"): [
         "payload.get('ready') is True",

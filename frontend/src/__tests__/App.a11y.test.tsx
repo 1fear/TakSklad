@@ -45,6 +45,7 @@ describe("focused accessibility characterization", () => {
   });
 
   it("has no automated axe violations on navigation and the orders table", async () => {
+    const user = userEvent.setup();
     const { container } = render(<App />);
     await screen.findByRole("heading", { name: "Позиции заказов" });
 
@@ -52,6 +53,10 @@ describe("focused accessibility characterization", () => {
     expect(screen.getByRole("table")).toBeInTheDocument();
     const results = await axe(container);
     expect(results).toHaveNoViolations();
+
+    await user.click(screen.getByRole("button", { name: "Склад" }));
+    await screen.findByRole("heading", { name: "Склад · PostgreSQL" });
+    expect(await axe(container)).toHaveNoViolations();
   });
 
   it("has no automated axe violations on client points and incidents", async () => {

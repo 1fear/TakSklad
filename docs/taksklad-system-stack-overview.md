@@ -1,5 +1,10 @@
 # TakSklad: суть приложения, логика, структура и стек
 
+> Статус: `HISTORY` переходного периода с Google mirror. Текущая DB-only
+> архитектура зафиксирована в `docs/db-only-architecture.md`, а cutover — в
+> `docs/runbook/google-sheets-decommission.md`. Сведения ниже не являются
+> runtime truth после DB-only release.
+
 Актуально на: 30.06.2026
 Текущая версия по коду: `2.0.24`; public `version.json` сейчас в forced rollout `2.0.24`.
 Репозиторий: `1fear/TakSklad`

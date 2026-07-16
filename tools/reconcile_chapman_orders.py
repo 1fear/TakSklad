@@ -9,14 +9,12 @@ from sqlalchemy.orm import selectinload
 try:
     from backend.app.db import SessionLocal
     from backend.app.excel_importer import excel_file_to_import_payload
-    from backend.app.google_sheets_pending import queue_google_sheets_export
     from backend.app.imports_service import normalize_import_row
     from backend.app.models import AuditLog, Order, OrderItem
     from backend.app.orders_service import STATUS_COMPLETED
 except ModuleNotFoundError:
     from app.db import SessionLocal
     from app.excel_importer import excel_file_to_import_payload
-    from app.google_sheets_pending import queue_google_sheets_export
     from app.imports_service import normalize_import_row
     from app.models import AuditLog, Order, OrderItem
     from app.orders_service import STATUS_COMPLETED
@@ -56,7 +54,7 @@ def parse_args():
     parser.add_argument("--shipment-date", default="03.06.2026", help="Force shipment date for Excel rows.")
     parser.add_argument("--apply", action="store_true", help="Apply safe DB repair. Requires --confirm.")
     parser.add_argument("--confirm", default="", help=f"Confirmation token: {APPLY_CONFIRM_TOKEN}")
-    parser.add_argument("--complete-without-kiz", action="store_true", help="Mark safe repaired orders completed and queue archive export.")
+    parser.add_argument("--complete-without-kiz", action="store_true", help="Mark safe repaired orders completed in PostgreSQL.")
     parser.add_argument("--output", default="", help="JSON report path.")
     return parser.parse_args()
 
@@ -194,7 +192,6 @@ def apply_repair(db, expected, report, complete_without_kiz=False):
 
     repaired_items = 0
     repaired_orders = set()
-    queued_exports = 0
     now = datetime.now(timezone.utc)
     for source_import_id, row in expected_rows.items():
         item = backend_by_import_id[source_import_id]
@@ -242,24 +239,15 @@ def apply_repair(db, expected, report, complete_without_kiz=False):
         repaired_orders.add(str(order.id))
 
     if complete_without_kiz:
-        export_result = {"status": "queued", "queued": True, "error": ""}
         for item in backend_by_import_id.values():
             item.status = STATUS_COMPLETED
             item.order.status = STATUS_COMPLETED
         for order_id in sorted(target_order_ids):
-            event = queue_google_sheets_export(
-                db,
-                "google_sheets_archive_export",
-                "order",
-                order_id,
-                result=export_result,
-            )
-            queued_exports += 1 if event else 0
             db.add(AuditLog(
-                action="google_sheets_archive_export",
+                action="order_completed_without_kiz_repair",
                 entity_type="order",
                 entity_id=order_id,
-                payload={**export_result, "pending_event_id": str(event.id) if event else ""},
+                payload={"repair_source": "chapman_excel_reconcile"},
             ))
 
     db.add(AuditLog(
@@ -270,7 +258,7 @@ def apply_repair(db, expected, report, complete_without_kiz=False):
             "repaired_items": repaired_items,
             "repaired_orders": len(repaired_orders),
             "complete_without_kiz": complete_without_kiz,
-            "queued_archive_exports": queued_exports,
+            "queued_archive_exports": 0,
         },
     ))
     db.commit()
@@ -278,7 +266,7 @@ def apply_repair(db, expected, report, complete_without_kiz=False):
         "repaired_items": repaired_items,
         "repaired_orders": len(repaired_orders),
         "complete_without_kiz": complete_without_kiz,
-        "queued_archive_exports": queued_exports,
+        "queued_archive_exports": 0,
     }
 
 
