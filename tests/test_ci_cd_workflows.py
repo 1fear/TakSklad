@@ -323,6 +323,10 @@ class CiCdWorkflowTests(unittest.TestCase):
         )
         self.assertIn("tools/google_cutover_audit.py", workflow)
         self.assertIn("tools/verify_postgres_only_cutover.py", workflow)
+        self.assertIn(
+            'git show "$DEPLOY_CONTROL_SHA:tools/verify_postgres_only_cutover.py"',
+            workflow,
+        )
         self.assertIn("POSTGRES_ONLY_CUTOVER_REUSED", workflow)
         self.assertIn("GOOGLE_TO_POSTGRES_CUTOVER_STATE_UNVERIFIED", workflow)
         self.assertIn("importlib.util.find_spec('app.google_sheets_sync_worker')", workflow)
