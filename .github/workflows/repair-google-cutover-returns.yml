@@ -173,6 +173,7 @@ jobs:
               "legacy_target_occurrences", "legacy_target_unique_codes", "scope_conflicts",
               "prerequisite_return_inserts", "reconstructed_prerequisite_occurrences",
               "preexisting_future_owner_return_occurrences",
+              "reconstructed_missing_scan_boundary_occurrences",
               "reconstructed_chronology_occurrences",
               "identity_no_strong_id_records", "identity_not_found_records",
               "identity_product_quantity_mismatch_records", "identity_multiple_records",
@@ -258,6 +259,7 @@ jobs:
               f"prerequisite_returns={payload.get('prerequisite_return_inserts', -1)} "
               f"reconstructed_prerequisites={payload.get('reconstructed_prerequisite_occurrences', -1)} "
               f"future_owner_returns={payload.get('preexisting_future_owner_return_occurrences', -1)} "
+              f"reconstructed_missing_scan_boundaries={payload.get('reconstructed_missing_scan_boundary_occurrences', -1)} "
               f"reconstructed_chronology={payload.get('reconstructed_chronology_occurrences', -1)} "
               f"duplicates={payload.get('duplicate_occurrences', -1)} "
               f"identity_conflicts={payload.get('identity_conflicts', -1)} "

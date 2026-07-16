@@ -249,7 +249,7 @@ class GoogleCutoverRepairTests(unittest.TestCase):
         owner_outbound = movement(
             "owner-out", "outbound", scan_id=owner_scan.id,
             item_id=owner.id, order_id=owner.order.id,
-            at=datetime(2026, 7, 9, 8, tzinfo=UTC),
+            at=datetime(2026, 7, 10, 4, 59, 59, 999999, tzinfo=UTC),
         )
         future_owner_return = movement(
             "owner-future-return", "return", scan_id=owner_scan.id,
@@ -267,8 +267,12 @@ class GoogleCutoverRepairTests(unittest.TestCase):
         self.assertTrue(summary["safe_to_repair"])
         self.assertEqual(summary["reconstructed_prerequisite_occurrences"], 1)
         self.assertEqual(
+            summary["reconstructed_missing_scan_boundary_occurrences"],
+            1,
+        )
+        self.assertEqual(
             candidates[0]["prerequisite_return"]["timestamp_provenance"],
-            "reconstructed_boundary_before_legacy_target",
+            "reconstructed_after_previous_outbound",
         )
         self.assertEqual(
             candidates[0]["prerequisite_return"]["return_at"],
@@ -278,6 +282,11 @@ class GoogleCutoverRepairTests(unittest.TestCase):
             candidates[0]["prerequisite_return"]["return_at"],
             candidates[0]["scan_at"],
         )
+        self.assertEqual(
+            candidates[0]["timestamp_provenance"],
+            "reconstructed_after_previous_outbound",
+        )
+        self.assertTrue(candidates[0]["timestamp_adjusted"])
 
     def test_return_that_would_cross_later_outbound_is_blocked(self):
         code = "KIZ-3"

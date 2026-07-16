@@ -835,6 +835,10 @@ def classify_target(
     before = [movement for movement in movements if movement_time(movement) < return_at]
     after = [movement for movement in movements if movement_time(movement) >= return_at]
     previous = before[-1] if before else None
+    candidate_scan_at = return_at - timedelta(microseconds=1)
+    candidate_return_at = return_at
+    candidate_timestamp_provenance = timestamp_provenance
+    candidate_timestamp_adjusted = False
     if previous is not None and normalize(previous.movement_type) not in AVAILABLE_MOVEMENTS:
         owner = (relevant_items or {}).get(str(previous.order_item_id or ""))
         owner_scan = None
@@ -852,10 +856,6 @@ def classify_target(
             movements_for_scan(movements, owner_scan, OUTBOUND_MOVEMENTS)
             if owner_scan is not None else []
         )
-        future_owner_returns = [
-            value for value in owner_returns
-            if movement_time(value) >= return_at
-        ]
         owner_returned_at, owner_return_provenance = (
             parse_returned_at(owner.order, {})
             if owner is not None else (None, "")
@@ -871,12 +871,27 @@ def classify_target(
         if (
             prerequisite_at is None
             or prerequisite_at <= movement_time(previous)
-            or prerequisite_at >= return_at - timedelta(microseconds=1)
+            or prerequisite_at >= candidate_scan_at
         ):
             prerequisite_at = return_at - timedelta(microseconds=2)
             owner_return_provenance = (
                 "reconstructed_boundary_before_legacy_target"
             )
+        if prerequisite_at <= movement_time(previous):
+            prerequisite_at = movement_time(previous) + timedelta(microseconds=1)
+            candidate_scan_at = movement_time(previous) + timedelta(microseconds=2)
+            candidate_return_at = movement_time(previous) + timedelta(microseconds=3)
+            owner_return_provenance = (
+                "reconstructed_after_previous_outbound"
+            )
+            candidate_timestamp_provenance = (
+                "reconstructed_after_previous_outbound"
+            )
+            candidate_timestamp_adjusted = True
+        future_owner_returns = [
+            value for value in owner_returns
+            if movement_time(value) > candidate_return_at
+        ]
         if (
             owner is None
             or owner_scan is None
@@ -886,7 +901,7 @@ def classify_target(
             or not owner_returns
             or len(future_owner_returns) != len(owner_returns)
             or prerequisite_at <= movement_time(previous)
-            or prerequisite_at >= return_at - timedelta(microseconds=1)
+            or prerequisite_at >= candidate_scan_at
         ):
             return None, "busy_before_missing_scan"
         prerequisite_return = {
@@ -903,10 +918,10 @@ def classify_target(
         outbound = movement_for_scan(movements, scan, OUTBOUND_MOVEMENTS)
         if outbound is None:
             return None, "scan_without_outbound"
-    if after and movement_time(after[0]) <= return_at:
+    if after and movement_time(after[0]) <= candidate_return_at:
         return None, "missing_scan_return_boundary_conflict"
 
-    scan_at = return_at - timedelta(microseconds=1)
+    scan_at = candidate_scan_at
     if previous is not None and movement_time(previous) >= scan_at:
         return None, "missing_scan_return_boundary_conflict"
     outbound_type = (
@@ -932,10 +947,10 @@ def classify_target(
         "scan": None,
         "outbound_type": outbound_type,
         "scan_at": scan_at,
-        "return_at": return_at,
+        "return_at": candidate_return_at,
         "original_return_at": return_at,
-        "timestamp_provenance": timestamp_provenance,
-        "timestamp_adjusted": False,
+        "timestamp_provenance": candidate_timestamp_provenance,
+        "timestamp_adjusted": candidate_timestamp_adjusted,
         "new_scanned_blocks": new_scanned_blocks,
         "prerequisite_return": prerequisite_return,
     }, ""
@@ -1128,6 +1143,7 @@ def build_repair_plan(
         "prerequisite_return_inserts": 0,
         "reconstructed_prerequisite_occurrences": 0,
         "preexisting_future_owner_return_occurrences": 0,
+        "reconstructed_missing_scan_boundary_occurrences": 0,
         "reconstructed_chronology_occurrences": 0,
         **{field: int(identity_diagnostics.get(field) or 0) for field in IDENTITY_DIAGNOSTIC_FIELDS},
         **{f"{error}_occurrences": 0 for error in sorted(AMBIGUOUS_ERRORS | OTHER_ERRORS)},
@@ -1233,12 +1249,19 @@ def build_repair_plan(
             counts["reconstructed_prerequisite_occurrences"] += int(
                 (candidate.get("prerequisite_return") or {}).get(
                     "timestamp_provenance"
-                ) == "reconstructed_boundary_before_legacy_target"
+                ) in {
+                    "reconstructed_boundary_before_legacy_target",
+                    "reconstructed_after_previous_outbound",
+                }
             )
             counts["preexisting_future_owner_return_occurrences"] += len(
                 (candidate.get("prerequisite_return") or {}).get(
                     "future_returns"
                 ) or []
+            )
+            counts["reconstructed_missing_scan_boundary_occurrences"] += int(
+                candidate.get("timestamp_provenance")
+                == "reconstructed_after_previous_outbound"
             )
             counts["reconstructed_chronology_occurrences"] += int(
                 candidate.get("timestamp_provenance")
@@ -1532,6 +1555,11 @@ def apply_candidates(db, candidates, summary):
                 "preexisting_future_owner_return_occurrences": int(
                     summary.get(
                         "preexisting_future_owner_return_occurrences"
+                    ) or 0
+                ),
+                "reconstructed_missing_scan_boundary_occurrences": int(
+                    summary.get(
+                        "reconstructed_missing_scan_boundary_occurrences"
                     ) or 0
                 ),
                 "legacy_target_unique_codes": int(
