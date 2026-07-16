@@ -7,6 +7,7 @@ from tools.container_runtime_harness import (
     HarnessError,
     docker_bind_source,
     last_integer_line,
+    memory_allocation_was_denied,
     parse_memory_bytes,
 )
 
@@ -85,7 +86,7 @@ class ContainerRuntimeHarnessContractTests(unittest.TestCase):
             "Docker POST unexpectedly allowed",
             "Docker images endpoint unexpectedly allowed",
             "PID limit did not deny",
-            "memory limit did not OOM-kill",
+            "memory limit did not deny",
             "log rotation did not retain",
         ):
             self.assertIn(marker, source)
@@ -94,6 +95,12 @@ class ContainerRuntimeHarnessContractTests(unittest.TestCase):
         self.assertEqual(parse_memory_bytes("52.5MiB"), int(52.5 * 1024**2))
         self.assertEqual(parse_memory_bytes("1.25GiB"), int(1.25 * 1024**3))
         self.assertEqual(parse_memory_bytes("unknown"), 0)
+
+    def test_memory_limit_accepts_kernel_kill_or_allocator_denial(self):
+        self.assertTrue(memory_allocation_was_denied({"OOMKilled": True, "ExitCode": 137}))
+        self.assertTrue(memory_allocation_was_denied({"OOMKilled": False, "ExitCode": 42}))
+        self.assertFalse(memory_allocation_was_denied({"OOMKilled": False, "ExitCode": 0}))
+        self.assertFalse(memory_allocation_was_denied({"OOMKilled": False, "ExitCode": 1}))
 
     def test_integer_parser_ignores_fresh_image_pull_diagnostics(self):
         output = "Unable to find image locally\nPull complete\n70\n"
