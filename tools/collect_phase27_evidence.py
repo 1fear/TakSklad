@@ -105,6 +105,14 @@ def read_json_file(path: Path) -> tuple[int, dict[str, Any], float]:
         raise CollectionError(f"readiness file failed: {type(exc).__name__}") from exc
     if not isinstance(value, dict):
         raise CollectionError("readiness file did not contain an object")
+    if "http_status" in value or "payload" in value:
+        status = value.get("http_status")
+        payload = value.get("payload")
+        if not isinstance(status, int) or not 100 <= status <= 599:
+            raise CollectionError("readiness file HTTP status is invalid")
+        if not isinstance(payload, dict):
+            raise CollectionError("readiness file payload did not contain an object")
+        return status, payload, (time.monotonic() - started) * 1000
     return 200, value, (time.monotonic() - started) * 1000
 
 

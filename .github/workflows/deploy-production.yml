@@ -582,7 +582,10 @@ jobs:
             -f deploy/vds/docker-compose.yml ps -q backend-api </dev/null)"
           test -n "\$preflight_backend_id"
           docker exec "\$preflight_backend_id" python -c \
-            "import json; from urllib.request import urlopen; print(json.dumps(json.load(urlopen('http://127.0.0.1:8000/ready', timeout=5)), sort_keys=True))" \
+            "import json; from urllib.error import HTTPError; from urllib.request import urlopen; u='http://127.0.0.1:8000/ready';
+          try: r=urlopen(u, timeout=5)
+          except HTTPError as e: r=e
+          print(json.dumps({'http_status':int(getattr(r,'status',getattr(r,'code',0))),'payload':json.load(r)}, sort_keys=True))" \
             > .release-state/current-ready.json
           chmod 600 .release-state/current-ready.json
           PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/collect_phase27_evidence.py \

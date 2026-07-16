@@ -310,6 +310,7 @@ class CiCdWorkflowTests(unittest.TestCase):
         )
         self.assertIn("--ready-json .release-state/current-ready.json", workflow)
         self.assertIn("http://127.0.0.1:8000/ready", workflow)
+        self.assertIn("except HTTPError as e: r=e", workflow)
         self.assertIn(
             "./deploy/vds/deploy_from_git.sh --artifact-manifest release.json --acceptance required --wait",
             workflow,
