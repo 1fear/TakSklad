@@ -294,6 +294,7 @@ jobs:
           git show "$DEPLOY_CONTROL_SHA:deploy/vds/acceptance_status.sh" > deploy/vds/acceptance_status.sh
           git show "$DEPLOY_CONTROL_SHA:tools/collect_phase27_evidence.py" > tools/collect_phase27_evidence.py
           git show "$DEPLOY_CONTROL_SHA:tools/google_cutover_audit.py" > tools/google_cutover_audit.py
+          git show "$DEPLOY_CONTROL_SHA:tools/verify_postgres_only_cutover.py" > tools/verify_postgres_only_cutover.py
           bash -n deploy/vds/deploy_from_git.sh deploy/vds/acceptance_status.sh
           grep -q 'previous runtime migration head does not match the retained database schema' deploy/vds/deploy_from_git.sh
           grep -q 'structurally complete forced rollout' deploy/vds/acceptance_status.sh
