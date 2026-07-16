@@ -171,7 +171,8 @@ jobs:
               "code_owner_conflicts", "divergent_duplicate_targets",
               "legacy_missing_scan_occurrences", "legacy_missing_return_occurrences",
               "legacy_target_occurrences", "legacy_target_unique_codes", "scope_conflicts",
-              "prerequisite_return_inserts", "reconstructed_chronology_occurrences",
+              "prerequisite_return_inserts", "reconstructed_prerequisite_occurrences",
+              "reconstructed_chronology_occurrences",
               "identity_no_strong_id_records", "identity_not_found_records",
               "identity_product_quantity_mismatch_records", "identity_multiple_records",
               "identity_order_not_returned_records",
@@ -249,6 +250,7 @@ jobs:
               f"legacy_targets={payload.get('legacy_target_occurrences', -1)} "
               f"legacy_unique_codes={payload.get('legacy_target_unique_codes', -1)} "
               f"prerequisite_returns={payload.get('prerequisite_return_inserts', -1)} "
+              f"reconstructed_prerequisites={payload.get('reconstructed_prerequisite_occurrences', -1)} "
               f"reconstructed_chronology={payload.get('reconstructed_chronology_occurrences', -1)} "
               f"duplicates={payload.get('duplicate_occurrences', -1)} "
               f"identity_conflicts={payload.get('identity_conflicts', -1)} "
@@ -320,6 +322,8 @@ jobs:
               raise SystemExit("GOOGLE_RETURN_REPAIR_UNIQUE_CODE_COUNT_CHANGED")
           if payload.get("prerequisite_return_inserts") != 7:
               raise SystemExit("GOOGLE_RETURN_REPAIR_PREREQUISITE_COUNT_CHANGED")
+          if payload.get("reconstructed_prerequisite_occurrences") != 7:
+              raise SystemExit("GOOGLE_RETURN_REPAIR_RECONSTRUCTED_PREREQUISITE_COUNT_CHANGED")
           if payload.get("reconstructed_chronology_occurrences") != 5:
               raise SystemExit("GOOGLE_RETURN_REPAIR_CHRONOLOGY_COUNT_CHANGED")
           if not re.fullmatch(r"[0-9a-f]{64}", str(payload.get("plan_sha256") or "")):
