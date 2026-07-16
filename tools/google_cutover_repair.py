@@ -664,6 +664,9 @@ def candidate_payload(candidate):
         "timestamp_provenance": candidate["timestamp_provenance"],
         "timestamp_adjusted": bool(candidate["timestamp_adjusted"]),
         "new_scanned_blocks": int(candidate["new_scanned_blocks"]),
+        "preserved_full_scanned_blocks": bool(
+            candidate.get("preserved_full_scanned_blocks")
+        ),
         "return_reference": normalize(candidate["record"].get("return_reference")),
         "returned_by": normalize(candidate["record"].get("returned_by")),
         "source_import_id": normalize(candidate["record"].get("source_import_id")),
@@ -944,8 +947,12 @@ def classify_target(
     synthetic_scan = SimpleNamespace(code=code, raw_payload=metadata)
     computed_blocks = scanned_blocks_for_scans([*(item.scan_codes or []), synthetic_scan])
     new_scanned_blocks = max(int(item.scanned_blocks or 0), int(computed_blocks or 0))
+    preserved_full_scanned_blocks = False
     if int(item.quantity_blocks or 0) > 0 and new_scanned_blocks > int(item.quantity_blocks or 0):
-        return None, "scanned_blocks_exceed_plan"
+        if int(item.scanned_blocks or 0) != int(item.quantity_blocks or 0):
+            return None, "scanned_blocks_exceed_plan"
+        new_scanned_blocks = int(item.scanned_blocks or 0)
+        preserved_full_scanned_blocks = True
     return {
         "kind": "missing_scan",
         "code": code,
@@ -959,6 +966,7 @@ def classify_target(
         "timestamp_provenance": candidate_timestamp_provenance,
         "timestamp_adjusted": candidate_timestamp_adjusted,
         "new_scanned_blocks": new_scanned_blocks,
+        "preserved_full_scanned_blocks": preserved_full_scanned_blocks,
         "prerequisite_return": prerequisite_return,
     }, ""
 
@@ -1152,6 +1160,7 @@ def build_repair_plan(
         "reused_existing_prerequisite_return_occurrences": 0,
         "preexisting_future_owner_return_occurrences": 0,
         "reconstructed_missing_scan_boundary_occurrences": 0,
+        "preserved_full_scanned_blocks_occurrences": 0,
         "reconstructed_chronology_occurrences": 0,
         **{field: int(identity_diagnostics.get(field) or 0) for field in IDENTITY_DIAGNOSTIC_FIELDS},
         **{f"{error}_occurrences": 0 for error in sorted(AMBIGUOUS_ERRORS | OTHER_ERRORS)},
@@ -1276,6 +1285,9 @@ def build_repair_plan(
                 candidate.get("kind") == "missing_scan"
                 and bool(candidate.get("timestamp_adjusted"))
             )
+            counts["preserved_full_scanned_blocks_occurrences"] += int(
+                bool(candidate.get("preserved_full_scanned_blocks"))
+            )
             counts["reconstructed_chronology_occurrences"] += int(
                 candidate.get("timestamp_provenance")
                 == "reconstructed_before_available_movement"
@@ -1395,6 +1407,9 @@ def apply_candidates(db, candidates, summary):
                     raw_payload={
                         "cutover_repair": "historical_google_return_v1",
                         "timestamp_provenance": "synthetic_before_return",
+                        "preserved_full_scanned_blocks": bool(
+                            candidate.get("preserved_full_scanned_blocks")
+                        ),
                         **scan_metadata_for_code(code),
                     },
                 )
@@ -1529,6 +1544,8 @@ def apply_candidates(db, candidates, summary):
             stored_scan is None
             or str(stored_scan.order_item_id) != str(item.id)
             or normalize(stored_scan.code) != candidate["code"]
+            or int(item.scanned_blocks or 0)
+            != int(candidate["new_scanned_blocks"])
         ):
             raise RuntimeError("repair scan invariant failed")
         if candidate["kind"] == "missing_scan":
@@ -1594,6 +1611,11 @@ def apply_candidates(db, candidates, summary):
                 "reconstructed_missing_scan_boundary_occurrences": int(
                     summary.get(
                         "reconstructed_missing_scan_boundary_occurrences"
+                    ) or 0
+                ),
+                "preserved_full_scanned_blocks_occurrences": int(
+                    summary.get(
+                        "preserved_full_scanned_blocks_occurrences"
                     ) or 0
                 ),
                 "legacy_target_unique_codes": int(

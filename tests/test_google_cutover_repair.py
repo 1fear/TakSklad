@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from tools.google_cutover_repair import (
     apply_candidates,
+    backend_module,
     build_repair_plan,
     deterministic_uuid,
     enrich_identity_lifecycle_diagnostics,
@@ -177,7 +178,7 @@ class GoogleCutoverRepairTests(unittest.TestCase):
 
     def test_missing_scan_reconstructs_returned_previous_owner_lifecycle(self):
         code = "KIZ-BUSY-PREVIOUS"
-        target = item(item_id="target-item")
+        target = item(item_id="target-item", scanned_blocks=10)
         target.order = order("target-order")
         target.order_id = target.order.id
         owner_scan = scan("owner-scan", code)
@@ -198,12 +199,17 @@ class GoogleCutoverRepairTests(unittest.TestCase):
             at=datetime(2026, 7, 10, 5, tzinfo=UTC),
         )
 
-        summary, candidates = build_repair_plan(
-            [(record(code), target)],
-            {code: [owner_scan]},
-            {code: [owner_outbound, future_owner_return]},
-            relevant_items={str(owner.id): owner, str(target.id): target},
-        )
+        with mock.patch.object(
+            backend_module("scan_quantities"),
+            "scanned_blocks_for_scans",
+            return_value=11,
+        ):
+            summary, candidates = build_repair_plan(
+                [(record(code), target)],
+                {code: [owner_scan]},
+                {code: [owner_outbound, future_owner_return]},
+                relevant_items={str(owner.id): owner, str(target.id): target},
+            )
 
         self.assertTrue(summary["safe_to_repair"])
         self.assertEqual(summary["prerequisite_return_inserts"], 0)
@@ -216,6 +222,8 @@ class GoogleCutoverRepairTests(unittest.TestCase):
             summary["reconstructed_missing_scan_boundary_occurrences"],
             1,
         )
+        self.assertEqual(summary["preserved_full_scanned_blocks_occurrences"], 1)
+        self.assertEqual(candidates[0]["new_scanned_blocks"], 10)
         self.assertEqual(summary["return_inserts"], 1)
         self.assertEqual(candidates[0]["outbound_type"], "re_outbound")
         self.assertIs(candidates[0]["prerequisite_return"]["item"], owner)
