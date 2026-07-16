@@ -390,10 +390,10 @@ def select_legacy_repair_targets(db, records, movements_by_code):
             codes.append(code)
     unique_codes = len(set(codes))
     scope_conflicts = int(
-        missing_scans != 7
+        missing_scans != 8
         or missing_returns != 22
-        or len(targets) != 29
-        or unique_codes != 29
+        or len(targets) != 30
+        or unique_codes != 30
     )
     return targets, {
         "legacy_missing_scan_occurrences": missing_scans,
@@ -852,7 +852,11 @@ def classify_target(
                 owner_returned_at = audit_times[0]
                 owner_return_provenance = "owner_audit_log"
         prerequisite_at = owner_returned_at
-        if prerequisite_at is None:
+        if (
+            prerequisite_at is None
+            or prerequisite_at <= movement_time(previous)
+            or prerequisite_at >= return_at - timedelta(microseconds=1)
+        ):
             prerequisite_at = return_at - timedelta(microseconds=2)
             owner_return_provenance = (
                 "reconstructed_boundary_before_legacy_target"
