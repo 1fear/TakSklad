@@ -852,6 +852,11 @@ def classify_target(
                 owner_returned_at = audit_times[0]
                 owner_return_provenance = "owner_audit_log"
         prerequisite_at = owner_returned_at
+        if prerequisite_at is None:
+            prerequisite_at = return_at - timedelta(microseconds=2)
+            owner_return_provenance = (
+                "reconstructed_boundary_before_legacy_target"
+            )
         if (
             owner is None
             or owner_scan is None
@@ -859,7 +864,6 @@ def classify_target(
             or len(owner_outbounds) != 1
             or owner_outbounds[0].id != previous.id
             or owner_returns
-            or prerequisite_at is None
             or prerequisite_at <= movement_time(previous)
             or prerequisite_at >= return_at - timedelta(microseconds=1)
         ):
@@ -1070,6 +1074,7 @@ def build_repair_plan(
         ),
         "scope_conflicts": int(scope_diagnostics.get("scope_conflicts") or 0),
         "prerequisite_return_inserts": 0,
+        "reconstructed_prerequisite_occurrences": 0,
         "reconstructed_chronology_occurrences": 0,
         **{field: int(identity_diagnostics.get(field) or 0) for field in IDENTITY_DIAGNOSTIC_FIELDS},
         **{f"{error}_occurrences": 0 for error in sorted(AMBIGUOUS_ERRORS | OTHER_ERRORS)},
@@ -1171,6 +1176,11 @@ def build_repair_plan(
             counts[field] += 1
             counts["prerequisite_return_inserts"] += int(
                 candidate.get("prerequisite_return") is not None
+            )
+            counts["reconstructed_prerequisite_occurrences"] += int(
+                (candidate.get("prerequisite_return") or {}).get(
+                    "timestamp_provenance"
+                ) == "reconstructed_boundary_before_legacy_target"
             )
             counts["reconstructed_chronology_occurrences"] += int(
                 candidate.get("timestamp_provenance")
@@ -1437,6 +1447,9 @@ def apply_candidates(db, candidates, summary):
                 "return_inserts": return_inserts,
                 "prerequisite_return_inserts": int(
                     summary.get("prerequisite_return_inserts") or 0
+                ),
+                "reconstructed_prerequisite_occurrences": int(
+                    summary.get("reconstructed_prerequisite_occurrences") or 0
                 ),
                 "legacy_target_unique_codes": int(
                     summary.get("legacy_target_unique_codes") or 0

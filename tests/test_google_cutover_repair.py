@@ -228,7 +228,7 @@ class GoogleCutoverRepairTests(unittest.TestCase):
         self.assertFalse(summary["safe_to_repair"])
         self.assertEqual(summary["scope_conflicts"], 1)
 
-    def test_missing_scan_without_trusted_previous_return_time_blocks(self):
+    def test_missing_scan_without_trusted_time_uses_reconstructed_boundary(self):
         code = "KIZ-BUSY-NO-TRUSTED-TIME"
         target = item(item_id="target-item")
         target.order = order("target-order")
@@ -250,9 +250,20 @@ class GoogleCutoverRepairTests(unittest.TestCase):
             relevant_items={str(owner.id): owner},
         )
 
-        self.assertEqual(candidates, [])
-        self.assertFalse(summary["safe_to_repair"])
-        self.assertEqual(summary["busy_before_missing_scan_occurrences"], 1)
+        self.assertTrue(summary["safe_to_repair"])
+        self.assertEqual(summary["reconstructed_prerequisite_occurrences"], 1)
+        self.assertEqual(
+            candidates[0]["prerequisite_return"]["timestamp_provenance"],
+            "reconstructed_boundary_before_legacy_target",
+        )
+        self.assertEqual(
+            candidates[0]["prerequisite_return"]["return_at"],
+            candidates[0]["return_at"] - timedelta(microseconds=2),
+        )
+        self.assertLess(
+            candidates[0]["prerequisite_return"]["return_at"],
+            candidates[0]["scan_at"],
+        )
 
     def test_return_that_would_cross_later_outbound_is_blocked(self):
         code = "KIZ-3"
