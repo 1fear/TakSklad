@@ -15,7 +15,7 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
             "result_file",
             "Acceptance result template not found",
             "Acceptance result file not found",
-            "version.json must be paused 1.1.7 rollout or forced 2.0.36 rollout",
+            "version.json must be a paused 1.1.7 rollout or a structurally complete forced rollout",
             "version.json onefile download_url and sha256 must be set",
             "version.json onedir download_url_onedir and sha256_onedir must be set",
             '"version_json_staged_rollout", "github_release_published", "push_notifications_allowed", "mandatory_update_enabled"',

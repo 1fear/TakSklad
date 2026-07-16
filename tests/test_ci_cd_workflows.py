@@ -277,6 +277,8 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn("acceptance_status.sh --require-go", script)
         self.assertIn("rollback_runtime", script)
         self.assertIn("PREVIOUS_MANIFEST", script)
+        self.assertIn("previous runtime migration head does not match the retained database schema", script)
+        self.assertIn('"$database_revision" != "$previous_runtime_revision"', script)
         self.assertIn("database schema retained, alembic downgrade=0", script)
         self.assertIn("--acceptance required --wait", script)
         self.assertIn('install -m 600 "$ARTIFACT_MANIFEST" "$temporary_record"', script)
@@ -299,6 +301,10 @@ class CiCdWorkflowTests(unittest.TestCase):
         )
 
         self.assertIn("tools/collect_phase27_evidence.py", workflow)
+        self.assertIn('git show "$DEPLOY_CONTROL_SHA:deploy/vds/deploy_from_git.sh"', workflow)
+        self.assertIn('git show "$DEPLOY_CONTROL_SHA:deploy/vds/acceptance_status.sh"', workflow)
+        self.assertIn("previous runtime migration head does not match the retained database schema", workflow)
+        self.assertIn("structurally complete forced rollout", workflow)
         self.assertIn(
             "rm -f /tmp/taksklad-production-preflight.json /tmp/taksklad-live-release-verification.json",
             workflow,
