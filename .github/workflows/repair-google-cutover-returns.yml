@@ -172,6 +172,7 @@ jobs:
               "legacy_missing_scan_occurrences", "legacy_missing_return_occurrences",
               "legacy_target_occurrences", "legacy_target_unique_codes", "scope_conflicts",
               "prerequisite_return_inserts", "reconstructed_prerequisite_occurrences",
+              "preexisting_future_owner_return_occurrences",
               "reconstructed_chronology_occurrences",
               "identity_no_strong_id_records", "identity_not_found_records",
               "identity_product_quantity_mismatch_records", "identity_multiple_records",
@@ -226,6 +227,11 @@ jobs:
               "busy_previous_owner_matches_google_row_occurrences",
               "busy_previous_owner_product_quantity_match_occurrences",
               "busy_previous_owner_scan_matches_movement_occurrences",
+              "busy_previous_owner_exactly_one_outbound_occurrences",
+              "busy_previous_owner_previous_is_latest_outbound_occurrences",
+              "busy_previous_owner_no_return_occurrences",
+              "busy_previous_owner_return_before_target_occurrences",
+              "busy_previous_owner_return_at_or_after_target_occurrences",
               "cross_later_backend_timestamp_in_interval_occurrences",
               "cross_later_google_timestamp_in_interval_occurrences",
               "cross_later_unique_audit_timestamp_in_interval_occurrences",
@@ -251,6 +257,7 @@ jobs:
               f"legacy_unique_codes={payload.get('legacy_target_unique_codes', -1)} "
               f"prerequisite_returns={payload.get('prerequisite_return_inserts', -1)} "
               f"reconstructed_prerequisites={payload.get('reconstructed_prerequisite_occurrences', -1)} "
+              f"future_owner_returns={payload.get('preexisting_future_owner_return_occurrences', -1)} "
               f"reconstructed_chronology={payload.get('reconstructed_chronology_occurrences', -1)} "
               f"duplicates={payload.get('duplicate_occurrences', -1)} "
               f"identity_conflicts={payload.get('identity_conflicts', -1)} "
@@ -303,6 +310,11 @@ jobs:
               f"busy_prev_owner_returned={payload.get('busy_previous_owner_order_returned_occurrences', -1)} "
               f"busy_prev_owner_both_ids={payload.get('busy_previous_owner_matches_both_source_ids_occurrences', -1)} "
               f"busy_prev_owner_row={payload.get('busy_previous_owner_matches_google_row_occurrences', -1)} "
+              f"busy_prev_owner_one_outbound={payload.get('busy_previous_owner_exactly_one_outbound_occurrences', -1)} "
+              f"busy_prev_owner_latest_outbound={payload.get('busy_previous_owner_previous_is_latest_outbound_occurrences', -1)} "
+              f"busy_prev_owner_no_return={payload.get('busy_previous_owner_no_return_occurrences', -1)} "
+              f"busy_prev_owner_return_before_target={payload.get('busy_previous_owner_return_before_target_occurrences', -1)} "
+              f"busy_prev_owner_return_after_target={payload.get('busy_previous_owner_return_at_or_after_target_occurrences', -1)} "
               f"cross_backend_in_interval={payload.get('cross_later_backend_timestamp_in_interval_occurrences', -1)} "
               f"cross_google_in_interval={payload.get('cross_later_google_timestamp_in_interval_occurrences', -1)} "
               f"cross_audit_in_interval={payload.get('cross_later_unique_audit_timestamp_in_interval_occurrences', -1)} "
@@ -324,6 +336,8 @@ jobs:
               raise SystemExit("GOOGLE_RETURN_REPAIR_PREREQUISITE_COUNT_CHANGED")
           if payload.get("reconstructed_prerequisite_occurrences") != 8:
               raise SystemExit("GOOGLE_RETURN_REPAIR_RECONSTRUCTED_PREREQUISITE_COUNT_CHANGED")
+          if payload.get("preexisting_future_owner_return_occurrences") != 8:
+              raise SystemExit("GOOGLE_RETURN_REPAIR_FUTURE_OWNER_RETURN_COUNT_CHANGED")
           if payload.get("reconstructed_chronology_occurrences") != 5:
               raise SystemExit("GOOGLE_RETURN_REPAIR_CHRONOLOGY_COUNT_CHANGED")
           if not re.fullmatch(r"[0-9a-f]{64}", str(payload.get("plan_sha256") or "")):
