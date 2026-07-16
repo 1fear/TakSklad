@@ -10,6 +10,7 @@ from sqlalchemy import select
 from . import skladbot_daily_report
 from .db import SessionLocal
 from .models import AuditLog, PendingEvent
+from .outbox_service import queue_outbox_event
 from .redaction import redact_secrets
 from .reconciliation_service import run_daily_reconciliation
 from .telegram_clients import TelegramProcessorDelegate
@@ -18,6 +19,7 @@ from .telegram_common import iso_date_from_display, normalize_text, parse_dates_
 
 SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE = "skladbot_daily_report_send"
 SKLADBOT_DAILY_REPORTED_REQUEST_EVENT_TYPE = "skladbot_daily_reported_request"
+TELEGRAM_NOTIFICATION_EVENT_TYPE = "telegram_notification"
 SKLADBOT_DAILY_REPORT_STALE_TTL_MINUTES_ENV = "SKLADBOT_DAILY_REPORT_STALE_TTL_MINUTES"
 SKLADBOT_DAILY_REPORT_STALE_FAILED_ERROR = "STUCK_PROCESSING_AFTER_TTL"
 SKLADBOT_DAILY_REPORT_COVERAGE_FAILED_ERROR = "SKLADBOT_DAILY_REPORT_COVERAGE_NOT_COMPLETE"
@@ -35,6 +37,7 @@ SCHEDULED_DAILY_PAYLOAD_SECRET_KEY_PARTS = (
     "chat", "token", "secret", "password", "authorization", "credential",
     "api_key", "apikey", "jwt", "raw", "payload",
 )
+SCHEDULED_DAILY_ALERT_REASON_MAX_LENGTH = 500
 
 
 def command_date_or_today(text):
@@ -252,6 +255,57 @@ def safe_scheduled_skladbot_daily_report_payload(payload):
         if scheduled_skladbot_daily_report_payload_key_is_safe(key_text):
             safe_payload[key_text] = value
     return safe_payload
+
+
+def queue_scheduled_daily_failure_alert(
+    db,
+    event,
+    automation_alert_chat_id,
+    admin_chat_ids,
+    error="",
+):
+    admins = {normalize_text(value) for value in admin_chat_ids or () if normalize_text(value)}
+    target_chat_id = normalize_text(automation_alert_chat_id)
+    if (
+        event is None
+        or not target_chat_id.isdigit()
+        or int(target_chat_id) <= 0
+        or target_chat_id not in admins
+    ):
+        return None
+    payload = event.payload if isinstance(event.payload, dict) else {}
+    report_date = normalize_text(payload.get("report_date")) or "unknown"
+    attempt = max(1, int(event.attempts or 0))
+    reason = normalize_text(redact_secrets(error or event.last_error or "scheduled daily failed"))
+    if len(reason) > SCHEDULED_DAILY_ALERT_REASON_MAX_LENGTH:
+        reason = reason[:SCHEDULED_DAILY_ALERT_REASON_MAX_LENGTH] + "..."
+    event_id = str(event.id)
+    idempotency_key = f"telegram:notification:v1:skladbot_daily_failure:{event_id}:{attempt}"
+    text = "\n".join([
+        "TakSklad: вечерний SkladBot daily не доставлен",
+        "",
+        f"Дата: {report_date}",
+        f"Попытка: {attempt}",
+        f"Причина: {reason}",
+        "",
+        "Что сделать: проверить /ready и событие daily перед ручным повтором.",
+    ])
+    return queue_outbox_event(
+        db,
+        event_type=TELEGRAM_NOTIFICATION_EVENT_TYPE,
+        action="notify_skladbot_daily_failure",
+        aggregate_type="pending_event",
+        aggregate_id=event_id,
+        idempotency_key=idempotency_key,
+        payload={
+            "kind": "skladbot_daily_failure_alert",
+            "chat_id": target_chat_id,
+            "source_event_id": event_id,
+            "report_date": report_date,
+            "retry_cycle": attempt,
+            "text": text,
+        },
+    )
 
 
 class TelegramScheduledReportProcessor(TelegramProcessorDelegate):
@@ -530,6 +584,13 @@ class TelegramScheduledReportProcessor(TelegramProcessorDelegate):
                 "reason": SKLADBOT_DAILY_REPORT_STALE_FAILED_ERROR,
             },
         ))
+        queue_scheduled_daily_failure_alert(
+            db,
+            event,
+            getattr(self, "automation_alert_chat_id", ""),
+            getattr(self, "admin_chat_ids", set()),
+            SKLADBOT_DAILY_REPORT_STALE_FAILED_ERROR,
+        )
 
     def update_scheduled_skladbot_daily_report_progress(self, event_id, stage, **fields):
         if not event_id:
@@ -577,6 +638,14 @@ class TelegramScheduledReportProcessor(TelegramProcessorDelegate):
             if error:
                 payload["error"] = redact_secrets(normalize_text(error))
             event.payload = payload
+            if not success:
+                queue_scheduled_daily_failure_alert(
+                    db,
+                    event,
+                    getattr(self, "automation_alert_chat_id", ""),
+                    getattr(self, "admin_chat_ids", set()),
+                    error,
+                )
             db.commit()
 
     def run_scheduled_daily_reconciliation(self, chat_id, report_date):

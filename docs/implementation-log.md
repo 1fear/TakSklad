@@ -4,6 +4,15 @@
 
 ## 2026-07-16
 
+### Notification routing incident and unified delivery hardening
+
+- Live read-only audit доказал deterministic misconfiguration: scheduled logistics report был отправлен автоматическим событием в personal admin route; ручной `/logistics` не был источником сегодняшнего сообщения.
+- Smartup routing, retry/catch-up, HMAC route identity, provenance и production invariants объединены с расширенным evening Daily/readiness контрактом.
+- Добавлен fail-closed production env preparer: принимает только схему «один personal admin + одна report group», не выводит значения и откатывает candidate при validation failure. После проверки правильный route и stable HMAC key намеренно переживают code rollback.
+- Для wrong-route события задан точный one-date recovery `2026-07-16`; legacy deliveries вне этой даты автоматически не переотправляются.
+- Release source подготовлен как `2.0.42`; root `version.json` остаётся `2.0.40`, desktop channel не продвигается этой server/runtime поставкой.
+- Локально подтверждены focused integration/migration suites, полный suite (`1192` tests, `77` platform skips) и security gate (`high/critical=0`); CI, immutable build, deploy и live evidence фиксируются ниже после выполнения.
+
 ### PostgreSQL-only cutover implementation
 
 - Google Sheets удалён из backend/desktop runtime, compose, deploy contract, readiness и web API; база PostgreSQL стала единственным operational source of truth.

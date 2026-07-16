@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import json
 import logging
 import math
@@ -26,7 +27,7 @@ from .observability_context import current_correlation_id
 from .imports_service import create_import, preview_import
 from .excel_importer import reverse_geocode_yandex
 from .logistics_calendar_service import is_logistics_non_working_day, resolve_effective_delivery_date
-from .logistics_service import build_logistics_report_xlsx
+from .logistics_service import build_logistics_report_xlsx, list_logistics_dates
 from .models import AuditLog, ImportJob, PendingEvent, SmartupFulfillment
 from .schemas import ImportCreate
 from .redaction import redact_secrets
@@ -64,6 +65,10 @@ DEFAULT_FINAL_TIME = "17:50"
 DEFAULT_TIMEZONE = "Asia/Tashkent"
 DEFAULT_DISABLED_WEEKDAYS = (5, 6)
 STALE_SMARTUP_SLOT_TIMEOUT = timedelta(minutes=30)
+DEFAULT_LOGISTICS_RETRY_BASE_SECONDS = 60
+DEFAULT_LOGISTICS_MAX_ATTEMPTS = 5
+DEFAULT_LOGISTICS_CATCHUP_DAYS = 2
+DEFAULT_LOGISTICS_CLAIM_TIMEOUT_MINUTES = 10
 TERMINAL_PAYMENT_CODE = "PYMT:2"
 SMARTUP_NEW_STATUS = "B#N"
 SMARTUP_WAITING_STATUS = "B#W"
@@ -113,6 +118,12 @@ class SmartupAutoImportConfig:
     schedule_times: tuple[str, ...] = DEFAULT_SCHEDULE_TIMES
     disabled_weekdays: tuple[int, ...] = DEFAULT_DISABLED_WEEKDAYS
     final_time: str = DEFAULT_FINAL_TIME
+    logistics_due_time: str = ""
+    logistics_retry_base_seconds: int = DEFAULT_LOGISTICS_RETRY_BASE_SECONDS
+    logistics_max_attempts: int = DEFAULT_LOGISTICS_MAX_ATTEMPTS
+    logistics_catchup_days: int = DEFAULT_LOGISTICS_CATCHUP_DAYS
+    logistics_claim_timeout_minutes: int = DEFAULT_LOGISTICS_CLAIM_TIMEOUT_MINUTES
+    logistics_route_recovery_export_date: str = ""
     slot_grace_minutes: int = 10
     poll_seconds: int = 30
     timezone_name: str = DEFAULT_TIMEZONE
@@ -132,6 +143,11 @@ class SmartupAutoImportConfig:
     client_chat_id: str = ""
     logistics_chat_id: str = ""
     alert_chat_id: str = ""
+    legacy_alert_chat_id: str = ""
+    admin_chat_ids: tuple[str, ...] = ()
+    route_fingerprint_key: str = ""
+    environment_name: str = ""
+    skladbot_create_requests_mode: str = "dry_run"
     telegram_bot_token: str = ""
     telegram_timeout_seconds: int = 120
 
@@ -153,6 +169,24 @@ class SmartupAutoImportConfig:
             raise SmartupAutoImportError(
                 "SMARTUP_AUTO_IMPORT_SAGA_MODE должен быть disabled, shadow или enforced"
             )
+        route_errors = smartup_production_route_errors(self)
+        production_runtime_errors = smartup_production_runtime_errors(self)
+        if route_errors or production_runtime_errors:
+            raise SmartupAutoImportError("; ".join([*route_errors, *production_runtime_errors]))
+        if self.logistics_route_recovery_export_date and not is_iso_date(
+            self.logistics_route_recovery_export_date
+        ):
+            raise SmartupAutoImportError(
+                "SMARTUP_AUTO_IMPORT_LOGISTICS_ROUTE_RECOVERY_EXPORT_DATE должен быть YYYY-MM-DD"
+            )
+
+    @property
+    def effective_logistics_due_time(self) -> str:
+        return normalize_text(self.logistics_due_time) or normalize_text(self.final_time) or DEFAULT_FINAL_TIME
+
+    @property
+    def production(self) -> bool:
+        return normalize_text(self.environment_name).casefold() == "production"
 
     @property
     def timezone(self) -> ZoneInfo:
@@ -430,6 +464,38 @@ def load_smartup_auto_import_config(environ: dict[str, str] | None = None) -> Sm
         schedule_times=parse_schedule_times(environ.get("SMARTUP_AUTO_IMPORT_TIMES")),
         disabled_weekdays=parse_disabled_weekdays(environ.get("SMARTUP_AUTO_IMPORT_DISABLED_WEEKDAYS")),
         final_time=normalize_text(environ.get("SMARTUP_AUTO_IMPORT_FINAL_TIME")) or DEFAULT_FINAL_TIME,
+        logistics_due_time=normalize_text(environ.get("SMARTUP_AUTO_IMPORT_LOGISTICS_DUE_TIME")),
+        logistics_retry_base_seconds=max(
+            1,
+            parse_int(
+                environ.get("SMARTUP_AUTO_IMPORT_LOGISTICS_RETRY_BASE_SECONDS"),
+                DEFAULT_LOGISTICS_RETRY_BASE_SECONDS,
+            ),
+        ),
+        logistics_max_attempts=max(
+            1,
+            parse_int(
+                environ.get("SMARTUP_AUTO_IMPORT_LOGISTICS_MAX_ATTEMPTS"),
+                DEFAULT_LOGISTICS_MAX_ATTEMPTS,
+            ),
+        ),
+        logistics_catchup_days=max(
+            0,
+            parse_int(
+                environ.get("SMARTUP_AUTO_IMPORT_LOGISTICS_CATCHUP_DAYS"),
+                DEFAULT_LOGISTICS_CATCHUP_DAYS,
+            ),
+        ),
+        logistics_claim_timeout_minutes=max(
+            1,
+            parse_int(
+                environ.get("SMARTUP_AUTO_IMPORT_LOGISTICS_CLAIM_TIMEOUT_MINUTES"),
+                DEFAULT_LOGISTICS_CLAIM_TIMEOUT_MINUTES,
+            ),
+        ),
+        logistics_route_recovery_export_date=normalize_text(
+            environ.get("SMARTUP_AUTO_IMPORT_LOGISTICS_ROUTE_RECOVERY_EXPORT_DATE")
+        ),
         slot_grace_minutes=max(1, parse_int(environ.get("SMARTUP_AUTO_IMPORT_SLOT_GRACE_MINUTES"), 10)),
         poll_seconds=max(30, parse_int(environ.get("SMARTUP_AUTO_IMPORT_POLL_SECONDS"), 30)),
         timezone_name=normalize_text(environ.get("TAKSKLAD_TIMEZONE")) or DEFAULT_TIMEZONE,
@@ -450,7 +516,14 @@ def load_smartup_auto_import_config(environ: dict[str, str] | None = None) -> Sm
         default_block_price=max(1, parse_int(environ.get("TAKSKLAD_DEFAULT_BLOCK_PRICE"), 240000)),
         client_chat_id=normalize_text(environ.get("SMARTUP_AUTO_IMPORT_CLIENT_CHAT_ID")),
         logistics_chat_id=normalize_text(environ.get("SMARTUP_AUTO_IMPORT_LOGISTICS_CHAT_ID")),
-        alert_chat_id=normalize_text(environ.get("SMARTUP_AUTO_IMPORT_ALERT_CHAT_ID")),
+        alert_chat_id=normalize_text(environ.get("TAKSKLAD_AUTOMATION_ALERT_CHAT_ID")),
+        legacy_alert_chat_id=normalize_text(environ.get("SMARTUP_AUTO_IMPORT_ALERT_CHAT_ID")),
+        admin_chat_ids=parse_csv_values(environ.get("TELEGRAM_ADMIN_CHAT_IDS")),
+        route_fingerprint_key=normalize_text(environ.get("SMARTUP_AUTO_IMPORT_ROUTE_FINGERPRINT_KEY")),
+        environment_name=normalize_text(environ.get("TAKSKLAD_ENV")),
+        skladbot_create_requests_mode=(
+            normalize_text(environ.get("SKLADBOT_CREATE_REQUESTS_MODE")).casefold() or "dry_run"
+        ),
         telegram_bot_token=normalize_text(environ.get("TELEGRAM_BOT_TOKEN")),
         telegram_timeout_seconds=max(5, parse_int(environ.get("TELEGRAM_WORKER_FILE_TIMEOUT_SECONDS"), 120)),
     )
@@ -467,53 +540,102 @@ def run_due_smartup_auto_imports(
     config = config or load_smartup_auto_import_config()
     if not config.enabled:
         return [{"status": "disabled"}]
+    config.validate_for_run()
     local_now = normalize_local_now(now, config.timezone)
+    results: list[dict[str, Any]] = []
+    slot_failure_count = 0
     if local_now.weekday() in config.disabled_weekdays:
-        return [{
+        results.append({
             "status": "idle",
             "reason": "weekday_disabled",
             "weekday": local_now.weekday(),
             "now": local_now.isoformat(),
-        }]
-    results = []
-    target_delivery_dates = scheduled_smartup_target_delivery_dates(db, local_now.date(), config)
-    for slot in config.schedule_times:
-        if not is_slot_due(local_now, slot, config.slot_grace_minutes):
+        })
+    else:
+        target_delivery_dates = scheduled_smartup_target_delivery_dates(db, local_now.date(), config)
+        for slot in config.schedule_times:
+            if not is_slot_due(local_now, slot, config.slot_grace_minutes):
+                continue
+            for target_delivery_date in target_delivery_dates:
+                try:
+                    results.append(run_scheduled_smartup_auto_import_slot(
+                        db,
+                        config,
+                        slot_label=slot,
+                        now=local_now,
+                        target_delivery_date=target_delivery_date,
+                        smartup_client=smartup_client,
+                        telegram_sender=telegram_sender,
+                        final_logistics_reports_enabled=False,
+                    ))
+                except Exception as exc:
+                    slot_failure_count += 1
+                    logger.error(
+                        "Smartup scheduled slot failed; independent logistics recovery continues "
+                        "slot=%s error_class=%s",
+                        slot,
+                        type(exc).__name__,
+                    )
+                    results.append({
+                        "status": "failed",
+                        "reason": "smartup_slot_failed",
+                        "export_date": local_now.date().isoformat(),
+                        "slot": slot,
+                        "target_delivery_date": target_delivery_date.isoformat(),
+                        "error": sanitize_automation_error_text(exc, limit=500),
+                    })
+
+    results.extend(run_due_smartup_logistics_reports(
+        db,
+        config,
+        now=local_now,
+        telegram_sender=telegram_sender,
+    ))
+    if slot_failure_count:
+        raise SmartupAutoImportError(
+            f"Smartup scheduled slots failed: {slot_failure_count}; "
+            "independent logistics recovery was still evaluated"
+        )
+    return results or [{"status": "idle", "now": local_now.isoformat()}]
+
+
+def run_due_smartup_logistics_reports(
+    db: Session,
+    config: SmartupAutoImportConfig,
+    *,
+    now: datetime | None = None,
+    telegram_sender: Any | None = None,
+) -> list[dict[str, Any]]:
+    """Deliver due logistics reports independently from Smartup slot completion."""
+    if not config.backend_import_enabled:
+        return []
+    local_now = normalize_local_now(now, config.timezone)
+    due_time = parse_slot_time(config.effective_logistics_due_time)
+    results: list[dict[str, Any]] = []
+    for days_ago in range(config.logistics_catchup_days, -1, -1):
+        export_date = local_now.date() - timedelta(days=days_ago)
+        due_at = datetime.combine(export_date, due_time, tzinfo=config.timezone)
+        if local_now < due_at:
             continue
-        defer_final_logistics_reports = is_final_slot(slot, config) and len(target_delivery_dates) > 1
-        slot_results = []
-        for target_delivery_date in target_delivery_dates:
-            slot_result = run_scheduled_smartup_auto_import_slot(
+        delivery_dates = delivery_dates_for_auto_logistics(db, export_date, config)
+        if not delivery_dates:
+            continue
+        results.append({
+            "status": "logistics_due",
+            "provenance": "auto_smartup",
+            "export_date": export_date.isoformat(),
+            "due_time": config.effective_logistics_due_time,
+            "delivery_dates": delivery_dates,
+            "logistics_reports": send_final_logistics_reports(
                 db,
                 config,
-                slot_label=slot,
-                now=local_now,
-                target_delivery_date=target_delivery_date,
-                smartup_client=smartup_client,
+                export_date=export_date,
                 telegram_sender=telegram_sender,
-                final_logistics_reports_enabled=not defer_final_logistics_reports,
-            )
-            slot_results.append(slot_result)
-            results.append(slot_result)
-        if defer_final_logistics_reports and config.backend_import_enabled:
-            delivery_dates = delivery_dates_from_smartup_run_results(slot_results)
-            if not delivery_dates:
-                delivery_dates = delivery_dates_for_export_date(db, local_now.date())
-            results.append({
-                "status": "final_logistics_reports",
-                "slot": slot,
-                "export_date": local_now.date().isoformat(),
-                "target_delivery_dates": [value.isoformat() for value in target_delivery_dates],
-                "delivery_dates": delivery_dates,
-                "logistics_reports": send_final_logistics_reports(
-                    db,
-                    config,
-                    export_date=local_now.date(),
-                    telegram_sender=telegram_sender,
-                    extra_delivery_dates=delivery_dates,
-                ),
-            })
-    return results or [{"status": "idle", "now": local_now.isoformat()}]
+                extra_delivery_dates=delivery_dates,
+                now=local_now,
+            ),
+        })
+    return results
 
 
 def run_scheduled_smartup_auto_import_slot(
@@ -644,18 +766,12 @@ def run_smartup_auto_import_once(
             "selected_orders": 0,
             "part": part,
             "skladbot_processing": {"status": "skipped"},
+            "logistics_reports": [],
             "smartup_saga": saga_report([], config.saga_mode),
         }
         if is_final_slot(slot_label, config):
             if config.process_skladbot_now:
                 result["skladbot_processing"] = process_pending_skladbot_request_creates(db)
-            if final_logistics_reports_enabled:
-                result["logistics_reports"] = send_final_logistics_reports(
-                    db,
-                    config,
-                    export_date=export_date,
-                    telegram_sender=telegram_sender,
-                )
         record_smartup_audit(db, "smartup_auto_import_no_orders", result)
         return result
 
@@ -815,16 +931,6 @@ def run_smartup_auto_import_once(
     if config.process_skladbot_now:
         skladbot_processing = process_pending_skladbot_request_creates(db)
 
-    logistics_reports = []
-    if is_final_slot(slot_label, config) and final_logistics_reports_enabled:
-        logistics_reports = send_final_logistics_reports(
-            db,
-            config,
-            export_date=export_date,
-            telegram_sender=telegram_sender,
-            extra_delivery_dates=delivery_dates,
-        )
-
     result = {
         **audit_payload,
         "status": "completed",
@@ -832,7 +938,7 @@ def run_smartup_auto_import_once(
         "status_change": status_change,
         "client_export": client_export,
         "skladbot_processing": skladbot_processing,
-        "logistics_reports": logistics_reports,
+        "logistics_reports": [],
         "smartup_saga": saga_report(saga_events, config.saga_mode),
     }
     update_export_audit(audit_path, result)
@@ -1297,6 +1403,7 @@ def send_smartup_export_to_client(
         result = {"status": "skipped", "reason": "SMARTUP_AUTO_IMPORT_CLIENT_CHAT_ID is empty"}
         record_smartup_client_export_audit(db, export_date, filename, result)
         return result
+    route_fingerprint = smartup_route_fingerprint(config, "client")
     sender = telegram_sender or TelegramDocumentSender(config.telegram_bot_token, config.telegram_timeout_seconds)
     if not getattr(sender, "configured", True):
         result = {"status": "skipped", "reason": "TELEGRAM_BOT_TOKEN is empty"}
@@ -1310,9 +1417,36 @@ def send_smartup_export_to_client(
             filename,
             caption=smartup_export_caption(export_date, slot_label, part, selected_orders, rows, delivery_dates),
         )
-        result = {"status": "sent", "filename": filename, "export_date": export_date.isoformat(), "part": part}
+        result = {
+            "status": "sent",
+            "provenance": "auto_smartup",
+            "route_role": "client",
+            "route_fingerprint": route_fingerprint,
+            "target_type": telegram_chat_target_type(config.client_chat_id),
+            "filename": filename,
+            "export_date": export_date.isoformat(),
+            "part": part,
+        }
     except Exception as exc:
-        result = {"status": "failed", "filename": filename, "error": str(exc)[:500]}
+        result = {
+            "status": "failed",
+            "provenance": "auto_smartup",
+            "route_role": "client",
+            "route_fingerprint": route_fingerprint,
+            "target_type": telegram_chat_target_type(config.client_chat_id),
+            "filename": filename,
+            "error": sanitize_automation_error_text(exc, limit=500),
+        }
+        notify_smartup_automation_error(
+            db,
+            config,
+            export_date=export_date,
+            slot_label=f"{normalize_text(slot_label) or 'unknown'}:client_export",
+            exc=SmartupAutoImportError(
+                f"Smartup client export delivery failed: {sanitize_automation_error_text(exc, limit=500)}"
+            ),
+            telegram_sender=telegram_sender,
+        )
     record_smartup_client_export_audit(db, export_date, filename, result)
     return result
 
@@ -1406,6 +1540,7 @@ def send_final_logistics_reports(
     export_date: date,
     telegram_sender: Any | None = None,
     extra_delivery_dates: list[str] | None = None,
+    now: datetime | None = None,
 ) -> list[dict[str, Any]]:
     delivery_dates = set(extra_delivery_dates or [])
     delivery_dates.update(delivery_dates_for_export_date(db, export_date))
@@ -1413,6 +1548,10 @@ def send_final_logistics_reports(
         return [{"status": "skipped", "reason": "no_delivery_dates"}]
     if not config.logistics_chat_id:
         return [{"status": "skipped", "reason": "SMARTUP_AUTO_IMPORT_LOGISTICS_CHAT_ID is empty"}]
+    route_fingerprint = smartup_route_fingerprint(config, "logistics")
+    current_time = smartup_datetime_utc(
+        normalize_local_now(now, config.timezone) if now is not None else datetime.now(timezone.utc)
+    )
 
     sender = telegram_sender or TelegramDocumentSender(config.telegram_bot_token, config.telegram_timeout_seconds)
     if not getattr(sender, "configured", True):
@@ -1424,6 +1563,17 @@ def send_final_logistics_reports(
         normalized_delivery_date = (
             parsed_delivery_date.isoformat() if parsed_delivery_date else normalize_text(delivery_date)
         )
+        event, skipped = claim_smartup_logistics_report(
+            db,
+            config,
+            export_date,
+            normalized_delivery_date,
+            route_fingerprint=route_fingerprint,
+            now=current_time,
+        )
+        if skipped is not None:
+            results.append(skipped)
+            continue
         if parsed_delivery_date and is_logistics_non_working_day(
             db,
             parsed_delivery_date,
@@ -1431,37 +1581,58 @@ def send_final_logistics_reports(
         ):
             result = {
                 "status": "skipped",
+                "provenance": "auto_smartup",
+                "route_role": "logistics",
+                "route_fingerprint": route_fingerprint,
                 "delivery_date": parsed_delivery_date.isoformat(),
                 "reason": "non_working_logistics_day",
             }
-            results.append(result)
             db.add(AuditLog(
                 action="smartup_auto_import_logistics_report",
                 entity_type="delivery_date",
                 entity_id=parsed_delivery_date.isoformat(),
-                payload=result,
+                payload=sanitize_audit_payload(result),
             ))
-            continue
-        event, skipped = claim_smartup_logistics_report(db, export_date, normalized_delivery_date)
-        if skipped is not None:
-            results.append(skipped)
+            mark_smartup_logistics_report_completed(db, event.id, result)
+            results.append(result)
             continue
         try:
             content, filename = build_logistics_report_xlsx(db, delivery_date)
+            auto_filename = logistics_report_filename(filename, provenance="auto")
             sender.send_document(
                 config.logistics_chat_id,
                 content,
-                filename,
-                caption=f"Отчёт логистики за {display_date_from_any(delivery_date)}",
+                auto_filename,
+                caption=f"AUTO Smartup · Отчёт логистики за {display_date_from_any(delivery_date)}",
             )
-            result = {"status": "sent", "delivery_date": delivery_date, "filename": filename}
+            result = {
+                "status": "sent",
+                "provenance": "auto_smartup",
+                "route_role": "logistics",
+                "route_fingerprint": route_fingerprint,
+                "delivery_date": delivery_date,
+                "filename": auto_filename,
+            }
         except Exception as exc:
             result = {
                 "status": "failed",
+                "provenance": "auto_smartup",
+                "route_role": "logistics",
+                "route_fingerprint": route_fingerprint,
                 "delivery_date": delivery_date,
-                "error": str(exc)[:500],
+                "error": sanitize_automation_error_text(exc, limit=500),
             }
-            mark_smartup_logistics_report_failed(db, event.id, result)
+            mark_smartup_logistics_report_failed(db, config, event.id, result, now=current_time)
+            notify_smartup_automation_error(
+                db,
+                config,
+                export_date=export_date,
+                slot_label=f"logistics:{normalized_delivery_date}",
+                exc=SmartupAutoImportError(
+                    f"Auto logistics delivery failed: {sanitize_automation_error_text(exc, limit=500)}"
+                ),
+                telegram_sender=telegram_sender,
+            )
         else:
             mark_smartup_logistics_report_completed(db, event.id, result)
         results.append(result)
@@ -1469,7 +1640,7 @@ def send_final_logistics_reports(
             action="smartup_auto_import_logistics_report",
             entity_type="delivery_date",
             entity_id=delivery_date,
-            payload=result,
+            payload=sanitize_audit_payload(result),
         ))
     db.commit()
     return results
@@ -1477,45 +1648,87 @@ def send_final_logistics_reports(
 
 def claim_smartup_logistics_report(
     db: Session,
+    config: SmartupAutoImportConfig,
     export_date: date,
     delivery_date: str,
+    *,
+    route_fingerprint: str,
+    now: datetime,
 ) -> tuple[PendingEvent | None, dict[str, Any] | None]:
-    idempotency_key = smartup_logistics_report_idempotency_key(export_date, delivery_date)
+    idempotency_key = smartup_logistics_report_idempotency_key(
+        export_date,
+        delivery_date,
+        route_fingerprint,
+    )
     existing = db.execute(
         select(PendingEvent).where(PendingEvent.idempotency_key == idempotency_key)
     ).scalar_one_or_none()
     if existing is not None:
-        if existing.status in {"completed", "processing"}:
+        retry_reason = smartup_logistics_retry_reason(existing, config, now)
+        if not retry_reason:
             return None, {
                 "status": "skipped",
                 "reason": "already_sent" if existing.status == "completed" else "already_processing",
+                "provenance": "auto_smartup",
+                "route_role": "logistics",
+                "route_fingerprint": route_fingerprint,
                 "delivery_date": delivery_date,
                 "event_id": str(existing.id),
+            }
+        if retry_reason in {"retry_backoff", "retry_exhausted"}:
+            return None, {
+                "status": "skipped",
+                "reason": retry_reason,
+                "provenance": "auto_smartup",
+                "route_role": "logistics",
+                "route_fingerprint": route_fingerprint,
+                "delivery_date": delivery_date,
+                "attempts": int(existing.attempts or 0),
             }
         existing.status = "processing"
         existing.attempts = int(existing.attempts or 0) + 1
         existing.last_error = ""
-        existing.payload = {
-            **(existing.payload or {}),
-            "retry_claimed_at": datetime.now(timezone.utc).isoformat(),
-        }
+        payload = {**(existing.payload or {})}
+        payload.pop("next_attempt_at", None)
+        payload.update({
+            "retry_claimed_at": now.isoformat(),
+            "retry_reason": retry_reason,
+            "route_fingerprint": route_fingerprint,
+        })
+        existing.payload = payload
         db.add(existing)
         db.commit()
         db.refresh(existing)
         return existing, None
 
-    sent_audit = find_existing_smartup_logistics_report_audit(db, delivery_date)
-    if sent_audit is not None:
+    sent_audit = find_existing_smartup_logistics_report_audit(
+        db,
+        delivery_date,
+    )
+    sent_route_fingerprint = normalize_text((sent_audit.payload or {}).get("route_fingerprint")) \
+        if sent_audit is not None else ""
+    route_matches = bool(sent_route_fingerprint and sent_route_fingerprint == route_fingerprint)
+    recovery_requested = (
+        normalize_text(config.logistics_route_recovery_export_date) == export_date.isoformat()
+    )
+    if sent_audit is not None and (route_matches or not recovery_requested):
+        legacy_delivery_state = (
+            "route_matched" if route_matches else "legacy_unproven_assumed_delivered"
+        )
         event = PendingEvent(
             event_type=SMARTUP_LOGISTICS_REPORT_EVENT_TYPE,
             idempotency_key=idempotency_key,
             status="completed",
             attempts=0,
             payload={
-                "version": 1,
+                "version": 2,
                 "export_date": export_date.isoformat(),
                 "delivery_date": delivery_date,
-                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "provenance": "auto_smartup",
+                "route_role": "logistics",
+                "route_fingerprint": route_fingerprint,
+                "legacy_delivery_state": legacy_delivery_state,
+                "completed_at": now.isoformat(),
                 "result": sanitize_audit_payload(sent_audit.payload or {}),
                 "legacy_audit_log_id": str(sent_audit.id),
             },
@@ -1527,7 +1740,10 @@ def claim_smartup_logistics_report(
             db.rollback()
         return None, {
             "status": "skipped",
-            "reason": "already_sent",
+            "reason": "already_sent" if route_matches else "legacy_assumed_delivered",
+            "provenance": "auto_smartup",
+            "route_role": "logistics",
+            "route_fingerprint": route_fingerprint,
             "delivery_date": delivery_date,
             "audit_log_id": str(sent_audit.id),
         }
@@ -1538,10 +1754,13 @@ def claim_smartup_logistics_report(
         status="processing",
         attempts=1,
         payload={
-            "version": 1,
+            "version": 2,
             "export_date": export_date.isoformat(),
             "delivery_date": delivery_date,
-            "claimed_at": datetime.now(timezone.utc).isoformat(),
+            "provenance": "auto_smartup",
+            "route_role": "logistics",
+            "route_fingerprint": route_fingerprint,
+            "claimed_at": now.isoformat(),
         },
     )
     db.add(event)
@@ -1579,40 +1798,121 @@ def mark_smartup_logistics_report_completed(
 
 def mark_smartup_logistics_report_failed(
     db: Session,
+    config: SmartupAutoImportConfig,
     event_id: uuid.UUID,
     result: dict[str, Any],
+    *,
+    now: datetime,
 ) -> None:
     event = db.get(PendingEvent, event_id)
     if event is None:
         return
     event.status = "failed"
     event.last_error = normalize_text(result.get("error"))[:1000]
+    backoff_seconds = min(
+        3600,
+        config.logistics_retry_base_seconds * (2 ** max(0, int(event.attempts or 1) - 1)),
+    )
     event.payload = {
         **(event.payload or {}),
-        "failed_at": datetime.now(timezone.utc).isoformat(),
+        "failed_at": now.isoformat(),
+        "next_attempt_at": (now + timedelta(seconds=backoff_seconds)).isoformat(),
+        "backoff_seconds": backoff_seconds,
         "result": sanitize_audit_payload(result),
     }
     db.add(event)
     db.commit()
 
 
-def smartup_logistics_report_idempotency_key(export_date: date, delivery_date: str) -> str:
-    return f"smartup:logistics_report:v1:{export_date.isoformat()}:{normalize_text(delivery_date)}"
+def smartup_logistics_report_idempotency_key(
+    export_date: date,
+    delivery_date: str,
+    route_fingerprint: str,
+) -> str:
+    return (
+        f"smartup:logistics_report:v2:{export_date.isoformat()}:"
+        f"{normalize_text(delivery_date)}:{normalize_text(route_fingerprint)}"
+    )
 
 
-def find_existing_smartup_logistics_report_audit(db: Session, delivery_date: str) -> AuditLog | None:
-    rows = db.execute(
+def find_existing_smartup_logistics_report_audit(
+    db: Session,
+    delivery_date: str,
+) -> AuditLog | None:
+    return db.execute(
         select(AuditLog)
         .where(AuditLog.action == "smartup_auto_import_logistics_report")
         .where(AuditLog.entity_id == delivery_date)
+        .where(AuditLog.payload["status"].as_string() == "sent")
         .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
-        .limit(20)
-    ).scalars().all()
-    for row in rows:
-        payload = row.payload or {}
-        if payload.get("status") == "sent":
-            return row
-    return None
+        .limit(1)
+    ).scalar_one_or_none()
+
+
+def smartup_logistics_retry_reason(
+    event: PendingEvent,
+    config: SmartupAutoImportConfig,
+    now: datetime,
+) -> str:
+    if event.status == "completed":
+        return ""
+    if event.status == "processing":
+        payload = event.payload or {}
+        claimed_at = parse_iso_datetime(
+            payload.get("retry_claimed_at") or payload.get("claimed_at")
+        )
+        last_seen_at = claimed_at or smartup_event_last_seen_at(event)
+        if last_seen_at is None:
+            return ""
+        if smartup_datetime_utc(now) - smartup_datetime_utc(last_seen_at) >= timedelta(
+            minutes=config.logistics_claim_timeout_minutes
+        ):
+            return "stale_processing"
+        return ""
+    if event.status == "failed":
+        if int(event.attempts or 0) >= config.logistics_max_attempts:
+            return "retry_exhausted"
+        next_attempt_at = parse_iso_datetime((event.payload or {}).get("next_attempt_at"))
+        if next_attempt_at is not None and smartup_datetime_utc(now) < smartup_datetime_utc(next_attempt_at):
+            return "retry_backoff"
+        return "failed"
+    return ""
+
+
+def smartup_route_fingerprint(config: SmartupAutoImportConfig, role: str) -> str:
+    routes = {
+        "client": config.client_chat_id,
+        "logistics": config.logistics_chat_id,
+        "alert": config.alert_chat_id,
+    }
+    chat_id = normalize_text(routes.get(role))
+    key = normalize_text(config.route_fingerprint_key)
+    if role not in routes or not chat_id:
+        raise SmartupAutoImportError(f"Smartup route {role or 'unknown'} не настроен")
+    if not key:
+        raise SmartupAutoImportError("SMARTUP_AUTO_IMPORT_ROUTE_FINGERPRINT_KEY не задан")
+    digest = hmac.new(
+        key.encode("utf-8"),
+        f"taksklad-smartup-route:v1:{role}:{chat_id}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"hmac-sha256:v1:{digest[:24]}"
+
+
+def logistics_report_filename(filename: str, *, provenance: str) -> str:
+    path = Path(normalize_text(filename) or "TakSklad_логистика.xlsx")
+    marker = "AUTO" if normalize_text(provenance).casefold() == "auto" else "MANUAL"
+    return f"{path.stem}_{marker}{path.suffix or '.xlsx'}"
+
+
+def parse_iso_datetime(value: Any) -> datetime | None:
+    text_value = normalize_text(value)
+    if not text_value:
+        return None
+    try:
+        return datetime.fromisoformat(text_value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def delivery_dates_for_export_date(db: Session, export_date: date) -> list[str]:
@@ -1630,6 +1930,26 @@ def delivery_dates_for_export_date(db: Session, export_date: date) -> list[str]:
             parsed = parse_smartup_date(value)
             if parsed:
                 result.add(parsed.isoformat())
+    return sorted(result)
+
+
+def delivery_dates_for_auto_logistics(
+    db: Session,
+    export_date: date,
+    config: SmartupAutoImportConfig,
+) -> list[str]:
+    """Use durable Smartup metadata, with order truth as a recovery source."""
+    result = set(delivery_dates_for_export_date(db, export_date))
+    scheduled_dates = {
+        value.isoformat()
+        for value in scheduled_smartup_target_delivery_dates(db, export_date, config)
+    }
+    available_order_dates = {
+        normalize_text(value)
+        for value in list_logistics_dates(db)
+        if normalize_text(value)
+    }
+    result.update(scheduled_dates & available_order_dates)
     return sorted(result)
 
 
@@ -1951,10 +2271,11 @@ def notify_smartup_automation_error(
     exc: Exception,
     telegram_sender: Any | None = None,
 ) -> dict[str, Any]:
-    chat_id = config.alert_chat_id or config.logistics_chat_id
+    chat_id = config.alert_chat_id
+    route_fingerprint = smartup_route_fingerprint_if_configured(config, "alert")
     result: dict[str, Any]
     if not chat_id:
-        result = {"status": "skipped", "reason": "SMARTUP_AUTO_IMPORT_ALERT_CHAT_ID is empty"}
+        result = {"status": "skipped", "reason": "TAKSKLAD_AUTOMATION_ALERT_CHAT_ID is empty"}
     else:
         sender = telegram_sender or TelegramDocumentSender(config.telegram_bot_token, config.telegram_timeout_seconds)
         if not getattr(sender, "configured", True):
@@ -1964,43 +2285,78 @@ def notify_smartup_automation_error(
                 "Smartup automation error",
                 f"Дата выгрузки: {format_display_date(export_date)}",
                 f"Слот: {slot_label}",
-                f"Ошибка: {str(exc)[:1200]}",
+                f"Ошибка: {sanitize_automation_error_text(exc, limit=1200)}",
             ])
             try:
                 sender.send_message(chat_id, message)
-                result = {"status": "sent", "chat_id": chat_id, "slot": slot_label}
+                result = {
+                    "status": "sent",
+                    "route_role": "alert",
+                    "route_fingerprint": route_fingerprint,
+                    "target_type": telegram_chat_target_type(chat_id),
+                    "slot": slot_label,
+                }
             except Exception as alert_exc:
-                logger.exception("Smartup automation error alert failed")
+                logger.error(
+                    "Smartup automation error alert failed: %s",
+                    sanitize_automation_error_text(alert_exc, limit=500),
+                )
                 result = {
                     "status": "failed",
-                    "chat_id": chat_id,
+                    "route_role": "alert",
+                    "route_fingerprint": route_fingerprint,
+                    "target_type": telegram_chat_target_type(chat_id),
                     "slot": slot_label,
-                    "error": str(alert_exc)[:500],
+                    "error": sanitize_automation_error_text(alert_exc, limit=500),
                 }
 
     db.add(AuditLog(
         action="smartup_auto_import_error_alert",
         entity_type="smartup_auto_import",
         entity_id=export_date.isoformat(),
-        payload={
+        payload=sanitize_audit_payload({
             **result,
             "export_date": export_date.isoformat(),
             "slot": slot_label,
-            "source_error": str(exc)[:500],
-        },
+            "source_error": sanitize_automation_error_text(exc, limit=500),
+        }),
     ))
     db.commit()
     return result
 
 
+def sanitize_automation_error_text(exc: Any, *, limit: int) -> str:
+    sanitized = redact_secrets(exc)
+    sanitized = re.sub(
+        r"(?i)(\bchat[_ -]?id\b\s*[:=]\s*)-?[1-9]\d*",
+        r"\1***",
+        sanitized,
+    )
+    return sanitized[:max(1, int(limit))]
+
+
 def sanitize_audit_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return {}
-    sanitized = dict(payload)
-    for key in ("smartup_password", "telegram_bot_token", "token", "password"):
-        if key in sanitized:
-            sanitized[key] = "***"
-    return sanitized
+
+    def sanitize(value: Any, key: str = "") -> Any:
+        normalized_key = normalize_text(key).casefold()
+        if (
+            normalized_key in {"smartup_password", "telegram_bot_token", "token", "password"}
+            or "chat_id" in normalized_key
+        ):
+            return "***"
+        if isinstance(value, dict):
+            return {item_key: sanitize(item_value, str(item_key)) for item_key, item_value in value.items()}
+        if isinstance(value, list):
+            return [sanitize(item) for item in value]
+        if isinstance(value, tuple):
+            return [sanitize(item) for item in value]
+        if isinstance(value, str):
+            return redact_secrets(value)
+        return value
+
+    return sanitize(payload)
 
 
 def acquire_smartup_slot_advisory_lock(
@@ -2198,18 +2554,19 @@ def mark_smartup_slot_failed(db: Session, event_id: uuid.UUID, exc: Exception) -
     if event is None:
         return
     event.status = "failed"
-    event.last_error = str(exc)[:1000]
+    safe_error = sanitize_automation_error_text(exc, limit=1000)
+    event.last_error = safe_error
     event.payload = {
         **(event.payload or {}),
         "failed_at": datetime.now(timezone.utc).isoformat(),
-        "error": str(exc)[:1000],
+        "error": safe_error,
     }
     db.add(event)
     db.add(AuditLog(
         action="smartup_auto_import_failed",
         entity_type="pending_event",
         entity_id=str(event.id),
-        payload={"error": str(exc)[:1000], "event_id": str(event.id)},
+        payload={"error": safe_error, "event_id": str(event.id)},
     ))
     db.commit()
 
@@ -2228,6 +2585,35 @@ def build_smartup_auto_import_status(
         .order_by(PendingEvent.created_at.desc(), PendingEvent.id.desc())
         .limit(event_limit)
     ).scalars().all()
+    last_logistics_events = db.execute(
+        select(PendingEvent)
+        .where(PendingEvent.event_type == SMARTUP_LOGISTICS_REPORT_EVENT_TYPE)
+        .order_by(PendingEvent.created_at.desc(), PendingEvent.id.desc())
+        .limit(event_limit)
+    ).scalars().all()
+    logistics_state_rows = db.execute(
+        select(PendingEvent.status, func.count(PendingEvent.id))
+        .where(PendingEvent.event_type == SMARTUP_LOGISTICS_REPORT_EVENT_TYPE)
+        .group_by(PendingEvent.status)
+    ).all()
+    logistics_states = {
+        normalize_text(state): int(count or 0)
+        for state, count in logistics_state_rows
+        if normalize_text(state)
+    }
+    current_logistics_route_fingerprint = smartup_route_fingerprint_if_configured(config, "logistics")
+    logistics_retry_exhausted = 0
+    if current_logistics_route_fingerprint:
+        logistics_retry_exhausted = int(db.execute(
+            select(func.count(PendingEvent.id))
+            .where(PendingEvent.event_type == SMARTUP_LOGISTICS_REPORT_EVENT_TYPE)
+            .where(PendingEvent.status == "failed")
+            .where(PendingEvent.attempts >= config.logistics_max_attempts)
+            .where(
+                PendingEvent.payload["route_fingerprint"].as_string()
+                == current_logistics_route_fingerprint
+            )
+        ).scalar_one() or 0)
     pending_skladbot_creates = db.execute(
         select(func.count(PendingEvent.id))
         .where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
@@ -2247,7 +2633,7 @@ def build_smartup_auto_import_status(
         for state in ("smartup_ambiguous", "skladbot_ambiguous", "blocked_stock", "payload_mismatch", "manual_review")
     )
     return {
-        "status": "failed" if validation_errors or manual_review_count else "ok",
+        "status": "failed" if validation_errors or manual_review_count or logistics_retry_exhausted else "ok",
         "configuration": {
             "enabled": config.enabled,
             "backend_import_enabled": config.backend_import_enabled,
@@ -2257,6 +2643,12 @@ def build_smartup_auto_import_status(
             "schedule_times": list(config.schedule_times),
             "disabled_weekdays": list(config.disabled_weekdays),
             "final_time": config.final_time,
+            "logistics_due_time": config.effective_logistics_due_time,
+            "logistics_retry_base_seconds": config.logistics_retry_base_seconds,
+            "logistics_max_attempts": config.logistics_max_attempts,
+            "logistics_catchup_days": config.logistics_catchup_days,
+            "logistics_claim_timeout_minutes": config.logistics_claim_timeout_minutes,
+            "logistics_route_recovery_export_date": config.logistics_route_recovery_export_date,
             "slot_grace_minutes": config.slot_grace_minutes,
             "poll_seconds": config.poll_seconds,
             "timezone": config.timezone_name,
@@ -2268,6 +2660,17 @@ def build_smartup_auto_import_status(
             "client_chat_configured": bool(config.client_chat_id),
             "logistics_chat_configured": bool(config.logistics_chat_id),
             "alert_chat_configured": bool(config.alert_chat_id),
+            "legacy_alert_chat_configured": bool(config.legacy_alert_chat_id),
+            "admin_allowlist_configured": bool(config.admin_chat_ids),
+            "route_fingerprint_key_configured": bool(config.route_fingerprint_key),
+            "production_route_contract_enforced": bool(config.production and config.enabled),
+            "skladbot_create_requests_mode": config.skladbot_create_requests_mode,
+            "client_route_type": telegram_chat_target_type(config.client_chat_id),
+            "logistics_route_type": telegram_chat_target_type(config.logistics_chat_id),
+            "alert_route_type": telegram_chat_target_type(config.alert_chat_id),
+            "client_route_fingerprint": smartup_route_fingerprint_if_configured(config, "client"),
+            "logistics_route_fingerprint": smartup_route_fingerprint_if_configured(config, "logistics"),
+            "alert_route_fingerprint": smartup_route_fingerprint_if_configured(config, "alert"),
             "telegram_bot_configured": bool(config.telegram_bot_token),
             "new_status_code_configured": bool(config.new_status_code),
             "waiting_status_code_configured": bool(config.waiting_status_code),
@@ -2280,8 +2683,11 @@ def build_smartup_auto_import_status(
             "pending_skladbot_request_creates": int(pending_skladbot_creates or 0),
             "fulfillment_states": dict(sorted(fulfillment_states.items())),
             "fulfillment_manual_review": manual_review_count,
+            "logistics_delivery_states": dict(sorted(logistics_states.items())),
+            "logistics_retry_exhausted": logistics_retry_exhausted,
         },
         "last_events": [summarize_smartup_auto_import_event(event) for event in last_events],
+        "last_logistics_events": [summarize_smartup_logistics_event(event) for event in last_logistics_events],
     }
 
 
@@ -2297,18 +2703,123 @@ def smartup_auto_import_status_findings(config: SmartupAutoImportConfig) -> tupl
         errors.append("SMARTUP_AUTO_IMPORT_CHANGE_STATUS_ENABLED=true требует статус ожидания")
     if config.enabled and not (config.smartup_username and config.smartup_password):
         errors.append("SMARTUP_AUTO_IMPORT_ENABLED=true требует Smartup auth")
-    if (config.enabled or config.backend_import_enabled or config.change_status_enabled) and not config.telegram_bot_token:
+    errors.extend(smartup_production_route_errors(config))
+    errors.extend(smartup_production_runtime_errors(config))
+    if config.logistics_route_recovery_export_date and not is_iso_date(
+        config.logistics_route_recovery_export_date
+    ):
+        errors.append("SMARTUP_AUTO_IMPORT_LOGISTICS_ROUTE_RECOVERY_EXPORT_DATE должен быть YYYY-MM-DD")
+    if (
+        config.enabled
+        and (config.client_chat_id or config.logistics_chat_id or config.alert_chat_id)
+        and not config.route_fingerprint_key
+        and "SMARTUP_AUTO_IMPORT_ROUTE_FINGERPRINT_KEY не задан" not in errors
+    ):
+        errors.append("SMARTUP_AUTO_IMPORT_ROUTE_FINGERPRINT_KEY не задан")
+    if (
+        (config.enabled or config.backend_import_enabled or config.change_status_enabled)
+        and not config.telegram_bot_token
+        and not config.production
+    ):
         warnings.append("TELEGRAM_BOT_TOKEN не задан: файлы/alerts в Telegram будут пропущены")
-    if config.enabled and not config.client_chat_id:
+    if config.enabled and not config.client_chat_id and not config.production:
         warnings.append("SMARTUP_AUTO_IMPORT_CLIENT_CHAT_ID не задан: export-файл клиенту не отправится")
-    if config.enabled and not config.logistics_chat_id:
+    if config.enabled and not config.logistics_chat_id and not config.production:
         warnings.append("SMARTUP_AUTO_IMPORT_LOGISTICS_CHAT_ID не задан: финальный отчет логистики не отправится")
     if config.process_skladbot_now:
         warnings.append("SMARTUP_AUTO_IMPORT_PROCESS_SKLADBOT_NOW=true: SkladBot create queue обрабатывается сразу")
+    if config.logistics_route_recovery_export_date:
+        warnings.append("Smartup logistics route recovery разрешён для одной export-date")
     if config.saga_mode in {"shadow", "enforced"}:
         if config.saga_mode == "shadow":
             warnings.append("SMARTUP_AUTO_IMPORT_SAGA_MODE=shadow не блокирует legacy completion invariant")
     return errors, warnings
+
+
+def smartup_production_route_errors(config: SmartupAutoImportConfig) -> list[str]:
+    if not (config.production and config.enabled):
+        return []
+    errors: list[str] = []
+    routes = {
+        "SMARTUP_AUTO_IMPORT_CLIENT_CHAT_ID": config.client_chat_id,
+        "SMARTUP_AUTO_IMPORT_LOGISTICS_CHAT_ID": config.logistics_chat_id,
+        "TAKSKLAD_AUTOMATION_ALERT_CHAT_ID": config.alert_chat_id,
+    }
+    for setting_name, value in routes.items():
+        if telegram_chat_target_type(value) in {"missing", "invalid"}:
+            errors.append(f"{setting_name} должен быть ненулевым numeric chat ID")
+    if config.client_chat_id and telegram_chat_target_type(config.client_chat_id) != "group":
+        errors.append("SMARTUP_AUTO_IMPORT_CLIENT_CHAT_ID должен указывать на group-like target")
+    if config.logistics_chat_id and telegram_chat_target_type(config.logistics_chat_id) != "group":
+        errors.append("SMARTUP_AUTO_IMPORT_LOGISTICS_CHAT_ID должен указывать на group-like target")
+    if config.alert_chat_id and telegram_chat_target_type(config.alert_chat_id) != "personal":
+        errors.append("TAKSKLAD_AUTOMATION_ALERT_CHAT_ID должен указывать на personal-like target")
+    report_routes = {
+        normalize_text(config.client_chat_id),
+        normalize_text(config.logistics_chat_id),
+    }
+    if config.alert_chat_id and normalize_text(config.alert_chat_id) in report_routes:
+        errors.append("Automation alert route должен отличаться от client и logistics report routes")
+    if not config.alert_chat_id or config.alert_chat_id not in set(config.admin_chat_ids):
+        errors.append("TAKSKLAD_AUTOMATION_ALERT_CHAT_ID должен входить в TELEGRAM_ADMIN_CHAT_IDS")
+    if config.legacy_alert_chat_id and config.legacy_alert_chat_id != config.alert_chat_id:
+        errors.append(
+            "SMARTUP_AUTO_IMPORT_ALERT_CHAT_ID должен быть пустым или совпадать с "
+            "TAKSKLAD_AUTOMATION_ALERT_CHAT_ID"
+        )
+    if not config.route_fingerprint_key:
+        errors.append("SMARTUP_AUTO_IMPORT_ROUTE_FINGERPRINT_KEY не задан")
+    if not config.telegram_bot_token:
+        errors.append("TELEGRAM_BOT_TOKEN не задан для production Smartup automation")
+    return errors
+
+
+def smartup_production_runtime_errors(config: SmartupAutoImportConfig) -> list[str]:
+    if not config.production:
+        return []
+    errors: list[str] = []
+    if not config.enabled:
+        errors.append(
+            "Production Smartup automation требует SMARTUP_AUTO_IMPORT_ENABLED=true"
+        )
+        return errors
+    if not config.backend_import_enabled:
+        errors.append(
+            "Production Smartup automation требует "
+            "SMARTUP_AUTO_IMPORT_BACKEND_IMPORT_ENABLED=true"
+        )
+    if normalize_text(config.skladbot_create_requests_mode).casefold() != "enabled":
+        errors.append(
+            "Production Smartup automation требует SKLADBOT_CREATE_REQUESTS_MODE=enabled"
+        )
+    normalized_slots = tuple(normalize_text(value) for value in config.schedule_times if normalize_text(value))
+    if len(normalized_slots) != 3 or len(set(normalized_slots)) != 3:
+        errors.append("Production Smartup automation требует ровно 3 уникальных slot time")
+    if normalize_text(config.final_time) not in set(normalized_slots):
+        errors.append("SMARTUP_AUTO_IMPORT_FINAL_TIME должен входить в production slot times")
+    return errors
+
+
+def telegram_chat_target_type(value: Any) -> str:
+    normalized = normalize_text(value)
+    if not normalized:
+        return "missing"
+    if not re.fullmatch(r"-?[1-9]\d*", normalized):
+        return "invalid"
+    return "group" if int(normalized) < 0 else "personal"
+
+
+def smartup_route_fingerprint_if_configured(config: SmartupAutoImportConfig, role: str) -> str:
+    if not config.route_fingerprint_key:
+        return ""
+    route_value = {
+        "client": config.client_chat_id,
+        "logistics": config.logistics_chat_id,
+        "alert": config.alert_chat_id,
+    }.get(role)
+    if not route_value:
+        return ""
+    return smartup_route_fingerprint(config, role)
 
 
 def summarize_smartup_auto_import_event(event: PendingEvent) -> dict[str, Any]:
@@ -2339,6 +2850,24 @@ def summarize_smartup_auto_import_event(event: PendingEvent) -> dict[str, Any]:
         "skladbot_processing": normalize_text(skladbot_processing.get("status")),
         "logistics_reports": len(logistics_reports),
         "last_error": redact_secrets(event.last_error or "")[:500],
+        "created_at": event.created_at.isoformat() if isinstance(event.created_at, datetime) else "",
+        "updated_at": event.updated_at.isoformat() if isinstance(event.updated_at, datetime) else "",
+    }
+
+
+def summarize_smartup_logistics_event(event: PendingEvent) -> dict[str, Any]:
+    payload = event.payload or {}
+    return {
+        "id": str(event.id),
+        "status": event.status,
+        "attempts": int(event.attempts or 0),
+        "export_date": normalize_text(payload.get("export_date")),
+        "delivery_date": normalize_text(payload.get("delivery_date")),
+        "provenance": normalize_text(payload.get("provenance")),
+        "route_role": normalize_text(payload.get("route_role")),
+        "route_fingerprint": normalize_text(payload.get("route_fingerprint")),
+        "legacy_delivery_state": normalize_text(payload.get("legacy_delivery_state")),
+        "last_error": sanitize_automation_error_text(event.last_error or "", limit=500),
         "created_at": event.created_at.isoformat() if isinstance(event.created_at, datetime) else "",
         "updated_at": event.updated_at.isoformat() if isinstance(event.updated_at, datetime) else "",
     }
@@ -2534,6 +3063,17 @@ def parse_smartup_date(value: Any) -> date | None:
     return None
 
 
+def is_iso_date(value: Any) -> bool:
+    normalized = normalize_text(value)
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", normalized):
+        return False
+    try:
+        date.fromisoformat(normalized)
+    except ValueError:
+        return False
+    return True
+
+
 def parse_bool(value: Any, default: bool = False) -> bool:
     text = normalize_text(value).casefold()
     if not text:
@@ -2549,6 +3089,17 @@ def parse_int(value: Any, default: int = 0) -> int:
         return int(float(text))
     except ValueError:
         return default
+
+
+def parse_csv_values(value: Any) -> tuple[str, ...]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in normalize_text(value).split(","):
+        normalized = normalize_text(item)
+        if normalized and normalized not in seen:
+            result.append(normalized)
+            seen.add(normalized)
+    return tuple(result)
 
 
 def parse_money(value: Any) -> int:

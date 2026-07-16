@@ -157,6 +157,7 @@ def validate_telegram_worker_config(
     daily_report_enabled=False,
     skladbot_api_tokens=(),
     daily_report_environ=None,
+    automation_alert_chat_id="",
 ):
     production = normalize_text(environment).casefold() == "production"
     if not normalize_text(token) and not production:
@@ -166,6 +167,7 @@ def validate_telegram_worker_config(
     admins = {str(value) for value in admin_chat_ids or ()}
     scheduled = {str(value) for value in scheduled_chat_ids or ()}
     reconciliation = {str(value) for value in reconciliation_chat_ids or ()}
+    automation_alert = normalize_text(automation_alert_chat_id)
     if production:
         contract_environ = daily_report_environ or {
             "TAKSKLAD_ENV": environment,
@@ -197,6 +199,14 @@ def validate_telegram_worker_config(
         errors.append("SKLADBOT_DAILY_REPORT_CHAT_IDS")
     if not reconciliation.issubset(admins):
         errors.append("TAKSKLAD_DAILY_RECONCILIATION_CHAT_IDS")
+    if automation_alert and (
+        not automation_alert.isdigit()
+        or int(automation_alert) <= 0
+        or automation_alert not in admins
+    ):
+        errors.append("TAKSKLAD_AUTOMATION_ALERT_CHAT_ID")
+    if production and not automation_alert:
+        errors.append("TAKSKLAD_AUTOMATION_ALERT_CHAT_ID")
     if errors:
         raise TelegramConfigurationError(errors)
     return True
@@ -311,6 +321,9 @@ class TelegramWorker:
         self.token = normalize_text(os.environ.get("TELEGRAM_BOT_TOKEN"))
         self.allowed_chat_ids = parse_chat_ids(os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS"))
         self.admin_chat_ids = parse_chat_ids(os.environ.get("TELEGRAM_ADMIN_CHAT_IDS"))
+        self.automation_alert_chat_id = normalize_text(
+            os.environ.get("TAKSKLAD_AUTOMATION_ALERT_CHAT_ID")
+        )
         self.backend_url = normalize_text(os.environ.get("TAKSKLAD_BACKEND_INTERNAL_URL")) or "http://backend-api:8000"
         self.backend_token = normalize_text(os.environ.get("TAKSKLAD_API_TOKEN"))
         self.timeout = int(os.environ.get("TELEGRAM_WORKER_TIMEOUT_SECONDS", "20") or "20")
@@ -342,6 +355,7 @@ class TelegramWorker:
             daily_report_enabled=self.skladbot_daily_report_enabled,
             skladbot_api_tokens=parse_skladbot_api_tokens(),
             daily_report_environ=os.environ,
+            automation_alert_chat_id=self.automation_alert_chat_id,
         )
         self._initialize_processors(
             telegram_api_client=telegram_api_client,

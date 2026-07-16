@@ -4,6 +4,25 @@
 
 ## 2026-07-16
 
+### Deterministic notification routing and durable logistics delivery
+
+**Что стало:**
+
+- Причина сегодняшней неверной доставки подтверждена: production `SMARTUP_AUTO_IMPORT_LOGISTICS_CHAT_ID` указывал на личный admin route. Случайного выбора адресата в коде не было.
+- Production routing стал fail-closed: client/logistics разрешены только в доказанную group-like цель, automation errors — только в единый personal admin route; fallback между ролями удалён.
+- Маршрут входит в идемпотентность через keyed HMAC fingerprint без raw `chat_id`; auto и manual logistics различаются в filename, caption, event и audit.
+- Логистический отчёт отделён от финального Smartup slot, получил durable catch-up, bounded retry/backoff, stale-claim recovery и одноразовый route-correction recovery для `2026-07-16`.
+- Production health блокирует выключенную автоматизацию, backend import/create mode drift, не три уникальных Smartup slot и final time вне расписания.
+- Вечерний SkladBot daily теперь включает движения и диагностические листы, публикует безопасный readiness summary и ставит личный alert при terminal delivery failure.
+- Deploy подготавливает routing candidate из runtime truth без печати ID/ключей, останавливается при неоднозначности и откатывает env при candidate-validation failure. После проверки исправленный route и stable HMAC key сохраняются даже при code rollback, чтобы не вернуть личную доставку и не создать повтор из-за смены key.
+- Runtime release candidate поднят до `2.0.42`; публичный desktop channel остаётся на `2.0.40`.
+
+**Проверки:**
+
+- Focused integration/migration suites и полный локальный suite: `1192` tests — OK (`77` platform skips).
+- Security gate: `high/critical=0`, synthetic negative fixtures `4/4` — OK.
+- Immutable release, CI и live production проверки фиксируются после выпуска.
+
 ### PostgreSQL-only runtime and warehouse web flow
 
 **Что стало:**

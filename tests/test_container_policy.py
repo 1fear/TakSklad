@@ -59,6 +59,7 @@ class ContainerPolicyTests(unittest.TestCase):
         required = {
             "TAKSKLAD_ENV",
             "TAKSKLAD_TIMEZONE",
+            "TAKSKLAD_AUTOMATION_ALERT_CHAT_ID",
             "SKLADBOT_API_TOKEN",
             "SKLADBOT_API_TOKENS",
             "SKLADBOT_API_BASE_URL",

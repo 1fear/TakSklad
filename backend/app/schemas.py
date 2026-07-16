@@ -51,6 +51,12 @@ class VersionResponse(BaseModel):
     environment: str
 
 
+class DailyReportReadinessResponse(BaseModel):
+    status: str = "unknown"
+    due_date: str = ""
+    missing_count: int = 0
+
+
 class ReadinessResponse(BaseModel):
     generated_at: datetime
     ready: bool
@@ -65,6 +71,7 @@ class ReadinessResponse(BaseModel):
     queue: dict[str, Any] = Field(default_factory=dict)
     imports: dict[str, Any] = Field(default_factory=dict)
     workers: dict[str, Any] = Field(default_factory=dict)
+    daily_report: DailyReportReadinessResponse = Field(default_factory=DailyReportReadinessResponse)
     policy: dict[str, Any] = Field(default_factory=dict)
 
 

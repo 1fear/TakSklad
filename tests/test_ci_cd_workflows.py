@@ -158,6 +158,9 @@ class CiCdWorkflowTests(unittest.TestCase):
         workflow = (PROJECT_ROOT / ".github" / "workflows" / "deploy-production.yml").read_text(
             encoding="utf-8"
         )
+        routing_tool = (
+            PROJECT_ROOT / "tools" / "prepare_notification_routing_env.py"
+        ).read_text(encoding="utf-8")
 
         self.assertIn("workflow_dispatch:", workflow)
         self.assertIn("environment: production", workflow)
@@ -198,8 +201,15 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn("PRODUCTION_CONFIG_RECOVERY_OK", workflow)
         self.assertIn("values_redacted=1", workflow)
         self.assertIn("phase27-env-pre-recovery", workflow)
-        self.assertIn('"SMARTUP_AUTO_IMPORT_SAGA_MODE": "disabled"', workflow)
-        self.assertIn('"SMARTUP_AUTO_IMPORT_PROCESS_SKLADBOT_NOW": "false"', workflow)
+        self.assertIn("tools/prepare_notification_routing_env.py", workflow)
+        self.assertIn("--recovery-export-date 2026-07-16", workflow)
+        self.assertNotIn("vds-telegram-worker-1", workflow)
+        self.assertIn('"SMARTUP_AUTO_IMPORT_SAGA_MODE": "disabled"', routing_tool)
+        self.assertIn('"SMARTUP_AUTO_IMPORT_PROCESS_SKLADBOT_NOW": "false"', routing_tool)
+        self.assertIn('"SMARTUP_AUTO_IMPORT_LOGISTICS_CHAT_ID": report_group', routing_tool)
+        self.assertIn('"TAKSKLAD_AUTOMATION_ALERT_CHAT_ID": admin_route', routing_tool)
+        self.assertIn('"SMARTUP_AUTO_IMPORT_ENABLED": "true"', routing_tool)
+        self.assertIn('"SKLADBOT_CREATE_REQUESTS_MODE": "enabled"', routing_tool)
         self.assertNotIn("TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED", workflow)
         self.assertIn("export PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.", workflow)
         self.assertIn("pull postgres-wal-init postgres", workflow)
@@ -355,6 +365,10 @@ class CiCdWorkflowTests(unittest.TestCase):
             'install -m 600 "\\$candidate_env" deploy/vds/.env'
         )
         self.assertLess(candidate_validation, env_install)
+        self.assertLess(
+            workflow.rindex("env_recovery_applied=0"),
+            workflow.index("docker pull \"\\$RELEASE_BACKEND_IMAGE\""),
+        )
         self.assertLess(
             workflow.index("tools/validate_daily_report_config.py"),
             workflow.index("pull postgres-wal-init postgres"),

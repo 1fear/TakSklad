@@ -47,6 +47,12 @@ class ReadinessPolicyTests(unittest.TestCase):
                 "missing": [],
                 "unhealthy": [],
             },
+            "daily_report": {
+                "status": "unhealthy",
+                "due_date": "2026-07-09",
+                "missing_count": 1,
+                "missing_chat_ids": ["secret-id"],
+            },
             "policy": {"mandatory_status": "ok", "optional_status": "degraded"},
         }
 
@@ -62,7 +68,25 @@ class ReadinessPolicyTests(unittest.TestCase):
         serialized = ReadinessResponse.model_validate(public).model_dump()
         self.assertEqual(serialized["workers"]["status"], "ok")
         self.assertEqual(serialized["workers"]["required_count"], 3)
+        self.assertEqual(serialized["daily_report"], {
+            "status": "unhealthy",
+            "due_date": "2026-07-09",
+            "missing_count": 1,
+        })
+        self.assertNotIn("missing_chat_ids", public["daily_report"])
         self.assertNotIn("secret-id", str(public))
+
+    def test_ready_openapi_exposes_only_safe_daily_report_fields(self):
+        from backend.app import main
+
+        schemas = main.app.openapi()["components"]["schemas"]
+        readiness_properties = schemas["ReadinessResponse"]["properties"]
+        self.assertIn("daily_report", readiness_properties)
+        self.assertEqual(
+            set(schemas["DailyReportReadinessResponse"]["properties"]),
+            {"status", "due_date", "missing_count"},
+        )
+        self.assertNotIn("chat_id", str(schemas["DailyReportReadinessResponse"]))
 
     def test_multiple_migration_rows_are_not_ready(self):
         db = mock.Mock()

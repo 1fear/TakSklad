@@ -68,6 +68,21 @@ Stock shortage признаётся только по детерминирова
 - Outbound Google export продолжает работать; reverse sync возвращает `paused`.
 - `/ready` показывает `google_backend_sync.circuit_open=true` как optional degraded.
 
+## Telegram routing и доставка логистики
+
+В production Smartup worker работает fail-closed:
+
+- `SMARTUP_AUTO_IMPORT_CLIENT_CHAT_ID` и `SMARTUP_AUTO_IMPORT_LOGISTICS_CHAT_ID` — numeric group-like targets; они могут совпадать;
+- `TAKSKLAD_AUTOMATION_ALERT_CHAT_ID` — numeric personal-like target, входит в `TELEGRAM_ADMIN_CHAT_IDS` и отличается от report routes;
+- legacy `SMARTUP_AUTO_IMPORT_ALERT_CHAT_ID` пустой либо совпадает с unified alert;
+- `SMARTUP_AUTO_IMPORT_ROUTE_FINGERPRINT_KEY` задан и стабилен между deploy/rollback.
+
+Raw chat ID и fingerprint key не пишутся в audit/status. Event хранит только HMAC route fingerprint, роль и provenance. Автофайл/caption помечены `AUTO Smartup`, ручной `/logistics` — `MANUAL /logistics`.
+
+Логистика запускается отдельным due/recovery-контуром. Время по умолчанию равно `SMARTUP_AUTO_IMPORT_FINAL_TIME`; override — `SMARTUP_AUTO_IMPORT_LOGISTICS_DUE_TIME`. Failed send остаётся durable `failed`, повторяется с bounded exponential backoff и после cap блокирует status/readiness. Catch-up использует Smartup import metadata и наличие подходящих Orders на ожидаемую дату.
+
+Legacy `sent` audit без route fingerprint по умолчанию считается доставленным и мигрируется в completed v2 event без повторной отправки. Для подтверждённого misroute допускается ровно одна export-date через `SMARTUP_AUTO_IMPORT_LOGISTICS_ROUTE_RECOVERY_EXPORT_DATE=YYYY-MM-DD`; после успешной отправки v2 idempotency блокирует дубль. Не оставлять recovery-date включённой после подтверждения доставки.
+
 ## Rollout и rollback
 
 1. Backup PostgreSQL и фиксация текущих image digests/commit SHA.

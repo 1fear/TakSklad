@@ -1247,7 +1247,12 @@ class SkladBotDailyReportTests(unittest.TestCase):
             "Сводка",
             "Заявки",
             "Товары заявок",
+            "Движения",
             "Остатки",
+            "Покрытие",
+            "Исключенные заявки",
+            "Диагностика дат",
+            "Ошибки",
         ])
 
         summary_sheet = workbook["Сводка"]
@@ -1269,6 +1274,13 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(summary_sheet["A6"].value, "Актуальный остаток")
         self.assertEqual(summary_sheet["B6"].value, 544)
         self.assertIsNone(summary_sheet["C6"].value)
+        self.assertEqual(summary_sheet["A8"].value, "Движения")
+        self.assertEqual(summary_sheet["A9"].value, "Приход")
+        self.assertEqual(summary_sheet["B9"].value, 500)
+        self.assertEqual(summary_sheet["C9"].value, 1)
+        self.assertEqual(summary_sheet["A10"].value, "Расход")
+        self.assertEqual(summary_sheet["B10"].value, 4)
+        self.assertEqual(summary_sheet["C10"].value, 1)
         self.assertEqual(summary_sheet.freeze_panes, "A2")
         self.assertEqual(summary_sheet["A2"].border.left.style, "thin")
         self.assertEqual(summary_sheet["C6"].border.right.style, "thin")
@@ -1306,6 +1318,14 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(gold_product_row["Блоков факт"], 500)
         self.assertEqual(gold_product_row["Отклонение"], 499)
 
+        movement_sheet = workbook["Движения"]
+        self.assertEqual([cell.value for cell in movement_sheet[1]], MOVEMENT_HEADERS)
+        movement_rows = worksheet_rows_by_header(movement_sheet)
+        self.assertEqual(len(movement_rows), 2)
+        self.assertEqual({row["Направление"] for row in movement_rows}, {"Приход", "Расход"})
+        self.assertEqual(sum(row["Кол-во"] for row in movement_rows), 504)
+        self.assertTrue(all(str(row["Дата"]).startswith("2026-06-08") for row in movement_rows))
+
         stock_sheet = workbook["Остатки"]
         self.assertEqual([cell.value for cell in stock_sheet[1]], STOCK_HEADERS)
         self.assertEqual(stock_sheet.max_row, 4)
@@ -1315,6 +1335,14 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertIn("Chapman Gold SSL", [row["Товар"] for row in stock_rows])
         self.assertIn("Chapman RED OP 20", [row["Товар"] for row in stock_rows])
 
+        coverage_rows = worksheet_rows_by_header(workbook["Покрытие"])
+        coverage_by_field = {row["Поле"]: row["Значение"] for row in coverage_rows}
+        self.assertEqual(coverage_by_field["coverage_status"], "complete")
+        self.assertEqual(coverage_by_field["movements_rows_returned"], 2)
+        self.assertEqual(workbook["Исключенные заявки"].max_row, 2)
+        self.assertEqual(workbook["Диагностика дат"].max_row, 5)
+        self.assertEqual(workbook["Ошибки"].max_row, 1)
+
         message = build_skladbot_daily_report_message(report)
         self.assertEqual(message, "\n".join([
             "SkladBot daily за 2026-06-08",
@@ -1322,6 +1350,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
             "Отгрузка в браке: 0 заявок, 0 блоков",
             "Возврат: 1 заявок, 2 блоков",
             "Приемка: 1 заявок, 500 блоков",
+            "Движения: приход 1 строк / 500 кол-во; расход 1 строк / 4 кол-во",
             "Актуальный остаток: 544",
         ]))
         for hidden_line in (
@@ -1331,7 +1360,6 @@ class SkladBotDailyReportTests(unittest.TestCase):
             "В диагностике/исключено:",
             "Ошибки API:",
             "Прочее:",
-            "Движения:",
         ):
             self.assertNotIn(hidden_line, message)
 
@@ -1401,6 +1429,30 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(report["coverage"]["coverage_status"], "partial")
         self.assertTrue(report["coverage"]["movements_truncation_possible"])
         self.assertIn("movements_possible_truncation", report["coverage"]["warnings"])
+
+    def test_daily_movements_deduplicate_only_stable_source_ids(self):
+        class DuplicateMovementClient(FakeSkladBotDailyReportClient):
+            def post(self, path, payload=None):
+                response = super().post(path, payload)
+                if path != "/warehouse/transactions":
+                    return response
+                row = dict(response["data"][0])
+                row["id"] = (
+                    "movement-in-1"
+                    if (payload or {}).get("type") == "in"
+                    else "movement-out-1"
+                )
+                return {"data": [row, dict(row)]}
+
+        report = collect_report_without_delay(DuplicateMovementClient(), date(2026, 6, 8))
+
+        self.assertEqual(report["summary"]["movements_total"], 2)
+        self.assertEqual(report["coverage"]["movements_rows_returned"], 4)
+        self.assertEqual(report["coverage"]["duplicate_movement_ids"], 2)
+        self.assertEqual(
+            {item["source_identity_key"] for item in report["movements"]},
+            {"movement:movement-in-1", "movement:movement-out-1"},
+        )
 
     def test_products_limit_reached_marks_partial_or_paginates(self):
         report = collect_report_with_env(
@@ -1568,7 +1620,10 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(len(product_rows), 8)
         self.assertEqual(sum(row["Блоков план"] for row in product_rows), 95)
 
-        self.assertEqual(workbook.sheetnames, ["Сводка", "Заявки", "Товары заявок", "Остатки"])
+        self.assertEqual(workbook.sheetnames, [
+            "Сводка", "Заявки", "Товары заявок", "Движения", "Остатки",
+            "Покрытие", "Исключенные заявки", "Диагностика дат", "Ошибки",
+        ])
         self.assertEqual(report["coverage"]["included_operational_requests"], 8)
         self.assertEqual(report["coverage"]["excluded_diagnostic_requests"], 0)
 
@@ -1823,7 +1878,24 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(workbook["Сводка"]["B6"].value, 0)
         self.assertEqual(workbook["Остатки"].max_row, 2)
         self.assertEqual(workbook["Остатки"]["E2"].value, 0)
+        self.assertEqual(workbook["Движения"].max_row, 1)
+        self.assertEqual(workbook["Покрытие"]["B4"].value, "complete")
+        self.assertEqual(workbook["Исключенные заявки"].max_row, 1)
+        self.assertEqual(workbook["Диагностика дат"].max_row, 1)
+        self.assertEqual(workbook["Ошибки"].max_row, 2)
+        self.assertEqual(workbook["Ошибки"]["A2"].value, "Не удалось получить остаток SkladBot")
         self.assertEqual(report["errors"], ["Не удалось получить остаток SkladBot"])
+
+    def test_movements_sheet_forces_formula_prefixes_to_text(self):
+        report = collect_report_without_delay(FakeSkladBotDailyReportClient(), date(2026, 6, 8))
+        report["movements"][0]["product"] = "=1+1"
+
+        content, _filename = build_skladbot_daily_report_xlsx(report)
+        workbook = openpyxl.load_workbook(BytesIO(content), data_only=False)
+
+        cell = workbook["Движения"]["F2"]
+        self.assertEqual(cell.value, "=1+1")
+        self.assertEqual(cell.data_type, "s")
 
     def test_daily_report_retries_request_detail_after_rate_limit(self):
         client = TransientRateLimitDailyReportClient()
@@ -2278,13 +2350,17 @@ class SkladBotDailyReportTests(unittest.TestCase):
         summary_sheet = workbook["Сводка"]
         summary_values = [cell.value for row in summary_sheet.iter_rows() for cell in row if cell.value]
 
-        self.assertEqual(summary_sheet.max_row, 6)
-        self.assertEqual([summary_sheet.cell(row=row, column=1).value for row in range(2, 7)], [
+        self.assertEqual(summary_sheet.max_row, 10)
+        self.assertEqual([summary_sheet.cell(row=row, column=1).value for row in range(2, 11)], [
             "Отгрузка",
             "Отгрузка в браке",
             "Возврат",
             "Приемка",
             "Актуальный остаток",
+            None,
+            "Движения",
+            "Приход",
+            "Расход",
         ])
         self.assertNotIn("Расчетный начальный остаток", summary_values)
         self.assertNotIn("Примечание", summary_values)
@@ -2909,6 +2985,112 @@ class SkladBotDailyReportTests(unittest.TestCase):
             self.assertEqual(event.status, "failed")
             self.assertEqual(event.attempts, 1)
             self.assertTrue((event.payload or {}).get("manual_recovery_required"))
+        finally:
+            telegram_scheduled_report_processor_module.SessionLocal = original_session_local
+
+    def test_scheduled_failure_queues_one_admin_only_alert_per_retry_cycle(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        original_session_local = telegram_scheduled_report_processor_module.SessionLocal
+        try:
+            telegram_scheduled_report_processor_module.SessionLocal = SessionLocal
+            worker = TelegramWorker.__new__(TelegramWorker)
+            worker.session_factory = SessionLocal
+            worker.allowed_chat_ids = {"888", "999"}
+            worker.admin_chat_ids = {"888", "999"}
+            worker.automation_alert_chat_id = "999"
+            worker.skladbot_daily_report_chat_ids = {"-100-report-group"}
+            report_date = date(2026, 7, 15)
+            with SessionLocal() as db:
+                event = PendingEvent(
+                    event_type=SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE,
+                    idempotency_key=worker.skladbot_daily_report_idempotency_key(
+                        "-100-report-group", report_date,
+                    ),
+                    status="processing",
+                    attempts=1,
+                    payload={
+                        "report_date": report_date.isoformat(),
+                        "stage": "scheduled job failed",
+                    },
+                )
+                db.add(event)
+                db.commit()
+                event_id = str(event.id)
+
+            worker.finish_scheduled_skladbot_daily_report(
+                event_id, False, "Bearer top-secret collection failure",
+            )
+            worker.finish_scheduled_skladbot_daily_report(
+                event_id, False, "Bearer top-secret collection failure",
+            )
+
+            with SessionLocal() as db:
+                alerts = db.execute(
+                    select(PendingEvent).where(PendingEvent.event_type == "telegram_notification")
+                ).scalars().all()
+            self.assertEqual(len(alerts), 1)
+            self.assertEqual(alerts[0].status, "pending")
+            self.assertTrue(alerts[0].idempotency_key.endswith(":" + "1"))
+            self.assertEqual((alerts[0].payload or {}).get("chat_id"), "999")
+            self.assertNotIn("-100-report-group", str(alerts[0].payload))
+            self.assertNotIn("top-secret", str(alerts[0].payload))
+            self.assertLessEqual(len((alerts[0].payload or {}).get("text") or ""), 800)
+
+            sent_alerts = []
+            worker.send_message = (
+                lambda chat_id, text: sent_alerts.append((chat_id, text)) or {"ok": True}
+            )
+            self.assertTrue(worker.is_admin_chat("999"))
+            self.assertEqual(worker.process_pending_telegram_notifications(), 1)
+            with SessionLocal() as db:
+                delivered_alert = db.get(PendingEvent, alerts[0].id)
+                delivery_state = (delivered_alert.status, delivered_alert.last_error)
+            self.assertEqual(
+                [chat_id for chat_id, _text in sent_alerts],
+                ["999"],
+                delivery_state,
+            )
+            self.assertEqual(delivery_state, ("completed", ""))
+
+            with SessionLocal() as db:
+                event = db.get(PendingEvent, uuid.UUID(event_id))
+                event.status = "processing"
+                event.attempts = 2
+                db.commit()
+            worker.finish_scheduled_skladbot_daily_report(event_id, False, "retry failed")
+            with SessionLocal() as db:
+                alerts = db.execute(
+                    select(PendingEvent).where(PendingEvent.event_type == "telegram_notification")
+                ).scalars().all()
+            self.assertEqual(len(alerts), 2)
+
+            worker.automation_alert_chat_id = ""
+            second_date = date(2026, 7, 16)
+            with SessionLocal() as db:
+                event = PendingEvent(
+                    event_type=SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE,
+                    idempotency_key=worker.skladbot_daily_report_idempotency_key(
+                        "-100-report-group", second_date,
+                    ),
+                    status="processing",
+                    attempts=1,
+                    payload={"report_date": second_date.isoformat()},
+                )
+                db.add(event)
+                db.commit()
+                second_event_id = str(event.id)
+            worker.finish_scheduled_skladbot_daily_report(second_event_id, False, "no admin route")
+            with SessionLocal() as db:
+                alerts = db.execute(
+                    select(PendingEvent).where(PendingEvent.event_type == "telegram_notification")
+                ).scalars().all()
+            self.assertEqual(len(alerts), 2)
         finally:
             telegram_scheduled_report_processor_module.SessionLocal = original_session_local
 

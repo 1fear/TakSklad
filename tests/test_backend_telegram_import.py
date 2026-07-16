@@ -376,6 +376,30 @@ class BackendTelegramImportTests(unittest.TestCase):
             ("TAKSKLAD_DAILY_RECONCILIATION_CHAT_IDS",),
         )
 
+        with self.assertRaises(TelegramConfigurationError) as invalid_alert_route:
+            validate_telegram_worker_config(
+                "synthetic-token",
+                {"123", "999"},
+                {"999"},
+                automation_alert_chat_id="123",
+            )
+        self.assertEqual(
+            invalid_alert_route.exception.setting_names,
+            ("TAKSKLAD_AUTOMATION_ALERT_CHAT_ID",),
+        )
+
+        with self.assertRaises(TelegramConfigurationError) as group_alert_route:
+            validate_telegram_worker_config(
+                "synthetic-token",
+                {"-100"},
+                {"-100"},
+                automation_alert_chat_id="-100",
+            )
+        self.assertEqual(
+            group_alert_route.exception.setting_names,
+            ("TAKSKLAD_AUTOMATION_ALERT_CHAT_ID",),
+        )
+
     def test_production_telegram_configuration_requires_daily_delivery(self):
         with self.assertRaises(TelegramConfigurationError) as invalid:
             validate_telegram_worker_config(
@@ -395,6 +419,7 @@ class BackendTelegramImportTests(unittest.TestCase):
                 "SKLADBOT_API_TOKEN(S)",
                 "SKLADBOT_DAILY_REPORT_CHAT_IDS",
                 "SKLADBOT_DAILY_REPORT_ENABLED",
+                "TAKSKLAD_AUTOMATION_ALERT_CHAT_ID",
                 "TELEGRAM_ALLOWED_CHAT_IDS",
                 "TELEGRAM_BOT_TOKEN",
             ),
@@ -403,12 +428,13 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertTrue(validate_telegram_worker_config(
             "synthetic-token",
             {"1001"},
-            set(),
+            {"1001"},
             {"1001"},
             set(),
             environment="production",
             daily_report_enabled=True,
             skladbot_api_tokens=("synthetic-skladbot-token",),
+            automation_alert_chat_id="1001",
         ))
 
     def test_telegram_constructor_rejects_invalid_config_before_database_access(self):
@@ -1604,8 +1630,8 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertEqual(sent_documents, [(
             "123",
             report_content,
-            "TakSklad_логистика_29.05.2026.xlsx",
-            "Отчёт логистики за 29.05.2026",
+            "TakSklad_логистика_29.05.2026_MANUAL.xlsx",
+            "MANUAL /logistics · Отчёт логистики за 29.05.2026",
         )])
 
     def test_telegram_worker_saves_shipment_date_from_message(self):

@@ -310,6 +310,7 @@ jobs:
             tools/collect_phase27_evidence.py \
             tools/google_cutover_audit.py \
             tools/live_release_verifier.sh \
+            tools/prepare_notification_routing_env.py \
             tools/production_preflight.sh \
             tools/production_release_checks.py \
             tools/release_artifacts.py \
@@ -477,56 +478,18 @@ jobs:
             exit "\$status"
           }
           trap restore_phase27_env_on_error EXIT
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-          import subprocess
-
-          env_path = Path("deploy/vds/.env")
-          container_env = json.loads(subprocess.check_output(
-              ["docker", "inspect", "--format", "{{json .Config.Env}}", "vds-telegram-worker-1"],
-              text=True,
-          ))
-          resolved = dict(item.split("=", 1) for item in container_env if "=" in item)
-
-          def csv_items(value):
-              return [part.strip() for part in str(value or "").split(",") if part.strip()]
-
-          allowed = csv_items(resolved.get("TELEGRAM_ALLOWED_CHAT_IDS"))
-          scheduled = csv_items(resolved.get("SKLADBOT_DAILY_REPORT_CHAT_IDS"))
-          merged = list(dict.fromkeys([*allowed, *scheduled]))
-          if not merged:
-              raise SystemExit("PRODUCTION_CONFIG_RECOVERY_MISSING_TELEGRAM_ALLOWLIST")
-
-          updates = {
-              "TAKSKLAD_LEGACY_AUTH_EXPIRES_AT": "2026-07-17T00:00:00+00:00",
-              "TELEGRAM_ALLOWED_CHAT_IDS": ",".join(merged),
-              "SMARTUP_AUTO_IMPORT_SAGA_MODE": "disabled",
-              "SMARTUP_AUTO_IMPORT_PROCESS_SKLADBOT_NOW": "false",
-          }
-          lines = env_path.read_text(encoding="utf-8").splitlines()
-          found = set()
-          output = []
-          for line in lines:
-              key = line.split("=", 1)[0].strip() if "=" in line and not line.lstrip().startswith("#") else ""
-              if key in updates:
-                  output.append(f"{key}={updates[key]}")
-                  found.add(key)
-              else:
-                  output.append(line)
-          for key, value in updates.items():
-              if key not in found:
-                  output.append(f"{key}={value}")
-          temporary = Path(".release-state/phase27-env-candidate")
-          temporary.write_text("\n".join(output) + "\n", encoding="utf-8")
-          os.chmod(temporary, 0o600)
-          print(
-              "PRODUCTION_CONFIG_CANDIDATE_READY "
-              "fields=TAKSKLAD_LEGACY_AUTH_EXPIRES_AT,TELEGRAM_ALLOWED_CHAT_IDS,"
-              "SMARTUP_AUTO_IMPORT_SAGA_MODE,SMARTUP_AUTO_IMPORT_PROCESS_SKLADBOT_NOW values_redacted=1"
-          )
-          PY
+          telegram_worker_id="\$(docker compose --env-file deploy/vds/.env \
+            -f deploy/vds/docker-compose.yml ps -q telegram-worker </dev/null)"
+          smartup_worker_id="\$(docker compose --env-file deploy/vds/.env \
+            -f deploy/vds/docker-compose.yml ps -q smartup-auto-import-worker </dev/null)"
+          test -n "\$telegram_worker_id"
+          test -n "\$smartup_worker_id"
+          python3 tools/prepare_notification_routing_env.py \
+            --env-path deploy/vds/.env \
+            --candidate-path "\$candidate_env" \
+            --telegram-container-id "\$telegram_worker_id" \
+            --smartup-container-id "\$smartup_worker_id" \
+            --recovery-export-date 2026-07-16
           docker compose --env-file "\$candidate_env" -f deploy/vds/docker-compose.yml \
             config --format json | \
             PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/validate_daily_report_config.py
@@ -538,7 +501,7 @@ jobs:
           env_recovery_applied=0
           trap - EXIT
           rm -f "\$candidate_env"
-          echo "PRODUCTION_CONFIG_RECOVERY_OK fields=TAKSKLAD_LEGACY_AUTH_EXPIRES_AT,TELEGRAM_ALLOWED_CHAT_IDS,SMARTUP_AUTO_IMPORT_SAGA_MODE,SMARTUP_AUTO_IMPORT_PROCESS_SKLADBOT_NOW values_redacted=1"
+          echo "PRODUCTION_CONFIG_RECOVERY_OK contract=notification-routing-v2 rollback_backup_retained=1 values_redacted=1"
           chmod +x deploy/vds/deploy_from_git.sh tools/production_preflight.sh tools/live_release_verifier.sh
           PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/release_artifacts.py verify --manifest release.json
           eval "\$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/release_artifacts.py emit-shell --manifest release.json)"
