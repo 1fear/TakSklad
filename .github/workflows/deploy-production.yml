@@ -406,6 +406,9 @@ jobs:
           updates = {
               "TAKSKLAD_LEGACY_AUTH_EXPIRES_AT": "2026-07-17T00:00:00+00:00",
               "TELEGRAM_ALLOWED_CHAT_IDS": ",".join(merged),
+              "SMARTUP_AUTO_IMPORT_SAGA_MODE": "disabled",
+              "SMARTUP_AUTO_IMPORT_PROCESS_SKLADBOT_NOW": "false",
+              "TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED": "false",
           }
           lines = env_path.read_text(encoding="utf-8").splitlines()
           found = set()
@@ -424,7 +427,12 @@ jobs:
           temporary.write_text("\n".join(output) + "\n", encoding="utf-8")
           os.chmod(temporary, 0o600)
           os.replace(temporary, env_path)
-          print("PRODUCTION_CONFIG_RECOVERY_OK fields=TAKSKLAD_LEGACY_AUTH_EXPIRES_AT,TELEGRAM_ALLOWED_CHAT_IDS values_redacted=1")
+          print(
+              "PRODUCTION_CONFIG_RECOVERY_OK "
+              "fields=TAKSKLAD_LEGACY_AUTH_EXPIRES_AT,TELEGRAM_ALLOWED_CHAT_IDS,"
+              "SMARTUP_AUTO_IMPORT_SAGA_MODE,SMARTUP_AUTO_IMPORT_PROCESS_SKLADBOT_NOW,"
+              "TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED values_redacted=1"
+          )
           PY
           chmod +x deploy/vds/deploy_from_git.sh tools/production_preflight.sh tools/live_release_verifier.sh
           PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/release_artifacts.py verify --manifest release.json
