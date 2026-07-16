@@ -97,6 +97,17 @@ def fetch_json_with_retry(
     raise last_error or CollectionError("HTTP probe did not run")
 
 
+def read_json_file(path: Path) -> tuple[int, dict[str, Any], float]:
+    started = time.monotonic()
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CollectionError(f"readiness file failed: {type(exc).__name__}") from exc
+    if not isinstance(value, dict):
+        raise CollectionError("readiness file did not contain an object")
+    return 200, value, (time.monotonic() - started) * 1000
+
+
 def percentile(values: list[float], percentile_value: float) -> float:
     ordered = sorted(values)
     if not ordered:
@@ -310,7 +321,10 @@ def common(manifest: dict[str, Any], mode: str) -> dict[str, Any]:
 
 
 def collect_preflight(args: argparse.Namespace, manifest: dict[str, Any]) -> dict[str, Any]:
-    ready_status, ready, _ = fetch_json_with_retry(args.ready_url)
+    if args.ready_json is not None:
+        ready_status, ready, _ = read_json_file(args.ready_json)
+    else:
+        ready_status, ready, _ = fetch_json_with_retry(args.ready_url)
     summary = readiness_summary(ready, ready_status)
     invariants, target_revision, observed = candidate_preflight(args, manifest)
     blockers = int(invariants.get("violations") or 0)
@@ -442,6 +456,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--health-url", default="https://api.taksklad.uz/health")
     parser.add_argument("--ready-url", default="https://api.taksklad.uz/ready")
+    parser.add_argument(
+        "--ready-json",
+        type=Path,
+        help="Read-only readiness JSON captured from the current backend; preflight mode only.",
+    )
     parser.add_argument("--version-url", default="https://api.taksklad.uz/version")
     parser.add_argument("--migration-budget-seconds", type=float, default=120)
     parser.add_argument("--slo-seconds", type=int, default=300)

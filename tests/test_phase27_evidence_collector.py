@@ -12,6 +12,7 @@ from tools.collect_phase27_evidence import (
     live_worker_readiness,
     fetch_json_with_retry,
     percentile,
+    read_json_file,
     readiness_summary,
     restore_drill,
     run,
@@ -165,6 +166,22 @@ class Phase27EvidenceCollectorTests(unittest.TestCase):
         self.assertEqual(result, expected)
         self.assertEqual(mocked.call_count, 2)
         slept.assert_called_once_with(0.1)
+
+    def test_readiness_file_supports_internal_preflight_probe(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "ready.json"
+            path.write_text(json.dumps({"ready": True, "status": "ok"}), encoding="utf-8")
+            status, payload, latency = read_json_file(path)
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, {"ready": True, "status": "ok"})
+        self.assertGreaterEqual(latency, 0)
+
+    def test_readiness_file_rejects_non_object_payload(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "ready.json"
+            path.write_text("[]", encoding="utf-8")
+            with self.assertRaisesRegex(CollectionError, "did not contain an object"):
+                read_json_file(path)
 
 
 if __name__ == "__main__":
