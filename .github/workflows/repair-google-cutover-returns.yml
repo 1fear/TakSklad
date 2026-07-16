@@ -132,27 +132,25 @@ jobs:
           test "\${#backend_ids[@]}" -eq 1
           backend_id="\${backend_ids[0]}"
 
+          set +e
           docker exec -i "\$backend_id" python - \
             --plan \
             --expected-missing-scans "\$expected_missing_scans" \
             --expected-missing-returns "\$expected_missing_returns" \
             < "\$run_dir/tools/google_cutover_repair.py" \
             > "\$run_dir/repair-plan.json"
-          python3 - "\$run_dir/repair-plan.json" "\$expected_missing_scans" "\$expected_missing_returns" <<'PY'
+          plan_rc="\$?"
+          set -e
+          test -s "\$run_dir/repair-plan.json"
+          python3 - "\$run_dir/repair-plan.json" "\$expected_missing_scans" "\$expected_missing_returns" "\$plan_rc" \
+            /tmp/taksklad-google-return-repair-plan.json <<'PY'
           import json
+          import os
           import re
           import sys
           from pathlib import Path
 
           payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-          if payload.get("safe_to_repair") is not True or payload.get("conflicts") != 0:
-              raise SystemExit("GOOGLE_RETURN_REPAIR_PLAN_BLOCKED")
-          if payload.get("missing_scan_occurrences") != int(sys.argv[2]):
-              raise SystemExit("GOOGLE_RETURN_REPAIR_MISSING_SCAN_COUNT_CHANGED")
-          if payload.get("missing_return_occurrences") != int(sys.argv[3]):
-              raise SystemExit("GOOGLE_RETURN_REPAIR_MISSING_RETURN_COUNT_CHANGED")
-          if not re.fullmatch(r"[0-9a-f]{64}", str(payload.get("plan_sha256") or "")):
-              raise SystemExit("GOOGLE_RETURN_REPAIR_PLAN_SHA_REQUIRED")
           allowed = {
               "schema_version", "mode", "returned_code_occurrences", "already_repaired_occurrences",
               "missing_scan_occurrences", "missing_return_occurrences", "duplicate_occurrences",
@@ -163,17 +161,35 @@ jobs:
           }
           if set(payload) - allowed:
               raise SystemExit("GOOGLE_RETURN_REPAIR_PLAN_UNSAFE_FIELDS")
+          evidence = {key: payload[key] for key in sorted(allowed) if key in payload}
+          fd = os.open(sys.argv[5], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          with os.fdopen(fd, "w", encoding="utf-8") as handle:
+              json.dump(evidence, handle, sort_keys=True)
+              handle.write("\n")
           print(
-              "GOOGLE_RETURN_REPAIR_PLAN_OK "
-              f"missing_scan_occurrences={payload['missing_scan_occurrences']} "
-              f"missing_return_occurrences={payload['missing_return_occurrences']} "
-              f"missing_scan_targets={payload['missing_scan_targets']} "
-              f"missing_return_targets={payload['missing_return_targets']} "
-              f"duplicates={payload['duplicate_occurrences']} conflicts=0 values_redacted=1"
+              "GOOGLE_RETURN_REPAIR_PLAN_COUNTS "
+              f"missing_scan_occurrences={payload.get('missing_scan_occurrences', -1)} "
+              f"missing_return_occurrences={payload.get('missing_return_occurrences', -1)} "
+              f"missing_scan_targets={payload.get('missing_scan_targets', -1)} "
+              f"missing_return_targets={payload.get('missing_return_targets', -1)} "
+              f"duplicates={payload.get('duplicate_occurrences', -1)} "
+              f"identity_conflicts={payload.get('identity_conflicts', -1)} "
+              f"unparseable_returned_at={payload.get('unparseable_returned_at', -1)} "
+              f"ambiguous_chronology={payload.get('ambiguous_chronology', -1)} "
+              f"other_conflicts={payload.get('other_conflicts', -1)} "
+              f"conflicts={payload.get('conflicts', -1)} values_redacted=1"
           )
+          if int(sys.argv[4]) != 0 or payload.get("safe_to_repair") is not True or payload.get("conflicts") != 0:
+              raise SystemExit("GOOGLE_RETURN_REPAIR_PLAN_BLOCKED")
+          if payload.get("missing_scan_occurrences") != int(sys.argv[2]):
+              raise SystemExit("GOOGLE_RETURN_REPAIR_MISSING_SCAN_COUNT_CHANGED")
+          if payload.get("missing_return_occurrences") != int(sys.argv[3]):
+              raise SystemExit("GOOGLE_RETURN_REPAIR_MISSING_RETURN_COUNT_CHANGED")
+          if not re.fullmatch(r"[0-9a-f]{64}", str(payload.get("plan_sha256") or "")):
+              raise SystemExit("GOOGLE_RETURN_REPAIR_PLAN_SHA_REQUIRED")
+          print("GOOGLE_RETURN_REPAIR_PLAN_OK values_redacted=1")
           PY
           plan_sha="\$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["plan_sha256"])' "\$run_dir/repair-plan.json")"
-          install -m 600 "\$run_dir/repair-plan.json" /tmp/taksklad-google-return-repair-plan.json
 
           service_names=(backend-api frontend telegram-worker skladbot-worker smartup-auto-import-worker google-sheets-sync-worker)
           writer_ids=()
