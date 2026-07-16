@@ -1,0 +1,115 @@
+name: Recover Google Return Repair Runtime
+
+on:
+  workflow_dispatch:
+    inputs:
+      approval:
+        description: Exact one-shot runtime recovery approval token
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: taksklad-production
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    name: Restart exact isolated legacy runtime
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Validate explicit recovery scope
+        env:
+          RECOVERY_APPROVAL: ${{ inputs.approval }}
+        run: test "$RECOVERY_APPROVAL" = GOOGLE_RETURN_REPAIR_RUNTIME_RECOVERY_APPROVED
+
+      - name: Validate required production access
+        env:
+          VDS_HOST: ${{ secrets.VDS_HOST }}
+          VDS_USER: ${{ secrets.VDS_USER }}
+          VDS_SSH_KEY: ${{ secrets.VDS_SSH_KEY }}
+          VDS_SSH_KNOWN_HOSTS: ${{ secrets.VDS_SSH_KNOWN_HOSTS }}
+        run: |
+          test -n "$VDS_HOST"
+          test -n "$VDS_USER"
+          test -n "$VDS_SSH_KEY"
+          test -n "$VDS_SSH_KNOWN_HOSTS"
+
+      - name: Install SSH key
+        env:
+          VDS_SSH_KEY: ${{ secrets.VDS_SSH_KEY }}
+          VDS_SSH_KNOWN_HOSTS: ${{ secrets.VDS_SSH_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$VDS_SSH_KEY" > ~/.ssh/taksklad_recovery_key
+          chmod 600 ~/.ssh/taksklad_recovery_key
+          printf '%s\n' "$VDS_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Restart exact stopped runtime and verify health
+        env:
+          VDS_HOST: ${{ secrets.VDS_HOST }}
+          VDS_USER: ${{ secrets.VDS_USER }}
+          VDS_APP_DIR: ${{ secrets.VDS_APP_DIR }}
+        run: |
+          set -euo pipefail
+          remote="$VDS_USER@$VDS_HOST"
+          app_dir="${VDS_APP_DIR:-/opt/stacks/taksklad/app}"
+          ssh -i ~/.ssh/taksklad_recovery_key \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=10 \
+            "$remote" 'bash -s' <<EOF
+          set -euo pipefail
+          app_dir=$(printf '%q' "$app_dir")
+          compose_project="\$(docker compose --env-file "\$app_dir/deploy/vds/.env" \
+            -f "\$app_dir/deploy/vds/docker-compose.yml" config --format json | \
+            python3 -c 'import json,sys; value=str((json.load(sys.stdin) or {}).get("name") or "").strip(); assert value; print(value)')"
+          service_names=(backend-api frontend telegram-worker skladbot-worker smartup-auto-import-worker google-sheets-sync-worker)
+          runtime_ids=()
+          for service in "\${service_names[@]}"; do
+            mapfile -t service_ids < <(docker ps -aq \
+              --filter label=com.docker.compose.project=\$compose_project \
+              --filter label=com.docker.compose.service=\$service)
+            test "\${#service_ids[@]}" -eq 1
+            runtime_ids+=("\${service_ids[0]}")
+          done
+          docker start "\${runtime_ids[@]}" >/dev/null
+          for attempt in \$(seq 1 60); do
+            healthy=1
+            for runtime_id in "\${runtime_ids[@]}"; do
+              status="\$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "\$runtime_id")"
+              if test "\$status" != healthy && test "\$status" != running; then
+                healthy=0
+              fi
+            done
+            if test "\$healthy" = 1; then
+              echo "GOOGLE_RETURN_REPAIR_RUNTIME_RECOVERY_OK services=\${#runtime_ids[@]}"
+              break
+            fi
+            test "\$attempt" != 60
+            sleep 5
+          done
+          EOF
+
+      - name: Verify public readiness
+        run: |
+          python3 - <<'PY'
+          import json
+          import time
+          from urllib.request import urlopen
+
+          for attempt in range(30):
+              try:
+                  with urlopen("https://api.taksklad.uz/ready", timeout=10) as response:
+                      payload = json.load(response)
+                  if response.status == 200 and payload.get("ready") is True:
+                      print("GOOGLE_RETURN_REPAIR_PUBLIC_RUNTIME_RECOVERY_OK")
+                      raise SystemExit(0)
+              except Exception:
+                  if attempt == 29:
+                      raise
+              time.sleep(2)
+          raise SystemExit("GOOGLE_RETURN_REPAIR_PUBLIC_RUNTIME_RECOVERY_TIMEOUT")
+          PY
