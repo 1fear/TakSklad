@@ -716,6 +716,10 @@ def parse_memory_bytes(value: str) -> int:
     return int(float(match.group(1)) * multiplier)
 
 
+def memory_allocation_was_denied(state: dict[str, object]) -> bool:
+    return state.get("OOMKilled") is True or state.get("ExitCode") == 42
+
+
 def run_load() -> None:
     ensure_images()
     suffix = uuid.uuid4().hex[:8]
@@ -863,14 +867,15 @@ time.sleep(2)
                 BACKEND_IMAGE,
                 "python",
                 "-c",
-                "bytearray(256 * 1024 * 1024)",
+                "import sys\ntry:\n bytearray(256 * 1024 * 1024)\nexcept MemoryError:\n sys.exit(42)\nsys.exit(0)",
             ],
             check=False,
             timeout=60,
         )
         oom_state = json.loads(run(["docker", "inspect", "-f", "{{json .State}}", oom_name]).stdout)
-        if oom_state.get("OOMKilled") is not True:
-            raise HarnessError("memory limit did not OOM-kill the oversize synthetic allocation")
+        if not memory_allocation_was_denied(oom_state):
+            raise HarnessError("memory limit did not deny the oversize synthetic allocation")
+        memory_denial_mode = "oom-kill" if oom_state.get("OOMKilled") is True else "memory-error"
 
         print(
             "CONTAINER_LOAD_LIMITS "
@@ -879,7 +884,8 @@ time.sleep(2)
         )
         print(
             "CONTAINER_LOAD_ENFORCEMENT "
-            f"pid_denied=1 memory_oom_denied=1 retained_log_bytes={len(logs.encode('utf-8'))} "
+            f"pid_denied=1 memory_limit_denied=1 memory_denial_mode={memory_denial_mode} "
+            f"retained_log_bytes={len(logs.encode('utf-8'))} "
             "log_files_max=2 log_size_each=64k"
         )
         print("CONTAINER_LOAD_OK production_volumes_touched=0 external_sends=0")
