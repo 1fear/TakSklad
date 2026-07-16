@@ -668,6 +668,13 @@ jobs:
           compose_project="\$(docker compose --env-file deploy/vds/.env \
             -f deploy/vds/docker-compose.yml config --format json | \
             python3 -c 'import json,sys; name=str((json.load(sys.stdin) or {}).get("name") or "").strip(); assert name; print(name)')"
+          retired_google_ids="\$(docker ps -aq \
+            --filter label=com.docker.compose.project=\$compose_project \
+            --filter label=com.docker.compose.service=google-sheets-sync-worker)"
+          if test -n "\$retired_google_ids"; then
+            docker container stop -t 45 \$retired_google_ids >/dev/null
+            docker container rm -f \$retired_google_ids >/dev/null
+          fi
           test -z "\$(docker ps -aq \
             --filter label=com.docker.compose.project=\$compose_project \
             --filter label=com.docker.compose.service=google-sheets-sync-worker)"
