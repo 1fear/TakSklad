@@ -298,7 +298,7 @@ class GoogleCutoverRepairTests(unittest.TestCase):
         self.assertNotEqual(first, other)
 
     def test_apply_is_idempotent_and_creates_outbound_then_return(self):
-        from app.models import AuditLog, Base, KizMovement, Order, OrderItem, ScanCode
+        from backend.app.models import AuditLog, Base, KizMovement, Order, OrderItem, ScanCode
 
         engine = create_engine("sqlite+pysqlite:///:memory:")
         Base.metadata.create_all(engine)
@@ -370,7 +370,7 @@ class GoogleCutoverRepairTests(unittest.TestCase):
             self.assertEqual(len(db.execute(select(AuditLog)).scalars().all()), 1)
 
     def test_commit_failure_rolls_back_every_repair_row(self):
-        from app.models import Base, KizMovement, Order, OrderItem, ScanCode
+        from backend.app.models import Base, KizMovement, Order, OrderItem, ScanCode
 
         engine = create_engine("sqlite+pysqlite:///:memory:")
         Base.metadata.create_all(engine)
