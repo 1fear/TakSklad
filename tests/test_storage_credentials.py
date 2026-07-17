@@ -87,6 +87,91 @@ class StorageSafetyTests(unittest.TestCase):
         self.assertEqual(self.store.get_text(BACKEND_API_TOKEN_SECRET), "synthetic-token")
         self.assertNotIn("TAKSKLAD_BACKEND_API_TOKEN", runtime)
 
+    def test_existing_secure_backend_token_is_authoritative_and_legacy_sources_are_purged(self):
+        scoped = "tks." + "a" * 32 + "." + "b" * 43
+        legacy = "synthetic-old-legacy-token"
+        self.store.set_text(BACKEND_API_TOKEN_SECRET, scoped)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            self.configure_paths(root)
+            state = {
+                "backend_api_token": legacy,
+                "TAKSKLAD_BACKEND_API_TOKEN": legacy,
+                "orders": [],
+            }
+            Path(storage.TAKSKLAD_DATA_FILE).write_text(json.dumps(state), encoding="utf-8")
+            Path(storage.RUNTIME_CONFIG_FILE).write_text(
+                json.dumps({"TAKSKLAD_API_TOKEN": legacy, "safe": "kept"}),
+                encoding="utf-8",
+            )
+            backup_paths = []
+            for index in range(1, storage.APP_DATA_BACKUP_LIMIT + 1):
+                path = Path(storage.app_data_backup_path(index))
+                path.write_text(json.dumps({"TAKSKLAD_API_TOKEN": legacy, "index": index}), encoding="utf-8")
+                backup_paths.append(path)
+
+            result = storage.migrate_desktop_secrets(
+                self.store,
+                allow_volatile_test_store=True,
+            )
+            sanitized = [json.loads(Path(storage.TAKSKLAD_DATA_FILE).read_text(encoding="utf-8"))]
+            sanitized += [json.loads(path.read_text(encoding="utf-8")) for path in backup_paths]
+            runtime = json.loads(Path(storage.RUNTIME_CONFIG_FILE).read_text(encoding="utf-8"))
+
+        self.assertEqual(self.store.get_text(BACKEND_API_TOKEN_SECRET), scoped)
+        self.assertFalse(result["restart_required"])
+        self.assertEqual(result["migrated"], 0)
+        self.assertEqual(runtime, {"safe": "kept"})
+        for payload in sanitized:
+            rendered = json.dumps(payload)
+            self.assertNotIn(legacy, rendered)
+            self.assertNotIn("backend_api_token", rendered.casefold())
+
+    def test_cleanup_failure_never_replaces_authoritative_secure_backend_token(self):
+        scoped = "tks." + "c" * 32 + "." + "d" * 43
+        legacy = "synthetic-old-legacy-token"
+        self.store.set_text(BACKEND_API_TOKEN_SECRET, scoped)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            self.configure_paths(root)
+            Path(storage.RUNTIME_CONFIG_FILE).write_text(
+                json.dumps({"TAKSKLAD_BACKEND_API_TOKEN": legacy}),
+                encoding="utf-8",
+            )
+
+            def fail_cleanup(stage):
+                if stage == "after_runtime_sanitize":
+                    raise OSError("synthetic cleanup failure")
+
+            with mock.patch.object(storage, "_storage_fault_hook", side_effect=fail_cleanup):
+                with self.assertRaises(storage.SecretMigrationError) as captured:
+                    storage.migrate_desktop_secrets(
+                        self.store,
+                        allow_volatile_test_store=True,
+                    )
+            restored_runtime = json.loads(Path(storage.RUNTIME_CONFIG_FILE).read_text(encoding="utf-8"))
+
+        self.assertEqual(self.store.get_text(BACKEND_API_TOKEN_SECRET), scoped)
+        self.assertEqual(restored_runtime["TAKSKLAD_BACKEND_API_TOKEN"], legacy)
+        self.assertNotIn(scoped, str(captured.exception))
+
+    def test_repeated_migration_never_overwrites_existing_secure_backend_token(self):
+        scoped = "tks." + "e" * 32 + "." + "f" * 43
+        legacy = "synthetic-old-legacy-token"
+        self.store.set_text(BACKEND_API_TOKEN_SECRET, scoped)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            self.configure_paths(root)
+            Path(storage.RUNTIME_CONFIG_FILE).write_text(
+                json.dumps({"TAKSKLAD_BACKEND_API_TOKEN": legacy}), encoding="utf-8"
+            )
+            first = storage.migrate_desktop_secrets(self.store, allow_volatile_test_store=True)
+            second = storage.migrate_desktop_secrets(self.store, allow_volatile_test_store=True)
+
+        self.assertEqual(self.store.get_text(BACKEND_API_TOKEN_SECRET), scoped)
+        self.assertFalse(first["restart_required"])
+        self.assertFalse(second["restart_required"])
+
     def test_non_windows_provider_requires_explicit_selection(self):
         reset_secret_store_for_tests()
         with mock.patch.dict(os.environ, {}, clear=True):

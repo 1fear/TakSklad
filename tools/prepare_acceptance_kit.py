@@ -68,17 +68,16 @@ def build_manifest(output_dir=DEFAULT_OUTPUT_DIR, marker=DEFAULT_MARKER, shipmen
         "test_kiz_codes": TEST_KIZ_CODES,
         "commands": {
             "regenerate": ".venv/bin/python tools/prepare_acceptance_kit.py",
-            "local_preflight": ".venv/bin/python tools/release_preflight.py",
+            "local_preflight": ".venv/bin/python tools/release_preflight.py --phase candidate --skip-network",
             "vds_status": './deploy/vds/acceptance_status.sh',
             "skladbot_coverage": './deploy/vds/verify_skladbot_coverage.sh',
             "telegram_verify": './deploy/vds/verify_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --expect-orders 1',
             "telegram_wait": './deploy/vds/wait_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --expect-orders 1 --timeout 300 --interval 10',
             "telegram_status": './deploy/vds/acceptance_status.sh --expect-orders 1',
             "windows_build_test_archive": '.\\tools\\build_windows_test_archive.ps1 -InstallDependencies',
-            "windows_check_only": '.\\tools\\windows_backend_acceptance.ps1 -CheckOnly -Token "<service-token>"',
-            "windows_launch_exe": '.\\tools\\windows_backend_acceptance.ps1 -Token "<service-token>" -AppPath ".\\TakSklad\\TakSklad.exe"',
-            "windows_launch_source": '.\\tools\\windows_backend_acceptance.ps1 -Token "<service-token>" -AppPath ".\\main.py"',
-            "windows_launch_source_auto": '.\\tools\\windows_backend_acceptance.ps1 -Token "<service-token>" -UsePython',
+            "windows_install_signed": '& ".\\TakSklad\\windows_backend_acceptance.ps1" -InstallBackendToken -CheckOnly -PrincipalIdentifier "desktop.pc-01" -AppPath ".\\TakSklad\\TakSklad.exe"',
+            "windows_check_only": '& ".\\TakSklad\\windows_backend_acceptance.ps1" -CheckOnly -AppPath ".\\TakSklad\\TakSklad.exe"',
+            "windows_launch_exe": '& ".\\TakSklad\\windows_backend_acceptance.ps1" -AppPath ".\\TakSklad\\TakSklad.exe"',
             "windows_verify": './deploy/vds/verify_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --expect-orders 1 --expect-scans 3 --expect-completed',
             "windows_wait": './deploy/vds/wait_acceptance_marker.sh "ACCEPTANCE TELEGRAM 20260531" --expect-orders 1 --expect-scans 3 --expect-completed --timeout 300 --interval 10',
             "windows_status": './deploy/vds/acceptance_status.sh --expect-orders 1 --expect-scans 3 --expect-completed',
@@ -187,13 +186,19 @@ cd /opt/taksklad/app
 
 ## Windows Проверка
 
-На Windows собрать свежий test archive:
+Unsigned test archive — только GUI/synthetic/local API, без production DPAPI/VDS:
 
 ```powershell
 {manifest["commands"]["windows_build_test_archive"]}
 ```
 
-Распаковать архив из `outputs\\windows_test_build`. Следующие PowerShell-команды выполнять уже из корня распакованного test archive.
+Этот архив не содержит production-capable auth helper. Следующие credentialed команды из него запускать запрещено.
+
+Для VDS/DPAPI acceptance получить отдельно подписанный production package `v{manifest["app_version"]}`. На trusted admin host сначала выполнить `tools/verify_release_attestations.sh --sha <exact-tagged-main-sha> --extract-windows-to <new-absolute-dir>`: GitHub/Sigstore verification обязана пройти до extraction и token prompt. На workstation передаётся весь проверенный каталог; выполняется только packaged wrapper, не checkout `tools`. Закрыть GUI и установить credential через wrapper:
+
+```powershell
+{manifest["commands"]["windows_install_signed"]}
+```
 
 Проверить связь с VDS:
 
@@ -201,25 +206,13 @@ cd /opt/taksklad/app
 {manifest["commands"]["windows_check_only"]}
 ```
 
-Запустить тестовую копию:
+Запустить подписанную production-копию:
 
 ```powershell
 {manifest["commands"]["windows_launch_exe"]}
 ```
 
-Если запуск из исходников:
-
-```powershell
-{manifest["commands"]["windows_launch_source"]}
-```
-
-Если в папке рядом есть exe, но нужно принудительно запустить исходники:
-
-```powershell
-{manifest["commands"]["windows_launch_source_auto"]}
-```
-
-Helper использует `https://api.taksklad.uz`, проверяет, что `APP_VERSION` не ниже `2.0.0` и `APP_BUILD_LABEL = MVP 2.0`, и предпочитает `.venv\\Scripts\\python.exe`. Для exe helper требует `build_manifest.json` из свежего test archive и сверяет `app_version` + `app_build_label`; старый ярлык `1.1.7` без manifest будет остановлен до запуска.
+Helper использует pinned `https://api.taksklad.uz`, читает credential из current-user DPAPI production desktop и вызывает только data-free `GET /api/v1/returns/auth-canary/desktop` с exact `204`. В packaged режиме acceptance запускает соседний подписанный `TakSkladAuth.exe` после проверки package hash/signer; unsigned test archive synthetic-only и production credential не читает.
 
 Сканировать тестовые КИЗы:
 
@@ -295,7 +288,7 @@ SHA-256 Excel: `{manifest["excel_sha256"]}`
 
 ## 1. Preflight
 
-- [ ] `.venv/bin/python tools/release_preflight.py` вернул `status=ok`.
+- [ ] `.venv/bin/python tools/release_preflight.py --phase candidate --skip-network` вернул `status=ok`.
 - [ ] `version.json` указывает на `{app_version}`, `mandatory=true`, ссылки и SHA заполнены.
 - [ ] В Git нет tracked runtime/secret-файлов.
 
@@ -406,7 +399,7 @@ SHA-256 Excel: `{manifest["excel_sha256"]}`
 
 ## 1. Preflight
 
-- [ ] `.venv/bin/python tools/release_preflight.py` вернул `status=ok`.
+- [ ] `.venv/bin/python tools/release_preflight.py --phase candidate --skip-network` вернул `status=ok`.
 - [ ] `version.json` указывает на `{app_version}`, `mandatory=true`, ссылки и SHA заполнены.
 - [ ] В Git нет tracked runtime/secret-файлов.
 

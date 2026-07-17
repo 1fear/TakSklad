@@ -7,6 +7,11 @@ from sqlalchemy.orm import Session
 
 from .models import AuditLog, ClientPoint, Order, OrderItem
 from .orders_service import STATUS_RETURNED
+from .skladbot_contracts import (
+    canonical_remote_request_id,
+    canonical_skladbot_request_number,
+    format_internal_smartup_ids,
+)
 
 
 DEFAULT_DELIVERY_FROM = "10:00"
@@ -486,14 +491,11 @@ def get_client_point_order_summary(
         select(
             Order.id.label("order_id"),
             Order.order_date.label("shipment_date"),
-            func.coalesce(Order.raw_payload["skladbot_request_number"].as_string(), "").label(
-                "skladbot_request_number"
-            ),
-            func.coalesce(Order.raw_payload["skladbot_request_id"].as_string(), "").label(
-                "skladbot_request_id"
-            ),
+            Order.raw_payload.label("order_raw_payload"),
+            OrderItem.raw_payload.label("item_raw_payload"),
             returned.label("is_returned"),
         )
+        .outerjoin(OrderItem, OrderItem.order_id == Order.id)
         .where(*order_filters)
         .order_by(returned.asc(), Order.created_at.asc(), Order.id.asc())
     ).mappings()
@@ -551,15 +553,36 @@ def get_client_point_order_summary(
             totals["orders_count"] += order_count
             date_row["orders_count"] += order_count
 
+    order_references = {}
     for row in order_reference_rows:
-        shipment_date = row["shipment_date"]
-        date_key = shipment_date.isoformat() if shipment_date else ""
-        dates_by_key[date_key]["order_references"].append({
-            "order_id": str(row["order_id"]),
-            "skladbot_request_number": normalize_text(row["skladbot_request_number"]),
-            "skladbot_request_id": normalize_text(row["skladbot_request_id"]),
+        order_id = str(row["order_id"])
+        order_raw = row["order_raw_payload"] if isinstance(row["order_raw_payload"], dict) else {}
+        reference = order_references.setdefault(order_id, {
+            "order_id": order_id,
+            "shipment_date": row["shipment_date"],
+            "smartup_sources": [order_raw.get("source_order_id")],
+            "skladbot_request_number": canonical_skladbot_request_number(
+                order_raw.get("skladbot_request_number")
+            ),
+            "skladbot_request_id": canonical_remote_request_id(
+                order_raw.get("skladbot_request_id")
+            ),
+            "skladbot_return_request_number": canonical_skladbot_request_number(
+                order_raw.get("skladbot_return_request_number")
+            ),
+            "skladbot_return_request_id": canonical_remote_request_id(
+                order_raw.get("skladbot_return_request_id")
+            ),
             "is_returned": bool(row["is_returned"]),
         })
+        item_raw = row["item_raw_payload"] if isinstance(row["item_raw_payload"], dict) else {}
+        reference["smartup_sources"].append(item_raw.get("source_order_id"))
+
+    for reference in order_references.values():
+        shipment_date = reference.pop("shipment_date")
+        date_key = shipment_date.isoformat() if shipment_date else ""
+        reference["smartup_id"] = format_internal_smartup_ids(reference.pop("smartup_sources"))
+        dates_by_key[date_key]["order_references"].append(reference)
 
     for row in item_rows:
         shipment_date = row["shipment_date"]

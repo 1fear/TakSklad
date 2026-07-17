@@ -55,9 +55,13 @@ SERVICE_PRINCIPAL_SCOPE_MATRIX = {
         "orders:complete",
         "orders:read",
         "reports:read",
+        "returns:read",
         "scans:create",
     }),
 }
+ACCEPTANCE_CANARY_SCOPES = frozenset({"returns:read"})
+ACCEPTANCE_CANARY_IDENTIFIER = "acceptance.release"
+DESKTOP_RUNTIME_SCOPES = SERVICE_PRINCIPAL_SCOPE_MATRIX["desktop"]
 
 
 class IdentityAuthError(Exception):

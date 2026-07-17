@@ -3,7 +3,7 @@ param(
     [string]$OutputDir = "outputs\windows_test_build",
     [string]$BuildDir = "build\windows_test",
     [string]$Python = "python",
-    [string]$MinAppVersion = "2.0.40",
+    [string]$MinAppVersion = "2.0.43",
     [string]$ExpectedBuildLabel = "MVP 2.0",
     [switch]$InstallDependencies,
     [switch]$SkipTests,
@@ -145,7 +145,7 @@ function Assert-VersionJsonSafeForTestBuild {
             $Manifest.sha256_onedir
         )
         if (-not $IsStablePinned -and -not $IsSafeRollout) {
-            throw "Public version.json is neither paused 1.1.7 nor forced 2.0.40 rollout manifest."
+            throw "Public version.json is neither paused 1.1.7 nor forced $MinAppVersion rollout manifest."
         }
     }
 }
@@ -171,15 +171,11 @@ Rules:
 - Do not upload this archive to GitHub Release.
 - Do not update public version.json with this archive.
 - Do not use the old desktop shortcut for acceptance.
-- Run acceptance through tools\windows_backend_acceptance.ps1.
+- Production credential acceptance is intentionally unavailable in this unsigned archive.
 - Keep service tokens outside this folder.
 
-Recommended launch:
-
-```powershell
-.\tools\windows_backend_acceptance.ps1 -CheckOnly -Token "<service-token>"
-.\tools\windows_backend_acceptance.ps1 -Token "<service-token>" -AppPath ".\TakSklad\TakSklad.exe"
-```
+This local archive is unsigned and synthetic-only. It must not install, read, or canary a production DPAPI credential.
+Production credential migration requires the signed release `TakSkladAuth.exe` adjacent to signed `TakSklad.exe`.
 
 Acceptance files are in the acceptance folder.
 "@
@@ -270,7 +266,7 @@ Invoke-CheckedCommand -FilePath $Python -Arguments @(
     "assets\TakSklad.ico",
     "--distpath",
     (Join-Path $BuildDir "dist"),
-    "main.py"
+    "pyinstaller_entry.py"
 )
 
 Invoke-CheckedCommand -FilePath $Python -Arguments @("tools\prepare_acceptance_kit.py")
@@ -325,6 +321,8 @@ $BuildManifest = [ordered]@{
     built_at_utc = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
     acceptance_helper = "tools/windows_backend_acceptance.ps1"
     app_path_for_acceptance = "TakSklad/TakSklad.exe"
+    signature_required = $false
+    production_credentials_allowed = $false
 }
 $BuildManifest | ConvertTo-Json | Out-File (Join-Path $PackageRoot "build_manifest.json") -Encoding utf8
 Write-TestBuildReadme -Path (Join-Path $PackageRoot "README_TEST_BUILD.md") -AppVersion $AppVersion -AppBuildLabel $AppBuildLabel -PackageName $PackageName

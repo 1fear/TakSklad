@@ -24,6 +24,7 @@ from .config import (
     YANDEX_GEOCODER_KEY_FILE,
 )
 from .secret_store import (
+    BACKEND_AUTH_BUNDLE_SECRET,
     BACKEND_API_TOKEN_SECRET,
     GEOCODER_API_KEY_SECRET,
     TELEGRAM_BOT_TOKEN_SECRET,
@@ -868,14 +869,6 @@ def migrate_desktop_secrets(secret_store=None, *, allow_volatile_test_store=Fals
                 except UnicodeDecodeError as exc:
                     raise SecretMigrationError("invalid geocoder source class=geocoder_file") from exc
 
-            selected = {
-                TELEGRAM_BOT_TOKEN_SECRET: _first_candidate(telegram_values),
-                BACKEND_API_TOKEN_SECRET: _first_candidate(backend_values),
-                GEOCODER_API_KEY_SECRET: _first_candidate(geocoder_values),
-            }
-            candidates = {name: value for name, value in selected.items() if value}
-            restart_required = BACKEND_API_TOKEN_SECRET in candidates
-
             store_status = store.status()
             if (
                 not allow_volatile_test_store
@@ -885,9 +878,27 @@ def migrate_desktop_secrets(secret_store=None, *, allow_volatile_test_store=Fals
                     not store_status.get("available")
                     or not store_status.get("persistent")
                     or store_status.get("state") != "ok"
+                    or store_status.get("scope") != "current_user"
                 )
             ):
                 raise SecretMigrationError("production Windows DPAPI store is unavailable")
+            authoritative_backend_bundle = store.get_text(BACKEND_AUTH_BUNDLE_SECRET)
+            authoritative_backend = store.get_text(BACKEND_API_TOKEN_SECRET)
+            selected = {
+                TELEGRAM_BOT_TOKEN_SECRET: _first_candidate(telegram_values),
+                BACKEND_API_TOKEN_SECRET: (
+                    None if (
+                        isinstance(authoritative_backend_bundle, str) and authoritative_backend_bundle
+                    ) or (
+                        isinstance(authoritative_backend, str) and authoritative_backend
+                    ) else
+                    _first_candidate(backend_values)
+                ),
+                GEOCODER_API_KEY_SECRET: _first_candidate(geocoder_values),
+            }
+            candidates = {name: value for name, value in selected.items() if value}
+            restart_required = BACKEND_API_TOKEN_SECRET in candidates
+
             if candidates and not allow_volatile_test_store:
                 if (
                     not isinstance(store_status, dict)

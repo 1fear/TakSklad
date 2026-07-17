@@ -14,12 +14,13 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from backend.app.models import AuditLog, Base, ImportJob, LogisticsCalendarDay, Order, PendingEvent, SmartupFulfillment
+from backend.app.models import AuditLog, Base, ImportJob, LogisticsCalendarDay, Order, OrderItem, PendingEvent, SmartupFulfillment
 from backend.app.smartup_auto_import import (
     SmartupClient,
     SmartupAutoImportConfig,
     SmartupAutoImportError,
     SMARTUP_AUTO_IMPORT_EVENT_TYPE,
+    SMARTUP_CLIENT_EXPORT_EVENT_TYPE,
     SMARTUP_LOGISTICS_REPORT_EVENT_TYPE,
     build_smartup_auto_import_status,
     build_import_rows,
@@ -44,11 +45,13 @@ from backend.app.smartup_auto_import import (
     smartup_auto_import_status_findings,
     smartup_advisory_lock_key,
     smartup_route_fingerprint,
+    smartup_logistics_dependency_proof,
     smartup_slot_idempotency_key,
     sweep_incomplete_smartup_fulfillments,
 )
 from backend.app import smartup_auto_import_worker
 from backend.app.kiz_reports_service import list_completed_kiz_source_files
+from backend.app.imports_service import preserve_order_smartup_identity
 from backend.app.smartup_auto_import_history_service import list_smartup_auto_import_history
 from backend.app.skladbot_request_dry_run import SKLADBOT_REQUEST_CREATE_EVENT_TYPE, list_skladbot_dry_runs
 from backend.app.smartup_saga import SMARTUP_DEAL_SAGA_EVENT_TYPE
@@ -333,6 +336,34 @@ class SmartupAutoImportTests(unittest.TestCase):
         self.assertEqual(rows[0]["Кол-во блок"], 20)
         self.assertEqual(rows[0]["ID заказа"], "smartup:642")
         self.assertEqual(rows[0]["ID импорта"], "smartup:642:line-1:1")
+
+    def test_smartup_import_identity_fill_is_idempotent_and_never_overwrites_durable_value(self):
+        order = Order(
+            payment_type="Терминал",
+            client="Synthetic client",
+            address="Synthetic address",
+            raw_payload={"source_order_id": "smartup:731"},
+        )
+
+        order.items.append(OrderItem(
+            product="Synthetic product",
+            quantity_pieces=1,
+            quantity_blocks=1,
+            raw_payload={"source_order_id": "smartup:732"},
+        ))
+
+        self.assertEqual(preserve_order_smartup_identity(order, ""), "731, 732")
+        self.assertEqual(preserve_order_smartup_identity(order, "smartup:999"), "731, 732, 999")
+        self.assertEqual(order.raw_payload["source_order_id"], "smartup:731")
+
+        missing = Order(
+            payment_type="Терминал",
+            client="Synthetic client",
+            address="Synthetic address",
+            raw_payload={},
+        )
+        self.assertEqual(preserve_order_smartup_identity(missing, "smartup:732"), "732")
+        self.assertEqual(missing.raw_payload["source_order_id"], "smartup:732")
 
     def test_mapper_moves_weekend_delivery_date_to_next_working_day(self):
         rows = build_import_rows(
@@ -659,10 +690,15 @@ class SmartupAutoImportTests(unittest.TestCase):
             self.assertEqual(orders[0].payment_type, "Терминал")
             self.assertEqual(order_source_id, "smartup:642")
             self.assertEqual(item_source_ids, ["smartup:642"])
-            self.assertRegex(
+            self.assertEqual(dry_runs[0]["payload"]["comment"], "Терминал\nТП")
+            self.assertEqual(
                 dry_runs[0]["payload"]["comment"],
-                r"^Терминал\nТП\nSmartup ID: smartup:642\nTakSklad ref: TSF-[A-F0-9]{24}$",
+                dry_runs[0]["payload"]["fields"]["comment"]["value"],
             )
+            self.assertNotIn("TakSklad ref:", dry_runs[0]["payload"]["comment"])
+            self.assertNotIn("TSF-", dry_runs[0]["payload"]["comment"])
+            self.assertNotIn("Smartup", dry_runs[0]["payload"]["comment"])
+            self.assertNotIn("642", dry_runs[0]["payload"]["comment"])
             self.assertEqual(len(imports), 1)
             self.assertEqual((imports[0].raw_payload["smartup_auto"]["delivery_dates"]), ["2026-06-26"])
 
@@ -744,8 +780,8 @@ class SmartupAutoImportTests(unittest.TestCase):
                 tmp_dir,
                 backend_import_enabled=True,
                 change_status_enabled=True,
-                client_chat_id="-5271267499",
-                logistics_chat_id="-1003515369435",
+                client_chat_id="-1002001",
+                logistics_chat_id="-1002002",
             )
             with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "dry_run"}, clear=False):
                 with self.SessionLocal() as db:
@@ -763,11 +799,11 @@ class SmartupAutoImportTests(unittest.TestCase):
         self.assertEqual(result["logistics_reports"], [])
         self.assertEqual(len(sender.documents), 1)
         chat_id, content, filename, caption = sender.documents[0]
-        self.assertEqual(chat_id, "-5271267499")
+        self.assertEqual(chat_id, "-1002001")
         self.assertTrue(content)
         self.assertEqual(filename, "Терминал 25.06.2026 Часть 1.xlsx")
         self.assertIn("Smartup выгрузка за 25.06.2026", caption)
-        self.assertEqual(imports[0].raw_payload["telegram_chat_id"], "-5271267499")
+        self.assertEqual(imports[0].raw_payload["telegram_chat_id"], "-1002001")
 
     def test_full_flow_queues_skladbot_create_after_smartup_status_change(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -792,6 +828,10 @@ class SmartupAutoImportTests(unittest.TestCase):
             self.assertEqual(len(create_events), 1)
             self.assertEqual(create_events[0].status, "pending")
             self.assertNotIn("not_before", create_events[0].payload)
+            request_payload = create_events[0].payload["request_payload"]
+            self.assertEqual(request_payload["comment"], request_payload["fields"]["comment"]["value"])
+            self.assertNotIn("TakSklad ref:", request_payload["comment"])
+            self.assertRegex(create_events[0].payload["taksklad_marker"], r"^TakSklad ref: TSF-[A-F0-9]{24}$")
             self.assertEqual(result["imports"][0]["skladbot_after_status"]["queued"], 1)
             self.assertEqual(imports[0].raw_payload["skladbot_dry_run"]["mode"], "enabled")
 
@@ -881,9 +921,9 @@ class SmartupAutoImportTests(unittest.TestCase):
                 change_status_enabled=True,
                 smartup_username="raw-user",
                 smartup_password="secret-pass",
-                client_chat_id="-5271267499",
-                logistics_chat_id="-1003515369435",
-                alert_chat_id="-1003515369435",
+                client_chat_id="-1002001",
+                logistics_chat_id="-1002002",
+                alert_chat_id="-1002002",
                 telegram_bot_token="bot123:secret-token",
             )
             with self.SessionLocal() as db:
@@ -909,7 +949,7 @@ class SmartupAutoImportTests(unittest.TestCase):
                             "status_change": {"status": "B#W"},
                             "skladbot_processing": {"status": "skipped"},
                             "logistics_reports": [{"status": "sent"}],
-                            "client_export": {"chat_id": "-5271267499", "status": "sent"},
+                            "client_export": {"chat_id": "-1002001", "status": "sent"},
                         },
                     },
                     last_error="password=secret-pass token=bot123:secret-token",
@@ -939,7 +979,7 @@ class SmartupAutoImportTests(unittest.TestCase):
             self.assertNotIn("raw-user", rendered)
             self.assertNotIn("secret-pass", rendered)
             self.assertNotIn("bot123:secret-token", rendered)
-            self.assertNotIn("-5271267499", rendered)
+            self.assertNotIn("-1002001", rendered)
 
     def test_backend_import_requires_smartup_status_change_gate(self):
         config = self.config("/tmp", backend_import_enabled=True, change_status_enabled=False)
@@ -1056,7 +1096,7 @@ class SmartupAutoImportTests(unittest.TestCase):
             ],
         )
 
-    def test_due_final_slot_sends_logistics_once_after_delivery_date_range(self):
+    def test_due_final_slot_waits_for_all_slots_and_fulfillment_then_sends_once(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             fake = FakeSmartupClient([
                 sample_order(deal_id="saturday", deal_time="03.07.2026 08:49:15", delivery_date="04.07.2026"),
@@ -1068,22 +1108,58 @@ class SmartupAutoImportTests(unittest.TestCase):
                 tmp_dir,
                 backend_import_enabled=True,
                 change_status_enabled=True,
-                client_chat_id="-5271267499",
-                logistics_chat_id="-1003515369435",
+                client_chat_id="-1002001",
+                logistics_chat_id="-1002002",
             )
             with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "dry_run"}, clear=False):
                 with self.SessionLocal() as db:
-                    result = run_due_smartup_auto_imports(
+                    for hour in (12, 15):
+                        run_due_smartup_auto_imports(
+                            db,
+                            config,
+                            now=datetime(2026, 7, 3, hour, 0, tzinfo=ZoneInfo("Asia/Tashkent")),
+                            smartup_client=fake,
+                            telegram_sender=sender,
+                        )
+                    final_result = run_due_smartup_auto_imports(
                         db,
                         config,
                         now=datetime(2026, 7, 3, 17, 50, tzinfo=ZoneInfo("Asia/Tashkent")),
                         smartup_client=fake,
                         telegram_sender=sender,
                     )
-                    second_result = run_due_smartup_auto_imports(
+                    slot_events = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == SMARTUP_AUTO_IMPORT_EVENT_TYPE)
+                    ).scalars().all()
+                    self.assertEqual(len(slot_events), 9, [event.idempotency_key for event in slot_events])
+                    proof_before = smartup_logistics_dependency_proof(db, config, date(2026, 7, 3))
+                    orders = db.execute(select(Order)).scalars().all()
+                    for order in orders:
+                        event = PendingEvent(
+                            event_type=SKLADBOT_REQUEST_CREATE_EVENT_TYPE,
+                            status="completed",
+                            idempotency_key=f"synthetic:terminal-create:{order.id}",
+                            payload={"last_result": {"status": "created"}},
+                        )
+                        db.add(event)
+                        db.flush()
+                        order.raw_payload = {
+                            **(order.raw_payload or {}),
+                            "skladbot_create_event_id": str(event.id),
+                        }
+                        db.add(order)
+                    db.commit()
+                    result = run_due_smartup_auto_imports(
                         db,
                         config,
                         now=datetime(2026, 7, 3, 17, 50, 30, tzinfo=ZoneInfo("Asia/Tashkent")),
+                        smartup_client=fake,
+                        telegram_sender=sender,
+                    )
+                    second_result = run_due_smartup_auto_imports(
+                        db,
+                        config,
+                        now=datetime(2026, 7, 3, 17, 50, 45, tzinfo=ZoneInfo("Asia/Tashkent")),
                         smartup_client=fake,
                         telegram_sender=sender,
                     )
@@ -1093,37 +1169,50 @@ class SmartupAutoImportTests(unittest.TestCase):
                         .where(PendingEvent.event_type == SMARTUP_LOGISTICS_REPORT_EVENT_TYPE)
                     ).scalars().all()
 
-        self.assertEqual([item["status"] for item in result[:3]], ["completed", "completed", "completed"])
-        self.assertEqual([item["delivery_dates"] for item in result[:3]], [
+        final_gate = next(
+            item for item in final_result
+            if item.get("export_date") == "2026-07-03" and item.get("status") == "logistics_blocked"
+        )
+        current_due = next(
+            item for item in result
+            if item.get("export_date") == "2026-07-03" and item.get("status") == "logistics_due"
+        )
+        current_due_second = next(
+            item for item in second_result
+            if item.get("export_date") == "2026-07-03" and item.get("status") == "logistics_due"
+        )
+
+        self.assertEqual([item["status"] for item in final_result[:3]], ["completed", "completed", "completed"])
+        self.assertEqual([item["delivery_dates"] for item in final_result[:3]], [
             ["2026-07-06"],
             ["2026-07-06"],
             ["2026-07-06"],
         ])
-        self.assertEqual([item["logistics_reports"] for item in result[:3]], [[], [], []])
-        self.assertEqual(result[3]["status"], "logistics_due")
-        self.assertEqual(result[3]["delivery_dates"], ["2026-07-06"])
-        self.assertEqual(result[3]["logistics_reports"][0]["status"], "sent")
-        self.assertEqual(result[3]["logistics_reports"][0]["delivery_date"], "2026-07-06")
-        self.assertEqual(len(imports), 3)
-        self.assertEqual(second_result[3]["status"], "logistics_due")
-        self.assertEqual(second_result[3]["delivery_dates"], ["2026-07-06"])
-        self.assertEqual(second_result[3]["logistics_reports"][0]["status"], "skipped")
-        self.assertEqual(second_result[3]["logistics_reports"][0]["reason"], "already_sent")
+        self.assertEqual(final_gate["status"], "logistics_blocked")
+        self.assertEqual(proof_before["reason"], "fulfillment_event_missing", proof_before)
+        self.assertEqual(final_gate["reason"], "fulfillment_event_missing")
+        self.assertEqual(current_due["delivery_dates"], ["2026-07-06"])
+        self.assertEqual(current_due["logistics_reports"][0]["status"], "sent")
+        self.assertEqual(current_due["logistics_reports"][0]["delivery_date"], "2026-07-06")
+        self.assertEqual(len(imports), 9)
+        self.assertEqual(current_due_second["delivery_dates"], ["2026-07-06"])
+        self.assertEqual(current_due_second["logistics_reports"][0]["status"], "skipped")
+        self.assertEqual(current_due_second["logistics_reports"][0]["reason"], "already_sent")
         self.assertEqual(len(logistics_events), 1)
         self.assertEqual(logistics_events[0].status, "completed")
         self.assertEqual(fake.changed, [
             (["saturday"], "B#W"),
             (["sunday"], "B#W"),
             (["monday"], "B#W"),
-        ])
-        self.assertEqual(len(sender.documents), 4)
+        ] * 3)
+        self.assertEqual(len(sender.documents), 10)
         logistics_documents = [
-            document for document in sender.documents if document[0] == "-1003515369435"
+            document for document in sender.documents if document[0] == "-1002002"
         ]
         self.assertEqual(len(logistics_documents), 1)
         _chat_id, content, filename, caption = logistics_documents[0]
-        self.assertEqual(filename, "TakSklad_логистика_06.07.2026_AUTO.xlsx")
-        self.assertIn("AUTO Smartup", caption)
+        self.assertEqual(filename, "TakSklad_логистика_06.07.2026.xlsx")
+        self.assertEqual(caption, "Отчёт логистики за 06.07.2026")
         self.assert_xlsx_has_no_orphaned_pane_selections(content)
         workbook = openpyxl.load_workbook(BytesIO(content), data_only=True)
         self.assertIn("Orders", workbook.sheetnames)
@@ -1152,7 +1241,7 @@ class SmartupAutoImportTests(unittest.TestCase):
         sender = FakeTelegramSender()
         config = self.config(
             "/tmp",
-            logistics_chat_id="-1003515369435",
+            logistics_chat_id="-1002002",
         )
         with self.SessionLocal() as db:
             db.add(AuditLog(
@@ -1163,7 +1252,7 @@ class SmartupAutoImportTests(unittest.TestCase):
                     "status": "sent",
                     "route_fingerprint": smartup_route_fingerprint(config, "logistics"),
                     "delivery_date": "2026-07-06",
-                    "filename": "TakSklad_логистика_06.07.2026_AUTO.xlsx",
+                    "filename": "TakSklad_логистика_06.07.2026.xlsx",
                 },
             ))
             db.commit()
@@ -1237,6 +1326,7 @@ class SmartupAutoImportTests(unittest.TestCase):
             self.assertEqual(len(imports), 2)
             self.assertEqual(len(create_events), 1)
             self.assertEqual(create_events[0].aggregate_id, str(orders[0].id))
+            self.assertEqual(orders[0].raw_payload["source_order_id"], "smartup:642")
 
     def test_enforced_saga_persists_intent_before_change_and_queues_one_skladbot_key(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1677,7 +1767,7 @@ class SmartupAutoImportTests(unittest.TestCase):
 
     def test_final_logistics_report_skips_non_working_delivery_date(self):
         sender = FakeTelegramSender()
-        config = self.config("/tmp", logistics_chat_id="-1003515369435", disabled_weekdays=(5, 6))
+        config = self.config("/tmp", logistics_chat_id="-1002002", disabled_weekdays=(5, 6))
         with self.SessionLocal() as db:
             result = send_final_logistics_reports(
                 db,
@@ -1777,7 +1867,7 @@ class SmartupAutoImportTests(unittest.TestCase):
             change_status_enabled=True,
             skladbot_create_requests_mode="enabled",
             client_chat_id="-1001001",
-            logistics_chat_id="-1001001",
+            logistics_chat_id="-1001002",
             alert_chat_id="1003",
             admin_chat_ids=("1003",),
             telegram_bot_token="bot123:synthetic-token",
@@ -1800,12 +1890,10 @@ class SmartupAutoImportTests(unittest.TestCase):
         errors, _warnings = smartup_auto_import_status_findings(invalid)
         rendered = json.dumps(errors, ensure_ascii=False)
 
-        self.assertIn("numeric chat ID", rendered)
-        self.assertIn("group-like", rendered)
-        self.assertIn("personal-like", rendered)
-        self.assertIn("должен отличаться", rendered)
+        self.assertIn("target type", rendered)
+        self.assertIn("попарно различны", rendered)
         self.assertIn("TELEGRAM_ADMIN_CHAT_IDS", rendered)
-        self.assertIn("должен быть пустым или совпадать", rendered)
+        self.assertIn("должен быть пустым", rendered)
         for raw_id in ("-1002", "1009"):
             self.assertNotIn(raw_id, rendered)
 
@@ -1827,7 +1915,7 @@ class SmartupAutoImportTests(unittest.TestCase):
 
         self.assertTrue(any("TAKSKLAD_AUTOMATION_ALERT_CHAT_ID" in item for item in errors))
 
-    def test_loader_maps_unified_alert_admin_hmac_and_exact_recovery_date(self):
+    def test_loader_rejects_colliding_routes_and_legacy_alert(self):
         config = load_smartup_auto_import_config({
             "TAKSKLAD_ENV": "production",
             "SMARTUP_AUTO_IMPORT_ENABLED": "true",
@@ -1846,7 +1934,8 @@ class SmartupAutoImportTests(unittest.TestCase):
             "SMARTUP_AUTO_IMPORT_LOGISTICS_ROUTE_RECOVERY_EXPORT_DATE": "2026-07-16",
         })
 
-        config.validate_for_run()
+        with self.assertRaisesRegex(SmartupAutoImportError, "попарно различны"):
+            config.validate_for_run()
         self.assertEqual(config.alert_chat_id, "1002")
         self.assertEqual(config.legacy_alert_chat_id, "1002")
         self.assertEqual(config.admin_chat_ids, ("1002",))
@@ -1859,7 +1948,7 @@ class SmartupAutoImportTests(unittest.TestCase):
             "change_status_enabled": True,
             "skladbot_create_requests_mode": "enabled",
             "client_chat_id": "-1001001",
-            "logistics_chat_id": "-1001001",
+            "logistics_chat_id": "-1001002",
             "alert_chat_id": "1002",
             "admin_chat_ids": ("1002",),
             "telegram_bot_token": "bot123:synthetic-token",
@@ -1902,9 +1991,9 @@ class SmartupAutoImportTests(unittest.TestCase):
         duplicate_errors, _warnings = smartup_auto_import_status_findings(duplicate_slots)
         missing_final_errors, _warnings = smartup_auto_import_status_findings(missing_final)
 
-        self.assertTrue(any("ровно 3 уникальных" in item for item in two_errors))
-        self.assertTrue(any("ровно 3 уникальных" in item for item in duplicate_errors))
-        self.assertTrue(any("FINAL_TIME" in item for item in missing_final_errors))
+        self.assertTrue(any("exact contract slot times" in item for item in two_errors))
+        self.assertTrue(any("exact contract slot times" in item for item in duplicate_errors))
+        self.assertTrue(any("exact contract slot times" in item for item in missing_final_errors))
 
     def test_smartup_error_never_falls_back_to_logistics_route(self):
         sender = FakeTelegramSender()
@@ -1922,7 +2011,53 @@ class SmartupAutoImportTests(unittest.TestCase):
 
         self.assertEqual(sender.messages, [])
 
-    def test_route_correction_resends_with_safe_identity_and_no_raw_chat_id(self):
+    def test_ambiguous_client_export_blocks_slot_and_automatic_retry(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sender = FailOnceTelegramSender()
+            config = self.config(
+                tmp_dir,
+                backend_import_enabled=True,
+                change_status_enabled=True,
+                client_chat_id="-1001001",
+                logistics_chat_id="-1001002",
+                alert_chat_id="1001",
+                admin_chat_ids=("1001",),
+            )
+            run_at = datetime(2026, 6, 25, 17, 50, tzinfo=ZoneInfo("Asia/Tashkent"))
+            with self.SessionLocal() as db:
+                with self.assertRaisesRegex(SmartupAutoImportError, "automatic retry blocked"):
+                    run_scheduled_smartup_auto_import_slot(
+                        db,
+                        config,
+                        now=run_at,
+                        slot_label="17:50",
+                        target_delivery_date=date(2026, 6, 26),
+                        smartup_client=FakeSmartupClient([sample_order()]),
+                        telegram_sender=sender,
+                    )
+                second = run_scheduled_smartup_auto_import_slot(
+                    db,
+                    config,
+                    now=run_at + timedelta(minutes=31),
+                    slot_label="17:50",
+                    target_delivery_date=date(2026, 6, 26),
+                    smartup_client=FakeSmartupClient([sample_order()]),
+                    telegram_sender=sender,
+                )
+                slot_event = db.execute(
+                    select(PendingEvent).where(PendingEvent.event_type == SMARTUP_AUTO_IMPORT_EVENT_TYPE)
+                ).scalar_one()
+                delivery_event = db.execute(
+                    select(PendingEvent).where(PendingEvent.event_type == SMARTUP_CLIENT_EXPORT_EVENT_TYPE)
+                ).scalar_one()
+
+        self.assertEqual(second["reason"], "slot_already_claimed")
+        self.assertEqual(slot_event.status, "blocked")
+        self.assertEqual(delivery_event.status, "blocked")
+        self.assertEqual(sender.documents, [])
+        self.assertEqual([message[0] for message in sender.messages], ["1001"])
+
+    def test_route_change_does_not_resend_confirmed_delivery(self):
         sender = FakeTelegramSender()
         first_config = self.config("/tmp", logistics_chat_id="-1001002")
         corrected_config = self.config(
@@ -1964,9 +2099,9 @@ class SmartupAutoImportTests(unittest.TestCase):
                 ).scalars().all()
 
         self.assertEqual(first[0]["status"], "sent")
-        self.assertEqual(corrected[0]["status"], "sent")
+        self.assertEqual(corrected[0]["reason"], "legacy_assumed_delivered")
         self.assertEqual(corrected_again[0]["reason"], "already_sent")
-        self.assertEqual(len(sender.documents), 2)
+        self.assertEqual(len(sender.documents), 1)
         self.assertEqual(len(events), 2)
         self.assertNotEqual(events[0].idempotency_key, events[1].idempotency_key)
         safe_evidence = json.dumps(
@@ -1978,7 +2113,7 @@ class SmartupAutoImportTests(unittest.TestCase):
         self.assertNotIn("-1001003", safe_evidence)
         self.assertIn("auto_smartup", safe_evidence)
 
-    def test_legacy_audits_skip_history_and_exact_recovery_resends_once(self):
+    def test_legacy_audits_never_trigger_automatic_resend(self):
         sender = FakeTelegramSender()
         config = self.config(
             "/tmp",
@@ -2029,9 +2164,9 @@ class SmartupAutoImportTests(unittest.TestCase):
                 ).scalars().all()
 
         self.assertEqual(historical[0]["reason"], "legacy_assumed_delivered")
-        self.assertEqual(recovered[0]["status"], "sent")
+        self.assertEqual(recovered[0]["reason"], "legacy_assumed_delivered")
         self.assertEqual(recovered_again[0]["reason"], "already_sent")
-        self.assertEqual(len(sender.documents), 1)
+        self.assertEqual(len(sender.documents), 0)
         self.assertEqual(len(events), 2)
         historical_event = next(
             event for event in events if (event.payload or {}).get("export_date") == "2026-07-15"
@@ -2041,7 +2176,7 @@ class SmartupAutoImportTests(unittest.TestCase):
             "legacy_unproven_assumed_delivered",
         )
 
-    def test_midnight_catchup_recovers_only_exact_export_date(self):
+    def test_midnight_catchup_blocks_without_durable_cycle_proof(self):
         sender = FakeTelegramSender()
         config = self.config(
             "/tmp",
@@ -2089,16 +2224,13 @@ class SmartupAutoImportTests(unittest.TestCase):
                 )
 
         self.assertEqual([item["export_date"] for item in first], ["2026-07-15", "2026-07-16"])
-        self.assertEqual(first[0]["logistics_reports"][0]["reason"], "legacy_assumed_delivered")
-        self.assertEqual(first[1]["logistics_reports"][0]["status"], "sent")
-        self.assertEqual(
-            [item["logistics_reports"][0]["reason"] for item in second],
-            ["already_sent", "already_sent"],
-        )
-        self.assertEqual(len(sender.documents), 1)
+        self.assertEqual([item["status"] for item in first], ["logistics_blocked", "logistics_blocked"])
+        self.assertEqual([item["reason"] for item in first], ["final_cycle_event_missing"] * 2)
+        self.assertEqual([item["status"] for item in second], ["logistics_blocked", "logistics_blocked"])
+        self.assertEqual(sender.documents, [])
 
-    def test_failed_logistics_send_retries_after_backoff_and_alerts_admin(self):
-        sender = FailOnceTelegramSender()
+    def test_logistics_build_failure_retries_before_delivery_start(self):
+        sender = FakeTelegramSender()
         config = self.config(
             "/tmp",
             logistics_chat_id="-1001002",
@@ -2110,7 +2242,10 @@ class SmartupAutoImportTests(unittest.TestCase):
         first_at = datetime(2026, 6, 25, 18, 0, tzinfo=timezone.utc)
         with mock.patch(
             "backend.app.smartup_auto_import.build_logistics_report_xlsx",
-            return_value=(b"xlsx", "TakSklad_логистика_26.06.2026.xlsx"),
+            side_effect=[
+                SmartupAutoImportError("synthetic build failure"),
+                (b"xlsx", "TakSklad_логистика_26.06.2026.xlsx"),
+            ],
         ):
             with self.SessionLocal() as db:
                 first = send_final_logistics_reports(
@@ -2149,7 +2284,7 @@ class SmartupAutoImportTests(unittest.TestCase):
         self.assertEqual([message[0] for message in sender.messages], ["1001"])
         self.assertEqual(len(sender.documents), 1)
 
-    def test_logistics_retry_attempt_cap_is_enforced(self):
+    def test_ambiguous_logistics_delivery_requires_manual_recovery_without_retry(self):
         sender = FailOnceTelegramSender()
         config = self.config(
             "/tmp",
@@ -2181,10 +2316,12 @@ class SmartupAutoImportTests(unittest.TestCase):
                 )
                 status = build_smartup_auto_import_status(db, config)
 
-        self.assertEqual(capped[0]["reason"], "retry_exhausted")
+        self.assertEqual(capped[0]["reason"], "manual_recovery_required")
         self.assertEqual(status["status"], "failed")
-        self.assertEqual(status["queues"]["logistics_retry_exhausted"], 1)
+        self.assertEqual(status["queues"]["logistics_retry_exhausted"], 0)
         self.assertEqual(status["last_logistics_events"][0]["route_role"], "logistics")
+        self.assertEqual(status["last_logistics_events"][0]["status"], "blocked")
+        self.assertEqual(sender.documents, [])
 
     def test_old_route_exhaustion_does_not_block_completed_current_route(self):
         config = self.config(
@@ -2231,7 +2368,7 @@ class SmartupAutoImportTests(unittest.TestCase):
         self.assertEqual(status["queues"]["logistics_retry_exhausted"], 0)
         self.assertEqual(status["queues"]["logistics_delivery_states"]["failed"], 2)
 
-    def test_missed_window_catchup_uses_order_truth_without_smartup_import_event(self):
+    def test_missed_window_catchup_rejects_orders_without_smartup_cycle_proof(self):
         sender = FakeTelegramSender()
         config = self.config(
             "/tmp",
@@ -2263,18 +2400,20 @@ class SmartupAutoImportTests(unittest.TestCase):
                     telegram_sender=sender,
                 )
 
-        self.assertEqual(result[0]["status"], "logistics_due")
-        self.assertEqual(result[0]["delivery_dates"], ["2026-06-26"])
-        self.assertEqual(result[0]["logistics_reports"][0]["status"], "sent")
-        self.assertEqual(len(sender.documents), 1)
+        self.assertEqual(result[0]["status"], "logistics_blocked")
+        self.assertEqual(result[0]["reason"], "final_cycle_event_missing")
+        self.assertEqual(result[0]["logistics_reports"], [])
+        self.assertEqual(sender.documents, [])
 
-    def test_due_logistics_continues_when_same_poll_smartup_slot_fails(self):
+    def test_due_logistics_blocks_when_same_poll_smartup_slot_fails(self):
         sender = FakeTelegramSender()
         config = self.config(
             "/tmp",
             backend_import_enabled=True,
             change_status_enabled=True,
             logistics_chat_id="-1001002",
+            alert_chat_id="1001",
+            admin_chat_ids=("1001",),
         )
         with mock.patch(
             "backend.app.smartup_auto_import.build_logistics_report_xlsx",
@@ -2294,7 +2433,7 @@ class SmartupAutoImportTests(unittest.TestCase):
 
                 with self.assertRaisesRegex(
                     SmartupAutoImportError,
-                    "independent logistics recovery was still evaluated",
+                    "dependency gate was evaluated fail-closed",
                 ):
                     run_due_smartup_auto_imports(
                         db,
@@ -2308,9 +2447,10 @@ class SmartupAutoImportTests(unittest.TestCase):
                     .where(PendingEvent.event_type == SMARTUP_LOGISTICS_REPORT_EVENT_TYPE)
                 ).scalars().all()
 
-        self.assertEqual(len(logistics_events), 1)
-        self.assertEqual(logistics_events[0].status, "completed")
-        self.assertEqual(len(sender.documents), 1)
+        self.assertEqual(logistics_events, [])
+        self.assertEqual(sender.documents, [])
+        self.assertTrue(sender.messages)
+        self.assertEqual({message[0] for message in sender.messages}, {"1001"})
 
     def test_logistics_due_time_defaults_to_final_slot_time(self):
         config = self.config(

@@ -118,6 +118,7 @@ class OrderRead(BaseModel):
     coordinates: str = ""
     representative: str | None = None
     status: str
+    smartup_id: str = ""
     skladbot_request_number: str = ""
     skladbot_request_id: str = ""
     skladbot_return_request_number: str = ""
@@ -175,6 +176,7 @@ class AdminTableRow(BaseModel):
     scan_codes_count: int
     block_price: int = 0
     line_total: int = 0
+    smartup_id: str = ""
     skladbot_request_number: str = ""
     skladbot_request_id: str = ""
     skladbot_status: str = ""
@@ -438,8 +440,11 @@ class ClientPointOrderProductRead(BaseModel):
 
 class ClientPointOrderReferenceRead(BaseModel):
     order_id: str
+    smartup_id: str = ""
     skladbot_request_number: str = ""
     skladbot_request_id: str = ""
+    skladbot_return_request_number: str = ""
+    skladbot_return_request_id: str = ""
     is_returned: bool = False
 
 
@@ -674,6 +679,11 @@ class SkladBotDryRunRead(BaseModel):
     blocks: int
     status: str
     error: str = ""
+    smartup_id: str = ""
+    skladbot_request_number: str = ""
+    skladbot_request_id: str = ""
+    skladbot_return_request_number: str = ""
+    skladbot_return_request_id: str = ""
     products: list[SkladBotDryRunProductRead] = Field(default_factory=list)
     payload: dict[str, Any] = Field(default_factory=dict)
     generated_at: datetime | None = None

@@ -18,7 +18,7 @@ from sqlalchemy.orm import selectinload
 
 from .audit_identity import AuditActor, set_audit_actor
 from .db import SessionLocal
-from .models import AuditLog, Order, OrderItem, PendingEvent
+from .models import AuditLog, Incident, Order, OrderItem, PendingEvent
 from .order_statuses import COMPLETED_STATUSES
 from .skladbot_client import (
     SkladBotClient,
@@ -33,6 +33,9 @@ from .skladbot_contracts import (
     address_soft_match,
     business_timezone,
     business_today,
+    canonical_remote_request_id,
+    canonical_skladbot_request_evidence_link,
+    canonical_skladbot_request_number,
     client_matches,
     extract_list_items,
     field_map,
@@ -61,6 +64,7 @@ from .skladbot_contracts import (
     smartup_id_from_comment,
     text_tokens_match,
 )
+from .skladbot_request_dry_run import skladbot_create_event_ownership_conflict_reason
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -68,6 +72,64 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 SKLADBOT_SYNC_LOCK_KEY = 22052631
 SKLADBOT_COMPLETED_BACKFILL_STATUSES = ("completed", "done", "closed")
 SKLADBOT_SYNC_ORDER_LIMIT_ENV = "SKLADBOT_SYNC_ORDER_LIMIT"
+SKLADBOT_REQUEST_CREATE_EVENT_TYPE = "skladbot_request_create"
+
+
+def canonical_uuid_text(value):
+    try:
+        return str(uuid.UUID(normalize_text(value)))
+    except (ValueError, TypeError, AttributeError):
+        return ""
+
+
+def skladbot_create_event_belongs_to_order(event, order):
+    if event is None or order is None:
+        return False
+    return not skladbot_create_event_ownership_conflict_reason(
+        event,
+        expected_order_id=str(order.id),
+    )
+
+
+def mark_skladbot_create_event_ownership_invalid(db, order, raw_payload, create_event_id):
+    error = "SkladBot create event ownership mismatch; manual review required"
+    raw_payload["skladbot_status"] = "ambiguous"
+    raw_payload["skladbot_error"] = error
+    existing = db.execute(
+        select(Incident)
+        .where(Incident.source == "skladbot_create")
+        .where(Incident.order_id == order.id)
+        .where(Incident.title == "Invalid SkladBot create event ownership")
+    ).scalar_one_or_none()
+    if existing is None:
+        db.add(Incident(
+            source="skladbot_create",
+            severity="critical",
+            status="manual_review",
+            title="Invalid SkladBot create event ownership",
+            message=error,
+            entity_type="order",
+            entity_id=str(order.id),
+            order_id=order.id,
+            raw_payload={
+                "order_id": str(order.id),
+                "referenced_event_id": normalize_text(create_event_id),
+                "reason": "ownership_mismatch",
+            },
+        ))
+        db.add(AuditLog(
+            action="skladbot_create_event_ownership_invalid",
+            entity_type="order",
+            entity_id=str(order.id),
+            payload={
+                "referenced_event_id": normalize_text(create_event_id),
+                "reason": "ownership_mismatch",
+            },
+        ))
+    else:
+        existing.status = "manual_review"
+        existing.severity = "critical"
+        existing.message = error
 
 class CandidateRequests(list):
     def __init__(
@@ -273,9 +335,10 @@ def fetch_candidate_requests(
         list_type = normalize_text(request_list_value(item, "type"))
         if list_type and not request_type_matches(list_type):
             continue
-        request_id = parse_int(request_list_value(item, "id"))
-        if request_id <= 0:
+        request_id_text = canonical_remote_request_id(request_list_value(item, "id"))
+        if not request_id_text:
             continue
+        request_id = int(request_id_text)
         list_unloading_date = request_list_value(item, "unloading_date", "unloadingDate")
         list_dates = {
             "created_at": request_list_value(item, "created_at", "createdAt"),
@@ -313,11 +376,10 @@ def fetch_candidate_requests(
     if progress_callback is not None:
         notify_skladbot_progress(progress_callback, f"remote_candidates_listed:{candidate_count}")
     checked_request_ids = []
-    for _priority, _freshness_date, _request_id, item in list_items:
+    for _priority, _freshness_date, request_id, item in list_items:
         if details_checked >= detail_limit:
             stopped_by_limit = True
             break
-        request_id = parse_int(request_list_value(item, "id"))
         try:
             detail = client.get_request_detail(request_id)
             details_checked += 1
@@ -347,6 +409,10 @@ def fetch_candidate_requests(
         if progress_callback is not None:
             notify_skladbot_progress(progress_callback, f"remote_details_processed:{details_checked + len(detail_errors)}")
         request = normalize_request_payload(item, detail)
+        evidence_id, evidence_number = canonical_skladbot_request_evidence_link(request)
+        if evidence_id != str(request_id) or not evidence_number:
+            detail_errors.append({"request_id": request_id, "error": "canonical_identity_mismatch"})
+            continue
         if not request_type_matches(request.get("type")):
             continue
         if not (
@@ -498,23 +564,51 @@ def update_orders_from_skladbot(
                 create_state = normalize_text(raw_payload.get("skladbot_status"))
                 create_event = None
                 active_create_processing = False
+                invalid_create_event_ownership = False
                 if create_state in {"create_queued", "ambiguous", "blocked_stock", "create_failed"}:
                     create_event_id = normalize_text(raw_payload.get("skladbot_create_event_id"))
                     try:
                         create_event = db.get(PendingEvent, uuid.UUID(create_event_id)) if create_event_id else None
                     except ValueError:
                         create_event = None
-                    marker = normalize_text((create_event.payload or {}).get("taksklad_marker")) if create_event else ""
-                    matches = [
-                        request
-                        for request in requests
-                        if marker and request_has_exact_taksklad_marker(request, marker)
-                    ]
+                    from .skladbot_request_dry_run import remote_taksklad_marker_from_event_payload
+
+                    if not skladbot_create_event_belongs_to_order(create_event, order):
+                        invalid_create_event_ownership = True
+                        mark_skladbot_create_event_ownership_invalid(
+                            db,
+                            order,
+                            raw_payload,
+                            create_event_id,
+                        )
+                        create_event = None
+                        matches = []
+                    event_payload = (create_event.payload or {}) if create_event else {}
+                    response_request_id = canonical_remote_request_id(
+                        event_payload.get("post_response_request_id")
+                    )
+                    marker = remote_taksklad_marker_from_event_payload(event_payload)
+                    if response_request_id:
+                        matches = [
+                            request for request in requests
+                            if canonical_skladbot_request_evidence_link(request)[0]
+                            == response_request_id
+                        ]
+                    else:
+                        matches = [
+                            request
+                            for request in requests
+                            if marker
+                            and all(canonical_skladbot_request_evidence_link(request))
+                            and request_has_exact_taksklad_marker(request, marker)
+                        ]
                     active_create_processing = bool(create_event and create_event.status == "processing")
                     if active_create_processing:
                         matches = []
                 raw_payload["skladbot_checked_at"] = checked_at
-                if active_create_processing:
+                if invalid_create_event_ownership:
+                    pending += 1
+                elif active_create_processing:
                     pending += 1
                 elif len(matches) == 1:
                     request = matches[0]
@@ -524,7 +618,7 @@ def update_orders_from_skladbot(
                         from .skladbot_request_dry_run import save_skladbot_create_result
 
                         event_payload = create_event.payload or {}
-                        save_skladbot_create_result(
+                        save_result = save_skladbot_create_result(
                             db,
                             order,
                             create_event,
@@ -534,17 +628,36 @@ def update_orders_from_skladbot(
                         )
                         raw_payload = dict(order.raw_payload or {})
                         raw_payload["skladbot_checked_at"] = checked_at
-                        create_event.status = "completed"
-                        create_event.last_error = None
-                        create_event.completed_at = datetime.now(timezone.utc)
-                        create_event.lease_owner = None
-                        create_event.lease_expires_at = None
+                        save_status = normalize_text(save_result.get("status"))
+                        if save_status == "created_recovered":
+                            create_event.status = "completed"
+                            create_event.last_error = None
+                            create_event.completed_at = datetime.now(timezone.utc)
+                            create_event.lease_owner = None
+                            create_event.lease_expires_at = None
+                            matched += 1
+                        else:
+                            from .skladbot_request_dry_run import ensure_skladbot_create_incident
+
+                            error = normalize_text(save_result.get("error")) or (
+                                "SkladBot recovery did not produce an exact canonical link"
+                            )
+                            create_event.status = "blocked"
+                            create_event.last_error = error
+                            ensure_skladbot_create_incident(
+                                db,
+                                order,
+                                create_event,
+                                error,
+                                status="manual_review",
+                            )
+                            pending += 1
                     else:
                         raw_payload["skladbot_request_number"] = request.get("number") or ""
                         raw_payload["skladbot_request_id"] = str(request.get("id") or "")
                         raw_payload["skladbot_status"] = "found"
                         raw_payload["skladbot_raw"] = request.get("raw") or {}
-                    matched += 1
+                        matched += 1
                 elif len(matches) > 1:
                     protected = create_state in {"create_queued", "ambiguous", "blocked_stock", "create_failed"}
                     raw_payload["skladbot_status"] = "ambiguous" if protected else "multiple"
@@ -558,7 +671,7 @@ def update_orders_from_skladbot(
                             ensure_skladbot_create_incident,
                             transition_linked_fulfillment,
                         )
-                        error = "Multiple SkladBot requests have the same exact TakSklad marker"
+                        error = "Multiple SkladBot requests matched the same exact create evidence"
                         create_event.status = "blocked"
                         create_event.last_error = error
                         transition_linked_fulfillment(db, create_event, "skladbot_ambiguous", error=error)

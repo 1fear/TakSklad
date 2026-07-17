@@ -132,6 +132,8 @@ jobs:
               "TakSklad-windows-x64.zip.sha256.txt",
               "TakSklad.exe",
               "TakSklad.exe.sha256.txt",
+              "TakSkladAuth.exe",
+              "TakSkladAuth.exe.sha256.txt",
               "version.json",
               "release.json",
           }
@@ -298,6 +300,7 @@ jobs:
         shell: pwsh
         run: |
           pyinstaller --clean --onefile --windowed --paths src --collect-submodules=taksklad --add-data "assets\product_images;assets\product_images" --name TakSklad --icon assets\TakSklad.ico --distpath dist\transition pyinstaller_entry.py
+          pyinstaller --clean --onefile --console --paths src --collect-submodules=taksklad --name TakSkladAuth --distpath dist\transition pyinstaller_auth_entry.py
 
       - name: Smoke test transition exe imports from clean directory
         shell: pwsh
@@ -308,10 +311,17 @@ jobs:
           }
           New-Item -ItemType Directory -Path $smokeDir | Out-Null
           Copy-Item dist\transition\TakSklad.exe $smokeDir\TakSklad.exe -Force
+          Copy-Item dist\transition\TakSkladAuth.exe $smokeDir\TakSkladAuth.exe -Force
           Push-Location $smokeDir
           try {
             & .\TakSklad.exe --smoke-import
             & .\TakSklad.exe --smoke-gui
+            & .\TakSklad.exe --install-backend-token-stdin
+            if ($LASTEXITCODE -eq 0) { throw "WINDOWED_EXE_AUTH_COMMAND_MUST_BE_BLOCKED" }
+            "invalid" | & .\TakSkladAuth.exe --install-backend-token-stdin
+            if ($LASTEXITCODE -eq 0) { throw "AUTH_HELPER_INVALID_STDIN_MUST_BE_BLOCKED" }
+            & .\TakSkladAuth.exe --auth-canary
+            if ($LASTEXITCODE -eq 0) { throw "AUTH_HELPER_EMPTY_DPAPI_MUST_BE_BLOCKED" }
           } finally {
             Pop-Location
           }
@@ -319,22 +329,22 @@ jobs:
       - name: Sign and verify transition executable
         shell: pwsh
         run: |
-          & "$env:WINDOWS_SIGNTOOL_PATH" sign /sha1 "$env:WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT" /s My /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com dist\transition\TakSklad.exe
-          if ($LASTEXITCODE -ne 0) {
-            throw "WINDOWS_CODESIGN_FAILED"
-          }
-          $signature = Get-AuthenticodeSignature dist\transition\TakSklad.exe
-          if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
-            throw "WINDOWS_CODESIGN_INVALID: transition executable"
-          }
-          $hasher = [System.Security.Cryptography.SHA256]::Create()
-          try {
-            $signerSha256 = -join ($hasher.ComputeHash($signature.SignerCertificate.RawData) | ForEach-Object { $_.ToString('x2') })
-          } finally {
-            $hasher.Dispose()
-          }
-          if ($signerSha256 -ne $env:WINDOWS_CODESIGN_CERTIFICATE_SHA256) {
-            throw "WINDOWS_CODESIGN_IDENTITY_MISMATCH"
+          foreach ($artifact in @("dist\transition\TakSklad.exe", "dist\transition\TakSkladAuth.exe")) {
+            & "$env:WINDOWS_SIGNTOOL_PATH" sign /sha1 "$env:WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT" /s My /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com $artifact
+            if ($LASTEXITCODE -ne 0) { throw "WINDOWS_CODESIGN_FAILED: $artifact" }
+            $signature = Get-AuthenticodeSignature $artifact
+            if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+              throw "WINDOWS_CODESIGN_INVALID: $artifact"
+            }
+            $hasher = [System.Security.Cryptography.SHA256]::Create()
+            try {
+              $signerSha256 = -join ($hasher.ComputeHash($signature.SignerCertificate.RawData) | ForEach-Object { $_.ToString('x2') })
+            } finally {
+              $hasher.Dispose()
+            }
+            if ($signerSha256 -ne $env:WINDOWS_CODESIGN_CERTIFICATE_SHA256) {
+              throw "WINDOWS_CODESIGN_IDENTITY_MISMATCH: $artifact"
+            }
           }
 
       - name: Compute transition exe SHA256
@@ -343,11 +353,15 @@ jobs:
           $hash = (Get-FileHash dist\transition\TakSklad.exe -Algorithm SHA256).Hash.ToLower()
           $hash | Out-File -FilePath dist\TakSklad.exe.sha256.txt -Encoding ascii -NoNewline
           "TAKSKLAD_EXE_SHA256=$hash" >> $env:GITHUB_ENV
+          $authHash = (Get-FileHash dist\transition\TakSkladAuth.exe -Algorithm SHA256).Hash.ToLower()
+          $authHash | Out-File -FilePath dist\TakSkladAuth.exe.sha256.txt -Encoding ascii -NoNewline
+          "TAKSKLAD_AUTH_EXE_SHA256=$authHash" >> $env:GITHUB_ENV
 
       - name: Build onedir app
         shell: pwsh
         run: |
           pyinstaller --clean --onedir --windowed --paths src --collect-submodules=taksklad --add-data "assets\product_images;assets\product_images" --name TakSklad --icon assets\TakSklad.ico --distpath dist\onedir pyinstaller_entry.py
+          pyinstaller --clean --onefile --console --paths src --collect-submodules=taksklad --name TakSkladAuth --distpath dist\onedir\TakSklad pyinstaller_auth_entry.py
           $smokeDir = Join-Path $env:RUNNER_TEMP "taksklad-smoke-onedir"
           if (Test-Path $smokeDir) {
             Remove-Item $smokeDir -Recurse -Force
@@ -358,10 +372,50 @@ jobs:
           try {
             & .\TakSklad\TakSklad.exe --smoke-import
             & .\TakSklad\TakSklad.exe --smoke-gui
+            "invalid" | & .\TakSklad\TakSkladAuth.exe --install-backend-token-stdin
+            if ($LASTEXITCODE -eq 0) { throw "ONEDIR_AUTH_HELPER_INVALID_STDIN_MUST_BE_BLOCKED" }
           } finally {
             Pop-Location
           }
           Copy-Item README.txt dist\onedir\TakSklad\README.txt -Force
+          Copy-Item tools\windows_backend_acceptance.ps1 dist\onedir\TakSklad\windows_backend_acceptance.ps1 -Force
+
+      - name: Sign and verify onedir executable
+        shell: pwsh
+        run: |
+          foreach ($artifact in @("dist\onedir\TakSklad\TakSklad.exe", "dist\onedir\TakSklad\TakSkladAuth.exe")) {
+            & "$env:WINDOWS_SIGNTOOL_PATH" sign /sha1 "$env:WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT" /s My /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com $artifact
+            if ($LASTEXITCODE -ne 0) { throw "WINDOWS_CODESIGN_FAILED: $artifact" }
+            $signature = Get-AuthenticodeSignature $artifact
+            if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) { throw "WINDOWS_CODESIGN_INVALID: $artifact" }
+            $hasher = [System.Security.Cryptography.SHA256]::Create()
+            try {
+              $signerSha256 = -join ($hasher.ComputeHash($signature.SignerCertificate.RawData) | ForEach-Object { $_.ToString('x2') })
+            } finally {
+              $hasher.Dispose()
+            }
+            if ($signerSha256 -ne $env:WINDOWS_CODESIGN_CERTIFICATE_SHA256) { throw "WINDOWS_CODESIGN_IDENTITY_MISMATCH: $artifact" }
+          }
+          $onedirAuthHash = (Get-FileHash dist\onedir\TakSklad\TakSkladAuth.exe -Algorithm SHA256).Hash.ToLower()
+          $onedirAppHash = (Get-FileHash dist\onedir\TakSklad\TakSklad.exe -Algorithm SHA256).Hash.ToLower()
+          $acceptanceWrapperHash = (Get-FileHash dist\onedir\TakSklad\windows_backend_acceptance.ps1 -Algorithm SHA256).Hash.ToLower()
+          "TAKSKLAD_ONEDIR_AUTH_EXE_SHA256=$onedirAuthHash" >> $env:GITHUB_ENV
+          "TAKSKLAD_ONEDIR_APP_EXE_SHA256=$onedirAppHash" >> $env:GITHUB_ENV
+          "TAKSKLAD_ACCEPTANCE_WRAPPER_SHA256=$acceptanceWrapperHash" >> $env:GITHUB_ENV
+          $packageRoot = (Resolve-Path "dist\onedir\TakSklad").Path
+          $packageFiles = @(
+            Get-ChildItem $packageRoot -Recurse -File |
+              Where-Object { $_.Name -notin @("version.json", "build_manifest.json") } |
+              ForEach-Object {
+                $relative = $_.FullName.Substring($packageRoot.Length + 1).Replace('\', '/')
+                [ordered]@{
+                  path = $relative
+                  sha256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+                  size = [int64]$_.Length
+                }
+              } |
+              Sort-Object { $_.path }
+          )
           $manifest = [ordered]@{
             app_version = $env:TAKSKLAD_APP_VERSION
             release_tag = "${{ steps.release.outputs.tag }}"
@@ -370,32 +424,34 @@ jobs:
             package_type = "onedir_zip"
             source_sha = "${{ steps.source.outputs.sha }}"
             dependency_lock_sha256 = $env:TAKSKLAD_DESKTOP_LOCK_SHA256
+            auth_helper = "TakSkladAuth.exe"
+            auth_helper_sha256 = $onedirAuthHash
+            app_sha256 = $onedirAppHash
+            acceptance_wrapper = "windows_backend_acceptance.ps1"
+            acceptance_wrapper_sha256 = $acceptanceWrapperHash
             signature_type = "authenticode"
             signature_required = $true
             signer_certificate_sha256 = $env:WINDOWS_CODESIGN_CERTIFICATE_SHA256
+            package_files = $packageFiles
           }
           $manifest | ConvertTo-Json | Out-File dist\onedir\TakSklad\version.json -Encoding utf8
-
-      - name: Sign and verify onedir executable
-        shell: pwsh
-        run: |
-          & "$env:WINDOWS_SIGNTOOL_PATH" sign /sha1 "$env:WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT" /s My /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com dist\onedir\TakSklad\TakSklad.exe
-          if ($LASTEXITCODE -ne 0) {
-            throw "WINDOWS_CODESIGN_FAILED"
+          $buildManifest = [ordered]@{
+            app_version = $env:TAKSKLAD_APP_VERSION
+            release_tag = "${{ steps.release.outputs.tag }}"
+            package_type = "onedir_zip"
+            app_build_label = "MVP 2.0"
+            app_path_for_acceptance = "TakSklad.exe"
+            app_sha256 = $onedirAppHash
+            acceptance_wrapper = "windows_backend_acceptance.ps1"
+            acceptance_wrapper_sha256 = $acceptanceWrapperHash
+            auth_helper_path_for_acceptance = "TakSkladAuth.exe"
+            auth_helper_sha256 = $onedirAuthHash
+            signature_required = $true
+            signer_certificate_sha256 = $env:WINDOWS_CODESIGN_CERTIFICATE_SHA256
+            source_sha = "${{ steps.source.outputs.sha }}"
+            package_files = $packageFiles
           }
-          $signature = Get-AuthenticodeSignature dist\onedir\TakSklad\TakSklad.exe
-          if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
-            throw "WINDOWS_CODESIGN_INVALID: onedir executable"
-          }
-          $hasher = [System.Security.Cryptography.SHA256]::Create()
-          try {
-            $signerSha256 = -join ($hasher.ComputeHash($signature.SignerCertificate.RawData) | ForEach-Object { $_.ToString('x2') })
-          } finally {
-            $hasher.Dispose()
-          }
-          if ($signerSha256 -ne $env:WINDOWS_CODESIGN_CERTIFICATE_SHA256) {
-            throw "WINDOWS_CODESIGN_IDENTITY_MISMATCH"
-          }
+          $buildManifest | ConvertTo-Json | Out-File dist\onedir\TakSklad\build_manifest.json -Encoding utf8
 
       - name: Remove code-signing material
         if: always()
@@ -423,7 +479,9 @@ jobs:
         run: |
           $artifactPaths = @(
             "dist\transition\TakSklad.exe",
-            "dist\onedir\TakSklad\TakSklad.exe"
+            "dist\transition\TakSkladAuth.exe",
+            "dist\onedir\TakSklad\TakSklad.exe",
+            "dist\onedir\TakSklad\TakSkladAuth.exe"
           )
           foreach ($artifactPath in $artifactPaths) {
             $signature = Get-AuthenticodeSignature -LiteralPath $artifactPath
@@ -469,7 +527,9 @@ jobs:
           if (Test-Path $zipPath) {
             Remove-Item $zipPath -Force
           }
-          Compress-Archive -Path dist\onedir\TakSklad -DestinationPath $zipPath -CompressionLevel Optimal
+          python tools\package_windows_release_zip.py `
+            --source dist\onedir\TakSklad --output $zipPath `
+            --outer-manifest dist\onedir\TakSklad\version.json
           $hash = (Get-FileHash $zipPath -Algorithm SHA256).Hash.ToLower()
           $hash | Out-File -FilePath "$zipPath.sha256.txt" -Encoding ascii -NoNewline
           "TAKSKLAD_ZIP_SHA256=$hash" >> $env:GITHUB_ENV
@@ -484,11 +544,18 @@ jobs:
           $manifest = [ordered]@{
             latest_version = $env:TAKSKLAD_APP_VERSION
             release_tag = $env:RELEASE_TAG
-            package_type = "onefile_exe"
+            package_type = "onedir_zip"
             entrypoint = "TakSklad.exe"
+            auth_helper = "TakSkladAuth.exe"
             download_url = "$releaseBaseUrl/TakSklad.exe"
             sha256 = $env:TAKSKLAD_EXE_SHA256
             artifact_sha256 = $env:TAKSKLAD_EXE_SHA256
+            auth_helper_download_url = "$releaseBaseUrl/TakSkladAuth.exe"
+            auth_helper_sha256 = $env:TAKSKLAD_AUTH_EXE_SHA256
+            auth_helper_sha256_onedir = $env:TAKSKLAD_ONEDIR_AUTH_EXE_SHA256
+            app_sha256_onedir = $env:TAKSKLAD_ONEDIR_APP_EXE_SHA256
+            acceptance_wrapper = "windows_backend_acceptance.ps1"
+            acceptance_wrapper_sha256 = $env:TAKSKLAD_ACCEPTANCE_WRAPPER_SHA256
             download_url_onedir = "$releaseBaseUrl/TakSklad-windows-x64.zip"
             sha256_onedir = $env:TAKSKLAD_ZIP_SHA256
             artifact_sha256_onedir = $env:TAKSKLAD_ZIP_SHA256
@@ -501,12 +568,17 @@ jobs:
           if (
             $manifest.sha256 -notmatch '^[0-9a-f]{64}$' -or
             $manifest.sha256_onedir -notmatch '^[0-9a-f]{64}$' -or
+            $manifest.auth_helper_sha256 -notmatch '^[0-9a-f]{64}$' -or
+            $manifest.auth_helper_sha256_onedir -notmatch '^[0-9a-f]{64}$' -or
+            $manifest.app_sha256_onedir -notmatch '^[0-9a-f]{64}$' -or
+            $manifest.acceptance_wrapper_sha256 -notmatch '^[0-9a-f]{64}$' -or
             $manifest.dependency_lock_sha256 -notmatch '^[0-9a-f]{64}$'
           ) {
             throw "IMMUTABLE_RELEASE_SHA256_REQUIRED"
           }
           $manifest | ConvertTo-Json | Out-File dist\version.json -Encoding utf8
           Copy-Item dist\transition\TakSklad.exe dist\TakSklad.exe -Force
+          Copy-Item dist\transition\TakSkladAuth.exe dist\TakSkladAuth.exe -Force
 
       - name: Attest Windows release subjects
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
@@ -514,6 +586,7 @@ jobs:
           subject-path: |
             dist/TakSklad-windows-x64.zip
             dist/TakSklad.exe
+            dist/TakSkladAuth.exe
             dist/version.json
 
       - name: Upload immutable Windows subjects and manifest
@@ -527,6 +600,8 @@ jobs:
             dist/TakSklad-windows-x64.zip.sha256.txt
             dist/TakSklad.exe
             dist/TakSklad.exe.sha256.txt
+            dist/TakSkladAuth.exe
+            dist/TakSkladAuth.exe.sha256.txt
             dist/version.json
 
   build-container-subjects:
@@ -731,7 +806,11 @@ jobs:
           windows = json.loads(windows_path.read_text(encoding="utf-8-sig"))
           if windows.get("source_sha") != source_sha:
               raise SystemExit("WINDOWS_SOURCE_SHA_MISMATCH")
-          for key in ("artifact_sha256", "artifact_sha256_onedir", "dependency_lock_sha256"):
+          for key in (
+              "artifact_sha256", "artifact_sha256_onedir", "auth_helper_sha256",
+              "auth_helper_sha256_onedir", "app_sha256_onedir",
+              "acceptance_wrapper_sha256", "dependency_lock_sha256",
+          ):
               if not re.fullmatch(r"[0-9a-f]{64}", str(windows.get(key, ""))):
                   raise SystemExit(f"WINDOWS_{key.upper()}_REQUIRED")
 
@@ -740,11 +819,15 @@ jobs:
           if windows.get("release_tag") != release_tag or release_tag != f"v{windows_version}":
               raise SystemExit("IMMUTABLE_RELEASE_TAG_VERSION_MISMATCH")
           windows_exe_path = Path("dist/windows/TakSklad.exe")
+          windows_auth_helper_path = Path("dist/windows/TakSkladAuth.exe")
           windows_onedir_path = Path("dist/windows/TakSklad-windows-x64.zip")
           windows_exe_sha256 = hashlib.sha256(windows_exe_path.read_bytes()).hexdigest()
+          windows_auth_helper_sha256 = hashlib.sha256(windows_auth_helper_path.read_bytes()).hexdigest()
           windows_onedir_sha256 = hashlib.sha256(windows_onedir_path.read_bytes()).hexdigest()
           if windows_exe_sha256 != windows["artifact_sha256"]:
               raise SystemExit("WINDOWS_ARTIFACT_SHA256_MISMATCH")
+          if windows_auth_helper_sha256 != windows["auth_helper_sha256"]:
+              raise SystemExit("WINDOWS_AUTH_HELPER_SHA256_MISMATCH")
           if windows_onedir_sha256 != windows["artifact_sha256_onedir"]:
               raise SystemExit("WINDOWS_ARTIFACT_SHA256_ONEDIR_MISMATCH")
 
@@ -752,6 +835,7 @@ jobs:
           backend_image = os.environ["BACKEND_IMAGE"]
           frontend_image = os.environ["FRONTEND_IMAGE"]
           windows_exe = "TakSklad.exe"
+          windows_auth_helper = "TakSkladAuth.exe"
           windows_onedir = "TakSklad-windows-x64.zip"
           windows_manifest = "version.json"
           manifest = {
@@ -763,6 +847,7 @@ jobs:
               "source_sha": source_sha,
               "release_id": f"github-{os.environ['ARTIFACT_RUN_ID']}",
               "acceptance_required": True,
+              "capabilities": ["returns_auth_canary_v2_exact_identifier"],
               "ci": {
                   "workflow": "CI",
                   "run_id": int(os.environ["CI_RUN_ID"]),
@@ -791,6 +876,12 @@ jobs:
                   "manifest_sha256": windows_manifest_sha256,
                   "artifact": windows_exe,
                   "artifact_sha256": windows_exe_sha256,
+                  "auth_helper": windows_auth_helper,
+                  "auth_helper_sha256": windows_auth_helper_sha256,
+                  "auth_helper_sha256_onedir": windows["auth_helper_sha256_onedir"],
+                  "app_sha256_onedir": windows["app_sha256_onedir"],
+                  "acceptance_wrapper": windows["acceptance_wrapper"],
+                  "acceptance_wrapper_sha256": windows["acceptance_wrapper_sha256"],
                   "artifact_onedir": windows_onedir,
                   "artifact_sha256_onedir": windows_onedir_sha256,
                   "version": windows_version,
@@ -801,6 +892,7 @@ jobs:
               },
               "attestation_subjects": [
                   {"kind": "windows", "name": windows_exe, "sha256": windows_exe_sha256},
+                  {"kind": "windows", "name": windows_auth_helper, "sha256": windows_auth_helper_sha256},
                   {"kind": "windows", "name": windows_onedir, "sha256": windows_onedir_sha256},
                   {"kind": "windows", "name": windows_manifest, "sha256": windows_manifest_sha256},
                   {"kind": "oci", "name": f"{backend_image}@{backend_digest}", "digest": backend_digest},
@@ -857,6 +949,8 @@ jobs:
             dist/windows/TakSklad-windows-x64.zip.sha256.txt \
             dist/windows/TakSklad.exe \
             dist/windows/TakSklad.exe.sha256.txt \
+            dist/windows/TakSkladAuth.exe \
+            dist/windows/TakSkladAuth.exe.sha256.txt \
             dist/windows/version.json \
             dist/release.json
           gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --verify-tag

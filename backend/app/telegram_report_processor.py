@@ -12,6 +12,7 @@ from .telegram_common import (
     parse_int,
     telegram_inline_keyboard,
 )
+from .telegram_output_contract import logistics_report_caption, logistics_report_filename
 
 
 TELEGRAM_BUTTON_KIZ_BY_FILES = "Выгрузка КИЗов"
@@ -221,12 +222,12 @@ class TelegramReportProcessor(TelegramProcessorDelegate):
                 f"Не удалось выгрузить отчёт логистики за {report_date}: backend временно недоступен ({exc.__class__.__name__})",
             )
             return False
-        filename = f"TakSklad_логистика_{report_date}_MANUAL.xlsx"
+        filename = logistics_report_filename(iso_date)
         self.safe_send_document(
             chat_id,
             content,
             filename,
-            caption=f"MANUAL /logistics · Отчёт логистики за {report_date}",
+            caption=logistics_report_caption(iso_date),
         )
         return True
 

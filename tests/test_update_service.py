@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import stat
 import tempfile
 import unittest
 import zipfile
@@ -19,15 +20,26 @@ from taksklad.update_service import (
     download_update_file,
     package_transition_required,
     select_update_download,
+    validate_onedir_zip,
     validate_update_manifest,
     validate_update_download_url,
     validate_update_sha256,
     verify_windows_authenticode_signature,
 )
+from taksklad.windows_release_zip import (
+    WindowsReleaseZipError,
+    _windows_component_key,
+    extract_windows_release_zip,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SYNTHETIC_SIGNER_CERT_SHA256 = "1" * 64
+AUTH_HELPER_PAYLOAD = b"synthetic signed auth helper"
+APP_PAYLOAD = b"fake exe"
+WRAPPER_PAYLOAD = b"synthetic packaged acceptance wrapper"
+MODULE_PAYLOAD = b"fake module"
+SOURCE_SHA = "a" * 40
 
 
 class FakeDownloadResponse(io.BytesIO):
@@ -46,10 +58,73 @@ class FakeDownloadResponse(io.BytesIO):
 
 
 class UpdateServiceTests(unittest.TestCase):
+    def test_win32_reserved_namespace_aliases_are_exact_and_normalized(self):
+        reserved = (
+            "COM¹",
+            "com².txt",
+            "CoM³ .log",
+            "LPT¹",
+            "lpt².bin",
+            "LpT³...cfg",
+            "CONIN$",
+            "conin$.txt",
+            "ConOut$ .log",
+        )
+        for component in reserved:
+            with self.subTest(reserved=component), self.assertRaises(WindowsReleaseZipError):
+                _windows_component_key(component)
+
+        allowed = (
+            "COM⁴.txt",
+            "COM¹-backup.txt",
+            "LPT10.txt",
+            "CONIN$-log.txt",
+            "myCONOUT$.txt",
+            "company.txt",
+        )
+        for component in allowed:
+            with self.subTest(allowed=component):
+                self.assertEqual(_windows_component_key(component), component.casefold())
+
     def _write_onedir_zip(self, zip_path):
+        files = {
+            "TakSklad.exe": APP_PAYLOAD,
+            "TakSkladAuth.exe": AUTH_HELPER_PAYLOAD,
+            "windows_backend_acceptance.ps1": WRAPPER_PAYLOAD,
+            "lib/module.pyd": MODULE_PAYLOAD,
+        }
+        inventory = [
+            {"path": path, "sha256": hashlib.sha256(payload).hexdigest(), "size": len(payload)}
+            for path, payload in sorted(files.items())
+        ]
+        common = {
+            "app_version": "9.8.7",
+            "release_tag": "v9.8.7",
+            "package_type": "onedir_zip",
+            "source_sha": SOURCE_SHA,
+            "app_sha256": hashlib.sha256(APP_PAYLOAD).hexdigest(),
+            "auth_helper_sha256": hashlib.sha256(AUTH_HELPER_PAYLOAD).hexdigest(),
+            "acceptance_wrapper_sha256": hashlib.sha256(WRAPPER_PAYLOAD).hexdigest(),
+            "signature_required": True,
+            "signer_certificate_sha256": SYNTHETIC_SIGNER_CERT_SHA256,
+            "package_files": inventory,
+        }
+        version = {
+            **common,
+            "auth_helper": "TakSkladAuth.exe",
+            "acceptance_wrapper": "windows_backend_acceptance.ps1",
+        }
+        build = {
+            **common,
+            "app_path_for_acceptance": "TakSklad.exe",
+            "auth_helper_path_for_acceptance": "TakSkladAuth.exe",
+            "acceptance_wrapper": "windows_backend_acceptance.ps1",
+        }
         with zipfile.ZipFile(zip_path, "w") as zip_file:
-            zip_file.writestr("TakSklad/TakSklad.exe", "fake exe")
-            zip_file.writestr("TakSklad/lib/module.pyd", "fake module")
+            for path, payload in files.items():
+                zip_file.writestr(f"TakSklad/{path}", payload)
+            zip_file.writestr("TakSklad/version.json", json.dumps(version))
+            zip_file.writestr("TakSklad/build_manifest.json", json.dumps(build))
 
     def _release_manifest(self, payload=b"signed synthetic exe", **overrides):
         manifest = {
@@ -58,9 +133,15 @@ class UpdateServiceTests(unittest.TestCase):
             "package_type": "onefile_exe",
             "download_url": "https://github.com/1fear/TakSklad/releases/download/v9.8.7/TakSklad.exe",
             "sha256": hashlib.sha256(payload).hexdigest(),
+            "auth_helper": "TakSkladAuth.exe",
+            "auth_helper_sha256_onedir": hashlib.sha256(AUTH_HELPER_PAYLOAD).hexdigest(),
+            "app_sha256_onedir": hashlib.sha256(APP_PAYLOAD).hexdigest(),
+            "acceptance_wrapper": "windows_backend_acceptance.ps1",
+            "acceptance_wrapper_sha256": hashlib.sha256(WRAPPER_PAYLOAD).hexdigest(),
             "signature_type": "authenticode",
             "signature_required": True,
             "signer_certificate_sha256": SYNTHETIC_SIGNER_CERT_SHA256,
+            "source_sha": SOURCE_SHA,
         }
         manifest.update(overrides)
         return manifest
@@ -68,7 +149,7 @@ class UpdateServiceTests(unittest.TestCase):
     def test_forced_release_manifest_is_current_or_three_patches_behind_app_versions(self):
         payload = json.loads((REPO_ROOT / "version.json").read_text(encoding="utf-8"))
 
-        self.assertEqual(APP_VERSION, "2.0.42")
+        self.assertEqual(APP_VERSION, "2.0.43")
         self.assertEqual(BACKEND_APP_VERSION, APP_VERSION)
         app_version = tuple(int(part) for part in APP_VERSION.split("."))
         published_version = tuple(int(part) for part in payload["latest_version"].split("."))
@@ -403,6 +484,187 @@ class UpdateServiceTests(unittest.TestCase):
                 mock.patch("taksklad.update_service.get_runtime_package_type", return_value="onefile"):
             self.assertFalse(package_transition_required(update_info))
 
+    def test_onedir_zip_requires_exact_auth_helper_membership_and_hash(self):
+        expected = hashlib.sha256(AUTH_HELPER_PAYLOAD).hexdigest()
+        app_hash = hashlib.sha256(APP_PAYLOAD).hexdigest()
+        wrapper_hash = hashlib.sha256(WRAPPER_PAYLOAD).hexdigest()
+        outer = self._release_manifest(package_type="onedir_zip")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            valid = root / "valid.zip"
+            self._write_onedir_zip(valid)
+            validate_onedir_zip(valid, expected, app_hash, wrapper_hash, outer_manifest=outer)
+
+            missing = root / "missing.zip"
+            with zipfile.ZipFile(valid) as source, zipfile.ZipFile(missing, "w") as archive:
+                for info in source.infolist():
+                    if info.filename != "TakSklad/TakSkladAuth.exe":
+                        archive.writestr(info, source.read(info))
+            with self.assertRaises(ValueError):
+                validate_onedir_zip(missing, expected, app_hash, wrapper_hash, outer_manifest=outer)
+
+            replaced = root / "replaced.zip"
+            with zipfile.ZipFile(valid) as source, zipfile.ZipFile(replaced, "w") as archive:
+                for info in source.infolist():
+                    payload = b"substituted" if info.filename == "TakSklad/TakSkladAuth.exe" else source.read(info)
+                    archive.writestr(info, payload)
+            with self.assertRaises(ValueError):
+                validate_onedir_zip(replaced, expected, app_hash, wrapper_hash, outer_manifest=outer)
+
+    def test_onedir_zip_rejects_ambiguous_or_unsafe_members_before_extraction(self):
+        expected = hashlib.sha256(AUTH_HELPER_PAYLOAD).hexdigest()
+        app_hash = hashlib.sha256(APP_PAYLOAD).hexdigest()
+        wrapper_hash = hashlib.sha256(WRAPPER_PAYLOAD).hexdigest()
+        outer = self._release_manifest(package_type="onedir_zip")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            valid = root / "valid.zip"
+            self._write_onedir_zip(valid)
+
+            cases = {
+                "traversal": zipfile.ZipInfo("TakSklad/../outside.txt"),
+                "absolute": zipfile.ZipInfo("/TakSklad/outside.txt"),
+                "backslash": zipfile.ZipInfo("TakSklad\\outside.txt"),
+                "nested-drive": zipfile.ZipInfo("TakSklad/C:/outside.txt"),
+                "ads": zipfile.ZipInfo("TakSklad/payload:stream"),
+                "trailing-dot": zipfile.ZipInfo("TakSklad/payload."),
+                "trailing-space": zipfile.ZipInfo("TakSklad/dir /file.txt"),
+                "reserved-con": zipfile.ZipInfo("TakSklad/CON"),
+                "reserved-extension": zipfile.ZipInfo("TakSklad/dir/PrN.txt"),
+                "reserved-com": zipfile.ZipInfo("TakSklad/COM9.log"),
+                "reserved-lpt": zipfile.ZipInfo("TakSklad/dir/lpt1.data"),
+                "illegal-character": zipfile.ZipInfo("TakSklad/bad?.txt"),
+                "control-character": zipfile.ZipInfo("TakSklad/bad\x01.txt"),
+                "case-collision": zipfile.ZipInfo("TakSklad/taksklad.exe"),
+                "unexpected-root": zipfile.ZipInfo("outside.txt"),
+                "unexpected-member": zipfile.ZipInfo("TakSklad/extra.bin"),
+            }
+            for label, extra in cases.items():
+                with self.subTest(label=label):
+                    candidate = root / f"{label}.zip"
+                    with zipfile.ZipFile(valid) as source, zipfile.ZipFile(candidate, "w") as archive:
+                        for info in source.infolist():
+                            archive.writestr(info, source.read(info))
+                        archive.writestr(extra, b"extra")
+                    with self.assertRaises(ValueError):
+                        validate_onedir_zip(
+                            candidate, expected, app_hash, wrapper_hash, outer_manifest=outer
+                        )
+
+            normalized_collision = root / "windows-normalized-collision.zip"
+            with zipfile.ZipFile(valid) as source, zipfile.ZipFile(normalized_collision, "w") as archive:
+                for info in source.infolist():
+                    archive.writestr(info, source.read(info))
+                archive.writestr("TakSklad/payload.txt", b"one")
+                archive.writestr("TakSklad/PAYLOAD.TXT", b"two")
+            with self.assertRaises(ValueError):
+                validate_onedir_zip(
+                    normalized_collision,
+                    expected,
+                    app_hash,
+                    wrapper_hash,
+                    outer_manifest=outer,
+                )
+
+            nested_drive = root / "nested-drive-no-write.zip"
+            with zipfile.ZipFile(valid) as source, zipfile.ZipFile(nested_drive, "w") as archive:
+                for info in source.infolist():
+                    archive.writestr(info, source.read(info))
+                archive.writestr("TakSklad/C:/outside.txt", b"outside")
+            destination = root / "must-not-exist"
+            with self.assertRaisesRegex(ValueError, "member_path_invalid"):
+                extract_windows_release_zip(nested_drive, destination, outer)
+            self.assertFalse(destination.exists())
+
+            symlink = root / "symlink.zip"
+            link_info = zipfile.ZipInfo("TakSklad/link")
+            link_info.create_system = 3
+            link_info.external_attr = (stat.S_IFLNK | 0o777) << 16
+            with zipfile.ZipFile(valid) as source, zipfile.ZipFile(symlink, "w") as archive:
+                for info in source.infolist():
+                    archive.writestr(info, source.read(info))
+                archive.writestr(link_info, b"TakSklad.exe")
+            with self.assertRaises(ValueError):
+                validate_onedir_zip(symlink, expected, app_hash, wrapper_hash, outer_manifest=outer)
+
+            special = root / "special.zip"
+            fifo_info = zipfile.ZipInfo("TakSklad/fifo")
+            fifo_info.create_system = 3
+            fifo_info.external_attr = (stat.S_IFIFO | 0o600) << 16
+            with zipfile.ZipFile(valid) as source, zipfile.ZipFile(special, "w") as archive:
+                for info in source.infolist():
+                    archive.writestr(info, source.read(info))
+                archive.writestr(fifo_info, b"")
+            with self.assertRaises(ValueError):
+                validate_onedir_zip(special, expected, app_hash, wrapper_hash, outer_manifest=outer)
+
+            duplicate = root / "duplicate.zip"
+            with zipfile.ZipFile(valid) as source, zipfile.ZipFile(duplicate, "w") as archive:
+                for info in source.infolist():
+                    archive.writestr(info, source.read(info))
+                with self.assertWarns(UserWarning):
+                    archive.writestr("TakSklad/TakSklad.exe", APP_PAYLOAD)
+            with self.assertRaises(ValueError):
+                validate_onedir_zip(duplicate, expected, app_hash, wrapper_hash, outer_manifest=outer)
+
+            with mock.patch("taksklad.windows_release_zip.MAX_MEMBER_BYTES", 4):
+                with self.assertRaises(ValueError):
+                    validate_onedir_zip(valid, expected, app_hash, wrapper_hash, outer_manifest=outer)
+
+    def test_onedir_zip_cross_manifest_identity_and_isolated_extraction(self):
+        outer = self._release_manifest(package_type="onedir_zip")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            valid = root / "valid.zip"
+            self._write_onedir_zip(valid)
+            destination = root / "verified-extract"
+            extracted = extract_windows_release_zip(
+                valid,
+                destination,
+                outer,
+                expected_source_sha=SOURCE_SHA,
+            )
+            self.assertEqual(extracted, destination / "TakSklad")
+            self.assertEqual((extracted / "TakSklad.exe").read_bytes(), APP_PAYLOAD)
+            self.assertEqual((extracted / "lib/module.pyd").read_bytes(), MODULE_PAYLOAD)
+            self.assertEqual(
+                (extracted / "windows_backend_acceptance.ps1").read_bytes(),
+                WRAPPER_PAYLOAD,
+            )
+            with self.assertRaises(ValueError):
+                extract_windows_release_zip(
+                    valid,
+                    destination,
+                    outer,
+                    expected_source_sha=SOURCE_SHA,
+                )
+
+            for label, field, value in (
+                ("source", "source_sha", "b" * 40),
+                ("version", "app_version", "9.8.6"),
+                ("signer", "signer_certificate_sha256", "2" * 64),
+                ("release", "release_tag", "v9.8.6"),
+                ("app-path", "app_path_for_acceptance", "Other.exe"),
+            ):
+                with self.subTest(label=label):
+                    candidate = root / f"{label}.zip"
+                    with zipfile.ZipFile(valid) as source, zipfile.ZipFile(candidate, "w") as archive:
+                        for info in source.infolist():
+                            payload = source.read(info)
+                            if info.filename == "TakSklad/build_manifest.json":
+                                manifest = json.loads(payload)
+                                manifest[field] = value
+                                payload = json.dumps(manifest).encode()
+                            archive.writestr(info, payload)
+                    with self.assertRaises(ValueError):
+                        validate_onedir_zip(
+                            candidate,
+                            outer["auth_helper_sha256_onedir"],
+                            outer["app_sha256_onedir"],
+                            outer["acceptance_wrapper_sha256"],
+                            outer_manifest=outer,
+                        )
+
     def test_select_update_download_uses_package_specific_url(self):
         update_info = {
             "package_type": "onefile_exe",
@@ -490,6 +752,10 @@ class UpdateServiceTests(unittest.TestCase):
             self.assertIn("$AcceptedChainStatuses -notcontains $ChainStatuses[0]", script)
             self.assertIn("$AcceptedSignatureStatuses -notcontains $Signature.Status", script)
             self.assertIn("$ExpectedSignerCertificateSha256", script)
+            self.assertIn("foreach ($ExecutableName in @($EntryPoint, $AuthHelper))", script)
+            self.assertIn("$ExpectedAuthHelperSha256", script)
+            self.assertLess(script.index("$ActualAuthHelperSha256"), staged_copy)
+            self.assertLess(script.index("foreach ($ExecutableName"), staged_copy)
             self.assertIn(SYNTHETIC_SIGNER_CERT_SHA256, script)
             self.assertIn("SignerCertificate.RawData", script)
             self.assertIn("недоверенным издателем", script)

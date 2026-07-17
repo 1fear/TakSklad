@@ -48,8 +48,8 @@ class ReconciliationServiceTests(unittest.TestCase):
         with Session(self.engine) as db:
             self.add_order(db, with_request=True, skladbot_status="error")
             db.commit()
-            first = run_daily_reconciliation(db=db, report_date="2026-07-16", alert_chat_ids=["test-chat"])
-            second = run_daily_reconciliation(db=db, report_date="2026-07-16", alert_chat_ids=["test-chat"])
+            first = run_daily_reconciliation(db=db, report_date="2026-07-16", alert_chat_ids=["1001"])
+            second = run_daily_reconciliation(db=db, report_date="2026-07-16", alert_chat_ids=["1001"])
             self.assertEqual(first["status"], "action_required")
             self.assertEqual(first["alerts"][0]["status"], "queued")
             self.assertEqual(second["alerts"][0]["status"], "deduped")

@@ -124,6 +124,8 @@ ROUTE_POLICIES: dict[tuple[str, str], RoutePolicy] = {
     ("POST", "/api/v1/imports/excel/preview"): _protected(PERMISSION_ADMIN_WRITE, "imports:write", mutates=True),
     ("POST", "/api/v1/imports/excel"): _protected(PERMISSION_ADMIN_WRITE, "imports:write", mutates=True),
     ("GET", "/api/v1/returns"): _protected(PERMISSION_WAREHOUSE_READ, "returns:read"),
+    ("GET", "/api/v1/returns/auth-canary/acceptance"): _protected(PERMISSION_WAREHOUSE_READ, "returns:read"),
+    ("GET", "/api/v1/returns/auth-canary/desktop"): _protected(PERMISSION_WAREHOUSE_READ, "returns:read"),
     ("POST", "/api/v1/scans"): _protected(PERMISSION_WAREHOUSE_WRITE, "scans:create", mutates=True),
     ("GET", "/api/v1/kiz/availability"): _protected(PERMISSION_WAREHOUSE_READ, "kiz:read"),
     ("POST", "/api/v1/scans/undo"): _protected(PERMISSION_WAREHOUSE_WRITE, "scans:undo", mutates=True),

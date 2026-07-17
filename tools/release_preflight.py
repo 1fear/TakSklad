@@ -2,6 +2,8 @@
 import argparse
 import hashlib
 import json
+import os
+import re
 import shutil
 import subprocess
 import sys
@@ -38,6 +40,7 @@ REQUIRED_FILES = [
     Path("tools/validate_deploy_probe.py"),
     Path("tools/build_windows_test_archive.ps1"),
     Path("tools/release_go_no_go.py"),
+    Path("tools/verify_release_attestations.sh"),
     Path("deploy/vds/acceptance_status.sh"),
     Path("deploy/vds/deploy_from_git.sh"),
     Path("deploy/vds/docker-compose.yml"),
@@ -50,7 +53,9 @@ REQUIRED_FILES = [
 ]
 WINDOWS_ACCEPTANCE_HELPER_REQUIRED_FRAGMENTS = [
     "build_manifest.json",
-    "Cannot verify TakSklad.exe version",
+    "Cannot verify TakSklad.exe because",
+    "TakSkladAuth.exe",
+    "$PinnedProductionSignerCertificateSha256",
     "$MinAppVersion = \"2.0.0\"",
     "$ExpectedBuildLabel = \"MVP 2.0\"",
     "APP_BUILD_LABEL",
@@ -69,15 +74,25 @@ WINDOWS_TEST_BUILD_REQUIRED_FRAGMENTS = [
     "ACCEPTANCE_RESULTS.md",
     "Assert-TestPackageDoesNotContainLocalSecrets",
     "version.json has local changes",
-    "paused 1.1.7 nor forced 2.0.40 rollout manifest",
+    "paused 1.1.7 nor forced $MinAppVersion rollout manifest",
 ]
-EXPECTED_RELEASE_VERSION = "2.0.40"
-EXPECTED_MIN_SUPPORTED_VERSION = "2.0.40"
-EXPECTED_PACKAGE_TYPE = "onefile_exe"
+def configured_app_version():
+    config_text = (PROJECT_ROOT / "src" / "taksklad" / "config.py").read_text(encoding="utf-8")
+    match = re.search(r'^APP_VERSION\s*=\s*"([^"]+)"', config_text, flags=re.MULTILINE)
+    if not match:
+        raise RuntimeError("APP_VERSION is missing from config.py")
+    return match.group(1)
+
+
+EXPECTED_RELEASE_VERSION = configured_app_version()
+EXPECTED_MIN_SUPPORTED_VERSION = EXPECTED_RELEASE_VERSION
+EXPECTED_PACKAGE_TYPE = "onedir_zip"
 EXPECTED_RELEASE_TAG = f"v{EXPECTED_RELEASE_VERSION}"
 EXPECTED_RELEASE_HOST = "github.com"
 EXPECTED_RELEASE_REPO_PATH = f"/1fear/TakSklad/releases/download/{EXPECTED_RELEASE_TAG}/"
 PAUSED_ROLLOUT_VERSION = "1.1.7"
+PHASE_CANDIDATE = "candidate"
+PHASE_FINAL = "final"
 BACKEND_ONLY_CONTRACT_FRAGMENTS = {
     Path("src/taksklad/config.py"): [
         "TAKSKLAD_BACKEND_ENABLED = True",
@@ -109,28 +124,23 @@ BACKEND_ONLY_CONTRACT_FRAGMENTS = {
 }
 DEPLOY_RUNBOOK_REQUIRED_FRAGMENTS = {
     Path("docs/windows-backend-acceptance.md"): [
-        "TAKSKLAD_BACKEND_ONLY_REFRESH = \"1\"",
-        "TELEGRAM_DESKTOP_POLLING_ENABLED = \"0\"",
-        "pending_backend_events",
-        "pending_saves",
-        "pending_prints",
-        "pending_telegram",
-        "/api/v1/admin/operations",
+        "TakSkladAuth.exe",
+        "/api/v1/returns/auth-canary/desktop",
+        "2.0.43",
+        "public channel",
     ],
     Path("docs/deploy-rollback-runbook.md"): [
-        "restore point",
-        "git status --short",
-        "Do not run broad rsync from a dirty tree",
-        "selective deploy",
-        "pending events",
-        "/api/v1/admin/operations",
+        "release.json",
+        "image@sha256",
+        "current-release",
+        "alembic downgrade",
     ],
     Path("docs/manual-acceptance-runbook.md"): [
-        "startup diagnostics",
-        "backend refresh",
-        "network timeout",
-        "retired Google worker absent",
-        "dirty tree",
+        "--phase candidate",
+        "--phase final",
+        "2.0.43",
+        "public channel",
+        "TakSkladAuth.exe",
     ],
 }
 DEPLOYMENT_READINESS_CONTRACT_FRAGMENTS = {
@@ -183,7 +193,13 @@ def check_required_files(root):
     return result("required_files", not missing, missing=missing)
 
 
-def check_version_json(root):
+def parse_version(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", value):
+        return None
+    return tuple(int(part) for part in value.split("."))
+
+
+def check_version_json(root, *, phase, source_sha=None):
     path = root / VERSION_JSON
     if not path.exists():
         return result("version_json", False, error="version.json not found")
@@ -192,40 +208,78 @@ def check_version_json(root):
     except Exception as exc:
         return result("version_json", False, error=f"invalid json: {exc}")
 
-    problems = []
-    paused_rollout = (
-        payload.get("latest_version") == PAUSED_ROLLOUT_VERSION
-        and payload.get("min_supported_version") == PAUSED_ROLLOUT_VERSION
-        and payload.get("mandatory") is False
-        and not payload.get("download_url")
-        and not payload.get("download_url_onedir")
-    )
-    forced_rollout = (
-        payload.get("latest_version") == EXPECTED_RELEASE_VERSION
-        and payload.get("min_supported_version") == EXPECTED_MIN_SUPPORTED_VERSION
-        and payload.get("mandatory") is True
-    )
-    rollout_state = "paused" if paused_rollout else "forced" if forced_rollout else "invalid"
+    if phase not in {PHASE_CANDIDATE, PHASE_FINAL}:
+        return result("version_json", False, error="release phase is invalid")
 
-    if rollout_state == "invalid":
-        problems.append(
-            f"version.json must be either paused {PAUSED_ROLLOUT_VERSION} rollout or forced {EXPECTED_RELEASE_VERSION} rollout"
-        )
-    if rollout_state == "forced":
-        if payload.get("package_type") != EXPECTED_PACKAGE_TYPE:
-            problems.append(f"package_type must be {EXPECTED_PACKAGE_TYPE}")
-        if not payload.get("download_url") or not payload.get("sha256"):
-            problems.append("onefile download_url and sha256 must be set")
-        if not payload.get("download_url_onedir") or not payload.get("sha256_onedir"):
-            problems.append("onedir download_url_onedir and sha256_onedir must be set")
-        for field_name in ("download_url", "download_url_onedir"):
-            url = str(payload.get(field_name) or "")
-            if url and not valid_release_download_url(url):
-                problems.append(f"{field_name} must be an HTTPS release URL for {EXPECTED_RELEASE_TAG}")
-        for field_name in ("sha256", "sha256_onedir"):
-            checksum = str(payload.get(field_name) or "")
-            if checksum and not valid_sha256(checksum):
-                problems.append(f"{field_name} must be a lowercase SHA256 hex digest")
+    problems = []
+    latest = payload.get("latest_version")
+    minimum = payload.get("min_supported_version")
+    latest_parts = parse_version(latest)
+    minimum_parts = parse_version(minimum)
+    expected_parts = parse_version(EXPECTED_RELEASE_VERSION)
+    release_tag = str(payload.get("release_tag") or "")
+    published_tag = f"v{latest}" if latest_parts else ""
+    package_type = payload.get("package_type")
+
+    if latest_parts is None or minimum_parts is None:
+        problems.append("published channel versions must be semantic x.y.z values")
+    elif minimum_parts > latest_parts:
+        problems.append("min_supported_version must not exceed latest_version")
+    if latest_parts is not None and expected_parts is not None and latest_parts > expected_parts:
+        problems.append("published channel must not be newer than the candidate runtime")
+    if release_tag != published_tag:
+        problems.append("release_tag must match latest_version")
+    if package_type not in {"onefile_exe", EXPECTED_PACKAGE_TYPE}:
+        problems.append("package_type must be onefile_exe or onedir_zip")
+    if not isinstance(payload.get("mandatory"), bool):
+        problems.append("mandatory must be boolean")
+    if payload.get("signature_type") != "authenticode" or payload.get("signature_required") is not True:
+        problems.append("published channel must require Authenticode")
+    if not valid_sha256(str(payload.get("signer_certificate_sha256") or "")):
+        problems.append("signer_certificate_sha256 must be a lowercase SHA256 hex digest")
+    if not re.fullmatch(r"[0-9a-f]{40}", str(payload.get("source_sha") or "")):
+        problems.append("source_sha must be exactly 40 lowercase hex")
+    if not valid_sha256(str(payload.get("dependency_lock_sha256") or "")):
+        problems.append("dependency_lock_sha256 must be a lowercase SHA256 hex digest")
+
+    required_assets = (("download_url", "sha256"),)
+    if payload.get("download_url_onedir") or payload.get("sha256_onedir") or package_type == EXPECTED_PACKAGE_TYPE:
+        required_assets += (("download_url_onedir", "sha256_onedir"),)
+    for url_field, sha_field in required_assets:
+        url = str(payload.get(url_field) or "")
+        checksum = str(payload.get(sha_field) or "")
+        if not valid_release_download_url(url, release_tag=published_tag):
+            problems.append(f"{url_field} must be an HTTPS release URL for {published_tag or 'the published tag'}")
+        if not valid_sha256(checksum):
+            problems.append(f"{sha_field} must be a lowercase SHA256 hex digest")
+
+    if phase == PHASE_FINAL:
+        if not re.fullmatch(r"[0-9a-f]{40}", str(source_sha or "")):
+            problems.append("final channel requires the explicit attested source SHA")
+        elif payload.get("source_sha") != source_sha:
+            problems.append("published source_sha must match the explicit attested source SHA")
+        if latest != EXPECTED_RELEASE_VERSION or minimum != EXPECTED_MIN_SUPPORTED_VERSION:
+            problems.append(f"final channel must require exact {EXPECTED_RELEASE_VERSION}")
+        if payload.get("mandatory") is not True or payload.get("block_workflow") is not True:
+            problems.append("final channel must be mandatory and block unsupported workflows")
+        if package_type != EXPECTED_PACKAGE_TYPE:
+            problems.append(f"final package_type must be {EXPECTED_PACKAGE_TYPE}")
+        if release_tag != EXPECTED_RELEASE_TAG:
+            problems.append(f"final release_tag must be {EXPECTED_RELEASE_TAG}")
+        if payload.get("auth_helper") != "TakSkladAuth.exe":
+            problems.append("auth_helper must be TakSkladAuth.exe")
+        helper_url = str(payload.get("auth_helper_download_url") or "")
+        helper_sha = str(payload.get("auth_helper_sha256") or "")
+        if not valid_release_download_url(helper_url, release_tag=EXPECTED_RELEASE_TAG):
+            problems.append("auth_helper_download_url must be an HTTPS release URL for the final tag")
+        if not valid_sha256(helper_sha):
+            problems.append("auth_helper_sha256 must be a lowercase SHA256 hex digest")
+
+    rollout_state = (
+        "final-published"
+        if phase == PHASE_FINAL and not problems
+        else "candidate-published" if latest == EXPECTED_RELEASE_VERSION else "published-supported"
+    )
 
     git_clean = None
     git = shutil.which("git")
@@ -259,6 +313,8 @@ def check_version_json(root):
         latest_version=payload.get("latest_version"),
         min_supported_version=payload.get("min_supported_version"),
         mandatory=payload.get("mandatory"),
+        phase=phase,
+        candidate_version=EXPECTED_RELEASE_VERSION,
         rollout_state=rollout_state,
         package_type=payload.get("package_type"),
         download_url_set=bool(payload.get("download_url")),
@@ -273,7 +329,7 @@ def valid_sha256(value):
     return len(value) == 64 and all(char in "0123456789abcdef" for char in value)
 
 
-def valid_release_download_url(url):
+def valid_release_download_url(url, *, release_tag=EXPECTED_RELEASE_TAG):
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme != "https" or not parsed.netloc:
         return False
@@ -281,7 +337,8 @@ def valid_release_download_url(url):
         return False
     if parsed.netloc.lower() != EXPECTED_RELEASE_HOST:
         return False
-    return parsed.path.startswith(EXPECTED_RELEASE_REPO_PATH)
+    expected_path = f"/1fear/TakSklad/releases/download/{release_tag}/"
+    return parsed.path.startswith(expected_path)
 
 
 def sha256_url(url, timeout_seconds):
@@ -315,6 +372,11 @@ def check_update_manifest_downloads(root, timeout_seconds):
             "expected_sha256": str(payload.get("sha256_onedir") or ""),
         },
     ]
+    assets.append({
+        "name": "auth_helper",
+        "url": str(payload.get("auth_helper_download_url") or ""),
+        "expected_sha256": str(payload.get("auth_helper_sha256") or ""),
+    })
     checked = []
     problems = []
     for asset in assets:
@@ -510,16 +572,90 @@ def check_public_backend_health(url, timeout_seconds):
     )
 
 
-def run_checks(root, health_url, timeout_seconds, skip_network=False, verify_downloads=False):
+def check_release_attestations(root, *, phase, source_sha=None):
+    script = root / "tools" / "verify_release_attestations.sh"
+    if not script.is_file():
+        return result("release_attestations", False, error="attestation verifier is missing")
+    command = ["bash", str(script), "--local"]
+    mode = "local-candidate"
+    if phase == PHASE_FINAL:
+        if not re.fullmatch(r"[0-9a-f]{40}", str(source_sha or "")):
+            return result("release_attestations", False, error="final source SHA is invalid")
+        command = ["bash", str(script), "--sha", str(source_sha)]
+        mode = "production-final"
+    environment = os.environ.copy()
+    environment["PYTHON_BIN"] = sys.executable
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=root,
+            env=environment,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=300,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return result(
+            "release_attestations",
+            False,
+            mode=mode,
+            error=exc.__class__.__name__,
+        )
+    return result(
+        "release_attestations",
+        completed.returncode == 0,
+        mode=mode,
+        exit_code=completed.returncode,
+    )
+
+
+def check_phase_contract(*, phase, skip_network, verify_downloads, source_sha):
+    problems = []
+    if phase not in {PHASE_CANDIDATE, PHASE_FINAL}:
+        problems.append("release phase must be explicit")
+    if phase == PHASE_CANDIDATE and source_sha:
+        problems.append("candidate phase does not accept a production source SHA")
+    if phase == PHASE_FINAL:
+        if skip_network:
+            problems.append("final phase cannot skip network verification")
+        if not verify_downloads:
+            problems.append("final phase requires immutable asset downloads")
+        if not re.fullmatch(r"[0-9a-f]{40}", str(source_sha or "")):
+            problems.append("final phase requires exact source SHA")
+    return result("phase_contract", not problems, phase=phase, problems=problems)
+
+
+def run_checks(
+    root,
+    health_url,
+    timeout_seconds,
+    *,
+    phase,
+    skip_network=False,
+    verify_downloads=False,
+    source_sha=None,
+):
+    phase_check = check_phase_contract(
+        phase=phase,
+        skip_network=skip_network,
+        verify_downloads=verify_downloads,
+        source_sha=source_sha,
+    )
     checks = [
+        phase_check,
         check_required_files(root),
-        check_version_json(root),
+        check_version_json(root, phase=phase, source_sha=source_sha),
         check_windows_acceptance_flow(root),
         check_backend_only_hot_path_contract(root),
         check_deploy_runbook_contract(root),
         check_deployment_readiness_contract(root),
         check_tracked_secrets(root),
     ]
+    if phase_check["ok"]:
+        checks.append(check_release_attestations(root, phase=phase, source_sha=source_sha))
+    else:
+        checks.append(result("release_attestations", False, skipped=True, reason="phase contract failed"))
     if skip_network:
         checks.append(result(
             "acceptance_kit",
@@ -541,8 +677,14 @@ def run_checks(root, health_url, timeout_seconds, skip_network=False, verify_dow
     }
 
 
-def parse_args():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="TakSklad 2.0 local release preflight.")
+    parser.add_argument(
+        "--phase",
+        choices=(PHASE_CANDIDATE, PHASE_FINAL),
+        required=True,
+        help="Explicit candidate or final publication phase.",
+    )
     parser.add_argument("--root", default=str(PROJECT_ROOT), help="Project root.")
     parser.add_argument("--health-url", default=DEFAULT_HEALTH_URL, help="Public backend health URL.")
     parser.add_argument("--timeout", type=int, default=8, help="Network timeout seconds.")
@@ -552,7 +694,22 @@ def parse_args():
         action="store_true",
         help="Download update artifacts from version.json and verify SHA256. Slow but useful before Windows rollout.",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--source-sha",
+        default="",
+        help="Exact production source SHA; required only for final phase.",
+    )
+    args = parser.parse_args(argv)
+    if args.phase == PHASE_FINAL:
+        if args.skip_network:
+            parser.error("final phase cannot use --skip-network")
+        if not args.verify_downloads:
+            parser.error("final phase requires --verify-downloads")
+        if not re.fullmatch(r"[0-9a-f]{40}", args.source_sha):
+            parser.error("final phase requires --source-sha with exactly 40 lowercase hex")
+    elif args.source_sha:
+        parser.error("candidate phase does not accept --source-sha")
+    return args
 
 
 def main():
@@ -561,8 +718,10 @@ def main():
         Path(args.root),
         health_url=args.health_url,
         timeout_seconds=max(1, args.timeout),
+        phase=args.phase,
         skip_network=args.skip_network,
         verify_downloads=args.verify_downloads,
+        source_sha=args.source_sha or None,
     )
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
     return 0 if summary["status"] == "ok" else 3

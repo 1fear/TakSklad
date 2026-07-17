@@ -4,10 +4,12 @@ import os
 from logging.handlers import RotatingFileHandler
 
 from .secret_store import (
+    BACKEND_AUTH_BUNDLE_SECRET,
     BACKEND_API_TOKEN_SECRET,
     GEOCODER_API_KEY_SECRET,
     TELEGRAM_BOT_TOKEN_SECRET,
     SecretStoreError,
+    decode_backend_auth_bundle,
     load_secret,
 )
 
@@ -16,6 +18,7 @@ LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
 LOG_SECRET_NAMES = (
     TELEGRAM_BOT_TOKEN_SECRET,
     BACKEND_API_TOKEN_SECRET,
+    BACKEND_AUTH_BUNDLE_SECRET,
     GEOCODER_API_KEY_SECRET,
 )
 
@@ -30,6 +33,12 @@ def redact_known_secret_values(value):
         if not secret:
             continue
         fragments = {secret}
+        if name == BACKEND_AUTH_BUNDLE_SECRET:
+            try:
+                credential, identifier = decode_backend_auth_bundle(secret)
+            except SecretStoreError:
+                credential = identifier = ""
+            fragments.update({credential, identifier})
         encoded_fragments = set()
         for fragment in fragments:
             if len(fragment) < 4:

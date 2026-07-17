@@ -14,7 +14,7 @@
   },
   "dependency_locks": {
     "backend_sha256": "211b695494ce64f2d13561bd32322f6873fa50f59786a77ced2a08baf4eac55b",
-    "desktop_sha256": "582eaa79370a79d1eae415c34fc57aecd69dc8d46cf40ef0835562b8f5de01c1"
+    "desktop_sha256": "1acd4bad2e14a89031472f2758b9ea8d1666c52d82dbeb4d67a7ac44e5e16ed1"
   },
   "deployable": false,
   "images": {
@@ -45,12 +45,12 @@
     "artifact": "test-artifacts/provenance/TakSklad-synthetic-signed.exe",
     "artifact_sha256": "2fffcef572cd1fb27c98e48b93f2cbcaf95697758436d1026aad333bc24cbfe5",
     "artifact_source_sha": "2b73e306e77272b90584b185aacd8d804471a0b3",
-    "dependency_lock_sha256": "582eaa79370a79d1eae415c34fc57aecd69dc8d46cf40ef0835562b8f5de01c1",
+    "dependency_lock_sha256": "1acd4bad2e14a89031472f2758b9ea8d1666c52d82dbeb4d67a7ac44e5e16ed1",
     "production_certificate_verified": false,
     "production_gate": "WINDOWS_CODESIGN_CERTIFICATE_NOT_AVAILABLE",
     "release_source_sha": "2b73e306e77272b90584b185aacd8d804471a0b3",
     "signature_status": "Valid",
     "signature_type": "authenticode-local-test",
-    "version": "2.0.25"
+    "version": "2.0.43"
   }
 }

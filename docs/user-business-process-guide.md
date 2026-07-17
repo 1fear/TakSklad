@@ -290,8 +290,8 @@ docker compose exec smartup-auto-import-worker python -m app.smartup_auto_import
 - `SMARTUP_AUTO_IMPORT_CHANGE_STATUS_ENABLED=true`;
 - `SMARTUP_AUTO_IMPORT_DISABLED_WEEKDAYS=5,6` чтобы отключить субботу/воскресенье;
 - `SKLADBOT_CREATE_REQUESTS_MODE=enabled` для реального создания заявок SkladBot;
-- `SMARTUP_AUTO_IMPORT_LOGISTICS_CHAT_ID` для чата, куда отправлять итоговый отчёт логистики.
-- `SMARTUP_AUTO_IMPORT_ALERT_CHAT_ID` для Telegram-ошибок automation; если пусто, используется logistics chat.
+- `SMARTUP_AUTO_IMPORT_LOGISTICS_CHAT_ID` для отдельной logistics group, куда отправляется только итоговый отчёт логистики.
+- `TAKSKLAD_AUTOMATION_ALERT_CHAT_ID` для единственного personal admin route ошибок; legacy `SMARTUP_AUTO_IMPORT_ALERT_CHAT_ID` должен быть пустым, fallback в группы запрещён.
 
 Первый production deploy кода можно делать с этими флагами выключенными. Включать automation нужно отдельным шагом после backup, проверки миграции, web-admin smoke и ручного `run-once` на контролируемом слоте.
 

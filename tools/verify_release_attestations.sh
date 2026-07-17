@@ -1,17 +1,22 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+EXTRACT_WINDOWS_TO=""
 if [[ "${1:-}" == "--local" && $# -eq 1 ]]; then
   MODE=local
   REQUESTED_SHA=""
 elif [[ "${1:-}" == "--sha" && $# -eq 2 ]]; then
   MODE=production
   REQUESTED_SHA="$2"
+elif [[ "${1:-}" == "--sha" && "${3:-}" == "--extract-windows-to" && $# -eq 4 ]]; then
+  MODE=production
+  REQUESTED_SHA="$2"
+  EXTRACT_WINDOWS_TO="$4"
 elif [[ $# -eq 0 ]]; then
   MODE=production
   REQUESTED_SHA=""
 else
-  echo "usage: $0 [--local | --sha <40-lowercase-hex>]" >&2
+  echo "usage: $0 [--local | --sha <40-lowercase-hex> [--extract-windows-to <new-absolute-dir>]]" >&2
   exit 2
 fi
 
@@ -56,6 +61,7 @@ for role in ("backend", "frontend"):
 windows = manifest["windows"]
 for key, hash_key, variable in (
     ("artifact", "artifact_sha256", "WINDOWS_EXE"),
+    ("auth_helper", "auth_helper_sha256", "WINDOWS_AUTH_HELPER"),
     ("artifact_onedir", "artifact_sha256_onedir", "WINDOWS_ZIP"),
     ("manifest", "manifest_sha256", "WINDOWS_MANIFEST"),
 ):
@@ -75,10 +81,23 @@ gh attestation verify "oci://$BACKEND_REFERENCE" \
   --repo "$REPOSITORY" --signer-workflow "$SIGNER_WORKFLOW" --source-digest "$REQUESTED_SHA"
 gh attestation verify "oci://$FRONTEND_REFERENCE" \
   --repo "$REPOSITORY" --signer-workflow "$SIGNER_WORKFLOW" --source-digest "$REQUESTED_SHA"
-for subject in "$WINDOWS_EXE" "$WINDOWS_ZIP" "$WINDOWS_MANIFEST"; do
+for subject in "$WINDOWS_EXE" "$WINDOWS_AUTH_HELPER" "$WINDOWS_ZIP" "$WINDOWS_MANIFEST"; do
   gh attestation verify "$subject" \
     --repo "$REPOSITORY" --signer-workflow "$SIGNER_WORKFLOW" --source-digest "$REQUESTED_SHA"
 done
+zip_verify_args=(
+  --zip "$WINDOWS_ZIP"
+  --outer-manifest "$WINDOWS_MANIFEST"
+  --source-sha "$REQUESTED_SHA"
+)
+if [[ -n "$EXTRACT_WINDOWS_TO" ]]; then
+  [[ "$EXTRACT_WINDOWS_TO" == /* ]] || {
+    echo "Windows extraction destination must be absolute" >&2
+    exit 2
+  }
+  zip_verify_args+=(--extract-to "$EXTRACT_WINDOWS_TO")
+fi
+PYTHONPATH=src "$PYTHON_BIN" tools/verify_windows_release_zip.py "${zip_verify_args[@]}"
 
-printf 'RELEASE_ATTESTATIONS_GITHUB_OK source_sha=%s subjects=6 signer_workflow=%s\n' \
+printf 'RELEASE_ATTESTATIONS_GITHUB_OK source_sha=%s subjects=7 signer_workflow=%s\n' \
   "$REQUESTED_SHA" "$SIGNER_WORKFLOW"

@@ -272,7 +272,6 @@ describe("API endpoint wrapper contracts", () => {
     ["smartup history default", () => api.getSmartupAutoImportHistory(cookieConfig), "/api/v1/admin/smartup-auto-imports/history?limit=50"],
     ["smartup history limit", () => api.getSmartupAutoImportHistory(cookieConfig, 7), "/api/v1/admin/smartup-auto-imports/history?limit=7"],
     ["client summary", () => api.getClientPointOrderSummary(cookieConfig, "Клиент & Ко"), "/api/v1/admin/client-points/order-summary?client_name=%D0%9A%D0%BB%D0%B8%D0%B5%D0%BD%D1%82+%26+%D0%9A%D0%BE"],
-    ["KIZ availability", () => api.lookupKizAvailability(cookieConfig, "0104-test", "item/1"), "/api/v1/kiz/availability?code=0104-test&order_item_id=item%2F1"],
     ["return lookup", () => api.lookupReturn(cookieConfig, "WH-R/1"), "/api/v1/returns/lookup?lookup=WH-R%2F1"],
   ])("builds GET endpoint for %s", async (_name, invoke, expectedPath) => {
     const fetchSpy = mockJsonFetch();
@@ -332,8 +331,6 @@ describe("API endpoint wrapper contracts", () => {
     ["restore", () => api.restoreOrder(cookieConfig, "order-1", { reason: "synthetic" }), "/api/v1/admin/orders/order-1/restore"],
     ["skladbot resync", () => api.resyncSkladBotOrder(cookieConfig, "order-1", { reason: "synthetic" }), "/api/v1/admin/orders/order-1/resync-skladbot"],
     ["rebuild dry run", () => api.rebuildSkladBotDryRun(cookieConfig, "dry/run"), "/api/v1/admin/skladbot/dry-runs/dry%2Frun/rebuild"],
-    ["scan", () => api.createScan(cookieConfig, { order_item_id: "item-1", code: "0104-test" }), "/api/v1/scans"],
-    ["scan undo", () => api.undoScan(cookieConfig, { order_item_id: "item-1", code: "0104-test" }), "/api/v1/scans/undo"],
     ["complete", () => api.completeWarehouseOrder(cookieConfig, "order/1"), "/api/v1/orders/order%2F1/complete"],
     ["return", () => api.markReturn(cookieConfig, "order/1", { confirmed_items: [] }), "/api/v1/returns/order%2F1"],
   ])("builds POST endpoint for %s", async (_name, invoke, expectedPath) => {

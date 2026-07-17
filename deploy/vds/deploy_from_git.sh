@@ -12,8 +12,12 @@ URL_RETRY_INTERVAL_SECONDS="${TAKSKLAD_DEPLOY_URL_RETRY_INTERVAL_SECONDS:-2}"
 COMPOSE_WAIT_TIMEOUT_SECONDS="${TAKSKLAD_COMPOSE_WAIT_TIMEOUT_SECONDS:-180}"
 LOG_SINCE_SECONDS="${TAKSKLAD_DEPLOY_LOG_SINCE_SECONDS:-120}"
 ACCEPTANCE_MODE="${TAKSKLAD_DEPLOY_ACCEPTANCE:-required}"
+AUTH_CANARY_TOKEN_FILE="${TAKSKLAD_AUTH_CANARY_TOKEN_FILE:-/opt/stacks/taksklad/private/acceptance-canary.token}"
 WRITER_SERVICES=(backend-api telegram-worker skladbot-worker smartup-auto-import-worker)
 DRY_RUN=0
+CURRENT_AUTH_CANARY_ONLY=0
+ALLOW_BOOTSTRAP_WITHOUT_ROLLBACK=0
+ALLOW_LEGACY_CANARY_BOOTSTRAP=0
 ARTIFACT_MANIFEST=""
 PYTHON_BIN="python3"
 if [[ -x ".venv/bin/python" ]]; then
@@ -25,6 +29,9 @@ usage() {
 Usage:
   deploy_from_git.sh --artifact-manifest PATH
   deploy_from_git.sh --artifact-manifest PATH --acceptance required --wait
+  deploy_from_git.sh --artifact-manifest PATH --current-auth-canary-only
+  deploy_from_git.sh --artifact-manifest PATH --allow-bootstrap-without-rollback
+  deploy_from_git.sh --artifact-manifest PATH --allow-legacy-canary-bootstrap
   deploy_from_git.sh --dry-run --artifact-manifest PATH [--acceptance required] [--wait]
 
 Production execution requires TAKSKLAD_PRODUCTION_APPROVAL=READY_FOR_PRODUCTION_DEPLOY.
@@ -52,6 +59,18 @@ while (($#)); do
       shift 2
       ;;
     --wait)
+      shift
+      ;;
+    --current-auth-canary-only)
+      CURRENT_AUTH_CANARY_ONLY=1
+      shift
+      ;;
+    --allow-bootstrap-without-rollback)
+      ALLOW_BOOTSTRAP_WITHOUT_ROLLBACK=1
+      shift
+      ;;
+    --allow-legacy-canary-bootstrap)
+      ALLOW_LEGACY_CANARY_BOOTSTRAP=1
       shift
       ;;
     -h|--help)
@@ -85,8 +104,60 @@ cd "$APP_DIR"
 [[ -f "$ENV_FILE" ]] || fail "production environment file is missing"
 [[ -f "$COMPOSE_FILE" ]] || fail "Compose definition is missing"
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. "$PYTHON_BIN" tools/release_artifacts.py verify \
-  --manifest "$ARTIFACT_MANIFEST"
+  --manifest "$ARTIFACT_MANIFEST" --candidate
 eval "$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. "$PYTHON_BIN" tools/release_artifacts.py emit-shell --manifest "$ARTIFACT_MANIFEST")"
+
+validate_auth_canary_token_file() {
+  PYTHONDONTWRITEBYTECODE=1 "$PYTHON_BIN" tools/validate_auth_canary_token_file.py \
+    "$AUTH_CANARY_TOKEN_FILE" || fail "acceptance canary credential file is missing or unsafe"
+}
+
+run_server_auth_canary() {
+  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. "$PYTHON_BIN" \
+    tools/credentialed_returns_canary.py --acceptance-token-stdin \
+    --identifier acceptance.release "$@" \
+    < "$AUTH_CANARY_TOKEN_FILE"
+}
+
+run_previous_auth_canary() {
+  local capability=0
+  if [[ -n "$PREVIOUS_MANIFEST" ]]; then
+    capability="$(PYTHONDONTWRITEBYTECODE=1 "$PYTHON_BIN" - "$PREVIOUS_MANIFEST" <<'PY'
+import json
+import sys
+from pathlib import Path
+manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+print(1 if "returns_auth_canary_v2_exact_identifier" in (manifest.get("capabilities") or []) else 0)
+PY
+)" || return 1
+  fi
+  if [[ "$capability" == "1" ]]; then
+    run_server_auth_canary
+    return $?
+  fi
+  if [[ "$ALLOW_LEGACY_CANARY_BOOTSTRAP" == "1" && \
+        "${TAKSKLAD_LEGACY_CANARY_BOOTSTRAP_APPROVAL:-}" == "ALLOW_ONE_LEGACY_CANARY_BOOTSTRAP" ]]; then
+    run_server_auth_canary --allow-missing-endpoint --require-missing-endpoint
+    return $?
+  fi
+  echo "PREVIOUS_AUTH_CANARY_BLOCKED reason=exact_identifier_capability_missing" >&2
+  return 1
+}
+
+validate_auth_canary_token_file
+if [[ "$CURRENT_AUTH_CANARY_ONLY" == "1" ]]; then
+  run_server_auth_canary || fail "current runtime acceptance auth canary failed; no candidate was activated"
+  echo "Current runtime acceptance auth canary passed; candidate activation=0."
+  exit 0
+fi
+
+if [[ ! -f "$DEPLOY_RECORD" ]]; then
+  if [[ "$ALLOW_BOOTSTRAP_WITHOUT_ROLLBACK" != "1" || \
+        "${TAKSKLAD_BOOTSTRAP_WITHOUT_ROLLBACK_APPROVAL:-}" != "ALLOW_BOOTSTRAP_WITHOUT_ROLLBACK" ]]; then
+    fail "verified previous deployment record is required before production mutation"
+  fi
+  echo "Bootstrap without rollback record explicitly approved; rollback protection unavailable." >&2
+fi
 
 export TAKSKLAD_BACKEND_IMAGE="$RELEASE_BACKEND_IMAGE"
 export TAKSKLAD_FRONTEND_IMAGE="$RELEASE_FRONTEND_IMAGE"
@@ -213,35 +284,114 @@ ensure_no_active_legacy_google_events() {
   [[ "$count" == "0" ]] || fail "active legacy Google events remain after cutover migration: $count"
 }
 
+verify_selected_runtime_identity() {
+  local backend_id frontend_id expected_backend_id expected_frontend_id actual_backend_id actual_frontend_id
+  backend_id="$(compose ps -q backend-api)" || return 1
+  frontend_id="$(compose ps -q frontend)" || return 1
+  [[ -n "$backend_id" && -n "$frontend_id" ]] || return 1
+  expected_backend_id="$(docker image inspect "$TAKSKLAD_BACKEND_IMAGE" --format '{{.Id}}')" || return 1
+  expected_frontend_id="$(docker image inspect "$TAKSKLAD_FRONTEND_IMAGE" --format '{{.Id}}')" || return 1
+  actual_backend_id="$(docker inspect "$backend_id" --format '{{.Image}}')" || return 1
+  actual_frontend_id="$(docker inspect "$frontend_id" --format '{{.Image}}')" || return 1
+  [[ "$actual_backend_id" == "$expected_backend_id" ]] || return 1
+  [[ "$actual_frontend_id" == "$expected_frontend_id" ]] || return 1
+  docker inspect "$backend_id" --format '{{range .Config.Env}}{{println .}}{{end}}' | \
+    grep -Fxq "TAKSKLAD_COMMIT_SHA=$RELEASE_SOURCE_SHA" || return 1
+  docker inspect "$backend_id" --format '{{range .Config.Env}}{{println .}}{{end}}' | \
+    grep -Fxq "TAKSKLAD_IMAGE_DIGEST=$RELEASE_BACKEND_DIGEST" || return 1
+  return 0
+}
+
 rollback_runtime() {
+  local emitted database_revision previous_runtime_revision legacy_ids
   [[ -n "$PREVIOUS_MANIFEST" ]] || {
     echo "No previous verified digest record is available; database schema remains current." >&2
     return 1
   }
-  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. "$PYTHON_BIN" tools/release_artifacts.py verify --manifest "$PREVIOUS_MANIFEST"
-  eval "$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. "$PYTHON_BIN" tools/release_artifacts.py emit-shell --manifest "$PREVIOUS_MANIFEST")"
+  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. "$PYTHON_BIN" tools/release_artifacts.py verify \
+    --manifest "$PREVIOUS_MANIFEST" || return 1
+  emitted="$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. "$PYTHON_BIN" \
+    tools/release_artifacts.py emit-shell --manifest "$PREVIOUS_MANIFEST")" || return 1
+  eval "$emitted" || return 1
   export TAKSKLAD_BACKEND_IMAGE="$RELEASE_BACKEND_IMAGE"
   export TAKSKLAD_FRONTEND_IMAGE="$RELEASE_FRONTEND_IMAGE"
   export TAKSKLAD_COMMIT_SHA="$RELEASE_SOURCE_SHA"
   export TAKSKLAD_IMAGE_DIGEST="$RELEASE_BACKEND_DIGEST"
-  docker pull "$TAKSKLAD_BACKEND_IMAGE"
-  docker pull "$TAKSKLAD_FRONTEND_IMAGE"
-  local database_revision previous_runtime_revision
+  docker pull "$TAKSKLAD_BACKEND_IMAGE" || return 1
+  docker pull "$TAKSKLAD_FRONTEND_IMAGE" || return 1
   database_revision="$(compose exec -T postgres sh -ec \
-    'psql -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "select version_num from alembic_version"')"
+    'psql -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "select version_num from alembic_version"')" || return 1
   previous_runtime_revision="$(compose run --rm --no-deps --pull never \
-    backend-api alembic -c alembic.ini heads | tail -n 1 | awk '{print $1}')"
+    backend-api alembic -c alembic.ini heads | tail -n 1 | awk '{print $1}')" || return 1
   if [[ -z "$database_revision" || -z "$previous_runtime_revision" || \
         "$database_revision" != "$previous_runtime_revision" ]]; then
     echo "Rollback refused: previous runtime migration head does not match the retained database schema; candidate runtime remains selected." >&2
     return 1
   fi
   compose up -d --no-deps --no-build --pull never --wait --wait-timeout "$COMPOSE_WAIT_TIMEOUT_SECONDS" \
-    backend-api frontend "${WRITER_SERVICES[@]:1}"
-  ensure_legacy_google_worker_absent
+    backend-api frontend "${WRITER_SERVICES[@]:1}" || return 1
+  legacy_ids="$(legacy_google_worker_ids)" || return 1
+  [[ -z "$legacy_ids" ]] || return 1
+  verify_selected_runtime_identity || return 1
+  check_public_url health "$HEALTH_URL" || return 1
+  check_public_url readiness "$READY_URL" || return 1
+  run_previous_auth_canary || return 1
   echo "Runtime rolled back to previous verified digests without the retired Google worker; database schema retained, alembic downgrade=0."
+  return 0
 }
 
+verify_previous_runtime_preflight() {
+  [[ -n "$PREVIOUS_MANIFEST" ]] || return 0
+  local candidate_backend_image="$RELEASE_BACKEND_IMAGE"
+  local candidate_frontend_image="$RELEASE_FRONTEND_IMAGE"
+  local candidate_source_sha="$RELEASE_SOURCE_SHA"
+  local candidate_backend_digest="$RELEASE_BACKEND_DIGEST"
+  local emitted database_revision runtime_revision result=0
+  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. "$PYTHON_BIN" tools/release_artifacts.py verify \
+    --manifest "$PREVIOUS_MANIFEST" || result=1
+  if [[ "$result" == "0" ]]; then
+    emitted="$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. "$PYTHON_BIN" \
+      tools/release_artifacts.py emit-shell --manifest "$PREVIOUS_MANIFEST")" || result=1
+  fi
+  if [[ "$result" == "0" ]]; then
+    eval "$emitted" || result=1
+  fi
+  if [[ "$result" == "0" ]]; then
+    export TAKSKLAD_BACKEND_IMAGE="$RELEASE_BACKEND_IMAGE"
+    export TAKSKLAD_FRONTEND_IMAGE="$RELEASE_FRONTEND_IMAGE"
+    export TAKSKLAD_COMMIT_SHA="$RELEASE_SOURCE_SHA"
+    export TAKSKLAD_IMAGE_DIGEST="$RELEASE_BACKEND_DIGEST"
+    database_revision="$(compose exec -T postgres sh -ec \
+      'psql -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "select version_num from alembic_version"')" || result=1
+    runtime_revision="$(compose exec -T backend-api alembic -c alembic.ini heads | \
+      tail -n 1 | awk '{print $1}')" || result=1
+    [[ -n "$database_revision" && "$database_revision" == "$runtime_revision" ]] || result=1
+    verify_selected_runtime_identity || result=1
+    check_public_url health "$HEALTH_URL" || result=1
+    check_public_url readiness "$READY_URL" || result=1
+    run_previous_auth_canary || result=1
+  fi
+  RELEASE_BACKEND_IMAGE="$candidate_backend_image"
+  RELEASE_FRONTEND_IMAGE="$candidate_frontend_image"
+  RELEASE_SOURCE_SHA="$candidate_source_sha"
+  RELEASE_BACKEND_DIGEST="$candidate_backend_digest"
+  export TAKSKLAD_BACKEND_IMAGE="$RELEASE_BACKEND_IMAGE"
+  export TAKSKLAD_FRONTEND_IMAGE="$RELEASE_FRONTEND_IMAGE"
+  export TAKSKLAD_COMMIT_SHA="$RELEASE_SOURCE_SHA"
+  export TAKSKLAD_IMAGE_DIGEST="$RELEASE_BACKEND_DIGEST"
+  [[ "$result" == "0" ]] || return 1
+  return 0
+}
+
+rollback_after_candidate_failure() {
+  local reason="$1"
+  if rollback_runtime; then
+    fail "$reason; rollback_restored=1 database_schema_retained=1"
+  fi
+  fail "$reason; rollback_unverified=1 database_schema_retained=1"
+}
+
+verify_previous_runtime_preflight || fail "previous runtime rollback preflight failed before production mutation"
 verify_db_only_compose
 validate_daily_report_config || fail "production daily-report configuration is incomplete"
 
@@ -260,8 +410,7 @@ TAKSKLAD_OUTPUT_PERMISSIONS_IMAGE="$TAKSKLAD_BACKEND_IMAGE" \
 
 echo "Quiescing every legacy database writer before the DB-only cutover..."
 if ! compose stop -t 45 "${WRITER_SERVICES[@]}"; then
-  rollback_runtime || true
-  fail "legacy database writers could not be quiesced; previous runtime selected when available"
+  rollback_after_candidate_failure "legacy database writers could not be quiesced"
 fi
 ensure_writer_services_stopped
 
@@ -270,44 +419,39 @@ remove_legacy_google_worker
 
 echo "Creating the exact PostgreSQL cutover backup after all legacy writers stopped..."
 if ! ./deploy/vds/backup_postgres.sh --no-prune; then
-  rollback_runtime || true
-  fail "cutover backup failed; previous schema-compatible runtime selected when available"
+  rollback_after_candidate_failure "cutover backup failed"
 fi
 
 echo "Applying forward-only migrations from the verified backend image..."
 if ! compose run --rm --no-deps backend-api alembic -c alembic.ini upgrade head; then
-  rollback_runtime || true
-  fail "forward-only migration failed; previous runtime selected only when schema-compatible"
+  rollback_after_candidate_failure "forward-only migration failed"
 fi
 ensure_no_active_legacy_google_events
 
 echo "Recovering leases owned by the stopped worker processes..."
 if ! compose run --rm --no-deps backend-api python -m app.event_lease_recovery; then
-  rollback_runtime || true
-  fail "in-flight event leases could not be recovered; previous runtime selected when available"
+  rollback_after_candidate_failure "in-flight event leases could not be recovered"
 fi
 
 echo "Activating verified image digests without source build..."
 if ! compose up -d --no-deps --no-build --pull never --wait --wait-timeout "$COMPOSE_WAIT_TIMEOUT_SECONDS" \
   backend-api frontend "${WRITER_SERVICES[@]:1}"; then
-  rollback_runtime || true
-  fail "candidate containers failed to activate; previous runtime selected when available"
+  rollback_after_candidate_failure "candidate containers failed to activate"
 fi
 ensure_legacy_google_worker_absent
 
 if ! check_public_url health "$HEALTH_URL" || ! check_public_url readiness "$READY_URL"; then
-  rollback_runtime || true
-  fail "candidate readiness failed; previous digest selected when available; database schema retained"
+  rollback_after_candidate_failure "candidate readiness failed"
 fi
 
 run_acceptance || {
-  rollback_runtime || true
-  fail "mandatory acceptance failed; database schema retained"
+  rollback_after_candidate_failure "mandatory acceptance failed"
 }
 run_log_scan || {
-  rollback_runtime || true
-  fail "fresh runtime logs failed; database schema retained"
+  rollback_after_candidate_failure "fresh runtime logs failed"
 }
+
+run_server_auth_canary || rollback_after_candidate_failure "candidate acceptance auth canary failed"
 
 install -d -m 700 "$(dirname "$DEPLOY_RECORD")"
 temporary_record="${DEPLOY_RECORD}.tmp.$$"

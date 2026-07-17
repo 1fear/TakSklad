@@ -2,9 +2,27 @@
 
 Здесь фиксируются все правки в коде TakSklad: что менялось, в каком файле, зачем, и какие тесты это покрывают. Записи идут от новых к старым.
 
+## 2026-07-17
+
+### Telegram routing contract correction
+
+**Что стало:**
+
+- Versioned manifest хранит только role names, target types, exact schedules, typed message-kind allowlist и approved text hashes; raw production chat IDs остаются только operator-managed runtime values.
+- `client`, `logistics`, `admin` обязаны быть попарно различны. Неизвестный kind, foreign target, legacy alert и desktop broadcast блокируются без fallback; sanitized error направляется ровно в один admin route.
+- Логистический отчёт в `17:50` зависит от durable terminal proof всех Smartup slots/imports/orders/SkladBot create events/client deliveries текущего цикла. Failed/partial/ambiguous stage блокирует группу.
+- После начала Telegram delivery client/logistics автоматический retry запрещён; неоднозначный результат требует manual recovery и не создаёт дубль.
+- Client-facing provenance в caption и filename удалён; provenance остаётся только во внутренних event/audit полях.
+- Env helper меняет только routing/schedule keys, сохраняет остальные строки byte-for-byte и не меняет auth, feature, backend, SkladBot или saga flags.
+- Любое будущее client-facing или routing изменение требует exact before/after и явного согласования Антона, synthetic contract tests и no-send verifier.
+
+**Причина исправления:** remote `main` в `dee450f` разрешал совпадение client/logistics, helper сводил обе роли к одному report group, а logistics scheduler продолжал работу независимо от проваленного slot. Это создало code-level возможность misroute. Фактические production env и live scheduler этим audit не проверялись.
+
 ## 2026-07-16
 
 ### Deterministic notification routing and durable logistics delivery
+
+> Историческая запись ниже описывает контракт `dee450f`, который заменён исправлением от 2026-07-17. Утверждения о совпадении ролей, client-facing provenance и независимом logistics recovery больше не действуют.
 
 **Что стало:**
 

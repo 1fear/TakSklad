@@ -10,7 +10,7 @@ from sqlalchemy.pool import StaticPool
 
 from backend.app.skladbot_diagnostic import diagnose_skladbot_matches
 from backend.app import skladbot_client, skladbot_request_dry_run, skladbot_return_requests, skladbot_worker
-from backend.app.models import AuditLog, Base, Order, OrderItem, PendingEvent
+from backend.app.models import AuditLog, Base, Incident, Order, OrderItem, PendingEvent
 from backend.app.skladbot_client import SkladBotApiError, SkladBotErrorKind
 from backend.app.skladbot_worker import (
     CandidateRequests,
@@ -994,6 +994,196 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
             Base.metadata.drop_all(engine)
             engine.dispose()
 
+    def test_markerless_protected_create_event_never_uses_fuzzy_worker_match(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        try:
+            with SessionLocal() as db:
+                order = Order(
+                    order_date=date(2026, 5, 29),
+                    payment_type="Перечисление",
+                    client='"TEST CLIENT" MCHJ',
+                    address="Address",
+                    representative="ТП1",
+                    status="not_completed",
+                    raw_payload={},
+                )
+                order.items = [
+                    OrderItem(
+                        product="Chapman Brown OP 20",
+                        quantity_blocks=2,
+                        quantity_pieces=20,
+                        pieces_per_block=10,
+                        scanned_blocks=0,
+                        status="not_completed",
+                    )
+                ]
+                db.add(order)
+                db.flush()
+                event = PendingEvent(
+                    event_type="skladbot_request_create",
+                    action="skladbot_request_create",
+                    aggregate_type="order",
+                    aggregate_id=str(order.id),
+                    status="blocked",
+                    idempotency_key=f"skladbot:create:v1:order:{order.id}",
+                    payload={
+                        "order_id": str(order.id),
+                        "taksklad_marker": "TakSklad ref: TSF-111111111111111111111111",
+                        "post_state": "ambiguous",
+                        "create_status": "ambiguous",
+                        "post_request_marker": "",
+                        "request_payload": {
+                            "comment": "Перечисление\nТП1",
+                            "fields": {"comment": {"value": "Перечисление\nТП1"}},
+                        },
+                    },
+                )
+                db.add(event)
+                db.flush()
+                order.raw_payload = {
+                    "skladbot_status": "ambiguous",
+                    "skladbot_create_event_id": str(event.id),
+                }
+                db.commit()
+                order_id = order.id
+
+            fuzzy_candidate = {
+                "id": 191794,
+                "number": "WH-R-191794",
+                "unloading_date": "29.05.2026",
+                "recipient": '"TEST CLIENT" MCHJ',
+                "comment": "Перечисление\nТП1",
+                "products": [{"name": "Chapman Brown OP 20 UZ", "amount": 2}],
+                "raw": {},
+            }
+            with mock.patch("backend.app.skladbot_worker.SessionLocal", SessionLocal), mock.patch(
+                "backend.app.skladbot_worker.fetch_candidate_requests",
+                return_value=CandidateRequests([fuzzy_candidate], complete=True),
+            ):
+                result = update_orders_from_skladbot()
+
+            self.assertEqual(result["matched"], 0)
+            with SessionLocal() as db:
+                order = db.get(Order, order_id)
+                event = db.execute(
+                    select(PendingEvent).where(PendingEvent.event_type == "skladbot_request_create")
+                ).scalar_one()
+                self.assertEqual(order.raw_payload["skladbot_status"], "ambiguous")
+                self.assertNotIn("skladbot_request_id", order.raw_payload)
+                self.assertEqual(event.status, "blocked")
+        finally:
+            Base.metadata.drop_all(engine)
+            engine.dispose()
+
+    def test_foreign_create_event_pointer_is_rejected_with_incident_and_audit(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        try:
+            with SessionLocal() as db:
+                foreign_order = Order(
+                    order_date=date(2026, 5, 29),
+                    payment_type="Перечисление",
+                    client="Foreign",
+                    address="Foreign address",
+                    status="not_completed",
+                    raw_payload={
+                        "skladbot_request_id": "9000",
+                        "skladbot_request_number": "WH-R-9000",
+                    },
+                )
+                target_order = Order(
+                    order_date=date(2026, 5, 29),
+                    payment_type="Перечисление",
+                    client='"TARGET CLIENT" MCHJ',
+                    address="Target address",
+                    representative="ТП1",
+                    status="not_completed",
+                    raw_payload={},
+                )
+                target_order.items = [
+                    OrderItem(
+                        product="Chapman Brown OP 20",
+                        quantity_blocks=2,
+                        quantity_pieces=20,
+                        pieces_per_block=10,
+                        scanned_blocks=0,
+                        status="not_completed",
+                    )
+                ]
+                db.add_all([foreign_order, target_order])
+                db.flush()
+                foreign_event = PendingEvent(
+                    event_type="skladbot_request_create",
+                    action="skladbot_request_create",
+                    aggregate_type="order",
+                    aggregate_id=str(foreign_order.id),
+                    status="blocked",
+                    idempotency_key=f"skladbot:create:v1:order:{foreign_order.id}",
+                    payload={
+                        "order_id": str(foreign_order.id),
+                        "post_state": "ambiguous",
+                        "create_status": "ambiguous",
+                        "post_response_request_id": 4242,
+                        "request_payload": {},
+                    },
+                )
+                db.add(foreign_event)
+                db.flush()
+                target_order.raw_payload = {
+                    "skladbot_status": "ambiguous",
+                    "skladbot_create_event_id": str(foreign_event.id),
+                }
+                db.commit()
+                target_order_id = target_order.id
+                foreign_event_id = foreign_event.id
+
+            foreign_candidate = {
+                "id": 4242,
+                "number": "WH-R-4242",
+                "unloading_date": "29.05.2026",
+                "recipient": '"TARGET CLIENT" MCHJ',
+                "comment": "Перечисление\nТП1",
+                "products": [{"name": "Chapman Brown OP 20 UZ", "amount": 2}],
+                "raw": {"detail": {"id": 4242}},
+            }
+            with mock.patch("backend.app.skladbot_worker.SessionLocal", SessionLocal), mock.patch(
+                "backend.app.skladbot_worker.fetch_candidate_requests",
+                return_value=CandidateRequests([foreign_candidate], complete=True),
+            ):
+                result = update_orders_from_skladbot()
+
+            self.assertEqual(result["matched"], 0)
+            with SessionLocal() as db:
+                target_order = db.get(Order, target_order_id)
+                foreign_event = db.get(PendingEvent, foreign_event_id)
+                incident = db.execute(
+                    select(Incident).where(Incident.order_id == target_order_id)
+                ).scalar_one()
+                audit = db.execute(
+                    select(AuditLog).where(AuditLog.action == "skladbot_create_event_ownership_invalid")
+                ).scalar_one()
+                self.assertEqual(target_order.raw_payload["skladbot_status"], "ambiguous")
+                self.assertNotIn("skladbot_request_id", target_order.raw_payload)
+                self.assertNotIn("skladbot_request_number", target_order.raw_payload)
+                self.assertEqual(incident.status, "manual_review")
+                self.assertIsNone(incident.pending_event_id)
+                self.assertEqual(audit.entity_id, str(target_order_id))
+                self.assertEqual(foreign_event.status, "blocked")
+        finally:
+            Base.metadata.drop_all(engine)
+            engine.dispose()
+
     def test_update_orders_skips_fetch_for_existing_skladbot_numbers(self):
         engine = create_engine(
             "sqlite+pysqlite:///:memory:",
@@ -1126,6 +1316,29 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
                     raw_payload={"source_import_id": "import-1", "source_order_id": "order-1"},
                 )]
                 db.add(order)
+                db.flush()
+                create_event = PendingEvent(
+                    event_type="skladbot_request_create",
+                    action="skladbot_request_create",
+                    aggregate_type="order",
+                    aggregate_id=str(order.id),
+                    status="pending",
+                    idempotency_key=f"skladbot:create:v1:order:{order.id}",
+                    payload={
+                        "order_id": str(order.id),
+                        "create_status": "queued",
+                        "request_payload": {
+                            "comment": "Перечисление\nRep",
+                            "fields": {"comment": {"value": "Перечисление\nRep"}},
+                        },
+                    },
+                )
+                db.add(create_event)
+                db.flush()
+                order.raw_payload = {
+                    **(order.raw_payload or {}),
+                    "skladbot_create_event_id": str(create_event.id),
+                }
                 db.commit()
 
             incomplete_requests = CandidateRequests([], complete=False, reason="detail_limit_reached")
@@ -1303,8 +1516,8 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
 
             def list_requests(self):
                 return [
-                    {"id": 1, "type": "Отгрузка 3PL", "created_at": "2026-05-20", "delivery_number": "OLD"},
-                    {"id": 2, "type": "Отгрузка 3PL", "created_at": "2026-05-31", "delivery_number": "NEW"},
+                    {"id": 1, "type": "Отгрузка 3PL", "created_at": "2026-05-20", "delivery_number": "WH-R-OLD"},
+                    {"id": 2, "type": "Отгрузка 3PL", "created_at": "2026-05-31", "delivery_number": "WH-R-NEW"},
                 ]
 
             def get_request_detail(self, request_id):
@@ -1324,7 +1537,7 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
 
         self.assertEqual(fake_client.detail_ids, [2])
         self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["number"], "NEW")
+        self.assertEqual(result[0]["number"], "WH-R-NEW")
 
     def test_dynamic_lookback_expands_for_older_active_orders_with_cap(self):
         orders = [

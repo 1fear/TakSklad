@@ -19,7 +19,7 @@ from .config import (
 )
 from .http_client import open_https_url
 from .scan_quantities import scan_entries_for_codes
-from .secret_store import BACKEND_API_TOKEN_SECRET, SecretStoreError, load_secret
+from .secret_store import SecretStoreError, load_backend_auth_bundle
 from .utils import parse_date_to_standard, split_codes
 
 
@@ -60,7 +60,7 @@ def make_backend_headers():
         "User-Agent": "TakSklad-desktop",
     }
     try:
-        token = load_secret(BACKEND_API_TOKEN_SECRET)
+        token = load_backend_auth_bundle()[0]
     except SecretStoreError:
         token = ""
     if token:

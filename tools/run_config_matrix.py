@@ -89,10 +89,9 @@ def matrix_cases() -> tuple[MatrixCase, ...]:
             BACKEND_CHILD,
             {
                 "TAKSKLAD_ENV": "production",
-                "TAKSKLAD_API_TOKEN": api_token,
+                "TAKSKLAD_IDENTITY_AUTH_ENABLED": "true",
                 "TAKSKLAD_WEB_SESSION_SECRET": session_secret,
                 "TAKSKLAD_TRUSTED_PROXY_CIDRS": "172.16.0.0/12",
-                "TAKSKLAD_LEGACY_AUTH_EXPIRES_AT": "2026-07-17T00:00:00+00:00",
             },
             0,
         ),

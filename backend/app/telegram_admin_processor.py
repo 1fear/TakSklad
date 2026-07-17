@@ -2,10 +2,8 @@ import logging
 import urllib.parse
 import uuid
 from datetime import datetime, timedelta, timezone
-
 import httpx
 from sqlalchemy import select
-
 from .db import SessionLocal
 from .event_leases import claim_event_leases, event_leases_enabled, finalize_event_leases
 from .event_queue_service import reset_stale_processing_events
@@ -27,8 +25,11 @@ from .telegram_manual_support import (
     telegram_manual_product_keyboard,
 )
 from .telegram_report_processor import backend_failure_message, backend_http_error_detail
-
-
+from .telegram_routing_contract import (
+    TelegramRoutingContractError,
+    load_telegram_routing_contract,
+)
+from .telegram_output_contract import blocked_admin_notification_text
 TELEGRAM_MANUAL_CALLBACK_PREFIX = "manual:"
 TELEGRAM_NOTIFICATION_EVENT_TYPE = "telegram_notification"
 TELEGRAM_NOTIFICATION_ACTIVE_STATUSES = ("pending", "failed")
@@ -45,15 +46,12 @@ TELEGRAM_MANUAL_PAYMENT_TYPES = {
     "terminal": "Терминал",
     "transfer": "Перечисление",
 }
-
-
 class TelegramAdminProcessor(TelegramProcessorDelegate):
     def __init__(self, *, ports=None, owner=None, **port_dependencies):
         TelegramProcessorDelegate.__init__(self, ports=ports, owner=owner, **port_dependencies)
 
     def _admin_session_factory(self):
         return getattr(self, "session_factory", None) or SessionLocal
-
     def chat_state_event_type(self, chat_id):
         return f"{TELEGRAM_CHAT_STATE_EVENT_PREFIX}{chat_id}"
 
@@ -577,12 +575,35 @@ class TelegramAdminProcessor(TelegramProcessorDelegate):
                 last_error="stale Telegram notification reset",
             )
 
-    def telegram_notification_targets(self, payload):
-        admins = sorted(getattr(self, "admin_chat_ids", set()))
+    def telegram_notification_route(self, payload):
+        admins = [
+            normalize_text(value)
+            for value in getattr(self, "admin_chat_ids", set())
+            if normalize_text(value)
+        ]
+        if len(admins) != 1 or not admins[0].isdigit() or int(admins[0]) <= 0:
+            return "", "telegram notification requires exactly one personal admin route"
+        try:
+            route = load_telegram_routing_contract().route_for_notification_kind(
+                (payload or {}).get("kind")
+            )
+        except TelegramRoutingContractError:
+            return admins[0], "telegram notification kind is not allowlisted"
+        if route.destination != "admin":
+            return admins[0], "telegram notification kind is not admin-only"
         requested_chat_id = normalize_text((payload or {}).get("chat_id"))
-        if requested_chat_id in admins:
-            return [requested_chat_id]
-        return [normalize_text(value) for value in admins if normalize_text(value)]
+        if requested_chat_id and requested_chat_id != admins[0]:
+            return admins[0], "telegram notification contains a foreign target"
+        return admins[0], ""
+
+    def notify_blocked_telegram_notification(self, admin_chat_id, reason):
+        if not admin_chat_id or not self.is_admin_chat(admin_chat_id):
+            return False
+        self.send_message(
+            admin_chat_id,
+            blocked_admin_notification_text(reason),
+        )
+        return True
 
     def process_pending_telegram_notifications(self):
         self.reset_stale_telegram_notification_events()
@@ -594,7 +615,21 @@ class TelegramAdminProcessor(TelegramProcessorDelegate):
             payload = event.get("payload") or {}
             lease_owner = event.get("lease_owner") or ""
             text = normalize_text(payload.get("text"))
-            targets = self.telegram_notification_targets(payload)
+            target, route_error = self.telegram_notification_route(payload)
+            if route_error:
+                try:
+                    self.notify_blocked_telegram_notification(target, route_error)
+                except Exception:
+                    logging.exception("Telegram worker: blocked-notification admin alert failed")
+                self.finish_telegram_notification_event(
+                    event["id"],
+                    False,
+                    route_error,
+                    failure_status="blocked",
+                    lease_owner=lease_owner,
+                )
+                processed += 1
+                continue
             if not text:
                 self.finish_telegram_notification_event(
                     event["id"],
@@ -605,7 +640,7 @@ class TelegramAdminProcessor(TelegramProcessorDelegate):
                 )
                 processed += 1
                 continue
-            if any(not self.is_admin_chat(chat_id) for chat_id in targets):
+            if not self.is_admin_chat(target):
                 self.finish_telegram_notification_event(
                     event["id"],
                     False,
@@ -615,7 +650,7 @@ class TelegramAdminProcessor(TelegramProcessorDelegate):
                 )
                 processed += 1
                 continue
-            if not targets:
+            if not target:
                 self.finish_telegram_notification_event(
                     event["id"],
                     False,
@@ -627,8 +662,7 @@ class TelegramAdminProcessor(TelegramProcessorDelegate):
                 continue
             with bind_event_payload(payload):
                 try:
-                    for chat_id in targets:
-                        self.send_message(chat_id, text)
+                    self.send_message(target, text)
                     self.finish_telegram_notification_event(event["id"], True, "", lease_owner=lease_owner)
                 except Exception as exc:
                     logging.exception("Telegram worker: queued notification failed")

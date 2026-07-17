@@ -131,6 +131,46 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(payload[0]["status"], "not_completed")
         self.assertEqual(payload[0]["items"][0]["product"], "Test Product")
 
+    def test_order_apis_expose_exact_internal_smartup_set_and_skladbot_links(self):
+        with self.SessionLocal() as db:
+            order = Order(
+                payment_type="cash",
+                client="Correlation Client",
+                address="Correlation Address",
+                status="not_completed",
+                raw_payload={
+                    "source_order_id": "smartup:731",
+                    "skladbot_request_number": "WH-R-CORR-1",
+                    "skladbot_request_id": "901",
+                    "skladbot_return_request_number": "WR-CORR-1",
+                    "skladbot_return_request_id": "902",
+                },
+            )
+            order.items.append(OrderItem(
+                product="Correlation Product",
+                quantity_pieces=2,
+                quantity_blocks=1,
+                status="not_completed",
+                raw_payload={"source_order_id": "smartup:732"},
+            ))
+            db.add(order)
+            db.commit()
+            order_id = str(order.id)
+
+        active = self.client.get("/api/v1/orders/active")
+        self.assertEqual(active.status_code, 200)
+        order_payload = next(row for row in active.json() if row["id"] == order_id)
+        self.assertEqual(order_payload["smartup_id"], "731, 732")
+        self.assertEqual(order_payload["skladbot_request_number"], "WH-R-CORR-1")
+        self.assertEqual(order_payload["skladbot_request_id"], "901")
+        self.assertEqual(order_payload["skladbot_return_request_number"], "WR-CORR-1")
+        self.assertEqual(order_payload["skladbot_return_request_id"], "902")
+
+        admin = self.client.get("/api/v1/admin/table")
+        self.assertEqual(admin.status_code, 200)
+        admin_row = next(row for row in admin.json()["rows"] if row["order_id"] == order_id)
+        self.assertEqual(admin_row["smartup_id"], "731, 732")
+
     def test_admin_table_returns_flat_rows_totals_and_recent_activity(self):
         with self.SessionLocal() as db:
             order = Order(
@@ -587,7 +627,12 @@ class BackendApiPersistenceTests(unittest.TestCase):
                 representative="Rep",
                 order_date=date(2026, 6, 21),
                 status="not_completed",
-                raw_payload={"source": "test", "skladbot_request_number": "WH-R-NEW"},
+                raw_payload={
+                    "source": "test",
+                    "source_order_id": "smartup:731",
+                    "skladbot_request_number": "WH-R-NEW",
+                    "skladbot_request_id": "1001",
+                },
             )
             returned_order = Order(
                 payment_type="cash",
@@ -596,7 +641,15 @@ class BackendApiPersistenceTests(unittest.TestCase):
                 representative="Rep",
                 order_date=date(2026, 6, 21),
                 status="returned",
-                raw_payload={"source": "test", "return_status": "returned", "skladbot_request_id": "RETURN-21"},
+                raw_payload={
+                    "source": "test",
+                    "source_order_id": "smartup:734",
+                    "return_status": "returned",
+                    "skladbot_request_number": "WR-OUT-21",
+                    "skladbot_request_id": "1002",
+                    "skladbot_return_request_number": "WR-RET-21",
+                    "skladbot_return_request_id": "2002",
+                },
             )
             other_client_order = Order(
                 payment_type="cash",
@@ -636,7 +689,16 @@ class BackendApiPersistenceTests(unittest.TestCase):
                     quantity_blocks=5,
                     pieces_per_block=10,
                     status="not_completed",
-                    raw_payload={"source": "test"},
+                    raw_payload={"source": "test", "source_order_id": "smartup:732"},
+                ),
+                OrderItem(
+                    order=newer_order,
+                    product="Chapman Green OP 20",
+                    quantity_pieces=0,
+                    quantity_blocks=0,
+                    pieces_per_block=10,
+                    status="not_completed",
+                    raw_payload={"source": "test", "source_order_id": "smartup:733"},
                 ),
                 OrderItem(
                     order=returned_order,
@@ -670,7 +732,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(payload["totals"], {
             "orders_count": 2,
             "returned_orders_count": 1,
-            "positions_count": 4,
+            "positions_count": 5,
             "quantity_blocks": 11,
             "quantity_pieces": 110,
         })
@@ -678,17 +740,23 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual([row["payment_type"] for row in payload["dates"]], ["cash", "cash"])
         self.assertEqual(payload["dates"][0]["orders_count"], 1)
         self.assertEqual(payload["dates"][0]["returned_orders_count"], 1)
-        self.assertEqual(payload["dates"][0]["positions_count"], 2)
+        self.assertEqual(payload["dates"][0]["positions_count"], 3)
         self.assertEqual(
             {
                 (
                     reference["skladbot_request_number"],
                     reference["skladbot_request_id"],
+                    reference["skladbot_return_request_number"],
+                    reference["skladbot_return_request_id"],
+                    reference["smartup_id"],
                     reference["is_returned"],
                 )
                 for reference in payload["dates"][0]["order_references"]
             },
-            {("WH-R-NEW", "", False), ("", "RETURN-21", True)},
+            {
+                ("WH-R-NEW", "1001", "", "", "731, 732, 733", False),
+                ("WR-OUT-21", "1002", "WR-RET-21", "2002", "734", True),
+            },
         )
         self.assertEqual(
             {product["product"]: product["quantity_blocks"] for product in payload["dates"][0]["products"]},

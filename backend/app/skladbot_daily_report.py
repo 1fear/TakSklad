@@ -8,12 +8,19 @@ from typing import Any
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+from sqlalchemy import exists, func, or_, select
+from sqlalchemy.orm import aliased
 
+from .models import Order, OrderItem
 from .skladbot_client import SkladBotClient, env_float, env_int, sanitize_skladbot_error
 from .skladbot_contracts import (
     business_timezone,
     business_today,
+    canonical_remote_request_id,
+    canonical_skladbot_request_evidence_link,
+    canonical_skladbot_request_number,
     extract_list_items,
+    format_internal_smartup_ids,
     normalize_request_payload,
     normalize_text,
     parse_date,
@@ -22,6 +29,7 @@ from .skladbot_contracts import (
 )
 from .representative_contacts import display_representative_name
 from .spreadsheet_safety import force_workbook_text_literals
+from .telegram_output_contract import build_skladbot_daily_report_message, daily_report_filename
 
 
 DEFAULT_DAILY_REPORT_REQUEST_TYPE_IDS = (3387, 3388, 3389, 3391, 3403)
@@ -42,7 +50,7 @@ REQUEST_CATEGORIES = (
 REQUEST_HEADERS = [
     "ID",
     "Номер",
-    "ID заявки Smartup",
+    "Smartup ID",
     "Категория",
     "Тип",
     "Статус",
@@ -66,7 +74,7 @@ REQUEST_HEADERS = [
 REQUEST_PRODUCT_HEADERS = [
     "Заявка",
     "ID заявки",
-    "ID заявки Smartup",
+    "Smartup ID",
     "Тип",
     "Дата выгрузки",
     "Юрлицо/точка",
@@ -1715,6 +1723,115 @@ def request_smartup_id(request: dict[str, Any]) -> str:
     return normalize_text(request.get("smartup_id"))
 
 
+def canonical_daily_request_number(value: Any) -> str:
+    return canonical_skladbot_request_number(value)
+
+
+def canonical_daily_request_evidence_pair(request: dict[str, Any]) -> tuple[str, str]:
+    return canonical_skladbot_request_evidence_link(
+        request,
+        allow_missing_raw=True,
+        allow_single_raw_side=True,
+    )
+
+
+def enrich_smartup_ids_from_orders(db, report: dict[str, Any]) -> None:
+    """Attach Smartup ids only when one durable ID/number pair has one owner."""
+    requests = [request for request in report.get("requests") or [] if isinstance(request, dict)]
+    report_pairs = set()
+    for request in requests:
+        request["smartup_id"] = ""
+        request_id, request_number = canonical_daily_request_evidence_pair(request)
+        if request_id and request_number:
+            report_pairs.add((request_id, request_number))
+    if not report_pairs:
+        return
+
+    report_ids = sorted({request_id for request_id, _request_number in report_pairs})
+    report_numbers = sorted({request_number for _request_id, request_number in report_pairs})
+    raw_payload = Order.raw_payload
+    candidate_item = aliased(OrderItem)
+    item_raw_payload = candidate_item.raw_payload
+    order_link_values = (
+        raw_payload["skladbot_request_id"].as_string(),
+        raw_payload["skladbot_return_request_id"].as_string(),
+    )
+    order_number_values = (
+        raw_payload["skladbot_request_number"].as_string(),
+        raw_payload["skladbot_return_request_number"].as_string(),
+    )
+    item_link_values = (
+        item_raw_payload["skladbot_request_id"].as_string(),
+        item_raw_payload["skladbot_return_request_id"].as_string(),
+    )
+    item_number_values = (
+        item_raw_payload["skladbot_request_number"].as_string(),
+        item_raw_payload["skladbot_return_request_number"].as_string(),
+    )
+    order_matches = or_(
+        *(func.trim(func.coalesce(value, "")).in_(report_ids) for value in order_link_values),
+        *(func.trim(func.coalesce(value, "")).in_(report_numbers) for value in order_number_values),
+    )
+    item_matches = or_(
+        *(func.trim(func.coalesce(value, "")).in_(report_ids) for value in item_link_values),
+        *(func.trim(func.coalesce(value, "")).in_(report_numbers) for value in item_number_values),
+    )
+    owner_ids = select(Order.id).where(or_(
+        order_matches,
+        exists(
+            select(1).where(
+                candidate_item.order_id == Order.id,
+                item_matches,
+            )
+        ),
+    ))
+    rows = db.execute(
+        select(Order.id, Order.raw_payload, OrderItem.raw_payload.label("item_raw_payload"))
+        .outerjoin(OrderItem, OrderItem.order_id == Order.id)
+        .where(Order.id.in_(owner_ids))
+    ).all()
+
+    order_sources: dict[str, list[Any]] = {}
+    owner_payloads: dict[str, list[dict[str, Any]]] = {}
+    for order_id, order_raw, item_raw in rows:
+        owner_id = str(order_id)
+        normalized_order_raw = order_raw if isinstance(order_raw, dict) else {}
+        normalized_item_raw = item_raw if isinstance(item_raw, dict) else {}
+        payloads = owner_payloads.setdefault(owner_id, [])
+        payloads.extend((normalized_order_raw, normalized_item_raw))
+        sources = order_sources.setdefault(owner_id, [normalized_order_raw.get("source_order_id")])
+        sources.append(normalized_item_raw.get("source_order_id"))
+
+    pair_owners: dict[tuple[str, str], set[str]] = {}
+    id_links: dict[str, set[tuple[str, str]]] = {}
+    number_links: dict[str, set[tuple[str, str]]] = {}
+    for owner_id, payloads in owner_payloads.items():
+        for payload in payloads:
+            for prefix in ("skladbot_request", "skladbot_return_request"):
+                request_id = canonical_remote_request_id(payload.get(f"{prefix}_id"))
+                request_number = canonical_daily_request_number(payload.get(f"{prefix}_number"))
+                link = (request_id, request_number)
+                if request_id:
+                    id_links.setdefault(request_id, set()).add(link)
+                if request_number:
+                    number_links.setdefault(request_number, set()).add(link)
+                if request_id and request_number:
+                    pair_owners.setdefault(link, set()).add(owner_id)
+
+    for request in requests:
+        pair = canonical_daily_request_evidence_pair(request)
+        owners = pair_owners.get(pair, set())
+        if (
+            not all(pair)
+            or len(owners) != 1
+            or id_links.get(pair[0], set()) != {pair}
+            or number_links.get(pair[1], set()) != {pair}
+        ):
+            continue
+        owner_id = next(iter(owners))
+        request["smartup_id"] = format_internal_smartup_ids(order_sources.get(owner_id, []))
+
+
 def representative_from_comment(comment: Any) -> str:
     lines = [normalize_text(line) for line in normalize_text(comment).splitlines()]
     lines = [line for line in lines if line]
@@ -1842,52 +1959,11 @@ def write_errors_sheet(sheet, errors: list[str], api_errors: list[dict[str, Any]
     apply_header_style(sheet)
 
 
-def build_skladbot_daily_report_message(report: dict[str, Any]) -> str:
-    summary = report.get("summary") or {}
-    category_counts = summary.get("category_counts") or {}
-    blocks = summary.get("request_blocks_by_category") or {}
-    report_date = format_date_iso(report.get("report_date"))
-    lines = [
-        f"SkladBot daily за {report_date}",
-        f"Отгрузка: {category_counts.get(REQUEST_CATEGORY_SHIPMENT, 0)} заявок, {blocks.get(REQUEST_CATEGORY_SHIPMENT, 0)} блоков",
-        f"Отгрузка в браке: {category_counts.get(REQUEST_CATEGORY_DEFECT_SHIPMENT, 0)} заявок, {blocks.get(REQUEST_CATEGORY_DEFECT_SHIPMENT, 0)} блоков",
-        f"Возврат: {category_counts.get(REQUEST_CATEGORY_RETURN, 0)} заявок, {blocks.get(REQUEST_CATEGORY_RETURN, 0)} блоков",
-        f"Приемка: {category_counts.get(REQUEST_CATEGORY_RECEIVING, 0)} заявок, {blocks.get(REQUEST_CATEGORY_RECEIVING, 0)} блоков",
-        (
-            "Движения: "
-            f"приход {parse_int(summary.get('movement_in_rows'))} строк / "
-            f"{parse_int(summary.get('movement_in_amount'))} кол-во; "
-            f"расход {parse_int(summary.get('movement_out_rows'))} строк / "
-            f"{parse_int(summary.get('movement_out_amount'))} кол-во"
-        ),
-        f"Актуальный остаток: {summary.get('stock_total', 0)}",
-    ]
-    return "\n".join(lines)
-
-
-def daily_report_filename(report_date: Any) -> str:
-    return f"TakSklad_SkladBot_daily_{format_date_for_filename(report_date)}.xlsx"
-
-
 def format_date(value: Any) -> str:
     if isinstance(value, date):
         return value.strftime("%d.%m.%Y")
     parsed = parse_date(value)
     return parsed.strftime("%d.%m.%Y") if parsed else normalize_text(value)
-
-
-def format_date_iso(value: Any) -> str:
-    if isinstance(value, date):
-        return value.isoformat()
-    parsed = parse_date(value)
-    return parsed.isoformat() if parsed else normalize_text(value)
-
-
-def format_date_for_filename(value: Any) -> str:
-    if isinstance(value, date):
-        return value.strftime("%d.%m.%Y")
-    parsed = parse_date(value)
-    return parsed.strftime("%d.%m.%Y") if parsed else "unknown"
 
 
 def format_datetime(value: Any) -> str:

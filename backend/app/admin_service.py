@@ -23,6 +23,7 @@ from .schemas import (
     AdminTableRow,
     AdminTableTotals,
 )
+from .skladbot_contracts import format_internal_smartup_ids
 from .redaction import redact_secrets
 
 
@@ -98,6 +99,9 @@ def build_admin_table(
     has_more = len(raw_rows) > row_limit
     visible_rows = raw_rows[:row_limit]
     rows = [admin_sql_row_to_read(row) for row in visible_rows]
+    smartup_ids = load_admin_order_smartup_ids(db, {row.order_id for row in rows})
+    for row in rows:
+        row.smartup_id = smartup_ids.get(row.order_id, "")
     order_capabilities = admin_order_capabilities_from_rows(visible_rows)
     next_cursor = ""
     if has_more and stable_page and visible_rows:
@@ -505,6 +509,28 @@ def admin_sql_row_to_read(row):
     return AdminTableRow(**values)
 
 
+def load_admin_order_smartup_ids(db: Session, order_ids: set[str]) -> dict[str, str]:
+    parsed_ids = []
+    for order_id in order_ids:
+        try:
+            parsed_ids.append(uuid.UUID(str(order_id)))
+        except (TypeError, ValueError):
+            continue
+    if not parsed_ids:
+        return {}
+    sources: dict[str, list[str]] = {}
+    rows = db.execute(
+        select(Order.id, Order.raw_payload, OrderItem.raw_payload.label("item_raw_payload"))
+        .outerjoin(OrderItem, OrderItem.order_id == Order.id)
+        .where(Order.id.in_(parsed_ids))
+    ).all()
+    for order_id, order_raw, item_raw in rows:
+        values = sources.setdefault(str(order_id), [])
+        values.append((order_raw or {}).get("source_order_id"))
+        values.append((item_raw or {}).get("source_order_id"))
+    return {order_id: format_internal_smartup_ids(values) for order_id, values in sources.items()}
+
+
 def json_text(column, key):
     return func.coalesce(column[key].as_string(), "")
 
@@ -639,6 +665,10 @@ def order_item_to_admin_row(order: Order, item: OrderItem, _pending_by_entity=No
         scan_codes_count=len(item.scan_codes or []),
         block_price=parse_int(item_raw.get("block_price")),
         line_total=parse_int(item_raw.get("line_total")),
+        smartup_id=format_internal_smartup_ids([
+            order_raw.get("source_order_id"),
+            *((related.raw_payload or {}).get("source_order_id") for related in order.items),
+        ]),
         skladbot_request_number=normalize_text(order_raw.get("skladbot_request_number")),
         skladbot_request_id=normalize_text(order_raw.get("skladbot_request_id")),
         skladbot_status=normalize_text(order_raw.get("skladbot_status")),

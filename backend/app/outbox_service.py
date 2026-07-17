@@ -16,6 +16,67 @@ MAX_OUTBOX_PAYLOAD_BYTES = 2 * 1024 * 1024
 SECRET_KEY_MARKERS = ("token", "password", "secret", "authorization", "credential")
 
 
+class OutboxIdentityConflict(ValueError):
+    def __init__(self, existing_event_id: object, reason: str):
+        self.existing_event_id = str(existing_event_id or "")
+        self.reason = str(reason or "event_identity_conflict")
+        super().__init__(f"outbox idempotency identity conflict: {self.reason}")
+
+
+def outbox_event_identity_conflict_reason(
+    event: PendingEvent,
+    *,
+    event_type: str,
+    action: str,
+    aggregate_type: str,
+    aggregate_id: str,
+    idempotency_key: str,
+) -> str:
+    expected = {
+        "event_type": event_type,
+        "action": action,
+        "aggregate_type": aggregate_type,
+        "aggregate_id": aggregate_id,
+        "idempotency_key": idempotency_key,
+    }
+    actual = {
+        "event_type": event.event_type,
+        "action": event.action,
+        "aggregate_type": event.aggregate_type,
+        "aggregate_id": event.aggregate_id,
+        "idempotency_key": event.idempotency_key,
+    }
+    for field, expected_value in expected.items():
+        if str(actual.get(field) or "").strip() != str(expected_value or "").strip():
+            return f"{field}_mismatch"
+
+    payload = event.payload if isinstance(event.payload, dict) else {}
+    payload_expected = {
+        "action": action,
+        "entity_type": aggregate_type,
+        "entity_id": aggregate_id,
+        "idempotency_key": idempotency_key,
+    }
+    for field, expected_value in payload_expected.items():
+        if str(payload.get(field) or "").strip() != str(expected_value or "").strip():
+            return f"payload_{field}_mismatch"
+    return ""
+
+
+def require_exact_outbox_event_identity(event: PendingEvent, values: dict) -> PendingEvent:
+    reason = outbox_event_identity_conflict_reason(
+        event,
+        event_type=values["event_type"],
+        action=values["action"],
+        aggregate_type=values["aggregate_type"],
+        aggregate_id=values["aggregate_id"],
+        idempotency_key=values["idempotency_key"],
+    )
+    if reason:
+        raise OutboxIdentityConflict(event.id, reason)
+    return event
+
+
 def queue_outbox_event(
     db: Session,
     *,
@@ -26,6 +87,7 @@ def queue_outbox_event(
     idempotency_key: str,
     payload: dict | None = None,
     last_error: str | None = None,
+    strict_identity: bool = False,
 ) -> PendingEvent:
     values = outbox_values(
         event_type=event_type,
@@ -58,6 +120,8 @@ def queue_outbox_event(
         existing = db.execute(
             select(PendingEvent).where(PendingEvent.idempotency_key == idempotency_key)
         ).scalar_one()
+        if strict_identity:
+            return require_exact_outbox_event_identity(existing, values)
         existing.action = existing.action or action
         existing.aggregate_type = existing.aggregate_type or aggregate_type
         existing.aggregate_id = existing.aggregate_id or aggregate_id
@@ -67,6 +131,8 @@ def queue_outbox_event(
         select(PendingEvent).where(PendingEvent.idempotency_key == idempotency_key)
     ).scalar_one_or_none()
     if existing is not None:
+        if strict_identity:
+            return require_exact_outbox_event_identity(existing, values)
         existing.action = existing.action or action
         existing.aggregate_type = existing.aggregate_type or aggregate_type
         existing.aggregate_id = existing.aggregate_id or aggregate_id

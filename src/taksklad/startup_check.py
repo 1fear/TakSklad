@@ -20,7 +20,7 @@ from .config import (
 )
 from .geocoding import load_yandex_geocoder_key
 from .telegram_service import get_telegram_chat_ids, load_telegram_settings
-from .secret_store import BACKEND_API_TOKEN_SECRET, SecretStoreError, load_secret
+from .secret_store import BACKEND_AUTH_BUNDLE_SECRET, SecretStoreError, load_secret
 from .update_service import compare_versions, package_transition_required
 from .utils import normalize_text
 
@@ -172,7 +172,7 @@ def build_startup_self_check(version_status=None):
         "backend_read_orders": bool_text(TAKSKLAD_BACKEND_READ_ORDERS_ENABLED),
         "backend_only_refresh": bool_text(TAKSKLAD_BACKEND_ONLY_REFRESH),
         "backend_origin": url_origin(TAKSKLAD_BACKEND_BASE_URL),
-        "backend_token": bool_text(secret_available(BACKEND_API_TOKEN_SECRET)),
+        "backend_token": bool_text(secret_available(BACKEND_AUTH_BUNDLE_SECRET)),
         "geocoder_key": bool_text(load_yandex_geocoder_key()),
         "pending_prints": str(len(pending_prints) if isinstance(pending_prints, list) else 0),
         "pending_backend_events": str(len(pending_backend_events) if isinstance(pending_backend_events, list) else 0),

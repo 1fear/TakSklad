@@ -36,6 +36,7 @@ from .order_statuses import (
     STATUS_RETURNED,
 )
 from .schemas import KizAvailabilityRead, OrderItemRead, OrderRead, ScanCreate, ScanRead, ScanUndo
+from .skladbot_contracts import format_internal_smartup_ids
 from .scan_quantities import (
     SCAN_TYPE_AGGREGATE_BOX,
     product_key_from_name,
@@ -743,6 +744,10 @@ def order_to_read(order: Order):
         coordinates=raw_payload.get("coordinates") or "",
         representative=order.representative,
         status=order.status,
+        smartup_id=format_internal_smartup_ids([
+            raw_payload.get("source_order_id"),
+            *((item.raw_payload or {}).get("source_order_id") for item in order.items),
+        ]),
         skladbot_request_number=raw_payload.get("skladbot_request_number") or "",
         skladbot_request_id=raw_payload.get("skladbot_request_id") or "",
         skladbot_return_request_number=raw_payload.get("skladbot_return_request_number") or "",

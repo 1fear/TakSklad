@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from .telegram_routing_contract import production_environment_errors
+
 
 DAILY_REPORT_INTEGER_SETTINGS = {
     "SKLADBOT_DAILY_REPORT_HOUR": (22, 0, 23),
@@ -111,6 +113,7 @@ def validate_production_daily_report_config(environ):
         errors.append("SKLADBOT_DAILY_REPORT_CHAT_IDS")
     if not _has_skladbot_token(environ):
         errors.append("SKLADBOT_API_TOKEN(S)")
+    errors.extend(production_environment_errors(environ))
 
     schedule_config = None
     try:

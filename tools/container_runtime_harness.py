@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -392,7 +393,9 @@ def backend_environment(database_url: str) -> list[str]:
         "TAKSKLAD_API_TOKEN": "synthetic-only-service-token-1234567890",
         "TAKSKLAD_ENV": "test",
         "TAKSKLAD_IDENTITY_AUTH_ENABLED": "true",
-        "TAKSKLAD_LEGACY_AUTH_EXPIRES_AT": "2026-07-17T00:00:00+00:00",
+        "TAKSKLAD_LEGACY_AUTH_EXPIRES_AT": (
+            datetime.now(timezone.utc) + timedelta(hours=1)
+        ).isoformat(),
         "TAKSKLAD_LEGACY_AUTH_MODE": "enforce",
         "TAKSKLAD_SERVICE_NAME": "taksklad-phase22",
         "TAKSKLAD_SERVICE_TOKEN_ROTATION_MAX_OVERLAP_SECONDS": "900",

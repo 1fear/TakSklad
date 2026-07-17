@@ -56,6 +56,9 @@ from .excel_web_service import parse_raw_excel_upload
 from .input_safety import MAX_REQUEST_BODY_BYTES, RequestBodyLimitMiddleware
 from .spreadsheet_safety import SpreadsheetSafetyError
 from .auth_identities import (
+    ACCEPTANCE_CANARY_IDENTIFIER,
+    ACCEPTANCE_CANARY_SCOPES,
+    DESKTOP_RUNTIME_SCOPES,
     IdentityAuthError,
     authenticate_service_token,
     create_user_session,
@@ -1198,6 +1201,57 @@ def start_skladbot_sync_background(audit_actor=None):
 
     Thread(target=worker, daemon=True).start()
     return {"status": "started", "message": "SkladBot sync started in background"}
+
+
+def require_exact_canary_principal(
+    auth_context: AuthContext,
+    *,
+    kind: str,
+    scopes: frozenset[str],
+    identifier: str | None = None,
+) -> None:
+    actual_scopes = frozenset(auth_context.permissions)
+    if (
+        auth_context.source != "service-principal"
+        or auth_context.role != kind
+        or actual_scopes != scopes
+        or (identifier is not None and auth_context.login != identifier)
+    ):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Canary principal policy denied")
+
+
+@api.get("/returns/auth-canary/acceptance", status_code=status.HTTP_204_NO_CONTENT)
+def acceptance_returns_auth_canary(
+    canary_identifier: str | None = Header(None, alias="X-TakSklad-Canary-Identifier"),
+    auth_context=Depends(require_service_token),
+):
+    require_exact_canary_principal(
+        auth_context,
+        kind="acceptance",
+        scopes=ACCEPTANCE_CANARY_SCOPES,
+        identifier=canary_identifier,
+    )
+    if canary_identifier != ACCEPTANCE_CANARY_IDENTIFIER:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Canary principal policy denied")
+    response = Response(status_code=status.HTTP_204_NO_CONTENT)
+    prevent_auth_response_caching(response)
+    return response
+
+
+@api.get("/returns/auth-canary/desktop", status_code=status.HTTP_204_NO_CONTENT)
+def desktop_returns_auth_canary(
+    canary_identifier: str | None = Header(None, alias="X-TakSklad-Canary-Identifier"),
+    auth_context=Depends(require_service_token),
+):
+    require_exact_canary_principal(
+        auth_context,
+        kind="desktop",
+        scopes=DESKTOP_RUNTIME_SCOPES,
+        identifier=canary_identifier,
+    )
+    response = Response(status_code=status.HTTP_204_NO_CONTENT)
+    prevent_auth_response_caching(response)
+    return response
 
 
 @api.get("/returns", response_model=list[OrderRead])

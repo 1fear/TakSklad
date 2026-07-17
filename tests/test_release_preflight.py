@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,6 +8,8 @@ from pathlib import Path
 from tools.release_preflight import (
     ACCEPTANCE_DIR,
     MANIFEST_NAME,
+    PHASE_CANDIDATE,
+    PHASE_FINAL,
     REQUIRED_FILES,
     VERSION_JSON,
     check_acceptance_kit,
@@ -20,6 +24,30 @@ from tools.release_preflight import (
 
 
 class ReleasePreflightTests(unittest.TestCase):
+    def final_version_manifest(self, **overrides):
+        value = {
+            "latest_version": "2.0.43",
+            "release_tag": "v2.0.43",
+            "min_supported_version": "2.0.43",
+            "mandatory": True,
+            "block_workflow": True,
+            "package_type": "onedir_zip",
+            "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.43/TakSklad.exe",
+            "sha256": "a" * 64,
+            "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.43/TakSklad-windows-x64.zip",
+            "sha256_onedir": "b" * 64,
+            "auth_helper": "TakSkladAuth.exe",
+            "auth_helper_download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.43/TakSkladAuth.exe",
+            "auth_helper_sha256": "c" * 64,
+            "signature_type": "authenticode",
+            "signature_required": True,
+            "signer_certificate_sha256": "d" * 64,
+            "source_sha": "e" * 40,
+            "dependency_lock_sha256": "f" * 64,
+        }
+        value.update(overrides)
+        return value
+
     def make_root(self):
         tmp_dir = tempfile.TemporaryDirectory()
         root = Path(tmp_dir.name)
@@ -27,6 +55,8 @@ class ReleasePreflightTests(unittest.TestCase):
             target = root / path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(self.fixture_file_text(path), encoding="utf-8")
+            if path == Path("tools/verify_release_attestations.sh"):
+                target.chmod(0o755)
         (root / ACCEPTANCE_DIR).mkdir(parents=True, exist_ok=True)
         excel_path = root / ACCEPTANCE_DIR / "acceptance.xlsx"
         excel_path.write_bytes(b"acceptance")
@@ -54,12 +84,21 @@ class ReleasePreflightTests(unittest.TestCase):
         (root / VERSION_JSON).write_text(
             json.dumps(
                 {
-                    "latest_version": "1.1.7",
-                    "min_supported_version": "1.1.7",
-                    "mandatory": False,
-                    "download_url": "",
-                    "download_url_onedir": "",
-                    "package_type": "",
+                    "latest_version": "2.0.40",
+                    "release_tag": "v2.0.40",
+                    "min_supported_version": "2.0.40",
+                    "mandatory": True,
+                    "block_workflow": True,
+                    "package_type": "onefile_exe",
+                    "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.40/TakSklad.exe",
+                    "sha256": "a" * 64,
+                    "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.40/TakSklad-windows-x64.zip",
+                    "sha256_onedir": "b" * 64,
+                    "signature_type": "authenticode",
+                    "signature_required": True,
+                    "signer_certificate_sha256": "c" * 64,
+                    "source_sha": "d" * 40,
+                    "dependency_lock_sha256": "e" * 64,
                 },
                 ensure_ascii=False,
             ),
@@ -72,7 +111,9 @@ class ReleasePreflightTests(unittest.TestCase):
         if path_text.endswith("windows_backend_acceptance.ps1"):
             return (
                 "build_manifest.json\n"
-                "Cannot verify TakSklad.exe version\n"
+                "Cannot verify TakSklad.exe because its signed package build_manifest.json was not found.\n"
+                "TakSkladAuth.exe\n"
+                "$PinnedProductionSignerCertificateSha256\n"
                 "$MinAppVersion = \"2.0.0\"\n"
                 "$ExpectedBuildLabel = \"MVP 2.0\"\n"
                 "APP_BUILD_LABEL\n"
@@ -83,6 +124,8 @@ class ReleasePreflightTests(unittest.TestCase):
                 "TAKSKLAD_BACKEND_ONLY_REFRESH\n"
                 "TELEGRAM_DESKTOP_POLLING_ENABLED\n"
             )
+        if path_text.endswith("tools/verify_release_attestations.sh"):
+            return "#!/usr/bin/env bash\nexit 0\n"
         if path_text.endswith("build_windows_test_archive.ps1"):
             return (
                 "build_manifest.json\n"
@@ -93,7 +136,7 @@ class ReleasePreflightTests(unittest.TestCase):
                 "ACCEPTANCE_RESULTS.md\n"
                 "Assert-TestPackageDoesNotContainLocalSecrets\n"
                 "version.json has local changes\n"
-                "paused 1.1.7 nor forced 2.0.40 rollout manifest\n"
+                "paused 1.1.7 nor forced $MinAppVersion rollout manifest\n"
             )
         if path_text.endswith("src/taksklad/config.py"):
             return (
@@ -144,43 +187,34 @@ class ReleasePreflightTests(unittest.TestCase):
             )
         if path_text.endswith("docs/windows-backend-acceptance.md"):
             return (
-                'TAKSKLAD_BACKEND_ONLY_REFRESH = "1"\n'
-                'TELEGRAM_DESKTOP_POLLING_ENABLED = "0"\n'
-                "pending_backend_events pending_saves pending_prints pending_telegram /api/v1/admin/operations\n"
+                "TakSkladAuth.exe\n"
+                "/api/v1/returns/auth-canary/desktop\n"
+                "2.0.43 candidate; public channel remains separately verified\n"
             )
         if path_text.endswith("docs/deploy-rollback-runbook.md"):
             return (
-                "restore point\n"
-                "git status --short\n"
-                "Do not run broad rsync from a dirty tree\n"
-                "selective deploy\n"
-                "pending events\n"
-                "/api/v1/admin/operations\n"
+                "release.json image@sha256 current-release alembic downgrade\n"
             )
         if path_text.endswith("docs/manual-acceptance-runbook.md"):
-            return "startup diagnostics backend refresh network timeout retired Google worker absent dirty tree\n"
+            return (
+                "--phase candidate --phase final 2.0.43 public channel TakSkladAuth.exe\n"
+            )
         return "ok"
 
     def test_preflight_passes_without_network_for_valid_fixture(self):
         tmp_dir, root = self.make_root()
         with tmp_dir:
             (root / VERSION_JSON).write_text(
-                json.dumps(
-                    {
-                        "latest_version": "2.0.40",
-                        "min_supported_version": "2.0.40",
-                        "mandatory": True,
-                        "package_type": "onefile_exe",
-                        "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.40/TakSklad.exe",
-                        "sha256": "a" * 64,
-                        "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.40/TakSklad-windows-x64.zip",
-                        "sha256_onedir": "b" * 64,
-                    },
-                    ensure_ascii=False,
-                ),
+                json.dumps(self.final_version_manifest(), ensure_ascii=False),
                 encoding="utf-8",
             )
-            summary = run_checks(root, health_url="https://example.invalid/health", timeout_seconds=1, skip_network=True)
+            summary = run_checks(
+                root,
+                health_url="https://example.invalid/health",
+                timeout_seconds=1,
+                phase=PHASE_CANDIDATE,
+                skip_network=True,
+            )
 
         self.assertEqual(summary["status"], "ok")
         self.assertTrue(all(check["ok"] for check in summary["checks"]))
@@ -190,38 +224,37 @@ class ReleasePreflightTests(unittest.TestCase):
 
         self.assertTrue(check["ok"], check.get("problems"))
 
-    def test_version_json_accepts_paused_rollout_manifest(self):
+    def test_candidate_accepts_current_supported_published_channel(self):
         tmp_dir, root = self.make_root()
         with tmp_dir:
-            check = check_version_json(root)
+            check = check_version_json(root, phase=PHASE_CANDIDATE)
 
         self.assertTrue(check["ok"])
-        self.assertEqual(check["rollout_state"], "paused")
+        self.assertEqual(check["rollout_state"], "published-supported")
+        self.assertEqual(check["candidate_version"], "2.0.43")
 
     def test_version_json_rejects_bad_url_and_sha_format(self):
         tmp_dir, root = self.make_root()
         with tmp_dir:
             (root / VERSION_JSON).write_text(
                 json.dumps(
-                    {
-                        "latest_version": "2.0.40",
-                        "min_supported_version": "2.0.40",
-                        "mandatory": True,
-                        "package_type": "onefile_exe",
-                        "download_url": "http://example.com/TakSklad.exe",
-                        "sha256": "A" * 64,
-                        "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v1.1.7/TakSklad.zip",
-                        "sha256_onedir": "short",
-                    },
+                    self.final_version_manifest(
+                        download_url="http://example.com/TakSklad.exe",
+                        sha256="A" * 64,
+                        download_url_onedir="https://github.com/1fear/TakSklad/releases/download/v1.1.7/TakSklad.zip",
+                        sha256_onedir="short",
+                        auth_helper_download_url="http://example.com/TakSkladAuth.exe",
+                        auth_helper_sha256="short",
+                    ),
                     ensure_ascii=False,
                 ),
                 encoding="utf-8",
             )
-            check = check_version_json(root)
+            check = check_version_json(root, phase=PHASE_FINAL, source_sha="e" * 40)
 
         self.assertFalse(check["ok"])
-        self.assertIn("download_url must be an HTTPS release URL for v2.0.40", check["problems"])
-        self.assertIn("download_url_onedir must be an HTTPS release URL for v2.0.40", check["problems"])
+        self.assertIn("download_url must be an HTTPS release URL for v2.0.43", check["problems"])
+        self.assertIn("download_url_onedir must be an HTTPS release URL for v2.0.43", check["problems"])
         self.assertIn("sha256 must be a lowercase SHA256 hex digest", check["problems"])
         self.assertIn("sha256_onedir must be a lowercase SHA256 hex digest", check["problems"])
 
@@ -230,60 +263,58 @@ class ReleasePreflightTests(unittest.TestCase):
         with tmp_dir:
             (root / VERSION_JSON).write_text(
                 json.dumps(
-                    {
-                        "latest_version": "2.0.40",
-                        "min_supported_version": "2.0.40",
-                        "mandatory": True,
-                        "package_type": "onefile_exe",
-                        "download_url": "https://mirror.example.com/1fear/TakSklad/releases/download/v2.0.40/TakSklad.exe",
-                        "sha256": "a" * 64,
-                        "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.40/TakSklad-windows-x64.zip",
-                        "sha256_onedir": "b" * 64,
-                    },
+                    self.final_version_manifest(
+                        download_url="https://mirror.example.com/1fear/TakSklad/releases/download/v2.0.43/TakSklad.exe"
+                    ),
                     ensure_ascii=False,
                 ),
                 encoding="utf-8",
             )
-            check = check_version_json(root)
+            check = check_version_json(root, phase=PHASE_FINAL, source_sha="e" * 40)
 
         self.assertFalse(check["ok"])
-        self.assertIn("download_url must be an HTTPS release URL for v2.0.40", check["problems"])
+        self.assertIn("download_url must be an HTTPS release URL for v2.0.43", check["problems"])
 
     def test_version_json_rejects_invalid_rollout_manifest(self):
         tmp_dir, root = self.make_root()
         with tmp_dir:
             (root / VERSION_JSON).write_text(
                 json.dumps(
-                    {
-                        "latest_version": "2.0.40",
-                        "min_supported_version": "1.1.7",
-                        "mandatory": False,
-                        "download_url": "https://example.com/TakSklad.zip",
-                    },
+                    self.final_version_manifest(
+                        min_supported_version="2.0.40",
+                        mandatory=False,
+                        block_workflow=False,
+                    ),
                     ensure_ascii=False,
                 ),
                 encoding="utf-8",
             )
-            check = check_version_json(root)
+            check = check_version_json(root, phase=PHASE_FINAL, source_sha="e" * 40)
 
         self.assertFalse(check["ok"])
-        self.assertIn("version.json must be either paused 1.1.7 rollout or forced 2.0.40 rollout", check["problems"])
-        self.assertEqual(check["rollout_state"], "invalid")
+        self.assertIn("final channel must require exact 2.0.43", check["problems"])
+        self.assertIn("final channel must be mandatory and block unsupported workflows", check["problems"])
 
     def test_verify_downloads_hashes_update_artifacts(self):
         tmp_dir, root = self.make_root()
         onefile = b"onefile artifact"
         onedir = b"onedir artifact"
+        auth_helper = b"auth helper artifact"
         onefile_sha = sha256_file(self.write_bytes(root / "onefile.bin", onefile))
         onedir_sha = sha256_file(self.write_bytes(root / "onedir.bin", onedir))
+        auth_helper_sha = sha256_file(self.write_bytes(root / "auth-helper.bin", auth_helper))
         with tmp_dir:
             (root / VERSION_JSON).write_text(
                 json.dumps(
                     {
-                        "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.40/TakSklad.exe",
+                        "package_type": "onedir_zip",
+                        "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.43/TakSklad.exe",
                         "sha256": onefile_sha,
-                        "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.40/TakSklad-windows-x64.zip",
+                        "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.43/TakSklad-windows-x64.zip",
                         "sha256_onedir": onedir_sha,
+                        "auth_helper": "TakSkladAuth.exe",
+                        "auth_helper_download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.43/TakSkladAuth.exe",
+                        "auth_helper_sha256": auth_helper_sha,
                     },
                     ensure_ascii=False,
                 ),
@@ -312,6 +343,8 @@ class ReleasePreflightTests(unittest.TestCase):
                     return FakeResponse([onefile])
                 if url.endswith("TakSklad-windows-x64.zip"):
                     return FakeResponse([onedir])
+                if url.endswith("TakSkladAuth.exe"):
+                    return FakeResponse([auth_helper])
                 raise AssertionError(url)
 
             import unittest.mock
@@ -320,7 +353,10 @@ class ReleasePreflightTests(unittest.TestCase):
                 check = check_update_manifest_downloads(root, timeout_seconds=3)
 
         self.assertTrue(check["ok"], check.get("problems"))
-        self.assertEqual([asset["actual_sha256"] for asset in check["assets"]], [onefile_sha, onedir_sha])
+        self.assertEqual(
+            [asset["actual_sha256"] for asset in check["assets"]],
+            [onefile_sha, onedir_sha, auth_helper_sha],
+        )
 
     def test_verify_downloads_reports_sha_mismatch(self):
         tmp_dir, root = self.make_root()
@@ -328,10 +364,14 @@ class ReleasePreflightTests(unittest.TestCase):
             (root / VERSION_JSON).write_text(
                 json.dumps(
                     {
-                        "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.40/TakSklad.exe",
+                        "package_type": "onedir_zip",
+                        "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.43/TakSklad.exe",
                         "sha256": "a" * 64,
-                        "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.40/TakSklad-windows-x64.zip",
+                        "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.43/TakSklad-windows-x64.zip",
                         "sha256_onedir": "b" * 64,
+                        "auth_helper": "TakSkladAuth.exe",
+                        "auth_helper_download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.43/TakSkladAuth.exe",
+                        "auth_helper_sha256": "c" * 64,
                     },
                     ensure_ascii=False,
                 ),
@@ -359,6 +399,7 @@ class ReleasePreflightTests(unittest.TestCase):
         self.assertFalse(check["ok"])
         self.assertIn("onefile SHA mismatch", check["problems"])
         self.assertIn("onedir SHA mismatch", check["problems"])
+        self.assertIn("auth_helper SHA mismatch", check["problems"])
 
     def test_acceptance_kit_rejects_sha_mismatch(self):
         tmp_dir, root = self.make_root()
@@ -422,7 +463,13 @@ class ReleasePreflightTests(unittest.TestCase):
                 "Backend refresh недоступен\n",
                 encoding="utf-8",
             )
-            summary = run_checks(root, health_url="https://example.invalid/health", timeout_seconds=1, skip_network=True)
+            summary = run_checks(
+                root,
+                health_url="https://example.invalid/health",
+                timeout_seconds=1,
+                phase=PHASE_CANDIDATE,
+                skip_network=True,
+            )
 
         backend_contract = next(check for check in summary["checks"] if check["name"] == "backend_only_hot_path_contract")
         self.assertFalse(backend_contract["ok"])
@@ -440,12 +487,18 @@ class ReleasePreflightTests(unittest.TestCase):
                 "/api/v1/admin/operations\n",
                 encoding="utf-8",
             )
-            summary = run_checks(root, health_url="https://example.invalid/health", timeout_seconds=1, skip_network=True)
+            summary = run_checks(
+                root,
+                health_url="https://example.invalid/health",
+                timeout_seconds=1,
+                phase=PHASE_CANDIDATE,
+                skip_network=True,
+            )
 
         deploy_contract = next(check for check in summary["checks"] if check["name"] == "deploy_runbook_contract")
         self.assertFalse(deploy_contract["ok"])
         self.assertIn(
-            "docs/deploy-rollback-runbook.md: missing fragment: Do not run broad rsync from a dirty tree",
+            "docs/deploy-rollback-runbook.md: missing fragment: release.json",
             deploy_contract["problems"],
         )
 
@@ -453,6 +506,83 @@ class ReleasePreflightTests(unittest.TestCase):
         check = check_windows_acceptance_flow(Path(__file__).resolve().parents[1])
 
         self.assertTrue(check["ok"], check.get("problems"))
+
+    def test_final_version_contract_requires_exact_candidate_channel(self):
+        tmp_dir, root = self.make_root()
+        with tmp_dir:
+            (root / VERSION_JSON).write_text(
+                json.dumps(self.final_version_manifest()), encoding="utf-8"
+            )
+            check = check_version_json(root, phase=PHASE_FINAL, source_sha="e" * 40)
+
+        self.assertTrue(check["ok"], check.get("problems"))
+        self.assertEqual(check["rollout_state"], "final-published")
+
+    def test_final_version_contract_rejects_published_source_sha_mismatch(self):
+        tmp_dir, root = self.make_root()
+        with tmp_dir:
+            (root / VERSION_JSON).write_text(
+                json.dumps(self.final_version_manifest(source_sha="e" * 40)),
+                encoding="utf-8",
+            )
+            check = check_version_json(
+                root,
+                phase=PHASE_FINAL,
+                source_sha="f" * 40,
+            )
+
+        self.assertFalse(check["ok"])
+        self.assertIn(
+            "published source_sha must match the explicit attested source SHA",
+            check["problems"],
+        )
+
+    def test_final_run_contract_blocks_offline_or_unverified_invocation(self):
+        tmp_dir, root = self.make_root()
+        with tmp_dir:
+            summary = run_checks(
+                root,
+                health_url="https://example.invalid/health",
+                timeout_seconds=1,
+                phase=PHASE_FINAL,
+                skip_network=True,
+                verify_downloads=False,
+                source_sha=None,
+            )
+
+        phase = next(item for item in summary["checks"] if item["name"] == "phase_contract")
+        attestation = next(
+            item for item in summary["checks"] if item["name"] == "release_attestations"
+        )
+        self.assertFalse(phase["ok"])
+        self.assertFalse(attestation["ok"])
+        self.assertTrue(attestation["skipped"])
+
+    def test_real_repo_root_candidate_preflight_is_green_without_network(self):
+        root = Path(__file__).resolve().parents[1]
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(root / "tools/release_preflight.py"),
+                "--root",
+                str(root),
+                "--phase",
+                PHASE_CANDIDATE,
+                "--skip-network",
+            ],
+            cwd=root,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        payload = json.loads(completed.stdout)
+        version = next(item for item in payload["checks"] if item["name"] == "version_json")
+        self.assertEqual(version["latest_version"], "2.0.40")
+        self.assertEqual(version["candidate_version"], "2.0.43")
+        self.assertEqual(version["rollout_state"], "published-supported")
 
     def write_bytes(self, path, content):
         path.write_bytes(content)

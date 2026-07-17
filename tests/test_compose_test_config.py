@@ -34,6 +34,10 @@ class ComposeTestConfigTests(unittest.TestCase):
         serialized = json.dumps(contract).casefold()
         self.assertIn("synthetic-only", serialized)
         self.assertNotIn("credentials.json", serialized)
+        self.assertNotIn(
+            "TAKSKLAD_LEGACY_AUTH_EXPIRES_AT",
+            contract["compose_test_values"],
+        )
 
 
 if __name__ == "__main__":

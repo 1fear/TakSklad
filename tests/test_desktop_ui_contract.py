@@ -18,6 +18,7 @@ from taksklad.config import (
 from taksklad.config import SKLADBOT_REQUEST_NUMBER_COLUMN
 from taksklad.app_day_end import build_backend_status
 from taksklad import backend_client
+from taksklad.secret_store import SecretStoreError
 from taksklad.main import (
     ScanningApp,
     backend_blocked_scan_events_for_item,
@@ -197,6 +198,38 @@ class DesktopUiContractTests(unittest.TestCase):
         migrate.assert_not_called()
         self_check.assert_not_called()
         scanning_app.assert_not_called()
+
+    def test_run_app_holds_credential_lock_for_entire_gui_lifetime(self):
+        instance_lock = object()
+        credential_lock = object()
+        instance_result = SimpleNamespace(acquired=True, lock=instance_lock)
+        credential_result = SimpleNamespace(acquired=True, lock=credential_lock)
+        release_credential = mock.Mock()
+        app = SimpleNamespace(single_instance_lock=None)
+
+        def mainloop():
+            self.assertEqual(release_credential.call_count, 0)
+            self.assertIs(app.single_instance_lock, instance_lock)
+
+        app.mainloop = mainloop
+        with (
+            mock.patch("taksklad.main.acquire_single_instance_lock", return_value=instance_result),
+            mock.patch("taksklad.main.release_single_instance_lock"),
+            mock.patch("taksklad.main.acquire_credential_mutation_lock", return_value=credential_result),
+            mock.patch("taksklad.main.release_credential_mutation_lock", release_credential),
+            mock.patch("taksklad.main.maybe_rename_windows_executable", return_value=False),
+            mock.patch("taksklad.main.ensure_windows_desktop_shortcut"),
+            mock.patch("taksklad.main.migrate_desktop_secrets", return_value={"restart_required": False}),
+            mock.patch("taksklad.main.migrate_legacy_json_files_to_app_data"),
+            mock.patch("taksklad.main.migrate_legacy_pending_saves_to_backend_events", return_value={"remaining": 0}),
+            mock.patch("taksklad.main.log_startup_self_check"),
+            mock.patch("taksklad.main.backend_configured", return_value=True),
+            mock.patch("taksklad.main.ScanningApp", return_value=app),
+        ):
+            self.assertEqual(main_module.run_app(), 0)
+
+        release_credential.assert_called_once_with(credential_lock)
+        self.assertIsNone(app.single_instance_lock)
 
     def test_sync_queue_retry_shows_blocker_without_sync_calls(self):
         fake = SimpleNamespace(
@@ -1511,6 +1544,41 @@ class DesktopUiContractTests(unittest.TestCase):
 
         self.assertEqual(result, {"id": "order-1"})
         lookup_backend.assert_called_once_with("WH-R-100")
+
+    def test_returns_error_mapping_distinguishes_auth_not_found_and_availability(self):
+        token_fragment = "synthetic-secret-fragment"
+        cases = (
+            (backend_client.BackendApiError(token_fragment, status_code=401), "lookup", "учётные данные"),
+            (backend_client.BackendApiError(token_fragment, status_code=403), "lookup", "Недостаточно прав"),
+            (backend_client.BackendApiError(token_fragment, status_code=404), "lookup", "Заявка не найдена"),
+            (backend_client.BackendApiError(token_fragment, status_code=404), "list", "Не удалось выполнить"),
+            (backend_client.BackendApiError(token_fragment, status_code=503), "list", "временно недоступен"),
+            (backend_client.BackendApiError(token_fragment), "lookup", "Нет связи"),
+        )
+
+        for exc, operation, expected in cases:
+            with self.subTest(status=exc.status_code, operation=operation):
+                message = app_returns.format_returns_error(exc, operation=operation)
+                self.assertIn(expected, message)
+                self.assertNotIn(token_fragment, message)
+                if exc.status_code != 404 or operation != "lookup":
+                    self.assertNotIn("не найдена", message.lower())
+
+    def test_returns_secret_store_error_is_sanitized_and_distinct_from_transport(self):
+        raw = "synthetic-dpapi-secret-fragment"
+        transport = app_returns.format_returns_error(
+            backend_client.BackendApiError(raw),
+            operation="lookup",
+        )
+        for operation in ("lookup", "list", "write"):
+            with self.subTest(operation=operation):
+                message = app_returns.format_returns_error(
+                    SecretStoreError(raw),
+                    operation=operation,
+                )
+                self.assertIn("Учётные данные рабочего места", message)
+                self.assertNotEqual(message, transport)
+                self.assertNotIn(raw, message)
 
     def legacy_backend_return_rejects_google_order_without_backend_id(self):
         fake_app = SimpleNamespace(telegram_lock_owner_label="warehouse-pc")

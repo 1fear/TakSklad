@@ -153,7 +153,7 @@ if [[ "$TEST_MODE" == true ]]; then
     DATABASE_URL="$database_url" TAKSKLAD_ENV=test PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$APP_DIR/backend" \
       "$PYTHON_BIN" -m alembic -c "$APP_DIR/backend/alembic.ini" heads | awk 'NR == 1 {print $1}'
   )"
-  [[ -n "$migration_head" ]] || { echo "Alembic head was not resolved" >&2; exit 1; }
+  [[ "$migration_head" =~ ^[A-Za-z0-9_]{8,64}$ ]] || { echo "Alembic head was not resolved exactly" >&2; exit 1; }
   DATABASE_URL="$database_url" TAKSKLAD_ENV=test PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$APP_DIR/backend" \
     "$PYTHON_BIN" -m alembic -c "$APP_DIR/backend/alembic.ini" upgrade head >/dev/null
 
@@ -176,6 +176,12 @@ if [[ "$TEST_MODE" == true ]]; then
   }
 
   docker exec "$container_name" pg_dump -Fc -U "$synthetic_user" "$synthetic_database" >"$archive_file"
+  revision_after_dump="$(docker exec "$container_name" psql -U "$synthetic_user" -d "$synthetic_database" -At \
+    -v ON_ERROR_STOP=1 -c 'select version_num from alembic_version;')"
+  [[ "$revision_after_dump" == "$current_revision" ]] || {
+    echo "Synthetic PostgreSQL migration changed during backup" >&2
+    exit 1
+  }
   docker exec -i "$container_name" pg_restore --list <"$archive_file" >"$list_file"
   docker rm -f "$container_name" >/dev/null
   container_name=""
@@ -197,8 +203,23 @@ else
   source "$ENV_FILE"
   set +a
   cd "$APP_DIR"
+  revision_before_dump="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T postgres \
+    psql -At -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+    -c 'select version_num from alembic_version;')"
+  [[ "$revision_before_dump" =~ ^[A-Za-z0-9_]{8,64}$ ]] || {
+    echo "Production PostgreSQL migration identity is missing, multiple, or invalid" >&2
+    exit 1
+  }
   docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T postgres \
     pg_dump -Fc -U "$POSTGRES_USER" "$POSTGRES_DB" >"$archive_file"
+  revision_after_dump="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T postgres \
+    psql -At -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+    -c 'select version_num from alembic_version;')"
+  [[ "$revision_after_dump" == "$revision_before_dump" ]] || {
+    echo "Production PostgreSQL migration changed during backup" >&2
+    exit 1
+  }
+  migration_head="$revision_before_dump"
   docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T postgres \
     pg_restore --list <"$archive_file" >"$list_file"
 fi
@@ -283,6 +304,35 @@ chmod 600 "$manifest_file"
 mv "$staging_dir" "$bundle_dir"
 staging_dir=""
 trap - EXIT
+
+if [[ -n "${TAKSKLAD_BACKUP_RESULT_FILE:-}" ]]; then
+  [[ "${TAKSKLAD_BACKUP_OPERATION_ID:-}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]] || {
+    echo "Backup operation ID is invalid" >&2
+    exit 1
+  }
+  python3 - "$TAKSKLAD_BACKUP_RESULT_FILE" "$TAKSKLAD_BACKUP_OPERATION_ID" \
+    "$bundle_dir/$manifest_name" "$bundle_dir/$archive_name" "$archive_sha256" \
+    "$archive_bytes" "$migration_head" "$created_at" <<'PY'
+import json, os, sys
+destination, operation_id, manifest, archive, digest, archive_bytes, migration_head, created_at = sys.argv[1:]
+payload = {
+    "schema": 1,
+    "operation_id": operation_id,
+    "manifest_path": manifest,
+    "archive_path": archive,
+    "archive_sha256": digest,
+    "archive_bytes": int(archive_bytes),
+    "migration_head": migration_head,
+    "created_at_utc": created_at,
+}
+fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(fd, "w", encoding="utf-8") as handle:
+    json.dump(payload, handle, sort_keys=True)
+    handle.write("\n")
+    handle.flush()
+    os.fsync(handle.fileno())
+PY
+fi
 
 if [[ "$TEST_MODE" != true && "$PRUNE_OLD_BACKUPS" == true ]]; then
   find "$completed_root" -mindepth 1 -maxdepth 1 -type d -name 'taksklad-postgres-*' \

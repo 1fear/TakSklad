@@ -279,7 +279,7 @@ export async function installSyntheticApi(page: Page, options: SyntheticApiOptio
       currentIncident = { ...currentIncident, status: payload.status ?? currentIncident.status, resolved_at: now };
       return json(route, currentIncident);
     }
-    if (path === "/api/v1/orders/active") return json(route, [{ id: "order-1", order_date: "2026-07-10", payment_type: "Перечисление", client: "Альфа Тест", address: "Синтетическая улица, 1", representative: "Тестовый ТП", status: "active", skladbot_request_number: "WH-R-SYNTHETIC", skladbot_request_id: "synthetic", items: [{ id: "order-1-item", product: "Синтетический товар", quantity_pieces: 20, quantity_blocks: 2, scanned_blocks: state.scans, status: "active", scan_codes: state.scans ? ["0104-synthetic"] : [] }] }]);
+    if (path === "/api/v1/orders/active") return json(route, [{ id: "order-1", order_date: "2026-07-10", payment_type: "Перечисление", client: "Альфа Тест", address: "Синтетическая улица, 1", representative: "Тестовый ТП", status: "active", smartup_id: "261000001", skladbot_request_number: "WH-R-SYNTHETIC", skladbot_request_id: "synthetic", items: [{ id: "order-1-item", product: "Синтетический товар", quantity_pieces: 20, quantity_blocks: 2, scanned_blocks: state.scans, status: "active", scan_codes: state.scans ? ["0104-synthetic"] : [] }] }]);
     if (path === "/api/v1/kiz/availability") return json(route, { code: url.searchParams.get("code") || "", available: true, reason: "", latest_movement_type: "", latest_order_item_id: "", existing_order_item_id: "" });
     if (path === "/api/v1/scans") {
       if (await configuredFailure(route, options.fail?.scan)) return;

@@ -4,15 +4,17 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
 from taksklad import backend_client
 from taksklad.secret_store import (
-    BACKEND_API_TOKEN_SECRET,
+    BACKEND_AUTH_BUNDLE_SECRET,
     MemorySecretStore,
     SecretStoreUnavailable,
     SecretStoreError,
+    encode_backend_auth_bundle,
     reset_secret_store_for_tests,
     set_secret_store_for_tests,
 )
@@ -24,6 +26,10 @@ from backend.app.settings import (
 
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "src" / "taksklad" / "config.py"
+
+
+def bounded_legacy_expiry():
+    return (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
 
 
 def load_config_from_app_dir(
@@ -91,7 +97,9 @@ class BackendRuntimeConfigTests(unittest.TestCase):
                     "TAKSKLAD_SECRET_STORE_PROVIDER": "environment",
                     "TAKSKLAD_SECRET_STORE_MODE": "test",
                     "TAKSKLAD_BACKEND_ENABLED": "0",
-                    "TAKSKLAD_BACKEND_API_TOKEN": "env-token",
+                    "TAKSKLAD_BACKEND_AUTH_BUNDLE": encode_backend_auth_bundle(
+                        "env-token", "desktop.test"
+                    ),
                     "TAKSKLAD_BACKEND_BASE_URL": "https://example.test/api/",
                     "TAKSKLAD_BACKEND_TIMEOUT_SECONDS": "12",
                 },
@@ -140,7 +148,11 @@ class BackendRuntimeConfigTests(unittest.TestCase):
 
     def test_macos_app_with_explicit_test_provider_uses_parent_folder(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
-            set_secret_store_for_tests(MemorySecretStore({BACKEND_API_TOKEN_SECRET: "synthetic-token"}))
+            set_secret_store_for_tests(MemorySecretStore({
+                BACKEND_AUTH_BUNDLE_SECRET: encode_backend_auth_bundle(
+                    "synthetic-token", "desktop.test"
+                )
+            }))
             config = load_config_from_app_dir(
                 tmp_dir,
                 executable_name="TakSklad.app/Contents/MacOS/TakSklad",
@@ -180,7 +192,7 @@ class BackendRuntimeConfigTests(unittest.TestCase):
                 "TAKSKLAD_ENV": "production",
                 "TAKSKLAD_API_TOKEN": "synthetic-api-token",
                 "TAKSKLAD_WEB_SESSION_SECRET": "synthetic-api-token",
-                "TAKSKLAD_LEGACY_AUTH_EXPIRES_AT": "2026-07-17T00:00:00+00:00",
+                "TAKSKLAD_LEGACY_AUTH_EXPIRES_AT": bounded_legacy_expiry(),
             }))
         self.assertEqual(shared_secret.exception.setting_names, ("TAKSKLAD_WEB_SESSION_SECRET",))
 
@@ -191,7 +203,7 @@ class BackendRuntimeConfigTests(unittest.TestCase):
                         "TAKSKLAD_ENV": "production",
                         "TAKSKLAD_API_TOKEN": "synthetic-api-token",
                         "TAKSKLAD_WEB_SESSION_SECRET": weak_secret,
-                        "TAKSKLAD_LEGACY_AUTH_EXPIRES_AT": "2026-07-17T00:00:00+00:00",
+                        "TAKSKLAD_LEGACY_AUTH_EXPIRES_AT": bounded_legacy_expiry(),
                     }))
                 self.assertEqual(weak.exception.setting_names, ("TAKSKLAD_WEB_SESSION_SECRET",))
                 self.assertNotIn(weak_secret, str(weak.exception))
@@ -200,7 +212,7 @@ class BackendRuntimeConfigTests(unittest.TestCase):
             "TAKSKLAD_ENV": "production",
             "TAKSKLAD_API_TOKEN": "synthetic-api-token",
             "TAKSKLAD_WEB_SESSION_SECRET": "independent-synthetic-session-secret",
-            "TAKSKLAD_LEGACY_AUTH_EXPIRES_AT": "2026-07-17T00:00:00+00:00",
+            "TAKSKLAD_LEGACY_AUTH_EXPIRES_AT": bounded_legacy_expiry(),
         }))
         self.assertTrue(settings.api_auth_enabled)
 

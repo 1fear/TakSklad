@@ -12,36 +12,27 @@ beforeEach(() => server.use(...defaultHandlers));
 const config = { apiUrl: "", token: "", csrfToken: "synthetic-csrf" };
 
 describe("DB-only warehouse operations", () => {
-  it("checks availability and creates a scan through backend API", async () => {
-    const requests: Array<Record<string, unknown>> = [];
-    server.use(http.post("/api/v1/scans", async ({ request }) => {
-      requests.push(await request.json() as Record<string, unknown>);
-      return HttpResponse.json({ id: "scan-1", order_item_id: "item-1", code: "0104-test", scanned_blocks: 1, item_status: "in_progress" }, { status: 201 });
-    }));
-    const onError = vi.fn();
-    const onNotice = vi.fn();
-    const user = userEvent.setup();
+  it("shows exact order correlations and contains no web scanner affordances", async () => {
+    render(<WarehousePanel config={config} canWrite actor="operator-test" onError={vi.fn()} onNotice={vi.fn()} />);
 
-    render(<WarehousePanel config={config} canWrite actor="operator-test" onError={onError} onNotice={onNotice} />);
     await screen.findByText(new RegExp(activeOrder.client));
-    await user.type(screen.getByLabelText("КИЗ"), "0104-test");
-    await user.click(screen.getByRole("button", { name: "Записать" }));
-
-    await waitFor(() => expect(requests).toHaveLength(1));
-    expect(requests[0]).toMatchObject({
-      order_item_id: "item-1",
-      code: "0104-test",
-      workstation_id: "taksklad-web",
-      scanned_by: "operator-test",
-    });
-    expect(onNotice).toHaveBeenCalledWith("КИЗ сохранён в PostgreSQL");
-    expect(onError).not.toHaveBeenCalled();
+    expect(screen.getByText("Smartup ID: 731")).toBeInTheDocument();
+    expect(screen.getByText("Заявка SkladBot: WH-R-TEST-1")).toBeInTheDocument();
+    expect(screen.queryByText(/Заявка возврата:/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("КИЗ")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Записать" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Отменить последний КИЗ")).not.toBeInTheDocument();
   });
 
   it("looks up an archived order and sends an explicit full return", async () => {
     const returnPayloads: Array<Record<string, unknown>> = [];
     server.use(
-      http.get("/api/v1/returns/lookup", () => HttpResponse.json({ ...activeOrder, status: "archive" })),
+      http.get("/api/v1/returns/lookup", () => HttpResponse.json({
+        ...activeOrder,
+        status: "archive",
+        skladbot_return_request_number: "WR-RET-1",
+        skladbot_return_request_id: "903",
+      })),
       http.post("/api/v1/returns/:orderId", async ({ request }) => {
         returnPayloads.push(await request.json() as Record<string, unknown>);
         return HttpResponse.json({ ...activeOrder, status: "returned" });
@@ -56,6 +47,7 @@ describe("DB-only warehouse operations", () => {
     await user.type(screen.getByLabelText("Номер SkladBot, клиент или ID заказа"), "WH-R-TEST-1");
     await user.click(screen.getByRole("button", { name: "Найти" }));
     await screen.findByRole("button", { name: "Подтвердить полный возврат" });
+    expect(screen.getByText("Заявка возврата: WR-RET-1")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Подтвердить полный возврат" }));
 
     await waitFor(() => expect(returnPayloads).toHaveLength(1));
@@ -65,5 +57,49 @@ describe("DB-only warehouse operations", () => {
       confirmed_items: [{ item_id: "item-1", product: "Тестовый товар", quantity_blocks: 2, quantity_pieces: 20 }],
     });
     expect(onNotice).toHaveBeenCalledWith("Возврат зафиксирован в PostgreSQL; КИЗы снова доступны");
+  });
+
+  it("uses decimal fallback only when canonical numbers are absent and rejects unsafe values", async () => {
+    server.use(http.get("/api/v1/orders/active", () => HttpResponse.json([{
+      ...activeOrder,
+      smartup_id: "<script>alert(1)</script>",
+      skladbot_request_number: "not-a-request",
+      skladbot_request_id: "904",
+    }])));
+
+    render(<WarehousePanel config={config} canWrite actor="operator-test" onError={vi.fn()} onNotice={vi.fn()} />);
+
+    expect(await screen.findByText("Smartup ID: —")).toBeInTheDocument();
+    expect(screen.getByText("Заявка SkladBot: ID 904")).toBeInTheDocument();
+    expect(screen.queryByText("<script>alert(1)</script>")).not.toBeInTheDocument();
+  });
+
+  it("fails closed for overlong correlation values", async () => {
+    server.use(http.get("/api/v1/orders/active", () => HttpResponse.json([{
+      ...activeOrder,
+      smartup_id: "7".repeat(41),
+      skladbot_request_number: `WH-R-${"A".repeat(81)}`,
+      skladbot_request_id: "9".repeat(21),
+    }])));
+
+    render(<WarehousePanel config={config} canWrite actor="operator-test" onError={vi.fn()} onNotice={vi.fn()} />);
+
+    expect(await screen.findByText("Smartup ID: —")).toBeInTheDocument();
+    expect(screen.getByText("Заявка SkladBot: —")).toBeInTheDocument();
+  });
+
+  it("shows honest placeholders when correlations are missing", async () => {
+    server.use(http.get("/api/v1/orders/active", () => HttpResponse.json([{
+      ...activeOrder,
+      smartup_id: "",
+      skladbot_request_number: "",
+      skladbot_request_id: "",
+    }])));
+
+    render(<WarehousePanel config={config} canWrite actor="operator-test" onError={vi.fn()} onNotice={vi.fn()} />);
+
+    expect(await screen.findByText("Smartup ID: —")).toBeInTheDocument();
+    expect(screen.getByText("Заявка SkladBot: —")).toBeInTheDocument();
+    expect(screen.queryByText(/Заявка возврата:/)).not.toBeInTheDocument();
   });
 });

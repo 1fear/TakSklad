@@ -37,8 +37,8 @@ Duplicate-only retry обязан вернуть `ImportResult.resolved_order_id
 | `smartup_ambiguous` | Результат не доказан | Backoff + read-back; без blind retry |
 | `smartup_confirmed` | Ответ или read-back подтвердил `B#W` | Создать/найти SkladBot intent по Order ID |
 | `skladbot_create_queued` | Durable create intent существует | SkladBot worker выполняет POST |
-| `skladbot_post_started` | POST мог дойти до SkladBot | Exact marker reconciliation |
-| `skladbot_ambiguous` | Результат POST не доказан | Manual review или exact marker match; без повторного POST |
+| `skladbot_post_started` | POST мог дойти до SkladBot | Exact response-ID recovery или legacy marker reconciliation; без повторного POST |
+| `skladbot_ambiguous` | Результат POST не доказан | Manual review, exact response ID или legacy marker; без повторного POST |
 | `skladbot_created` | Canonical WH-R/ID сохранён | Terminal success |
 | `blocked_stock` | SkladBot подтвердил shortage 4xx | Сохранить Order, incident/manual review |
 | `payload_mismatch`, `blocked_validation`, `manual_review` | Автоматическое продолжение небезопасно | Решение оператора |
@@ -55,9 +55,28 @@ Consistency sweeper запускается каждым циклом Smartup wor
 
 ## SkladBot retry rule
 
-В comment каждого create payload добавляется `TakSklad ref: TSF-<24 hex>`. Timeout, network и 5xx считаются ambiguous. После них разрешён только поиск exact marker; blind POST запрещён. Текущий list API не доказывает исчерпывающую пагинацию, поэтому отсутствие marker не является доказательством отсутствия заявки и требует manual review.
+Новые create payload не содержат `TakSklad ref`/`TSF` или Smartup ID в `comment` и `fields.comment.value`: там остаются только существующий бизнес-текст, тип оплаты и ТП/контакты. Sanitizer удаляет из старых еще не отправленных payload только полные технические строки, распознаваемые canonical marker/Smartup regex; похожая подстрока внутри бизнес-текста сохраняется. Внутренний deterministic marker, idempotency key, payload hash, event/order links и audit остаются в TakSklad и не считаются remote evidence. Smartup ID берется из exact `Order.raw_payload.source_order_id` и связанных строк заказа; daily связывает его только по сохраненному exact SkladBot request ID/number и показывает в XLSX-колонке `Smartup ID`, но не добавляет в Telegram summary.
+
+Timeout, network, 5xx, пустой/невалидный response ID и stale `post_state=started` считаются ambiguous. Если POST вернул request ID, recovery разрешён только через `GET /requests/show/{id}` с тем же ID и непустым WH-R. Без response ID новый markerless event переводится в `blocked/manual_review`: list/fuzzy lookup и повторный POST запрещены. Для legacy event, где сохранённый уже начатый request payload доказывает фактическую отправку marker, сохраняется exact-marker reconciliation; отсутствие marker в неполном list API не доказывает отсутствие заявки.
+
+Event с `attempts > 1` и пустым/неизвестным `post_state` также считается ambiguous: разрешён только exact legacy-marker recovery, иначе manual review. Повторный POST разрешён лишь при явном `post_state=retry_scheduled`; его `available_at` обязан переживать lease finalize. Любой direct processor и worker recovery до Order load или remote call проверяет ownership tuple create-event (`event_type`, `aggregate_type`, `aggregate_id`, `payload.order_id`); чужой или отсутствующий event pointer не может связать WH-R и создаёт manual-review incident/audit.
 
 Stock shortage признаётся только по детерминированному 4xx. Order/OrderItem/Google-строка не удаляются; ставится `blocked_stock`, incident и уведомление.
+
+### SkladBot return-create
+
+- Return payload содержит только business comment; обе comment-копии одинаковы, полная строка технического `TakSklad ref` удаляется.
+- Перед любым Order/remote действием event обязан доказать ownership tuple `event_type + aggregate_type=order + aggregate_id=payload.order_id`.
+- Первый queued claim сохраняет `post_state=started`, время, idempotency key и payload hash отдельным commit до единственного POST.
+- Timeout/network/5xx или ответ без ID переводят event в blocked/manual review. List/fuzzy lookup и повторный POST запрещены.
+- После response ID сохраняется `post_state=response_received` отдельным commit. Дальше разрешён только `show/{id}`; link требует совпадающий canonical ID и номер формата `WH-R-*` или `WR-*`.
+- Exact-detail retry имеет future backoff 5 минут и общий лимит `SKLADBOT_API_MAX_RETRIES + 1` попыток (по умолчанию 3, максимум 10). После лимита — manual review без повторного POST.
+- 429 считается доказанно не принятым POST: event остаётся pending с future backoff; следующий POST возможен только после `available_at`.
+- При `TAKSKLAD_EVENT_LEASES_ENABLED=0` PostgreSQL claim-ит одну строку через `SELECT FOR UPDATE SKIP LOCKED`, меняет `processing/attempts` и commit-ит в той же transaction до внешнего вызова.
+- SQLite и другие non-PostgreSQL dialects claim-ят одной conditional compare-and-set командой `UPDATE ... RETURNING id`, затем обязательно перечитывают ORM state; process-local mutex не является гарантией.
+- Cached batch через commit не переносится ни в одном dialect.
+- `already_linked` допустим только для полной canonical связи: положительный decimal ID и номер формата `WH-R-*` или `WR-*`. Partial/conflicting link требует manual review; ID-only восстанавливается только exact-detail при совпадении с durable response ID.
+- Normal exact save и полный `already_linked` разрешают связанные `skladbot_return_create` incidents и пишут resolution audit.
 
 ## Google → backend circuit breaker
 
@@ -72,16 +91,19 @@ Stock shortage признаётся только по детерминирова
 
 В production Smartup worker работает fail-closed:
 
-- `SMARTUP_AUTO_IMPORT_CLIENT_CHAT_ID` и `SMARTUP_AUTO_IMPORT_LOGISTICS_CHAT_ID` — numeric group-like targets; они могут совпадать;
-- `TAKSKLAD_AUTOMATION_ALERT_CHAT_ID` — numeric personal-like target, входит в `TELEGRAM_ADMIN_CHAT_IDS` и отличается от report routes;
-- legacy `SMARTUP_AUTO_IMPORT_ALERT_CHAT_ID` пустой либо совпадает с unified alert;
+- `client`, `logistics`, `admin` — три попарно различных typed route; client/logistics group-like, admin personal-like;
+- client получает только Smartup export в `12:00`, `15:00`, `17:50` и daily в `22:00`;
+- logistics получает только итоговый отчёт в `17:50`; все ошибки и служебные события получает только один admin route;
+- legacy `SMARTUP_AUTO_IMPORT_ALERT_CHAT_ID` должен быть пустым; fallback и broadcast между ролями запрещены;
 - `SMARTUP_AUTO_IMPORT_ROUTE_FINGERPRINT_KEY` задан и стабилен между deploy/rollback.
 
-Raw chat ID и fingerprint key не пишутся в audit/status. Event хранит только HMAC route fingerprint, роль и provenance. Автофайл/caption помечены `AUTO Smartup`, ручной `/logistics` — `MANUAL /logistics`.
+Raw production chat ID, token и fingerprint key не коммитятся и не пишутся в audit/status. Event хранит только HMAC route fingerprint, роль и internal provenance. Auto/manual provenance не меняет client-facing caption или filename.
 
-Логистика запускается отдельным due/recovery-контуром. Время по умолчанию равно `SMARTUP_AUTO_IMPORT_FINAL_TIME`; override — `SMARTUP_AUTO_IMPORT_LOGISTICS_DUE_TIME`. Failed send остаётся durable `failed`, повторяется с bounded exponential backoff и после cap блокирует status/readiness. Catch-up использует Smartup import metadata и наличие подходящих Orders на ожидаемую дату.
+Protected identity anchor хранится только во внешнем Production Environment secret `TELEGRAM_ROUTING_IDENTITY_ANCHOR_SHA256` и формируется вне deploy из канонического role/type/chat-ID mapping. Helper не создаёт anchor из candidate или persisted `.env`; missing, malformed или mismatch блокирует установку и restart. Сам anchor и raw chat IDs не выводятся в лог.
 
-Legacy `sent` audit без route fingerprint по умолчанию считается доставленным и мигрируется в completed v2 event без повторной отправки. Для подтверждённого misroute допускается ровно одна export-date через `SMARTUP_AUTO_IMPORT_LOGISTICS_ROUTE_RECOVERY_EXPORT_DATE=YYYY-MM-DD`; после успешной отправки v2 idempotency блокирует дубль. Не оставлять recovery-date включённой после подтверждения доставки.
+Логистика проверяется после Smartup slots тем же scheduler cycle и отправляется только при durable proof всех ожидаемых slots текущей даты: импорт terminal, все заказы существуют, SkladBot create queue terminal-success, client export terminal-success. Failed/partial/ambiguous dependency блокирует logistics. Build failure до начала Telegram delivery допускает bounded retry; после начала delivery любой неоднозначный результат становится `manual_recovery_required` без автоматического retry.
+
+Любое изменение client-facing Telegram text/caption/filename/label, role/chat mapping, schedule, fallback или message kind требует exact before/after и явного согласования Антона. После согласования обязательны synthetic contract tests и no-send verifier.
 
 ## Rollout и rollback
 

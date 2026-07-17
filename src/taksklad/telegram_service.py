@@ -7,13 +7,11 @@ import tempfile
 import urllib.parse
 import urllib.request
 from datetime import datetime
+from enum import Enum
 
 from .config import (
     APP_NAME,
     APP_VERSION,
-    BACKUP_DIR,
-    DAILY_REPORT_AUTO_SEND_HOUR,
-    DAILY_REPORT_AUTO_SEND_MINUTE,
     LOG_FILE,
     PENDING_PRINTS_FILE,
     PENDING_TELEGRAM_FILE,
@@ -25,13 +23,7 @@ from .config import (
     YANDEX_GEOCODER_KEY_FILE,
 )
 from .http_client import open_https_url
-from .reports import (
-    parse_report_date,
-    report_date_display,
-    report_date_key,
-    scan_backup_path_for_date,
-    truncate_middle,
-)
+from .reports import scan_backup_path_for_date, truncate_middle
 from .storage import (
     append_queue_item,
     load_data_section,
@@ -49,12 +41,28 @@ from .utils import (
 )
 
 
+class DesktopTelegramMessageKind(str, Enum):
+    SERVICE_ERROR = "service_error"
+    SERVICE_DOCUMENT = "service_document"
+    SERVICE_REPORT = "service_report"
+    MANUAL_ADMIN_RESPONSE = "manual_admin_response"
+
+
+def desktop_telegram_message_kind(value):
+    try:
+        return value if isinstance(value, DesktopTelegramMessageKind) else DesktopTelegramMessageKind(str(value))
+    except ValueError:
+        return None
+
+
 def load_telegram_settings():
     defaults = {
         "enabled": False,
         "bot_token": "",
         "chat_id": "",
         "chat_ids": [],
+        "routing_contract_version": 0,
+        "admin_chat_id": "",
         "send_reports": True,
         "send_scan_backups": False,
         "send_pending_files": False,
@@ -71,27 +79,25 @@ def load_telegram_settings():
 
 def get_telegram_chat_ids(settings=None):
     settings = settings or load_telegram_settings()
-    chat_ids = []
+    if int(settings.get("routing_contract_version") or 0) != 1:
+        return []
+    if normalize_text(settings.get("chat_id")):
+        return []
     raw_chat_ids = settings.get("chat_ids", [])
     if isinstance(raw_chat_ids, list):
-        chat_ids.extend(normalize_text(chat_id) for chat_id in raw_chat_ids)
+        legacy_chat_ids = [normalize_text(value) for value in raw_chat_ids if normalize_text(value)]
     else:
-        chat_ids.extend(
-            normalize_text(chat_id)
-            for chat_id in str(raw_chat_ids).split(",")
-        )
-
-    legacy_chat_id = normalize_text(settings.get("chat_id"))
-    if legacy_chat_id:
-        chat_ids.append(legacy_chat_id)
-
-    unique_chat_ids = []
-    seen = set()
-    for chat_id in chat_ids:
-        if chat_id and chat_id not in seen:
-            unique_chat_ids.append(chat_id)
-            seen.add(chat_id)
-    return unique_chat_ids
+        legacy_chat_ids = [
+            normalize_text(value)
+            for value in str(raw_chat_ids or "").split(",")
+            if normalize_text(value)
+        ]
+    if legacy_chat_ids:
+        return []
+    admin_chat_id = normalize_text(settings.get("admin_chat_id"))
+    if not admin_chat_id.isdigit() or int(admin_chat_id) <= 0:
+        return []
+    return [admin_chat_id]
 
 def telegram_is_configured(settings=None):
     settings = settings or load_telegram_settings()
@@ -182,8 +188,14 @@ def send_telegram_message_to_chat(chat_id, text, token, reply_markup=None):
     telegram_api_request(token, "sendMessage", fields, timeout=30)
     return True, "Отправлено в Telegram"
 
-def send_telegram_message(text, reply_markup=None):
+def send_telegram_message(text, reply_markup=None, *, message_kind=None):
     settings = load_telegram_settings()
+    typed_kind = desktop_telegram_message_kind(message_kind)
+    if typed_kind not in {
+        DesktopTelegramMessageKind.SERVICE_ERROR,
+        DesktopTelegramMessageKind.MANUAL_ADMIN_RESPONSE,
+    }:
+        return False, "Telegram message kind не разрешён"
     if not telegram_is_configured(settings):
         return False, "Telegram не настроен"
 
@@ -196,7 +208,7 @@ def send_telegram_message(text, reply_markup=None):
             sent += 1
         except Exception as exc:
             logging.exception("Не удалось отправить сообщение в Telegram")
-            errors.append(f"{chat_id}: {exc}")
+            errors.append(f"Telegram sendMessage failed: {exc.__class__.__name__}")
 
     if errors:
         return False, "; ".join(errors)
@@ -354,8 +366,14 @@ def send_telegram_document_to_chat(file_path, chat_id, caption, token):
         return True, "Отправлено в Telegram"
     return False, normalize_text(result.get("description")) or "Telegram вернул ошибку"
 
-def send_telegram_document(file_path, caption=""):
+def send_telegram_document(file_path, caption="", *, message_kind=None):
     settings = load_telegram_settings()
+    typed_kind = desktop_telegram_message_kind(message_kind)
+    if typed_kind not in {
+        DesktopTelegramMessageKind.SERVICE_DOCUMENT,
+        DesktopTelegramMessageKind.SERVICE_REPORT,
+    }:
+        return False, "Telegram document kind не разрешён"
     if not telegram_is_configured(settings):
         return False, "Telegram не настроен"
     if not safe_telegram_document_path(file_path):
@@ -373,7 +391,7 @@ def send_telegram_document(file_path, caption=""):
                 errors.append(f"{chat_id}: {message}")
         except Exception as exc:
             logging.exception("Не удалось отправить документ в Telegram")
-            errors.append(f"{chat_id}: {exc}")
+            errors.append(f"Telegram sendDocument failed: {exc.__class__.__name__}")
 
     if errors:
         return False, "; ".join(errors)
@@ -393,7 +411,13 @@ def make_pending_telegram_id(file_path, caption):
     }
     return make_hash(payload)
 
-def add_pending_telegram(file_path, caption, reason):
+def add_pending_telegram(file_path, caption, reason, message_kind):
+    typed_kind = desktop_telegram_message_kind(message_kind)
+    if typed_kind not in {
+        DesktopTelegramMessageKind.SERVICE_DOCUMENT,
+        DesktopTelegramMessageKind.SERVICE_REPORT,
+    }:
+        return None
     if not safe_telegram_document_path(file_path):
         return None
     pending_id = make_pending_telegram_id(file_path, caption)
@@ -405,6 +429,7 @@ def add_pending_telegram(file_path, caption, reason):
         "caption": normalize_text(caption),
         "attempts": 1,
         "last_error": reason,
+        "message_kind": typed_kind.value,
     }
 
     def update_existing(existing):
@@ -416,13 +441,19 @@ def add_pending_telegram(file_path, caption, reason):
     append_queue_item("pending_telegram", item, update_existing=update_existing)
     return pending_id
 
-def send_or_queue_telegram_document(file_path, caption):
+def send_or_queue_telegram_document(file_path, caption, *, message_kind):
+    typed_kind = desktop_telegram_message_kind(message_kind)
+    if typed_kind not in {
+        DesktopTelegramMessageKind.SERVICE_DOCUMENT,
+        DesktopTelegramMessageKind.SERVICE_REPORT,
+    }:
+        return False, "Telegram document kind не разрешён"
     settings = load_telegram_settings()
     if not telegram_is_configured(settings):
         return False, "Telegram не настроен"
-    ok, message = send_telegram_document(file_path, caption)
+    ok, message = send_telegram_document(file_path, caption, message_kind=typed_kind)
     if not ok:
-        add_pending_telegram(file_path, caption, message)
+        add_pending_telegram(file_path, caption, message, typed_kind)
     return ok, message
 
 def sync_pending_telegram():
@@ -438,7 +469,17 @@ def sync_pending_telegram():
         caption = item.get("caption", "")
         if not safe_telegram_document_path(file_path):
             continue
-        ok, message = send_telegram_document(file_path, caption)
+        message_kind = desktop_telegram_message_kind(item.get("message_kind"))
+        if message_kind is None:
+            failed += 1
+            item["last_error"] = "legacy Telegram queue item blocked: missing typed message kind"
+            remaining.append(item)
+            continue
+        ok, message = send_telegram_document(
+            file_path,
+            caption,
+            message_kind=message_kind,
+        )
         if ok:
             sent += 1
             continue
@@ -452,108 +493,6 @@ def sync_pending_telegram():
 
 def today_scan_backup_path():
     return scan_backup_path_for_date()
-
-def load_daily_report_state():
-    state = load_data_section("daily_report_state", {})
-    return state if isinstance(state, dict) else {}
-
-def save_daily_report_state(state):
-    return save_data_section("daily_report_state", state)
-
-def daily_report_state_entry(report_date=None):
-    return load_daily_report_state().get(report_date_key(report_date), {})
-
-def daily_report_already_handled(report_date=None):
-    entry = daily_report_state_entry(report_date)
-    return normalize_text(entry.get("status")) in {"sent", "queued", "empty"}
-
-def mark_daily_report_status(report_date, status, filename="", message="", total_rows=0):
-    key = report_date_key(report_date)
-    entry = {
-        "date": key,
-        "display_date": report_date_display(report_date),
-        "status": normalize_text(status),
-        "filename": os.path.abspath(filename) if filename else "",
-        "message": normalize_text(message),
-        "total_rows": total_rows,
-        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-    }
-
-    def update(state):
-        state = state if isinstance(state, dict) else {}
-        state[key] = entry
-        return state
-
-    mutate_data_section("daily_report_state", update, default={})
-    return entry
-
-def scan_backup_report_dates():
-    dates = []
-    if not os.path.isdir(BACKUP_DIR):
-        return dates
-    pattern = re.compile(r"^scan_backup_(\d{2}\.\d{2}\.\d{4})\.jsonl$")
-    for file_name in os.listdir(BACKUP_DIR):
-        match = pattern.match(file_name)
-        if not match:
-            continue
-        path = os.path.join(BACKUP_DIR, file_name)
-        if not os.path.isfile(path) or os.path.getsize(path) <= 0:
-            continue
-        dates.append(parse_report_date(match.group(1)))
-    return sorted(set(dates))
-
-def should_send_today_daily_report(now=None):
-    now = now or datetime.now()
-    send_at = now.replace(
-        hour=DAILY_REPORT_AUTO_SEND_HOUR,
-        minute=DAILY_REPORT_AUTO_SEND_MINUTE,
-        second=0,
-        microsecond=0,
-    )
-    return now >= send_at
-
-def due_daily_report_dates(now=None):
-    now = now or datetime.now()
-    today = now.date()
-    dates = [date for date in scan_backup_report_dates() if date < today]
-    if should_send_today_daily_report(now) and os.path.exists(scan_backup_path_for_date(today)):
-        dates.append(today)
-    return [date for date in sorted(set(dates)) if not daily_report_already_handled(date)]
-
-def daily_report_caption(result, reason=""):
-    date_label = result.get("shipment_date_display") or result.get("report_date_display")
-    part_number = result.get("part_number")
-    part_text = f", часть {part_number}" if part_number else ""
-    lines = [
-        f"{APP_NAME}: КИЗ-отчёт за {date_label}{part_text}",
-        f"Всего КИЗов: {result.get('total_report_rows', 0)}",
-        f"Терминал: {result.get('terminal_count', 0)}",
-        f"Перечисление: {result.get('transfer_count', 0)}",
-        f"Не распознано: {result.get('unknown_count', 0)}",
-    ]
-    if reason:
-        lines.extend(["", reason])
-    return "\n".join(lines)
-
-def send_daily_report_result_to_telegram(result, reason=""):
-    filename = result.get("filename")
-    if not filename:
-        return False, "Файл отчёта не создан", "failed"
-    ok, message = send_or_queue_telegram_document(filename, daily_report_caption(result, reason=reason))
-    if ok:
-        status = "sent"
-    elif telegram_is_configured():
-        status = "queued"
-    else:
-        status = "failed"
-    mark_daily_report_status(
-        result.get("report_date"),
-        status,
-        filename=filename,
-        message=message,
-        total_rows=result.get("total_report_rows", 0),
-    )
-    return ok, message, status
 
 def collect_operational_documents(
     include_report=None,

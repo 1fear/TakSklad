@@ -14,6 +14,7 @@ from .models import Order, OrderItem
 from .orders_service import ApiError, STATUS_RETURNED
 from .reports_service import parse_report_date
 from .spreadsheet_safety import force_workbook_text_literals
+from .telegram_output_contract import logistics_report_filename
 
 
 LOGISTICS_HEADERS = [
@@ -172,10 +173,6 @@ def build_logistics_report_xlsx(db: Session, shipment_date: str):
     force_workbook_text_literals(workbook)
     workbook.save(buffer)
     return buffer.getvalue(), logistics_report_filename(report_date)
-
-
-def logistics_report_filename(report_date):
-    return f"TakSklad_логистика_{report_date.strftime('%d.%m.%Y')}.xlsx"
 
 
 def set_cell(row, one_based_index, value):

@@ -6,10 +6,13 @@ from types import SimpleNamespace
 from unittest import mock
 
 from fastapi import HTTPException, Response
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
+from sqlalchemy.pool import StaticPool
 
 from backend.app.auth_identities import (
+    ACCEPTANCE_CANARY_IDENTIFIER,
     SERVICE_PRINCIPAL_SCOPE_MATRIX,
     IdentityAuthError,
     IdentityScopeError,
@@ -24,7 +27,7 @@ from backend.app.auth_identities import (
     validate_principal_scopes,
     validate_user_session,
 )
-from backend.app.models import AuthSession, Base, ServicePrincipal, ServicePrincipalToken, User
+from backend.app.models import AuthSession, Base, Order, ServicePrincipal, ServicePrincipalToken, User
 from backend.app.schemas import AuthLoginRequest
 from backend.app.settings import load_settings
 from backend.app.web_auth import SESSION_COOKIE_NAME, hash_password
@@ -90,6 +93,339 @@ class BackendAuthIdentityTests(unittest.TestCase):
             validate_principal_scopes("desktop", ["orders:read", "admin:write"])
         with self.assertRaises(ValueError):
             scopes_for_principal_kind("unknown")
+        self.assertIn("returns:read", SERVICE_PRINCIPAL_SCOPE_MATRIX["acceptance"])
+        self.assertNotIn("returns:write", SERVICE_PRINCIPAL_SCOPE_MATRIX["acceptance"])
+
+    def test_legacy_cutoff_and_returns_scope_matrix_are_exact_and_fail_closed(self):
+        cutoff = datetime(2030, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+        legacy_token = "synthetic-legacy-token-value"
+        legacy_settings = load_settings({
+            "TAKSKLAD_ENV": "test",
+            "TAKSKLAD_API_TOKEN": legacy_token,
+            "TAKSKLAD_LEGACY_AUTH_MODE": "enforce",
+            "TAKSKLAD_LEGACY_AUTH_EXPIRES_AT": cutoff.isoformat(),
+            "TAKSKLAD_WEB_SESSION_SECRET": "independent-synthetic-session-secret",
+        })
+        with mock.patch.object(backend_main, "settings", legacy_settings):
+            self.assertTrue(backend_main.legacy_auth_window_active(cutoff - timedelta(microseconds=1)))
+            self.assertFalse(backend_main.legacy_auth_window_active(cutoff))
+            self.assertFalse(backend_main.legacy_auth_window_active(cutoff + timedelta(microseconds=1)))
+
+        auth_now = datetime.now(timezone.utc)
+        read_principal = self.add_principal(
+            kind="acceptance",
+            scopes=["returns:read"],
+            suffix="returns-read",
+        )
+        read_principal.expires_at = auth_now + timedelta(days=30)
+        read_token = issue_service_token(
+            self.db,
+            read_principal,
+            expires_at=auth_now + timedelta(days=1),
+            now=auth_now,
+            secret_factory=lambda _count: FIXED_SECRET + "-returns-read",
+        )
+        wrong_principal = self.add_principal(scopes=["orders:read"], suffix="wrong-scope")
+        wrong_principal.expires_at = auth_now + timedelta(days=30)
+        wrong_token = issue_service_token(
+            self.db,
+            wrong_principal,
+            expires_at=auth_now + timedelta(days=1),
+            now=auth_now,
+            secret_factory=lambda _count: FIXED_SECRET + "-wrong-scope",
+        )
+        self.db.commit()
+        identity_settings = load_settings({
+            "TAKSKLAD_ENV": "test",
+            "TAKSKLAD_IDENTITY_AUTH_ENABLED": "true",
+            "TAKSKLAD_WEB_SESSION_SECRET": "independent-synthetic-session-secret",
+        })
+
+        def request_for(path, method="GET", template=None):
+            scope = {}
+            if template:
+                scope["route"] = SimpleNamespace(path=template)
+            return SimpleNamespace(
+                url=SimpleNamespace(path=path),
+                method=method,
+                cookies={},
+                scope=scope,
+                state=SimpleNamespace(),
+            )
+
+        with mock.patch.object(backend_main, "settings", identity_settings):
+            for authorization in (None, "Bearer invalid-synthetic-token"):
+                with self.subTest(authorization=bool(authorization)):
+                    with self.assertRaises(HTTPException) as denied:
+                        backend_main.read_auth_context(
+                            request_for("/api/v1/returns"),
+                            authorization,
+                            db=self.db,
+                        )
+                    self.assertEqual(denied.exception.status_code, 401)
+
+            for path in ("/api/v1/returns", "/api/v1/returns/lookup"):
+                allowed = backend_main.require_service_token(
+                    request_for(path),
+                    f"Bearer {read_token.token}",
+                    db=self.db,
+                )
+                self.assertEqual(allowed.permissions, ("returns:read",))
+
+            with self.assertRaises(HTTPException) as wrong_scope:
+                backend_main.require_service_token(
+                    request_for("/api/v1/returns"),
+                    f"Bearer {wrong_token.token}",
+                    db=self.db,
+                )
+            self.assertEqual(wrong_scope.exception.status_code, 403)
+
+            with self.assertRaises(HTTPException) as write_denied:
+                backend_main.require_service_token(
+                    request_for(
+                        "/api/v1/returns/synthetic-order",
+                        method="POST",
+                        template="/api/v1/returns/{order_id}",
+                    ),
+                    f"Bearer {read_token.token}",
+                    db=self.db,
+                )
+            self.assertEqual(write_denied.exception.status_code, 403)
+
+    def test_auth_canary_http_endpoints_enforce_exact_identity_matrix_without_business_data(self):
+        client = TestClient(backend_main.app)
+
+        def context(source, role, permissions, *, login="synthetic"):
+            return backend_main.AuthContext(
+                login=login,
+                role=role,
+                permissions=tuple(sorted(permissions)),
+                source=source,
+            )
+
+        acceptance_exact = context(
+            "service-principal", "acceptance", {"returns:read"}, login=ACCEPTANCE_CANARY_IDENTIFIER
+        )
+        desktop_exact = context(
+            "service-principal",
+            "desktop",
+            SERVICE_PRINCIPAL_SCOPE_MATRIX["desktop"],
+        )
+
+        def request(path, auth_context, identifier=None):
+            def dependency():
+                if isinstance(auth_context, Exception):
+                    raise auth_context
+                return auth_context
+
+            backend_main.app.dependency_overrides[backend_main.require_service_token] = dependency
+            backend_main.app.dependency_overrides[backend_main.get_db] = lambda: self.fail(
+                "business database dependency must not run"
+            )
+            headers = {}
+            if not isinstance(auth_context, Exception):
+                headers["X-TakSklad-Canary-Identifier"] = identifier or auth_context.login
+            return client.get(path, headers=headers)
+
+        try:
+            for label in ("missing", "invalid"):
+                with self.subTest(label=label):
+                    response = request(
+                        "/api/v1/returns/auth-canary/acceptance",
+                        HTTPException(status_code=401, detail="Invalid service token"),
+                    )
+                    self.assertEqual(response.status_code, 401)
+
+            for path, allowed in (
+                ("/api/v1/returns/auth-canary/acceptance", acceptance_exact),
+                ("/api/v1/returns/auth-canary/desktop", desktop_exact),
+            ):
+                response = request(path, allowed)
+                self.assertEqual(response.status_code, 204)
+                self.assertEqual(response.content, b"")
+                self.assertEqual(response.headers.get("cache-control"), "no-store")
+
+            denied_cases = [
+                ("acceptance-cross-kind", "/api/v1/returns/auth-canary/desktop", acceptance_exact),
+                ("desktop-cross-kind", "/api/v1/returns/auth-canary/acceptance", desktop_exact),
+                (
+                    "acceptance-wrong-identifier",
+                    "/api/v1/returns/auth-canary/acceptance",
+                    context("service-principal", "acceptance", {"returns:read"}),
+                ),
+                (
+                    "acceptance-extra-scopes",
+                    "/api/v1/returns/auth-canary/acceptance",
+                    context("service-principal", "acceptance", SERVICE_PRINCIPAL_SCOPE_MATRIX["acceptance"]),
+                ),
+                (
+                    "legacy-during-grace",
+                    "/api/v1/returns/auth-canary/desktop",
+                    context("legacy-service-token", "desktop", SERVICE_PRINCIPAL_SCOPE_MATRIX["desktop"]),
+                ),
+                (
+                    "web-session",
+                    "/api/v1/returns/auth-canary/desktop",
+                    context("web-session", "desktop", SERVICE_PRINCIPAL_SCOPE_MATRIX["desktop"]),
+                ),
+                (
+                    "wrong-kind",
+                    "/api/v1/returns/auth-canary/desktop",
+                    context("service-principal", "worker", SERVICE_PRINCIPAL_SCOPE_MATRIX["desktop"]),
+                ),
+            ]
+            for label, path, denied_context in denied_cases:
+                with self.subTest(label=label):
+                    expected_identifier = (
+                        ACCEPTANCE_CANARY_IDENTIFIER
+                        if path.endswith("/acceptance")
+                        else getattr(denied_context, "login", "desktop.expected")
+                    )
+                    self.assertEqual(request(path, denied_context, expected_identifier).status_code, 403)
+
+            for removed_scope in SERVICE_PRINCIPAL_SCOPE_MATRIX["desktop"]:
+                with self.subTest(desktop_missing=removed_scope):
+                    reduced = set(SERVICE_PRINCIPAL_SCOPE_MATRIX["desktop"]) - {removed_scope}
+                    response = request(
+                        "/api/v1/returns/auth-canary/desktop",
+                        context("service-principal", "desktop", reduced),
+                    )
+                    self.assertEqual(response.status_code, 403)
+
+            self.assertEqual(self.db.execute(select(Order)).scalars().all(), [])
+        finally:
+            backend_main.app.dependency_overrides.clear()
+
+    def test_auth_canary_http_uses_real_scoped_token_and_session_authentication(self):
+        engine = create_engine(
+            "sqlite+pysqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        db = Session(engine, expire_on_commit=False)
+        now = datetime.now(timezone.utc)
+
+        def issued(kind, scopes, suffix, *, identifier=None):
+            principal = ServicePrincipal(
+                id=uuid.uuid4(),
+                identifier=identifier or f"http-{kind}-{suffix}",
+                kind=kind,
+                scopes=list(scopes),
+                is_active=True,
+                expires_at=now + timedelta(days=1),
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(principal)
+            db.flush()
+            return issue_service_token(
+                db,
+                principal,
+                expires_at=now + timedelta(hours=1),
+                now=now,
+                secret_factory=lambda _count: FIXED_SECRET + suffix,
+            ).token
+
+        acceptance = issued(
+            "acceptance", {"returns:read"}, "acceptance", identifier=ACCEPTANCE_CANARY_IDENTIFIER
+        )
+        acceptance_wrong_identifier = issued(
+            "acceptance", {"returns:read"}, "acceptance-wrong-identifier"
+        )
+        acceptance_full = issued(
+            "acceptance",
+            SERVICE_PRINCIPAL_SCOPE_MATRIX["acceptance"],
+            "acceptance-full",
+        )
+        desktop_identifier = "desktop.http"
+        desktop = issued(
+            "desktop", SERVICE_PRINCIPAL_SCOPE_MATRIX["desktop"], "desktop",
+            identifier=desktop_identifier,
+        )
+        desktop_no_write = issued(
+            "desktop",
+            set(SERVICE_PRINCIPAL_SCOPE_MATRIX["desktop"]) - {"returns:write"},
+            "desktop-no-write",
+        )
+        user = User(
+            id=uuid.uuid4(), username="998000000009", password_hash="synthetic", role="operator",
+            is_active=True, auth_version=1, created_at=now, updated_at=now,
+        )
+        db.add(user)
+        db.flush()
+        web_token = create_user_session(
+            db, user, expires_at=now + timedelta(hours=1), now=now,
+            secret_factory=lambda _count: FIXED_SECRET + "web",
+        ).token
+        db.commit()
+
+        def override_db():
+            yield db
+
+        backend_main.app.dependency_overrides[backend_main.get_db] = override_db
+        client = TestClient(backend_main.app)
+        settings = load_settings({
+            "TAKSKLAD_ENV": "test",
+            "TAKSKLAD_IDENTITY_AUTH_ENABLED": "true",
+            "TAKSKLAD_API_TOKEN": "synthetic-legacy-http-token",
+            "TAKSKLAD_LEGACY_AUTH_MODE": "enforce",
+            "TAKSKLAD_LEGACY_AUTH_EXPIRES_AT": (now + timedelta(hours=1)).isoformat(),
+            "TAKSKLAD_WEB_SESSION_SECRET": "independent-synthetic-session-secret",
+        })
+        try:
+            with mock.patch.object(backend_main, "settings", settings):
+                cases = (
+                    ("/api/v1/returns/auth-canary/acceptance", acceptance, ACCEPTANCE_CANARY_IDENTIFIER, 204),
+                    ("/api/v1/returns/auth-canary/desktop", desktop, desktop_identifier, 204),
+                    ("/api/v1/returns/auth-canary/desktop", desktop, "desktop.beta", 403),
+                    ("/api/v1/returns/auth-canary/desktop", acceptance, ACCEPTANCE_CANARY_IDENTIFIER, 403),
+                    ("/api/v1/returns/auth-canary/acceptance", desktop, ACCEPTANCE_CANARY_IDENTIFIER, 403),
+                    ("/api/v1/returns/auth-canary/acceptance", acceptance_full, ACCEPTANCE_CANARY_IDENTIFIER, 403),
+                    ("/api/v1/returns/auth-canary/acceptance", acceptance_wrong_identifier, ACCEPTANCE_CANARY_IDENTIFIER, 403),
+                    ("/api/v1/returns/auth-canary/desktop", desktop_no_write, "http-desktop-desktop-no-write", 403),
+                )
+                for path, token, identifier, expected in cases:
+                    response = client.get(path, headers={
+                        "Authorization": f"Bearer {token}",
+                        "X-TakSklad-Canary-Identifier": identifier,
+                    })
+                    self.assertEqual(response.status_code, expected)
+                    if expected == 204:
+                        self.assertEqual(response.content, b"")
+                        self.assertEqual(response.headers.get("cache-control"), "no-store")
+                for authorization in (None, "Bearer invalid-synthetic"):
+                    headers = {} if authorization is None else {"Authorization": authorization}
+                    self.assertEqual(
+                        client.get(
+                            "/api/v1/returns/auth-canary/desktop",
+                            headers={**headers, "X-TakSklad-Canary-Identifier": desktop_identifier},
+                        ).status_code,
+                        401,
+                    )
+                self.assertEqual(
+                    client.get(
+                        "/api/v1/returns/auth-canary/desktop",
+                        headers={
+                            "Authorization": "Bearer synthetic-legacy-http-token",
+                            "X-TakSklad-Canary-Identifier": desktop_identifier,
+                        },
+                    ).status_code,
+                    403,
+                )
+                self.assertEqual(
+                    client.get(
+                        "/api/v1/returns/auth-canary/desktop",
+                        headers={"X-TakSklad-Canary-Identifier": desktop_identifier},
+                        cookies={SESSION_COOKIE_NAME: web_token},
+                    ).status_code,
+                    403,
+                )
+                self.assertEqual(db.execute(select(Order)).scalars().all(), [])
+        finally:
+            backend_main.app.dependency_overrides.clear()
+            db.close()
+            engine.dispose()
 
     def test_service_token_is_digest_only_scoped_and_touched(self):
         principal = self.add_principal(scopes=["orders:read"])

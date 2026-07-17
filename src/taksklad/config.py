@@ -2,7 +2,11 @@ import json
 import os
 import sys
 
-from taksklad.secret_store import BACKEND_API_TOKEN_SECRET, SecretStoreError, load_secret
+from taksklad.secret_store import (
+    SecretStoreError,
+    SecretStoreUnavailable,
+    load_backend_auth_bundle,
+)
 
 APP_NAME = "TakSklad"
 APP_EXECUTABLE_NAME = "TakSklad.exe"
@@ -121,7 +125,7 @@ TELEGRAM_SETTINGS_FILE = os.path.join(APP_DIR, "telegram_settings.json")
 YANDEX_GEOCODER_KEY_FILE = os.path.join(APP_DIR, "yandex_geocoder_key.txt")
 YANDEX_GEOCODER_ENV_VAR = "YANDEX_GEOCODER_API_KEY"
 
-APP_VERSION = "2.0.42"
+APP_VERSION = "2.0.43"
 APP_BUILD_LABEL = os.environ.get("TAKSKLAD_BUILD_LABEL", "MVP 2.0").strip()
 UPDATE_INFO_URL = os.environ.get(
     "TAKSKLAD_UPDATE_INFO_URL",
@@ -138,10 +142,12 @@ EXCEL_IMPORT_EXTENSIONS = {".xlsx", ".xlsm"}
 TELEGRAM_SINGLE_LISTENER_LOCK_ENABLED = True
 
 try:
-    TAKSKLAD_BACKEND_API_TOKEN = (load_secret(BACKEND_API_TOKEN_SECRET) or "").strip()
-except SecretStoreError:
+    TAKSKLAD_BACKEND_API_TOKEN = load_backend_auth_bundle()[0].strip()
+except SecretStoreUnavailable:
     if getattr(sys, "frozen", False) and os.name != "nt":
         raise
+    TAKSKLAD_BACKEND_API_TOKEN = ""
+except SecretStoreError:
     TAKSKLAD_BACKEND_API_TOKEN = ""
 TAKSKLAD_BACKEND_BASE_URL = _string_setting(
     RUNTIME_CONFIG,
@@ -204,10 +210,6 @@ SKLADBOT_REQUESTS_LIMIT = 500
 SKLADBOT_COMPLETED_DETAIL_LIMIT = 500
 SKLADBOT_REQUEST_DELAY_SECONDS = 2.0
 SKLADBOT_SYNC_INTERVAL_MS = 60 * 1000
-DAILY_REPORT_AUTO_SEND_HOUR = 23
-DAILY_REPORT_AUTO_SEND_MINUTE = 55
-DAILY_REPORT_CHECK_INTERVAL_MS = 5 * 60 * 1000
-
 SERVICE_COLUMNS = [
     "ID заказа",
     "ID импорта",

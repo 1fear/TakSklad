@@ -23,6 +23,7 @@ export type Order = {
   representative: string | null;
   coordinates?: string;
   status: string;
+  smartup_id?: string;
   skladbot_request_number: string;
   skladbot_request_id: string;
   skladbot_return_request_number?: string;
@@ -32,23 +33,6 @@ export type Order = {
   returned_at?: string;
   return_reference?: string;
   items: OrderItem[];
-};
-
-export type ScanResult = {
-  id: string;
-  order_item_id: string;
-  code: string;
-  scanned_blocks: number;
-  item_status: string;
-};
-
-export type KizAvailability = {
-  code: string;
-  available: boolean;
-  reason: string;
-  latest_movement_type: string;
-  latest_order_item_id: string;
-  existing_order_item_id: string;
 };
 
 export type ReturnConfirmedItem = {
@@ -174,6 +158,11 @@ export type SkladBotDryRun = {
   blocks: number;
   status: "ready" | "blocked" | "already_linked" | "linked_mismatch" | string;
   error: string;
+  smartup_id: string;
+  skladbot_request_number: string;
+  skladbot_request_id: string;
+  skladbot_return_request_number: string;
+  skladbot_return_request_id: string;
   linked_skladbot_blocks: number;
   linked_skladbot_source: string;
   products: SkladBotDryRunProduct[];
@@ -213,6 +202,7 @@ export type AdminTableRow = {
   scan_codes_count: number;
   block_price: number;
   line_total: number;
+  smartup_id: string;
   skladbot_request_number: string;
   skladbot_request_id: string;
   skladbot_status: string;
@@ -426,8 +416,11 @@ export type ClientPointOrderSummaryDate = {
 
 export type ClientPointOrderReference = {
   order_id: string;
+  smartup_id: string;
   skladbot_request_number: string;
   skladbot_request_id: string;
+  skladbot_return_request_number: string;
+  skladbot_return_request_id: string;
   is_returned: boolean;
 };
 
@@ -708,30 +701,6 @@ export function syncSources(config: ApiConfig, options: { skladbot?: boolean; wa
     method: "POST",
     timeoutMs: LONG_REQUEST_TIMEOUT_MS,
   });
-}
-
-export function lookupKizAvailability(config: ApiConfig, code: string, orderItemId = "") {
-  const query = new URLSearchParams({ code });
-  if (orderItemId) query.set("order_item_id", orderItemId);
-  return apiRequest<KizAvailability>(config, `/api/v1/kiz/availability?${query.toString()}`);
-}
-
-export function createScan(config: ApiConfig, payload: {
-  order_item_id: string;
-  code: string;
-  workstation_id?: string;
-  scanned_by?: string;
-}) {
-  return apiRequest<ScanResult>(config, "/api/v1/scans", { method: "POST", body: payload });
-}
-
-export function undoScan(config: ApiConfig, payload: {
-  order_item_id: string;
-  code: string;
-  workstation_id?: string;
-  actor?: string;
-}) {
-  return apiRequest<ScanResult>(config, "/api/v1/scans/undo", { method: "POST", body: payload });
 }
 
 export function completeWarehouseOrder(config: ApiConfig, orderId: string) {

@@ -20,7 +20,7 @@ class WindowsTestBuildHelperTest(unittest.TestCase):
         self.assertIn("app_build_label = $AppBuildLabel", script)
         self.assertIn("Build label: $AppBuildLabel", script)
         self.assertIn("version.json has local changes", script)
-        self.assertIn("paused 1.1.7 nor forced 2.0.40 rollout manifest", script)
+        self.assertIn("paused 1.1.7 nor forced $MinAppVersion rollout manifest", script)
         self.assertIn("public_version_json_changed = $false", script)
         self.assertIn("windows_backend_acceptance.ps1", script)
         self.assertIn("release_go_no_go.py", script)
@@ -30,6 +30,12 @@ class WindowsTestBuildHelperTest(unittest.TestCase):
         self.assertIn("build_manifest.json", script)
         self.assertIn("PackagedAppDir", script)
         self.assertIn("TakSklad.exe", script)
+        self.assertIn("pyinstaller_entry.py", script)
+        self.assertNotIn('"pyinstaller_auth_entry.py"', script)
+        self.assertNotIn('"TakSkladAuth.exe"', script)
+        self.assertIn("signature_required = $false", script)
+        self.assertIn("production_credentials_allowed = $false", script)
+        self.assertIn("unsigned and synthetic-only", script)
         self.assertIn("Compress-Archive", script)
 
     def test_helper_does_not_embed_secrets_or_release_uploads(self):
@@ -61,6 +67,8 @@ class WindowsTestBuildHelperTest(unittest.TestCase):
             "SKLADBOT_API_TOKEN=",
             "GOOGLE_PRIVATE_KEY",
             "service-token-from-local-secret-storage",
+            "scoped-token.txt",
+            "Read-Host \"Scoped desktop token\"",
         ]
         for fragment in forbidden_fragments:
             self.assertNotIn(fragment, script)

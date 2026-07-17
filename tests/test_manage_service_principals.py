@@ -212,6 +212,59 @@ class ManageServicePrincipalsTests(unittest.TestCase):
             self.assertEqual(second_stderr, "service_principal_error class=secret_file_exists\n")
             self.assertEqual(secret_path.read_text(encoding="utf-8").strip(), token)
 
+    def test_acceptance_principal_can_be_narrowed_to_returns_read_only(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            _, database_url = self.create_database(tmp_dir)
+            secret_path = Path(tmp_dir, "returns-canary-handoff.txt")
+            exit_code, stdout, stderr = self.run_main([
+                "provision",
+                "--apply",
+                "--database-url",
+                database_url,
+                "--secret-file",
+                str(secret_path),
+                "--identifier",
+                "release-returns-canary",
+                "--kind",
+                "acceptance",
+                "--scope",
+                "returns:read",
+            ])
+
+            self.assertEqual(exit_code, 0, stderr)
+            self.assertNotIn(secret_path.read_text(encoding="utf-8").strip(), stdout)
+            engine = create_engine(database_url)
+            Session = sessionmaker(bind=engine)
+            with Session() as db:
+                principal = db.execute(select(ServicePrincipal)).scalar_one()
+                self.assertEqual(principal.kind, "acceptance")
+                self.assertEqual(principal.scopes, ["returns:read"])
+            engine.dispose()
+
+    def test_provision_rejects_scope_outside_principal_kind(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            _, database_url = self.create_database(tmp_dir)
+            secret_path = Path(tmp_dir, "blocked-handoff.txt")
+            exit_code, stdout, stderr = self.run_main([
+                "provision",
+                "--apply",
+                "--database-url",
+                database_url,
+                "--secret-file",
+                str(secret_path),
+                "--identifier",
+                "release-returns-canary",
+                "--kind",
+                "acceptance",
+                "--scope",
+                "returns:write",
+            ])
+
+            self.assertEqual(exit_code, 2)
+            self.assertEqual(stdout, "")
+            self.assertEqual(stderr, "service_principal_error class=principal_scope_invalid\n")
+            self.assertFalse(secret_path.exists())
+
     def test_local_sqlite_rotation_bounds_old_token_and_keeps_plaintext_out_of_output(self):
         old_secret = "PHASE13-SYNTHETIC-OLD-SERVICE-SECRET"
         new_secret = "PHASE13-SYNTHETIC-NEW-SERVICE-SECRET"

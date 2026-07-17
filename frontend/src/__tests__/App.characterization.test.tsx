@@ -97,6 +97,87 @@ describe("login and session characterization", () => {
 });
 
 describe("authenticated control-surface characterization", () => {
+  it("shows canonical order references and return link regardless of stale status bucket", async () => {
+    const row = {
+      ...firstAdminRow,
+      smartup_id: "731, 732",
+      status_bucket: "active",
+      skladbot_return_request_number: "WR-RET-1",
+      skladbot_return_request_id: "903",
+    };
+    server.use(http.get("/api/v1/admin/table", () => HttpResponse.json(adminTable([row]))));
+
+    await renderAuthenticatedApp();
+
+    expect(screen.getByText("Smartup ID: 731, 732")).toBeInTheDocument();
+    expect(screen.getByText("Заявка SkladBot: WH-R-TEST-1")).toBeInTheDocument();
+    expect(screen.getByText("Заявка возврата: WR-RET-1")).toBeInTheDocument();
+  });
+
+  it("keeps operational SkladBot status lines under canonical references", async () => {
+    const rows = [
+      { ...firstAdminRow, item_id: "queued", order_id: "queued", skladbot_request_number: "", skladbot_request_id: "", skladbot_status: "create_queued" },
+      { ...firstAdminRow, item_id: "ambiguous", order_id: "ambiguous", client: "Ambiguous client", skladbot_request_number: "", skladbot_request_id: "", skladbot_status: "ambiguous" },
+      { ...firstAdminRow, item_id: "manual-review", order_id: "manual-review", client: "Manual review client", skladbot_request_number: "", skladbot_request_id: "", skladbot_status: "manual_review" },
+      { ...firstAdminRow, item_id: "error", order_id: "error", client: "Error client", skladbot_request_number: "", skladbot_request_id: "", skladbot_status: "error" },
+      {
+        ...firstAdminRow,
+        item_id: "return-queued",
+        order_id: "return-queued",
+        client: "Return queued client",
+        skladbot_return_request_id: "2001",
+        skladbot_return_request_number: "WR-2001",
+        skladbot_return_status: "queued",
+      },
+      {
+        ...firstAdminRow,
+        item_id: "return-error",
+        order_id: "return-error",
+        client: "Return error client",
+        skladbot_return_request_id: "2002",
+        skladbot_return_request_number: "WR-2002",
+        skladbot_return_status: "create_failed",
+      },
+      {
+        ...firstAdminRow,
+        item_id: "return-manual-review",
+        order_id: "return-manual-review",
+        client: "Return manual review client",
+        skladbot_return_request_id: "2003",
+        skladbot_return_request_number: "WR-2003",
+        skladbot_return_status: "manual_review",
+      },
+    ];
+    server.use(http.get("/api/v1/admin/table", () => HttpResponse.json(adminTable(rows))));
+
+    await renderAuthenticatedApp();
+
+    expect(screen.getByText("Создание в очереди")).toBeInTheDocument();
+    expect(screen.getAllByText("Неоднозначно — ручная проверка")).toHaveLength(2);
+    expect(screen.getByText("Ошибка")).toBeInTheDocument();
+    expect(screen.getByText("Возврат: WR-2001 · В очереди")).toBeInTheDocument();
+    expect(screen.getByText("Возврат: WR-2002 · Ошибка создания")).toBeInTheDocument();
+    expect(screen.getByText("Возврат: WR-2003 · Неоднозначно — ручная проверка")).toBeInTheDocument();
+    expect(screen.queryByText("manual_review")).not.toBeInTheDocument();
+    expect(
+      within(screen.getByText("Manual review client").closest("tr") as HTMLElement).queryByText("Без номера"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows canonical correlations for persisted dry-run orders and honest missing values", async () => {
+    const { user } = await renderAuthenticatedApp();
+
+    await user.click(screen.getByRole("button", { name: "История действий" }));
+    await user.click(screen.getByRole("button", { name: "SkladBot dry-run" }));
+
+    expect(await screen.findByRole("heading", { name: "SkladBot dry-run" })).toBeInTheDocument();
+    expect(screen.getByText("Smartup ID: 731, 732")).toBeInTheDocument();
+    expect(screen.getByText("Заявка SkladBot: WH-R-DRY-1")).toBeInTheDocument();
+    expect(screen.getByText("Заявка возврата: WR-DRY-1")).toBeInTheDocument();
+    expect(screen.getByText("Smartup ID: —")).toBeInTheDocument();
+    expect(screen.getByText("Заявка SkladBot: —")).toBeInTheDocument();
+  });
+
   it("keeps server-side filters and pagination parameters deterministic", async () => {
     const requests: URL[] = [];
     server.use(
@@ -212,9 +293,13 @@ describe("authenticated control-surface characterization", () => {
     expect(await screen.findByRole("heading", { name: "Клиенты и таймслоты" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /История заказов Клиент Альфа: 2 заказов · 1 возвратов/ }));
     expect(await screen.findByText("Тестовый товар")).toBeInTheDocument();
-    expect(screen.getByText("Заказ 1 · SkladBot: WH-R-TEST-1")).toBeInTheDocument();
-    expect(screen.getByText("Заказ 2 · SkladBot: ID 1002")).toBeInTheDocument();
-    expect(screen.getByText("Возврат · SkladBot: не найдена")).toBeInTheDocument();
+    expect(screen.getByText("Smartup ID: 731, 732")).toBeInTheDocument();
+    expect(screen.getByText("Заявка SkladBot: WH-R-TEST-1")).toBeInTheDocument();
+    expect(screen.getByText("Smartup ID: 733")).toBeInTheDocument();
+    expect(screen.getByText("Заявка SkladBot: ID 1002")).toBeInTheDocument();
+    expect(screen.getByText("Smartup ID: 734")).toBeInTheDocument();
+    expect(screen.getByText("Заявка SkladBot: —")).toBeInTheDocument();
+    expect(screen.getByText("Заявка возврата: WR-RET-1")).toBeInTheDocument();
 
     const clientSearch = screen.getByRole("searchbox", { name: "Поиск клиентов" });
     await user.type(clientSearch, "Несуществующий клиент");

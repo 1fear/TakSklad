@@ -22,6 +22,7 @@ from .skladbot_request_dry_run import (
     create_skladbot_dry_run_for_import,
     skladbot_create_idempotency_key,
 )
+from .skladbot_contracts import format_internal_smartup_ids, internal_smartup_id_from_source
 
 
 logger = logging.getLogger(__name__)
@@ -208,6 +209,8 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
             db.add(order)
             order_by_key[order_key] = order
             orders_created += 1
+        elif import_job.source == SMARTUP_AUTO_IMPORT_SOURCE:
+            preserve_order_smartup_identity(order, row.get("source_order_id"))
 
         resolved_order_ids.add(order.id)
 
@@ -764,6 +767,19 @@ def build_order_raw_payload(
         "split_source_order_id": row["source_order_id"],
     })
     return payload
+
+
+def preserve_order_smartup_identity(order: Order, incoming_source_order_id) -> str:
+    """Keep the first order source stable while returning every exact deal linked by its items."""
+    raw_payload = dict(order.raw_payload or {})
+    current = internal_smartup_id_from_source(raw_payload.get("source_order_id"))
+    incoming = internal_smartup_id_from_source(incoming_source_order_id)
+    if not current and incoming:
+        raw_payload["source_order_id"] = f"smartup:{incoming}"
+        order.raw_payload = raw_payload
+    sources = [raw_payload.get("source_order_id"), incoming_source_order_id]
+    sources.extend((item.raw_payload or {}).get("source_order_id") for item in order.items)
+    return format_internal_smartup_ids(sources)
 
 
 def find_existing_item_for_row(db: Session, row, existing_items):

@@ -38,12 +38,14 @@ class BackendRbacPolicyTests(unittest.TestCase):
         }
 
         self.assertEqual(actual, set(ROUTE_POLICIES))
-        self.assertEqual(len(actual), 57)
+        self.assertEqual(len(actual), 59)
+        self.assertIn(("GET", "/api/v1/returns/auth-canary/acceptance"), actual)
+        self.assertIn(("GET", "/api/v1/returns/auth-canary/desktop"), actual)
 
     def test_every_protected_route_has_complete_web_and_service_policy(self):
         protected = [policy for policy in ROUTE_POLICIES.values() if policy.authentication == AUTH_PROTECTED]
 
-        self.assertEqual(len(protected), 53)
+        self.assertEqual(len(protected), 55)
         self.assertTrue(all(policy.web_permission in ALL_PERMISSIONS for policy in protected))
         self.assertTrue(all(bool(policy.service_scope) for policy in protected))
 
@@ -170,7 +172,7 @@ class BackendRbacPolicyTests(unittest.TestCase):
                     self.assertEqual(anonymous.exception.status_code, 401)
                 decisions += 1
 
-        self.assertEqual(decisions, 318)
+        self.assertEqual(decisions, 330)
 
     def test_all_get_handlers_static_mutation_scan_is_zero(self):
         banned_calls = {

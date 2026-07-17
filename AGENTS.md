@@ -8,6 +8,13 @@
 3. Не читать и не использовать секреты, `.env*`, credentials, `Пароли.md`, `/Users/anton/.codex/LOCAL_SECRETS.md`, клиентские выгрузки, outputs, backups и реальные отчеты как источник для графа.
 4. Любые изменения должны сохранять надежность склада: дедуп КИЗов, audit, backup, понятные отчеты и воспроизводимые проверки.
 
+Client-facing output contract:
+1. Без явного согласования Антона запрещено добавлять или менять client-facing Telegram reports, XLSX строки/колонки/captions/filenames/labels, web UI, routes, schedules, fallbacks, message types или новый пользовательский функционал.
+2. Перед таким изменением обязательно показать exact before/after и запросить approval.
+3. Изменения Telegram routing/error требуют synthetic contract tests и no-send verifier.
+4. Raw production chat IDs и Telegram tokens запрещено коммитить или логировать.
+5. Технический internal provenance запрещено выводить в client-facing output без явного согласования Антона.
+
 Git branch discipline:
 1. Все рабочие изменения, коммиты и push для TakSklad по умолчанию делаются только в `main`.
 2. Перед любыми изменениями выполнить `git branch --show-current` и `git status --short --branch`.

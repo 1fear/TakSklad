@@ -354,13 +354,11 @@ test("@performance keyboard-only login, navigation, selection, action, dropdown 
   await focusByTab(warehouse, "warehouse navigation");
   await page.keyboard.press("Enter");
   await expect(page.getByRole("heading", { name: "Склад · PostgreSQL" })).toBeVisible();
-  const scanInput = page.getByPlaceholder("Отсканируйте код");
-  await focusByTab(scanInput, "KIZ input");
-  await page.keyboard.type("0104-synthetic");
-  const action = page.getByRole("button", { name: "Записать" });
-  await focusByTab(action, "scan action");
-  await page.keyboard.press("Enter");
-  await expect.poll(() => api.scans).toBe(1);
+  await expect(page.getByText("Smartup ID: 261000001")).toBeVisible();
+  await expect(page.getByPlaceholder("Отсканируйте код")).toHaveCount(0);
+  const returnLookup = page.getByPlaceholder("WH-R-...");
+  await focusByTab(returnLookup, "return lookup");
+  await page.keyboard.type("WH-R-SYNTHETIC");
 
   const logout = page.getByRole("button", { name: "Выйти" });
   await focusByTab(logout, "logout");
@@ -369,7 +367,7 @@ test("@performance keyboard-only login, navigation, selection, action, dropdown 
 
   keyboardEvidence = {
     pass: matrix.every((entry) => entry.pass)
-      && api.scans === 1
+      && api.scans === 0
       && api.requests.includes("POST /api/v1/auth/login")
       && api.requests.includes("POST /api/v1/auth/logout"),
     matrix,

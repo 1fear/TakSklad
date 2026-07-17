@@ -1,19 +1,16 @@
-import { AlertCircle, CheckCircle2, Loader2, PackageCheck, RefreshCw, RotateCcw, Search, Undo2 } from "lucide-react";
+import { AlertCircle, CheckCircle2, Loader2, RefreshCw, RotateCcw, Search } from "lucide-react";
 import type { FormEvent } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import {
   type ApiConfig,
-  type KizAvailability,
   type Order,
   completeWarehouseOrder,
-  createScan,
   listActiveOrders,
-  lookupKizAvailability,
   lookupReturn,
   markReturn,
-  undoScan,
 } from "../../api";
+import OrderCorrelationDetails from "../orders/OrderCorrelationDetails";
 
 type WarehousePanelProps = {
   config: ApiConfig;
@@ -23,15 +20,9 @@ type WarehousePanelProps = {
   onNotice: (message: string) => void;
 };
 
-const WORKSTATION_ID = "taksklad-web";
-
 export default function WarehousePanel({ config, canWrite, actor, onError, onNotice }: WarehousePanelProps) {
-  const scanInputRef = useRef<HTMLInputElement>(null);
   const [orders, setOrders] = useState<Order[]>([]);
   const [selectedOrderId, setSelectedOrderId] = useState("");
-  const [selectedItemId, setSelectedItemId] = useState("");
-  const [scanCode, setScanCode] = useState("");
-  const [availability, setAvailability] = useState<KizAvailability | null>(null);
   const [returnLookup, setReturnLookup] = useState("");
   const [returnOrder, setReturnOrder] = useState<Order | null>(null);
   const [returnReference, setReturnReference] = useState("");
@@ -41,10 +32,6 @@ export default function WarehousePanel({ config, canWrite, actor, onError, onNot
   const selectedOrder = useMemo(
     () => orders.find((order) => order.id === selectedOrderId) ?? orders[0],
     [orders, selectedOrderId],
-  );
-  const selectedItem = useMemo(
-    () => selectedOrder?.items.find((item) => item.id === selectedItemId) ?? selectedOrder?.items[0],
-    [selectedOrder, selectedItemId],
   );
   const orderComplete = Boolean(selectedOrder?.items.length)
     && selectedOrder!.items.every((item) => item.quantity_blocks > 0 && item.scanned_blocks >= item.quantity_blocks);
@@ -61,7 +48,6 @@ export default function WarehousePanel({ config, canWrite, actor, onError, onNot
       const next = await listActiveOrders(config);
       setOrders(next);
       setSelectedOrderId((current) => next.some((order) => order.id === current) ? current : (next[0]?.id ?? ""));
-      setSelectedItemId((current) => next.some((order) => order.items.some((item) => item.id === current)) ? current : (next[0]?.items[0]?.id ?? ""));
       if (showNotice) onNotice(`Активные заказы обновлены: ${next.length}`);
     } catch (error) {
       onError(error, "Не удалось загрузить активные заказы");
@@ -71,61 +57,7 @@ export default function WarehousePanel({ config, canWrite, actor, onError, onNot
   }
 
   function chooseOrder(orderId: string) {
-    const order = orders.find((value) => value.id === orderId);
     setSelectedOrderId(orderId);
-    setSelectedItemId(order?.items[0]?.id ?? "");
-    setAvailability(null);
-    setScanCode("");
-    queueMicrotask(() => scanInputRef.current?.focus());
-  }
-
-  async function submitScan(event: FormEvent) {
-    event.preventDefault();
-    const code = scannerCode(scanCode);
-    if (!selectedItem || !code || !canWrite) return;
-    setBusy("scan");
-    setAvailability(null);
-    try {
-      const check = await lookupKizAvailability(config, code, selectedItem.id);
-      setAvailability(check);
-      if (!check.available) throw new Error(check.reason || "КИЗ недоступен для выбранной позиции");
-      await createScan(config, {
-        order_item_id: selectedItem.id,
-        code,
-        workstation_id: WORKSTATION_ID,
-        scanned_by: actor || "web",
-      });
-      setScanCode("");
-      setAvailability(null);
-      await refreshOrders(false);
-      onNotice("КИЗ сохранён в PostgreSQL");
-      queueMicrotask(() => scanInputRef.current?.focus());
-    } catch (error) {
-      onError(error, "Не удалось сохранить КИЗ");
-    } finally {
-      setBusy("");
-    }
-  }
-
-  async function removeLastCode() {
-    const code = selectedItem?.scan_codes.at(-1) ?? "";
-    if (!selectedItem || !code || !canWrite) return;
-    if (!window.confirm(`Отменить последний КИЗ ${shortCode(code)}?`)) return;
-    setBusy("undo");
-    try {
-      await undoScan(config, {
-        order_item_id: selectedItem.id,
-        code,
-        workstation_id: WORKSTATION_ID,
-        actor: actor || "web",
-      });
-      await refreshOrders(false);
-      onNotice("Последний КИЗ отменён в PostgreSQL");
-    } catch (error) {
-      onError(error, "Не удалось отменить последний КИЗ");
-    } finally {
-      setBusy("");
-    }
   }
 
   async function completeOrder() {
@@ -192,7 +124,7 @@ export default function WarehousePanel({ config, canWrite, actor, onError, onNot
       <div className="panel-header">
         <div>
           <h2>Склад · PostgreSQL</h2>
-          <span className="panel-subtitle">Сканирование и возвраты напрямую через backend</span>
+          <span className="panel-subtitle">Заказы и возвраты напрямую через backend</span>
         </div>
         <button className="ghost-button" onClick={() => void refreshOrders()} disabled={loading || Boolean(busy)}>
           {loading ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
@@ -202,7 +134,7 @@ export default function WarehousePanel({ config, canWrite, actor, onError, onNot
 
       {!canWrite && (
         <div className="warehouse-warning" role="status">
-          <AlertCircle size={18} /> Доступен просмотр. Для сканирования и возвратов нужно право warehouse:write.
+          <AlertCircle size={18} /> Доступен просмотр. Для возвратов нужно право warehouse:write.
         </div>
       )}
 
@@ -218,43 +150,15 @@ export default function WarehousePanel({ config, canWrite, actor, onError, onNot
           {selectedOrder ? (
             <>
               <p className="warehouse-meta">{selectedOrder.client} · {selectedOrder.address}</p>
-              <label>
-                <span>Позиция</span>
-                <select value={selectedItem?.id ?? ""} onChange={(event) => { setSelectedItemId(event.target.value); setAvailability(null); }}>
-                  {selectedOrder.items.map((item) => (
-                    <option key={item.id} value={item.id}>{item.product} · {item.scanned_blocks}/{item.quantity_blocks}</option>
-                  ))}
-                </select>
-              </label>
-              <form className="warehouse-scan-form" onSubmit={submitScan}>
-                <label>
-                  <span>КИЗ</span>
-                  <input
-                    ref={scanInputRef}
-                    value={scanCode}
-                    onChange={(event) => { setScanCode(event.target.value); setAvailability(null); }}
-                    autoComplete="off"
-                    inputMode="text"
-                    placeholder="Отсканируйте код"
-                    disabled={!canWrite || Boolean(busy)}
-                  />
-                </label>
-                <button className="primary-button" type="submit" disabled={!canWrite || !selectedItem || !scannerCode(scanCode) || Boolean(busy)}>
-                  {busy === "scan" ? <Loader2 className="spin" size={16} /> : <PackageCheck size={16} />}
-                  Записать
-                </button>
-              </form>
-              {availability && (
-                <div className={availability.available ? "warehouse-check ok" : "warehouse-check error"} role="status">
-                  {availability.available ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
-                  {availability.available ? "КИЗ доступен" : (availability.reason || "КИЗ недоступен")}
-                </div>
-              )}
+              <OrderCorrelationDetails
+                smartupId={selectedOrder.smartup_id}
+                skladbotRequestNumber={selectedOrder.skladbot_request_number}
+                skladbotRequestId={selectedOrder.skladbot_request_id}
+                returnRequestNumber={selectedOrder.skladbot_return_request_number}
+                returnRequestId={selectedOrder.skladbot_return_request_id}
+                showReturn={orderHasReturn(selectedOrder)}
+              />
               <div className="warehouse-actions">
-                <button className="ghost-button" onClick={() => void removeLastCode()} disabled={!canWrite || !selectedItem?.scan_codes.length || Boolean(busy)}>
-                  {busy === "undo" ? <Loader2 className="spin" size={16} /> : <Undo2 size={16} />}
-                  Отменить последний КИЗ
-                </button>
                 <button className="primary-button" onClick={() => void completeOrder()} disabled={!canWrite || !orderComplete || Boolean(busy)}>
                   {busy === "complete" ? <Loader2 className="spin" size={16} /> : <CheckCircle2 size={16} />}
                   Завершить заказ
@@ -280,6 +184,14 @@ export default function WarehousePanel({ config, canWrite, actor, onError, onNot
             <div className="warehouse-return-result">
               <strong>{orderLabel(returnOrder)}</strong>
               <span>{returnOrder.client} · позиций {returnOrder.items.length}</span>
+              <OrderCorrelationDetails
+                smartupId={returnOrder.smartup_id}
+                skladbotRequestNumber={returnOrder.skladbot_request_number}
+                skladbotRequestId={returnOrder.skladbot_request_id}
+                returnRequestNumber={returnOrder.skladbot_return_request_number}
+                returnRequestId={returnOrder.skladbot_return_request_id}
+                showReturn={orderHasReturn(returnOrder)}
+              />
               <label>
                 <span>Основание возврата</span>
                 <input value={returnReference} onChange={(event) => setReturnReference(event.target.value)} />
@@ -301,11 +213,8 @@ function orderLabel(order: Order) {
   return order.skladbot_request_number || `${order.client} · ${order.order_date || "без даты"}`;
 }
 
-function shortCode(code: string) {
-  if (code.length <= 24) return code;
-  return `${code.slice(0, 12)}…${code.slice(-8)}`;
-}
-
-function scannerCode(value: string) {
-  return value.replace(/[\r\n]+$/g, "");
+function orderHasReturn(order: Order) {
+  return order.status === "returned"
+    || Boolean(order.return_status || order.returned_at || order.return_reference)
+    || Boolean(order.skladbot_return_request_id || order.skladbot_return_request_number);
 }

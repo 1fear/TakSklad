@@ -16,7 +16,7 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python -m unittest tests.test_b
 ./tools/run_postgres_tests.sh readiness
 bash -n deploy/vds/deploy_from_git.sh deploy/vds/acceptance_status.sh
 docker compose -f deploy/vds/docker-compose.yml config --no-interpolate --quiet
-PYTHONPATH=. .venv/bin/python tools/release_preflight.py --skip-network
+PYTHONPATH=. .venv/bin/python tools/release_preflight.py --phase candidate --skip-network
 ./tools/run_postgres_tests.sh queue-concurrency
 ./tools/run_postgres_tests.sh queue-failures
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. .venv/bin/python -m unittest tests.test_backend_google_sheets_pending tests.test_backend_skladbot_worker tests.test_backend_skladbot_request_dry_run tests.test_backend_events

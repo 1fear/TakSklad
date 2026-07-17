@@ -3,6 +3,7 @@ import threading
 
 from .config import APP_NAME
 from .telegram_service import (
+    DesktopTelegramMessageKind,
     send_telegram_message,
     sync_pending_telegram,
     telegram_is_configured,
@@ -33,6 +34,7 @@ class TelegramActionsMixin:
             ok, result = send_telegram_message(
                 message,
                 reply_markup=telegram_reports_keyboard() if with_keyboard else None,
+                message_kind=DesktopTelegramMessageKind.SERVICE_ERROR,
             )
             if not ok:
                 logging.warning("Telegram: сообщение не отправлено: %s", result)

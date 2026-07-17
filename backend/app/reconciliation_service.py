@@ -203,25 +203,27 @@ def upsert_reconciliation_incident(db, report_date, spec):
 
 def queue_reconciliation_alerts(db, report_date, incidents, chat_ids):
     alerts = []
+    admin_routes = [normalize_text(value) for value in chat_ids if normalize_text(value)]
+    if len(admin_routes) != 1 or not admin_routes[0].isdigit() or int(admin_routes[0]) <= 0:
+        return alerts
     for incident in incidents:
         kind = normalize_text(incident.external_ref).split(":")[-1]
         if incident.severity != "critical" or kind not in CRITICAL_INCIDENT_TYPES:
             continue
-        for chat_id in [normalize_text(value) for value in chat_ids if normalize_text(value)]:
-            key = f"telegram:notification:v1:reconciliation:{report_date.isoformat()}:{kind}:{incident.id}:{chat_id}"
-            existing = db.execute(select(PendingEvent).where(PendingEvent.idempotency_key == key)).scalar_one_or_none()
-            if existing is None:
-                existing = PendingEvent(event_type=TELEGRAM_NOTIFICATION_EVENT_TYPE, status="pending", idempotency_key=key, payload={
-                    "kind": "daily_reconciliation_alert", "chat_id": chat_id, "incident_id": str(incident.id),
-                    "source": RECONCILIATION_SOURCE, "report_date": report_date.isoformat(),
-                    "text": reconciliation_alert_text(report_date, incident),
-                })
-                db.add(existing)
-                db.flush()
-                status = "queued"
-            else:
-                status = "deduped"
-            alerts.append({"incident_id": str(incident.id), "chat_id": chat_id, "idempotency_key": key, "status": status, "event_id": str(existing.id)})
+        key = f"telegram:notification:v2:reconciliation:{report_date.isoformat()}:{kind}:{incident.id}"
+        existing = db.execute(select(PendingEvent).where(PendingEvent.idempotency_key == key)).scalar_one_or_none()
+        if existing is None:
+            existing = PendingEvent(event_type=TELEGRAM_NOTIFICATION_EVENT_TYPE, status="pending", idempotency_key=key, payload={
+                "kind": "daily_reconciliation_alert", "incident_id": str(incident.id),
+                "source": RECONCILIATION_SOURCE, "report_date": report_date.isoformat(),
+                "text": reconciliation_alert_text(report_date, incident),
+            })
+            db.add(existing)
+            db.flush()
+            status = "queued"
+        else:
+            status = "deduped"
+        alerts.append({"incident_id": str(incident.id), "route_role": "admin", "idempotency_key": key, "status": status, "event_id": str(existing.id)})
     return alerts
 
 

@@ -52,6 +52,7 @@ cd /opt/stacks/taksklad/app
 ```bash
 dig +short api.taksklad.uz
 curl -fsS https://api.taksklad.uz/health
+curl -fsS https://api.taksklad.uz/ready
 ```
 
 Fallback-проверка по текущему IP:
@@ -70,38 +71,12 @@ git status --short
 git diff --name-only
 ```
 
-Do not run broad rsync from a dirty tree. Если worktree грязный, deploy должен быть selective deploy: отправлять только проверенные файлы из конкретного reviewed diff/commit. Нельзя копировать весь проект, `outputs/`, локальные runtime JSON, `.env`, credentials, backup-файлы и старые артефакты сборки.
+Dirty worktree не является источником production delivery. Разрешены только exact-SHA control bundle и immutable release assets, проверенные по manifest/attestation; source-файлы из checkout не копируются.
 
-На VDS перед заменой кода создать restore point:
-
-```bash
-cd /opt/stacks/taksklad/app
-restore_id="pre-backend-only-hot-path-$(date -u +%Y%m%dT%H%M%SZ)"
-mkdir -p "/opt/stacks/taksklad/restore_points/$restore_id"
-cp -a backend deploy docs tools version.json "/opt/stacks/taksklad/restore_points/$restore_id/"
-./deploy/vds/backup_postgres.sh
-```
-
-Локально:
-
-```bash
-rsync -az backend root@159.195.138.95:/opt/stacks/taksklad/app/
-rsync -az --exclude '.env' deploy/vds/ root@159.195.138.95:/opt/stacks/taksklad/app/deploy/vds/
-```
-
-На VDS:
-
-```bash
-cd /opt/stacks/taksklad/app
-./deploy/vds/backup_postgres.sh
-docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml run --rm backend-api \
-  alembic -c alembic.ini upgrade head
-docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml up -d --build backend-api
-curl -fsS https://api.taksklad.uz/health
-curl -fsS https://api.taksklad.uz/ready
-curl -fsS -H "Authorization: Bearer <service-token-from-secret-storage>" \
-  https://api.taksklad.uz/api/v1/admin/operations
-```
+Production activation использует только verified `release.json`, exact source SHA,
+immutable `image@sha256` и заранее созданный rollback record. Копирование source tree,
+локальная сборка на VDS и широкий `rsync` запрещены. До activation создаётся свежий
+backup; после activation проверяются `/health`, `/ready` и data-free auth canary.
 
 Если VDS database еще не stamped на baseline `20260616_0001`, сначала пройти `docs/database-migrations-runbook.md`. `deploy/vds/apply_schema.sh` не использовать для обычных production upgrades после baseline stamp; он остается только для legacy/bootstrap сценариев пустой БД.
 
@@ -151,7 +126,7 @@ Windows signing secrets должны соответствовать заране
 
 ### Immutable release candidate
 
-Версия собираемого приложения и уже опубликованный update channel разделены. Во время подготовки кандидата `APP_VERSION` может быть `2.0.26`, пока корневой `version.json` продолжает указывать на проверенный `2.0.25`. Это исключает ссылку клиентов на ещё не существующие подписанные файлы.
+Версия кандидата и уже опубликованный update channel разделены. Во время подготовки candidate `APP_VERSION=2.0.43`, пока корневой `version.json` продолжает указывать на текущий поддерживаемый channel. Это не утверждает, что `2.0.43` уже опубликован.
 
 Безопасная последовательность:
 
@@ -166,7 +141,7 @@ Windows signing secrets должны соответствовать заране
 
 Существующий тег или asset никогда не передвигается и не перезаписывается. `--clobber`, source build на VDS, schema downgrade, restore и автоматический data repair запрещены.
 
-Если `/opt/stacks/taksklad/app` не является git checkout, `deploy/vds/deploy_from_git.sh` делает временный clone из `TAKSKLAD_DEPLOY_REMOTE_URL` и синхронизирует выбранный ref через `rsync --delete`, исключая `.env*`, `outputs`, `backups`, runtime logs, restore points, virtualenv, `node_modules`, `dist`, `__pycache__` и `*.pyc`.
+Production получает только exact-SHA control bundle и immutable `image@sha256`, связанные с verified `release.json`; source checkout/build на VDS не является rollback или delivery contract.
 
 Ручной запуск:
 
@@ -175,10 +150,76 @@ Windows signing secrets должны соответствовать заране
 3. `services`: `all` или список compose-сервисов через пробел/запятую.
 Production workflow запускается только вручную. Acceptance не имеет bypass-режима и всегда обязателен.
 
+До запуска deploy оператор отдельно provisioned acceptance principal exact kind `acceptance` + scope `returns:read` и его token file в `/opt/stacks/taksklad/private/acceptance-canary.token`. Файл и защищённый parent принадлежат текущему deploy user; file mode только `0400/0600`. Token не передаётся через GitHub secret/env/argv и не печатается. Скрипт до pull/quiesce проверяет owner/mode/parent, bounded scoped format и наличие verified previous deployment record.
+
+### Manual P0 bridge для principal
+
+`Deploy Production` не управляет lifecycle principals. До первого adoption допускается только отдельный manual P0 bridge под явным prod-write gate родителя. На trusted admin host сначала доказать immutable tag → exact main SHA и GitHub/Sigstore attestations `release.json` + exact backend OCI digest. На VDS exact `image@sha256` должен быть уже локально staged; one-shot использует `--pull never` и не доверяет ambient registry credentials.
+
+До передачи чего-либо на VDS trusted admin checkout должен быть чистым на exact tag/main SHA. Скачать release assets в новый каталог и выполнить существующий full verifier; он проверяет manifest, OCI/Windows attestations с exact source digest и ожидаемым release workflow:
+
+```bash
+source_sha="<exact-40-lowercase-main-sha>"
+release_tag="v2.0.43"
+git fetch --tags origin main
+test "$(git rev-parse origin/main)" = "$source_sha"
+test "$(git rev-list -n 1 "$release_tag")" = "$source_sha"
+release_dir="$(mktemp -d /tmp/taksklad-p0-release.XXXXXX)"
+chmod 700 "$release_dir"
+gh release download "$release_tag" --dir "$release_dir"
+TAKSKLAD_RELEASE_MANIFEST="$release_dir/release.json" \
+TAKSKLAD_RELEASE_ARTIFACT_DIR="$release_dir" \
+./tools/verify_release_attestations.sh --sha "$source_sha"
+```
+
+Только digest из прошедшего verifier manifest передаётся на VDS. Exact image staging выполняется отдельно с новым per-run `DOCKER_CONFIG`, credential через `docker login --password-stdin`, затем `docker pull image@sha256`, `docker image inspect` и обязательные logout/удаление только этого owned temp-каталога. Ambient Docker credentials, tag без digest и caller-created «verified» stamp запрещены. Любая ошибка verification или cleanup — stop до one-shot.
+
+После проверки release authority создать новый стабильный UUID операции и свежий operation-bound backup. Result filename должен быть новым; повтор той же операции использует тот же UUID, но новый result filename/backup:
+
+```bash
+operation_id="<stable-uuid-approved-for-this-action>"
+backup_result="/run/taksklad-observability/principal-backup-${operation_id}.json"
+TAKSKLAD_BACKUP_OPERATION_ID="$operation_id" \
+TAKSKLAD_BACKUP_RESULT_FILE="$backup_result" \
+./deploy/vds/backup_postgres.sh --no-prune
+backup_archive="$(python3 - "$backup_result" <<'PY'
+import json, sys
+from pathlib import Path
+value = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+path = str(value.get("archive_path") or "")
+if not path.startswith("/"):
+    raise SystemExit(1)
+print(path)
+PY
+)"
+```
+
+Только после отдельного подтверждения backup/PITR и exact action заполнить non-secret bindings. Пример формы для canonical acceptance provision; реальные SHA/digest/UUID сюда не копировать:
+
+```bash
+source_sha="<exact-40-lowercase-main-sha>"
+release_tag="v2.0.43"
+backend_image="ghcr.io/1fear/taksklad-backend@sha256:<exact-attested-digest>"
+export TAKSKLAD_PRINCIPAL_BACKUP_ROOT=/opt/taksklad/backups/postgres/completed
+export TAKSKLAD_PRINCIPAL_BACKUP_RESULT_FILE="$backup_result"
+export TAKSKLAD_PRINCIPAL_BACKUP_ARCHIVE_FILE="$backup_archive"
+export TAKSKLAD_PRINCIPAL_WRITE_APPROVAL=ALLOW_SERVICE_PRINCIPAL_WRITE
+export TAKSKLAD_PRINCIPAL_COMMAND_APPROVAL=PROVISION_ACCEPTANCE_PRINCIPAL
+export TAKSKLAD_MANUAL_P0_RELEASE_AUTHORITY="VERIFIED_TAGGED_MAIN_RELEASE:${release_tag}:${source_sha}:${backend_image}"
+export TAKSKLAD_MANUAL_P0_BRIDGE_APPROVAL="MANUAL_P0_BRIDGE:provision:acceptance:acceptance.release:${operation_id}:${source_sha}:${release_tag}:${backend_image}:BACKUP:${operation_id}"
+./deploy/vds/provision_service_principal.sh \
+  "$backend_image" provision acceptance acceptance.release \
+  "$operation_id" "$source_sha" "$release_tag"
+```
+
+Shell до DB mutation повторно проверяет actual archive bytes/SHA/freshness/UUID/head, exact local image digest и единственный image Alembic head == live DB head. Для одного UUID создаётся новая internal network; к ней временно подключаются только exact PostgreSQL и one-shot provisioner, после чего сеть всегда отключается/удаляется. Обычный compose не оставляет PostgreSQL в admin network; pre-existing network блокирует операцию и не удаляется. Writers не останавливаются. Success печатается только после cleanup one-shot container/network. Нельзя вручную move/copy/delete plaintext handoff. Acceptance rotate выполняет atomic replace; desktop staging уничтожается только `destroy-handoff` после signed Windows DPAPI canary. Revoke DB-first; `cleanup=unverified` или `.token.*` residue означает partial state, nonzero и escalation, но principal обратно не активируется.
+
+После candidate ready/acceptance/log scan, но до atomic current-release record, deploy вызывает data-free acceptance endpoint и требует exact `204`. Ошибка выполняет schema-compatible runtime rollback без `alembic downgrade`, затем сверяет previous image IDs, SHA/digest и public health/ready. Только legacy first-adoption без endpoint допускает exact `404` через совместные literal `--allow-missing-endpoint --require-missing-endpoint` и отдельный exact approval; legacy `204` запрещён, потому что не доказывает identifier-aware v2 contract. Missing previous record блокирует mutation; bootstrap без rollback требует отдельного явного флага/approval и не используется workflow по умолчанию.
+
 Разрешенные сервисы для rebuild/recreate:
 
 ```text
-backend-api frontend telegram-worker google-sheets-sync-worker skladbot-worker smartup-auto-import-worker
+backend-api frontend telegram-worker skladbot-worker smartup-auto-import-worker
 ```
 
 Серверный скрипт `deploy/vds/deploy_from_git.sh` выполняет:
@@ -186,13 +227,13 @@ backend-api frontend telegram-worker google-sheets-sync-worker skladbot-worker s
 1. отказывается деплоить при tracked changes на VDS checkout;
 2. создает restore point без `outputs`, `.env`, credentials и backup-файлов;
 3. запускает `deploy/vds/backup_postgres.sh`;
-4. checkout выбранного git ref или sync выбранного ref из временного clone, если app dir не git checkout;
-5. build `backend-api`;
+4. проверяет exact-SHA control bundle и immutable image digests из release manifest;
+5. активирует только заранее проверенный `image@sha256` без source build;
 6. `alembic -c alembic.ini upgrade head`;
 7. read-only сверяет единственный `alembic current` с единственным `alembic heads` до активации;
-8. `docker compose up -d --build --wait --wait-timeout ...` для выбранных сервисов;
+8. `docker compose up -d --no-build --wait --wait-timeout ...` для выбранных immutable services;
 9. проверяет JSON-контракт `/health` с retry;
-10. проверяет JSON-контракт `/ready`: database/migrations/head/mandatory policy обязаны быть готовы; optional Google degradation допускает `status=degraded` при `ready=true`;
+10. проверяет JSON-контракт `/ready`: database/migrations/head/mandatory policy обязаны быть готовы;
 11. обязательно запускает `deploy/vds/acceptance_status.sh --require-go`;
 12. выполняет fresh log scan по rebuilt/recreated сервисам.
 
@@ -241,18 +282,12 @@ CONFIRM_RESTORE=YES ./deploy/vds/restore_postgres.sh /opt/taksklad/backups/postg
 curl -fsS https://api.taksklad.uz/health
 ```
 
-## 6. Rollback Backend Code
+## 6. Rollback Backend Runtime
 
-Rollback к предыдущему Git-коммиту:
-
-```bash
-cd /opt/stacks/taksklad/app
-git fetch --all
-git checkout <previous-good-commit>
-docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml up -d --build backend-api
-```
-
-Если код на VDS доставлялся через `rsync`, rollback делается повторным `rsync` из локального checkout предыдущего хорошего коммита.
+Rollback выбирает только exact previous manifest из protected current-release record,
+повторно проверяет image digests и активирует предыдущий immutable bundle без build,
+checkout или синхронизации source tree. После rollback обязательны exact runtime
+identity и public `/health` + `/ready`; несоответствие означает `rollback_unverified`.
 
 Rollback после backend-only hot path не должен удалять pending events. До rollback сохранить:
 
@@ -277,15 +312,9 @@ docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml ps
 curl -fsS https://api.taksklad.uz/health
 ```
 
-Откат к предыдущему good commit:
-
-```bash
-cd /opt/stacks/taksklad/app
-git fetch --all
-git checkout <previous-good-commit>
-docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml up -d --build backend-api telegram-worker google-sheets-sync-worker skladbot-worker frontend
-curl -fsS https://api.taksklad.uz/health
-```
+Откат выполняет deploy transaction по exact previous manifest. Команда не собирает
+образы и не добавляет retired workers: запускаются только сервисы, перечисленные в
+проверенном previous manifest, по их exact digests.
 
 Если после релиза уже применялись Alembic migrations, downgrade БД нельзя делать автоматически вместе с кодом. Сначала выполнить backup, затем отдельно проверить конкретный migration downgrade plan. Если сомневаешься, откатывать только код, а БД оставлять на текущей схеме до ручного решения.
 
@@ -296,9 +325,7 @@ curl -fsS https://api.taksklad.uz/health
 - менять `version.json`;
 - отправлять desktop push-update;
 - собирать и выкладывать Windows archive как обязательное обновление;
-- удалять desktop fallback на Google/local режим.
-
-Для включения backend в desktop используются feature flags, а не принудительный переход.
+- ослаблять backend-only desktop auth или возвращать local/Google fallback.
 
 Release guard для backend-only:
 

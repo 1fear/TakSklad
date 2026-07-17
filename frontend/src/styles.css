@@ -1131,7 +1131,6 @@ summary:focus-visible {
 }
 
 .warehouse-card label,
-.warehouse-scan-form,
 .warehouse-return-search,
 .warehouse-return-result {
   display: grid;
@@ -1156,14 +1155,12 @@ summary:focus-visible {
 }
 
 .warehouse-actions,
-.warehouse-scan-form,
 .warehouse-return-search {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: end;
 }
 
-.warehouse-warning,
-.warehouse-check {
+.warehouse-warning {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1173,20 +1170,17 @@ summary:focus-visible {
   color: #795000;
 }
 
-.warehouse-check.ok {
-  background: #e5f4ea;
-  color: #1d6b3a;
-}
-
-.warehouse-check.error {
-  background: #f7e5e1;
-  color: #8a2f22;
-}
-
 .warehouse-meta,
 .warehouse-empty,
 .warehouse-return-result span,
 .warehouse-return-result p {
+  color: #656b63;
+  font-size: 13px;
+}
+
+.order-correlation {
+  display: grid;
+  gap: 4px;
   color: #656b63;
   font-size: 13px;
 }
@@ -1199,7 +1193,6 @@ summary:focus-visible {
 
 @media (max-width: 640px) {
   .warehouse-actions,
-  .warehouse-scan-form,
   .warehouse-return-search {
     grid-template-columns: 1fr;
   }

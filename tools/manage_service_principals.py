@@ -48,6 +48,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add_mutation_arguments(provision)
     provision.add_argument("--identifier", required=True)
     provision.add_argument("--kind", choices=tuple(sorted(SERVICE_PRINCIPAL_SCOPE_MATRIX)), required=True)
+    provision.add_argument(
+        "--scope",
+        action="append",
+        default=[],
+        help="repeat to provision a validated least-privilege subset of the kind matrix",
+    )
 
     rotate = subparsers.add_parser("rotate", help="rotate an existing principal token")
     _add_mutation_arguments(rotate)
@@ -161,10 +167,11 @@ def provision(arguments, *, now: datetime | None = None) -> tuple[str, str]:
     database_url = validate_local_database_url(arguments.database_url)
     now = _utc(now)
     expires_at = now + timedelta(seconds=int(arguments.token_ttl_seconds))
-    scopes = validate_principal_scopes(
-        arguments.kind,
-        SERVICE_PRINCIPAL_SCOPE_MATRIX[arguments.kind],
-    )
+    requested_scopes = arguments.scope or SERVICE_PRINCIPAL_SCOPE_MATRIX[arguments.kind]
+    try:
+        scopes = validate_principal_scopes(arguments.kind, requested_scopes)
+    except ValueError as exc:
+        raise ServicePrincipalToolError("principal_scope_invalid") from exc
     engine = create_engine(database_url, pool_pre_ping=True)
     Session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
     secret_written = False

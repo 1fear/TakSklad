@@ -32,7 +32,7 @@
 
 Не готово для production:
 
-- Desktop-приложение ещё не подключено к backend на рабочих Windows-ПК.
+- DB-only desktop требует завершённой scoped-миграции credential на каждом рабочем Windows-профиле.
 - Нет Alembic-миграций; текущая схема рассчитана на стартовый deploy.
 - DNS `api.taksklad.uz` ещё не настроен: домен `taksklad.uz` ожидает финальную активацию/делегацию у регистратора.
 - Не проведена ручная приемка на реальных заказах склада.
@@ -268,6 +268,18 @@ VDS staging smoke:
 - тестовый `.xlsx` внутри контейнера разобран в payload с `source=telegram`;
 - реальные Telegram-файлы в этом шаге не отправлялись.
 
+### One-shot provisioning до first adoption
+
+Для аварийного релиза это только manual P0 bridge, а не production lifecycle automation. Обычный `Deploy Production` не создаёт, не вращает и не отзывает principals. Будущая автоматизация должна быть отдельным reviewed workflow; сейчас её нет.
+
+До запуска one-shot доверенный администратор вне VDS обязан проверить immutable tag → exact main SHA, `release.json` и OCI `image@sha256` через GitHub/Sigstore attestation с ожидаемым release workflow. На VDS используется уже локально staged exact digest с `--pull never`; строка approval не заменяет attestation. Затем для того же стабильного UUID операции создаётся свежий `pg_dump` через `backup_postgres.sh` с `TAKSKLAD_BACKUP_OPERATION_ID` и новым `TAKSKLAD_BACKUP_RESULT_FILE`. One-shot принимает exact result/archive paths и непосредственно перед DB mutation перепроверяет bytes/SHA/freshness/operation UUID/Alembic head. Единственный head exact image обязан совпасть с live `alembic_version`.
+
+`deploy/vds/provision_service_principal.sh` требует отдельные literal approvals, связанные с action, kind, identifier, operation UUID, source SHA, release tag, image digest и backup operation. Для каждой операции скрипт создаёт новое operation-unique internal network, временно подключает только exact PostgreSQL и dedicated `principal-provisioner`, затем всегда отключает и удаляет только эту сеть; обычный compose не держит PostgreSQL в admin network. Pre-existing/foreign network блокирует запуск и не удаляется. Writers не останавливаются; любая ошибка cleanup означает nonzero, а не ложный `OK`.
+
+Acceptance использует canonical identifier `acceptance.release` и постоянный `/opt/stacks/taksklad/private/acceptance-canary.token` mode `0600`. Desktop handoff — временный `/opt/stacks/taksklad/private/desktop-token`: после установки pair token+expected identifier в DPAPI и успешного signed-helper canary применяется только `destroy-handoff` с новым approval. Rotation acceptance выполняет inode-safe atomic replace; desktop rotation требует отсутствующего staging file. Нельзя вручную перемещать, копировать, архивировать или удалять plaintext handoff. Revoke всегда DB-first; `cleanup=unverified`/residue — блокирующий partial state, foreign file сохраняется для escalation.
+
+Live запуск one-shot, prod-write approval, backup/PITR truth, Windows handoff и revoke остаются отдельными gates родителя и оператора.
+
 ## Windows Приёмка С Backend Flags
 
 Подробный чеклист: [windows-backend-acceptance.md](/Users/anton/Documents/work/TakSklad/docs/windows-backend-acceptance.md).
@@ -286,26 +298,34 @@ VDS staging smoke:
 $env:TAKSKLAD_BACKEND_ENABLED = "1"
 $env:TAKSKLAD_BACKEND_READ_ORDERS_ENABLED = "1"
 $env:TAKSKLAD_BACKEND_BASE_URL = "https://api.taksklad.uz"
-$env:TAKSKLAD_BACKEND_API_TOKEN = "<service-token-from-local-secret-storage>"
+# backend credential читается только из current-user DPAPI store
 $env:TAKSKLAD_BACKEND_TIMEOUT_SECONDS = "8"
 ```
 
 Важно:
 
 - токен не писать в документацию, чат, скриншоты и Git;
+- credential file для acceptance principal заранее provisioned в защищённом каталоге VDS,
+  принадлежит текущему deploy user, имеет mode `0400/0600` и не попадает в GitHub/env/log/release asset;
+- provision, rotation и revoke canary principal требуют отдельного операторского gate;
+- web-session auth проверяется отдельным credentialed canary;
+- server-side data-free returns canary выполняется внутри deploy transaction до записи current-release;
+  failure запускает schema-compatible runtime rollback и затем exact identity + health/ready verification;
+- первый adoption: principal provision выполняется manual P0 bridge до deploy; candidate после deploy обязан дать canonical v2 exact-identifier `204`;
 - включать flags сначала только на тестовой копии;
-- при проблеме отключить flags и вернуться к desktop fallback;
-- Windows archive не выкатывать как обязательное обновление до прохождения приёмки; `version.json` держать в staged rollout: `2.0.0`, `mandatory=false`.
+- при проблеме остановить acceptance и вручную вернуть предыдущий DB-compatible release/config;
+  desktop fallback на локальное/Google-хранилище отсутствует;
+- Windows candidate `2.0.43` не считать опубликованным до final preflight; переключение public channel на exact `2.0.43`/`onedir_zip` выполняется только единым immutable promotion.
 
 ## Следующий Шаг После Этого Этапа
 
 Перед ручными acceptance-шагами локально запустить:
 
 ```bash
-.venv/bin/python tools/release_preflight.py
+.venv/bin/python tools/release_preflight.py --phase candidate --skip-network
 ```
 
-Preflight проверяет публичный backend health, staged rollout `version.json`, acceptance kit и отсутствие tracked runtime/secret-файлов.
+Candidate preflight проверяет локальный `2.0.43`, текущий поддерживаемый public channel и отсутствие tracked runtime/secret-файлов; он не доказывает публикацию. Final preflight отдельно требует exact опубликованный `2.0.43`, `onedir_zip`, downloads и attestations.
 
 Фактические результаты ручной приёмки фиксировать в:
 

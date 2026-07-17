@@ -12,6 +12,28 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 VALIDATOR = PROJECT_ROOT / "tools" / "validate_daily_report_config.py"
 
 
+def complete_production_environment():
+    return {
+        "TAKSKLAD_ENV": "production",
+        "TAKSKLAD_TIMEZONE": "Asia/Tashkent",
+        "TELEGRAM_BOT_TOKEN": "synthetic-telegram-token",
+        "TELEGRAM_ALLOWED_CHAT_IDS": "-1002001,-1002002,1001",
+        "TELEGRAM_ADMIN_CHAT_IDS": "1001",
+        "SKLADBOT_DAILY_REPORT_ENABLED": "true",
+        "SKLADBOT_DAILY_REPORT_CHAT_IDS": "-1002001",
+        "SKLADBOT_API_TOKEN": "synthetic-skladbot-token",
+        "TAKSKLAD_AUTOMATION_ALERT_CHAT_ID": "1001",
+        "SMARTUP_AUTO_IMPORT_CLIENT_CHAT_ID": "-1002001",
+        "SMARTUP_AUTO_IMPORT_LOGISTICS_CHAT_ID": "-1002002",
+        "SMARTUP_AUTO_IMPORT_ALERT_CHAT_ID": "",
+        "SMARTUP_AUTO_IMPORT_TIMES": "12:00,15:00,17:50",
+        "SMARTUP_AUTO_IMPORT_FINAL_TIME": "17:50",
+        "SMARTUP_AUTO_IMPORT_LOGISTICS_DUE_TIME": "17:50",
+        "SKLADBOT_DAILY_REPORT_HOUR": "22",
+        "SKLADBOT_DAILY_REPORT_MINUTE": "0",
+    }
+
+
 class DailyReportConfigTests(unittest.TestCase):
     def run_validator(self, environment):
         payload = {
@@ -31,14 +53,7 @@ class DailyReportConfigTests(unittest.TestCase):
         )
 
     def test_accepts_complete_production_daily_configuration(self):
-        completed = self.run_validator({
-            "TAKSKLAD_ENV": "production",
-            "TELEGRAM_BOT_TOKEN": "synthetic-telegram-token",
-            "TELEGRAM_ALLOWED_CHAT_IDS": "1001",
-            "SKLADBOT_DAILY_REPORT_ENABLED": "true",
-            "SKLADBOT_DAILY_REPORT_CHAT_IDS": "1001",
-            "SKLADBOT_API_TOKEN": "synthetic-skladbot-token",
-        })
+        completed = self.run_validator(complete_production_environment())
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIn("DAILY_REPORT_CONFIG_OK", completed.stdout)
@@ -46,9 +61,8 @@ class DailyReportConfigTests(unittest.TestCase):
 
     def test_rejects_missing_production_daily_configuration_without_leaking_values(self):
         completed = self.run_validator({
-            "TAKSKLAD_ENV": "production",
+            **complete_production_environment(),
             "TELEGRAM_BOT_TOKEN": "synthetic-secret-token",
-            "TELEGRAM_ALLOWED_CHAT_IDS": "1001",
             "SKLADBOT_DAILY_REPORT_ENABLED": "false",
             "SKLADBOT_DAILY_REPORT_CHAT_IDS": "",
             "SKLADBOT_API_TOKEN": "",
@@ -62,27 +76,15 @@ class DailyReportConfigTests(unittest.TestCase):
 
     def test_rejects_non_production_rendered_environment(self):
         completed = self.run_validator({
+            **complete_production_environment(),
             "TAKSKLAD_ENV": "test",
-            "TELEGRAM_BOT_TOKEN": "synthetic-telegram-token",
-            "TELEGRAM_ALLOWED_CHAT_IDS": "1001",
-            "SKLADBOT_DAILY_REPORT_ENABLED": "true",
-            "SKLADBOT_DAILY_REPORT_CHAT_IDS": "1001",
-            "SKLADBOT_API_TOKEN": "synthetic-skladbot-token",
         })
 
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("TAKSKLAD_ENV", completed.stderr)
 
     def test_rejects_invalid_schedule_fields_with_shared_strict_ranges(self):
-        base = {
-            "TAKSKLAD_ENV": "production",
-            "TAKSKLAD_TIMEZONE": "Asia/Tashkent",
-            "TELEGRAM_BOT_TOKEN": "synthetic-telegram-token",
-            "TELEGRAM_ALLOWED_CHAT_IDS": "1001",
-            "SKLADBOT_DAILY_REPORT_ENABLED": "true",
-            "SKLADBOT_DAILY_REPORT_CHAT_IDS": "1001",
-            "SKLADBOT_API_TOKEN": "synthetic-skladbot-token",
-        }
+        base = complete_production_environment()
         invalid_values = {
             "TAKSKLAD_TIMEZONE": "Invalid/Timezone",
             "SKLADBOT_DAILY_REPORT_HOUR": "24",

@@ -1,9 +1,13 @@
 import copy
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
+import tarfile
+import tempfile
 import unittest
+from unittest import mock
 
 from tools.github_protection_diff import (
     load_json,
@@ -11,10 +15,25 @@ from tools.github_protection_diff import (
     validate_json_schema,
     validate_manifest,
 )
+from backend.app.telegram_routing_contract import (
+    ROUTING_IDENTITY_ANCHOR_ENV,
+    canonical_route_identity_sha256,
+)
+from tools.materialize_deploy_control import (
+    DEPLOY_CONTROL_PATHS,
+    MaterializationError,
+    materialize,
+)
 from tools.release_artifacts import validate_manifest_shape
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def deploy_control_paths(workflow):
+    if "tools/materialize_deploy_control.py" not in workflow:
+        raise AssertionError("workflow does not use the exact-SHA control materializer")
+    return list(DEPLOY_CONTROL_PATHS)
 
 
 class CiCdWorkflowTests(unittest.TestCase):
@@ -113,6 +132,7 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn("./tools/run_postgres_tests.sh migrations", workflow)
         self.assertIn("./tools/run_postgres_tests.sh smoke", workflow)
         self.assertIn("./tools/run_postgres_tests.sh readiness", workflow)
+        self.assertIn("./tools/run_postgres_tests.sh skladbot-nonlease-concurrency", workflow)
         self.assertIn("tools/render_compose_test_config.py", workflow)
         self.assertIn('bash -n "$script"', workflow)
         self.assertIn('docker compose --env-file "$config_path" -f deploy/vds/docker-compose.yml config --quiet', workflow)
@@ -121,6 +141,22 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn("npm --prefix frontend run build", workflow)
         self.assertNotIn("VDS_SSH_KEY", workflow)
         self.assertNotIn("secrets.", workflow)
+
+    def test_postgres_gate_wires_skladbot_nonlease_concurrency_into_ci_and_all(self):
+        script = (PROJECT_ROOT / "tools" / "run_postgres_tests.sh").read_text(encoding="utf-8")
+        workflow = (PROJECT_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        all_mode = script.split("  all)", 1)[1].split("    ;;", 1)[0]
+
+        self.assertIn("skladbot-nonlease-concurrency)", script)
+        self.assertIn(
+            'TEST_MODULE="tests.test_postgres_skladbot_nonlease_concurrency"',
+            script,
+        )
+        self.assertIn("tests.test_postgres_skladbot_nonlease_concurrency", all_mode)
+        self.assertIn(
+            "./tools/run_postgres_tests.sh skladbot-nonlease-concurrency",
+            workflow,
+        )
 
     def test_release_workflow_builds_each_image_once_and_consumes_exact_digests(self):
         workflow = (PROJECT_ROOT / ".github" / "workflows" / "build-windows-release.yml").read_text(
@@ -161,6 +197,7 @@ class CiCdWorkflowTests(unittest.TestCase):
         routing_tool = (
             PROJECT_ROOT / "tools" / "prepare_notification_routing_env.py"
         ).read_text(encoding="utf-8")
+        control_paths = set(deploy_control_paths(workflow))
 
         self.assertIn("workflow_dispatch:", workflow)
         self.assertIn("environment: production", workflow)
@@ -193,7 +230,10 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn("ref: ${{ inputs.source_sha }}", workflow)
         self.assertIn("fetch-depth: 0", workflow)
         self.assertIn("taksklad-deploy-control.tar.gz", workflow)
-        self.assertIn("DEPLOY_CONTROL_SHA: ${{ github.sha }}", workflow)
+        self.assertIn("DEPLOY_CONTROL_SHA: ${{ inputs.source_sha }}", workflow)
+        self.assertNotIn("DEPLOY_CONTROL_SHA: ${{ github.sha }}", workflow)
+        self.assertIn('[[ "$WORKFLOW_CONTROL_SHA" == "$EXPECTED_SOURCE_SHA" ]]', workflow)
+        self.assertIn("WORKFLOW_CONTROL_SOURCE_SHA_MISMATCH", workflow)
         self.assertIn("def live_runtime_invariants", workflow)
         self.assertIn("PRODUCTION_APPROVAL: READY_FOR_PRODUCTION_DEPLOY", workflow)
         self.assertIn("TAKSKLAD_PRODUCTION_APPROVAL", workflow)
@@ -202,14 +242,46 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn("values_redacted=1", workflow)
         self.assertIn("phase27-env-pre-recovery", workflow)
         self.assertIn("tools/prepare_notification_routing_env.py", workflow)
-        self.assertIn("--recovery-export-date 2026-07-16", workflow)
+        self.assertIn("tools/verify_telegram_routing_contract.py", workflow)
+        self.assertIn("backend/app/telegram_routing_contract.py", control_paths)
+        self.assertIn("backend/app/telegram_routing_manifest.json", control_paths)
+        self.assertIn("backend/app/telegram_output_contract.py", control_paths)
+        self.assertIn("tools/materialize_deploy_control.py", workflow)
+        self.assertIn("tools/phase27_routing_candidate_guard.sh", workflow)
+        self.assertIn(
+            "TELEGRAM_ROUTING_IDENTITY_ANCHOR_SHA256: "
+            "${{ secrets.TELEGRAM_ROUTING_IDENTITY_ANCHOR_SHA256 }}",
+            workflow,
+        )
+        self.assertIn("PROTECTED_TELEGRAM_ROUTING_IDENTITY_ANCHOR_REQUIRED", workflow)
+        self.assertIn("phase27_candidate_guard_init", workflow)
+        self.assertIn("phase27_candidate_guard_create_compose", workflow)
+        self.assertIn("phase27_candidate_guard_verify_modes", workflow)
+        self.assertIn("phase27_candidate_guard_mark_installed", workflow)
+        self.assertIn("phase27_candidate_guard_commit", workflow)
+        self.assertLess(
+            workflow.index("phase27_candidate_guard_init"),
+            workflow.index("python3 tools/prepare_notification_routing_env.py"),
+        )
+        self.assertGreater(
+            workflow.index("phase27_candidate_guard_commit"),
+            workflow.index("./tools/live_release_verifier.sh --read-only --same-sha --slo-window"),
+        )
+        self.assertLess(
+            workflow.index("python3 tools/verify_telegram_routing_contract.py"),
+            workflow.index('install -m 600 "\\$candidate_env" deploy/vds/.env'),
+        )
+        self.assertNotIn("--recovery-export-date", workflow)
+        self.assertIn("contract=notification-routing-v3", workflow)
         self.assertNotIn("vds-telegram-worker-1", workflow)
-        self.assertIn('"SMARTUP_AUTO_IMPORT_SAGA_MODE": "disabled"', routing_tool)
-        self.assertIn('"SMARTUP_AUTO_IMPORT_PROCESS_SKLADBOT_NOW": "false"', routing_tool)
-        self.assertIn('"SMARTUP_AUTO_IMPORT_LOGISTICS_CHAT_ID": report_group', routing_tool)
-        self.assertIn('"TAKSKLAD_AUTOMATION_ALERT_CHAT_ID": admin_route', routing_tool)
-        self.assertIn('"SMARTUP_AUTO_IMPORT_ENABLED": "true"', routing_tool)
-        self.assertIn('"SKLADBOT_CREATE_REQUESTS_MODE": "enabled"', routing_tool)
+        self.assertIn('"SMARTUP_AUTO_IMPORT_LOGISTICS_CHAT_ID": logistics', routing_tool)
+        self.assertIn('"TAKSKLAD_AUTOMATION_ALERT_CHAT_ID": admin', routing_tool)
+        self.assertIn('"SMARTUP_AUTO_IMPORT_ALERT_CHAT_ID": ""', routing_tool)
+        self.assertNotIn('"SMARTUP_AUTO_IMPORT_SAGA_MODE":', routing_tool)
+        self.assertNotIn('"SMARTUP_AUTO_IMPORT_PROCESS_SKLADBOT_NOW":', routing_tool)
+        self.assertNotIn('"SMARTUP_AUTO_IMPORT_ENABLED":', routing_tool)
+        self.assertNotIn('"SKLADBOT_CREATE_REQUESTS_MODE":', routing_tool)
+        self.assertNotIn("repaired_personal_logistics_route", routing_tool)
         self.assertNotIn("TAKSKLAD_GOOGLE_TO_BACKEND_SYNC_ENABLED", workflow)
         self.assertIn("export PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.", workflow)
         self.assertIn("pull postgres-wal-init postgres", workflow)
@@ -243,8 +315,17 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn("for attempt in \\$(seq 1 36)", workflow)
         self.assertIn("compose up -d --no-deps --no-build", workflow)
         self.assertIn("backup_postgres.sh --no-prune </dev/null", workflow)
-        self.assertIn("deploy_from_git.sh --artifact-manifest release.json --acceptance required --wait </dev/null", workflow)
+        self.assertIn(
+            "deploy_from_git.sh --artifact-manifest release.json --acceptance required --wait \\$legacy_canary_arg </dev/null",
+            workflow,
+        )
         self.assertIn("live_release_verifier.sh --read-only --same-sha --slo-window </dev/null", workflow)
+        self.assertIn("tools/credentialed_returns_canary.py", workflow)
+        self.assertIn("tools/validate_auth_canary_token_file.py", workflow)
+        self.assertIn("--current-auth-canary-only", workflow)
+        self.assertNotIn("TAKSKLAD_AUTH_CANARY_TOKEN", workflow)
+        self.assertNotIn("--token-env", workflow)
+        self.assertNotIn("--token ", workflow)
         self.assertNotIn("TAKSKLAD_DEPLOY_REF", workflow)
         self.assertNotIn("inputs.ref", workflow)
         self.assertNotIn("inputs.branch", workflow)
@@ -256,6 +337,193 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertNotIn("\n  push:", workflow)
         self.assertNotIn("VDS_PASSWORD", workflow)
         self.assertNotIn("secrets.VDS_PASSWORD", workflow)
+
+    def test_deploy_control_artifact_imports_and_verifies_from_clean_base(self):
+        workflow = (PROJECT_ROOT / ".github" / "workflows" / "deploy-production.yml").read_text(
+            encoding="utf-8"
+        )
+        members = deploy_control_paths(workflow)
+        required = {
+            "backend/app/daily_report_config.py",
+            "backend/app/telegram_output_contract.py",
+            "backend/app/telegram_routing_contract.py",
+            "backend/app/telegram_routing_manifest.json",
+            "tools/prepare_notification_routing_env.py",
+            "tools/verify_telegram_routing_contract.py",
+        }
+        self.assertTrue(required.issubset(set(members)))
+
+        candidate = {
+            "TAKSKLAD_ENV": "production",
+            "TAKSKLAD_TIMEZONE": "Asia/Tashkent",
+            "TELEGRAM_BOT_TOKEN": "synthetic-token",
+            "TELEGRAM_ALLOWED_CHAT_IDS": "-1002001,-1002002,1001",
+            "TELEGRAM_ADMIN_CHAT_IDS": "1001",
+            "SKLADBOT_DAILY_REPORT_ENABLED": "true",
+            "SKLADBOT_DAILY_REPORT_CHAT_IDS": "-1002001",
+            "SKLADBOT_API_TOKENS": "synthetic-skladbot-token",
+            "TAKSKLAD_AUTOMATION_ALERT_CHAT_ID": "1001",
+            "SMARTUP_AUTO_IMPORT_CLIENT_CHAT_ID": "-1002001",
+            "SMARTUP_AUTO_IMPORT_LOGISTICS_CHAT_ID": "-1002002",
+            "SMARTUP_AUTO_IMPORT_ALERT_CHAT_ID": "",
+            "SMARTUP_AUTO_IMPORT_TIMES": "12:00,15:00,17:50",
+            "SMARTUP_AUTO_IMPORT_FINAL_TIME": "17:50",
+            "SMARTUP_AUTO_IMPORT_LOGISTICS_DUE_TIME": "17:50",
+            "SKLADBOT_DAILY_REPORT_HOUR": "22",
+            "SKLADBOT_DAILY_REPORT_MINUTE": "0",
+        }
+        identity_anchor = canonical_route_identity_sha256(
+            candidate["SMARTUP_AUTO_IMPORT_CLIENT_CHAT_ID"],
+            candidate["SMARTUP_AUTO_IMPORT_LOGISTICS_CHAT_ID"],
+            candidate["TAKSKLAD_AUTOMATION_ALERT_CHAT_ID"],
+        )
+        compose = {
+            "services": {
+                "telegram-worker": {"environment": dict(candidate)},
+                "smartup-auto-import-worker": {
+                    "environment": {
+                        key: candidate[key]
+                        for key in (
+                            "SMARTUP_AUTO_IMPORT_CLIENT_CHAT_ID",
+                            "SMARTUP_AUTO_IMPORT_LOGISTICS_CHAT_ID",
+                            "TAKSKLAD_AUTOMATION_ALERT_CHAT_ID",
+                            "SMARTUP_AUTO_IMPORT_ALERT_CHAT_ID",
+                            "SMARTUP_AUTO_IMPORT_TIMES",
+                            "SMARTUP_AUTO_IMPORT_FINAL_TIME",
+                            "SMARTUP_AUTO_IMPORT_LOGISTICS_DUE_TIME",
+                            "TELEGRAM_ADMIN_CHAT_IDS",
+                        )
+                    }
+                },
+            }
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            archive = temp_root / "control.tar.gz"
+            extracted = temp_root / "clean-base"
+            extracted.mkdir(mode=0o700)
+            with tarfile.open(archive, "w:gz") as bundle:
+                for member in members:
+                    bundle.add(PROJECT_ROOT / member, arcname=member)
+            with tarfile.open(archive, "r:gz") as bundle:
+                bundle.extractall(extracted, filter="data")
+            env_path = extracted / "candidate.env"
+            compose_path = extracted / "candidate-compose.json"
+            env_path.write_text(
+                "".join(f"{key}={value}\n" for key, value in candidate.items()),
+                encoding="utf-8",
+            )
+            compose_path.write_text(json.dumps(compose), encoding="utf-8")
+            os.chmod(env_path, 0o600)
+            os.chmod(compose_path, 0o600)
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(extracted / "tools" / "verify_telegram_routing_contract.py"),
+                    "--env-path", str(env_path),
+                    "--compose-config-json", str(compose_path),
+                    "--json",
+                ],
+                cwd=extracted,
+                text=True,
+                capture_output=True,
+                check=False,
+                env={**os.environ, ROUTING_IDENTITY_ANCHOR_ENV: identity_anchor},
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertNotIn("ModuleNotFoundError", completed.stdout + completed.stderr)
+            for raw_value in ("-1002001", "-1002002", "1001", "synthetic-token"):
+                self.assertNotIn(raw_value, completed.stdout + completed.stderr)
+
+            (extracted / "backend" / "app" / "telegram_routing_manifest.json").unlink()
+            missing_manifest = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(extracted / "tools" / "verify_telegram_routing_contract.py"),
+                    "--env-path", str(env_path),
+                    "--compose-config-json", str(compose_path),
+                    "--json",
+                ],
+                cwd=extracted,
+                text=True,
+                capture_output=True,
+                check=False,
+                env={**os.environ, ROUTING_IDENTITY_ANCHOR_ENV: identity_anchor},
+            )
+            self.assertNotEqual(missing_manifest.returncode, 0)
+            self.assertIn("manifest is unreadable", missing_manifest.stderr)
+
+    def test_deploy_control_materializer_uses_source_sha_for_entire_closure(self):
+        materializer_source = (
+            PROJECT_ROOT / "tools" / "materialize_deploy_control.py"
+        ).read_bytes()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            repo = root / "repo"
+            repo.mkdir()
+            source_sha = "a" * 40
+            github_sha = "b" * 40
+            missing_sha = "c" * 40
+            source_objects = {}
+            github_objects = {}
+            for relative in DEPLOY_CONTROL_PATHS:
+                payload = (
+                    materializer_source
+                    if relative == "tools/materialize_deploy_control.py"
+                    else f"source-sha:{relative}\n".encode("utf-8")
+                )
+                source_objects[relative] = payload
+                github_objects[relative] = f"github-sha:{relative}\n".encode("utf-8")
+            self.assertNotEqual(github_sha, source_sha)
+            missing_relative = DEPLOY_CONTROL_PATHS[-1]
+            object_sets = {
+                source_sha: source_objects,
+                github_sha: github_objects,
+                missing_sha: {
+                    key: value for key, value in source_objects.items() if key != missing_relative
+                },
+            }
+            calls = []
+
+            def fake_git(_repo_root, *args):
+                calls.append(args)
+                if args[:2] == ("cat-file", "-e"):
+                    sha = args[2].removesuffix("^{commit}")
+                    if sha not in object_sets:
+                        raise MaterializationError("missing commit")
+                    return b""
+                if args[:2] != ("cat-file", "blob") or ":" not in args[2]:
+                    raise MaterializationError("unexpected git call")
+                sha, relative = args[2].split(":", 1)
+                try:
+                    return object_sets[sha][relative]
+                except KeyError as exc:
+                    raise MaterializationError("missing blob") from exc
+
+            output = root / "materialized"
+            with mock.patch("tools.materialize_deploy_control._git", side_effect=fake_git):
+                materialize(repo, source_sha, output)
+            actual_paths = {
+                path.relative_to(output).as_posix()
+                for path in output.rglob("*")
+                if path.is_file()
+            }
+            self.assertEqual(actual_paths, set(DEPLOY_CONTROL_PATHS))
+            for relative, payload in source_objects.items():
+                self.assertEqual((output / relative).read_bytes(), payload)
+            requested_specs = {args[2] for args in calls if args[:2] == ("cat-file", "blob")}
+            self.assertEqual(
+                requested_specs,
+                {f"{source_sha}:{relative}" for relative in DEPLOY_CONTROL_PATHS},
+            )
+            self.assertFalse(any(github_sha in spec for spec in requested_specs))
+
+            missing_output = root / "missing-output"
+            with mock.patch("tools.materialize_deploy_control._git", side_effect=fake_git):
+                with self.assertRaises(MaterializationError):
+                    materialize(repo, missing_sha, missing_output)
 
     def test_vds_deploy_script_is_artifact_only_and_rolls_back_runtime_without_db_downgrade(self):
         script = (PROJECT_ROOT / "deploy" / "vds" / "deploy_from_git.sh").read_text(encoding="utf-8")
@@ -320,11 +588,19 @@ class CiCdWorkflowTests(unittest.TestCase):
         workflow = (PROJECT_ROOT / ".github/workflows/deploy-production.yml").read_text(
             encoding="utf-8"
         )
+        control_paths = set(deploy_control_paths(workflow))
+        candidate_guard = (
+            PROJECT_ROOT / "tools" / "phase27_routing_candidate_guard.sh"
+        ).read_text(encoding="utf-8")
 
         self.assertIn("tools/collect_phase27_evidence.py", workflow)
-        self.assertIn('git show "$DEPLOY_CONTROL_SHA:deploy/vds/deploy_from_git.sh"', workflow)
-        self.assertIn('git show "$DEPLOY_CONTROL_SHA:deploy/vds/acceptance_status.sh"', workflow)
-        self.assertIn('git show "$DEPLOY_CONTROL_SHA:tools/google_cutover_audit.py"', workflow)
+        self.assertIn(
+            'git cat-file blob "$DEPLOY_CONTROL_SHA:tools/materialize_deploy_control.py"',
+            workflow,
+        )
+        self.assertIn("deploy/vds/deploy_from_git.sh", control_paths)
+        self.assertIn("deploy/vds/acceptance_status.sh", control_paths)
+        self.assertIn("tools/google_cutover_audit.py", control_paths)
         self.assertIn("previous runtime migration head does not match the retained database schema", workflow)
         self.assertIn("structurally complete forced rollout", workflow)
         self.assertIn(
@@ -333,18 +609,15 @@ class CiCdWorkflowTests(unittest.TestCase):
         )
         self.assertIn("tools/google_cutover_audit.py", workflow)
         self.assertIn("tools/verify_postgres_only_cutover.py", workflow)
-        self.assertIn(
-            'git show "$DEPLOY_CONTROL_SHA:tools/verify_postgres_only_cutover.py"',
-            workflow,
-        )
+        self.assertIn("tools/verify_postgres_only_cutover.py", control_paths)
         self.assertIn("POSTGRES_ONLY_CUTOVER_REUSED", workflow)
         self.assertIn("GOOGLE_TO_POSTGRES_CUTOVER_STATE_UNVERIFIED", workflow)
         self.assertIn("importlib.util.find_spec('app.google_sheets_sync_worker')", workflow)
         self.assertIn("GOOGLE_TO_POSTGRES_CUTOVER_AUDIT_BLOCKED", workflow)
         self.assertIn('payload.get("blockers") != 0', workflow)
         self.assertLess(
-            workflow.index("tools/google_cutover_audit.py"),
-            workflow.index("phase27-env-pre-recovery"),
+            workflow.index("phase27_candidate_guard_init"),
+            workflow.index("< tools/google_cutover_audit.py"),
         )
         self.assertIn("./deploy/vds/backup_postgres.sh --no-prune", workflow)
         self.assertIn(
@@ -355,9 +628,9 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn("http://127.0.0.1:8000/ready", workflow)
         self.assertIn("except HTTPError as e: r=e", workflow)
         self.assertIn("tools/validate_daily_report_config.py", workflow)
-        self.assertIn("backend/app/daily_report_config.py", workflow)
-        self.assertIn("phase27-env-candidate", workflow)
-        self.assertIn("PRODUCTION_CONFIG_RECOVERY_ROLLED_BACK", workflow)
+        self.assertIn("backend/app/daily_report_config.py", control_paths)
+        self.assertIn("phase27-env-candidate", candidate_guard)
+        self.assertIn("PRODUCTION_CONFIG_RECOVERY_ROLLED_BACK", candidate_guard)
         candidate_validation = workflow.index(
             'docker compose --env-file "\\$candidate_env"'
         )
@@ -365,8 +638,8 @@ class CiCdWorkflowTests(unittest.TestCase):
             'install -m 600 "\\$candidate_env" deploy/vds/.env'
         )
         self.assertLess(candidate_validation, env_install)
-        self.assertLess(
-            workflow.rindex("env_recovery_applied=0"),
+        self.assertGreater(
+            workflow.index("phase27_candidate_guard_commit"),
             workflow.index("docker pull \"\\$RELEASE_BACKEND_IMAGE\""),
         )
         self.assertLess(

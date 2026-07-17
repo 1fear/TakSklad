@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -22,6 +23,11 @@ from .config import (
 )
 from .http_client import open_https_url
 from .utils import file_sha256, normalize_text
+from .windows_release_zip import (
+    WindowsReleaseZipError,
+    extract_windows_release_zip,
+    validate_windows_release_zip,
+)
 
 UPDATE_RUNTIME_EXCLUDE_FILES = (
     "TakSklad_data.json",
@@ -63,6 +69,8 @@ UPDATE_RUNTIME_EXCLUDE_DIRS = (
     "diagnostics",
 )
 MAX_UPDATE_DOWNLOAD_BYTES = 512 * 1024 * 1024
+AUTH_HELPER_EXECUTABLE_NAME = "TakSkladAuth.exe"
+ACCEPTANCE_WRAPPER_NAME = "windows_backend_acceptance.ps1"
 UPDATE_SIGNATURE_TYPE = "authenticode"
 WINDOWS_CODESIGN_CERTIFICATE_NOT_AVAILABLE = "WINDOWS_CODESIGN_CERTIFICATE_NOT_AVAILABLE"
 # The release certificate chains to TakSklad's internal CA, which is intentionally
@@ -196,6 +204,18 @@ def validate_update_manifest(update_info, trusted_signers=None):
         raise ValueError("В version.json не указан download_url для обновления")
     validate_update_download_url(download_url)
     validate_update_sha256(expected_sha256)
+    if manifest_targets_onedir(update_info):
+        if not re.fullmatch(r"[0-9a-f]{40}", normalize_text(update_info.get("source_sha"))):
+            raise ValueError("ZIP manifest must bind the exact source SHA")
+        if normalize_text(update_info.get("auth_helper")) != AUTH_HELPER_EXECUTABLE_NAME:
+            raise ValueError("ZIP manifest must require TakSkladAuth.exe")
+        validate_update_sha256(
+            normalize_text(update_info.get("auth_helper_sha256_onedir")).lower()
+        )
+        validate_update_sha256(normalize_text(update_info.get("app_sha256_onedir")).lower())
+        if normalize_text(update_info.get("acceptance_wrapper")) != ACCEPTANCE_WRAPPER_NAME:
+            raise ValueError("ZIP manifest must require the signed-package acceptance wrapper")
+        validate_update_sha256(normalize_text(update_info.get("acceptance_wrapper_sha256")).lower())
 
     latest_version = normalize_text(update_info.get("latest_version"))
     if not latest_version:
@@ -354,22 +374,30 @@ def detect_update_package_type(update_info, downloaded_path):
         return "onedir_zip"
     return "onefile_exe"
 
-def validate_onedir_zip(zip_path):
+def validate_onedir_zip(
+    zip_path,
+    expected_auth_helper_sha256,
+    expected_app_sha256=None,
+    expected_wrapper_sha256=None,
+    outer_manifest=None,
+):
+    validate_update_sha256(expected_auth_helper_sha256)
+    validate_update_sha256(expected_app_sha256)
+    validate_update_sha256(expected_wrapper_sha256)
+    manifest = dict(outer_manifest or {})
+    manifest.update({
+        "app_sha256_onedir": expected_app_sha256,
+        "auth_helper_sha256_onedir": expected_auth_helper_sha256,
+        "acceptance_wrapper_sha256": expected_wrapper_sha256,
+    })
     try:
-        with zipfile.ZipFile(zip_path) as zip_file:
-            names = [name.replace("\\", "/") for name in zip_file.namelist()]
-    except zipfile.BadZipFile as exc:
-        raise ValueError("Файл обновления повреждён или не является ZIP-архивом") from exc
-
-    candidates = (
-        APP_EXECUTABLE_NAME,
-        f"{APP_NAME}/{APP_EXECUTABLE_NAME}",
-        f"./{APP_EXECUTABLE_NAME}",
-        f"./{APP_NAME}/{APP_EXECUTABLE_NAME}",
-    )
-    normalized = {name.lstrip("/") for name in names}
-    if not any(candidate in normalized for candidate in candidates):
-        raise ValueError(f"ZIP-обновление не содержит {APP_EXECUTABLE_NAME}")
+        return validate_windows_release_zip(
+            zip_path,
+            manifest,
+            expected_source_sha=manifest.get("source_sha"),
+        )
+    except WindowsReleaseZipError as exc:
+        raise ValueError("Windows ZIP layout or identity is invalid") from exc
 
 def powershell_single_quoted(value):
     return "'" + str(value).replace("'", "''") + "'"
@@ -499,8 +527,6 @@ def create_windows_onedir_updater(update_zip_path, update_info, trusted_signers=
     if os.name != "nt":
         raise RuntimeError("Автообновление сейчас поддерживает только Windows")
 
-    validate_onedir_zip(update_zip_path)
-
     current_exe = os.path.abspath(sys.executable)
     app_dir = os.path.abspath(APP_DIR)
     updater_path = os.path.join(tempfile.gettempdir(), f"{APP_NAME}_updater_{os.getpid()}.ps1")
@@ -512,6 +538,32 @@ def create_windows_onedir_updater(update_zip_path, update_info, trusted_signers=
         update_info,
         trusted_signers=trusted_signers,
     )
+    auth_helper_sha256 = normalize_text(update_info.get("auth_helper_sha256_onedir")).lower()
+    app_sha256 = normalize_text(update_info.get("app_sha256_onedir")).lower()
+    wrapper_sha256 = normalize_text(update_info.get("acceptance_wrapper_sha256")).lower()
+    validate_onedir_zip(
+        update_zip_path,
+        auth_helper_sha256,
+        app_sha256,
+        wrapper_sha256,
+        outer_manifest=update_info,
+    )
+    if os.path.exists(extract_dir):
+        raise RuntimeError("Изолированный каталог обновления уже существует")
+    try:
+        source_root = extract_windows_release_zip(
+            update_zip_path,
+            extract_dir,
+            update_info,
+            expected_source_sha=normalize_text(update_info.get("source_sha")),
+        )
+    except Exception:
+        if os.path.isdir(extract_dir):
+            shutil.rmtree(extract_dir, ignore_errors=True)
+        raise
+    source_dir = str(source_root)
+    inner_version_sha256 = file_sha256(os.path.join(source_dir, "version.json"))
+    build_manifest_sha256 = file_sha256(os.path.join(source_dir, "build_manifest.json"))
     runtime_exclude_files = powershell_array(UPDATE_RUNTIME_EXCLUDE_FILES)
     runtime_preserve_files = powershell_array(UPDATE_RUNTIME_PRESERVE_FILES)
     runtime_exclude_dirs = powershell_array(UPDATE_RUNTIME_EXCLUDE_DIRS)
@@ -528,6 +580,12 @@ $ZipPath = {powershell_single_quoted(update_zip_path)}
 $ExtractDir = {powershell_single_quoted(extract_dir)}
 $LogPath = {powershell_single_quoted(log_path)}
 $EntryPoint = {powershell_single_quoted(entrypoint)}
+$AuthHelper = '{AUTH_HELPER_EXECUTABLE_NAME}'
+$ExpectedAuthHelperSha256 = {powershell_single_quoted(auth_helper_sha256)}
+$ExpectedAppSha256 = {powershell_single_quoted(app_sha256)}
+$ExpectedWrapperSha256 = {powershell_single_quoted(wrapper_sha256)}
+$ExpectedInnerVersionSha256 = {powershell_single_quoted(inner_version_sha256)}
+$ExpectedBuildManifestSha256 = {powershell_single_quoted(build_manifest_sha256)}
 $ExpectedSignerCertificateSha256 = {powershell_single_quoted(signer_certificate_sha256)}
 $ProcessIdToWait = {process_id}
 $Desktop = [Environment]::GetFolderPath('Desktop')
@@ -550,53 +608,73 @@ try {{
     Start-Sleep -Seconds 1
   }}
 
-  if (Test-Path $ExtractDir) {{
-    Remove-Item -LiteralPath $ExtractDir -Recurse -Force
-  }}
-  New-Item -ItemType Directory -Path $ExtractDir -Force | Out-Null
-  Expand-Archive -LiteralPath $ZipPath -DestinationPath $ExtractDir -Force
-
-  $SourceDir = $ExtractDir
-  $NestedDir = Join-Path $ExtractDir '{APP_NAME}'
-  if (Test-Path (Join-Path $NestedDir $EntryPoint)) {{
-    $SourceDir = $NestedDir
+  $SourceDir = {powershell_single_quoted(source_dir)}
+  if (-not (Test-Path $ExtractDir) -or -not (Test-Path $SourceDir)) {{
+    throw "Изолированное содержимое обновления отсутствует"
   }}
   if (-not (Test-Path (Join-Path $SourceDir $EntryPoint))) {{
     throw "В архиве обновления не найден $EntryPoint"
   }}
-  $Signature = Get-AuthenticodeSignature -LiteralPath (Join-Path $SourceDir $EntryPoint)
-  if ($null -eq $Signature.SignerCertificate) {{
-    throw "Authenticode-подпись обновления не содержит сертификат издателя"
+  $AuthHelperPath = Join-Path $SourceDir $AuthHelper
+  if (-not (Test-Path $AuthHelperPath)) {{
+    throw "В архиве обновления не найден $AuthHelper"
   }}
-  $Hasher = [System.Security.Cryptography.SHA256]::Create()
-  try {{
-    $SignerCertificateSha256 = -join ($Hasher.ComputeHash($Signature.SignerCertificate.RawData) | ForEach-Object {{ $_.ToString('x2') }})
-  }} finally {{
-    $Hasher.Dispose()
+  $ActualAuthHelperSha256 = (Get-FileHash -LiteralPath $AuthHelperPath -Algorithm SHA256).Hash.ToLower()
+  if ($ActualAuthHelperSha256 -ne $ExpectedAuthHelperSha256) {{
+    throw "Контрольная сумма TakSkladAuth.exe не совпала"
   }}
-  if ($SignerCertificateSha256 -ne $ExpectedSignerCertificateSha256) {{
-    throw "Authenticode-подпись создана недоверенным издателем"
+  $RequiredPackageHashes = @{{
+    $EntryPoint = $ExpectedAppSha256
+    '{ACCEPTANCE_WRAPPER_NAME}' = $ExpectedWrapperSha256
+    'version.json' = $ExpectedInnerVersionSha256
+    'build_manifest.json' = $ExpectedBuildManifestSha256
   }}
-  $Chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain
-  try {{
-    $Chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
-    $null = $Chain.Build($Signature.SignerCertificate)
-    $ChainStatuses = @($Chain.ChainStatus | ForEach-Object {{ $_.Status.ToString() }} | Sort-Object -Unique)
-  }} finally {{
-    $Chain.Dispose()
+  foreach ($PackageName in $RequiredPackageHashes.Keys) {{
+    $PackagePath = Join-Path $SourceDir $PackageName
+    if (-not (Test-Path -LiteralPath $PackagePath -PathType Leaf)) {{
+      throw "Обязательный файл пакета отсутствует"
+    }}
+    $ActualPackageHash = (Get-FileHash -LiteralPath $PackagePath -Algorithm SHA256).Hash.ToLower()
+    if ($ActualPackageHash -ne $RequiredPackageHashes[$PackageName]) {{
+      throw "Контрольная сумма обязательного файла пакета не совпала"
+    }}
   }}
-  $AcceptedSignatureStatuses = @(
-    [System.Management.Automation.SignatureStatus]::Valid,
-    [System.Management.Automation.SignatureStatus]::NotTrusted,
-    [System.Management.Automation.SignatureStatus]::UnknownError
-  )
-  if ($AcceptedSignatureStatuses -notcontains $Signature.Status) {{
-    throw "Authenticode-подпись обновления недействительна: $($Signature.Status)"
-  }}
-  $AcceptedChainStatuses = @('PartialChain', 'UntrustedRoot')
-  if ($Signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -and
-      ($ChainStatuses.Count -ne 1 -or $AcceptedChainStatuses -notcontains $ChainStatuses[0])) {{
-    throw "Authenticode-цепочка обновления недействительна: $($ChainStatuses -join ',')"
+  foreach ($ExecutableName in @($EntryPoint, $AuthHelper)) {{
+    $ExecutablePath = Join-Path $SourceDir $ExecutableName
+    $Signature = Get-AuthenticodeSignature -LiteralPath $ExecutablePath
+    if ($null -eq $Signature.SignerCertificate) {{
+      throw "Authenticode-подпись обновления не содержит сертификат издателя"
+    }}
+    $Hasher = [System.Security.Cryptography.SHA256]::Create()
+    try {{
+      $SignerCertificateSha256 = -join ($Hasher.ComputeHash($Signature.SignerCertificate.RawData) | ForEach-Object {{ $_.ToString('x2') }})
+    }} finally {{
+      $Hasher.Dispose()
+    }}
+    if ($SignerCertificateSha256 -ne $ExpectedSignerCertificateSha256) {{
+      throw "Authenticode-подпись создана недоверенным издателем"
+    }}
+    $Chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain
+    try {{
+      $Chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
+      $null = $Chain.Build($Signature.SignerCertificate)
+      $ChainStatuses = @($Chain.ChainStatus | ForEach-Object {{ $_.Status.ToString() }} | Sort-Object -Unique)
+    }} finally {{
+      $Chain.Dispose()
+    }}
+    $AcceptedSignatureStatuses = @(
+      [System.Management.Automation.SignatureStatus]::Valid,
+      [System.Management.Automation.SignatureStatus]::NotTrusted,
+      [System.Management.Automation.SignatureStatus]::UnknownError
+    )
+    if ($AcceptedSignatureStatuses -notcontains $Signature.Status) {{
+      throw "Authenticode-подпись обновления недействительна: $($Signature.Status)"
+    }}
+    $AcceptedChainStatuses = @('PartialChain', 'UntrustedRoot')
+    if ($Signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -and
+        ($ChainStatuses.Count -ne 1 -or $AcceptedChainStatuses -notcontains $ChainStatuses[0])) {{
+      throw "Authenticode-цепочка обновления недействительна: $($ChainStatuses -join ',')"
+    }}
   }}
 
   if (Test-Path $NewDir) {{

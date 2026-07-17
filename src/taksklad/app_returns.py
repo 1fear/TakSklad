@@ -1,12 +1,14 @@
 import tkinter as tk
 
 from .backend_client import (
+    BackendApiError,
     backend_configured,
     fetch_returned_orders,
     lookup_return_order,
     mark_order_returned,
 )
 from .config import ACCENT, BG_CARD, BG_MAIN, BORDER, FG_MUTED, FG_TEXT
+from .secret_store import SecretStoreError
 from .ui_widgets import AppButton
 from .utils import normalize_text, parse_int_value
 
@@ -18,6 +20,23 @@ PARTIAL_RETURN_UNSUPPORTED_MESSAGE = (
 )
 EMPTY_RETURN_SELECTION_MESSAGE = "Возврат не сохранён: выберите хотя бы одну позицию."
 ALREADY_RETURNED_MESSAGE = "Этот возврат уже принят."
+
+
+def format_returns_error(exc, *, operation):
+    if isinstance(exc, SecretStoreError):
+        return "Учётные данные рабочего места недоступны или не установлены. Обратитесь к администратору."
+    status_code = exc.status_code if isinstance(exc, BackendApiError) else None
+    if status_code == 401:
+        return "Доступ к backend отклонён. Обновите учётные данные рабочего места."
+    if status_code == 403:
+        return "Недостаточно прав для работы с возвратами."
+    if status_code == 404 and operation == "lookup":
+        return "Заявка не найдена."
+    if status_code is not None and status_code >= 500:
+        return "Backend временно недоступен. Повторите позже."
+    if status_code is None:
+        return "Нет связи с backend. Проверьте сеть и повторите."
+    return "Не удалось выполнить запрос возвратов."
 
 
 def return_item_blocks(item):
@@ -267,7 +286,7 @@ class ReturnsActionsMixin:
 
             def on_error(exc):
                 returns_list.delete(0, tk.END)
-                returns_list.insert(tk.END, f"Не удалось загрузить возвраты: {exc}")
+                returns_list.insert(tk.END, format_returns_error(exc, operation="list"))
 
             self.run_background(
                 "Не удалось загрузить список возвратов",
@@ -289,7 +308,7 @@ class ReturnsActionsMixin:
 
             def on_error(exc):
                 self.return_lookup_result = None
-                result_var.set(f"Не найдено: {exc}")
+                result_var.set(format_returns_error(exc, operation="lookup"))
 
             self.run_background(
                 "Не удалось найти заявку для возврата",
@@ -330,7 +349,7 @@ class ReturnsActionsMixin:
                 self.refresh_from_sheet()
 
             def on_error(exc):
-                result_var.set(f"Возврат не сохранён: {exc}")
+                result_var.set(format_returns_error(exc, operation="write"))
                 return_btn.config(state="normal")
 
             self.run_background(

@@ -90,6 +90,7 @@ def load_identity(manifest_path: Path = RELEASE_MANIFEST) -> dict[str, str]:
         "backend_digest": str(manifest.get("images", {}).get("backend", {}).get("digest", "")),
         "frontend_digest": str(manifest.get("images", {}).get("frontend", {}).get("digest", "")),
         "windows_artifact_sha256": str(manifest.get("windows", {}).get("artifact_sha256", "")),
+        "windows_auth_helper_sha256": str(manifest.get("windows", {}).get("auth_helper_sha256", "")),
         "sbom_manifest_sha256": sha256_file(ROOT / "test-artifacts/sbom/manifest.sha256"),
         "provenance_sha256": sha256_file(ROOT / "test-artifacts/release/provenance.dsse.json"),
     }
@@ -107,6 +108,13 @@ def load_identity(manifest_path: Path = RELEASE_MANIFEST) -> dict[str, str]:
     artifact = ROOT / str(manifest.get("windows", {}).get("artifact", ""))
     if not artifact.is_file() or sha256_file(artifact) != identity["windows_artifact_sha256"]:
         raise VerificationError("Windows artifact hash does not match release manifest")
+    helper_name = str(manifest.get("windows", {}).get("auth_helper", ""))
+    if helper_name:
+        if not HEX_RE.fullmatch(identity["windows_auth_helper_sha256"]):
+            raise VerificationError("invalid release identity: windows_auth_helper_sha256")
+        helper = ROOT / helper_name
+        if not helper.is_file() or sha256_file(helper) != identity["windows_auth_helper_sha256"]:
+            raise VerificationError("Windows auth helper hash does not match release manifest")
     if manifest.get("windows", {}).get("release_source_sha") != identity["source_sha"]:
         raise VerificationError("Windows release SHA does not match release source SHA")
     if manifest.get("windows", {}).get("artifact_source_sha") != identity["source_sha"]:
@@ -126,6 +134,8 @@ def load_identity(manifest_path: Path = RELEASE_MANIFEST) -> dict[str, str]:
         for role in ("backend", "frontend")
     }
     expected_subjects[str(manifest["windows"]["artifact"])] = identity["windows_artifact_sha256"]
+    if helper_name:
+        expected_subjects[helper_name] = identity["windows_auth_helper_sha256"]
     if any(subjects.get(name) != digest for name, digest in expected_subjects.items()):
         raise VerificationError("provenance subjects do not match release artifacts")
     sbom_root = ROOT / "test-artifacts/sbom"
@@ -174,7 +184,7 @@ GATES = [
     ("sbom", "supply_chain", "./tools/generate_sbom.sh --verify"),
     ("attestations", "supply_chain", "./tools/verify_release_attestations.sh --local"),
     ("workflow-lint", "supply_chain", "./tools/lint_workflows.sh"),
-    ("release-preflight", "source_integrity", "PYTHONPATH=. .venv/bin/python tools/release_preflight.py --skip-network"),
+    ("release-preflight", "source_integrity", "PYTHONPATH=. .venv/bin/python tools/release_preflight.py --phase candidate --skip-network"),
     ("compose-config", "source_integrity", "docker compose --env-file /dev/null -f deploy/vds/docker-compose.yml config --no-interpolate --quiet"),
     ("container-policy", "security", "PYTHONPATH=. .venv/bin/python tools/check_container_policy.py --strict"),
     ("container-smoke", "migration", "./tools/run_container_smoke.sh --dummy-config --permission-tests"),

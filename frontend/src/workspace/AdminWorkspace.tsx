@@ -84,6 +84,7 @@ import {
   tashkentBusinessDate,
   tashkentBusinessMonth,
 } from "../data-flow";
+import OrderCorrelationDetails from "../features/orders/OrderCorrelationDetails";
 
 type Tab = "warehouse" | "table" | "calendar" | "clients" | "smartup" | "imports" | "skladbotDryRun" | "incidents" | "activity";
 const HISTORY_TABS: Tab[] = ["imports", "skladbotDryRun", "incidents", "activity"];
@@ -1899,9 +1900,16 @@ function AdminRowsTable({
                   <span className={`activity-badge ${scanState(row)}`}>{scanStateLabel(scanState(row))}</span>
                 </td>
                 <td>
-                  <strong className="cell-title">{row.skladbot_request_number || "-"}</strong>
+                  <OrderCorrelationDetails
+                    smartupId={row.smartup_id}
+                    skladbotRequestNumber={row.skladbot_request_number}
+                    skladbotRequestId={row.skladbot_request_id}
+                    returnRequestNumber={row.skladbot_return_request_number}
+                    returnRequestId={row.skladbot_return_request_id}
+                    showReturn={Boolean(row.skladbot_return_request_id || row.skladbot_return_request_number || row.return_status || row.returned_at || row.return_reference)}
+                  />
                   <span className="table-muted cell-sub">{skladbotStatusLabel(row)}</span>
-                  {row.status_bucket === "returned" && (
+                  {Boolean(row.skladbot_return_request_id || row.skladbot_return_request_number || row.return_status || row.returned_at || row.return_reference) && (
                     <span className="table-muted cell-sub">
                       Возврат: {row.skladbot_return_request_number || "не создан"} ·{" "}
                       {returnSkladBotStatusLabel(row.skladbot_return_status)}
@@ -2233,12 +2241,21 @@ function ClientOrderHistory({ point, summary, error, loading }: { point: ClientP
             <div className="client-order-date-meta">
               <strong>{formatDate(entry.shipment_date)}</strong>
               <div className="client-order-skladbot-references" aria-label="Заявки SkladBot">
-                {entry.order_references.map((reference, index) => (
-                  <span key={reference.order_id}>
-                    {formatClientOrderSkladBotReference(reference, entry.order_references.length, index)}
-                  </span>
+                {entry.order_references.map((reference) => (
+                  <OrderCorrelationDetails
+                    key={reference.order_id}
+                    smartupId={reference.smartup_id}
+                    skladbotRequestNumber={reference.skladbot_request_number}
+                    skladbotRequestId={reference.skladbot_request_id}
+                    returnRequestNumber={reference.skladbot_return_request_number}
+                    returnRequestId={reference.skladbot_return_request_id}
+                    showReturn={Boolean(
+                      reference.is_returned
+                      || reference.skladbot_return_request_number
+                      || reference.skladbot_return_request_id
+                    )}
+                  />
                 ))}
-                {entry.order_references.length === 0 && <span>Заявка SkladBot: не найдена</span>}
               </div>
               <span>Тип оплаты: {entry.payment_type || "-"}</span>
             </div>
@@ -2374,6 +2391,14 @@ function SkladBotDryRunPanel({
                   <td>
                     <span className={`status-badge dry-run-${item.status}`}>{dryRunStatusLabel(item.status)}</span>
                     {item.error && <span className="table-muted cell-sub">{item.error}</span>}
+                    <OrderCorrelationDetails
+                      smartupId={item.smartup_id}
+                      skladbotRequestNumber={item.skladbot_request_number}
+                      skladbotRequestId={item.skladbot_request_id}
+                      returnRequestNumber={item.skladbot_return_request_number}
+                      returnRequestId={item.skladbot_return_request_id}
+                      showReturn={Boolean(item.skladbot_return_request_number || item.skladbot_return_request_id)}
+                    />
                   </td>
                   <td>
                     <details className="json-preview">
@@ -3079,7 +3104,9 @@ function skladbotStatusLabel(row: AdminTableRow) {
   if (row.skladbot_status === "not_found") return "Не найдено";
   if (row.skladbot_status === "multiple") return "Несколько";
   if (row.skladbot_status === "create_queued") return "Создание в очереди";
-  if (row.skladbot_status === "ambiguous") return "Неоднозначно — ручная проверка";
+  if (row.skladbot_status === "ambiguous" || row.skladbot_status === "manual_review") {
+    return "Неоднозначно — ручная проверка";
+  }
   if (row.skladbot_status === "blocked_stock") return "Заблокировано: нет товара";
   if (row.skladbot_status === "pending") return "Проверяется";
   if (row.skladbot_status === "create_failed") return "Ошибка создания";
@@ -3093,6 +3120,7 @@ function returnSkladBotStatusLabel(value: string) {
   if (value === "created_recovered") return "Восстановлено";
   if (value === "blocked") return "Заблокировано";
   if (value === "create_failed") return "Ошибка создания";
+  if (value === "manual_review") return "Неоднозначно — ручная проверка";
   return value || "нет статуса";
 }
 
@@ -3217,18 +3245,6 @@ function formatOrderReturnCounts(orders: number, returns: number) {
   const parts = [`${formatNumber(orders)} заказов`];
   if (returns > 0) parts.push(`${formatNumber(returns)} возвратов`);
   return parts.join(" · ");
-}
-
-function formatClientOrderSkladBotReference(
-  reference: ClientPointOrderSummary["dates"][number]["order_references"][number],
-  totalReferences: number,
-  index: number,
-) {
-  const value = reference.skladbot_request_number
-    || (reference.skladbot_request_id ? `ID ${reference.skladbot_request_id}` : "не найдена");
-  if (totalReferences === 1) return `Заявка SkladBot: ${value}`;
-  const orderLabel = reference.is_returned ? "Возврат" : `Заказ ${index + 1}`;
-  return `${orderLabel} · SkladBot: ${value}`;
 }
 
 function formatClientProductQuantity(blocks: number, pieces: number) {

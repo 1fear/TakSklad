@@ -18,7 +18,7 @@ from backend.app.health_service import (
     build_readiness_report,
     readiness_http_status,
 )
-from backend.app.models import AuditLog, Base, PendingEvent
+from backend.app.models import AuditLog, Base, Order, OrderItem, PendingEvent
 from backend.app.skladbot_daily_report import (
     DEFAULT_DAILY_REPORT_MAX_PAGES,
     MOVEMENT_HEADERS,
@@ -30,6 +30,7 @@ from backend.app.skladbot_daily_report import (
     build_skladbot_daily_report_xlsx,
     categorize_request_type,
     collect_skladbot_daily_report,
+    enrich_smartup_ids_from_orders,
     product_breakdown_for_summary,
     read_style_post,
     request_representative,
@@ -81,6 +82,16 @@ def worksheet_rows_by_header(sheet):
         {header: sheet.cell(row=row, column=index + 1).value for index, header in enumerate(headers)}
         for row in range(2, sheet.max_row + 1)
     ]
+
+
+def empty_sqlite_session_factory():
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    return sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 class FakeSkladBotDailyReportClient:
@@ -1240,6 +1251,9 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(summary["stock_total"], 544)
         self.assertEqual(report["errors"], [])
 
+        for request in report["requests"]:
+            request["smartup_id"] = "731" if request.get("number") == "WH-R-101" else ""
+
         content, filename = build_skladbot_daily_report_xlsx(report)
         self.assertEqual(filename, "TakSklad_SkladBot_daily_08.06.2026.xlsx")
         workbook = openpyxl.load_workbook(BytesIO(content), data_only=False)
@@ -1293,13 +1307,14 @@ class SkladBotDailyReportTests(unittest.TestCase):
         request_rows = worksheet_rows_by_header(requests_sheet)
         request_by_number = {row["Номер"]: row for row in request_rows}
         self.assertEqual(request_by_number["WH-R-101"]["Юрлицо/точка"], "XASAN XUSAN SAVDO SERVIS XK")
-        self.assertEqual(request_by_number["WH-R-101"]["ID заявки Smartup"], "smartup:259704266")
+        self.assertEqual(request_by_number["WH-R-101"]["Smartup ID"], "731")
         self.assertEqual(request_by_number["WH-R-101"]["Торговый представитель"], "ТП1 Суюнбеков Умид")
         self.assertEqual(request_by_number["WH-R-101"]["Раб зона"], "Юнусабад")
         self.assertEqual(request_by_number["WH-R-101"]["Блоков план"], 4)
         self.assertEqual(request_by_number["WH-R-101"]["Блоков факт"], 4)
         self.assertEqual(request_by_number["WH-R-101"]["Отклонение"], 0)
         self.assertEqual(request_by_number["WH-R-303"]["Торговый представитель"], None)
+        self.assertIsNone(request_by_number["WH-R-303"]["Smartup ID"])
         self.assertEqual(request_by_number["WH-R-303"]["Блоков план"], 1)
         self.assertEqual(request_by_number["WH-R-303"]["Блоков факт"], 500)
         self.assertEqual(request_by_number["WH-R-303"]["Отклонение"], 499)
@@ -1309,7 +1324,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
         product_rows = worksheet_rows_by_header(products_sheet)
         self.assertIn("Chapman Gold SSL", [row["Товар"] for row in product_rows])
         brown_product_row = next(row for row in product_rows if row["Товар"] == "Chapman Brown OP 20")
-        self.assertEqual(brown_product_row["ID заявки Smartup"], "smartup:259704266")
+        self.assertEqual(brown_product_row["Smartup ID"], "731")
         self.assertEqual(brown_product_row["Торговый представитель"], "ТП1 Суюнбеков Умид")
         self.assertEqual(brown_product_row["Раб зона"], "Юнусабад")
         gold_product_row = next(row for row in product_rows if row["Товар"] == "Chapman Gold SSL")
@@ -1350,9 +1365,11 @@ class SkladBotDailyReportTests(unittest.TestCase):
             "Отгрузка в браке: 0 заявок, 0 блоков",
             "Возврат: 1 заявок, 2 блоков",
             "Приемка: 1 заявок, 500 блоков",
-            "Движения: приход 1 строк / 500 кол-во; расход 1 строк / 4 кол-во",
             "Актуальный остаток: 544",
         ]))
+        self.assertEqual(len(message.splitlines()), 6)
+        self.assertNotIn("Движения:", message)
+        self.assertNotIn("Smartup ID", message)
         for hidden_line in (
             "Срез:",
             "Статус покрытия:",
@@ -1362,6 +1379,90 @@ class SkladBotDailyReportTests(unittest.TestCase):
             "Прочее:",
         ):
             self.assertNotIn(hidden_line, message)
+
+    def test_daily_smartup_ids_are_enriched_only_by_exact_internal_order_links(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(bind=engine)
+        with SessionLocal() as db:
+            order = Order(
+                payment_type="Терминал",
+                client="Synthetic client",
+                address="Synthetic address",
+                raw_payload={
+                    "source_order_id": "smartup:731",
+                    "skladbot_request_id": "901",
+                    "skladbot_request_number": "WH-R-EXACT-1",
+                },
+            )
+            order.items.append(OrderItem(
+                product="Synthetic product",
+                quantity_pieces=1,
+                quantity_blocks=1,
+                raw_payload={"source_order_id": "smartup:732"},
+            ))
+            conflicting = Order(
+                payment_type="Терминал",
+                client="Other client",
+                address="Other address",
+                raw_payload={
+                    "source_order_id": "smartup:733",
+                    "skladbot_request_id": "902",
+                    "skladbot_request_number": "WH-R-OTHER-1",
+                },
+            )
+            conflicting.items.append(OrderItem(
+                product="Other product",
+                quantity_pieces=1,
+                quantity_blocks=1,
+                raw_payload={},
+            ))
+            db.add_all([order, conflicting])
+            db.commit()
+            report = {"requests": [
+                {"id": 901, "number": "WH-R-EXACT-1", "smartup_id": "smartup:999"},
+                {"id": 902, "number": "WH-R-EXACT-1", "smartup_id": "smartup:998"},
+                {"id": 999, "number": "WH-R-MISSING-1", "smartup_id": "smartup:997"},
+            ]}
+
+            enrich_smartup_ids_from_orders(db, report)
+
+        self.assertEqual(report["requests"][0]["smartup_id"], "731, 732")
+        self.assertEqual(report["requests"][1]["smartup_id"], "")
+        self.assertEqual(report["requests"][2]["smartup_id"], "")
+        self.assertEqual(REQUEST_HEADERS.count("Smartup ID"), 1)
+        self.assertEqual(REQUEST_PRODUCT_HEADERS.count("Smartup ID"), 1)
+        self.assertNotIn("ID заявки Smartup", REQUEST_HEADERS)
+
+    def test_daily_telegram_zero_movement_snapshot_keeps_exact_six_lines(self):
+        report = {
+            "report_date": date(2026, 6, 8),
+            "summary": {
+                "category_counts": {"Отгрузка": 0, "Отгрузка в браке": 0, "Возврат": 0, "Приемка": 0},
+                "request_blocks_by_category": {"Отгрузка": 0, "Отгрузка в браке": 0, "Возврат": 0, "Приемка": 0},
+                "movement_in_rows": 0,
+                "movement_out_rows": 0,
+                "movement_in_amount": 0,
+                "movement_out_amount": 0,
+                "stock_total": 0,
+            },
+        }
+
+        message = build_skladbot_daily_report_message(report)
+        self.assertEqual(message, "\n".join([
+            "SkladBot daily за 2026-06-08",
+            "Отгрузка: 0 заявок, 0 блоков",
+            "Отгрузка в браке: 0 заявок, 0 блоков",
+            "Возврат: 0 заявок, 0 блоков",
+            "Приемка: 0 заявок, 0 блоков",
+            "Актуальный остаток: 0",
+        ]))
+        self.assertNotIn("Движения:", message)
+        self.assertNotIn("Smartup ID", message)
 
     def test_daily_report_never_calls_skladbot_create_request(self):
         client = ForbiddenWriteDailyReportClient()
@@ -2367,6 +2468,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
 
     def test_telegram_manual_command_sends_skladbot_daily_report(self):
         worker = TelegramWorker.__new__(TelegramWorker)
+        worker.session_factory = empty_sqlite_session_factory()
         worker.allowed_chat_ids = {"123"}
         worker.admin_chat_ids = {"123"}
         messages = []
@@ -2416,6 +2518,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
 
     def test_manual_skladbot_daily_partial_blocked_by_default(self):
         worker = TelegramWorker.__new__(TelegramWorker)
+        worker.session_factory = empty_sqlite_session_factory()
         worker.allowed_chat_ids = {"123"}
         worker.admin_chat_ids = {"123"}
         messages = []
@@ -2470,6 +2573,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
 
     def test_manual_skladbot_daily_partial_requires_explicit_allow_flag(self):
         worker = TelegramWorker.__new__(TelegramWorker)
+        worker.session_factory = empty_sqlite_session_factory()
         worker.allowed_chat_ids = {"123"}
         worker.admin_chat_ids = {"123"}
         messages = []
@@ -3001,8 +3105,8 @@ class SkladBotDailyReportTests(unittest.TestCase):
             telegram_scheduled_report_processor_module.SessionLocal = SessionLocal
             worker = TelegramWorker.__new__(TelegramWorker)
             worker.session_factory = SessionLocal
-            worker.allowed_chat_ids = {"888", "999"}
-            worker.admin_chat_ids = {"888", "999"}
+            worker.allowed_chat_ids = {"999", "-1002001"}
+            worker.admin_chat_ids = {"999"}
             worker.automation_alert_chat_id = "999"
             worker.skladbot_daily_report_chat_ids = {"-100-report-group"}
             report_date = date(2026, 7, 15)
@@ -3112,7 +3216,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
             )
             worker = TelegramWorker.__new__(TelegramWorker)
             worker.skladbot_daily_report_enabled = True
-            worker.skladbot_daily_report_chat_ids = {"-5271267499"}
+            worker.skladbot_daily_report_chat_ids = {"-1002001"}
             worker.skladbot_daily_report_hour = 22
             worker.skladbot_daily_report_minute = 0
             worker.skladbot_daily_report_retry_minutes = 15
@@ -3125,7 +3229,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
             now = datetime(2026, 6, 8, 22, 5, tzinfo=ZoneInfo("Asia/Tashkent"))
             self.assertEqual(worker.send_due_skladbot_daily_reports(now=now), 1)
 
-            self.assertEqual(sends, [("-5271267499", date(2026, 6, 8), True)])
+            self.assertEqual(sends, [("-1002001", date(2026, 6, 8), True)])
             self.assertEqual(reconciliations, [(date(2026, 6, 8), ["999"])])
         finally:
             telegram_scheduled_report_processor_module.SessionLocal = original_session_local
@@ -3149,7 +3253,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
             )
             worker = TelegramWorker.__new__(TelegramWorker)
             worker.skladbot_daily_report_enabled = True
-            worker.skladbot_daily_report_chat_ids = {"-5271267499"}
+            worker.skladbot_daily_report_chat_ids = {"-1002001"}
             worker.skladbot_daily_report_hour = 22
             worker.skladbot_daily_report_minute = 0
             worker.skladbot_daily_report_retry_minutes = 15
@@ -3162,7 +3266,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
             now = datetime(2026, 6, 8, 22, 5, tzinfo=ZoneInfo("Asia/Tashkent"))
             self.assertEqual(worker.send_due_skladbot_daily_reports(now=now), 1)
 
-            self.assertEqual(sends, [("-5271267499", date(2026, 6, 8), True)])
+            self.assertEqual(sends, [("-1002001", date(2026, 6, 8), True)])
             self.assertEqual(reconciliations, [(date(2026, 6, 8), ["999"])])
         finally:
             telegram_scheduled_report_processor_module.SessionLocal = original_session_local

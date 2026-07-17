@@ -62,6 +62,8 @@ from .storage import (
 from .startup_check import log_startup_self_check
 from .logging_setup import configure_app_logging
 from .single_instance import acquire_single_instance_lock, release_single_instance_lock
+from .credential_lock import acquire_credential_mutation_lock, release_credential_mutation_lock
+from .secret_store import SecretStoreError
 
 configure_app_logging(LOG_FILE, LOG_MAX_BYTES, LOG_BACKUP_COUNT)
 
@@ -179,14 +181,18 @@ def run_app():
         return 2
 
     app = None
+    credential_lock_result = None
     try:
         if maybe_rename_windows_executable():
             return 0
 
         ensure_windows_desktop_shortcut()
         try:
+            credential_lock_result = acquire_credential_mutation_lock()
+            if not credential_lock_result.acquired:
+                raise SecretMigrationError("credential mutation lock is held")
             secret_migration = migrate_desktop_secrets()
-        except SecretMigrationError:
+        except (SecretMigrationError, SecretStoreError):
             logging.exception("Безопасная миграция desktop-секретов остановила запуск")
             show_startup_error_message(
                 "Безопасное хранилище недоступно",
@@ -226,6 +232,8 @@ def run_app():
     finally:
         if app is not None:
             app.single_instance_lock = None
+        if credential_lock_result is not None and credential_lock_result.acquired:
+            release_credential_mutation_lock(credential_lock_result.lock)
         release_single_instance_lock(instance_result.lock)
 
 

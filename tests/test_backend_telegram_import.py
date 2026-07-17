@@ -233,7 +233,11 @@ class BackendTelegramImportTests(unittest.TestCase):
         calls = []
         events = [{
             "id": "notification-1",
-            "payload": {"chat_id": "allowed", "text": "Synthetic notification"},
+            "payload": {
+                "kind": "daily_reconciliation_alert",
+                "chat_id": "1001",
+                "text": "Synthetic notification",
+            },
             "lease_owner": "lease-1",
         }]
 
@@ -244,7 +248,8 @@ class BackendTelegramImportTests(unittest.TestCase):
             return events.pop(0) if events else None
 
         processor.take_next_telegram_notification_event = take_next
-        processor.is_allowed_chat = lambda chat_id: calls.append(("authorize", chat_id)) or chat_id == "allowed"
+        processor.admin_chat_ids = {"1001"}
+        processor.is_admin_chat = lambda chat_id: calls.append(("authorize", chat_id)) or chat_id == "1001"
         processor.send_message = lambda chat_id, text: calls.append(("send_message", chat_id, text))
         processor.finish_telegram_notification_event = (
             lambda event_id, success, error="", failure_status="failed", lease_owner="": calls.append(
@@ -256,11 +261,29 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertEqual(calls, [
             ("reset",),
             ("take",),
-            ("authorize", "allowed"),
-            ("send_message", "allowed", "Synthetic notification"),
+            ("authorize", "1001"),
+            ("send_message", "1001", "Synthetic notification"),
             ("finish", "notification-1", True, "", "failed", "lease-1"),
             ("take",),
         ])
+
+    def test_admin_processor_notification_route_blocks_unknown_foreign_and_broadcast(self):
+        processor = TelegramAdminProcessor()
+        processor.admin_chat_ids = {"1001"}
+        allowed = {"kind": "daily_reconciliation_alert", "text": "safe"}
+        self.assertEqual(processor.telegram_notification_route(allowed), ("1001", ""))
+        self.assertEqual(
+            processor.telegram_notification_route({**allowed, "chat_id": "1002"})[1],
+            "telegram notification contains a foreign target",
+        )
+        self.assertEqual(
+            processor.telegram_notification_route({"kind": "foreign", "text": "safe"})[1],
+            "telegram notification kind is not allowlisted",
+        )
+        processor.admin_chat_ids = {"1001", "1002"}
+        target, reason = processor.telegram_notification_route(allowed)
+        self.assertEqual(target, "")
+        self.assertIn("exactly one", reason)
 
     def test_report_processor_builds_kiz_menu_with_characterized_ordered_calls(self):
         processor = TelegramReportProcessor()
@@ -413,27 +436,53 @@ class BackendTelegramImportTests(unittest.TestCase):
                 skladbot_api_tokens=(),
             )
 
-        self.assertEqual(
-            invalid.exception.setting_names,
-            (
-                "SKLADBOT_API_TOKEN(S)",
-                "SKLADBOT_DAILY_REPORT_CHAT_IDS",
-                "SKLADBOT_DAILY_REPORT_ENABLED",
-                "TAKSKLAD_AUTOMATION_ALERT_CHAT_ID",
-                "TELEGRAM_ALLOWED_CHAT_IDS",
-                "TELEGRAM_BOT_TOKEN",
-            ),
-        )
+        self.assertTrue({
+            "SKLADBOT_API_TOKEN(S)",
+            "SKLADBOT_DAILY_REPORT_CHAT_IDS",
+            "SKLADBOT_DAILY_REPORT_ENABLED",
+            "SKLADBOT_DAILY_REPORT_HOUR",
+            "SKLADBOT_DAILY_REPORT_MINUTE",
+            "SMARTUP_AUTO_IMPORT_CLIENT_CHAT_ID",
+            "SMARTUP_AUTO_IMPORT_LOGISTICS_CHAT_ID",
+            "SMARTUP_AUTO_IMPORT_TIMES",
+            "SMARTUP_AUTO_IMPORT_FINAL_TIME",
+            "SMARTUP_AUTO_IMPORT_LOGISTICS_DUE_TIME",
+            "TAKSKLAD_AUTOMATION_ALERT_CHAT_ID",
+            "TELEGRAM_ADMIN_CHAT_IDS",
+            "TELEGRAM_ALLOWED_CHAT_IDS",
+            "TELEGRAM_BOT_TOKEN",
+            "TELEGRAM_ROUTE_ROLE_COLLISION",
+        }.issubset(set(invalid.exception.setting_names)))
 
+        production_environ = {
+            "TAKSKLAD_ENV": "production",
+            "TAKSKLAD_TIMEZONE": "Asia/Tashkent",
+            "TELEGRAM_BOT_TOKEN": "synthetic-token",
+            "TELEGRAM_ALLOWED_CHAT_IDS": "-1002001,-1002002,1001",
+            "TELEGRAM_ADMIN_CHAT_IDS": "1001",
+            "SKLADBOT_DAILY_REPORT_ENABLED": "true",
+            "SKLADBOT_DAILY_REPORT_CHAT_IDS": "-1002001",
+            "SKLADBOT_API_TOKENS": "synthetic-skladbot-token",
+            "TAKSKLAD_AUTOMATION_ALERT_CHAT_ID": "1001",
+            "SMARTUP_AUTO_IMPORT_CLIENT_CHAT_ID": "-1002001",
+            "SMARTUP_AUTO_IMPORT_LOGISTICS_CHAT_ID": "-1002002",
+            "SMARTUP_AUTO_IMPORT_ALERT_CHAT_ID": "",
+            "SMARTUP_AUTO_IMPORT_TIMES": "12:00,15:00,17:50",
+            "SMARTUP_AUTO_IMPORT_FINAL_TIME": "17:50",
+            "SMARTUP_AUTO_IMPORT_LOGISTICS_DUE_TIME": "17:50",
+            "SKLADBOT_DAILY_REPORT_HOUR": "22",
+            "SKLADBOT_DAILY_REPORT_MINUTE": "0",
+        }
         self.assertTrue(validate_telegram_worker_config(
             "synthetic-token",
+            {"-1002001", "-1002002", "1001"},
             {"1001"},
-            {"1001"},
-            {"1001"},
+            {"-1002001"},
             set(),
             environment="production",
             daily_report_enabled=True,
             skladbot_api_tokens=("synthetic-skladbot-token",),
+            daily_report_environ=production_environ,
             automation_alert_chat_id="1001",
         ))
 
@@ -731,7 +780,11 @@ class BackendTelegramImportTests(unittest.TestCase):
                 event = PendingEvent(
                     event_type=telegram_worker_module.TELEGRAM_NOTIFICATION_EVENT_TYPE,
                     status="pending",
-                    payload={"chat_id": "123", "text": "Заказ отменён из-за недостатка товара"},
+                    payload={
+                        "kind": "skladbot_stock_shortage_blocked_order",
+                        "chat_id": "999",
+                        "text": "Заказ отменён из-за недостатка товара",
+                    },
                 )
                 db.add(event)
                 db.commit()
@@ -784,20 +837,21 @@ class BackendTelegramImportTests(unittest.TestCase):
                     PendingEvent(
                         event_type=telegram_worker_module.TELEGRAM_NOTIFICATION_EVENT_TYPE,
                         status="pending",
-                        payload={"chat_id": "123", "text": ""},
+                        payload={"kind": "daily_reconciliation_alert", "chat_id": "999", "text": ""},
                     ),
                     PendingEvent(
                         event_type=telegram_worker_module.TELEGRAM_NOTIFICATION_EVENT_TYPE,
                         status="pending",
-                        payload={"text": "Нет адресата"},
+                        payload={"kind": "foreign_kind", "text": "Секретный payload"},
                     ),
                 ])
                 db.commit()
 
             sent = []
             worker = TelegramWorker.__new__(TelegramWorker)
-            worker.allowed_chat_ids = set()
-            worker.admin_chat_ids = set()
+            worker.allowed_chat_ids = {"999"}
+            worker.admin_chat_ids = {"999"}
+            worker.is_admin_chat = lambda chat_id: chat_id == "999"
             worker.send_message = lambda chat_id, text: sent.append((chat_id, text))
             telegram_admin_processor_module.SessionLocal = SessionLocal
 
@@ -810,12 +864,15 @@ class BackendTelegramImportTests(unittest.TestCase):
                 audits = db.execute(select(AuditLog)).scalars().all()
 
             self.assertEqual(processed, 2)
-            self.assertEqual(sent, [])
+            self.assertEqual(len(sent), 1)
+            self.assertEqual(sent[0][0], "999")
+            self.assertIn("уведомление заблокировано", sent[0][1])
+            self.assertNotIn("Секретный payload", sent[0][1])
             self.assertEqual({event.status for event in events}, {"blocked"})
             self.assertEqual([event.attempts for event in events], [1, 1])
             blocked_by_error = {event.last_error: event for event in events}
             self.assertIn("telegram notification text is empty", blocked_by_error)
-            self.assertIn("telegram notification target chat is empty", blocked_by_error)
+            self.assertIn("telegram notification kind is not allowlisted", blocked_by_error)
             self.assertEqual([audit.action for audit in audits], ["telegram_notification_blocked", "telegram_notification_blocked"])
             self.assertEqual({audit.entity_id for audit in audits}, {str(event.id) for event in events})
         finally:
@@ -1630,8 +1687,8 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertEqual(sent_documents, [(
             "123",
             report_content,
-            "TakSklad_логистика_29.05.2026_MANUAL.xlsx",
-            "MANUAL /logistics · Отчёт логистики за 29.05.2026",
+            "TakSklad_логистика_29.05.2026.xlsx",
+            "Отчёт логистики за 29.05.2026",
         )])
 
     def test_telegram_worker_saves_shipment_date_from_message(self):
@@ -2276,7 +2333,7 @@ class BackendTelegramImportTests(unittest.TestCase):
                     event_type=telegram_worker_module.TELEGRAM_NOTIFICATION_EVENT_TYPE,
                     status="processing",
                     attempts=2,
-                    payload={"chat_id": "123", "text": "hello"},
+                    payload={"kind": "daily_reconciliation_alert", "chat_id": "123", "text": "hello"},
                     last_error="worker died",
                     updated_at=datetime.now(timezone.utc) - timedelta(minutes=30),
                 ))

@@ -12,6 +12,7 @@ import type {
   Order,
   ReadinessResponse,
   SmartupAutoImportHistory,
+  SkladBotDryRun,
 } from "../api";
 
 export const fullPermissions = [
@@ -64,8 +65,9 @@ export function adminRow(overrides: Partial<AdminTableRow> = {}): AdminTableRow 
     scan_codes_count: 0,
     block_price: 100,
     line_total: 200,
+    smartup_id: "731",
     skladbot_request_number: "WH-R-TEST-1",
-    skladbot_request_id: "skladbot-1",
+    skladbot_request_id: "901",
     skladbot_status: "found",
     skladbot_return_request_number: "",
     skladbot_return_request_id: "",
@@ -87,7 +89,7 @@ export const secondAdminRow = adminRow({
   client: "Клиент Бета",
   product: "Второй товар",
   skladbot_request_number: "WH-R-TEST-2",
-  skladbot_request_id: "skladbot-2",
+  skladbot_request_id: "902",
 });
 
 export const activeOrder: Order = {
@@ -98,8 +100,11 @@ export const activeOrder: Order = {
   address: "Ташкент, улица Тестовая, 1",
   representative: "Тестовый ТП",
   status: "active",
+  smartup_id: "731",
   skladbot_request_number: "WH-R-TEST-1",
-  skladbot_request_id: "skladbot-1",
+  skladbot_request_id: "901",
+  skladbot_return_request_number: "",
+  skladbot_return_request_id: "",
   items: [{
     id: "item-1",
     product: "Тестовый товар",
@@ -230,20 +235,29 @@ export const clientOrderSummary: ClientPointOrderSummary = {
     order_references: [
       {
         order_id: "order-with-number",
+        smartup_id: "731, 732",
         skladbot_request_number: "WH-R-TEST-1",
         skladbot_request_id: "1001",
+        skladbot_return_request_number: "",
+        skladbot_return_request_id: "",
         is_returned: false,
       },
       {
         order_id: "order-with-id",
+        smartup_id: "733",
         skladbot_request_number: "",
         skladbot_request_id: "1002",
+        skladbot_return_request_number: "",
+        skladbot_return_request_id: "",
         is_returned: false,
       },
       {
         order_id: "order-without-reference",
+        smartup_id: "734",
         skladbot_request_number: "",
         skladbot_request_id: "",
+        skladbot_return_request_number: "WR-RET-1",
+        skladbot_return_request_id: "2003",
         is_returned: true,
       },
     ],
@@ -255,6 +269,55 @@ export const clientOrderSummary: ClientPointOrderSummary = {
     }],
   }],
 };
+
+export const skladbotDryRuns: SkladBotDryRun[] = [
+  {
+    id: "dry-run-complete",
+    event_id: "event-complete",
+    import_id: "import-complete",
+    order_id: "order-complete",
+    client: "Synthetic complete client",
+    order_date: "2026-07-17",
+    payment_type: "Перечисление",
+    address: "Synthetic address",
+    blocks: 1,
+    status: "already_linked",
+    error: "",
+    smartup_id: "731, 732",
+    skladbot_request_number: "WH-R-DRY-1",
+    skladbot_request_id: "1001",
+    skladbot_return_request_number: "WR-DRY-1",
+    skladbot_return_request_id: "2001",
+    linked_skladbot_blocks: 1,
+    linked_skladbot_source: "synthetic",
+    products: [],
+    payload: {},
+    generated_at: "2026-07-17T00:00:00Z",
+  },
+  {
+    id: "dry-run-missing",
+    event_id: "event-missing",
+    import_id: "import-missing",
+    order_id: "order-missing",
+    client: "Synthetic missing client",
+    order_date: "2026-07-17",
+    payment_type: "Терминал",
+    address: "Synthetic address",
+    blocks: 1,
+    status: "ready",
+    error: "",
+    smartup_id: "",
+    skladbot_request_number: "",
+    skladbot_request_id: "",
+    skladbot_return_request_number: "",
+    skladbot_return_request_id: "",
+    linked_skladbot_blocks: 0,
+    linked_skladbot_source: "",
+    products: [],
+    payload: {},
+    generated_at: "2026-07-17T00:00:00Z",
+  },
+];
 
 export const incident: AdminIncident = {
   id: "incident-1",

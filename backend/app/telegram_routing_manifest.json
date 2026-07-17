@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "timezone": "Asia/Tashkent",
+  "roles": {
+    "client": {
+      "target_type": "group",
+      "setting": "SMARTUP_AUTO_IMPORT_CLIENT_CHAT_ID"
+    },
+    "logistics": {
+      "target_type": "group",
+      "setting": "SMARTUP_AUTO_IMPORT_LOGISTICS_CHAT_ID"
+    },
+    "admin": {
+      "target_type": "personal",
+      "setting": "TAKSKLAD_AUTOMATION_ALERT_CHAT_ID"
+    }
+  },
+  "message_kinds": {
+    "smartup_client_export": {
+      "destination": "client",
+      "schedules": ["12:00", "15:00", "17:50"],
+      "text_policy_label": "runtime_smartup_export_outputs_v1",
+      "text_policy_sha256": "58482504749c653554f3ad10d4b0f6375a2f765ce62208f04527b3d3d1fc989d",
+      "error_destination": "admin"
+    },
+    "smartup_logistics_report": {
+      "destination": "logistics",
+      "schedules": ["17:50"],
+      "text_policy_label": "runtime_logistics_outputs_v1",
+      "text_policy_sha256": "203a57c59eccbdbfc6755f0b0e35cd119a54a374c3a70f1d30454f4ad946eed0",
+      "error_destination": "admin"
+    },
+    "skladbot_daily_report": {
+      "destination": "client",
+      "schedules": ["22:00"],
+      "text_policy_label": "runtime_skladbot_daily_outputs_v1",
+      "text_policy_sha256": "684bf167c8ba203eec966a9faa90717a82a8b8354fccebe5d425523a9cbc132f",
+      "error_destination": "admin"
+    },
+    "admin_error": {
+      "destination": "admin",
+      "schedules": ["on_error"],
+      "text_policy_label": "runtime_admin_error_output_v1",
+      "text_policy_sha256": "891f18d30e320cccb64376f23add88a0f88c748993f822879ca761736703c1df",
+      "error_destination": "admin"
+    }
+  },
+  "notification_kind_aliases": {
+    "daily_reconciliation_alert": "admin_error",
+    "smartup_logistics_dependency_alert": "admin_error",
+    "skladbot_daily_failure_alert": "admin_error",
+    "skladbot_stock_shortage_blocked_order": "admin_error"
+  }
+}

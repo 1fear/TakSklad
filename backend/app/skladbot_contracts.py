@@ -32,6 +32,11 @@ SMARTUP_ID_KEYS = (
 SMARTUP_COMMENT_ID_RE = re.compile(
     r"(?im)^\s*(?:smartup(?:\s+deal[_ ]?id|\s+id)?|id\s+smartup|id\s+заявки\s+smartup)\s*[:#-]\s*([^\s;]+)\s*$"
 )
+INTERNAL_SMARTUP_SOURCE_ID_RE = re.compile(r"(?i)^smartup:([1-9][0-9]{0,39})$")
+CANONICAL_REMOTE_REQUEST_ID_RE = re.compile(r"^[1-9][0-9]{0,19}$")
+CANONICAL_SKLADBOT_REQUEST_NUMBER_RE = re.compile(
+    r"^(?:WH-R|WR)-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$"
+)
 TAKSKLAD_MARKER_RE = re.compile(r"(?im)^\s*TakSklad\s+ref:\s*(TSF-[A-F0-9]{24})\s*$")
 
 
@@ -312,6 +317,99 @@ def normalize_smartup_id(value, *, explicit=False):
     if explicit:
         return f"smartup:{text}"
     return ""
+
+
+def internal_smartup_id_from_source(value):
+    """Return the numeric Smartup deal id from TakSklad's canonical order source."""
+    match = INTERNAL_SMARTUP_SOURCE_ID_RE.fullmatch(normalize_text(value))
+    return match.group(1) if match else ""
+
+
+def internal_smartup_ids_from_sources(values) -> tuple[str, ...]:
+    ids = {
+        smartup_id
+        for value in values
+        if (smartup_id := internal_smartup_id_from_source(value))
+    }
+    return tuple(sorted(ids, key=lambda value: (len(value), value)))
+
+
+def format_internal_smartup_ids(values) -> str:
+    return ", ".join(internal_smartup_ids_from_sources(values))
+
+
+def canonical_remote_request_id(value):
+    """Return a bounded positive SkladBot id, or fail closed for display/correlation."""
+    text = normalize_text(value)
+    return text if CANONICAL_REMOTE_REQUEST_ID_RE.fullmatch(text) else ""
+
+
+def canonical_skladbot_request_number(value):
+    """Return a bounded canonical WH-R/WR number, or fail closed."""
+    text = normalize_text(value)
+    if not text or len(text) > 80:
+        return ""
+    return text if CANONICAL_SKLADBOT_REQUEST_NUMBER_RE.fullmatch(text) else ""
+
+
+def canonical_skladbot_request_link(request_id, request_number):
+    """Return one complete canonical SkladBot link pair or two empty values."""
+    canonical_id = canonical_remote_request_id(request_id)
+    canonical_number = canonical_skladbot_request_number(request_number)
+    if not canonical_id or not canonical_number:
+        return "", ""
+    return canonical_id, canonical_number
+
+
+def canonical_skladbot_request_evidence_link(
+    request,
+    *,
+    allow_missing_raw=False,
+    allow_single_raw_side=False,
+):
+    """Validate one normalized link against its strict list/detail evidence."""
+    request = request if isinstance(request, dict) else {}
+    canonical_id, canonical_number = canonical_skladbot_request_link(
+        request.get("id"),
+        request.get("number"),
+    )
+    if not canonical_id or not canonical_number:
+        return "", ""
+
+    raw = request.get("raw")
+    if not isinstance(raw, dict) or not ({"list", "detail"} & set(raw)):
+        return (canonical_id, canonical_number) if allow_missing_raw else ("", "")
+
+    list_present = "list" in raw
+    detail_present = "detail" in raw
+    list_item = raw.get("list") if isinstance(raw.get("list"), dict) else {}
+    detail = raw.get("detail") if isinstance(raw.get("detail"), dict) else {}
+    list_id = canonical_remote_request_id(request_list_value(list_item, "id"))
+    detail_id = canonical_remote_request_id(detail.get("id"))
+    list_number_value = request_list_value(list_item, "delivery_number", "number")
+    detail_number_value = detail.get("delivery_number") or detail.get("number")
+    list_number_text = normalize_text(list_number_value)
+    detail_number_text = normalize_text(detail_number_value)
+    list_number = canonical_skladbot_request_number(list_number_value)
+    detail_number = canonical_skladbot_request_number(detail_number_value)
+
+    if (list_number_text and not list_number) or (detail_number_text and not detail_number):
+        return "", ""
+
+    if list_present and detail_present:
+        if not list_id or not detail_id or list_id != detail_id or detail_id != canonical_id:
+            return "", ""
+        evidence_numbers = {number for number in (list_number, detail_number) if number}
+        if evidence_numbers != {canonical_number}:
+            return "", ""
+        return canonical_id, canonical_number
+    if not allow_single_raw_side:
+        return "", ""
+    if list_present and list_id == canonical_id and list_number == canonical_number:
+        return canonical_id, canonical_number
+    if detail_present and detail_id == canonical_id and detail_number == canonical_number:
+        return canonical_id, canonical_number
+    return "", ""
 
 
 def smartup_id_from_comment(comment):

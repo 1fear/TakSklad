@@ -348,9 +348,49 @@ def validate_manifest_shape(manifest: dict[str, Any], *, local: bool) -> None:
                 raise ReleaseArtifactError("production image must use the approved GHCR namespace")
 
 
-def verify_manifest(path: Path, *, local: bool, expected_sha: str | None = None) -> dict[str, Any]:
+def verify_manifest(
+    path: Path,
+    *,
+    local: bool,
+    expected_sha: str | None = None,
+    candidate: bool = False,
+) -> dict[str, Any]:
     manifest = _load_manifest(path)
     validate_manifest_shape(manifest, local=local)
+    if candidate:
+        if local:
+            raise ReleaseArtifactError("candidate verification is production-only")
+        if "returns_auth_canary_v2_exact_identifier" not in (manifest.get("capabilities") or []):
+            raise ReleaseArtifactError("production candidate must declare returns auth canary capability")
+        windows = manifest.get("windows") or {}
+        expected_windows = {
+            "TakSklad.exe": windows.get("artifact_sha256"),
+            "TakSkladAuth.exe": windows.get("auth_helper_sha256"),
+            "TakSklad-windows-x64.zip": windows.get("artifact_sha256_onedir"),
+            "version.json": windows.get("manifest_sha256"),
+        }
+        if (
+            windows.get("artifact") != "TakSklad.exe"
+            or windows.get("auth_helper") != "TakSkladAuth.exe"
+            or windows.get("artifact_onedir") != "TakSklad-windows-x64.zip"
+            or windows.get("manifest") != "version.json"
+            or windows.get("acceptance_wrapper") != "windows_backend_acceptance.ps1"
+            or not HEX_RE.fullmatch(str(windows.get("app_sha256_onedir") or ""))
+            or not HEX_RE.fullmatch(str(windows.get("acceptance_wrapper_sha256") or ""))
+            or any(not HEX_RE.fullmatch(str(value or "")) for value in expected_windows.values())
+            or windows.get("signature_type") != "authenticode"
+            or windows.get("signature_required") is not True
+            or not HEX_RE.fullmatch(str(windows.get("signer_certificate_sha256") or ""))
+        ):
+            raise ReleaseArtifactError("production Windows subject identity is invalid")
+        subjects = manifest.get("attestation_subjects") or []
+        windows_subjects = {
+            item.get("name"): item.get("sha256")
+            for item in subjects
+            if isinstance(item, dict) and item.get("kind") == "windows"
+        }
+        if windows_subjects != expected_windows:
+            raise ReleaseArtifactError("production attestation subjects differ from manifest artifacts")
     if expected_sha is not None:
         if local:
             raise ReleaseArtifactError("exact-SHA verification is production-only")
@@ -361,6 +401,8 @@ def verify_manifest(path: Path, *, local: bool, expected_sha: str | None = None)
             raise ReleaseArtifactError("requested source SHA differs from current commit")
         if manifest["source_sha"] != expected_sha:
             raise ReleaseArtifactError("release manifest source SHA differs from requested source SHA")
+        if "returns_auth_canary_v2_exact_identifier" not in (manifest.get("capabilities") or []):
+            raise ReleaseArtifactError("production candidate must declare returns auth canary capability")
         version = str((manifest.get("windows") or {}).get("version") or "")
         if manifest.get("release_tag") != f"v{version}":
             raise ReleaseArtifactError("release tag differs from production Windows version")
@@ -382,13 +424,18 @@ def verify_manifest(path: Path, *, local: bool, expected_sha: str | None = None)
         windows = manifest.get("windows") or {}
         expected_windows = {
             "TakSklad.exe": windows.get("artifact_sha256"),
+            "TakSkladAuth.exe": windows.get("auth_helper_sha256"),
             "TakSklad-windows-x64.zip": windows.get("artifact_sha256_onedir"),
             "version.json": windows.get("manifest_sha256"),
         }
         if (
             windows.get("artifact") != "TakSklad.exe"
+            or windows.get("auth_helper") != "TakSkladAuth.exe"
             or windows.get("artifact_onedir") != "TakSklad-windows-x64.zip"
             or windows.get("manifest") != "version.json"
+            or windows.get("acceptance_wrapper") != "windows_backend_acceptance.ps1"
+            or not HEX_RE.fullmatch(str(windows.get("app_sha256_onedir") or ""))
+            or not HEX_RE.fullmatch(str(windows.get("acceptance_wrapper_sha256") or ""))
             or any(not HEX_RE.fullmatch(str(value or "")) for value in expected_windows.values())
             or windows.get("signature_type") != "authenticode"
             or windows.get("signature_required") is not True
@@ -490,6 +537,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     verify_mode = verify.add_mutually_exclusive_group()
     verify_mode.add_argument("--local", action="store_true")
     verify_mode.add_argument("--sha")
+    verify.add_argument("--candidate", action="store_true")
     plan = subparsers.add_parser("plan")
     plan.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     plan.add_argument("--local", action="store_true")
@@ -509,7 +557,12 @@ def main(argv: list[str] | None = None) -> int:
                 f"frontend_digest={manifest['images']['frontend']['digest']} dirty_worktree_used=0 oci_tars_retained=0"
             )
         elif args.command == "verify":
-            manifest = verify_manifest(args.manifest.resolve(), local=args.local, expected_sha=args.sha)
+            manifest = verify_manifest(
+                args.manifest.resolve(),
+                local=args.local,
+                expected_sha=args.sha,
+                candidate=args.candidate or args.sha is not None,
+            )
             subject_count = 3 if args.local else len(manifest.get("attestation_subjects") or [])
             print(
                 "RELEASE_ATTESTATIONS_OK "

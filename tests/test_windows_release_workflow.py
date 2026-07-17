@@ -65,6 +65,9 @@ class WindowsReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("--collect-submodules=taksklad", workflow)
         self.assertIn('--add-data "assets\\product_images;assets\\product_images"', workflow)
         self.assertIn("pyinstaller_entry.py", workflow)
+        self.assertIn("pyinstaller_auth_entry.py", workflow)
+        self.assertIn("--onefile --console", workflow)
+        self.assertIn("TakSkladAuth.exe", workflow)
         self.assertIn("$env:PYTHONPATH = $srcPath", workflow)
         self.assertIn("PYTHONPATH=$srcPath", workflow)
         self.assertIn("Rename-Item taksklad taksklad_bridge_disabled", workflow)
@@ -96,13 +99,24 @@ class WindowsReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("artifact_sha256_onedir = $env:TAKSKLAD_ZIP_SHA256", workflow)
         self.assertIn("WINDOWS_SOURCE_SHA_MISMATCH", workflow)
         self.assertIn(
-            'for key in ("artifact_sha256", "artifact_sha256_onedir", "dependency_lock_sha256")',
+            '"auth_helper_sha256_onedir", "app_sha256_onedir",',
             workflow,
         )
+        self.assertIn('"acceptance_wrapper_sha256", "dependency_lock_sha256",', workflow)
+        self.assertIn('"acceptance_wrapper": windows["acceptance_wrapper"]', workflow)
+        self.assertIn('"app_sha256_onedir": windows["app_sha256_onedir"]', workflow)
         self.assertIn('"version": windows_version', workflow)
         self.assertIn('"artifact_sha256": windows_exe_sha256', workflow)
         self.assertIn('"artifact_sha256_onedir": windows_onedir_sha256', workflow)
         self.assertIn('"dependency_lock_sha256": windows["dependency_lock_sha256"]', workflow)
+        self.assertIn('"app_sha256_onedir": windows["app_sha256_onedir"]', workflow)
+        self.assertIn('"acceptance_wrapper": windows["acceptance_wrapper"]', workflow)
+        self.assertIn(
+            '"acceptance_wrapper_sha256": windows["acceptance_wrapper_sha256"]',
+            workflow,
+        )
+        self.assertIn("tools\\package_windows_release_zip.py", workflow)
+        self.assertNotIn("Compress-Archive", workflow)
 
     def test_release_build_requires_exact_tag_draft_and_successful_ci_gate(self):
         workflow = (PROJECT_ROOT / ".github/workflows/build-windows-release.yml").read_text(
@@ -138,9 +152,11 @@ class WindowsReleaseWorkflowTests(unittest.TestCase):
         self.assertIn('"head_sha": source_sha', workflow)
         self.assertIn('"required_check": "Release gate"', workflow)
         self.assertIn('"artifact": windows_exe', workflow)
+        self.assertIn('"auth_helper": windows_auth_helper', workflow)
         self.assertIn('"artifact_onedir": windows_onedir', workflow)
         self.assertIn('"manifest": windows_manifest', workflow)
         self.assertIn('{"kind": "windows", "name": windows_exe, "sha256": windows_exe_sha256}', workflow)
+        self.assertIn('{"kind": "windows", "name": windows_auth_helper, "sha256": windows_auth_helper_sha256}', workflow)
         self.assertIn('{"kind": "windows", "name": windows_onedir, "sha256": windows_onedir_sha256}', workflow)
         self.assertIn('{"kind": "windows", "name": windows_manifest', workflow)
         self.assertEqual(workflow.count('{"kind": "oci", "name":'), 2)
@@ -156,7 +172,7 @@ class WindowsReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("OCI_ATTESTATION_SUBJECTS_MISMATCH", workflow)
         self.assertIn('expected_name = f"ghcr.io/{sys.argv[4].split(\'/\', 1)[0]}/taksklad-{service}"', workflow)
         self.assertIn("WINDOWS_SUBJECT_SHA256_MISMATCH", workflow)
-        self.assertIn('for subject in TakSklad.exe TakSklad-windows-x64.zip version.json', workflow)
+        self.assertIn('for subject in TakSklad.exe TakSkladAuth.exe TakSklad-windows-x64.zip version.json', workflow)
         self.assertIn("RELEASE_TAG_SOURCE_SHA_MISMATCH", workflow)
 
 

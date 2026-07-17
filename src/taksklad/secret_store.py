@@ -28,6 +28,8 @@ from typing import Mapping, MutableMapping, Optional
 
 TELEGRAM_BOT_TOKEN_SECRET = "telegram_bot_token"
 BACKEND_API_TOKEN_SECRET = "backend_api_token"
+BACKEND_PRINCIPAL_IDENTIFIER_SECRET = "backend_principal_identifier"
+BACKEND_AUTH_BUNDLE_SECRET = "backend_auth_bundle"
 GEOCODER_API_KEY_SECRET = "geocoder_api_key"
 
 _SYNTHETIC_SECRET = "phase11_synthetic_secret"
@@ -45,6 +47,8 @@ _MAX_STORE_PAYLOAD_BYTES = 3 * 1024 * 1024
 _MAX_STORE_FILE_BYTES = 6 * 1024 * 1024
 _MAX_SECRET_COUNT = 64
 _NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
+_BACKEND_AUTH_BUNDLE_VERSION = 1
+_BACKEND_AUTH_BUNDLE_KEYS = {"version", "credential", "principal_identifier"}
 
 
 class SecretStoreError(RuntimeError):
@@ -61,6 +65,52 @@ class SecretStoreAccessDenied(SecretStoreError):
 
 class SecretStoreCorrupt(SecretStoreError):
     """The protected store is malformed or cannot be validated."""
+
+
+def encode_backend_auth_bundle(credential: str, principal_identifier: str) -> str:
+    """Serialize the desktop backend identity as one protected atomic record."""
+    credential = _validate_text(credential)
+    principal_identifier = _validate_text(principal_identifier)
+    if not credential or not principal_identifier:
+        raise SecretStoreError("backend auth bundle fields are required")
+    return json.dumps(
+        {
+            "version": _BACKEND_AUTH_BUNDLE_VERSION,
+            "credential": credential,
+            "principal_identifier": principal_identifier,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def decode_backend_auth_bundle(value: str) -> tuple[str, str]:
+    """Parse one protected backend identity without accepting partial records."""
+    try:
+        payload = json.loads(_validate_text(value))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise SecretStoreCorrupt("backend auth bundle is malformed") from exc
+    if not isinstance(payload, dict) or set(payload) != _BACKEND_AUTH_BUNDLE_KEYS:
+        raise SecretStoreCorrupt("backend auth bundle shape is invalid")
+    if payload.get("version") != _BACKEND_AUTH_BUNDLE_VERSION:
+        raise SecretStoreCorrupt("backend auth bundle version is unsupported")
+    credential = payload.get("credential")
+    identifier = payload.get("principal_identifier")
+    if not isinstance(credential, str) or not credential:
+        raise SecretStoreCorrupt("backend auth bundle credential is invalid")
+    if not isinstance(identifier, str) or not identifier:
+        raise SecretStoreCorrupt("backend auth bundle identifier is invalid")
+    return credential, identifier
+
+
+def load_backend_auth_bundle(store=None) -> tuple[str, str]:
+    """Load only the authoritative atomic bundle; legacy fields are never mixed."""
+    secret_store = store or get_secret_store()
+    value = secret_store.get_text(BACKEND_AUTH_BUNDLE_SECRET)
+    if value is None:
+        raise SecretStoreError("backend auth bundle is missing")
+    return decode_backend_auth_bundle(value)
 
 
 def _validate_name(name: str) -> str:
@@ -120,6 +170,7 @@ class EnvironmentSecretStore:
     DEFAULT_ENVIRONMENT_MAPPING = {
         TELEGRAM_BOT_TOKEN_SECRET: "TAKSKLAD_TELEGRAM_BOT_TOKEN",
         BACKEND_API_TOKEN_SECRET: "TAKSKLAD_BACKEND_API_TOKEN",
+        BACKEND_AUTH_BUNDLE_SECRET: "TAKSKLAD_BACKEND_AUTH_BUNDLE",
         GEOCODER_API_KEY_SECRET: "YANDEX_GEOCODER_API_KEY",
         _SYNTHETIC_SECRET: "TAKSKLAD_SYNTHETIC_SECRET",
     }

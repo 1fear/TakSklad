@@ -12,6 +12,14 @@ on:
       manifest_sha256:
         description: Expected SHA256 of the attested release.json
         required: true
+      legacy_canary_bootstrap:
+        description: One-time adoption only; allow a verified legacy runtime to lack the 204 canary endpoint
+        required: false
+        type: boolean
+        default: false
+      legacy_canary_bootstrap_approval:
+        description: Must equal ALLOW_ONE_LEGACY_CANARY_BOOTSTRAP when the one-time gate is enabled
+        required: false
 
 permissions:
   actions: read
@@ -35,6 +43,7 @@ jobs:
           ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
           EXPECTED_MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
           EXPECTED_SOURCE_SHA: ${{ inputs.source_sha }}
+          WORKFLOW_CONTROL_SHA: ${{ github.sha }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -44,6 +53,10 @@ jobs:
           }
           [[ "$EXPECTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
             echo "IMMUTABLE_SOURCE_SHA_REQUIRED" >&2
+            exit 1
+          }
+          [[ "$WORKFLOW_CONTROL_SHA" == "$EXPECTED_SOURCE_SHA" ]] || {
+            echo "WORKFLOW_CONTROL_SOURCE_SHA_MISMATCH" >&2
             exit 1
           }
           [[ "$EXPECTED_MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]] || {
@@ -108,6 +121,8 @@ jobs:
               raise SystemExit("RELEASE_MANIFEST_SOURCE_SHA_MISMATCH")
           if manifest.get("authority") != "github-sigstore" or manifest.get("deployable") is not True:
               raise SystemExit("PRODUCTION_RELEASE_MANIFEST_REQUIRED")
+          if "returns_auth_canary_v2_exact_identifier" not in (manifest.get("capabilities") or []):
+              raise SystemExit("RETURNS_AUTH_CANARY_CAPABILITY_REQUIRED")
           windows = manifest.get("windows") or {}
           version = str(windows.get("version") or "")
           release_tag = str(manifest.get("release_tag") or "")
@@ -141,13 +156,20 @@ jobs:
           hash_re = re.compile(r"^[0-9a-f]{64}$")
           expected_windows = {
               "TakSklad.exe": windows.get("artifact_sha256"),
+              "TakSkladAuth.exe": windows.get("auth_helper_sha256"),
               "TakSklad-windows-x64.zip": windows.get("artifact_sha256_onedir"),
               "version.json": windows.get("manifest_sha256"),
           }
-          if windows.get("artifact") != "TakSklad.exe" or windows.get("artifact_onedir") != "TakSklad-windows-x64.zip" or windows.get("manifest") != "version.json":
+          if windows.get("artifact") != "TakSklad.exe" or windows.get("auth_helper") != "TakSkladAuth.exe" or windows.get("artifact_onedir") != "TakSklad-windows-x64.zip" or windows.get("manifest") != "version.json":
               raise SystemExit("IMMUTABLE_WINDOWS_SUBJECT_NAMES_REQUIRED")
           if any(not hash_re.fullmatch(str(value or "")) for value in expected_windows.values()):
               raise SystemExit("IMMUTABLE_WINDOWS_SUBJECT_HASH_REQUIRED")
+          if (
+              windows.get("acceptance_wrapper") != "windows_backend_acceptance.ps1"
+              or not hash_re.fullmatch(str(windows.get("app_sha256_onedir") or ""))
+              or not hash_re.fullmatch(str(windows.get("acceptance_wrapper_sha256") or ""))
+          ):
+              raise SystemExit("IMMUTABLE_WINDOWS_ONEDIR_IDENTITY_REQUIRED")
           subjects = manifest.get("attestation_subjects") or []
           windows_subjects = {
               item.get("name"): item.get("sha256")
@@ -215,6 +237,7 @@ jobs:
           windows = manifest["windows"]
           expected = {
               windows["artifact"]: windows["artifact_sha256"],
+              windows["auth_helper"]: windows["auth_helper_sha256"],
               windows["artifact_onedir"]: windows["artifact_sha256_onedir"],
               windows["manifest"]: windows["manifest_sha256"],
           }
@@ -223,7 +246,7 @@ jobs:
               if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
                   raise SystemExit(f"WINDOWS_SUBJECT_SHA256_MISMATCH:{name}")
           PY
-          for subject in TakSklad.exe TakSklad-windows-x64.zip version.json; do
+          for subject in TakSklad.exe TakSkladAuth.exe TakSklad-windows-x64.zip version.json; do
             gh attestation verify "$windows_dir/$subject" \
               --repo "$GITHUB_REPOSITORY" \
               --signer-workflow "$signer_workflow" \
@@ -248,6 +271,7 @@ jobs:
               --signer-workflow "$signer_workflow" \
               --source-digest "$EXPECTED_SOURCE_SHA"
           done
+          printf 'VERIFIED_BACKEND_REFERENCE=%s\n' "${image_references[0]}" >> "$GITHUB_ENV"
           printf 'RELEASE_MANIFEST_PATH=%s\n' "$manifest_path" >> "$GITHUB_ENV"
 
       - name: Checkout exact verified release SHA
@@ -285,39 +309,39 @@ jobs:
 
       - name: Package exact-SHA deployment control plane
         env:
-          DEPLOY_CONTROL_SHA: ${{ github.sha }}
+          DEPLOY_CONTROL_SHA: ${{ inputs.source_sha }}
         run: |
           set -euo pipefail
           [[ "$DEPLOY_CONTROL_SHA" =~ ^[0-9a-f]{40}$ ]]
           git cat-file -e "$DEPLOY_CONTROL_SHA^{commit}"
-          git show "$DEPLOY_CONTROL_SHA:deploy/vds/deploy_from_git.sh" > deploy/vds/deploy_from_git.sh
-          git show "$DEPLOY_CONTROL_SHA:deploy/vds/acceptance_status.sh" > deploy/vds/acceptance_status.sh
-          git show "$DEPLOY_CONTROL_SHA:tools/collect_phase27_evidence.py" > tools/collect_phase27_evidence.py
-          git show "$DEPLOY_CONTROL_SHA:tools/google_cutover_audit.py" > tools/google_cutover_audit.py
-          git show "$DEPLOY_CONTROL_SHA:tools/verify_postgres_only_cutover.py" > tools/verify_postgres_only_cutover.py
-          bash -n deploy/vds/deploy_from_git.sh deploy/vds/acceptance_status.sh
-          grep -q 'previous runtime migration head does not match the retained database schema' deploy/vds/deploy_from_git.sh
-          grep -q 'structurally complete forced rollout' deploy/vds/acceptance_status.sh
-          grep -q 'def live_runtime_invariants' tools/collect_phase27_evidence.py
-          tar -czf "$RUNNER_TEMP/taksklad-deploy-control.tar.gz" \
-            backend/app/daily_report_config.py \
-            deploy/vds/deploy_from_git.sh \
-            deploy/vds/docker-compose.yml \
-            deploy/vds/acceptance_status.sh \
-            deploy/vds/backup_postgres.sh \
-            test-artifacts/disaster-recovery/restore-drill.json \
-            tools/check_data_invariants.py \
-            tools/collect_phase27_evidence.py \
-            tools/google_cutover_audit.py \
-            tools/live_release_verifier.sh \
-            tools/prepare_notification_routing_env.py \
-            tools/production_preflight.sh \
-            tools/production_release_checks.py \
-            tools/release_artifacts.py \
-            tools/validate_daily_report_config.py \
-            tools/validate_deploy_probe.py \
-            tools/verify_postgres_only_cutover.py \
-            tools/write_maintenance_marker.py
+          materializer="$RUNNER_TEMP/materialize-deploy-control.py"
+          control_root="$RUNNER_TEMP/deploy-control-$DEPLOY_CONTROL_SHA"
+          test ! -e "$control_root"
+          git cat-file blob "$DEPLOY_CONTROL_SHA:tools/materialize_deploy_control.py" > "$materializer"
+          chmod 700 "$materializer"
+          python3 "$materializer" --repo-root . --source-sha "$DEPLOY_CONTROL_SHA" --output-dir "$control_root"
+          auth_paths=(
+            src/taksklad/__init__.py
+            src/taksklad/returns_auth_canary.py
+            tools/credentialed_returns_canary.py
+            tools/validate_auth_canary_token_file.py
+          )
+          for relative in "${auth_paths[@]}"; do
+            install -d "$control_root/$(dirname "$relative")"
+            git cat-file blob "$DEPLOY_CONTROL_SHA:$relative" > "$control_root/$relative"
+            chmod 600 "$control_root/$relative"
+          done
+          bash -n "$control_root/deploy/vds/deploy_from_git.sh" \
+            "$control_root/deploy/vds/acceptance_status.sh" \
+            "$control_root/tools/phase27_routing_candidate_guard.sh"
+          PYTHONPATH="$control_root/src" python3 "$control_root/tools/credentialed_returns_canary.py" --help >/dev/null
+          grep -q 'previous runtime migration head does not match the retained database schema' "$control_root/deploy/vds/deploy_from_git.sh"
+          grep -q 'structurally complete forced rollout' "$control_root/deploy/vds/acceptance_status.sh"
+          grep -q 'def live_runtime_invariants' "$control_root/tools/collect_phase27_evidence.py"
+          mapfile -t deploy_control_paths < <(python3 "$materializer" --print-paths)
+          test "${#deploy_control_paths[@]}" -gt 0
+          tar -C "$control_root" -czf "$RUNNER_TEMP/taksklad-deploy-control.tar.gz" \
+            -- "${deploy_control_paths[@]}" "${auth_paths[@]}"
 
       - name: Validate required secrets
         env:
@@ -361,8 +385,24 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GHCR_USER: ${{ github.actor }}
           PRODUCTION_APPROVAL: READY_FOR_PRODUCTION_DEPLOY
+          TELEGRAM_ROUTING_IDENTITY_ANCHOR_SHA256: ${{ secrets.TELEGRAM_ROUTING_IDENTITY_ANCHOR_SHA256 }}
+          LEGACY_CANARY_BOOTSTRAP: ${{ inputs.legacy_canary_bootstrap }}
+          LEGACY_CANARY_BOOTSTRAP_APPROVAL: ${{ inputs.legacy_canary_bootstrap_approval }}
         run: |
           set -euo pipefail
+          [[ "$TELEGRAM_ROUTING_IDENTITY_ANCHOR_SHA256" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "PROTECTED_TELEGRAM_ROUTING_IDENTITY_ANCHOR_REQUIRED" >&2
+            exit 1
+          }
+          legacy_canary_arg=""
+          if [[ "$LEGACY_CANARY_BOOTSTRAP" == "true" ]]; then
+            [[ "$LEGACY_CANARY_BOOTSTRAP_APPROVAL" == "ALLOW_ONE_LEGACY_CANARY_BOOTSTRAP" ]] || {
+              echo "LEGACY_CANARY_BOOTSTRAP_APPROVAL_REQUIRED" >&2
+              exit 1
+            }
+            legacy_canary_arg="--allow-legacy-canary-bootstrap"
+            echo "LEGACY_CANARY_BOOTSTRAP enabled=1 token_disclosed=0"
+          fi
           app_dir="${VDS_APP_DIR:-/opt/stacks/taksklad/app}"
           remote="$VDS_USER@$VDS_HOST"
           remote_docker_config="/tmp/taksklad-ghcr-auth-${GITHUB_RUN_ID}"
@@ -388,10 +428,19 @@ jobs:
           export TAKSKLAD_DEPLOY_APP_DIR=$(printf '%q' "$app_dir")
           export TAKSKLAD_DEPLOY_ACCEPTANCE=$(printf '%q' "$DEPLOY_ACCEPTANCE")
           export TAKSKLAD_PRODUCTION_APPROVAL=$(printf '%q' "$PRODUCTION_APPROVAL")
+          export TAKSKLAD_TELEGRAM_ROUTING_IDENTITY_ANCHOR_SHA256=$(printf '%q' "$TELEGRAM_ROUTING_IDENTITY_ANCHOR_SHA256")
+          export TAKSKLAD_LEGACY_CANARY_BOOTSTRAP_APPROVAL=$(printf '%q' "$LEGACY_CANARY_BOOTSTRAP_APPROVAL")
+          legacy_canary_arg=$(printf '%q' "$legacy_canary_arg")
           export DOCKER_CONFIG=$(printf '%q' "$remote_docker_config")
           cd "$app_dir"
           export PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.
           install -d -m 700 .release-state
+          env_backup=".release-state/phase27-env-pre-recovery-\$(date -u +%Y%m%dT%H%M%SZ)"
+          install -m 600 deploy/vds/.env "\$env_backup"
+          source tools/phase27_routing_candidate_guard.sh
+          phase27_candidate_guard_init .release-state deploy/vds/.env "\$env_backup"
+          candidate_env="\$PHASE27_CANDIDATE_ENV"
+          candidate_compose="\$PHASE27_CANDIDATE_COMPOSE"
           compose_project="\$(docker compose --env-file deploy/vds/.env \
             -f deploy/vds/docker-compose.yml config --format json | \
             python3 -c 'import json,sys; name=str((json.load(sys.stdin) or {}).get("name") or "").strip(); assert name; print(name)')"
@@ -465,19 +514,6 @@ jobs:
               f"returned={payload['returned_records']} blockers=0 values_redacted=1"
           )
           PY
-          env_backup=".release-state/phase27-env-pre-recovery-\$(date -u +%Y%m%dT%H%M%SZ)"
-          candidate_env=".release-state/phase27-env-candidate"
-          env_recovery_applied=0
-          install -m 600 deploy/vds/.env "\$env_backup"
-          restore_phase27_env_on_error() {
-            status=\$?
-            if test "\$status" -ne 0 && test "\$env_recovery_applied" -eq 1; then
-              install -m 600 "\$env_backup" deploy/vds/.env
-              echo "PRODUCTION_CONFIG_RECOVERY_ROLLED_BACK values_redacted=1" >&2
-            fi
-            exit "\$status"
-          }
-          trap restore_phase27_env_on_error EXIT
           telegram_worker_id="\$(docker compose --env-file deploy/vds/.env \
             -f deploy/vds/docker-compose.yml ps -q telegram-worker </dev/null)"
           smartup_worker_id="\$(docker compose --env-file deploy/vds/.env \
@@ -488,20 +524,20 @@ jobs:
             --env-path deploy/vds/.env \
             --candidate-path "\$candidate_env" \
             --telegram-container-id "\$telegram_worker_id" \
-            --smartup-container-id "\$smartup_worker_id" \
-            --recovery-export-date 2026-07-16
+            --smartup-container-id "\$smartup_worker_id"
+          phase27_candidate_guard_create_compose
           docker compose --env-file "\$candidate_env" -f deploy/vds/docker-compose.yml \
-            config --format json | \
-            PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/validate_daily_report_config.py
+            config --format json > "\$candidate_compose"
+          phase27_candidate_guard_verify_modes
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/verify_telegram_routing_contract.py \
+            --env-path "\$candidate_env" --compose-config-json "\$candidate_compose" --json
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/validate_daily_report_config.py < "\$candidate_compose"
           install -m 600 "\$candidate_env" deploy/vds/.env
-          env_recovery_applied=1
+          phase27_candidate_guard_mark_installed
           docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml \
             config --format json | \
             PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/validate_daily_report_config.py
-          env_recovery_applied=0
-          trap - EXIT
-          rm -f "\$candidate_env"
-          echo "PRODUCTION_CONFIG_RECOVERY_OK contract=notification-routing-v2 rollback_backup_retained=1 values_redacted=1"
+          echo "PRODUCTION_CONFIG_RECOVERY_OK contract=notification-routing-v3 rollback_backup_retained=1 values_redacted=1"
           chmod +x deploy/vds/deploy_from_git.sh tools/production_preflight.sh tools/live_release_verifier.sh
           PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/release_artifacts.py verify --manifest release.json
           eval "\$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/release_artifacts.py emit-shell --manifest release.json)"
@@ -725,9 +761,11 @@ jobs:
           raise SystemExit(0 if same else 1)
           PY
           then
+            ./deploy/vds/deploy_from_git.sh --artifact-manifest release.json \
+              --current-auth-canary-only \$legacy_canary_arg </dev/null
             echo "PHASE27_DEPLOY_REUSED exact_manifest=1 mutation=0"
           else
-            ./deploy/vds/deploy_from_git.sh --artifact-manifest release.json --acceptance required --wait </dev/null
+            ./deploy/vds/deploy_from_git.sh --artifact-manifest release.json --acceptance required --wait \$legacy_canary_arg </dev/null
           fi
           PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/collect_phase27_evidence.py \
             live --manifest release.json --output .release-state/live-release-verification.json </dev/null
@@ -756,6 +794,7 @@ jobs:
           )
           PY
           ./tools/live_release_verifier.sh --read-only --same-sha --slo-window </dev/null
+          phase27_candidate_guard_commit
           EOF
           cleanup_registry_auth
           trap - EXIT

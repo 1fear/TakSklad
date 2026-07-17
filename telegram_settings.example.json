@@ -3,6 +3,8 @@
   "bot_token": "",
   "chat_id": "",
   "chat_ids": [],
+  "routing_contract_version": 1,
+  "admin_chat_id": "",
   "send_reports": true,
   "send_scan_backups": false,
   "send_pending_files": false,

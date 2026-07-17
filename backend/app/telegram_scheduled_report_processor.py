@@ -4,9 +4,7 @@ import logging
 import os
 import uuid
 from datetime import date, datetime, timedelta, timezone
-
 from sqlalchemy import select
-
 from . import skladbot_daily_report
 from .db import SessionLocal
 from .models import AuditLog, PendingEvent
@@ -15,8 +13,7 @@ from .redaction import redact_secrets
 from .reconciliation_service import run_daily_reconciliation
 from .telegram_clients import TelegramProcessorDelegate
 from .telegram_common import iso_date_from_display, normalize_text, parse_dates_from_text, parse_int
-
-
+from .telegram_output_contract import daily_report_caption
 SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE = "skladbot_daily_report_send"
 SKLADBOT_DAILY_REPORTED_REQUEST_EVENT_TYPE = "skladbot_daily_reported_request"
 TELEGRAM_NOTIFICATION_EVENT_TYPE = "telegram_notification"
@@ -38,15 +35,11 @@ SCHEDULED_DAILY_PAYLOAD_SECRET_KEY_PARTS = (
     "api_key", "apikey", "jwt", "raw", "payload",
 )
 SCHEDULED_DAILY_ALERT_REASON_MAX_LENGTH = 500
-
-
 def command_date_or_today(text):
     dates = parse_dates_from_text(text)
     if dates:
         return datetime.strptime(dates[0], "%Y-%m-%d").date()
     return skladbot_daily_report.business_today()
-
-
 def coerce_report_date(value):
     if isinstance(value, datetime):
         return value.date()
@@ -340,6 +333,10 @@ class TelegramScheduledReportProcessor(TelegramProcessorDelegate):
         report = report_module.collect_skladbot_daily_report(
             report_date=report_date,
         )
+        enrich_smartup_ids = getattr(report_module, "enrich_smartup_ids_from_orders", None)
+        if callable(enrich_smartup_ids):
+            with self._scheduled_session_factory()() as db:
+                enrich_smartup_ids(db, report)
         report_date = coerce_report_date(report.get("report_date") or report_date)
         report_date_text = report_date.strftime("%d.%m.%Y")
         coverage = report.get("coverage") or {}
@@ -371,7 +368,7 @@ class TelegramScheduledReportProcessor(TelegramProcessorDelegate):
                 chat_id,
                 content,
                 filename,
-                caption=f"SkladBot отчет за {report_date_text}",
+                caption=daily_report_caption(report_date),
             )
             emit_progress("telegram sendDocument success", report_date=report_date.isoformat())
         else:
@@ -380,7 +377,7 @@ class TelegramScheduledReportProcessor(TelegramProcessorDelegate):
                 chat_id,
                 content,
                 filename,
-                caption=f"SkladBot отчет за {report_date_text}",
+                caption=daily_report_caption(report_date),
             )
         if document is not None and scheduled:
             reported_count = mark_skladbot_daily_report_requests_reported(
