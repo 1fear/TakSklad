@@ -31,7 +31,7 @@ class ReleasePreflightTests(unittest.TestCase):
             "min_supported_version": "2.0.45",
             "mandatory": True,
             "block_workflow": True,
-            "package_type": "onedir_zip",
+            "package_type": "onefile_exe",
             "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.45/TakSklad.exe",
             "sha256": "a" * 64,
             "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.45/TakSklad-windows-x64.zip",
@@ -518,6 +518,32 @@ class ReleasePreflightTests(unittest.TestCase):
         self.assertTrue(check["ok"], check.get("problems"))
         self.assertEqual(check["rollout_state"], "final-published")
 
+    def test_final_version_contract_rejects_unsupported_package_type(self):
+        tmp_dir, root = self.make_root()
+        with tmp_dir:
+            (root / VERSION_JSON).write_text(
+                json.dumps(self.final_version_manifest(package_type="msix")),
+                encoding="utf-8",
+            )
+            check = check_version_json(root, phase=PHASE_FINAL, source_sha="e" * 40)
+
+        self.assertFalse(check["ok"])
+        self.assertIn("package_type must be onefile_exe or onedir_zip", check["problems"])
+        self.assertIn("final package_type must be onefile_exe", check["problems"])
+
+    def test_final_version_contract_rejects_onedir_public_channel(self):
+        tmp_dir, root = self.make_root()
+        with tmp_dir:
+            (root / VERSION_JSON).write_text(
+                json.dumps(self.final_version_manifest(package_type="onedir_zip")),
+                encoding="utf-8",
+            )
+            check = check_version_json(root, phase=PHASE_FINAL, source_sha="e" * 40)
+
+        self.assertFalse(check["ok"])
+        self.assertNotIn("package_type must be onefile_exe or onedir_zip", check["problems"])
+        self.assertIn("final package_type must be onefile_exe", check["problems"])
+
     def test_final_version_contract_rejects_published_source_sha_mismatch(self):
         tmp_dir, root = self.make_root()
         with tmp_dir:
@@ -580,9 +606,9 @@ class ReleasePreflightTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         payload = json.loads(completed.stdout)
         version = next(item for item in payload["checks"] if item["name"] == "version_json")
-        self.assertEqual(version["latest_version"], "2.0.44")
+        self.assertEqual(version["latest_version"], "2.0.45")
         self.assertEqual(version["candidate_version"], "2.0.45")
-        self.assertEqual(version["rollout_state"], "published-supported")
+        self.assertEqual(version["rollout_state"], "candidate-published")
 
     def write_bytes(self, path, content):
         path.write_bytes(content)

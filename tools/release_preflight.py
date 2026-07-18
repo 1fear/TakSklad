@@ -87,6 +87,7 @@ def configured_app_version():
 EXPECTED_RELEASE_VERSION = configured_app_version()
 EXPECTED_MIN_SUPPORTED_VERSION = EXPECTED_RELEASE_VERSION
 EXPECTED_PACKAGE_TYPE = "onedir_zip"
+SUPPORTED_PUBLIC_PACKAGE_TYPES = {"onefile_exe", EXPECTED_PACKAGE_TYPE}
 EXPECTED_RELEASE_TAG = f"v{EXPECTED_RELEASE_VERSION}"
 EXPECTED_RELEASE_HOST = "github.com"
 EXPECTED_RELEASE_REPO_PATH = f"/1fear/TakSklad/releases/download/{EXPECTED_RELEASE_TAG}/"
@@ -229,7 +230,7 @@ def check_version_json(root, *, phase, source_sha=None):
         problems.append("published channel must not be newer than the candidate runtime")
     if release_tag != published_tag:
         problems.append("release_tag must match latest_version")
-    if package_type not in {"onefile_exe", EXPECTED_PACKAGE_TYPE}:
+    if package_type not in SUPPORTED_PUBLIC_PACKAGE_TYPES:
         problems.append("package_type must be onefile_exe or onedir_zip")
     if not isinstance(payload.get("mandatory"), bool):
         problems.append("mandatory must be boolean")
@@ -262,8 +263,8 @@ def check_version_json(root, *, phase, source_sha=None):
             problems.append(f"final channel must require exact {EXPECTED_RELEASE_VERSION}")
         if payload.get("mandatory") is not True or payload.get("block_workflow") is not True:
             problems.append("final channel must be mandatory and block unsupported workflows")
-        if package_type != EXPECTED_PACKAGE_TYPE:
-            problems.append(f"final package_type must be {EXPECTED_PACKAGE_TYPE}")
+        if package_type != "onefile_exe":
+            problems.append("final package_type must be onefile_exe")
         if release_tag != EXPECTED_RELEASE_TAG:
             problems.append(f"final release_tag must be {EXPECTED_RELEASE_TAG}")
         if payload.get("auth_helper") != "TakSkladAuth.exe":
