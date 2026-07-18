@@ -49,12 +49,12 @@ cd /Users/anton/Documents/work/TakSklad
   --source-sha <exact-tagged-main-sha> --timeout 120
 ```
 
-Candidate-mode проверяет локальный кандидат `2.0.46`, не утверждая, что public channel уже переключён. Final-mode разрешён только после immutable publication: он скачивает все Windows assets из `version.json`, проверяет exact `2.0.46`, `onedir_zip`, SHA256 и attestations.
+Candidate-mode проверяет локальный кандидат `2.0.46`, не утверждая, что public channel уже переключён. Final-mode разрешён только после immutable publication: он скачивает все Windows assets из `version.json`, проверяет exact `2.0.46`, `onefile_exe`, SHA256 и attestations.
 
 Он проверяет:
 
 - публичный `https://api.taksklad.uz/health`;
-- candidate contract `2.0.46` отдельно от ещё поддерживаемого public channel; final-mode требует опубликованный exact `2.0.46`, `mandatory=true`, `onedir_zip` и immutable ссылки/хеши;
+- candidate contract `2.0.46` отдельно от ещё поддерживаемого public channel; final-mode требует опубликованный exact `2.0.46`, `mandatory=true`, `onefile_exe` и immutable ссылки/хеши;
 - checksum acceptance Excel;
 - наличие acceptance/runbook/helper-файлов;
 - отсутствие tracked runtime/secret-файлов.

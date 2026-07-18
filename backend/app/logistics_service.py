@@ -285,20 +285,28 @@ def logistics_external_id(order, item=None):
     raw_payload = order.raw_payload or {}
     if raw_payload.get("skladbot_request_number"):
         return raw_payload.get("skladbot_request_number")
-    if raw_payload.get("source_order_id"):
-        return raw_payload.get("source_order_id")
+
+    def public_source_id(value):
+        text = str(value or "").strip()
+        if text.casefold().startswith("smartup:"):
+            return ""
+        return text
+
+    value = public_source_id(raw_payload.get("source_order_id"))
+    if value:
+        return value
     if item is not None:
         item_payload = item.raw_payload or {}
-        if item_payload.get("source_order_id"):
-            return item_payload.get("source_order_id")
-        if item_payload.get("source_import_id"):
-            return item_payload.get("source_import_id")
+        for key in ("source_order_id", "source_import_id"):
+            value = public_source_id(item_payload.get(key))
+            if value:
+                return value
     for order_item in sorted(order.items, key=lambda value: (value.product, str(value.id))):
         item_payload = order_item.raw_payload or {}
-        if item_payload.get("source_order_id"):
-            return item_payload.get("source_order_id")
-        if item_payload.get("source_import_id"):
-            return item_payload.get("source_import_id")
+        for key in ("source_order_id", "source_import_id"):
+            value = public_source_id(item_payload.get(key))
+            if value:
+                return value
     return ""
 
 

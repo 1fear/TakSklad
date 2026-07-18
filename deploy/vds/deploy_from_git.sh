@@ -16,6 +16,8 @@ AUTH_CANARY_TOKEN_FILE="${TAKSKLAD_AUTH_CANARY_TOKEN_FILE:-/opt/stacks/taksklad/
 WRITER_SERVICES=(backend-api telegram-worker skladbot-worker smartup-auto-import-worker)
 DRY_RUN=0
 CURRENT_AUTH_CANARY_ONLY=0
+PROMOTE_CURRENT_RUNTIME=0
+ROLLBACK_TO_CURRENT_RECORD=0
 ALLOW_BOOTSTRAP_WITHOUT_ROLLBACK=0
 ALLOW_LEGACY_CANARY_BOOTSTRAP=0
 ARTIFACT_MANIFEST=""
@@ -30,6 +32,8 @@ Usage:
   deploy_from_git.sh --artifact-manifest PATH
   deploy_from_git.sh --artifact-manifest PATH --acceptance required --wait
   deploy_from_git.sh --artifact-manifest PATH --current-auth-canary-only
+  deploy_from_git.sh --artifact-manifest PATH --promote-current-runtime
+  deploy_from_git.sh --artifact-manifest PATH --rollback-to-current-record
   deploy_from_git.sh --artifact-manifest PATH --allow-bootstrap-without-rollback
   deploy_from_git.sh --artifact-manifest PATH --allow-legacy-canary-bootstrap
   deploy_from_git.sh --dry-run --artifact-manifest PATH [--acceptance required] [--wait]
@@ -65,6 +69,14 @@ while (($#)); do
       CURRENT_AUTH_CANARY_ONLY=1
       shift
       ;;
+    --promote-current-runtime)
+      PROMOTE_CURRENT_RUNTIME=1
+      shift
+      ;;
+    --rollback-to-current-record)
+      ROLLBACK_TO_CURRENT_RECORD=1
+      shift
+      ;;
     --allow-bootstrap-without-rollback)
       ALLOW_BOOTSTRAP_WITHOUT_ROLLBACK=1
       shift
@@ -83,6 +95,9 @@ while (($#)); do
       ;;
   esac
 done
+
+special_mode_count=$((CURRENT_AUTH_CANARY_ONLY + PROMOTE_CURRENT_RUNTIME + ROLLBACK_TO_CURRENT_RECORD))
+[[ "$special_mode_count" -le 1 ]] || fail "only one current-runtime control mode may be selected"
 
 [[ -n "$ARTIFACT_MANIFEST" && -f "$ARTIFACT_MANIFEST" ]] || fail "artifact manifest is required"
 ARTIFACT_MANIFEST="$(cd "$(dirname "$ARTIFACT_MANIFEST")" && pwd -P)/$(basename "$ARTIFACT_MANIFEST")"
@@ -390,6 +405,29 @@ rollback_after_candidate_failure() {
   fi
   fail "$reason; rollback_unverified=1 database_schema_retained=1"
 }
+
+if [[ "$ROLLBACK_TO_CURRENT_RECORD" == "1" ]]; then
+  rollback_runtime || fail "rollback to the verified current deployment record failed"
+  echo "Current deployment record runtime restored and verified."
+  exit 0
+fi
+
+if [[ "$PROMOTE_CURRENT_RUNTIME" == "1" ]]; then
+  verify_db_only_compose
+  validate_daily_report_config || fail "production daily-report configuration is incomplete"
+  verify_selected_runtime_identity || fail "current runtime identity differs from the candidate manifest"
+  check_public_url health "$HEALTH_URL" || fail "current runtime health identity failed"
+  check_public_url readiness "$READY_URL" || fail "current runtime readiness identity failed"
+  run_acceptance || fail "current runtime mandatory acceptance failed"
+  run_log_scan || fail "current runtime fresh log scan failed"
+  run_server_auth_canary || fail "current runtime acceptance auth canary failed"
+  install -d -m 700 "$(dirname "$DEPLOY_RECORD")"
+  current_runtime_record_tmp="${DEPLOY_RECORD}.tmp.$$"
+  install -m 600 "$ARTIFACT_MANIFEST" "$current_runtime_record_tmp"
+  mv -f "$current_runtime_record_tmp" "$DEPLOY_RECORD"
+  echo "Current verified runtime promoted to the exact deployment record."
+  exit 0
+fi
 
 verify_previous_runtime_preflight || fail "previous runtime rollback preflight failed before production mutation"
 verify_db_only_compose

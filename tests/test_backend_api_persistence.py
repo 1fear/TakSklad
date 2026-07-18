@@ -3850,6 +3850,35 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(sheet["AE2"].value, 50)
         workbook.close()
 
+    def test_logistics_report_does_not_expose_smartup_internal_id(self):
+        rows = [
+            {
+                "Дата отгрузки": "2026-07-20",
+                "Тип оплаты": "Терминал",
+                "Клиент": "Smartup Logistics Client",
+                "Адрес": "Tashkent Smartup Address",
+                "Координаты": "41.31, 69.27",
+                "Товары": "Chapman Brown OP 20",
+                "Кол-во ШТ": "10",
+                "Кол-во блок": "1",
+                "ID заказа": "smartup:261896730",
+                "ID импорта": "smartup:261896730:line-1:1",
+            },
+        ]
+        imported = self.client.post(
+            "/api/v1/imports",
+            json={"source": "smartup_auto", "filename": "smartup.xlsx", "rows": rows},
+        )
+        self.assertEqual(imported.status_code, 201)
+
+        report = self.client.get("/api/v1/logistics/report?shipment_date=2026-07-20")
+
+        self.assertEqual(report.status_code, 200)
+        workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
+        sheet = workbook["Orders"]
+        self.assertIsNone(sheet["B2"].value)
+        workbook.close()
+
     def test_logistics_report_uses_saved_client_point_timeslot(self):
         rows = [
             {

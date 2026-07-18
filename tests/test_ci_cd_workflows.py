@@ -291,10 +291,12 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn("select version_num from alembic_version", workflow)
         self.assertIn("alembic -c alembic.ini heads </dev/null", workflow)
         self.assertIn(r'test "\$current_revision" = "\$target_revision"', workflow)
-        self.assertIn("phase27_runtime_preactivated=0", workflow)
+        self.assertIn("phase27_runtime_mutation_started=0", workflow)
+        self.assertIn("phase27_record_promoted=0", workflow)
+        self.assertIn("phase27_rollback_on_error()", workflow)
+        self.assertIn("--rollback-to-current-record", workflow)
+        self.assertIn("--promote-current-runtime", workflow)
         self.assertIn("PHASE27_RETRY_RUNTIME_OK", workflow)
-        self.assertIn("./deploy/vds/acceptance_status.sh --require-go </dev/null", workflow)
-        self.assertIn('phase27_logs="\\$(docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml \\', workflow)
         self.assertIn("backend-api frontend telegram-worker skladbot-worker", workflow)
         self.assertIn("for attempt in \\$(seq 1 36)", workflow)
         self.assertIn("backend_health", workflow)
@@ -306,9 +308,17 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn("PHASE27_HISTORICAL_REPORT_RECOVERY_OK", workflow)
         self.assertIn("phase27_historical_daily_report_recovery", workflow)
         self.assertIn("DB_ONLY_RUNTIME_POLICY_OK", workflow)
-        self.assertIn('if test "\\$phase27_runtime_preactivated" = 1; then', workflow)
-        self.assertIn('deployment_record_tmp="\\${deployment_record}.tmp.\\$\\$"', workflow)
-        self.assertIn("runtime_already_promoted=1 record_promoted=1", workflow)
+        self.assertIn("phase27_record_promoted=1", workflow)
+        self.assertNotIn("phase27_runtime_preactivated", workflow)
+        rollback_trap = workflow.index("trap phase27_rollback_on_error ERR")
+        mutation_start = workflow.index("phase27_runtime_mutation_started=1")
+        candidate_stop = workflow.index("stop -t 45 backend-api telegram-worker")
+        promotion = workflow.index("--promote-current-runtime")
+        promotion_recorded = workflow.index("phase27_record_promoted=1")
+        self.assertLess(rollback_trap, mutation_start)
+        self.assertLess(mutation_start, candidate_stop)
+        self.assertLess(candidate_stop, promotion)
+        self.assertLess(promotion, promotion_recorded)
         self.assertIn('retired_google_ids="\\$(docker ps -aq', workflow)
         self.assertIn("docker container stop -t 45 \\$retired_google_ids", workflow)
         self.assertIn("docker container rm -f \\$retired_google_ids", workflow)
@@ -552,6 +562,12 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn("--artifact-manifest", script)
         self.assertIn("--acceptance", script)
         self.assertIn("--wait", script)
+        self.assertIn("--promote-current-runtime", script)
+        self.assertIn("--rollback-to-current-record", script)
+        self.assertIn("only one current-runtime control mode may be selected", script)
+        self.assertIn("current runtime identity differs from the candidate manifest", script)
+        self.assertIn("Current verified runtime promoted to the exact deployment record.", script)
+        self.assertIn("Current deployment record runtime restored and verified.", script)
         self.assertIn("READY_FOR_PRODUCTION_DEPLOY", script)
         self.assertIn("tools/release_artifacts.py verify", script)
         self.assertIn("tools/release_artifacts.py emit-shell", script)
@@ -646,10 +662,8 @@ class CiCdWorkflowTests(unittest.TestCase):
             workflow,
         )
         self.assertLess(
-            workflow.index('if test "\\$phase27_runtime_preactivated" = 1; then'),
-            workflow.index(
-                'elif python3 - "\\$deployment_record" release.json <<\'PY\''
-            ),
+            workflow.index("--promote-current-runtime"),
+            workflow.index('if python3 - "\\$deployment_record" release.json <<\'PY\''),
         )
         self.assertIn("--ready-json .release-state/current-ready.json", workflow)
         self.assertIn("http://127.0.0.1:8000/ready", workflow)
