@@ -45,6 +45,10 @@ from .scan_quantities import (
     scan_product_mismatch,
     scanned_blocks_for_scans,
 )
+from .transfer_kiz_service import (
+    queue_transfer_kiz_completion_check,
+    queue_transfer_kiz_undo_alert,
+)
 
 
 class ApiError(Exception):
@@ -314,6 +318,7 @@ def create_scan(db: Session, payload: ScanCreate):
             "block_quantity": block_quantity,
         },
     ))
+    queue_transfer_kiz_completion_check(db, scan=scan, item=item)
     response = scan_to_read(scan, item)
 
     try:
@@ -415,6 +420,7 @@ def undo_scan(db: Session, payload: ScanUndo):
             "block_quantity": scan_block_quantity(scan),
         },
     ))
+    queue_transfer_kiz_undo_alert(db, item=item)
     outbox_service.outbox_fault("before_commit", "scan")
     db.commit()
     outbox_service.outbox_fault("after_commit", "scan")

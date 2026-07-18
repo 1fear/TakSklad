@@ -364,6 +364,9 @@ class TelegramImportProcessor(TelegramProcessorDelegate):
             )
             meta = import_payload.pop("meta", {})
             rows = import_payload.get("rows") or []
+            import_payload["source_rows_count"] = parse_int(meta.get("source_rows_count"))
+            import_payload["skipped_rows_count"] = parse_int(meta.get("skipped_rows_count"))
+            import_payload["payment_groups"] = meta.get("payment_groups") or {}
             imported_blocks = sum(parse_int(row.get("Кол-во блок")) for row in rows if isinstance(row, dict))
             import_payload["telegram_chat_id"] = normalize_text(chat_id)
             if event_id:

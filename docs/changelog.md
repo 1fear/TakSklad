@@ -2,6 +2,13 @@
 
 Здесь фиксируются все правки в коде TakSklad: что менялось, в каком файле, зачем, и какие тесты это покрывают. Записи идут от новых к старым.
 
+## 2026-07-19
+
+### Automatic KIZ delivery for pure Telegram transfer imports
+
+- Runtime release candidate поднят до `2.0.49` для автоматической доставки КИЗ по полностью отсканированному файлу Telegram-импорта, если все строки относятся к оплате перечислением и прошли проверки полноты.
+- Public desktop `version.json` не менялся: promotion выполняется отдельно после immutable build и проверки release-артефакта.
+
 ## 2026-07-17
 
 ### Telegram routing contract correction

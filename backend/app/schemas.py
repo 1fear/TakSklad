@@ -575,6 +575,9 @@ class ImportCreate(BaseModel):
     sha256: str | None = Field(default=None, max_length=64)
     telegram_chat_id: str | None = Field(default=None, max_length=128)
     telegram_event_id: str | None = Field(default=None, max_length=256)
+    source_rows_count: int = Field(default=0, ge=0)
+    skipped_rows_count: int = Field(default=0, ge=0)
+    payment_groups: dict[str, int] = Field(default_factory=dict)
     rows: list[ImportRow] = Field(default_factory=list, max_length=MAX_IMPORT_ROWS)
 
     @field_validator("filename")

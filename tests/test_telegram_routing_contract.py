@@ -10,12 +10,14 @@ from unittest import mock
 from backend.app.telegram_output_contract import (
     runtime_output_artifacts,
     runtime_output_policy_hashes,
+    transfer_kiz_export_caption,
 )
 
 from backend.app.telegram_routing_contract import (
     ROUTING_IDENTITY_ANCHOR_ENV,
     TelegramMessageKind,
     TelegramRoutingContractError,
+    _validate_manifest,
     canonical_route_identity_sha256,
     load_telegram_routing_contract,
     production_environment_errors,
@@ -120,6 +122,7 @@ class TelegramRoutingContractTests(unittest.TestCase):
             TelegramMessageKind.SMARTUP_CLIENT_EXPORT: ("client", ("12:00", "15:00", "17:50")),
             TelegramMessageKind.SMARTUP_LOGISTICS_REPORT: ("logistics", ("17:50",)),
             TelegramMessageKind.SKLADBOT_DAILY_REPORT: ("client", ("22:00",)),
+            TelegramMessageKind.TRANSFER_KIZ_EXPORT: ("client", ("on_completion",)),
             TelegramMessageKind.ADMIN_ERROR: ("admin", ("on_error",)),
         }
         for kind, (destination, schedules) in expected.items():
@@ -129,7 +132,14 @@ class TelegramRoutingContractTests(unittest.TestCase):
             self.assertEqual(route.error_destination, "admin")
 
     def test_unknown_and_near_miss_kinds_are_blocked(self):
-        for kind in ("smartup_client", "smartup_logistics_report ", "service", ""):
+        for kind in (
+            "smartup_client",
+            "smartup_logistics_report ",
+            "transfer_kiz",
+            "transfer_kiz_export ",
+            "service",
+            "",
+        ):
             with self.subTest(kind=kind), self.assertRaises(TelegramRoutingContractError):
                 self.contract.route_for(kind)
         for kind in ("daily_reconciliation_alert ", "foreign_kind", "admin_error"):
@@ -188,6 +198,41 @@ class TelegramRoutingContractTests(unittest.TestCase):
             self.assertEqual(hashes[kind.value], route.text_policy_sha256)
         for marker in forbidden:
             self.assertNotIn(marker, rendered)
+
+    def test_transfer_kiz_export_output_is_exact_and_completion_only(self):
+        kind = TelegramMessageKind.TRANSFER_KIZ_EXPORT
+        self.assertEqual(
+            transfer_kiz_export_caption("source.xlsx"),
+            "Коды маркировки по файлу: source.xlsx",
+        )
+        self.assertEqual(
+            runtime_output_artifacts()[kind.value],
+            {"caption": "Коды маркировки по файлу: transfer_kiz_export.xlsx"},
+        )
+        self.assertEqual(self.contract.route_for(kind).schedules, ("on_completion",))
+
+    def test_on_completion_is_allowlisted_only_for_transfer_kiz_export(self):
+        manifest = json.loads(
+            (PROJECT_ROOT / "backend" / "app" / "telegram_routing_manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        for kind in (
+            TelegramMessageKind.SMARTUP_CLIENT_EXPORT,
+            TelegramMessageKind.SMARTUP_LOGISTICS_REPORT,
+            TelegramMessageKind.SKLADBOT_DAILY_REPORT,
+            TelegramMessageKind.ADMIN_ERROR,
+        ):
+            with self.subTest(kind=kind.value):
+                changed = json.loads(json.dumps(manifest))
+                changed["message_kinds"][kind.value]["schedules"] = ["on_completion"]
+                with self.assertRaises(TelegramRoutingContractError):
+                    _validate_manifest(changed)
+
+        changed = json.loads(json.dumps(manifest))
+        changed["message_kinds"][TelegramMessageKind.TRANSFER_KIZ_EXPORT.value]["schedules"] = ["on_error"]
+        with self.assertRaises(TelegramRoutingContractError):
+            _validate_manifest(changed)
 
     def test_no_send_verifier_redacts_raw_ids(self):
         status, output, error = self.run_verifier(self.environment())

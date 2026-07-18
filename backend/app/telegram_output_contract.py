@@ -95,6 +95,10 @@ def daily_report_caption(report_date: Any) -> str:
     return f"SkladBot отчет за {_display_date(report_date)}"
 
 
+def transfer_kiz_export_caption(source_file: Any) -> str:
+    return f"Коды маркировки по файлу: {_text(source_file)}"
+
+
 def blocked_admin_notification_text(reason: Any) -> str:
     return "\n".join([
         "TakSklad: служебное Telegram-уведомление заблокировано",
@@ -142,6 +146,9 @@ def runtime_output_artifacts() -> dict[str, dict[str, str]]:
             "message": build_skladbot_daily_report_message(daily_report),
             "caption": daily_report_caption(sample_date),
             "filename": daily_report_filename(sample_date),
+        },
+        "transfer_kiz_export": {
+            "caption": transfer_kiz_export_caption("transfer_kiz_export.xlsx"),
         },
         "admin_error": {
             "message": blocked_admin_notification_text("unknown_kind"),
