@@ -12,7 +12,6 @@ from sqlalchemy.orm import Session, selectinload
 from .client_points_service import client_point_delivery_slot_map, delivery_slot_for_order
 from .models import Order, OrderItem
 from .orders_service import ApiError, STATUS_RETURNED
-from .representative_contacts import display_representative_name, find_representative_contact, normalize_text
 from .reports_service import parse_report_date
 from .spreadsheet_safety import force_workbook_text_literals
 from .telegram_output_contract import logistics_report_filename
@@ -20,9 +19,7 @@ from .telegram_output_contract import logistics_report_filename
 
 LOGISTICS_HEADERS = [
     "Тип заказа",
-    "ID заявки SkladBot",
-    "ID заявки Smartup",
-    "ID источника",
+    "Внешний ID",
     "Описание",
     "Имя клиента",
     "Телефон",
@@ -57,9 +54,7 @@ LOGISTICS_HEADERS = [
 LOGISTICS_COORDINATE_PROBLEM_HEADERS = [
     "Клиент",
     "Адрес",
-    "ID заявки SkladBot",
-    "ID заявки Smartup",
-    "ID источника",
+    "Внешний ID",
     "Причина",
     "Товары",
     "Тип оплаты",
@@ -72,29 +67,27 @@ LOGISTICS_DATETIME_FORMAT = "yyyy-mm-dd hh:mm"
 LOGISTICS_TEMPLATE_COLUMN_WIDTHS = {
     "A": 14,
     "B": 18,
-    "C": 18,
-    "D": 18,
-    "E": 22,
-    "F": 30,
-    "G": 18,
-    "H": 28,
-    "I": 30,
-    "J": 14,
-    "K": 14,
-    "L": 30,
-    "M": 22,
-    "N": 22,
-    "S": 14,
-    "T": 14,
-    "U": 30,
-    "V": 22,
-    "W": 22,
-    "AB": 24,
-    "AC": 22,
-    "AD": 18,
-    "AE": 14,
-    "AF": 14,
-    "AG": 10,
+    "C": 22,
+    "D": 30,
+    "E": 18,
+    "F": 28,
+    "G": 30,
+    "H": 14,
+    "I": 14,
+    "J": 30,
+    "K": 22,
+    "L": 22,
+    "Q": 14,
+    "R": 14,
+    "S": 30,
+    "T": 22,
+    "U": 22,
+    "Z": 24,
+    "AA": 22,
+    "AB": 18,
+    "AC": 14,
+    "AD": 14,
+    "AE": 10,
 }
 
 
@@ -130,7 +123,6 @@ def build_logistics_report_xlsx(db: Session, shipment_date: str):
     delivery_orders = [order for order in candidate_orders if is_logistics_delivery_order(order)]
     coordinate_problem_orders = [order for order in candidate_orders if not is_logistics_delivery_order(order)]
     delivery_slots = client_point_delivery_slot_map(db, delivery_orders)
-    representative_cache = {}
 
     workbook = Workbook()
     sheet = workbook.active
@@ -146,20 +138,18 @@ def build_logistics_report_xlsx(db: Session, shipment_date: str):
             quantity_blocks = item_quantity_blocks(item)
             row = [""] * len(LOGISTICS_HEADERS)
             set_cell(row, 1, "delivery")
-            set_cell(row, 2, logistics_skladbot_id(order))
-            set_cell(row, 3, logistics_smartup_id(order, item))
-            set_cell(row, 4, logistics_source_id(order, item))
-            set_cell(row, 6, order.client)
-            set_cell(row, 9, logistics_representative_name(db, order, representative_cache))
-            set_cell(row, 19, latitude)
-            set_cell(row, 20, longitude)
-            set_cell(row, 21, order.address)
-            set_cell(row, 22, delivery_window_datetime(report_date, delivery_from))
-            set_cell(row, 23, delivery_window_datetime(report_date, delivery_to))
-            set_cell(row, 29, item.product)
-            set_cell(row, 31, 0)
-            set_cell(row, 32, 0)
-            set_cell(row, 33, quantity_blocks)
+            set_cell(row, 2, logistics_external_id(order, item))
+            set_cell(row, 4, order.client)
+            set_cell(row, 7, order.representative or "")
+            set_cell(row, 17, latitude)
+            set_cell(row, 18, longitude)
+            set_cell(row, 19, order.address)
+            set_cell(row, 20, delivery_window_datetime(report_date, delivery_from))
+            set_cell(row, 21, delivery_window_datetime(report_date, delivery_to))
+            set_cell(row, 27, item.product)
+            set_cell(row, 29, 0)
+            set_cell(row, 30, 0)
+            set_cell(row, 31, quantity_blocks)
             sheet.append(row)
             apply_orders_row_style(sheet, sheet.max_row)
 
@@ -171,9 +161,7 @@ def build_logistics_report_xlsx(db: Session, shipment_date: str):
             problem_sheet.append([
                 order.client,
                 order.address,
-                logistics_skladbot_id(order),
-                logistics_smartup_id(order),
-                logistics_source_id(order),
+                logistics_external_id(order),
                 logistics_coordinate_problem_reason(order),
                 order_product_summary(order),
                 order.payment_type,
@@ -293,69 +281,10 @@ def delivery_window_datetime(report_date, value):
     return datetime(report_date.year, report_date.month, report_date.day, hour, minute)
 
 
-def logistics_skladbot_id(order):
+def logistics_external_id(order, item=None):
     raw_payload = order.raw_payload or {}
-    return (
-        normalize_text(raw_payload.get("skladbot_request_number"))
-        or normalize_text(raw_payload.get("skladbot_request_id"))
-    )
-
-
-def logistics_smartup_id(order, item=None):
-    payloads = [order.raw_payload or {}]
-    if item is not None:
-        payloads.append(item.raw_payload or {})
-    payloads.extend(
-        (order_item.raw_payload or {})
-        for order_item in sorted(order.items, key=lambda value: (value.product, str(value.id)))
-    )
-    for payload in payloads:
-        smartup_id = smartup_id_from_payload(payload)
-        if smartup_id:
-            return smartup_id
-    smartup_id = smartup_id_from_value(getattr(order, "external_id", ""), explicit=False)
-    return smartup_id
-
-
-def smartup_id_from_payload(payload):
-    raw_row = payload.get("raw_row") if isinstance(payload.get("raw_row"), dict) else {}
-    for value in (
-        payload.get("smartup_request_id"),
-        payload.get("smartup_deal_id"),
-        payload.get("Smartup deal_id"),
-        raw_row.get("Smartup deal_id"),
-        raw_row.get("smartup_deal_id"),
-        raw_row.get("deal_id"),
-    ):
-        smartup_id = smartup_id_from_value(value, explicit=True)
-        if smartup_id:
-            return smartup_id
-    for value in (
-        payload.get("source_order_id"),
-        payload.get("source_import_id"),
-        raw_row.get("ID заказа"),
-        raw_row.get("ID импорта"),
-    ):
-        smartup_id = smartup_id_from_value(value, explicit=False)
-        if smartup_id:
-            return smartup_id
-    return ""
-
-
-def smartup_id_from_value(value, *, explicit):
-    text = normalize_text(value)
-    if not text:
-        return ""
-    if text.startswith("smartup:"):
-        parts = text.split(":")
-        return ":".join(parts[:2]) if len(parts) >= 2 and parts[1] else text
-    if explicit:
-        return f"smartup:{text}"
-    return ""
-
-
-def logistics_source_id(order, item=None):
-    raw_payload = order.raw_payload or {}
+    if raw_payload.get("skladbot_request_number"):
+        return raw_payload.get("skladbot_request_number")
     if raw_payload.get("source_order_id"):
         return raw_payload.get("source_order_id")
     if item is not None:
@@ -370,22 +299,7 @@ def logistics_source_id(order, item=None):
             return item_payload.get("source_order_id")
         if item_payload.get("source_import_id"):
             return item_payload.get("source_import_id")
-    external_id = normalize_text(getattr(order, "external_id", ""))
-    if external_id and not external_id.startswith("late-skladbot-split:"):
-        return external_id
     return ""
-
-
-def logistics_representative_name(db, order, cache):
-    representative = normalize_text(order.representative)
-    if not representative:
-        return ""
-    if representative not in cache:
-        cache[representative] = display_representative_name(
-            representative,
-            find_representative_contact(db, representative),
-        )
-    return cache[representative]
 
 
 def item_quantity_blocks(item):
@@ -418,7 +332,7 @@ def apply_orders_template_style(sheet):
 
 
 def apply_orders_row_style(sheet, row_number):
-    for column_letter in ("V", "W"):
+    for column_letter in ("T", "U"):
         sheet[f"{column_letter}{row_number}"].number_format = LOGISTICS_DATETIME_FORMAT
 
 
