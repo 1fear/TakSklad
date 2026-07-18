@@ -570,8 +570,21 @@ jobs:
             backend-api alembic -c alembic.ini heads </dev/null | tail -n 1 | awk '{print \$1}')"
           test -n "\$current_revision"
           test -n "\$target_revision"
-          phase27_runtime_preactivated=0
+          phase27_runtime_mutation_started=0
+          phase27_record_promoted=0
+          phase27_rollback_on_error() {
+            phase27_failure_status=\$?
+            trap - ERR
+            if test "\$phase27_runtime_mutation_started" = 1 && test "\$phase27_record_promoted" = 0; then
+              ./deploy/vds/deploy_from_git.sh --artifact-manifest release.json \
+                --rollback-to-current-record \$legacy_canary_arg </dev/null || \
+                echo "PHASE27_ROLLBACK_FAILED current_record_retained=1" >&2
+            fi
+            exit "\$phase27_failure_status"
+          }
+          trap phase27_rollback_on_error ERR
           if test "\$current_revision" = "\$target_revision"; then
+            phase27_runtime_mutation_started=1
             docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml \
               stop -t 45 backend-api telegram-worker skladbot-worker smartup-auto-import-worker
             running_writers="\$(docker compose --env-file deploy/vds/.env \
@@ -705,17 +718,12 @@ jobs:
               docker exec "\$backend_id" python -c "import json; from sqlalchemy import func, select; from app import skladbot_daily_report; from app.db import SessionLocal; from app.health_service import daily_report_event_report_date, daily_report_failure_resolved_by_later_success; from app.models import PendingEvent; db=SessionLocal(); rows=db.execute(select(PendingEvent.event_type, PendingEvent.status, func.count(PendingEvent.id)).where(PendingEvent.status.in_(('failed','error','blocked'))).group_by(PendingEvent.event_type, PendingEvent.status).order_by(PendingEvent.event_type, PendingEvent.status)).all(); events=db.execute(select(PendingEvent).where(PendingEvent.event_type == 'skladbot_daily_report_send').where(PendingEvent.status == 'failed')).scalars().all(); unresolved=[e for e in events if not daily_report_failure_resolved_by_later_success(db,e)]; today=skladbot_daily_report.business_today().isoformat(); summary={'groups':[{'event_type':a,'status':b,'count':int(c)} for a,b,c in rows], 'unresolved_daily_report_current':sum(daily_report_event_report_date(e) == today for e in unresolved), 'unresolved_daily_report_historical':sum(daily_report_event_report_date(e) != today for e in unresolved)}; db.close(); print('HOT_PATH_FAILURE_GROUPS ' + json.dumps(summary, sort_keys=True))" </dev/null || true
               exit 1
             fi
-            ./deploy/vds/acceptance_status.sh --require-go </dev/null
-            phase27_logs="\$(docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml \
-              logs --since 120s backend-api frontend telegram-worker skladbot-worker smartup-auto-import-worker 2>&1 || true)"
-            if printf '%s\n' "\$phase27_logs" | grep -Eiq \
-              '\[(ERROR|CRITICAL)\]|(^|[[:space:]])(ERROR|CRITICAL)(:|[[:space:]])|Traceback \(most recent call last\):|(^|[[:space:]])Exception:|(^|[[:space:]])panic:'; then
-              printf '%s\n' "\$phase27_logs" >&2
-              exit 1
-            fi
-            phase27_runtime_preactivated=1
+            ./deploy/vds/deploy_from_git.sh --artifact-manifest release.json \
+              --promote-current-runtime \$legacy_canary_arg </dev/null
+            phase27_record_promoted=1
             echo "PHASE27_RETRY_RUNTIME_OK revision=\$current_revision"
           fi
+          trap - ERR
           install -d -m 700 .release-state
           preflight_backend_id="\$(docker compose --env-file deploy/vds/.env \
             -f deploy/vds/docker-compose.yml ps -q backend-api </dev/null)"
@@ -753,15 +761,7 @@ jobs:
             --filter label=com.docker.compose.service=google-sheets-sync-worker)"
           echo "DB_ONLY_RUNTIME_POLICY_OK retired_worker_absent=1"
           deployment_record=/opt/stacks/taksklad/deployments/current-release.json
-          if test "\$phase27_runtime_preactivated" = 1; then
-            ./deploy/vds/deploy_from_git.sh --artifact-manifest release.json \
-              --current-auth-canary-only \$legacy_canary_arg </dev/null
-            install -d -m 700 "\$(dirname "\$deployment_record")"
-            deployment_record_tmp="\${deployment_record}.tmp.\$\$"
-            install -m 600 release.json "\$deployment_record_tmp"
-            mv -f "\$deployment_record_tmp" "\$deployment_record"
-            echo "PHASE27_DEPLOY_REUSED exact_manifest=0 mutation=0 runtime_already_promoted=1 record_promoted=1"
-          elif python3 - "\$deployment_record" release.json <<'PY'
+          if python3 - "\$deployment_record" release.json <<'PY'
           import json
           import sys
           from pathlib import Path

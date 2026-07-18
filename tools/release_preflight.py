@@ -85,6 +85,16 @@ def configured_app_version():
 
 
 EXPECTED_RELEASE_VERSION = configured_app_version()
+
+
+def previous_patch_version(version):
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", str(version or ""))
+    if not match or int(match.group(3)) == 0:
+        return ""
+    return f"{match.group(1)}.{match.group(2)}.{int(match.group(3)) - 1}"
+
+
+STALE_OPERATOR_RELEASE_VERSION = previous_patch_version(EXPECTED_RELEASE_VERSION)
 EXPECTED_MIN_SUPPORTED_VERSION = EXPECTED_RELEASE_VERSION
 EXPECTED_PACKAGE_TYPE = "onedir_zip"
 SUPPORTED_PUBLIC_PACKAGE_TYPES = {"onefile_exe", EXPECTED_PACKAGE_TYPE}
@@ -537,11 +547,23 @@ def check_backend_only_hot_path_contract(root):
 
 
 def check_deploy_runbook_contract(root):
-    return check_text_fragment_contract(
+    check = check_text_fragment_contract(
         root,
         "deploy_runbook_contract",
         DEPLOY_RUNBOOK_REQUIRED_FRAGMENTS,
     )
+    problems = list(check.get("problems") or [])
+    if STALE_OPERATOR_RELEASE_VERSION:
+        for path in DEPLOY_RUNBOOK_REQUIRED_FRAGMENTS:
+            try:
+                text = (root / path).read_text(encoding="utf-8")
+            except OSError:
+                continue
+            if STALE_OPERATOR_RELEASE_VERSION in text:
+                problems.append(
+                    f"{path}: stale operator release version: {STALE_OPERATOR_RELEASE_VERSION}"
+                )
+    return result("deploy_runbook_contract", not problems, problems=problems)
 
 
 def check_deployment_readiness_contract(root):

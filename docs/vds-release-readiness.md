@@ -315,7 +315,7 @@ $env:TAKSKLAD_BACKEND_TIMEOUT_SECONDS = "8"
 - включать flags сначала только на тестовой копии;
 - при проблеме остановить acceptance и вручную вернуть предыдущий DB-compatible release/config;
   desktop fallback на локальное/Google-хранилище отсутствует;
-- Windows candidate `2.0.45` не считать опубликованным до final preflight; переключение public channel на exact `2.0.45`/`onedir_zip` выполняется только единым immutable promotion.
+- Windows candidate `2.0.46` не считать опубликованным до final preflight; переключение public channel на exact `2.0.46`/`onefile_exe` выполняется только единым immutable promotion.
 
 ## Следующий Шаг После Этого Этапа
 
@@ -325,7 +325,7 @@ $env:TAKSKLAD_BACKEND_TIMEOUT_SECONDS = "8"
 .venv/bin/python tools/release_preflight.py --phase candidate --skip-network
 ```
 
-Candidate preflight проверяет локальный `2.0.45`, текущий поддерживаемый public channel и отсутствие tracked runtime/secret-файлов; он не доказывает публикацию. Final preflight отдельно требует exact опубликованный `2.0.45`, `onedir_zip`, downloads и attestations.
+Candidate preflight проверяет локальный `2.0.46`, текущий поддерживаемый public channel и отсутствие tracked runtime/secret-файлов; он не доказывает публикацию. Final preflight отдельно требует exact опубликованный `2.0.46`, `onefile_exe`, downloads и attestations.
 
 Фактические результаты ручной приёмки фиксировать в:
 

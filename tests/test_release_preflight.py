@@ -14,6 +14,7 @@ from tools.release_preflight import (
     REQUIRED_FILES,
     VERSION_JSON,
     check_acceptance_kit,
+    check_deploy_runbook_contract,
     check_deployment_readiness_contract,
     check_required_files,
     check_update_manifest_downloads,
@@ -517,6 +518,20 @@ class ReleasePreflightTests(unittest.TestCase):
         self.assertIn(
             "docs/deploy-rollback-runbook.md: missing fragment: release.json",
             deploy_contract["problems"],
+        )
+
+    def test_deploy_runbook_contract_rejects_stale_previous_release_version(self):
+        tmp_dir, root = self.make_root()
+        with tmp_dir:
+            path = root / "docs/windows-backend-acceptance.md"
+            path.write_text(path.read_text(encoding="utf-8") + "\n2.0.45\n", encoding="utf-8")
+
+            check = check_deploy_runbook_contract(root)
+
+        self.assertFalse(check["ok"])
+        self.assertIn(
+            "docs/windows-backend-acceptance.md: stale operator release version: 2.0.45",
+            check["problems"],
         )
 
     def test_windows_acceptance_flow_passes_for_current_scripts(self):

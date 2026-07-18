@@ -3774,9 +3774,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
         self.assertEqual([cell.value for cell in sheet[1]], [
             "Тип заказа",
-            "ID заявки SkladBot",
-            "ID заявки Smartup",
-            "ID источника",
+            "Внешний ID",
             "Описание",
             "Имя клиента",
             "Телефон",
@@ -3808,50 +3806,18 @@ class BackendApiPersistenceTests(unittest.TestCase):
             "Короба",
         ])
         self.assertEqual(sheet["A2"].value, "delivery")
-        self.assertIsNone(sheet["B2"].value)
-        self.assertIsNone(sheet["C2"].value)
-        self.assertEqual(sheet["D2"].value, "logistics-source-order")
-        self.assertEqual(sheet["F2"].value, "Logistics Client")
-        self.assertEqual(sheet["I2"].value, "Rep One")
-        self.assertEqual(sheet["S2"].value, "41.31")
-        self.assertEqual(sheet["T2"].value, "69.27")
-        self.assertEqual(sheet["U2"].value, "Tashkent Address")
-        self.assertEqual(sheet["V2"].value, datetime(2026, 5, 30, 10, 0))
-        self.assertEqual(sheet["W2"].value, datetime(2026, 5, 30, 18, 0))
-        self.assertEqual(sheet["AC2"].value, "Chapman Brown OP 20")
-        self.assertEqual(sheet["AE2"].value, 0)
-        self.assertEqual(sheet["AF2"].value, 0)
-        self.assertEqual(sheet["AG2"].value, 20)
-        workbook.close()
-
-    def test_logistics_report_splits_skladbot_and_smartup_ids(self):
-        rows = [
-            {
-                "Дата отгрузки": "2026-07-08",
-                "Тип оплаты": "Терминал",
-                "Клиент": "Smartup Logistics Client",
-                "Адрес": "Smartup Address",
-                "Координаты": "41.30, 69.20",
-                "Торговый представитель": "ТП-1 Умид",
-                "Товары": "Chapman Brown OP 20",
-                "Кол-во блок": "3",
-                "ID заказа": "smartup:259704266",
-                "ID импорта": "smartup:259704266:line-1:1",
-                "Номер заявки SkladBot": "WH-R-204528",
-            },
-        ]
-        imported = self.client.post("/api/v1/imports", json={"source": "smartup_auto", "filename": "smartup.xlsx", "rows": rows})
-        self.assertEqual(imported.status_code, 201)
-
-        report = self.client.get("/api/v1/logistics/report?shipment_date=2026-07-08")
-
-        self.assertEqual(report.status_code, 200)
-        workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
-        sheet = workbook["Orders"]
-        self.assertEqual(sheet["B2"].value, "WH-R-204528")
-        self.assertEqual(sheet["C2"].value, "smartup:259704266")
-        self.assertEqual(sheet["D2"].value, "smartup:259704266")
-        self.assertEqual(sheet["I2"].value, "ТП1 Умид")
+        self.assertEqual(sheet["B2"].value, "logistics-source-order")
+        self.assertEqual(sheet["D2"].value, "Logistics Client")
+        self.assertEqual(sheet["G2"].value, "Rep One")
+        self.assertEqual(sheet["Q2"].value, "41.31")
+        self.assertEqual(sheet["R2"].value, "69.27")
+        self.assertEqual(sheet["S2"].value, "Tashkent Address")
+        self.assertEqual(sheet["T2"].value, datetime(2026, 5, 30, 10, 0))
+        self.assertEqual(sheet["U2"].value, datetime(2026, 5, 30, 18, 0))
+        self.assertEqual(sheet["AA2"].value, "Chapman Brown OP 20")
+        self.assertEqual(sheet["AC2"].value, 0)
+        self.assertEqual(sheet["AD2"].value, 0)
+        self.assertEqual(sheet["AE2"].value, 20)
         workbook.close()
 
     def test_logistics_report_uses_quantity_blocks_for_boxes(self):
@@ -3880,8 +3846,37 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(report.status_code, 200)
         workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
         sheet = workbook["Orders"]
-        self.assertEqual(sheet["AC2"].value, "Chapman Brown OP 20")
-        self.assertEqual(sheet["AG2"].value, 50)
+        self.assertEqual(sheet["AA2"].value, "Chapman Brown OP 20")
+        self.assertEqual(sheet["AE2"].value, 50)
+        workbook.close()
+
+    def test_logistics_report_does_not_expose_smartup_internal_id(self):
+        rows = [
+            {
+                "Дата отгрузки": "2026-07-20",
+                "Тип оплаты": "Терминал",
+                "Клиент": "Smartup Logistics Client",
+                "Адрес": "Tashkent Smartup Address",
+                "Координаты": "41.31, 69.27",
+                "Товары": "Chapman Brown OP 20",
+                "Кол-во ШТ": "10",
+                "Кол-во блок": "1",
+                "ID заказа": "smartup:261896730",
+                "ID импорта": "smartup:261896730:line-1:1",
+            },
+        ]
+        imported = self.client.post(
+            "/api/v1/imports",
+            json={"source": "smartup_auto", "filename": "smartup.xlsx", "rows": rows},
+        )
+        self.assertEqual(imported.status_code, 201)
+
+        report = self.client.get("/api/v1/logistics/report?shipment_date=2026-07-20")
+
+        self.assertEqual(report.status_code, 200)
+        workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
+        sheet = workbook["Orders"]
+        self.assertIsNone(sheet["B2"].value)
         workbook.close()
 
     def test_logistics_report_uses_saved_client_point_timeslot(self):
@@ -3919,9 +3914,9 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(report.status_code, 200)
         workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
         sheet = workbook["Orders"]
-        self.assertEqual(sheet["F2"].value, "Timeslot Legal Entity")
-        self.assertEqual(sheet["V2"].value, datetime(2026, 5, 30, 8, 30))
-        self.assertEqual(sheet["W2"].value, datetime(2026, 5, 30, 11, 45))
+        self.assertEqual(sheet["D2"].value, "Timeslot Legal Entity")
+        self.assertEqual(sheet["T2"].value, datetime(2026, 5, 30, 8, 30))
+        self.assertEqual(sheet["U2"].value, datetime(2026, 5, 30, 11, 45))
         workbook.close()
 
     def test_import_updates_client_point_address_and_keeps_timeslot_by_client(self):
@@ -3986,10 +3981,10 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(report.status_code, 200)
         workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
         sheet = workbook["Orders"]
-        self.assertEqual(sheet["F2"].value, "Timeslot Legal Entity")
-        self.assertEqual(sheet["U2"].value, "New Timeslot Address")
-        self.assertEqual(sheet["V2"].value, datetime(2026, 5, 31, 8, 30))
-        self.assertEqual(sheet["W2"].value, datetime(2026, 5, 31, 11, 45))
+        self.assertEqual(sheet["D2"].value, "Timeslot Legal Entity")
+        self.assertEqual(sheet["S2"].value, "New Timeslot Address")
+        self.assertEqual(sheet["T2"].value, datetime(2026, 5, 31, 8, 30))
+        self.assertEqual(sheet["U2"].value, datetime(2026, 5, 31, 11, 45))
         workbook.close()
 
     def test_logistics_report_keeps_unrouteable_orders_on_separate_sheet(self):
@@ -4064,19 +4059,18 @@ class BackendApiPersistenceTests(unittest.TestCase):
         problems = workbook["Требуют координаты"]
 
         self.assertEqual(sheet.max_row, 2)
-        self.assertEqual(sheet["F2"].value, "Route Client")
-        self.assertEqual(sheet["U2"].value, "Tashkent Address")
-        self.assertEqual(sheet["AC2"].value, "Chapman Brown OP 20")
+        self.assertEqual(sheet["D2"].value, "Route Client")
+        self.assertEqual(sheet["S2"].value, "Tashkent Address")
+        self.assertEqual(sheet["AA2"].value, "Chapman Brown OP 20")
         self.assertEqual(problems.max_row, 3)
         problem_rows = {
             row[0]: row
             for row in problems.iter_rows(min_row=2, values_only=True)
         }
         self.assertEqual(problem_rows["No Coordinates Client"][1], "Tashkent Address Without Coordinates")
-        self.assertEqual(problem_rows["No Coordinates Client"][4], "no-coordinates-order")
-        self.assertEqual(problem_rows["No Coordinates Client"][5], "Нет координат")
+        self.assertEqual(problem_rows["No Coordinates Client"][3], "Нет координат")
         self.assertEqual(problem_rows["Invalid Coordinates Client"][1], "Invalid Coordinates Address")
-        self.assertEqual(problem_rows["Invalid Coordinates Client"][5], "Невалидные координаты")
+        self.assertEqual(problem_rows["Invalid Coordinates Client"][3], "Невалидные координаты")
         workbook.close()
 
     def test_logistics_report_returns_unrouteable_sheet_when_date_has_no_routeable_orders(self):
@@ -4202,8 +4196,8 @@ class BackendApiPersistenceTests(unittest.TestCase):
         workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
         sheet = workbook["Orders"]
 
-        self.assertEqual(sheet["S2"].value, "41.214609")
-        self.assertEqual(sheet["T2"].value, "69.223027")
+        self.assertEqual(sheet["Q2"].value, "41.214609")
+        self.assertEqual(sheet["R2"].value, "69.223027")
         workbook.close()
 
     def test_kiz_reports_show_source_file_progress_and_allow_partial_date_export(self):

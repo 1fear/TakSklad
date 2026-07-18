@@ -3,7 +3,7 @@ param(
     [string]$OutputDir = "outputs\windows_test_build",
     [string]$BuildDir = "build\windows_test",
     [string]$Python = "python",
-    [string]$MinAppVersion = "2.0.45",
+    [string]$MinAppVersion = "2.0.46",
     [string]$ExpectedBuildLabel = "MVP 2.0",
     [switch]$InstallDependencies,
     [switch]$SkipTests,
