@@ -322,6 +322,7 @@ jobs:
             if ($LASTEXITCODE -eq 0) { throw "AUTH_HELPER_INVALID_STDIN_MUST_BE_BLOCKED" }
             & .\TakSkladAuth.exe --auth-canary
             if ($LASTEXITCODE -eq 0) { throw "AUTH_HELPER_EMPTY_DPAPI_MUST_BE_BLOCKED" }
+            $global:LASTEXITCODE = 0
           } finally {
             Pop-Location
           }
@@ -374,6 +375,7 @@ jobs:
             & .\TakSklad\TakSklad.exe --smoke-gui
             "invalid" | & .\TakSklad\TakSkladAuth.exe --install-backend-token-stdin
             if ($LASTEXITCODE -eq 0) { throw "ONEDIR_AUTH_HELPER_INVALID_STDIN_MUST_BE_BLOCKED" }
+            $global:LASTEXITCODE = 0
           } finally {
             Pop-Location
           }

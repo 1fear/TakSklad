@@ -91,9 +91,41 @@ def matrix_cases() -> tuple[MatrixCase, ...]:
                 "TAKSKLAD_ENV": "production",
                 "TAKSKLAD_IDENTITY_AUTH_ENABLED": "true",
                 "TAKSKLAD_WEB_SESSION_SECRET": session_secret,
-                "TAKSKLAD_TRUSTED_PROXY_CIDRS": "172.16.0.0/12",
+                "TAKSKLAD_TRUSTED_PROXY_CIDRS": "172.18.0.0/16",
             },
             0,
+        ),
+        MatrixCase(
+            "production_missing_proxy",
+            BACKEND_CHILD,
+            {
+                "TAKSKLAD_ENV": "production",
+                "TAKSKLAD_IDENTITY_AUTH_ENABLED": "true",
+                "TAKSKLAD_WEB_SESSION_SECRET": session_secret,
+            },
+            1,
+        ),
+        MatrixCase(
+            "production_broad_proxy",
+            BACKEND_CHILD,
+            {
+                "TAKSKLAD_ENV": "production",
+                "TAKSKLAD_IDENTITY_AUTH_ENABLED": "true",
+                "TAKSKLAD_WEB_SESSION_SECRET": session_secret,
+                "TAKSKLAD_TRUSTED_PROXY_CIDRS": "172.16.0.0/12",
+            },
+            1,
+        ),
+        MatrixCase(
+            "production_extra_proxy",
+            BACKEND_CHILD,
+            {
+                "TAKSKLAD_ENV": "production",
+                "TAKSKLAD_IDENTITY_AUTH_ENABLED": "true",
+                "TAKSKLAD_WEB_SESSION_SECRET": session_secret,
+                "TAKSKLAD_TRUSTED_PROXY_CIDRS": "172.18.0.0/16,10.0.0.0/8",
+            },
+            1,
         ),
         MatrixCase("local_missing_opt_in", BACKEND_CHILD, {"TAKSKLAD_ENV": "local"}, 1),
         MatrixCase(

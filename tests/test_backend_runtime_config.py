@@ -185,6 +185,7 @@ class BackendRuntimeConfigTests(unittest.TestCase):
         with self.assertRaises(ConfigurationError) as missing_auth:
             validate_backend_settings(load_backend_settings({"TAKSKLAD_ENV": "production"}))
         self.assertIn("TAKSKLAD_AUTH_MECHANISM", missing_auth.exception.setting_names)
+        self.assertIn("TAKSKLAD_TRUSTED_PROXY_CIDRS", missing_auth.exception.setting_names)
         self.assertIn("TAKSKLAD_WEB_SESSION_SECRET", missing_auth.exception.setting_names)
 
         with self.assertRaises(ConfigurationError) as shared_secret:
@@ -193,6 +194,7 @@ class BackendRuntimeConfigTests(unittest.TestCase):
                 "TAKSKLAD_API_TOKEN": "synthetic-api-token",
                 "TAKSKLAD_WEB_SESSION_SECRET": "synthetic-api-token",
                 "TAKSKLAD_LEGACY_AUTH_EXPIRES_AT": bounded_legacy_expiry(),
+                "TAKSKLAD_TRUSTED_PROXY_CIDRS": "172.18.0.0/16",
             }))
         self.assertEqual(shared_secret.exception.setting_names, ("TAKSKLAD_WEB_SESSION_SECRET",))
 
@@ -204,6 +206,7 @@ class BackendRuntimeConfigTests(unittest.TestCase):
                         "TAKSKLAD_API_TOKEN": "synthetic-api-token",
                         "TAKSKLAD_WEB_SESSION_SECRET": weak_secret,
                         "TAKSKLAD_LEGACY_AUTH_EXPIRES_AT": bounded_legacy_expiry(),
+                        "TAKSKLAD_TRUSTED_PROXY_CIDRS": "172.18.0.0/16",
                     }))
                 self.assertEqual(weak.exception.setting_names, ("TAKSKLAD_WEB_SESSION_SECRET",))
                 self.assertNotIn(weak_secret, str(weak.exception))
@@ -213,8 +216,33 @@ class BackendRuntimeConfigTests(unittest.TestCase):
             "TAKSKLAD_API_TOKEN": "synthetic-api-token",
             "TAKSKLAD_WEB_SESSION_SECRET": "independent-synthetic-session-secret",
             "TAKSKLAD_LEGACY_AUTH_EXPIRES_AT": bounded_legacy_expiry(),
+            "TAKSKLAD_TRUSTED_PROXY_CIDRS": "172.18.0.0/16",
         }))
         self.assertTrue(settings.api_auth_enabled)
+
+    def test_production_requires_exact_trusted_proxy_cidrs(self):
+        base = {
+            "TAKSKLAD_ENV": "production",
+            "TAKSKLAD_IDENTITY_AUTH_ENABLED": "true",
+            "TAKSKLAD_WEB_SESSION_SECRET": "independent-synthetic-session-secret",
+        }
+        for candidate in ("", "172.16.0.0/12", "172.18.0.0/16,10.0.0.0/8"):
+            with self.subTest(candidate=candidate or "empty"):
+                with self.assertRaises(ConfigurationError) as invalid_proxy:
+                    validate_backend_settings(load_backend_settings({
+                        **base,
+                        "TAKSKLAD_TRUSTED_PROXY_CIDRS": candidate,
+                    }))
+                self.assertEqual(
+                    invalid_proxy.exception.setting_names,
+                    ("TAKSKLAD_TRUSTED_PROXY_CIDRS",),
+                )
+
+        settings = validate_backend_settings(load_backend_settings({
+            **base,
+            "TAKSKLAD_TRUSTED_PROXY_CIDRS": "172.18.0.0/16",
+        }))
+        self.assertEqual(settings.trusted_proxy_cidrs, ("172.18.0.0/16",))
 
     def test_anonymous_local_admin_requires_explicit_environment_and_opt_in(self):
         for environment in (None, "local"):
@@ -236,6 +264,7 @@ class BackendRuntimeConfigTests(unittest.TestCase):
             "TAKSKLAD_ENV": "production",
             "TAKSKLAD_IDENTITY_AUTH_ENABLED": "true",
             "TAKSKLAD_WEB_SESSION_SECRET": "independent-synthetic-session-secret",
+            "TAKSKLAD_TRUSTED_PROXY_CIDRS": "172.18.0.0/16",
         }))
         self.assertTrue(identity_settings.identity_auth_enabled)
 
@@ -244,6 +273,7 @@ class BackendRuntimeConfigTests(unittest.TestCase):
                 "TAKSKLAD_ENV": "production",
                 "TAKSKLAD_API_TOKEN": "synthetic-api-token",
                 "TAKSKLAD_WEB_SESSION_SECRET": "independent-synthetic-session-secret",
+                "TAKSKLAD_TRUSTED_PROXY_CIDRS": "172.18.0.0/16",
             }))
         self.assertEqual(
             missing_expiry.exception.setting_names,
@@ -257,6 +287,7 @@ class BackendRuntimeConfigTests(unittest.TestCase):
                 "TAKSKLAD_WEB_SESSION_SECRET": "independent-synthetic-session-secret",
                 "TAKSKLAD_LEGACY_AUTH_MODE": "forever",
                 "TAKSKLAD_SERVICE_TOKEN_ROTATION_MAX_OVERLAP_SECONDS": "3601",
+                "TAKSKLAD_TRUSTED_PROXY_CIDRS": "172.18.0.0/16",
             }))
         self.assertEqual(
             invalid_policy.exception.setting_names,
@@ -271,6 +302,7 @@ class BackendRuntimeConfigTests(unittest.TestCase):
                         "TAKSKLAD_API_TOKEN": "synthetic-api-token",
                         "TAKSKLAD_WEB_SESSION_SECRET": "independent-synthetic-session-secret",
                         "TAKSKLAD_LEGACY_AUTH_MODE": legacy_mode,
+                        "TAKSKLAD_TRUSTED_PROXY_CIDRS": "172.18.0.0/16",
                     }))
                 self.assertIn("TAKSKLAD_AUTH_MECHANISM", no_identity.exception.setting_names)
                 self.assertIn("TAKSKLAD_IDENTITY_AUTH_ENABLED", no_identity.exception.setting_names)

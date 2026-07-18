@@ -15,7 +15,8 @@ class LoginRateLimited(RuntimeError):
 
 
 class LoginLimiterCapacityExceeded(RuntimeError):
-    def __init__(self):
+    def __init__(self, retry_after: float):
+        self.retry_after = max(0.0, float(retry_after))
         super().__init__("login limiter capacity exceeded")
 
 
@@ -80,7 +81,10 @@ class BoundedTTLLoginLimiter:
                 raise LoginRateLimited(record.locked_until - now)
             if record is None:
                 if len(self._records) >= self._max_entries:
-                    raise LoginLimiterCapacityExceeded()
+                    retry_after = min(
+                        existing.expires_at for existing in self._records.values()
+                    ) - now
+                    raise LoginLimiterCapacityExceeded(retry_after)
                 record = _AttemptRecord(now, 0, 0.0, now + self._entry_ttl_seconds)
                 self._records[key] = record
             elif now - record.window_start >= float(window_seconds):
@@ -96,6 +100,11 @@ class BoundedTTLLoginLimiter:
                 record.window_start + float(window_seconds),
                 record.locked_until,
             )
+            if record.locked_until > now:
+                # Tell the request that crossed the threshold to stop immediately.
+                # Previously it received a misleading 401 and only the next request
+                # learned that the key had been locked.
+                raise LoginRateLimited(record.locked_until - now)
 
     def clear(self, key: str) -> None:
         with self._lock:

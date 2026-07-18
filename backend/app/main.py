@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import ipaddress
 import logging
+import math
 from dataclasses import dataclass
 from urllib.parse import quote
 from threading import Lock, Thread
@@ -172,6 +173,7 @@ from .web_auth import (
     WebAuthError,
     authenticate_web_user,
     create_session_token,
+    normalize_login,
     normalize_role,
     role_permissions,
     verify_session_token,
@@ -534,6 +536,17 @@ def web_login(payload: AuthLoginRequest, request: Request, response: Response, d
     ensure_login_not_locked(login_key)
     try:
         identity = authenticate_web_user(settings, payload.login, payload.password, db=db)
+    except WebAuthError as exc:
+        db.rollback()
+        if "configured" in str(exc):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Web auth is not configured",
+            ) from exc
+        register_login_failure(login_key)
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials") from exc
+
+    try:
         if identity.user_id is not None and settings.identity_auth_enabled:
             user = db.get(User, identity.user_id)
             issued = create_user_session(
@@ -559,10 +572,12 @@ def web_login(payload: AuthLoginRequest, request: Request, response: Response, d
             session_payload = verify_session_token(settings, token)
     except (WebAuthError, IdentityAuthError) as exc:
         db.rollback()
-        register_login_failure(login_key)
-        if "configured" in str(exc):
-            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Web auth is not configured") from exc
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials") from exc
+        # Credentials were already verified. Session persistence/issuance errors
+        # are operational failures and must not poison the brute-force counter.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Login session is temporarily unavailable",
+        ) from exc
 
     clear_login_failures(login_key)
     response.set_cookie(
@@ -579,11 +594,9 @@ def web_login(payload: AuthLoginRequest, request: Request, response: Response, d
 
 def login_attempt_key(request: Request, login):
     ip = client_identity(request, settings.trusted_proxy_cidrs)
-    login_digest = hashlib.sha256()
-    for character in str(login or ""):
-        if character.isdigit() or character == "+":
-            login_digest.update(character.encode("utf-8"))
-    return f"{ip}:{login_digest.hexdigest()}"
+    canonical_login = normalize_login(login)
+    login_digest = hashlib.sha256(canonical_login.encode("utf-8")).hexdigest()
+    return f"{ip}:{login_digest}"
 
 
 def client_identity(request, trusted_proxy_cidrs=()):
@@ -624,10 +637,7 @@ def ensure_login_not_locked(key):
     try:
         login_limiter.ensure_not_locked(key)
     except (LoginRateLimited, LoginLimiterCapacityExceeded) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Too many login attempts",
-        ) from exc
+        raise login_rate_limited_http_exception(exc) from exc
 
 
 def register_login_failure(key):
@@ -639,10 +649,16 @@ def register_login_failure(key):
             lock_seconds=settings.web_login_lock_seconds,
         )
     except (LoginRateLimited, LoginLimiterCapacityExceeded) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Too many login attempts",
-        ) from exc
+        raise login_rate_limited_http_exception(exc) from exc
+
+
+def login_rate_limited_http_exception(exc):
+    retry_after = max(1, math.ceil(exc.retry_after))
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail="Too many login attempts",
+        headers={"Retry-After": str(retry_after)},
+    )
 
 
 def clear_login_failures(key):

@@ -77,7 +77,7 @@ class PrincipalProvisioningGuardTests(unittest.TestCase):
         image = "ghcr.io/1fear/taksklad-backend@sha256:" + "a" * 64
         operation_id = "6bb40555-4bb4-4daa-8a44-30d216860a7f"
         source_sha = "b" * 40
-        release_tag = "v2.0.43"
+        release_tag = "v2.0.44"
         command = "provision"
         kind = "acceptance"
         identifier = "acceptance.release"
