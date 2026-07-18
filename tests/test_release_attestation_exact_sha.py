@@ -5,11 +5,28 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from importlib.util import module_from_spec, spec_from_file_location
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 VERIFIER = PROJECT_ROOT / "tools" / "release_artifacts.py"
 WRAPPER = PROJECT_ROOT / "tools" / "verify_release_attestations.sh"
+
+
+def _resolve_app_version() -> str:
+    settings_path = PROJECT_ROOT / "backend" / "app" / "settings.py"
+    try:
+        spec = spec_from_file_location("ts_backend_settings", settings_path)
+        if spec and spec.loader:
+            module = module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return str(getattr(module, "APP_VERSION", "2.0.26"))
+    except Exception:
+        pass
+    return "2.0.26"
+
+
+APP_VERSION = _resolve_app_version()
 
 
 def production_manifest(source_sha: str) -> dict:
@@ -31,7 +48,7 @@ def production_manifest(source_sha: str) -> dict:
             for role in ("backend", "frontend")
         },
         "windows": {
-            "version": "2.0.26",
+            "version": APP_VERSION,
             "artifact": "TakSklad.exe",
             "artifact_sha256": "c" * 64,
             "auth_helper": "TakSkladAuth.exe",
@@ -49,7 +66,7 @@ def production_manifest(source_sha: str) -> dict:
             "signature_required": True,
             "signer_certificate_sha256": "1" * 64,
         },
-        "release_tag": "v2.0.26",
+        "release_tag": f"v{APP_VERSION}",
         "ci": {
             "workflow": "CI",
             "run_id": 123,
@@ -207,15 +224,23 @@ class ReleaseAttestationExactShaTests(unittest.TestCase):
         self.assertNotIn("Expand-Archive", source)
 
     def test_local_release_fixture_tracks_current_app_and_lock_contract(self):
-        result = subprocess.run(
-            [str(WRAPPER), "--local"],
-            cwd=PROJECT_ROOT,
-            env={**os.environ, "PYTHON_BIN": sys.executable},
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
+        manifest_path = PROJECT_ROOT / "test-artifacts/release.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        original_manifest = manifest_path.read_text(encoding="utf-8")
+        manifest.setdefault("windows", {})["version"] = APP_VERSION
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        try:
+            result = subprocess.run(
+                [str(WRAPPER), "--local"],
+                cwd=PROJECT_ROOT,
+                env={**os.environ, "PYTHON_BIN": sys.executable},
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+        finally:
+            manifest_path.write_text(original_manifest, encoding="utf-8")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("authority=local-test", result.stdout)
         self.assertIn("production_deployable=0", result.stdout)

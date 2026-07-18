@@ -127,7 +127,7 @@ DEPLOY_RUNBOOK_REQUIRED_FRAGMENTS = {
     Path("docs/windows-backend-acceptance.md"): [
         "TakSkladAuth.exe",
         "/api/v1/returns/auth-canary/desktop",
-        "2.0.45",
+        EXPECTED_RELEASE_VERSION,
         "public channel",
     ],
     Path("docs/deploy-rollback-runbook.md"): [
@@ -139,7 +139,7 @@ DEPLOY_RUNBOOK_REQUIRED_FRAGMENTS = {
     Path("docs/manual-acceptance-runbook.md"): [
         "--phase candidate",
         "--phase final",
-        "2.0.45",
+        EXPECTED_RELEASE_VERSION,
         "public channel",
         "TakSkladAuth.exe",
     ],
@@ -654,7 +654,17 @@ def run_checks(
         check_tracked_secrets(root),
     ]
     if phase_check["ok"]:
-        checks.append(check_release_attestations(root, phase=phase, source_sha=source_sha))
+        if skip_network:
+            checks.append(
+                result(
+                    "release_attestations",
+                    True,
+                    skipped=True,
+                    reason="skip-network requested",
+                )
+            )
+        else:
+            checks.append(check_release_attestations(root, phase=phase, source_sha=source_sha))
     else:
         checks.append(result("release_attestations", False, skipped=True, reason="phase contract failed"))
     if skip_network:

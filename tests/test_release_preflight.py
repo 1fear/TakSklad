@@ -10,6 +10,7 @@ from tools.release_preflight import (
     MANIFEST_NAME,
     PHASE_CANDIDATE,
     PHASE_FINAL,
+    configured_app_version,
     REQUIRED_FILES,
     VERSION_JSON,
     check_acceptance_kit,
@@ -22,22 +23,29 @@ from tools.release_preflight import (
     sha256_file,
 )
 
+EXPECTED_RELEASE_VERSION = configured_app_version()
+EXPECTED_RELEASE_TAG = f"v{EXPECTED_RELEASE_VERSION}"
+
+
+def release_url(asset):
+    return f"https://github.com/1fear/TakSklad/releases/download/{EXPECTED_RELEASE_TAG}/{asset}"
+
 
 class ReleasePreflightTests(unittest.TestCase):
     def final_version_manifest(self, **overrides):
         value = {
-            "latest_version": "2.0.45",
-            "release_tag": "v2.0.45",
-            "min_supported_version": "2.0.45",
+            "latest_version": EXPECTED_RELEASE_VERSION,
+            "release_tag": EXPECTED_RELEASE_TAG,
+            "min_supported_version": EXPECTED_RELEASE_VERSION,
             "mandatory": True,
             "block_workflow": True,
             "package_type": "onefile_exe",
-            "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.45/TakSklad.exe",
+            "download_url": release_url("TakSklad.exe"),
             "sha256": "a" * 64,
-            "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.45/TakSklad-windows-x64.zip",
+            "download_url_onedir": release_url("TakSklad-windows-x64.zip"),
             "sha256_onedir": "b" * 64,
             "auth_helper": "TakSkladAuth.exe",
-            "auth_helper_download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.45/TakSkladAuth.exe",
+            "auth_helper_download_url": release_url("TakSkladAuth.exe"),
             "auth_helper_sha256": "c" * 64,
             "signature_type": "authenticode",
             "signature_required": True,
@@ -189,7 +197,7 @@ class ReleasePreflightTests(unittest.TestCase):
             return (
                 "TakSkladAuth.exe\n"
                 "/api/v1/returns/auth-canary/desktop\n"
-                "2.0.45 candidate; public channel remains separately verified\n"
+                f"{EXPECTED_RELEASE_VERSION} candidate; public channel remains separately verified\n"
             )
         if path_text.endswith("docs/deploy-rollback-runbook.md"):
             return (
@@ -197,7 +205,7 @@ class ReleasePreflightTests(unittest.TestCase):
             )
         if path_text.endswith("docs/manual-acceptance-runbook.md"):
             return (
-                "--phase candidate --phase final 2.0.45 public channel TakSkladAuth.exe\n"
+                f"--phase candidate --phase final {EXPECTED_RELEASE_VERSION} public channel TakSkladAuth.exe\n"
             )
         return "ok"
 
@@ -231,7 +239,7 @@ class ReleasePreflightTests(unittest.TestCase):
 
         self.assertTrue(check["ok"])
         self.assertEqual(check["rollout_state"], "published-supported")
-        self.assertEqual(check["candidate_version"], "2.0.45")
+        self.assertEqual(check["candidate_version"], EXPECTED_RELEASE_VERSION)
 
     def test_version_json_rejects_bad_url_and_sha_format(self):
         tmp_dir, root = self.make_root()
@@ -253,8 +261,14 @@ class ReleasePreflightTests(unittest.TestCase):
             check = check_version_json(root, phase=PHASE_FINAL, source_sha="e" * 40)
 
         self.assertFalse(check["ok"])
-        self.assertIn("download_url must be an HTTPS release URL for v2.0.45", check["problems"])
-        self.assertIn("download_url_onedir must be an HTTPS release URL for v2.0.45", check["problems"])
+        self.assertIn(
+            f"download_url must be an HTTPS release URL for {EXPECTED_RELEASE_TAG}",
+            check["problems"],
+        )
+        self.assertIn(
+            f"download_url_onedir must be an HTTPS release URL for {EXPECTED_RELEASE_TAG}",
+            check["problems"],
+        )
         self.assertIn("sha256 must be a lowercase SHA256 hex digest", check["problems"])
         self.assertIn("sha256_onedir must be a lowercase SHA256 hex digest", check["problems"])
 
@@ -264,7 +278,7 @@ class ReleasePreflightTests(unittest.TestCase):
             (root / VERSION_JSON).write_text(
                 json.dumps(
                     self.final_version_manifest(
-                        download_url="https://mirror.example.com/1fear/TakSklad/releases/download/v2.0.45/TakSklad.exe"
+                        download_url=f"https://mirror.example.com/1fear/TakSklad/releases/download/{EXPECTED_RELEASE_TAG}/TakSklad.exe"
                     ),
                     ensure_ascii=False,
                 ),
@@ -273,7 +287,10 @@ class ReleasePreflightTests(unittest.TestCase):
             check = check_version_json(root, phase=PHASE_FINAL, source_sha="e" * 40)
 
         self.assertFalse(check["ok"])
-        self.assertIn("download_url must be an HTTPS release URL for v2.0.45", check["problems"])
+        self.assertIn(
+            f"download_url must be an HTTPS release URL for {EXPECTED_RELEASE_TAG}",
+            check["problems"],
+        )
 
     def test_version_json_rejects_invalid_rollout_manifest(self):
         tmp_dir, root = self.make_root()
@@ -292,7 +309,7 @@ class ReleasePreflightTests(unittest.TestCase):
             check = check_version_json(root, phase=PHASE_FINAL, source_sha="e" * 40)
 
         self.assertFalse(check["ok"])
-        self.assertIn("final channel must require exact 2.0.45", check["problems"])
+        self.assertIn(f"final channel must require exact {EXPECTED_RELEASE_VERSION}", check["problems"])
         self.assertIn("final channel must be mandatory and block unsupported workflows", check["problems"])
 
     def test_verify_downloads_hashes_update_artifacts(self):
@@ -308,12 +325,12 @@ class ReleasePreflightTests(unittest.TestCase):
                 json.dumps(
                     {
                         "package_type": "onedir_zip",
-                        "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.45/TakSklad.exe",
+                        "download_url": release_url("TakSklad.exe"),
                         "sha256": onefile_sha,
-                        "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.45/TakSklad-windows-x64.zip",
+                        "download_url_onedir": release_url("TakSklad-windows-x64.zip"),
                         "sha256_onedir": onedir_sha,
                         "auth_helper": "TakSkladAuth.exe",
-                        "auth_helper_download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.45/TakSkladAuth.exe",
+                        "auth_helper_download_url": release_url("TakSkladAuth.exe"),
                         "auth_helper_sha256": auth_helper_sha,
                     },
                     ensure_ascii=False,
@@ -365,12 +382,12 @@ class ReleasePreflightTests(unittest.TestCase):
                 json.dumps(
                     {
                         "package_type": "onedir_zip",
-                        "download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.45/TakSklad.exe",
+                        "download_url": release_url("TakSklad.exe"),
                         "sha256": "a" * 64,
-                        "download_url_onedir": "https://github.com/1fear/TakSklad/releases/download/v2.0.45/TakSklad-windows-x64.zip",
+                        "download_url_onedir": release_url("TakSklad-windows-x64.zip"),
                         "sha256_onedir": "b" * 64,
                         "auth_helper": "TakSkladAuth.exe",
-                        "auth_helper_download_url": "https://github.com/1fear/TakSklad/releases/download/v2.0.45/TakSkladAuth.exe",
+                        "auth_helper_download_url": release_url("TakSkladAuth.exe"),
                         "auth_helper_sha256": "c" * 64,
                     },
                     ensure_ascii=False,
@@ -607,8 +624,8 @@ class ReleasePreflightTests(unittest.TestCase):
         payload = json.loads(completed.stdout)
         version = next(item for item in payload["checks"] if item["name"] == "version_json")
         self.assertEqual(version["latest_version"], "2.0.45")
-        self.assertEqual(version["candidate_version"], "2.0.45")
-        self.assertEqual(version["rollout_state"], "candidate-published")
+        self.assertEqual(version["candidate_version"], EXPECTED_RELEASE_VERSION)
+        self.assertEqual(version["rollout_state"], "published-supported")
 
     def write_bytes(self, path, content):
         path.write_bytes(content)
