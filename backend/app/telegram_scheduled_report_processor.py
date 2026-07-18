@@ -13,23 +13,21 @@ from .redaction import redact_secrets
 from .reconciliation_service import run_daily_reconciliation
 from .telegram_clients import TelegramProcessorDelegate
 from .telegram_common import iso_date_from_display, normalize_text, parse_dates_from_text, parse_int
+from .telegram_daily_report_policy import (
+    SKLADBOT_DAILY_REPORT_COVERAGE_FAILED_ERROR,
+    SKLADBOT_DAILY_REPORT_NO_REQUESTS_RESULT,
+    SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE,
+    SKLADBOT_DAILY_SAFE_RETRY_STAGES,
+    completed_daily_report_delivery_exists,
+    ensure_aware_utc,
+    failed_daily_report_is_legacy_empty_false_positive,
+    failed_daily_report_retry_is_safe,
+)
 from .telegram_output_contract import daily_report_caption
-SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE = "skladbot_daily_report_send"
 SKLADBOT_DAILY_REPORTED_REQUEST_EVENT_TYPE = "skladbot_daily_reported_request"
 TELEGRAM_NOTIFICATION_EVENT_TYPE = "telegram_notification"
 SKLADBOT_DAILY_REPORT_STALE_TTL_MINUTES_ENV = "SKLADBOT_DAILY_REPORT_STALE_TTL_MINUTES"
 SKLADBOT_DAILY_REPORT_STALE_FAILED_ERROR = "STUCK_PROCESSING_AFTER_TTL"
-SKLADBOT_DAILY_REPORT_COVERAGE_FAILED_ERROR = "SKLADBOT_DAILY_REPORT_COVERAGE_NOT_COMPLETE"
-SKLADBOT_DAILY_SUCCESS_RESULT_STATUSES = {
-    "CATCHUP_SENT_COMPLETE_ONCE",
-    "completed_sent",
-}
-SKLADBOT_DAILY_SAFE_RETRY_STAGES = {
-    "scheduled job started",
-    "report generation finished",
-    "scheduled job failed",
-    "xlsx created",
-}
 SCHEDULED_DAILY_PAYLOAD_SECRET_KEY_PARTS = (
     "chat", "token", "secret", "password", "authorization", "credential",
     "api_key", "apikey", "jwt", "raw", "payload",
@@ -49,52 +47,6 @@ def coerce_report_date(value):
     if iso_date:
         return datetime.strptime(iso_date, "%Y-%m-%d").date()
     return command_date_or_today(str(value))
-
-
-def ensure_aware_utc(value):
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
-
-
-def daily_report_event_success(event):
-    if event is None or normalize_text(event.status) != "completed":
-        return False
-    payload = event.payload if isinstance(event.payload, dict) else {}
-    success = payload.get("success")
-    if success is True or normalize_text(success).casefold() == "true":
-        return True
-    return normalize_text(payload.get("result_status")) in SKLADBOT_DAILY_SUCCESS_RESULT_STATUSES
-
-
-def completed_daily_report_delivery_exists(db, chat_id, report_date):
-    prefix = f"skladbot_daily_report:{report_date.isoformat()}:{chat_id}:"
-    candidates = db.execute(
-        select(PendingEvent)
-        .where(PendingEvent.event_type == SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE)
-        .where(PendingEvent.status == "completed")
-        .where(PendingEvent.idempotency_key.like(prefix + "%"))
-        .order_by(PendingEvent.updated_at.desc(), PendingEvent.created_at.desc())
-        .limit(20)
-    ).scalars().all()
-    return any(daily_report_event_success(event) for event in candidates)
-
-
-def failed_daily_report_retry_is_safe(event, now_utc, retry_minutes, max_attempts):
-    payload = event.payload if isinstance(event.payload, dict) else {}
-    stage = normalize_text(payload.get("stage"))
-    if stage not in SKLADBOT_DAILY_SAFE_RETRY_STAGES:
-        return False
-    if int(event.attempts or 0) >= max(1, int(max_attempts)):
-        return False
-    updated_at = ensure_aware_utc(event.updated_at or event.created_at)
-    return bool(
-        updated_at
-        and now_utc
-        and now_utc - updated_at >= timedelta(minutes=max(1, int(retry_minutes)))
-    )
 
 
 def skladbot_reported_request_key(
@@ -347,6 +299,18 @@ class TelegramScheduledReportProcessor(TelegramProcessorDelegate):
             requests_count=len(report.get("requests") or []),
             errors_count=len(report.get("errors") or []),
         )
+        if (
+            scheduled
+            and normalize_text(coverage.get("coverage_status")).lower() == "complete"
+            and not (report.get("errors") or [])
+            and not (report.get("requests") or [])
+        ):
+            emit_progress(
+                "scheduled job no requests",
+                report_date=report_date.isoformat(),
+                result_status=SKLADBOT_DAILY_REPORT_NO_REQUESTS_RESULT,
+            )
+            return SKLADBOT_DAILY_REPORT_NO_REQUESTS_RESULT
         blocker = scheduled_skladbot_daily_report_blocker(report)
         if blocker:
             if scheduled:
@@ -471,7 +435,9 @@ class TelegramScheduledReportProcessor(TelegramProcessorDelegate):
                 # must not refresh updated_at or overwrite the last delivery stage,
                 # otherwise the stale detector can never expire the original lease.
                 return ""
+            legacy_empty_retry = False
             if event is not None and event.status == "failed":
+                legacy_empty_retry = failed_daily_report_is_legacy_empty_false_positive(event)
                 retry_minutes = max(
                     1,
                     int(getattr(self, "skladbot_daily_report_retry_minutes", 15)),
@@ -480,7 +446,7 @@ class TelegramScheduledReportProcessor(TelegramProcessorDelegate):
                     1,
                     int(getattr(self, "skladbot_daily_report_max_attempts", 3)),
                 )
-                if not failed_daily_report_retry_is_safe(
+                if not legacy_empty_retry and not failed_daily_report_retry_is_safe(
                     event,
                     now_utc,
                     retry_minutes,
@@ -524,9 +490,38 @@ class TelegramScheduledReportProcessor(TelegramProcessorDelegate):
                 )
                 db.add(event)
             else:
+                existing_payload = {**(event.payload or {})}
+                if legacy_empty_retry:
+                    for key in (
+                        "error",
+                        "finished_at",
+                        "manual_recovery_required",
+                        "manual_recovery_reason",
+                        "manual_recovery_marked_at",
+                        "result_status",
+                        "same_day_existing_event_status",
+                        "stale_failed_at",
+                        "stale_origin_stage",
+                        "success",
+                    ):
+                        existing_payload.pop(key, None)
+                    existing_payload.update({
+                        "legacy_empty_retry_claimed_at": now_utc.isoformat() if now_utc else "",
+                        "legacy_empty_retry_reason": "legacy_false_positive_empty_coverage_guard",
+                    })
+                    db.add(AuditLog(
+                        action="skladbot_daily_report_legacy_empty_retry_claimed",
+                        entity_type="pending_event",
+                        entity_id=str(event.id),
+                        payload={
+                            "report_date": report_date.isoformat(),
+                            "reason": "legacy_false_positive_empty_coverage_guard",
+                            "previous_attempts": int(event.attempts or 0),
+                        },
+                    ))
                 event.status = "processing"
                 event.attempts = (event.attempts or 0) + 1
-                event.payload = {**(event.payload or {}), **payload}
+                event.payload = {**existing_payload, **payload}
                 event.last_error = None
             db.commit()
             return str(event.id)
@@ -614,7 +609,7 @@ class TelegramScheduledReportProcessor(TelegramProcessorDelegate):
             event.payload = payload
             db.commit()
 
-    def finish_scheduled_skladbot_daily_report(self, event_id, success, error=""):
+    def finish_scheduled_skladbot_daily_report(self, event_id, success, error="", result_status=""):
         if not event_id:
             return
         with self._scheduled_session_factory()() as db:
@@ -627,7 +622,7 @@ class TelegramScheduledReportProcessor(TelegramProcessorDelegate):
             payload["finished_at"] = datetime.now(timezone.utc).isoformat()
             payload["success"] = bool(success)
             if success:
-                payload["result_status"] = "completed_sent"
+                payload["result_status"] = normalize_text(result_status) or "completed_sent"
             elif SKLADBOT_DAILY_REPORT_COVERAGE_FAILED_ERROR in normalize_text(error):
                 payload["result_status"] = "blocked_partial"
             else:
@@ -679,7 +674,7 @@ class TelegramScheduledReportProcessor(TelegramProcessorDelegate):
                 continue
             progress = lambda stage, **fields: self.update_scheduled_skladbot_daily_report_progress(event_id, stage, **fields)
             try:
-                success = self.send_skladbot_daily_report(
+                result = self.send_skladbot_daily_report(
                     chat_id,
                     report_date=report_date,
                     scheduled=True,
@@ -690,6 +685,14 @@ class TelegramScheduledReportProcessor(TelegramProcessorDelegate):
                 logging.exception("Telegram worker: scheduled SkladBot daily report failed")
                 self.finish_scheduled_skladbot_daily_report(event_id, False, error)
                 continue
+            if result == SKLADBOT_DAILY_REPORT_NO_REQUESTS_RESULT:
+                self.finish_scheduled_skladbot_daily_report(
+                    event_id,
+                    True,
+                    result_status=SKLADBOT_DAILY_REPORT_NO_REQUESTS_RESULT,
+                )
+                continue
+            success = bool(result)
             self.finish_scheduled_skladbot_daily_report(event_id, success, "" if success else "telegram_send_failed")
             if success:
                 self.run_scheduled_daily_reconciliation(chat_id, report_date)

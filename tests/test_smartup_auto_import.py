@@ -1765,6 +1765,90 @@ class SmartupAutoImportTests(unittest.TestCase):
             self.assertEqual(events, [])
             self.assertEqual(fake.changed, [])
 
+    def test_due_logistics_skips_non_working_cycle_without_dependency_alert(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sender = FakeTelegramSender()
+            config = self.config(
+                tmp_dir,
+                backend_import_enabled=True,
+                change_status_enabled=True,
+                logistics_chat_id="-1002002",
+                disabled_weekdays=(5, 6),
+                logistics_catchup_days=3,
+            )
+            with mock.patch(
+                "backend.app.smartup_auto_import.smartup_logistics_dependency_proof",
+                return_value={
+                    "status": "ready",
+                    "reason": "all_terminal",
+                    "completed_cycles": 3,
+                    "orders_proven": 1,
+                },
+            ) as dependency_proof, mock.patch(
+                "backend.app.smartup_auto_import.delivery_dates_for_auto_logistics",
+                return_value=["2026-07-20"],
+            ):
+                with self.SessionLocal() as db:
+                    first = run_due_smartup_auto_imports(
+                        db,
+                        config,
+                        now=datetime(2026, 7, 18, 17, 50, tzinfo=ZoneInfo("Asia/Tashkent")),
+                        smartup_client=FakeSmartupClient([]),
+                        telegram_sender=sender,
+                    )
+                    second = run_due_smartup_auto_imports(
+                        db,
+                        config,
+                        now=datetime(2026, 7, 18, 17, 51, tzinfo=ZoneInfo("Asia/Tashkent")),
+                        smartup_client=FakeSmartupClient([]),
+                        telegram_sender=sender,
+                    )
+                    events = db.execute(select(PendingEvent)).scalars().all()
+
+        self.assertEqual(first, [{
+            "status": "idle",
+            "reason": "weekday_disabled",
+            "weekday": 5,
+            "now": "2026-07-18T17:50:00+05:00",
+        }])
+        self.assertEqual(second[0]["reason"], "weekday_disabled")
+        dependency_proof.assert_not_called()
+        self.assertEqual(events, [])
+        self.assertEqual(sender.messages, [])
+        self.assertEqual(sender.documents, [])
+
+    def test_web_calendar_working_override_enables_saturday_cycle(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            fake = FakeSmartupClient([])
+            config = self.config(
+                tmp_dir,
+                backend_import_enabled=False,
+                change_status_enabled=False,
+                disabled_weekdays=(5, 6),
+            )
+            with self.SessionLocal() as db:
+                db.add(LogisticsCalendarDay(
+                    service_date=date(2026, 7, 18),
+                    is_non_working=False,
+                    reason="Рабочая суббота",
+                    source="web",
+                    raw_payload={},
+                ))
+                db.commit()
+
+                result = run_due_smartup_auto_imports(
+                    db,
+                    config,
+                    now=datetime(2026, 7, 18, 12, 0, tzinfo=ZoneInfo("Asia/Tashkent")),
+                    smartup_client=fake,
+                )
+
+        self.assertEqual([item["status"] for item in result], ["no_orders", "no_orders"])
+        self.assertEqual(fake.exports, [
+            (date(2026, 7, 18), date(2026, 7, 19)),
+            (date(2026, 7, 18), date(2026, 7, 20)),
+        ])
+
     def test_final_logistics_report_skips_non_working_delivery_date(self):
         sender = FakeTelegramSender()
         config = self.config("/tmp", logistics_chat_id="-1002002", disabled_weekdays=(5, 6))

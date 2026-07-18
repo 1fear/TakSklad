@@ -176,7 +176,14 @@ class ReleasePreflightTests(unittest.TestCase):
                 'report["status"] = "unhealthy"\n'
             )
         if path_text.endswith("deploy/vds/docker-compose.yml"):
-            return "payload.get('ready') is True json.load(response)\n"
+            return (
+                "http://127.0.0.1:8000/health\n"
+                "payload.get('status') == 'ok'\n"
+                "payload.get('service') == expected_service\n"
+                "payload.get('commit_sha') == expected_sha\n"
+                "payload.get('image_digest') == expected_digest\n"
+                "json.load(response)\n"
+            )
         if path_text.endswith("deploy/vds/deploy_from_git.sh"):
             return (
                 "tools/release_artifacts.py verify\n"
@@ -640,9 +647,9 @@ class ReleasePreflightTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         payload = json.loads(completed.stdout)
         version = next(item for item in payload["checks"] if item["name"] == "version_json")
-        self.assertEqual(version["latest_version"], EXPECTED_RELEASE_VERSION)
+        self.assertEqual(version["latest_version"], previous_patch_version(EXPECTED_RELEASE_VERSION))
         self.assertEqual(version["candidate_version"], EXPECTED_RELEASE_VERSION)
-        self.assertEqual(version["rollout_state"], "candidate-published")
+        self.assertEqual(version["rollout_state"], "published-supported")
 
     def write_bytes(self, path, content):
         path.write_bytes(content)

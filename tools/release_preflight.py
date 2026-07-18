@@ -161,7 +161,11 @@ DEPLOYMENT_READINESS_CONTRACT_FRAGMENTS = {
         'report["status"] = "unhealthy"',
     ],
     Path("deploy/vds/docker-compose.yml"): [
-        "payload.get('ready') is True",
+        "http://127.0.0.1:8000/health",
+        "payload.get('status') == 'ok'",
+        "payload.get('service') == expected_service",
+        "payload.get('commit_sha') == expected_sha",
+        "payload.get('image_digest') == expected_digest",
         "json.load(response)",
     ],
     Path("deploy/vds/deploy_from_git.sh"): [

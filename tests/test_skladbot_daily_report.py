@@ -3894,7 +3894,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
             telegram_worker_module.skladbot_daily_report.build_skladbot_daily_report_xlsx = original_build_xlsx
             telegram_scheduled_report_processor_module.run_daily_reconciliation = original_reconciliation
 
-    def test_scheduled_blocks_partial_report_no_telegram_send(self):
+    def test_scheduled_complete_empty_day_finishes_without_telegram_send(self):
         engine = create_engine(
             "sqlite+pysqlite:///:memory:",
             connect_args={"check_same_thread": False},
@@ -3909,9 +3909,11 @@ class SkladBotDailyReportTests(unittest.TestCase):
         try:
             telegram_scheduled_report_processor_module.SessionLocal = SessionLocal
             calls = []
+            collections = []
             reconciliations = []
 
             def fake_collect(report_date=None):
+                collections.append(report_date)
                 return {
                     "report_date": report_date,
                     "requests": [],
@@ -3949,22 +3951,144 @@ class SkladBotDailyReportTests(unittest.TestCase):
 
             now = datetime(2026, 6, 20, 22, 5, tzinfo=ZoneInfo("Asia/Tashkent"))
             self.assertEqual(worker.send_due_skladbot_daily_reports(now=now), 0)
+            self.assertEqual(
+                worker.send_due_skladbot_daily_reports(now=now + timedelta(minutes=20)),
+                0,
+            )
 
             with SessionLocal() as db:
                 events = db.execute(select(PendingEvent).order_by(PendingEvent.created_at)).scalars().all()
 
             self.assertEqual(calls, [])
+            self.assertEqual(collections, [date(2026, 6, 20)])
             self.assertEqual(reconciliations, [])
             self.assertEqual(len(events), 1)
             self.assertEqual(events[0].event_type, SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE)
-            self.assertEqual(events[0].status, "failed")
-            self.assertIn("included=0 excluded=1", events[0].last_error)
+            self.assertEqual(events[0].status, "completed")
+            self.assertEqual(events[0].attempts, 1)
+            self.assertEqual(events[0].last_error, "")
             self.assertTrue((events[0].payload or {}).get("finished_at"))
+            self.assertEqual((events[0].payload or {}).get("success"), True)
+            self.assertEqual(
+                (events[0].payload or {}).get("result_status"),
+                "completed_no_requests",
+            )
         finally:
             telegram_scheduled_report_processor_module.SessionLocal = original_session_local
             telegram_worker_module.skladbot_daily_report.collect_skladbot_daily_report = original_collect
             telegram_worker_module.skladbot_daily_report.build_skladbot_daily_report_xlsx = original_build_xlsx
             telegram_scheduled_report_processor_module.run_daily_reconciliation = original_reconciliation
+
+    def test_exhausted_legacy_empty_failure_gets_one_terminal_no_send_retry(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        original_session_local = telegram_scheduled_report_processor_module.SessionLocal
+        original_collect = telegram_worker_module.skladbot_daily_report.collect_skladbot_daily_report
+        original_build_xlsx = telegram_worker_module.skladbot_daily_report.build_skladbot_daily_report_xlsx
+        try:
+            telegram_scheduled_report_processor_module.SessionLocal = SessionLocal
+            collections = []
+
+            def fake_collect(report_date=None):
+                collections.append(report_date)
+                return {
+                    "report_date": report_date,
+                    "requests": [],
+                    "excluded_requests": [
+                        {"request_id": 999, "exclusion_reason": "out_of_scope"},
+                    ],
+                    "errors": [],
+                    "coverage": {
+                        "coverage_status": "complete",
+                        "included_operational_requests": 0,
+                        "excluded_diagnostic_requests": 4160,
+                    },
+                }
+
+            telegram_worker_module.skladbot_daily_report.collect_skladbot_daily_report = fake_collect
+            telegram_worker_module.skladbot_daily_report.build_skladbot_daily_report_xlsx = (
+                lambda _report: (_ for _ in ()).throw(AssertionError("xlsx must not be built"))
+            )
+            worker = TelegramWorker.__new__(TelegramWorker)
+            worker.skladbot_daily_report_enabled = True
+            worker.skladbot_daily_report_chat_ids = {"123"}
+            worker.skladbot_daily_report_hour = 22
+            worker.skladbot_daily_report_minute = 0
+            worker.skladbot_daily_report_max_attempts = 3
+            worker.send_message = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("Telegram message must not be sent")
+            )
+            worker.send_document = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("Telegram document must not be sent")
+            )
+            report_date = date(2026, 7, 18)
+            now = datetime(2026, 7, 18, 22, 30, tzinfo=ZoneInfo("Asia/Tashkent"))
+            with SessionLocal() as db:
+                db.add(PendingEvent(
+                    event_type=SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE,
+                    idempotency_key=worker.skladbot_daily_report_idempotency_key("123", report_date),
+                    status="failed",
+                    attempts=3,
+                    payload={
+                        "report_date": report_date.isoformat(),
+                        "stage": "manual_recovery_required",
+                        "result_status": "manual_recovery_required",
+                        "error": (
+                            "SKLADBOT_DAILY_REPORT_COVERAGE_NOT_COMPLETE: "
+                            "included=0 excluded=4160"
+                        ),
+                        "manual_recovery_required": True,
+                        "manual_recovery_reason": "automatic_retry_not_safe_or_exhausted",
+                    },
+                    last_error=(
+                        "SKLADBOT_DAILY_REPORT_COVERAGE_NOT_COMPLETE: "
+                        "included=0 excluded=4160"
+                    ),
+                ))
+                db.commit()
+
+            self.assertEqual(worker.send_due_skladbot_daily_reports(now=now), 0)
+            self.assertEqual(
+                worker.send_due_skladbot_daily_reports(now=now + timedelta(minutes=20)),
+                0,
+            )
+
+            with SessionLocal() as db:
+                events = db.execute(
+                    select(PendingEvent).order_by(PendingEvent.created_at)
+                ).scalars().all()
+                audits = db.execute(
+                    select(AuditLog).where(
+                        AuditLog.action == "skladbot_daily_report_legacy_empty_retry_claimed"
+                    )
+                ).scalars().all()
+
+            self.assertEqual(collections, [report_date])
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0].status, "completed")
+            self.assertEqual(events[0].attempts, 4)
+            self.assertEqual(events[0].last_error, "")
+            self.assertEqual((events[0].payload or {}).get("result_status"), "completed_no_requests")
+            self.assertEqual(
+                (events[0].payload or {}).get("legacy_empty_retry_reason"),
+                "legacy_false_positive_empty_coverage_guard",
+            )
+            self.assertNotIn("error", events[0].payload or {})
+            self.assertNotIn("manual_recovery_required", events[0].payload or {})
+            self.assertEqual(len(audits), 1)
+            self.assertEqual(
+                (audits[0].payload or {}).get("reason"),
+                "legacy_false_positive_empty_coverage_guard",
+            )
+        finally:
+            telegram_scheduled_report_processor_module.SessionLocal = original_session_local
+            telegram_worker_module.skladbot_daily_report.collect_skladbot_daily_report = original_collect
+            telegram_worker_module.skladbot_daily_report.build_skladbot_daily_report_xlsx = original_build_xlsx
 
     def test_scheduled_report_partial_detail_coverage_marks_failed_without_send(self):
         engine = create_engine(
