@@ -177,21 +177,21 @@ services:
       - traefik.http.routers.taksklad-backend.entrypoints=websecure
       - traefik.http.routers.taksklad-backend.tls.certresolver=letsencrypt
       - traefik.http.routers.taksklad-backend.priority=100
-      - traefik.http.routers.taksklad-backend.middlewares=taksklad-request-limit,taksklad-security-headers
+      - traefik.http.routers.taksklad-backend.middlewares=taksklad-request-limit,taksklad-backend-security-headers
       - traefik.http.services.taksklad-backend.loadbalancer.server.port=8000
       - traefik.http.middlewares.taksklad-request-limit.buffering.maxRequestBodyBytes=33554432
-      - traefik.http.middlewares.taksklad-security-headers.headers.stsSeconds=31536000
-      - traefik.http.middlewares.taksklad-security-headers.headers.stsIncludeSubdomains=true
-      - traefik.http.middlewares.taksklad-security-headers.headers.stsPreload=false
-      - traefik.http.middlewares.taksklad-security-headers.headers.contentTypeNosniff=true
-      - traefik.http.middlewares.taksklad-security-headers.headers.frameDeny=true
-      - traefik.http.middlewares.taksklad-security-headers.headers.referrerPolicy=same-origin
+      - traefik.http.middlewares.taksklad-backend-security-headers.headers.stsSeconds=31536000
+      - traefik.http.middlewares.taksklad-backend-security-headers.headers.stsIncludeSubdomains=true
+      - traefik.http.middlewares.taksklad-backend-security-headers.headers.stsPreload=false
+      - traefik.http.middlewares.taksklad-backend-security-headers.headers.contentTypeNosniff=true
+      - traefik.http.middlewares.taksklad-backend-security-headers.headers.frameDeny=true
+      - traefik.http.middlewares.taksklad-backend-security-headers.headers.referrerPolicy=same-origin
       - traefik.docker.network=${TRAEFIK_NETWORK:-traefik}
     networks:
       - taksklad-internal
       - traefik
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import json; from urllib.request import urlopen; response = urlopen('http://127.0.0.1:8000/ready', timeout=5); payload = json.load(response); database = payload.get('database') or {}; migrations = payload.get('migrations') or {}; policy = payload.get('policy') or {}; valid = response.status == 200 and payload.get('ready') is True and payload.get('status') in ('ok', 'degraded') and database.get('status') == 'ok' and migrations.get('status') == 'ok' and migrations.get('current_revision') == migrations.get('expected_head') and policy.get('mandatory_status') == 'ok'; raise SystemExit(0 if valid else 1)\""]
+      test: ["CMD-SHELL", "python -c \"import json, os; from urllib.request import urlopen; response = urlopen('http://127.0.0.1:8000/health', timeout=5); payload = json.load(response); expected_service = os.environ.get('TAKSKLAD_SERVICE_NAME', '').strip(); expected_sha = os.environ.get('TAKSKLAD_COMMIT_SHA', '').strip().lower(); expected_digest = os.environ.get('TAKSKLAD_IMAGE_DIGEST', '').strip().lower(); valid = response.status == 200 and payload.get('status') == 'ok' and bool(expected_service) and payload.get('service') == expected_service and bool(payload.get('version')) and (not expected_sha or payload.get('commit_sha') == expected_sha) and (not expected_digest or payload.get('image_digest') == expected_digest); raise SystemExit(0 if valid else 1)\""]
       interval: 30s
       timeout: 5s
       retries: 5
@@ -217,12 +217,18 @@ services:
       - traefik.http.routers.taksklad-frontend.entrypoints=websecure
       - traefik.http.routers.taksklad-frontend.tls.certresolver=letsencrypt
       - traefik.http.routers.taksklad-frontend.priority=1
-      - traefik.http.routers.taksklad-frontend.middlewares=taksklad-security-headers,taksklad-frontend-csp
+      - traefik.http.routers.taksklad-frontend.middlewares=taksklad-frontend-security-headers,taksklad-frontend-csp
       - traefik.http.routers.taksklad-frontend-http.rule=Host(`${TAKSKLAD_FRONTEND_HOST}`) || Host(`${TAKSKLAD_FRONTEND_WWW_HOST}`)
       - traefik.http.routers.taksklad-frontend-http.entrypoints=web
       - traefik.http.routers.taksklad-frontend-http.middlewares=taksklad-frontend-https-redirect
       - traefik.http.middlewares.taksklad-frontend-https-redirect.redirectscheme.scheme=https
       - traefik.http.middlewares.taksklad-frontend-https-redirect.redirectscheme.permanent=true
+      - traefik.http.middlewares.taksklad-frontend-security-headers.headers.stsSeconds=31536000
+      - traefik.http.middlewares.taksklad-frontend-security-headers.headers.stsIncludeSubdomains=true
+      - traefik.http.middlewares.taksklad-frontend-security-headers.headers.stsPreload=false
+      - traefik.http.middlewares.taksklad-frontend-security-headers.headers.contentTypeNosniff=true
+      - traefik.http.middlewares.taksklad-frontend-security-headers.headers.frameDeny=true
+      - traefik.http.middlewares.taksklad-frontend-security-headers.headers.referrerPolicy=same-origin
       - traefik.http.middlewares.taksklad-frontend-csp.headers.contentSecurityPolicy=default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self' data:; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests; block-all-mixed-content
       - traefik.http.services.taksklad-frontend.loadbalancer.server.port=8080
       - traefik.docker.network=${TRAEFIK_NETWORK:-traefik}

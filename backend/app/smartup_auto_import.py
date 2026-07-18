@@ -559,7 +559,11 @@ def run_due_smartup_auto_imports(
     local_now = normalize_local_now(now, config.timezone)
     results: list[dict[str, Any]] = []
     slot_failure_count = 0
-    if local_now.weekday() in config.disabled_weekdays:
+    if is_logistics_non_working_day(
+        db,
+        local_now.date(),
+        default_non_working_weekdays=config.disabled_weekdays,
+    ):
         results.append({
             "status": "idle",
             "reason": "weekday_disabled",
@@ -624,12 +628,24 @@ def run_due_smartup_logistics_reports(
     if not config.backend_import_enabled:
         return []
     local_now = normalize_local_now(now, config.timezone)
+    if is_logistics_non_working_day(
+        db,
+        local_now.date(),
+        default_non_working_weekdays=config.disabled_weekdays,
+    ):
+        return []
     due_time = parse_slot_time(config.effective_logistics_due_time)
     results: list[dict[str, Any]] = []
     for days_ago in range(config.logistics_catchup_days, -1, -1):
         export_date = local_now.date() - timedelta(days=days_ago)
         due_at = datetime.combine(export_date, due_time, tzinfo=config.timezone)
         if local_now < due_at:
+            continue
+        if is_logistics_non_working_day(
+            db,
+            export_date,
+            default_non_working_weekdays=config.disabled_weekdays,
+        ):
             continue
         dependency = smartup_logistics_dependency_proof(db, config, export_date)
         if dependency["status"] != "ready":

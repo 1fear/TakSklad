@@ -166,20 +166,34 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
     def test_web_deploy_forces_https_security_headers(self):
         compose = (PROJECT_ROOT / "deploy" / "vds" / "docker-compose.yml").read_text(encoding="utf-8")
         nginx = (PROJECT_ROOT / "frontend" / "nginx.conf.template").read_text(encoding="utf-8")
+        backend = compose.split("  backend-api:", 1)[1].split("\n  frontend:", 1)[0]
+        frontend = compose.split("  frontend:", 1)[1].split("\n  skladbot-worker:", 1)[0]
 
         self.assertIn(
-            "traefik.http.routers.taksklad-backend.middlewares=taksklad-request-limit,taksklad-security-headers",
-            compose,
+            "traefik.http.routers.taksklad-backend.middlewares=taksklad-request-limit,taksklad-backend-security-headers",
+            backend,
         )
-        self.assertIn("traefik.http.middlewares.taksklad-request-limit.buffering.maxRequestBodyBytes=33554432", compose)
-        self.assertIn("traefik.http.routers.taksklad-frontend.middlewares=taksklad-security-headers,taksklad-frontend-csp", compose)
+        self.assertIn("traefik.http.middlewares.taksklad-request-limit.buffering.maxRequestBodyBytes=33554432", backend)
+        self.assertIn(
+            "traefik.http.routers.taksklad-frontend.middlewares=taksklad-frontend-security-headers,taksklad-frontend-csp",
+            frontend,
+        )
+        self.assertNotIn("taksklad-frontend-security-headers", backend)
+        self.assertNotIn("taksklad-backend-security-headers", frontend)
+        self.assertNotIn("taksklad-security-headers", compose)
+        for service, middleware_name in (
+            (backend, "taksklad-backend-security-headers"),
+            (frontend, "taksklad-frontend-security-headers"),
+        ):
+            self.assertIn(f"traefik.http.middlewares.{middleware_name}.headers.stsSeconds=31536000", service)
+            self.assertIn(f"traefik.http.middlewares.{middleware_name}.headers.stsIncludeSubdomains=true", service)
+            self.assertIn(f"traefik.http.middlewares.{middleware_name}.headers.stsPreload=false", service)
+            self.assertIn(f"traefik.http.middlewares.{middleware_name}.headers.contentTypeNosniff=true", service)
+            self.assertIn(f"traefik.http.middlewares.{middleware_name}.headers.frameDeny=true", service)
+            self.assertIn(f"traefik.http.middlewares.{middleware_name}.headers.referrerPolicy=same-origin", service)
         self.assertIn('profiles: ["adminer"]', compose)
         self.assertIn("traefik.enable=false", compose)
         self.assertNotIn("traefik.http.routers.taksklad-adminer", compose)
-        self.assertIn("headers.stsSeconds=31536000", compose)
-        self.assertIn("headers.stsIncludeSubdomains=true", compose)
-        self.assertIn("headers.contentTypeNosniff=true", compose)
-        self.assertIn("headers.frameDeny=true", compose)
         self.assertIn("upgrade-insecure-requests", compose)
         self.assertIn("block-all-mixed-content", compose)
 
@@ -201,12 +215,21 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
 
     def test_vds_compose_declares_runtime_healthchecks(self):
         compose = (PROJECT_ROOT / "deploy" / "vds" / "docker-compose.yml").read_text(encoding="utf-8")
+        backend = compose.split("  backend-api:", 1)[1].split("\n  frontend:", 1)[0]
 
-        self.assertIn("http://127.0.0.1:8000/ready", compose)
-        self.assertIn("payload.get('ready') is True", compose)
-        self.assertIn("migrations.get('current_revision') == migrations.get('expected_head')", compose)
-        self.assertIn("policy.get('mandatory_status') == 'ok'", compose)
-        self.assertIn("json.load(response)", compose)
+        self.assertIn("http://127.0.0.1:8000/health", backend)
+        self.assertNotIn("http://127.0.0.1:8000/ready", backend)
+        self.assertIn("response.status == 200", backend)
+        self.assertIn("payload.get('status') == 'ok'", backend)
+        self.assertIn("payload.get('service') == expected_service", backend)
+        self.assertIn("payload.get('commit_sha') == expected_sha", backend)
+        self.assertIn("payload.get('image_digest') == expected_digest", backend)
+        self.assertNotIn("payload.get('ready')", backend)
+        self.assertNotIn("database =", backend)
+        self.assertNotIn("migrations =", backend)
+        self.assertNotIn("policy.get('mandatory_status')", backend)
+        self.assertIn("json.load(response)", backend)
+        self.assertIn("Path(`/ready`)", backend)
         self.assertIn("wget -qO- http://127.0.0.1:8080/", compose)
         self.assertEqual(compose.count("from app.worker_observability import build_worker_readiness"), 3)
         for worker_name in ("skladbot", "smartup_auto_import", "telegram"):
