@@ -81,6 +81,7 @@ from .telegram_report_processor import (
     backend_failure_message,
     summarize_active_orders_by_date,
 )
+from .telegram_transfer_kiz_processor import TelegramTransferKizProcessor
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -369,6 +370,7 @@ class TelegramWorker:
         self.bot_menu_ready = False
         self._processor_ports.bot_menu_ready = False
         self.manual_flow_cache = {}
+        self._poll_processors_ready = True
 
     @property
     def configured(self):
@@ -404,7 +406,8 @@ class TelegramWorker:
         ports.save_chat_state = admin.save_chat_state
         ports.get_chat_shipment_date = admin.get_chat_shipment_date
         self._processor_ports = ports
-        self._processors = (scheduled, admin, importer, report)
+        transfer_kiz = TelegramTransferKizProcessor(ports=ports, owner=self)
+        self._processors = (scheduled, admin, importer, report, transfer_kiz)
 
     def __getattr__(self, name):
         if name.startswith("_processor"):
@@ -527,6 +530,9 @@ class TelegramWorker:
                 self.notify_update_error(update, exc)
         if updates:
             self.save_offset()
+        if self.__dict__.get("_poll_processors_ready"):
+            self.process_pending_transfer_kiz_completions()
+            self.process_pending_transfer_kiz_deliveries()
         self.process_queued_telegram_imports()
         self.process_pending_telegram_notifications()
         self.send_due_skladbot_daily_reports()

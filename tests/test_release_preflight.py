@@ -647,9 +647,9 @@ class ReleasePreflightTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         payload = json.loads(completed.stdout)
         version = next(item for item in payload["checks"] if item["name"] == "version_json")
-        self.assertEqual(version["latest_version"], EXPECTED_RELEASE_VERSION)
+        self.assertEqual(version["latest_version"], previous_patch_version(EXPECTED_RELEASE_VERSION))
         self.assertEqual(version["candidate_version"], EXPECTED_RELEASE_VERSION)
-        self.assertEqual(version["rollout_state"], "candidate-published")
+        self.assertEqual(version["rollout_state"], "published-supported")
 
     def write_bytes(self, path, content):
         path.write_bytes(content)

@@ -8,6 +8,8 @@ from pathlib import Path
 
 import httpx
 
+from .reports_service import payment_group
+
 from .spreadsheet_safety import load_safe_workbook, normalize_spreadsheet_filename
 
 
@@ -605,6 +607,8 @@ def excel_file_to_import_payload(file_path, file_name=None, source="telegram", s
         geocoded_count = 0
         geocode_failed_count = 0
         source_rows_count = 0
+        skipped_rows_count = 0
+        payment_groups = {}
 
         for row_number, row in enumerate(
             worksheet.iter_rows(min_row=source_info["first_data_row"], values_only=True),
@@ -620,6 +624,7 @@ def excel_file_to_import_payload(file_path, file_name=None, source="telegram", s
             blocks = parse_int(get_cell(row, columns.get("blocks")))
 
             if not client or not payment or not product or quantity <= 0:
+                skipped_rows_count += 1
                 warnings.append(f"{file_name}, строка {row_number}: пропущена, не заполнены клиент/оплата/товар/количество")
                 continue
 
@@ -700,6 +705,8 @@ def excel_file_to_import_payload(file_path, file_name=None, source="telegram", s
                 "Номер заявки SkladBot": get_cell(row, columns.get("skladbot_request_number")),
                 "ID заявки SkladBot": get_cell(row, columns.get("skladbot_request_id")),
             })
+            group = payment_group(payment)
+            payment_groups[group] = payment_groups.get(group, 0) + 1
     finally:
         workbook.close()
 
@@ -710,10 +717,15 @@ def excel_file_to_import_payload(file_path, file_name=None, source="telegram", s
         "source": source,
         "filename": file_name,
         "sha256": sha256,
+        "source_rows_count": source_rows_count,
+        "skipped_rows_count": skipped_rows_count,
+        "payment_groups": payment_groups,
         "rows": rows,
         "meta": {
             "sheet_name": sheet_name,
             "source_rows_count": source_rows_count,
+            "skipped_rows_count": skipped_rows_count,
+            "payment_groups": payment_groups,
             "shipment_date": display_shipment_date,
             "shipment_dates": row_dates,
             "geocoded_count": geocoded_count,

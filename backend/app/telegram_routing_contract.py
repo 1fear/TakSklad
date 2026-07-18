@@ -28,6 +28,7 @@ class TelegramMessageKind(str, Enum):
     SMARTUP_CLIENT_EXPORT = "smartup_client_export"
     SMARTUP_LOGISTICS_REPORT = "smartup_logistics_report"
     SKLADBOT_DAILY_REPORT = "skladbot_daily_report"
+    TRANSFER_KIZ_EXPORT = "transfer_kiz_export"
     ADMIN_ERROR = "admin_error"
 
 
@@ -141,7 +142,15 @@ def _validate_manifest(payload: Mapping[str, Any]) -> TelegramRoutingContract:
             raise TelegramRoutingContractError(f"message_kinds.{kind.value}: invalid destination")
         if not isinstance(schedules, list) or not schedules or len(set(schedules)) != len(schedules):
             raise TelegramRoutingContractError(f"message_kinds.{kind.value}: invalid schedules")
-        if any(value != "on_error" and not TIME_RE.fullmatch(str(value)) for value in schedules):
+        allowed_non_time_schedules = {
+            TelegramMessageKind.TRANSFER_KIZ_EXPORT.value: {"on_completion"},
+            TelegramMessageKind.ADMIN_ERROR.value: {"on_error"},
+        }
+        allowed_non_time = allowed_non_time_schedules.get(kind.value, set())
+        if any(
+            str(value) not in allowed_non_time and not TIME_RE.fullmatch(str(value))
+            for value in schedules
+        ):
             raise TelegramRoutingContractError(f"message_kinds.{kind.value}: invalid schedule")
         if not str(spec.get("text_policy_label") or "").strip():
             raise TelegramRoutingContractError(f"message_kinds.{kind.value}: missing text contract")
@@ -152,6 +161,7 @@ def _validate_manifest(payload: Mapping[str, Any]) -> TelegramRoutingContract:
         TelegramMessageKind.SMARTUP_CLIENT_EXPORT.value: ["12:00", "15:00", "17:50"],
         TelegramMessageKind.SMARTUP_LOGISTICS_REPORT.value: ["17:50"],
         TelegramMessageKind.SKLADBOT_DAILY_REPORT.value: ["22:00"],
+        TelegramMessageKind.TRANSFER_KIZ_EXPORT.value: ["on_completion"],
         TelegramMessageKind.ADMIN_ERROR.value: ["on_error"],
     }
     for kind, schedules in expected_schedules.items():
@@ -163,6 +173,8 @@ def _validate_manifest(payload: Mapping[str, Any]) -> TelegramRoutingContract:
         raise TelegramRoutingContractError("logistics report must use logistics route")
     if message_kinds[TelegramMessageKind.SKLADBOT_DAILY_REPORT.value]["destination"] != "client":
         raise TelegramRoutingContractError("daily report must use client route")
+    if message_kinds[TelegramMessageKind.TRANSFER_KIZ_EXPORT.value]["destination"] != "client":
+        raise TelegramRoutingContractError("transfer KIZ export must use client route")
     if message_kinds[TelegramMessageKind.ADMIN_ERROR.value]["destination"] != "admin":
         raise TelegramRoutingContractError("admin errors must use admin route")
 

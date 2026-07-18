@@ -37,6 +37,13 @@
       "text_policy_sha256": "684bf167c8ba203eec966a9faa90717a82a8b8354fccebe5d425523a9cbc132f",
       "error_destination": "admin"
     },
+    "transfer_kiz_export": {
+      "destination": "client",
+      "schedules": ["on_completion"],
+      "text_policy_label": "runtime_transfer_kiz_export_output_v1",
+      "text_policy_sha256": "6b335747615219f48a06afafe6082c18a9fef63596252ca7c2dbf7f5602aa211",
+      "error_destination": "admin"
+    },
     "admin_error": {
       "destination": "admin",
       "schedules": ["on_error"],
