@@ -20,6 +20,7 @@ from tools.release_preflight import (
     check_update_manifest_downloads,
     check_version_json,
     check_windows_acceptance_flow,
+    previous_patch_version,
     run_checks,
     sha256_file,
 )
@@ -522,15 +523,16 @@ class ReleasePreflightTests(unittest.TestCase):
 
     def test_deploy_runbook_contract_rejects_stale_previous_release_version(self):
         tmp_dir, root = self.make_root()
+        stale_version = previous_patch_version(EXPECTED_RELEASE_VERSION)
         with tmp_dir:
             path = root / "docs/windows-backend-acceptance.md"
-            path.write_text(path.read_text(encoding="utf-8") + "\n2.0.45\n", encoding="utf-8")
+            path.write_text(path.read_text(encoding="utf-8") + f"\n{stale_version}\n", encoding="utf-8")
 
             check = check_deploy_runbook_contract(root)
 
         self.assertFalse(check["ok"])
         self.assertIn(
-            "docs/windows-backend-acceptance.md: stale operator release version: 2.0.45",
+            f"docs/windows-backend-acceptance.md: stale operator release version: {stale_version}",
             check["problems"],
         )
 
