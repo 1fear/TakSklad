@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
+from backend.app.settings import APP_VERSION as BACKEND_APP_VERSION
 
 
 class VersionEndpointTests(unittest.TestCase):
@@ -19,7 +20,7 @@ class VersionEndpointTests(unittest.TestCase):
 
             payload = version()
 
-        self.assertEqual(payload["version"], "2.0.45")
+        self.assertEqual(payload["version"], BACKEND_APP_VERSION)
         self.assertEqual(payload["commit_sha"], "a" * 40)
         self.assertEqual(payload["image_digest"], "sha256:" + "b" * 64)
         self.assertNotIn("database", payload)

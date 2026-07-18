@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 from taksklad import desktop_diagnostics
+from taksklad.config import APP_VERSION
 from taksklad.logging_setup import LOG_FORMAT, SecretRedactingFormatter
 from taksklad.secret_store import (
     TELEGRAM_BOT_TOKEN_SECRET,
@@ -141,7 +142,7 @@ class DesktopDiagnosticsTests(unittest.TestCase):
             saved = json.loads(saved_text)
             serialized = json.dumps(saved, ensure_ascii=False)
 
-        self.assertEqual(saved["app"]["version"], "2.0.45")
+        self.assertEqual(saved["app"]["version"], APP_VERSION)
         self.assertEqual(saved["app"]["build_label"], "MVP 2.0")
         self.assertEqual(saved["startup_self_check"]["app_dir"], "[redacted-path]")
         self.assertEqual(saved["startup_self_check"]["log_file"], "[redacted-path]")
