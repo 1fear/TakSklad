@@ -77,7 +77,7 @@ class PrincipalProvisioningGuardTests(unittest.TestCase):
         image = "ghcr.io/1fear/taksklad-backend@sha256:" + "a" * 64
         operation_id = "6bb40555-4bb4-4daa-8a44-30d216860a7f"
         source_sha = "b" * 40
-        release_tag = "v2.0.44"
+        release_tag = "v2.0.45"
         command = "provision"
         kind = "acceptance"
         identifier = "acceptance.release"
@@ -483,6 +483,7 @@ class PrincipalProvisioningGuardTests(unittest.TestCase):
             "logging": {"driver": "json-file", "options": {"max-size": "10m", "max-file": "3"}},
             "profiles": ["principal-admin"],
             "image": image,
+            "command": None,
             "restart": "no",
             "user": "501:20",
             "entrypoint": ["python", "-m", "app.principal_handoff"],
@@ -516,6 +517,31 @@ class PrincipalProvisioningGuardTests(unittest.TestCase):
             },
         }
         return payload, image
+
+    def test_compose_validator_accepts_only_null_rendered_command(self):
+        payload, image = self.compose_payload()
+        self.assertEqual(
+            validate_principal_provisioner_compose.validate(
+                payload, image, "501", "20", "/opt/stacks/taksklad/private"
+            ),
+            ("taksklad", "taksklad-principal-12345678123442349234123456789abc"),
+        )
+
+        for command in ("", ["python", "-V"], {"unexpected": "value"}, False):
+            with self.subTest(command=command):
+                changed = json.loads(json.dumps(payload))
+                changed["services"]["principal-provisioner"]["command"] = command
+                with self.assertRaisesRegex(ValueError, "^service_keys_unsafe$"):
+                    validate_principal_provisioner_compose.validate(
+                        changed, image, "501", "20", "/opt/stacks/taksklad/private"
+                    )
+
+        missing = json.loads(json.dumps(payload))
+        missing["services"]["principal-provisioner"].pop("command")
+        with self.assertRaisesRegex(ValueError, "^service_keys_unsafe$"):
+            validate_principal_provisioner_compose.validate(
+                missing, image, "501", "20", "/opt/stacks/taksklad/private"
+            )
 
     def test_compose_validator_rejects_any_privilege_secret_or_topology_drift(self):
         payload, image = self.compose_payload()

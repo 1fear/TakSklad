@@ -539,6 +539,8 @@ jobs:
             PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/validate_daily_report_config.py
           echo "PRODUCTION_CONFIG_RECOVERY_OK contract=notification-routing-v3 rollback_backup_retained=1 values_redacted=1"
           chmod +x deploy/vds/deploy_from_git.sh tools/production_preflight.sh tools/live_release_verifier.sh
+          chmod 700 deploy/vds/backup_postgres.sh deploy/vds/acceptance_status.sh
+          chmod 644 tools/check_data_invariants.py
           PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/release_artifacts.py verify --manifest release.json
           eval "\$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/release_artifacts.py emit-shell --manifest release.json)"
           docker pull "\$RELEASE_BACKEND_IMAGE"

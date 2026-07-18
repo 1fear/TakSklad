@@ -10,7 +10,7 @@ import sys
 
 SERVICE = "principal-provisioner"
 ALLOWED_KEYS = {
-    "cap_drop", "cpus", "depends_on", "entrypoint", "environment", "image", "init",
+    "cap_drop", "command", "cpus", "depends_on", "entrypoint", "environment", "image", "init",
     "labels", "logging", "mem_limit", "network_mode", "pids_limit", "profiles",
     "networks", "read_only", "restart", "security_opt", "tmpfs", "user", "volumes",
 }
@@ -28,6 +28,8 @@ def validate(
         raise ValueError("service_missing")
     service = services[SERVICE]
     if not isinstance(service, dict) or set(service) - ALLOWED_KEYS:
+        raise ValueError("service_keys_unsafe")
+    if "command" not in service or service["command"] is not None:
         raise ValueError("service_keys_unsafe")
     if service.get("image") != expected_image:
         raise ValueError("image_mismatch")
