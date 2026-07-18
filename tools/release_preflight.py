@@ -126,7 +126,7 @@ DEPLOY_RUNBOOK_REQUIRED_FRAGMENTS = {
     Path("docs/windows-backend-acceptance.md"): [
         "TakSkladAuth.exe",
         "/api/v1/returns/auth-canary/desktop",
-        "2.0.44",
+        "2.0.45",
         "public channel",
     ],
     Path("docs/deploy-rollback-runbook.md"): [
@@ -138,7 +138,7 @@ DEPLOY_RUNBOOK_REQUIRED_FRAGMENTS = {
     Path("docs/manual-acceptance-runbook.md"): [
         "--phase candidate",
         "--phase final",
-        "2.0.44",
+        "2.0.45",
         "public channel",
         "TakSkladAuth.exe",
     ],

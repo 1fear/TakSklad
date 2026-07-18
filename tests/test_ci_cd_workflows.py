@@ -315,6 +315,21 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn("for attempt in \\$(seq 1 36)", workflow)
         self.assertIn("compose up -d --no-deps --no-build", workflow)
         self.assertIn("backup_postgres.sh --no-prune </dev/null", workflow)
+        executable_control_chmod = (
+            "chmod 700 deploy/vds/backup_postgres.sh "
+            "deploy/vds/acceptance_status.sh"
+        )
+        readable_invariant_chmod = "chmod 644 tools/check_data_invariants.py"
+        self.assertIn(executable_control_chmod, workflow)
+        self.assertIn(readable_invariant_chmod, workflow)
+        self.assertLess(
+            workflow.index(executable_control_chmod),
+            workflow.index("./deploy/vds/backup_postgres.sh --no-prune"),
+        )
+        self.assertLess(
+            workflow.index(readable_invariant_chmod),
+            workflow.index("python3 tools/collect_phase27_evidence.py"),
+        )
         self.assertIn(
             "deploy_from_git.sh --artifact-manifest release.json --acceptance required --wait \\$legacy_canary_arg </dev/null",
             workflow,
