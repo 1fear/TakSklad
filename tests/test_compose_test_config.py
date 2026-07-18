@@ -38,6 +38,10 @@ class ComposeTestConfigTests(unittest.TestCase):
             "TAKSKLAD_LEGACY_AUTH_EXPIRES_AT",
             contract["compose_test_values"],
         )
+        self.assertEqual(
+            contract["compose_test_values"]["TAKSKLAD_TRUSTED_PROXY_CIDRS"],
+            "172.18.0.0/16",
+        )
 
 
 if __name__ == "__main__":

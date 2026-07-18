@@ -38,7 +38,11 @@ def authenticate_web_user(settings, login, password, db=None):
     if not normalized_login:
         raise WebAuthError("invalid credentials")
 
-    if settings.web_login and settings.web_password_hash and constant_time_equals(normalized_login, settings.web_login):
+    if (
+        settings.web_login
+        and settings.web_password_hash
+        and constant_time_equals(normalized_login, normalize_login(settings.web_login))
+    ):
         if not verify_password(str(password or ""), settings.web_password_hash):
             raise WebAuthError("invalid credentials")
         return AuthIdentity(login=settings.web_login, role=ROLE_ADMIN)
@@ -64,11 +68,20 @@ def authenticate_web_user(settings, login, password, db=None):
 def find_active_db_user(db, login):
     from .models import User
 
-    return db.execute(
+    canonical_login = normalize_login(login)
+    if not canonical_login:
+        return None
+    candidates = db.execute(
         select(User)
-        .where(User.username == login)
+        .where(User.username.in_((canonical_login, f"+{canonical_login}")))
         .where(User.is_active.is_(True))
-    ).scalar_one_or_none()
+    ).scalars().all()
+    if len(candidates) > 1:
+        # A unique SQL value is not necessarily a unique phone identity because
+        # ``998...`` and ``+998...`` are distinct strings. Never guess which
+        # credential owns an ambiguous canonical identity.
+        raise WebAuthError("invalid credentials")
+    return candidates[0] if candidates else None
 
 
 def create_session_token(settings, login, role=ROLE_ADMIN, now=None):
@@ -132,14 +145,17 @@ def base64url_decode(value):
 
 
 def normalize_login(value):
-    return "".join(ch for ch in str(value or "").strip() if ch.isdigit() or ch == "+")
+    # Phone identity is canonicalized to digits. A leading '+' is presentation,
+    # not a different account; keeping it in the identity previously made the
+    # login form and limiter disagree with DB usernames.
+    return "".join(ch for ch in str(value or "").strip() if ch.isdigit())
 
 
 def normalize_session_role(settings, payload):
     role = normalize_role(payload.get("role"))
     if role != ROLE_OPERATOR:
         return role
-    if constant_time_equals(normalize_login(payload.get("sub")), settings.web_login):
+    if constant_time_equals(normalize_login(payload.get("sub")), normalize_login(settings.web_login)):
         return ROLE_ADMIN
     return role
 

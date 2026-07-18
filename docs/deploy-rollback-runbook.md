@@ -126,7 +126,7 @@ Windows signing secrets должны соответствовать заране
 
 ### Immutable release candidate
 
-Версия кандидата и уже опубликованный update channel разделены. Во время подготовки candidate `APP_VERSION=2.0.43`, пока корневой `version.json` продолжает указывать на текущий поддерживаемый channel. Это не утверждает, что `2.0.43` уже опубликован.
+Версия кандидата и уже опубликованный update channel разделены. Во время подготовки candidate `APP_VERSION=2.0.44`, пока корневой `version.json` продолжает указывать на текущий поддерживаемый channel. Это не утверждает, что `2.0.44` уже опубликован.
 
 Безопасная последовательность:
 
@@ -160,7 +160,7 @@ Production workflow запускается только вручную. Acceptan
 
 ```bash
 source_sha="<exact-40-lowercase-main-sha>"
-release_tag="v2.0.43"
+release_tag="v2.0.44"
 git fetch --tags origin main
 test "$(git rev-parse origin/main)" = "$source_sha"
 test "$(git rev-list -n 1 "$release_tag")" = "$source_sha"
@@ -198,7 +198,7 @@ PY
 
 ```bash
 source_sha="<exact-40-lowercase-main-sha>"
-release_tag="v2.0.43"
+release_tag="v2.0.44"
 backend_image="ghcr.io/1fear/taksklad-backend@sha256:<exact-attested-digest>"
 export TAKSKLAD_PRINCIPAL_BACKUP_ROOT=/opt/taksklad/backups/postgres/completed
 export TAKSKLAD_PRINCIPAL_BACKUP_RESULT_FILE="$backup_result"

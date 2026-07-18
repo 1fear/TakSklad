@@ -99,6 +99,17 @@ class ContainerPolicyTests(unittest.TestCase):
             environment["SKLADBOT_DAILY_REPORT_ENABLED"],
             "${SKLADBOT_DAILY_REPORT_ENABLED:-false}",
         )
+
+    def test_backend_requires_an_explicit_trusted_proxy_network(self):
+        payload = yaml.safe_load(
+            (ROOT / "deploy" / "vds" / "docker-compose.yml").read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(
+            payload["services"]["backend-api"]["environment"]["TAKSKLAD_TRUSTED_PROXY_CIDRS"],
+            "${TAKSKLAD_TRUSTED_PROXY_CIDRS:?TAKSKLAD_TRUSTED_PROXY_CIDRS is required}",
+        )
+
     def test_read_only_bind_is_not_classified_as_writable(self):
         temporary, root = self.make_root()
         with temporary:

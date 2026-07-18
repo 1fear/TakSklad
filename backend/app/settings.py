@@ -16,12 +16,13 @@ except ImportError:  # pragma: no cover - standalone settings verifier compatibi
     )
 
 
-APP_VERSION = "2.0.43"
+APP_VERSION = "2.0.44"
 VALID_ENVIRONMENTS = frozenset({"local", "test", "production"})
 MIN_SESSION_SECRET_BYTES = 32
 MIN_SESSION_SECRET_DISTINCT_CHARACTERS = 8
 VALID_LEGACY_AUTH_MODES = frozenset({"enforce", "shadow", "disabled"})
 MAX_SERVICE_TOKEN_ROTATION_OVERLAP_SECONDS = 3600
+PRODUCTION_TRUSTED_PROXY_CIDRS = ("172.18.0.0/16",)
 DATABASE_INTEGER_SETTINGS = {
     "TAKSKLAD_DB_POOL_SIZE": ("db_pool_size", 2, 1, 20),
     "TAKSKLAD_DB_MAX_OVERFLOW": ("db_max_overflow", 1, 0, 20),
@@ -265,6 +266,12 @@ def validate_backend_settings(settings):
         and settings.api_token == settings.web_session_secret
     ):
         errors.append("TAKSKLAD_WEB_SESSION_SECRET")
+
+    if (
+        environment == "production"
+        and settings.trusted_proxy_cidrs != PRODUCTION_TRUSTED_PROXY_CIDRS
+    ):
+        errors.append("TAKSKLAD_TRUSTED_PROXY_CIDRS")
 
     for cidr in settings.trusted_proxy_cidrs:
         try:

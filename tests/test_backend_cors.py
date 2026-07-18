@@ -14,6 +14,7 @@ from backend.app.login_limiter import (
 from backend.app.main import (
     client_identity,
     configure_cors,
+    ensure_login_not_locked,
     login_attempt_key,
     register_login_failure,
     require_browser_request_security,
@@ -135,13 +136,16 @@ class BackendCorsTests(unittest.TestCase):
         )
         limiter.register_failure("one", max_attempts=5, window_seconds=5, lock_seconds=30)
         limiter.register_failure("two", max_attempts=5, window_seconds=5, lock_seconds=30)
-        with self.assertRaises(LoginLimiterCapacityExceeded):
+        with self.assertRaises(LoginLimiterCapacityExceeded) as capacity:
             limiter.register_failure("three", max_attempts=5, window_seconds=5, lock_seconds=30)
+        self.assertEqual(capacity.exception.retry_after, 10)
         self.assertEqual(limiter.size(), 2)
 
         now[0] += 11
         self.assertEqual(limiter.size(), 0)
-        limiter.register_failure("locked", max_attempts=1, window_seconds=5, lock_seconds=30)
+        with self.assertRaises(LoginRateLimited) as threshold:
+            limiter.register_failure("locked", max_attempts=1, window_seconds=5, lock_seconds=30)
+        self.assertEqual(threshold.exception.retry_after, 30)
         with self.assertRaises(LoginRateLimited):
             limiter.ensure_not_locked("locked")
 
@@ -154,6 +158,17 @@ class BackendCorsTests(unittest.TestCase):
         key = login_attempt_key(request, "9" * 1_000_000)
 
         self.assertEqual(len(key), len("203.0.113.10:") + 64)
+
+    def test_login_limiter_key_canonicalizes_optional_phone_plus(self):
+        request = SimpleNamespace(
+            client=SimpleNamespace(host="203.0.113.10"),
+            headers={},
+        )
+
+        self.assertEqual(
+            login_attempt_key(request, "+998 90 111 22 33"),
+            login_attempt_key(request, "998901112233"),
+        )
 
     def test_concurrent_login_lock_race_returns_429(self):
         class RaceLimiter:
@@ -169,6 +184,39 @@ class BackendCorsTests(unittest.TestCase):
             backend_main.login_limiter = original_limiter
 
         self.assertEqual(captured.exception.status_code, 429)
+        self.assertEqual(captured.exception.headers["Retry-After"], "30")
+
+    def test_existing_login_lock_returns_retry_after(self):
+        class LockedLimiter:
+            def ensure_not_locked(self, *_args, **_kwargs):
+                raise LoginRateLimited(30.2)
+
+        original_limiter = backend_main.login_limiter
+        try:
+            backend_main.login_limiter = LockedLimiter()
+            with self.assertRaises(HTTPException) as captured:
+                ensure_login_not_locked("fixed-key")
+        finally:
+            backend_main.login_limiter = original_limiter
+
+        self.assertEqual(captured.exception.status_code, 429)
+        self.assertEqual(captured.exception.headers["Retry-After"], "31")
+
+    def test_full_login_limiter_returns_capacity_retry_after(self):
+        class FullLimiter:
+            def ensure_not_locked(self, *_args, **_kwargs):
+                raise LoginLimiterCapacityExceeded(45.1)
+
+        original_limiter = backend_main.login_limiter
+        try:
+            backend_main.login_limiter = FullLimiter()
+            with self.assertRaises(HTTPException) as captured:
+                ensure_login_not_locked("fixed-key")
+        finally:
+            backend_main.login_limiter = original_limiter
+
+        self.assertEqual(captured.exception.status_code, 429)
+        self.assertEqual(captured.exception.headers["Retry-After"], "46")
 
 
 if __name__ == "__main__":

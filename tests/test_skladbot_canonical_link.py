@@ -579,55 +579,63 @@ class SkladBotCanonicalLinkTests(unittest.TestCase):
                     self.assertNotIn("skladbot_request_id", order.raw_payload)
                     self.assertNotEqual(event.status, "completed")
 
+    def assert_worker_rejects_untyped_recovery_result(self, save_status, marker_character):
+        with self.SessionLocal() as db:
+            marker = f"TakSklad ref: TSF-{marker_character * 24}"
+            order, event = self.seed_create_event(db)
+            event.status = "blocked"
+            event.idempotency_key = skladbot_create_idempotency_key(str(order.id))
+            legacy_payload = dict(event.payload or {})
+            legacy_payload.pop("taksklad_marker", None)
+            event.payload = {
+                **legacy_payload,
+                "post_state": "ambiguous",
+                "create_status": "ambiguous",
+                "post_request_marker": marker,
+            }
+            order.raw_payload = {
+                "skladbot_status": "ambiguous",
+                "skladbot_create_event_id": str(event.id),
+            }
+            db.commit()
+            order_id = order.id
+            event_id = event.id
+
+        candidate = self.candidate()
+        candidate["comment"] = marker
+        save_result = {"status": save_status, "error": f"synthetic {save_status}"}
+        with mock.patch("backend.app.skladbot_worker.SessionLocal", self.SessionLocal), mock.patch(
+            "backend.app.skladbot_worker.fetch_candidate_requests",
+            return_value=CandidateRequests([candidate], complete=True),
+        ), mock.patch(
+            "backend.app.skladbot_request_dry_run.save_skladbot_create_result",
+            return_value=save_result,
+        ) as save_mock:
+            first = update_orders_from_skladbot()
+            second = update_orders_from_skladbot()
+
+        self.assertEqual(first["matched"], 0)
+        self.assertEqual(second["matched"], 0)
+        self.assertEqual(save_mock.call_count, 2)
+        with self.SessionLocal() as db:
+            order = db.get(Order, order_id)
+            event = db.get(PendingEvent, event_id)
+            incidents = db.execute(select(Incident).where(
+                Incident.pending_event_id == event_id
+            )).scalars().all()
+            self.assertNotIn("skladbot_request_id", order.raw_payload)
+            self.assertEqual(event.status, "blocked")
+            self.assertEqual(event.last_error, f"synthetic {save_status}")
+            self.assertEqual(len(incidents), 1)
+
     def test_worker_completes_only_typed_created_recovered_save_result(self):
-        for scenario_index, save_status in enumerate(("ambiguous", "blocked", "conflict"), start=1):
-            with self.subTest(save_status=save_status), self.SessionLocal() as db:
-                marker = f"TakSklad ref: TSF-{'ABC'[scenario_index - 1] * 24}"
-                order, event = self.seed_create_event(db)
-                event.status = "blocked"
-                event.idempotency_key = skladbot_create_idempotency_key(str(order.id))
-                legacy_payload = dict(event.payload or {})
-                legacy_payload.pop("taksklad_marker", None)
-                event.payload = {
-                    **legacy_payload,
-                    "post_state": "ambiguous",
-                    "create_status": "ambiguous",
-                    "post_request_marker": marker,
-                }
-                order.raw_payload = {
-                    "skladbot_status": "ambiguous",
-                    "skladbot_create_event_id": str(event.id),
-                }
-                db.commit()
-                order_id = order.id
-                event_id = event.id
+        self.assert_worker_rejects_untyped_recovery_result("ambiguous", "A")
 
-            candidate = self.candidate()
-            candidate["comment"] = marker
-            save_result = {"status": save_status, "error": f"synthetic {save_status}"}
-            with mock.patch("backend.app.skladbot_worker.SessionLocal", self.SessionLocal), mock.patch(
-                "backend.app.skladbot_worker.fetch_candidate_requests",
-                return_value=CandidateRequests([candidate], complete=True),
-            ), mock.patch(
-                "backend.app.skladbot_request_dry_run.save_skladbot_create_result",
-                return_value=save_result,
-            ) as save_mock:
-                first = update_orders_from_skladbot()
-                second = update_orders_from_skladbot()
+    def test_worker_rejects_blocked_recovery_save_result(self):
+        self.assert_worker_rejects_untyped_recovery_result("blocked", "B")
 
-            self.assertEqual(first["matched"], 0)
-            self.assertEqual(second["matched"], 0)
-            self.assertEqual(save_mock.call_count, 2)
-            with self.SessionLocal() as db:
-                order = db.get(Order, order_id)
-                event = db.get(PendingEvent, event_id)
-                incidents = db.execute(select(Incident).where(
-                    Incident.pending_event_id == event_id
-                )).scalars().all()
-                self.assertNotIn("skladbot_request_id", order.raw_payload)
-                self.assertEqual(event.status, "blocked")
-                self.assertEqual(event.last_error, f"synthetic {save_status}")
-                self.assertEqual(len(incidents), 1)
+    def test_worker_rejects_conflict_recovery_save_result(self):
+        self.assert_worker_rejects_untyped_recovery_result("conflict", "C")
 
 
 if __name__ == "__main__":

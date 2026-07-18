@@ -177,6 +177,9 @@ class TelegramRoutingContractTests(unittest.TestCase):
             "MANUAL" + " /logistics ·",
             "_" + "AUTO.xlsx",
             "_" + "MANUAL.xlsx",
+            "_" + "OUT.xlsx",
+            "_" + "OUT SPOT.xlsx",
+            "_" + "OUT_SPOT.xlsx",
         )
         rendered = json.dumps(artifacts, ensure_ascii=False, sort_keys=True)
         self.assertNotIn("Движения:", artifacts[TelegramMessageKind.SKLADBOT_DAILY_REPORT.value]["message"])

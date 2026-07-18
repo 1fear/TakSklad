@@ -30,7 +30,13 @@ from backend.app.auth_identities import (
 from backend.app.models import AuthSession, Base, Order, ServicePrincipal, ServicePrincipalToken, User
 from backend.app.schemas import AuthLoginRequest
 from backend.app.settings import load_settings
-from backend.app.web_auth import SESSION_COOKIE_NAME, hash_password
+from backend.app.web_auth import (
+    SESSION_COOKIE_NAME,
+    WebAuthError,
+    authenticate_web_user,
+    hash_password,
+    normalize_login,
+)
 from backend.app import main as backend_main
 
 
@@ -630,6 +636,109 @@ class BackendAuthIdentityTests(unittest.TestCase):
             backend_main.web_logout(logout_request, Response(), db=self.db)
             with self.assertRaises(IdentityAuthError):
                 backend_main.read_web_session(logout_request, db=self.db)
+
+    def test_phone_login_with_or_without_plus_resolves_the_same_unique_user(self):
+        user = self.add_user("9")
+        user.username = "+998000000009"
+        user.password_hash = hash_password("synthetic-password", salt="phone-format-salt", iterations=1000)
+        self.db.flush()
+        app_settings = load_settings({
+            "TAKSKLAD_ENV": "test",
+            "TAKSKLAD_IDENTITY_AUTH_ENABLED": "true",
+            "TAKSKLAD_WEB_SESSION_SECRET": "independent-synthetic-session-secret",
+        })
+
+        with_plus = authenticate_web_user(
+            app_settings,
+            "+998000000009",
+            "synthetic-password",
+            db=self.db,
+        )
+        without_plus = authenticate_web_user(
+            app_settings,
+            "998000000009",
+            "synthetic-password",
+            db=self.db,
+        )
+
+        self.assertEqual(normalize_login(with_plus.login), "998000000009")
+        self.assertEqual(with_plus.user_id, user.id)
+        self.assertEqual(without_plus.user_id, user.id)
+
+    def test_duplicate_plus_variants_are_ambiguous_and_fail_closed(self):
+        first = self.add_user("5")
+        first.username = "+998000000005"
+        first.password_hash = hash_password("first-password", salt="first-phone-salt", iterations=1000)
+        second = self.add_user("6")
+        second.username = "998000000005"
+        second.password_hash = hash_password("second-password", salt="second-phone-salt", iterations=1000)
+        self.db.flush()
+        app_settings = load_settings({
+            "TAKSKLAD_ENV": "test",
+            "TAKSKLAD_IDENTITY_AUTH_ENABLED": "true",
+            "TAKSKLAD_WEB_SESSION_SECRET": "independent-synthetic-session-secret",
+        })
+
+        for candidate_password in ("first-password", "second-password"):
+            with self.subTest(candidate_password=candidate_password):
+                with self.assertRaises(WebAuthError):
+                    authenticate_web_user(
+                        app_settings,
+                        "998000000005",
+                        candidate_password,
+                        db=self.db,
+                    )
+
+    def test_verified_credentials_do_not_poison_limiter_when_session_issuance_fails(self):
+        user = self.add_user("8")
+        user.password_hash = hash_password("synthetic-password", salt="phase13-salt", iterations=1000)
+        self.db.flush()
+        app_settings = load_settings({
+            "TAKSKLAD_ENV": "test",
+            "TAKSKLAD_IDENTITY_AUTH_ENABLED": "true",
+            "TAKSKLAD_WEB_SESSION_SECRET": "independent-synthetic-session-secret",
+            "TAKSKLAD_WEB_COOKIE_SECURE": "false",
+        })
+        request = SimpleNamespace(
+            client=SimpleNamespace(host="203.0.113.18"),
+            cookies={},
+            headers={"host": "testserver", "origin": "http://testserver"},
+            url=SimpleNamespace(netloc="testserver", scheme="http"),
+            state=SimpleNamespace(),
+        )
+
+        class RecordingLimiter:
+            failure_count = 0
+
+            def ensure_not_locked(self, _key):
+                return None
+
+            def register_failure(self, *_args, **_kwargs):
+                self.failure_count += 1
+
+            def clear(self, _key):
+                return None
+
+        limiter = RecordingLimiter()
+        with (
+            mock.patch.object(backend_main, "settings", app_settings),
+            mock.patch.object(backend_main, "login_limiter", limiter),
+            mock.patch.object(
+                backend_main,
+                "create_user_session",
+                side_effect=IdentityAuthError("synthetic session store failure"),
+            ),
+        ):
+            with self.assertRaises(HTTPException) as captured:
+                backend_main.web_login(
+                    AuthLoginRequest(login=user.username, password="synthetic-password"),
+                    request,
+                    Response(),
+                    db=self.db,
+                )
+
+        self.assertEqual(captured.exception.status_code, 503)
+        self.assertEqual(limiter.failure_count, 0)
 
     def test_request_scope_matrix_and_legacy_shadow_are_enforced(self):
         auth_now = datetime.now(timezone.utc)

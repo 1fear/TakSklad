@@ -87,6 +87,23 @@ class WindowsReleaseWorkflowTests(unittest.TestCase):
         self.assertNotIn("& dist\\transition\\TakSklad.exe --smoke-import", workflow)
         self.assertNotIn("& dist\\onedir\\TakSklad\\TakSklad.exe --smoke-import", workflow)
 
+    def test_expected_negative_auth_smokes_normalize_native_exit_code_after_assertion(self):
+        workflow = (PROJECT_ROOT / ".github" / "workflows" / "build-windows-release.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            'if ($LASTEXITCODE -eq 0) { throw "AUTH_HELPER_EMPTY_DPAPI_MUST_BE_BLOCKED" }\n'
+            "            $global:LASTEXITCODE = 0",
+            workflow,
+        )
+        self.assertIn(
+            'if ($LASTEXITCODE -eq 0) { throw "ONEDIR_AUTH_HELPER_INVALID_STDIN_MUST_BE_BLOCKED" }\n'
+            "            $global:LASTEXITCODE = 0",
+            workflow,
+        )
+        self.assertEqual(workflow.count("$global:LASTEXITCODE = 0"), 2)
+
     def test_windows_release_manifest_binds_version_source_lock_and_artifact_hashes(self):
         workflow = (PROJECT_ROOT / ".github" / "workflows" / "build-windows-release.yml").read_text(
             encoding="utf-8"
