@@ -79,7 +79,7 @@ class BackendRuntimeConfigTests(unittest.TestCase):
 
         self.assertTrue(config.TAKSKLAD_BACKEND_ENABLED)
         self.assertTrue(config.TAKSKLAD_BACKEND_READ_ORDERS_ENABLED)
-        self.assertEqual(config.TAKSKLAD_BACKEND_BASE_URL, "")
+        self.assertEqual(config.TAKSKLAD_BACKEND_BASE_URL, "https://api.taksklad.uz")
         self.assertEqual(config.TAKSKLAD_BACKEND_API_TOKEN, "")
         self.assertEqual(config.TAKSKLAD_BACKEND_TIMEOUT_SECONDS, 8)
 
@@ -122,14 +122,14 @@ class BackendRuntimeConfigTests(unittest.TestCase):
                     },
                 )
 
-    def test_without_runtime_json_backend_stays_fail_closed_without_credentials(self):
+    def test_without_runtime_json_backend_pins_url_but_stays_without_credentials(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             set_secret_store_for_tests(MemorySecretStore())
             config = load_config_from_app_dir(tmp_dir)
 
         self.assertTrue(config.TAKSKLAD_BACKEND_ENABLED)
         self.assertTrue(config.TAKSKLAD_BACKEND_READ_ORDERS_ENABLED)
-        self.assertEqual(config.TAKSKLAD_BACKEND_BASE_URL, "")
+        self.assertEqual(config.TAKSKLAD_BACKEND_BASE_URL, "https://api.taksklad.uz")
         self.assertEqual(config.TAKSKLAD_BACKEND_API_TOKEN, "")
 
     def test_frozen_macos_without_explicit_provider_fails_closed(self):

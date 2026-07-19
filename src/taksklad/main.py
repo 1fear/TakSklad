@@ -35,6 +35,7 @@ from .desktop_refresh_service import (
     backend_skladbot_sync_result,
 )
 from .desktop_smoke import run_tk_app_smoke
+from .desktop_pairing import run_desktop_pairing_dialog
 from .backend_flow import (
     backend_blocked_scan_events_for_item,
     backend_sync_group_blocker,
@@ -218,16 +219,21 @@ def run_app():
         log_startup_self_check()
 
         if not backend_configured():
+            if not run_desktop_pairing_dialog(credential_lock_held=True):
+                show_startup_error_message(
+                    "Компьютер не подключён",
+                    "Получите одноразовый код подключения в панели TakSklad и повторите запуск.",
+                )
+                return 4
+        if not backend_configured():
             show_startup_error_message(
-                "Backend не настроен",
-                "TakSklad работает только через backend/PostgreSQL. "
-                "Проверьте URL сервера и backend API token, затем перезапустите приложение.",
+                "Компьютер не подключён",
+                "Защищённые данные подключения не сохранились. Повторите подключение.",
             )
             return 4
-        else:
-            app = ScanningApp()
-            app.single_instance_lock = instance_result.lock
-            app.mainloop()
+        app = ScanningApp()
+        app.single_instance_lock = instance_result.lock
+        app.mainloop()
         return 0
     finally:
         if app is not None:

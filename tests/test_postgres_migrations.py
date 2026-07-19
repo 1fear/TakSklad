@@ -7,7 +7,7 @@ from tests.postgres_support import create_database, drop_database, run_alembic, 
 
 
 POSTGRES_AVAILABLE = bool(os.environ.get("TAKSKLAD_TEST_DATABASE_URL"))
-CURRENT_HEAD = "20260716_0019"
+CURRENT_HEAD = "20260719_0020"
 PREVIOUS_HEAD = "20260715_0017"
 
 
@@ -38,6 +38,10 @@ class PostgresMigrationTests(unittest.TestCase):
             audit_columns = {column["name"] for column in inspect(engine).get_columns("audit_log")}
             audit_checks = {check["name"] for check in inspect(engine).get_check_constraints("audit_log")}
             heartbeat_columns = {column["name"] for column in inspect(engine).get_columns("worker_heartbeats")}
+            pairing_uniques = {
+                constraint["name"]
+                for constraint in inspect(engine).get_unique_constraints("desktop_pairings")
+            }
         finally:
             engine.dispose()
         self.assertTrue({"orders", "order_items", "pending_events", "kiz_codes"}.issubset(tables))
@@ -47,6 +51,16 @@ class PostgresMigrationTests(unittest.TestCase):
             "last_progress_at", "last_progress_phase", "last_success_at", "last_failure_at",
         }.issubset(heartbeat_columns))
         self.assertTrue({"auth_sessions", "service_principals", "service_principal_tokens"}.issubset(tables))
+        self.assertTrue({
+            "desktop_pairings",
+            "desktop_pairing_rate_limits",
+            "desktop_pairing_maintenance",
+        }.issubset(tables))
+        self.assertTrue({
+            "uq_desktop_pairings_setup_code_digest",
+            "uq_desktop_pairings_principal_id",
+            "uq_desktop_pairings_token_id",
+        }.issubset(pairing_uniques))
         self.assertTrue({"available_at", "lease_owner", "lease_expires_at", "completed_at"}.issubset(pending_columns))
         self.assertIn("idx_pending_events_claim_ordered", pending_indexes)
         self.assertNotIn("idx_pending_events_claim", pending_indexes)

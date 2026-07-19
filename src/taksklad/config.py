@@ -125,7 +125,7 @@ TELEGRAM_SETTINGS_FILE = os.path.join(APP_DIR, "telegram_settings.json")
 YANDEX_GEOCODER_KEY_FILE = os.path.join(APP_DIR, "yandex_geocoder_key.txt")
 YANDEX_GEOCODER_ENV_VAR = "YANDEX_GEOCODER_API_KEY"
 
-APP_VERSION = "2.0.49"
+APP_VERSION = "2.0.50"
 APP_BUILD_LABEL = os.environ.get("TAKSKLAD_BUILD_LABEL", "MVP 2.0").strip()
 UPDATE_INFO_URL = os.environ.get(
     "TAKSKLAD_UPDATE_INFO_URL",
@@ -153,7 +153,9 @@ TAKSKLAD_BACKEND_BASE_URL = _string_setting(
     RUNTIME_CONFIG,
     "TAKSKLAD_BACKEND_BASE_URL",
     "TAKSKLAD_BACKEND_BASE_URL",
-    default="https://api.taksklad.uz" if TAKSKLAD_BACKEND_API_TOKEN else "",
+    # The server address is public configuration and must remain available on
+    # a clean workstation before its one-time credential pairing completes.
+    default="https://api.taksklad.uz",
 ).rstrip("/")
 # Desktop 2.x работает только через backend/PostgreSQL. Эти значения намеренно
 # не читаются из env/runtime config: старый Google-режим нельзя вернуть флагом

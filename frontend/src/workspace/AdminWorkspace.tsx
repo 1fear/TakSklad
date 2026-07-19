@@ -85,6 +85,7 @@ import {
   tashkentBusinessMonth,
 } from "../data-flow";
 import OrderCorrelationDetails from "../features/orders/OrderCorrelationDetails";
+import DesktopPairingControl from "../features/desktopPairing/DesktopPairingControl";
 
 type Tab = "warehouse" | "table" | "calendar" | "clients" | "smartup" | "imports" | "skladbotDryRun" | "incidents" | "activity";
 const HISTORY_TABS: Tab[] = ["imports", "skladbotDryRun", "incidents", "activity"];
@@ -1070,6 +1071,13 @@ function AdminWorkspace({
               <ShieldCheck size={17} />
               {authUser ? `${maskLogin(authUser)} · ${roleLabel(authRole)}` : "Вход выполнен"}
             </div>
+            {canAdminWrite && (
+              <DesktopPairingControl
+                config={config}
+                disabled={Boolean(busyAction)}
+                onError={(failure) => showActionError(failure, "Не удалось создать код подключения")}
+              />
+            )}
             {canAdminWrite && (
               <button className="ghost-button" onClick={() => void syncExternalSources()} disabled={Boolean(busyAction)} title="Обновить SkladBot через backend">
                 {busyAction === "sync-sources" ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}

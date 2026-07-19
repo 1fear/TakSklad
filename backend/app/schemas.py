@@ -78,6 +78,7 @@ class ReadinessResponse(BaseModel):
     imports: dict[str, Any] = Field(default_factory=dict)
     workers: dict[str, Any] = Field(default_factory=dict)
     daily_report: DailyReportReadinessResponse = Field(default_factory=DailyReportReadinessResponse)
+    desktop_pairing: dict[str, Any] = Field(default_factory=dict)
     policy: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -93,6 +94,34 @@ class AuthSessionRead(BaseModel):
     permissions: list[str] = Field(default_factory=list)
     expires_at: datetime | None = None
     csrf_token: str = ""
+
+
+class DesktopPairingCreateRequest(BaseModel):
+    device_label: str = Field(default="", max_length=80)
+
+
+class DesktopPairingCreateResponse(BaseModel):
+    pairing_id: str
+    setup_code: str
+    expires_at: datetime
+
+
+class DesktopPairingRedeemRequest(BaseModel):
+    setup_code: str = Field(min_length=43, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    desktop_version: str = Field(default="", max_length=40, pattern=r"^[0-9A-Za-z._+-]*$")
+
+
+class DesktopPairingRedeemResponse(BaseModel):
+    pairing_id: str
+    credential: str
+    principal_identifier: str
+    ack_deadline: datetime
+
+
+class DesktopPairingAckResponse(BaseModel):
+    pairing_id: str
+    status: Literal["acked"]
+    credential_expires_at: datetime
 
 
 class ScanEntryRead(BaseModel):

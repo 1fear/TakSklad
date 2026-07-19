@@ -38,14 +38,14 @@ class BackendRbacPolicyTests(unittest.TestCase):
         }
 
         self.assertEqual(actual, set(ROUTE_POLICIES))
-        self.assertEqual(len(actual), 59)
+        self.assertEqual(len(actual), 62)
         self.assertIn(("GET", "/api/v1/returns/auth-canary/acceptance"), actual)
         self.assertIn(("GET", "/api/v1/returns/auth-canary/desktop"), actual)
 
     def test_every_protected_route_has_complete_web_and_service_policy(self):
         protected = [policy for policy in ROUTE_POLICIES.values() if policy.authentication == AUTH_PROTECTED]
 
-        self.assertEqual(len(protected), 55)
+        self.assertEqual(len(protected), 57)
         self.assertTrue(all(policy.web_permission in ALL_PERMISSIONS for policy in protected))
         self.assertTrue(all(bool(policy.service_scope) for policy in protected))
 
@@ -172,7 +172,7 @@ class BackendRbacPolicyTests(unittest.TestCase):
                     self.assertEqual(anonymous.exception.status_code, 401)
                 decisions += 1
 
-        self.assertEqual(decisions, 330)
+        self.assertEqual(decisions, 342)
 
     def test_day_report_accepts_desktop_and_legacy_report_reader_scopes(self):
         request = SimpleNamespace(

@@ -57,7 +57,7 @@ test("@smoke table filters, pagination and order action are deterministic", asyn
 
   await page.getByLabel("Поиск заказов").fill("");
   await expect(page.getByText("Альфа Тест").first()).toBeVisible();
-  await page.getByRole("button", { name: "Склад" }).click();
+  await page.getByRole("button", { name: "Склад", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Склад · PostgreSQL" })).toBeVisible();
   await expect(page.getByText("Smartup ID: 261000001")).toBeVisible();
   await expect(page.getByPlaceholder("Отсканируйте код")).toHaveCount(0);
