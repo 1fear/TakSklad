@@ -650,9 +650,12 @@ class ReleasePreflightTests(unittest.TestCase):
         version = next(item for item in payload["checks"] if item["name"] == "version_json")
         published = tuple(int(part) for part in version["latest_version"].split("."))
         candidate = tuple(int(part) for part in EXPECTED_RELEASE_VERSION.split("."))
-        self.assertLess(published, candidate)
+        self.assertLessEqual(published, candidate)
         self.assertEqual(version["candidate_version"], EXPECTED_RELEASE_VERSION)
-        self.assertEqual(version["rollout_state"], "published-supported")
+        expected_state = (
+            "published-supported" if published < candidate else "candidate-published"
+        )
+        self.assertEqual(version["rollout_state"], expected_state)
 
     def write_bytes(self, path, content):
         path.write_bytes(content)
