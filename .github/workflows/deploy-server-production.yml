@@ -345,13 +345,28 @@ jobs:
           docker pull "\$RELEASE_BACKEND_IMAGE"
           docker pull "\$RELEASE_FRONTEND_IMAGE"
 
-          candidate_compose="/tmp/taksklad-server-candidate-compose-$$.json"
-          docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml \
+          install -d -m 700 .release-state
+          candidate_state=".release-state/server-routing-candidate"
+          test ! -L "\$candidate_state"
+          install -d -m 700 "\$candidate_state"
+          candidate_env="\$candidate_state/.env"
+          candidate_compose="\$candidate_state/compose.json"
+          test ! -L "\$candidate_env"
+          test ! -L "\$candidate_compose"
+          cleanup_candidate_routing() {
+            rm -f -- "\$candidate_env" "\$candidate_compose"
+            rmdir -- "\$candidate_state"
+          }
+          trap cleanup_candidate_routing EXIT
+          install -m 600 deploy/vds/.env "\$candidate_env"
+          install -m 600 /dev/null "\$candidate_compose"
+          docker compose --env-file "\$candidate_env" -f deploy/vds/docker-compose.yml \
             config --format json > "\$candidate_compose"
           python3 tools/verify_telegram_routing_contract.py \
-            --env-path deploy/vds/.env --compose-config-json "\$candidate_compose" --json >/dev/null
+            --env-path "\$candidate_env" --compose-config-json "\$candidate_compose" --json >/dev/null
           python3 tools/validate_daily_report_config.py < "\$candidate_compose"
-          rm -f "\$candidate_compose"
+          cleanup_candidate_routing
+          trap - EXIT
 
           current_revision="\$(docker compose --env-file deploy/vds/.env \
             -f deploy/vds/docker-compose.yml exec -T postgres sh -ec \
@@ -369,7 +384,6 @@ jobs:
             exit 1
           }
 
-          install -d -m 700 .release-state
           preflight_backend_id="\$(docker compose --env-file deploy/vds/.env \
             -f deploy/vds/docker-compose.yml ps -q backend-api </dev/null)"
           test -n "\$preflight_backend_id"
