@@ -38,7 +38,8 @@ class BackendRbacPolicyTests(unittest.TestCase):
         }
 
         self.assertEqual(actual, set(ROUTE_POLICIES))
-        self.assertEqual(len(actual), 62)
+        self.assertEqual(len(actual), 63)
+        self.assertIn(("POST", "/api/v1/auth/desktop-bootstrap"), actual)
         self.assertIn(("GET", "/api/v1/returns/auth-canary/acceptance"), actual)
         self.assertIn(("GET", "/api/v1/returns/auth-canary/desktop"), actual)
 

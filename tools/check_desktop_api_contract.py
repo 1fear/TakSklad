@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed compatibility gate for the current TakSklad desktop 2.0.50 API.
+"""Fail-closed compatibility gate for the current TakSklad desktop 2.0.51 API.
 
 The gate is intentionally static and data-free.  It verifies the HTTP methods,
 route templates, authentication policy and service-principal scopes used by the
@@ -16,7 +16,7 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
-FROZEN_DESKTOP_VERSION = "2.0.50"
+FROZEN_DESKTOP_VERSION = "2.0.51"
 
 
 @dataclass(frozen=True, order=True)

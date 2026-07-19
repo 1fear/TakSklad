@@ -34,6 +34,7 @@ from .diagnostics_service import build_backend_diagnostics_log
 from .device_pairing_service import (
     DevicePairingError,
     acknowledge_desktop_pairing,
+    bootstrap_desktop,
     create_desktop_pairing,
     redeem_desktop_pairing,
     run_device_pairing_sweeper_loop,
@@ -137,6 +138,7 @@ from .schemas import (
     ClientPointRead,
     ClientPointTimeslotUpdate,
     DashboardDaySummaryRead,
+    DesktopBootstrapRequest,
     DesktopPairingAckResponse,
     DesktopPairingCreateRequest,
     DesktopPairingCreateResponse,
@@ -754,6 +756,35 @@ def web_auth_check(request: Request, db=Depends(get_db)):
     response = Response(status_code=status.HTTP_204_NO_CONTENT)
     prevent_auth_response_caching(response)
     return response
+
+
+@auth_api.post(
+    "/desktop-bootstrap",
+    response_model=DesktopPairingRedeemResponse,
+)
+def public_desktop_bootstrap(
+    payload: DesktopBootstrapRequest,
+    request: Request,
+    response: Response,
+    db=Depends(get_db),
+):
+    prevent_auth_response_caching(response)
+    try:
+        bootstrapped = bootstrap_desktop(
+            db,
+            pepper=settings.web_session_secret,
+            desktop_version=payload.desktop_version,
+            rate_key=client_identity(request, settings.trusted_proxy_cidrs),
+        )
+    except DevicePairingError as exc:
+        db.rollback()
+        raise device_pairing_http_error(exc) from exc
+    return DesktopPairingRedeemResponse(
+        pairing_id=str(bootstrapped.pairing_id),
+        credential=bootstrapped.credential,
+        principal_identifier=bootstrapped.principal_identifier,
+        ack_deadline=bootstrapped.ack_deadline,
+    )
 
 
 @auth_api.post(

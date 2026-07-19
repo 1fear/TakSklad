@@ -97,6 +97,7 @@ def _protected(
 
 ROUTE_POLICIES: dict[tuple[str, str], RoutePolicy] = {
     ("POST", "/api/v1/auth/login"): _public(),
+    ("POST", "/api/v1/auth/desktop-bootstrap"): _public(),
     ("POST", "/api/v1/auth/desktop-pairing/redeem"): _public(),
     ("POST", "/api/v1/auth/desktop-pairing/{pairing_id}/ack"): _protected(
         PERMISSION_WAREHOUSE_READ,

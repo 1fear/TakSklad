@@ -38,10 +38,13 @@ from .secret_store import (
 
 
 REDEEM_PATH = "/api/v1/auth/desktop-pairing/redeem"
+BOOTSTRAP_PATH = "/api/v1/auth/desktop-bootstrap"
 ACK_PATH_TEMPLATE = "/api/v1/auth/desktop-pairing/{pairing_id}/ack"
 MAX_RESPONSE_BYTES = 32 * 1024
 SETUP_CODE_RE = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
 ACK_MAX_ATTEMPTS = 3
+BOOTSTRAP_MAX_ATTEMPTS = 3
+BOOTSTRAP_RETRY_BASE_SECONDS = 0.25
 
 
 class DesktopPairingError(RuntimeError):
@@ -112,9 +115,10 @@ def _json_request(
     credential: str | None = None,
     timeout: int,
     opener,
+    error_prefix: str = "pairing",
 ) -> dict:
     if not path.startswith("/api/v1/") or "://" in path:
-        raise DesktopPairingError("pairing_path_invalid")
+        raise DesktopPairingError(f"{error_prefix}_path_invalid")
     headers = {
         "Accept": "application/json",
         "Cache-Control": "no-store",
@@ -135,7 +139,7 @@ def _json_request(
             status = int(getattr(response, "status", response.getcode()))
             if status < 200 or status >= 300:
                 raise DesktopPairingError(
-                    f"pairing_http_{status}",
+                    f"{error_prefix}_http_{status}",
                     retryable=status in {408, 429, 500, 502, 503, 504},
                 )
             raw = response.read(MAX_RESPONSE_BYTES + 1)
@@ -149,19 +153,19 @@ def _json_request(
         finally:
             exc.close()
         raise DesktopPairingError(
-            f"pairing_http_{status}",
+            f"{error_prefix}_http_{status}",
             retryable=status in {408, 429, 500, 502, 503, 504},
         ) from exc
     except Exception as exc:
-        raise DesktopPairingError("pairing_transport_failed", retryable=True) from exc
+        raise DesktopPairingError(f"{error_prefix}_transport_failed", retryable=True) from exc
     if len(raw) > MAX_RESPONSE_BYTES:
-        raise DesktopPairingError("pairing_response_too_large")
+        raise DesktopPairingError(f"{error_prefix}_response_too_large")
     try:
         result = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise DesktopPairingError("pairing_response_invalid") from exc
+        raise DesktopPairingError(f"{error_prefix}_response_invalid") from exc
     if not isinstance(result, dict):
-        raise DesktopPairingError("pairing_response_invalid")
+        raise DesktopPairingError(f"{error_prefix}_response_invalid")
     return result
 
 
@@ -231,6 +235,10 @@ def acknowledge_pairing(
                 or not result.get("credential_expires_at", "").strip()
             ):
                 raise DesktopPairingError("pairing_ack_response_invalid")
+            try:
+                _parse_deadline(result["credential_expires_at"], now_func=now_func)
+            except DesktopPairingError as exc:
+                raise DesktopPairingError("pairing_ack_response_invalid") from exc
             return
         except DesktopPairingError as exc:
             last_error = exc
@@ -242,6 +250,48 @@ def acknowledge_pairing(
                 break
             sleep_func(delay)
     raise DesktopPairingError("pairing_ack_failed") from last_error
+
+
+def request_public_desktop_identity(
+    *,
+    timeout: int = TAKSKLAD_BACKEND_TIMEOUT_SECONDS,
+    opener=None,
+    now_func=None,
+    sleep_func=None,
+) -> RedeemedDesktopIdentity:
+    """Request one short-lived public identity without local setup input."""
+
+    network_opener = opener or _system_tls_opener()
+    sleep_func = sleep_func or time.sleep
+    result = None
+    last_error = None
+    for attempt in range(BOOTSTRAP_MAX_ATTEMPTS):
+        try:
+            result = _json_request(
+                "POST",
+                BOOTSTRAP_PATH,
+                {"desktop_version": APP_VERSION},
+                timeout=timeout,
+                opener=network_opener,
+                error_prefix="desktop_bootstrap",
+            )
+            break
+        except DesktopPairingError as exc:
+            last_error = exc
+            if not exc.retryable or attempt + 1 >= BOOTSTRAP_MAX_ATTEMPTS:
+                raise
+            sleep_func(BOOTSTRAP_RETRY_BASE_SECONDS * (2**attempt))
+    if result is None:
+        raise DesktopPairingError("desktop_bootstrap_failed") from last_error
+    try:
+        return RedeemedDesktopIdentity(
+            pairing_id=_validate_pairing_id(result.get("pairing_id")),
+            credential=validate_scoped_credential(result.get("credential")),
+            principal_identifier=validate_principal_identifier(result.get("principal_identifier")),
+            ack_deadline=_parse_deadline(result.get("ack_deadline"), now_func=now_func),
+        )
+    except (DesktopPairingError, ReturnsAuthCanaryError) as exc:
+        raise DesktopPairingError("desktop_bootstrap_response_invalid") from exc
 
 
 def _locally_valid_bundle(store) -> bool:
@@ -258,6 +308,81 @@ def _locally_valid_bundle(store) -> bool:
 def desktop_pairing_required(*, store=None) -> bool:
     secret_store = store or get_secret_store()
     return not _locally_valid_bundle(secret_store)
+
+
+def ensure_public_desktop_identity(
+    *,
+    store=None,
+    timeout: int = TAKSKLAD_BACKEND_TIMEOUT_SECONDS,
+    opener=None,
+    canary_opener=None,
+    now_func=None,
+    sleep_func=None,
+    credential_lock_held: bool = False,
+    lock_acquirer=None,
+    lock_releaser=None,
+) -> bool:
+    """Silently preserve or bootstrap one verified current-user identity."""
+
+    lock_result = None
+    if not credential_lock_held:
+        acquire = lock_acquirer or acquire_credential_mutation_lock
+        try:
+            lock_result = acquire()
+        except Exception as exc:
+            raise DesktopPairingError("workstation_lock_unavailable") from exc
+        if not getattr(lock_result, "acquired", False):
+            raise DesktopPairingError("workstation_in_use")
+    try:
+        return _ensure_public_desktop_identity_locked(
+            store=store,
+            timeout=timeout,
+            opener=opener,
+            canary_opener=canary_opener,
+            now_func=now_func,
+            sleep_func=sleep_func,
+        )
+    finally:
+        if lock_result is not None and getattr(lock_result, "acquired", False):
+            (lock_releaser or release_credential_mutation_lock)(lock_result.lock)
+
+
+def _ensure_public_desktop_identity_locked(
+    *,
+    store=None,
+    timeout: int,
+    opener=None,
+    canary_opener=None,
+    now_func=None,
+    sleep_func=None,
+) -> bool:
+    try:
+        secret_store = store or get_secret_store()
+        if not _production_dpapi_store(secret_store):
+            raise DesktopPairingError("secure_store_unavailable")
+        if _locally_valid_bundle(secret_store):
+            return True
+    except DesktopPairingError:
+        raise
+    except Exception as exc:
+        raise DesktopPairingError("secure_store_unavailable") from exc
+
+    network_opener = opener or _system_tls_opener()
+    identity = request_public_desktop_identity(
+        timeout=timeout,
+        opener=network_opener,
+        now_func=now_func,
+        sleep_func=sleep_func,
+    )
+    return _install_redeemed_identity(
+        identity,
+        secret_store=secret_store,
+        timeout=timeout,
+        network_opener=network_opener,
+        canary_opener=canary_opener,
+        now_func=now_func,
+        sleep_func=sleep_func,
+    )
 
 
 def pair_desktop_from_setup_code(
@@ -326,6 +451,27 @@ def _pair_desktop_from_setup_code_locked(
         now_func=now_func,
     )
 
+    return _install_redeemed_identity(
+        identity,
+        secret_store=secret_store,
+        timeout=timeout,
+        network_opener=network_opener,
+        canary_opener=canary_opener,
+        now_func=now_func,
+        sleep_func=sleep_func,
+    )
+
+
+def _install_redeemed_identity(
+    identity: RedeemedDesktopIdentity,
+    *,
+    secret_store,
+    timeout: int,
+    network_opener,
+    canary_opener=None,
+    now_func=None,
+    sleep_func=None,
+) -> bool:
     def ack_verifier(_credential, _identifier):
         acknowledge_pairing(
             identity,

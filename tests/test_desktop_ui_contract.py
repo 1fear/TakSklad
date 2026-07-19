@@ -223,6 +223,7 @@ class DesktopUiContractTests(unittest.TestCase):
             mock.patch("taksklad.main.migrate_legacy_json_files_to_app_data"),
             mock.patch("taksklad.main.migrate_legacy_pending_saves_to_backend_events", return_value={"remaining": 0}),
             mock.patch("taksklad.main.log_startup_self_check"),
+            mock.patch("taksklad.main.ensure_public_desktop_identity", return_value=True),
             mock.patch("taksklad.main.backend_configured", return_value=True),
             mock.patch("taksklad.main.ScanningApp", return_value=app),
         ):

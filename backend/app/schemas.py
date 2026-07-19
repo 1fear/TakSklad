@@ -106,6 +106,14 @@ class DesktopPairingCreateResponse(BaseModel):
     expires_at: datetime
 
 
+class DesktopBootstrapRequest(BaseModel):
+    desktop_version: str = Field(
+        min_length=1,
+        max_length=40,
+        pattern=r"^[0-9A-Za-z._+-]+$",
+    )
+
+
 class DesktopPairingRedeemRequest(BaseModel):
     setup_code: str = Field(min_length=43, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
     desktop_version: str = Field(default="", max_length=40, pattern=r"^[0-9A-Za-z._+-]*$")
