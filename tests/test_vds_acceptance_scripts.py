@@ -264,6 +264,18 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
             script,
         )
 
+    def test_deploy_accepts_only_verified_full_or_server_release_manifests(self):
+        script = (PROJECT_ROOT / "deploy" / "vds" / "deploy_from_git.sh").read_text(encoding="utf-8")
+
+        self.assertIn('release_kind in (None, "full")', script)
+        self.assertIn('release_kind == "server"', script)
+        self.assertIn('raise SystemExit(f"unsupported release_kind:', script)
+        self.assertIn('print("tools/release_artifacts.py")', script)
+        self.assertIn('print("tools/server_release_artifacts.py")', script)
+        self.assertIn('verify_release_manifest "$PREVIOUS_MANIFEST"', script)
+        self.assertIn('TAKSKLAD_SERVER_RELEASE_ID', script)
+        self.assertIn('TAKSKLAD_DESKTOP_API_CONTRACT', script)
+
     def test_frontend_uses_same_origin_api_proxy_contract(self):
         compose = (PROJECT_ROOT / "deploy" / "vds" / "docker-compose.yml").read_text(encoding="utf-8")
         nginx = (PROJECT_ROOT / "frontend" / "nginx.conf.template").read_text(encoding="utf-8")

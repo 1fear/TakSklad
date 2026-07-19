@@ -186,7 +186,8 @@ class ReleasePreflightTests(unittest.TestCase):
             )
         if path_text.endswith("deploy/vds/deploy_from_git.sh"):
             return (
-                "tools/release_artifacts.py verify\n"
+                "tools/release_artifacts.py\n"
+                "tools/server_release_artifacts.py\n"
                 "alembic -c alembic.ini upgrade head\n"
                 "--no-build --pull never\n"
                 "--wait --wait-timeout\n"

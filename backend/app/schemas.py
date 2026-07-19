@@ -40,6 +40,8 @@ class HealthResponse(BaseModel):
     version: str
     commit_sha: str = "unknown"
     image_digest: str = "unknown"
+    server_release_id: str = "unknown"
+    desktop_api_contract: int = 1
     environment: str
 
 
@@ -48,6 +50,8 @@ class VersionResponse(BaseModel):
     version: str
     commit_sha: str
     image_digest: str
+    server_release_id: str
+    desktop_api_contract: int
     environment: str
 
 
@@ -65,6 +69,8 @@ class ReadinessResponse(BaseModel):
     version: str
     commit_sha: str = "unknown"
     image_digest: str = "unknown"
+    server_release_id: str = "unknown"
+    desktop_api_contract: int = 1
     environment: str
     database: dict[str, Any] = Field(default_factory=dict)
     migrations: dict[str, Any] = Field(default_factory=dict)

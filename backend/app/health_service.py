@@ -20,7 +20,7 @@ from .event_queue_service import (
 )
 from .models import AuditLog, ImportJob, Incident, PendingEvent
 from .redaction import redact_secrets
-from .settings import APP_VERSION
+from .settings import APP_VERSION, DESKTOP_API_CONTRACT
 from .worker_observability import build_worker_readiness
 
 
@@ -35,14 +35,30 @@ SKLADBOT_DAILY_SUCCESS_RESULT_STATUSES = {
 }
 SHA256_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 COMMIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+SERVER_RELEASE_ID_RE = re.compile(r"^server-([0-9a-f]{40})$")
 
 
 def runtime_build_identity():
     commit_sha = str(os.environ.get("TAKSKLAD_COMMIT_SHA") or "").strip().lower()
     image_digest = str(os.environ.get("TAKSKLAD_IMAGE_DIGEST") or "").strip().lower()
+    verified_commit_sha = commit_sha if COMMIT_SHA_RE.fullmatch(commit_sha) else "unknown"
+    configured_release_id = str(
+        os.environ.get("TAKSKLAD_SERVER_RELEASE_ID") or ""
+    ).strip().lower()
+    release_match = SERVER_RELEASE_ID_RE.fullmatch(configured_release_id)
+    if release_match and (
+        verified_commit_sha == "unknown" or release_match.group(1) == verified_commit_sha
+    ):
+        server_release_id = configured_release_id
+    elif verified_commit_sha != "unknown":
+        server_release_id = f"server-{verified_commit_sha}"
+    else:
+        server_release_id = "unknown"
     return {
-        "commit_sha": commit_sha if COMMIT_SHA_RE.fullmatch(commit_sha) else "unknown",
+        "commit_sha": verified_commit_sha,
         "image_digest": image_digest if SHA256_DIGEST_RE.fullmatch(image_digest) else "unknown",
+        "server_release_id": server_release_id,
+        "desktop_api_contract": DESKTOP_API_CONTRACT,
     }
 
 
@@ -156,6 +172,10 @@ def public_readiness_report(report):
         "version": report.get("version") or "",
         "commit_sha": report.get("commit_sha") or "unknown",
         "image_digest": report.get("image_digest") or "unknown",
+        "server_release_id": report.get("server_release_id") or "unknown",
+        "desktop_api_contract": int(
+            report.get("desktop_api_contract") or DESKTOP_API_CONTRACT
+        ),
         "environment": report.get("environment") or "",
         "database": {"status": (report.get("database") or {}).get("status") or "unknown"},
         "migrations": {

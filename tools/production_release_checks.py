@@ -11,7 +11,7 @@ import re
 import sys
 from typing import Any
 
-from tools.release_artifacts import ReleaseArtifactError, verify_manifest
+from tools.release_artifacts import ReleaseArtifactError, verify_manifest as verify_full_manifest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -66,7 +66,15 @@ def require_zero(value: Any, field: str) -> None:
 
 def load_production_manifest(path: Path) -> dict[str, Any]:
     try:
-        return verify_manifest(path, local=False)
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        release_kind = raw.get("release_kind")
+        if release_kind in (None, "full"):
+            return verify_full_manifest(path, local=False)
+        if release_kind == "server":
+            from tools.server_release_artifacts import verify_manifest as verify_server_manifest
+
+            return verify_server_manifest(path)
+        raise ProductionCheckError("unsupported release manifest kind")
     except (ReleaseArtifactError, OSError, ValueError, json.JSONDecodeError) as exc:
         raise ProductionCheckError(str(exc)) from exc
 
@@ -127,6 +135,18 @@ def validate_preflight(
     budget = float(migration.get("runtime_budget_seconds") or 0)
     if observed < 0 or budget <= 0 or observed > budget:
         raise ProductionCheckError("migration preflight exceeded its runtime budget")
+    if manifest.get("release_kind") == "server":
+        database_contract = manifest.get("database") or {}
+        if database_contract.get("migration_policy") != "no_change":
+            raise ProductionCheckError("server-only release migration policy must remain no_change")
+        expected_head = str(database_contract.get("alembic_head") or "")
+        if not expected_head:
+            raise ProductionCheckError("server-only release Alembic head is missing")
+        if (
+            migration.get("current_revision") != expected_head
+            or migration.get("target_revision") != expected_head
+        ):
+            raise ProductionCheckError("server-only release cannot change the production schema")
     invariants = evidence.get("invariants") or {}
     require_zero(invariants.get("violations"), "invariants.violations")
     if invariants.get("zero_mutation") is not True or invariants.get("automatic_repairs") != 0:
@@ -169,8 +189,19 @@ def validate_live(
         raise ProductionCheckError("live runtime SHA differs from release manifest")
     if runtime.get("backend_digest") != expected_digest or not DIGEST_RE.fullmatch(str(runtime.get("backend_digest") or "")):
         raise ProductionCheckError("live backend digest differs from release manifest")
-    if runtime.get("version") != manifest.get("windows", {}).get("version"):
+    compatibility = manifest.get("compatibility") or {}
+    expected_runtime_version = (
+        compatibility.get("min_desktop_version")
+        if manifest.get("release_kind") == "server"
+        else manifest.get("windows", {}).get("version")
+    )
+    if runtime.get("version") != expected_runtime_version:
         raise ProductionCheckError("live version differs from release manifest")
+    if manifest.get("release_kind") == "server":
+        if runtime.get("server_release_id") != manifest.get("server_release_id"):
+            raise ProductionCheckError("live server release identity differs from release manifest")
+        if runtime.get("desktop_api_contract") != compatibility.get("desktop_api_contract"):
+            raise ProductionCheckError("live desktop API contract differs from release manifest")
     health = evidence.get("health") or {}
     readiness = evidence.get("readiness") or {}
     if health.get("status") != "ok" or health.get("http_status") != 200:

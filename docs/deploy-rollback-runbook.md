@@ -284,6 +284,18 @@ curl -fsS https://api.taksklad.uz/health
 
 ## 6. Rollback Backend Runtime
 
+Для server-only release применяется контракт разделения из
+`docs/server-desktop-release-separation.md`: Windows `2.0.49`, installer и
+`version.json` не меняются. До activation обязателен data-free gate:
+
+```bash
+PYTHONPATH=. python tools/check_desktop_api_contract.py
+```
+
+Первый релиз разделения не должен содержать Alembic migration. Более поздняя
+server-only migration допускается только как staged expand-only; drop/rename и
+автоматический downgrade являются stop condition.
+
 Rollback выбирает только exact previous manifest из protected current-release record,
 повторно проверяет image digests и активирует предыдущий immutable bundle без build,
 checkout или синхронизации source tree. После rollback обязательны exact runtime

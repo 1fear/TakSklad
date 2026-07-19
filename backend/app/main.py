@@ -418,7 +418,8 @@ def require_service_token(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Invalid protected route policy")
     auth_context = read_auth_context(request, authorization, db=db)
     if auth_context.source == "service-principal":
-        if not policy.service_scope or policy.service_scope not in auth_context.permissions:
+        allowed_service_scopes = frozenset({policy.service_scope}) | policy.service_scope_alternatives
+        if not policy.service_scope or allowed_service_scopes.isdisjoint(auth_context.permissions):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Service principal scope denied")
     elif auth_context.source == "legacy-service-token":
         if not legacy_auth_window_active():
