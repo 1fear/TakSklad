@@ -71,10 +71,12 @@ class SkladBotCanonicalLinkTests(unittest.TestCase):
         Base.metadata.drop_all(self.engine)
         self.engine.dispose()
 
-    def seed_create_event(self, db):
+    def seed_create_event(self, db, *, order_id=None):
+        order_id = order_id or uuid.uuid4()
         order = Order(
+            id=order_id,
             source="test",
-            external_id=f"synthetic-{uuid.uuid4()}",
+            external_id=f"synthetic-{order_id}",
             order_date=date(2026, 7, 17),
             payment_type="Перечисление",
             client="Synthetic client",
@@ -349,12 +351,12 @@ class SkladBotCanonicalLinkTests(unittest.TestCase):
             self.assertEqual(recovered["number"], "WH-R-123")
 
     def test_save_entrypoint_requires_canonical_pair(self):
-        for request in (
-            {"id": "7.001e3", "number": "WH-R-7001"},
-            {"id": "7001", "number": "NOT-A-SKLADBOT-NUMBER"},
+        for order_id, request in (
+            (uuid.UUID("00000000-0000-0000-0000-000000007001"), {"id": "7.001e3", "number": "WH-R-7001"}),
+            (uuid.UUID("00000000-0000-0000-0000-000000007002"), {"id": "7001", "number": "NOT-A-SKLADBOT-NUMBER"}),
         ):
             with self.subTest(request=request), self.SessionLocal() as db:
-                order, event = self.seed_create_event(db)
+                order, event = self.seed_create_event(db, order_id=order_id)
 
                 result = save_skladbot_create_result(
                     db,
