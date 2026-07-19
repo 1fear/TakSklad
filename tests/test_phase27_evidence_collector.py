@@ -10,6 +10,7 @@ from tools.collect_phase27_evidence import (
     latest_backup,
     live_runtime_invariants,
     live_worker_readiness,
+    parse_alembic_head_output,
     fetch_json_with_retry,
     percentile,
     read_json_file,
@@ -93,6 +94,17 @@ class Phase27EvidenceCollectorTests(unittest.TestCase):
 
     def test_percentile_uses_nearest_rank(self):
         self.assertEqual(percentile([1, 2, 3, 4, 5], 0.95), 5)
+
+    def test_alembic_head_parser_ignores_compose_status_chatter(self):
+        output = """ Container vds-postgres-1 Running
+ Container vds-backend-api-run-123 Creating
+ Container vds-backend-api-run-123 Created
+20260716_0019 (head)
+"""
+        self.assertEqual(parse_alembic_head_output(output), "20260716_0019")
+
+    def test_alembic_head_parser_fails_closed_without_revision(self):
+        self.assertEqual(parse_alembic_head_output("Container backend Running\n"), "")
 
     def test_command_failure_redacts_secret_like_output(self):
         with self.assertRaises(CollectionError) as raised:

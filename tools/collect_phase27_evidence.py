@@ -141,6 +141,18 @@ def percentile(values: list[float], percentile_value: float) -> float:
     return round(ordered[index], 3)
 
 
+def parse_alembic_head_output(output: str) -> str:
+    """Extract the Alembic head while ignoring Docker Compose status chatter."""
+
+    for line in reversed(output.splitlines()):
+        parts = line.strip().split()
+        if not parts or not re.fullmatch(r"[0-9A-Za-z_]+", parts[0]):
+            continue
+        if len(parts) == 1 or parts[1:] == ["(head)"]:
+            return parts[0]
+    return ""
+
+
 def compose_base(args: argparse.Namespace, manifest: dict[str, Any]) -> tuple[list[str], dict[str, str]]:
     if not args.env_file.is_file() or not args.compose_file.is_file():
         raise CollectionError("production Compose inputs are missing")
@@ -202,7 +214,7 @@ def candidate_preflight(args: argparse.Namespace, manifest: dict[str, Any]) -> t
         environment=environment,
         timeout=180,
     )
-    target_revision = target_output.split()[0] if target_output.split() else ""
+    target_revision = parse_alembic_head_output(target_output)
     if not target_revision:
         raise CollectionError("candidate migration head is missing")
     return invariants, target_revision, round(time.monotonic() - started, 3)
