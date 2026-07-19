@@ -23,6 +23,17 @@ def manifest():
     }
 
 
+def server_manifest():
+    return {
+        "release_kind": "server",
+        "server_release_id": f"server-{SHA}",
+        "source_sha": SHA,
+        "compatibility": {"desktop_api_contract": 1, "min_desktop_version": "2.0.49"},
+        "database": {"migration_policy": "no_change", "alembic_head": "head"},
+        "images": {"backend": {"digest": DIGEST}},
+    }
+
+
 class ProductionReleaseChecksTests(unittest.TestCase):
     def setUp(self):
         self.now = datetime.now(timezone.utc)
@@ -113,6 +124,54 @@ class ProductionReleaseChecksTests(unittest.TestCase):
             max_backup_age_hours=24, max_restore_drill_age_hours=192,
         )
         self.assertEqual(result["blockers"], 0)
+
+    def test_server_preflight_requires_unchanged_schema(self):
+        evidence = self.preflight()
+        evidence["migration"].update(
+            current_revision="head",
+            expected_current_revision="head",
+            target_revision="head",
+        )
+        result = validate_preflight(
+            evidence, server_manifest(), require_current_backup=True,
+            require_zero_blockers=True, now=self.now,
+            max_backup_age_hours=24, max_restore_drill_age_hours=192,
+        )
+        self.assertEqual(result["current_revision"], "head")
+
+        evidence["migration"]["target_revision"] = "new-head"
+        with self.assertRaisesRegex(ProductionCheckError, "cannot change the production schema"):
+            validate_preflight(
+                evidence, server_manifest(), require_current_backup=True,
+                require_zero_blockers=True, now=self.now,
+                max_backup_age_hours=24, max_restore_drill_age_hours=192,
+            )
+
+    def test_server_live_requires_release_and_contract_identity(self):
+        evidence = self.live()
+        evidence["runtime"] = {
+            "source_sha": SHA,
+            "backend_digest": DIGEST,
+            "version": "2.0.49",
+            "server_release_id": f"server-{SHA}",
+            "desktop_api_contract": 1,
+        }
+        result = validate_live(
+            evidence,
+            server_manifest(),
+            require_same_sha=True,
+            require_slo_window=True,
+        )
+        self.assertEqual(result["version"], "2.0.49")
+
+        evidence["runtime"]["desktop_api_contract"] = 2
+        with self.assertRaisesRegex(ProductionCheckError, "API contract"):
+            validate_live(
+                evidence,
+                server_manifest(),
+                require_same_sha=True,
+                require_slo_window=True,
+            )
 
     def test_preflight_rejects_stale_backup_and_any_violation(self):
         evidence = self.preflight()

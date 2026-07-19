@@ -174,6 +174,32 @@ class BackendRbacPolicyTests(unittest.TestCase):
 
         self.assertEqual(decisions, 330)
 
+    def test_day_report_accepts_desktop_and_legacy_report_reader_scopes(self):
+        request = SimpleNamespace(
+            method="GET",
+            url=SimpleNamespace(path="/api/v1/reports/day"),
+            scope={"route": SimpleNamespace(path="/api/v1/reports/day")},
+            state=SimpleNamespace(),
+            cookies={},
+            headers={},
+        )
+        db = SimpleNamespace(info={}, rollback=lambda: None)
+        for scope in ("orders:read", "reports:read"):
+            context = backend_main.AuthContext(
+                login=f"synthetic-{scope}",
+                role="worker",
+                permissions=(scope,),
+                source="service-principal",
+                principal_id="00000000-0000-0000-0000-000000001402",
+            )
+            with self.subTest(scope=scope), mock.patch.object(
+                backend_main, "read_auth_context", return_value=context
+            ):
+                self.assertEqual(
+                    backend_main.require_service_token(request, db=db).source,
+                    "service-principal",
+                )
+
     def test_all_get_handlers_static_mutation_scan_is_zero(self):
         banned_calls = {
             "commit",

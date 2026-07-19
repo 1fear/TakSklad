@@ -31,6 +31,7 @@ DEPLOY_CONTROL_PATHS = (
     "tools/production_preflight.sh",
     "tools/production_release_checks.py",
     "tools/release_artifacts.py",
+    "tools/server_release_artifacts.py",
     "tools/validate_daily_report_config.py",
     "tools/validate_deploy_probe.py",
     "tools/verify_telegram_routing_contract.py",

@@ -1,0 +1,459 @@
+name: Deploy Server Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      artifact_run_id:
+        description: Successful Build Immutable Server Release workflow run ID
+        required: true
+      source_sha:
+        description: Exact 40-character server release commit SHA
+        required: true
+      manifest_sha256:
+        description: Expected SHA256 of the attested server-release.json
+        required: true
+
+permissions:
+  actions: read
+  attestations: read
+  contents: read
+  packages: read
+
+concurrency:
+  group: taksklad-production
+  cancel-in-progress: false
+
+jobs:
+  deploy-server:
+    name: Production server-only deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: production
+
+    steps:
+      - name: Download and verify immutable server release manifest
+        env:
+          ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
+          EXPECTED_MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
+          EXPECTED_SOURCE_SHA: ${{ inputs.source_sha }}
+          WORKFLOW_CONTROL_REF: ${{ github.ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$ARTIFACT_RUN_ID" =~ ^[1-9][0-9]*$ ]] || {
+            echo "IMMUTABLE_ARTIFACT_RUN_ID_REQUIRED" >&2
+            exit 1
+          }
+          [[ "$EXPECTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "IMMUTABLE_SOURCE_SHA_REQUIRED" >&2
+            exit 1
+          }
+          [[ "$WORKFLOW_CONTROL_REF" == "refs/heads/main" ]] || {
+            echo "SERVER_DEPLOY_MAIN_REF_REQUIRED" >&2
+            exit 1
+          }
+          [[ "$EXPECTED_MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "IMMUTABLE_SERVER_MANIFEST_SHA256_REQUIRED" >&2
+            exit 1
+          }
+
+          run_metadata="$RUNNER_TEMP/server-release-run.json"
+          gh run view "$ARTIFACT_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --json conclusion,event,headBranch,headSha,workflowName > "$run_metadata"
+          python3 - "$run_metadata" "$EXPECTED_SOURCE_SHA" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          metadata = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          if metadata.get("workflowName") != "Build Immutable Server Release":
+              raise SystemExit("UNVERIFIED_SERVER_RELEASE_WORKFLOW")
+          if metadata.get("conclusion") != "success":
+              raise SystemExit("SERVER_RELEASE_WORKFLOW_NOT_SUCCESSFUL")
+          if metadata.get("event") != "workflow_dispatch":
+              raise SystemExit("UNVERIFIED_SERVER_RELEASE_EVENT")
+          if metadata.get("headBranch") != "main" or metadata.get("headSha") != sys.argv[2]:
+              raise SystemExit("SERVER_RELEASE_WORKFLOW_SOURCE_SHA_MISMATCH")
+          PY
+
+          manifest_dir="$RUNNER_TEMP/server-release-manifest"
+          mkdir -p "$manifest_dir"
+          gh run download "$ARTIFACT_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name taksklad-server-release-manifest --dir "$manifest_dir"
+          manifest_path="$manifest_dir/server-release.json"
+          [[ -f "$manifest_path" ]] || {
+            echo "SERVER_RELEASE_MANIFEST_NOT_FOUND" >&2
+            exit 1
+          }
+          actual_manifest_sha256="$(sha256sum "$manifest_path" | awk '{print $1}')"
+          [[ "$actual_manifest_sha256" == "$EXPECTED_MANIFEST_SHA256" ]] || {
+            echo "SERVER_RELEASE_MANIFEST_SHA256_MISMATCH" >&2
+            exit 1
+          }
+          signer_workflow="github.com/$GITHUB_REPOSITORY/.github/workflows/build-server-release.yml"
+          gh attestation verify "$manifest_path" --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$signer_workflow" --source-digest "$EXPECTED_SOURCE_SHA"
+          printf 'SERVER_RELEASE_MANIFEST_PATH=%s\n' "$manifest_path" >> "$GITHUB_ENV"
+          printf 'SERVER_RELEASE_SIGNER_WORKFLOW=%s\n' "$signer_workflow" >> "$GITHUB_ENV"
+
+      - name: Checkout exact verified server SHA
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Verify manifest, CI identity, and OCI attestations
+        env:
+          EXPECTED_SOURCE_SHA: ${{ inputs.source_sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$EXPECTED_SOURCE_SHA" origin/main || {
+            echo "SERVER_RELEASE_SOURCE_IS_NOT_ON_MAIN" >&2
+            exit 1
+          }
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/server_release_artifacts.py verify \
+            --manifest "$SERVER_RELEASE_MANIFEST_PATH" --sha "$EXPECTED_SOURCE_SHA"
+
+          ci_run_id="$(python3 - "$SERVER_RELEASE_MANIFEST_PATH" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          print(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))["ci"]["run_id"])
+          PY
+          )"
+          ci_run_attempt="$(python3 - "$SERVER_RELEASE_MANIFEST_PATH" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          print(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))["ci"]["run_attempt"])
+          PY
+          )"
+          ci_metadata="$RUNNER_TEMP/ci-run.json"
+          gh run view "$ci_run_id" --repo "$GITHUB_REPOSITORY" \
+            --json attempt,conclusion,event,headBranch,headSha,jobs,workflowName > "$ci_metadata"
+          python3 - "$ci_metadata" "$EXPECTED_SOURCE_SHA" "$ci_run_attempt" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          metadata = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          if metadata.get("workflowName") != "CI" or metadata.get("conclusion") != "success":
+              raise SystemExit("UNVERIFIED_CI_WORKFLOW")
+          if metadata.get("event") != "push" or metadata.get("headBranch") != "main":
+              raise SystemExit("CI_MAIN_PUSH_REQUIRED")
+          if metadata.get("headSha") != sys.argv[2] or metadata.get("attempt") != int(sys.argv[3]):
+              raise SystemExit("CI_SOURCE_IDENTITY_MISMATCH")
+          gates = [job for job in metadata.get("jobs", []) if job.get("name") == "Release gate"]
+          if len(gates) != 1 or gates[0].get("conclusion") != "success":
+              raise SystemExit("CI_RELEASE_GATE_NOT_SUCCESSFUL")
+          PY
+
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          mapfile -t image_references < <(python3 - "$SERVER_RELEASE_MANIFEST_PATH" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          for role in ("backend", "frontend"):
+              print(manifest["images"][role]["reference"])
+          PY
+          )
+          test "${#image_references[@]}" -eq 2
+          for reference in "${image_references[@]}"; do
+            gh attestation verify "oci://$reference" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$SERVER_RELEASE_SIGNER_WORKFLOW" --source-digest "$EXPECTED_SOURCE_SHA"
+          done
+
+      - name: Validate and package exact-SHA deployment control plane
+        env:
+          DEPLOY_CONTROL_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          bash -n deploy/vds/deploy_from_git.sh
+          grep -q 'rollback_after_candidate_failure' deploy/vds/deploy_from_git.sh
+          grep -q 'backup_postgres.sh --no-prune' deploy/vds/deploy_from_git.sh
+          grep -q 'run_acceptance' deploy/vds/deploy_from_git.sh
+          grep -q 'check_public_url readiness' deploy/vds/deploy_from_git.sh
+
+          materializer="$RUNNER_TEMP/materialize-deploy-control.py"
+          control_root="$RUNNER_TEMP/deploy-control-$DEPLOY_CONTROL_SHA"
+          test ! -e "$control_root"
+          git cat-file blob "$DEPLOY_CONTROL_SHA:tools/materialize_deploy_control.py" > "$materializer"
+          chmod 700 "$materializer"
+          python3 "$materializer" --repo-root . --source-sha "$DEPLOY_CONTROL_SHA" --output-dir "$control_root"
+          auth_paths=(
+            src/taksklad/__init__.py
+            src/taksklad/returns_auth_canary.py
+            tools/credentialed_returns_canary.py
+            tools/validate_auth_canary_token_file.py
+          )
+          for relative in "${auth_paths[@]}"; do
+            install -d "$control_root/$(dirname "$relative")"
+            git cat-file blob "$DEPLOY_CONTROL_SHA:$relative" > "$control_root/$relative"
+            chmod 600 "$control_root/$relative"
+          done
+          test -f "$control_root/tools/server_release_artifacts.py"
+          bash -n "$control_root/deploy/vds/deploy_from_git.sh" \
+            "$control_root/deploy/vds/acceptance_status.sh" \
+            "$control_root/tools/live_release_verifier.sh"
+          mapfile -t deploy_control_paths < <(python3 "$materializer" --print-paths)
+          test "${#deploy_control_paths[@]}" -gt 0
+          tar -C "$control_root" -czf "$RUNNER_TEMP/taksklad-server-deploy-control.tar.gz" \
+            -- "${deploy_control_paths[@]}" "${auth_paths[@]}"
+
+      - name: Validate production SSH secrets
+        env:
+          VDS_HOST: ${{ secrets.VDS_HOST }}
+          VDS_USER: ${{ secrets.VDS_USER }}
+          VDS_SSH_KEY: ${{ secrets.VDS_SSH_KEY }}
+          VDS_SSH_KNOWN_HOSTS: ${{ secrets.VDS_SSH_KNOWN_HOSTS }}
+          TELEGRAM_ROUTING_IDENTITY_ANCHOR_SHA256: ${{ secrets.TELEGRAM_ROUTING_IDENTITY_ANCHOR_SHA256 }}
+        run: |
+          set -euo pipefail
+          test -n "$VDS_HOST"
+          test -n "$VDS_USER"
+          test -n "$VDS_SSH_KEY"
+          test -n "$VDS_SSH_KNOWN_HOSTS"
+          [[ "$TELEGRAM_ROUTING_IDENTITY_ANCHOR_SHA256" =~ ^[0-9a-f]{64}$ ]]
+
+      - name: Install SSH key
+        env:
+          VDS_SSH_KEY: ${{ secrets.VDS_SSH_KEY }}
+          VDS_SSH_KNOWN_HOSTS: ${{ secrets.VDS_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$VDS_SSH_KEY" > ~/.ssh/taksklad_server_deploy_key
+          chmod 600 ~/.ssh/taksklad_server_deploy_key
+          printf '%s\n' "$VDS_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Verify no database migration change from current production release
+        env:
+          EXPECTED_SOURCE_SHA: ${{ inputs.source_sha }}
+          VDS_HOST: ${{ secrets.VDS_HOST }}
+          VDS_USER: ${{ secrets.VDS_USER }}
+        run: |
+          set -euo pipefail
+          current_record="$RUNNER_TEMP/current-production-release.json"
+          scp -i ~/.ssh/taksklad_server_deploy_key \
+            "$VDS_USER@$VDS_HOST:/opt/stacks/taksklad/deployments/current-release.json" "$current_record"
+          release_kind="$(python3 - "$current_record" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          print(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8")).get("release_kind") or "full")
+          PY
+          )"
+          case "$release_kind" in
+            full)
+              PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/release_artifacts.py verify --manifest "$current_record"
+              ;;
+            server)
+              PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/server_release_artifacts.py verify --manifest "$current_record"
+              ;;
+            *)
+              echo "CURRENT_PRODUCTION_RELEASE_KIND_INVALID" >&2
+              exit 1
+              ;;
+          esac
+          previous_source_sha="$(python3 - "$current_record" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          print(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))["source_sha"])
+          PY
+          )"
+          [[ "$previous_source_sha" =~ ^[0-9a-f]{40}$ ]]
+          git cat-file -e "$previous_source_sha^{commit}"
+          git merge-base --is-ancestor "$previous_source_sha" "$EXPECTED_SOURCE_SHA" || {
+            echo "SERVER_RELEASE_MUST_ADVANCE_CURRENT_PRODUCTION_SHA" >&2
+            exit 1
+          }
+          git diff --quiet "$previous_source_sha" "$EXPECTED_SOURCE_SHA" -- backend/migrations || {
+            echo "SERVER_RELEASE_DATABASE_MIGRATION_DIFF_FORBIDDEN" >&2
+            exit 1
+          }
+
+      - name: Copy exact-SHA control bundle and verified server manifest to VDS
+        env:
+          VDS_HOST: ${{ secrets.VDS_HOST }}
+          VDS_USER: ${{ secrets.VDS_USER }}
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/taksklad_server_deploy_key \
+            "$RUNNER_TEMP/taksklad-server-deploy-control.tar.gz" \
+            "$SERVER_RELEASE_MANIFEST_PATH" \
+            "$VDS_USER@$VDS_HOST:/tmp/"
+
+      - name: Deploy verified server release on VDS
+        env:
+          VDS_HOST: ${{ secrets.VDS_HOST }}
+          VDS_USER: ${{ secrets.VDS_USER }}
+          VDS_APP_DIR: ${{ secrets.VDS_APP_DIR }}
+          GH_TOKEN: ${{ github.token }}
+          GHCR_USER: ${{ github.actor }}
+          PRODUCTION_APPROVAL: READY_FOR_PRODUCTION_DEPLOY
+          TELEGRAM_ROUTING_IDENTITY_ANCHOR_SHA256: ${{ secrets.TELEGRAM_ROUTING_IDENTITY_ANCHOR_SHA256 }}
+        run: |
+          set -euo pipefail
+          app_dir="${VDS_APP_DIR:-/opt/stacks/taksklad/app}"
+          remote="$VDS_USER@$VDS_HOST"
+          remote_docker_config="/tmp/taksklad-server-ghcr-auth-${GITHUB_RUN_ID}"
+          ssh -i ~/.ssh/taksklad_server_deploy_key "$remote" \
+            "install -d -m 700 $(printf '%q' "$remote_docker_config")"
+          printf '%s' "$GH_TOKEN" | ssh -i ~/.ssh/taksklad_server_deploy_key "$remote" \
+            "DOCKER_CONFIG=$(printf '%q' "$remote_docker_config") docker login ghcr.io --username $(printf '%q' "$GHCR_USER") --password-stdin" >/dev/null
+          cleanup_registry_auth() {
+            ssh -i ~/.ssh/taksklad_server_deploy_key "$remote" \
+              "DOCKER_CONFIG=$(printf '%q' "$remote_docker_config") docker logout ghcr.io >/dev/null 2>&1 || true; rm -rf $(printf '%q' "$remote_docker_config")" || true
+          }
+          trap cleanup_registry_auth EXIT
+          ssh -i ~/.ssh/taksklad_server_deploy_key \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=10 \
+            "$remote" 'bash -s' <<EOF
+          set -euo pipefail
+          app_dir=$(printf '%q' "$app_dir")
+          install -d -m 755 "\$app_dir"
+          tar -xzf /tmp/taksklad-server-deploy-control.tar.gz -C "\$app_dir" --no-same-owner
+          install -m 600 /tmp/server-release.json "\$app_dir/server-release.json"
+          export TAKSKLAD_DEPLOY_APP_DIR="\$app_dir"
+          export TAKSKLAD_DEPLOY_ACCEPTANCE=required
+          export TAKSKLAD_PRODUCTION_APPROVAL=$(printf '%q' "$PRODUCTION_APPROVAL")
+          export TAKSKLAD_TELEGRAM_ROUTING_IDENTITY_ANCHOR_SHA256=$(printf '%q' "$TELEGRAM_ROUTING_IDENTITY_ANCHOR_SHA256")
+          export DOCKER_CONFIG=$(printf '%q' "$remote_docker_config")
+          cd "\$app_dir"
+          export PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.
+          chmod +x deploy/vds/deploy_from_git.sh tools/live_release_verifier.sh
+          chmod 700 deploy/vds/backup_postgres.sh deploy/vds/acceptance_status.sh
+
+          python3 tools/server_release_artifacts.py verify --manifest server-release.json
+          eval "\$(python3 tools/server_release_artifacts.py emit-shell --manifest server-release.json)"
+          test "\$RELEASE_DATABASE_MIGRATION_POLICY" = no_change
+          export TAKSKLAD_BACKEND_IMAGE="\$RELEASE_BACKEND_IMAGE"
+          export TAKSKLAD_FRONTEND_IMAGE="\$RELEASE_FRONTEND_IMAGE"
+          export TAKSKLAD_COMMIT_SHA="\$RELEASE_SOURCE_SHA"
+          export TAKSKLAD_IMAGE_DIGEST="\$RELEASE_BACKEND_DIGEST"
+          export TAKSKLAD_SERVER_RELEASE_ID="\$RELEASE_SERVER_RELEASE_ID"
+          export TAKSKLAD_DESKTOP_API_CONTRACT="\$RELEASE_DESKTOP_API_CONTRACT"
+          docker pull "\$RELEASE_BACKEND_IMAGE"
+          docker pull "\$RELEASE_FRONTEND_IMAGE"
+
+          candidate_compose="/tmp/taksklad-server-candidate-compose-$$.json"
+          docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml \
+            config --format json > "\$candidate_compose"
+          python3 tools/verify_telegram_routing_contract.py \
+            --env-path deploy/vds/.env --compose-config-json "\$candidate_compose" --json >/dev/null
+          python3 tools/validate_daily_report_config.py < "\$candidate_compose"
+          rm -f "\$candidate_compose"
+
+          current_revision="\$(docker compose --env-file deploy/vds/.env \
+            -f deploy/vds/docker-compose.yml exec -T postgres sh -ec \
+            'psql -At -v ON_ERROR_STOP=1 -U "\$POSTGRES_USER" -d "\$POSTGRES_DB" -c "select version_num from alembic_version"' </dev/null)"
+          candidate_revision="\$(docker compose --env-file deploy/vds/.env \
+            -f deploy/vds/docker-compose.yml run --rm --no-deps --pull never \
+            backend-api alembic -c alembic.ini heads </dev/null | tail -n 1 | awk '{print \$1}')"
+          test -n "\$current_revision"
+          test "\$current_revision" = "\$RELEASE_ALEMBIC_HEAD" || {
+            echo "PRODUCTION_ALEMBIC_HEAD_DIFFERS_FROM_NO_CHANGE_RELEASE" >&2
+            exit 1
+          }
+          test "\$candidate_revision" = "\$RELEASE_ALEMBIC_HEAD" || {
+            echo "CANDIDATE_ALEMBIC_HEAD_DIFFERS_FROM_NO_CHANGE_RELEASE" >&2
+            exit 1
+          }
+
+          install -d -m 700 .release-state
+          preflight_backend_id="\$(docker compose --env-file deploy/vds/.env \
+            -f deploy/vds/docker-compose.yml ps -q backend-api </dev/null)"
+          test -n "\$preflight_backend_id"
+          docker exec "\$preflight_backend_id" python -c \
+            "import json; from urllib.error import HTTPError; from urllib.request import urlopen; u='http://127.0.0.1:8000/ready';
+          try: r=urlopen(u, timeout=5)
+          except HTTPError as e: r=e
+          print(json.dumps({'http_status':int(getattr(r,'status',getattr(r,'code',0))),'payload':json.load(r)}, sort_keys=True))" \
+            > .release-state/current-ready.json
+          python3 tools/collect_phase27_evidence.py preflight \
+            --manifest server-release.json \
+            --ready-json .release-state/current-ready.json \
+            --output .release-state/server-production-preflight.json </dev/null
+          rm -f .release-state/current-ready.json
+          ./tools/production_preflight.sh \
+            --manifest server-release.json \
+            --evidence .release-state/server-production-preflight.json \
+            --read-only --require-current-backup --require-zero-blockers </dev/null
+
+          ./deploy/vds/deploy_from_git.sh --artifact-manifest server-release.json \
+            --acceptance required --wait </dev/null
+          python3 tools/collect_phase27_evidence.py live \
+            --manifest server-release.json \
+            --output .release-state/server-live-release-verification.json </dev/null
+          ./tools/live_release_verifier.sh \
+            --manifest server-release.json \
+            --evidence .release-state/server-live-release-verification.json \
+            --read-only --same-sha --slo-window </dev/null
+
+          curl -fsS https://api.taksklad.uz/health > /tmp/taksklad-server-health.json
+          curl -fsS https://api.taksklad.uz/ready > /tmp/taksklad-server-ready.json
+          python3 - /tmp/taksklad-server-health.json /tmp/taksklad-server-ready.json \
+            /tmp/taksklad-server-deploy-evidence.json <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          health = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          ready = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+          allowed_identity = (
+              "status", "service", "server_release_id", "desktop_api_contract",
+              "commit_sha", "image_digest",
+          )
+          evidence = {
+              "schema_version": 1,
+              "release_kind": "server",
+              "health": {key: health.get(key) for key in allowed_identity if key in health},
+              "ready": {
+                  key: ready.get(key)
+                  for key in (
+                      "ready", "status", "server_release_id", "desktop_api_contract",
+                      "commit_sha", "image_digest",
+                  )
+                  if key in ready
+              },
+              "acceptance": "required",
+              "desktop_channel_changed": False,
+          }
+          Path(sys.argv[3]).write_text(
+              json.dumps(evidence, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+          )
+          PY
+          EOF
+          cleanup_registry_auth
+          trap - EXIT
+
+      - name: Collect sanitized server deploy evidence
+        if: always()
+        env:
+          VDS_HOST: ${{ secrets.VDS_HOST }}
+          VDS_USER: ${{ secrets.VDS_USER }}
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/server-deploy-evidence"
+          mkdir -p "$evidence_dir"
+          scp -i ~/.ssh/taksklad_server_deploy_key \
+            "$VDS_USER@$VDS_HOST:/tmp/taksklad-server-deploy-evidence.json" \
+            "$evidence_dir/server-deploy-evidence.json" || true
+
+      - name: Upload sanitized server deploy evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: taksklad-server-production-evidence
+          if-no-files-found: warn
+          retention-days: 30
+          path: ${{ runner.temp }}/server-deploy-evidence/

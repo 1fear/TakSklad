@@ -13,6 +13,7 @@ class VersionEndpointTests(unittest.TestCase):
             {
                 "TAKSKLAD_COMMIT_SHA": "a" * 40,
                 "TAKSKLAD_IMAGE_DIGEST": "sha256:" + "b" * 64,
+                "TAKSKLAD_SERVER_RELEASE_ID": "server-" + "a" * 40,
             },
             clear=False,
         ):
@@ -23,6 +24,8 @@ class VersionEndpointTests(unittest.TestCase):
         self.assertEqual(payload["version"], BACKEND_APP_VERSION)
         self.assertEqual(payload["commit_sha"], "a" * 40)
         self.assertEqual(payload["image_digest"], "sha256:" + "b" * 64)
+        self.assertEqual(payload["server_release_id"], "server-" + "a" * 40)
+        self.assertEqual(payload["desktop_api_contract"], 1)
         self.assertNotIn("database", payload)
 
     def test_version_is_public_and_schema_bounded(self):
@@ -33,6 +36,7 @@ class VersionEndpointTests(unittest.TestCase):
             {
                 "TAKSKLAD_COMMIT_SHA": "c" * 40,
                 "TAKSKLAD_IMAGE_DIGEST": "sha256:" + "d" * 64,
+                "TAKSKLAD_SERVER_RELEASE_ID": "server-" + "c" * 40,
             },
             clear=False,
         ):
@@ -41,7 +45,15 @@ class VersionEndpointTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             set(response.json()),
-            {"service", "version", "commit_sha", "image_digest", "environment"},
+            {
+                "service",
+                "version",
+                "commit_sha",
+                "image_digest",
+                "server_release_id",
+                "desktop_api_contract",
+                "environment",
+            },
         )
 
 

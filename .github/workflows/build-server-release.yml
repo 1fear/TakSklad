@@ -1,0 +1,349 @@
+name: Build Immutable Server Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact 40-character commit from main after a successful CI Release gate
+        required: true
+      ci_run_id:
+        description: Exact successful CI workflow run ID for the same main commit
+        required: true
+
+permissions: {}
+
+concurrency:
+  group: taksklad-server-release-${{ inputs.source_sha }}
+  cancel-in-progress: false
+
+jobs:
+  build-server-release:
+    name: Build immutable backend and frontend subjects
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      actions: read
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
+    outputs:
+      backend_digest: ${{ steps.backend.outputs.digest }}
+      frontend_digest: ${{ steps.frontend.outputs.digest }}
+      source_sha: ${{ steps.source.outputs.sha }}
+      ci_run_id: ${{ steps.ci.outputs.run_id }}
+      ci_run_attempt: ${{ steps.ci.outputs.run_attempt }}
+
+    steps:
+      - name: Require exact main workflow control SHA
+        id: source
+        env:
+          EXPECTED_SOURCE_SHA: ${{ inputs.source_sha }}
+          WORKFLOW_REF: ${{ github.ref }}
+          WORKFLOW_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "IMMUTABLE_SOURCE_SHA_REQUIRED" >&2
+            exit 1
+          }
+          [[ "$WORKFLOW_REF" == "refs/heads/main" ]] || {
+            echo "SERVER_RELEASE_MAIN_REF_REQUIRED" >&2
+            exit 1
+          }
+          [[ "$WORKFLOW_SHA" == "$EXPECTED_SOURCE_SHA" ]] || {
+            echo "WORKFLOW_CONTROL_SOURCE_SHA_MISMATCH" >&2
+            exit 1
+          }
+          printf 'sha=%s\n' "$EXPECTED_SOURCE_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact server source SHA
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ steps.source.outputs.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Verify exact checkout and protected main ancestry
+        env:
+          EXPECTED_SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          remote_main_sha="$(git ls-remote origin refs/heads/main | awk '{print $1}')"
+          test "$remote_main_sha" = "$EXPECTED_SOURCE_SHA" || {
+            echo "SERVER_RELEASE_MAIN_SHA_MOVED" >&2
+            exit 1
+          }
+
+      - name: Require exact successful CI Release gate
+        id: ci
+        env:
+          CI_RUN_ID: ${{ inputs.ci_run_id }}
+          EXPECTED_SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$CI_RUN_ID" =~ ^[1-9][0-9]*$ ]] || {
+            echo "IMMUTABLE_CI_RUN_ID_REQUIRED" >&2
+            exit 1
+          }
+          metadata_path="$RUNNER_TEMP/ci-run.json"
+          gh run view "$CI_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --json attempt,conclusion,event,headBranch,headSha,jobs,workflowName > "$metadata_path"
+          python3 - "$metadata_path" "$EXPECTED_SOURCE_SHA" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          metadata = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          if metadata.get("workflowName") != "CI":
+              raise SystemExit("UNVERIFIED_CI_WORKFLOW")
+          if metadata.get("conclusion") != "success":
+              raise SystemExit("CI_WORKFLOW_NOT_SUCCESSFUL")
+          if metadata.get("event") != "push" or metadata.get("headBranch") != "main":
+              raise SystemExit("CI_MAIN_PUSH_REQUIRED")
+          if metadata.get("headSha") != sys.argv[2]:
+              raise SystemExit("CI_SOURCE_SHA_MISMATCH")
+          release_gates = [job for job in metadata.get("jobs", []) if job.get("name") == "Release gate"]
+          if len(release_gates) != 1 or release_gates[0].get("conclusion") != "success":
+              raise SystemExit("CI_RELEASE_GATE_NOT_SUCCESSFUL")
+          attempt = metadata.get("attempt")
+          if not isinstance(attempt, int) or isinstance(attempt, bool) or attempt <= 0:
+              raise SystemExit("IMMUTABLE_CI_RUN_ATTEMPT_REQUIRED")
+          print(attempt)
+          PY
+          ci_run_attempt="$(python3 - "$metadata_path" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          print(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))["attempt"])
+          PY
+          )"
+          printf 'run_id=%s\n' "$CI_RUN_ID" >> "$GITHUB_OUTPUT"
+          printf 'run_attempt=%s\n' "$ci_run_attempt" >> "$GITHUB_OUTPUT"
+
+      - name: Verify release supply-chain inputs
+        run: |
+          set -euo pipefail
+          ./tools/verify_locked_installs.sh --cold --require-hashes
+          ./tools/security_gate.sh --fail-on high
+          ./tools/generate_sbom.sh --verify
+          PYTHONDONTWRITEBYTECODE=1 python3 tools/verify_immutable_refs.py
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - name: Authenticate to GitHub Container Registry
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "${{ github.actor }}" --password-stdin
+
+      - name: Refuse to overwrite immutable server image tags
+        env:
+          BACKEND_IMAGE_TAG: ghcr.io/${{ github.repository_owner }}/taksklad-backend:sha-${{ steps.source.outputs.sha }}
+          FRONTEND_IMAGE_TAG: ghcr.io/${{ github.repository_owner }}/taksklad-frontend:sha-${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          require_absent() {
+            local reference="$1"
+            local output status
+            set +e
+            output="$(docker buildx imagetools inspect --raw "$reference" 2>&1)"
+            status=$?
+            set -e
+            if (( status == 0 )); then
+              echo "IMMUTABLE_IMAGE_TAG_ALREADY_EXISTS: $reference" >&2
+              exit 1
+            fi
+            if ! grep -Eiq 'manifest unknown|not found' <<<"$output"; then
+              echo "IMMUTABLE_IMAGE_TAG_ABSENCE_UNVERIFIED: $reference" >&2
+              exit 1
+            fi
+          }
+          require_absent "$BACKEND_IMAGE_TAG"
+          require_absent "$FRONTEND_IMAGE_TAG"
+
+      - name: Build and publish backend image once
+        id: backend
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: backend
+          file: backend/Dockerfile
+          platforms: linux/amd64
+          provenance: false
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/taksklad-backend:sha-${{ steps.source.outputs.sha }}
+
+      - name: Build and publish frontend image once
+        id: frontend
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: frontend
+          file: frontend/Dockerfile
+          platforms: linux/amd64
+          provenance: false
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/taksklad-frontend:sha-${{ steps.source.outputs.sha }}
+
+      - name: Validate immutable image digests
+        env:
+          BACKEND_DIGEST: ${{ steps.backend.outputs.digest }}
+          FRONTEND_DIGEST: ${{ steps.frontend.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$BACKEND_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "IMMUTABLE_BACKEND_DIGEST_REQUIRED" >&2
+            exit 1
+          }
+          [[ "$FRONTEND_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "IMMUTABLE_FRONTEND_DIGEST_REQUIRED" >&2
+            exit 1
+          }
+
+      - name: Attest backend registry digest
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-name: ghcr.io/${{ github.repository_owner }}/taksklad-backend
+          subject-digest: ${{ steps.backend.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attest frontend registry digest
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-name: ghcr.io/${{ github.repository_owner }}/taksklad-frontend
+          subject-digest: ${{ steps.frontend.outputs.digest }}
+          push-to-registry: true
+
+      - name: Generate and verify server-only release manifest
+        env:
+          BACKEND_DIGEST: ${{ steps.backend.outputs.digest }}
+          BACKEND_IMAGE: ghcr.io/${{ github.repository_owner }}/taksklad-backend
+          CI_RUN_ATTEMPT: ${{ steps.ci.outputs.run_attempt }}
+          CI_RUN_ID: ${{ steps.ci.outputs.run_id }}
+          FRONTEND_DIGEST: ${{ steps.frontend.outputs.digest }}
+          FRONTEND_IMAGE: ghcr.io/${{ github.repository_owner }}/taksklad-frontend
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          alembic_head="$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 - <<'PY'
+          from tools.server_release_artifacts import read_alembic_head
+          print(read_alembic_head())
+          PY
+          )"
+          export ALEMBIC_HEAD="$alembic_head"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          source_sha = os.environ["SOURCE_SHA"]
+          backend_image = os.environ["BACKEND_IMAGE"]
+          frontend_image = os.environ["FRONTEND_IMAGE"]
+          backend_digest = os.environ["BACKEND_DIGEST"]
+          frontend_digest = os.environ["FRONTEND_DIGEST"]
+          backend_reference = f"{backend_image}@{backend_digest}"
+          frontend_reference = f"{frontend_image}@{frontend_digest}"
+          manifest = {
+              "schema_version": 1,
+              "release_kind": "server",
+              "authority": "github-sigstore",
+              "deployable": True,
+              "source_sha": source_sha,
+              "server_release_id": f"server-{source_sha}",
+              "capabilities": ["returns_auth_canary_v2_exact_identifier"],
+              "ci": {
+                  "workflow": "CI",
+                  "run_id": int(os.environ["CI_RUN_ID"]),
+                  "run_attempt": int(os.environ["CI_RUN_ATTEMPT"]),
+                  "head_sha": source_sha,
+                  "event": "push",
+                  "head_branch": "main",
+                  "required_check": "Release gate",
+                  "conclusion": "success",
+              },
+              "images": {
+                  "backend": {
+                      "name": backend_image,
+                      "digest": backend_digest,
+                      "reference": backend_reference,
+                  },
+                  "frontend": {
+                      "name": frontend_image,
+                      "digest": frontend_digest,
+                      "reference": frontend_reference,
+                  },
+              },
+              "compatibility": {
+                  "desktop_api_contract": 1,
+                  "min_desktop_version": "2.0.49",
+              },
+              "database": {
+                  "migration_policy": "no_change",
+                  "alembic_head": os.environ["ALEMBIC_HEAD"],
+                  "destructive_migrations_allowed": False,
+                  "alembic_downgrade_allowed": False,
+              },
+              "attestation": {"registry_attestation_verified": True},
+              "attestation_subjects": [
+                  {
+                      "kind": "oci",
+                      "role": "backend",
+                      "name": backend_reference,
+                      "digest": backend_digest,
+                  },
+                  {
+                      "kind": "oci",
+                      "role": "frontend",
+                      "name": frontend_reference,
+                      "digest": frontend_digest,
+                  },
+              ],
+          }
+          Path("dist/server-release.json").write_text(
+              json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/server_release_artifacts.py verify \
+            --manifest dist/server-release.json --sha "$SOURCE_SHA"
+
+      - name: Attest server-only release manifest
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: dist/server-release.json
+
+      - name: Upload immutable server release manifest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: taksklad-server-release-manifest
+          if-no-files-found: error
+          retention-days: 30
+          path: dist/server-release.json
+
+      - name: Upload server release SBOM
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: taksklad-server-release-sbom
+          if-no-files-found: error
+          retention-days: 30
+          path: test-artifacts/sbom/
+
+      - name: Publish immutable manifest identity
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          manifest_sha256="$(sha256sum dist/server-release.json | awk '{print $1}')"
+          [[ "$manifest_sha256" =~ ^[0-9a-f]{64}$ ]]
+          {
+            echo "### Immutable server release"
+            echo "- source_sha: \`$SOURCE_SHA\`"
+            echo "- manifest_sha256: \`$manifest_sha256\`"
+            echo "- desktop channel changed: \`false\`"
+            echo "- database migration policy: \`no_change\`"
+          } >> "$GITHUB_STEP_SUMMARY"

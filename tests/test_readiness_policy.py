@@ -35,6 +35,8 @@ class ReadinessPolicyTests(unittest.TestCase):
             "version": "test",
             "commit_sha": "a" * 40,
             "image_digest": "sha256:" + "b" * 64,
+            "server_release_id": "server-" + "a" * 40,
+            "desktop_api_contract": 1,
             "environment": "test",
             "database": {"status": "ok", "dialect": "postgresql"},
             "migrations": {"status": "ok", "expected_head": "head", "current_revision": "head"},
@@ -61,6 +63,8 @@ class ReadinessPolicyTests(unittest.TestCase):
         self.assertEqual(public["status"], "degraded")
         self.assertEqual(public["commit_sha"], "a" * 40)
         self.assertEqual(public["image_digest"], "sha256:" + "b" * 64)
+        self.assertEqual(public["server_release_id"], "server-" + "a" * 40)
+        self.assertEqual(public["desktop_api_contract"], 1)
         self.assertNotIn("last_errors", public["queue"])
         self.assertNotIn("google_mirror", public)
         self.assertNotIn("google_backend_sync", public)
@@ -115,7 +119,12 @@ class ReadinessPolicyTests(unittest.TestCase):
         ):
             self.assertEqual(
                 health_service.runtime_build_identity(),
-                {"commit_sha": "a" * 40, "image_digest": "sha256:" + "b" * 64},
+                {
+                    "commit_sha": "a" * 40,
+                    "image_digest": "sha256:" + "b" * 64,
+                    "server_release_id": "server-" + "a" * 40,
+                    "desktop_api_contract": 1,
+                },
             )
         with mock.patch.dict(
             "os.environ",
@@ -124,8 +133,27 @@ class ReadinessPolicyTests(unittest.TestCase):
         ):
             self.assertEqual(
                 health_service.runtime_build_identity(),
-                {"commit_sha": "unknown", "image_digest": "unknown"},
+                {
+                    "commit_sha": "unknown",
+                    "image_digest": "unknown",
+                    "server_release_id": "unknown",
+                    "desktop_api_contract": 1,
+                },
             )
+
+    def test_server_release_id_must_match_runtime_commit(self):
+        with mock.patch.dict(
+            "os.environ",
+            {
+                "TAKSKLAD_COMMIT_SHA": "a" * 40,
+                "TAKSKLAD_IMAGE_DIGEST": "sha256:" + "b" * 64,
+                "TAKSKLAD_SERVER_RELEASE_ID": "server-" + "c" * 40,
+            },
+            clear=False,
+        ):
+            identity = health_service.runtime_build_identity()
+
+        self.assertEqual(identity["server_release_id"], "server-" + "a" * 40)
 
 
 if __name__ == "__main__":

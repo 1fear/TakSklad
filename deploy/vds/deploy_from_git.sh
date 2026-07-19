@@ -48,6 +48,73 @@ fail() {
   exit 1
 }
 
+manifest_tool_for() {
+  local manifest_path="$1" release_kind
+  release_kind="$(PYTHONDONTWRITEBYTECODE=1 "$PYTHON_BIN" - "$manifest_path" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+release_kind = payload.get("release_kind")
+if release_kind in (None, "full"):
+    print("tools/release_artifacts.py")
+elif release_kind == "server":
+    print("tools/server_release_artifacts.py")
+else:
+    raise SystemExit(f"unsupported release_kind: {release_kind!r}")
+PY
+)" || fail "release manifest kind is invalid"
+  [[ -f "$release_kind" ]] || fail "release manifest verifier is missing: $release_kind"
+  printf '%s\n' "$release_kind"
+}
+
+verify_release_manifest() {
+  local manifest_path="$1" verifier
+  shift
+  verifier="$(manifest_tool_for "$manifest_path")"
+  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. "$PYTHON_BIN" "$verifier" verify \
+    --manifest "$manifest_path" "$@"
+}
+
+verify_candidate_release_manifest() {
+  local manifest_path="$1" verifier
+  verifier="$(manifest_tool_for "$manifest_path")"
+  if [[ "$verifier" == "tools/server_release_artifacts.py" ]]; then
+    # A server deploy is an attested exact-SHA control bundle, not a Git checkout.
+    # The workflow already verified the candidate against the exact checkout;
+    # the VDS must still validate the immutable manifest shape without requiring .git.
+    PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. "$PYTHON_BIN" "$verifier" verify \
+      --manifest "$manifest_path"
+    return
+  fi
+  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. "$PYTHON_BIN" "$verifier" verify \
+    --manifest "$manifest_path" --candidate
+}
+
+emit_release_shell() {
+  local manifest_path="$1" verifier
+  verifier="$(manifest_tool_for "$manifest_path")"
+  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. "$PYTHON_BIN" "$verifier" emit-shell \
+    --manifest "$manifest_path"
+}
+
+plan_release_manifest() {
+  local manifest_path="$1" verifier
+  verifier="$(manifest_tool_for "$manifest_path")"
+  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. "$PYTHON_BIN" "$verifier" plan \
+    --local --manifest "$manifest_path"
+}
+
+export_release_runtime_env() {
+  export TAKSKLAD_BACKEND_IMAGE="$RELEASE_BACKEND_IMAGE"
+  export TAKSKLAD_FRONTEND_IMAGE="$RELEASE_FRONTEND_IMAGE"
+  export TAKSKLAD_COMMIT_SHA="$RELEASE_SOURCE_SHA"
+  export TAKSKLAD_IMAGE_DIGEST="$RELEASE_BACKEND_DIGEST"
+  export TAKSKLAD_SERVER_RELEASE_ID="${RELEASE_SERVER_RELEASE_ID:-$RELEASE_SOURCE_SHA}"
+  export TAKSKLAD_DESKTOP_API_CONTRACT="${RELEASE_DESKTOP_API_CONTRACT:-1}"
+}
+
 while (($#)); do
   case "$1" in
     --dry-run)
@@ -103,8 +170,7 @@ special_mode_count=$((CURRENT_AUTH_CANARY_ONLY + PROMOTE_CURRENT_RUNTIME + ROLLB
 ARTIFACT_MANIFEST="$(cd "$(dirname "$ARTIFACT_MANIFEST")" && pwd -P)/$(basename "$ARTIFACT_MANIFEST")"
 
 if [[ "$DRY_RUN" == "1" ]]; then
-  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. "$PYTHON_BIN" tools/release_artifacts.py plan \
-    --local --manifest "$ARTIFACT_MANIFEST"
+  plan_release_manifest "$ARTIFACT_MANIFEST"
   exit 0
 fi
 
@@ -118,9 +184,8 @@ fi
 cd "$APP_DIR"
 [[ -f "$ENV_FILE" ]] || fail "production environment file is missing"
 [[ -f "$COMPOSE_FILE" ]] || fail "Compose definition is missing"
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. "$PYTHON_BIN" tools/release_artifacts.py verify \
-  --manifest "$ARTIFACT_MANIFEST" --candidate
-eval "$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. "$PYTHON_BIN" tools/release_artifacts.py emit-shell --manifest "$ARTIFACT_MANIFEST")"
+verify_candidate_release_manifest "$ARTIFACT_MANIFEST"
+eval "$(emit_release_shell "$ARTIFACT_MANIFEST")"
 
 validate_auth_canary_token_file() {
   PYTHONDONTWRITEBYTECODE=1 "$PYTHON_BIN" tools/validate_auth_canary_token_file.py \
@@ -174,10 +239,7 @@ if [[ ! -f "$DEPLOY_RECORD" ]]; then
   echo "Bootstrap without rollback record explicitly approved; rollback protection unavailable." >&2
 fi
 
-export TAKSKLAD_BACKEND_IMAGE="$RELEASE_BACKEND_IMAGE"
-export TAKSKLAD_FRONTEND_IMAGE="$RELEASE_FRONTEND_IMAGE"
-export TAKSKLAD_COMMIT_SHA="$RELEASE_SOURCE_SHA"
-export TAKSKLAD_IMAGE_DIGEST="$RELEASE_BACKEND_DIGEST"
+export_release_runtime_env
 
 PREVIOUS_MANIFEST=""
 if [[ -f "$DEPLOY_RECORD" ]]; then
@@ -323,15 +385,10 @@ rollback_runtime() {
     echo "No previous verified digest record is available; database schema remains current." >&2
     return 1
   }
-  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. "$PYTHON_BIN" tools/release_artifacts.py verify \
-    --manifest "$PREVIOUS_MANIFEST" || return 1
-  emitted="$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. "$PYTHON_BIN" \
-    tools/release_artifacts.py emit-shell --manifest "$PREVIOUS_MANIFEST")" || return 1
+  verify_release_manifest "$PREVIOUS_MANIFEST" || return 1
+  emitted="$(emit_release_shell "$PREVIOUS_MANIFEST")" || return 1
   eval "$emitted" || return 1
-  export TAKSKLAD_BACKEND_IMAGE="$RELEASE_BACKEND_IMAGE"
-  export TAKSKLAD_FRONTEND_IMAGE="$RELEASE_FRONTEND_IMAGE"
-  export TAKSKLAD_COMMIT_SHA="$RELEASE_SOURCE_SHA"
-  export TAKSKLAD_IMAGE_DIGEST="$RELEASE_BACKEND_DIGEST"
+  export_release_runtime_env
   docker pull "$TAKSKLAD_BACKEND_IMAGE" || return 1
   docker pull "$TAKSKLAD_FRONTEND_IMAGE" || return 1
   database_revision="$(compose exec -T postgres sh -ec \
@@ -362,20 +419,15 @@ verify_previous_runtime_preflight() {
   local candidate_source_sha="$RELEASE_SOURCE_SHA"
   local candidate_backend_digest="$RELEASE_BACKEND_DIGEST"
   local emitted database_revision runtime_revision result=0
-  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. "$PYTHON_BIN" tools/release_artifacts.py verify \
-    --manifest "$PREVIOUS_MANIFEST" || result=1
+  verify_release_manifest "$PREVIOUS_MANIFEST" || result=1
   if [[ "$result" == "0" ]]; then
-    emitted="$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. "$PYTHON_BIN" \
-      tools/release_artifacts.py emit-shell --manifest "$PREVIOUS_MANIFEST")" || result=1
+    emitted="$(emit_release_shell "$PREVIOUS_MANIFEST")" || result=1
   fi
   if [[ "$result" == "0" ]]; then
     eval "$emitted" || result=1
   fi
   if [[ "$result" == "0" ]]; then
-    export TAKSKLAD_BACKEND_IMAGE="$RELEASE_BACKEND_IMAGE"
-    export TAKSKLAD_FRONTEND_IMAGE="$RELEASE_FRONTEND_IMAGE"
-    export TAKSKLAD_COMMIT_SHA="$RELEASE_SOURCE_SHA"
-    export TAKSKLAD_IMAGE_DIGEST="$RELEASE_BACKEND_DIGEST"
+    export_release_runtime_env
     database_revision="$(compose exec -T postgres sh -ec \
       'psql -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "select version_num from alembic_version"')" || result=1
     runtime_revision="$(compose exec -T backend-api alembic -c alembic.ini heads | \
@@ -390,10 +442,7 @@ verify_previous_runtime_preflight() {
   RELEASE_FRONTEND_IMAGE="$candidate_frontend_image"
   RELEASE_SOURCE_SHA="$candidate_source_sha"
   RELEASE_BACKEND_DIGEST="$candidate_backend_digest"
-  export TAKSKLAD_BACKEND_IMAGE="$RELEASE_BACKEND_IMAGE"
-  export TAKSKLAD_FRONTEND_IMAGE="$RELEASE_FRONTEND_IMAGE"
-  export TAKSKLAD_COMMIT_SHA="$RELEASE_SOURCE_SHA"
-  export TAKSKLAD_IMAGE_DIGEST="$RELEASE_BACKEND_DIGEST"
+  export_release_runtime_env
   [[ "$result" == "0" ]] || return 1
   return 0
 }

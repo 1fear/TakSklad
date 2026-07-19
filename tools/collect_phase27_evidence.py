@@ -18,7 +18,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
-from tools.release_artifacts import verify_manifest
+from tools.release_artifacts import verify_manifest as verify_full_manifest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +27,23 @@ SECRET_RE = re.compile(r"(?i)(password|passwd|token|secret|authorization|databas
 
 class CollectionError(RuntimeError):
     pass
+
+
+def verify_deploy_manifest(path: Path) -> dict[str, Any]:
+    """Verify either the legacy full release or the independent server release."""
+
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CollectionError(f"cannot read release manifest: {type(exc).__name__}") from exc
+    release_kind = raw.get("release_kind")
+    if release_kind in (None, "full"):
+        return verify_full_manifest(path, local=False)
+    if release_kind == "server":
+        from tools.server_release_artifacts import verify_manifest as verify_server_manifest
+
+        return verify_server_manifest(path)
+    raise CollectionError("unsupported release manifest kind")
 
 
 def utc_now() -> datetime:
@@ -134,6 +151,10 @@ def compose_base(args: argparse.Namespace, manifest: dict[str, Any]) -> tuple[li
             "TAKSKLAD_FRONTEND_IMAGE": manifest["images"]["frontend"]["reference"],
             "TAKSKLAD_COMMIT_SHA": manifest["source_sha"],
             "TAKSKLAD_IMAGE_DIGEST": manifest["images"]["backend"]["digest"],
+            "TAKSKLAD_SERVER_RELEASE_ID": str(manifest.get("server_release_id") or manifest["source_sha"]),
+            "TAKSKLAD_DESKTOP_API_CONTRACT": str(
+                (manifest.get("compatibility") or {}).get("desktop_api_contract") or 1
+            ),
         }
     )
     return [
@@ -420,6 +441,8 @@ def collect_live(args: argparse.Namespace, manifest: dict[str, Any]) -> dict[str
                 "source_sha": last_health.get("commit_sha"),
                 "backend_digest": last_health.get("image_digest"),
                 "version": last_health.get("version"),
+                "server_release_id": last_health.get("server_release_id"),
+                "desktop_api_contract": last_health.get("desktop_api_contract"),
             },
             "health": {"status": last_health.get("status"), "http_status": health_status},
             "readiness": summary,
@@ -481,7 +504,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     try:
-        manifest = verify_manifest(args.manifest.resolve(), local=False)
+        manifest = verify_deploy_manifest(args.manifest.resolve())
         report = collect_preflight(args, manifest) if args.mode == "preflight" else collect_live(args, manifest)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         temporary = args.output.with_suffix(args.output.suffix + ".tmp")

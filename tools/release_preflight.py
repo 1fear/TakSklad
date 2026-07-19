@@ -169,7 +169,8 @@ DEPLOYMENT_READINESS_CONTRACT_FRAGMENTS = {
         "json.load(response)",
     ],
     Path("deploy/vds/deploy_from_git.sh"): [
-        "tools/release_artifacts.py verify",
+        "tools/release_artifacts.py",
+        "tools/server_release_artifacts.py",
         'alembic -c alembic.ini upgrade head',
         "--no-build --pull never",
         "--wait --wait-timeout",

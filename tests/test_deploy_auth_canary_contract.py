@@ -65,8 +65,8 @@ run_previous_auth_canary
     def test_candidate_capability_gate_precedes_candidate_shell_activation(self):
         script = (ROOT / "deploy" / "vds" / "deploy_from_git.sh").read_text(encoding="utf-8")
 
-        candidate_gate = script.index('--manifest "$ARTIFACT_MANIFEST" --candidate')
-        emit_shell = script.index("tools/release_artifacts.py emit-shell")
+        candidate_gate = script.index('verify_candidate_release_manifest "$ARTIFACT_MANIFEST"')
+        emit_shell = script.index('eval "$(emit_release_shell "$ARTIFACT_MANIFEST")"')
         self.assertLess(candidate_gate, emit_shell)
 
     def make_file(self, root: Path, payload=TOKEN + b"\n", mode=0o600):
@@ -126,8 +126,8 @@ run_previous_auth_canary
         self.assertLess(script.rindex("run_server_auth_canary ||"), script.index('mv -f "$temporary_record"'))
         rollback = script.split("rollback_runtime() {", 1)[1].split("\n}", 1)[0]
         for fragment in (
-            "tools/release_artifacts.py verify",
-            "tools/release_artifacts.py emit-shell",
+            'verify_release_manifest "$PREVIOUS_MANIFEST"',
+            'emit_release_shell "$PREVIOUS_MANIFEST"',
             'docker pull "$TAKSKLAD_BACKEND_IMAGE" || return 1',
             'docker pull "$TAKSKLAD_FRONTEND_IMAGE" || return 1',
             "compose up -d",
@@ -209,6 +209,18 @@ check_public_url() {{
   [[ "$FAIL_STAGE" != "$1" ]]
 }}
 run_previous_auth_canary() {{ [[ "$FAIL_STAGE" != auth_canary ]]; }}
+verify_release_manifest() {{
+  "$PYTHON_BIN" tools/release_artifacts.py verify --manifest "$1"
+}}
+emit_release_shell() {{
+  "$PYTHON_BIN" tools/release_artifacts.py emit-shell --manifest "$1"
+}}
+export_release_runtime_env() {{
+  export TAKSKLAD_BACKEND_IMAGE="$RELEASE_BACKEND_IMAGE"
+  export TAKSKLAD_FRONTEND_IMAGE="$RELEASE_FRONTEND_IMAGE"
+  export TAKSKLAD_COMMIT_SHA="$RELEASE_SOURCE_SHA"
+  export TAKSKLAD_IMAGE_DIGEST="$RELEASE_BACKEND_DIGEST"
+}}
 fail() {{ printf '%s\\n' "$*" >&2; exit 1; }}
 rollback_runtime() {{{rollback}
 }}

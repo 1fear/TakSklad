@@ -64,6 +64,7 @@ class RoutePolicy:
     authentication: str
     web_permission: str | None = None
     service_scope: str | None = None
+    service_scope_alternatives: frozenset[str] = frozenset()
     mutates: bool = False
     sensitive: bool = False
 
@@ -76,11 +77,19 @@ def _session(*, mutates: bool = False) -> RoutePolicy:
     return RoutePolicy(authentication=AUTH_SESSION, mutates=mutates)
 
 
-def _protected(permission: str, scope: str, *, mutates: bool = False, sensitive: bool = False) -> RoutePolicy:
+def _protected(
+    permission: str,
+    scope: str,
+    *,
+    service_scope_alternatives: frozenset[str] = frozenset(),
+    mutates: bool = False,
+    sensitive: bool = False,
+) -> RoutePolicy:
     return RoutePolicy(
         authentication=AUTH_PROTECTED,
         web_permission=permission,
         service_scope=scope,
+        service_scope_alternatives=service_scope_alternatives,
         mutates=mutates,
         sensitive=sensitive,
     )
@@ -135,7 +144,11 @@ ROUTE_POLICIES: dict[tuple[str, str], RoutePolicy] = {
     ("POST", "/api/v1/imports"): _protected(PERMISSION_IMPORT_WRITE, "imports:create", mutates=True),
     ("POST", "/api/v1/imports/preview"): _protected(PERMISSION_IMPORT_WRITE, "imports:preview", mutates=True),
     ("GET", "/api/v1/imports"): _protected(PERMISSION_IMPORT_READ, "imports:read"),
-    ("GET", "/api/v1/reports/day"): _protected(PERMISSION_REPORT_READ, "reports:read"),
+    ("GET", "/api/v1/reports/day"): _protected(
+        PERMISSION_REPORT_READ,
+        "orders:read",
+        service_scope_alternatives=frozenset({"reports:read"}),
+    ),
     ("GET", "/api/v1/reports/reconciliation/day"): _protected(PERMISSION_REPORT_READ, "reports:read"),
     ("POST", "/api/v1/reports/reconciliation/day"): _protected(PERMISSION_ADMIN_WRITE, "reconciliation:run", mutates=True, sensitive=True),
     ("GET", "/api/v1/reports/kiz/source-files"): _protected(PERMISSION_REPORT_READ, "reports:read"),
