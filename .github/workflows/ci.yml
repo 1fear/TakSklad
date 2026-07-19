@@ -75,6 +75,9 @@ jobs:
       - name: Test PostgreSQL SkladBot non-lease concurrency
         run: ./tools/run_postgres_tests.sh skladbot-nonlease-concurrency
 
+      - name: Test PostgreSQL desktop pairing concurrency
+        run: ./tools/run_postgres_tests.sh desktop-pairing
+
       - name: Run Python tests
         run: |
           PYTHONPATH=. python -m unittest discover -s tests

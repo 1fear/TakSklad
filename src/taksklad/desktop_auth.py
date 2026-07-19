@@ -109,6 +109,7 @@ def _install_scoped_backend_token_from_stdin(
     error_stream=None,
     store=None,
     opener=None,
+    post_install_verifier=None,
 ) -> int:
     input_stream = input_stream or sys.stdin
     output_stream = output_stream or sys.stdout
@@ -162,6 +163,8 @@ def _install_scoped_backend_token_from_stdin(
             stored[0],
             **{**canary_kwargs, "identifier": stored[1]},
         )
+        if post_install_verifier is not None:
+            post_install_verifier(stored[0], stored[1])
         bundle_verified = True
     except Exception:
         if mutation_attempted:
@@ -216,6 +219,7 @@ def install_scoped_backend_token_from_stdin(
     error_stream=None,
     store=None,
     opener=None,
+    post_install_verifier=None,
     lock_acquirer=None,
     lock_releaser=None,
 ) -> int:
@@ -240,9 +244,50 @@ def install_scoped_backend_token_from_stdin(
             error_stream=error_stream,
             store=store,
             opener=opener,
+            post_install_verifier=post_install_verifier,
         )
     finally:
         release(lock_result.lock)
+
+
+def install_scoped_backend_bundle(
+    credential: str,
+    principal_identifier: str,
+    base_url: str = PRODUCTION_BACKEND_ORIGIN,
+    *,
+    timeout: int = 8,
+    store=None,
+    opener=None,
+    post_install_verifier=None,
+    output_stream=None,
+    error_stream=None,
+) -> int:
+    """Install one already-redeemed identity under an existing mutation lock.
+
+    The pairing workflow holds the workstation credential lock for the whole
+    desktop lifetime.  This helper therefore deliberately does not acquire a
+    second lock.  It reuses the same preflight, atomic DPAPI round trip,
+    stored-token canary and exact rollback path as the stdin-only operator
+    command.  ``post_install_verifier`` runs before the installation is
+    committed, so a failed server acknowledgement rolls the exact previous
+    bundle back (or removes a fresh bundle).
+    """
+
+    class _CredentialStream:
+        def read(self, _limit):
+            return credential
+
+    return _install_scoped_backend_token_from_stdin(
+        base_url,
+        expected_identifier=principal_identifier,
+        timeout=timeout,
+        input_stream=_CredentialStream(),
+        output_stream=output_stream,
+        error_stream=error_stream,
+        store=store,
+        opener=opener,
+        post_install_verifier=post_install_verifier,
+    )
 
 
 def run_desktop_returns_auth_canary(

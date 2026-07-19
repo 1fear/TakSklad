@@ -5,7 +5,7 @@ import logging
 import math
 from dataclasses import dataclass
 from urllib.parse import quote
-from threading import Lock, Thread
+from threading import Event, Lock, Thread
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, Response, status
@@ -28,9 +28,16 @@ from .client_points_service import (
     list_client_points as list_client_points_in_db,
     update_client_point_timeslot as update_client_point_timeslot_in_db,
 )
-from .db import get_db
+from .db import SessionLocal, get_db
 from .db_errors import database_error_response
 from .diagnostics_service import build_backend_diagnostics_log
+from .device_pairing_service import (
+    DevicePairingError,
+    acknowledge_desktop_pairing,
+    create_desktop_pairing,
+    redeem_desktop_pairing,
+    run_device_pairing_sweeper_loop,
+)
 from .event_queue_service import (
     EventQueueApiError,
     get_event_queue_detail as get_event_queue_detail_from_db,
@@ -130,6 +137,11 @@ from .schemas import (
     ClientPointRead,
     ClientPointTimeslotUpdate,
     DashboardDaySummaryRead,
+    DesktopPairingAckResponse,
+    DesktopPairingCreateRequest,
+    DesktopPairingCreateResponse,
+    DesktopPairingRedeemRequest,
+    DesktopPairingRedeemResponse,
     DayReportRead,
     EventQueueDiagnosticsRead,
     EventQueueActionRequest,
@@ -183,6 +195,9 @@ from .web_auth import (
 settings = load_settings()
 sync_sources_lock = Lock()
 skladbot_sync_lock = Lock()
+device_pairing_sweeper_lock = Lock()
+device_pairing_sweeper_stop = Event()
+device_pairing_sweeper_thread = None
 login_limiter = BoundedTTLLoginLimiter(
     max_entries=settings.web_login_limiter_max_entries,
     entry_ttl_seconds=settings.web_login_limiter_entry_ttl_seconds,
@@ -261,6 +276,31 @@ def paginate_materialized(rows, *, scope, response, limit, cursor="", default=50
 @app.on_event("startup")
 def validate_startup_configuration():
     validate_backend_settings(settings)
+    start_device_pairing_sweeper()
+
+
+@app.on_event("shutdown")
+def stop_device_pairing_sweeper():
+    device_pairing_sweeper_stop.set()
+
+
+def start_device_pairing_sweeper():
+    global device_pairing_sweeper_stop, device_pairing_sweeper_thread
+    if settings.environment.strip().casefold() != "production" or not settings.identity_auth_enabled:
+        return
+    with device_pairing_sweeper_lock:
+        if device_pairing_sweeper_thread is not None and device_pairing_sweeper_thread.is_alive():
+            return
+        if device_pairing_sweeper_stop.is_set():
+            device_pairing_sweeper_stop = Event()
+        device_pairing_sweeper_thread = Thread(
+            target=run_device_pairing_sweeper_loop,
+            args=(SessionLocal,),
+            kwargs={"stop_event": device_pairing_sweeper_stop},
+            name="desktop-pairing-sweeper",
+            daemon=True,
+        )
+        device_pairing_sweeper_thread.start()
 
 
 def legacy_auth_window_active(now=None) -> bool:
@@ -499,6 +539,13 @@ def prevent_auth_response_caching(response: Response) -> None:
     response.headers["Pragma"] = "no-cache"
 
 
+def device_pairing_http_error(exc: DevicePairingError) -> HTTPException:
+    headers = {"Cache-Control": "no-store", "Pragma": "no-cache"}
+    if exc.retry_after:
+        headers["Retry-After"] = str(exc.retry_after)
+    return HTTPException(status_code=exc.status_code, detail=exc.detail, headers=headers)
+
+
 def auth_session_read(payload, session_token: str = ""):
     expires_at = datetime.fromtimestamp(int(payload.get("exp") or 0), timezone.utc)
     role = normalize_role(payload.get("role"))
@@ -709,10 +756,116 @@ def web_auth_check(request: Request, db=Depends(get_db)):
     return response
 
 
+@auth_api.post(
+    "/desktop-pairing/redeem",
+    response_model=DesktopPairingRedeemResponse,
+)
+def desktop_pairing_redeem(
+    payload: DesktopPairingRedeemRequest,
+    request: Request,
+    response: Response,
+    db=Depends(get_db),
+):
+    prevent_auth_response_caching(response)
+    try:
+        redeemed = redeem_desktop_pairing(
+            db,
+            pepper=settings.web_session_secret,
+            setup_code=payload.setup_code,
+            desktop_version=payload.desktop_version,
+            rate_key=client_identity(request, settings.trusted_proxy_cidrs),
+        )
+    except DevicePairingError as exc:
+        db.rollback()
+        raise device_pairing_http_error(exc) from exc
+    return DesktopPairingRedeemResponse(
+        pairing_id=str(redeemed.pairing_id),
+        credential=redeemed.credential,
+        principal_identifier=redeemed.principal_identifier,
+        ack_deadline=redeemed.ack_deadline,
+    )
+
+
 app.include_router(auth_api)
 
 
 api = APIRouter(prefix="/api/v1", dependencies=[Depends(require_service_token)])
+
+
+@api.post(
+    "/admin/desktop-pairings",
+    response_model=DesktopPairingCreateResponse,
+)
+def admin_create_desktop_pairing(
+    payload: DesktopPairingCreateRequest,
+    request: Request,
+    response: Response,
+    auth_context=Depends(require_service_token),
+    db=Depends(get_db),
+):
+    prevent_auth_response_caching(response)
+    if (
+        auth_context.source != "web-session"
+        or auth_context.role != ROLE_ADMIN
+        or "admin:write" not in auth_context.permissions
+        or not auth_context.user_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Active browser administrator session required",
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+        )
+    try:
+        created = create_desktop_pairing(
+            db,
+            pepper=settings.web_session_secret,
+            created_by_user_id=auth_context.user_id,
+            device_label=payload.device_label,
+            rate_key=client_identity(request, settings.trusted_proxy_cidrs),
+        )
+    except DevicePairingError as exc:
+        db.rollback()
+        raise device_pairing_http_error(exc) from exc
+    return DesktopPairingCreateResponse(
+        pairing_id=str(created.pairing_id),
+        setup_code=created.setup_code,
+        expires_at=created.expires_at,
+    )
+
+
+@api.post(
+    "/auth/desktop-pairing/{pairing_id}/ack",
+    response_model=DesktopPairingAckResponse,
+)
+def desktop_pairing_ack(
+    pairing_id: str,
+    response: Response,
+    auth_context=Depends(require_service_token),
+    db=Depends(get_db),
+):
+    prevent_auth_response_caching(response)
+    if (
+        auth_context.source != "service-principal"
+        or auth_context.role != "desktop"
+        or frozenset(auth_context.permissions) != DESKTOP_RUNTIME_SCOPES
+        or not auth_context.principal_id
+        or not auth_context.token_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Desktop pairing credential denied",
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+        )
+    try:
+        return acknowledge_desktop_pairing(
+            db,
+            pairing_id,
+            auth_principal_id=auth_context.principal_id,
+            auth_token_id=auth_context.token_id,
+        )
+    except DevicePairingError as exc:
+        db.rollback()
+        raise device_pairing_http_error(exc) from exc
 
 
 @api.get("/orders/active")

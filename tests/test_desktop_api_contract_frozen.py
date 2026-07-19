@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class FrozenDesktopApiContractTests(unittest.TestCase):
     def test_desktop_2049_contract_is_satisfied(self):
-        self.assertEqual(FROZEN_DESKTOP_VERSION, "2.0.49")
+        self.assertEqual(FROZEN_DESKTOP_VERSION, "2.0.50")
         self.assertEqual(validate_contract(ROOT), [])
 
     def test_contract_contains_real_warehouse_and_report_paths(self):

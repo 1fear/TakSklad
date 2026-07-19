@@ -66,6 +66,9 @@ case "$MODE" in
   auth-identities)
     TEST_MODULE="tests.test_postgres_auth_identities"
     ;;
+  desktop-pairing)
+    TEST_MODULE="tests.test_device_pairing_service"
+    ;;
   rbac-audit)
     TEST_MODULE="tests.test_postgres_rbac_audit"
     ;;
@@ -82,10 +85,10 @@ case "$MODE" in
     TEST_MODULE="tests.test_postgres_cursor_capabilities"
     ;;
   all)
-    TEST_MODULE="tests.test_postgres_migrations tests.test_postgres_concurrency tests.test_postgres_readiness tests.test_postgres_observability tests.test_postgres_queue_concurrency tests.test_postgres_skladbot_nonlease_concurrency tests.test_postgres_queue_failures tests.test_postgres_import_identity tests.test_postgres_invariants tests.test_postgres_outbox tests.test_postgres_outbox_faults tests.test_postgres_smartup_saga tests.test_postgres_auth_identities tests.test_postgres_rbac_audit tests.test_postgres_input_safety tests.test_postgres_query_parity tests.test_postgres_db_resilience tests.test_postgres_cursor_capabilities"
+    TEST_MODULE="tests.test_postgres_migrations tests.test_postgres_concurrency tests.test_postgres_readiness tests.test_postgres_observability tests.test_postgres_queue_concurrency tests.test_postgres_skladbot_nonlease_concurrency tests.test_postgres_queue_failures tests.test_postgres_import_identity tests.test_postgres_invariants tests.test_postgres_outbox tests.test_postgres_outbox_faults tests.test_postgres_smartup_saga tests.test_postgres_auth_identities tests.test_device_pairing_service tests.test_postgres_rbac_audit tests.test_postgres_input_safety tests.test_postgres_query_parity tests.test_postgres_db_resilience tests.test_postgres_cursor_capabilities"
     ;;
   *)
-    echo "Usage: $0 {seed-reference|migrations|smoke|readiness|observability|queue-concurrency|skladbot-nonlease-concurrency|queue-failures|import-identity|invariants|outbox|outbox-faults|smartup-saga|auth-identities|rbac-audit|input-safety|query-parity|db-resilience|cursor-capabilities|all}" >&2
+    echo "Usage: $0 {seed-reference|migrations|smoke|readiness|observability|queue-concurrency|skladbot-nonlease-concurrency|queue-failures|import-identity|invariants|outbox|outbox-faults|smartup-saga|auth-identities|desktop-pairing|rbac-audit|input-safety|query-parity|db-resilience|cursor-capabilities|all}" >&2
     exit 2
     ;;
 esac

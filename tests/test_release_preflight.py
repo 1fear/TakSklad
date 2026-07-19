@@ -171,7 +171,7 @@ class ReleasePreflightTests(unittest.TestCase):
             return "shadow_diagnostics backend_active_orders_source hot_path_stale_processing telegram_worker_state\n"
         if path_text.endswith("backend/app/health_service.py"):
             return (
-                'EXPECTED_HEAD_REVISION = "20260716_0019"\n'
+                'EXPECTED_HEAD_REVISION = "20260719_0020"\n'
                 'report["ready"] = True\n'
                 'report["status"] = "unhealthy"\n'
             )
@@ -648,9 +648,9 @@ class ReleasePreflightTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         payload = json.loads(completed.stdout)
         version = next(item for item in payload["checks"] if item["name"] == "version_json")
-        self.assertEqual(version["latest_version"], EXPECTED_RELEASE_VERSION)
+        self.assertEqual(version["latest_version"], previous_patch_version(EXPECTED_RELEASE_VERSION))
         self.assertEqual(version["candidate_version"], EXPECTED_RELEASE_VERSION)
-        self.assertEqual(version["rollout_state"], "candidate-published")
+        self.assertEqual(version["rollout_state"], "published-supported")
 
     def write_bytes(self, path, content):
         path.write_bytes(content)

@@ -97,11 +97,23 @@ def _protected(
 
 ROUTE_POLICIES: dict[tuple[str, str], RoutePolicy] = {
     ("POST", "/api/v1/auth/login"): _public(),
+    ("POST", "/api/v1/auth/desktop-pairing/redeem"): _public(),
+    ("POST", "/api/v1/auth/desktop-pairing/{pairing_id}/ack"): _protected(
+        PERMISSION_WAREHOUSE_READ,
+        "returns:read",
+        mutates=True,
+    ),
     ("POST", "/api/v1/auth/logout"): _session(mutates=True),
     ("GET", "/api/v1/auth/session"): _session(),
     ("GET", "/api/v1/auth/check"): _session(),
     ("GET", "/api/v1/orders/active"): _protected(PERMISSION_WAREHOUSE_READ, "orders:read"),
     ("GET", "/api/v1/admin/table"): _protected(PERMISSION_ADMIN_READ, "admin:read", sensitive=True),
+    ("POST", "/api/v1/admin/desktop-pairings"): _protected(
+        PERMISSION_ADMIN_WRITE,
+        "admin:write",
+        mutates=True,
+        sensitive=True,
+    ),
     ("GET", "/api/v1/admin/dashboard/day-summary"): _protected(PERMISSION_ADMIN_READ, "admin:read"),
     ("GET", "/api/v1/admin/metrics"): _protected(PERMISSION_DIAGNOSTICS_READ, "diagnostics:read", sensitive=True),
     ("GET", "/api/v1/admin/client-points"): _protected(PERMISSION_CLIENT_POINTS_READ, "client_points:read"),

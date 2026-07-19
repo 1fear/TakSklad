@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed compatibility gate for the frozen TakSklad desktop 2.0.49 API.
+"""Fail-closed compatibility gate for the current TakSklad desktop 2.0.50 API.
 
 The gate is intentionally static and data-free.  It verifies the HTTP methods,
 route templates, authentication policy and service-principal scopes used by the
@@ -16,7 +16,7 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
-FROZEN_DESKTOP_VERSION = "2.0.49"
+FROZEN_DESKTOP_VERSION = "2.0.50"
 
 
 @dataclass(frozen=True, order=True)
@@ -218,7 +218,7 @@ def validate_contract(root: Path = ROOT) -> list[str]:
         if missing:
             errors.append(f"desktop calls missing or renamed: {missing}")
         if unexpected:
-            errors.append(f"desktop 2.0.49 gained unversioned API calls: {unexpected}")
+            errors.append(f"desktop {FROZEN_DESKTOP_VERSION} gained unversioned API calls: {unexpected}")
 
     declared_routes = discover_declared_routes(root / "backend/app/main.py")
     policies = discover_route_policies(root / "backend/app/access_policy.py")

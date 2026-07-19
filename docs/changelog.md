@@ -4,6 +4,14 @@
 
 ## 2026-07-19
 
+### One-time Windows desktop pairing
+
+- Runtime candidate поднят до `2.0.50`; публичный desktop `version.json` остаётся на `2.0.49`, поэтому существующие складские ПК не получают принудительное обновление.
+- Администратор создаёт в web-панели одноразовый код на пять минут. Код показывается один раз, не сохраняется в URL/storage/logs и вводится непосредственно на новом складском ПК.
+- Backend хранит только digest кода, сам назначает desktop principal и scopes, атомарно блокирует повторный обмен и применяет постоянные DB rate limits.
+- Новый credential сначала выдаётся на пять минут. Windows сохраняет его через current-user DPAPI, проверяет data-free canary и подтверждает установку; неподтверждённый credential автоматически отзывается.
+- Архив и release assets не содержат setup code, service token, пароль или другой production secret.
+
 ### Automatic KIZ delivery for pure Telegram transfer imports
 
 - Runtime release candidate поднят до `2.0.49` для автоматической доставки КИЗ по полностью отсканированному файлу Telegram-импорта, если все строки относятся к оплате перечислением и прошли проверки полноты.
