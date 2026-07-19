@@ -144,6 +144,21 @@ class ServerReleaseWorkflowContractTests(unittest.TestCase):
             with self.subTest(needle=needle):
                 self.assertIn(needle, self.deploy)
 
+    def test_deploy_verifies_routing_from_one_protected_candidate_directory(self):
+        required = (
+            'candidate_state=".release-state/server-routing-candidate"',
+            'install -d -m 700 "\\$candidate_state"',
+            'candidate_env="\\$candidate_state/.env"',
+            'candidate_compose="\\$candidate_state/compose.json"',
+            'install -m 600 deploy/vds/.env "\\$candidate_env"',
+            'install -m 600 /dev/null "\\$candidate_compose"',
+            '--env-path "\\$candidate_env" --compose-config-json "\\$candidate_compose"',
+            "cleanup_candidate_routing",
+        )
+        for needle in required:
+            with self.subTest(needle=needle):
+                self.assertIn(needle, self.deploy)
+
     def test_deploy_cannot_mutate_desktop_update_channel(self):
         for forbidden in (
             "TakSklad.exe",
