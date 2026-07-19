@@ -190,12 +190,10 @@ def validate_live(
     if runtime.get("backend_digest") != expected_digest or not DIGEST_RE.fullmatch(str(runtime.get("backend_digest") or "")):
         raise ProductionCheckError("live backend digest differs from release manifest")
     compatibility = manifest.get("compatibility") or {}
-    expected_runtime_version = (
-        compatibility.get("min_desktop_version")
-        if manifest.get("release_kind") == "server"
-        else manifest.get("windows", {}).get("version")
-    )
-    if runtime.get("version") != expected_runtime_version:
+    if (
+        manifest.get("release_kind") != "server"
+        and runtime.get("version") != manifest.get("windows", {}).get("version")
+    ):
         raise ProductionCheckError("live version differs from release manifest")
     if manifest.get("release_kind") == "server":
         if runtime.get("server_release_id") != manifest.get("server_release_id"):

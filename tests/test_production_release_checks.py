@@ -152,7 +152,7 @@ class ProductionReleaseChecksTests(unittest.TestCase):
         evidence["runtime"] = {
             "source_sha": SHA,
             "backend_digest": DIGEST,
-            "version": "2.0.49",
+            "version": "2.0.50",
             "server_release_id": f"server-{SHA}",
             "desktop_api_contract": 1,
         }
@@ -162,13 +162,25 @@ class ProductionReleaseChecksTests(unittest.TestCase):
             require_same_sha=True,
             require_slo_window=True,
         )
-        self.assertEqual(result["version"], "2.0.49")
+        self.assertEqual(result["version"], "2.0.50")
 
         evidence["runtime"]["desktop_api_contract"] = 2
         with self.assertRaisesRegex(ProductionCheckError, "API contract"):
             validate_live(
                 evidence,
                 server_manifest(),
+                require_same_sha=True,
+                require_slo_window=True,
+            )
+
+    def test_full_release_live_rejects_runtime_version_mismatch(self):
+        evidence = self.live()
+        evidence["runtime"]["version"] = "2.0.50"
+
+        with self.assertRaisesRegex(ProductionCheckError, "live version"):
+            validate_live(
+                evidence,
+                manifest(),
                 require_same_sha=True,
                 require_slo_window=True,
             )
