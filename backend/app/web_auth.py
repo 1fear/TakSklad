@@ -38,8 +38,14 @@ def authenticate_web_user(settings, login, password, db=None):
     if not normalized_login:
         raise WebAuthError("invalid credentials")
 
+    if settings.identity_auth_enabled and db is not None:
+        identity = _authenticate_db_user(db, normalized_login, password)
+        if identity is not None:
+            return identity
+
     if (
-        settings.web_login
+        settings.legacy_auth_mode == "enforce"
+        and settings.web_login
         and settings.web_password_hash
         and constant_time_equals(normalized_login, normalize_login(settings.web_login))
     ):
@@ -47,22 +53,29 @@ def authenticate_web_user(settings, login, password, db=None):
             raise WebAuthError("invalid credentials")
         return AuthIdentity(login=settings.web_login, role=ROLE_ADMIN)
 
-    if db is not None:
-        user = find_active_db_user(db, normalized_login)
-        if user and user.password_hash and verify_password(str(password or ""), user.password_hash):
-            role = normalize_role(user.role)
-            if role == ROLE_DENIED:
-                raise WebAuthError("invalid credentials")
-            return AuthIdentity(
-                login=user.username,
-                role=role,
-                user_id=user.id,
-                auth_version=int(getattr(user, "auth_version", 0) or 0),
-            )
+    if db is not None and not settings.identity_auth_enabled:
+        identity = _authenticate_db_user(db, normalized_login, password)
+        if identity is not None:
+            return identity
 
     if not settings.web_auth_enabled and db is None:
         raise WebAuthError("web auth is not configured")
     raise WebAuthError("invalid credentials")
+
+
+def _authenticate_db_user(db, login, password):
+    user = find_active_db_user(db, login)
+    if not user or not user.password_hash or not verify_password(str(password or ""), user.password_hash):
+        return None
+    role = normalize_role(user.role)
+    if role == ROLE_DENIED:
+        raise WebAuthError("invalid credentials")
+    return AuthIdentity(
+        login=user.username,
+        role=role,
+        user_id=user.id,
+        auth_version=int(getattr(user, "auth_version", 0) or 0),
+    )
 
 
 def find_active_db_user(db, login):
