@@ -4,6 +4,15 @@
 
 ## 2026-07-19
 
+### Public zero-touch Windows desktop bootstrap
+
+- Runtime candidate поднят до `2.0.51`; публичный update channel переключается отдельно только после immutable build, production deploy и проверки release assets.
+- На чистом ПК TakSklad больше не показывает логин, пароль или одноразовый код: приложение автоматически получает ограниченный desktop principal, проверяет его data-free canary и сохраняет bundle через current-user DPAPI.
+- До подтверждения DPAPI и ACK credential живёт пять минут; неуспешная установка восстанавливает предыдущий bundle, а sweeper отзывает неподтверждённый principal.
+- Публичная выдача ограничена persistent rate limit и общим лимитом незавершённых bootstrap; plaintext credential не сохраняется и не попадает в audit/logs/release assets.
+- Web-панель, её login/session/CSRF, складские данные, КИЗы, отчёты и Telegram routing этим изменением не затронуты.
+- Принятый владельцем компромисс: любой интернет-клиент может запросить desktop-scoped credential; `admin:write` и web-права ему не выдаются.
+
 ### One-time Windows desktop pairing
 
 - Runtime candidate поднят до `2.0.50`; публичный desktop `version.json` остаётся на `2.0.49`, поэтому существующие складские ПК не получают принудительное обновление.

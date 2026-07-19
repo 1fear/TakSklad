@@ -42,11 +42,14 @@ CREATE_ADMIN_RATE_LIMIT = 5
 CREATE_ADMIN_RATE_WINDOW_SECONDS = 900
 CREATE_IP_RATE_LIMIT = 20
 CREATE_IP_RATE_WINDOW_SECONDS = 3600
+PUBLIC_BOOTSTRAP_RATE_LIMIT = 20
+PUBLIC_BOOTSTRAP_RATE_WINDOW_SECONDS = 3600
 REDEEM_RATE_LIMIT = 10
 REDEEM_RATE_WINDOW_SECONDS = 60
 RATE_LOCK_SECONDS = 900
 _SETUP_CODE_RE = re.compile(r"^[A-Za-z0-9_-]{43,64}$")
 _VERSION_RE = re.compile(r"^[0-9A-Za-z._+-]{0,40}$")
+_BOOTSTRAP_VERSION_RE = re.compile(r"^[0-9A-Za-z._+-]{1,40}$")
 _CREATE_CAP_ADVISORY_LOCK = 7_431_905_021
 
 
@@ -152,6 +155,99 @@ def create_desktop_pairing(
         db.rollback()
         raise DevicePairingError("Desktop pairing code generation failed", status_code=503) from exc
     return CreatedPairing(row.id, setup_code, _utc(row.expires_at))
+
+
+def bootstrap_desktop(
+    db,
+    *,
+    pepper: str,
+    desktop_version: str,
+    rate_key: str,
+    now: datetime | None = None,
+) -> RedeemedPairing:
+    """Issue an anonymous desktop credential through the existing ACK lifecycle."""
+
+    now = _utc(now)
+    _require_pepper(pepper)
+    version = str(desktop_version or "").strip()
+    if not _BOOTSTRAP_VERSION_RE.fullmatch(version):
+        raise DevicePairingError("Invalid desktop version", status_code=422)
+    _consume_budget(
+        db,
+        pepper=pepper,
+        bucket=f"public-bootstrap-ip:{rate_key}",
+        limit=PUBLIC_BOOTSTRAP_RATE_LIMIT,
+        window_seconds=PUBLIC_BOOTSTRAP_RATE_WINDOW_SECONDS,
+        now=now,
+    )
+    _serialize_pending_cap_check(db)
+    active_bootstraps = db.execute(
+        select(func.count(DesktopPairing.id))
+        .where(DesktopPairing.status == "redeemed_unacked")
+        .where(DesktopPairing.ack_deadline > now)
+    ).scalar_one()
+    if int(active_bootstraps or 0) >= GLOBAL_PENDING_CAP:
+        db.rollback()
+        raise DevicePairingError(
+            "Desktop bootstrap capacity is temporarily unavailable",
+            status_code=503,
+        )
+
+    pairing_id = uuid.uuid4()
+    ack_deadline = now + timedelta(seconds=UNACKED_TOKEN_TTL_SECONDS)
+    principal = ServicePrincipal(
+        id=uuid.uuid4(),
+        identifier=f"desktop.bootstrap.{pairing_id.hex[:24]}",
+        kind="desktop",
+        scopes=sorted(SERVICE_PRINCIPAL_SCOPE_MATRIX["desktop"]),
+        is_active=True,
+        expires_at=None,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(principal)
+    db.flush()
+    issued = issue_service_token(db, principal, expires_at=ack_deadline, now=now)
+    pairing = DesktopPairing(
+        id=pairing_id,
+        setup_code_digest=_digest(
+            pepper,
+            "setup-code",
+            secrets.token_urlsafe(SETUP_CODE_BYTES),
+        ),
+        status="redeemed_unacked",
+        desktop_version=version,
+        created_by_user_id=None,
+        principal_id=principal.id,
+        token_id=issued.identifier,
+        expires_at=ack_deadline,
+        ack_deadline=ack_deadline,
+        redeemed_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(pairing)
+    set_audit_actor(db, AuditActor(subject="public:desktop-bootstrap"))
+    db.add(AuditLog(
+        action="desktop_public_bootstrap_issued",
+        entity_type="desktop_pairing",
+        entity_id=str(pairing.id),
+        payload={
+            "principal_id": str(principal.id),
+            "ack_deadline": ack_deadline.isoformat(),
+            "desktop_version_present": True,
+            "source_digest": _digest(pepper, "public-bootstrap-source", rate_key),
+        },
+    ))
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise DevicePairingError(
+            "Desktop bootstrap is temporarily unavailable",
+            status_code=503,
+        ) from exc
+    return RedeemedPairing(pairing.id, issued.token, principal.identifier, ack_deadline)
 
 
 def redeem_desktop_pairing(

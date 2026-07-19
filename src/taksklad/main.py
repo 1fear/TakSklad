@@ -35,7 +35,7 @@ from .desktop_refresh_service import (
     backend_skladbot_sync_result,
 )
 from .desktop_smoke import run_tk_app_smoke
-from .desktop_pairing import run_desktop_pairing_dialog
+from .desktop_pairing import DesktopPairingError, ensure_public_desktop_identity
 from .backend_flow import (
     backend_blocked_scan_events_for_item,
     backend_sync_group_blocker,
@@ -218,17 +218,26 @@ def run_app():
             return 5
         log_startup_self_check()
 
-        if not backend_configured():
-            if not run_desktop_pairing_dialog(credential_lock_held=True):
-                show_startup_error_message(
-                    "Компьютер не подключён",
-                    "Получите одноразовый код подключения в панели TakSklad и повторите запуск.",
-                )
-                return 4
+        try:
+            ensure_public_desktop_identity(credential_lock_held=True)
+        except DesktopPairingError as exc:
+            logging.warning("Автоматическое подключение к backend не выполнено: %s", exc.reason)
+            show_startup_error_message(
+                "Нет связи с сервером",
+                "Не удалось подключиться к серверу TakSklad. Проверьте интернет и повторите запуск.",
+            )
+            return 4
+        except Exception:
+            logging.error("Автоматическое подключение к backend завершилось неожиданной ошибкой")
+            show_startup_error_message(
+                "Нет связи с сервером",
+                "Не удалось подключиться к серверу TakSklad. Проверьте интернет и повторите запуск.",
+            )
+            return 4
         if not backend_configured():
             show_startup_error_message(
-                "Компьютер не подключён",
-                "Защищённые данные подключения не сохранились. Повторите подключение.",
+                "Нет связи с сервером",
+                "Не удалось подключиться к серверу TakSklad. Проверьте интернет и повторите запуск.",
             )
             return 4
         app = ScanningApp()

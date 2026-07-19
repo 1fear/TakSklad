@@ -22,6 +22,7 @@ from backend.app.csrf import csrf_token_for_session
 from backend.app.device_pairing_service import (
     DevicePairingError,
     acknowledge_desktop_pairing,
+    bootstrap_desktop,
     build_device_pairing_readiness,
     cleanup_expired_pairings,
     create_desktop_pairing,
@@ -126,6 +127,119 @@ class DevicePairingServiceTests(unittest.TestCase):
                 now=NOW + timedelta(seconds=2),
             )
         self.assertEqual(replay.exception.status_code, 401)
+
+    def test_public_bootstrap_issues_unacked_exact_desktop_scopes_and_persists_digest_only(self):
+        bootstrapped = bootstrap_desktop(
+            self.db,
+            pepper=PEPPER,
+            desktop_version="2.0.50",
+            rate_key="203.0.113.40",
+            now=NOW,
+        )
+
+        pairing = self.db.get(DesktopPairing, bootstrapped.pairing_id)
+        principal = self.db.get(ServicePrincipal, pairing.principal_id)
+        token = self.db.get(ServicePrincipalToken, pairing.token_id)
+        audit = self.db.execute(
+            select(AuditLog).where(AuditLog.action == "desktop_public_bootstrap_issued")
+        ).scalar_one()
+
+        self.assertEqual(principal.kind, "desktop")
+        self.assertEqual(set(principal.scopes), set(SERVICE_PRINCIPAL_SCOPE_MATRIX["desktop"]))
+        self.assertEqual(principal.identifier, bootstrapped.principal_identifier)
+        self.assertTrue(principal.identifier.startswith("desktop.bootstrap."))
+        self.assertEqual(pairing.status, "redeemed_unacked")
+        self.assertIsNone(pairing.created_by_user_id)
+        self.assertEqual(len(pairing.setup_code_digest), 64)
+        self.assertEqual(len(token.token_digest), 64)
+        self.assertNotEqual(token.token_digest, bootstrapped.credential)
+        self.assertNotIn(bootstrapped.credential, repr(token.__dict__))
+        self.assertEqual(_aware(token.expires_at), bootstrapped.ack_deadline)
+        self.assertEqual(bootstrapped.ack_deadline, NOW + timedelta(minutes=5))
+        audit_text = repr(audit.__dict__)
+        self.assertNotIn(bootstrapped.credential, audit_text)
+        self.assertNotIn(token.token_digest, audit_text)
+        self.assertEqual(audit.payload["desktop_version_present"], True)
+        self.assertNotIn("203.0.113.40", audit_text)
+        self.assertRegex(audit.payload["source_digest"], r"^[0-9a-f]{64}$")
+
+        acked = acknowledge_desktop_pairing(
+            self.db,
+            bootstrapped.pairing_id,
+            auth_principal_id=principal.id,
+            auth_token_id=token.id,
+            now=NOW + timedelta(seconds=1),
+        )
+        self.assertEqual(acked["status"], "acked")
+        self.assertEqual(
+            acked["credential_expires_at"],
+            NOW + timedelta(seconds=1, days=365),
+        )
+
+    def test_public_bootstrap_rate_limit_is_hashed_and_persists_across_sessions(self):
+        rate_key = "203.0.113.41"
+        with mock.patch("backend.app.device_pairing_service.PUBLIC_BOOTSTRAP_RATE_LIMIT", 2):
+            for _index in range(2):
+                bootstrap_desktop(
+                    self.db,
+                    pepper=PEPPER,
+                    desktop_version="2.0.50",
+                    rate_key=rate_key,
+                    now=NOW,
+                )
+
+            self.db.close()
+            self.db = self.sessions()
+            with self.assertRaises(DevicePairingError) as limited:
+                bootstrap_desktop(
+                    self.db,
+                    pepper=PEPPER,
+                    desktop_version="2.0.50",
+                    rate_key=rate_key,
+                    now=NOW + timedelta(seconds=1),
+                )
+
+        self.assertEqual(limited.exception.status_code, 429)
+        rate_row = self.db.execute(select(DesktopPairingRateLimit)).scalar_one()
+        self.assertEqual(len(rate_row.bucket_digest), 64)
+        self.assertNotIn(rate_key, repr(rate_row.__dict__))
+
+    def test_public_bootstrap_has_a_global_unacked_capacity_limit(self):
+        with mock.patch("backend.app.device_pairing_service.GLOBAL_PENDING_CAP", 2):
+            for index in range(2):
+                bootstrap_desktop(
+                    self.db,
+                    pepper=PEPPER,
+                    desktop_version="2.0.51",
+                    rate_key=f"203.0.113.{50 + index}",
+                    now=NOW,
+                )
+            with self.assertRaises(DevicePairingError) as unavailable:
+                bootstrap_desktop(
+                    self.db,
+                    pepper=PEPPER,
+                    desktop_version="2.0.51",
+                    rate_key="203.0.113.52",
+                    now=NOW,
+                )
+
+        self.assertEqual(unavailable.exception.status_code, 503)
+        self.assertEqual(
+            len(self.db.execute(select(DesktopPairing)).scalars().all()),
+            2,
+        )
+
+    def test_public_bootstrap_rejects_unbounded_desktop_version(self):
+        for version in ("", "x" * 41, "2.0.50/unsafe"):
+            with self.subTest(version=version), self.assertRaises(DevicePairingError) as invalid:
+                bootstrap_desktop(
+                    self.db,
+                    pepper=PEPPER,
+                    desktop_version=version,
+                    rate_key="203.0.113.42",
+                    now=NOW,
+                )
+            self.assertEqual(invalid.exception.status_code, 422)
 
     def test_ack_is_bound_to_exact_token_and_idempotently_extends_it(self):
         created = self.create()
@@ -380,6 +494,90 @@ class DevicePairingServiceTests(unittest.TestCase):
             self.assertEqual(ack.status_code, 200, ack.text)
             self.assertEqual(ack.json()["status"], "acked")
             self.assertEqual(ack.headers.get("cache-control"), "no-store")
+
+    def test_public_bootstrap_http_contract_needs_no_auth_or_csrf_and_is_no_store(self):
+        app_settings = load_settings({
+            "TAKSKLAD_ENV": "test",
+            "TAKSKLAD_IDENTITY_AUTH_ENABLED": "true",
+            "TAKSKLAD_LEGACY_AUTH_MODE": "disabled",
+            "TAKSKLAD_WEB_SESSION_SECRET": PEPPER,
+            "TAKSKLAD_WEB_COOKIE_SECURE": "false",
+        })
+
+        def override_db():
+            db = self.sessions()
+            try:
+                yield db
+            finally:
+                db.close()
+
+        backend_main.app.dependency_overrides[backend_main.get_db] = override_db
+        client = TestClient(backend_main.app, base_url="http://testserver")
+        with (
+            mock.patch.object(backend_main, "settings", app_settings),
+            mock.patch.object(
+                backend_main,
+                "client_identity",
+                return_value="203.0.113.43",
+            ) as identity,
+        ):
+            response = client.post(
+                "/api/v1/auth/desktop-bootstrap",
+                json={"desktop_version": "2.0.50"},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.headers.get("cache-control"), "no-store")
+        self.assertEqual(response.headers.get("pragma"), "no-cache")
+        self.assertEqual(
+            set(response.json()),
+            {"pairing_id", "credential", "principal_identifier", "ack_deadline"},
+        )
+        self.assertTrue(response.json()["credential"].startswith("tks."))
+        self.assertNotIn("set-cookie", response.headers)
+        identity.assert_called_once_with(mock.ANY, app_settings.trusted_proxy_cidrs)
+
+    def test_public_bootstrap_http_contract_rate_limits_by_client_identity(self):
+        app_settings = load_settings({
+            "TAKSKLAD_ENV": "test",
+            "TAKSKLAD_IDENTITY_AUTH_ENABLED": "true",
+            "TAKSKLAD_LEGACY_AUTH_MODE": "disabled",
+            "TAKSKLAD_WEB_SESSION_SECRET": PEPPER,
+            "TAKSKLAD_WEB_COOKIE_SECURE": "false",
+        })
+
+        def override_db():
+            db = self.sessions()
+            try:
+                yield db
+            finally:
+                db.close()
+
+        backend_main.app.dependency_overrides[backend_main.get_db] = override_db
+        client = TestClient(backend_main.app, base_url="http://testserver")
+        with (
+            mock.patch.object(backend_main, "settings", app_settings),
+            mock.patch("backend.app.device_pairing_service.PUBLIC_BOOTSTRAP_RATE_LIMIT", 2),
+            mock.patch.object(
+                backend_main,
+                "client_identity",
+                return_value="203.0.113.44",
+            ) as identity,
+        ):
+            responses = [
+                client.post(
+                    "/api/v1/auth/desktop-bootstrap",
+                    json={"desktop_version": "2.0.50"},
+                    headers={"X-Forwarded-For": f"198.51.100.{index}"},
+                )
+                for index in range(3)
+            ]
+
+        self.assertEqual([response.status_code for response in responses[:2]], [200] * 2)
+        self.assertEqual(responses[2].status_code, 429)
+        self.assertEqual(responses[2].headers.get("cache-control"), "no-store")
+        self.assertGreater(int(responses[2].headers["retry-after"]), 0)
+        self.assertEqual(identity.call_count, 3)
 
     def test_sweeper_records_heartbeat_on_empty_database(self):
         stop = threading.Event()

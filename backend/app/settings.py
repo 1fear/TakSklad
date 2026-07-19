@@ -16,7 +16,7 @@ except ImportError:  # pragma: no cover - standalone settings verifier compatibi
     )
 
 
-APP_VERSION = "2.0.50"
+APP_VERSION = "2.0.51"
 DESKTOP_API_CONTRACT = 1
 VALID_ENVIRONMENTS = frozenset({"local", "test", "production"})
 MIN_SESSION_SECRET_BYTES = 32

@@ -85,6 +85,10 @@ def ack_payload():
     }
 
 
+def bootstrap_payload():
+    return redeem_payload()
+
+
 class DesktopPairingTests(unittest.TestCase):
     def test_valid_bundle_skips_modal_construction(self):
         store = FakeDpapiStore(encode_backend_auth_bundle(TOKEN, IDENTIFIER))
@@ -120,6 +124,136 @@ class DesktopPairingTests(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(calls, [])
         self.assertEqual(store.values[BACKEND_AUTH_BUNDLE_SECRET], original)
+
+    def test_silent_bootstrap_keeps_valid_bundle_without_network(self):
+        original = encode_backend_auth_bundle(TOKEN, IDENTIFIER)
+        store = FakeDpapiStore(original)
+        opener = mock.Mock(side_effect=AssertionError("network must stay closed"))
+
+        self.assertTrue(desktop_pairing.ensure_public_desktop_identity(
+            store=store,
+            opener=opener,
+            credential_lock_held=True,
+        ))
+
+        opener.assert_not_called()
+        self.assertEqual(store.values[BACKEND_AUTH_BUNDLE_SECRET], original)
+
+    def test_silent_bootstrap_persists_only_verified_public_identity(self):
+        store = FakeDpapiStore()
+        bootstrap_requests = []
+        canary_requests = []
+
+        def opener(request, timeout):
+            bootstrap_requests.append(request)
+            if request.full_url.endswith(desktop_pairing.BOOTSTRAP_PATH):
+                return FakeResponse(200, bootstrap_payload())
+            return FakeResponse(200, ack_payload())
+
+        self.assertTrue(desktop_pairing.ensure_public_desktop_identity(
+            store=store,
+            opener=opener,
+            canary_opener=lambda request, timeout: (
+                canary_requests.append(request) or FakeResponse(204)
+            ),
+            credential_lock_held=True,
+        ))
+
+        self.assertEqual(
+            decode_backend_auth_bundle(store.values[BACKEND_AUTH_BUNDLE_SECRET]),
+            (TOKEN, IDENTIFIER),
+        )
+        self.assertEqual(len(bootstrap_requests), 2)
+        request, ack_request = bootstrap_requests
+        self.assertEqual(
+            request.full_url,
+            desktop_pairing.PRODUCTION_BACKEND_ORIGIN + desktop_pairing.BOOTSTRAP_PATH,
+        )
+        self.assertNotIn("Authorization", request.headers)
+        self.assertEqual(json.loads(request.data), {"desktop_version": desktop_pairing.APP_VERSION})
+        self.assertEqual(ack_request.headers["Authorization"], f"Bearer {TOKEN}")
+        self.assertEqual(len(canary_requests), 2)
+
+    def test_silent_bootstrap_failures_are_sanitized_and_fail_closed(self):
+        leaked_credential = "tks." + "c" * 32 + "." + "d" * 43
+        transport = mock.Mock(side_effect=OSError(leaked_credential))
+        cases = {
+            "http": lambda request, timeout: FakeResponse(
+                400,
+                {"detail": leaked_credential},
+            ),
+            "invalid": lambda request, timeout: FakeResponse(
+                200,
+                {"credential": leaked_credential},
+            ),
+            "oversize": lambda request, timeout: SimpleNamespace(
+                status=200,
+                getcode=lambda: 200,
+                read=lambda _limit=-1: b"x" * (desktop_pairing.MAX_RESPONSE_BYTES + 1),
+                close=lambda: None,
+            ),
+            "redirect": lambda request, timeout: FakeResponse(
+                302,
+                {"location": f"https://example.test/{leaked_credential}"},
+            ),
+            "transport": SimpleNamespace(open=transport),
+        }
+
+        for name, opener in cases.items():
+            with self.subTest(name=name):
+                store = FakeDpapiStore()
+                with self.assertRaises(desktop_pairing.DesktopPairingError) as captured:
+                    desktop_pairing.ensure_public_desktop_identity(
+                        store=store,
+                        opener=opener,
+                        canary_opener=mock.Mock(),
+                        sleep_func=lambda _seconds: None,
+                        credential_lock_held=True,
+                    )
+                self.assertNotIn(leaked_credential, str(captured.exception))
+                self.assertNotIn(BACKEND_AUTH_BUNDLE_SECRET, store.values)
+
+        self.assertEqual(transport.call_count, desktop_pairing.BOOTSTRAP_MAX_ATTEMPTS)
+
+    def test_silent_bootstrap_ack_failure_restores_exact_previous_bundle(self):
+        previous = "{synthetic-corrupt-bundle"
+        store = FakeDpapiStore(previous)
+
+        def opener(request, timeout):
+            if request.full_url.endswith(desktop_pairing.BOOTSTRAP_PATH):
+                return FakeResponse(200, bootstrap_payload())
+            return FakeResponse(503, {})
+
+        with self.assertRaises(desktop_pairing.DesktopPairingError):
+            desktop_pairing.ensure_public_desktop_identity(
+                store=store,
+                opener=opener,
+                canary_opener=lambda request, timeout: FakeResponse(204),
+                sleep_func=lambda _seconds: None,
+                credential_lock_held=True,
+            )
+
+        self.assertEqual(store.values[BACKEND_AUTH_BUNDLE_SECRET], previous)
+
+    def test_silent_bootstrap_retries_only_transient_http_failures(self):
+        store = FakeDpapiStore()
+        responses = [
+            FakeResponse(503, {}),
+            FakeResponse(429, {}),
+            FakeResponse(200, bootstrap_payload()),
+            FakeResponse(200, ack_payload()),
+        ]
+        sleeps = []
+
+        self.assertTrue(desktop_pairing.ensure_public_desktop_identity(
+            store=store,
+            opener=lambda request, timeout: responses.pop(0),
+            canary_opener=lambda request, timeout: FakeResponse(204),
+            sleep_func=sleeps.append,
+            credential_lock_held=True,
+        ))
+
+        self.assertEqual(sleeps, [0.25, 0.5])
 
     def test_redeem_failure_never_writes_a_bundle(self):
         store = FakeDpapiStore()
@@ -294,7 +428,7 @@ class DesktopPairingTests(unittest.TestCase):
             ):
                 self.assertFalse(backend_client.backend_configured())
 
-    def test_startup_pairs_before_constructing_scanning_app(self):
+    def test_startup_silently_bootstraps_before_constructing_scanning_app(self):
         instance_lock = object()
         credential_lock = object()
         app = SimpleNamespace(single_instance_lock=None, mainloop=mock.Mock())
@@ -309,13 +443,15 @@ class DesktopPairingTests(unittest.TestCase):
             mock.patch.object(main, "migrate_legacy_json_files_to_app_data"),
             mock.patch.object(main, "migrate_legacy_pending_saves_to_backend_events", return_value={"remaining": 0}),
             mock.patch.object(main, "log_startup_self_check"),
-            mock.patch.object(main, "backend_configured", side_effect=[False, True]),
-            mock.patch.object(main, "run_desktop_pairing_dialog", return_value=True) as pairing,
+            mock.patch.object(main, "backend_configured", return_value=True),
+            mock.patch.object(main, "ensure_public_desktop_identity", return_value=True) as bootstrap,
+            mock.patch.object(desktop_pairing, "run_desktop_pairing_dialog") as pairing_dialog,
             mock.patch.object(main, "ScanningApp", return_value=app),
         ):
             self.assertEqual(main.run_app(), 0)
 
-        pairing.assert_called_once_with(credential_lock_held=True)
+        bootstrap.assert_called_once_with(credential_lock_held=True)
+        pairing_dialog.assert_not_called()
         app.mainloop.assert_called_once_with()
 
 
