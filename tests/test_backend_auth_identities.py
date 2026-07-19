@@ -665,6 +665,144 @@ class BackendAuthIdentityTests(unittest.TestCase):
         self.assertEqual(with_plus.user_id, user.id)
         self.assertEqual(without_plus.user_id, user.id)
 
+    def test_disabled_legacy_web_auth_uses_overlapping_db_identity(self):
+        user = self.add_user("3")
+        shared_password_hash = hash_password(
+            "synthetic-password",
+            salt="disabled-overlap-salt",
+            iterations=1000,
+        )
+        user.password_hash = shared_password_hash
+        self.db.flush()
+        app_settings = load_settings({
+            "TAKSKLAD_ENV": "test",
+            "TAKSKLAD_IDENTITY_AUTH_ENABLED": "true",
+            "TAKSKLAD_LEGACY_AUTH_MODE": "disabled",
+            "TAKSKLAD_WEB_LOGIN": user.username,
+            "TAKSKLAD_WEB_PASSWORD_HASH": shared_password_hash,
+            "TAKSKLAD_WEB_SESSION_SECRET": "independent-synthetic-session-secret",
+        })
+
+        identity = authenticate_web_user(
+            app_settings,
+            user.username,
+            "synthetic-password",
+            db=self.db,
+        )
+
+        self.assertEqual(identity.login, user.username)
+        self.assertEqual(identity.role, "operator")
+        self.assertEqual(identity.user_id, user.id)
+        self.assertEqual(identity.auth_version, user.auth_version)
+
+    def test_enforced_legacy_web_auth_uses_overlapping_db_identity_first(self):
+        user = self.add_user("4")
+        shared_password_hash = hash_password(
+            "synthetic-password",
+            salt="enforce-overlap-salt",
+            iterations=1000,
+        )
+        user.password_hash = shared_password_hash
+        self.db.flush()
+        app_settings = load_settings({
+            "TAKSKLAD_ENV": "test",
+            "TAKSKLAD_IDENTITY_AUTH_ENABLED": "true",
+            "TAKSKLAD_LEGACY_AUTH_MODE": "enforce",
+            "TAKSKLAD_WEB_LOGIN": user.username,
+            "TAKSKLAD_WEB_PASSWORD_HASH": shared_password_hash,
+            "TAKSKLAD_WEB_SESSION_SECRET": "independent-synthetic-session-secret",
+        })
+
+        identity = authenticate_web_user(
+            app_settings,
+            user.username,
+            "synthetic-password",
+            db=self.db,
+        )
+
+        self.assertEqual(identity.login, user.username)
+        self.assertEqual(identity.role, "operator")
+        self.assertEqual(identity.user_id, user.id)
+        self.assertEqual(identity.auth_version, user.auth_version)
+
+    def test_enforced_legacy_web_auth_falls_back_without_db_match(self):
+        legacy_login = "998000000007"
+        legacy_password_hash = hash_password(
+            "synthetic-password",
+            salt="enforce-fallback-salt",
+            iterations=1000,
+        )
+        app_settings = load_settings({
+            "TAKSKLAD_ENV": "test",
+            "TAKSKLAD_IDENTITY_AUTH_ENABLED": "true",
+            "TAKSKLAD_LEGACY_AUTH_MODE": "enforce",
+            "TAKSKLAD_WEB_LOGIN": legacy_login,
+            "TAKSKLAD_WEB_PASSWORD_HASH": legacy_password_hash,
+            "TAKSKLAD_WEB_SESSION_SECRET": "independent-synthetic-session-secret",
+        })
+
+        identity = authenticate_web_user(
+            app_settings,
+            legacy_login,
+            "synthetic-password",
+            db=self.db,
+        )
+
+        self.assertEqual(identity.login, legacy_login)
+        self.assertEqual(identity.role, "admin")
+        self.assertIsNone(identity.user_id)
+
+    def test_expired_enforced_legacy_window_issues_overlapping_db_session(self):
+        user = self.add_user("2")
+        shared_password_hash = hash_password(
+            "synthetic-password",
+            salt="expired-enforce-overlap-salt",
+            iterations=1000,
+        )
+        user.password_hash = shared_password_hash
+        self.db.flush()
+        app_settings = load_settings({
+            "TAKSKLAD_ENV": "test",
+            "TAKSKLAD_IDENTITY_AUTH_ENABLED": "true",
+            "TAKSKLAD_LEGACY_AUTH_MODE": "enforce",
+            "TAKSKLAD_LEGACY_AUTH_EXPIRES_AT": "2000-01-01T00:00:00+00:00",
+            "TAKSKLAD_WEB_LOGIN": user.username,
+            "TAKSKLAD_WEB_PASSWORD_HASH": shared_password_hash,
+            "TAKSKLAD_WEB_SESSION_SECRET": "independent-synthetic-session-secret",
+            "TAKSKLAD_WEB_COOKIE_SECURE": "false",
+        })
+        request = SimpleNamespace(
+            client=SimpleNamespace(host="203.0.113.19"),
+            cookies={},
+            headers={"host": "testserver", "origin": "http://testserver"},
+            url=SimpleNamespace(netloc="testserver", scheme="http"),
+            state=SimpleNamespace(),
+        )
+        response = Response()
+
+        with mock.patch.object(backend_main, "settings", app_settings):
+            self.assertFalse(backend_main.legacy_auth_window_active())
+            login = backend_main.web_login(
+                AuthLoginRequest(login=user.username, password="synthetic-password"),
+                request,
+                response,
+                db=self.db,
+            )
+            cookie = SimpleCookie()
+            cookie.load(response.headers["set-cookie"])
+            token = cookie[SESSION_COOKIE_NAME].value
+            session = backend_main.read_web_session(
+                SimpleNamespace(cookies={SESSION_COOKIE_NAME: token}),
+                db=self.db,
+            )
+
+        self.assertTrue(login.authenticated)
+        self.assertEqual(login.login, user.username)
+        self.assertEqual(login.role, "operator")
+        self.assertTrue(token.startswith("tks."))
+        self.assertEqual(session["uid"], str(user.id))
+        self.assertEqual(session["role"], "operator")
+
     def test_duplicate_plus_variants_are_ambiguous_and_fail_closed(self):
         first = self.add_user("5")
         first.username = "+998000000005"
