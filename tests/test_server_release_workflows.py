@@ -128,6 +128,8 @@ class ServerReleaseWorkflowContractTests(unittest.TestCase):
             "--artifact-manifest server-release.json",
             "--acceptance required --wait",
             "tools/collect_phase27_evidence.py preflight",
+            "chmod 644 tools/check_data_invariants.py",
+            "chmod +x deploy/vds/deploy_from_git.sh tools/production_preflight.sh tools/live_release_verifier.sh",
             "--output .release-state/server-production-preflight.json",
             "--evidence .release-state/server-production-preflight.json",
             "--read-only --require-current-backup --require-zero-blockers",

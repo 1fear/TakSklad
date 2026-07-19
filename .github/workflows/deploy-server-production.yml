@@ -330,8 +330,9 @@ jobs:
           export DOCKER_CONFIG=$(printf '%q' "$remote_docker_config")
           cd "\$app_dir"
           export PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.
-          chmod +x deploy/vds/deploy_from_git.sh tools/live_release_verifier.sh
+          chmod +x deploy/vds/deploy_from_git.sh tools/production_preflight.sh tools/live_release_verifier.sh
           chmod 700 deploy/vds/backup_postgres.sh deploy/vds/acceptance_status.sh
+          chmod 644 tools/check_data_invariants.py
 
           python3 tools/server_release_artifacts.py verify --manifest server-release.json
           eval "\$(python3 tools/server_release_artifacts.py emit-shell --manifest server-release.json)"
