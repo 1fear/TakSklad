@@ -10,7 +10,7 @@ SECRET_PATTERNS = (
     (re.compile(r"(Bearer\s+)[A-Za-z0-9._~+/=-]+", re.IGNORECASE), r"\1***"),
     (
         re.compile(
-            r"(token|password|secret|authorization)([\"'=:\s]+)([^\"'\s,}]+)",
+            r"(token|password|secret|authorization|setup[_-]?code|credential)([\"'=:\s]+)([^\"'\s,}]+)",
             re.IGNORECASE,
         ),
         r"\1\2***",

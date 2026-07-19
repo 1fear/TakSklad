@@ -19,6 +19,11 @@ from .config import (
 )
 from .http_client import open_https_url
 from .scan_quantities import scan_entries_for_codes
+from .returns_auth_canary import (
+    ReturnsAuthCanaryError,
+    validate_principal_identifier,
+    validate_scoped_credential,
+)
 from .secret_store import SecretStoreError, load_backend_auth_bundle
 from .utils import parse_date_to_standard, split_codes
 
@@ -50,7 +55,15 @@ def backend_read_orders_enabled():
 
 
 def backend_configured():
-    return backend_enabled() and bool(TAKSKLAD_BACKEND_BASE_URL)
+    if not backend_enabled() or not TAKSKLAD_BACKEND_BASE_URL:
+        return False
+    try:
+        credential, identifier = load_backend_auth_bundle()
+        validate_scoped_credential(credential)
+        validate_principal_identifier(identifier)
+    except (SecretStoreError, ReturnsAuthCanaryError):
+        return False
+    return True
 
 
 def make_backend_headers():

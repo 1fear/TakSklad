@@ -18,6 +18,7 @@ from .event_queue_service import (
     event_to_queue_read,
     list_stale_processing_events,
 )
+from .device_pairing_service import build_device_pairing_readiness
 from .models import AuditLog, ImportJob, Incident, PendingEvent
 from .redaction import redact_secrets
 from .settings import APP_VERSION, DESKTOP_API_CONTRACT
@@ -25,7 +26,7 @@ from .worker_observability import build_worker_readiness
 
 
 EXPECTED_BASELINE_REVISION = "20260616_0001"
-EXPECTED_HEAD_REVISION = "20260716_0019"
+EXPECTED_HEAD_REVISION = "20260719_0020"
 LEGACY_SQLITE_HEAD_REVISION = "20260710_0011"
 TERMINAL_INCIDENT_STATUSES = ("resolved", "ignored", "cancelled")
 SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE = "skladbot_daily_report_send"
@@ -88,6 +89,12 @@ def build_readiness_report(db: Session, app_settings, now=None):
         "imports": {"recent_errors": []},
         "workers": {"status": "unknown", "required": [], "missing": [], "unhealthy": [], "workers": []},
         "daily_report": {"status": "unknown", "due_date": "", "missing_count": 0},
+        "desktop_pairing": {
+            "status": "unknown",
+            "overdue_unacked_count": 0,
+            "stale_cleanup_count": 0,
+            "sweeper_heartbeat_stale": False,
+        },
         "policy": {
             "mandatory": [
                 "database",
@@ -96,6 +103,7 @@ def build_readiness_report(db: Session, app_settings, now=None):
                 "imports",
                 "worker_main_loops",
                 "daily_report_delivery",
+                "desktop_pairing_cleanup",
             ],
             "optional": [],
             "mandatory_status": "unknown",
@@ -130,6 +138,14 @@ def build_readiness_report(db: Session, app_settings, now=None):
             app_settings,
             now=now,
         )
+        report["desktop_pairing"] = build_device_pairing_readiness(
+            db,
+            now=now,
+            require_sweeper=(
+                str(app_settings.environment or "").strip().casefold() == "production"
+                and bool(getattr(app_settings, "identity_auth_enabled", False))
+            ),
+        )
     except SQLAlchemyError as exc:
         report["status"] = "unhealthy"
         report["database"] = {
@@ -147,6 +163,7 @@ def build_readiness_report(db: Session, app_settings, now=None):
         or report["imports"]["recent_errors"]
         or report["workers"].get("status") != "ok"
         or report["daily_report"].get("status") == "unhealthy"
+        or report["desktop_pairing"].get("status") == "unhealthy"
     )
     report["ready"] = not bool(mandatory_failed)
     report["policy"]["mandatory_status"] = "unhealthy" if mandatory_failed else "ok"
@@ -164,6 +181,7 @@ def public_readiness_report(report):
     queue = report.get("queue") or {}
     imports = report.get("imports") or {}
     workers = report.get("workers") or {}
+    desktop_pairing = report.get("desktop_pairing") or {}
     return {
         "generated_at": report.get("generated_at"),
         "ready": report.get("ready") is True,
@@ -198,6 +216,12 @@ def public_readiness_report(report):
             "status": (report.get("daily_report") or {}).get("status") or "unknown",
             "due_date": (report.get("daily_report") or {}).get("due_date") or "",
             "missing_count": int((report.get("daily_report") or {}).get("missing_count") or 0),
+        },
+        "desktop_pairing": {
+            "status": desktop_pairing.get("status") or "unknown",
+            "overdue_unacked_count": int(desktop_pairing.get("overdue_unacked_count") or 0),
+            "stale_cleanup_count": int(desktop_pairing.get("stale_cleanup_count") or 0),
+            "sweeper_heartbeat_stale": bool(desktop_pairing.get("sweeper_heartbeat_stale")),
         },
         "policy": dict(report.get("policy") or {}),
     }

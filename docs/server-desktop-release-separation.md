@@ -1,6 +1,6 @@
 # Разделение серверных и Windows-релизов
 
-Статус контракта: desktop `2.0.49`, API contract `1`.
+Статус контракта: текущий desktop `2.0.50`, минимально поддерживаемый desktop `2.0.49`, API contract `1`.
 
 ## Цель
 
@@ -33,7 +33,7 @@ Server-only release обязан сохранить уже работающий 
 ## Frozen API contract 1
 
 `tools/check_desktop_api_contract.py` статически проверяет реально используемые
-desktop `2.0.49` HTTP methods/routes, Bearer authentication и минимальные scopes.
+desktop contract `1` (совместимые линии `2.0.49` и `2.0.50`) HTTP methods/routes, Bearer authentication и минимальные scopes.
 Удаление, переименование, смена метода, усиление auth без совместимого desktop
 credential или потеря scope блокируют server-only release. Дополнительные
 серверные routes и дополнительные поля в ответах разрешены.
@@ -68,7 +68,7 @@ PYTHONPATH=. python -m unittest tests.test_desktop_api_contract_frozen
 3. выполнить проверяемый bounded backfill отдельно;
 4. переключить чтение только после data preflight;
 5. удаление старой формы — отдельный поздний contract release после подтверждения,
-   что desktop `2.0.49` и rollback runtime её не используют.
+   что desktop contract `1` и rollback runtime её не используют.
 
 Drop/rename, обязательная колонка без совместимого default, изменение смысла
 существующего поля и автоматический Alembic downgrade запрещены.
@@ -94,7 +94,7 @@ Drop/rename, обязательная колонка без совместимо
 ## Rollback
 
 Rollback использует только предыдущий проверенный server manifest и прежние image
-digests. Windows `2.0.49`, installer и `version.json` при этом не меняются.
+digests. Windows-клиент и `version.json` при server-only rollback не меняются.
 
 Порядок:
 

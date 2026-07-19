@@ -591,6 +591,79 @@ class ServicePrincipalToken(Base):
     )
 
 
+class DesktopPairing(Base):
+    __tablename__ = "desktop_pairings"
+    __table_args__ = (
+        UniqueConstraint("setup_code_digest", name="uq_desktop_pairings_setup_code_digest"),
+        UniqueConstraint("principal_id", name="uq_desktop_pairings_principal_id"),
+        UniqueConstraint("token_id", name="uq_desktop_pairings_token_id"),
+        Index("idx_desktop_pairings_status_expires", "status", "expires_at"),
+        Index("idx_desktop_pairings_creator_status", "created_by_user_id", "status"),
+        CheckConstraint(
+            "status IN ('pending','redeemed_unacked','acked','expired','revoked')",
+            name="ck_desktop_pairings_supported_status",
+        ),
+        CheckConstraint(
+            "length(setup_code_digest) = 64",
+            name="ck_desktop_pairings_setup_digest_length",
+        ),
+        CheckConstraint("expires_at > created_at", name="ck_desktop_pairings_expiry_after_creation"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    setup_code_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", server_default="pending")
+    device_label: Mapped[str | None] = mapped_column(String(80))
+    desktop_version: Mapped[str | None] = mapped_column(String(40))
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID_TYPE,
+        ForeignKey("users.id", ondelete="SET NULL"),
+    )
+    principal_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID_TYPE,
+        ForeignKey("service_principals.id", ondelete="SET NULL"),
+    )
+    token_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID_TYPE,
+        ForeignKey("service_principal_tokens.id", ondelete="SET NULL"),
+    )
+    expires_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
+    ack_deadline: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+    redeemed_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+    acked_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class DesktopPairingRateLimit(Base):
+    __tablename__ = "desktop_pairing_rate_limits"
+    __table_args__ = (
+        UniqueConstraint("bucket_digest", name="uq_desktop_pairing_rate_limits_bucket"),
+        Index("idx_desktop_pairing_rate_limits_updated", "updated_at"),
+        CheckConstraint("length(bucket_digest) = 64", name="ck_desktop_pairing_rate_bucket_digest_length"),
+        CheckConstraint("attempts >= 0", name="ck_desktop_pairing_rate_attempts_nonnegative"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    bucket_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    window_started_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
+    locked_until: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class DesktopPairingMaintenance(Base):
+    __tablename__ = "desktop_pairing_maintenance"
+
+    name: Mapped[str] = mapped_column(String(40), primary_key=True)
+    last_started_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+    last_succeeded_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+    last_error_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class AuditLog(Base):
     __tablename__ = "audit_log"
     __table_args__ = (

@@ -56,7 +56,7 @@ def valid_manifest():
         },
         "database": {
             "migration_policy": "no_change",
-            "alembic_head": "20260716_0019",
+            "alembic_head": "20260719_0020",
             "destructive_migrations_allowed": False,
             "alembic_downgrade_allowed": False,
         },
@@ -196,7 +196,7 @@ class ServerReleaseArtifactTests(unittest.TestCase):
         self.assertIn("RELEASE_DESKTOP_API_CONTRACT=1", lines)
         self.assertIn("RELEASE_MIN_DESKTOP_VERSION=2.0.49", lines)
         self.assertIn("RELEASE_DATABASE_MIGRATION_POLICY=no_change", lines)
-        self.assertIn("RELEASE_ALEMBIC_HEAD=20260716_0019", lines)
+        self.assertIn("RELEASE_ALEMBIC_HEAD=20260719_0020", lines)
         self.assertNotIn("TOKEN", output.getvalue())
         self.assertNotIn("PASSWORD", output.getvalue())
 
