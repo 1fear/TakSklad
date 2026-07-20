@@ -1,4 +1,6 @@
+import io
 import unittest
+import urllib.error
 from types import SimpleNamespace
 from unittest import mock
 from urllib.parse import parse_qs, urlsplit
@@ -56,6 +58,100 @@ class PaginationContractTests(unittest.TestCase):
 
 
 class DesktopPaginationClientTests(unittest.TestCase):
+    @staticmethod
+    def http_error(status):
+        return urllib.error.HTTPError(
+            "https://api.taksklad.uz/api/v1/orders/active",
+            status,
+            "synthetic",
+            {},
+            io.BytesIO(b'{"detail":"synthetic auth failure"}'),
+        )
+
+    def test_request_recovers_rejected_desktop_identity_and_retries_once(self):
+        class JsonResponse:
+            headers = {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return b'[{"id":"order-1"}]'
+
+        responses = [
+            self.http_error(401),
+            JsonResponse(),
+        ]
+        opened_headers = []
+
+        def open_url(request, timeout):
+            opened_headers.append(dict(request.headers))
+            result = responses.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        with (
+            mock.patch.object(backend_client, "open_https_url", side_effect=open_url),
+            mock.patch.object(
+                backend_client,
+                "make_backend_headers",
+                side_effect=[{"Authorization": "Bearer old"}, {"Authorization": "Bearer new"}],
+            ),
+            mock.patch(
+                "taksklad.desktop_pairing.ensure_public_desktop_identity",
+                return_value=True,
+            ) as recover,
+        ):
+            payload, _headers = backend_client.backend_request_page(
+                "GET", "/api/v1/orders/active",
+            )
+
+        self.assertEqual(payload, [{"id": "order-1"}])
+        recover.assert_called_once_with()
+        self.assertEqual(len(opened_headers), 2)
+        self.assertEqual(opened_headers[0]["Authorization"], "Bearer old")
+        self.assertEqual(opened_headers[1]["Authorization"], "Bearer new")
+
+    def test_request_does_not_loop_when_recovered_identity_is_still_rejected(self):
+        with (
+            mock.patch.object(
+                backend_client,
+                "open_https_url",
+                side_effect=[self.http_error(401), self.http_error(401)],
+            ) as open_url,
+            mock.patch(
+                "taksklad.desktop_pairing.ensure_public_desktop_identity",
+                return_value=True,
+            ) as recover,
+        ):
+            with self.assertRaises(backend_client.BackendApiError) as captured:
+                backend_client.backend_request_page("GET", "/api/v1/orders/active")
+
+        self.assertEqual(captured.exception.status_code, 401)
+        self.assertEqual(open_url.call_count, 2)
+        recover.assert_called_once_with()
+
+    def test_request_does_not_rotate_identity_for_non_auth_failure(self):
+        with (
+            mock.patch.object(
+                backend_client,
+                "open_https_url",
+                side_effect=self.http_error(503),
+            ),
+            mock.patch(
+                "taksklad.desktop_pairing.ensure_public_desktop_identity",
+            ) as recover,
+        ):
+            with self.assertRaises(backend_client.BackendApiError) as captured:
+                backend_client.backend_request_page("GET", "/api/v1/orders/active")
+
+        self.assertEqual(captured.exception.status_code, 503)
+        recover.assert_not_called()
+
     def test_all_pages_preserves_query_and_uses_old_backend_fallback(self):
         calls = []
 

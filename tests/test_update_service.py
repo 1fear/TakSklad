@@ -8,7 +8,7 @@ import zipfile
 from pathlib import Path
 from unittest import mock
 
-from backend.app.settings import APP_VERSION as BACKEND_APP_VERSION
+from backend.app.settings import DESKTOP_API_CONTRACT
 from taksklad.config import APP_VERSION
 from taksklad.update_service import (
     MAX_UPDATE_DOWNLOAD_BYTES,
@@ -149,7 +149,10 @@ class UpdateServiceTests(unittest.TestCase):
     def test_forced_release_manifest_is_current_or_three_patches_behind_app_versions(self):
         payload = json.loads((REPO_ROOT / "version.json").read_text(encoding="utf-8"))
 
-        self.assertEqual(BACKEND_APP_VERSION, APP_VERSION)
+        # Server and Windows releases are intentionally independent. The
+        # compatibility boundary is the frozen API contract, not equal
+        # marketing version numbers.
+        self.assertEqual(DESKTOP_API_CONTRACT, 1)
         app_version = tuple(int(part) for part in APP_VERSION.split("."))
         published_version = tuple(int(part) for part in payload["latest_version"].split("."))
         self.assertEqual(published_version[:2], app_version[:2])

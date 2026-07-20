@@ -14,7 +14,7 @@ WRAPPER = PROJECT_ROOT / "tools" / "verify_release_attestations.sh"
 
 
 def _resolve_app_version() -> str:
-    settings_path = PROJECT_ROOT / "backend" / "app" / "settings.py"
+    settings_path = PROJECT_ROOT / "src" / "taksklad" / "config.py"
     try:
         spec = spec_from_file_location("ts_backend_settings", settings_path)
         if spec and spec.loader:
