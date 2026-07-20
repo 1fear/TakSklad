@@ -1487,12 +1487,34 @@ class DesktopUiContractTests(unittest.TestCase):
 
         with (
             mock.patch("taksklad.backend_flow.backend_configured", return_value=True),
+            mock.patch("taksklad.backend_flow.queue_backend_order_complete", side_effect=lambda order_id: f"event-{order_id}") as queue_complete,
+            mock.patch("taksklad.backend_flow.remove_pending_backend_order_complete") as remove_complete,
             mock.patch("taksklad.backend_flow.complete_order", side_effect=fake_complete),
         ):
             result = complete_backend_orders_or_raise(["order-new", "order-done"])
 
         self.assertEqual(completed, ["order-new"])
         self.assertEqual(result, {"completed": 1, "already_completed": 1})
+        self.assertEqual(queue_complete.call_args_list, [mock.call("order-new"), mock.call("order-done")])
+        self.assertEqual(remove_complete.call_args_list, [mock.call("order-new"), mock.call("order-done")])
+
+    def test_backend_complete_keeps_durable_event_after_transient_failure(self):
+        error = backend_client.BackendApiError(
+            "Backend HTTP 503: temporarily unavailable",
+            status_code=503,
+        )
+
+        with (
+            mock.patch("taksklad.backend_flow.backend_configured", return_value=True),
+            mock.patch("taksklad.backend_flow.queue_backend_order_complete", return_value="event-order-1") as queue_complete,
+            mock.patch("taksklad.backend_flow.remove_pending_backend_order_complete") as remove_complete,
+            mock.patch("taksklad.backend_flow.complete_order", side_effect=error),
+        ):
+            with self.assertRaises(backend_client.BackendApiError):
+                complete_backend_orders_or_raise(["order-1"])
+
+        queue_complete.assert_called_once_with("order-1")
+        remove_complete.assert_not_called()
 
     def test_return_mark_sends_confirmed_items_to_backend(self):
         fake_app = SimpleNamespace(telegram_lock_owner_label="warehouse-pc")

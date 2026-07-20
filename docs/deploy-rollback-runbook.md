@@ -126,7 +126,7 @@ Windows signing secrets должны соответствовать заране
 
 ### Immutable release candidate
 
-Версия кандидата и уже опубликованный update channel разделены. Во время подготовки candidate `APP_VERSION=2.0.52`, пока корневой `version.json` продолжает указывать на текущий поддерживаемый channel. Это не утверждает, что `2.0.52` уже опубликована.
+Версия кандидата и уже опубликованный update channel разделены. Во время подготовки candidate `APP_VERSION=2.0.53`, пока корневой `version.json` продолжает указывать на текущий поддерживаемый channel. Это не утверждает, что `2.0.53` уже опубликована.
 
 Безопасная последовательность:
 
@@ -160,7 +160,7 @@ Production workflow запускается только вручную. Acceptan
 
 ```bash
 source_sha="<exact-40-lowercase-main-sha>"
-release_tag="v2.0.52"
+release_tag="v2.0.53"
 git fetch --tags origin main
 test "$(git rev-parse origin/main)" = "$source_sha"
 test "$(git rev-list -n 1 "$release_tag")" = "$source_sha"
@@ -198,7 +198,7 @@ PY
 
 ```bash
 source_sha="<exact-40-lowercase-main-sha>"
-release_tag="v2.0.52"
+release_tag="v2.0.53"
 backend_image="ghcr.io/1fear/taksklad-backend@sha256:<exact-attested-digest>"
 export TAKSKLAD_PRINCIPAL_BACKUP_ROOT=/opt/taksklad/backups/postgres/completed
 export TAKSKLAD_PRINCIPAL_BACKUP_RESULT_FILE="$backup_result"
@@ -285,7 +285,7 @@ curl -fsS https://api.taksklad.uz/health
 ## 6. Rollback Backend Runtime
 
 Для server-only release применяется контракт разделения из
-`docs/server-desktop-release-separation.md`: Windows `2.0.52`, installer и
+`docs/server-desktop-release-separation.md`: Windows `2.0.53`, installer и
 `version.json` не меняются. До activation обязателен data-free gate:
 
 ```bash

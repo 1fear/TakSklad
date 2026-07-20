@@ -49,12 +49,12 @@ cd /Users/anton/Documents/work/TakSklad
   --source-sha <exact-tagged-main-sha> --timeout 120
 ```
 
-Candidate-mode проверяет локальный кандидат `2.0.52`, не утверждая, что public channel уже переключён. Final-mode разрешён только после immutable publication: он скачивает все Windows assets из release manifest, проверяет exact `2.0.52`, `onefile_exe`, SHA256 и attestations.
+Candidate-mode проверяет локальный кандидат `2.0.53`, не утверждая, что public channel уже переключён. Final-mode разрешён только после immutable publication: он скачивает все Windows assets из release manifest, проверяет exact `2.0.53`, `onefile_exe`, SHA256 и attestations.
 
 Он проверяет:
 
 - публичный `https://api.taksklad.uz/health`;
-- candidate contract `2.0.52` отдельно от ещё поддерживаемого public channel; final-mode требует опубликованный exact `2.0.52`, `mandatory=true`, `onefile_exe` и immutable ссылки/хеши;
+- candidate contract `2.0.53` отдельно от ещё поддерживаемого public channel; final-mode требует опубликованный exact `2.0.53`, `mandatory=true`, `onefile_exe` и immutable ссылки/хеши;
 - checksum acceptance Excel;
 - наличие acceptance/runbook/helper-файлов;
 - отсутствие tracked runtime/secret-файлов.
@@ -232,9 +232,9 @@ SMOKE_MARKER=SMOKE_MVP_CHAPMAN_manual_20260531 \
 
 Распаковать архив из `outputs\windows_test_build`. Он не содержит production-capable `TakSkladAuth.exe`: запрещены current-user production DPAPI, production origin, установка token и credentialed VDS acceptance. Допустимы только GUI smoke и source/unit сценарии с injected synthetic store и explicit localhost test API.
 
-### Signed v2.0.52: Credentialed VDS/DPAPI Acceptance
+### Signed v2.0.53: Credentialed VDS/DPAPI Acceptance
 
-Получить подписанный production ZIP `v2.0.52` только после release gate. На доверенном admin host запустить `tools/verify_release_attestations.sh --sha <exact-tagged-main-sha> --extract-windows-to <new-absolute-dir>` с `TAKSKLAD_RELEASE_MANIFEST` и `TAKSKLAD_RELEASE_ARTIFACT_DIR`, указывающими на скачанные release assets. Verifier сначала проверяет GitHub/Sigstore attestations и cross-manifest hashes, затем безопасно извлекает ZIP в новый каталог. Только весь проверенный каталог `TakSklad` передаётся на workstation. Checkout wrapper, обычная распаковка ZIP и unsigned archive не подходят.
+Получить подписанный production ZIP `v2.0.53` только после release gate. На доверенном admin host запустить `tools/verify_release_attestations.sh --sha <exact-tagged-main-sha> --extract-windows-to <new-absolute-dir>` с `TAKSKLAD_RELEASE_MANIFEST` и `TAKSKLAD_RELEASE_ARTIFACT_DIR`, указывающими на скачанные release assets. Verifier сначала проверяет GitHub/Sigstore attestations и cross-manifest hashes, затем безопасно извлекает ZIP в новый каталог. Только весь проверенный каталог `TakSklad` передаётся на workstation. Checkout wrapper, обычная распаковка ZIP и unsigned archive не подходят.
 
 Установить или rotate отдельный desktop principal и сразу выполнить data-free desktop canary:
 
@@ -263,7 +263,7 @@ SMOKE_MARKER=SMOKE_MVP_CHAPMAN_manual_20260531 \
 
 Production credential acceptance выполняется только для подписанного packaged release. Wrapper проверяет соседние EXE, immutable signer pin, package manifest и helper SHA до чтения или передачи нового token; при любой ошибке helper не запускается.
 
-1. Запустить подписанный TakSklad v2.0.52 через wrapper выше.
+1. Запустить подписанный TakSklad v2.0.53 через wrapper выше.
 2. Убедиться, что приложение открылось без обновления `version.json`.
 3. Обновить список заказов.
 4. Проверить в блоке статистики статус `Backend: online, список из VDS`.
@@ -353,7 +353,7 @@ cd /opt/taksklad/app
 ## 4. Что Не Делать Во Время Acceptance
 
 - Не менять `version.json` вручную и не переключать rollout без release checklist.
-- Не перемещать и не перезаписывать существующий tag/release; `v2.0.52` публикуется один раз после final gate.
+- Не перемещать и не перезаписывать существующий tag/release; `v2.0.53` публикуется один раз после final gate.
 - Не запускать Windows release workflow.
 - Не проверять на реальных заказах без отдельного подтверждения.
 - Не делать deploy из dirty tree широким `rsync`; только selective deploy проверенных файлов после restore point.
