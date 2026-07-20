@@ -1,6 +1,6 @@
 # Report Source Rules
 
-Актуально на: 16.07.2026
+Актуально на: 20.07.2026
 
 Цель документа: зафиксировать, откуда отчеты и складской hot path берут данные и как должны вести себя при ошибках. Главное правило: Postgres/backend является единственным operational source of truth. Google Sheets в runtime не используется.
 
@@ -14,23 +14,23 @@
 | КИЗы по дате | `GET /api/v1/reports/kiz/date` | Postgres: `order_items.scan_codes`, `orders`, import metadata | Выгружаются только КИЗы, записанные в backend. |
 | КИЗы по файлу | `GET /api/v1/reports/kiz/source-file` | Postgres: import metadata и `scan_codes` | Для выбранной партии требуется завершённость. |
 | Административный экспорт заказов | `GET /api/v1/admin/orders/export.xlsx` | PostgreSQL с admin-фильтрами | XLSX формируется backend; таблица не является хранилищем. |
-| Ежедневный SkladBot отчет | `/skladbot_daily ДД.ММ.ГГГГ`, schedule `22:00` | SkladBot API: requests/detail, transactions, products/stock | Read-only отчёт; XLSX содержит заявки, товары заявок, движения, остатки и diagnostics; partial/failed coverage блокирует scheduled send. |
+| Ежедневный SkladBot отчет | `/skladbot_daily ДД.ММ.ГГГГ`, schedule `22:00` | SkladBot API: requests/detail, transactions, products/stock | Read-only отчёт; клиентский XLSX содержит только `Сводка`, `Заявки`, `Товары заявок`; internal partial/failed coverage блокирует scheduled send. |
 | Ежедневная сверка | `GET /api/v1/reports/reconciliation/day`, schedule после SkladBot daily | PostgreSQL + SkladBot metadata | Сверка не читает Google и не создаёт Google mirror incidents. |
 
 ## Ошибки И Edge Cases
 
 - Невалидная дата отчета возвращает явную ошибку, а не молча подставляет сегодня.
-- Частичные ошибки SkladBot/API записываются в список `errors`, coverage diagnostics и лист `Ошибки`, а не скрываются как успешный отчет.
+- Частичные ошибки SkladBot/API записываются во внутренние `errors` и coverage diagnostics, а не скрываются как успешный отчет и не добавляют технические листы в клиентский XLSX.
 - Scheduled SkladBot daily не отправляет Telegram и не запускает daily reconciliation, если coverage не `complete`, есть API/detail/list warning/error, detail limit не дал проверить in-scope/unknown candidates, или отчет содержит `0` operational rows при наличии diagnostic/excluded rows.
 - Если за дату отчета есть заявки, созданные сегодня на будущую дату выгрузки, они остаются обычными операционными строками при статусе `Выполнена` + `В архиве`.
 - Manual `/skladbot_daily` использует тот же blocker по coverage: partial/failed/truncation/date-conflict/API-error отчет не отправляет XLSX по умолчанию. Ручная отправка неполного отчета возможна только через explicit admin flag `--allow-partial`; такой отчет помечается текстом `НЕПОЛНЫЙ ОТЧЕТ`, не пишет scheduled registry и не запускает reconciliation.
-- Detail budget для SkladBot daily сначала расходуется на known in-scope candidates, затем на unknown-date candidates, и только потом на diagnostic/out-of-scope sample. Known out-of-scope rows могут быть записаны в `Исключенные заявки` без detail fetch и не должны вытеснять полезные строки из лимита детализации.
+- Detail budget для SkladBot daily сначала расходуется на known in-scope candidates, затем на unknown-date candidates, и только потом на diagnostic/out-of-scope sample. Known out-of-scope rows остаются во внутреннем `excluded_requests` без detail fetch и не должны вытеснять полезные строки из лимита детализации.
 - Coverage counters разделяют aggregate list pages и per-type guard: `pages_fetched`/`list_pages_fetched`, `max_pages_per_request_type`, `list_page_guard_max_total`, `detail_pages_fetched`, `total_http_pages_fetched`. Поэтому aggregate `list_pages_fetched` может быть больше `max_pages_per_request_type`, но не должен превышать `list_page_guard_max_total`.
 - Read-style POST endpoints SkladBot daily: `/warehouse/transactions`, `/products`, `/report/stock`. Они проходят через retry для timeout/429/5xx и coverage counters `read_style_post_retry_count`, `read_style_post_error_count`. Write POST вроде `/requests` не использует этот retry policy.
 - `/warehouse/transactions`, `/products`, `/report/stock` имеют лимиты и conservative truncation guard. Если endpoint вернул строк ровно по лимиту, coverage получает `movements_possible_truncation`, `products_possible_truncation` или `stock_possible_truncation`, а отчет становится `partial`; scheduled send блокируется.
-- Движения фильтруются по выбранной бизнес-дате. Повтор одной и той же строки удаляется только при наличии стабильного ID движения от SkladBot; строки без ID не схлопываются по эвристике, чтобы не потерять реальные одинаковые операции. Счетчик `duplicate_movement_ids` остается в листе `Покрытие`.
+- Движения фильтруются по выбранной бизнес-дате. Повтор одной и той же строки удаляется только при наличии стабильного ID движения от SkladBot; строки без ID не схлопываются по эвристике, чтобы не потерять реальные одинаковые операции. Счетчик `duplicate_movement_ids` остается во внутреннем coverage.
 - Для SkladBot daily нельзя отбрасывать строку только по старому `created_at`, если list response не содержит достаточных данных для primary daily scope. Такая строка должна дойти до detail fetch в пределах detail limit или сделать отчет `partial`.
-- Если включенная operational request имеет конфликт `unloading_date` и `movement_date`, строка остается видимой в `Заявки`/`Диагностика дат`, но coverage получает `date_conflict_unloading_vs_movement`, становится `partial`, и scheduled send блокируется.
+- Если включенная operational request имеет конфликт `unloading_date` и `movement_date`, строка остается видимой в `Заявки`, а внутренняя `date_diagnostics` и coverage получают `date_conflict_unloading_vs_movement`; отчет становится `partial`, и scheduled send блокируется.
 - In-scope строки со статусом не `Выполнена + В архиве` попадают в diagnostics/excluded rows. Если такая строка относится к primary daily scope, coverage становится `partial` через `status_not_completed_archived`.
 - Любой успешный daily event для date + chat, включая approved manual_catchup, блокирует повторную scheduled-отправку независимо от mode/version.
 - До сегодняшнего schedule latest due date равна вчерашней дате, после schedule — сегодняшней. В пределах `SKLADBOT_DAILY_REPORT_LOOKBACK_DAYS` worker сначала догоняет самый старый пропуск и не считает более новый success закрытием старого gap. Без явной настройки окно равно одному дню, чтобы восстановление не рассылало многодневный backlog неожиданно.
@@ -38,7 +38,7 @@
 - Каждый failed retry-cycle ставит не более одного durable `telegram_notification` строго в `TAKSKLAD_AUTOMATION_ALERT_CHAT_ID`. Это должен быть strictly positive numeric personal-like ID, входящий в `TELEGRAM_ADMIN_CHAT_IDS`; отрицательный group ID запрещен, production config без exact route не стартует. Broadcast по admin list и fallback к получателям отчета запрещены; при невалидном route событие не создается, а ошибка остается в daily event/readiness.
 - `/ready` после schedule + `SKLADBOT_DAILY_REPORT_GRACE_MINUTES` становится unhealthy, если для latest due date нет успешного event по каждому настроенному daily chat. Public response показывает только `daily_report.status`, `daily_report.due_date`, `daily_report.missing_count` и не раскрывает chat ID.
 - Daily report collector использует read-only SkladBot client wrapper. Он не вызывает `create_request` и блокирует write-style POST из daily path. SkladBot create/return workers остаются отдельными write-capable компонентами и не являются частью daily report flow.
-- `Сводка` показывает блоки/заявки по категориям, отдельные итоги прихода/расхода в нейтральном поле `Количество` и число строк движений, а также актуальный остаток. Historical opening stock не вычисляется и не заявляется.
+- `Сводка` показывает только блоки/заявки по категориям и актуальный остаток. Движения и diagnostics остаются внутренними данными контроля полноты. Historical opening stock не вычисляется и не заявляется.
 - Этот документ описывает local code/test contract. Production live truth не заявляется без отдельной approved проверки live logs/DB/runtime.
 - Telegram показывает пользователю действие и причину ошибки, но токены, Bearer credentials и длинные КИЗы маскируются.
 - Недоступность Google Sheets не является runtime-событием: у приложения нет Google-клиента и Google worker.
@@ -52,7 +52,7 @@
 ## Проверочные Тесты
 
 - `tests.test_backend_api_persistence` проверяет DB day report, web dashboard summary по дате загрузки, business timezone, логистику, таймслоты сохраненных точек, лист `Требуют координаты`, KIZ source/date exports и invalid report date.
-- `tests.test_skladbot_daily_report` проверяет SkladBot daily XLSX, листы движений/coverage/errors, spreadsheet formula safety, стабильный movement-ID dedupe, пустой набор, SKU-колонки, `acceptedAmount`, отдельную строку `Отгрузка в браке`, page-based `/requests` crawl, coverage diagnostics, excluded rows, July 7 transfer batch regression, truncation/date-conflict/status partial coverage, read-style POST retry, manual partial block/override, admin-only bounded failure alert, scheduled partial-send block, detail-budget priority, split max-pages counters, source identity keys, scheduled registry и retry на `429`.
+- `tests.test_skladbot_daily_report` проверяет точный трехлистовый SkladBot daily XLSX, spreadsheet formula safety, стабильный movement-ID dedupe, пустой набор, SKU-колонки, `acceptedAmount`, отдельную строку `Отгрузка в браке`, page-based `/requests` crawl, internal coverage diagnostics/excluded rows, July 7 transfer batch regression, truncation/date-conflict/status partial coverage, read-style POST retry, manual partial block/override, admin-only bounded failure alert, scheduled partial-send block, detail-budget priority, split max-pages counters, source identity keys, scheduled registry и retry на `429`.
 - `tests.test_readiness_policy` проверяет безопасную сериализацию и OpenAPI-контракт `daily_report` без chat ID.
 - `tests.test_backend_telegram_import` проверяет Telegram-ошибки логистики/KIZ и ограничение меню последних файлов.
 - `tests.test_reconciliation_service` проверяет DB/SkladBot сверку, SkladBot gaps и dedupe Telegram alerts без Google runtime.
