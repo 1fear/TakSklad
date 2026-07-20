@@ -373,7 +373,7 @@ services:
       context: ../../backend
       dockerfile: Dockerfile
     restart: unless-stopped
-    command: ["python", "-m", "app.telegram_worker"]
+    command: ["python", "-m", "app.telegram_worker_runner"]
     environment:
       DATABASE_URL: ${DATABASE_URL}
       TAKSKLAD_ENV: ${TAKSKLAD_ENV}

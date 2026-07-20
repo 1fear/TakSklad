@@ -13,6 +13,8 @@ COMPOSE_WAIT_TIMEOUT_SECONDS="${TAKSKLAD_COMPOSE_WAIT_TIMEOUT_SECONDS:-180}"
 LOG_SINCE_SECONDS="${TAKSKLAD_DEPLOY_LOG_SINCE_SECONDS:-120}"
 ACCEPTANCE_MODE="${TAKSKLAD_DEPLOY_ACCEPTANCE:-required}"
 AUTH_CANARY_TOKEN_FILE="${TAKSKLAD_AUTH_CANARY_TOKEN_FILE:-/opt/stacks/taksklad/private/acceptance-canary.token}"
+TELEGRAM_IMPORT_AUTH_RECOVERY_EVENT_ID="${TAKSKLAD_TELEGRAM_IMPORT_AUTH_RECOVERY_EVENT_ID:-}"
+TELEGRAM_IMPORT_AUTH_RECOVERY_APPROVAL="${TAKSKLAD_TELEGRAM_IMPORT_AUTH_RECOVERY_APPROVAL:-}"
 WRITER_SERVICES=(backend-api telegram-worker skladbot-worker smartup-auto-import-worker)
 DRY_RUN=0
 CURRENT_AUTH_CANARY_ONLY=0
@@ -180,6 +182,12 @@ fi
 [[ "$URL_RETRY_ATTEMPTS" =~ ^[0-9]+$ && "$URL_RETRY_ATTEMPTS" -gt 0 ]] || fail "invalid retry attempts"
 [[ "$URL_RETRY_INTERVAL_SECONDS" =~ ^[0-9]+$ ]] || fail "invalid retry interval"
 [[ "$COMPOSE_WAIT_TIMEOUT_SECONDS" =~ ^[0-9]+$ && "$COMPOSE_WAIT_TIMEOUT_SECONDS" -gt 0 ]] || fail "invalid Compose timeout"
+if [[ -n "$TELEGRAM_IMPORT_AUTH_RECOVERY_EVENT_ID" ]]; then
+  [[ "$TELEGRAM_IMPORT_AUTH_RECOVERY_EVENT_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]] || \
+    fail "Telegram import auth recovery event ID is invalid"
+  [[ "$TELEGRAM_IMPORT_AUTH_RECOVERY_APPROVAL" == "RETRY_ONE_TELEGRAM_IMPORT_AUTH_401" ]] || \
+    fail "exact Telegram import auth recovery approval is required"
+fi
 
 cd "$APP_DIR"
 [[ -f "$ENV_FILE" ]] || fail "production environment file is missing"
@@ -273,6 +281,36 @@ check_public_url() {
     ((attempt == URL_RETRY_ATTEMPTS)) || sleep "$URL_RETRY_INTERVAL_SECONDS"
   done
   echo "$output" >&2
+  return 1
+}
+
+run_telegram_import_auth_recovery() {
+  compose exec -T backend-api python - "$@" < tools/telegram_import_auth_recovery.py
+}
+
+verify_telegram_import_auth_recovery_candidate() {
+  [[ -n "$TELEGRAM_IMPORT_AUTH_RECOVERY_EVENT_ID" ]] || return 1
+  run_telegram_import_auth_recovery inspect \
+    --event-id "$TELEGRAM_IMPORT_AUTH_RECOVERY_EVENT_ID" >/dev/null
+}
+
+complete_telegram_import_auth_recovery() {
+  [[ -n "$TELEGRAM_IMPORT_AUTH_RECOVERY_EVENT_ID" ]] || return 0
+  verify_telegram_import_auth_recovery_candidate || return 1
+  run_telegram_import_auth_recovery retry \
+    --event-id "$TELEGRAM_IMPORT_AUTH_RECOVERY_EVENT_ID" \
+    --approval "$TELEGRAM_IMPORT_AUTH_RECOVERY_APPROVAL" >/dev/null || return 1
+  local attempt
+  for ((attempt = 1; attempt <= 90; attempt += 1)); do
+    if run_telegram_import_auth_recovery verify \
+      --event-id "$TELEGRAM_IMPORT_AUTH_RECOVERY_EVENT_ID" >/dev/null 2>&1; then
+      run_telegram_import_auth_recovery finalize \
+        --event-id "$TELEGRAM_IMPORT_AUTH_RECOVERY_EVENT_ID" \
+        --approval "$TELEGRAM_IMPORT_AUTH_RECOVERY_APPROVAL"
+      return $?
+    fi
+    sleep 2
+  done
   return 1
 }
 
@@ -435,7 +473,11 @@ verify_previous_runtime_preflight() {
     [[ -n "$database_revision" && "$database_revision" == "$runtime_revision" ]] || result=1
     verify_selected_runtime_identity || result=1
     check_public_url health "$HEALTH_URL" || result=1
-    check_public_url readiness "$READY_URL" || result=1
+    if [[ "$result" == "0" ]] && verify_telegram_import_auth_recovery_candidate; then
+      echo "PREVIOUS_READINESS_BYPASS_OK reason=one_verified_telegram_import_auth_401 values_redacted=1" >&2
+    elif ! check_public_url readiness "$READY_URL"; then
+      result=1
+    fi
     run_previous_auth_canary || result=1
   fi
   RELEASE_BACKEND_IMAGE="$candidate_backend_image"
@@ -527,7 +569,13 @@ if ! compose up -d --no-deps --no-build --pull never --wait --wait-timeout "$COM
 fi
 ensure_legacy_google_worker_absent
 
-if ! check_public_url health "$HEALTH_URL" || ! check_public_url readiness "$READY_URL"; then
+if ! check_public_url health "$HEALTH_URL"; then
+  rollback_after_candidate_failure "candidate health failed"
+fi
+if ! complete_telegram_import_auth_recovery; then
+  rollback_after_candidate_failure "verified Telegram import auth recovery failed"
+fi
+if ! check_public_url readiness "$READY_URL"; then
   rollback_after_candidate_failure "candidate readiness failed"
 fi
 

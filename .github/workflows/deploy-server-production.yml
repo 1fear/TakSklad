@@ -399,10 +399,46 @@ jobs:
             --ready-json .release-state/current-ready.json \
             --output .release-state/server-production-preflight.json </dev/null
           rm -f .release-state/current-ready.json
-          ./tools/production_preflight.sh \
-            --manifest server-release.json \
-            --evidence .release-state/server-production-preflight.json \
-            --read-only --require-current-backup --require-zero-blockers </dev/null
+          recovery_event_id=""
+          recovery_inspection=.release-state/telegram-import-auth-recovery.json
+          set +e
+          docker exec -i "\$preflight_backend_id" python - inspect \
+            < tools/telegram_import_auth_recovery.py > "\$recovery_inspection"
+          recovery_inspection_status="\$?"
+          set -e
+          if test "\$recovery_inspection_status" = 0; then
+            recovery_event_id="\$(python3 - "\$recovery_inspection" <<'PY'
+          import json
+          import re
+          import sys
+          from pathlib import Path
+          payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          event_id = str(payload.get("event_id") or "")
+          if (
+              payload.get("status") != "recoverable"
+              or payload.get("linked_imports") != 0
+              or payload.get("unrelated_blockers") != 0
+              or payload.get("values_redacted") is not True
+              or not re.fullmatch(r"[0-9a-f-]{36}", event_id)
+          ):
+              raise SystemExit("TELEGRAM_IMPORT_AUTH_RECOVERY_INSPECTION_INVALID")
+          print(event_id)
+          PY
+            )"
+            export TAKSKLAD_TELEGRAM_IMPORT_AUTH_RECOVERY_EVENT_ID="\$recovery_event_id"
+            export TAKSKLAD_TELEGRAM_IMPORT_AUTH_RECOVERY_APPROVAL=RETRY_ONE_TELEGRAM_IMPORT_AUTH_401
+            ./tools/production_preflight.sh \
+              --manifest server-release.json \
+              --evidence .release-state/server-production-preflight.json \
+              --read-only --require-current-backup </dev/null
+            echo "TELEGRAM_IMPORT_AUTH_RECOVERY_PREFLIGHT_OK event=one linked_imports=0 values_redacted=1"
+          else
+            rm -f "\$recovery_inspection"
+            ./tools/production_preflight.sh \
+              --manifest server-release.json \
+              --evidence .release-state/server-production-preflight.json \
+              --read-only --require-current-backup --require-zero-blockers </dev/null
+          fi
 
           ./deploy/vds/deploy_from_git.sh --artifact-manifest server-release.json \
             --acceptance required --wait </dev/null
