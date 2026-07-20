@@ -79,6 +79,19 @@ class ImportRowError(Exception):
 def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: str | None = None):
     correlation_id = current_correlation_id()
     rows_total = len(payload.rows)
+    normalized_source = normalize_text(payload.source) or "excel"
+    telegram_event_id = normalize_text(payload.telegram_event_id)
+    if telegram_event_id:
+        acquire_import_identity_lock(db, "telegram_event", telegram_event_id)
+        existing_telegram_import = db.execute(
+            select(ImportJob)
+            .where(ImportJob.source == normalized_source)
+            .where(ImportJob.raw_payload["telegram_event_id"].as_string() == telegram_event_id)
+            .order_by(ImportJob.created_at, ImportJob.id)
+            .limit(1)
+        ).scalar_one_or_none()
+        if existing_telegram_import is not None:
+            return import_result_from_existing_job(existing_telegram_import)
     normalized_sha = normalize_text(payload.sha256).lower()
     existing_file = None
     if normalized_sha:
@@ -96,7 +109,7 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
     resolved_order_ids: set[uuid.UUID] = set()
 
     import_job = ImportJob(
-        source=normalize_text(payload.source) or "excel",
+        source=normalized_source,
         status="created",
         rows_total=rows_total,
         rows_imported=0,
@@ -108,7 +121,7 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
                 str(existing_file.import_id) if existing_file is not None and existing_file.import_id else ""
             ),
             "telegram_chat_id": normalize_text(payload.telegram_chat_id),
-            "telegram_event_id": normalize_text(payload.telegram_event_id),
+            "telegram_event_id": telegram_event_id,
             "source_rows_count": int(payload.source_rows_count or 0),
             "skipped_rows_count": int(payload.skipped_rows_count or 0),
             "payment_groups": dict(payload.payment_groups or {}),
@@ -342,6 +355,31 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
         skladbot_dry_run_already_linked=skladbot_dry_run_result.get("already_linked", 0),
         skladbot_dry_run_linked_mismatch=skladbot_dry_run_result.get("linked_mismatch", 0),
         skladbot_dry_run_event_id=skladbot_dry_run_result.get("event_id", ""),
+    )
+
+
+def import_result_from_existing_job(import_job: ImportJob) -> ImportResult:
+    raw_payload = dict(import_job.raw_payload or {})
+    skladbot = raw_payload.get("skladbot_dry_run") or {}
+    return ImportResult(
+        id=str(import_job.id),
+        source=import_job.source,
+        status=import_job.status,
+        rows_total=int(import_job.rows_total or 0),
+        rows_imported=int(import_job.rows_imported or 0),
+        orders_created=int(raw_payload.get("orders_created") or 0),
+        items_created=int(raw_payload.get("items_created") or 0),
+        duplicate_rows=int(raw_payload.get("duplicate_rows") or 0),
+        invalid_rows=int(raw_payload.get("invalid_rows") or 0),
+        resolved_order_ids=list(raw_payload.get("resolved_order_ids") or ()),
+        errors=list(raw_payload.get("errors") or ()),
+        backend_address_updates=int(raw_payload.get("backend_address_updates") or 0),
+        skladbot_dry_run_status=str(skladbot.get("status") or ""),
+        skladbot_dry_run_ready=int(skladbot.get("ready") or 0),
+        skladbot_dry_run_blocked=int(skladbot.get("blocked") or 0),
+        skladbot_dry_run_already_linked=int(skladbot.get("already_linked") or 0),
+        skladbot_dry_run_linked_mismatch=int(skladbot.get("linked_mismatch") or 0),
+        skladbot_dry_run_event_id=str(skladbot.get("event_id") or ""),
     )
 
 

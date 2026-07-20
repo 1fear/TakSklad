@@ -16,7 +16,11 @@ from .redaction import redact_secrets
 from .reconciliation_service import run_daily_reconciliation
 from .skladbot_client import parse_skladbot_api_tokens
 from .telegram_admin_processor import TelegramAdminProcessor
-from .telegram_clients import TelegramProcessorPorts, telegram_main_reply_keyboard
+from .telegram_clients import (
+    TelegramBackendIdentityError,
+    TelegramProcessorPorts,
+    telegram_main_reply_keyboard,
+)
 from .telegram_common import (
     normalize_text,
     telegram_inline_keyboard,
@@ -515,6 +519,7 @@ class TelegramWorker:
             logging.info("Telegram worker disabled: TELEGRAM_BOT_TOKEN is not configured")
             return
 
+        self.probe_backend_identity()
         self.ensure_bot_menu()
         poll_timeout = max(1, min(self.poll_timeout, max(1, self.timeout - 5)))
         try:
@@ -791,6 +796,9 @@ def main(*, backend_token=None):
         try:
             with observed_worker_cycle("telegram", max(1, worker.poll_timeout)):
                 worker.poll_once()
+        except TelegramBackendIdentityError as exc:
+            logging.error("%s", exc)
+            return 2
         except Exception:
             logging.exception("Telegram worker failed")
             time.sleep(10)
