@@ -230,9 +230,12 @@ SKLADBOT_COVERAGE_STATUS="1"
 for ((skladbot_coverage_attempt = 1; skladbot_coverage_attempt <= SKLADBOT_COVERAGE_ATTEMPTS; skladbot_coverage_attempt++)); do
   SKLADBOT_COVERAGE_OUTPUT="$("$SKLADBOT_COVERAGE_SCRIPT" 2>&1)"
   SKLADBOT_COVERAGE_STATUS="$?"
-  if [[ "$SKLADBOT_COVERAGE_STATUS" -eq 0 ]]; then
+  if [[ "$SKLADBOT_COVERAGE_STATUS" -eq 0 ]] && \
+      python3 -c 'import json,sys; raise SystemExit(0 if json.loads(sys.argv[1]).get("status") == "ok" else 1)' \
+        "$SKLADBOT_COVERAGE_OUTPUT"; then
     break
   fi
+  SKLADBOT_COVERAGE_STATUS=1
   if [[ "$skladbot_coverage_attempt" -lt "$SKLADBOT_COVERAGE_ATTEMPTS" ]]; then
     sleep "$SKLADBOT_COVERAGE_RETRY_DELAY_SECONDS"
   fi
@@ -306,7 +309,20 @@ except Exception:
 try:
     skladbot_coverage = json.loads(skladbot_coverage_output.splitlines()[-1])
 except Exception:
-    skladbot_coverage = {"status": "failed", "raw": skladbot_coverage_output}
+    skladbot_coverage = {"status": "failed", "parse_error": True}
+skladbot_coverage = {
+    key: skladbot_coverage.get(key)
+    for key in (
+        "status",
+        "active_orders",
+        "missing_orders",
+        "numbered_orders",
+        "missing_statuses",
+        "checked_at",
+    )
+    if key in skladbot_coverage
+}
+skladbot_coverage["details_redacted"] = True
 
 try:
     smartup_automation = json.loads(smartup_automation_output.splitlines()[-1])

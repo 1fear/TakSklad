@@ -125,6 +125,9 @@ class ServerReleaseWorkflowContractTests(unittest.TestCase):
             "check_public_url readiness",
             "verify_telegram_routing_contract.py",
             "validate_daily_report_config.py",
+            "verify_telegram_worker_repair_preflight.py",
+            "TELEGRAM_WORKER_ROLLBACK_REPAIR_PREFLIGHT_OK",
+            "REPAIR_ONE_TELEGRAM_WORKER_ROLLBACK_MISMATCH",
             "--artifact-manifest server-release.json",
             "--acceptance required --wait",
             "tools/collect_phase27_evidence.py preflight",
@@ -180,6 +183,7 @@ class ServerReleaseWorkflowContractTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn('"tools/server_release_artifacts.py"', materializer)
+        self.assertIn('"tools/verify_telegram_worker_repair_preflight.py"', materializer)
 
     def test_remote_server_candidate_does_not_require_git_checkout(self):
         deploy_script = (PROJECT_ROOT / "deploy/vds/deploy_from_git.sh").read_text(

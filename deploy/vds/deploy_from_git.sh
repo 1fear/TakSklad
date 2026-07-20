@@ -15,6 +15,7 @@ ACCEPTANCE_MODE="${TAKSKLAD_DEPLOY_ACCEPTANCE:-required}"
 AUTH_CANARY_TOKEN_FILE="${TAKSKLAD_AUTH_CANARY_TOKEN_FILE:-/opt/stacks/taksklad/private/acceptance-canary.token}"
 TELEGRAM_IMPORT_AUTH_RECOVERY_EVENT_ID="${TAKSKLAD_TELEGRAM_IMPORT_AUTH_RECOVERY_EVENT_ID:-}"
 TELEGRAM_IMPORT_AUTH_RECOVERY_APPROVAL="${TAKSKLAD_TELEGRAM_IMPORT_AUTH_RECOVERY_APPROVAL:-}"
+TELEGRAM_WORKER_REPAIR_APPROVAL="${TAKSKLAD_TELEGRAM_WORKER_REPAIR_APPROVAL:-}"
 WRITER_SERVICES=(backend-api telegram-worker skladbot-worker smartup-auto-import-worker)
 DRY_RUN=0
 CURRENT_AUTH_CANARY_ONLY=0
@@ -188,6 +189,10 @@ if [[ -n "$TELEGRAM_IMPORT_AUTH_RECOVERY_EVENT_ID" ]]; then
   [[ "$TELEGRAM_IMPORT_AUTH_RECOVERY_APPROVAL" == "RETRY_ONE_TELEGRAM_IMPORT_AUTH_401" ]] || \
     fail "exact Telegram import auth recovery approval is required"
 fi
+if [[ -n "$TELEGRAM_WORKER_REPAIR_APPROVAL" ]]; then
+  [[ "$TELEGRAM_WORKER_REPAIR_APPROVAL" == "REPAIR_ONE_TELEGRAM_WORKER_ROLLBACK_MISMATCH" ]] || \
+    fail "exact Telegram worker rollback repair approval is required"
+fi
 
 cd "$APP_DIR"
 [[ -f "$ENV_FILE" ]] || fail "production environment file is missing"
@@ -292,6 +297,29 @@ verify_telegram_import_auth_recovery_candidate() {
   [[ -n "$TELEGRAM_IMPORT_AUTH_RECOVERY_EVENT_ID" ]] || return 1
   run_telegram_import_auth_recovery inspect \
     --event-id "$TELEGRAM_IMPORT_AUTH_RECOVERY_EVENT_ID" >/dev/null
+}
+
+verify_telegram_worker_repair_candidate() {
+  [[ "$TELEGRAM_WORKER_REPAIR_APPROVAL" == "REPAIR_ONE_TELEGRAM_WORKER_ROLLBACK_MISMATCH" ]] || return 1
+  local backend_id ready_path compose_path result=0
+  backend_id="$(compose ps -q backend-api)" || return 1
+  [[ -n "$backend_id" ]] || return 1
+  ready_path=".release-state/telegram-worker-repair-ready.json"
+  compose_path=".release-state/telegram-worker-repair-compose.json"
+  install -d -m 700 .release-state
+  docker exec "$backend_id" python -c \
+    "import json; from urllib.error import HTTPError; from urllib.request import urlopen; u='http://127.0.0.1:8000/ready';
+try: r=urlopen(u, timeout=5)
+except HTTPError as e: r=e
+print(json.dumps({'http_status':int(getattr(r,'status',getattr(r,'code',0))),'payload':json.load(r)}, sort_keys=True))" \
+    > "$ready_path" || result=1
+  compose ps --format json > "$compose_path" || result=1
+  if [[ "$result" == "0" ]]; then
+    python3 tools/verify_telegram_worker_repair_preflight.py \
+      --ready-json "$ready_path" --compose-ps-json "$compose_path" >/dev/null || result=1
+  fi
+  rm -f -- "$ready_path" "$compose_path"
+  [[ "$result" == "0" ]]
 }
 
 complete_telegram_import_auth_recovery() {
@@ -475,6 +503,8 @@ verify_previous_runtime_preflight() {
     check_public_url health "$HEALTH_URL" || result=1
     if [[ "$result" == "0" ]] && verify_telegram_import_auth_recovery_candidate; then
       echo "PREVIOUS_READINESS_BYPASS_OK reason=one_verified_telegram_import_auth_401 values_redacted=1" >&2
+    elif [[ "$result" == "0" ]] && verify_telegram_worker_repair_candidate; then
+      echo "PREVIOUS_READINESS_BYPASS_OK reason=one_verified_telegram_worker_rollback_mismatch values_redacted=1" >&2
     elif ! check_public_url readiness "$READY_URL"; then
       result=1
     fi

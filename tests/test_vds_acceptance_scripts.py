@@ -38,6 +38,8 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
             "ACCEPTANCE_SKLADBOT_COVERAGE_ATTEMPTS",
             "ACCEPTANCE_SKLADBOT_COVERAGE_RETRY_DELAY_SECONDS",
             "skladbot_coverage_attempt",
+            'json.loads(sys.argv[1]).get("status") == "ok"',
+            'skladbot_coverage["details_redacted"] = True',
             "http://127.0.0.1:8000/ready",
             "READINESS_OUTPUT",
             'readiness.get("ready") is not True',

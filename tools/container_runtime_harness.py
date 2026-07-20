@@ -475,7 +475,16 @@ def start_worker_probes(scope: DockerScope, network: str, database_url: str) -> 
             },
         ),
         "telegram-worker": (
-            ["python", "-m", "app.telegram_worker_runner"],
+            [
+                "sh",
+                "-ec",
+                (
+                    "if python -c 'import importlib.util,sys; sys.exit(0 if "
+                    "importlib.util.find_spec(\"app.telegram_worker_runner\") else 1)'; then "
+                    "exec python -m app.telegram_worker_runner; else "
+                    "exec python -m app.telegram_worker; fi"
+                ),
+            ],
             {
                 "TAKSKLAD_AUTOMATION_ALERT_CHAT_ID": "",
                 "TELEGRAM_ADMIN_CHAT_IDS": "",
