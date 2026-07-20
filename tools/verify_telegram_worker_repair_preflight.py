@@ -18,6 +18,8 @@ REQUIRED_SERVICES = {
     "telegram-worker",
 }
 
+TELEGRAM_REPAIR_STATES = {"running", "restarting", "exited", "dead"}
+
 
 class RepairPreflightBlocked(RuntimeError):
     pass
@@ -90,18 +92,27 @@ def verify(ready_wrapper: dict, compose_rows: list[dict]) -> dict:
     services = {_service(row): row for row in compose_rows if _service(row)}
     if set(services) != REQUIRED_SERVICES:
         raise RepairPreflightBlocked("compose_service_set_mismatch")
+    telegram_state = ""
     for name, row in services.items():
-        if _state(row) != "running":
-            raise RepairPreflightBlocked("service_not_running")
+        state = _state(row)
         health = _health(row)
         if name == "telegram-worker":
-            if health != "unhealthy":
+            telegram_state = state
+            if state not in TELEGRAM_REPAIR_STATES:
+                raise RepairPreflightBlocked("telegram_worker_state_not_repairable")
+            if state == "running" and health != "unhealthy":
                 raise RepairPreflightBlocked("telegram_worker_not_uniquely_unhealthy")
-        elif health != "healthy":
-            raise RepairPreflightBlocked("unrelated_service_unhealthy")
+            if state != "running" and health not in {"", "unhealthy"}:
+                raise RepairPreflightBlocked("telegram_worker_not_uniquely_unhealthy")
+        else:
+            if state != "running":
+                raise RepairPreflightBlocked("unrelated_service_not_running")
+            if health != "healthy":
+                raise RepairPreflightBlocked("unrelated_service_unhealthy")
     return {
         "status": "repairable",
         "unhealthy_service": "telegram-worker",
+        "worker_runtime_state": telegram_state,
         "unhealthy_count": 1,
         "queue_blockers": 0,
         "import_errors": 0,
