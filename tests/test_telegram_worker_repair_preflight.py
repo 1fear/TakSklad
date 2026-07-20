@@ -45,6 +45,15 @@ class TelegramWorkerRepairPreflightTests(unittest.TestCase):
         self.assertEqual(result["unhealthy_service"], "telegram-worker")
         self.assertTrue(result["values_redacted"])
 
+    def test_accepts_telegram_worker_restart_loop(self):
+        rows = compose_rows()
+        for row in rows:
+            if row["Service"] == "telegram-worker":
+                row["State"] = "restarting"
+                row["Health"] = ""
+        result = verify(ready_payload(), rows)
+        self.assertEqual(result["worker_runtime_state"], "restarting")
+
     def test_rejects_queue_or_import_blockers(self):
         for path in ("queue", "imports"):
             with self.subTest(path=path):
@@ -62,4 +71,13 @@ class TelegramWorkerRepairPreflightTests(unittest.TestCase):
             if row["Service"] == "backend-api":
                 row["Health"] = "unhealthy"
         with self.assertRaisesRegex(RepairPreflightBlocked, "unrelated_service_unhealthy"):
+            verify(ready_payload(), rows)
+
+    def test_rejects_an_unrelated_non_running_service(self):
+        rows = compose_rows()
+        for row in rows:
+            if row["Service"] == "backend-api":
+                row["State"] = "restarting"
+                row["Health"] = ""
+        with self.assertRaisesRegex(RepairPreflightBlocked, "unrelated_service_not_running"):
             verify(ready_payload(), rows)
