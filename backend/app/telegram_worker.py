@@ -312,6 +312,7 @@ class TelegramWorker:
     def __init__(
         self,
         *,
+        backend_token=None,
         telegram_api_client=None,
         backend_api_client=None,
         session_factory=None,
@@ -326,7 +327,9 @@ class TelegramWorker:
             os.environ.get("TAKSKLAD_AUTOMATION_ALERT_CHAT_ID")
         )
         self.backend_url = normalize_text(os.environ.get("TAKSKLAD_BACKEND_INTERNAL_URL")) or "http://backend-api:8000"
-        self.backend_token = normalize_text(os.environ.get("TAKSKLAD_API_TOKEN"))
+        self.backend_token = normalize_text(backend_token) or normalize_text(
+            os.environ.get("TAKSKLAD_API_TOKEN")
+        )
         self.timeout = int(os.environ.get("TELEGRAM_WORKER_TIMEOUT_SECONDS", "20") or "20")
         self.import_timeout = int(os.environ.get("TELEGRAM_WORKER_IMPORT_TIMEOUT_SECONDS", "120") or "120")
         self.file_timeout = int(os.environ.get("TELEGRAM_WORKER_FILE_TIMEOUT_SECONDS", "120") or "120")
@@ -767,11 +770,11 @@ class TelegramWorker:
 
 
 
-def main():
+def main(*, backend_token=None):
     from .worker_observability import observed_worker_cycle
 
     try:
-        worker = TelegramWorker()
+        worker = TelegramWorker(backend_token=backend_token)
     except TelegramConfigurationError as exc:
         logging.error("Telegram worker configuration invalid: %s", ", ".join(exc.setting_names))
         return 2
