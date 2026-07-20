@@ -14,7 +14,7 @@ class SkladBotActionsMixin:
                 and not self.refresh_in_progress
                 and not self.current_order
             ):
-                self.refresh_from_sheet()
+                self.refresh_from_sheet(background=True)
         finally:
             try:
                 self.after(SKLADBOT_SYNC_INTERVAL_MS, self.run_skladbot_periodic_refresh)
@@ -23,4 +23,4 @@ class SkladBotActionsMixin:
 
     def sync_skladbot_async(self):
         if not self.refresh_in_progress and not self.operation_in_progress and not self.current_order:
-            self.refresh_from_sheet()
+            self.refresh_from_sheet(background=True)
