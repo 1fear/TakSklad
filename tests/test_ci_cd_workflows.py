@@ -604,6 +604,8 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn("(ERROR|CRITICAL)", script)
         self.assertNotIn("'ERROR|CRITICAL|Traceback|Exception|panic'", script)
         self.assertIn("rollback_runtime", script)
+        self.assertIn("verify_telegram_worker_repair_candidate", script)
+        self.assertIn("REPAIR_ONE_TELEGRAM_WORKER_ROLLBACK_MISMATCH", script)
         self.assertIn("PREVIOUS_MANIFEST", script)
         self.assertIn("previous runtime migration head does not match the retained database schema", script)
         self.assertIn('"$database_revision" != "$previous_runtime_revision"', script)
