@@ -21,7 +21,12 @@ from backend.app import excel_importer
 from backend.app.excel_importer import excel_file_to_import_payload
 from backend.app.models import AuditLog, Base, Incident, PendingEvent
 from backend.app.telegram_admin_processor import TelegramAdminProcessor
-from backend.app.telegram_clients import BackendApiClient, TelegramApiClient, TelegramProcessorPorts
+from backend.app.telegram_clients import (
+    BackendApiClient,
+    TelegramApiClient,
+    TelegramBackendUnavailableError,
+    TelegramProcessorPorts,
+)
 from backend.app.telegram_import_processor import TelegramImportProcessor
 from backend.app.telegram_report_processor import TelegramReportProcessor
 from backend.app.telegram_scheduled_report_processor import TelegramScheduledReportProcessor
@@ -3107,6 +3112,25 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertNotIn("backend-api", str(rejected.exception))
         self.assertNotIn("/api/v1/imports", str(rejected.exception))
 
+    def test_production_worker_defers_backend_connection_failure_without_url_leak(self):
+        class UnavailableBackendClient:
+            def get_page(self, path, params=None):
+                raise httpx.ConnectError("connection refused")
+
+        worker = TelegramWorker.__new__(TelegramWorker)
+        worker.environment = "production"
+        worker._processor_ports = TelegramProcessorPorts(
+            backend_api_client=UnavailableBackendClient(), owner=worker,
+        )
+        worker._processors = ()
+
+        with self.assertRaises(TelegramBackendUnavailableError) as deferred:
+            worker.probe_backend_identity()
+
+        self.assertIn("connection unavailable", str(deferred.exception))
+        self.assertNotIn("backend-api", str(deferred.exception))
+        self.assertNotIn("/api/v1/imports", str(deferred.exception))
+
     def test_worker_process_exits_fail_closed_after_backend_identity_rejection(self):
         worker = SimpleNamespace(
             configured=True,
@@ -3129,6 +3153,36 @@ class BackendTelegramImportTests(unittest.TestCase):
 
         self.assertEqual(status, 2)
         worker.poll_once.assert_called_once_with()
+
+    def test_worker_process_retries_backend_unavailable_without_traceback(self):
+        worker = SimpleNamespace(
+            configured=True,
+            poll_timeout=1,
+            poll_once=mock.Mock(side_effect=[
+                TelegramBackendUnavailableError(
+                    "Telegram worker backend preflight deferred: connection unavailable"
+                ),
+                KeyboardInterrupt(),
+            ]),
+        )
+        observed_cycle = mock.MagicMock()
+        observed_cycle.return_value.__enter__.return_value = "synthetic-correlation"
+        observed_cycle.return_value.__exit__.return_value = False
+
+        with mock.patch.object(
+            telegram_worker_module, "TelegramWorker", return_value=worker,
+        ), mock.patch(
+            "backend.app.worker_observability.observed_worker_cycle",
+            observed_cycle,
+        ), mock.patch.object(telegram_worker_module.time, "sleep"), self.assertLogs(
+            level="WARNING"
+        ) as logs, self.assertRaises(KeyboardInterrupt):
+            telegram_worker_module.main(backend_token="synthetic-runtime-token")
+
+        rendered = "\n".join(logs.output)
+        self.assertIn("backend preflight deferred", rendered)
+        self.assertNotIn("Traceback", rendered)
+        self.assertEqual(worker.poll_once.call_count, 2)
 
     def test_telegram_worker_runs_scheduled_jobs_after_getupdates_conflict(self):
         worker = TelegramWorker.__new__(TelegramWorker)

@@ -18,6 +18,7 @@ from .skladbot_client import parse_skladbot_api_tokens
 from .telegram_admin_processor import TelegramAdminProcessor
 from .telegram_clients import (
     TelegramBackendIdentityError,
+    TelegramBackendUnavailableError,
     TelegramProcessorPorts,
     telegram_main_reply_keyboard,
 )
@@ -799,6 +800,9 @@ def main(*, backend_token=None):
         except TelegramBackendIdentityError as exc:
             logging.error("%s", exc)
             return 2
+        except TelegramBackendUnavailableError as exc:
+            logging.warning("%s", exc)
+            time.sleep(2)
         except Exception:
             logging.exception("Telegram worker failed")
             time.sleep(10)
