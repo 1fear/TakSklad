@@ -1,6 +1,7 @@
 import os
 import threading
 import unittest
+import uuid
 from unittest.mock import patch
 
 from sqlalchemy import create_engine, func, select
@@ -131,6 +132,43 @@ class PostgresImportIdentityTests(unittest.TestCase):
             replay_jobs[0].raw_payload["file_sha256_reused_from_import_id"],
             str(import_file.import_id),
         )
+
+    def test_two_concurrent_telegram_retries_create_exactly_one_import_job(self):
+        event_id = str(uuid.uuid4())
+        barrier = threading.Barrier(3)
+        results = []
+        errors = []
+
+        def worker():
+            try:
+                payload = self.import_payload(sha="d" * 64)
+                payload.source = "telegram"
+                payload.telegram_event_id = event_id
+                barrier.wait(timeout=5)
+                results.append(self.run_import(payload))
+            except Exception as exc:
+                errors.append(exc)
+
+        skladbot_result = {"status": "synthetic_stub", "ready": 0, "blocked": 0,
+                            "already_linked": 0, "linked_mismatch": 0, "event_id": ""}
+        with patch(
+            "backend.app.imports_service.create_skladbot_dry_run_for_import",
+            return_value=skladbot_result,
+        ):
+            threads = [threading.Thread(target=worker, daemon=True) for _index in range(2)]
+            for thread in threads:
+                thread.start()
+            barrier.wait(timeout=5)
+            for thread in threads:
+                thread.join(timeout=20)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(results), 2)
+        self.assertEqual(results[0].id, results[1].id)
+        with self.SessionLocal() as session:
+            self.assertEqual(session.scalar(select(func.count()).select_from(ImportJob)), 1)
+            self.assertEqual(session.scalar(select(func.count()).select_from(Order)), 1)
+            self.assertEqual(session.scalar(select(func.count()).select_from(OrderItem)), 1)
 
     def test_returned_identity_does_not_block_reimport(self):
         skladbot_result = {"status": "synthetic_stub", "ready": 0, "blocked": 0, "already_linked": 0,

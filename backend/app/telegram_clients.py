@@ -20,6 +20,10 @@ PAGINATED_LIST_PATHS = frozenset({
 })
 
 
+class TelegramBackendIdentityError(RuntimeError):
+    """Fail-closed signal without backend URL or credential material."""
+
+
 def telegram_menu_retry_seconds(error) -> int:
     message = str(error or "")
     match = re.search(r'(?:retry after|"retry_after"\s*:\s*)(\d+)', message, flags=re.IGNORECASE)
@@ -355,6 +359,26 @@ class TelegramProcessorPorts:
 
     def backend_post(self, path, payload=None):
         return self._backend_client().post(path, payload)
+
+    def probe_backend_identity(self):
+        if str(getattr(self, "environment", "") or "").strip().casefold() != "production":
+            return True
+        client = self._backend_client()
+        try:
+            get_page = getattr(client, "get_page", None)
+            if callable(get_page):
+                get_page("/api/v1/imports", params={"limit": 1})
+            else:
+                client.get("/api/v1/imports", {"limit": 1})
+        except Exception as exc:
+            response = getattr(exc, "response", None)
+            status_code = int(getattr(response, "status_code", 0) or 0)
+            if status_code in {401, 403}:
+                raise TelegramBackendIdentityError(
+                    f"Telegram worker backend identity rejected: HTTP {status_code}"
+                ) from None
+            raise
+        return True
 
     def send_message(self, chat_id, text, reply_markup=None):
         return self._telegram_client().send_message(chat_id, text, reply_markup)

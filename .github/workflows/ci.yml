@@ -78,9 +78,22 @@ jobs:
       - name: Test PostgreSQL desktop pairing concurrency
         run: ./tools/run_postgres_tests.sh desktop-pairing
 
+      - name: Test PostgreSQL Telegram import idempotency
+        run: ./tools/run_postgres_tests.sh telegram-import-idempotency
+
       - name: Run Python tests
         run: |
           PYTHONPATH=. python -m unittest discover -s tests
+
+      - name: Run synthetic Telegram auth/import no-send smoke
+        run: |
+          PYTHONPATH=. python -m unittest \
+            tests.test_worker_runtime_identity \
+            tests.test_telegram_import_idempotency \
+            tests.test_backend_telegram_import.BackendTelegramImportTests.test_production_worker_probes_backend_identity_before_polling \
+            tests.test_backend_telegram_import.BackendTelegramImportTests.test_production_worker_rejects_backend_auth_before_polling_without_url_leak \
+            tests.test_backend_telegram_import.BackendTelegramImportTests.test_worker_process_exits_fail_closed_after_backend_identity_rejection \
+            tests.test_telegram_routing_contract.TelegramRoutingContractTests.test_no_send_verifier_redacts_raw_ids
 
       - name: Check Alembic head
         run: |

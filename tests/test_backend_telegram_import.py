@@ -21,7 +21,7 @@ from backend.app import excel_importer
 from backend.app.excel_importer import excel_file_to_import_payload
 from backend.app.models import AuditLog, Base, Incident, PendingEvent
 from backend.app.telegram_admin_processor import TelegramAdminProcessor
-from backend.app.telegram_clients import BackendApiClient, TelegramApiClient
+from backend.app.telegram_clients import BackendApiClient, TelegramApiClient, TelegramProcessorPorts
 from backend.app.telegram_import_processor import TelegramImportProcessor
 from backend.app.telegram_report_processor import TelegramReportProcessor
 from backend.app.telegram_scheduled_report_processor import TelegramScheduledReportProcessor
@@ -35,6 +35,7 @@ from backend.app.telegram_worker import (
     TELEGRAM_KIZ_FILE_PREFIX,
     TELEGRAM_KIZ_RANGE_CALLBACK_PREFIX,
     TelegramConfigurationError,
+    TelegramBackendIdentityError,
     TelegramWorker,
     display_date,
     summarize_active_orders_by_date,
@@ -3052,6 +3053,82 @@ class BackendTelegramImportTests(unittest.TestCase):
             102,
             "",
         )])
+
+    def test_production_worker_probes_backend_identity_before_polling(self):
+        calls = []
+
+        class FakeBackendClient:
+            def get_page(self, path, params=None):
+                calls.append(("auth_probe", path, params))
+                return [], ""
+
+        worker = TelegramWorker.__new__(TelegramWorker)
+        worker.environment = "production"
+        worker.token = "synthetic-telegram-token"
+        worker.timeout = 20
+        worker.poll_timeout = 1
+        worker.offset = 0
+        worker.bot_menu_ready = True
+        worker._processor_ports = TelegramProcessorPorts(
+            backend_api_client=FakeBackendClient(), owner=worker,
+        )
+        worker._processors = ()
+        worker.telegram_api_client = SimpleNamespace(
+            poll_updates=lambda offset, timeout: calls.append(("poll", offset, timeout)) or [],
+        )
+        worker.process_queued_telegram_imports = lambda: 0
+        worker.process_pending_telegram_notifications = lambda: 0
+        worker.send_due_skladbot_daily_reports = lambda: 0
+
+        worker.poll_once()
+
+        self.assertEqual(calls[0], ("auth_probe", "/api/v1/imports", {"limit": 1}))
+        self.assertEqual(calls[1][0], "poll")
+
+    def test_production_worker_rejects_backend_auth_before_polling_without_url_leak(self):
+        request = httpx.Request("GET", "http://backend-api:8000/api/v1/imports")
+        response = httpx.Response(401, request=request)
+
+        class RejectedBackendClient:
+            def get_page(self, path, params=None):
+                raise httpx.HTTPStatusError("rejected", request=request, response=response)
+
+        worker = TelegramWorker.__new__(TelegramWorker)
+        worker.environment = "production"
+        worker._processor_ports = TelegramProcessorPorts(
+            backend_api_client=RejectedBackendClient(), owner=worker,
+        )
+        worker._processors = ()
+
+        with self.assertRaises(TelegramBackendIdentityError) as rejected:
+            worker.probe_backend_identity()
+
+        self.assertIn("HTTP 401", str(rejected.exception))
+        self.assertNotIn("backend-api", str(rejected.exception))
+        self.assertNotIn("/api/v1/imports", str(rejected.exception))
+
+    def test_worker_process_exits_fail_closed_after_backend_identity_rejection(self):
+        worker = SimpleNamespace(
+            configured=True,
+            poll_timeout=1,
+            poll_once=mock.Mock(side_effect=TelegramBackendIdentityError(
+                "Telegram worker backend identity rejected: HTTP 403"
+            )),
+        )
+        observed_cycle = mock.MagicMock()
+        observed_cycle.return_value.__enter__.return_value = "synthetic-correlation"
+        observed_cycle.return_value.__exit__.return_value = False
+
+        with mock.patch.object(
+            telegram_worker_module, "TelegramWorker", return_value=worker,
+        ), mock.patch(
+            "backend.app.worker_observability.observed_worker_cycle",
+            observed_cycle,
+        ):
+            status = telegram_worker_module.main(backend_token="synthetic-runtime-token")
+
+        self.assertEqual(status, 2)
+        worker.poll_once.assert_called_once_with()
 
     def test_telegram_worker_runs_scheduled_jobs_after_getupdates_conflict(self):
         worker = TelegramWorker.__new__(TelegramWorker)
