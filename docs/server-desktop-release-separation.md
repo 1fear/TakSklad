@@ -1,6 +1,6 @@
 # Разделение серверных и Windows-релизов
 
-Статус контракта: текущий desktop `2.0.52`, минимально поддерживаемый desktop `2.0.49`, API contract `1`.
+Статус контракта: текущий desktop `2.0.53`, минимально поддерживаемый desktop `2.0.49`, API contract `1`.
 
 ## Цель
 
@@ -33,7 +33,7 @@ Server-only release обязан сохранить уже работающий 
 ## Frozen API contract 1
 
 `tools/check_desktop_api_contract.py` статически проверяет реально используемые
-desktop contract `1` (совместимые линии `2.0.49`-`2.0.52`) HTTP methods/routes,
+desktop contract `1` (совместимые линии `2.0.49`-`2.0.53`) HTTP methods/routes,
 Bearer authentication и минимальные scopes.
 Удаление, переименование, смена метода, усиление auth без совместимого desktop
 credential или потеря scope блокируют server-only release. Дополнительные

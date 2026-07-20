@@ -7,6 +7,10 @@ from .backend_client import (
     complete_order,
     lookup_kiz_availability,
 )
+from .backend_events import (
+    queue_backend_order_complete,
+    remove_pending_backend_order_complete,
+)
 from .desktop_scan_rules import (
     format_duplicate_scan_message,
     format_scan_product_mismatch_message,
@@ -182,14 +186,19 @@ def complete_backend_orders_or_raise(order_ids):
 
     result = {"completed": 0, "already_completed": 0}
     for order_id in order_ids:
+        event_id = queue_backend_order_complete(order_id)
+        if not event_id:
+            raise RuntimeError("Не удалось сохранить завершение заказа в локальную очередь backend.")
         try:
             complete_order(order_id)
             result["completed"] += 1
         except BackendApiError as exc:
             if is_backend_order_already_completed_error(exc):
                 result["already_completed"] += 1
+                remove_pending_backend_order_complete(order_id)
                 continue
             raise
+        remove_pending_backend_order_complete(order_id)
     return result
 
 

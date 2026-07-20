@@ -177,6 +177,22 @@ def queue_backend_order_complete(order_id):
     return add_pending_backend_event("order_complete", {"order_id": order_id})
 
 
+def remove_pending_backend_order_complete(order_id):
+    order_id = normalize_text(order_id)
+    if not order_id:
+        return False
+    event_id = make_backend_event_id("order_complete", {"order_id": order_id})
+    removed = {"value": False}
+
+    def remove(items):
+        result = [item for item in items if item.get("id") != event_id]
+        removed["value"] = len(result) != len(items)
+        return result
+
+    mutate_queue_section("pending_backend_events", remove)
+    return removed["value"]
+
+
 def is_duplicate_scan_ack(exc):
     if not isinstance(exc, BackendApiError) or exc.status_code != 409:
         return False

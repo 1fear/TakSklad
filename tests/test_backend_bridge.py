@@ -476,6 +476,28 @@ class BackendBridgeTests(unittest.TestCase):
         self.assertEqual(result["remaining"], 0)
         self.assertEqual(saved, [[]])
 
+    def test_remove_pending_backend_order_complete_removes_only_matching_event(self):
+        matching = {
+            "id": backend_events.make_backend_event_id("order_complete", {"order_id": "order-1"}),
+            "type": "order_complete",
+            "payload": {"order_id": "order-1"},
+        }
+        other = {
+            "id": backend_events.make_backend_event_id("order_complete", {"order_id": "order-2"}),
+            "type": "order_complete",
+            "payload": {"order_id": "order-2"},
+        }
+        saved = []
+
+        def mutate(_section, callback):
+            saved.extend(callback([matching, other]))
+
+        with mock.patch.object(backend_events, "mutate_queue_section", side_effect=mutate):
+            removed = backend_events.remove_pending_backend_order_complete("order-1")
+
+        self.assertTrue(removed)
+        self.assertEqual(saved, [other])
+
     def test_backend_queue_unknown_event_does_not_block_queue(self):
         pending = [{
             "id": "event-1",
