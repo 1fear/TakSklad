@@ -21,11 +21,9 @@ from backend.app.health_service import (
 from backend.app.models import AuditLog, Base, Order, OrderItem, PendingEvent
 from backend.app.skladbot_daily_report import (
     DEFAULT_DAILY_REPORT_MAX_PAGES,
-    MOVEMENT_HEADERS,
     REQUEST_HEADERS,
     REQUEST_PRODUCT_HEADERS,
     SkladBotReadOnlyClient,
-    STOCK_HEADERS,
     build_skladbot_daily_report_message,
     build_skladbot_daily_report_xlsx,
     categorize_request_type,
@@ -1261,12 +1259,6 @@ class SkladBotDailyReportTests(unittest.TestCase):
             "Сводка",
             "Заявки",
             "Товары заявок",
-            "Движения",
-            "Остатки",
-            "Покрытие",
-            "Исключенные заявки",
-            "Диагностика дат",
-            "Ошибки",
         ])
 
         summary_sheet = workbook["Сводка"]
@@ -1288,13 +1280,6 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(summary_sheet["A6"].value, "Актуальный остаток")
         self.assertEqual(summary_sheet["B6"].value, 544)
         self.assertIsNone(summary_sheet["C6"].value)
-        self.assertEqual(summary_sheet["A8"].value, "Движения")
-        self.assertEqual(summary_sheet["A9"].value, "Приход")
-        self.assertEqual(summary_sheet["B9"].value, 500)
-        self.assertEqual(summary_sheet["C9"].value, 1)
-        self.assertEqual(summary_sheet["A10"].value, "Расход")
-        self.assertEqual(summary_sheet["B10"].value, 4)
-        self.assertEqual(summary_sheet["C10"].value, 1)
         self.assertEqual(summary_sheet.freeze_panes, "A2")
         self.assertEqual(summary_sheet["A2"].border.left.style, "thin")
         self.assertEqual(summary_sheet["C6"].border.right.style, "thin")
@@ -1332,31 +1317,6 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(gold_product_row["Принято факт"], 500)
         self.assertEqual(gold_product_row["Блоков факт"], 500)
         self.assertEqual(gold_product_row["Отклонение"], 499)
-
-        movement_sheet = workbook["Движения"]
-        self.assertEqual([cell.value for cell in movement_sheet[1]], MOVEMENT_HEADERS)
-        movement_rows = worksheet_rows_by_header(movement_sheet)
-        self.assertEqual(len(movement_rows), 2)
-        self.assertEqual({row["Направление"] for row in movement_rows}, {"Приход", "Расход"})
-        self.assertEqual(sum(row["Кол-во"] for row in movement_rows), 504)
-        self.assertTrue(all(str(row["Дата"]).startswith("2026-06-08") for row in movement_rows))
-
-        stock_sheet = workbook["Остатки"]
-        self.assertEqual([cell.value for cell in stock_sheet[1]], STOCK_HEADERS)
-        self.assertEqual(stock_sheet.max_row, 4)
-        stock_rows = worksheet_rows_by_header(stock_sheet)
-        self.assertEqual(sum(row["Остаток"] for row in stock_rows), 544)
-        self.assertIn("Chapman Brown OP 20", [row["Товар"] for row in stock_rows])
-        self.assertIn("Chapman Gold SSL", [row["Товар"] for row in stock_rows])
-        self.assertIn("Chapman RED OP 20", [row["Товар"] for row in stock_rows])
-
-        coverage_rows = worksheet_rows_by_header(workbook["Покрытие"])
-        coverage_by_field = {row["Поле"]: row["Значение"] for row in coverage_rows}
-        self.assertEqual(coverage_by_field["coverage_status"], "complete")
-        self.assertEqual(coverage_by_field["movements_rows_returned"], 2)
-        self.assertEqual(workbook["Исключенные заявки"].max_row, 2)
-        self.assertEqual(workbook["Диагностика дат"].max_row, 5)
-        self.assertEqual(workbook["Ошибки"].max_row, 1)
 
         message = build_skladbot_daily_report_message(report)
         self.assertEqual(message, "\n".join([
@@ -1721,10 +1681,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(len(product_rows), 8)
         self.assertEqual(sum(row["Блоков план"] for row in product_rows), 95)
 
-        self.assertEqual(workbook.sheetnames, [
-            "Сводка", "Заявки", "Товары заявок", "Движения", "Остатки",
-            "Покрытие", "Исключенные заявки", "Диагностика дат", "Ошибки",
-        ])
+        self.assertEqual(workbook.sheetnames, ["Сводка", "Заявки", "Товары заявок"])
         self.assertEqual(report["coverage"]["included_operational_requests"], 8)
         self.assertEqual(report["coverage"]["excluded_diagnostic_requests"], 0)
 
@@ -1977,24 +1934,17 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(workbook["Сводка"]["B4"].value, 0)
         self.assertEqual(workbook["Сводка"]["B5"].value, 0)
         self.assertEqual(workbook["Сводка"]["B6"].value, 0)
-        self.assertEqual(workbook["Остатки"].max_row, 2)
-        self.assertEqual(workbook["Остатки"]["E2"].value, 0)
-        self.assertEqual(workbook["Движения"].max_row, 1)
-        self.assertEqual(workbook["Покрытие"]["B4"].value, "complete")
-        self.assertEqual(workbook["Исключенные заявки"].max_row, 1)
-        self.assertEqual(workbook["Диагностика дат"].max_row, 1)
-        self.assertEqual(workbook["Ошибки"].max_row, 2)
-        self.assertEqual(workbook["Ошибки"]["A2"].value, "Не удалось получить остаток SkladBot")
+        self.assertEqual(workbook.sheetnames, ["Сводка", "Заявки", "Товары заявок"])
         self.assertEqual(report["errors"], ["Не удалось получить остаток SkladBot"])
 
-    def test_movements_sheet_forces_formula_prefixes_to_text(self):
+    def test_request_products_sheet_forces_formula_prefixes_to_text(self):
         report = collect_report_without_delay(FakeSkladBotDailyReportClient(), date(2026, 6, 8))
-        report["movements"][0]["product"] = "=1+1"
+        report["requests"][0]["products"][0]["name"] = "=1+1"
 
         content, _filename = build_skladbot_daily_report_xlsx(report)
         workbook = openpyxl.load_workbook(BytesIO(content), data_only=False)
 
-        cell = workbook["Движения"]["F2"]
+        cell = workbook["Товары заявок"]["I2"]
         self.assertEqual(cell.value, "=1+1")
         self.assertEqual(cell.data_type, "s")
 
@@ -2451,17 +2401,13 @@ class SkladBotDailyReportTests(unittest.TestCase):
         summary_sheet = workbook["Сводка"]
         summary_values = [cell.value for row in summary_sheet.iter_rows() for cell in row if cell.value]
 
-        self.assertEqual(summary_sheet.max_row, 10)
-        self.assertEqual([summary_sheet.cell(row=row, column=1).value for row in range(2, 11)], [
+        self.assertEqual(summary_sheet.max_row, 6)
+        self.assertEqual([summary_sheet.cell(row=row, column=1).value for row in range(2, 7)], [
             "Отгрузка",
             "Отгрузка в браке",
             "Возврат",
             "Приемка",
             "Актуальный остаток",
-            None,
-            "Движения",
-            "Приход",
-            "Расход",
         ])
         self.assertNotIn("Расчетный начальный остаток", summary_values)
         self.assertNotIn("Примечание", summary_values)

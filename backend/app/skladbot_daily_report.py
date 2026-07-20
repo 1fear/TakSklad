@@ -1590,22 +1590,6 @@ def build_skladbot_daily_report_xlsx(report: dict[str, Any]) -> tuple[bytes, str
     write_summary_sheet(summary_sheet, report)
     write_requests_sheet(workbook.create_sheet("Заявки"), report.get("requests") or [])
     write_request_products_sheet(workbook.create_sheet("Товары заявок"), report.get("requests") or [])
-    write_movements_sheet(workbook.create_sheet("Движения"), report.get("movements") or [])
-    write_stock_sheet(workbook.create_sheet("Остатки"), report)
-    write_coverage_sheet(workbook.create_sheet("Покрытие"), report)
-    write_excluded_requests_sheet(
-        workbook.create_sheet("Исключенные заявки"),
-        report.get("excluded_requests") or [],
-    )
-    write_date_diagnostics_sheet(
-        workbook.create_sheet("Диагностика дат"),
-        report.get("date_diagnostics") or [],
-    )
-    write_errors_sheet(
-        workbook.create_sheet("Ошибки"),
-        report.get("errors") or [],
-        report.get("api_errors") or [],
-    )
     for sheet in workbook.worksheets:
         autosize_columns(sheet)
     apply_report_template_widths(workbook)
@@ -1632,23 +1616,10 @@ def write_summary_sheet(sheet, report: dict[str, Any]) -> None:
             parse_int(category_counts.get(category)),
         ])
     sheet.append(["Актуальный остаток", parse_int(summary.get("stock_total")), None])
-    sheet.append([])
-    sheet.append(["Движения", "Количество", "Строк"])
-    sheet.append([
-        "Приход",
-        parse_int(summary.get("movement_in_amount")),
-        parse_int(summary.get("movement_in_rows")),
-    ])
-    sheet.append([
-        "Расход",
-        parse_int(summary.get("movement_out_amount")),
-        parse_int(summary.get("movement_out_rows")),
-    ])
-    apply_header_style(sheet, rows=(1, 8))
+    apply_header_style(sheet)
     for cell in ("A6", "B6"):
         sheet[cell].font = Font(bold=True)
     apply_thin_border(sheet, "A2:C6")
-    apply_thin_border(sheet, "A9:C10")
 
 
 def write_requests_sheet(sheet, requests: list[dict[str, Any]]) -> None:
@@ -2009,8 +1980,6 @@ def apply_report_template_widths(workbook: Workbook) -> None:
         "Сводка": {"A": 28, "B": 13, "C": 10},
         "Заявки": {"A": 10, "B": 13, "C": 11, "D": 20, "E": 11, "F": 10, "G": 15, "H": 17, "I": 15, "J": 45, "K": 24, "L": 33, "M": 60, "N": 13, "O": 12, "P": 12, "Q": 12, "R": 10, "S": 24},
         "Товары заявок": {"A": 13, "B": 11, "C": 20, "D": 15, "E": 45, "F": 24, "G": 36, "H": 17, "I": 15, "J": 12, "K": 13, "L": 12, "M": 12},
-        "Движения": {"A": 13, "B": 20, "C": 20, "D": 18, "E": 29, "F": 36, "G": 15, "H": 16, "I": 12, "J": 14, "K": 14},
-        "Остатки": {"A": 29, "B": 10, "C": 13, "D": 13, "E": 13, "F": 17, "G": 21, "H": 10},
     }
     for sheet_name, widths in widths_by_sheet.items():
         if sheet_name not in workbook.sheetnames:
