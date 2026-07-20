@@ -86,7 +86,7 @@ def backend_request(method, path, payload=None, timeout=None):
     return result
 
 
-def backend_request_page(method, path, payload=None, timeout=None):
+def backend_request_page(method, path, payload=None, timeout=None, *, _auth_retry=True):
     if not TAKSKLAD_BACKEND_BASE_URL:
         raise BackendApiError("Backend URL не настроен")
 
@@ -108,10 +108,35 @@ def backend_request_page(method, path, payload=None, timeout=None):
                 return {}, response.headers
             return json.loads(raw), response.headers
     except urllib.error.HTTPError as exc:
+        status_code = int(exc.code)
         detail = read_error_detail(exc)
+        if status_code in {401, 403} and _auth_retry:
+            try:
+                # Import lazily to keep the desktop client modules acyclic.
+                # The pairing layer rotates only a server-rejected identity,
+                # commits it atomically, and preserves the old bundle on error.
+                from .desktop_pairing import ensure_public_desktop_identity
+
+                ensure_public_desktop_identity()
+            except Exception:
+                logging.warning(
+                    "Backend desktop identity recovery failed: %s %s status=%s",
+                    method,
+                    path,
+                    status_code,
+                    exc_info=True,
+                )
+            else:
+                return backend_request_page(
+                    method,
+                    path,
+                    payload=payload,
+                    timeout=timeout,
+                    _auth_retry=False,
+                )
         raise BackendApiError(
-            format_backend_error(exc.code, detail),
-            status_code=exc.code,
+            format_backend_error(status_code, detail),
+            status_code=status_code,
             detail=detail,
         ) from exc
     except Exception as exc:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import re
 import ssl
 import threading
@@ -26,6 +27,7 @@ from .desktop_auth import _production_dpapi_store, install_scoped_backend_bundle
 from .returns_auth_canary import (
     PRODUCTION_BACKEND_ORIGIN,
     ReturnsAuthCanaryError,
+    run_returns_auth_canary,
     validate_principal_identifier,
     validate_scoped_credential,
 )
@@ -305,6 +307,15 @@ def _locally_valid_bundle(store) -> bool:
         return False
 
 
+def _load_locally_valid_bundle(store) -> tuple[str, str]:
+    value = store.get_text(BACKEND_AUTH_BUNDLE_SECRET)
+    credential, identifier = decode_backend_auth_bundle(value)
+    return (
+        validate_scoped_credential(credential),
+        validate_principal_identifier(identifier),
+    )
+
+
 def desktop_pairing_required(*, store=None) -> bool:
     secret_store = store or get_secret_store()
     return not _locally_valid_bundle(secret_store)
@@ -360,14 +371,37 @@ def _ensure_public_desktop_identity_locked(
         secret_store = store or get_secret_store()
         if not _production_dpapi_store(secret_store):
             raise DesktopPairingError("secure_store_unavailable")
-        if _locally_valid_bundle(secret_store):
-            return True
     except DesktopPairingError:
         raise
     except Exception as exc:
         raise DesktopPairingError("secure_store_unavailable") from exc
 
     network_opener = opener or _system_tls_opener()
+    if _locally_valid_bundle(secret_store):
+        try:
+            credential, identifier = _load_locally_valid_bundle(secret_store)
+            run_returns_auth_canary(
+                PRODUCTION_BACKEND_ORIGIN,
+                credential,
+                timeout=timeout,
+                opener=canary_opener or network_opener,
+                require_scoped=True,
+                canary_kind="desktop",
+                identifier=identifier,
+            )
+            return True
+        except ReturnsAuthCanaryError as exc:
+            reason = str(exc)
+            if reason not in {"auth_canary_http_401", "auth_canary_http_403"}:
+                # A transport/server outage must not delete a usable local
+                # identity or block cached warehouse work. Only an explicit
+                # authentication rejection authorizes automatic rotation.
+                logging.warning("Desktop identity canary deferred: %s", reason)
+                return True
+            logging.warning("Desktop identity rejected; rotating automatically: %s", reason)
+        except (SecretStoreError, TypeError) as exc:
+            raise DesktopPairingError("secure_store_unavailable") from exc
+
     identity = request_public_desktop_identity(
         timeout=timeout,
         opener=network_opener,

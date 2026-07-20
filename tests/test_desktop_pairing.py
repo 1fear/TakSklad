@@ -16,6 +16,7 @@ from taksklad.secret_store import (
 
 SETUP_CODE = "S" * 43
 TOKEN = "tks." + "a" * 32 + "." + "b" * 43
+ROTATED_TOKEN = "tks." + "c" * 32 + "." + "d" * 43
 IDENTIFIER = "desktop.paired"
 PAIRING_ID = "123e4567-e89b-12d3-a456-426614174000"
 
@@ -85,8 +86,10 @@ def ack_payload():
     }
 
 
-def bootstrap_payload():
-    return redeem_payload()
+def bootstrap_payload(credential=TOKEN):
+    payload = redeem_payload()
+    payload["credential"] = credential
+    return payload
 
 
 class DesktopPairingTests(unittest.TestCase):
@@ -125,18 +128,98 @@ class DesktopPairingTests(unittest.TestCase):
         self.assertEqual(calls, [])
         self.assertEqual(store.values[BACKEND_AUTH_BUNDLE_SECRET], original)
 
-    def test_silent_bootstrap_keeps_valid_bundle_without_network(self):
+    def test_silent_bootstrap_keeps_server_verified_bundle_without_bootstrap(self):
         original = encode_backend_auth_bundle(TOKEN, IDENTIFIER)
         store = FakeDpapiStore(original)
-        opener = mock.Mock(side_effect=AssertionError("network must stay closed"))
+        bootstrap_opener = mock.Mock(side_effect=AssertionError("bootstrap must stay closed"))
+        canary_requests = []
+
+        self.assertTrue(desktop_pairing.ensure_public_desktop_identity(
+            store=store,
+            opener=bootstrap_opener,
+            canary_opener=lambda request, timeout: (
+                canary_requests.append(request) or FakeResponse(204)
+            ),
+            credential_lock_held=True,
+        ))
+
+        bootstrap_opener.assert_not_called()
+        self.assertEqual(len(canary_requests), 1)
+        self.assertEqual(canary_requests[0].headers["Authorization"], f"Bearer {TOKEN}")
+        self.assertEqual(store.values[BACKEND_AUTH_BUNDLE_SECRET], original)
+
+    def test_silent_bootstrap_rotates_only_server_rejected_bundle(self):
+        original = encode_backend_auth_bundle(TOKEN, IDENTIFIER)
+        store = FakeDpapiStore(original)
+        bootstrap_requests = []
+        canary_tokens = []
+
+        def opener(request, timeout):
+            bootstrap_requests.append(request)
+            if request.full_url.endswith(desktop_pairing.BOOTSTRAP_PATH):
+                return FakeResponse(200, bootstrap_payload(ROTATED_TOKEN))
+            return FakeResponse(200, ack_payload())
+
+        def canary_opener(request, timeout):
+            token = request.headers["Authorization"]
+            canary_tokens.append(token)
+            if token == f"Bearer {TOKEN}":
+                return FakeResponse(401)
+            return FakeResponse(204)
 
         self.assertTrue(desktop_pairing.ensure_public_desktop_identity(
             store=store,
             opener=opener,
+            canary_opener=canary_opener,
             credential_lock_held=True,
         ))
 
-        opener.assert_not_called()
+        self.assertEqual(
+            decode_backend_auth_bundle(store.values[BACKEND_AUTH_BUNDLE_SECRET]),
+            (ROTATED_TOKEN, IDENTIFIER),
+        )
+        self.assertEqual(len(bootstrap_requests), 2)
+        self.assertEqual(canary_tokens.count(f"Bearer {TOKEN}"), 1)
+        self.assertEqual(canary_tokens.count(f"Bearer {ROTATED_TOKEN}"), 2)
+
+    def test_silent_bootstrap_preserves_bundle_when_canary_transport_is_unavailable(self):
+        original = encode_backend_auth_bundle(TOKEN, IDENTIFIER)
+        store = FakeDpapiStore(original)
+        bootstrap_opener = mock.Mock(side_effect=AssertionError("bootstrap must stay closed"))
+
+        self.assertTrue(desktop_pairing.ensure_public_desktop_identity(
+            store=store,
+            opener=bootstrap_opener,
+            canary_opener=mock.Mock(side_effect=OSError("offline")),
+            credential_lock_held=True,
+        ))
+
+        bootstrap_opener.assert_not_called()
+        self.assertEqual(store.values[BACKEND_AUTH_BUNDLE_SECRET], original)
+
+    def test_silent_bootstrap_restores_rejected_bundle_when_rotation_fails(self):
+        original = encode_backend_auth_bundle(TOKEN, IDENTIFIER)
+        store = FakeDpapiStore(original)
+
+        def opener(request, timeout):
+            if request.full_url.endswith(desktop_pairing.BOOTSTRAP_PATH):
+                return FakeResponse(200, bootstrap_payload(ROTATED_TOKEN))
+            return FakeResponse(503, {})
+
+        def canary_opener(request, timeout):
+            if request.headers["Authorization"] == f"Bearer {TOKEN}":
+                return FakeResponse(401)
+            return FakeResponse(204)
+
+        with self.assertRaises(desktop_pairing.DesktopPairingError):
+            desktop_pairing.ensure_public_desktop_identity(
+                store=store,
+                opener=opener,
+                canary_opener=canary_opener,
+                sleep_func=lambda _seconds: None,
+                credential_lock_held=True,
+            )
+
         self.assertEqual(store.values[BACKEND_AUTH_BUNDLE_SECRET], original)
 
     def test_silent_bootstrap_persists_only_verified_public_identity(self):
