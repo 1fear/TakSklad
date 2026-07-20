@@ -24,6 +24,10 @@ class TelegramBackendIdentityError(RuntimeError):
     """Fail-closed signal without backend URL or credential material."""
 
 
+class TelegramBackendUnavailableError(RuntimeError):
+    """Backend preflight failed before Telegram updates were consumed."""
+
+
 def telegram_menu_retry_seconds(error) -> int:
     message = str(error or "")
     match = re.search(r'(?:retry after|"retry_after"\s*:\s*)(\d+)', message, flags=re.IGNORECASE)
@@ -377,7 +381,10 @@ class TelegramProcessorPorts:
                 raise TelegramBackendIdentityError(
                     f"Telegram worker backend identity rejected: HTTP {status_code}"
                 ) from None
-            raise
+            detail = f"HTTP {status_code}" if status_code else "connection unavailable"
+            raise TelegramBackendUnavailableError(
+                f"Telegram worker backend preflight deferred: {detail}"
+            ) from None
         return True
 
     def send_message(self, chat_id, text, reply_markup=None):
