@@ -146,15 +146,18 @@ class AppRuntimeMixin:
         self.operation_message = ""
 
 
-    def set_refresh_in_progress(self, message):
+    def set_refresh_in_progress(self, message, *, announce=True):
         self.refresh_in_progress = True
         self.refresh_started_at = time.monotonic()
         self.refresh_message = normalize_text(message)
         self.refresh_notice_token += 1
         notice_token = self.refresh_notice_token
         logging.info("Фоновое обновление начато: %s", self.refresh_message)
-        self.status_var.set(message)
-        self.safe_config(self.status_label, bg=BG_MAIN, fg=FG_MUTED)
+        if announce:
+            self.status_var.set(message)
+            self.safe_config(self.status_label, bg=BG_MAIN, fg=FG_MUTED)
+        else:
+            return
         try:
             self.after(15000, lambda token=notice_token: self.show_refresh_long_running_notice(token))
         except tk.TclError:

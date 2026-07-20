@@ -255,25 +255,34 @@ class DataLoadingMixin:
         }
 
 
-    def refresh_from_sheet(self, initial=False):
+    def refresh_from_sheet(self, initial=False, background=False):
         if not self.ensure_update_allowed():
             return
 
         if self.operation_in_progress:
-            self.show_busy_error()
+            if not background:
+                self.show_busy_error()
             return
 
         if self.refresh_in_progress:
-            self.show_refresh_busy_error()
+            if not background:
+                self.show_refresh_busy_error()
             return
 
         refresh_started_with_selection = bool(self.current_order) and not initial
         if refresh_started_with_selection:
-            self.set_refresh_in_progress("⏳ Обновляю список заказов в фоне, сканирование доступно...")
+            self.set_refresh_in_progress(
+                "⏳ Обновляю список заказов в фоне, сканирование доступно...",
+                announce=not background,
+            )
         else:
-            self.set_refresh_in_progress("⏳ Обновляю список заказов...")
-        self.safe_config(self.refresh_btn, state="disabled")
-        self.safe_config(self.import_btn, state="disabled")
+            self.set_refresh_in_progress(
+                "⏳ Обновляю список заказов...",
+                announce=not background,
+            )
+        if not background:
+            self.safe_config(self.refresh_btn, state="disabled")
+            self.safe_config(self.import_btn, state="disabled")
 
         def on_success(result):
             keep_current_selection = bool(self.current_order) and not initial
@@ -322,18 +331,14 @@ class DataLoadingMixin:
             )
             self.show_error(
                 format_refresh_error_message(exc, has_cached_orders=bool(self.today_orders)),
-                popup=True,
+                popup=not background,
             )
 
         def on_finally():
             self.clear_refresh_in_progress()
-            self.safe_config(self.refresh_btn, state="normal")
-            self.safe_config(self.import_btn, state="normal")
-            try:
-                if not self.current_order and not self.operation_in_progress:
-                    self.after(100, self.sync_skladbot_async)
-            except tk.TclError:
-                pass
+            if not background:
+                self.safe_config(self.refresh_btn, state="normal")
+                self.safe_config(self.import_btn, state="normal")
 
         self.run_background(
             "Не удалось обновить список заказов",
