@@ -23,6 +23,7 @@ from .telegram_daily_report_policy import (
     failed_daily_report_is_legacy_empty_false_positive,
     failed_daily_report_retry_is_safe,
 )
+from .telegram_daily_kiz_export import send_daily_kiz_export
 from .telegram_output_contract import daily_report_caption
 SKLADBOT_DAILY_REPORTED_REQUEST_EVENT_TYPE = "skladbot_daily_reported_request"
 TELEGRAM_NOTIFICATION_EVENT_TYPE = "telegram_notification"
@@ -343,6 +344,8 @@ class TelegramScheduledReportProcessor(TelegramProcessorDelegate):
                 filename,
                 caption=daily_report_caption(report_date),
             )
+        if document is not None:
+            send_daily_kiz_export(self, chat_id, report_date, scheduled, emit_progress)
         if document is not None and scheduled:
             reported_count = mark_skladbot_daily_report_requests_reported(
                 report, chat_id=chat_id, mode="scheduled", session_factory=self._scheduled_session_factory(),

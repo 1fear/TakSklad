@@ -1694,7 +1694,7 @@ class BackendTelegramImportTests(unittest.TestCase):
             "123",
             report_content,
             "TakSklad_логистика_29.05.2026.xlsx",
-            "Отчёт логистики за 29.05.2026",
+            "Отчет логистики 29.05.2026",
         )])
 
     def test_telegram_worker_saves_shipment_date_from_message(self):

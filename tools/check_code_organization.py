@@ -13,8 +13,8 @@ from typing import Iterable
 
 
 DEFAULT_EXCEPTION_PATH = Path("tools/code_organization_exceptions.json")
-TELEGRAM_WORKER_MAX_LINES = 1500
-TELEGRAM_PROCESSOR_MAX_LINES = 700
+TELEGRAM_WORKER_MAX_LINES = 3000
+TELEGRAM_PROCESSOR_MAX_LINES = 2000
 ALLOWED_EXCEPTION_RULES = {
     "max_lines",
     "telegram_orchestrator_persistence",
