@@ -50,12 +50,7 @@ def smartup_export_caption(
     rows: int,
     delivery_dates: list[str],
 ) -> str:
-    delivery_display = ", ".join(_display_date(value) for value in delivery_dates if value) or "-"
-    return (
-        f"Smartup выгрузка за {_display_date(export_date)}, слот {_text(slot_label) or '-'}, "
-        f"часть {part}. Терминал. Заказов: {selected_orders}, строк: {rows}. "
-        f"Даты отгрузки: {delivery_display}."
-    )
+    return f"Выгрузка со смарт-ап {_text(slot_label) or '-'} Часть {part}"
 
 
 def smartup_export_filename(export_date: date, part: int) -> str:
@@ -63,7 +58,7 @@ def smartup_export_filename(export_date: date, part: int) -> str:
 
 
 def logistics_report_caption(report_date: Any) -> str:
-    return f"Отчёт логистики за {_display_date(report_date)}"
+    return f"Отчет логистики {_display_date(report_date)}"
 
 
 def logistics_report_filename(report_date: Any) -> str:
@@ -93,6 +88,10 @@ def daily_report_filename(report_date: Any) -> str:
 
 def daily_report_caption(report_date: Any) -> str:
     return f"SkladBot отчет за {_display_date(report_date)}"
+
+
+def kiz_daily_report_caption(report_date: Any) -> str:
+    return f"Коды маркировки {_display_date(report_date)}"
 
 
 def transfer_kiz_export_caption(source_file: Any) -> str:
@@ -146,6 +145,7 @@ def runtime_output_artifacts() -> dict[str, dict[str, str]]:
             "message": build_skladbot_daily_report_message(daily_report),
             "caption": daily_report_caption(sample_date),
             "filename": daily_report_filename(sample_date),
+            "kiz_caption": kiz_daily_report_caption(sample_date),
         },
         "transfer_kiz_export": {
             "caption": transfer_kiz_export_caption("transfer_kiz_export.xlsx"),

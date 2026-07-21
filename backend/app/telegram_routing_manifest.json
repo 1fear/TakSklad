@@ -20,21 +20,21 @@
       "destination": "client",
       "schedules": ["12:00", "15:00", "17:50"],
       "text_policy_label": "runtime_smartup_export_outputs_v1",
-      "text_policy_sha256": "58482504749c653554f3ad10d4b0f6375a2f765ce62208f04527b3d3d1fc989d",
+      "text_policy_sha256": "f0fcfb5d610368b7e250a55af41ea1e8cdd16f536768a3a1c024ada3aa3ac318",
       "error_destination": "admin"
     },
     "smartup_logistics_report": {
       "destination": "logistics",
       "schedules": ["17:50"],
       "text_policy_label": "runtime_logistics_outputs_v1",
-      "text_policy_sha256": "203a57c59eccbdbfc6755f0b0e35cd119a54a374c3a70f1d30454f4ad946eed0",
+      "text_policy_sha256": "7e61d7429c921cb1bc0972886e52f0793a23c47412f00d5a400b7a212cae8dea",
       "error_destination": "admin"
     },
     "skladbot_daily_report": {
       "destination": "client",
       "schedules": ["22:00"],
       "text_policy_label": "runtime_skladbot_daily_outputs_v1",
-      "text_policy_sha256": "684bf167c8ba203eec966a9faa90717a82a8b8354fccebe5d425523a9cbc132f",
+      "text_policy_sha256": "4425d350cb87c7c85d61f6e430847dfc7042fc130497a442fc156ca658ea6728",
       "error_destination": "admin"
     },
     "transfer_kiz_export": {

@@ -802,7 +802,8 @@ class SmartupAutoImportTests(unittest.TestCase):
         self.assertEqual(chat_id, "-1002001")
         self.assertTrue(content)
         self.assertEqual(filename, "Терминал 25.06.2026 Часть 1.xlsx")
-        self.assertIn("Smartup выгрузка за 25.06.2026", caption)
+        self.assertIn("Выгрузка со смарт-ап", caption)
+        self.assertIn("Часть 1", caption)
         self.assertEqual(imports[0].raw_payload["telegram_chat_id"], "-1002001")
 
     def test_full_flow_queues_skladbot_create_after_smartup_status_change(self):
@@ -1212,7 +1213,7 @@ class SmartupAutoImportTests(unittest.TestCase):
         self.assertEqual(len(logistics_documents), 1)
         _chat_id, content, filename, caption = logistics_documents[0]
         self.assertEqual(filename, "TakSklad_логистика_06.07.2026.xlsx")
-        self.assertEqual(caption, "Отчёт логистики за 06.07.2026")
+        self.assertEqual(caption, "Отчет логистики 06.07.2026")
         self.assert_xlsx_has_no_orphaned_pane_selections(content)
         workbook = openpyxl.load_workbook(BytesIO(content), data_only=True)
         self.assertIn("Orders", workbook.sheetnames)

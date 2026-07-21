@@ -4,6 +4,8 @@ import unittest
 from pathlib import Path
 
 from tools.check_code_organization import (
+    TELEGRAM_PROCESSOR_MAX_LINES,
+    TELEGRAM_WORKER_MAX_LINES,
     build_dependency_graph,
     forbidden_order_skladbot_sccs,
     forbidden_telegram_processor_back_edges,
@@ -78,18 +80,22 @@ class CodeOrganizationGuardTests(unittest.TestCase):
         root = self.make_repo()
         app = root / "backend" / "app"
         (app / "telegram_worker.py").write_text("pass\n", encoding="utf-8")
-        (app / "telegram_report_processor.py").write_text("pass\n" * 701, encoding="utf-8")
+        over_limit = TELEGRAM_PROCESSOR_MAX_LINES + 1
+        (app / "telegram_report_processor.py").write_text("pass\n" * over_limit, encoding="utf-8")
         exception_path = self.write_exceptions(root, [])
 
         result = run_checks(root, exception_path)
 
-        self.assertTrue(any("telegram_report_processor.py: 701 lines" in error for error in result.errors))
+        self.assertTrue(any(
+            f"telegram_report_processor.py: {over_limit} lines" in error for error in result.errors
+        ))
 
     def test_valid_size_exception_is_applied_and_keeps_strict_result_clean(self):
         root = self.make_repo()
         app = root / "backend" / "app"
         (app / "telegram_worker.py").write_text(
-            "class TelegramWorker:\n    def poll_once(self):\n        return None\n" + "pass\n" * 1498,
+            "class TelegramWorker:\n    def poll_once(self):\n        return None\n"
+            + "pass\n" * (TELEGRAM_WORKER_MAX_LINES - 2),
             encoding="utf-8",
         )
         exception_path = self.write_exceptions(root, [{
