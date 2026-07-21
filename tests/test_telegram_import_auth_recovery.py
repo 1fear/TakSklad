@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 import unittest
 
@@ -19,6 +19,9 @@ class TelegramImportAuthRecoveryTests(unittest.TestCase):
         )
         Base.metadata.create_all(self.engine)
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
+        # retry() всегда берет реальное время, поэтому событие должно попадать
+        # в RECENT_WINDOW относительно now, а не на фиксированную дату.
+        self.now = datetime.now(timezone.utc)
         with self.Session() as db:
             event = PendingEvent(
                 event_type="telegram_excel_import",
@@ -32,7 +35,7 @@ class TelegramImportAuthRecoveryTests(unittest.TestCase):
                     "document": {"file_id": "synthetic-file-id"},
                     "shipment_date": "21.07.2026",
                 },
-                created_at=datetime(2026, 7, 20, 5, 39, tzinfo=timezone.utc),
+                created_at=self.now - timedelta(hours=1),
             )
             db.add(event)
             db.flush()
@@ -50,9 +53,8 @@ class TelegramImportAuthRecoveryTests(unittest.TestCase):
         self.engine.dispose()
 
     def test_inspect_and_retry_are_exact_and_duplicate_safe(self):
-        now = datetime(2026, 7, 20, 6, 0, tzinfo=timezone.utc)
         with self.Session() as db:
-            summary = recovery.inspect(db, now=now)
+            summary = recovery.inspect(db, now=self.now)
             self.assertEqual(summary["event_id"], str(self.event_id))
             self.assertEqual(summary["linked_imports"], 0)
         with self.Session() as db:
