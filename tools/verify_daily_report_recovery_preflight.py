@@ -23,6 +23,9 @@ SUCCESS_RESULT_STATUSES = {
     "completed_no_requests",
     "completed_sent",
 }
+MANUAL_RECOVERY_RESULT_STATUS = "manual_recovery_required"
+MANUAL_RECOVERY_STAGE = "manual_recovery_required"
+MANUAL_RECOVERY_REASON = "automatic_retry_not_safe_or_exhausted"
 COVERAGE_ERROR_PREFIX = "SKLADBOT_DAILY_REPORT_COVERAGE_NOT_COMPLETE"
 PRE_TELEGRAM_STAGES = {
     "scheduled job started",
@@ -110,12 +113,18 @@ def _event_is_proven_pre_telegram_failure(event: Any) -> bool:
     error = _normalize(getattr(event, "last_error", ""))
     result_status = _normalize(payload.get("result_status"))
     success = payload.get("success")
+    if not error.startswith(COVERAGE_ERROR_PREFIX):
+        return False
+    if success is True or _normalize(success).casefold() == "true":
+        return False
+    if stage in PRE_TELEGRAM_STAGES and result_status == "blocked_partial":
+        return True
     return (
-        stage in PRE_TELEGRAM_STAGES
-        and error.startswith(COVERAGE_ERROR_PREFIX)
-        and result_status == "blocked_partial"
-        and success is not True
-        and _normalize(success).casefold() != "true"
+        stage == MANUAL_RECOVERY_STAGE
+        and payload.get("manual_recovery_required") is True
+        and result_status == MANUAL_RECOVERY_RESULT_STATUS
+        and _normalize(payload.get("manual_recovery_reason")) == MANUAL_RECOVERY_REASON
+        and _normalize(payload.get("same_day_existing_event_status")) == "failed"
     )
 
 
@@ -181,6 +190,9 @@ def inspect_database(report_dates: tuple[date, date]) -> dict[str, Any]:
         "approved_pair_non_pretelegram_failure": 0,
         "approved_pair_non_success_completion": 0,
     }
+    unrelated_blocker_count = 0
+    target_daily_failure_count = 0
+    safe_target_blocker_count = 0
 
     with SessionLocal() as db:
         terminal_incident_ids = select(Incident.pending_event_id).where(
@@ -209,17 +221,24 @@ def inspect_database(report_dates: tuple[date, date]) -> dict[str, Any]:
         configured_chat = next(iter(configured_chats)) if len(configured_chats) == 1 else ""
         for event in unresolved_events:
             event_date = _date_from_event(event)
-            if (
-                event.event_type != DAILY_EVENT_TYPE
-                or event_date not in counts_by_date
-                or not configured_chat
-                or _chat_from_event(event) != configured_chat
-                or not _event_is_proven_pre_telegram_or_safe_manual_recovery(event)
-            ):
-                ambiguous_count += 1
+            event_chat = _chat_from_event(event)
+            matches_approved_pair = (
+                event.event_type == DAILY_EVENT_TYPE
+                and event_date in counts_by_date
+                and bool(configured_chat)
+                and event_chat == configured_chat
+            )
+            if not matches_approved_pair:
+                unrelated_blocker_count += 1
                 ambiguous_breakdown["unresolved_out_of_scope"] += 1
                 continue
+            target_daily_failure_count += 1
+            if not _event_is_proven_pre_telegram_or_safe_manual_recovery(event):
+                ambiguous_count += 1
+                ambiguous_breakdown["approved_pair_non_pretelegram_failure"] += 1
+                continue
             counts_by_date[event_date] += 1
+            safe_target_blocker_count += 1
 
         daily_events = db.execute(
             select(PendingEvent).where(PendingEvent.event_type == DAILY_EVENT_TYPE)
@@ -271,6 +290,7 @@ def inspect_database(report_dates: tuple[date, date]) -> dict[str, Any]:
         and success_count == 0
         and registry_count == 0
         and ambiguous_count == 0
+        and unrelated_blocker_count == 0
     )
     return {
         "status": "inspect_ok" if safe else "blocked",
@@ -284,6 +304,9 @@ def inspect_database(report_dates: tuple[date, date]) -> dict[str, Any]:
         "registry_count": registry_count,
         "ambiguous_count": ambiguous_count,
         "ambiguous_breakdown": ambiguous_breakdown,
+        "unrelated_blocker_count": unrelated_blocker_count,
+        "target_daily_failure_count": target_daily_failure_count,
+        "safe_target_blocker_count": safe_target_blocker_count,
         "values_redacted": True,
     }
 
@@ -359,6 +382,9 @@ def verify_preflight(
         or _nonnegative_int(database.get("success_count")) != 0
         or _nonnegative_int(database.get("registry_count")) != 0
         or _nonnegative_int(database.get("ambiguous_count")) != 0
+        or _nonnegative_int(database.get("unrelated_blocker_count")) != 0
+        or _nonnegative_int(database.get("target_daily_failure_count")) != blocker_count
+        or _nonnegative_int(database.get("safe_target_blocker_count")) != blocker_count
         or _nonnegative_int(queue.get("hot_path_blocking_count")) != blocker_count
         or _nonnegative_int(queue.get("hot_path_error_count")) != blocker_count
     ):
