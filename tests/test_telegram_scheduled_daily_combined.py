@@ -164,8 +164,9 @@ class TelegramScheduledDailyCombinedTests(unittest.TestCase):
         self.assertEqual(telegram_calls, [])
         self.assertNotIn("build_xlsx", timeline)
 
-    def test_day_kiz_only_report_is_sent_even_with_diagnostic_request(self):
+    def test_day_kiz_only_report_completes_without_client_send(self):
         timeline = []
+        progress = []
         report = complete_report(requests=[], excluded=1)
 
         def hydrate(combined_report):
@@ -176,21 +177,25 @@ class TelegramScheduledDailyCombinedTests(unittest.TestCase):
             FakeReportModule(report, timeline, hydrate),
             sqlite_session_factory(),
         )
-        messages = []
-        documents = []
-        processor.send_message = lambda *args, **kwargs: messages.append((args, kwargs)) or {"message_id": 1}
-        processor.send_document = lambda *args, **kwargs: documents.append((args, kwargs)) or {"message_id": 2}
+        telegram_calls = []
+        processor.send_message = lambda *args, **kwargs: telegram_calls.append((args, kwargs))
+        processor.send_document = lambda *args, **kwargs: telegram_calls.append((args, kwargs))
 
         result = processor.send_skladbot_daily_report(
             "synthetic-client",
             report_date=date(2026, 7, 21),
             scheduled=True,
+            progress=lambda stage, **fields: progress.append((stage, fields)),
         )
 
-        self.assertTrue(result)
-        self.assertEqual(len(messages), 1)
-        self.assertEqual(len(documents), 1)
-        self.assertIn("build_xlsx", timeline)
+        self.assertEqual(result, SKLADBOT_DAILY_REPORT_NO_REQUESTS_RESULT)
+        self.assertEqual(telegram_calls, [])
+        self.assertNotIn("build_xlsx", timeline)
+        no_requests = next(fields for stage, fields in progress if stage == "scheduled job no requests")
+        self.assertTrue(no_requests["combined_empty"])
+        self.assertEqual(no_requests["requests_count"], 0)
+        self.assertEqual(no_requests["order_kiz_count"], 0)
+        self.assertEqual(no_requests["day_kiz_count"], 1)
 
     def test_no_requests_and_no_day_kiz_completes_without_send_or_build(self):
         timeline = []

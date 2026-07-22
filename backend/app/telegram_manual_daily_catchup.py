@@ -20,6 +20,7 @@ from .telegram_daily_report_policy import (
     SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE,
     SKLADBOT_DAILY_SAFE_RETRY_STAGES,
     completed_daily_report_delivery_exists,
+    daily_report_failure_is_safe_manual_wrapper,
 )
 
 
@@ -82,6 +83,7 @@ def claim_manual_daily_catchup(sender: Any, chat_id: str, report_date: date) -> 
                 if (
                     status in {"failed", "error", "blocked", "dead", "cancelled"}
                     and stage not in MANUAL_DAILY_CATCHUP_PRE_TELEGRAM_STAGES
+                    and not daily_report_failure_is_safe_manual_wrapper(event)
                 ):
                     return {"status": "ambiguous_delivery_exists", "event_id": str(event.id)}
                 if status == "completed":
@@ -379,7 +381,7 @@ def dry_run_manual_daily_catchup(sender: Any, report_date: date) -> dict[str, An
     blocker = normalize_text(prepared.get("blocker"))
     if blocker:
         status = "blocked"
-    elif requests_count == 0 and order_kiz_count == 0 and day_kiz_count == 0:
+    elif requests_count == 0:
         status = SKLADBOT_DAILY_REPORT_NO_REQUESTS_RESULT
     else:
         status = "ready"

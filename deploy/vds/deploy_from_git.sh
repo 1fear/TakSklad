@@ -22,6 +22,7 @@ DAILY_REPORT_RECOVERY_APPROVAL_PHRASE="SEND_EXACTLY_TWO_DAILY_REPORT_CATCHUPS"
 DAILY_REPORT_RECOVERY_DATES=()
 DAILY_REPORT_RECOVERY_APPROVAL=""
 DAILY_REPORT_RECOVERY_ENABLED=0
+DAILY_REPORT_RECOVERY_COMPLETION_VERIFIED=0
 DRY_RUN=0
 CURRENT_AUTH_CANARY_ONLY=0
 PROMOTE_CURRENT_RUNTIME=0
@@ -337,6 +338,7 @@ verify_daily_report_recovery_candidate() {
   ready_path="$state_dir/recheck-ready.json"
   database_path="$state_dir/recheck-database.json"
   for path in \
+    "$state_dir/database.json" \
     "$state_dir/dry-run-1.json" \
     "$state_dir/dry-run-2.json"; do
     [[ -f "$path" && ! -L "$path" ]] || return 1
@@ -358,12 +360,57 @@ print(json.dumps({'http_status':int(getattr(r,'status',getattr(r,'code',0))),'pa
     PYTHONDONTWRITEBYTECODE=1 "$PYTHON_BIN" tools/verify_daily_report_recovery_preflight.py verify \
       "${date_args[@]}" \
       --ready-json "$ready_path" \
+      --before-database-json "$state_dir/database.json" \
       --database-json "$database_path" \
       --dry-run-json "$state_dir/dry-run-1.json" \
       --dry-run-json "$state_dir/dry-run-2.json" >/dev/null || result=1
   fi
   rm -f -- "$ready_path" "$database_path"
   [[ "$result" == "0" ]]
+}
+
+verify_daily_report_recovery_completion() {
+  [[ "$DAILY_REPORT_RECOVERY_ENABLED" == "1" ]] || return 1
+  local backend_id state_dir ready_path database_path result_path attempt path
+  local -a date_args
+  mapfile -t date_args < <(daily_report_recovery_args) || return 1
+  state_dir=".release-state/daily-report-recovery"
+  ready_path="$state_dir/completion-ready.json"
+  database_path="$state_dir/completion-database.json"
+  result_path="$state_dir/completion-result.json"
+  [[ -f "$state_dir/database.json" && ! -L "$state_dir/database.json" ]] || return 1
+  for path in "$ready_path" "$database_path" "$result_path"; do
+    [[ ! -L "$path" ]] || return 1
+    install -m 600 /dev/null "$path" || return 1
+  done
+  backend_id="$(compose ps -q backend-api)" || return 1
+  [[ -n "$backend_id" ]] || return 1
+  for ((attempt = 1; attempt <= URL_RETRY_ATTEMPTS; attempt += 1)); do
+    if "$PYTHON_BIN" -c \
+      "import json,sys; from urllib.error import HTTPError; from urllib.request import urlopen; u=sys.argv[1];
+try: r=urlopen(u, timeout=5)
+except HTTPError as e: r=e
+print(json.dumps({'http_status':int(getattr(r,'status',getattr(r,'code',0))),'payload':json.load(r)}, sort_keys=True))" \
+      "$READY_URL" \
+      > "$ready_path" && \
+      docker exec -i "$backend_id" python - inspect-completion "${date_args[@]}" \
+        < tools/verify_daily_report_recovery_preflight.py > "$database_path" && \
+      PYTHONDONTWRITEBYTECODE=1 "$PYTHON_BIN" \
+        tools/verify_daily_report_recovery_preflight.py verify-completion \
+        "${date_args[@]}" \
+        --ready-json "$ready_path" \
+        --before-database-json "$state_dir/database.json" \
+        --database-json "$database_path" \
+        --expected-sha "$RELEASE_SOURCE_SHA" \
+        --expected-digest "$RELEASE_BACKEND_DIGEST" > "$result_path"; then
+      DAILY_REPORT_RECOVERY_COMPLETION_VERIFIED=1
+      echo "DAILY_REPORT_RECOVERY_COMPLETION_OK dates=2 sends=2 replay_sends=0 schedule=22:00 values_redacted=1"
+      return 0
+    fi
+    ((attempt == URL_RETRY_ATTEMPTS)) || sleep "$URL_RETRY_INTERVAL_SECONDS"
+  done
+  rm -f -- "$ready_path" "$database_path" "$result_path"
+  return 1
 }
 
 check_public_url() {
@@ -436,6 +483,15 @@ complete_telegram_import_auth_recovery() {
 
 run_acceptance() {
   [[ "$ACCEPTANCE_MODE" == "required" ]] || return 1
+  if [[ "$DAILY_REPORT_RECOVERY_ENABLED" == "1" ]]; then
+    [[ "$DAILY_REPORT_RECOVERY_COMPLETION_VERIFIED" == "1" ]] || return 1
+    ./deploy/vds/acceptance_status.sh --require-go \
+      --daily-report-recovery-ready-json \
+        .release-state/daily-report-recovery/completion-ready.json \
+      --daily-report-recovery-verification-json \
+        .release-state/daily-report-recovery/completion-result.json
+    return $?
+  fi
   [[ -x deploy/vds/acceptance_status.sh ]] || return 1
   [[ -f outputs/taksklad_acceptance/acceptance_manifest.json ]] || return 1
   ./deploy/vds/acceptance_status.sh --require-go
@@ -475,6 +531,8 @@ if mode == "send":
         raise SystemExit(1)
 elif mode == "replay":
     if status not in {"already_completed", "already_reported"}:
+        raise SystemExit(1)
+    if set(payload) != {"status", "report_date"}:
         raise SystemExit(1)
 else:
     raise SystemExit(1)
@@ -813,6 +871,9 @@ if ! complete_telegram_import_auth_recovery; then
   rollback_after_candidate_failure "verified Telegram import auth recovery failed"
 fi
 if [[ "$DAILY_REPORT_RECOVERY_ENABLED" == "1" ]]; then
+  if ! verify_daily_report_recovery_candidate; then
+    rollback_after_candidate_failure "daily-report recovery incident changed before approved sends"
+  fi
   if ! run_daily_report_recovery; then
     rollback_after_candidate_failure "approved daily-report recovery stopped before exact completion"
   fi
@@ -822,9 +883,13 @@ if [[ "$DAILY_REPORT_RECOVERY_ENABLED" == "1" ]]; then
   fi
   validate_daily_report_config || \
     rollback_after_candidate_failure "22:00 daily-report configuration changed after recovery"
-fi
-if ! check_public_url readiness "$READY_URL"; then
-  rollback_after_candidate_failure "candidate readiness failed"
+  if ! verify_daily_report_recovery_completion; then
+    rollback_after_candidate_failure "daily-report recovery completion proof failed"
+  fi
+else
+  if ! check_public_url readiness "$READY_URL"; then
+    rollback_after_candidate_failure "candidate readiness failed"
+  fi
 fi
 
 run_acceptance || {
@@ -835,6 +900,12 @@ run_log_scan || {
 }
 
 run_server_auth_canary || rollback_after_candidate_failure "candidate acceptance auth canary failed"
+
+if [[ "$DAILY_REPORT_RECOVERY_ENABLED" == "1" ]]; then
+  if ! verify_daily_report_recovery_completion; then
+    rollback_after_candidate_failure "final daily-report recovery completion proof failed"
+  fi
+fi
 
 install -d -m 700 "$(dirname "$DEPLOY_RECORD")"
 temporary_record="${DEPLOY_RECORD}.tmp.$$"

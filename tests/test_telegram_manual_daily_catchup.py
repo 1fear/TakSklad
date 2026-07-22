@@ -11,6 +11,7 @@ from sqlalchemy.pool import StaticPool
 
 from backend.app.models import Base, PendingEvent
 from backend.app.telegram_daily_report_policy import (
+    SKLADBOT_DAILY_REPORT_COVERAGE_FAILED_ERROR,
     SKLADBOT_DAILY_REPORT_NO_REQUESTS_RESULT,
     SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE,
 )
@@ -310,6 +311,82 @@ class ManualDailyCatchupTests(unittest.TestCase):
         self.assertEqual(sender.send_message_count, 1)
         self.assertEqual(sender.send_document_count, 1)
 
+    def test_exact_safe_manual_wrapper_allows_catchup(self):
+        with self.session_factory() as db:
+            db.add(PendingEvent(
+                event_type=SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE,
+                idempotency_key=(
+                    f"skladbot_daily_report:{REPORT_DATE.isoformat()}:{CHAT_ID}:"
+                    "scheduled:daily_skladbot:v2"
+                ),
+                status="failed",
+                attempts=3,
+                last_error=(
+                    f"{SKLADBOT_DAILY_REPORT_COVERAGE_FAILED_ERROR}: "
+                    "coverage_status=partial"
+                ),
+                payload={
+                    "report_date": REPORT_DATE.isoformat(),
+                    "stage": "manual_recovery_required",
+                    "result_status": "manual_recovery_required",
+                    "manual_recovery_required": True,
+                    "manual_recovery_reason": "automatic_retry_not_safe_or_exhausted",
+                    "same_day_existing_event_status": "failed",
+                    "success": False,
+                },
+            ))
+            db.commit()
+        sender = FakeSender(self.session_factory)
+
+        result = run_manual_daily_catchup(sender, CHAT_ID, REPORT_DATE)
+
+        self.assertEqual(result["status"], MANUAL_DAILY_CATCHUP_SUCCESS)
+        self.assertEqual(sender.send_message_count, 1)
+        self.assertEqual(sender.send_document_count, 1)
+
+    def test_incomplete_or_telegram_touched_manual_wrapper_stays_blocked(self):
+        mutations = (
+            {"result_status": "blocked_partial"},
+            {"manual_recovery_reason": "manual_catchup_failed"},
+            {"same_day_existing_event_status": "completed"},
+            {"success": True},
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                session_factory = make_session_factory()
+                payload = {
+                    "report_date": REPORT_DATE.isoformat(),
+                    "stage": "manual_recovery_required",
+                    "result_status": "manual_recovery_required",
+                    "manual_recovery_required": True,
+                    "manual_recovery_reason": "automatic_retry_not_safe_or_exhausted",
+                    "same_day_existing_event_status": "failed",
+                    "success": False,
+                    **mutation,
+                }
+                with session_factory() as db:
+                    db.add(PendingEvent(
+                        event_type=SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE,
+                        idempotency_key=(
+                            f"skladbot_daily_report:{REPORT_DATE.isoformat()}:{CHAT_ID}:"
+                            "scheduled:daily_skladbot:v2"
+                        ),
+                        status="failed",
+                        attempts=3,
+                        last_error=(
+                            f"{SKLADBOT_DAILY_REPORT_COVERAGE_FAILED_ERROR}: "
+                            "coverage_status=partial"
+                        ),
+                        payload=payload,
+                    ))
+                    db.commit()
+                sender = FakeSender(session_factory)
+
+                result = run_manual_daily_catchup(sender, CHAT_ID, REPORT_DATE)
+
+                self.assertEqual(result["status"], "ambiguous_delivery_exists")
+                self.assertEqual(sender.send_calls, [])
+
     def test_failure_after_send_started_blocks_and_replay_sends_nothing(self):
         sender = FakeSender(self.session_factory)
         sender.raise_after_message_started = True
@@ -368,6 +445,28 @@ class ManualDailyCatchupTests(unittest.TestCase):
             "xlsx_bytes": len(b"synthetic-xlsx"),
         })
         self.assertEqual(sender.prepare_calls, [REPORT_DATE])
+        self.assertEqual(sender.send_calls, [])
+        self.assertEqual(sender.send_message_count, 0)
+        self.assertEqual(sender.send_document_count, 0)
+        with self.session_factory() as db:
+            self.assertEqual(db.execute(select(PendingEvent)).scalars().all(), [])
+
+    def test_dry_run_day_kiz_without_requests_is_completed_no_requests(self):
+        sender = FakeSender(self.session_factory)
+        sender.prepared["report"]["requests"] = []
+        sender.prepared["report"]["request_kiz_rows"] = []
+        sender.prepared["report"]["daily_kiz_rows"] = [{"code": "do-not-print-day-code"}]
+
+        result = dry_run_manual_daily_catchup(sender, REPORT_DATE)
+
+        self.assertEqual(result, {
+            "status": SKLADBOT_DAILY_REPORT_NO_REQUESTS_RESULT,
+            "report_date": REPORT_DATE.isoformat(),
+            "requests_count": 0,
+            "order_kiz_count": 0,
+            "day_kiz_count": 1,
+            "xlsx_bytes": len(b"synthetic-xlsx"),
+        })
         self.assertEqual(sender.send_calls, [])
         self.assertEqual(sender.send_message_count, 0)
         self.assertEqual(sender.send_document_count, 0)

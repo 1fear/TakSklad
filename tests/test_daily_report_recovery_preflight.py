@@ -3,15 +3,19 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+from types import ModuleType
 from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 from tools.verify_daily_report_recovery_preflight import (
     COVERAGE_ERROR_PREFIX,
     PRE_TELEGRAM_STAGES,
     RecoveryPreflightError,
+    _event_is_exact_manual_catchup_success,
     _event_is_proven_pre_telegram_failure,
     _event_is_proven_safe_manual_recovery,
+    verify_completion,
     verify_preflight,
 )
 
@@ -20,6 +24,8 @@ ROOT = Path(__file__).resolve().parents[1]
 DEPLOY_SCRIPT = ROOT / "deploy" / "vds" / "deploy_from_git.sh"
 WORKFLOW = ROOT / ".github" / "workflows" / "deploy-server-production.yml"
 DATES = (date(2026, 7, 20), date(2026, 7, 21))
+EXPECTED_SHA = "a" * 40
+EXPECTED_DIGEST = "sha256:" + "b" * 64
 
 
 def ready_payload():
@@ -27,6 +33,8 @@ def ready_payload():
         "http_status": 503,
         "payload": {
             "ready": False,
+            "commit_sha": EXPECTED_SHA,
+            "image_digest": EXPECTED_DIGEST,
             "database": {"status": "ok"},
             "migrations": {"status": "ok"},
             "queue": {
@@ -64,13 +72,43 @@ def database_payload():
         "configured_chat_count": 1,
         "schedule_2200_tashkent": True,
         "blocker_count": 3,
-        "blockers_by_date": {"2026-07-20": 1, "2026-07-21": 2},
+        "blockers_by_date": {"2026-07-20": 1, "2026-07-21": 1},
+        "unrelated_non_daily_by_type_status": {
+            "smartup_auto_import_run": {"failed": 1},
+        },
+        "unrelated_non_daily_fingerprint": "a" * 64,
         "active_count": 0,
         "success_count": 0,
+        "catchup_success_by_date": {"2026-07-20": 0, "2026-07-21": 0},
         "registry_count": 0,
         "ambiguous_count": 0,
         "values_redacted": True,
     }
+
+
+def completion_ready_payload():
+    payload = ready_payload()
+    payload["payload"]["queue"]["hot_path_blocking_count"] = 1
+    payload["payload"]["queue"]["hot_path_error_count"] = 1
+    payload["payload"]["daily_report"] = {
+        "status": "ok",
+        "due_date": "2026-07-21",
+        "missing_count": 0,
+    }
+    return payload
+
+
+def completion_database_payload():
+    payload = database_payload()
+    payload.update({
+        "status": "completion_ok",
+        "blocker_count": 1,
+        "blockers_by_date": {"2026-07-20": 0, "2026-07-21": 0},
+        "success_count": 2,
+        "catchup_success_by_date": {"2026-07-20": 1, "2026-07-21": 1},
+        "registry_count": 2,
+    })
+    return payload
 
 
 def dry_runs():
@@ -138,6 +176,7 @@ class DailyReportRecoveryPreflightTests(unittest.TestCase):
             last_error=f"{COVERAGE_ERROR_PREFIX}: coverage_status=partial",
             payload={
                 "stage": "manual_recovery_required",
+                "result_status": "manual_recovery_required",
                 "manual_recovery_required": True,
                 "manual_recovery_reason": "automatic_retry_not_safe_or_exhausted",
                 "same_day_existing_event_status": "failed",
@@ -146,15 +185,38 @@ class DailyReportRecoveryPreflightTests(unittest.TestCase):
         )
         self.assertTrue(_event_is_proven_safe_manual_recovery(event))
 
+    def test_safe_manual_recovery_works_in_old_image_without_policy_helper(self):
+        old_policy = ModuleType("app.telegram_daily_report_policy")
+        self.assertFalse(hasattr(old_policy, "daily_report_failure_is_safe_manual_wrapper"))
+        event = SimpleNamespace(
+            status="failed",
+            last_error=f"{COVERAGE_ERROR_PREFIX}: coverage_status=partial",
+            payload={
+                "stage": "manual_recovery_required",
+                "result_status": "manual_recovery_required",
+                "manual_recovery_required": True,
+                "manual_recovery_reason": "automatic_retry_not_safe_or_exhausted",
+                "same_day_existing_event_status": "failed",
+                "success": False,
+            },
+        )
+        with mock.patch.dict(
+            "sys.modules",
+            {"app.telegram_daily_report_policy": old_policy},
+        ):
+            self.assertTrue(_event_is_proven_safe_manual_recovery(event))
+
     def test_safe_manual_recovery_rejects_completed_or_telegram_touched_shapes(self):
         base_payload = {
             "stage": "manual_recovery_required",
+            "result_status": "manual_recovery_required",
             "manual_recovery_required": True,
             "manual_recovery_reason": "automatic_retry_not_safe_or_exhausted",
             "same_day_existing_event_status": "failed",
             "success": False,
         }
         mutations = (
+            {"result_status": "blocked_partial"},
             {"same_day_existing_event_status": "completed"},
             {"manual_recovery_reason": "skipped_same_day_existing_completed_event"},
             {"success": True},
@@ -176,12 +238,13 @@ class DailyReportRecoveryPreflightTests(unittest.TestCase):
         )
         self.assertFalse(_event_is_proven_safe_manual_recovery(telegram_failure))
 
-    def verify(self, *, ready=None, database=None, reports=None):
+    def verify(self, *, ready=None, database=None, reports=None, before=None):
         return verify_preflight(
             report_dates=DATES,
             ready=ready or ready_payload(),
             database=database or database_payload(),
             dry_runs=reports or dry_runs(),
+            before_database=before,
             today=date(2026, 7, 22),
         )
 
@@ -194,6 +257,7 @@ class DailyReportRecoveryPreflightTests(unittest.TestCase):
                 "dates_count": 2,
                 "dry_run_count": 2,
                 "blocker_count": 3,
+                "unrelated_blocker_count": 1,
                 "values_redacted": True,
             },
         )
@@ -201,11 +265,51 @@ class DailyReportRecoveryPreflightTests(unittest.TestCase):
         self.assertNotIn("chat", encoded.casefold())
         self.assertNotIn("kiz", encoded.casefold())
 
-    def test_unrelated_blocker_blocks_recovery(self):
-        database = database_payload()
-        database["ambiguous_count"] = 1
+    def test_only_exact_preexisting_smartup_blocker_is_allowed(self):
+        mutations = (
+            {},
+            {"other_event": {"failed": 1}},
+            {"smartup_auto_import_run": {"error": 1}},
+            {"smartup_auto_import_run": {"failed": 2}},
+        )
+        for unrelated in mutations:
+            with self.subTest(unrelated=unrelated):
+                database = database_payload()
+                database["unrelated_non_daily_by_type_status"] = unrelated
+                with self.assertRaises(RecoveryPreflightError):
+                    self.verify(database=database)
+
+    def test_exact_manual_catchup_success_requires_one_message_and_one_document(self):
+        payload = {
+            "success": True,
+            "mode": "manual_catchup",
+            "kind": "daily_skladbot",
+            "report_version": "v4-combined-kiz",
+            "stage": "manual catchup completed",
+            "result_status": "CATCHUP_SENT_COMPLETE_ONCE",
+            "sendMessage_count": 1,
+            "sendDocument_count": 1,
+            "registry_marked_after_success": True,
+            "reconciliation_started": False,
+        }
+        event = SimpleNamespace(status="completed", payload=payload)
+        self.assertTrue(_event_is_exact_manual_catchup_success(event))
+        for mutation in (
+            {"sendMessage_count": 2},
+            {"sendDocument_count": 0},
+            {"report_version": "v3"},
+            {"registry_marked_after_success": False},
+            {"reconciliation_started": True},
+        ):
+            with self.subTest(mutation=mutation):
+                invalid = SimpleNamespace(status="completed", payload={**payload, **mutation})
+                self.assertFalse(_event_is_exact_manual_catchup_success(invalid))
+
+    def test_candidate_recheck_rejects_changed_unrelated_blocker_fingerprint(self):
+        current = database_payload()
+        current["unrelated_non_daily_fingerprint"] = "b" * 64
         with self.assertRaises(RecoveryPreflightError):
-            self.verify(database=database)
+            self.verify(database=current, before=database_payload())
 
     def test_wrong_due_date_blocks_recovery(self):
         ready = ready_payload()
@@ -242,6 +346,58 @@ class DailyReportRecoveryPreflightTests(unittest.TestCase):
                 with self.assertRaises(RecoveryPreflightError):
                     self.verify(reports=reports)
 
+    def test_exact_completion_accepts_unchanged_smartup_blocker_and_two_catchups(self):
+        result = verify_completion(
+            report_dates=DATES,
+            ready=completion_ready_payload(),
+            before_database=database_payload(),
+            database=completion_database_payload(),
+            expected_sha=EXPECTED_SHA,
+            expected_digest=EXPECTED_DIGEST,
+            today=date(2026, 7, 22),
+        )
+        self.assertEqual(
+            result,
+            {
+                "status": "complete",
+                "dates_count": 2,
+                "catchup_success_count": 2,
+                "remaining_unrelated_blocker_count": 1,
+                "schedule_2200_tashkent": True,
+                "values_redacted": True,
+            },
+        )
+
+    def test_completion_rejects_duplicate_missing_or_changed_proof(self):
+        for mutation in (
+            "duplicate", "missing", "changed_unrelated", "daily_unhealthy", "queue", "identity",
+        ):
+            with self.subTest(mutation=mutation):
+                ready = completion_ready_payload()
+                after = completion_database_payload()
+                if mutation == "duplicate":
+                    after["catchup_success_by_date"]["2026-07-20"] = 2
+                elif mutation == "missing":
+                    after["catchup_success_by_date"]["2026-07-21"] = 0
+                elif mutation == "changed_unrelated":
+                    after["unrelated_non_daily_fingerprint"] = "b" * 64
+                elif mutation == "daily_unhealthy":
+                    ready["payload"]["daily_report"]["status"] = "unhealthy"
+                elif mutation == "queue":
+                    ready["payload"]["queue"]["hot_path_error_count"] = 2
+                else:
+                    ready["payload"]["commit_sha"] = "c" * 40
+                with self.assertRaises(RecoveryPreflightError):
+                    verify_completion(
+                        report_dates=DATES,
+                        ready=ready,
+                        before_database=database_payload(),
+                        database=after,
+                        expected_sha=EXPECTED_SHA,
+                        expected_digest=EXPECTED_DIGEST,
+                        today=date(2026, 7, 22),
+                    )
+
 
 class DailyReportRecoveryDeployContractTests(unittest.TestCase):
     @classmethod
@@ -256,17 +412,52 @@ class DailyReportRecoveryDeployContractTests(unittest.TestCase):
         self.assertIn('DAILY_REPORT_RECOVERY_ENABLED=0', self.workflow)
         self.assertIn('EXACT_DAILY_REPORT_RECOVERY_APPROVAL_REQUIRED', self.workflow)
 
-    def test_workflow_runs_candidate_dry_runs_and_current_backend_inspection_before_mutation(self):
+    def test_workflow_inspects_current_database_before_slow_candidate_dry_runs(self):
+        current_inspect = self.workflow.index(
+            'python - inspect \\\n              "\\${recovery_date_args[@]}"'
+        )
         first_dry_run = self.workflow.index('--report-date "\\$DAILY_REPORT_RECOVERY_DATE_1" --dry-run')
         second_dry_run = self.workflow.index('--report-date "\\$DAILY_REPORT_RECOVERY_DATE_2" --dry-run')
-        current_inspect = self.workflow.index(
-            '< tools/verify_daily_report_recovery_preflight.py', second_dry_run
+        combined_verify = self.workflow.index(
+            'tools/verify_daily_report_recovery_preflight.py verify', second_dry_run
         )
         deploy = self.workflow.index('./deploy/vds/deploy_from_git.sh --artifact-manifest')
+        self.assertLess(current_inspect, first_dry_run)
         self.assertLess(first_dry_run, second_dry_run)
-        self.assertLess(second_dry_run, current_inspect)
-        self.assertLess(current_inspect, deploy)
-        self.assertIn('tools/verify_daily_report_recovery_preflight.py verify', self.workflow)
+        self.assertLess(second_dry_run, combined_verify)
+        self.assertLess(combined_verify, deploy)
+
+    def test_recovery_has_exact_completion_gate_and_normal_readiness_stays_strict(self):
+        self.assertIn('verify_daily_report_recovery_completion() {', self.script)
+        self.assertIn('verify_daily_report_recovery_completion', self.script)
+        self.assertIn('else\n  if ! check_public_url readiness "$READY_URL"', self.script)
+        final_proof = self.script.rindex('verify_daily_report_recovery_completion')
+        deployment_record = self.script.index('temporary_record="${DEPLOY_RECORD}.tmp.$$"')
+        self.assertLess(final_proof, deployment_record)
+        self.assertIn('tools/verify_daily_report_recovery_preflight.py verify-completion', self.workflow)
+        workflow_postdeploy = self.workflow.split(
+            './deploy/vds/deploy_from_git.sh --artifact-manifest', 1
+        )[1]
+        normal_postdeploy = workflow_postdeploy.split(
+            '          else\n            python3 tools/collect_phase27_evidence.py live', 1
+        )
+        self.assertEqual(len(normal_postdeploy), 2)
+        recovery_branch = normal_postdeploy[0]
+        self.assertIn("https://api.taksklad.uz/ready", recovery_branch)
+        self.assertIn("from urllib.error import HTTPError", recovery_branch)
+        self.assertNotIn("live_release_verifier.sh", recovery_branch)
+        self.assertNotIn("curl -fsS https://api.taksklad.uz/ready", recovery_branch)
+        self.assertIn('curl -fsS https://api.taksklad.uz/ready', normal_postdeploy[1])
+
+    def test_recovery_acceptance_requires_verified_completion(self):
+        function = self.script.split('run_acceptance() {', 1)[1].split('\n}\n', 1)[0]
+        recovery_branch, normal_branch = function.split('  fi\n', 1)
+        self.assertIn('DAILY_REPORT_RECOVERY_COMPLETION_VERIFIED', recovery_branch)
+        self.assertIn('[[ "$DAILY_REPORT_RECOVERY_COMPLETION_VERIFIED" == "1" ]]', recovery_branch)
+        self.assertIn('./deploy/vds/acceptance_status.sh --require-go', recovery_branch)
+        self.assertIn('--daily-report-recovery-ready-json', recovery_branch)
+        self.assertIn('--daily-report-recovery-verification-json', recovery_branch)
+        self.assertIn('./deploy/vds/acceptance_status.sh --require-go', normal_branch)
 
     def test_failed_deploy_cannot_publish_stale_success_evidence(self):
         cleanup = self.workflow.index(

@@ -479,6 +479,14 @@ jobs:
               --report-date "\$DAILY_REPORT_RECOVERY_DATE_1"
               --report-date "\$DAILY_REPORT_RECOVERY_DATE_2"
             )
+            if ! docker exec -i "\$preflight_backend_id" python - inspect \
+              "\${recovery_date_args[@]}" \
+              < tools/verify_daily_report_recovery_preflight.py \
+              > "\$recovery_database" 2>/dev/null; then
+              cat "\$recovery_database" >&2
+              echo "CURRENT_DAILY_REPORT_RECOVERY_DATABASE_INSPECTION_BLOCKED" >&2
+              exit 1
+            fi
             if ! docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml \
               run --rm --no-deps --pull never telegram-worker \
               python -m app.telegram_manual_daily_catchup \
@@ -493,14 +501,6 @@ jobs:
                 --report-date "\$DAILY_REPORT_RECOVERY_DATE_2" --dry-run \
                 > "\$recovery_dry_run_2" 2>/dev/null; then
               echo "SECOND_CANDIDATE_DAILY_REPORT_DRY_RUN_BLOCKED" >&2
-              exit 1
-            fi
-            if ! docker exec -i "\$preflight_backend_id" python - inspect \
-              "\${recovery_date_args[@]}" \
-              < tools/verify_daily_report_recovery_preflight.py \
-              > "\$recovery_database" 2>/dev/null; then
-              cat "\$recovery_database" >&2
-              echo "CURRENT_DAILY_REPORT_RECOVERY_DATABASE_INSPECTION_BLOCKED" >&2
               exit 1
             fi
             python3 tools/verify_daily_report_recovery_preflight.py verify \
@@ -578,18 +578,81 @@ jobs:
           fi
           ./deploy/vds/deploy_from_git.sh --artifact-manifest server-release.json \
             --acceptance required --wait "\${deploy_recovery_args[@]}" </dev/null
-          python3 tools/collect_phase27_evidence.py live \
-            --manifest server-release.json \
-            --output .release-state/server-live-release-verification.json </dev/null
-          ./tools/live_release_verifier.sh \
-            --manifest server-release.json \
-            --evidence .release-state/server-live-release-verification.json \
-            --read-only --same-sha --slo-window </dev/null
+          if test "\$DAILY_REPORT_RECOVERY_ENABLED" = 1; then
+            recovery_state=.release-state/daily-report-recovery
+            recovery_completion_ready="\$recovery_state/workflow-completion-ready.json"
+            recovery_completion_database="\$recovery_state/workflow-completion-database.json"
+            recovery_completion_result="\$recovery_state/workflow-completion-result.json"
+            completion_backend_id="\$(docker compose --env-file deploy/vds/.env \
+              -f deploy/vds/docker-compose.yml ps -q backend-api </dev/null)"
+            test -n "\$completion_backend_id"
+            python3 -c \
+              "import json; from urllib.error import HTTPError; from urllib.request import urlopen; u='https://api.taksklad.uz/ready';
+          try: r=urlopen(u, timeout=5)
+          except HTTPError as e: r=e
+          print(json.dumps({'http_status':int(getattr(r,'status',getattr(r,'code',0))),'payload':json.load(r)}, sort_keys=True))" \
+              > "\$recovery_completion_ready"
+            docker exec -i "\$completion_backend_id" python - inspect-completion \
+              "\${recovery_date_args[@]}" \
+              < tools/verify_daily_report_recovery_preflight.py \
+              > "\$recovery_completion_database"
+            python3 tools/verify_daily_report_recovery_preflight.py verify-completion \
+              "\${recovery_date_args[@]}" \
+              --ready-json "\$recovery_completion_ready" \
+              --before-database-json "\$recovery_state/database.json" \
+              --database-json "\$recovery_completion_database" \
+              --expected-sha "\$RELEASE_SOURCE_SHA" \
+              --expected-digest "\$RELEASE_BACKEND_DIGEST" \
+              > "\$recovery_completion_result"
+            curl -fsS https://api.taksklad.uz/health > /tmp/taksklad-server-health.json
+            python3 - /tmp/taksklad-server-health.json "\$recovery_completion_ready" \
+              "\$recovery_completion_result" /tmp/taksklad-server-deploy-evidence.json <<'PY'
+          import json
+          import sys
+          from pathlib import Path
 
-          curl -fsS https://api.taksklad.uz/health > /tmp/taksklad-server-health.json
-          curl -fsS https://api.taksklad.uz/ready > /tmp/taksklad-server-ready.json
-          python3 - /tmp/taksklad-server-health.json /tmp/taksklad-server-ready.json \
-            /tmp/taksklad-server-deploy-evidence.json <<'PY'
+          health = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          ready_wrapper = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+          ready = ready_wrapper["payload"]
+          recovery = json.loads(Path(sys.argv[3]).read_text(encoding="utf-8"))
+          allowed_identity = (
+              "status", "service", "server_release_id", "desktop_api_contract",
+              "commit_sha", "image_digest",
+          )
+          evidence = {
+              "schema_version": 1,
+              "release_kind": "server",
+              "health": {key: health.get(key) for key in allowed_identity if key in health},
+              "ready": {
+                  key: ready.get(key)
+                  for key in (
+                      "ready", "status", "server_release_id", "desktop_api_contract",
+                      "commit_sha", "image_digest",
+                  )
+                  if key in ready
+              },
+              "ready_http_status": ready_wrapper["http_status"],
+              "daily_report_recovery": recovery,
+              "acceptance": "required",
+              "desktop_channel_changed": False,
+          }
+          Path(sys.argv[4]).write_text(
+              json.dumps(evidence, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+          )
+          PY
+          else
+            python3 tools/collect_phase27_evidence.py live \
+              --manifest server-release.json \
+              --output .release-state/server-live-release-verification.json </dev/null
+            ./tools/live_release_verifier.sh \
+              --manifest server-release.json \
+              --evidence .release-state/server-live-release-verification.json \
+              --read-only --same-sha --slo-window </dev/null
+
+            curl -fsS https://api.taksklad.uz/health > /tmp/taksklad-server-health.json
+            curl -fsS https://api.taksklad.uz/ready > /tmp/taksklad-server-ready.json
+            python3 - /tmp/taksklad-server-health.json /tmp/taksklad-server-ready.json \
+              /tmp/taksklad-server-deploy-evidence.json <<'PY'
           import json
           import sys
           from pathlib import Path
@@ -619,6 +682,7 @@ jobs:
               json.dumps(evidence, sort_keys=True, indent=2) + "\n", encoding="utf-8"
           )
           PY
+          fi
           EOF
           cleanup_registry_auth
           trap - EXIT

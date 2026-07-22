@@ -152,7 +152,7 @@ def scheduled_skladbot_daily_report_blocker(report):
         return f"{SKLADBOT_DAILY_REPORT_COVERAGE_FAILED_ERROR}: errors={len(errors)}"
     included = parse_int((coverage or {}).get("included_operational_requests"))
     excluded = parse_int((coverage or {}).get("excluded_diagnostic_requests"))
-    if included == 0 and excluded > 0 and not (report.get("daily_kiz_rows") or []):
+    if included == 0 and excluded > 0:
         return f"{SKLADBOT_DAILY_REPORT_COVERAGE_FAILED_ERROR}: included=0 excluded={excluded}"
     return ""
 
@@ -312,11 +312,9 @@ class TelegramScheduledReportProcessor(TelegramProcessorDelegate):
         requests_count = len(report.get("requests") or [])
         order_kiz_count = len(report.get("request_kiz_rows") or [])
         day_kiz_count = len(report.get("daily_kiz_rows") or [])
-        combined_empty = (
-            requests_count == 0
-            and order_kiz_count == 0
-            and day_kiz_count == 0
-        )
+        # Client daily delivery is driven by included SkladBot requests.
+        # Standalone scan-day rows are diagnostic data, not a daily payload.
+        combined_empty = requests_count == 0
         self._emit_skladbot_daily_progress(
             progress,
             "report generation finished",
@@ -341,8 +339,8 @@ class TelegramScheduledReportProcessor(TelegramProcessorDelegate):
                 result_status=SKLADBOT_DAILY_REPORT_NO_REQUESTS_RESULT,
                 combined_empty=True,
                 requests_count=0,
-                order_kiz_count=0,
-                day_kiz_count=0,
+                order_kiz_count=order_kiz_count,
+                day_kiz_count=day_kiz_count,
             )
         if no_requests_result and not build_for_dry_run:
             return {
@@ -355,8 +353,8 @@ class TelegramScheduledReportProcessor(TelegramProcessorDelegate):
                 "result_status": SKLADBOT_DAILY_REPORT_NO_REQUESTS_RESULT,
                 "combined_empty": True,
                 "requests_count": 0,
-                "order_kiz_count": 0,
-                "day_kiz_count": 0,
+                "order_kiz_count": order_kiz_count,
+                "day_kiz_count": day_kiz_count,
             }
         blocker = scheduled_skladbot_daily_report_blocker(report)
         content = None
