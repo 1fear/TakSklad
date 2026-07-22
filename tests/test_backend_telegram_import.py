@@ -96,6 +96,59 @@ def create_conflicting_date_workbook(path):
 
 
 class BackendTelegramImportTests(unittest.TestCase):
+    def test_coordinate_header_semantic_contains_match_precedes_content_inference(self):
+        columns, missing, _score = excel_importer.build_columns([
+            "Клиент",
+            "Тип оплаты",
+            "Товары",
+            "Кол-во ШТ",
+            "Служебная GPS позиция клиента",
+        ])
+
+        self.assertEqual(missing, [])
+        self.assertEqual(columns["coordinates"], 4)
+        self.assertEqual(columns["coordinates_candidates"], [4])
+
+    def test_explicit_coordinate_headers_reject_adjacent_decoys_and_out_of_range_values(self):
+        for coordinate_header in ("Координаты", "Служебная GPS позиция клиента"):
+            with self.subTest(coordinate_header=coordinate_header):
+                columns, missing, _score = excel_importer.build_columns([
+                    "Клиент",
+                    "Тип оплаты",
+                    "Товары",
+                    "Кол-во ШТ",
+                    coordinate_header,
+                    "Создан",
+                    "Резерв",
+                ])
+
+                self.assertEqual(missing, [])
+                self.assertEqual(
+                    excel_importer.normalize_coordinates_from_row(
+                        ["Client", "Терминал", "Product", 20, "", "21.07.2026", "91.0,69.2"],
+                        columns,
+                    ),
+                    "",
+                )
+                self.assertEqual(
+                    excel_importer.normalize_coordinates_from_row(
+                        ["Client", "Терминал", "Product", 20, "91.0,69.2", "", ""],
+                        columns,
+                    ),
+                    "",
+                )
+
+        self.assertEqual(
+            excel_importer.normalize_coordinates("GPS: 41.311081,69.240562,15"),
+            "41.311081, 69.240562",
+        )
+        self.assertEqual(
+            excel_importer.normalize_coordinates(
+                "https://maps.google.com/?q=41.311081,69.240562"
+            ),
+            "41.311081, 69.240562",
+        )
+
     def test_all_processors_execute_with_constructor_injected_ports(self):
         telegram_calls = []
         backend_calls = []
@@ -3589,6 +3642,325 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertEqual(payload["rows"][0]["Координаты"], "41.325658539017745, 69.23166364431383")
         self.assertEqual(payload["meta"]["geocoded_count"], 1)
         self.assertEqual(payload["meta"]["geocode_failed_count"], 0)
+
+    def test_excel_file_to_import_payload_reads_exact_gps_client_coordinates_alias(self):
+        original_reverse_geocoder = excel_importer.reverse_geocode_yandex
+        calls = []
+        try:
+            def fake_reverse_geocoder(coordinates, cache=None):
+                calls.append(coordinates)
+                return "", "timeout"
+
+            excel_importer.reverse_geocode_yandex = fake_reverse_geocoder
+
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                path = Path(tmp_dir) / "gps_client_coordinates.xlsx"
+                workbook = openpyxl.Workbook()
+                sheet = workbook.active
+                sheet.title = "Заявки"
+                sheet.append([
+                    "Клиент",
+                    "Тип оплаты",
+                    "Товары",
+                    "Кол-во ШТ",
+                    "Адрес",
+                    "GPS-координаты клиента",
+                ])
+                sheet.append([
+                    "Delivery Client",
+                    "Терминал",
+                    "Chapman Brown OP 20",
+                    20,
+                    "Адрес не найден",
+                    "41.311081,69.240562",
+                ])
+                sheet.append([
+                    "Pickup Client",
+                    "Терминал",
+                    "Chapman Brown OP 20",
+                    20,
+                    "Самовывоз",
+                    "41.300000,69.200000",
+                ])
+                workbook.save(path)
+
+                payload = excel_importer.excel_file_to_import_payload(
+                    path,
+                    file_name=path.name,
+                    source="telegram",
+                    shipment_date="23.07.2026",
+                )
+        finally:
+            excel_importer.reverse_geocode_yandex = original_reverse_geocoder
+
+        self.assertEqual(calls, ["41.311081, 69.240562"])
+        self.assertEqual(payload["rows"][0]["Адрес"], "Координаты: 41.311081, 69.240562")
+        self.assertEqual(payload["rows"][0]["Координаты"], "41.311081, 69.240562")
+        self.assertEqual(payload["rows"][1]["Адрес"], "Самовывоз со склада")
+        self.assertEqual(payload["rows"][1]["Координаты"], "41.300000, 69.200000")
+        self.assertEqual(payload["meta"]["geocode_failed_count"], 1)
+
+    def test_excel_file_to_import_payload_infers_unique_coordinate_column_from_contents(self):
+        original_reverse_geocoder = excel_importer.reverse_geocode_yandex
+        calls = []
+        try:
+            def fake_reverse_geocoder(coordinates, cache=None):
+                calls.append(coordinates)
+                return f"Адрес {coordinates}", ""
+
+            excel_importer.reverse_geocode_yandex = fake_reverse_geocoder
+
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                path = Path(tmp_dir) / "content_coordinates.xlsx"
+                workbook = openpyxl.Workbook()
+                sheet = workbook.active
+                sheet.title = "Заявки"
+                sheet.append([
+                    "Клиент",
+                    "Тип оплаты",
+                    "Товары",
+                    "Кол-во ШТ",
+                    "Адрес",
+                    "GPS ID",
+                    "Создан",
+                    "Бюджет",
+                    "Телефон",
+                    "Точка на карте",
+                ])
+                sheet.append([
+                    "Delivery One",
+                    "Терминал",
+                    "Chapman Brown OP 20",
+                    20,
+                    "Адрес не найден",
+                    "WH-R-209244",
+                    "21.07.2026",
+                    480000,
+                    "+998 90 123 45 67",
+                    "41.311081,69.240562,15",
+                ])
+                sheet.append([
+                    "Delivery Two",
+                    "Терминал",
+                    "Chapman Brown OP 20",
+                    20,
+                    "Адрес не найден",
+                    "WH-R-209245",
+                    "22.07.2026",
+                    960000,
+                    "+998 91 765 43 21",
+                    "41,300000;69,200000;500",
+                ])
+                workbook.save(path)
+
+                payload = excel_importer.excel_file_to_import_payload(
+                    path,
+                    file_name=path.name,
+                    source="telegram",
+                    shipment_date="23.07.2026",
+                )
+        finally:
+            excel_importer.reverse_geocode_yandex = original_reverse_geocoder
+
+        self.assertEqual(calls, ["41.311081, 69.240562", "41.300000, 69.200000"])
+        self.assertEqual(
+            [row["Координаты"] for row in payload["rows"]],
+            ["41.311081, 69.240562", "41.300000, 69.200000"],
+        )
+
+    def test_content_inferred_coordinates_do_not_scan_adjacent_cells_and_validate_range(self):
+        original_reverse_geocoder = excel_importer.reverse_geocode_yandex
+        calls = []
+        try:
+            def fake_reverse_geocoder(coordinates, cache=None):
+                calls.append(coordinates)
+                return "", "timeout"
+
+            excel_importer.reverse_geocode_yandex = fake_reverse_geocoder
+
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                path = Path(tmp_dir) / "content_coordinates_with_gaps.xlsx"
+                workbook = openpyxl.Workbook()
+                sheet = workbook.active
+                sheet.title = "Заявки"
+                sheet.append([
+                    "Клиент",
+                    "Тип оплаты",
+                    "Товары",
+                    "Кол-во ШТ",
+                    "Адрес",
+                    "Точка на карте",
+                    "Соседняя ячейка 1",
+                    "Соседняя ячейка 2",
+                ])
+                rows = [
+                    ("Valid One", "41.311081,69.240562", "21.07.2026", "+998 90 123 45 67"),
+                    ("Blank Near Date", "", "21.07.2026", "+998 91 765 43 21"),
+                    ("Blank Near Number", "", 480000, "+998 93 111 22 33"),
+                    ("Invalid Latitude", "91.000000,69.200000", "22.07.2026", 960000),
+                    ("Valid Two", "41.300000,69.200000", "22.07.2026", "+998 94 444 55 66"),
+                    ("Valid Three", "41.320000,69.250000", "23.07.2026", 1_440_000),
+                    ("Valid Four", "41.330000,69.260000", "23.07.2026", "+998 95 777 88 99"),
+                ]
+                for client, coordinates, adjacent_one, adjacent_two in rows:
+                    sheet.append([
+                        client,
+                        "Терминал",
+                        "Chapman Brown OP 20",
+                        20,
+                        "Адрес не найден",
+                        coordinates,
+                        adjacent_one,
+                        adjacent_two,
+                    ])
+                workbook.save(path)
+
+                payload = excel_importer.excel_file_to_import_payload(
+                    path,
+                    file_name=path.name,
+                    source="telegram",
+                    shipment_date="23.07.2026",
+                )
+        finally:
+            excel_importer.reverse_geocode_yandex = original_reverse_geocoder
+
+        self.assertEqual(
+            [row["Координаты"] for row in payload["rows"]],
+            [
+                "41.311081, 69.240562",
+                "",
+                "",
+                "",
+                "41.300000, 69.200000",
+                "41.320000, 69.250000",
+                "41.330000, 69.260000",
+            ],
+        )
+        self.assertEqual(
+            calls,
+            [
+                "41.311081, 69.240562",
+                "41.300000, 69.200000",
+                "41.320000, 69.250000",
+                "41.330000, 69.260000",
+            ],
+        )
+
+    def test_excel_file_to_import_payload_does_not_infer_numeric_decoy_columns(self):
+        original_reverse_geocoder = excel_importer.reverse_geocode_yandex
+        calls = []
+        try:
+            excel_importer.reverse_geocode_yandex = (
+                lambda coordinates, cache=None: calls.append(coordinates)
+            )
+
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                path = Path(tmp_dir) / "numeric_decoys.xlsx"
+                workbook = openpyxl.Workbook()
+                sheet = workbook.active
+                sheet.title = "Заявки"
+                sheet.append([
+                    "Клиент",
+                    "Тип оплаты",
+                    "Товары",
+                    "Кол-во ШТ",
+                    "Адрес",
+                    "Номер маршрута",
+                    "Создан",
+                    "Бюджет",
+                    "Телефон",
+                    "Коэффициент",
+                ])
+                for suffix, created, budget, phone in (
+                    ("244", "21.07.2026", 480000, "+998 90 123 45 67"),
+                    ("245", "22.07.2026", 960000, "+998 91 765 43 21"),
+                ):
+                    sheet.append([
+                        f"Pickup {suffix}",
+                        "Терминал",
+                        "Chapman Brown OP 20",
+                        20,
+                        "Адрес не найден",
+                        f"WH-R-209{suffix}",
+                        created,
+                        budget,
+                        phone,
+                        "41,69",
+                    ])
+                workbook.save(path)
+
+                payload = excel_importer.excel_file_to_import_payload(
+                    path,
+                    file_name=path.name,
+                    source="telegram",
+                    shipment_date="23.07.2026",
+                )
+        finally:
+            excel_importer.reverse_geocode_yandex = original_reverse_geocoder
+
+        self.assertEqual(calls, [])
+        self.assertEqual([row["Координаты"] for row in payload["rows"]], ["", ""])
+        self.assertEqual(
+            [row["Адрес"] for row in payload["rows"]],
+            ["Самовывоз со склада"] * 2,
+        )
+
+    def test_excel_file_to_import_payload_fails_closed_on_ambiguous_coordinate_columns(self):
+        original_reverse_geocoder = excel_importer.reverse_geocode_yandex
+        calls = []
+        try:
+            excel_importer.reverse_geocode_yandex = (
+                lambda coordinates, cache=None: calls.append(coordinates)
+            )
+
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                path = Path(tmp_dir) / "ambiguous_coordinates.xlsx"
+                workbook = openpyxl.Workbook()
+                sheet = workbook.active
+                sheet.title = "Заявки"
+                sheet.append([
+                    "Клиент",
+                    "Тип оплаты",
+                    "Товары",
+                    "Кол-во ШТ",
+                    "Адрес",
+                    "Точка A",
+                    "Точка B",
+                ])
+                sheet.append([
+                    "Delivery One",
+                    "Терминал",
+                    "Chapman Brown OP 20",
+                    20,
+                    "Адрес не найден",
+                    "41.311081,69.240562",
+                    "41.320000,69.250000",
+                ])
+                sheet.append([
+                    "Delivery Two",
+                    "Терминал",
+                    "Chapman Brown OP 20",
+                    20,
+                    "Адрес не найден",
+                    "41.300000,69.200000",
+                    "41.330000,69.260000",
+                ])
+                workbook.save(path)
+
+                with self.assertRaisesRegex(
+                    excel_importer.AmbiguousCoordinateColumnsError,
+                    "^Неоднозначные координаты: найдено несколько подходящих колонок$",
+                ):
+                    excel_importer.excel_file_to_import_payload(
+                        path,
+                        file_name=path.name,
+                        source="telegram",
+                        shipment_date="23.07.2026",
+                    )
+        finally:
+            excel_importer.reverse_geocode_yandex = original_reverse_geocoder
+
+        self.assertEqual(calls, [])
 
     def test_excel_file_to_import_payload_combines_split_smartup_coordinates_without_full_column_header(self):
         original_reverse_geocoder = excel_importer.reverse_geocode_yandex

@@ -7,7 +7,12 @@ from .config import (
     STATUS_COLUMN,
     STATUS_NOT_COMPLETED,
 )
-from .excel_normalizer import detect_excel_source, get_source_cell, is_summary_row
+from .excel_normalizer import (
+    detect_excel_source,
+    get_source_cell,
+    is_summary_row,
+    parse_strict_coordinate_pair,
+)
 from .geocoding import reverse_geocode_yandex
 from .orders import make_order_id
 from .spreadsheet_safety import (
@@ -78,7 +83,16 @@ def normalize_coordinates(value):
     numbers = re.findall(r"-?\d+(?:[.,]\d+)?", text)
     if len(numbers) < 2:
         return ""
-    return f"{numbers[0].replace(',', '.')}, {numbers[1].replace(',', '.')}"
+    latitude_text = numbers[0].replace(",", ".")
+    longitude_text = numbers[1].replace(",", ".")
+    try:
+        latitude = float(latitude_text)
+        longitude = float(longitude_text)
+    except ValueError:
+        return ""
+    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+        return ""
+    return f"{latitude_text}, {longitude_text}"
 
 
 def normalize_split_coordinates(latitude_value, longitude_value):
@@ -94,6 +108,9 @@ def normalize_split_coordinates(latitude_value, longitude_value):
 def get_coordinates_from_row(row, columns):
     candidates = list(columns.get("coords_candidates") or [])
     primary = columns.get("coords")
+    if columns.get("coords_inferred_from_content"):
+        return parse_strict_coordinate_pair(get_source_cell(row, primary))
+
     if primary is not None and primary not in candidates:
         candidates.insert(0, primary)
 

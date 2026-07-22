@@ -14,6 +14,7 @@ from .spreadsheet_safety import load_safe_workbook, normalize_spreadsheet_filena
 
 
 MAX_HEADER_SCAN_ROWS = 40
+MAX_COORDINATE_INFERENCE_ROWS = 200
 SUPPORTED_EXCEL_EXTENSIONS = {".xlsx", ".xlsm"}
 SUMMARY_MARKERS = {"итого", "total", "grand total", "всего"}
 DATE_PATTERN = re.compile(r"(?<!\d)(\d{1,2})[._/-](\d{1,2})[._/-](\d{2,4})(?!\d)")
@@ -37,6 +38,24 @@ MISSING_ADDRESS_MARKERS = {
 }
 YANDEX_GEOCODER_ENV_VAR = "YANDEX_GEOCODER_API_KEY"
 YANDEX_GEOCODER_URL = "https://geocode-maps.yandex.ru/v1/"
+STRICT_COORDINATE_PAIR_PATTERN = re.compile(
+    r"""
+    ^\s*[\[(]?\s*
+    (?P<latitude>[+-]?\d{1,3}(?:[.,]\d+))
+    \s*(?:[,;|/]|\s)\s*
+    (?P<longitude>[+-]?\d{1,3}(?:[.,]\d+))
+    (?:\s*(?:[,;|/]|\s)\s*[+-]?\d+(?:[.,]\d+)?)?
+    \s*[\])]?\s*$
+    """,
+    re.VERBOSE,
+)
+COORDINATE_HEADER_MARKERS = ("координат", "геолокац", "latlon", "latlong")
+COORDINATE_HEADER_NEGATIVE_MARKERS = ("id", "код", "номер")
+COORDINATE_CONTENT_MIN_RATIO = 0.8
+COORDINATE_CONTENT_MIN_ROW_COVERAGE = 0.5
+AMBIGUOUS_COORDINATE_COLUMNS_MESSAGE = (
+    "Неоднозначные координаты: найдено несколько подходящих колонок"
+)
 
 
 class ExcelDateConflictError(ValueError):
@@ -47,6 +66,10 @@ class ExcelDateConflictError(ValueError):
             f"Дата отгрузки из Telegram ({telegram_date}) "
             f"не совпадает с датой в Excel ({excel_date})"
         )
+
+
+class AmbiguousCoordinateColumnsError(ValueError):
+    pass
 
 
 REQUIRED_ALIASES = {
@@ -109,6 +132,7 @@ OPTIONAL_ALIASES = {
     "coordinates": [
         "Координаты",
         "Координаты клиента",
+        "GPS-координаты клиента",
         "GPS",
         "Локация",
     ],
@@ -294,6 +318,15 @@ def build_columns(header):
     for key, aliases in OPTIONAL_ALIASES.items():
         columns[key] = find_column(header_index, aliases)
     columns["coordinates_candidates"] = find_columns(header_positions, OPTIONAL_ALIASES["coordinates"])
+    if columns["coordinates"] is None and not columns["coordinates_candidates"]:
+        semantic_candidates = [
+            index
+            for index, value in enumerate(header)
+            if is_coordinate_semantic_header(value)
+        ]
+        if len(semantic_candidates) == 1:
+            columns["coordinates"] = semantic_candidates[0]
+            columns["coordinates_candidates"] = semantic_candidates
     optional_found = sum(1 for key in OPTIONAL_ALIASES if columns.get(key) is not None)
     required_found = len(REQUIRED_ALIASES) - len(missing)
     return columns, missing, required_found * 10 + optional_found
@@ -365,6 +398,88 @@ def is_summary_row(row, columns):
     return key_values.count("итого") >= 2
 
 
+def parse_strict_coordinate_pair(value):
+    match = STRICT_COORDINATE_PAIR_PATTERN.fullmatch(normalize_text(value))
+    if not match:
+        return ""
+    try:
+        latitude = float(match.group("latitude").replace(",", "."))
+        longitude = float(match.group("longitude").replace(",", "."))
+    except ValueError:
+        return ""
+    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+        return ""
+    return f"{match.group('latitude').replace(',', '.')}, {match.group('longitude').replace(',', '.')}"
+
+
+def is_coordinate_semantic_header(value):
+    header = normalize_lookup_text(value)
+    if any(marker in header for marker in COORDINATE_HEADER_MARKERS):
+        return True
+    return "gps" in header and not any(
+        marker in header for marker in COORDINATE_HEADER_NEGATIVE_MARKERS
+    )
+
+
+def is_real_data_row(row, columns):
+    if not row_has_data(row) or is_summary_row(row, columns):
+        return False
+    return all(
+        get_cell(row, columns.get(key))
+        for key in ("client", "payment", "product", "quantity")
+    )
+
+
+def add_content_inferred_coordinate_column(columns, rows, header_row):
+    columns = dict(columns)
+    if columns.get("coordinates") is not None or columns.get("coordinates_candidates"):
+        return columns
+
+    data_rows = [
+        row
+        for row in rows[header_row:]
+        if is_real_data_row(row, columns)
+    ]
+    if not data_rows:
+        return columns
+
+    assigned_columns = {
+        index
+        for key, index in columns.items()
+        if key not in {"coordinates", "coordinates_candidates"} and isinstance(index, int)
+    }
+    max_columns = max((len(row) for row in data_rows), default=0)
+    minimum_matches = 1 if len(data_rows) == 1 else 2
+    high_confidence = []
+    for index in range(max_columns):
+        if index in assigned_columns:
+            continue
+        non_empty_values = [get_cell(row, index) for row in data_rows if get_cell(row, index)]
+        if not non_empty_values:
+            continue
+        match_count = sum(bool(parse_strict_coordinate_pair(value)) for value in non_empty_values)
+        match_ratio = match_count / len(non_empty_values)
+        row_coverage = match_count / len(data_rows)
+        if (
+            match_count >= minimum_matches
+            and match_ratio >= COORDINATE_CONTENT_MIN_RATIO
+            and row_coverage >= COORDINATE_CONTENT_MIN_ROW_COVERAGE
+        ):
+            high_confidence.append(index)
+
+    if not high_confidence:
+        return columns
+    if len(high_confidence) != 1:
+        raise AmbiguousCoordinateColumnsError(AMBIGUOUS_COORDINATE_COLUMNS_MESSAGE)
+
+    selected = high_confidence[0]
+
+    columns["coordinates"] = selected
+    columns["coordinates_candidates"] = [selected]
+    columns["coordinates_inferred_from_content"] = True
+    return columns
+
+
 def detect_excel_source(workbook, file_name):
     preferred_sheets = []
     if "Заявки" in workbook.sheetnames:
@@ -385,6 +500,18 @@ def detect_excel_source(workbook, file_name):
         if not detected:
             continue
         columns = add_context_columns(detected["columns"], preview_rows, detected["header_row"])
+        inference_last_row = min(
+            worksheet.max_row or detected["header_row"],
+            detected["header_row"] + MAX_COORDINATE_INFERENCE_ROWS,
+        )
+        inference_rows = list(
+            worksheet.iter_rows(min_row=1, max_row=inference_last_row, values_only=True)
+        )
+        columns = add_content_inferred_coordinate_column(
+            columns,
+            inference_rows,
+            detected["header_row"],
+        )
         default_date = default_date_from_file_name(file_name) or default_date_from_context(
             preview_rows,
             detected["header_row"],
@@ -433,6 +560,13 @@ def normalize_coordinates(value):
         return ""
     first = numbers[0].replace(",", ".")
     second = numbers[1].replace(",", ".")
+    try:
+        latitude = float(first)
+        longitude = float(second)
+    except ValueError:
+        return ""
+    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+        return ""
     return f"{first}, {second}"
 
 
@@ -463,6 +597,9 @@ def normalize_split_coordinates(latitude_value, longitude_value):
 def normalize_coordinates_from_row(row, columns):
     candidates = list(columns.get("coordinates_candidates") or [])
     primary = columns.get("coordinates")
+    if columns.get("coordinates_inferred_from_content"):
+        return parse_strict_coordinate_pair(get_cell(row, primary))
+
     if primary is not None and primary not in candidates:
         candidates.insert(0, primary)
 

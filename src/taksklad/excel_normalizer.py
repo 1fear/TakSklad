@@ -7,6 +7,7 @@ from .utils import clean_file_name, normalize_lookup_text, normalize_text, parse
 
 
 MAX_HEADER_SCAN_ROWS = 40
+MAX_COORDINATE_INFERENCE_ROWS = 200
 
 EXTRA_REQUIRED_ALIASES = {
     "client": [
@@ -53,6 +54,7 @@ EXTRA_OPTIONAL_ALIASES = {
     ],
     "coords": [
         "Координаты клиента",
+        "GPS-координаты клиента",
         "GPS",
         "Геолокация",
     ],
@@ -69,6 +71,28 @@ EXTRA_OPTIONAL_ALIASES = {
 
 SUMMARY_MARKERS = {"итого", "total", "grand total", "всего"}
 DATE_PATTERN = re.compile(r"(?<!\d)(\d{1,2})[._/-](\d{1,2})[._/-](\d{2,4})(?!\d)")
+STRICT_COORDINATE_PAIR_PATTERN = re.compile(
+    r"""
+    ^\s*[\[(]?\s*
+    (?P<latitude>[+-]?\d{1,3}(?:[.,]\d+))
+    \s*(?:[,;|/]|\s)\s*
+    (?P<longitude>[+-]?\d{1,3}(?:[.,]\d+))
+    (?:\s*(?:[,;|/]|\s)\s*[+-]?\d+(?:[.,]\d+)?)?
+    \s*[\])]?\s*$
+    """,
+    re.VERBOSE,
+)
+COORDINATE_HEADER_MARKERS = ("координат", "геолокац", "latlon", "latlong")
+COORDINATE_HEADER_NEGATIVE_MARKERS = ("id", "код", "номер")
+COORDINATE_CONTENT_MIN_RATIO = 0.8
+COORDINATE_CONTENT_MIN_ROW_COVERAGE = 0.5
+AMBIGUOUS_COORDINATE_COLUMNS_MESSAGE = (
+    "Неоднозначные координаты: найдено несколько подходящих колонок"
+)
+
+
+class AmbiguousCoordinateColumnsError(ValueError):
+    pass
 
 
 def merge_aliases(base_aliases, extra_aliases):
@@ -175,6 +199,15 @@ def build_source_columns(header):
         columns[key] = find_source_column(header_idx, aliases)
 
     columns["coords_candidates"] = find_source_columns(header_positions, NORMALIZER_OPTIONAL_ALIASES["coords"])
+    if columns["coords"] is None and not columns["coords_candidates"]:
+        semantic_candidates = [
+            index
+            for index, value in enumerate(header)
+            if is_coordinate_semantic_header(value)
+        ]
+        if len(semantic_candidates) == 1:
+            columns["coords"] = semantic_candidates[0]
+            columns["coords_candidates"] = semantic_candidates
     optional_found = sum(1 for key in NORMALIZER_OPTIONAL_ALIASES if columns.get(key) is not None)
     required_found = len(NORMALIZER_REQUIRED_ALIASES) - len(missing)
     score = required_found * 10 + optional_found
@@ -259,6 +292,92 @@ def is_summary_row(row, columns):
     return key_values.count("итого") >= 2
 
 
+def parse_strict_coordinate_pair(value):
+    match = STRICT_COORDINATE_PAIR_PATTERN.fullmatch(normalize_text(value))
+    if not match:
+        return ""
+    try:
+        latitude = float(match.group("latitude").replace(",", "."))
+        longitude = float(match.group("longitude").replace(",", "."))
+    except ValueError:
+        return ""
+    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+        return ""
+    return f"{match.group('latitude').replace(',', '.')}, {match.group('longitude').replace(',', '.')}"
+
+
+def is_coordinate_semantic_header(value):
+    header = normalize_lookup_text(value)
+    if any(marker in header for marker in COORDINATE_HEADER_MARKERS):
+        return True
+    return "gps" in header and not any(
+        marker in header for marker in COORDINATE_HEADER_NEGATIVE_MARKERS
+    )
+
+
+def is_real_data_row(row, columns):
+    if not row_has_data(row) or is_summary_row(row, columns):
+        return False
+    return all(
+        get_source_cell(row, columns.get(key))
+        for key in ("client", "payment", "product", "quantity")
+    )
+
+
+def add_content_inferred_coordinate_column(columns, rows, header_row):
+    columns = dict(columns)
+    if columns.get("coords") is not None or columns.get("coords_candidates"):
+        return columns
+
+    data_rows = [
+        row
+        for row in rows[header_row:]
+        if is_real_data_row(row, columns)
+    ]
+    if not data_rows:
+        return columns
+
+    assigned_columns = {
+        index
+        for key, index in columns.items()
+        if key not in {"coords", "coords_candidates"} and isinstance(index, int)
+    }
+    max_columns = max((len(row) for row in data_rows), default=0)
+    minimum_matches = 1 if len(data_rows) == 1 else 2
+    high_confidence = []
+    for index in range(max_columns):
+        if index in assigned_columns:
+            continue
+        non_empty_values = [
+            get_source_cell(row, index)
+            for row in data_rows
+            if get_source_cell(row, index)
+        ]
+        if not non_empty_values:
+            continue
+        match_count = sum(bool(parse_strict_coordinate_pair(value)) for value in non_empty_values)
+        match_ratio = match_count / len(non_empty_values)
+        row_coverage = match_count / len(data_rows)
+        if (
+            match_count >= minimum_matches
+            and match_ratio >= COORDINATE_CONTENT_MIN_RATIO
+            and row_coverage >= COORDINATE_CONTENT_MIN_ROW_COVERAGE
+        ):
+            high_confidence.append(index)
+
+    if not high_confidence:
+        return columns
+    if len(high_confidence) != 1:
+        raise AmbiguousCoordinateColumnsError(AMBIGUOUS_COORDINATE_COLUMNS_MESSAGE)
+
+    selected = high_confidence[0]
+
+    columns["coords"] = selected
+    columns["coords_candidates"] = [selected]
+    columns["coords_inferred_from_content"] = True
+    return columns
+
+
 def detect_excel_source(workbook, file_name):
     sheet_names = list(workbook.sheetnames)
     preferred_names = []
@@ -280,6 +399,18 @@ def detect_excel_source(workbook, file_name):
         if not detected:
             continue
         columns = add_context_columns(detected["columns"], preview_rows, detected["header_row"])
+        inference_last_row = min(
+            worksheet.max_row or detected["header_row"],
+            detected["header_row"] + MAX_COORDINATE_INFERENCE_ROWS,
+        )
+        inference_rows = list(
+            worksheet.iter_rows(min_row=1, max_row=inference_last_row, values_only=True)
+        )
+        columns = add_content_inferred_coordinate_column(
+            columns,
+            inference_rows,
+            detected["header_row"],
+        )
 
         default_date = extract_default_date_from_file_name(file_name)
         default_date_source = "file_name" if default_date else ""
