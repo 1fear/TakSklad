@@ -54,14 +54,17 @@ SKLADBOT_ID_FIELDS = ("ID заявки SkladBot", "skladbot_request_id")
 SMARTUP_AUTO_IMPORT_SOURCE = "smartup_auto"
 LINKED_SKLADBOT_SPLIT_REASON = "linked_skladbot_late_smartup_export"
 PICKUP_ADDRESS = "Самовывоз со склада"
+PICKUP_ADDRESS_MARKERS = {
+    "самовывоз",
+    "самовывоз со склада",
+}
 MISSING_ADDRESS_MARKERS = {
     "адрес не указан",
     "адрес не найден",
     "адреса не найдены",
     "адрес не определен",
     "адрес отсутствует",
-    "самовывоз",
-    "самовывоз со склада",
+    *PICKUP_ADDRESS_MARKERS,
     "нет",
     "n/a",
     "na",
@@ -892,15 +895,26 @@ def should_update_existing_order_address(order, row):
     if order is None:
         return False
     new_address = normalize_text(row.get("address"))
-    return is_real_address(new_address) and is_missing_address(order.address)
+    coordinates = normalize_text(row.get("coordinates"))
+    if is_pickup_address(new_address):
+        return False
+    if not (is_real_address(new_address) or coordinates):
+        return False
+    if not is_missing_address(order.address):
+        return False
+    raw_payload = order.raw_payload or {}
+    return (
+        normalize_lookup_text(new_address) != normalize_lookup_text(order.address)
+        or coordinates != normalize_text(raw_payload.get("coordinates"))
+    )
 
 
 def normalize_import_row(raw_row):
     order_date = parse_date_value(first_value(raw_row, ORDER_DATE_FIELDS))
     payment_type = first_value(raw_row, PAYMENT_FIELDS)
     client = first_value(raw_row, CLIENT_FIELDS)
-    address = normalize_import_address(first_value(raw_row, ADDRESS_FIELDS))
     coordinates = first_value(raw_row, COORDINATES_FIELDS)
+    address = normalize_import_address(first_value(raw_row, ADDRESS_FIELDS), coordinates)
     representative = first_value(raw_row, REPRESENTATIVE_FIELDS) or None
     product = first_value(raw_row, PRODUCT_FIELDS)
     quantity_pieces = parse_int(first_value(raw_row, QUANTITY_PIECES_FIELDS))
@@ -1018,9 +1032,18 @@ def is_real_address(value):
     return bool(text and not is_missing_address(text))
 
 
-def normalize_import_address(value):
+def is_pickup_address(value):
+    return normalize_lookup_text(value) in PICKUP_ADDRESS_MARKERS
+
+
+def normalize_import_address(value, coordinates=""):
     text = normalize_text(value)
-    return text if is_real_address(text) else PICKUP_ADDRESS
+    if is_pickup_address(text):
+        return PICKUP_ADDRESS
+    if is_real_address(text):
+        return text
+    coordinates = normalize_text(coordinates)
+    return f"Координаты: {coordinates}" if coordinates else PICKUP_ADDRESS
 
 
 def parse_int(value):
