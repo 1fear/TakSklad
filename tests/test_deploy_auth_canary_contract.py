@@ -182,6 +182,8 @@ COMPOSE_WAIT_TIMEOUT_SECONDS=1
 HEALTH_URL=health
 READY_URL=ready
 WRITER_SERVICES=(legacy worker)
+RECOVERY_RUNTIME_SERVICES=(backend-api frontend legacy)
+DAILY_REPORT_RECOVERY_ENABLED=0
 docker() {{
   if [[ "$1" == pull ]]; then
     [[ "$FAIL_STAGE" != backend_pull || "$2" != backend@* ]] || return 1

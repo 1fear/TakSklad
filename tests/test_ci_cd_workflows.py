@@ -590,7 +590,7 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn("./deploy/vds/backup_postgres.sh --no-prune", script)
         self.assertIn("alembic -c alembic.ini upgrade head", script)
         self.assertIn("--no-build --pull never", script)
-        self.assertEqual(script.count("compose up -d --no-deps --no-build"), 2)
+        self.assertEqual(script.count("compose up -d --no-deps --no-build"), 5)
         self.assertIn("tools/validate_deploy_probe.py", script)
         self.assertIn('--expected-sha "$RELEASE_SOURCE_SHA"', script)
         self.assertIn('--expected-digest "$RELEASE_BACKEND_DIGEST"', script)
