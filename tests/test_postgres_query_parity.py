@@ -10,6 +10,7 @@ from backend.app.event_queue_service import list_event_queue_diagnostics
 from backend.app.models import ImportJob, Order, OrderItem, PendingEvent, ScanCode
 from backend.app.orders_service import list_active_orders, list_active_orders_page
 from backend.app.reports_service import build_dashboard_day_summary, build_day_report
+from backend.app.skladbot_daily_kiz import enrich_daily_kiz_from_orders
 from tests.postgres_support import create_database, drop_database, run_alembic
 
 
@@ -300,6 +301,60 @@ class PostgresQueryParityTests(unittest.TestCase):
         self.assertEqual(day.totals.total_price, 450)
         self.assertEqual(dashboard.totals.orders, 2)
         self.assertEqual(dashboard.totals.items, 3)
+
+    def test_combined_daily_kiz_query_uses_postgres_json_and_tashkent_business_date(self):
+        with self.SessionLocal() as db:
+            order = Order(
+                source="synthetic_daily_kiz",
+                order_date=date(2026, 6, 2),
+                payment_type="Терминал",
+                client="Synthetic Daily KIZ",
+                address="Synthetic Address",
+                status="completed",
+                raw_payload={
+                    "skladbot_request_id": "101",
+                    "skladbot_request_number": "WH-R-101",
+                },
+            )
+            order.items = [OrderItem(
+                product="Synthetic Daily KIZ Product",
+                quantity_pieces=10,
+                quantity_blocks=1,
+                scanned_blocks=1,
+                status="completed",
+                raw_payload={
+                    "skladbot_request_id": "101",
+                    "skladbot_request_number": "WH-R-101",
+                },
+            )]
+            db.add(order)
+            db.flush()
+            db.add(ScanCode(
+                order_item_id=order.items[0].id,
+                code="SYNTHETIC-DAILY-KIZ-PG",
+                scanned_at=datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc),
+                raw_payload={"scanned_at": "2026-06-01T19:00:00Z"},
+            ))
+            db.commit()
+
+            report = {
+                "report_date": date(2026, 6, 2),
+                "requests": [{
+                    "id": 101,
+                    "number": "WH-R-101",
+                    "smartup_id": "",
+                    "unloading_date": "02.06.2026",
+                }],
+            }
+            enrich_daily_kiz_from_orders(db, report)
+
+        self.assertEqual(report["requests"][0]["kiz_count"], 1)
+        self.assertEqual(len(report["request_kiz_rows"]), 1)
+        self.assertEqual(len(report["daily_kiz_rows"]), 1)
+        self.assertEqual(
+            report["daily_kiz_rows"][0]["scanned_at"],
+            "2026-06-02T00:00:00+05:00",
+        )
 
     def test_active_first_page_query_count_is_constant_at_ten_x_history(self):
         def measure():

@@ -52,6 +52,7 @@ class FakeSender:
         self.prepare_calls = []
         self.reconciliation_calls = []
         self.raise_after_message_started = False
+        self.change_claim_state_after_send = False
         self.result = True
         self.no_requests_combined_empty = True
         self.prepared = {
@@ -133,6 +134,15 @@ class FakeSender:
         self.send_document_count += 1
         progress("telegram sendDocument success")
         progress("reported mark success", reported_count=1)
+        if self.change_claim_state_after_send:
+            with self.session_factory() as db:
+                event = db.execute(
+                    select(PendingEvent).where(
+                        PendingEvent.event_type == SKLADBOT_DAILY_REPORT_SEND_EVENT_TYPE
+                    )
+                ).scalar_one()
+                event.status = "blocked"
+                db.commit()
         return self.result
 
     def prepare_skladbot_daily_report(self, report_date=None, progress=None, **_kwargs):
@@ -318,6 +328,20 @@ class ManualDailyCatchupTests(unittest.TestCase):
         self.assertEqual(event.payload["origin_stage"], "telegram sendMessage started")
         self.assertNotIn("very-secret", event.last_error or "")
         self.assertIs(event.payload["reconciliation_started"], False)
+
+    def test_success_is_not_reported_when_durable_completion_cannot_be_saved(self):
+        sender = FakeSender(self.session_factory)
+        sender.change_claim_state_after_send = True
+
+        first = run_manual_daily_catchup(sender, CHAT_ID, REPORT_DATE)
+        sender.change_claim_state_after_send = False
+        second = run_manual_daily_catchup(sender, CHAT_ID, REPORT_DATE)
+
+        self.assertEqual(first["status"], "manual_recovery_required")
+        self.assertIs(first["sent"], True)
+        self.assertEqual(second["status"], "ambiguous_delivery_exists")
+        self.assertEqual(sender.send_message_count, 1)
+        self.assertEqual(sender.send_document_count, 1)
 
     def test_no_requests_requires_explicit_combined_empty_proof(self):
         sender = FakeSender(self.session_factory)

@@ -211,13 +211,20 @@ def run_manual_daily_catchup(sender: Any, chat_id: str, report_date: date) -> di
                 "sent": False,
                 **_public_progress_counts(progress_state),
             }
-        _finish_manual_daily_catchup(
+        if not _finish_manual_daily_catchup(
             sender,
             event_id,
             result_status=SKLADBOT_DAILY_REPORT_NO_REQUESTS_RESULT,
             sent=False,
             registry_marked=False,
-        )
+        ):
+            return {
+                "status": "manual_recovery_required",
+                "event_id": event_id,
+                "report_date": report_date.isoformat(),
+                "sent": False,
+                **_public_progress_counts(progress_state),
+            }
         return {
             "status": SKLADBOT_DAILY_REPORT_NO_REQUESTS_RESULT,
             "event_id": event_id,
@@ -247,13 +254,20 @@ def run_manual_daily_catchup(sender: Any, chat_id: str, report_date: date) -> di
             **_public_progress_counts(progress_state),
         }
 
-    _finish_manual_daily_catchup(
+    if not _finish_manual_daily_catchup(
         sender,
         event_id,
         result_status=MANUAL_DAILY_CATCHUP_SUCCESS,
         sent=True,
         registry_marked=progress_state["reported_count"] > 0,
-    )
+    ):
+        return {
+            "status": "manual_recovery_required",
+            "event_id": event_id,
+            "report_date": report_date.isoformat(),
+            "sent": True,
+            **_public_progress_counts(progress_state),
+        }
     return {
         "status": MANUAL_DAILY_CATCHUP_SUCCESS,
         "event_id": event_id,
@@ -270,12 +284,12 @@ def _finish_manual_daily_catchup(
     result_status: str,
     sent: bool,
     registry_marked: bool,
-) -> None:
+) -> bool:
     now = datetime.now(timezone.utc)
     with sender._scheduled_session_factory()() as db:
         event = db.get(PendingEvent, uuid.UUID(str(event_id)))
         if event is None or normalize_text(event.status) != "processing":
-            return
+            return False
         payload = dict(event.payload or {})
         payload.update({
             "stage": "manual catchup completed",
@@ -301,6 +315,7 @@ def _finish_manual_daily_catchup(
             },
         ))
         db.commit()
+        return True
 
 
 def _block_manual_daily_catchup(sender: Any, event_id: str, error: Any) -> None:
