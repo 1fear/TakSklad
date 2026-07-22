@@ -12,6 +12,18 @@ on:
       manifest_sha256:
         description: Expected SHA256 of the attested server-release.json
         required: true
+      daily_report_recovery_date_1:
+        description: First missed daily report date (YYYY-MM-DD); leave empty for a normal deploy
+        required: false
+        default: ""
+      daily_report_recovery_date_2:
+        description: Second missed daily report date (YYYY-MM-DD); leave empty for a normal deploy
+        required: false
+        default: ""
+      daily_report_recovery_approval:
+        description: Exact approval phrase for two irreversible catch-up sends; leave empty for a normal deploy
+        required: false
+        default: ""
 
 permissions:
   actions: read
@@ -37,9 +49,45 @@ jobs:
           EXPECTED_MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
           EXPECTED_SOURCE_SHA: ${{ inputs.source_sha }}
           WORKFLOW_CONTROL_REF: ${{ github.ref }}
+          DAILY_REPORT_RECOVERY_DATE_1_INPUT: ${{ inputs.daily_report_recovery_date_1 }}
+          DAILY_REPORT_RECOVERY_DATE_2_INPUT: ${{ inputs.daily_report_recovery_date_2 }}
+          DAILY_REPORT_RECOVERY_APPROVAL_INPUT: ${{ inputs.daily_report_recovery_approval }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          if [[ -z "$DAILY_REPORT_RECOVERY_DATE_1_INPUT" && \
+                -z "$DAILY_REPORT_RECOVERY_DATE_2_INPUT" && \
+                -z "$DAILY_REPORT_RECOVERY_APPROVAL_INPUT" ]]; then
+            printf 'DAILY_REPORT_RECOVERY_ENABLED=0\n' >> "$GITHUB_ENV"
+          else
+            [[ "$DAILY_REPORT_RECOVERY_APPROVAL_INPUT" == "SEND_EXACTLY_TWO_DAILY_REPORT_CATCHUPS" ]] || {
+              echo "EXACT_DAILY_REPORT_RECOVERY_APPROVAL_REQUIRED" >&2
+              exit 1
+            }
+            python3 - "$DAILY_REPORT_RECOVERY_DATE_1_INPUT" "$DAILY_REPORT_RECOVERY_DATE_2_INPUT" <<'PY'
+          import sys
+          from datetime import date, datetime
+          from zoneinfo import ZoneInfo
+
+          raw = sys.argv[1:]
+          try:
+              parsed = [date.fromisoformat(value) for value in raw]
+          except ValueError:
+              raise SystemExit("DAILY_REPORT_RECOVERY_ISO_DATES_REQUIRED")
+          if len(parsed) != 2 or [value.isoformat() for value in parsed] != raw:
+              raise SystemExit("EXACTLY_TWO_DAILY_REPORT_RECOVERY_DATES_REQUIRED")
+          if parsed[0] >= parsed[1]:
+              raise SystemExit("SORTED_DISTINCT_DAILY_REPORT_RECOVERY_DATES_REQUIRED")
+          if any(value >= datetime.now(ZoneInfo("Asia/Tashkent")).date() for value in parsed):
+              raise SystemExit("PAST_DAILY_REPORT_RECOVERY_DATES_REQUIRED")
+          PY
+            {
+              printf 'DAILY_REPORT_RECOVERY_ENABLED=1\n'
+              printf 'DAILY_REPORT_RECOVERY_DATE_1=%s\n' "$DAILY_REPORT_RECOVERY_DATE_1_INPUT"
+              printf 'DAILY_REPORT_RECOVERY_DATE_2=%s\n' "$DAILY_REPORT_RECOVERY_DATE_2_INPUT"
+              printf 'DAILY_REPORT_RECOVERY_APPROVAL=%s\n' "$DAILY_REPORT_RECOVERY_APPROVAL_INPUT"
+            } >> "$GITHUB_ENV"
+          fi
           [[ "$ARTIFACT_RUN_ID" =~ ^[1-9][0-9]*$ ]] || {
             echo "IMMUTABLE_ARTIFACT_RUN_ID_REQUIRED" >&2
             exit 1
@@ -301,6 +349,10 @@ jobs:
           GHCR_USER: ${{ github.actor }}
           PRODUCTION_APPROVAL: READY_FOR_PRODUCTION_DEPLOY
           TELEGRAM_ROUTING_IDENTITY_ANCHOR_SHA256: ${{ secrets.TELEGRAM_ROUTING_IDENTITY_ANCHOR_SHA256 }}
+          DAILY_REPORT_RECOVERY_ENABLED: ${{ env.DAILY_REPORT_RECOVERY_ENABLED }}
+          DAILY_REPORT_RECOVERY_DATE_1: ${{ env.DAILY_REPORT_RECOVERY_DATE_1 }}
+          DAILY_REPORT_RECOVERY_DATE_2: ${{ env.DAILY_REPORT_RECOVERY_DATE_2 }}
+          DAILY_REPORT_RECOVERY_APPROVAL: ${{ env.DAILY_REPORT_RECOVERY_APPROVAL }}
         run: |
           set -euo pipefail
           app_dir="${VDS_APP_DIR:-/opt/stacks/taksklad/app}"
@@ -327,6 +379,10 @@ jobs:
           export TAKSKLAD_DEPLOY_ACCEPTANCE=required
           export TAKSKLAD_PRODUCTION_APPROVAL=$(printf '%q' "$PRODUCTION_APPROVAL")
           export TAKSKLAD_TELEGRAM_ROUTING_IDENTITY_ANCHOR_SHA256=$(printf '%q' "$TELEGRAM_ROUTING_IDENTITY_ANCHOR_SHA256")
+          export DAILY_REPORT_RECOVERY_ENABLED=$(printf '%q' "$DAILY_REPORT_RECOVERY_ENABLED")
+          export DAILY_REPORT_RECOVERY_DATE_1=$(printf '%q' "${DAILY_REPORT_RECOVERY_DATE_1:-}")
+          export DAILY_REPORT_RECOVERY_DATE_2=$(printf '%q' "${DAILY_REPORT_RECOVERY_DATE_2:-}")
+          export DAILY_REPORT_RECOVERY_APPROVAL=$(printf '%q' "${DAILY_REPORT_RECOVERY_APPROVAL:-}")
           export DOCKER_CONFIG=$(printf '%q' "$remote_docker_config")
           cd "\$app_dir"
           export PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.
@@ -405,7 +461,58 @@ jobs:
             < tools/telegram_import_auth_recovery.py > "\$recovery_inspection"
           recovery_inspection_status="\$?"
           set -e
-          if test "\$recovery_inspection_status" = 0; then
+          if test "\$DAILY_REPORT_RECOVERY_ENABLED" = 1; then
+            test "\$DAILY_REPORT_RECOVERY_APPROVAL" = SEND_EXACTLY_TWO_DAILY_REPORT_CATCHUPS
+            recovery_state=.release-state/daily-report-recovery
+            test ! -L "\$recovery_state"
+            install -d -m 700 "\$recovery_state"
+            recovery_database="\$recovery_state/database.json"
+            recovery_dry_run_1="\$recovery_state/dry-run-1.json"
+            recovery_dry_run_2="\$recovery_state/dry-run-2.json"
+            for recovery_path in \
+              "\$recovery_database" "\$recovery_dry_run_1" "\$recovery_dry_run_2"; do
+              test ! -L "\$recovery_path"
+              install -m 600 /dev/null "\$recovery_path"
+            done
+            recovery_date_args=(
+              --report-date "\$DAILY_REPORT_RECOVERY_DATE_1"
+              --report-date "\$DAILY_REPORT_RECOVERY_DATE_2"
+            )
+            if ! docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml \
+              run --rm --no-deps --pull never telegram-worker \
+              python -m app.telegram_manual_daily_catchup \
+                --report-date "\$DAILY_REPORT_RECOVERY_DATE_1" --dry-run \
+                > "\$recovery_dry_run_1" 2>/dev/null; then
+              echo "FIRST_CANDIDATE_DAILY_REPORT_DRY_RUN_BLOCKED" >&2
+              exit 1
+            fi
+            if ! docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml \
+              run --rm --no-deps --pull never telegram-worker \
+              python -m app.telegram_manual_daily_catchup \
+                --report-date "\$DAILY_REPORT_RECOVERY_DATE_2" --dry-run \
+                > "\$recovery_dry_run_2" 2>/dev/null; then
+              echo "SECOND_CANDIDATE_DAILY_REPORT_DRY_RUN_BLOCKED" >&2
+              exit 1
+            fi
+            if ! docker exec -i "\$preflight_backend_id" python - inspect \
+              "\${recovery_date_args[@]}" \
+              < tools/verify_daily_report_recovery_preflight.py \
+              > "\$recovery_database" 2>/dev/null; then
+              echo "CURRENT_DAILY_REPORT_RECOVERY_DATABASE_INSPECTION_BLOCKED" >&2
+              exit 1
+            fi
+            python3 tools/verify_daily_report_recovery_preflight.py verify \
+              "\${recovery_date_args[@]}" \
+              --ready-json .release-state/current-ready.json \
+              --database-json "\$recovery_database" \
+              --dry-run-json "\$recovery_dry_run_1" \
+              --dry-run-json "\$recovery_dry_run_2" >/dev/null
+            ./tools/production_preflight.sh \
+              --manifest server-release.json \
+              --evidence .release-state/server-production-preflight.json \
+              --read-only --require-current-backup </dev/null
+            echo "DAILY_REPORT_RECOVERY_PREFLIGHT_OK dates=2 dry_runs=2 values_redacted=1"
+          elif test "\$recovery_inspection_status" = 0; then
             recovery_event_id="\$(python3 - "\$recovery_inspection" <<'PY'
           import json
           import re
@@ -457,10 +564,18 @@ jobs:
             fi
             rm -f "\$current_compose_ps"
           fi
-          rm -f .release-state/current-ready.json
+          rm -f .release-state/current-ready.json "\$recovery_inspection"
 
+          deploy_recovery_args=()
+          if test "\$DAILY_REPORT_RECOVERY_ENABLED" = 1; then
+            deploy_recovery_args=(
+              --daily-report-recovery-date "\$DAILY_REPORT_RECOVERY_DATE_1"
+              --daily-report-recovery-date "\$DAILY_REPORT_RECOVERY_DATE_2"
+              --daily-report-recovery-approval "\$DAILY_REPORT_RECOVERY_APPROVAL"
+            )
+          fi
           ./deploy/vds/deploy_from_git.sh --artifact-manifest server-release.json \
-            --acceptance required --wait </dev/null
+            --acceptance required --wait "\${deploy_recovery_args[@]}" </dev/null
           python3 tools/collect_phase27_evidence.py live \
             --manifest server-release.json \
             --output .release-state/server-live-release-verification.json </dev/null

@@ -90,10 +90,6 @@ def daily_report_caption(report_date: Any) -> str:
     return f"SkladBot отчет за {_display_date(report_date)}"
 
 
-def kiz_daily_report_caption(report_date: Any) -> str:
-    return f"Коды маркировки {_display_date(report_date)}"
-
-
 def transfer_kiz_export_caption(source_file: Any) -> str:
     return f"Коды маркировки по файлу: {_text(source_file)}"
 
@@ -145,7 +141,6 @@ def runtime_output_artifacts() -> dict[str, dict[str, str]]:
             "message": build_skladbot_daily_report_message(daily_report),
             "caption": daily_report_caption(sample_date),
             "filename": daily_report_filename(sample_date),
-            "kiz_caption": kiz_daily_report_caption(sample_date),
         },
         "transfer_kiz_export": {
             "caption": transfer_kiz_export_caption("transfer_kiz_export.xlsx"),

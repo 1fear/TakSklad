@@ -18,16 +18,28 @@ from backend.app.health_service import (
     build_readiness_report,
     readiness_http_status,
 )
-from backend.app.models import AuditLog, Base, Order, OrderItem, PendingEvent
+from backend.app.models import (
+    AuditLog,
+    Base,
+    KizCode,
+    KizMovement,
+    Order,
+    OrderItem,
+    PendingEvent,
+    ScanCode,
+)
 from backend.app.skladbot_daily_report import (
+    DAILY_KIZ_HEADERS,
     DEFAULT_DAILY_REPORT_MAX_PAGES,
     REQUEST_HEADERS,
+    REQUEST_KIZ_HEADERS,
     REQUEST_PRODUCT_HEADERS,
     SkladBotReadOnlyClient,
     build_skladbot_daily_report_message,
     build_skladbot_daily_report_xlsx,
     categorize_request_type,
     collect_skladbot_daily_report,
+    enrich_daily_kiz_from_orders,
     enrich_smartup_ids_from_orders,
     product_breakdown_for_summary,
     read_style_post,
@@ -1058,6 +1070,49 @@ class July7MissingTransferBatchClient(FakeSkladBotDailyReportClient):
 
 
 class SkladBotDailyReportTests(unittest.TestCase):
+    def add_kiz_order(
+        self,
+        db,
+        *,
+        request_id,
+        request_number,
+        payment_type="Терминал",
+        code="",
+        scanned_at=None,
+        scan_raw_payload=None,
+        product="Synthetic product",
+    ):
+        order = Order(
+            payment_type=payment_type,
+            client=f"Synthetic client {request_id}",
+            address="Synthetic address",
+            raw_payload={
+                "skladbot_request_id": str(request_id),
+                "skladbot_request_number": request_number,
+            },
+        )
+        item = OrderItem(
+            product=product,
+            quantity_pieces=10,
+            quantity_blocks=1,
+            scanned_blocks=1 if code else 0,
+            raw_payload={},
+        )
+        order.items.append(item)
+        db.add(order)
+        db.flush()
+        scan = None
+        if code:
+            scan = ScanCode(
+                order_item_id=item.id,
+                code=code,
+                scanned_at=scanned_at or datetime(2026, 6, 20, 12, 0, tzinfo=timezone.utc),
+                raw_payload=dict(scan_raw_payload or {}),
+            )
+            db.add(scan)
+            db.flush()
+        return order, item, scan
+
     def test_daily_delivery_readiness_detects_missing_event_after_grace(self):
         engine = create_engine(
             "sqlite+pysqlite:///:memory:",
@@ -1259,6 +1314,8 @@ class SkladBotDailyReportTests(unittest.TestCase):
             "Сводка",
             "Заявки",
             "Товары заявок",
+            "КИЗы заявок",
+            "КИЗы за день",
         ])
 
         summary_sheet = workbook["Сводка"]
@@ -1297,6 +1354,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(request_by_number["WH-R-101"]["Раб зона"], "Юнусабад")
         self.assertEqual(request_by_number["WH-R-101"]["Блоков план"], 4)
         self.assertEqual(request_by_number["WH-R-101"]["Блоков факт"], 4)
+        self.assertIsNone(request_by_number["WH-R-101"]["КИЗов"])
         self.assertEqual(request_by_number["WH-R-101"]["Отклонение"], 0)
         self.assertEqual(request_by_number["WH-R-303"]["Торговый представитель"], None)
         self.assertIsNone(request_by_number["WH-R-303"]["Smartup ID"])
@@ -1397,6 +1455,395 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(REQUEST_HEADERS.count("Smartup ID"), 1)
         self.assertEqual(REQUEST_PRODUCT_HEADERS.count("Smartup ID"), 1)
         self.assertNotIn("ID заявки Smartup", REQUEST_HEADERS)
+
+    def test_daily_kiz_hydration_builds_exact_combined_workbook_and_keeps_blank_vs_zero(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(bind=engine)
+        with SessionLocal() as db:
+            self.add_kiz_order(
+                db,
+                request_id=910,
+                request_number="WH-R-910",
+                code="=SYNTHETIC-KIZ",
+                scanned_at=datetime(2026, 6, 19, 12, 0, tzinfo=timezone.utc),
+                scan_raw_payload={
+                    "scanned_at": "2026-06-19T20:30:00+00:00",
+                    "scan_type": "aggregate_box",
+                    "block_quantity": 50,
+                },
+            )
+            self.add_kiz_order(
+                db,
+                request_id=911,
+                request_number="WH-R-911",
+                payment_type="Перечисление",
+            )
+            self.add_kiz_order(
+                db,
+                request_id=912,
+                request_number="WH-R-912",
+                payment_type="Перечисление",
+                code="TRANSFER-KIZ",
+                scanned_at=datetime(2026, 6, 20, 10, 0, tzinfo=timezone.utc),
+            )
+            self.add_kiz_order(
+                db,
+                request_id=913,
+                request_number="WH-R-913",
+                code="UNMAPPED-DAY-KIZ",
+                scanned_at=datetime(2026, 6, 20, 11, 0, tzinfo=timezone.utc),
+            )
+            db.commit()
+            report = {
+                "report_date": date(2026, 6, 20),
+                "requests": [
+                    {
+                        "id": 910,
+                        "number": "WH-R-910",
+                        "smartup_id": "731",
+                        "unloading_date": "2026-06-20",
+                        "products": [],
+                    },
+                    {"id": 911, "number": "WH-R-911", "products": []},
+                    {"id": 912, "number": "WH-R-912", "products": []},
+                    {"id": 999, "number": "WH-R-UNMAPPED", "products": []},
+                ],
+                "summary": {"category_counts": {}, "request_blocks_by_category": {}, "stock_total": 0},
+            }
+
+            enrich_daily_kiz_from_orders(db, report)
+
+        self.assertEqual([row["kiz_count"] for row in report["requests"]], [1, 0, 1, None])
+        self.assertEqual(len(report["request_kiz_rows"]), 2)
+        self.assertEqual(len(report["daily_kiz_rows"]), 2)
+        row = next(value for value in report["daily_kiz_rows"] if value["code"] == "=SYNTHETIC-KIZ")
+        self.assertEqual(row["code"], "=SYNTHETIC-KIZ")
+        self.assertEqual(row["request_number"], "WH-R-910")
+        self.assertEqual(row["request_id"], "910")
+        self.assertEqual(row["smartup_id"], "731")
+        self.assertEqual(row["unloading_date"], "2026-06-20")
+        self.assertEqual(row["payment_type"], "Терминал")
+        self.assertEqual(row["scan_type"], "aggregate_box")
+        self.assertEqual(row["block_quantity"], 50)
+        self.assertTrue(row["scanned_at"].startswith("2026-06-20T01:30:00"))
+        self.assertNotIn("TRANSFER-KIZ", {value["code"] for value in report["daily_kiz_rows"]})
+        unmapped_day = next(value for value in report["daily_kiz_rows"] if value["code"] == "UNMAPPED-DAY-KIZ")
+        self.assertEqual(
+            [unmapped_day[key] for key in ("request_number", "request_id", "smartup_id", "unloading_date")],
+            ["", "", "", ""],
+        )
+        self.assertEqual(unmapped_day["payment_type"], "Терминал")
+
+        content, _filename = build_skladbot_daily_report_xlsx(report)
+        workbook = openpyxl.load_workbook(BytesIO(content), data_only=False)
+        self.assertEqual(workbook.sheetnames, [
+            "Сводка", "Заявки", "Товары заявок", "КИЗы заявок", "КИЗы за день",
+        ])
+        self.assertEqual([cell.value for cell in workbook["КИЗы заявок"][1]], REQUEST_KIZ_HEADERS)
+        self.assertEqual([cell.value for cell in workbook["КИЗы за день"][1]], DAILY_KIZ_HEADERS)
+        self.assertEqual(REQUEST_KIZ_HEADERS, [
+            "Номер", "ID заявки", "Smartup ID", "Дата выгрузки", "Тип оплаты",
+            "Товар", "КИЗ", "Время скана", "Тип скана", "Блоков по коду",
+        ])
+        self.assertEqual(DAILY_KIZ_HEADERS, REQUEST_KIZ_HEADERS)
+        self.assertEqual(REQUEST_HEADERS[REQUEST_HEADERS.index("Блоков факт") + 1], "КИЗов")
+        request_rows = worksheet_rows_by_header(workbook["Заявки"])
+        self.assertEqual([row["КИЗов"] for row in request_rows], [1, 0, 1, None])
+        self.assertEqual(workbook["КИЗы заявок"]["G2"].value, "=SYNTHETIC-KIZ")
+        self.assertEqual(workbook["КИЗы заявок"]["G2"].data_type, "s")
+
+    def test_daily_kiz_lifecycle_excludes_returned_and_keeps_legacy_scan(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(bind=engine)
+        with SessionLocal() as db:
+            order, item, returned_scan = self.add_kiz_order(
+                db,
+                request_id=920,
+                request_number="WH-R-920",
+                code="RETURNED-KIZ",
+                scanned_at=datetime(2026, 6, 20, 8, 0, tzinfo=timezone.utc),
+            )
+            legacy_scan = ScanCode(
+                order_item_id=item.id,
+                code="LEGACY-KIZ",
+                scanned_at=datetime(2026, 6, 20, 9, 0, tzinfo=timezone.utc),
+                raw_payload={"block_quantity": 1},
+            )
+            registry = KizCode(code="RETURNED-KIZ")
+            db.add_all([legacy_scan, registry])
+            db.flush()
+            db.add_all([
+                KizMovement(
+                    kiz_id=registry.id,
+                    movement_type="outbound",
+                    order_id=order.id,
+                    order_item_id=item.id,
+                    scan_code_id=returned_scan.id,
+                    occurred_at=datetime(2026, 6, 20, 8, 1, tzinfo=timezone.utc),
+                    raw_payload={},
+                ),
+                KizMovement(
+                    kiz_id=registry.id,
+                    movement_type="return",
+                    order_id=order.id,
+                    order_item_id=item.id,
+                    scan_code_id=returned_scan.id,
+                    occurred_at=datetime(2026, 6, 20, 10, 0, tzinfo=timezone.utc),
+                    raw_payload={},
+                ),
+            ])
+            db.commit()
+            report = {
+                "report_date": date(2026, 6, 20),
+                "requests": [{"id": 920, "number": "WH-R-920"}],
+            }
+
+            enrich_daily_kiz_from_orders(db, report)
+
+        self.assertEqual(report["requests"][0]["kiz_count"], 1)
+        self.assertEqual([row["code"] for row in report["request_kiz_rows"]], ["LEGACY-KIZ"])
+        self.assertEqual([row["code"] for row in report["daily_kiz_rows"]], ["LEGACY-KIZ"])
+
+    def test_daily_kiz_reoutbound_uses_only_latest_active_scan_owner(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(bind=engine)
+        with SessionLocal() as db:
+            old_order, old_item, old_scan = self.add_kiz_order(
+                db,
+                request_id=930,
+                request_number="WH-R-930",
+                code="REUSED-KIZ",
+                scanned_at=datetime(2026, 6, 19, 8, 0, tzinfo=timezone.utc),
+            )
+            new_order, new_item, new_scan = self.add_kiz_order(
+                db,
+                request_id=931,
+                request_number="WH-R-931",
+                code="REUSED-KIZ",
+                scanned_at=datetime(2026, 6, 20, 8, 0, tzinfo=timezone.utc),
+            )
+            registry = KizCode(code="REUSED-KIZ")
+            db.add(registry)
+            db.flush()
+            db.add_all([
+                KizMovement(
+                    kiz_id=registry.id,
+                    movement_type="outbound",
+                    order_id=old_order.id,
+                    order_item_id=old_item.id,
+                    scan_code_id=old_scan.id,
+                    occurred_at=datetime(2026, 6, 19, 8, 1, tzinfo=timezone.utc),
+                    raw_payload={},
+                ),
+                KizMovement(
+                    kiz_id=registry.id,
+                    movement_type="return",
+                    order_id=old_order.id,
+                    order_item_id=old_item.id,
+                    scan_code_id=old_scan.id,
+                    occurred_at=datetime(2026, 6, 19, 12, 0, tzinfo=timezone.utc),
+                    raw_payload={},
+                ),
+                KizMovement(
+                    kiz_id=registry.id,
+                    movement_type="re_outbound",
+                    order_id=new_order.id,
+                    order_item_id=new_item.id,
+                    scan_code_id=new_scan.id,
+                    occurred_at=datetime(2026, 6, 20, 8, 1, tzinfo=timezone.utc),
+                    raw_payload={},
+                ),
+            ])
+            db.commit()
+            report = {
+                "report_date": date(2026, 6, 20),
+                "requests": [{"id": 931, "number": "WH-R-931"}],
+            }
+
+            enrich_daily_kiz_from_orders(db, report)
+
+        self.assertEqual(report["requests"][0]["kiz_count"], 1)
+        self.assertEqual(len(report["request_kiz_rows"]), 1)
+        self.assertEqual(report["request_kiz_rows"][0]["request_number"], "WH-R-931")
+        self.assertEqual(len(report["daily_kiz_rows"]), 1)
+        self.assertEqual(report["daily_kiz_rows"][0]["request_number"], "WH-R-931")
+
+    def test_daily_kiz_duplicate_legacy_code_across_owners_fails_without_leaking_code(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(bind=engine)
+        with SessionLocal() as db:
+            self.add_kiz_order(
+                db,
+                request_id=940,
+                request_number="WH-R-940",
+                code=" DUPLICATE-SECRET-KIZ ",
+                scanned_at=datetime(2026, 6, 20, 8, 0, tzinfo=timezone.utc),
+            )
+            self.add_kiz_order(
+                db,
+                request_id=941,
+                request_number="WH-R-941",
+                code="DUPLICATE-SECRET-KIZ",
+                scanned_at=datetime(2026, 6, 20, 9, 0, tzinfo=timezone.utc),
+            )
+            db.commit()
+            report = {"report_date": date(2026, 6, 20), "requests": []}
+
+            with self.assertRaises(RuntimeError) as raised:
+                enrich_daily_kiz_from_orders(db, report)
+
+        self.assertEqual(str(raised.exception), "daily_kiz_duplicate_active_code")
+        self.assertNotIn("DUPLICATE-SECRET-KIZ", str(raised.exception))
+
+    def test_daily_kiz_duplicate_legacy_code_within_one_owner_fails_closed(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(bind=engine)
+        with SessionLocal() as db:
+            order, _item, _scan = self.add_kiz_order(
+                db,
+                request_id=945,
+                request_number="WH-R-945",
+                code="SAME-OWNER-DUPLICATE",
+                scanned_at=datetime(2026, 6, 20, 8, 0, tzinfo=timezone.utc),
+            )
+            sibling = OrderItem(
+                product="Sibling product",
+                quantity_pieces=10,
+                quantity_blocks=1,
+                scanned_blocks=1,
+                raw_payload={},
+            )
+            order.items.append(sibling)
+            db.flush()
+            db.add(ScanCode(
+                order_item_id=sibling.id,
+                code="SAME-OWNER-DUPLICATE",
+                scanned_at=datetime(2026, 6, 20, 9, 0, tzinfo=timezone.utc),
+                raw_payload={},
+            ))
+            db.commit()
+
+            with self.assertRaisesRegex(RuntimeError, "^daily_kiz_duplicate_active_code$"):
+                enrich_daily_kiz_from_orders(
+                    db,
+                    {"report_date": date(2026, 6, 20), "requests": []},
+                )
+
+    def test_daily_kiz_cross_pair_and_duplicate_owner_keep_request_count_blank(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(bind=engine)
+        with SessionLocal() as db:
+            first, _item, _scan = self.add_kiz_order(
+                db,
+                request_id=950,
+                request_number="WH-R-950",
+                code="PAIR-A",
+            )
+            first.items[0].raw_payload = {"skladbot_request_id": "950"}
+            self.add_kiz_order(
+                db,
+                request_id=950,
+                request_number="WH-R-OTHER",
+                code="PAIR-B",
+            )
+            self.add_kiz_order(
+                db,
+                request_id=960,
+                request_number="WH-R-960",
+                code="OWNER-A",
+            )
+            self.add_kiz_order(
+                db,
+                request_id=960,
+                request_number="WH-R-960",
+                code="OWNER-B",
+            )
+            db.commit()
+            report = {
+                "report_date": date(2026, 6, 20),
+                "requests": [
+                    {"id": 950, "number": "WH-R-950"},
+                    {"id": 960, "number": "WH-R-960"},
+                ],
+            }
+
+            enrich_daily_kiz_from_orders(db, report)
+
+        self.assertEqual([request["kiz_count"] for request in report["requests"]], [None, None])
+        self.assertEqual(report["request_kiz_rows"], [])
+        self.assertTrue(all(
+            not row["request_number"] and not row["request_id"]
+            for row in report["daily_kiz_rows"]
+        ))
+
+    def test_daily_kiz_one_owner_with_two_included_pairs_is_mapping_ambiguity(self):
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(bind=engine)
+        with SessionLocal() as db:
+            order, item, _scan = self.add_kiz_order(
+                db,
+                request_id=970,
+                request_number="WH-R-970",
+                code="AMBIGUOUS-OWNER-KIZ",
+            )
+            item.raw_payload = {
+                "skladbot_return_request_id": "971",
+                "skladbot_return_request_number": "WH-R-971",
+            }
+            db.commit()
+            report = {
+                "report_date": date(2026, 6, 20),
+                "requests": [
+                    {"id": 970, "number": "WH-R-970"},
+                    {"id": 971, "number": "WH-R-971"},
+                ],
+            }
+
+            enrich_daily_kiz_from_orders(db, report)
+
+        self.assertEqual([request["kiz_count"] for request in report["requests"]], [None, None])
+        self.assertEqual(report["request_kiz_rows"], [])
+        self.assertEqual(len(report["daily_kiz_rows"]), 1)
+        day_row = report["daily_kiz_rows"][0]
+        self.assertEqual(
+            [day_row[key] for key in ("request_number", "request_id", "smartup_id", "unloading_date")],
+            ["", "", "", ""],
+        )
 
     def test_daily_telegram_zero_movement_snapshot_keeps_exact_six_lines(self):
         report = {
@@ -1681,7 +2128,9 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(len(product_rows), 8)
         self.assertEqual(sum(row["Блоков план"] for row in product_rows), 95)
 
-        self.assertEqual(workbook.sheetnames, ["Сводка", "Заявки", "Товары заявок"])
+        self.assertEqual(workbook.sheetnames, [
+            "Сводка", "Заявки", "Товары заявок", "КИЗы заявок", "КИЗы за день",
+        ])
         self.assertEqual(report["coverage"]["included_operational_requests"], 8)
         self.assertEqual(report["coverage"]["excluded_diagnostic_requests"], 0)
 
@@ -1724,6 +2173,24 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(excluded_by_id[204500]["diagnostic_reason"], "archived_only")
         self.assertEqual(excluded_by_id[204501]["diagnostic_reason"], "neither")
         self.assertEqual(report["coverage"]["coverage_status"], "partial")
+
+    def test_created_at_only_neither_is_ordinary_diagnostic_not_partial(self):
+        report = collect_report_without_delay(
+            July7MissingTransferBatchClient(
+                unloading_date="2026-07-08",
+                status_matrix={204501: (False, False)},
+            ),
+            date(2026, 7, 7),
+        )
+
+        self.assertEqual(report["coverage"]["coverage_status"], "complete")
+        self.assertEqual(report["coverage"]["neither_count"], 1)
+        self.assertEqual(report["coverage"]["warnings"], "")
+        excluded = {row["request_id"]: row for row in report["excluded_requests"]}
+        self.assertEqual(excluded[204501]["diagnostic_reason"], "neither")
+        diagnostics = {row["request_id"]: row for row in report["date_diagnostics"]}
+        self.assertEqual(diagnostics[204501]["date_field_used"], "created_at")
+        self.assertNotIn("WH-R-204501", {row["number"] for row in report["requests"]})
 
     def test_unknown_cancelled_problem_status_goes_to_diagnostics_or_partial(self):
         report = collect_report_with_env(
@@ -1934,7 +2401,9 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(workbook["Сводка"]["B4"].value, 0)
         self.assertEqual(workbook["Сводка"]["B5"].value, 0)
         self.assertEqual(workbook["Сводка"]["B6"].value, 0)
-        self.assertEqual(workbook.sheetnames, ["Сводка", "Заявки", "Товары заявок"])
+        self.assertEqual(workbook.sheetnames, [
+            "Сводка", "Заявки", "Товары заявок", "КИЗы заявок", "КИЗы за день",
+        ])
         self.assertEqual(report["errors"], ["Не удалось получить остаток SkladBot"])
 
     def test_request_products_sheet_forces_formula_prefixes_to_text(self):

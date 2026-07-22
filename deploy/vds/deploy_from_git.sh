@@ -17,6 +17,11 @@ TELEGRAM_IMPORT_AUTH_RECOVERY_EVENT_ID="${TAKSKLAD_TELEGRAM_IMPORT_AUTH_RECOVERY
 TELEGRAM_IMPORT_AUTH_RECOVERY_APPROVAL="${TAKSKLAD_TELEGRAM_IMPORT_AUTH_RECOVERY_APPROVAL:-}"
 TELEGRAM_WORKER_REPAIR_APPROVAL="${TAKSKLAD_TELEGRAM_WORKER_REPAIR_APPROVAL:-}"
 WRITER_SERVICES=(backend-api telegram-worker skladbot-worker smartup-auto-import-worker)
+RECOVERY_RUNTIME_SERVICES=(backend-api frontend skladbot-worker smartup-auto-import-worker)
+DAILY_REPORT_RECOVERY_APPROVAL_PHRASE="SEND_EXACTLY_TWO_DAILY_REPORT_CATCHUPS"
+DAILY_REPORT_RECOVERY_DATES=()
+DAILY_REPORT_RECOVERY_APPROVAL=""
+DAILY_REPORT_RECOVERY_ENABLED=0
 DRY_RUN=0
 CURRENT_AUTH_CANARY_ONLY=0
 PROMOTE_CURRENT_RUNTIME=0
@@ -39,6 +44,10 @@ Usage:
   deploy_from_git.sh --artifact-manifest PATH --rollback-to-current-record
   deploy_from_git.sh --artifact-manifest PATH --allow-bootstrap-without-rollback
   deploy_from_git.sh --artifact-manifest PATH --allow-legacy-canary-bootstrap
+  deploy_from_git.sh --artifact-manifest PATH \
+    --daily-report-recovery-date YYYY-MM-DD \
+    --daily-report-recovery-date YYYY-MM-DD \
+    --daily-report-recovery-approval SEND_EXACTLY_TWO_DAILY_REPORT_CATCHUPS
   deploy_from_git.sh --dry-run --artifact-manifest PATH [--acceptance required] [--wait]
 
 Production execution requires TAKSKLAD_PRODUCTION_APPROVAL=READY_FOR_PRODUCTION_DEPLOY.
@@ -155,6 +164,14 @@ while (($#)); do
       ALLOW_LEGACY_CANARY_BOOTSTRAP=1
       shift
       ;;
+    --daily-report-recovery-date)
+      DAILY_REPORT_RECOVERY_DATES+=("${2:-}")
+      shift 2
+      ;;
+    --daily-report-recovery-approval)
+      DAILY_REPORT_RECOVERY_APPROVAL="${2:-}"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -168,6 +185,32 @@ done
 
 special_mode_count=$((CURRENT_AUTH_CANARY_ONLY + PROMOTE_CURRENT_RUNTIME + ROLLBACK_TO_CURRENT_RECORD))
 [[ "$special_mode_count" -le 1 ]] || fail "only one current-runtime control mode may be selected"
+
+if [[ "${#DAILY_REPORT_RECOVERY_DATES[@]}" -gt 0 || -n "$DAILY_REPORT_RECOVERY_APPROVAL" ]]; then
+  [[ "${#DAILY_REPORT_RECOVERY_DATES[@]}" -eq 2 ]] || \
+    fail "daily-report recovery requires exactly two dates"
+  [[ "$DAILY_REPORT_RECOVERY_APPROVAL" == "$DAILY_REPORT_RECOVERY_APPROVAL_PHRASE" ]] || \
+    fail "exact daily-report recovery approval is required"
+  [[ "$special_mode_count" -eq 0 ]] || \
+    fail "daily-report recovery cannot be combined with current-runtime control modes"
+  PYTHONDONTWRITEBYTECODE=1 "$PYTHON_BIN" - "${DAILY_REPORT_RECOVERY_DATES[@]}" <<'PY' || \
+    fail "daily-report recovery dates must be sorted, distinct, ISO-formatted, and in the past"
+import sys
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
+
+raw = sys.argv[1:]
+try:
+    parsed = [date.fromisoformat(value) for value in raw]
+except ValueError:
+    raise SystemExit(1)
+if len(parsed) != 2 or [value.isoformat() for value in parsed] != raw:
+    raise SystemExit(1)
+if parsed[0] >= parsed[1] or any(value >= datetime.now(ZoneInfo("Asia/Tashkent")).date() for value in parsed):
+    raise SystemExit(1)
+PY
+  DAILY_REPORT_RECOVERY_ENABLED=1
+fi
 
 [[ -n "$ARTIFACT_MANIFEST" && -f "$ARTIFACT_MANIFEST" ]] || fail "artifact manifest is required"
 ARTIFACT_MANIFEST="$(cd "$(dirname "$ARTIFACT_MANIFEST")" && pwd -P)/$(basename "$ARTIFACT_MANIFEST")"
@@ -274,6 +317,55 @@ validate_daily_report_config() {
     PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. "$PYTHON_BIN" tools/validate_daily_report_config.py
 }
 
+daily_report_recovery_args() {
+  [[ "$DAILY_REPORT_RECOVERY_ENABLED" == "1" ]] || return 1
+  printf '%s\n' \
+    --report-date "${DAILY_REPORT_RECOVERY_DATES[0]}" \
+    --report-date "${DAILY_REPORT_RECOVERY_DATES[1]}"
+}
+
+ensure_telegram_worker_stopped() {
+  ! compose ps --status running --services | grep -Fxq telegram-worker
+}
+
+verify_daily_report_recovery_candidate() {
+  [[ "$DAILY_REPORT_RECOVERY_ENABLED" == "1" ]] || return 1
+  local backend_id state_dir ready_path database_path result=0
+  local -a date_args
+  mapfile -t date_args < <(daily_report_recovery_args) || return 1
+  state_dir=".release-state/daily-report-recovery"
+  ready_path="$state_dir/recheck-ready.json"
+  database_path="$state_dir/recheck-database.json"
+  for path in \
+    "$state_dir/dry-run-1.json" \
+    "$state_dir/dry-run-2.json"; do
+    [[ -f "$path" && ! -L "$path" ]] || return 1
+  done
+  install -d -m 700 "$state_dir"
+  backend_id="$(compose ps -q backend-api)" || return 1
+  [[ -n "$backend_id" ]] || return 1
+  docker exec "$backend_id" python -c \
+    "import json; from urllib.error import HTTPError; from urllib.request import urlopen; u='http://127.0.0.1:8000/ready';
+try: r=urlopen(u, timeout=5)
+except HTTPError as e: r=e
+print(json.dumps({'http_status':int(getattr(r,'status',getattr(r,'code',0))),'payload':json.load(r)}, sort_keys=True))" \
+    > "$ready_path" || result=1
+  if [[ "$result" == "0" ]]; then
+    docker exec -i "$backend_id" python - inspect "${date_args[@]}" \
+      < tools/verify_daily_report_recovery_preflight.py > "$database_path" || result=1
+  fi
+  if [[ "$result" == "0" ]]; then
+    PYTHONDONTWRITEBYTECODE=1 "$PYTHON_BIN" tools/verify_daily_report_recovery_preflight.py verify \
+      "${date_args[@]}" \
+      --ready-json "$ready_path" \
+      --database-json "$database_path" \
+      --dry-run-json "$state_dir/dry-run-1.json" \
+      --dry-run-json "$state_dir/dry-run-2.json" >/dev/null || result=1
+  fi
+  rm -f -- "$ready_path" "$database_path"
+  [[ "$result" == "0" ]]
+}
+
 check_public_url() {
   local label="$1" url="$2" attempt output
   for ((attempt = 1; attempt <= URL_RETRY_ATTEMPTS; attempt += 1)); do
@@ -358,6 +450,92 @@ run_log_scan() {
     printf '%s\n' "$output" >&2
     return 1
   fi
+}
+
+validate_daily_catchup_cli_result() {
+  local path="$1" expected_date="$2" expected_mode="$3"
+  PYTHONDONTWRITEBYTECODE=1 "$PYTHON_BIN" - "$path" "$expected_date" "$expected_mode" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+allowed_fields = {
+    "status", "report_date", "requests_count", "order_kiz_count",
+    "day_kiz_count", "xlsx_bytes",
+}
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+if not isinstance(payload, dict) or set(payload) - allowed_fields:
+    raise SystemExit(1)
+if payload.get("report_date") != sys.argv[2]:
+    raise SystemExit(1)
+mode = sys.argv[3]
+status = payload.get("status")
+if mode == "send":
+    if status != "CATCHUP_SENT_COMPLETE_ONCE":
+        raise SystemExit(1)
+elif mode == "replay":
+    if status not in {"already_completed", "already_reported"}:
+        raise SystemExit(1)
+else:
+    raise SystemExit(1)
+for field in ("requests_count", "order_kiz_count", "day_kiz_count", "xlsx_bytes"):
+    if field in payload and (isinstance(payload[field], bool) or not isinstance(payload[field], int) or payload[field] < 0):
+        raise SystemExit(1)
+PY
+}
+
+run_one_daily_report_catchup() {
+  local report_date="$1" result_path="$2" error_path="$3"
+  ensure_telegram_worker_stopped || return 1
+  if ! compose run --rm --no-deps --pull never telegram-worker \
+    python -m app.telegram_manual_daily_catchup \
+      --report-date "$report_date" --execute > "$result_path" 2> "$error_path"; then
+    return 1
+  fi
+  validate_daily_catchup_cli_result "$result_path" "$report_date" send
+}
+
+verify_one_daily_report_catchup_replay() {
+  local report_date="$1" result_path="$2" error_path="$3"
+  ensure_telegram_worker_stopped || return 1
+  if ! compose run --rm --no-deps --pull never telegram-worker \
+    python -m app.telegram_manual_daily_catchup \
+      --report-date "$report_date" --execute > "$result_path" 2> "$error_path"; then
+    return 1
+  fi
+  validate_daily_catchup_cli_result "$result_path" "$report_date" replay
+}
+
+run_daily_report_recovery() {
+  [[ "$DAILY_REPORT_RECOVERY_ENABLED" == "1" ]] || return 1
+  local state_dir=".release-state/daily-report-recovery" report_date result_path error_path index
+  install -d -m 700 "$state_dir"
+  ensure_telegram_worker_stopped || return 1
+  for index in 0 1; do
+    report_date="${DAILY_REPORT_RECOVERY_DATES[$index]}"
+    result_path="$state_dir/send-$((index + 1)).json"
+    error_path="$state_dir/send-$((index + 1)).stderr"
+    rm -f -- "$result_path" "$error_path"
+    if ! run_one_daily_report_catchup "$report_date" "$result_path" "$error_path"; then
+      rm -f -- "$result_path" "$error_path"
+      return 1
+    fi
+    echo "DAILY_REPORT_CATCHUP_OK ordinal=$((index + 1)) status=CATCHUP_SENT_COMPLETE_ONCE values_redacted=1"
+    rm -f -- "$result_path" "$error_path"
+  done
+  for index in 0 1; do
+    report_date="${DAILY_REPORT_RECOVERY_DATES[$index]}"
+    result_path="$state_dir/replay-$((index + 1)).json"
+    error_path="$state_dir/replay-$((index + 1)).stderr"
+    rm -f -- "$result_path" "$error_path"
+    if ! verify_one_daily_report_catchup_replay "$report_date" "$result_path" "$error_path"; then
+      rm -f -- "$result_path" "$error_path"
+      return 1
+    fi
+    echo "DAILY_REPORT_CATCHUP_REPLAY_OK ordinal=$((index + 1)) status=already_completed_or_reported sends=0 values_redacted=1"
+    rm -f -- "$result_path" "$error_path"
+  done
+  ensure_telegram_worker_stopped
 }
 
 verify_db_only_compose() {
@@ -466,14 +644,28 @@ rollback_runtime() {
     echo "Rollback refused: previous runtime migration head does not match the retained database schema; candidate runtime remains selected." >&2
     return 1
   fi
-  compose up -d --no-deps --no-build --pull never --wait --wait-timeout "$COMPOSE_WAIT_TIMEOUT_SECONDS" \
-    backend-api frontend "${WRITER_SERVICES[@]:1}" || return 1
+  if [[ "$DAILY_REPORT_RECOVERY_ENABLED" == "1" ]]; then
+    compose stop -t 45 telegram-worker || return 1
+    compose up -d --no-deps --no-build --pull never --wait --wait-timeout "$COMPOSE_WAIT_TIMEOUT_SECONDS" \
+      "${RECOVERY_RUNTIME_SERVICES[@]}" || return 1
+    ensure_telegram_worker_stopped || return 1
+  else
+    compose up -d --no-deps --no-build --pull never --wait --wait-timeout "$COMPOSE_WAIT_TIMEOUT_SECONDS" \
+      backend-api frontend "${WRITER_SERVICES[@]:1}" || return 1
+  fi
   legacy_ids="$(legacy_google_worker_ids)" || return 1
   [[ -z "$legacy_ids" ]] || return 1
   verify_selected_runtime_identity || return 1
   check_public_url health "$HEALTH_URL" || return 1
-  check_public_url readiness "$READY_URL" || return 1
+  if [[ "$DAILY_REPORT_RECOVERY_ENABLED" != "1" ]]; then
+    check_public_url readiness "$READY_URL" || return 1
+  fi
   run_previous_auth_canary || return 1
+  if [[ "$DAILY_REPORT_RECOVERY_ENABLED" == "1" ]]; then
+    ensure_telegram_worker_stopped || return 1
+    echo "Recovery rollback restored previous verified digests with telegram-worker stopped; delivery events retained, automatic retry=0."
+    return 0
+  fi
   echo "Runtime rolled back to previous verified digests without the retired Google worker; database schema retained, alembic downgrade=0."
   return 0
 }
@@ -501,7 +693,13 @@ verify_previous_runtime_preflight() {
     [[ -n "$database_revision" && "$database_revision" == "$runtime_revision" ]] || result=1
     verify_selected_runtime_identity || result=1
     check_public_url health "$HEALTH_URL" || result=1
-    if [[ "$result" == "0" ]] && verify_telegram_import_auth_recovery_candidate; then
+    if [[ "$result" == "0" && "$DAILY_REPORT_RECOVERY_ENABLED" == "1" ]]; then
+      if verify_daily_report_recovery_candidate; then
+        echo "PREVIOUS_READINESS_BYPASS_OK reason=verified_two_date_daily_report_recovery values_redacted=1" >&2
+      else
+        result=1
+      fi
+    elif [[ "$result" == "0" ]] && verify_telegram_import_auth_recovery_candidate; then
       echo "PREVIOUS_READINESS_BYPASS_OK reason=one_verified_telegram_import_auth_401 values_redacted=1" >&2
     elif [[ "$result" == "0" ]] && verify_telegram_worker_repair_candidate; then
       echo "PREVIOUS_READINESS_BYPASS_OK reason=one_verified_telegram_worker_rollback_mismatch values_redacted=1" >&2
@@ -593,9 +791,18 @@ if ! compose run --rm --no-deps backend-api python -m app.event_lease_recovery; 
 fi
 
 echo "Activating verified image digests without source build..."
-if ! compose up -d --no-deps --no-build --pull never --wait --wait-timeout "$COMPOSE_WAIT_TIMEOUT_SECONDS" \
-  backend-api frontend "${WRITER_SERVICES[@]:1}"; then
-  rollback_after_candidate_failure "candidate containers failed to activate"
+if [[ "$DAILY_REPORT_RECOVERY_ENABLED" == "1" ]]; then
+  if ! compose up -d --no-deps --no-build --pull never --wait --wait-timeout "$COMPOSE_WAIT_TIMEOUT_SECONDS" \
+    "${RECOVERY_RUNTIME_SERVICES[@]}"; then
+    rollback_after_candidate_failure "candidate recovery containers failed to activate"
+  fi
+  ensure_telegram_worker_stopped || \
+    rollback_after_candidate_failure "telegram worker started before approved catch-ups"
+else
+  if ! compose up -d --no-deps --no-build --pull never --wait --wait-timeout "$COMPOSE_WAIT_TIMEOUT_SECONDS" \
+    backend-api frontend "${WRITER_SERVICES[@]:1}"; then
+    rollback_after_candidate_failure "candidate containers failed to activate"
+  fi
 fi
 ensure_legacy_google_worker_absent
 
@@ -604,6 +811,17 @@ if ! check_public_url health "$HEALTH_URL"; then
 fi
 if ! complete_telegram_import_auth_recovery; then
   rollback_after_candidate_failure "verified Telegram import auth recovery failed"
+fi
+if [[ "$DAILY_REPORT_RECOVERY_ENABLED" == "1" ]]; then
+  if ! run_daily_report_recovery; then
+    rollback_after_candidate_failure "approved daily-report recovery stopped before exact completion"
+  fi
+  if ! compose up -d --no-deps --no-build --pull never --wait \
+    --wait-timeout "$COMPOSE_WAIT_TIMEOUT_SECONDS" telegram-worker; then
+    rollback_after_candidate_failure "telegram worker failed to start after approved catch-ups"
+  fi
+  validate_daily_report_config || \
+    rollback_after_candidate_failure "22:00 daily-report configuration changed after recovery"
 fi
 if ! check_public_url readiness "$READY_URL"; then
   rollback_after_candidate_failure "candidate readiness failed"

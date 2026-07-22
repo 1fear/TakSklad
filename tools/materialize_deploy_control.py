@@ -33,6 +33,7 @@ DEPLOY_CONTROL_PATHS = (
     "tools/release_artifacts.py",
     "tools/server_release_artifacts.py",
     "tools/telegram_import_auth_recovery.py",
+    "tools/verify_daily_report_recovery_preflight.py",
     "tools/verify_telegram_worker_repair_preflight.py",
     "tools/validate_daily_report_config.py",
     "tools/validate_deploy_probe.py",
