@@ -19,6 +19,7 @@ from .backend_flow import (
     unsaved_backend_scan_codes,
 )
 from .config import BG_MAIN, FG_MUTED, STATUS_COLUMN, SUCCESS
+from .kiz_blocklist import blocked_kiz_reason
 from .desktop_scan_rules import (
     build_product_result,
     find_code_owner_in_orders,
@@ -253,6 +254,12 @@ class ScanningActionsMixin:
 
         if not is_valid:
             ScanningActionsMixin.reject_scan(self, error_msg)
+            return
+
+        block_reason = blocked_kiz_reason(code)
+        if block_reason:
+            logging.warning("Blocked KIZ scan attempt rejected on desktop")
+            ScanningActionsMixin.reject_scan(self, f"🚫 {block_reason}")
             return
 
         plan_blocks = get_plan_blocks(self.current_order)

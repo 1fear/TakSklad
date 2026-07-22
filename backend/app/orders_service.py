@@ -6,6 +6,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy.orm.attributes import set_committed_value
 
+from .kiz_blocklist import blocked_kiz_reason
 from .kiz_movements_service import (
     MOVEMENT_RETURN,
     MOVEMENT_UNDO,
@@ -162,7 +163,10 @@ def lookup_kiz_availability(db: Session, code, order_item_id=""):
 
     available = True
     reason = "no_backend_history"
-    if same_item_scan is not None:
+    if blocked_kiz_reason(code):
+        available = False
+        reason = "kiz_blocked"
+    elif same_item_scan is not None:
         available = False
         reason = "same_order_item_scan"
     elif other_item_scan is not None and latest_movement is None:
@@ -196,6 +200,14 @@ def create_scan(db: Session, payload: ScanCreate):
     code = str(payload.code or "").strip(" \t\r\n")
     if not code:
         raise ApiError(422, "Code must not be empty")
+
+    block_reason = blocked_kiz_reason(code)
+    if block_reason:
+        raise ApiError(409, {
+            "message": block_reason,
+            "reason": "kiz_blocked",
+            "order_item_id": str(order_item_id),
+        })
 
     item = db.execute(
         select(OrderItem)
