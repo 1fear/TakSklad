@@ -69,6 +69,9 @@ def database_payload():
         "success_count": 0,
         "registry_count": 0,
         "ambiguous_count": 0,
+        "unrelated_blocker_count": 0,
+        "target_daily_failure_count": 3,
+        "safe_target_blocker_count": 3,
         "values_redacted": True,
     }
 
@@ -138,6 +141,7 @@ class DailyReportRecoveryPreflightTests(unittest.TestCase):
             last_error=f"{COVERAGE_ERROR_PREFIX}: coverage_status=partial",
             payload={
                 "stage": "manual_recovery_required",
+                "result_status": "manual_recovery_required",
                 "manual_recovery_required": True,
                 "manual_recovery_reason": "automatic_retry_not_safe_or_exhausted",
                 "same_day_existing_event_status": "failed",
@@ -149,6 +153,7 @@ class DailyReportRecoveryPreflightTests(unittest.TestCase):
     def test_safe_manual_recovery_rejects_completed_or_telegram_touched_shapes(self):
         base_payload = {
             "stage": "manual_recovery_required",
+            "result_status": "manual_recovery_required",
             "manual_recovery_required": True,
             "manual_recovery_reason": "automatic_retry_not_safe_or_exhausted",
             "same_day_existing_event_status": "failed",
@@ -203,7 +208,7 @@ class DailyReportRecoveryPreflightTests(unittest.TestCase):
 
     def test_unrelated_blocker_blocks_recovery(self):
         database = database_payload()
-        database["ambiguous_count"] = 1
+        database["unrelated_blocker_count"] = 1
         with self.assertRaises(RecoveryPreflightError):
             self.verify(database=database)
 
@@ -220,10 +225,24 @@ class DailyReportRecoveryPreflightTests(unittest.TestCase):
             self.verify(ready=ready)
 
     def test_any_success_registry_active_or_ambiguous_state_blocks(self):
-        for field in ("success_count", "registry_count", "active_count", "ambiguous_count"):
+        for field in (
+            "success_count",
+            "registry_count",
+            "active_count",
+            "ambiguous_count",
+            "unrelated_blocker_count",
+        ):
             with self.subTest(field=field):
                 database = database_payload()
                 database[field] = 1
+                with self.assertRaises(RecoveryPreflightError):
+                    self.verify(database=database)
+
+    def test_target_and_safe_blocker_counts_must_match_exact_runtime_blockers(self):
+        for field in ("target_daily_failure_count", "safe_target_blocker_count"):
+            with self.subTest(field=field):
+                database = database_payload()
+                database[field] = 2
                 with self.assertRaises(RecoveryPreflightError):
                     self.verify(database=database)
 
