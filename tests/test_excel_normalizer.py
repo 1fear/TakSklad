@@ -11,7 +11,7 @@ from unittest.mock import patch
 from openpyxl import Workbook, load_workbook
 
 from taksklad.geocoding import clean_geocoded_address
-from taksklad.excel_normalizer import detect_excel_source, is_summary_row
+from taksklad.excel_normalizer import build_source_columns, detect_excel_source, is_summary_row
 from taksklad import spreadsheet_safety
 
 
@@ -36,6 +36,60 @@ def import_excel_import():
 
 
 class ExcelNormalizerTests(unittest.TestCase):
+    def test_coordinate_header_semantic_contains_match_precedes_content_inference(self):
+        columns, missing, _score = build_source_columns([
+            "Клиент",
+            "Тип оплаты",
+            "Товары",
+            "Кол-во ШТ",
+            "Служебная GPS позиция клиента",
+        ])
+
+        self.assertEqual(missing, [])
+        self.assertEqual(columns["coords"], 4)
+        self.assertEqual(columns["coords_candidates"], [4])
+
+    def test_explicit_coordinate_headers_reject_adjacent_decoys_and_out_of_range_values(self):
+        excel_import = import_excel_import()
+        for coordinate_header in ("Координаты", "Служебная GPS позиция клиента"):
+            with self.subTest(coordinate_header=coordinate_header):
+                columns, missing, _score = build_source_columns([
+                    "Клиент",
+                    "Тип оплаты",
+                    "Товары",
+                    "Кол-во ШТ",
+                    coordinate_header,
+                    "Создан",
+                    "Резерв",
+                ])
+
+                self.assertEqual(missing, [])
+                self.assertEqual(
+                    excel_import.get_coordinates_from_row(
+                        ["Client", "Терминал", "Product", 20, "", "21.07.2026", "91.0,69.2"],
+                        columns,
+                    ),
+                    "",
+                )
+                self.assertEqual(
+                    excel_import.get_coordinates_from_row(
+                        ["Client", "Терминал", "Product", 20, "91.0,69.2", "", ""],
+                        columns,
+                    ),
+                    "",
+                )
+
+        self.assertEqual(
+            excel_import.normalize_coordinates("GPS: 41.311081,69.240562,15"),
+            "41.311081, 69.240562",
+        )
+        self.assertEqual(
+            excel_import.normalize_coordinates(
+                "https://maps.google.com/?q=41.311081,69.240562"
+            ),
+            "41.311081, 69.240562",
+        )
+
     def test_clean_geocoded_address_removes_country_prefix(self):
         self.assertEqual(
             clean_geocoded_address("Узбекистан, Ташкент, улица Укчи, 3"),
@@ -271,6 +325,287 @@ class ExcelNormalizerTests(unittest.TestCase):
         self.assertEqual(result["errors"], [])
         self.assertEqual(result["records"][0]["Адрес"], "Ташкент, Юнусабадский район")
         self.assertEqual(result["records"][0]["Координаты"], "41.325658539017745, 69.23166364431383")
+
+    def test_desktop_import_reads_exact_gps_client_coordinates_alias(self):
+        excel_import = import_excel_import()
+        excel_import.reverse_geocode_yandex = lambda coords, cache=None: (f"Адрес {coords}", "")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "orders_23_07_2026.xlsx"
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.title = "Заявки"
+            worksheet.append([
+                "Клиент",
+                "Тип оплаты",
+                "Товары",
+                "Кол-во ШТ",
+                "Адрес",
+                "GPS-координаты клиента",
+            ])
+            worksheet.append([
+                "Delivery Client",
+                "Терминал",
+                "Chapman Brown OP 20",
+                20,
+                "Адрес не найден",
+                "41.311081,69.240562",
+            ])
+            workbook.save(path)
+
+            workbook_read = load_workbook(path, data_only=True, read_only=True)
+            source = detect_excel_source(workbook_read, str(path))
+            workbook_read.close()
+            result = excel_import.parse_excel_order_files([str(path)])
+
+        self.assertEqual(source["columns"]["coords"], 5)
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(result["records"][0]["Адрес"], "Адрес 41.311081, 69.240562")
+        self.assertEqual(result["records"][0]["Координаты"], "41.311081, 69.240562")
+
+    def test_desktop_import_infers_unique_coordinate_column_from_contents(self):
+        excel_import = import_excel_import()
+        calls = []
+
+        def fake_reverse_geocoder(coords, cache=None):
+            calls.append(coords)
+            return f"Адрес {coords}", ""
+
+        excel_import.reverse_geocode_yandex = fake_reverse_geocoder
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "content_coordinates.xlsx"
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.title = "Заявки"
+            worksheet.append([
+                "Клиент",
+                "Тип оплаты",
+                "Товары",
+                "Кол-во ШТ",
+                "Адрес",
+                "GPS ID",
+                "Создан",
+                "Бюджет",
+                "Телефон",
+                "Точка на карте",
+            ])
+            worksheet.append([
+                "Delivery One",
+                "Терминал",
+                "Chapman Brown OP 20",
+                20,
+                "Адрес не найден",
+                "WH-R-209244",
+                "21.07.2026",
+                480000,
+                "+998 90 123 45 67",
+                "41.311081,69.240562,15",
+            ])
+            worksheet.append([
+                "Delivery Two",
+                "Терминал",
+                "Chapman Brown OP 20",
+                20,
+                "Адрес не найден",
+                "WH-R-209245",
+                "22.07.2026",
+                960000,
+                "+998 91 765 43 21",
+                "41,300000;69,200000;500",
+            ])
+            workbook.save(path)
+
+            workbook_read = load_workbook(path, data_only=True, read_only=True)
+            source = detect_excel_source(workbook_read, str(path))
+            workbook_read.close()
+            result = excel_import.parse_excel_order_files([str(path)])
+
+        self.assertEqual(source["columns"]["coords"], 9)
+        self.assertEqual(calls, ["41.311081, 69.240562", "41.300000, 69.200000"])
+        self.assertEqual(
+            [record["Координаты"] for record in result["records"]],
+            ["41.311081, 69.240562", "41.300000, 69.200000"],
+        )
+
+    def test_content_inferred_coordinates_do_not_scan_adjacent_cells_and_validate_range(self):
+        excel_import = import_excel_import()
+        calls = []
+
+        def fake_reverse_geocoder(coords, cache=None):
+            calls.append(coords)
+            return "", "timeout"
+
+        excel_import.reverse_geocode_yandex = fake_reverse_geocoder
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "content_coordinates_with_gaps.xlsx"
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.title = "Заявки"
+            worksheet.append([
+                "Клиент",
+                "Тип оплаты",
+                "Товары",
+                "Кол-во ШТ",
+                "Адрес",
+                "Точка на карте",
+                "Соседняя ячейка 1",
+                "Соседняя ячейка 2",
+            ])
+            rows = [
+                ("Valid One", "41.311081,69.240562", "21.07.2026", "+998 90 123 45 67"),
+                ("Blank Near Date", "", "21.07.2026", "+998 91 765 43 21"),
+                ("Blank Near Number", "", 480000, "+998 93 111 22 33"),
+                ("Invalid Latitude", "91.000000,69.200000", "22.07.2026", 960000),
+                ("Valid Two", "41.300000,69.200000", "22.07.2026", "+998 94 444 55 66"),
+                ("Valid Three", "41.320000,69.250000", "23.07.2026", 1_440_000),
+                ("Valid Four", "41.330000,69.260000", "23.07.2026", "+998 95 777 88 99"),
+            ]
+            for client, coordinates, adjacent_one, adjacent_two in rows:
+                worksheet.append([
+                    client,
+                    "Терминал",
+                    "Chapman Brown OP 20",
+                    20,
+                    "Адрес не найден",
+                    coordinates,
+                    adjacent_one,
+                    adjacent_two,
+                ])
+            workbook.save(path)
+
+            workbook_read = load_workbook(path, data_only=True, read_only=True)
+            source = detect_excel_source(workbook_read, str(path))
+            workbook_read.close()
+            result = excel_import.parse_excel_order_files([str(path)])
+
+        self.assertTrue(source["columns"]["coords_inferred_from_content"])
+        self.assertEqual(
+            [record["Координаты"] for record in result["records"]],
+            [
+                "41.311081, 69.240562",
+                "",
+                "",
+                "",
+                "41.300000, 69.200000",
+                "41.320000, 69.250000",
+                "41.330000, 69.260000",
+            ],
+        )
+        self.assertEqual(
+            calls,
+            [
+                "41.311081, 69.240562",
+                "41.300000, 69.200000",
+                "41.320000, 69.250000",
+                "41.330000, 69.260000",
+            ],
+        )
+
+    def test_desktop_import_does_not_infer_numeric_decoy_columns(self):
+        excel_import = import_excel_import()
+        calls = []
+        excel_import.reverse_geocode_yandex = lambda coords, cache=None: calls.append(coords)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "numeric_decoys.xlsx"
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.title = "Заявки"
+            worksheet.append([
+                "Клиент",
+                "Тип оплаты",
+                "Товары",
+                "Кол-во ШТ",
+                "Адрес",
+                "Номер маршрута",
+                "Создан",
+                "Бюджет",
+                "Телефон",
+                "Коэффициент",
+            ])
+            for suffix, created, budget, phone in (
+                ("244", "21.07.2026", 480000, "+998 90 123 45 67"),
+                ("245", "22.07.2026", 960000, "+998 91 765 43 21"),
+            ):
+                worksheet.append([
+                    f"Pickup {suffix}",
+                    "Терминал",
+                    "Chapman Brown OP 20",
+                    20,
+                    "Адрес не найден",
+                    f"WH-R-209{suffix}",
+                    created,
+                    budget,
+                    phone,
+                    "41,69",
+                ])
+            workbook.save(path)
+
+            workbook_read = load_workbook(path, data_only=True, read_only=True)
+            source = detect_excel_source(workbook_read, str(path))
+            workbook_read.close()
+            result = excel_import.parse_excel_order_files([str(path)])
+
+        self.assertIsNone(source["columns"]["coords"])
+        self.assertEqual(calls, [])
+        self.assertEqual([record["Координаты"] for record in result["records"]], ["", ""])
+        self.assertEqual(
+            [record["Адрес"] for record in result["records"]],
+            ["Самовывоз со склада"] * 2,
+        )
+
+    def test_desktop_import_fails_closed_on_ambiguous_coordinate_columns(self):
+        excel_import = import_excel_import()
+        calls = []
+        excel_import.reverse_geocode_yandex = lambda coords, cache=None: calls.append(coords)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "ambiguous_coordinates.xlsx"
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.title = "Заявки"
+            worksheet.append([
+                "Клиент",
+                "Тип оплаты",
+                "Товары",
+                "Кол-во ШТ",
+                "Адрес",
+                "Точка A",
+                "Точка B",
+            ])
+            worksheet.append([
+                "Delivery One",
+                "Терминал",
+                "Chapman Brown OP 20",
+                20,
+                "Адрес не найден",
+                "41.311081,69.240562",
+                "41.320000,69.250000",
+            ])
+            worksheet.append([
+                "Delivery Two",
+                "Терминал",
+                "Chapman Brown OP 20",
+                20,
+                "Адрес не найден",
+                "41.300000,69.200000",
+                "41.330000,69.260000",
+            ])
+            workbook.save(path)
+
+            workbook_read = load_workbook(path, data_only=True, read_only=True)
+            try:
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "^Неоднозначные координаты: найдено несколько подходящих колонок$",
+                ):
+                    detect_excel_source(workbook_read, str(path))
+            finally:
+                workbook_read.close()
+
+        self.assertEqual(calls, [])
 
     def test_desktop_import_keeps_coordinates_when_reverse_geocode_fails(self):
         excel_import = import_excel_import()
