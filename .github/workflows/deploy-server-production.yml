@@ -28,6 +28,10 @@ on:
         description: One-off two-date preview to the exact personal admin route
         required: false
         default: "false"
+      operator_mark_delivered_only:
+        description: Mark the two reviewed personal previews as delivered without Telegram sends
+        required: false
+        default: "false"
 
 permissions:
   actions: read
@@ -41,7 +45,7 @@ concurrency:
 
 jobs:
   private-preview:
-    if: ${{ inputs.private_preview_only == 'true' }}
+    if: ${{ inputs.private_preview_only == 'true' && inputs.operator_mark_delivered_only != 'true' }}
     name: Private SkladBot daily preview
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -132,8 +136,123 @@ jobs:
             < "\$preview_script"
           EOF
 
+  operator-mark-delivered:
+    if: ${{ inputs.operator_mark_delivered_only == 'true' && inputs.private_preview_only != 'true' }}
+    name: Mark reviewed SkladBot daily previews delivered
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+
+    steps:
+      - name: Checkout operator control
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Validate exact operator scope
+        env:
+          EXPECTED_SOURCE_SHA: ${{ inputs.source_sha }}
+          REPORT_DATE_1: ${{ inputs.daily_report_recovery_date_1 }}
+          REPORT_DATE_2: ${{ inputs.daily_report_recovery_date_2 }}
+          APPROVAL: ${{ inputs.daily_report_recovery_approval }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$REPORT_DATE_1" = 2026-07-20
+          test "$REPORT_DATE_2" = 2026-07-21
+          test "$APPROVAL" = MARK_EXACTLY_TWO_DAILY_REPORTS_DELIVERED_NO_SEND
+
+      - name: Install production SSH key
+        env:
+          VDS_HOST: ${{ secrets.VDS_HOST }}
+          VDS_USER: ${{ secrets.VDS_USER }}
+          VDS_SSH_KEY: ${{ secrets.VDS_SSH_KEY }}
+          VDS_SSH_KNOWN_HOSTS: ${{ secrets.VDS_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$VDS_HOST"
+          test -n "$VDS_USER"
+          test -n "$VDS_SSH_KEY"
+          test -n "$VDS_SSH_KNOWN_HOSTS"
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$VDS_SSH_KEY" > ~/.ssh/taksklad_server_deploy_key
+          chmod 600 ~/.ssh/taksklad_server_deploy_key
+          printf '%s\n' "$VDS_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Backup and mark exactly two dates without Telegram
+        env:
+          EXPECTED_SOURCE_SHA: ${{ inputs.source_sha }}
+          REPORT_DATE_1: ${{ inputs.daily_report_recovery_date_1 }}
+          REPORT_DATE_2: ${{ inputs.daily_report_recovery_date_2 }}
+          VDS_HOST: ${{ secrets.VDS_HOST }}
+          VDS_USER: ${{ secrets.VDS_USER }}
+          VDS_APP_DIR: ${{ secrets.VDS_APP_DIR }}
+        run: |
+          set -euo pipefail
+          app_dir="${VDS_APP_DIR:-/opt/stacks/taksklad/app}"
+          remote="$VDS_USER@$VDS_HOST"
+          marker_script="/tmp/taksklad-operator-mark-daily-${GITHUB_RUN_ID}.py"
+          scp -i ~/.ssh/taksklad_server_deploy_key \
+            tools/operator_mark_daily_delivered.py "$remote:$marker_script"
+          ssh -i ~/.ssh/taksklad_server_deploy_key \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=10 \
+            "$remote" 'bash -s' <<EOF
+          set -euo pipefail
+          app_dir=$(printf '%q' "$app_dir")
+          marker_script=$(printf '%q' "$marker_script")
+          expected_source_sha=$(printf '%q' "$EXPECTED_SOURCE_SHA")
+          report_date_1=$(printf '%q' "$REPORT_DATE_1")
+          report_date_2=$(printf '%q' "$REPORT_DATE_2")
+          trap 'rm -f -- "\$marker_script"' EXIT
+          chmod 600 "\$marker_script"
+          cd "\$app_dir"
+          test "\$(curl -fsS https://api.taksklad.uz/version | python3 -c \
+            'import json,sys; print(json.load(sys.stdin)["commit_sha"])')" = "\$expected_source_sha"
+          date_args=(--report-date "\$report_date_1" --report-date "\$report_date_2")
+          docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml \
+            exec -T backend-api python - "\${date_args[@]}" < "\$marker_script" \
+            > /tmp/taksklad-operator-daily-precheck.json
+          python3 - /tmp/taksklad-operator-daily-precheck.json <<'PY'
+          import json, sys
+          payload = json.load(open(sys.argv[1], encoding="utf-8"))
+          assert payload.get("status") == "inspected"
+          assert payload.get("values_redacted") is True
+          assert payload.get("client_sends") == 0
+          assert len(payload.get("dates") or []) == 2
+          assert all(row.get("active_count") == 0 for row in payload["dates"])
+          PY
+          ./deploy/vds/backup_postgres.sh --no-prune </dev/null
+          docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml \
+            exec -T backend-api python - "\${date_args[@]}" --apply < "\$marker_script" \
+            > /tmp/taksklad-operator-daily-apply.json
+          python3 - /tmp/taksklad-operator-daily-apply.json <<'PY'
+          import json, sys
+          payload = json.load(open(sys.argv[1], encoding="utf-8"))
+          assert payload.get("status") == "completed"
+          assert payload.get("values_redacted") is True
+          assert payload.get("client_sends") == 0
+          assert len(payload.get("dates") or []) == 2
+          assert all(row.get("status") in {"marked", "remarked", "already_completed"} for row in payload["dates"])
+          print(json.dumps(payload, sort_keys=True))
+          PY
+          docker compose --env-file deploy/vds/.env -f deploy/vds/docker-compose.yml \
+            exec -T backend-api python - "\${date_args[@]}" < "\$marker_script" \
+            > /tmp/taksklad-operator-daily-postcheck.json
+          python3 - /tmp/taksklad-operator-daily-postcheck.json <<'PY'
+          import json, sys
+          payload = json.load(open(sys.argv[1], encoding="utf-8"))
+          assert payload.get("status") == "inspected"
+          assert payload.get("values_redacted") is True
+          assert len(payload.get("dates") or []) == 2
+          assert all(row.get("delivery_closed") is True and row.get("active_count") == 0 for row in payload["dates"])
+          print(json.dumps(payload, sort_keys=True))
+          PY
+          rm -f /tmp/taksklad-operator-daily-precheck.json \
+            /tmp/taksklad-operator-daily-apply.json \
+            /tmp/taksklad-operator-daily-postcheck.json
+          EOF
+
   deploy-server:
-    if: ${{ inputs.private_preview_only != 'true' }}
+    if: ${{ inputs.private_preview_only != 'true' && inputs.operator_mark_delivered_only != 'true' }}
     name: Production server-only deploy
     runs-on: ubuntu-latest
     timeout-minutes: 45
