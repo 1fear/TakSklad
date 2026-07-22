@@ -3367,6 +3367,106 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertEqual(order.address, "Ташкент, геокодированный адрес 1")
             self.assertEqual(order.raw_payload["address_backfill_source"], "import")
 
+    def test_duplicate_reimport_backfills_pickup_without_changing_order_or_kiz_identity(self):
+        first_row = {
+            "Дата отгрузки": "22.07.2026",
+            "Тип оплаты": "cash",
+            "Клиент": "Stable Pickup Client",
+            "Адрес": "Самовывоз",
+            "Координаты": "41.300000, 69.200000",
+            "Товары": "Product One",
+            "Кол-во ШТ": "20",
+            "Кол-во блок": "2",
+            "ID заказа": "stable-pickup-order",
+            "ID импорта": "stable-pickup-import",
+            "Номер заявки SkladBot": "WH-R-ORIGINAL",
+            "ID заявки SkladBot": "100500",
+        }
+        created = self.client.post(
+            "/api/v1/imports",
+            json={"source": "excel", "filename": "pickup.xlsx", "rows": [first_row]},
+        )
+        self.assertEqual(created.status_code, 201)
+
+        with self.SessionLocal() as db:
+            order = db.execute(select(Order)).scalar_one()
+            item = db.execute(select(OrderItem)).scalar_one()
+            self.assertEqual(order.address, "Самовывоз со склада")
+            order_id = order.id
+            item_id = item.id
+            scan = ScanCode(
+                order_item_id=item.id,
+                code="0104006396053978217GPSBACKFILL",
+                source="desktop",
+            )
+            kiz = KizCode(code="0104006396053978217GPSBACKFILL")
+            db.add_all([scan, kiz])
+            db.flush()
+            movement = KizMovement(
+                kiz_id=kiz.id,
+                movement_type="outbound",
+                order_id=order.id,
+                order_item_id=item.id,
+                scan_code_id=scan.id,
+                source="test",
+            )
+            db.add(movement)
+            db.commit()
+            scan_id = scan.id
+            kiz_id = kiz.id
+            movement_id = movement.id
+
+        corrected_row = {
+            **first_row,
+            "Дата отгрузки": "23.07.2026",
+            "Адрес": "Адрес не найден",
+            "Координаты": "41.311081, 69.240562",
+            "Номер заявки SkladBot": "WH-R-INCOMING",
+            "ID заявки SkladBot": "999999",
+        }
+        repeated = self.client.post(
+            "/api/v1/imports",
+            json={"source": "excel", "filename": "pickup-corrected.xlsx", "rows": [corrected_row]},
+        )
+
+        self.assertEqual(repeated.status_code, 201)
+        self.assertEqual(repeated.json()["orders_created"], 0)
+        self.assertEqual(repeated.json()["items_created"], 0)
+        self.assertEqual(repeated.json()["duplicate_rows"], 1)
+        self.assertEqual(repeated.json()["backend_address_updates"], 1)
+
+        repeated_again = self.client.post(
+            "/api/v1/imports",
+            json={"source": "excel", "filename": "pickup-corrected.xlsx", "rows": [corrected_row]},
+        )
+        self.assertEqual(repeated_again.status_code, 201)
+        self.assertEqual(repeated_again.json()["orders_created"], 0)
+        self.assertEqual(repeated_again.json()["items_created"], 0)
+        self.assertEqual(repeated_again.json()["duplicate_rows"], 1)
+        self.assertEqual(repeated_again.json()["backend_address_updates"], 0)
+
+        with self.SessionLocal() as db:
+            order = db.execute(select(Order)).scalar_one()
+            item = db.execute(select(OrderItem)).scalar_one()
+            scan = db.execute(select(ScanCode)).scalar_one()
+            kiz = db.execute(select(KizCode)).scalar_one()
+            movement = db.execute(select(KizMovement)).scalar_one()
+            self.assertEqual(order.id, order_id)
+            self.assertEqual(item.id, item_id)
+            self.assertEqual(order.order_date, date(2026, 7, 22))
+            self.assertEqual(order.address, "Координаты: 41.311081, 69.240562")
+            self.assertEqual(order.raw_payload["coordinates"], "41.311081, 69.240562")
+            self.assertEqual(order.raw_payload["skladbot_request_number"], "WH-R-ORIGINAL")
+            self.assertEqual(order.raw_payload["skladbot_request_id"], "100500")
+            self.assertEqual(item.source_import_id, "stable-pickup-import")
+            self.assertEqual(scan.id, scan_id)
+            self.assertEqual(scan.order_item_id, item_id)
+            self.assertEqual(kiz.id, kiz_id)
+            self.assertEqual(movement.id, movement_id)
+            self.assertEqual(movement.order_id, order_id)
+            self.assertEqual(movement.order_item_id, item_id)
+            self.assertEqual(movement.scan_code_id, scan_id)
+
     def legacy_google_sheets_export_updates_missing_address_for_existing_import_id(self):
         class FakeSheet:
             def __init__(self):
