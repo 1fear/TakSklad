@@ -30,6 +30,9 @@ PRE_TELEGRAM_STAGES = {
     "xlsx created",
     "scheduled job failed",
 }
+SAFE_MANUAL_RECOVERY_REASONS = {
+    "automatic_retry_not_safe_or_exhausted",
+}
 DRY_RUN_FIELDS = {
     "status",
     "report_date",
@@ -116,6 +119,30 @@ def _event_is_proven_pre_telegram_failure(event: Any) -> bool:
     )
 
 
+def _event_is_proven_safe_manual_recovery(event: Any) -> bool:
+    if _normalize(getattr(event, "status", "")) not in FAILURE_STATUSES:
+        return False
+    payload = event.payload if isinstance(getattr(event, "payload", None), dict) else {}
+    error = _normalize(getattr(event, "last_error", ""))
+    success = payload.get("success")
+    return (
+        payload.get("manual_recovery_required") is True
+        and _normalize(payload.get("stage")) == "manual_recovery_required"
+        and _normalize(payload.get("manual_recovery_reason")) in SAFE_MANUAL_RECOVERY_REASONS
+        and _normalize(payload.get("same_day_existing_event_status")) in FAILURE_STATUSES
+        and error.startswith(COVERAGE_ERROR_PREFIX)
+        and success is not True
+        and _normalize(success).casefold() != "true"
+    )
+
+
+def _event_is_proven_pre_telegram_or_safe_manual_recovery(event: Any) -> bool:
+    return (
+        _event_is_proven_pre_telegram_failure(event)
+        or _event_is_proven_safe_manual_recovery(event)
+    )
+
+
 def inspect_database(report_dates: tuple[date, date]) -> dict[str, Any]:
     """Inspect production DB read-only and return only counts and approved dates."""
     from sqlalchemy import select
@@ -148,6 +175,12 @@ def inspect_database(report_dates: tuple[date, date]) -> dict[str, Any]:
     success_count = 0
     registry_count = 0
     ambiguous_count = 0
+    ambiguous_breakdown = {
+        "count_mismatch": 0,
+        "unresolved_out_of_scope": 0,
+        "approved_pair_non_pretelegram_failure": 0,
+        "approved_pair_non_success_completion": 0,
+    }
 
     with SessionLocal() as db:
         terminal_incident_ids = select(Incident.pending_event_id).where(
@@ -171,6 +204,7 @@ def inspect_database(report_dates: tuple[date, date]) -> dict[str, Any]:
         blocker_count = int(count_unresolved_hot_path_failures(db) or 0)
         if blocker_count != len(unresolved_events):
             ambiguous_count += 1
+            ambiguous_breakdown["count_mismatch"] += 1
 
         configured_chat = next(iter(configured_chats)) if len(configured_chats) == 1 else ""
         for event in unresolved_events:
@@ -180,9 +214,10 @@ def inspect_database(report_dates: tuple[date, date]) -> dict[str, Any]:
                 or event_date not in counts_by_date
                 or not configured_chat
                 or _chat_from_event(event) != configured_chat
-                or not _event_is_proven_pre_telegram_failure(event)
+                or not _event_is_proven_pre_telegram_or_safe_manual_recovery(event)
             ):
                 ambiguous_count += 1
+                ambiguous_breakdown["unresolved_out_of_scope"] += 1
                 continue
             counts_by_date[event_date] += 1
 
@@ -206,8 +241,10 @@ def inspect_database(report_dates: tuple[date, date]) -> dict[str, Any]:
                 status == "completed" and not _event_is_success(event)
             ):
                 ambiguous_count += 1
-            if matches_approved_pair and status in FAILURE_STATUSES and not _event_is_proven_pre_telegram_failure(event):
+                ambiguous_breakdown["approved_pair_non_success_completion"] += 1
+            if matches_approved_pair and status in FAILURE_STATUSES and not _event_is_proven_pre_telegram_or_safe_manual_recovery(event):
                 ambiguous_count += 1
+                ambiguous_breakdown["approved_pair_non_pretelegram_failure"] += 1
 
         registry_events = db.execute(
             select(PendingEvent).where(PendingEvent.event_type == REGISTRY_EVENT_TYPE)
@@ -246,6 +283,7 @@ def inspect_database(report_dates: tuple[date, date]) -> dict[str, Any]:
         "success_count": success_count,
         "registry_count": registry_count,
         "ambiguous_count": ambiguous_count,
+        "ambiguous_breakdown": ambiguous_breakdown,
         "values_redacted": True,
     }
 

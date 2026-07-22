@@ -11,6 +11,7 @@ from tools.verify_daily_report_recovery_preflight import (
     PRE_TELEGRAM_STAGES,
     RecoveryPreflightError,
     _event_is_proven_pre_telegram_failure,
+    _event_is_proven_safe_manual_recovery,
     verify_preflight,
 )
 
@@ -130,6 +131,50 @@ class DailyReportRecoveryPreflightTests(unittest.TestCase):
             payload=base_payload,
         )
         self.assertFalse(_event_is_proven_pre_telegram_failure(wrong_error))
+
+    def test_safe_manual_recovery_accepts_coverage_failure_reclassified_after_retry_window(self):
+        event = SimpleNamespace(
+            status="failed",
+            last_error=f"{COVERAGE_ERROR_PREFIX}: coverage_status=partial",
+            payload={
+                "stage": "manual_recovery_required",
+                "manual_recovery_required": True,
+                "manual_recovery_reason": "automatic_retry_not_safe_or_exhausted",
+                "same_day_existing_event_status": "failed",
+                "success": False,
+            },
+        )
+        self.assertTrue(_event_is_proven_safe_manual_recovery(event))
+
+    def test_safe_manual_recovery_rejects_completed_or_telegram_touched_shapes(self):
+        base_payload = {
+            "stage": "manual_recovery_required",
+            "manual_recovery_required": True,
+            "manual_recovery_reason": "automatic_retry_not_safe_or_exhausted",
+            "same_day_existing_event_status": "failed",
+            "success": False,
+        }
+        mutations = (
+            {"same_day_existing_event_status": "completed"},
+            {"manual_recovery_reason": "skipped_same_day_existing_completed_event"},
+            {"success": True},
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                payload = {**base_payload, **mutation}
+                event = SimpleNamespace(
+                    status="failed",
+                    last_error=f"{COVERAGE_ERROR_PREFIX}: coverage_status=partial",
+                    payload=payload,
+                )
+                self.assertFalse(_event_is_proven_safe_manual_recovery(event))
+
+        telegram_failure = SimpleNamespace(
+            status="failed",
+            last_error="telegram_send_failed",
+            payload=base_payload,
+        )
+        self.assertFalse(_event_is_proven_safe_manual_recovery(telegram_failure))
 
     def verify(self, *, ready=None, database=None, reports=None):
         return verify_preflight(
