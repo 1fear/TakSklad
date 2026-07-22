@@ -451,6 +451,9 @@ jobs:
           except HTTPError as e: r=e
           print(json.dumps({'http_status':int(getattr(r,'status',getattr(r,'code',0))),'payload':json.load(r)}, sort_keys=True))" \
             > .release-state/current-ready.json
+          if test "\$DAILY_REPORT_RECOVERY_ENABLED" != 1; then
+            ./deploy/vds/backup_postgres.sh --no-prune </dev/null
+          fi
           python3 tools/collect_phase27_evidence.py preflight \
             --manifest server-release.json \
             --ready-json .release-state/current-ready.json \
@@ -509,6 +512,11 @@ jobs:
               --database-json "\$recovery_database" \
               --dry-run-json "\$recovery_dry_run_1" \
               --dry-run-json "\$recovery_dry_run_2" >/dev/null
+            ./deploy/vds/backup_postgres.sh --no-prune </dev/null
+            python3 tools/collect_phase27_evidence.py preflight \
+              --manifest server-release.json \
+              --ready-json .release-state/current-ready.json \
+              --output .release-state/server-production-preflight.json </dev/null
             ./tools/production_preflight.sh \
               --manifest server-release.json \
               --evidence .release-state/server-production-preflight.json \

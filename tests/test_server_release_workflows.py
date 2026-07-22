@@ -149,6 +149,41 @@ class ServerReleaseWorkflowContractTests(unittest.TestCase):
             with self.subTest(needle=needle):
                 self.assertIn(needle, self.deploy)
 
+    def test_daily_recovery_refreshes_backup_after_no_send_checks(self):
+        normal_backup = self.deploy.index(
+            "./deploy/vds/backup_postgres.sh --no-prune </dev/null"
+        )
+        initial_evidence = self.deploy.index(
+            "python3 tools/collect_phase27_evidence.py preflight",
+            normal_backup,
+        )
+        recovery_verify = self.deploy.index(
+            "python3 tools/verify_daily_report_recovery_preflight.py verify"
+        )
+        backup = self.deploy.index(
+            "./deploy/vds/backup_postgres.sh --no-prune </dev/null",
+            recovery_verify,
+        )
+        refreshed_evidence = self.deploy.index(
+            "python3 tools/collect_phase27_evidence.py preflight",
+            backup,
+        )
+        current_backup_gate = self.deploy.index(
+            "--read-only --require-current-backup </dev/null",
+            refreshed_evidence,
+        )
+        deploy = self.deploy.index(
+            "./deploy/vds/deploy_from_git.sh --artifact-manifest server-release.json",
+            current_backup_gate,
+        )
+
+        self.assertLess(normal_backup, initial_evidence)
+        self.assertLess(initial_evidence, recovery_verify)
+        self.assertLess(recovery_verify, backup)
+        self.assertLess(backup, refreshed_evidence)
+        self.assertLess(refreshed_evidence, current_backup_gate)
+        self.assertLess(current_backup_gate, deploy)
+
     def test_deploy_verifies_routing_from_one_protected_candidate_directory(self):
         required = (
             'candidate_state=".release-state/server-routing-candidate"',
