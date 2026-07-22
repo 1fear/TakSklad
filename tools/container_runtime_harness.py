@@ -726,6 +726,19 @@ def memory_allocation_was_denied(state: dict[str, object]) -> bool:
     return state.get("OOMKilled") is True or state.get("ExitCode") == 42
 
 
+def oversize_memory_probe_script() -> str:
+    return """
+import mmap, sys
+try:
+ data = bytearray(256 * 1024 * 1024)
+ for offset in range(0, len(data), mmap.PAGESIZE):
+  data[offset] = 1
+except MemoryError:
+ sys.exit(42)
+sys.exit(0)
+"""
+
+
 def run_load() -> None:
     ensure_images()
     suffix = uuid.uuid4().hex[:8]
@@ -873,7 +886,7 @@ time.sleep(2)
                 BACKEND_IMAGE,
                 "python",
                 "-c",
-                "import sys\ntry:\n bytearray(256 * 1024 * 1024)\nexcept MemoryError:\n sys.exit(42)\nsys.exit(0)",
+                oversize_memory_probe_script(),
             ],
             check=False,
             timeout=60,
