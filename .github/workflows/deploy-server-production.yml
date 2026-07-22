@@ -371,6 +371,7 @@ jobs:
             -o ServerAliveInterval=30 -o ServerAliveCountMax=10 \
             "$remote" 'bash -s' <<EOF
           set -euo pipefail
+          rm -f /tmp/taksklad-server-deploy-evidence.json
           app_dir=$(printf '%q' "$app_dir")
           install -d -m 755 "\$app_dir"
           tar -xzf /tmp/taksklad-server-deploy-control.tar.gz -C "\$app_dir" --no-same-owner
@@ -385,7 +386,6 @@ jobs:
           export DAILY_REPORT_RECOVERY_APPROVAL=$(printf '%q' "${DAILY_REPORT_RECOVERY_APPROVAL:-}")
           export DOCKER_CONFIG=$(printf '%q' "$remote_docker_config")
           cd "\$app_dir"
-          rm -f /tmp/taksklad-server-deploy-evidence.json
           export PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.
           chmod +x deploy/vds/deploy_from_git.sh tools/production_preflight.sh tools/live_release_verifier.sh
           chmod 700 deploy/vds/backup_postgres.sh deploy/vds/acceptance_status.sh
