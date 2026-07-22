@@ -3,10 +3,14 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+from types import SimpleNamespace
 import unittest
 
 from tools.verify_daily_report_recovery_preflight import (
+    COVERAGE_ERROR_PREFIX,
+    PRE_TELEGRAM_STAGES,
     RecoveryPreflightError,
+    _event_is_proven_pre_telegram_failure,
     verify_preflight,
 )
 
@@ -83,6 +87,50 @@ def dry_runs():
 
 
 class DailyReportRecoveryPreflightTests(unittest.TestCase):
+    def test_every_allowlisted_pre_telegram_stage_is_accepted(self):
+        for stage in PRE_TELEGRAM_STAGES:
+            with self.subTest(stage=stage):
+                event = SimpleNamespace(
+                    status="failed",
+                    last_error=f"{COVERAGE_ERROR_PREFIX}: coverage_status=partial",
+                    payload={
+                        "stage": stage,
+                        "result_status": "blocked_partial",
+                        "success": False,
+                    },
+                )
+                self.assertTrue(_event_is_proven_pre_telegram_failure(event))
+
+    def test_pre_telegram_proof_rejects_unsafe_or_incomplete_failure(self):
+        base_payload = {
+            "stage": "report generation finished",
+            "result_status": "blocked_partial",
+            "success": False,
+        }
+        mutations = (
+            {"stage": "telegram sendMessage started"},
+            {"stage": "telegram sendMessage success"},
+            {"stage": "telegram sendDocument started"},
+            {"result_status": "failed"},
+            {"success": True},
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                payload = {**base_payload, **mutation}
+                event = SimpleNamespace(
+                    status="failed",
+                    last_error=f"{COVERAGE_ERROR_PREFIX}: coverage_status=partial",
+                    payload=payload,
+                )
+                self.assertFalse(_event_is_proven_pre_telegram_failure(event))
+
+        wrong_error = SimpleNamespace(
+            status="failed",
+            last_error="telegram_send_failed",
+            payload=base_payload,
+        )
+        self.assertFalse(_event_is_proven_pre_telegram_failure(wrong_error))
+
     def verify(self, *, ready=None, database=None, reports=None):
         return verify_preflight(
             report_dates=DATES,
@@ -174,6 +222,16 @@ class DailyReportRecoveryDeployContractTests(unittest.TestCase):
         self.assertLess(second_dry_run, current_inspect)
         self.assertLess(current_inspect, deploy)
         self.assertIn('tools/verify_daily_report_recovery_preflight.py verify', self.workflow)
+
+    def test_failed_deploy_cannot_publish_stale_success_evidence(self):
+        cleanup = self.workflow.index(
+            'rm -f /tmp/taksklad-server-deploy-evidence.json'
+        )
+        deploy = self.workflow.index(
+            './deploy/vds/deploy_from_git.sh --artifact-manifest'
+        )
+        self.assertLess(cleanup, deploy)
+        self.assertIn('cat "\\$recovery_database" >&2', self.workflow)
 
     def test_recovery_stops_worker_and_rollback_never_restarts_old_scheduler(self):
         send_function = self.script.split('run_one_daily_report_catchup() {', 1)[1].split('\n}\n', 1)[0]

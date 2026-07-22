@@ -385,6 +385,7 @@ jobs:
           export DAILY_REPORT_RECOVERY_APPROVAL=$(printf '%q' "${DAILY_REPORT_RECOVERY_APPROVAL:-}")
           export DOCKER_CONFIG=$(printf '%q' "$remote_docker_config")
           cd "\$app_dir"
+          rm -f /tmp/taksklad-server-deploy-evidence.json
           export PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.
           chmod +x deploy/vds/deploy_from_git.sh tools/production_preflight.sh tools/live_release_verifier.sh
           chmod 700 deploy/vds/backup_postgres.sh deploy/vds/acceptance_status.sh
@@ -498,6 +499,7 @@ jobs:
               "\${recovery_date_args[@]}" \
               < tools/verify_daily_report_recovery_preflight.py \
               > "\$recovery_database" 2>/dev/null; then
+              cat "\$recovery_database" >&2
               echo "CURRENT_DAILY_REPORT_RECOVERY_DATABASE_INSPECTION_BLOCKED" >&2
               exit 1
             fi
