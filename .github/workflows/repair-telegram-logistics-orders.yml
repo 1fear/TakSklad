@@ -1,0 +1,731 @@
+name: Repair Telegram Logistics Orders
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact 40-character main commit containing the audited repair control plane
+        required: true
+      approval:
+        description: Exact one-shot production repair approval
+        required: true
+      expected_plan_sha:
+        description: Exact SHA-256 from the reviewed read-only plan
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: taksklad-production
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    name: Repair exact 62 Telegram logistics orders
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: production
+    steps:
+      - name: Checkout exact candidate main control plane
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate exact main candidate and approval
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          REPAIR_APPROVAL: ${{ inputs.approval }}
+          EXPECTED_PLAN_SHA: ${{ inputs.expected_plan_sha }}
+          DISPATCH_REF: ${{ github.ref }}
+          DISPATCH_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$DISPATCH_REF" = refs/heads/main
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_PLAN_SHA" =~ ^[0-9a-f]{64}$ ]]
+          test "$REPAIR_APPROVAL" = REPAIR-62-LOGISTICS-2026-07-23
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$DISPATCH_SHA" = "$SOURCE_SHA"
+          test "$(git rev-parse refs/remotes/origin/main)" = "$SOURCE_SHA"
+
+      - name: Package audited repair control plane
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          for name in (
+              "tools/repair_telegram_logistics_orders.py",
+              "tools/postgres_quiescence_check.py",
+          ):
+              path = Path(name)
+              compile(path.read_text(encoding="utf-8"), str(path), "exec")
+          PY
+          bash -n deploy/vds/backup_postgres.sh
+          bundle="$RUNNER_TEMP/taksklad-telegram-logistics-repair-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.tar.gz"
+          tar -czf "$bundle" \
+            deploy/vds/backup_postgres.sh \
+            deploy/vds/docker-compose.yml \
+            tools/postgres_quiescence_check.py \
+            tools/repair_telegram_logistics_orders.py \
+            tools/write_maintenance_marker.py
+
+      - name: Validate required production access
+        env:
+          VDS_HOST: ${{ secrets.VDS_HOST }}
+          VDS_USER: ${{ secrets.VDS_USER }}
+          VDS_SSH_KEY: ${{ secrets.VDS_SSH_KEY }}
+          VDS_SSH_KNOWN_HOSTS: ${{ secrets.VDS_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$VDS_HOST"
+          test -n "$VDS_USER"
+          test -n "$VDS_SSH_KEY"
+          test -n "$VDS_SSH_KNOWN_HOSTS"
+
+      - name: Install SSH identity
+        env:
+          VDS_SSH_KEY: ${{ secrets.VDS_SSH_KEY }}
+          VDS_SSH_KNOWN_HOSTS: ${{ secrets.VDS_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$VDS_SSH_KEY" > ~/.ssh/taksklad_telegram_logistics_repair_key
+          chmod 600 ~/.ssh/taksklad_telegram_logistics_repair_key
+          printf '%s\n' "$VDS_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Copy exact repair bundle to VDS
+        env:
+          VDS_HOST: ${{ secrets.VDS_HOST }}
+          VDS_USER: ${{ secrets.VDS_USER }}
+        run: |
+          set -euo pipefail
+          bundle="$RUNNER_TEMP/taksklad-telegram-logistics-repair-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.tar.gz"
+          remote_bundle="/tmp/taksklad-telegram-logistics-repair-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.tar.gz"
+          scp -i ~/.ssh/taksklad_telegram_logistics_repair_key \
+            "$bundle" "$VDS_USER@$VDS_HOST:$remote_bundle"
+
+      - name: Plan, isolate, backup, apply, verify and restore
+        env:
+          VDS_HOST: ${{ secrets.VDS_HOST }}
+          VDS_USER: ${{ secrets.VDS_USER }}
+          VDS_APP_DIR: ${{ secrets.VDS_APP_DIR }}
+          REPAIR_APPROVAL: ${{ inputs.approval }}
+          EXPECTED_PLAN_SHA: ${{ inputs.expected_plan_sha }}
+        run: |
+          set -euo pipefail
+          remote="$VDS_USER@$VDS_HOST"
+          app_dir="${VDS_APP_DIR:-/opt/stacks/taksklad/app}"
+          printf -v remote_command 'bash -s -- %q %q %q %q %q' \
+            "$app_dir" "$REPAIR_APPROVAL" "$EXPECTED_PLAN_SHA" \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+          ssh -i ~/.ssh/taksklad_telegram_logistics_repair_key \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=10 \
+            "$remote" "$remote_command" <<'REMOTE'
+          set -euo pipefail
+          umask 077
+
+          app_dir="$1"
+          repair_approval="$2"
+          expected_plan_sha="$3"
+          run_id="$4"
+          run_attempt="$5"
+          [[ "$run_id" =~ ^[0-9]+$ ]]
+          [[ "$run_attempt" =~ ^[0-9]+$ ]]
+          expected_targets=62
+          expected_target_items=230
+          test "$expected_targets" = 62
+          test "$expected_target_items" = 230
+          bundle="/tmp/taksklad-telegram-logistics-repair-${run_id}-${run_attempt}.tar.gz"
+          run_dir="/tmp/taksklad-telegram-logistics-repair-run-${run_id}-${run_attempt}"
+          evidence_prefix="/tmp/taksklad-telegram-logistics-repair-${run_id}-${run_attempt}"
+          state_dir="$run_dir/state"
+          tool="$run_dir/tools/repair_telegram_logistics_orders.py"
+
+          case "$run_dir" in
+            /tmp/taksklad-telegram-logistics-repair-run-[0-9]*-[0-9]*) ;;
+            *) echo "TELEGRAM_LOGISTICS_RUN_DIR_INVALID" >&2; exit 1 ;;
+          esac
+          test ! -e "$run_dir"
+          install -d -m 700 "$run_dir"
+          tar -xzf "$bundle" -C "$run_dir" --no-same-owner
+          chmod 700 "$run_dir/deploy/vds/backup_postgres.sh"
+          test -f "$tool"
+          install -d -m 700 "$state_dir"
+
+          cleanup_sensitive_state() {
+            case "$run_dir" in
+              /tmp/taksklad-telegram-logistics-repair-run-[0-9]*-[0-9]*) ;;
+              *) return 1 ;;
+            esac
+            rm -f "$bundle"
+            rm -rf -- "$run_dir"
+          }
+          early_exit() {
+            early_rc="$?"
+            trap - EXIT
+            cleanup_sensitive_state || true
+            exit "$early_rc"
+          }
+          trap early_exit EXIT
+
+          sanitized_names=(plan runtime-before drained-plan quiescence-before-backup backup quiescence-after-backup apply verify-1 verify-2 rollback runtime rollback-runtime)
+          for name in "${sanitized_names[@]}"; do
+            test ! -e "${evidence_prefix}-${name}.json"
+          done
+
+          sanitizer="$run_dir/sanitize_repair_evidence.py"
+          python3 - "$sanitizer" <<'PY'
+          import os
+          import sys
+
+          destination = sys.argv[1]
+          source = r'''import datetime
+          import json
+          import os
+          import re
+          import sys
+          from pathlib import Path
+
+          mode, source_path, destination, expected_plan_sha, expected_preimage_sha = sys.argv[1:]
+          payload = json.loads(Path(source_path).read_text(encoding="utf-8"))
+          common = {
+              "schema_version", "mode", "target_count", "safe_to_repair", "conflicts",
+              "plan_sha256", "preimage_sha256",
+          }
+          schemas = {
+              "plan": common | {
+                  "source_files", "target_items", "scan_count", "unique_kiz_count",
+                  "mutations_expected",
+              },
+              "apply": common | {"mutations_applied", "target_audits", "batch_audits"},
+              "verify": common | {"verified_count", "report_rows", "problem_rows", "no_send_unchanged"},
+              "rollback": common | {"rollback_count", "rollback_audits"},
+          }
+          if mode not in schemas or set(payload) != schemas[mode]:
+              raise SystemExit("TELEGRAM_LOGISTICS_EVIDENCE_FIELDS_INVALID")
+          expected_modes = {
+              "plan": {"plan_counts_only"},
+              "apply": {"apply_counts_only"},
+              "verify": {"verify_counts_only"},
+              "rollback": {"rollback_counts_only", "rollback_already_completed_counts_only"},
+          }
+          if payload.get("schema_version") != 1 or payload.get("mode") not in expected_modes[mode]:
+              raise SystemExit("TELEGRAM_LOGISTICS_EVIDENCE_MODE_INVALID")
+          if payload.get("target_count") != 62:
+              raise SystemExit("TELEGRAM_LOGISTICS_TARGET_COUNT_CHANGED")
+          if payload.get("safe_to_repair") is not True or payload.get("conflicts") != 0:
+              raise SystemExit("TELEGRAM_LOGISTICS_REPAIR_BLOCKED")
+          if payload.get("plan_sha256") != expected_plan_sha or not re.fullmatch(
+              r"[0-9a-f]{64}", str(payload.get("plan_sha256") or "")
+          ):
+              raise SystemExit("TELEGRAM_LOGISTICS_PLAN_SHA_MISMATCH")
+          preimage_sha = payload.get("preimage_sha256")
+          if mode == "plan":
+              if not re.fullmatch(r"[0-9a-f]{64}", str(preimage_sha or "")):
+                  raise SystemExit("TELEGRAM_LOGISTICS_PLAN_PREIMAGE_INVALID")
+              if expected_preimage_sha and preimage_sha != expected_preimage_sha:
+                  raise SystemExit("TELEGRAM_LOGISTICS_PLAN_PREIMAGE_CHANGED")
+              if (
+                  payload.get("source_files") != 2
+                  or payload.get("target_items") != 230
+                  or payload.get("scan_count") != 560
+                  or payload.get("unique_kiz_count") != 560
+                  or payload.get("mutations_expected") != 62
+              ):
+                  raise SystemExit("TELEGRAM_LOGISTICS_PLAN_SCOPE_CHANGED")
+          else:
+              if preimage_sha != expected_preimage_sha or not re.fullmatch(
+                  r"[0-9a-f]{64}", str(preimage_sha or "")
+              ):
+                  raise SystemExit("TELEGRAM_LOGISTICS_PREIMAGE_SHA_MISMATCH")
+          if mode == "apply" and (
+              payload.get("mutations_applied") != 62
+              or payload.get("target_audits") != 62
+              or payload.get("batch_audits", 0) < 1
+          ):
+              raise SystemExit("TELEGRAM_LOGISTICS_APPLY_SCOPE_CHANGED")
+          if mode == "verify" and (
+              payload.get("verified_count") != 62
+              or payload.get("report_rows") != 230
+              or payload.get("problem_rows") != 0
+              or payload.get("no_send_unchanged") is not True
+          ):
+              raise SystemExit("TELEGRAM_LOGISTICS_VERIFY_FAILED")
+          if mode == "rollback" and (
+              payload.get("rollback_count") != 62
+              or payload.get("rollback_audits") != 62
+          ):
+              raise SystemExit("TELEGRAM_LOGISTICS_ROLLBACK_SCOPE_CHANGED")
+          fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          with os.fdopen(fd, "w", encoding="utf-8") as handle:
+              json.dump(payload, handle, sort_keys=True)
+              handle.write("\n")
+          '''
+          fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          with os.fdopen(fd, "w", encoding="utf-8") as handle:
+              handle.write(source)
+          PY
+
+          compose_file="$app_dir/deploy/vds/docker-compose.yml"
+          compose_env="$app_dir/deploy/vds/.env"
+          test -f "$compose_file"
+          test -f "$compose_env"
+          compose_project="$(docker compose --env-file "$compose_env" -f "$compose_file" \
+            config --format json | python3 -c 'import json,sys; value=str((json.load(sys.stdin) or {}).get("name") or "").strip(); assert value; print(value)')"
+          internal_network="${compose_project}_taksklad-internal"
+          docker network inspect "$internal_network" >/dev/null
+
+          writer_services=(backend-api telegram-worker skladbot-worker smartup-auto-import-worker)
+          declare -A writer_by_service=()
+          writer_ids=()
+          for service in "${writer_services[@]}"; do
+            mapfile -t service_ids < <(docker ps -q \
+              --filter "label=com.docker.compose.project=$compose_project" \
+              --filter "label=com.docker.compose.service=$service")
+            test "${#service_ids[@]}" -eq 1
+            writer_by_service["$service"]="${service_ids[0]}"
+            writer_ids+=("${service_ids[0]}")
+          done
+          test "${#writer_ids[@]}" -eq 4
+          backend_id="${writer_by_service[backend-api]}"
+          repair_env_container_id="${writer_by_service[smartup-auto-import-worker]}"
+          backend_image="$(docker inspect --format '{{.Image}}' "$backend_id")"
+          [[ "$backend_image" =~ ^sha256:[0-9a-f]{64}$ ]]
+          repair_env_image="$(docker inspect --format '{{.Image}}' "$repair_env_container_id")"
+          test "$repair_env_image" = "$backend_image"
+          backend_user="$(docker inspect --format '{{.Config.User}}' "$backend_id")"
+          [[ "$backend_user" =~ ^[0-9]+(:[0-9]+)?$ ]]
+          backend_uid="${backend_user%%:*}"
+          backend_gid="$backend_uid"
+          if [[ "$backend_user" == *:* ]]; then
+            backend_gid="${backend_user##*:}"
+          fi
+          chown "$backend_uid:$backend_gid" "$state_dir"
+
+          env_json="$run_dir/repair-runtime-env.json"
+          env_file="$run_dir/repair-runtime.env"
+          docker inspect --format '{{json .Config.Env}}' "$repair_env_container_id" > "$env_json"
+          python3 - "$env_json" "$env_file" <<'PY'
+          import json
+          import os
+          import sys
+
+          values = json.loads(open(sys.argv[1], encoding="utf-8").read())
+          fd = os.open(sys.argv[2], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          with os.fdopen(fd, "w", encoding="utf-8") as handle:
+              for value in values:
+                  if "\n" in value or "\r" in value:
+                      raise SystemExit("TELEGRAM_LOGISTICS_ENV_MULTILINE_FORBIDDEN")
+                  handle.write(value + "\n")
+          PY
+          rm -f "$env_json"
+
+          run_control_script() {
+            script_path="$1"
+            output_path="$2"
+            error_path="$3"
+            shift 3
+            docker run --rm -i \
+              --network "$internal_network" \
+              --env-file "$env_file" \
+              -e TAKSKLAD_EXTERNAL_SENDS_DISABLED=1 \
+              --read-only \
+              --cap-drop ALL \
+              --security-opt no-new-privileges:true \
+              --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m \
+              --pids-limit 256 \
+              --memory 768m \
+              --cpus 1.0 \
+              --mount "type=bind,src=$state_dir,dst=/repair-state,rw" \
+              "$backend_image" python - "$@" < "$script_path" > "$output_path" 2> "$error_path"
+          }
+
+          run_repair() {
+            output_path="$1"
+            error_path="$2"
+            shift 2
+            run_control_script "$tool" "$output_path" "$error_path" "$@"
+          }
+
+          sanitize_quiescence() {
+            source_path="$1"
+            destination="$2"
+            python3 - "$source_path" "$destination" <<'PY'
+          import json
+          import os
+          import sys
+
+          payload = json.load(open(sys.argv[1], encoding="utf-8"))
+          allowed = {"schema_version", "mode", "other_active_client_transactions", "quiescent"}
+          if set(payload) != allowed or payload.get("schema_version") != 1 or payload.get("mode") != "counts_only":
+              raise SystemExit("TELEGRAM_LOGISTICS_QUIESCENCE_FIELDS_INVALID")
+          if payload.get("quiescent") is not True or payload.get("other_active_client_transactions") != 0:
+              raise SystemExit("TELEGRAM_LOGISTICS_DATABASE_NOT_QUIESCENT")
+          fd = os.open(sys.argv[2], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          with os.fdopen(fd, "w", encoding="utf-8") as handle:
+              json.dump(payload, handle, sort_keys=True)
+              handle.write("\n")
+          PY
+          }
+
+          initial_plan_raw="$run_dir/initial-plan.raw.json"
+          if ! run_repair "$initial_plan_raw" "$run_dir/initial-plan.stderr" --plan; then
+            echo "TELEGRAM_LOGISTICS_INITIAL_PLAN_FAILED" >&2
+            exit 1
+          fi
+          python3 "$sanitizer" plan "$initial_plan_raw" \
+            "${evidence_prefix}-plan.json" "$expected_plan_sha" ""
+          plan_sha="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["plan_sha256"])' \
+            "${evidence_prefix}-plan.json")"
+          planned_preimage_sha="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["preimage_sha256"])' \
+            "${evidence_prefix}-plan.json")"
+          test "$plan_sha" = "$expected_plan_sha"
+          [[ "$planned_preimage_sha" =~ ^[0-9a-f]{64}$ ]]
+          echo "TELEGRAM_LOGISTICS_INITIAL_PLAN_OK targets=62 safe=1 conflicts=0 values_redacted=1"
+
+          wait_healthy() {
+            for _ in $(seq 1 36); do
+              all_healthy=1
+              for container_id in "$@"; do
+                running="$(docker inspect --format '{{.State.Running}}' "$container_id" 2>/dev/null || true)"
+                health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$container_id" 2>/dev/null || true)"
+                if test "$running" != true || test "$health" != healthy; then
+                  all_healthy=0
+                fi
+              done
+              if test "$all_healthy" = 1; then
+                return 0
+              fi
+              sleep 5
+            done
+            return 1
+          }
+
+          stop_exact_writers() {
+            timeout 60s docker stop -t 45 "${writer_ids[@]}" >/dev/null
+            for container_id in "${writer_ids[@]}"; do
+              test "$(docker inspect --format '{{.State.Running}}' "$container_id")" = false
+            done
+            for service in "${writer_services[@]}"; do
+              test -z "$(docker ps -q \
+                --filter "label=com.docker.compose.project=$compose_project" \
+                --filter "label=com.docker.compose.service=$service")"
+            done
+          }
+
+          restore_previous_runtime() {
+            timeout 60s docker start "${writer_ids[@]}" >/dev/null
+            wait_healthy "${writer_ids[@]}"
+          }
+
+          check_public_runtime() {
+            destination="$1"
+            expected_identity="${2:-}"
+            health_raw="$run_dir/public-health.raw.json"
+            version_raw="$run_dir/public-version.raw.json"
+            for attempt in $(seq 1 12); do
+              rm -f "$health_raw" "$version_raw" "$destination"
+              if curl --fail --silent --show-error --max-time 10 \
+                   https://api.taksklad.uz/health > "$health_raw" \
+                 && curl --fail --silent --show-error --max-time 10 \
+                   https://api.taksklad.uz/version > "$version_raw" \
+                 && python3 - "$health_raw" "$version_raw" "$destination" "$expected_identity" <<'PY'
+          import json
+          import os
+          import re
+          import sys
+
+          health = json.load(open(sys.argv[1], encoding="utf-8"))
+          version = json.load(open(sys.argv[2], encoding="utf-8"))
+          shared = (
+              "service", "version", "commit_sha", "image_digest", "server_release_id",
+              "desktop_api_contract", "environment",
+          )
+          if health.get("status") != "ok" or any(health.get(key) != version.get(key) for key in shared):
+              raise SystemExit("TELEGRAM_LOGISTICS_PUBLIC_IDENTITY_MISMATCH")
+          if not re.fullmatch(r"[0-9a-f]{40}", str(version.get("commit_sha") or "")):
+              raise SystemExit("TELEGRAM_LOGISTICS_PUBLIC_COMMIT_INVALID")
+          if not re.fullmatch(r"sha256:[0-9a-f]{64}", str(version.get("image_digest") or "")):
+              raise SystemExit("TELEGRAM_LOGISTICS_PUBLIC_DIGEST_INVALID")
+          if version.get("server_release_id") != f"server-{version['commit_sha']}":
+              raise SystemExit("TELEGRAM_LOGISTICS_PUBLIC_RELEASE_INVALID")
+          evidence = {"status": "ok", **{key: version[key] for key in shared}}
+          if sys.argv[4]:
+              expected = json.load(open(sys.argv[4], encoding="utf-8"))
+              if set(expected) != set(evidence) or any(expected[key] != evidence[key] for key in evidence):
+                  raise SystemExit("TELEGRAM_LOGISTICS_PUBLIC_RUNTIME_CHANGED")
+          fd = os.open(sys.argv[3], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          with os.fdopen(fd, "w", encoding="utf-8") as handle:
+              json.dump(evidence, handle, sort_keys=True)
+              handle.write("\n")
+          PY
+              then
+                rm -f "$health_raw" "$version_raw"
+                return 0
+              fi
+              sleep 5
+            done
+            rm -f "$health_raw" "$version_raw" "$destination"
+            return 1
+          }
+
+          isolation_active=0
+          postcommit_guard=0
+          repair_exit() {
+            original_rc="$?"
+            trap - EXIT
+            if test "$isolation_active" != 1; then
+              cleanup_sensitive_state || true
+              exit "$original_rc"
+            fi
+            set +e
+            if test "$postcommit_guard" = 0; then
+              if restore_previous_runtime; then
+                echo "TELEGRAM_LOGISTICS_PRECOMMIT_RUNTIME_RESTORED"
+                cleanup_sensitive_state
+              else
+                echo "TELEGRAM_LOGISTICS_PRECOMMIT_RUNTIME_RESTORE_FAILED" >&2
+              fi
+              exit 1
+            fi
+
+            stop_exact_writers
+            stop_rc="$?"
+            rollback_ok=0
+            preimage_file="$state_dir/preimage.json"
+            if test "$stop_rc" = 0 \
+              && test -f "$preimage_file" \
+              && test ! -L "$preimage_file" \
+              && test "$(stat -c '%a' "$preimage_file" 2>/dev/null)" = 600; then
+              preimage_sha="$(sha256sum "$preimage_file" | awk '{print $1}')"
+              if [[ "$preimage_sha" =~ ^[0-9a-f]{64}$ ]] \
+                && test "$preimage_sha" = "$planned_preimage_sha" \
+                && run_repair "$run_dir/rollback.raw.json" "$run_dir/rollback.stderr" \
+                  --rollback \
+                  --approval "$repair_approval" \
+                  --expected-plan-sha "$plan_sha" \
+                  --preimage-file /repair-state/preimage.json \
+                  --expected-preimage-sha "$preimage_sha" \
+                && python3 "$sanitizer" rollback "$run_dir/rollback.raw.json" \
+                  "${evidence_prefix}-rollback.json" "$plan_sha" "$preimage_sha"; then
+                rollback_ok=1
+              fi
+            fi
+            if test "$rollback_ok" = 1 && restore_previous_runtime \
+              && check_public_runtime "${evidence_prefix}-rollback-runtime.json" \
+                "${evidence_prefix}-runtime-before.json"; then
+              echo "TELEGRAM_LOGISTICS_ROLLBACK_OK targets=62 values_redacted=1"
+              cleanup_sensitive_state
+            else
+              stop_exact_writers >/dev/null 2>&1 || true
+              echo "TELEGRAM_LOGISTICS_ROLLBACK_FAILED_LEFT_IN_MAINTENANCE" >&2
+            fi
+            exit 1
+          }
+          trap repair_exit EXIT
+
+          check_public_runtime "${evidence_prefix}-runtime-before.json"
+          echo "TELEGRAM_LOGISTICS_RUNTIME_BEFORE_CAPTURED values_redacted=1"
+
+          isolation_active=1
+          stop_exact_writers
+          echo "TELEGRAM_LOGISTICS_WRITERS_STOPPED count=4"
+
+          drained_plan_raw="$run_dir/drained-plan.raw.json"
+          run_repair "$drained_plan_raw" "$run_dir/drained-plan.stderr" --plan
+          python3 "$sanitizer" plan "$drained_plan_raw" \
+            "${evidence_prefix}-drained-plan.json" "$plan_sha" "$planned_preimage_sha"
+          echo "TELEGRAM_LOGISTICS_DRAINED_PLAN_OK targets=62 snapshot_unchanged=1 values_redacted=1"
+
+          quiescence_tool="$run_dir/tools/postgres_quiescence_check.py"
+          run_control_script "$quiescence_tool" \
+            "$run_dir/quiescence-before-backup.raw.json" \
+            "$run_dir/quiescence-before-backup.stderr"
+          sanitize_quiescence "$run_dir/quiescence-before-backup.raw.json" \
+            "${evidence_prefix}-quiescence-before-backup.json"
+          echo "TELEGRAM_LOGISTICS_QUIESCENCE_BEFORE_BACKUP_OK other_active=0"
+
+          backup_operation_id="$(cat /proc/sys/kernel/random/uuid)"
+          backup_raw="$run_dir/backup-result.raw.json"
+          TAKSKLAD_ENV_FILE="$compose_env" \
+          TAKSKLAD_COMPOSE_FILE="$run_dir/deploy/vds/docker-compose.yml" \
+          TAKSKLAD_MAINTENANCE_MARKER=/run/taksklad-observability/maintenance.json \
+          TAKSKLAD_BACKUP_OPERATION_ID="$backup_operation_id" \
+          TAKSKLAD_BACKUP_RESULT_FILE="$backup_raw" \
+            "$run_dir/deploy/vds/backup_postgres.sh" --no-prune \
+            > "$run_dir/backup.stdout" 2> "$run_dir/backup.stderr"
+          python3 - "$backup_raw" "${evidence_prefix}-backup.json" "$backup_operation_id" <<'PY'
+          import datetime
+          import json
+          import os
+          import re
+          import sys
+
+          payload = json.load(open(sys.argv[1], encoding="utf-8"))
+          allowed = {
+              "schema", "operation_id", "manifest_path", "archive_path", "archive_sha256",
+              "archive_bytes", "migration_head", "created_at_utc",
+          }
+          if set(payload) != allowed or payload.get("schema") != 1:
+              raise SystemExit("TELEGRAM_LOGISTICS_BACKUP_FIELDS_INVALID")
+          if payload.get("operation_id") != sys.argv[3]:
+              raise SystemExit("TELEGRAM_LOGISTICS_BACKUP_OPERATION_MISMATCH")
+          if not re.fullmatch(r"[0-9a-f]{64}", str(payload.get("archive_sha256") or "")):
+              raise SystemExit("TELEGRAM_LOGISTICS_BACKUP_SHA_INVALID")
+          if not isinstance(payload.get("archive_bytes"), int) or payload["archive_bytes"] <= 0:
+              raise SystemExit("TELEGRAM_LOGISTICS_BACKUP_EMPTY")
+          if not re.fullmatch(r"[A-Za-z0-9_]{8,64}", str(payload.get("migration_head") or "")):
+              raise SystemExit("TELEGRAM_LOGISTICS_BACKUP_MIGRATION_INVALID")
+          created = datetime.datetime.fromisoformat(str(payload.get("created_at_utc") or "").replace("Z", "+00:00"))
+          now = datetime.datetime.now(datetime.timezone.utc)
+          if created < now - datetime.timedelta(minutes=15) or created > now + datetime.timedelta(minutes=2):
+              raise SystemExit("TELEGRAM_LOGISTICS_BACKUP_NOT_FRESH")
+          evidence = {
+              "schema_version": 1,
+              "operation_id": payload["operation_id"],
+              "archive_sha256": payload["archive_sha256"],
+              "archive_bytes": payload["archive_bytes"],
+              "migration_head": payload["migration_head"],
+              "created_at_utc": payload["created_at_utc"],
+          }
+          fd = os.open(sys.argv[2], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          with os.fdopen(fd, "w", encoding="utf-8") as handle:
+              json.dump(evidence, handle, sort_keys=True)
+              handle.write("\n")
+          PY
+          echo "TELEGRAM_LOGISTICS_BACKUP_OK fresh=1 values_redacted=1"
+
+          run_control_script "$quiescence_tool" \
+            "$run_dir/quiescence-after-backup.raw.json" \
+            "$run_dir/quiescence-after-backup.stderr"
+          sanitize_quiescence "$run_dir/quiescence-after-backup.raw.json" \
+            "${evidence_prefix}-quiescence-after-backup.json"
+          echo "TELEGRAM_LOGISTICS_QUIESCENCE_AFTER_BACKUP_OK other_active=0"
+
+          preimage_file="$state_dir/preimage.json"
+          test ! -e "$preimage_file"
+          postcommit_guard=1
+          if ! run_repair "$run_dir/apply.raw.json" "$run_dir/apply.stderr" \
+            --apply \
+            --approval "$repair_approval" \
+            --expected-plan-sha "$plan_sha" \
+            --preimage-out /repair-state/preimage.json; then
+            echo "TELEGRAM_LOGISTICS_APPLY_FAILED_ROLLBACK_REQUIRED" >&2
+            exit 1
+          fi
+          test -f "$preimage_file"
+          test ! -L "$preimage_file"
+          test "$(stat -c '%a' "$preimage_file")" = 600
+          preimage_sha="$(sha256sum "$preimage_file" | awk '{print $1}')"
+          [[ "$preimage_sha" =~ ^[0-9a-f]{64}$ ]]
+          test "$preimage_sha" = "$planned_preimage_sha"
+          python3 "$sanitizer" apply "$run_dir/apply.raw.json" \
+            "${evidence_prefix}-apply.json" "$plan_sha" "$preimage_sha"
+          echo "TELEGRAM_LOGISTICS_APPLY_OK targets=62 values_redacted=1"
+
+          timeout 60s docker start "$backend_id" >/dev/null
+          wait_healthy "$backend_id"
+          for service in telegram-worker skladbot-worker smartup-auto-import-worker; do
+            test -z "$(docker ps -q \
+              --filter "label=com.docker.compose.project=$compose_project" \
+              --filter "label=com.docker.compose.service=$service")"
+          done
+          echo "TELEGRAM_LOGISTICS_BACKEND_ONLY_HEALTHY other_writers_stopped=3"
+
+          run_repair "$run_dir/verify-1.raw.json" "$run_dir/verify-1.stderr" \
+            --verify --expected-plan-sha "$plan_sha" --no-send
+          python3 "$sanitizer" verify "$run_dir/verify-1.raw.json" \
+            "${evidence_prefix}-verify-1.json" "$plan_sha" "$preimage_sha"
+          echo "TELEGRAM_LOGISTICS_VERIFY_1_OK targets=62 no_send=1 values_redacted=1"
+
+          sleep 30
+
+          run_repair "$run_dir/verify-2.raw.json" "$run_dir/verify-2.stderr" \
+            --verify --expected-plan-sha "$plan_sha" --no-send
+          python3 "$sanitizer" verify "$run_dir/verify-2.raw.json" \
+            "${evidence_prefix}-verify-2.json" "$plan_sha" "$preimage_sha"
+          echo "TELEGRAM_LOGISTICS_VERIFY_2_OK targets=62 no_send=1 values_redacted=1"
+
+          timeout 60s docker start \
+            "${writer_by_service[telegram-worker]}" \
+            "${writer_by_service[skladbot-worker]}" \
+            "${writer_by_service[smartup-auto-import-worker]}" >/dev/null
+          wait_healthy "${writer_ids[@]}"
+          check_public_runtime "${evidence_prefix}-runtime.json" \
+            "${evidence_prefix}-runtime-before.json"
+          echo "TELEGRAM_LOGISTICS_RUNTIME_RESTORED writers=4 public_health=ok public_version=ok"
+
+          isolation_active=0
+          postcommit_guard=0
+          trap - EXIT
+          cleanup_sensitive_state
+          REMOTE
+
+      - name: Collect counts-only sanitized evidence
+        if: always()
+        env:
+          VDS_HOST: ${{ secrets.VDS_HOST }}
+          VDS_USER: ${{ secrets.VDS_USER }}
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/telegram-logistics-repair-evidence"
+          install -d -m 700 "$evidence_dir"
+          prefix="/tmp/taksklad-telegram-logistics-repair-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          for name in plan runtime-before drained-plan quiescence-before-backup backup quiescence-after-backup apply verify-1 verify-2 rollback runtime rollback-runtime; do
+            scp -i ~/.ssh/taksklad_telegram_logistics_repair_key \
+              "$VDS_USER@$VDS_HOST:${prefix}-${name}.json" \
+              "$evidence_dir/${name}.json" 2>/dev/null || true
+          done
+          test -f "$evidence_dir/plan.json"
+          find "$evidence_dir" -type f -exec chmod 600 {} +
+
+      - name: Remove remote sanitized evidence
+        if: always()
+        env:
+          VDS_HOST: ${{ secrets.VDS_HOST }}
+          VDS_USER: ${{ secrets.VDS_USER }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$GITHUB_RUN_ATTEMPT" =~ ^[0-9]+$ ]]
+          remote="$VDS_USER@$VDS_HOST"
+          printf -v remote_command 'bash -s -- %q %q' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+          ssh -i ~/.ssh/taksklad_telegram_logistics_repair_key \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+            "$remote" "$remote_command" <<'REMOTE'
+          set -euo pipefail
+          run_id="$1"
+          run_attempt="$2"
+          [[ "$run_id" =~ ^[0-9]+$ ]]
+          [[ "$run_attempt" =~ ^[0-9]+$ ]]
+          prefix="/tmp/taksklad-telegram-logistics-repair-${run_id}-${run_attempt}"
+          case "$prefix" in
+            /tmp/taksklad-telegram-logistics-repair-[0-9]*-[0-9]*) ;;
+            *) echo "TELEGRAM_LOGISTICS_EVIDENCE_PREFIX_INVALID" >&2; exit 1 ;;
+          esac
+          evidence_names=(
+            plan runtime-before drained-plan
+            quiescence-before-backup backup quiescence-after-backup
+            apply verify-1 verify-2 rollback runtime rollback-runtime
+          )
+          for name in "${evidence_names[@]}"; do
+            rm -f -- "${prefix}-${name}.json"
+          done
+          REMOTE
+
+      - name: Upload counts-only sanitized evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: taksklad-telegram-logistics-repair-evidence
+          path: ${{ runner.temp }}/telegram-logistics-repair-evidence
+          if-no-files-found: error
+          retention-days: 14
