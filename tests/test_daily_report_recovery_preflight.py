@@ -421,11 +421,29 @@ class DailyReportRecoveryDeployContractTests(unittest.TestCase):
         combined_verify = self.workflow.index(
             'tools/verify_daily_report_recovery_preflight.py verify', second_dry_run
         )
-        deploy = self.workflow.index('./deploy/vds/deploy_from_git.sh --artifact-manifest')
+        backup = self.workflow.index(
+            './deploy/vds/backup_postgres.sh --no-prune </dev/null',
+            combined_verify,
+        )
+        refreshed_evidence = self.workflow.index(
+            'python3 tools/collect_phase27_evidence.py preflight',
+            backup,
+        )
+        current_backup_gate = self.workflow.index(
+            '--read-only --require-current-backup </dev/null',
+            refreshed_evidence,
+        )
+        deploy = self.workflow.index(
+            './deploy/vds/deploy_from_git.sh --artifact-manifest',
+            current_backup_gate,
+        )
         self.assertLess(current_inspect, first_dry_run)
         self.assertLess(first_dry_run, second_dry_run)
         self.assertLess(second_dry_run, combined_verify)
-        self.assertLess(combined_verify, deploy)
+        self.assertLess(combined_verify, backup)
+        self.assertLess(backup, refreshed_evidence)
+        self.assertLess(refreshed_evidence, current_backup_gate)
+        self.assertLess(current_backup_gate, deploy)
 
     def test_recovery_has_exact_completion_gate_and_normal_readiness_stays_strict(self):
         self.assertIn('verify_daily_report_recovery_completion() {', self.script)
