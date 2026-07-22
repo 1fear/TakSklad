@@ -8,6 +8,7 @@ from tools.container_runtime_harness import (
     docker_bind_source,
     last_integer_line,
     memory_allocation_was_denied,
+    oversize_memory_probe_script,
     parse_memory_bytes,
 )
 
@@ -100,6 +101,12 @@ class ContainerRuntimeHarnessContractTests(unittest.TestCase):
         self.assertTrue(memory_allocation_was_denied({"OOMKilled": False, "ExitCode": 42}))
         self.assertFalse(memory_allocation_was_denied({"OOMKilled": False, "ExitCode": 0}))
         self.assertFalse(memory_allocation_was_denied({"OOMKilled": False, "ExitCode": 1}))
+
+    def test_oversize_memory_probe_touches_every_allocated_page(self):
+        script = oversize_memory_probe_script()
+        self.assertIn("data = bytearray(256 * 1024 * 1024)", script)
+        self.assertIn("range(0, len(data), mmap.PAGESIZE)", script)
+        self.assertIn("data[offset] = 1", script)
 
     def test_integer_parser_ignores_fresh_image_pull_diagnostics(self):
         output = "Unable to find image locally\nPull complete\n70\n"
