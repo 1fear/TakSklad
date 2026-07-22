@@ -211,6 +211,29 @@ class TelegramRoutingContractTests(unittest.TestCase):
         )
         self.assertEqual(self.contract.route_for(kind).schedules, ("on_completion",))
 
+    def test_daily_runtime_artifact_is_one_combined_report(self):
+        artifact = runtime_output_artifacts()[TelegramMessageKind.SKLADBOT_DAILY_REPORT.value]
+        self.assertEqual(set(artifact), {"message", "caption", "filename"})
+        self.assertEqual(artifact["caption"], "SkladBot отчет за 02.01.2030")
+        self.assertEqual(artifact["filename"], "TakSklad_SkladBot_daily_02.01.2030.xlsx")
+
+        scheduled_source = (
+            PROJECT_ROOT / "backend" / "app" / "telegram_scheduled_report_processor.py"
+        ).read_text(encoding="utf-8")
+        output_source = (
+            PROJECT_ROOT / "backend" / "app" / "telegram_output_contract.py"
+        ).read_text(encoding="utf-8")
+        for removed_symbol in (
+            "send_daily_kiz_export",
+            "kiz_daily_report_caption",
+            "kiz_caption",
+        ):
+            with self.subTest(removed_symbol=removed_symbol):
+                self.assertNotIn(removed_symbol, scheduled_source + output_source)
+        self.assertFalse(
+            (PROJECT_ROOT / "backend" / "app" / "telegram_daily_kiz_export.py").exists()
+        )
+
     def test_on_completion_is_allowlisted_only_for_transfer_kiz_export(self):
         manifest = json.loads(
             (PROJECT_ROOT / "backend" / "app" / "telegram_routing_manifest.json").read_text(

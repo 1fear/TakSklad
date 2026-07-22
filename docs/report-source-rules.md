@@ -1,6 +1,6 @@
 # Report Source Rules
 
-Актуально на: 20.07.2026
+Актуально на: 22.07.2026
 
 Цель документа: зафиксировать, откуда отчеты и складской hot path берут данные и как должны вести себя при ошибках. Главное правило: Postgres/backend является единственным operational source of truth. Google Sheets в runtime не используется.
 
@@ -14,14 +14,17 @@
 | КИЗы по дате | `GET /api/v1/reports/kiz/date` | Postgres: `order_items.scan_codes`, `orders`, import metadata | Выгружаются только КИЗы, записанные в backend. |
 | КИЗы по файлу | `GET /api/v1/reports/kiz/source-file` | Postgres: import metadata и `scan_codes` | Для выбранной партии требуется завершённость. |
 | Административный экспорт заказов | `GET /api/v1/admin/orders/export.xlsx` | PostgreSQL с admin-фильтрами | XLSX формируется backend; таблица не является хранилищем. |
-| Ежедневный SkladBot отчет | `/skladbot_daily ДД.ММ.ГГГГ`, schedule `22:00` | SkladBot API: requests/detail, transactions, products/stock | Read-only отчёт; клиентский XLSX содержит только `Сводка`, `Заявки`, `Товары заявок`; internal partial/failed coverage блокирует scheduled send. |
+| Ежедневный SkladBot отчет | `/skladbot_daily ДД.ММ.ГГГГ`, schedule `22:00` | SkladBot API: requests/detail, transactions, products/stock; PostgreSQL: `orders`, `order_items`, `scan_codes`, KIZ lifecycle | Read-only отчёт; клиентский XLSX содержит только `Сводка`, `Заявки`, `Товары заявок`, `КИЗы заявок`, `КИЗы за день`; internal partial/failed coverage или ошибка KIZ hydration блокирует scheduled send до Telegram. |
 | Ежедневная сверка | `GET /api/v1/reports/reconciliation/day`, schedule после SkladBot daily | PostgreSQL + SkladBot metadata | Сверка не читает Google и не создаёт Google mirror incidents. |
 
 ## Ошибки И Edge Cases
 
 - Невалидная дата отчета возвращает явную ошибку, а не молча подставляет сегодня.
 - Частичные ошибки SkladBot/API записываются во внутренние `errors` и coverage diagnostics, а не скрываются как успешный отчет и не добавляют технические листы в клиентский XLSX.
-- Scheduled SkladBot daily не отправляет Telegram и не запускает daily reconciliation, если coverage не `complete`, есть API/detail/list warning/error, detail limit не дал проверить in-scope/unknown candidates, или отчет содержит `0` operational rows при наличии diagnostic/excluded rows.
+- Scheduled SkladBot daily не отправляет Telegram и не запускает daily reconciliation, если coverage не `complete`, есть API/detail/list warning/error, detail limit не дал проверить in-scope/unknown candidates, или KIZ hydration завершился ошибкой. Обычная открытая заявка, найденная только по `created_at` и status diagnostic `neither`, остаётся внутренней диагностикой без ложного warning; остальные status/date anomalies по-прежнему блокируют send.
+- `КИЗы заявок` содержит все текущие активные `ScanCode` однозначно связанной operational request независимо от даты скана и типа оплаты. Колонка `КИЗов` равна `0` только при доказанной связи и отсутствии активных кодов; при неоднозначности она пустая.
+- `КИЗы за день` содержит только текущие активные сканы terminal-заказов, чья business scan date равна дате отчёта. Источник времени: `raw_payload.scanned_at`, fallback `scan_codes.scanned_at`, timezone `Asia/Tashkent`. Неоднозначный day scan остаётся в листе с пустыми полями заявки.
+- Mapping КИЗов запрещает эвристики по клиенту, адресу, дате, товару и Smartup ID. Допустима только уникальная canonical-пара `SkladBot ID + WH-R/WR номер` из `Order`/`OrderItem.raw_payload`; returned/free lifecycle исключается, duplicate active normalized code блокирует report без вывода кода в error/log.
 - Если за дату отчета есть заявки, созданные сегодня на будущую дату выгрузки, они остаются обычными операционными строками при статусе `Выполнена` + `В архиве`.
 - Manual `/skladbot_daily` использует тот же blocker по coverage: partial/failed/truncation/date-conflict/API-error отчет не отправляет XLSX по умолчанию. Ручная отправка неполного отчета возможна только через explicit admin flag `--allow-partial`; такой отчет помечается текстом `НЕПОЛНЫЙ ОТЧЕТ`, не пишет scheduled registry и не запускает reconciliation.
 - Detail budget для SkladBot daily сначала расходуется на known in-scope candidates, затем на unknown-date candidates, и только потом на diagnostic/out-of-scope sample. Known out-of-scope rows остаются во внутреннем `excluded_requests` без detail fetch и не должны вытеснять полезные строки из лимита детализации.
@@ -52,7 +55,8 @@
 ## Проверочные Тесты
 
 - `tests.test_backend_api_persistence` проверяет DB day report, web dashboard summary по дате загрузки, business timezone, логистику, таймслоты сохраненных точек, лист `Требуют координаты`, KIZ source/date exports и invalid report date.
-- `tests.test_skladbot_daily_report` проверяет точный трехлистовый SkladBot daily XLSX, spreadsheet formula safety, стабильный movement-ID dedupe, пустой набор, SKU-колонки, `acceptedAmount`, отдельную строку `Отгрузка в браке`, page-based `/requests` crawl, internal coverage diagnostics/excluded rows, July 7 transfer batch regression, truncation/date-conflict/status partial coverage, read-style POST retry, manual partial block/override, admin-only bounded failure alert, scheduled partial-send block, detail-budget priority, split max-pages counters, source identity keys, scheduled registry и retry на `429`.
+- `tests.test_skladbot_daily_report` проверяет точный пятилистовый SkladBot daily XLSX, exact KIZ headers, blank-vs-zero mapping, business-date/timezone, terminal filter, lifecycle и duplicate guards, spreadsheet formula safety, movement-ID dedupe, пустой набор, SKU-колонки, `acceptedAmount`, page-based `/requests` crawl, coverage diagnostics, truncation/date-conflict/status partial coverage, read-style POST retry, scheduled registry и retry на `429`.
+- `tests.test_telegram_scheduled_daily_combined` и `tests.test_telegram_manual_daily_catchup` проверяют один message + один combined XLSX, KIZ hydration до Telegram, true-empty no-send, durable catch-up, post-send ambiguity и zero-send replay.
 - `tests.test_readiness_policy` проверяет безопасную сериализацию и OpenAPI-контракт `daily_report` без chat ID.
 - `tests.test_backend_telegram_import` проверяет Telegram-ошибки логистики/KIZ и ограничение меню последних файлов.
 - `tests.test_reconciliation_service` проверяет DB/SkladBot сверку, SkladBot gaps и dedupe Telegram alerts без Google runtime.

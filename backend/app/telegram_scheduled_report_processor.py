@@ -23,7 +23,6 @@ from .telegram_daily_report_policy import (
     failed_daily_report_is_legacy_empty_false_positive,
     failed_daily_report_retry_is_safe,
 )
-from .telegram_daily_kiz_export import send_daily_kiz_export
 from .telegram_output_contract import daily_report_caption
 SKLADBOT_DAILY_REPORTED_REQUEST_EVENT_TYPE = "skladbot_daily_reported_request"
 TELEGRAM_NOTIFICATION_EVENT_TYPE = "telegram_notification"
@@ -153,7 +152,7 @@ def scheduled_skladbot_daily_report_blocker(report):
         return f"{SKLADBOT_DAILY_REPORT_COVERAGE_FAILED_ERROR}: errors={len(errors)}"
     included = parse_int((coverage or {}).get("included_operational_requests"))
     excluded = parse_int((coverage or {}).get("excluded_diagnostic_requests"))
-    if included == 0 and excluded > 0:
+    if included == 0 and excluded > 0 and not (report.get("daily_kiz_rows") or []):
         return f"{SKLADBOT_DAILY_REPORT_COVERAGE_FAILED_ERROR}: included=0 excluded={excluded}"
     return ""
 
@@ -267,75 +266,197 @@ class TelegramScheduledReportProcessor(TelegramProcessorDelegate):
     def _daily_reconciliation_callback(self):
         return getattr(self, "daily_reconciliation_callback", None) or run_daily_reconciliation
 
-    def send_skladbot_daily_report(self, chat_id, report_date=None, scheduled=False, progress=None, allow_partial=False):
-        def emit_progress(stage, **fields):
-            logging.info(
-                "Telegram worker: scheduled SkladBot daily progress stage=%s report_date=%s",
-                stage,
-                fields.get("report_date") or "",
-            )
-            if progress is not None:
-                progress(stage, **fields)
+    @staticmethod
+    def _emit_skladbot_daily_progress(progress, stage, **fields):
+        logging.info(
+            "Telegram worker: scheduled SkladBot daily progress stage=%s report_date=%s",
+            stage,
+            fields.get("report_date") or "",
+        )
+        if progress is not None:
+            progress(stage, **fields)
 
+    def prepare_skladbot_daily_report(
+        self,
+        report_date=None,
+        progress=None,
+        *,
+        scheduled=False,
+        allow_partial=False,
+        build_for_dry_run=False,
+    ):
+        """Collect and fully hydrate one combined daily workbook before Telegram I/O."""
         report_module = self._skladbot_daily_report_module()
         report_date = coerce_report_date(report_date or report_module.business_today())
-        report_date_text = report_date.strftime("%d.%m.%Y")
-        if not scheduled:
-            self.safe_send_message(chat_id, f"Собираю SkladBot отчет за {report_date_text}.")
-        emit_progress("scheduled job started", report_date=report_date.isoformat(), scheduled=bool(scheduled))
+        self._emit_skladbot_daily_progress(
+            progress,
+            "scheduled job started",
+            report_date=report_date.isoformat(),
+            scheduled=bool(scheduled),
+        )
         report = report_module.collect_skladbot_daily_report(
             report_date=report_date,
         )
         enrich_smartup_ids = getattr(report_module, "enrich_smartup_ids_from_orders", None)
-        if callable(enrich_smartup_ids):
+        enrich_daily_kiz = getattr(report_module, "enrich_daily_kiz_from_orders", None)
+        if callable(enrich_smartup_ids) or callable(enrich_daily_kiz):
             with self._scheduled_session_factory()() as db:
-                enrich_smartup_ids(db, report)
+                if callable(enrich_smartup_ids):
+                    enrich_smartup_ids(db, report)
+                if callable(enrich_daily_kiz):
+                    enrich_daily_kiz(db, report)
+        report.setdefault("request_kiz_rows", [])
+        report.setdefault("daily_kiz_rows", [])
         report_date = coerce_report_date(report.get("report_date") or report_date)
-        report_date_text = report_date.strftime("%d.%m.%Y")
         coverage = report.get("coverage") or {}
-        emit_progress(
+        requests_count = len(report.get("requests") or [])
+        order_kiz_count = len(report.get("request_kiz_rows") or [])
+        day_kiz_count = len(report.get("daily_kiz_rows") or [])
+        combined_empty = (
+            requests_count == 0
+            and order_kiz_count == 0
+            and day_kiz_count == 0
+        )
+        self._emit_skladbot_daily_progress(
+            progress,
             "report generation finished",
             report_date=report_date.isoformat(),
             coverage_status=normalize_text(coverage.get("coverage_status")),
-            requests_count=len(report.get("requests") or []),
+            requests_count=requests_count,
+            order_kiz_count=order_kiz_count,
+            day_kiz_count=day_kiz_count,
             errors_count=len(report.get("errors") or []),
         )
-        if (
+        no_requests_result = bool(
             scheduled
             and normalize_text(coverage.get("coverage_status")).lower() == "complete"
             and not (report.get("errors") or [])
-            and not (report.get("requests") or [])
-        ):
-            emit_progress(
+            and combined_empty
+        )
+        if no_requests_result:
+            self._emit_skladbot_daily_progress(
+                progress,
                 "scheduled job no requests",
                 report_date=report_date.isoformat(),
                 result_status=SKLADBOT_DAILY_REPORT_NO_REQUESTS_RESULT,
+                combined_empty=True,
+                requests_count=0,
+                order_kiz_count=0,
+                day_kiz_count=0,
             )
-            return SKLADBOT_DAILY_REPORT_NO_REQUESTS_RESULT
+        if no_requests_result and not build_for_dry_run:
+            return {
+                "report": report,
+                "report_date": report_date,
+                "content": None,
+                "filename": "",
+                "message": "",
+                "blocker": "",
+                "result_status": SKLADBOT_DAILY_REPORT_NO_REQUESTS_RESULT,
+                "combined_empty": True,
+                "requests_count": 0,
+                "order_kiz_count": 0,
+                "day_kiz_count": 0,
+            }
         blocker = scheduled_skladbot_daily_report_blocker(report)
+        content = None
+        filename = ""
+        message = ""
+        if not blocker or allow_partial or build_for_dry_run:
+            content, filename = report_module.build_skladbot_daily_report_xlsx(report)
+            self._emit_skladbot_daily_progress(
+                progress,
+                "xlsx created",
+                report_date=report_date.isoformat(),
+                filename=filename,
+                bytes=len(content),
+            )
+            message = report_module.build_skladbot_daily_report_message(report)
+        return {
+            "report": report,
+            "report_date": report_date,
+            "content": content,
+            "filename": filename,
+            "message": message,
+            "blocker": blocker,
+            "result_status": (
+                SKLADBOT_DAILY_REPORT_NO_REQUESTS_RESULT if no_requests_result else ""
+            ),
+            "combined_empty": combined_empty,
+            "requests_count": requests_count,
+            "order_kiz_count": order_kiz_count,
+            "day_kiz_count": day_kiz_count,
+        }
+
+    def send_skladbot_daily_report(
+        self,
+        chat_id,
+        report_date=None,
+        scheduled=False,
+        progress=None,
+        allow_partial=False,
+        delivery_mode="scheduled",
+    ):
+        prepared = self.prepare_skladbot_daily_report(
+            report_date,
+            progress,
+            scheduled=scheduled,
+            allow_partial=allow_partial,
+        )
+        if prepared["result_status"] == SKLADBOT_DAILY_REPORT_NO_REQUESTS_RESULT:
+            return SKLADBOT_DAILY_REPORT_NO_REQUESTS_RESULT
+        report = prepared["report"]
+        report_date = prepared["report_date"]
+        blocker = prepared["blocker"]
         if blocker:
             if scheduled:
-                emit_progress("scheduled job failed", report_date=report_date.isoformat(), error=blocker)
+                self._emit_skladbot_daily_progress(
+                    progress,
+                    "scheduled job failed",
+                    report_date=report_date.isoformat(),
+                    error=blocker,
+                )
                 raise RuntimeError(blocker)
             if not allow_partial:
                 self.safe_send_message(chat_id, manual_skladbot_daily_partial_warning(report, blocker))
                 return False
-            self.safe_send_message(chat_id, manual_skladbot_daily_partial_override_warning(report, blocker))
-        content, filename = report_module.build_skladbot_daily_report_xlsx(report)
-        emit_progress("xlsx created", report_date=report_date.isoformat(), filename=filename, bytes=len(content))
-        message = report_module.build_skladbot_daily_report_message(report)
+
+        content = prepared["content"]
+        filename = prepared["filename"]
+        message = prepared["message"]
+        if not scheduled:
+            report_date_text = report_date.strftime("%d.%m.%Y")
+            self.safe_send_message(chat_id, f"Собираю SkladBot отчет за {report_date_text}.")
+            if blocker:
+                self.safe_send_message(chat_id, manual_skladbot_daily_partial_override_warning(report, blocker))
         if scheduled:
-            emit_progress("telegram sendMessage started", report_date=report_date.isoformat())
+            self._emit_skladbot_daily_progress(
+                progress,
+                "telegram sendMessage started",
+                report_date=report_date.isoformat(),
+            )
             self.send_message(chat_id, message)
-            emit_progress("telegram sendMessage success", report_date=report_date.isoformat())
-            emit_progress("telegram sendDocument started", report_date=report_date.isoformat())
+            self._emit_skladbot_daily_progress(
+                progress,
+                "telegram sendMessage success",
+                report_date=report_date.isoformat(),
+            )
+            self._emit_skladbot_daily_progress(
+                progress,
+                "telegram sendDocument started",
+                report_date=report_date.isoformat(),
+            )
             document = self.send_document(
                 chat_id,
                 content,
                 filename,
                 caption=daily_report_caption(report_date),
             )
-            emit_progress("telegram sendDocument success", report_date=report_date.isoformat())
+            self._emit_skladbot_daily_progress(
+                progress,
+                "telegram sendDocument success",
+                report_date=report_date.isoformat(),
+            )
         else:
             self.safe_send_message(chat_id, message)
             document = self.safe_send_document(
@@ -344,13 +465,15 @@ class TelegramScheduledReportProcessor(TelegramProcessorDelegate):
                 filename,
                 caption=daily_report_caption(report_date),
             )
-        if document is not None:
-            send_daily_kiz_export(self, chat_id, report_date, scheduled, emit_progress)
         if document is not None and scheduled:
             reported_count = mark_skladbot_daily_report_requests_reported(
-                report, chat_id=chat_id, mode="scheduled", session_factory=self._scheduled_session_factory(),
+                report,
+                chat_id=chat_id,
+                mode=normalize_text(delivery_mode) or "scheduled",
+                session_factory=self._scheduled_session_factory(),
             )
-            emit_progress(
+            self._emit_skladbot_daily_progress(
+                progress,
                 "reported mark success",
                 report_date=report_date.isoformat(),
                 reported_count=reported_count,

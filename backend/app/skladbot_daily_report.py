@@ -29,6 +29,11 @@ from .skladbot_contracts import (
 )
 from .representative_contacts import display_representative_name
 from .spreadsheet_safety import force_workbook_text_literals
+from .skladbot_daily_kiz import (
+    DAILY_KIZ_HEADERS,
+    REQUEST_KIZ_HEADERS,
+    enrich_daily_kiz_from_orders,
+)
 from .telegram_output_contract import build_skladbot_daily_report_message, daily_report_filename
 
 
@@ -66,6 +71,7 @@ REQUEST_HEADERS = [
     "Комментарий",
     "Блоков план",
     "Блоков факт",
+    "КИЗов",
     "Отклонение",
     "Товаров",
     "Причина включения",
@@ -1011,7 +1017,15 @@ def update_coverage_exclusion_counts(coverage: dict[str, Any], request: dict[str
     if exclusion_reason == "out_of_scope":
         coverage["out_of_scope_requests"] += 1
     primary_status_fields = {"unloading_date", "movement_date", "created_at"}
-    if exclusion_reason == "status_not_completed_archived" and date_field_used in primary_status_fields:
+    ordinary_created_neither = (
+        date_field_used == "created_at"
+        and diagnostic_reason == "neither"
+    )
+    if (
+        exclusion_reason == "status_not_completed_archived"
+        and date_field_used in primary_status_fields
+        and not ordinary_created_neither
+    ):
         add_coverage_warning(coverage, "status_not_completed_archived")
 
 
@@ -1590,6 +1604,8 @@ def build_skladbot_daily_report_xlsx(report: dict[str, Any]) -> tuple[bytes, str
     write_summary_sheet(summary_sheet, report)
     write_requests_sheet(workbook.create_sheet("Заявки"), report.get("requests") or [])
     write_request_products_sheet(workbook.create_sheet("Товары заявок"), report.get("requests") or [])
+    write_request_kiz_sheet(workbook.create_sheet("КИЗы заявок"), report.get("request_kiz_rows") or [])
+    write_daily_kiz_sheet(workbook.create_sheet("КИЗы за день"), report.get("daily_kiz_rows") or [])
     for sheet in workbook.worksheets:
         autosize_columns(sheet)
     apply_report_template_widths(workbook)
@@ -1648,9 +1664,46 @@ def write_requests_sheet(sheet, requests: list[dict[str, Any]]) -> None:
             request.get("comment") or "",
             planned_blocks,
             actual_blocks,
+            request.get("kiz_count"),
             actual_blocks - planned_blocks,
             len(request.get("products") or []),
             ", ".join(request.get("include_reasons") or []),
+        ])
+    apply_header_style(sheet)
+
+
+def write_request_kiz_sheet(sheet, rows: list[dict[str, Any]]) -> None:
+    sheet.append(REQUEST_KIZ_HEADERS)
+    for row in rows:
+        sheet.append([
+            row.get("request_number") or "",
+            row.get("request_id") or "",
+            row.get("smartup_id") or "",
+            row.get("unloading_date") or "",
+            row.get("payment_type") or "",
+            row.get("product") or "",
+            row.get("code") or "",
+            row.get("scanned_at") or "",
+            row.get("scan_type") or "",
+            parse_int(row.get("block_quantity")),
+        ])
+    apply_header_style(sheet)
+
+
+def write_daily_kiz_sheet(sheet, rows: list[dict[str, Any]]) -> None:
+    sheet.append(DAILY_KIZ_HEADERS)
+    for row in rows:
+        sheet.append([
+            row.get("request_number") or "",
+            row.get("request_id") or "",
+            row.get("smartup_id") or "",
+            row.get("unloading_date") or "",
+            row.get("payment_type") or "",
+            row.get("product") or "",
+            row.get("code") or "",
+            row.get("scanned_at") or "",
+            row.get("scan_type") or "",
+            parse_int(row.get("block_quantity")),
         ])
     apply_header_style(sheet)
 
@@ -1978,8 +2031,10 @@ def autosize_columns(sheet) -> None:
 def apply_report_template_widths(workbook: Workbook) -> None:
     widths_by_sheet = {
         "Сводка": {"A": 28, "B": 13, "C": 10},
-        "Заявки": {"A": 10, "B": 13, "C": 11, "D": 20, "E": 11, "F": 10, "G": 15, "H": 17, "I": 15, "J": 45, "K": 24, "L": 33, "M": 60, "N": 13, "O": 12, "P": 12, "Q": 12, "R": 10, "S": 24},
+        "Заявки": {"A": 10, "B": 13, "C": 11, "D": 20, "E": 11, "F": 10, "G": 15, "H": 17, "I": 15, "J": 45, "K": 24, "L": 33, "M": 60, "N": 13, "O": 12, "P": 12, "Q": 12, "R": 10, "S": 10, "T": 10, "U": 24},
         "Товары заявок": {"A": 13, "B": 11, "C": 20, "D": 15, "E": 45, "F": 24, "G": 36, "H": 17, "I": 15, "J": 12, "K": 13, "L": 12, "M": 12},
+        "КИЗы заявок": {"A": 18, "B": 12, "C": 16, "D": 16, "E": 18, "F": 36, "G": 50, "H": 25, "I": 20, "J": 16},
+        "КИЗы за день": {"A": 18, "B": 12, "C": 16, "D": 16, "E": 18, "F": 36, "G": 50, "H": 25, "I": 20, "J": 16},
     }
     for sheet_name, widths in widths_by_sheet.items():
         if sheet_name not in workbook.sheetnames:

@@ -34,7 +34,7 @@
       "destination": "client",
       "schedules": ["22:00"],
       "text_policy_label": "runtime_skladbot_daily_outputs_v1",
-      "text_policy_sha256": "4425d350cb87c7c85d61f6e430847dfc7042fc130497a442fc156ca658ea6728",
+      "text_policy_sha256": "684bf167c8ba203eec966a9faa90717a82a8b8354fccebe5d425523a9cbc132f",
       "error_destination": "admin"
     },
     "transfer_kiz_export": {

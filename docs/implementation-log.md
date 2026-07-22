@@ -2,6 +2,18 @@
 
 Документ фиксирует ход работ: что сделано, что не сделано, какие ошибки найдены, какие решения приняты и что требует проверки. Новые записи добавляются сверху.
 
+## 2026-07-22
+
+### Daily SkladBot recovery and combined KIZ workbook
+
+- Причина двух пропусков: scheduled collector успешно читал list/detail, но обычную открытую заявку текущего дня классифицировал как coverage warning; fail-closed processor останавливался до первого Telegram-вызова.
+- Исправление ограничено сочетанием `date_field_used=created_at` и status diagnostic `neither`. Ошибки API, detail limit, pagination, truncation, conflicting dates и реальные status anomalies остаются blocking.
+- Новый read-only KIZ hydration полностью завершается до Telegram. Request-связь допускается только по уникальной canonical-паре SkladBot; неизвестная связь остаётся пустой, duplicate active normalized code и lifecycle inconsistency блокируют delivery без вывода самого кода в лог.
+- Daily XLSX формирует ровно пять клиентских листов: `Сводка`, `Заявки`, `Товары заявок`, `КИЗы заявок`, `КИЗы за день`. Отдельная scheduled KIZ-доставка и её caption удалены; transfer-KIZ `on_completion` не менялся.
+- Одноразовый catch-up сначала полностью строит combined XLSX без DB write/send, затем durable claim фиксируется до Telegram. После `sendMessage started` любой timeout переводит событие в manual recovery и запрещает replay; reconciliation в catch-up не запускается.
+- Production recovery использует только immutable candidate и существующий protected deploy workflow: exact two-date gate, count-only DB inspection, no-send dry-runs, backup, остановленный обычный Telegram worker, последовательность `20.07 -> 21.07` и zero-send replay proof.
+- Локальная code/test truth фиксируется verifier loop; immutable build, две внешние отправки, live runtime identity и расписание `22:00` подтверждаются отдельно после release.
+
 ## 2026-07-20
 
 ### Daily SkladBot client workbook cleanup
