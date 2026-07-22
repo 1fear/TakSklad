@@ -653,7 +653,9 @@ def create_plan(db, *, parsed_sources=None, enforce_runtime_guards=True) -> Repa
         or len(import_files) != EXPECTED_SOURCE_FILE_COUNT
     ):
         raise RepairBlocked("SOURCE_DOCUMENT_SCOPE_MISMATCH")
-    parsed_sources = dict(parsed_sources or download_and_parse_sources(contexts))
+    if parsed_sources is None:
+        raise RepairBlocked("SOURCE_DOCUMENTS_NOT_PREPARED")
+    parsed_sources = dict(parsed_sources)
     if len(parsed_sources) != EXPECTED_SOURCE_FILE_COUNT:
         raise RepairBlocked("SOURCE_DOCUMENT_SCOPE_MISMATCH")
     parsed_by_event = parsed_rows_by_event(contexts, parsed_sources)
@@ -820,6 +822,38 @@ def create_plan(db, *, parsed_sources=None, enforce_runtime_guards=True) -> Repa
         lock_ids={key: tuple(value) for key, value in lock_ids.items()},
         preimage=preimage,
     )
+
+
+def prepare_parsed_sources(SessionLocal) -> dict[uuid.UUID, ParsedSource]:
+    """Load immutable download metadata, then release PostgreSQL before Telegram I/O."""
+
+    with SessionLocal() as db:
+        configure_repair_transaction(db)
+        runtime_guards(db)
+        if existing_batch_audits(db, BATCH_ACTION) or existing_batch_audits(
+            db, ROLLBACK_BATCH_ACTION
+        ):
+            raise RepairBlocked("REPAIR_ALREADY_RECORDED")
+        orders = load_target_orders(db)
+        contexts, import_jobs, import_files = load_source_contexts(db, orders)
+        if (
+            len(contexts) != EXPECTED_SOURCE_FILE_COUNT
+            or len(import_jobs) != EXPECTED_SOURCE_FILE_COUNT
+            or len(import_files) != EXPECTED_SOURCE_FILE_COUNT
+        ):
+            raise RepairBlocked("SOURCE_DOCUMENT_SCOPE_MISMATCH")
+        download_contexts = {
+            event_id: {
+                "file_id": context["file_id"],
+                "file_name": context["file_name"],
+                "shipment_date": context["shipment_date"],
+                "expected_sha256": context["expected_sha256"],
+            }
+            for event_id, context in contexts.items()
+        }
+        db.rollback()
+
+    return download_and_parse_sources(download_contexts)
 
 
 def lock_plan_rows(db, plan) -> None:
@@ -1480,28 +1514,46 @@ def parse_args(argv=None):
     return parser.parse_args(argv)
 
 
+def configure_repair_transaction(db) -> None:
+    from sqlalchemy import text
+
+    db.execute(text("SET LOCAL lock_timeout = '15s'"))
+    db.execute(text("SET LOCAL statement_timeout = '120s'"))
+
+
 def run(argv=None):
     from sqlalchemy import text
 
     args = parse_args(argv)
+    if args.apply and (
+        args.approval != APPLY_APPROVAL
+        or not valid_sha(args.expected_plan_sha)
+        or not args.preimage_out
+        or not Path(args.preimage_out).is_absolute()
+    ):
+        raise RepairBlocked("APPLY_APPROVAL_REJECTED")
+    approved_preimage = None
+    if args.rollback:
+        if args.approval != ROLLBACK_APPROVAL:
+            raise RepairBlocked("ROLLBACK_APPROVAL_REJECTED")
+        if not valid_sha(args.expected_plan_sha) or not valid_sha(args.expected_preimage_sha):
+            raise RepairBlocked("ROLLBACK_HASH_INVALID")
+        approved_preimage = validate_preimage_file(
+            args.preimage_file,
+            args.expected_preimage_sha,
+            args.expected_plan_sha,
+        )
+
     SessionLocal = backend_module("db").SessionLocal
+    parsed_sources = prepare_parsed_sources(SessionLocal) if (args.plan or args.apply) else None
+
     with SessionLocal() as db:
+        configure_repair_transaction(db)
         if args.verify:
             result = verify_applied(db, args.expected_plan_sha, no_send=args.no_send)
             print(json.dumps(result, sort_keys=True))
             return 0 if result["safe_to_repair"] else 3
         if args.rollback:
-            if args.approval != ROLLBACK_APPROVAL:
-                raise RepairBlocked("ROLLBACK_APPROVAL_REJECTED")
-            if not valid_sha(args.expected_plan_sha) or not valid_sha(args.expected_preimage_sha):
-                raise RepairBlocked("ROLLBACK_HASH_INVALID")
-            approved_preimage = validate_preimage_file(
-                args.preimage_file,
-                args.expected_preimage_sha,
-                args.expected_plan_sha,
-            )
-            db.execute(text("SET LOCAL lock_timeout = '15s'"))
-            db.execute(text("SET LOCAL statement_timeout = '120s'"))
             db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:identity, 0))"), {
                 "identity": "taksklad:telegram-logistics-orders-repair:2026-07-23:v1",
             })
@@ -1517,23 +1569,14 @@ def run(argv=None):
             return 0
 
         if args.plan:
-            plan = create_plan(db)
+            plan = create_plan(db, parsed_sources=parsed_sources)
             db.rollback()
             print(json.dumps(plan.summary, sort_keys=True))
             return 0
-        if (
-            args.approval != APPLY_APPROVAL
-            or not valid_sha(args.expected_plan_sha)
-            or not args.preimage_out
-        ):
-            db.rollback()
-            raise RepairBlocked("APPLY_APPROVAL_REJECTED")
-        db.execute(text("SET LOCAL lock_timeout = '15s'"))
-        db.execute(text("SET LOCAL statement_timeout = '120s'"))
         db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:identity, 0))"), {
             "identity": "taksklad:telegram-logistics-orders-repair:2026-07-23:v1",
         })
-        plan = create_plan(db)
+        plan = create_plan(db, parsed_sources=parsed_sources)
         if args.expected_plan_sha != plan.summary["plan_sha256"]:
             db.rollback()
             raise RepairBlocked("APPLY_PLAN_SHA_MISMATCH")

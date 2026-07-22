@@ -36,6 +36,7 @@ from tools.repair_telegram_logistics_orders import (
     apply_plan,
     create_plan,
     ensure_coordinates_header_alias,
+    prepare_parsed_sources,
     rollback_applied,
     run,
     validate_preimage_file,
@@ -483,6 +484,68 @@ class RepairTelegramLogisticsOrdersTests(unittest.TestCase):
                     plan.summary["plan_sha256"],
                 )
 
+    def test_source_download_runs_after_metadata_session_is_closed(self):
+        from sqlalchemy.orm import Session
+
+        closed_sessions = []
+
+        class TrackingSession(Session):
+            def close(self):
+                closed_sessions.append(self)
+                super().close()
+
+        TrackingSessionLocal = sessionmaker(
+            bind=self.engine,
+            class_=TrackingSession,
+            expire_on_commit=False,
+        )
+        with TrackingSessionLocal() as db:
+            sources = self.seed_scope(db)
+            db.commit()
+        closed_sessions.clear()
+
+        def assert_released(_contexts):
+            self.assertEqual(len(closed_sessions), 1)
+            self.assertFalse(closed_sessions[0].in_transaction())
+            return sources
+
+        with (
+            mock.patch(
+                "tools.repair_telegram_logistics_orders.configure_repair_transaction"
+            ),
+            mock.patch("tools.repair_telegram_logistics_orders.runtime_guards"),
+            mock.patch(
+                "tools.repair_telegram_logistics_orders.download_and_parse_sources",
+                side_effect=assert_released,
+            ),
+        ):
+            parsed = prepare_parsed_sources(TrackingSessionLocal)
+
+        self.assertEqual(parsed, sources)
+
+    def test_create_plan_never_downloads_inside_database_transaction(self):
+        import tools.repair_telegram_logistics_orders as repair_tool
+
+        with self.Session() as db:
+            self.seed_scope(db)
+            with mock.patch.object(repair_tool, "download_and_parse_sources") as download:
+                with self.assertRaisesRegex(RepairBlocked, "SOURCE_DOCUMENTS_NOT_PREPARED"):
+                    create_plan(db, enforce_runtime_guards=False)
+            download.assert_not_called()
+
+    def test_invalid_apply_gate_blocks_before_source_download(self):
+        import tools.repair_telegram_logistics_orders as repair_tool
+
+        with mock.patch.object(repair_tool, "prepare_parsed_sources") as prepare:
+            with self.assertRaisesRegex(RepairBlocked, "APPLY_APPROVAL_REJECTED"):
+                run([
+                    "--apply",
+                    "--approval", "wrong",
+                    "--expected-plan-sha", "a" * 64,
+                    "--preimage-out", "/tmp/synthetic-preimage.json",
+                ])
+        prepare.assert_not_called()
+
     def test_stale_plan_does_not_materialize_preimage(self):
         import tempfile
         from pathlib import Path
@@ -559,6 +622,7 @@ class RepairTelegramLogisticsOrdersTests(unittest.TestCase):
             with (
                 mock.patch.object(repair_tool, "backend_module", side_effect=fake_backend_module),
                 mock.patch.object(repair_tool, "create_plan", side_effect=fake_create_plan),
+                mock.patch.object(repair_tool, "prepare_parsed_sources", return_value=sources),
             ):
                 with self.assertRaisesRegex(RepairBlocked, "PLAN_CHANGED_UNDER_LOCK"):
                     run([
