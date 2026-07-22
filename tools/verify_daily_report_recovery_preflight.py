@@ -109,7 +109,6 @@ def _event_is_proven_pre_telegram_failure(event: Any) -> bool:
     success = payload.get("success")
     return (
         stage in PRE_TELEGRAM_STAGES
-        and stage == "scheduled job failed"
         and error.startswith(COVERAGE_ERROR_PREFIX)
         and result_status == "blocked_partial"
         and success is not True
