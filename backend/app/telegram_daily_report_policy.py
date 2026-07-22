@@ -23,6 +23,9 @@ SKLADBOT_DAILY_SAFE_RETRY_STAGES = {
     "scheduled job failed",
     "xlsx created",
 }
+SKLADBOT_DAILY_MANUAL_RECOVERY_STAGE = "manual_recovery_required"
+SKLADBOT_DAILY_MANUAL_RECOVERY_RESULT_STATUS = "manual_recovery_required"
+SKLADBOT_DAILY_MANUAL_RECOVERY_REASON = "automatic_retry_not_safe_or_exhausted"
 
 
 def ensure_aware_utc(value):
@@ -41,6 +44,26 @@ def daily_report_event_success(event):
     if success is True or normalize_text(success).casefold() == "true":
         return True
     return normalize_text(payload.get("result_status")) in SKLADBOT_DAILY_SUCCESS_RESULT_STATUSES
+
+
+def daily_report_failure_is_safe_manual_wrapper(event):
+    """Prove that scheduler reclassified a coverage-only pre-Telegram failure."""
+    if event is None or normalize_text(event.status) not in {"failed", "error", "blocked"}:
+        return False
+    payload = event.payload if isinstance(event.payload, dict) else {}
+    success = payload.get("success")
+    return (
+        normalize_text(event.last_error).startswith(SKLADBOT_DAILY_REPORT_COVERAGE_FAILED_ERROR)
+        and payload.get("manual_recovery_required") is True
+        and normalize_text(payload.get("stage")) == SKLADBOT_DAILY_MANUAL_RECOVERY_STAGE
+        and normalize_text(payload.get("result_status"))
+        == SKLADBOT_DAILY_MANUAL_RECOVERY_RESULT_STATUS
+        and normalize_text(payload.get("manual_recovery_reason"))
+        == SKLADBOT_DAILY_MANUAL_RECOVERY_REASON
+        and normalize_text(payload.get("same_day_existing_event_status")) == "failed"
+        and success is not True
+        and normalize_text(success).casefold() != "true"
+    )
 
 
 def completed_daily_report_delivery_exists(db, chat_id, report_date):

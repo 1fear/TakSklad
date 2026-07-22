@@ -29,10 +29,9 @@ from backend.app.models import (
     ScanCode,
 )
 from backend.app.skladbot_daily_report import (
-    DAILY_KIZ_HEADERS,
     DEFAULT_DAILY_REPORT_MAX_PAGES,
+    MARKING_CODE_HEADERS,
     REQUEST_HEADERS,
-    REQUEST_KIZ_HEADERS,
     REQUEST_PRODUCT_HEADERS,
     SkladBotReadOnlyClient,
     build_skladbot_daily_report_message,
@@ -1314,8 +1313,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
             "Сводка",
             "Заявки",
             "Товары заявок",
-            "КИЗы заявок",
-            "КИЗы за день",
+            "Коды маркировок",
         ])
 
         summary_sheet = workbook["Сводка"]
@@ -1519,6 +1517,10 @@ class SkladBotDailyReportTests(unittest.TestCase):
             enrich_daily_kiz_from_orders(db, report)
 
         self.assertEqual([row["kiz_count"] for row in report["requests"]], [1, 0, 1, None])
+        self.assertEqual(
+            [row["kiz_codes"] for row in report["requests"]],
+            [["=SYNTHETIC-KIZ"], [], ["TRANSFER-KIZ"], None],
+        )
         self.assertEqual(len(report["request_kiz_rows"]), 2)
         self.assertEqual(len(report["daily_kiz_rows"]), 2)
         row = next(value for value in report["daily_kiz_rows"] if value["code"] == "=SYNTHETIC-KIZ")
@@ -1542,20 +1544,26 @@ class SkladBotDailyReportTests(unittest.TestCase):
         content, _filename = build_skladbot_daily_report_xlsx(report)
         workbook = openpyxl.load_workbook(BytesIO(content), data_only=False)
         self.assertEqual(workbook.sheetnames, [
-            "Сводка", "Заявки", "Товары заявок", "КИЗы заявок", "КИЗы за день",
+            "Сводка", "Заявки", "Товары заявок", "Коды маркировок",
         ])
-        self.assertEqual([cell.value for cell in workbook["КИЗы заявок"][1]], REQUEST_KIZ_HEADERS)
-        self.assertEqual([cell.value for cell in workbook["КИЗы за день"][1]], DAILY_KIZ_HEADERS)
-        self.assertEqual(REQUEST_KIZ_HEADERS, [
+        self.assertEqual([cell.value for cell in workbook["Коды маркировок"][1]], MARKING_CODE_HEADERS)
+        self.assertEqual(MARKING_CODE_HEADERS, [
             "Номер", "ID заявки", "Smartup ID", "Дата выгрузки", "Тип оплаты",
             "Товар", "КИЗ", "Время скана", "Тип скана", "Блоков по коду",
         ])
-        self.assertEqual(DAILY_KIZ_HEADERS, REQUEST_KIZ_HEADERS)
         self.assertEqual(REQUEST_HEADERS[REQUEST_HEADERS.index("Блоков факт") + 1], "КИЗов")
+        self.assertEqual(REQUEST_HEADERS[REQUEST_HEADERS.index("КИЗов") + 1], "Коды маркировки")
         request_rows = worksheet_rows_by_header(workbook["Заявки"])
         self.assertEqual([row["КИЗов"] for row in request_rows], [1, 0, 1, None])
-        self.assertEqual(workbook["КИЗы заявок"]["G2"].value, "=SYNTHETIC-KIZ")
-        self.assertEqual(workbook["КИЗы заявок"]["G2"].data_type, "s")
+        self.assertEqual(
+            [row["Коды маркировки"] for row in request_rows],
+            ["=SYNTHETIC-KIZ", None, "TRANSFER-KIZ", None],
+        )
+        self.assertEqual(workbook["Заявки"]["T2"].data_type, "s")
+        marking_rows = worksheet_rows_by_header(workbook["Коды маркировок"])
+        self.assertEqual([row["КИЗ"] for row in marking_rows], ["=SYNTHETIC-KIZ", "TRANSFER-KIZ"])
+        self.assertNotIn("UNMAPPED-DAY-KIZ", {row["КИЗ"] for row in marking_rows})
+        self.assertEqual(workbook["Коды маркировок"]["G2"].data_type, "s")
 
     def test_daily_kiz_lifecycle_excludes_returned_and_keeps_legacy_scan(self):
         engine = create_engine(
@@ -2129,7 +2137,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(sum(row["Блоков план"] for row in product_rows), 95)
 
         self.assertEqual(workbook.sheetnames, [
-            "Сводка", "Заявки", "Товары заявок", "КИЗы заявок", "КИЗы за день",
+            "Сводка", "Заявки", "Товары заявок", "Коды маркировок",
         ])
         self.assertEqual(report["coverage"]["included_operational_requests"], 8)
         self.assertEqual(report["coverage"]["excluded_diagnostic_requests"], 0)
@@ -2402,7 +2410,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(workbook["Сводка"]["B5"].value, 0)
         self.assertEqual(workbook["Сводка"]["B6"].value, 0)
         self.assertEqual(workbook.sheetnames, [
-            "Сводка", "Заявки", "Товары заявок", "КИЗы заявок", "КИЗы за день",
+            "Сводка", "Заявки", "Товары заявок", "Коды маркировок",
         ])
         self.assertEqual(report["errors"], ["Не удалось получить остаток SkladBot"])
 

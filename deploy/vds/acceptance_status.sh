@@ -31,6 +31,7 @@ usage() {
   cat >&2 <<'EOF'
 Usage:
   acceptance_status.sh [--marker MARKER] [--expect-orders N] [--expect-scans N] [--expect-completed] [--require-go]
+    [--daily-report-recovery-ready-json PATH --daily-report-recovery-verification-json PATH]
 
 Read-only status check for TakSklad acceptance.
 EOF
@@ -39,6 +40,8 @@ EOF
 MARKER=""
 VERIFY_ARGS=()
 REQUIRE_GO=0
+DAILY_REPORT_RECOVERY_READY_JSON=""
+DAILY_REPORT_RECOVERY_VERIFICATION_JSON=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -74,6 +77,16 @@ while [[ $# -gt 0 ]]; do
       REQUIRE_GO=1
       shift
       ;;
+    --daily-report-recovery-ready-json)
+      [[ $# -ge 2 && -n "$2" ]] || { usage; exit 2; }
+      DAILY_REPORT_RECOVERY_READY_JSON="$2"
+      shift 2
+      ;;
+    --daily-report-recovery-verification-json)
+      [[ $# -ge 2 && -n "$2" ]] || { usage; exit 2; }
+      DAILY_REPORT_RECOVERY_VERIFICATION_JSON="$2"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -84,6 +97,16 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+DAILY_REPORT_RECOVERY_MODE=0
+if [[ -n "$DAILY_REPORT_RECOVERY_READY_JSON" || -n "$DAILY_REPORT_RECOVERY_VERIFICATION_JSON" ]]; then
+  if [[ ! -f "$DAILY_REPORT_RECOVERY_READY_JSON" || -L "$DAILY_REPORT_RECOVERY_READY_JSON" || \
+        ! -f "$DAILY_REPORT_RECOVERY_VERIFICATION_JSON" || -L "$DAILY_REPORT_RECOVERY_VERIFICATION_JSON" ]]; then
+    echo "Daily-report recovery acceptance requires two regular proof files" >&2
+    exit 2
+  fi
+  DAILY_REPORT_RECOVERY_MODE=1
+fi
 
 if [[ ! -f "$MANIFEST_FILE" ]]; then
   echo "Manifest not found: $MANIFEST_FILE" >&2
@@ -206,15 +229,53 @@ PY
     sleep "$HEALTH_RETRY_DELAY_SECONDS"
   fi
 done
-READINESS_OUTPUT="$(
-  docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T backend-api \
-    python - <<'PY' 2>&1
+READINESS_HTTP_STATUS=0
+DAILY_REPORT_RECOVERY_VERIFICATION_OUTPUT="{}"
+if [[ "$DAILY_REPORT_RECOVERY_MODE" == "1" ]]; then
+  READINESS_OUTPUT="$(python3 - "$DAILY_REPORT_RECOVERY_READY_JSON" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+wrapper = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+if not isinstance(wrapper, dict) or not isinstance(wrapper.get("payload"), dict):
+    raise SystemExit(1)
+print(json.dumps(wrapper["payload"], ensure_ascii=False, sort_keys=True))
+PY
+  )"
+  READINESS_STATUS="$?"
+  READINESS_HTTP_STATUS="$(python3 - "$DAILY_REPORT_RECOVERY_READY_JSON" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+wrapper = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+print(int(wrapper.get("http_status") or 0))
+PY
+  )"
+  DAILY_REPORT_RECOVERY_VERIFICATION_OUTPUT="$(python3 - "$DAILY_REPORT_RECOVERY_VERIFICATION_JSON" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+PY
+  )"
+else
+  READINESS_OUTPUT="$(
+    docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T backend-api \
+      python - <<'PY' 2>&1
 import sys
 from urllib.request import urlopen
 sys.stdout.write(urlopen("http://127.0.0.1:8000/ready", timeout=5).read().decode())
 PY
-)"
-READINESS_STATUS="$?"
+  )"
+  READINESS_STATUS="$?"
+  if [[ "$READINESS_STATUS" == "0" ]]; then
+    READINESS_HTTP_STATUS=200
+  fi
+fi
 COMPOSE_OUTPUT="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps --format json 2>&1)"
 COMPOSE_STATUS="$?"
 if ((${#VERIFY_ARGS[@]})); then
@@ -246,7 +307,7 @@ GO_NO_GO_OUTPUT="$(python3 "$GO_NO_GO_SCRIPT" --results "$RESULTS_FILE" 2>&1)"
 GO_NO_GO_STATUS="$?"
 set -e
 
-python3 - "$MANIFEST_INFO" "$VERSION_INFO" "$SHA_STATUS" "$ACTUAL_SHA" "$EXPECTED_SHA" "$HEALTH_STATUS" "$HEALTH_OUTPUT" "$READINESS_STATUS" "$READINESS_OUTPUT" "$COMPOSE_STATUS" "$COMPOSE_OUTPUT" "$VERIFY_STATUS" "$VERIFY_OUTPUT" "$TELEGRAM_MENU_STATUS" "$TELEGRAM_MENU_OUTPUT" "$SKLADBOT_COVERAGE_STATUS" "$SKLADBOT_COVERAGE_OUTPUT" "$SMARTUP_AUTOMATION_STATUS" "$SMARTUP_AUTOMATION_OUTPUT" "$GO_NO_GO_STATUS" "$GO_NO_GO_OUTPUT" "$REQUIRE_GO" <<'PY'
+python3 - "$MANIFEST_INFO" "$VERSION_INFO" "$SHA_STATUS" "$ACTUAL_SHA" "$EXPECTED_SHA" "$HEALTH_STATUS" "$HEALTH_OUTPUT" "$READINESS_STATUS" "$READINESS_OUTPUT" "$COMPOSE_STATUS" "$COMPOSE_OUTPUT" "$VERIFY_STATUS" "$VERIFY_OUTPUT" "$TELEGRAM_MENU_STATUS" "$TELEGRAM_MENU_OUTPUT" "$SKLADBOT_COVERAGE_STATUS" "$SKLADBOT_COVERAGE_OUTPUT" "$SMARTUP_AUTOMATION_STATUS" "$SMARTUP_AUTOMATION_OUTPUT" "$GO_NO_GO_STATUS" "$GO_NO_GO_OUTPUT" "$REQUIRE_GO" "$DAILY_REPORT_RECOVERY_MODE" "$READINESS_HTTP_STATUS" "$DAILY_REPORT_RECOVERY_VERIFICATION_OUTPUT" <<'PY'
 import json
 import sys
 
@@ -272,6 +333,9 @@ smartup_automation_output = sys.argv[19].strip()
 go_no_go_status = int(sys.argv[20])
 go_no_go_output = sys.argv[21].strip()
 require_go = sys.argv[22] == "1"
+daily_report_recovery_mode = sys.argv[23] == "1"
+readiness_http_status = int(sys.argv[24] or 0)
+daily_report_recovery_verification_output = sys.argv[25].strip()
 
 try:
     health = json.loads(health_output)
@@ -281,6 +345,12 @@ try:
     readiness = json.loads(readiness_output)
 except Exception:
     readiness = {"raw": readiness_output}
+try:
+    daily_report_recovery_verification = json.loads(
+        daily_report_recovery_verification_output
+    )
+except Exception:
+    daily_report_recovery_verification = {}
 
 services = []
 if compose_status == 0 and compose_output:
@@ -366,19 +436,60 @@ if safety.get("contains_secrets") is not False:
     errors.append("manifest safety.contains_secrets must be false")
 if health_status != 0:
     errors.append(f"backend health failed with exit {health_status}")
-if readiness_status != 0:
-    errors.append(f"backend readiness failed with exit {readiness_status}")
 readiness_database = readiness.get("database") or {}
 readiness_migrations = readiness.get("migrations") or {}
 readiness_policy = readiness.get("policy") or {}
-if readiness.get("ready") is not True or readiness.get("status") not in ("ok", "degraded"):
-    errors.append(f"backend readiness contract failed: {readiness.get('status') or 'unknown'}")
-if readiness_database.get("status") != "ok":
-    errors.append("backend readiness database status is not ok")
-if readiness_migrations.get("status") != "ok" or not readiness_migrations.get("expected_head") or readiness_migrations.get("current_revision") != readiness_migrations.get("expected_head"):
-    errors.append("backend readiness migration revision is not current")
-if readiness_policy.get("mandatory_status") != "ok":
-    errors.append("backend readiness mandatory policy is not ok")
+if daily_report_recovery_mode:
+    queue = readiness.get("queue") or {}
+    imports = readiness.get("imports") or {}
+    workers = readiness.get("workers") or {}
+    daily = readiness.get("daily_report") or {}
+    pairing = readiness.get("desktop_pairing") or {}
+    recovery_proof_ok = (
+        daily_report_recovery_verification.get("status") == "complete"
+        and daily_report_recovery_verification.get("dates_count") == 2
+        and daily_report_recovery_verification.get("catchup_success_count") == 2
+        and daily_report_recovery_verification.get("remaining_unrelated_blocker_count") == 1
+        and daily_report_recovery_verification.get("schedule_2200_tashkent") is True
+        and daily_report_recovery_verification.get("values_redacted") is True
+    )
+    recovery_readiness_ok = (
+        readiness_status == 0
+        and readiness_http_status == 503
+        and readiness.get("ready") is False
+        and readiness_database.get("status") == "ok"
+        and readiness_migrations.get("status") == "ok"
+        and bool(readiness_migrations.get("expected_head"))
+        and readiness_migrations.get("current_revision") == readiness_migrations.get("expected_head")
+        and int(queue.get("hot_path_stale_processing_count") or 0) == 0
+        and int(queue.get("hot_path_blocking_count") or 0) == 1
+        and int(queue.get("hot_path_error_count") or 0) == 1
+        and int(imports.get("recent_error_count") or 0) == 0
+        and workers.get("status") == "ok"
+        and int(workers.get("required_count") or 0) == 3
+        and int(workers.get("missing_count") or 0) == 0
+        and int(workers.get("unhealthy_count") or 0) == 0
+        and daily.get("status") == "ok"
+        and int(daily.get("missing_count") or 0) == 0
+        and pairing.get("status") == "ok"
+        and int(pairing.get("overdue_unacked_count") or 0) == 0
+        and int(pairing.get("stale_cleanup_count") or 0) == 0
+        and pairing.get("sweeper_heartbeat_stale") is False
+        and readiness_policy.get("mandatory_status") == "unhealthy"
+    )
+    if not recovery_proof_ok or not recovery_readiness_ok:
+        errors.append("daily-report recovery readiness proof is invalid")
+else:
+    if readiness_status != 0:
+        errors.append(f"backend readiness failed with exit {readiness_status}")
+    if readiness.get("ready") is not True or readiness.get("status") not in ("ok", "degraded"):
+        errors.append(f"backend readiness contract failed: {readiness.get('status') or 'unknown'}")
+    if readiness_database.get("status") != "ok":
+        errors.append("backend readiness database status is not ok")
+    if readiness_migrations.get("status") != "ok" or not readiness_migrations.get("expected_head") or readiness_migrations.get("current_revision") != readiness_migrations.get("expected_head"):
+        errors.append("backend readiness migration revision is not current")
+    if readiness_policy.get("mandatory_status") != "ok":
+        errors.append("backend readiness mandatory policy is not ok")
 if compose_status != 0:
     errors.append(f"docker compose ps failed with exit {compose_status}")
 if verify_status != 0:
@@ -409,7 +520,12 @@ summary = {
     },
     "backend_readiness": {
         "exit_code": readiness_status,
+        "http_status": readiness_http_status,
         "response": readiness,
+    },
+    "daily_report_recovery": {
+        "enabled": daily_report_recovery_mode,
+        "verification": daily_report_recovery_verification if daily_report_recovery_mode else {},
     },
     "compose": {
         "exit_code": compose_status,

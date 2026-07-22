@@ -37,7 +37,7 @@ from .skladbot_contracts import (
 )
 
 
-REQUEST_KIZ_HEADERS = [
+MARKING_CODE_HEADERS = [
     "Номер",
     "ID заявки",
     "Smartup ID",
@@ -49,8 +49,6 @@ REQUEST_KIZ_HEADERS = [
     "Тип скана",
     "Блоков по коду",
 ]
-
-DAILY_KIZ_HEADERS = list(REQUEST_KIZ_HEADERS)
 
 ACTIVE_KIZ_MOVEMENT_TYPES = {MOVEMENT_OUTBOUND, MOVEMENT_RE_OUTBOUND}
 KNOWN_KIZ_MOVEMENT_TYPES = {
@@ -78,6 +76,7 @@ def enrich_daily_kiz_from_orders(db, report: dict[str, Any]) -> None:
     report["daily_kiz_rows"] = []
     for request in requests:
         request["kiz_count"] = None
+        request["kiz_codes"] = None
 
     report_date = _report_date(report.get("report_date"))
     request_pairs = set()
@@ -133,6 +132,7 @@ def enrich_daily_kiz_from_orders(db, report: dict[str, Any]) -> None:
             key=_scan_row_sort_key,
         )
         request["kiz_count"] = len(rows)
+        request["kiz_codes"] = [scan.code for scan, _item, _owner in rows]
         request_rows.extend(
             _serialize_scan_row(scan, item, owner, request_metadata=metadata)
             for scan, item, owner in rows
