@@ -12748,7 +12748,7 @@
       "version": "3.0.0"
     },
     {
-      "bom-ref": "pkg:npm/nanoid@3.3.12",
+      "bom-ref": "pkg:npm/nanoid@3.3.16",
       "name": "nanoid",
       "properties": [
         {
@@ -12765,13 +12765,13 @@
         },
         {
           "name": "taksklad:npm-integrity",
-          "value": "sha512-ZB9RH/39qpq5Vu6Y+NmUaFhQR6pp+M2Xt76XBnEwDaGcVAqhlvxrl3B2bKS5D3NH3QR76v3aSrKaF/Kiy7lEtQ=="
+          "value": "sha512-bzlKTyNJ7+LdGIIwy8ijFpIqEQIvafahV7eYykJ8Cvh42EdJeODoJ6gUJXpQJvej1BddH8OqTXZNE/KfbWAu8Q=="
         }
       ],
-      "purl": "pkg:npm/nanoid@3.3.12",
+      "purl": "pkg:npm/nanoid@3.3.16",
       "scope": "required",
       "type": "library",
-      "version": "3.3.12"
+      "version": "3.3.16"
     },
     {
       "bom-ref": "pkg:npm/natural-compare@1.4.0",
@@ -13528,7 +13528,7 @@
       "version": "1.1.0"
     },
     {
-      "bom-ref": "pkg:npm/postcss@8.5.15",
+      "bom-ref": "pkg:npm/postcss@8.5.23",
       "name": "postcss",
       "properties": [
         {
@@ -13545,13 +13545,13 @@
         },
         {
           "name": "taksklad:npm-integrity",
-          "value": "sha512-FfR8sjd4em2T6fb3I2MwAJU7HWVMr9zba+enmQeeWFfCbm+UOC/0X4DS8XtpUTMwWMGbjKYP7xjfNekzyGmB3A=="
+          "value": "sha512-g50586zr4bZmwFiTlflMu8E0bDTb5I5gertgwAKmsdUlTQIhZtunzUlD1WSzwcVWPoAVpsrA6vlfCD7oXvRwgg=="
         }
       ],
-      "purl": "pkg:npm/postcss@8.5.15",
+      "purl": "pkg:npm/postcss@8.5.23",
       "scope": "required",
       "type": "library",
-      "version": "8.5.15"
+      "version": "8.5.23"
     },
     {
       "bom-ref": "pkg:npm/postgres-array@2.0.0",
@@ -17580,7 +17580,7 @@
         "pkg:npm/ms@2.1.3",
         "pkg:npm/msw@2.15.0",
         "pkg:npm/mute-stream@3.0.0",
-        "pkg:npm/nanoid@3.3.12",
+        "pkg:npm/nanoid@3.3.16",
         "pkg:npm/natural-compare@1.4.0",
         "pkg:npm/node-releases@2.0.46",
         "pkg:npm/object-inspect@1.13.4",
@@ -17610,7 +17610,7 @@
         "pkg:npm/playwright-core@1.61.1",
         "pkg:npm/playwright@1.61.1",
         "pkg:npm/possible-typed-array-names@1.1.0",
-        "pkg:npm/postcss@8.5.15",
+        "pkg:npm/postcss@8.5.23",
         "pkg:npm/postgres-array@2.0.0",
         "pkg:npm/postgres-bytea@1.0.1",
         "pkg:npm/postgres-date@1.0.7",
