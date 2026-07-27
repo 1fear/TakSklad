@@ -24,6 +24,43 @@ export const defaultHandlers = [
   http.post("/api/v1/auth/login", () => HttpResponse.json(authenticatedSession)),
   http.post("/api/v1/auth/logout", () => HttpResponse.json({ ...authenticatedSession, authenticated: false })),
   http.get("/api/v1/orders/active", () => HttpResponse.json([activeOrder])),
+  http.get("/api/v1/kiz/availability", ({ request }) => {
+    const url = new URL(request.url);
+    return HttpResponse.json({
+      code: url.searchParams.get("code") || "",
+      available: true,
+      reason: "no_backend_history",
+      latest_movement_type: "",
+      latest_order_item_id: "",
+      existing_order_item_id: "",
+    });
+  }),
+  http.post("/api/v1/scans", async ({ request }) => {
+    const payload = await request.json() as Record<string, string>;
+    return HttpResponse.json({
+      id: "scan-1",
+      order_item_id: payload.order_item_id || "item-1",
+      code: payload.code || "",
+      scanned_blocks: 1,
+      item_status: "not_completed",
+      scanned_at: "2026-07-10T08:05:00Z",
+      scan_type: "unit",
+      block_quantity: 1,
+    }, { status: 201 });
+  }),
+  http.post("/api/v1/scans/undo", async ({ request }) => {
+    const payload = await request.json() as Record<string, string>;
+    return HttpResponse.json({
+      id: "scan-1",
+      order_item_id: payload.order_item_id || "item-1",
+      code: payload.code || "",
+      scanned_blocks: 0,
+      item_status: "active",
+      scanned_at: "2026-07-10T08:05:00Z",
+      scan_type: "unit",
+      block_quantity: 1,
+    });
+  }),
   http.post("/api/v1/orders/:orderId/complete", () => HttpResponse.json({ ...activeOrder, status: "archive" })),
   http.get("/api/v1/returns/lookup", () => HttpResponse.json({ ...activeOrder, status: "archive" })),
   http.post("/api/v1/returns/:orderId", () => HttpResponse.json({ ...activeOrder, status: "returned" })),

@@ -109,6 +109,7 @@ describe("desktop pairing admin control", () => {
       permissions: authenticatedSession.permissions.filter((permission) => permission !== "admin:write"),
     };
     server.use(http.get("/api/v1/auth/session", () => HttpResponse.json(readOnlySession)));
+    window.history.pushState({}, "", "/admin");
 
     render(<App />);
 

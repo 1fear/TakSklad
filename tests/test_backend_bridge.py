@@ -1,11 +1,23 @@
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
-from taksklad import backend_client, backend_events, backend_flow
+from taksklad import backend_client, backend_events, backend_flow, storage
 from taksklad.config import SKLADBOT_REQUEST_NUMBER_COLUMN, STATUS_COMPLETED
 
 
 class BackendBridgeTests(unittest.TestCase):
+    def setUp(self):
+        # Синхронизация очереди пишет заблокированные события в durable-хранилище.
+        # Без изоляции тесты трогали бы реальный TakSklad_queues.sqlite3 склада.
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self._original_data_file = storage.TAKSKLAD_DATA_FILE
+        storage.TAKSKLAD_DATA_FILE = str(Path(self._temp_dir.name) / "TakSklad_data.json")
+
+    def tearDown(self):
+        storage.TAKSKLAD_DATA_FILE = self._original_data_file
+        self._temp_dir.cleanup()
     @staticmethod
     def reconcile_stub(pending, saved):
         def reconcile(_section, _snapshot, remaining):
@@ -255,7 +267,7 @@ class BackendBridgeTests(unittest.TestCase):
         self.assertEqual(saved[0][0]["attempts"], 1)
         self.assertEqual(saved[0][0]["last_error"], "timeout")
 
-    def test_backend_queue_drops_extra_scan_when_item_already_full(self):
+    def test_backend_queue_blocks_extra_scan_when_item_already_full(self):
         pending = [{
             "id": "event-1",
             "type": "scan",
@@ -280,16 +292,106 @@ class BackendBridgeTests(unittest.TestCase):
                 side_effect=backend_client.BackendApiError(
                     "Backend HTTP 409: Order item is already fully scanned",
                     status_code=409,
-                    detail="Order item is already fully scanned",
+                    detail={
+                        "code": "order_item_fully_scanned_new_code",
+                        "message": "Order item is already fully scanned",
+                        "order_item_id": "item-1",
+                        "quantity_blocks": 2,
+                        "scanned_blocks": 2,
+                    },
                 ),
             ),
         ):
             result = backend_events.sync_pending_backend_events()
 
-        self.assertEqual(result["synced"], 1)
+        self.assertEqual(result["synced"], 0)
         self.assertEqual(result["failed"], 0)
+        self.assertEqual(result["dropped"], 1)
+        self.assertEqual(result["blocked"], 1)
         self.assertEqual(result["remaining"], 0)
         self.assertEqual(saved, [[]])
+        self.assertEqual(
+            result["blocked_events"][0]["last_error_detail"]["code"],
+            "order_item_fully_scanned_new_code",
+        )
+
+    def test_blocked_scan_survives_sync_even_when_no_position_is_open(self):
+        """Заблокированный скан описывает блок, который физически уехал со склада.
+
+        Он намеренно убран из очереди повторов, но обязан пережить процесс:
+        иначе при закрытой другим контуром позиции КИЗ исчезает молча.
+        """
+        pending = [{
+            "id": "event-1",
+            "type": "scan",
+            "payload": {
+                "order_item_id": "item-1",
+                "code": "01000000000000000002",
+            },
+        }]
+        saved = []
+        blocked_store = []
+
+        with (
+            mock.patch.object(backend_events, "backend_configured", return_value=True),
+            mock.patch.object(backend_events, "load_pending_backend_events", return_value=pending),
+            mock.patch.object(
+                backend_events,
+                "reconcile_queue_section",
+                side_effect=self.reconcile_stub(pending, saved),
+            ),
+            mock.patch.object(backend_events, "load_blocked_backend_events", side_effect=lambda: list(blocked_store)),
+            mock.patch.object(
+                backend_events,
+                "save_blocked_backend_events",
+                side_effect=lambda items: blocked_store.__setitem__(slice(None), list(items)),
+            ),
+            mock.patch.object(
+                backend_events,
+                "create_scan",
+                side_effect=backend_client.BackendApiError(
+                    "Backend HTTP 409: Order item is already fully scanned",
+                    status_code=409,
+                    detail={
+                        "code": "order_item_fully_scanned_new_code",
+                        "message": "Order item is already fully scanned",
+                        "order_item_id": "item-1",
+                        "quantity_blocks": 2,
+                        "scanned_blocks": 2,
+                    },
+                ),
+            ),
+        ):
+            backend_events.sync_pending_backend_events()
+
+        self.assertEqual(len(blocked_store), 1)
+        self.assertEqual(blocked_store[0]["payload"]["code"], "01000000000000000002")
+        self.assertEqual(blocked_store[0]["payload"]["order_item_id"], "item-1")
+        self.assertEqual(
+            blocked_store[0]["last_error_detail"]["code"],
+            "order_item_fully_scanned_new_code",
+        )
+
+    def test_blocked_scan_store_is_idempotent_across_repeated_syncs(self):
+        stored = [{
+            "id": "event-1",
+            "type": "scan",
+            "payload": {"order_item_id": "item-1", "code": "01000000000000000002"},
+        }]
+        saved_calls = []
+
+        with (
+            mock.patch.object(backend_events, "load_blocked_backend_events", return_value=list(stored)),
+            mock.patch.object(
+                backend_events,
+                "save_blocked_backend_events",
+                side_effect=lambda items: saved_calls.append(list(items)),
+            ),
+        ):
+            added = backend_events.record_blocked_backend_events(list(stored))
+
+        self.assertEqual(added, 0)
+        self.assertEqual(saved_calls, [])
 
     def test_backend_queue_drops_non_retryable_complete_not_found(self):
         pending = [{

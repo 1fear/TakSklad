@@ -35,7 +35,7 @@ class FrontendCsrfContractTests(unittest.TestCase):
         self.assertIn("Ограниченный доступ", source)
         self.assertIn("csrf_invalid", source)
         self.assertIn("origin_denied", source)
-        self.assertIn("accessibleTabsForPermissions", source)
+        self.assertIn("accessibleAdminTabsForPermissions", source)
         self.assertIn("Нет доступных разделов", source)
         self.assertIn("showActionError(panelError", source)
         self.assertIn('accessibleTabs.includes("table") && tab === "table"', source)

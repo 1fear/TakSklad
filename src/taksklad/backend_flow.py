@@ -114,6 +114,13 @@ def format_backend_blocked_scan_message(blocked_events):
         )
     if "exceeds remaining order item blocks" in detail:
         return f"Код короба превышает остаток позиции{suffix}"
+    if (
+        normalize_text(detail_payload.get("code")) == "order_item_fully_scanned_new_code"
+        or "already fully scanned" in detail
+    ):
+        # Позиция закрыта на сервере: любой другой код получит тот же отказ,
+        # поэтому единственный рабочий выход - пересинхронизация через "Обновить".
+        return f"Позиция уже закрыта на сервере. Нажмите «Обновить»{suffix}"
     return f"Backend отклонил КИЗ. Сканируйте другой код{suffix}"
 
 

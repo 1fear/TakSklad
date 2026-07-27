@@ -7,14 +7,23 @@ import App from "../App";
 import {
   adminTable,
   anonymousSession,
+  authenticatedSession,
   firstAdminRow,
   secondAdminRow,
 } from "./fixtures";
 import { defaultHandlers, server } from "./server";
 
-beforeEach(() => server.use(...defaultHandlers));
+beforeEach(() => {
+  server.use(...defaultHandlers);
+  window.history.pushState({}, "", "/");
+});
 
-async function renderAuthenticatedApp() {
+function setPath(pathname: string) {
+  window.history.pushState({}, "", pathname);
+}
+
+async function renderAuthenticatedAdminApp() {
+  setPath("/admin");
   const user = userEvent.setup();
   const view = render(<App />);
   await screen.findByRole("heading", { name: "Позиции заказов" });
@@ -34,7 +43,7 @@ describe("login and session characterization", () => {
     render(<App />);
 
     expect(screen.getByText("Загружаем доступ...")).toBeInTheDocument();
-    expect(await screen.findByRole("heading", { name: "Вход в панель" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Вход в складскую web-панель" })).toBeInTheDocument();
     expect(screen.getByLabelText("Телефон")).toHaveAttribute("autocomplete", "username");
     expect(screen.getByLabelText("Пароль")).toHaveAttribute("autocomplete", "current-password");
   });
@@ -49,7 +58,7 @@ describe("login and session characterization", () => {
     );
     const user = userEvent.setup();
     render(<App />);
-    await screen.findByRole("heading", { name: "Вход в панель" });
+    await screen.findByRole("heading", { name: "Вход в складскую web-панель" });
 
     await user.type(screen.getByLabelText("Телефон"), "+998 90 111 22 33");
     await user.type(screen.getByLabelText("Пароль"), "synthetic-password");
@@ -72,7 +81,7 @@ describe("login and session characterization", () => {
         return HttpResponse.json(adminTable([firstAdminRow]));
       }),
     );
-    const { user } = await renderAuthenticatedApp();
+    const { user } = await renderAuthenticatedAdminApp();
 
     expect(screen.getByText(/admin/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Обновить" }));
@@ -83,9 +92,10 @@ describe("login and session characterization", () => {
 
   it("logs in from an anonymous session and loads only synthetic panel data", async () => {
     server.use(http.get("/api/v1/auth/session", () => HttpResponse.json(anonymousSession)));
+    setPath("/admin");
     const user = userEvent.setup();
     render(<App />);
-    await screen.findByRole("heading", { name: "Вход в панель" });
+    await screen.findByRole("heading", { name: "Вход в панель управления" });
 
     await user.type(screen.getByLabelText("Телефон"), "+998901234567");
     await user.type(screen.getByLabelText("Пароль"), "synthetic-password");
@@ -93,6 +103,42 @@ describe("login and session characterization", () => {
 
     expect(await screen.findByRole("heading", { name: "Позиции заказов" })).toBeInTheDocument();
     expect(await screen.findByText(firstAdminRow.client)).toBeInTheDocument();
+  });
+
+  it("chooses the operator workspace on root and keeps the admin link visible", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Операторский складской контур" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Склад · PostgreSQL" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Панель управления" })).toHaveAttribute("href", "/admin");
+
+    await user.click(screen.getByRole("button", { name: "Обновить" }));
+    expect(await screen.findByText("Активные заказы обновлены: 1")).toBeInTheDocument();
+  });
+
+  it("links to /admin when a warehouse user has an imports-only admin section", async () => {
+    server.use(http.get("/api/v1/auth/session", () => HttpResponse.json({
+      ...authenticatedSession,
+      permissions: ["warehouse:read", "imports:read"],
+    })));
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Операторский складской контур" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Панель управления" })).toHaveAttribute("href", "/admin");
+  });
+
+  it("shows an access-denied link to /admin when warehouse:read is missing on root", async () => {
+    server.use(http.get("/api/v1/auth/session", () => HttpResponse.json({
+      ...authenticatedSession,
+      permissions: authenticatedSession.permissions.filter((permission) => permission !== "warehouse:read"),
+    })));
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Нет доступа к складской web-панели" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Открыть панель управления" })).toHaveAttribute("href", "/admin");
   });
 });
 
@@ -107,7 +153,7 @@ describe("authenticated control-surface characterization", () => {
     };
     server.use(http.get("/api/v1/admin/table", () => HttpResponse.json(adminTable([row]))));
 
-    await renderAuthenticatedApp();
+    await renderAuthenticatedAdminApp();
 
     expect(screen.getByText("Smartup ID: 731, 732")).toBeInTheDocument();
     expect(screen.getByText("Заявка SkladBot: WH-R-TEST-1")).toBeInTheDocument();
@@ -150,7 +196,7 @@ describe("authenticated control-surface characterization", () => {
     ];
     server.use(http.get("/api/v1/admin/table", () => HttpResponse.json(adminTable(rows))));
 
-    await renderAuthenticatedApp();
+    await renderAuthenticatedAdminApp();
 
     expect(screen.getByText("Создание в очереди")).toBeInTheDocument();
     expect(screen.getAllByText("Неоднозначно — ручная проверка")).toHaveLength(2);
@@ -165,7 +211,7 @@ describe("authenticated control-surface characterization", () => {
   });
 
   it("shows canonical correlations for persisted dry-run orders and honest missing values", async () => {
-    const { user } = await renderAuthenticatedApp();
+    const { user } = await renderAuthenticatedAdminApp();
 
     await user.click(screen.getByRole("button", { name: "История действий" }));
     await user.click(screen.getByRole("button", { name: "SkladBot dry-run" }));
@@ -190,7 +236,7 @@ describe("authenticated control-surface characterization", () => {
           : HttpResponse.json(adminTable([firstAdminRow], { total_rows: 2, has_more: true, next_cursor: "synthetic-page-2" }));
       }),
     );
-    const { user } = await renderAuthenticatedApp();
+    const { user } = await renderAuthenticatedAdminApp();
 
     await user.click(screen.getByRole("button", { name: /Загрузить еще 1/ }));
     expect(await screen.findByText(secondAdminRow.client)).toBeInTheDocument();
@@ -217,7 +263,7 @@ describe("authenticated control-surface characterization", () => {
     );
     vi.spyOn(window, "prompt").mockReturnValue("Синтетическая причина");
     vi.spyOn(window, "confirm").mockReturnValue(true);
-    const { user } = await renderAuthenticatedApp();
+    const { user } = await renderAuthenticatedAdminApp();
 
     await user.click(screen.getByRole("checkbox", { name: `Выбрать заказ ${firstAdminRow.client}` }));
     await user.click(screen.getByRole("button", { name: "В архив без КИЗов" }));
@@ -240,7 +286,7 @@ describe("authenticated control-surface characterization", () => {
     );
     vi.spyOn(window, "prompt").mockReturnValue("Синтетическая причина");
     vi.spyOn(window, "confirm").mockReturnValue(true);
-    const { user } = await renderAuthenticatedApp();
+    const { user } = await renderAuthenticatedAdminApp();
 
     await user.click(screen.getByRole("checkbox", { name: `Выбрать заказ ${firstAdminRow.client}` }));
     await user.click(screen.getByRole("button", { name: "В архив без КИЗов" }));
@@ -258,7 +304,7 @@ describe("authenticated control-surface characterization", () => {
         return HttpResponse.json({ status: "resolved" });
       }),
     );
-    const { user } = await renderAuthenticatedApp();
+    const { user } = await renderAuthenticatedAdminApp();
     await user.click(screen.getByRole("button", { name: "История действий" }));
     await user.click(screen.getByRole("button", { name: "Инциденты" }));
 
@@ -287,7 +333,7 @@ describe("authenticated control-surface characterization", () => {
         return HttpResponse.json({ status: "saved" });
       }),
     );
-    const { user } = await renderAuthenticatedApp();
+    const { user } = await renderAuthenticatedAdminApp();
     await user.click(screen.getByRole("button", { name: "Клиенты" }));
 
     expect(await screen.findByRole("heading", { name: "Клиенты и таймслоты" })).toBeInTheDocument();
@@ -323,6 +369,7 @@ describe("authenticated control-surface characterization", () => {
 
   it("renders the current empty table state without inventing placeholder data", async () => {
     server.use(http.get("/api/v1/admin/table", () => HttpResponse.json(adminTable([]))));
+    setPath("/admin");
     render(<App />);
 
     const heading = await screen.findByRole("heading", { name: "Позиции заказов" });

@@ -61,6 +61,7 @@ APP_DATA_DEFAULTS = {
     "pending_prints": [],
     "pending_telegram": [],
     "pending_backend_events": [],
+    "blocked_backend_events": [],
     "telegram_state": {},
     "product_catalog": {},
     "import_history": [],
@@ -77,6 +78,7 @@ APP_DATA_QUEUE_SECTIONS = (
     "pending_prints",
     "pending_telegram",
     "pending_backend_events",
+    "blocked_backend_events",
 )
 LAST_APP_DATA_RECOVERY_STATUS = {
     "status": "unknown",

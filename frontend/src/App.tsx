@@ -5,9 +5,18 @@ import { createRoot } from "react-dom/client";
 import { getAuthSession, loginWeb, logoutWeb, type AuthSession } from "./api/auth";
 import { defaultApiUrl, type ApiConfig } from "./api/core";
 import { LoadingGate, LoginScreen } from "./auth/AuthShell";
+import {
+  alternateSurfacePath,
+  hasAdminSurfaceAccess,
+  hasOperatorSurfaceAccess,
+  resolveAppSurface,
+  surfaceTitle,
+  type AppSurface,
+} from "./workspace/surface";
 import "./styles.css";
 
 const AdminWorkspace = lazy(() => import("./workspace/AdminWorkspace"));
+const OperatorWorkspace = lazy(() => import("./workspace/OperatorWorkspace"));
 
 function initialConfig(): ApiConfig {
   return { apiUrl: defaultApiUrl(), token: "", csrfToken: "" };
@@ -21,6 +30,7 @@ function App() {
   const [loginPassword, setLoginPassword] = useState("");
   const [loginLoading, setLoginLoading] = useState(false);
   const [loginError, setLoginError] = useState("");
+  const surface = resolveAppSurface(window.location.pathname);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -91,6 +101,7 @@ function App() {
   if (!session) {
     return (
       <LoginScreen
+        surface={surface}
         phone={loginPhone}
         password={loginPassword}
         error={loginError}
@@ -102,16 +113,58 @@ function App() {
     );
   }
 
+  const canUseOperatorSurface = hasOperatorSurfaceAccess(session.permissions);
+  const canUseAdminSurface = hasAdminSurfaceAccess(session.permissions);
+
+  if (surface === "operator" && !canUseOperatorSurface) {
+    return (
+      <AccessDeniedScreen
+        surface={surface}
+        canUseAlternateSurface={canUseAdminSurface}
+        title="Нет доступа к складской web-панели"
+        message={canUseAdminSurface
+          ? "Для операционного контура нужно право warehouse:read. Откройте административный контур."
+          : "Для операционного контура нужно право warehouse:read. Обратитесь к администратору склада."}
+        onLogout={() => logout(config)}
+      />
+    );
+  }
+
+  if (surface === "admin" && !canUseAdminSurface) {
+    return (
+      <AccessDeniedScreen
+        surface={surface}
+        canUseAlternateSurface={canUseOperatorSurface}
+        title="Нет доступа к панели управления"
+        message={canUseOperatorSurface
+          ? "Для административного контура нужны права admin:read или доступный admin-раздел. Откройте складской контур."
+          : "Для административного контура нужны права admin:read или доступный admin-раздел. Обратитесь к администратору склада."}
+        onLogout={() => logout(config)}
+      />
+    );
+  }
+
   return (
     <Suspense fallback={<LoadingGate />}>
-      <AdminWorkspace
-        config={config}
-        authUser={session.login}
-        authRole={session.role}
-        authPermissions={session.permissions}
-        onSessionExpired={expireSession}
-        onLogout={logout}
-      />
+      {surface === "admin" ? (
+        <AdminWorkspace
+          config={config}
+          authUser={session.login}
+          authRole={session.role}
+          authPermissions={session.permissions}
+          onSessionExpired={expireSession}
+          onLogout={logout}
+        />
+      ) : (
+        <OperatorWorkspace
+          config={config}
+          authUser={session.login}
+          authRole={session.role}
+          authPermissions={session.permissions}
+          onSessionExpired={expireSession}
+          onLogout={logout}
+        />
+      )}
     </Suspense>
   );
 }
@@ -124,6 +177,42 @@ function loginFailureMessage(message: string) {
     return "Сайт не может подключиться к backend. Обновите страницу или попробуйте позже.";
   }
   return "Не удалось выполнить вход. Проверьте связь и попробуйте ещё раз.";
+}
+
+function AccessDeniedScreen({
+  surface,
+  canUseAlternateSurface,
+  title,
+  message,
+  onLogout,
+}: {
+  surface: AppSurface;
+  canUseAlternateSurface: boolean;
+  title: string;
+  message: string;
+  onLogout: () => void;
+}) {
+  const fallbackPath = alternateSurfacePath(surface);
+  const fallbackTitle = surfaceTitle(surface === "admin" ? "operator" : "admin");
+
+  return (
+    <main className="login-shell">
+      <section className="login-panel" aria-label="Доступ к панели">
+        <div className="login-panel-head">
+          <h1>{title}</h1>
+        </div>
+        <p>{message}</p>
+        {canUseAlternateSurface && (
+          <a className="login-submit" href={fallbackPath}>
+            Открыть {fallbackTitle.toLowerCase()}
+          </a>
+        )}
+        <button className="login-submit" type="button" onClick={onLogout}>
+          Выйти и сменить пользователя
+        </button>
+      </section>
+    </main>
+  );
 }
 
 export default App;

@@ -86,8 +86,9 @@ import {
 } from "../data-flow";
 import OrderCorrelationDetails from "../features/orders/OrderCorrelationDetails";
 import DesktopPairingControl from "../features/desktopPairing/DesktopPairingControl";
+import { accessibleAdminTabsForPermissions, type AdminWorkspaceTab } from "./surface";
 
-type Tab = "warehouse" | "table" | "calendar" | "clients" | "smartup" | "imports" | "skladbotDryRun" | "incidents" | "activity";
+type Tab = AdminWorkspaceTab;
 const HISTORY_TABS: Tab[] = ["imports", "skladbotDryRun", "incidents", "activity"];
 type StatusFilter = "all" | "active" | "archive" | "archive_no_kiz" | "cancelled" | "returned";
 type ScanFilter = "all" | "not_started" | "in_progress" | "completed" | "over_scanned" | "no_plan";
@@ -116,7 +117,6 @@ const ADMIN_TABLE_PAGE_SIZE = 500;
 const PANEL_CACHE_TTL_MS = 30_000;
 const ImportHistoryPanel = lazy(() => import("../features/history/ImportHistoryPanel"));
 const SmartupAutoImportPanel = lazy(() => import("../features/smartup/SmartupAutoImportPanel"));
-const WarehousePanel = lazy(() => import("../features/warehouse/WarehousePanel"));
 const ExcelImportControls = lazy(() => import("../features/imports/ExcelImportControls"));
 
 function defaultClientPointDraft(): ClientPointFormDraft {
@@ -242,7 +242,7 @@ function AdminWorkspace({
     () => Array.from(new Set(incidents.map((item) => item.source).filter(Boolean))).sort(),
     [incidents],
   );
-  const accessibleTabs = useMemo(() => accessibleTabsForPermissions(authPermissions), [authPermissions]);
+  const accessibleTabs = useMemo(() => accessibleAdminTabsForPermissions(authPermissions), [authPermissions]);
   const actionableEvents = useMemo(
     () => (eventQueue?.recent_events ?? [])
       .filter((event) => ["failed", "pending", "processing", "blocked"].includes(event.status)),
@@ -1000,14 +1000,10 @@ function AdminWorkspace({
           <img src="/taksklad.png" alt="" />
           <div>
             <strong>TakSklad</strong>
-            <span>веб-панель</span>
+            <span>панель управления</span>
           </div>
         </div>
         <nav className="nav-tabs" aria-label="Разделы панели">
-          {accessibleTabs.includes("warehouse") && <button className={tab === "warehouse" ? "active" : ""} onClick={() => setTab("warehouse")} aria-current={tab === "warehouse" ? "page" : undefined}>
-            <SquareCode size={18} />
-            Склад
-          </button>}
           {accessibleTabs.includes("table") && <button className={tab === "table" ? "active" : ""} onClick={() => setTab("table")} aria-current={tab === "table" ? "page" : undefined}>
             <ClipboardList size={18} />
             Таблица
@@ -1063,7 +1059,7 @@ function AdminWorkspace({
       <main className="workspace">
         <header className="topbar">
           <div>
-            <p>Web-панель</p>
+            <p>Панель управления</p>
             <h1 ref={workspaceHeadingRef} tabIndex={-1}>Заказы, синхронизация и активность</h1>
           </div>
           <div className="topbar-actions" aria-label="Действия панели">
@@ -1126,18 +1122,6 @@ function AdminWorkspace({
             <h2>Нет доступных разделов</h2>
             <p>Для этой роли не назначены разрешения веб-панели. Обратитесь к администратору.</p>
           </section>
-        )}
-
-        {accessibleTabs.includes("warehouse") && tab === "warehouse" && (
-          <Suspense fallback={<PanelFallback label="склад" />}>
-            <WarehousePanel
-              config={config}
-              canWrite={authPermissions.includes("warehouse:write")}
-              actor={authUser || "web"}
-              onError={showActionError}
-              onNotice={(message) => { setError(""); setNotice(message); }}
-            />
-          </Suspense>
         )}
 
         {accessibleTabs.includes("table") && tab === "table" && (
@@ -3070,7 +3054,6 @@ function isHistoryTab(value: Tab) {
 }
 
 function panelResourcesForTab(value: Tab, calendarMonth: string) {
-  if (value === "warehouse") return [];
   if (value === "clients") return ["client-points"];
   if (value === "calendar") return [`calendar:${calendarMonth}`];
   if (value === "smartup") return ["smartup-history"];
@@ -3079,17 +3062,6 @@ function panelResourcesForTab(value: Tab, calendarMonth: string) {
   if (value === "incidents") return ["incidents", "events"];
   if (value === "activity") return ["readiness", "events", "operations"];
   return [];
-}
-
-function accessibleTabsForPermissions(permissions: string[]): Tab[] {
-  const tabs: Tab[] = [];
-  if (permissions.includes("warehouse:read")) tabs.push("warehouse");
-  if (permissions.includes("admin:read")) tabs.push("table");
-  if (permissions.includes("client_points:read")) tabs.push("calendar", "clients");
-  if (permissions.includes("admin:read")) tabs.push("smartup");
-  if (permissions.includes("imports:read")) tabs.push("imports");
-  if (permissions.includes("admin:read")) tabs.push("skladbotDryRun", "incidents", "activity");
-  return tabs;
 }
 
 function weekdayLabel(value: number) {

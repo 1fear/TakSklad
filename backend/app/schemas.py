@@ -145,6 +145,7 @@ class OrderItemRead(BaseModel):
     quantity_pieces: int
     quantity_blocks: int
     scanned_blocks: int
+    requires_kiz: bool = True
     block_price: int = 0
     line_total: int = 0
     status: str

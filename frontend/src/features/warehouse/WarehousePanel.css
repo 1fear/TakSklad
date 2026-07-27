@@ -1,0 +1,263 @@
+.warehouse-print-ready {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid #dce5d9;
+  border-radius: 12px;
+  padding: 14px 16px;
+  background: #f2f7ef;
+}
+
+.warehouse-print-ready div,
+.warehouse-progress,
+.warehouse-item-progress,
+.warehouse-recent-scans,
+.warehouse-recent-head {
+  display: grid;
+  gap: 4px;
+}
+
+.warehouse-print-ready span,
+.warehouse-progress span,
+.warehouse-item-progress span,
+.warehouse-recent-head span {
+  color: #656b63;
+  font-size: 13px;
+}
+
+.warehouse-scanner-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+}
+
+.warehouse-scanner-field {
+  display: grid;
+  gap: 8px;
+}
+
+.warehouse-scanner-input {
+  min-height: 64px;
+  font-size: 21px;
+  letter-spacing: 0.02em;
+}
+
+.warehouse-scanner-submit {
+  min-height: 64px;
+  min-width: 152px;
+}
+
+.warehouse-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 9px;
+  padding: 10px 12px;
+  font-size: 14px;
+}
+
+.warehouse-check.ok {
+  background: #e8f3ea;
+  color: #1d6b3a;
+}
+
+.warehouse-check.error {
+  background: #f8e7e4;
+  color: #8a2f22;
+}
+
+.warehouse-recent-scans {
+  border-top: 1px solid #e3e8e1;
+  padding-top: 12px;
+}
+
+.warehouse-recent-scans ul {
+  list-style: none;
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+}
+
+.warehouse-recent-scans li {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) auto auto;
+  gap: 10px;
+  align-items: center;
+  border-radius: 9px;
+  padding: 9px 11px;
+  background: #f4f6f2;
+  font-size: 13px;
+  color: #2f352f;
+}
+
+.warehouse-print-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(20, 26, 20, 0.5);
+}
+
+.warehouse-print-modal {
+  position: relative;
+  width: min(880px, 100%);
+  max-height: calc(100vh - 40px);
+  overflow: auto;
+  border-radius: 16px;
+  background: #ffffff;
+  box-shadow: 0 28px 80px rgba(18, 24, 18, 0.24);
+}
+
+.warehouse-print-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid #d6ddd3;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #233023;
+}
+
+.warehouse-print-sheet {
+  display: grid;
+  gap: 18px;
+  padding: 28px;
+}
+
+.warehouse-print-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.warehouse-print-head h2,
+.warehouse-print-head p {
+  margin: 0;
+}
+
+.warehouse-print-head p,
+.warehouse-print-timestamp {
+  color: #5f685e;
+  font-size: 14px;
+}
+
+.warehouse-print-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 20px;
+  margin: 0;
+}
+
+.warehouse-print-meta div {
+  display: grid;
+  gap: 4px;
+}
+
+.warehouse-print-meta dt {
+  color: #5f685e;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.warehouse-print-meta dd {
+  margin: 0;
+  color: #223022;
+}
+
+.warehouse-print-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.warehouse-print-table th,
+.warehouse-print-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #e2e7e1;
+  text-align: left;
+}
+
+.warehouse-print-table th {
+  font-size: 12px;
+  color: #5f685e;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.warehouse-print-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+body.warehouse-print-open {
+  overflow: hidden;
+}
+
+@media (max-width: 720px) {
+  .warehouse-print-ready,
+  .warehouse-scanner-form,
+  .warehouse-print-head,
+  .warehouse-print-meta,
+  .warehouse-print-actions {
+    grid-template-columns: 1fr;
+    flex-direction: column;
+  }
+
+  .warehouse-scanner-submit,
+  .warehouse-print-ready .primary-button {
+    width: 100%;
+  }
+
+  .warehouse-recent-scans li {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media print {
+  body.warehouse-print-open * {
+    visibility: hidden !important;
+  }
+
+  body.warehouse-print-open .warehouse-print-modal,
+  body.warehouse-print-open .warehouse-print-modal * {
+    visibility: visible !important;
+  }
+
+  body.warehouse-print-open .warehouse-print-backdrop {
+    position: static;
+    padding: 0;
+    background: transparent;
+  }
+
+  body.warehouse-print-open .warehouse-print-modal {
+    width: auto;
+    max-height: none;
+    overflow: visible;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  body.warehouse-print-open .warehouse-print-close,
+  body.warehouse-print-open .warehouse-print-actions,
+  body.warehouse-print-open .warehouse-print-head p {
+    display: none !important;
+  }
+
+  body.warehouse-print-open .warehouse-print-sheet {
+    padding: 0;
+    gap: 12px;
+  }
+}

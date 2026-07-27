@@ -92,6 +92,21 @@ export const secondAdminRow = adminRow({
   skladbot_request_id: "902",
 });
 
+export function orderItem(overrides: Partial<Order["items"][number]> = {}): Order["items"][number] {
+  return {
+    id: "item-1",
+    product: "Тестовый товар",
+    requires_kiz: true,
+    quantity_pieces: 20,
+    quantity_blocks: 2,
+    scanned_blocks: 0,
+    status: "active",
+    scan_codes: [],
+    scan_entries: [],
+    ...overrides,
+  };
+}
+
 export const activeOrder: Order = {
   id: "order-1",
   order_date: "2026-07-10",
@@ -105,15 +120,7 @@ export const activeOrder: Order = {
   skladbot_request_id: "901",
   skladbot_return_request_number: "",
   skladbot_return_request_id: "",
-  items: [{
-    id: "item-1",
-    product: "Тестовый товар",
-    quantity_pieces: 20,
-    quantity_blocks: 2,
-    scanned_blocks: 0,
-    status: "active",
-    scan_codes: [],
-  }],
+  items: [orderItem()],
 };
 
 export function adminTable(

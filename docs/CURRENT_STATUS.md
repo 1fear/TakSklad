@@ -1,98 +1,169 @@
 # TakSklad: текущий статус
 
-Дата сверки: 2026-07-20.
+Дата локальной сверки: 2026-07-27.
 
-Статус: `PARTIALLY_CONFIRMED_LIVE_NOT_READY`.
+Статус: `LOCAL_CANDIDATE_VERIFIED; DUAL_RUN_READY_PENDING_APPROVAL; DESKTOP_RETIREMENT_BLOCKED; LIVE_OPERATOR_PHYSICAL_NOT_RUN`.
 
 ## Короткий вывод
 
-TakSklad является рабочей складской системой с Windows desktop, web, backend API,
-PostgreSQL и серверными workers. Код и документация подтверждают DB-only архитектуру,
-но текущий production backend нельзя считать полностью готовым: публичный `/ready`
-вернул `503`, а верхнеуровневый readiness показал `workers=unhealthy`.
+Локальная версия веб-панели собрана и прошла полный доступный verifier loop.
+Операторский контур работает на `/`, административный — на `/admin`.
+Сканирование КИЗов, отмена последнего скана, завершение заказа, полный возврат и
+печать из браузера покрыты unit, synthetic browser и PostgreSQL-тестами.
 
-Причина нездорового состояния конкретного worker не диагностировалась в этой
-документационной задаче. Production write, restart, deploy и исправление данных не
-выполнялись.
+Кандидат в исходном виде ломал развёрнутое Windows-приложение `2.0.54` в режиме
+параллельной работы: новый `409` по полностью отсканированной позиции заводил
+оператора в бесконечный цикл пересканирования, а физически отсканированные КИЗы
+молча выпадали из очереди, если web успел закрыть позицию раньше. Обе регрессии
+найдены и **исправлены**, каждая закрыта тестом, проверенным на падение без
+исправления.
 
-## Назначение и рабочий контур
+Остаточное условие выката — согласование: правки меняют поведение
+production-десктопа, поэтому сначала выпускается новая сборка десктопа, затем
+backend.
 
-TakSklad закрывает следующие процессы:
+К отказу от Windows-приложения кандидат не готов: проверено 234 операторские
+возможности десктопа, подтверждён 121 пробел (15 из них P1). Разбор по доменам,
+риски параллельной работы и условия выключения приложения —
+[паритет web и desktop](web-desktop-parity.md).
 
-- импорт и нормализацию Excel-заказов;
-- хранение заказов, импортов, КИЗов, движений и аудита в PostgreSQL;
-- сканирование, проверку дублей и сохранение КИЗов;
-- локальную идемпотентную очередь desktop при временной недоступности backend;
-- web-контроль, отчеты и экспорт;
-- Telegram import/report flow;
-- SkladBot заявки, возвраты и read-only отчеты в подтвержденных контурах;
-- Smartup auto-import в пределах текущего backend-контракта;
-- Windows update channel через GitHub Release.
+Работа находится только в локальной ветке
+`codex/web-panel-recovery-audit-20260727` поверх
+`c3d535bb9bf4396f61608b90859def576b92c95d`. Изменения не закоммичены, не
+отправлены и не развёрнуты.
 
-Operational source of truth — PostgreSQL через backend API. Google Sheets не
-является runtime-хранилищем или fallback. Excel остается форматом импорта и экспорта.
+Это подтверждённый локальный production candidate, но не доказательство
+готовности фактического production. Live runtime, production data, реальный
+сканер, системная печать и операторская приёмка в этой локальной задаче не
+проверялись.
 
-## Разделение источников истины
+## Что реализовано
 
-| Слой | Статус на 2026-07-20 | Evidence и граница |
-|---|---|---|
-| Docs truth | `CONFIRMED` | `README.md`, `docs/db-only-architecture.md` и runbook описывают DB-only контур и безопасный release/deploy. |
-| Code truth | `CONFIRMED_LOCAL_ONLY` | Локальный `main` на `cef29859f5ec31288cf2a2e34005f3d7831dc000`; desktop `APP_VERSION=2.0.54`, backend `APP_VERSION=2.0.51`. В worktree есть чужие untracked artifacts; он не является готовым production source bundle. |
-| Test truth | `NOT_RUN_THIS_REVIEW` | В рамках этой документационной задачи тесты приложения и CI не запускались. Старые test/CI records не доказывают текущий live. |
-| Live truth | `PARTIAL_FAIL` | Read-only public probe: `/health` `200`, `/version` `200`, `/ready` `503`. Детали ниже. |
-| Data truth | `NOT_CHECKED` | Production DB, очереди, заказы, КИЗы и отчеты не читались. |
-| Operator truth | `NOT_CHECKED` | Windows workstation, Telegram, печать, scanner и физический складской сценарий не проверялись. |
+- `/` — отдельная операторская поверхность склада;
+- `/admin` и `/admin/*` — административная поверхность с проверкой permissions;
+- выбор заказа и позиции, ввод или аппаратный keyboard-wedge scan КИЗа;
+- проверка формата КИЗа в браузере по правилам десктопа (префикс `01`, длина
+  20–120, кириллица, пробелы, набор ASCII с разделителем GS);
+- preflight-проверка доступности и авторитетная запись скана через backend;
+- fail-closed обработка несовпадения ответа и нового КИЗа после полного сканирования позиции;
+- отклонённый КИЗ остаётся в поле и выделяется целиком, чтобы следующий скан
+  заменил его, а не дописался к нему;
+- отмена последнего скана;
+- точная проверка готовности и завершение заказа;
+- печатный snapshot после завершения только по явной кнопке пользователя;
+- поиск архивного заказа и только полный возврат всех его КИЗов;
+- аутентифицированная атрибуция движений scan/undo/return;
+- блокировки reset/rescan против гонок со scan/undo;
+- PostgreSQL/backend остаётся operational source of truth.
 
-## Текущая идентичность контуров
+В браузере нет offline-очереди и fallback на desktop или Google Sheets. Потеря
+доступа к backend блокирует запись и должна быть показана оператору как ошибка.
+Пока это так, Windows-приложение остаётся обязательным контуром на случай
+недоступности backend.
+
+## Идентичность контуров
 
 Эти идентификаторы нельзя смешивать:
 
-- локальный checkout: `cef29859f5ec31288cf2a2e34005f3d7831dc000`;
-- public desktop update manifest: версия `2.0.54`, source SHA
-  `63f4506404408d44c02a8aa626f2fee2f26c526b`;
-- live backend на read-only probe: версия `2.0.51`, commit prefix `87cdc9d5`.
+| Контур | Идентичность | Источник |
+|---|---|---|
+| Локальный checkout | `c3d535bb9bf4396f61608b90859def576b92c95d` (= `origin/main`) | `git rev-parse HEAD origin/main` |
+| Backend в коде | `APP_VERSION = 2.0.51` | `backend/app/settings.py:19` |
+| Desktop в коде | `APP_VERSION = 2.0.54` | `src/taksklad/config.py:128` |
+| Public desktop manifest | `2.0.54`, `source_sha 63f4506404408d44c02a8aa626f2fee2f26c526b`, `mandatory=true`, `min_supported_version=2.0.54` | `version.json` |
+| Live backend (последняя зафиксированная сверка 2026-07-26) | `2.0.51`, `commit_sha fb0cb124…` | запись в базе знаний, не перепроверялась 2026-07-27 |
 
-Локальная ветка на момент сверки была `ahead 4, behind 1` относительно
-`origin/main`. Это не ошибка само по себе, но запрещает считать текущий checkout
-точной копией production или публичного desktop release без отдельной сверки.
+Живой контур не разошёлся с `main`: `fb0cb124` является предком `main`, а `main`
+опережает его ровно на **9 коммитов**. Среди непоставленных на live изменений
+есть значимые для склада:
 
-## Live truth: безопасная публичная проверка
+- `82e367a` — блокировка конкретного КИЗ-кода при скане и отгрузке;
+- `91d3639` + `56911db` — обновление postcss под `GHSA-r28c-9q8g-f849` и SBOM.
 
-Дата проверки: 2026-07-20. Базовый URL: `https://api.taksklad.uz`.
+Версию backend и `version.json` в этой задаче не меняли: по границам проекта
+release identity правится только через release checklist. Решение о номере
+крупного релиза остаётся за Антоном.
 
-| Endpoint | HTTP | Наблюдение |
-|---|---:|---|
-| `/health` | `200` | `status=ok`, версия `2.0.51`, commit prefix `87cdc9d5`. |
-| `/version` | `200` | Та же версия и runtime identity. |
-| `/ready` | `503` | `ready=false`, общий статус `unhealthy`; `database=ok`, `migrations=ok`, `daily_report=ok`, `desktop_pairing=ok`, `workers=unhealthy`. |
+## Источники истины
 
-Readiness фиксирует наблюдаемую верхнеуровневую причину общего fail, но не root
-cause конкретного worker. До диагностики и повторного `/ready=200` нельзя писать
-`production ready`.
+| Слой | Статус | Evidence и граница |
+|---|---|---|
+| Docs truth | `PASS` | README, backend README, web acceptance runbook и паритет-документ приведены к текущему коду. |
+| Code truth | `PASS_LOCAL` | Локальная ветка и незакоммиченный diff проверены; deploy не выполнялся. |
+| Test truth | `PASS_LOCAL` | Python, PostgreSQL, frontend unit/a11y/E2E/performance, build и security gates прошли. |
+| Parity truth | `FAIL_FOR_RETIREMENT` | 234 возможности проверено, 121 пробел подтверждён, 43 заявки опровергнуты. См. [паритет](web-desktop-parity.md). |
+| Dual-run truth | `PASS_PENDING_APPROVAL` | 18 рисков проверено; 2 P1, внесённые кандидатом, исправлены и покрыты тестами. Остальные — ранее существовавшие гонки блокировок, см. [паритет](web-desktop-parity.md). |
+| Live truth | `NOT RUN` | Production endpoints и фактический image/SHA 2026-07-27 не проверялись. |
+| Data truth | `NOT RUN` | Production DB, заказы, КИЗы, очереди и отчёты не читались и не изменялись. |
+| Operator truth | `NOT RUN` | Рабочее место и реальный складской процесс не проверялись. |
+| Physical truth | `NOT RUN` | Handheld scanner, системный print dialog и бумажная печать не проверялись. |
 
-## Активное направление
+## Локальные проверки 2026-07-27
 
-1. Надежность Windows desktop, локальной очереди, backup и recovery.
-2. PostgreSQL/backend как единственный operational source of truth.
-3. Безопасные SkladBot, Smartup и Telegram integrations.
-4. Отчеты, аудит, observability и понятная ручная приемка.
-5. Web/admin контроль без ослабления auth и release gates.
+| Проверка | Результат |
+|---|---|
+| Полный Python suite | `PASS`: 1638 тестов, 84 skipped |
+| PostgreSQL suite в одноразовом PostgreSQL 16 | `PASS`: 101 тест |
+| Frontend unit + coverage | `PASS`: 156/156 |
+| Frontend accessibility config | `PASS`: 6 проверок, 150 skipped по конфигурации |
+| Frontend synthetic E2E | `PASS`: 4/4, 2 performance-теста штатно skipped без perf-флага |
+| Полный performance gate | `PASS`: 2/2; Lighthouse performance/accessibility/best-practices 1.0 на `/` |
+| Frontend lint/typecheck/build | `PASS` |
+| Security gate | `PASS`: blocking/high/critical = 0 |
+| SBOM verification | `PASS`: 5 файлов, CycloneDX 1.6 |
 
-## Ближайшие доказуемые действия
+Замечание по воспроизводимости: `tools/security_gate.sh` работает fail-closed и
+падает с `dependency-audit.invalid-result`, если `pip-audit` не может получить
+базу advisory. Один прогон 2026-07-27 упал именно так и прошёл при повторе;
+результат гейта зависит от доступности сети.
 
-1. Read-only диагностировать, какой обязательный worker делает readiness unhealthy.
-2. Сверить exact live backend SHA, public desktop release SHA и актуальный
-   `origin/main`; не использовать dirty checkout как release source.
-3. После исправления пройти focused tests, CI, deploy gates и повторный
-   `/health` + `/version` + `/ready` smoke.
-4. Отдельно выполнить operator acceptance на реальном Windows workstation,
-   Telegram/печати/scanner flow без тестовых production-write действий вне
-   согласованного scope.
+## Исторические live-снимки — не текущая проверка
+
+Живая проверка в этой локальной задаче **не выполнялась**. Зафиксированные ранее
+снимки:
+
+| Дата | `/health` | `/version` | `/ready` | Примечание |
+|---|---|---|---|---|
+| 2026-07-20 | `200` | `200` | `503`, `workers=unhealthy` | зафиксирован в прошлой версии этого документа |
+| 2026-07-26 | `200` | `200` | `200`, `ready: true` | по записи в базе знаний; блокер `workers=unhealthy` не воспроизводился |
+
+Ни один из снимков не перепроверялся 2026-07-27 и оба могут быть устаревшими.
+Свежий `/ready=200` остаётся обязательным пунктом перед выпуском.
+
+## Стоп-факторы до выката
+
+Закрыть до коммита и деплоя:
+
+1. **Требует согласования.** Две правки десктопа, закрывающие регрессии
+   дуального режима, меняют поведение развёрнутого `2.0.54`: заблокированные
+   события теперь переживают перезапуск в durable-секции
+   `blocked_backend_events`, а сообщение оператору при закрытой на сервере
+   позиции указывает нажать «Обновить» вместо бесконечного пересканирования.
+   Exact before/after — в [паритете](web-desktop-parity.md). Порядок выката:
+   сначала новая сборка десктопа, затем backend.
+2. **Решение владельца.** Молчаливое обрезание списка активных заказов на 200.
+3. **Остаётся открытым (P2).** Заблокированные события сохраняются, но всё ещё
+   не показываются оператору, если относятся не к текущей позиции.
+
+## Следующий release gate
+
+После отдельного разрешения на live/release-этап:
+
+1. сверить deploy target, exact SHA/image и получить свежий `/ready=200`;
+2. развернуть только утверждённый source state с планом rollback;
+3. пройти [приёмку веб-склада](web-warehouse-acceptance.md) на реальном рабочем месте;
+4. отдельно подтвердить scanner, печать и операторский сценарий;
+5. только после этого менять статус на production ready.
+
+Отказ от Windows-приложения — **отдельный, более поздний gate**. Его условия и
+оставшиеся блокеры перечислены в [паритете web и desktop](web-desktop-parity.md).
 
 ## Читать дальше
 
-1. [Server topology и live endpoints](SERVER.md).
-2. [Доступы без секретов](ACCESS.md).
-3. [DB-only архитектура](db-only-architecture.md).
-4. [Deploy и rollback](deploy-rollback-runbook.md).
-5. [Ручная приемка](manual-acceptance-runbook.md).
+1. [Паритет web и desktop](web-desktop-parity.md).
+2. [Приёмка веб-склада](web-warehouse-acceptance.md).
+3. [Общая ручная приёмка](manual-acceptance-runbook.md).
+4. [DB-only архитектура](db-only-architecture.md).
+5. [Deploy и rollback](deploy-rollback-runbook.md).
+6. [Server topology и live endpoints](SERVER.md).
+7. [Доступы без секретов](ACCESS.md).

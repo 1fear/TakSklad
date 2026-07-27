@@ -7,13 +7,16 @@ from zipfile import ZipFile
 import xml.etree.ElementTree as ET
 
 import openpyxl
+from fastapi import Depends
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import sessionmaker, selectinload
 from sqlalchemy.pool import StaticPool
 
+from backend.app.audit_identity import AuditActor, set_audit_actor
 from backend.app.db import get_db
 from backend.app.main import (
+    AuthContext,
     app,
     require_admin_write_permission,
     require_client_points_write_permission,
@@ -43,10 +46,30 @@ class BackendApiPersistenceTests(unittest.TestCase):
             finally:
                 db.close()
 
+        self.audit_principal_id = "00000000-0000-0000-0000-000000000111"
+        self.audit_actor_subject = "service:test-backend-api"
+
+        def override_auth(db=Depends(get_db)):
+            set_audit_actor(
+                db,
+                AuditActor(
+                    subject=self.audit_actor_subject,
+                    service_principal_id=uuid.UUID(self.audit_principal_id),
+                ),
+            )
+            return AuthContext(
+                login="test-backend-api",
+                role="desktop",
+                permissions=tuple(),
+                source="service-principal",
+                principal_id=self.audit_principal_id,
+                token_id="00000000-0000-0000-0000-000000000222",
+            )
+
         app.dependency_overrides[get_db] = override_get_db
-        app.dependency_overrides[require_service_token] = lambda: None
-        app.dependency_overrides[require_admin_write_permission] = lambda: None
-        app.dependency_overrides[require_client_points_write_permission] = lambda: None
+        app.dependency_overrides[require_service_token] = override_auth
+        app.dependency_overrides[require_admin_write_permission] = override_auth
+        app.dependency_overrides[require_client_points_write_permission] = override_auth
         self.client = TestClient(app)
 
     def tearDown(self):
@@ -62,6 +85,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         scanned_blocks=0,
         item_status="not_completed",
         product="Test Product",
+        requires_kiz=True,
     ):
         with self.SessionLocal() as db:
             order = Order(
@@ -80,6 +104,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
                 quantity_blocks=quantity_blocks,
                 pieces_per_block=10,
                 scanned_blocks=scanned_blocks,
+                requires_kiz=requires_kiz,
                 status=item_status,
                 raw_payload={"source": "test"},
             )
@@ -130,6 +155,16 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(payload[0]["id"], active_order_id)
         self.assertEqual(payload[0]["status"], "not_completed")
         self.assertEqual(payload[0]["items"][0]["product"], "Test Product")
+        self.assertTrue(payload[0]["items"][0]["requires_kiz"])
+
+    def test_active_orders_include_requires_kiz_flag_for_item(self):
+        order_id, _ = self.seed_order(requires_kiz=False)
+
+        response = self.client.get("/api/v1/orders/active")
+
+        self.assertEqual(response.status_code, 200)
+        order_payload = next(row for row in response.json() if row["id"] == order_id)
+        self.assertFalse(order_payload["items"][0]["requires_kiz"])
 
     def test_order_apis_expose_exact_internal_smartup_set_and_skladbot_links(self):
         with self.SessionLocal() as db:
@@ -1257,7 +1292,9 @@ class BackendApiPersistenceTests(unittest.TestCase):
                 select(AuditLog).where(AuditLog.action == "order_archived_without_kiz")
             ).scalar_one()
             self.assertEqual(audit.payload["action"], "order_archived_without_kiz")
-            self.assertEqual(audit.payload["actor"], "anton")
+            self.assertEqual(audit.payload["actor"], self.audit_actor_subject)
+            self.assertEqual(audit.payload["claimed_actor"], "anton")
+            self.assertEqual(str(audit.actor_service_principal_id), self.audit_principal_id)
             self.assertEqual(audit.payload["source"], "anton")
             self.assertEqual(audit.payload["reason"], "Emergency close")
             self.assertEqual(audit.payload["affected_order_ids"], [order_id])
@@ -1634,7 +1671,12 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
         response = self.client.post(
             "/api/v1/scans",
-            json={"order_item_id": item_id, "code": "  0104006396053947217ABCDEF  ", "workstation_id": "pc-1"},
+            json={
+                "order_item_id": item_id,
+                "code": "  0104006396053947217ABCDEF  ",
+                "workstation_id": "pc-1",
+                "scanned_by": "warehouse-pc-1",
+            },
         )
 
         self.assertEqual(response.status_code, 201)
@@ -1671,6 +1713,12 @@ class BackendApiPersistenceTests(unittest.TestCase):
                 .where(KizCode.code == "0104006396053947217ABCDEF")
             ).scalars().all()
             self.assertEqual([movement.movement_type for movement in movements], ["outbound"])
+            self.assertEqual(movements[0].actor, self.audit_actor_subject)
+            self.assertEqual(movements[0].raw_payload["claimed_actor"], "warehouse-pc-1")
+            audit = db.execute(select(AuditLog).where(AuditLog.action == "scan_code_created")).scalar_one()
+            self.assertEqual(str(audit.actor_service_principal_id), self.audit_principal_id)
+            self.assertEqual(audit.actor_subject, self.audit_actor_subject)
+            self.assertEqual(audit.payload["claimed_actor"], "warehouse-pc-1")
             item = db.get(OrderItem, uuid.UUID(item_id))
             self.assertEqual(item.scanned_blocks, 1)
             other_item = db.get(OrderItem, uuid.UUID(other_item_id))
@@ -1700,7 +1748,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertEqual(item.scanned_blocks, 1)
             self.assertEqual(item.status, "completed")
 
-    def test_scan_create_acknowledges_extra_scan_when_item_already_full(self):
+    def test_scan_create_rejects_new_code_when_item_is_already_full(self):
         _, item_id = self.seed_order(quantity_blocks=2)
 
         first = self.client.post(
@@ -1722,16 +1770,25 @@ class BackendApiPersistenceTests(unittest.TestCase):
             json={"order_item_id": item_id, "code": "010987654321", "workstation_id": "pc-1"},
         )
 
-        self.assertEqual(extra.status_code, 201)
-        self.assertEqual(extra.json()["order_item_id"], item_id)
-        self.assertEqual(extra.json()["code"], "010123456780")
-        self.assertEqual(extra.json()["scanned_blocks"], 2)
-        self.assertEqual(extra.json()["item_status"], "completed")
+        self.assertEqual(extra.status_code, 409)
+        detail = extra.json()["detail"]
+        self.assertEqual(detail["code"], "order_item_fully_scanned_new_code")
+        self.assertEqual(detail["message"], "Order item is already fully scanned")
+        self.assertEqual(detail["order_item_id"], item_id)
+        self.assertEqual(detail["quantity_blocks"], 2)
+        self.assertEqual(detail["scanned_blocks"], 2)
 
         with self.SessionLocal() as db:
             scans = db.execute(select(ScanCode)).scalars().all()
             self.assertEqual(len(scans), 2)
             self.assertEqual({scan.code for scan in scans}, {"010123456789", "010123456780"})
+            movements = db.execute(select(KizMovement)).scalars().all()
+            self.assertEqual(len(movements), 2)
+            self.assertEqual({movement.scan_code_id for movement in movements}, {scan.id for scan in scans})
+            audits = db.execute(
+                select(AuditLog).where(AuditLog.action == "scan_code_created")
+            ).scalars().all()
+            self.assertEqual(len(audits), 2)
             item = db.get(OrderItem, uuid.UUID(item_id))
             self.assertEqual(item.scanned_blocks, 2)
             self.assertEqual(item.status, "completed")
@@ -2008,6 +2065,41 @@ class BackendApiPersistenceTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 409)
+
+    def test_scan_undo_uses_authenticated_actor_for_kiz_movement(self):
+        _order_id, item_id = self.seed_order(quantity_blocks=1)
+        self.assertEqual(
+            self.client.post(
+                "/api/v1/scans",
+                json={"order_item_id": item_id, "code": "010000000777", "workstation_id": "pc-1"},
+            ).status_code,
+            201,
+        )
+
+        response = self.client.post(
+            "/api/v1/scans/undo",
+            json={
+                "order_item_id": item_id,
+                "code": "010000000777",
+                "workstation_id": "pc-1",
+                "actor": "spoofed-desktop-label",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        with self.SessionLocal() as db:
+            movements = db.execute(
+                select(KizMovement)
+                .join(KizCode, KizMovement.kiz_id == KizCode.id)
+                .where(KizCode.code == "010000000777")
+                .order_by(KizMovement.occurred_at, KizMovement.id)
+            ).scalars().all()
+            self.assertEqual([movement.movement_type for movement in movements], ["outbound", "undo"])
+            self.assertEqual(movements[-1].actor, self.audit_actor_subject)
+            self.assertEqual(movements[-1].raw_payload["claimed_actor"], "spoofed-desktop-label")
+            audit = db.execute(select(AuditLog).where(AuditLog.action == "scan_code_deleted")).scalar_one()
+            self.assertEqual(audit.actor_subject, self.audit_actor_subject)
+            self.assertEqual(audit.payload["claimed_actor"], "spoofed-desktop-label")
 
     def legacy_scan_create_queues_google_sheets_export_when_google_is_down(self):
         _, item_id = self.seed_order()
@@ -2369,7 +2461,14 @@ class BackendApiPersistenceTests(unittest.TestCase):
                 .order_by(KizMovement.occurred_at, KizMovement.id)
             ).scalars().all()
             self.assertEqual([movement.movement_type for movement in movements], ["outbound", "return", "re_outbound"])
+            self.assertEqual(movements[1].actor, self.audit_actor_subject)
+            self.assertEqual(movements[1].raw_payload["claimed_actor"], "warehouse-pc")
             self.assertEqual(str(movements[-1].order_item_id), second_item_id)
+            return_audit = db.execute(
+                select(AuditLog).where(AuditLog.action == "order_returned").where(AuditLog.entity_id == first_order_id)
+            ).scalar_one()
+            self.assertEqual(return_audit.actor_subject, self.audit_actor_subject)
+            self.assertEqual(return_audit.payload["claimed_actor"], "warehouse-pc")
 
             first_order = db.get(Order, uuid.UUID(first_order_id))
             second_order = db.get(Order, uuid.UUID(second_order_id))
@@ -4997,7 +5096,9 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertEqual(audit.entity_id, retryable_id)
             self.assertEqual(audit.payload["old_status"], "failed")
             self.assertEqual(audit.payload["new_status"], "pending")
-            self.assertEqual(audit.payload["actor"], "anton")
+            self.assertEqual(audit.payload["actor"], self.audit_actor_subject)
+            self.assertEqual(audit.payload["claimed_actor"], "anton")
+            self.assertEqual(str(audit.actor_service_principal_id), self.audit_principal_id)
             self.assertEqual(audit.payload["source"], "web")
             self.assertEqual(audit.payload["reason"], "Manual retry after operator review")
 
@@ -5196,7 +5297,9 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertEqual(audit.entity_id, incident_id)
             self.assertEqual(audit.payload["old_status"], "open")
             self.assertEqual(audit.payload["new_status"], "resolved")
-            self.assertEqual(audit.payload["actor"], "anton")
+            self.assertEqual(audit.payload["actor"], self.audit_actor_subject)
+            self.assertEqual(audit.payload["claimed_actor"], "anton")
+            self.assertEqual(str(audit.actor_service_principal_id), self.audit_principal_id)
             self.assertEqual(audit.payload["source"], "web")
             self.assertEqual(audit.payload["reason"], "Checked and fixed import")
 

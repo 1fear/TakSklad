@@ -4,6 +4,7 @@ export type OrderItem = {
   quantity_pieces: number;
   quantity_blocks: number;
   scanned_blocks: number;
+  requires_kiz: boolean;
   status: string;
   scan_codes: string[];
   scan_entries?: Array<{
@@ -41,6 +42,26 @@ export type ReturnConfirmedItem = {
   sku?: string;
   quantity_blocks: number;
   quantity_pieces?: number;
+};
+
+export type ScanResult = {
+  id: string;
+  order_item_id: string;
+  code: string;
+  scanned_blocks: number;
+  item_status: string;
+  scanned_at: string;
+  scan_type: string;
+  block_quantity: number;
+};
+
+export type KizAvailability = {
+  code: string;
+  available: boolean;
+  reason: string;
+  latest_movement_type: string;
+  latest_order_item_id: string;
+  existing_order_item_id: string;
 };
 
 export type DayReport = {
@@ -705,6 +726,38 @@ export function syncSources(config: ApiConfig, options: { skladbot?: boolean; wa
 
 export function completeWarehouseOrder(config: ApiConfig, orderId: string) {
   return apiRequest<Order>(config, `/api/v1/orders/${encodeURIComponent(orderId)}/complete`, { method: "POST" });
+}
+
+export function lookupKizAvailability(config: ApiConfig, code: string, orderItemId = "") {
+  const query = new URLSearchParams({ code });
+  if (orderItemId) query.set("order_item_id", orderItemId);
+  return apiRequest<KizAvailability>(config, `/api/v1/kiz/availability?${query.toString()}`);
+}
+
+export function createScan(config: ApiConfig, payload: {
+  order_item_id: string;
+  code: string;
+  workstation_id?: string;
+  scanned_by?: string;
+  scanned_at?: string;
+  raw_payload?: Record<string, unknown>;
+}) {
+  return apiRequest<ScanResult>(config, "/api/v1/scans", {
+    method: "POST",
+    body: payload,
+  });
+}
+
+export function undoScan(config: ApiConfig, payload: {
+  order_item_id: string;
+  code: string;
+  workstation_id?: string;
+  actor?: string;
+}) {
+  return apiRequest<ScanResult>(config, "/api/v1/scans/undo", {
+    method: "POST",
+    body: payload,
+  });
 }
 
 export function lookupReturn(config: ApiConfig, lookup: string) {

@@ -199,3 +199,48 @@ class StorageConcurrencyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BlockedBackendEventsDurabilityTests(unittest.TestCase):
+    """Заблокированный скан описывает блок, который физически уехал со склада.
+
+    Он убран из очереди повторов намеренно, но обязан пережить перезапуск
+    приложения, иначе КИЗ не остаётся нигде, кроме локального backup.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.original_data_file = storage.TAKSKLAD_DATA_FILE
+        storage.TAKSKLAD_DATA_FILE = str(Path(self.temp_dir.name) / "TakSklad_data.json")
+
+    def tearDown(self):
+        storage.TAKSKLAD_DATA_FILE = self.original_data_file
+        self.temp_dir.cleanup()
+
+    def test_blocked_backend_events_round_trip_through_durable_queue(self):
+        from taksklad import backend_events
+
+        added = backend_events.record_blocked_backend_events([{
+            "id": "blocked-1",
+            "type": "scan",
+            "payload": {"order_item_id": "item-1", "code": "01000000000000000002"},
+            "last_error_detail": {"code": "order_item_fully_scanned_new_code"},
+        }])
+        self.assertEqual(added, 1)
+
+        # Полная перезагрузка состояния: секция должна прийти из SQLite, а не из памяти.
+        reloaded = backend_events.load_blocked_backend_events()
+        self.assertEqual(len(reloaded), 1)
+        self.assertEqual(reloaded[0]["payload"]["code"], "01000000000000000002")
+        self.assertTrue(os.path.exists(storage.queue_db_path()))
+
+    def test_blocked_backend_events_are_counted_in_queue_diagnostics(self):
+        from taksklad import backend_events
+
+        backend_events.record_blocked_backend_events([{
+            "id": "blocked-1",
+            "type": "scan",
+            "payload": {"order_item_id": "item-1", "code": "01000000000000000002"},
+        }])
+        counts = storage.app_data_queue_counts(storage.load_app_data())
+        self.assertEqual(counts.get("blocked_backend_events"), 1)

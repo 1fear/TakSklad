@@ -5,8 +5,12 @@ from datetime import datetime, timezone
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session, selectinload
 
-from .kiz_movements_service import MOVEMENT_RESET, lock_kiz_code_for_transaction, record_kiz_movement
-from .models import AuditLog, Order, OrderItem
+from .kiz_movements_service import (
+    MOVEMENT_RESET,
+    lock_kiz_codes_for_transaction,
+    record_kiz_movement,
+)
+from .models import AuditLog, Order, OrderItem, ScanCode
 from .orders_service import (
     ApiError,
     INACTIVE_ORDER_STATUSES,
@@ -224,9 +228,10 @@ def reset_order_for_rescan(db: Session, order_id, payload):
 
     now = datetime.now(timezone.utc)
     actor = context["actor"]
+    locked_items, scans_by_item_id = lock_reset_order_state(db, order.id)
     reset_counts = []
-    for item in order.items:
-        scan_codes = list(item.scan_codes or [])
+    for item in locked_items:
+        scan_codes = list(scans_by_item_id.get(item.id) or [])
         reset_counts.append({
             "item_id": str(item.id),
             "product": item.product,
@@ -234,7 +239,6 @@ def reset_order_for_rescan(db: Session, order_id, payload):
             "scan_codes": len(scan_codes),
         })
         for scan in scan_codes:
-            lock_kiz_code_for_transaction(db, scan.code)
             record_kiz_movement(
                 db,
                 code=scan.code,
@@ -250,7 +254,7 @@ def reset_order_for_rescan(db: Session, order_id, payload):
                     "reset_from_status": order.status,
                 },
             )
-        item.scan_codes.clear()
+            db.delete(scan)
         item.scanned_blocks = 0
         item.status = STATUS_NOT_COMPLETED
         raw_payload = dict(item.raw_payload or {})
@@ -286,8 +290,8 @@ def reset_order_for_rescan(db: Session, order_id, payload):
         ),
     ))
     db.commit()
-    db.refresh(order)
-    return order_to_read(order)
+    db.expire_all()
+    return order_to_read(get_order_for_action(db, order_id))
 
 
 def restore_order(db: Session, order_id, payload):
@@ -436,6 +440,29 @@ def get_order_for_action(db: Session, order_id, with_for_update=False):
     if order is None:
         raise ApiError(404, "Order not found")
     return order
+
+
+def lock_reset_order_state(db: Session, order_id):
+    locked_items = db.execute(
+        select(OrderItem)
+        .where(OrderItem.order_id == order_id)
+        .order_by(OrderItem.created_at.asc(), OrderItem.id.asc())
+        .with_for_update(of=OrderItem)
+    ).scalars().all()
+    item_ids = [item.id for item in locked_items]
+    locked_scans = []
+    if item_ids:
+        locked_scans = db.execute(
+            select(ScanCode)
+            .where(ScanCode.order_item_id.in_(item_ids))
+            .order_by(ScanCode.order_item_id.asc(), ScanCode.scanned_at.asc(), ScanCode.id.asc())
+            .with_for_update(of=ScanCode)
+        ).scalars().all()
+        lock_kiz_codes_for_transaction(db, [scan.code for scan in locked_scans])
+    scans_by_item_id = {item.id: [] for item in locked_items}
+    for scan in locked_scans:
+        scans_by_item_id.setdefault(scan.order_item_id, []).append(scan)
+    return locked_items, scans_by_item_id
 
 
 def ensure_order_has_no_scans(order):

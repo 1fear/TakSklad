@@ -2,6 +2,8 @@ import { AlertCircle, Database, History, KeyRound, Loader2, Lock, PackageCheck, 
 import type { FormEvent } from "react";
 import { useEffect, useRef } from "react";
 
+import type { AppSurface } from "../workspace/surface";
+
 export function LoadingGate() {
   return (
     <div className="login-shell loading-gate" role="status" aria-live="polite">
@@ -14,6 +16,7 @@ export function LoadingGate() {
 }
 
 export type LoginScreenProps = {
+  surface: AppSurface;
   phone: string;
   password: string;
   error: string;
@@ -24,6 +27,7 @@ export type LoginScreenProps = {
 };
 
 export function LoginScreen({
+  surface,
   phone,
   password,
   error,
@@ -34,6 +38,7 @@ export function LoginScreen({
 }: LoginScreenProps) {
   const phoneRef = useRef<HTMLInputElement>(null);
   useEffect(() => phoneRef.current?.focus({ preventScroll: true }), []);
+  const copy = loginCopy(surface);
 
   return (
     <main className="login-shell">
@@ -42,12 +47,12 @@ export function LoginScreen({
           <img src="/taksklad.png" alt="" />
           <div>
             <strong>TakSklad</strong>
-            <span>Складская web-панель</span>
+            <span>{copy.product}</span>
           </div>
         </div>
         <div className="login-copy">
-          <p>Операционный контур склада</p>
-          <h1>Доступ к заказам, синхронизации и журналу действий</h1>
+          <p>{copy.eyebrow}</p>
+          <h1>{copy.title}</h1>
         </div>
         <div className="login-status-grid">
           <span><Database size={16} /> PostgreSQL</span>
@@ -61,7 +66,7 @@ export function LoginScreen({
         <div className="login-panel-head">
           <Lock size={22} />
           <div>
-            <h2>Вход в панель</h2>
+            <h2>{copy.heading}</h2>
             <span>Используйте рабочий телефон и пароль.</span>
           </div>
         </div>
@@ -114,4 +119,21 @@ export function LoginScreen({
       </section>
     </main>
   );
+}
+
+function loginCopy(surface: AppSurface) {
+  if (surface === "admin") {
+    return {
+      product: "Панель управления",
+      eyebrow: "Административный контур TakSklad",
+      title: "Доступ к таблице заказов, клиентам и журналу действий",
+      heading: "Вход в панель управления",
+    };
+  }
+  return {
+    product: "Складская web-панель",
+    eyebrow: "Операционный контур склада",
+    title: "Сканирование КИЗов, завершение заказов, возвраты и печать",
+    heading: "Вход в складскую web-панель",
+  };
 }

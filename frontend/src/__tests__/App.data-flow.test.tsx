@@ -7,7 +7,10 @@ import App from "../App";
 import { adminTable, clientPoint, dashboardSummary, firstAdminRow } from "./fixtures";
 import { defaultHandlers, server } from "./server";
 
-beforeEach(() => server.use(...defaultHandlers));
+beforeEach(() => {
+  server.use(...defaultHandlers);
+  window.history.pushState({}, "", "/admin");
+});
 
 describe("authenticated data-flow integration", () => {
   it("loads two critical resources and keeps hidden panels request-free until opened", async () => {
@@ -150,7 +153,7 @@ describe("authenticated data-flow integration", () => {
     await started;
     await user.click(screen.getByRole("button", { name: "Выйти" }));
 
-    expect(await screen.findByRole("heading", { name: "Вход в панель" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Вход в панель управления" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Позиции заказов" })).not.toBeInTheDocument();
     await waitFor(() => expect(aborted).toBe(true));
   });

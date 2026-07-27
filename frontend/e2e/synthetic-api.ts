@@ -188,10 +188,57 @@ export type SyntheticApiOptions = {
 export type SyntheticApiState = {
   requests: string[];
   scans: number;
+  completes: number;
   clientUpdates: number;
   incidentUpdates: number;
   loggedIn: boolean;
 };
+
+function buildWarehouseOrder(scannedCodes: string[], completed = false) {
+  return {
+    id: "order-1",
+    order_date: "2026-07-10",
+    payment_type: "Перечисление",
+    client: "Альфа Тест",
+    address: "Синтетическая улица, 1",
+    representative: "Тестовый ТП",
+    status: completed ? "completed" : "active",
+    smartup_id: "261000001",
+    skladbot_request_number: "WH-R-SYNTHETIC",
+    skladbot_request_id: "synthetic",
+    skladbot_return_request_number: "",
+    skladbot_return_request_id: "",
+    items: [
+      {
+        id: "order-1-item",
+        product: "Синтетический товар",
+        quantity_pieces: 20,
+        quantity_blocks: 2,
+        scanned_blocks: scannedCodes.length,
+        requires_kiz: true,
+        status: completed || scannedCodes.length >= 2 ? "completed" : (scannedCodes.length > 0 ? "not_completed" : "active"),
+        scan_codes: [...scannedCodes],
+        scan_entries: scannedCodes.map((code, index) => ({
+          code,
+          scan_type: "unit",
+          block_quantity: 1,
+          scanned_at: `2026-07-10T08:0${5 + index}:00Z`,
+        })),
+      },
+      {
+        id: "order-1-item-optional",
+        product: "Синтетический товар без КИЗ",
+        quantity_pieces: 10,
+        quantity_blocks: 1,
+        scanned_blocks: 0,
+        requires_kiz: false,
+        status: completed ? "completed" : "active",
+        scan_codes: [],
+        scan_entries: [],
+      },
+    ],
+  };
+}
 
 function json(route: Route, body: unknown, status = 200) {
   return route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
@@ -217,12 +264,15 @@ export async function installSyntheticApi(page: Page, options: SyntheticApiOptio
   const state: SyntheticApiState = {
     requests: [],
     scans: 0,
+    completes: 0,
     clientUpdates: 0,
     incidentUpdates: 0,
     loggedIn: options.authenticated !== false,
   };
   let point = { ...clientPoint };
   let currentIncident = { ...incident };
+  let warehouseScans: string[] = [];
+  let completedWarehouseOrder: ReturnType<typeof buildWarehouseOrder> | null = null;
 
   await page.route("**/api/v1/**", async (route) => {
     const request = route.request();
@@ -279,14 +329,52 @@ export async function installSyntheticApi(page: Page, options: SyntheticApiOptio
       currentIncident = { ...currentIncident, status: payload.status ?? currentIncident.status, resolved_at: now };
       return json(route, currentIncident);
     }
-    if (path === "/api/v1/orders/active") return json(route, [{ id: "order-1", order_date: "2026-07-10", payment_type: "Перечисление", client: "Альфа Тест", address: "Синтетическая улица, 1", representative: "Тестовый ТП", status: "active", smartup_id: "261000001", skladbot_request_number: "WH-R-SYNTHETIC", skladbot_request_id: "synthetic", items: [{ id: "order-1-item", product: "Синтетический товар", quantity_pieces: 20, quantity_blocks: 2, scanned_blocks: state.scans, status: "active", scan_codes: state.scans ? ["0104-synthetic"] : [] }] }]);
-    if (path === "/api/v1/kiz/availability") return json(route, { code: url.searchParams.get("code") || "", available: true, reason: "", latest_movement_type: "", latest_order_item_id: "", existing_order_item_id: "" });
+    if (path === "/api/v1/orders/active") return json(route, completedWarehouseOrder ? [] : [buildWarehouseOrder(warehouseScans)]);
+    if (path === "/api/v1/kiz/availability") return json(route, {
+      code: url.searchParams.get("code") || "",
+      available: true,
+      reason: "no_backend_history",
+      latest_movement_type: "",
+      latest_order_item_id: "",
+      existing_order_item_id: "",
+    });
     if (path === "/api/v1/scans") {
       if (await configuredFailure(route, options.fail?.scan)) return;
-      state.scans += 1;
-      return json(route, { id: "scan-1", order_item_id: "order-1-item", code: "0104-synthetic", scanned_blocks: state.scans, item_status: "in_progress" }, 201);
+      const payload = request.postDataJSON() as { code?: string };
+      const code = payload.code || `010400639605394721SYNTH${warehouseScans.length + 1}`;
+      warehouseScans = [...warehouseScans, code];
+      state.scans = warehouseScans.length;
+      return json(route, {
+        id: `scan-${warehouseScans.length}`,
+        order_item_id: "order-1-item",
+        code,
+        scanned_blocks: state.scans,
+        item_status: state.scans >= 2 ? "completed" : "not_completed",
+        scanned_at: "2026-07-10T08:05:00Z",
+        scan_type: "unit",
+        block_quantity: 1,
+      }, 201);
     }
-    if (path === "/api/v1/scans/undo") { state.scans = Math.max(0, state.scans - 1); return json(route, { id: "scan-1", order_item_id: "order-1-item", code: "0104-synthetic", scanned_blocks: state.scans, item_status: "active" }); }
+    if (path === "/api/v1/scans/undo") {
+      const code = warehouseScans.at(-1) || "";
+      warehouseScans = warehouseScans.slice(0, -1);
+      state.scans = warehouseScans.length;
+      return json(route, {
+        id: `scan-${warehouseScans.length + 1}`,
+        order_item_id: "order-1-item",
+        code,
+        scanned_blocks: state.scans,
+        item_status: state.scans > 0 ? "not_completed" : "active",
+        scanned_at: "2026-07-10T08:05:00Z",
+        scan_type: "unit",
+        block_quantity: 1,
+      });
+    }
+    if (/^\/api\/v1\/orders\/[^/]+\/complete$/.test(path)) {
+      completedWarehouseOrder = buildWarehouseOrder(warehouseScans, true);
+      state.completes += 1;
+      return json(route, completedWarehouseOrder);
+    }
     if (/^\/api\/v1\/admin\/events\/[^/]+\/retry$/.test(path)) return json(route, { ...queueEvent, status: "pending" });
     if (path === "/api/v1/sync/sources") return json(route, { status: "completed", skladbot: { status: "synthetic" } });
 

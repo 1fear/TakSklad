@@ -1,0 +1,76 @@
+.operator-app-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.operator-topbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 24px 32px 0;
+}
+
+.operator-brand {
+  display: grid;
+  gap: 6px;
+}
+
+.operator-brand p {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(15, 23, 42, 0.7);
+}
+
+.operator-brand h1 {
+  margin: 0;
+}
+
+.operator-copy {
+  font-size: 14px;
+  color: rgba(15, 23, 42, 0.72);
+}
+
+.operator-topbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.operator-link {
+  text-decoration: none;
+}
+
+.operator-message {
+  margin: 16px 32px 0;
+}
+
+.operator-workspace {
+  padding: 16px 32px 32px;
+}
+
+@media (max-width: 900px) {
+  .operator-topbar {
+    flex-direction: column;
+    padding: 20px 20px 0;
+  }
+
+  .operator-topbar-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .operator-message {
+    margin: 16px 20px 0;
+  }
+
+  .operator-workspace {
+    padding: 16px 20px 24px;
+  }
+}

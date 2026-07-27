@@ -110,7 +110,7 @@ test("@performance pinned synthetic Web Vitals, axe, screenshots and network bud
     } catch { metrics.eventTimingSupported = false; }
   });
 
-  await page.goto("/", { waitUntil: "networkidle" });
+  await page.goto("/admin", { waitUntil: "networkidle" });
   await expect(page.getByRole("heading", { name: "Позиции заказов" })).toBeVisible();
 
   const selector = page.getByLabel("Выбрать заказ Альфа Тест");
@@ -282,8 +282,8 @@ test("@performance pinned synthetic Web Vitals, axe, screenshots and network bud
 test("@performance keyboard-only login, navigation, selection, action, dropdown and logout", async ({ page }) => {
   const api = await installSyntheticApi(page, { authenticated: false });
   page.on("dialog", async (dialog) => dialog.accept(dialog.type() === "prompt" ? "Synthetic keyboard reason" : undefined));
-  await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Вход в панель" })).toBeVisible();
+  await page.goto("/admin");
+  await expect(page.getByRole("heading", { name: "Вход в панель управления" })).toBeVisible();
 
   const matrix: Array<{ step: string; focus_visible: boolean; pass: boolean }> = [];
   keyboardEvidence = {
@@ -350,12 +350,10 @@ test("@performance keyboard-only login, navigation, selection, action, dropdown 
   await page.keyboard.press("Space");
   await expect(orderSelector).toBeChecked();
 
-  const warehouse = page.getByRole("button", { name: "Склад" });
-  await focusByTab(warehouse, "warehouse navigation");
-  await page.keyboard.press("Enter");
+  await page.goto("/", { waitUntil: "networkidle" });
   await expect(page.getByRole("heading", { name: "Склад · PostgreSQL" })).toBeVisible();
   await expect(page.getByText("Smartup ID: 261000001")).toBeVisible();
-  await expect(page.getByPlaceholder("Отсканируйте код")).toHaveCount(0);
+  await expect(page.getByRole("textbox", { name: "КИЗ" })).toBeVisible();
   const returnLookup = page.getByPlaceholder("WH-R-...");
   await focusByTab(returnLookup, "return lookup");
   await page.keyboard.type("WH-R-SYNTHETIC");
@@ -363,7 +361,7 @@ test("@performance keyboard-only login, navigation, selection, action, dropdown 
   const logout = page.getByRole("button", { name: "Выйти" });
   await focusByTab(logout, "logout");
   await page.keyboard.press("Enter");
-  await expect(page.getByRole("heading", { name: "Вход в панель" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Вход в складскую web-панель" })).toBeVisible();
 
   keyboardEvidence = {
     pass: matrix.every((entry) => entry.pass)

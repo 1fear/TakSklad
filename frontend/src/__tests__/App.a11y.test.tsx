@@ -8,13 +8,20 @@ import App from "../App";
 import { anonymousSession } from "./fixtures";
 import { defaultHandlers, server } from "./server";
 
-beforeEach(() => server.use(...defaultHandlers));
+beforeEach(() => {
+  server.use(...defaultHandlers);
+  window.history.pushState({}, "", "/");
+});
+
+function setPath(pathname: string) {
+  window.history.pushState({}, "", pathname);
+}
 
 describe("focused accessibility characterization", () => {
   it("has no automated axe violations on the login semantic surface", async () => {
     server.use(http.get("/api/v1/auth/session", () => HttpResponse.json(anonymousSession)));
     const { container } = render(<App />);
-    await screen.findByRole("heading", { name: "Вход в панель" });
+    await screen.findByRole("heading", { name: "Вход в складскую web-панель" });
 
     const results = await axe(container);
     expect(results).toHaveNoViolations();
@@ -27,7 +34,7 @@ describe("focused accessibility characterization", () => {
     );
     const user = userEvent.setup();
     render(<App />);
-    await screen.findByRole("heading", { name: "Вход в панель" });
+    await screen.findByRole("heading", { name: "Вход в складскую web-панель" });
 
     const phone = screen.getByRole("textbox", { name: "Телефон" });
     const password = screen.getByLabelText("Пароль");
@@ -45,7 +52,7 @@ describe("focused accessibility characterization", () => {
   });
 
   it("has no automated axe violations on navigation and the orders table", async () => {
-    const user = userEvent.setup();
+    setPath("/admin");
     const { container } = render(<App />);
     await screen.findByRole("heading", { name: "Позиции заказов" });
 
@@ -53,13 +60,10 @@ describe("focused accessibility characterization", () => {
     expect(screen.getByRole("table")).toBeInTheDocument();
     const results = await axe(container);
     expect(results).toHaveNoViolations();
-
-    await user.click(screen.getByRole("button", { name: "Склад" }));
-    await screen.findByRole("heading", { name: "Склад · PostgreSQL" });
-    expect(await axe(container)).toHaveNoViolations();
   });
 
   it("has no automated axe violations on client points and incidents", async () => {
+    setPath("/admin");
     const user = userEvent.setup();
     const { container } = render(<App />);
     await screen.findByRole("heading", { name: "Позиции заказов" });
@@ -74,6 +78,14 @@ describe("focused accessibility characterization", () => {
     expect(container.querySelector("tr[role='button']")).toBeNull();
     expect(screen.getByRole("button", { name: /Открыть инцидент/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Открыть событие/ })).toBeInTheDocument();
+    expect(await axe(container)).toHaveNoViolations();
+  });
+
+  it("has no automated axe violations on the operator workspace shell", async () => {
+    const { container } = render(<App />);
+
+    await screen.findByRole("heading", { name: "Операторский складской контур" });
+    expect(screen.getByRole("heading", { name: "Склад · PostgreSQL" })).toBeInTheDocument();
     expect(await axe(container)).toHaveNoViolations();
   });
 });

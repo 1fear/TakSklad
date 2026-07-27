@@ -15,6 +15,14 @@ PostgreSQL/backend is the only supported runtime source of truth. Desktop and
 web clients use the backend for orders, scans, returns, imports, and reports;
 Google Sheets is not a runtime fallback.
 
+Current web operator behavior for warehouse:
+
+- `/` is the operator surface (scan/complete/return/print workflow).
+- `/admin` is the admin surface (table, logistics, smartup, incidents).
+- Operator APIs are session-based and online-first: scanning, completion and returns
+  are persisted directly in backend and do not rely on a local desktop queue in
+  the web UI.
+
 ## Local Docker Run
 
 From repository root:
@@ -54,6 +62,10 @@ Implemented now:
 - `POST /api/v1/imports`
 - `GET /api/v1/imports`
 - `GET /api/v1/reports/day`
+- `POST /api/v1/scans/undo`
+- `GET /api/v1/kiz/availability`
+- `GET /api/v1/returns/lookup`
+- `POST /api/v1/returns/{order_id}`
 - `GET /api/v1/admin/client-points`
 - `POST /api/v1/admin/client-points/timeslot`
 
@@ -76,6 +88,8 @@ An empty `TAKSKLAD_API_TOKEN` disables only the Bearer-token path. It does not o
 Web sessions include `role` and `permissions`. The env-configured web login is treated as `admin`; DB-backed `users` rows with role `logistics_slots` can read the web UI and write only client-point delivery slots. State-changing warehouse/admin endpoints require `admin:write`; `POST /api/v1/admin/client-points/timeslot` requires `client_points:write`.
 
 The frontend same-origin `/api/` proxy must forward browser cookies without injecting the internal service token. Otherwise web sessions would be upgraded to service/admin at the proxy layer.
+
+The web operator surface (`/`) performs `warehouse`-scoped actions against backend routes and does not redirect scan/complete/return operations to desktop-only offline queues.
 
 ## SkladBot SKU Mapping
 

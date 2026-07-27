@@ -933,6 +933,31 @@ class DesktopUiContractTests(unittest.TestCase):
         self.assertIn("Сканируйте другой КИЗ", message)
         self.assertNotIn("Backend HTTP", message)
 
+    def test_fully_scanned_conflict_tells_operator_to_refresh_not_to_rescan(self):
+        """Позиция закрыта на сервере: любой другой код получит тот же отказ.
+
+        Совет "сканируйте другой код" загоняет оператора в бесконечный цикл,
+        поэтому сообщение обязано указывать на пересинхронизацию.
+        """
+        message = format_backend_blocked_scan_message([
+            {
+                "type": "scan",
+                "payload": {"code": "0104006396053978-TEST-FULL"},
+                "last_error": "Backend HTTP 409: Order item is already fully scanned",
+                "last_error_detail": {
+                    "code": "order_item_fully_scanned_new_code",
+                    "message": "Order item is already fully scanned",
+                    "order_item_id": "item-1",
+                    "quantity_blocks": 2,
+                    "scanned_blocks": 2,
+                },
+            }
+        ])
+
+        self.assertIn("Обновить", message)
+        self.assertNotIn("Сканируйте другой код", message)
+        self.assertNotIn("Backend HTTP", message)
+
     def test_scan_product_mismatch_message_includes_runtime_diagnostics(self):
         message = format_scan_product_mismatch_message(
             "0104006396054067-TEST-BROWN-SSL",

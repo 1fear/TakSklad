@@ -1,11 +1,18 @@
+import tempfile
 import unittest
+from pathlib import Path
 
-from taksklad import backend_events
+from taksklad import backend_events, storage
 from taksklad.backend_client import BackendApiError
 
 
 class BackendEventQueueTests(unittest.TestCase):
     def setUp(self):
+        # Заблокированные события уходят в durable-хранилище, поэтому тест
+        # обязан работать в своём каталоге, а не в реальном TakSklad_queues.sqlite3.
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self._original_data_file = storage.TAKSKLAD_DATA_FILE
+        storage.TAKSKLAD_DATA_FILE = str(Path(self._temp_dir.name) / "TakSklad_data.json")
         self.original_backend_configured = backend_events.backend_configured
         self.original_load_pending_backend_events = backend_events.load_pending_backend_events
         self.original_save_pending_backend_events = backend_events.save_pending_backend_events
@@ -20,6 +27,8 @@ class BackendEventQueueTests(unittest.TestCase):
         backend_events.create_scan = self.original_create_scan
         backend_events.complete_order = self.original_complete_order
         backend_events.reconcile_queue_section = self.original_reconcile_queue_section
+        storage.TAKSKLAD_DATA_FILE = self._original_data_file
+        self._temp_dir.cleanup()
 
     def use_pending_events(self, items):
         state = {"items": list(items)}

@@ -6,6 +6,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy.orm.attributes import set_committed_value
 
+from .audit_identity import AUDIT_ACTOR_INFO_KEY, AuditActor
 from .kiz_blocklist import blocked_kiz_reason
 from .kiz_movements_service import (
     MOVEMENT_RETURN,
@@ -64,6 +65,15 @@ def parse_uuid(value, field_name="id"):
         return uuid.UUID(str(value))
     except (TypeError, ValueError) as exc:
         raise ApiError(422, f"Invalid {field_name}") from exc
+
+
+def effective_authenticated_actor(db: Session, claimed_actor="") -> str:
+    audit_actor = db.info.get(AUDIT_ACTOR_INFO_KEY)
+    if isinstance(audit_actor, AuditActor):
+        subject = str(audit_actor.subject or "").strip()
+        if subject:
+            return subject[:120]
+    return normalize_text(claimed_actor)[:120]
 
 
 def list_active_orders_page(db: Session, *, limit=50, cursor=""):
@@ -235,13 +245,18 @@ def create_scan(db: Session, payload: ScanCreate):
     if item.status in COMPLETED_STATUSES or (
         item.quantity_blocks > 0 and item.scanned_blocks >= item.quantity_blocks
     ):
-        latest_scan = latest_scan_for_item(db, item.id)
-        if latest_scan is not None:
-            return scan_to_read(latest_scan, item)
-        raise ApiError(409, "Order item is already fully scanned")
+        raise ApiError(409, {
+            "code": "order_item_fully_scanned_new_code",
+            "message": "Order item is already fully scanned",
+            "order_item_id": str(item.id),
+            "quantity_blocks": int(item.quantity_blocks or 0),
+            "scanned_blocks": int(item.scanned_blocks or 0),
+        })
 
     scan_metadata = scan_metadata_for_code(code)
     block_quantity = scan_metadata["block_quantity"]
+    movement_actor = effective_authenticated_actor(db, payload.scanned_by)
+    claimed_scanned_by = normalize_text(payload.scanned_by)
 
     item_product_key = product_key_from_name(item.product)
     if scan_metadata["scan_type"] == SCAN_TYPE_AGGREGATE_BOX:
@@ -287,6 +302,16 @@ def create_scan(db: Session, payload: ScanCreate):
     db.add(scan)
     db.flush()
     movement_received_at = datetime.now(timezone.utc)
+    movement_raw_payload = {
+        "scan_source": scan.source,
+        "scanner_scanned_at": scan.scanned_at.isoformat() if scan.scanned_at else "",
+        "previous_movement_type": latest_movement.movement_type if latest_movement else "",
+        "previous_order_item_id": str(latest_movement.order_item_id or "") if latest_movement else "",
+        "scan_type": scan_metadata["scan_type"],
+        "block_quantity": block_quantity,
+    }
+    if claimed_scanned_by and claimed_scanned_by != movement_actor:
+        movement_raw_payload["claimed_actor"] = claimed_scanned_by[:120]
     movement = record_kiz_movement(
         db,
         code=code,
@@ -295,17 +320,10 @@ def create_scan(db: Session, payload: ScanCreate):
         order_item_id=item.id,
         scan_code_id=scan_id,
         source="backend",
-        actor=payload.scanned_by or "",
+        actor=movement_actor,
         workstation_id=payload.workstation_id or "",
         occurred_at=movement_received_at,
-        raw_payload={
-            "scan_source": scan.source,
-            "scanner_scanned_at": scan.scanned_at.isoformat() if scan.scanned_at else "",
-            "previous_movement_type": latest_movement.movement_type if latest_movement else "",
-            "previous_order_item_id": str(latest_movement.order_item_id or "") if latest_movement else "",
-            "scan_type": scan_metadata["scan_type"],
-            "block_quantity": block_quantity,
-        },
+        raw_payload=movement_raw_payload,
         kiz_code=kiz_code,
     )
 
@@ -321,6 +339,7 @@ def create_scan(db: Session, payload: ScanCreate):
         entity_id=str(scan_id),
         payload={
             "order_item_id": str(item.id),
+            "actor": claimed_scanned_by,
             "code": code,
             "workstation_id": payload.workstation_id,
             "scanned_by": payload.scanned_by,
@@ -388,6 +407,13 @@ def undo_scan(db: Session, payload: ScanUndo):
 
     scan_id = scan.id
     scanned_at = scan.scanned_at
+    movement_actor = effective_authenticated_actor(db, payload.actor)
+    claimed_actor = normalize_text(payload.actor)
+    movement_raw_payload = {
+        "undone_scan_scanned_at": scanned_at.isoformat() if scanned_at else "",
+    }
+    if claimed_actor and claimed_actor != movement_actor:
+        movement_raw_payload["claimed_actor"] = claimed_actor[:120]
     movement = record_kiz_movement(
         db,
         code=code,
@@ -396,12 +422,10 @@ def undo_scan(db: Session, payload: ScanUndo):
         order_item_id=item.id,
         scan_code_id=scan_id,
         source="backend",
-        actor=payload.actor or "",
+        actor=movement_actor,
         workstation_id=payload.workstation_id or "",
         occurred_at=datetime.now(timezone.utc),
-        raw_payload={
-            "undone_scan_scanned_at": scanned_at.isoformat() if scanned_at else "",
-        },
+        raw_payload=movement_raw_payload,
     )
     db.delete(scan)
     remaining_scans = [
@@ -505,17 +529,6 @@ def scan_to_read(scan, item):
         scan_type=(scan.raw_payload or {}).get("scan_type") or "unit",
         block_quantity=scan_block_quantity(scan),
     )
-
-
-def latest_scan_for_item(db: Session, order_item_id):
-    return db.execute(
-        select(ScanCode)
-        .where(ScanCode.order_item_id == order_item_id)
-        .order_by(ScanCode.scanned_at.desc(), ScanCode.id.desc())
-        .limit(1)
-    ).scalar_one_or_none()
-
-
 def complete_order(db: Session, order_id):
     parsed_order_id = parse_uuid(order_id, "order_id")
     order = db.execute(
@@ -645,6 +658,7 @@ def mark_order_returned(db: Session, order_id, return_reference="", returned_by=
     raw_payload["return_reference"] = normalize_text(return_reference)
     raw_payload["returned_by"] = normalize_text(returned_by) or "desktop"
     raw_payload["skladbot_return_confirmed_items"] = confirmed
+    movement_actor = effective_authenticated_actor(db, raw_payload["returned_by"])
     order.raw_payload = raw_payload
     order.status = STATUS_RETURNED
     from .skladbot_return_requests import queue_skladbot_return_request_create
@@ -661,11 +675,15 @@ def mark_order_returned(db: Session, order_id, return_reference="", returned_by=
                 "scan_code_id": scan.id,
                 "return_reference": raw_payload["return_reference"],
                 "source": "backend",
-                "actor": raw_payload["returned_by"],
+                "actor": movement_actor,
                 "occurred_at": returned_at,
                 "raw_payload": {
                     "return_reference": raw_payload["return_reference"],
                     "returned_by": raw_payload["returned_by"],
+                    **(
+                        {"claimed_actor": raw_payload["returned_by"][:120]}
+                        if raw_payload["returned_by"] and raw_payload["returned_by"] != movement_actor else {}
+                    ),
                 },
             })
     return_movements = [
@@ -678,6 +696,7 @@ def mark_order_returned(db: Session, order_id, return_reference="", returned_by=
         entity_type="order",
         entity_id=str(order.id),
         payload={
+            "actor": raw_payload["returned_by"],
             "return_reference": raw_payload["return_reference"],
             "returned_by": raw_payload["returned_by"],
             "returned_at": raw_payload["returned_at"],
@@ -791,6 +810,7 @@ def item_to_read(item: OrderItem):
         quantity_pieces=item.quantity_pieces,
         quantity_blocks=item.quantity_blocks,
         scanned_blocks=item.scanned_blocks,
+        requires_kiz=bool(item.requires_kiz),
         block_price=parse_int(raw_payload.get("block_price")),
         line_total=parse_int(raw_payload.get("line_total")),
         status=item.status,

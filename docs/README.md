@@ -26,6 +26,8 @@
 | Файл | Для чего |
 |---|---|
 | `manual-acceptance-runbook.md` | Ручная приемка Telegram, VDS MVP, Windows desktop. |
+| `web-warehouse-acceptance.md` | Операторский `/` и admin `/admin` web-поток: сканирование, завершение, возвраты, печать. |
+| `web-desktop-parity.md` | Паритет web-панели и Windows-приложения: что мешает отказаться от приложения и риски параллельной работы. |
 | `deploy-rollback-runbook.md` | Deploy, backup, restore и rollback. |
 | `database-migrations-runbook.md` | Миграции и rollback posture. |
 | `event-queue-lifecycle.md` | Жизненный цикл очередей и retry. |

@@ -1,4 +1,4 @@
-import { expect, test as base } from "@playwright/test";
+import { expect, test as base, type Page } from "@playwright/test";
 import { installSyntheticApi } from "./synthetic-api";
 
 type BrowserConsolePolicy = {
@@ -25,48 +25,85 @@ const test = base.extend<{ browserConsole: BrowserConsolePolicy }>({
   }, { auto: true }],
 });
 
+async function openWarehouseSurface(page: Page) {
+  const warehouseHeading = page.getByRole("heading", { name: "Склад · PostgreSQL" });
+  const operatorSurfaceHeading = page.getByRole("heading", { name: "Операторский складской контур" });
+  if (await warehouseHeading.isVisible().catch(() => false)) return warehouseHeading;
+  if (await operatorSurfaceHeading.isVisible().catch(() => false)) {
+    await expect(warehouseHeading).toBeVisible();
+    return warehouseHeading;
+  }
+
+  const loginHeading = page.getByRole("heading", { name: "Вход в складскую web-панель" });
+  if (await loginHeading.isVisible().catch(() => false)) {
+    await page.locator("input[inputmode=\"tel\"]").fill("+998 90 000 00 01");
+    await page.locator("input[type=\"password\"]").fill("synthetic-password");
+    await page.getByRole("button", { name: "Войти" }).click();
+    await expect(warehouseHeading).toBeVisible();
+    return warehouseHeading;
+  }
+
+  await page.goto("/");
+  await expect(warehouseHeading).toBeVisible();
+  return warehouseHeading;
+}
+
 test("@smoke login and session use only a synthetic user", async ({ page }) => {
   const api = await installSyntheticApi(page, { authenticated: false });
   await page.goto("/");
 
-  await expect(page.getByRole("heading", { name: "Вход в панель" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Вход в складскую web-панель" })).toBeVisible();
   await page.locator('input[inputmode="tel"]').fill("+998 90 000 00 01");
   await page.locator('input[type="password"]').fill("synthetic-password");
   await page.getByRole("button", { name: "Войти" }).click();
 
-  await expect(page.getByRole("heading", { name: "Позиции заказов" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Склад · PostgreSQL" })).toBeVisible();
   await expect(page.getByText("Альфа Тест").first()).toBeVisible();
   expect(api.requests).toContain("POST /api/v1/auth/login");
   await page.getByRole("button", { name: "Выйти" }).click();
-  await expect(page.getByRole("heading", { name: "Вход в панель" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Вход в складскую web-панель" })).toBeVisible();
 });
 
-test("@smoke table filters, pagination and order action are deterministic", async ({ page }) => {
+test("@smoke warehouse scanner, completion and print stay inside the synthetic API", async ({ page }) => {
   const api = await installSyntheticApi(page);
-  page.on("dialog", async (dialog) => dialog.accept(dialog.type() === "prompt" ? "Synthetic e2e reason" : undefined));
+  await page.addInitScript(() => {
+    (window as typeof window & { __printCalls?: number }).__printCalls = 0;
+    window.print = () => {
+      (window as typeof window & { __printCalls?: number }).__printCalls = ((window as typeof window & { __printCalls?: number }).__printCalls ?? 0) + 1;
+    };
+  });
+  page.on("dialog", async (dialog) => dialog.accept());
   await page.goto("/");
 
-  await expect(page.getByText("Альфа Тест").first()).toBeVisible();
-  await page.getByRole("button", { name: /Загрузить еще/ }).click();
-  await expect(page.getByText("Бета Тест").first()).toBeVisible();
-
-  await page.getByLabel("Поиск заказов").fill("Гамма");
-  await expect(page.getByText("Результат Гамма").first()).toBeVisible();
-  await page.getByLabel("Фильтр статуса заказа").selectOption("all");
-  await expect.poll(() => api.requests.some((request) => request.includes("status_bucket") === false && request.includes("search=%D0%93%D0%B0%D0%BC%D0%BC%D0%B0"))).toBe(true);
-
-  await page.getByLabel("Поиск заказов").fill("");
-  await expect(page.getByText("Альфа Тест").first()).toBeVisible();
-  await page.getByRole("button", { name: "Склад", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Склад · PostgreSQL" })).toBeVisible();
+  await openWarehouseSurface(page);
   await expect(page.getByText("Smartup ID: 261000001")).toBeVisible();
-  await expect(page.getByPlaceholder("Отсканируйте код")).toHaveCount(0);
-  expect(api.scans).toBe(0);
+
+  const scanner = page.getByRole("textbox", { name: "КИЗ" });
+  await scanner.fill("0104006396053947217SYNTH1");
+  await scanner.press("Enter");
+  await expect.poll(() => api.scans).toBe(1);
+  await expect(page.getByText("КИЗ подтверждён и записан.")).toBeVisible();
+
+  await scanner.fill("0104006396053947217SYNTH2");
+  await scanner.press("Enter");
+  await expect.poll(() => api.scans).toBe(2);
+  await expect(page.getByRole("button", { name: "Завершить заказ" })).toBeEnabled();
+
+  await page.getByRole("button", { name: "Завершить заказ" }).click();
+  await expect.poll(() => api.completes).toBe(1);
+  await expect(page.getByRole("dialog", { name: "Печать сводного листа" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Открыть печать" })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (window as typeof window & { __printCalls?: number }).__printCalls ?? 0)).toBe(0);
+
+  await page.getByRole("dialog", { name: "Печать сводного листа" })
+    .getByRole("button", { name: "Печать", exact: true })
+    .click();
+  await expect.poll(() => page.evaluate(() => (window as typeof window & { __printCalls?: number }).__printCalls ?? 0)).toBe(1);
 });
 
 test("@smoke incidents and client-point actions stay inside synthetic API", async ({ page }) => {
   const api = await installSyntheticApi(page);
-  await page.goto("/");
+  await page.goto("/admin");
   await expect(page.getByRole("heading", { name: "Позиции заказов" })).toBeVisible();
 
   await page.getByRole("button", { name: "Клиенты" }).click();
@@ -91,7 +128,7 @@ test("@smoke incidents and client-point actions stay inside synthetic API", asyn
 
 test("@network-contract critical requests stay bounded and hidden panels stay lazy", async ({ page }) => {
   const api = await installSyntheticApi(page);
-  await page.goto("/");
+  await page.goto("/admin");
   await expect(page.getByRole("heading", { name: "Позиции заказов" })).toBeVisible();
 
   const critical = api.requests.filter((request) => (

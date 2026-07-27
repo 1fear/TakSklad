@@ -29,6 +29,48 @@ def save_pending_backend_events(items):
     return save_data_section("pending_backend_events", items)
 
 
+BLOCKED_BACKEND_EVENTS_LIMIT = 500
+
+
+def load_blocked_backend_events():
+    data = load_data_section("blocked_backend_events", [])
+    return data if isinstance(data, list) else []
+
+
+def save_blocked_backend_events(items):
+    return save_data_section("blocked_backend_events", items)
+
+
+def record_blocked_backend_events(items):
+    """Persist events the backend refused for good.
+
+    They are removed from the retry queue on purpose, but the blocks they
+    describe physically left the warehouse, so the record has to survive the
+    process. Without this the only trace was an in-memory list that the UI
+    discards unless it happens to match the position the operator has open.
+    """
+    items = [item for item in (items or []) if isinstance(item, dict)]
+    if not items:
+        return 0
+    stored = load_blocked_backend_events()
+    known = {_blocked_event_key(item) for item in stored}
+    added = [item for item in items if _blocked_event_key(item) not in known]
+    if not added:
+        return 0
+    save_blocked_backend_events((stored + added)[-BLOCKED_BACKEND_EVENTS_LIMIT:])
+    return len(added)
+
+
+def _blocked_event_key(item):
+    payload = item.get("payload") or {}
+    return (
+        normalize_text(item.get("id")),
+        normalize_text(item.get("type")),
+        normalize_text(payload.get("order_item_id")),
+        normalize_kiz_code(payload.get("code")),
+    )
+
+
 def get_pending_backend_codes():
     codes = set()
     for item in load_pending_backend_events():
@@ -200,13 +242,6 @@ def is_duplicate_scan_ack(exc):
     return "already scanned for this order item" in detail
 
 
-def is_fully_scanned_item_ack(exc):
-    if not isinstance(exc, BackendApiError) or exc.status_code != 409:
-        return False
-    detail = str(exc.detail or exc).lower()
-    return "order item is already fully scanned" in detail
-
-
 def is_non_retryable_scan_conflict(exc):
     if not isinstance(exc, BackendApiError) or exc.status_code != 409:
         return False
@@ -219,6 +254,8 @@ def is_non_retryable_scan_conflict(exc):
             "code already scanned for another order item",
             "aggregate box product does not match order item",
             "aggregate box exceeds remaining order item blocks",
+            "order_item_fully_scanned_new_code",
+            "order item is already fully scanned",
         )
     )
 
@@ -281,7 +318,7 @@ def sync_pending_backend_events():
                 logging.warning("Backend queue: unknown event type skipped: %s", event_type)
             synced += 1
         except BackendApiError as exc:
-            if item.get("type") == "scan" and (is_duplicate_scan_ack(exc) or is_fully_scanned_item_ack(exc)):
+            if item.get("type") == "scan" and is_duplicate_scan_ack(exc):
                 synced += 1
                 continue
             if item.get("type") == "scan" and is_non_retryable_scan_conflict(exc):
@@ -335,6 +372,7 @@ def sync_pending_backend_events():
             remaining.append(item)
 
     current = reconcile_queue_section("pending_backend_events", pending, remaining)
+    record_blocked_backend_events(blocked_events)
     return {
         "synced": synced,
         "failed": failed,
