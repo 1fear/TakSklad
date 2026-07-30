@@ -11,6 +11,7 @@ import re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from .payment_policy import resolve_payment_policy
 from .settings import load_settings
 
 
@@ -159,12 +160,7 @@ def address_soft_match(left, right):
 
 
 def normalize_payment_type(value):
-    text = normalize_lookup_text(value)
-    if "терминал" in text:
-        return "terminal"
-    if "перечис" in text or "безнал" in text:
-        return "transfer"
-    return "unknown"
+    return resolve_payment_policy(value).legacy_skladbot
 
 
 def parse_int(value):
