@@ -13,6 +13,7 @@ from .orders_service import (
     STATUS_REMOVED_FROM_GOOGLE,
     STATUS_RETURNED,
 )
+from .payment_policy import resolve_payment_policy
 from .scan_quantities import (
     AGGREGATE_BOX_BLOCK_QUANTITY,
     AGGREGATE_BOX_PRODUCT_PREFIXES,
@@ -548,12 +549,7 @@ def add_payment_totals(payment_totals, payment_type, order_totals):
 
 
 def payment_group(value):
-    payment = str(value or "").strip().lower().replace("ё", "е")
-    if "терминал" in payment or "terminal" in payment:
-        return "terminal"
-    if "перечис" in payment or "безнал" in payment or "transfer" in payment:
-        return "transfer"
-    return "unknown"
+    return resolve_payment_policy(value).legacy_reports
 
 
 def scan_date(value):
