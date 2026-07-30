@@ -118,6 +118,7 @@ def smartup_event_to_run_read(event: PendingEvent) -> dict[str, Any]:
     imports = list_field(result, "imports")
     status_change = record_field(result, "status_change")
     skladbot_processing = record_field(result, "skladbot_processing")
+    skipped_duplicate_deals = list_field(result, "skipped_duplicate_deals")
     return {
         "id": str(event.id),
         "status": event.status,
@@ -134,6 +135,10 @@ def smartup_event_to_run_read(event: PendingEvent) -> dict[str, Any]:
         "orders_created": sum(int_field(item, "orders_created") for item in imports),
         "items_created": sum(int_field(item, "items_created") for item in imports),
         "duplicate_rows": sum(int_field(item, "duplicate_rows") for item in imports),
+        "skipped_duplicate_deals": len(skipped_duplicate_deals),
+        "skipped_duplicate_deal_ids": [
+            deal_id for item in skipped_duplicate_deals if (deal_id := string_field(item, "deal_id"))
+        ],
         "status_change_submitted": int_field(status_change, "submitted"),
         "skladbot_status": string_field(skladbot_processing, "status"),
         "logistics_reports": list_field(result, "logistics_reports"),

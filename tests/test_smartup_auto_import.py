@@ -51,7 +51,8 @@ from backend.app.smartup_auto_import import (
 )
 from backend.app import smartup_auto_import_worker
 from backend.app.kiz_reports_service import list_completed_kiz_source_files
-from backend.app.imports_service import preserve_order_smartup_identity
+from backend.app.imports_service import normalize_import_row, preserve_order_smartup_identity
+from backend.app.telegram_routing_contract import load_telegram_routing_contract
 from backend.app.smartup_auto_import_history_service import list_smartup_auto_import_history
 from backend.app.skladbot_request_dry_run import SKLADBOT_REQUEST_CREATE_EVENT_TYPE, list_skladbot_dry_runs
 from backend.app.smartup_saga import SMARTUP_DEAL_SAGA_EVENT_TYPE
@@ -2592,6 +2593,163 @@ class SmartupAutoImportTests(unittest.TestCase):
         self.assertEqual(run_slot.call_args.kwargs["now"], datetime(2026, 6, 30, 16, 1, tzinfo=config.timezone))
         self.assertEqual(run_slot.call_args.kwargs["target_delivery_date"], date(2026, 7, 1))
 
+    def test_three_deals_for_one_point_create_three_orders_and_three_requests(self):
+        def deal(deal_id, line_id, quantity, amount):
+            return sample_order(
+                deal_id=deal_id,
+                order_products=[{
+                    "external_id": line_id,
+                    "product_code": "red-op",
+                    "product_name": "Chapman RED OP 20 / VON EICKEN / Германия",
+                    "order_quant": quantity,
+                    "product_price": "240000",
+                    "sold_amount": amount,
+                }],
+            )
+
+        orders = [
+            deal("265566551", "line-1", "200", "4800000"),
+            deal("265566554", "line-2", "100", "2400000"),
+            deal("265566558", "line-3", "300", "7200000"),
+        ]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = self.config(tmp_dir, backend_import_enabled=True, change_status_enabled=True)
+            with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "enabled"}, clear=False):
+                with self.SessionLocal() as db:
+                    result = run_scheduled_smartup_auto_import_slot(
+                        db,
+                        config,
+                        now=datetime(2026, 6, 25, 12, 0, tzinfo=ZoneInfo("Asia/Tashkent")),
+                        slot_label="12:00",
+                        smartup_client=FakeSmartupClient(orders),
+                        telegram_sender=FakeTelegramSender(),
+                    )
+                    stored_orders = db.execute(select(Order)).scalars().all()
+                    create_events = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
+                    ).scalars().all()
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["skipped_duplicate_deals"], [])
+        self.assertEqual(len(result["imports"]), 3)
+        self.assertEqual(len(stored_orders), 3)
+        self.assertEqual(
+            sorted((order.raw_payload or {}).get("source_order_id", "") for order in stored_orders),
+            ["smartup:265566551", "smartup:265566554", "smartup:265566558"],
+        )
+        self.assertEqual(len(create_events), 3)
+        self.assertEqual(
+            sorted(str(event.aggregate_id) for event in create_events),
+            sorted(str(order.id) for order in stored_orders),
+        )
+
+    def test_repeated_deal_with_linked_request_is_skipped_and_alerts_admin(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = self.config(
+                tmp_dir,
+                backend_import_enabled=True,
+                change_status_enabled=True,
+                client_chat_id="-1002001",
+            )
+            sender = FakeTelegramSender()
+            with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "enabled"}, clear=False):
+                with self.SessionLocal() as db:
+                    run_scheduled_smartup_auto_import_slot(
+                        db,
+                        config,
+                        now=datetime(2026, 6, 25, 12, 0, tzinfo=ZoneInfo("Asia/Tashkent")),
+                        slot_label="12:00",
+                        smartup_client=FakeSmartupClient([sample_order()]),
+                        telegram_sender=sender,
+                    )
+                    repeated = run_scheduled_smartup_auto_import_slot(
+                        db,
+                        config,
+                        now=datetime(2026, 6, 25, 15, 0, tzinfo=ZoneInfo("Asia/Tashkent")),
+                        slot_label="15:00",
+                        smartup_client=FakeSmartupClient([sample_order()]),
+                        telegram_sender=sender,
+                    )
+                    stored_orders = db.execute(select(Order)).scalars().all()
+                    imports = db.execute(select(ImportJob)).scalars().all()
+                    create_events = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
+                    ).scalars().all()
+                    notifications = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == "telegram_notification")
+                    ).scalars().all()
+
+        self.assertEqual(repeated["status"], "completed")
+        self.assertEqual(repeated["imports"], [])
+        self.assertEqual(
+            [item["deal_id"] for item in repeated["skipped_duplicate_deals"]],
+            ["642"],
+        )
+        self.assertEqual(len(stored_orders), 1)
+        self.assertEqual(len(imports), 1)
+        self.assertEqual(len(create_events), 1)
+        self.assertEqual(len(notifications), 1)
+        payload = notifications[0].payload or {}
+        self.assertEqual(payload["kind"], "smartup_duplicate_deal_skipped")
+        self.assertEqual(payload["route_role"], "admin")
+        self.assertEqual(payload["deal_ids"], ["642"])
+        self.assertEqual(
+            payload["text"],
+            "\n".join([
+                "TakSklad: повторные заказы Smartup пропущены",
+                "Дата выгрузки: 25.06.2026",
+                "Слот: 15:00",
+                "Пропущено: 1 (642)",
+            ]),
+        )
+        route = load_telegram_routing_contract().route_for_notification_kind(payload["kind"])
+        self.assertEqual(route.destination, "admin")
+        self.assertNotIn(
+            payload["text"],
+            [text for _chat_id, text in sender.messages],
+        )
+        self.assertEqual(
+            [caption for _chat_id, _content, _filename, caption in sender.documents],
+            ["Выгрузка со смарт-ап 12:00 Часть 1", "Выгрузка со смарт-ап 15:00 Часть 2"],
+        )
+
+    def test_repeated_deal_without_linked_request_is_still_delivered(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = self.config(tmp_dir, backend_import_enabled=True, change_status_enabled=True)
+            sender = FakeTelegramSender()
+            with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "enabled"}, clear=False):
+                with self.SessionLocal() as db:
+                    with self.assertRaisesRegex(SmartupAutoImportError, "status change unavailable"):
+                        run_scheduled_smartup_auto_import_slot(
+                            db,
+                            config,
+                            now=datetime(2026, 6, 25, 12, 0, tzinfo=ZoneInfo("Asia/Tashkent")),
+                            slot_label="12:00",
+                            smartup_client=FailingStatusChangeSmartupClient([sample_order()]),
+                            telegram_sender=sender,
+                        )
+                    retried = run_scheduled_smartup_auto_import_slot(
+                        db,
+                        config,
+                        now=datetime(2026, 6, 25, 12, 1, tzinfo=ZoneInfo("Asia/Tashkent")),
+                        slot_label="12:00",
+                        smartup_client=FakeSmartupClient([sample_order()]),
+                        telegram_sender=sender,
+                    )
+                    stored_orders = db.execute(select(Order)).scalars().all()
+                    create_events = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
+                    ).scalars().all()
+                    notifications = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == "telegram_notification")
+                    ).scalars().all()
+
+        self.assertEqual(retried["status"], "completed")
+        self.assertEqual(retried["skipped_duplicate_deals"], [])
+        self.assertEqual(len(stored_orders), 1)
+        self.assertEqual(len(create_events), 1)
+        self.assertEqual(notifications, [])
+
     def test_postgres_advisory_lock_uses_dedicated_connection(self):
         connection = FakePostgresConnection(acquired=True)
         db = FakeDbSession(FakePostgresBind(connection))
@@ -2609,6 +2767,50 @@ class SmartupAutoImportTests(unittest.TestCase):
         self.assertIn("pg_advisory_unlock", connection.executed[1][0])
         self.assertEqual(connection.commits, 2)
         self.assertTrue(connection.closed)
+
+
+class ImportOrderKeySplitTests(unittest.TestCase):
+    """Ключ заказа: сделки Smartup разделяются, остальные источники не меняются."""
+
+    LEGACY_EXCEL_ORDER_KEY = "4ced9f4812eb690458a7f120354029806f3fdffb80203becbd757795a8cb8183"
+
+    def excel_row(self, **overrides):
+        row = {
+            "Дата отгрузки": "26.06.2026",
+            "Тип оплаты": "Терминал",
+            "Клиент": "TEST TRADE MCHJ",
+            "Адрес": "Ташкент, тестовая 1",
+            "Координаты": "41.311081,69.240562",
+            "Торговый представитель": "ТП",
+            "Товары": "Chapman RED OP 20",
+            "Кол-во ШТ": 200,
+            "Кол-во блок": 20,
+        }
+        row.update(overrides)
+        return row
+
+    def test_order_key_without_deal_id_matches_hash_from_before_the_split(self):
+        row = normalize_import_row(self.excel_row())
+
+        self.assertEqual(row["order_key"], self.LEGACY_EXCEL_ORDER_KEY)
+        self.assertEqual(row["smartup_deal_id"], "")
+
+    def test_blank_deal_id_does_not_shift_the_legacy_key(self):
+        row = normalize_import_row(self.excel_row(**{"Smartup deal_id": "   "}))
+
+        self.assertEqual(row["order_key"], self.LEGACY_EXCEL_ORDER_KEY)
+
+    def test_each_deal_id_gets_its_own_order_key(self):
+        first = normalize_import_row(self.excel_row(**{"Smartup deal_id": "265566551"}))
+        second = normalize_import_row(self.excel_row(**{"Smartup deal_id": "265566554"}))
+        same_deal_other_product = normalize_import_row(
+            self.excel_row(**{"Smartup deal_id": "265566551", "Товары": "Chapman BLUE OP 20"})
+        )
+
+        self.assertNotEqual(first["order_key"], second["order_key"])
+        self.assertNotEqual(first["order_key"], self.LEGACY_EXCEL_ORDER_KEY)
+        self.assertEqual(first["smartup_deal_id"], "265566551")
+        self.assertEqual(same_deal_other_product["order_key"], first["order_key"])
 
 
 if __name__ == "__main__":

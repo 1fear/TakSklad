@@ -313,6 +313,8 @@ export type SmartupAutoImportRun = {
   orders_created: number;
   items_created: number;
   duplicate_rows: number;
+  skipped_duplicate_deals: number;
+  skipped_duplicate_deal_ids: string[];
   status_change_submitted: number;
   skladbot_status: string;
   logistics_reports: Array<Record<string, unknown>>;

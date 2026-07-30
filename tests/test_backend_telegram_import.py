@@ -326,6 +326,57 @@ class BackendTelegramImportTests(unittest.TestCase):
             ("take",),
         ])
 
+    def test_admin_processor_delivers_smartup_duplicate_deal_alert_to_admin_only(self):
+        processor = TelegramAdminProcessor()
+        processor.admin_chat_ids = {"1001"}
+        calls = []
+        events = [{
+            "id": "duplicate-deal-1",
+            "payload": {
+                "kind": "smartup_duplicate_deal_skipped",
+                "text": "\n".join([
+                    "TakSklad: повторные заказы Smartup пропущены",
+                    "Дата выгрузки: 30.07.2026",
+                    "Слот: 16:00",
+                    "Пропущено: 1 (265566554)",
+                ]),
+            },
+            "lease_owner": "lease-duplicate",
+        }]
+
+        processor.reset_stale_telegram_notification_events = lambda: None
+        processor.take_next_telegram_notification_event = lambda: events.pop(0) if events else None
+        processor.is_admin_chat = lambda chat_id: chat_id == "1001"
+        processor.send_message = lambda chat_id, text: calls.append((chat_id, text))
+        processor.finish_telegram_notification_event = (
+            lambda event_id, success, error="", failure_status="failed", lease_owner="": calls.append(
+                ("finish", success, error)
+            )
+        )
+
+        self.assertEqual(processor.process_pending_telegram_notifications(), 1)
+        self.assertEqual(calls, [
+            ("1001", "\n".join([
+                "TakSklad: повторные заказы Smartup пропущены",
+                "Дата выгрузки: 30.07.2026",
+                "Слот: 16:00",
+                "Пропущено: 1 (265566554)",
+            ])),
+            ("finish", True, ""),
+        ])
+        self.assertEqual(
+            processor.telegram_notification_route({"kind": "smartup_duplicate_deal_skipped", "text": "x"}),
+            ("1001", ""),
+        )
+        self.assertEqual(
+            processor.telegram_notification_route({
+                "kind": "smartup_duplicate_deal_skipped",
+                "chat_id": "-1002001",
+                "text": "x",
+            })[1],
+            "telegram notification contains a foreign target",
+        )
+
     def test_admin_processor_notification_route_blocks_unknown_foreign_and_broadcast(self):
         processor = TelegramAdminProcessor()
         processor.admin_chat_ids = {"1001"}
