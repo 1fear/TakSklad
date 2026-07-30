@@ -152,7 +152,10 @@ def list_returned_orders(db: Session, limit=50, offset=0):
 def lookup_kiz_availability(db: Session, code, order_item_id=""):
     code = normalize_kiz_code(code)
     if not code:
-        raise ApiError(422, "Code must not be empty")
+        raise ApiError(422, {
+            "code": "kiz_format_invalid",
+            "message": "Code must not be empty",
+        })
 
     target_item_id = parse_uuid(order_item_id, "order_item_id") if str(order_item_id or "").strip() else None
     same_item_scan = find_same_item_scan(db, code=code, order_item_id=target_item_id) if target_item_id else None
@@ -209,11 +212,15 @@ def create_scan(db: Session, payload: ScanCreate):
     order_item_id = parse_uuid(payload.order_item_id, "order_item_id")
     code = str(payload.code or "").strip(" \t\r\n")
     if not code:
-        raise ApiError(422, "Code must not be empty")
+        raise ApiError(422, {
+            "code": "kiz_format_invalid",
+            "message": "Code must not be empty",
+        })
 
     block_reason = blocked_kiz_reason(code)
     if block_reason:
         raise ApiError(409, {
+            "code": "kiz_blocked",
             "message": block_reason,
             "reason": "kiz_blocked",
             "order_item_id": str(order_item_id),
@@ -262,6 +269,7 @@ def create_scan(db: Session, payload: ScanCreate):
     if scan_metadata["scan_type"] == SCAN_TYPE_AGGREGATE_BOX:
         if not item_product_key or item_product_key != scan_metadata["aggregate_product_key"]:
             raise ApiError(409, {
+                "code": "aggregate_box_product_mismatch",
                 "message": "Aggregate box product does not match order item",
                 "order_item_id": str(item.id),
                 "product": item.product,
@@ -270,6 +278,7 @@ def create_scan(db: Session, payload: ScanCreate):
         remaining_blocks = max(0, int(item.quantity_blocks or 0) - int(item.scanned_blocks or 0))
         if item.quantity_blocks > 0 and block_quantity > remaining_blocks:
             raise ApiError(409, {
+                "code": "aggregate_box_exceeds_plan",
                 "message": "Aggregate box exceeds remaining order item blocks",
                 "order_item_id": str(item.id),
                 "remaining_blocks": remaining_blocks,
@@ -277,6 +286,7 @@ def create_scan(db: Session, payload: ScanCreate):
             })
     elif scan_product_mismatch(code, item.product):
         raise ApiError(409, {
+            "code": "scan_product_mismatch",
             "message": "Scan product does not match order item",
             "order_item_id": str(item.id),
             "product": item.product,
@@ -366,7 +376,10 @@ def create_scan(db: Session, payload: ScanCreate):
             other_item_scan = find_other_item_scan(db, code=code, order_item_id=item.id)
             if other_item_scan is not None:
                 return existing_scan_response_or_error(db, other_item_scan, item)
-        raise ApiError(409, "Code already scanned") from exc
+        raise ApiError(409, {
+            "code": "kiz_already_owned",
+            "message": "Code already scanned",
+        }) from exc
 
     return response
 
@@ -375,7 +388,10 @@ def undo_scan(db: Session, payload: ScanUndo):
     order_item_id = parse_uuid(payload.order_item_id, "order_item_id")
     code = str(payload.code or "").strip(" \t\r\n")
     if not code:
-        raise ApiError(422, "Code must not be empty")
+        raise ApiError(422, {
+            "code": "kiz_format_invalid",
+            "message": "Code must not be empty",
+        })
 
     item = db.execute(
         select(OrderItem)
@@ -386,7 +402,10 @@ def undo_scan(db: Session, payload: ScanUndo):
     if item is None:
         raise ApiError(404, "Order item not found")
     if item.order.status in INACTIVE_ORDER_STATUSES:
-        raise ApiError(409, "Cannot undo scan for inactive order")
+        raise ApiError(409, {
+            "code": "order_closed",
+            "message": "Cannot undo scan for inactive order",
+        })
 
     lock_kiz_code_for_transaction(db, code)
     scan = db.execute(
@@ -399,6 +418,7 @@ def undo_scan(db: Session, payload: ScanUndo):
         existing_scan = db.execute(select(ScanCode).where(ScanCode.code == code)).scalar_one_or_none()
         if existing_scan is not None:
             raise ApiError(409, {
+                "code": "kiz_already_owned",
                 "message": "Code belongs to another order item",
                 "existing_order_item_id": str(existing_scan.order_item_id),
                 "order_item_id": str(item.id),
@@ -482,6 +502,7 @@ def existing_scan_response_or_error(db: Session, existing_scan, item):
 
 def scan_conflict_detail(db: Session, existing_order_item_id, item):
     detail = {
+        "code": "kiz_already_owned",
         "message": "Code already scanned in another order item",
         "existing_order_item_id": str(existing_order_item_id or ""),
         "order_item_id": str(item.id),

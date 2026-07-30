@@ -30,6 +30,19 @@ def save_pending_backend_events(items):
 
 
 BLOCKED_BACKEND_EVENTS_LIMIT = 500
+SCAN_DUPLICATE_ACK_CODE = "scan_duplicate_ack"
+KNOWN_NON_RETRYABLE_SCAN_ERROR_CODES = frozenset({
+    "kiz_format_invalid",
+    "kiz_already_owned",
+    "order_item_fully_scanned_new_code",
+    "order_closed",
+    "transfer_order_irreversible",
+    "legal_entity_unresolved",
+    "aggregate_box_product_mismatch",
+    "aggregate_box_exceeds_plan",
+    "scan_product_mismatch",
+    "shipment_manifest_mismatch",
+})
 
 
 def load_blocked_backend_events():
@@ -235,9 +248,18 @@ def remove_pending_backend_order_complete(order_id):
     return removed["value"]
 
 
+def backend_error_code(exc):
+    detail = getattr(exc, "detail", None)
+    if not isinstance(detail, dict):
+        return ""
+    return normalize_text(detail.get("code")).lower()
+
+
 def is_duplicate_scan_ack(exc):
     if not isinstance(exc, BackendApiError) or exc.status_code != 409:
         return False
+    if backend_error_code(exc) == SCAN_DUPLICATE_ACK_CODE:
+        return True
     detail = str(exc.detail or exc).lower()
     return "already scanned for this order item" in detail
 
@@ -245,6 +267,13 @@ def is_duplicate_scan_ack(exc):
 def is_non_retryable_scan_conflict(exc):
     if not isinstance(exc, BackendApiError) or exc.status_code != 409:
         return False
+    code = backend_error_code(exc)
+    if code == SCAN_DUPLICATE_ACK_CODE:
+        return False
+    if code in KNOWN_NON_RETRYABLE_SCAN_ERROR_CODES:
+        return True
+    if code:
+        return True
     detail = str(exc.detail or exc).lower()
     return any(
         marker in detail
