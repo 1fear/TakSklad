@@ -133,6 +133,57 @@ class PostgresImportIdentityTests(unittest.TestCase):
             str(import_file.import_id),
         )
 
+    def test_two_concurrent_imports_of_one_smartup_deal_create_one_order(self):
+        deal_rows = [dict(synthetic_row(), **{"Smartup deal_id": "265566554"})]
+        barrier = threading.Barrier(3)
+        results = []
+        errors = []
+
+        def worker(sha):
+            def run():
+                try:
+                    payload = ImportCreate(
+                        source="smartup_auto",
+                        filename="synthetic-smartup-deal.xlsx",
+                        sha256=sha,
+                        rows=deal_rows,
+                    )
+                    barrier.wait(timeout=5)
+                    results.append(self.run_import(payload))
+                except Exception as exc:
+                    errors.append(exc)
+            return run
+
+        skladbot_result = {"status": "synthetic_stub", "ready": 0, "blocked": 0,
+                            "already_linked": 0, "linked_mismatch": 0, "event_id": ""}
+        with patch(
+            "backend.app.imports_service.create_skladbot_dry_run_for_import",
+            return_value=skladbot_result,
+        ):
+            threads = [
+                threading.Thread(target=worker("e" * 64), daemon=True),
+                threading.Thread(target=worker("f" * 64), daemon=True),
+            ]
+            for thread in threads:
+                thread.start()
+            barrier.wait(timeout=5)
+            for thread in threads:
+                thread.join(timeout=20)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(results), 2)
+        self.assertEqual(sorted(result.items_created for result in results), [0, 1])
+        self.assertEqual(sorted(result.duplicate_rows for result in results), [0, 1])
+        with self.SessionLocal() as session:
+            self.assertEqual(session.scalar(select(func.count()).select_from(Order)), 1)
+            self.assertEqual(session.scalar(select(func.count()).select_from(OrderItem)), 1)
+            order = session.execute(select(Order)).scalar_one()
+
+        normalized = normalize_import_row(deal_rows[0])
+        self.assertEqual(order.import_order_key, normalized["order_key"])
+        self.assertEqual(normalized["smartup_deal_id"], "265566554")
+        self.assertNotEqual(normalized["order_key"], normalize_import_row(synthetic_row())["order_key"])
+
     def test_two_concurrent_telegram_retries_create_exactly_one_import_job(self):
         event_id = str(uuid.uuid4())
         barrier = threading.Barrier(3)

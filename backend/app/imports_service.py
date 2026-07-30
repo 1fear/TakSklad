@@ -51,6 +51,7 @@ SOURCE_ROW_FIELDS = ("Строка файла", "source_row")
 SOURCE_BATCH_FIELDS = ("Ключ исходного документа", "source_batch_key")
 SKLADBOT_NUMBER_FIELDS = ("Номер заявки SkladBot", "skladbot_request_number")
 SKLADBOT_ID_FIELDS = ("ID заявки SkladBot", "skladbot_request_id")
+SMARTUP_DEAL_FIELDS = ("Smartup deal_id",)
 SMARTUP_AUTO_IMPORT_SOURCE = "smartup_auto"
 LINKED_SKLADBOT_SPLIT_REASON = "linked_skladbot_late_smartup_export"
 PICKUP_ADDRESS = "Самовывоз со склада"
@@ -635,6 +636,37 @@ def find_active_order_by_key(db: Session, order_key: str, cache=None):
     return order
 
 
+def find_active_order_for_import_rows(db: Session, rows):
+    """Вернуть активный заказ, в который попали бы эти строки импорта.
+
+    Строки, которые импорт всё равно забракует, пропускаются: решение о них
+    принимает сам импорт со своей отчётностью об ошибках.
+    """
+    cache = {}
+    for raw_row in rows or []:
+        try:
+            row = normalize_import_row(raw_row)
+        except ImportRowError:
+            continue
+        order = find_active_order_by_key(db, row["order_key"], cache)
+        if order is not None:
+            return order
+    return None
+
+
+def find_skladbot_linked_order_for_import_rows(db: Session, rows):
+    """Вернуть заказ этих строк, если заявка SkladBot по нему уже создана.
+
+    Нужен вызывающей стороне, чтобы отсечь повторный импорт до создания import
+    job. Заказ без заявки дублем не считается: это незавершённый прогон, его
+    надо довести до заявки, а не пропустить.
+    """
+    order = find_active_order_for_import_rows(db, rows)
+    if order is None or not order_has_linked_skladbot_request(db, order):
+        return None
+    return order
+
+
 def prefetch_active_orders(db: Session, order_keys, cache):
     keys = {normalize_text(value) for value in order_keys if normalize_text(value)}
     if not keys:
@@ -717,10 +749,9 @@ def is_returned_order(order):
     )
 
 
-def should_split_from_linked_skladbot_order(db: Session, order, import_source: str) -> bool:
+def order_has_linked_skladbot_request(db: Session, order) -> bool:
+    """Заявка SkladBot по этому заказу уже создана или поставлена в очередь."""
     if order is None:
-        return False
-    if normalize_text(import_source) != SMARTUP_AUTO_IMPORT_SOURCE:
         return False
     raw_payload = order.raw_payload or {}
     has_linked_payload = bool(
@@ -730,6 +761,14 @@ def should_split_from_linked_skladbot_order(db: Session, order, import_source: s
     if has_linked_payload:
         return True
     return has_skladbot_create_event(db, order)
+
+
+def should_split_from_linked_skladbot_order(db: Session, order, import_source: str) -> bool:
+    if order is None:
+        return False
+    if normalize_text(import_source) != SMARTUP_AUTO_IMPORT_SOURCE:
+        return False
+    return order_has_linked_skladbot_request(db, order)
 
 
 def has_skladbot_create_event(db: Session, order) -> bool:
@@ -936,6 +975,7 @@ def normalize_import_row(raw_row):
     source_batch_key = first_value(raw_row, SOURCE_BATCH_FIELDS)
     skladbot_request_number = first_value(raw_row, SKLADBOT_NUMBER_FIELDS)
     skladbot_request_id = first_value(raw_row, SKLADBOT_ID_FIELDS)
+    smartup_deal_id = normalize_text(first_value(raw_row, SMARTUP_DEAL_FIELDS))
 
     required = {
         "payment_type": payment_type,
@@ -948,7 +988,7 @@ def normalize_import_row(raw_row):
     if quantity_pieces <= 0 and quantity_blocks <= 0:
         raise ImportRowError("quantity must be greater than zero")
 
-    order_key = stable_hash({
+    order_key_payload = {
         "date": order_date.isoformat() if order_date else "",
         "payment_type": payment_type,
         "client": client,
@@ -957,7 +997,13 @@ def normalize_import_row(raw_row):
         "representative": representative,
         "skladbot_request_number": skladbot_request_number,
         "skladbot_request_id": skladbot_request_id,
-    })
+    }
+    if smartup_deal_id:
+        # Каждая сделка Smartup остаётся отдельным заказом и отдельной заявкой SkladBot.
+        # Ключ добавляется только при непустом deal_id, поэтому Excel и ручной импорт
+        # считают тот же хеш, что и до разделения.
+        order_key_payload["smartup_deal_id"] = smartup_deal_id
+    order_key = stable_hash(order_key_payload)
     item_key = stable_hash({
         "order_key": order_key,
         "product": product,
@@ -990,6 +1036,7 @@ def normalize_import_row(raw_row):
         "source_batch_key": normalize_text(source_batch_key),
         "skladbot_request_number": normalize_text(skladbot_request_number),
         "skladbot_request_id": normalize_text(skladbot_request_id),
+        "smartup_deal_id": smartup_deal_id,
     }
 
 

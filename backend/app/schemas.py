@@ -394,6 +394,8 @@ class SmartupAutoImportRunRead(BaseModel):
     orders_created: int = 0
     items_created: int = 0
     duplicate_rows: int = 0
+    skipped_duplicate_deals: int = 0
+    skipped_duplicate_deal_ids: list[str] = Field(default_factory=list)
     status_change_submitted: int = 0
     skladbot_status: str = ""
     logistics_reports: list[dict[str, Any]] = Field(default_factory=list)

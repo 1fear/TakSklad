@@ -44,7 +44,7 @@ export default function SmartupAutoImportPanel({ history }: { history: SmartupAu
                   <td><span className={`status-badge queue-${run.status}`}>{smartupRunStatusLabel(run.status)}</span><span className="table-muted cell-sub">часть {run.part ?? "-"}</span></td>
                   <td><strong className="cell-title">{run.filename || "-"}</strong><span className="table-muted cell-sub clamp-text">{run.export_path || run.audit_path || "-"}</span></td>
                   <td>{smartupDeliveryDatesText(run)}</td>
-                  <td><strong className="cell-title">{run.orders_created} создано</strong><span className="table-muted cell-sub">выбрано {run.selected_orders}, строк {run.rows}, дублей {run.duplicate_rows}</span></td>
+                  <td><strong className="cell-title">{run.orders_created} создано</strong><span className="table-muted cell-sub">выбрано {run.selected_orders}, строк {run.rows}, дублей {run.duplicate_rows}</span><span className="table-muted cell-sub">{smartupDuplicateDealsText(run)}</span></td>
                   <td><strong className="cell-title">{smartupSkladbotStatusText(run)}</strong><span className="table-muted cell-sub">{smartupLogisticsText(run)}</span></td>
                   <td><span className="table-muted cell-sub clamp-text">{run.error || "-"}</span></td>
                   <td><details className="json-preview"><summary>JSON</summary><pre>{JSON.stringify(event?.raw_payload ?? run, null, 2)}</pre></details></td>
@@ -75,6 +75,16 @@ function smartupRunStatusLabel(value: string) {
 function smartupDeliveryDatesText(run: SmartupAutoImportRun) {
   if (!run.delivery_dates.length) return "-";
   return run.delivery_dates.map(formatDate).join(", ");
+}
+
+function smartupDuplicateDealsText(run: SmartupAutoImportRun) {
+  const skipped = run.skipped_duplicate_deals ?? 0;
+  if (!skipped) return "повторных заказов нет";
+  const ids = run.skipped_duplicate_deal_ids ?? [];
+  const shown = ids.slice(0, 5).join(", ");
+  const hidden = ids.length - Math.min(ids.length, 5);
+  if (!shown) return `повторных заказов пропущено: ${skipped}`;
+  return `повторных заказов пропущено: ${skipped} (${shown}${hidden > 0 ? ` и ещё ${hidden}` : ""})`;
 }
 
 function smartupSkladbotStatusText(run: SmartupAutoImportRun) {

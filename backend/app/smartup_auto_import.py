@@ -24,7 +24,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .observability_context import current_correlation_id
-from .imports_service import create_import, preview_import
+from .imports_service import (
+    create_import,
+    find_skladbot_linked_order_for_import_rows,
+    preview_import,
+)
 from .excel_importer import reverse_geocode_yandex
 from .logistics_calendar_service import is_logistics_non_working_day, resolve_effective_delivery_date
 from .logistics_service import build_logistics_report_xlsx, list_logistics_dates
@@ -68,6 +72,8 @@ SMARTUP_AUTO_IMPORT_EVENT_TYPE = "smartup_auto_import_run"
 SMARTUP_LOGISTICS_REPORT_EVENT_TYPE = "smartup_logistics_report"
 SMARTUP_CLIENT_EXPORT_EVENT_TYPE = "smartup_client_export"
 SMARTUP_AUTO_IMPORT_SOURCE = "smartup_auto"
+SMARTUP_DUPLICATE_DEAL_ALERT_KIND = "smartup_duplicate_deal_skipped"
+DUPLICATE_DEAL_ALERT_ID_LIMIT = 20
 SMARTUP_EXPORT_REQUEST_PATH = "/b/trade/txs/tdeal/order$export"
 SMARTUP_CHANGE_STATUS_PATH = "/b/trade/txs/tdeal/order$change_status"
 DEFAULT_SMARTUP_BASE_URL = "https://smartup.online"
@@ -839,6 +845,63 @@ def queue_smartup_logistics_dependency_alert(
     return event
 
 
+def queue_smartup_duplicate_deal_alert(
+    db: Session,
+    export_date: date,
+    slot_label: str,
+    deal_ids: list[str],
+    *,
+    part: int = 1,
+) -> PendingEvent | None:
+    """Queue at most one admin-only alert about repeated Smartup deals per run."""
+    unique_ids = [value for value in dict.fromkeys(normalize_text(item) for item in deal_ids) if value]
+    if not unique_ids:
+        return None
+    key = (
+        f"telegram:notification:v1:smartup_duplicate_deal:{export_date.isoformat()}:"
+        f"{normalize_text(slot_label)}:part-{part}"
+    )
+    existing = db.execute(
+        select(PendingEvent).where(PendingEvent.idempotency_key == key)
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+    shown_ids = unique_ids[:DUPLICATE_DEAL_ALERT_ID_LIMIT]
+    listed = ", ".join(shown_ids)
+    hidden = len(unique_ids) - len(shown_ids)
+    if hidden > 0:
+        listed = f"{listed} и ещё {hidden}"
+    event = PendingEvent(
+        event_type="telegram_notification",
+        status="pending",
+        idempotency_key=key,
+        payload={
+            "kind": SMARTUP_DUPLICATE_DEAL_ALERT_KIND,
+            "route_role": "admin",
+            "export_date": export_date.isoformat(),
+            "slot": normalize_text(slot_label),
+            "part": part,
+            "deal_ids": unique_ids,
+            "text": "\n".join([
+                "TakSklad: повторные заказы Smartup пропущены",
+                f"Дата выгрузки: {format_display_date(export_date)}",
+                f"Слот: {normalize_text(slot_label) or '-'}",
+                f"Пропущено: {len(unique_ids)} ({listed})",
+            ]),
+        },
+    )
+    db.add(event)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return db.execute(
+            select(PendingEvent).where(PendingEvent.idempotency_key == key)
+        ).scalar_one()
+    db.refresh(event)
+    return event
+
+
 def run_scheduled_smartup_auto_import_slot(
     db: Session,
     config: SmartupAutoImportConfig,
@@ -1007,6 +1070,7 @@ def run_smartup_auto_import_once(
         "deal_ids": unique_deal_ids(selected_orders),
         "delivery_dates": delivery_dates,
         "delivery_date_adjustments": delivery_date_adjustments(import_rows),
+        "skipped_duplicate_deals": [],
         "previews": [],
         "backend_import_enabled": config.backend_import_enabled,
         "change_status_enabled": config.change_status_enabled,
@@ -1050,7 +1114,7 @@ def run_smartup_auto_import_once(
         record_smartup_audit(db, "smartup_auto_import_shadow_preview", result)
         return result
 
-    imports = create_delivery_group_imports(
+    imports, skipped_duplicate_deals = create_delivery_group_imports(
         db,
         grouped_rows,
         filename,
@@ -1063,6 +1127,15 @@ def run_smartup_auto_import_once(
         target_delivery_date=target_delivery_date,
         saga_mode=config.saga_mode,
     )
+    audit_payload["skipped_duplicate_deals"] = skipped_duplicate_deals
+    if skipped_duplicate_deals:
+        queue_smartup_duplicate_deal_alert(
+            db,
+            export_date,
+            slot_label,
+            [item["deal_id"] for item in skipped_duplicate_deals],
+            part=part,
+        )
     saga_events = []
     if config.saga_mode in {"shadow", "enforced"}:
         saga_events = prepare_deal_sagas(
@@ -1416,13 +1489,29 @@ def create_delivery_group_imports(
     source_chat_id: str,
     target_delivery_date: date | None = None,
     saga_mode: str = "disabled",
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Создать по одному импорту на сделку Smartup, повторные сделки пропустить.
+
+    Возвращает импорты и список пропущенных повторов. Повтором считается только
+    сделка, по которой заявка SkladBot уже создана: заказ без заявки это
+    незавершённый прогон, его надо довести до склада, а не пропустить.
+    """
     results = []
+    skipped_duplicates = []
     for delivery_date, rows in sorted(grouped_rows.items()):
         rows_by_deal_id: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for row in rows:
             rows_by_deal_id[normalize_text(row.get("Smartup deal_id"))].append(row)
         for deal_id, deal_rows in sorted(rows_by_deal_id.items()):
+            existing_order = find_skladbot_linked_order_for_import_rows(db, deal_rows)
+            if existing_order is not None:
+                skipped_duplicates.append({
+                    "deal_id": deal_id,
+                    "delivery_date": delivery_date,
+                    "order_id": str(existing_order.id),
+                    "rows": len(deal_rows),
+                })
+                continue
             result = create_smartup_import(
                 db,
                 delivery_date,
@@ -1439,7 +1528,7 @@ def create_delivery_group_imports(
                 saga_mode=saga_mode,
             )
             results.append(result)
-    return results
+    return results, skipped_duplicates
 
 
 def create_smartup_import(
