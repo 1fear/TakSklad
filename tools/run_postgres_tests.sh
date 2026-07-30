@@ -45,6 +45,9 @@ case "$MODE" in
   admin-rescan-concurrency)
     TEST_MODULE="tests.test_postgres_admin_rescan_concurrency"
     ;;
+  kiz-lock-order)
+    TEST_MODULE="tests.test_postgres_kiz_lock_order"
+    ;;
   skladbot-nonlease-concurrency)
     TEST_MODULE="tests.test_postgres_skladbot_nonlease_concurrency"
     ;;
