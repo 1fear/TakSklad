@@ -398,7 +398,40 @@ def collect_preflight(args: argparse.Namespace, manifest: dict[str, Any]) -> dic
     return report
 
 
+def warmup_live_endpoints(args: argparse.Namespace) -> dict[str, Any]:
+    """Прогреть endpoint до начала окна SLO и выбросить эти пробы.
+
+    Окно стартует сразу после пересоздания backend-контейнера, поэтому первые
+    ответы отражают холодный старт, а не установившуюся латентность. При 90
+    пробах одна такая проба определяет p95 и исход гейта. Прогретые пробы в
+    измерение не попадают, но записываются в evidence, чтобы холодный старт
+    оставался видимым.
+    """
+    cycles = int(getattr(args, "warmup_cycles", 0) or 0)
+    latencies: list[float] = []
+    errors = 0
+    if cycles <= 0:
+        return {"cycles": 0, "samples": 0, "errors": 0, "latency_p50_ms": 0, "latency_max_ms": 0}
+    for index in range(cycles):
+        for url in (args.health_url, args.ready_url, args.version_url):
+            try:
+                _status, _payload, latency = fetch_json(url)
+                latencies.append(latency)
+            except CollectionError:
+                errors += 1
+        if index + 1 < cycles:
+            time.sleep(min(args.sample_interval_seconds, 1.0))
+    return {
+        "cycles": cycles,
+        "samples": len(latencies),
+        "errors": errors,
+        "latency_p50_ms": round(statistics.median(latencies), 3) if latencies else 0,
+        "latency_max_ms": round(max(latencies), 3) if latencies else 0,
+    }
+
+
 def collect_live(args: argparse.Namespace, manifest: dict[str, Any]) -> dict[str, Any]:
+    warmup = warmup_live_endpoints(args)
     started = time.monotonic()
     latencies: list[float] = []
     endpoint_errors = {"health": 0, "ready": 0, "version": 0}
@@ -474,6 +507,7 @@ def collect_live(args: argparse.Namespace, manifest: dict[str, Any]) -> dict[str
                 "endpoint_errors": endpoint_errors,
                 "endpoint_statuses": endpoint_statuses,
                 "terminated_early": terminated_early,
+                "warmup": warmup,
                 "latency_p50_ms": round(statistics.median(latencies), 3) if latencies else 0,
                 "latency_p95_ms": percentile(latencies, 0.95),
                 "latency_budget_ms": args.latency_budget_ms,
@@ -507,6 +541,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--version-url", default="https://api.taksklad.uz/version")
     parser.add_argument("--migration-budget-seconds", type=float, default=120)
     parser.add_argument("--slo-seconds", type=int, default=300)
+    parser.add_argument(
+        "--warmup-cycles",
+        type=int,
+        default=3,
+        help="циклов прогрева до окна SLO; их пробы не входят в p50/p95",
+    )
     parser.add_argument("--sample-interval-seconds", type=float, default=10)
     parser.add_argument("--fail-fast-consecutive-errors", type=int, default=3)
     parser.add_argument("--latency-budget-ms", type=float, default=500)

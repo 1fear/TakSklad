@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from tools.collect_phase27_evidence import (
     CollectionError,
+    collect_live,
     latest_backup,
     live_runtime_invariants,
     live_worker_readiness,
@@ -18,6 +19,100 @@ from tools.collect_phase27_evidence import (
     restore_drill,
     run,
 )
+
+
+SOURCE_SHA = "a" * 40
+
+
+def live_args(**overrides):
+    args = SimpleNamespace(
+        health_url="https://example.invalid/health",
+        ready_url="https://example.invalid/ready",
+        version_url="https://example.invalid/version",
+        slo_seconds=0,
+        sample_interval_seconds=0,
+        fail_fast_consecutive_errors=3,
+        latency_budget_ms=500,
+        warmup_cycles=3,
+    )
+    for key, value in overrides.items():
+        setattr(args, key, value)
+    return args
+
+
+class Phase27LiveWarmupTests(unittest.TestCase):
+    """Окно SLO не должно мерить холодный старт только что поднятого backend."""
+
+    def collect(self, latencies, **overrides):
+        remaining = list(latencies)
+
+        def fake_fetch(url, **kwargs):
+            latency = remaining.pop(0) if remaining else 100.0
+            return 200, {"commit_sha": SOURCE_SHA, "status": "ok"}, latency
+
+        summary = {
+            "queue_blockers": 0,
+            "stale_processing": 0,
+            "mandatory_status": "ok",
+            "database_status": "ok",
+        }
+        with patch("tools.collect_phase27_evidence.fetch_json", side_effect=fake_fetch), \
+             patch("tools.collect_phase27_evidence.live_runtime_invariants", return_value={"invariants": {}}), \
+             patch("tools.collect_phase27_evidence.live_worker_readiness", return_value={}), \
+             patch("tools.collect_phase27_evidence.readiness_summary", return_value=summary), \
+             patch("tools.collect_phase27_evidence.common", return_value={}), \
+             patch("tools.collect_phase27_evidence.time.sleep"):
+            return collect_live(live_args(**overrides), {"source_sha": SOURCE_SHA})
+
+    def test_warmup_samples_are_excluded_from_the_measured_window(self):
+        # три холодных цикла по 2000 мс, затем установившиеся 100 мс
+        report = self.collect([2000.0] * 9 + [100.0] * 3)
+
+        slo = report["slo"]
+        self.assertEqual(slo["samples"], 3, "в окно попадают только пробы после прогрева")
+        self.assertEqual(slo["latency_p95_ms"], 100)
+        self.assertEqual(slo["latency_p50_ms"], 100)
+
+    def test_warmup_is_recorded_for_transparency(self):
+        report = self.collect([2000.0] * 9 + [100.0] * 3)
+
+        warmup = report["slo"]["warmup"]
+        self.assertEqual(warmup["cycles"], 3)
+        self.assertEqual(warmup["samples"], 9)
+        self.assertEqual(warmup["errors"], 0)
+        self.assertEqual(warmup["latency_max_ms"], 2000)
+
+    def test_warmup_can_be_disabled(self):
+        report = self.collect([2000.0] * 3 + [100.0] * 3, warmup_cycles=0)
+
+        self.assertEqual(report["slo"]["warmup"]["cycles"], 0)
+        self.assertEqual(report["slo"]["samples"], 3)
+        self.assertEqual(report["slo"]["latency_p95_ms"], 2000)
+
+    def test_warmup_errors_do_not_hide_a_broken_window(self):
+        remaining = [CollectionError("cold"), CollectionError("cold"), CollectionError("cold")]
+
+        def fake_fetch(url, **kwargs):
+            if remaining:
+                raise remaining.pop(0)
+            return 500, {"commit_sha": SOURCE_SHA}, 100.0
+
+        summary = {
+            "queue_blockers": 0,
+            "stale_processing": 0,
+            "mandatory_status": "ok",
+            "database_status": "ok",
+        }
+        with patch("tools.collect_phase27_evidence.fetch_json", side_effect=fake_fetch), \
+             patch("tools.collect_phase27_evidence.live_runtime_invariants", return_value={"invariants": {}}), \
+             patch("tools.collect_phase27_evidence.live_worker_readiness", return_value={}), \
+             patch("tools.collect_phase27_evidence.readiness_summary", return_value=summary), \
+             patch("tools.collect_phase27_evidence.common", return_value={}), \
+             patch("tools.collect_phase27_evidence.time.sleep"):
+            report = collect_live(live_args(warmup_cycles=1), {"source_sha": SOURCE_SHA})
+
+        self.assertEqual(report["slo"]["warmup"]["errors"], 3)
+        self.assertEqual(report["slo"]["status"], "fail", "ошибки в самом окне обязаны валить SLO")
 
 
 class Phase27EvidenceCollectorTests(unittest.TestCase):
