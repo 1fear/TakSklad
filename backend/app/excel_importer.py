@@ -827,13 +827,14 @@ def excel_file_to_import_payload(file_path, file_name=None, source="telegram", s
                 "Отсканированные коды": "",
                 "Статус": "Не выполнено",
                 "ID импорта": source_id,
+                # Идентификатор заказа, а не строки: товар и номер строки сюда не входят,
+                # иначе каждая строка файла выглядит как отдельный заказ и позиции
+                # одного заказа перестают складываться.
                 "ID заказа": stable_hash({
                     "date": date_value,
                     "payment": payment,
                     "client": client,
                     "address": address,
-                    "product": product,
-                    "row": row_number,
                 }),
                 "Источник файла": file_name,
                 "Строка файла": str(row_number),

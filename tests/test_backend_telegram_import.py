@@ -808,6 +808,55 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertEqual(payload["meta"]["shipment_date"], "05.06.2026")
         self.assertEqual(payload["meta"]["shipment_dates"], ["05.06.2026"])
 
+    def test_excel_order_id_identifies_order_not_file_row(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "Шаблон_отправки_заказов_на_склад_03_08_2026.xlsx"
+            workbook = openpyxl.Workbook()
+            sheet = workbook.active
+            sheet.title = "Конструктор отчетов"
+            sheet.append(["", "", "", "", "", "", "", "ИТОГО", "", "ДАТА ДОСТАВКИ"])
+            sheet.append([
+                "Торговый представитель",
+                "Клиент",
+                "Координаты клиента",
+                "",
+                "",
+                "ТМЦ",
+                "Тип оплаты",
+                "Количество заказа",
+                "Сумма с переоценкой",
+                "",
+            ])
+            for client, product in (
+                ("MAVZUNA ZUMRAD", "Chapman Brown OP 20"),
+                ("MAVZUNA ZUMRAD", "Chapman RED OP 20"),
+                ("OTHER CLIENT", "Chapman RED OP 20"),
+                ("MAVZUNA ZUMRAD", "Chapman RED OP 20"),
+            ):
+                sheet.append([
+                    "ТП6",
+                    client,
+                    "41.281521",
+                    "69.360139",
+                    "41.281521,69.360139",
+                    product,
+                    "Перечисление",
+                    10,
+                    240000,
+                    "2026-08-03",
+                ])
+            workbook.save(path)
+
+            payload = excel_file_to_import_payload(path, file_name=path.name, source="telegram")
+
+        rows = payload["rows"]
+        self.assertEqual(len(rows), 4)
+        order_ids = [row["ID заказа"] for row in rows]
+        self.assertEqual(order_ids[0], order_ids[1], "строки одного заказа обязаны иметь один ID заказа")
+        self.assertEqual(order_ids[0], order_ids[3], "повтор товара ниже по файлу остаётся тем же заказом")
+        self.assertNotEqual(order_ids[0], order_ids[2], "разные клиенты обязаны иметь разные ID заказа")
+        self.assertEqual(len({row["ID импорта"] for row in rows}), 4, "ID импорта остаётся идентификатором строки")
+
     def test_excel_file_to_import_payload_rejects_telegram_date_conflict_with_excel_date(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             path = Path(tmp_dir) / "Шаблон_отправки_заказов_на_склад_09_06_2026.xlsx"
