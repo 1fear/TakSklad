@@ -664,6 +664,7 @@ class ImportResult(BaseModel):
     rows_imported: int
     orders_created: int
     items_created: int
+    merged_position_rows: int = 0
     duplicate_rows: int
     invalid_rows: int
     resolved_order_ids: list[str] = Field(default_factory=list)

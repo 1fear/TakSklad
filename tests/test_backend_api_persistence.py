@@ -2870,6 +2870,113 @@ class BackendApiPersistenceTests(unittest.TestCase):
             ["smartup:deal-1:product-1:1", "smartup:deal-2:product-1:1"],
         )
 
+    def merge_row(self, **overrides):
+        row = {
+            "Дата отгрузки": "03.08.2026",
+            "Тип оплаты": "Перечисление",
+            "Клиент": "Merge Client",
+            "Адрес": "Merge Address",
+            "Координаты": "41.281521, 69.360139",
+            "Торговый представитель": "Merge Rep",
+            "Товары": "Chapman RED OP 20",
+            "Кол-во ШТ": "10",
+            "Кол-во блок": "1",
+            "Сумма позиции": "240000",
+            "ID заказа": "merge-order-1",
+            "ID импорта": "merge-order-1:row-37",
+        }
+        row.update(overrides)
+        return row
+
+    def test_import_merges_same_product_rows_of_one_source_order(self):
+        rows = [
+            self.merge_row(),
+            self.merge_row(**{"ID импорта": "merge-order-1:row-54"}),
+        ]
+
+        response = self.client.post(
+            "/api/v1/imports",
+            json={"source": "telegram", "filename": "orders.xlsx", "rows": rows},
+        )
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        self.assertEqual(payload["orders_created"], 1)
+        self.assertEqual(payload["items_created"], 1)
+        self.assertEqual(payload["merged_position_rows"], 1)
+        with self.SessionLocal() as db:
+            items = db.execute(select(OrderItem)).scalars().all()
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].quantity_blocks, 2)
+        self.assertEqual(items[0].quantity_pieces, 20)
+        self.assertEqual(
+            items[0].raw_payload["source_import_ids"],
+            ["merge-order-1:row-37", "merge-order-1:row-54"],
+        )
+        self.assertEqual(items[0].raw_payload["line_total"], 480000)
+
+    def test_import_keeps_rows_of_different_source_orders_separate(self):
+        rows = [
+            self.merge_row(),
+            self.merge_row(**{"ID заказа": "merge-order-2", "ID импорта": "merge-order-2:row-54"}),
+        ]
+
+        response = self.client.post(
+            "/api/v1/imports",
+            json={"source": "telegram", "filename": "orders.xlsx", "rows": rows},
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["items_created"], 2)
+        self.assertEqual(response.json()["merged_position_rows"], 0)
+        with self.SessionLocal() as db:
+            items = db.execute(select(OrderItem)).scalars().all()
+        self.assertEqual([item.quantity_blocks for item in items], [1, 1])
+
+    def test_reimport_of_merged_rows_does_not_double_quantity(self):
+        rows = [
+            self.merge_row(),
+            self.merge_row(**{"ID импорта": "merge-order-1:row-54"}),
+        ]
+        body = {"source": "telegram", "filename": "orders.xlsx", "rows": rows}
+
+        first = self.client.post("/api/v1/imports", json=body)
+        self.assertEqual(first.status_code, 201)
+        second = self.client.post("/api/v1/imports", json=body)
+        self.assertEqual(second.status_code, 201)
+
+        self.assertEqual(second.json()["items_created"], 0)
+        self.assertEqual(second.json()["duplicate_rows"], 2)
+        with self.SessionLocal() as db:
+            items = db.execute(select(OrderItem)).scalars().all()
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].quantity_blocks, 2)
+
+    def test_import_merges_into_position_created_by_earlier_import(self):
+        first = self.client.post(
+            "/api/v1/imports",
+            json={"source": "telegram", "filename": "part1.xlsx", "rows": [self.merge_row()]},
+        )
+        self.assertEqual(first.status_code, 201)
+
+        second = self.client.post(
+            "/api/v1/imports",
+            json={
+                "source": "telegram",
+                "filename": "part2.xlsx",
+                "rows": [self.merge_row(**{"ID импорта": "merge-order-1:part2-row-9"})],
+            },
+        )
+
+        self.assertEqual(second.status_code, 201)
+        self.assertEqual(second.json()["items_created"], 0)
+        self.assertEqual(second.json()["merged_position_rows"], 1)
+        with self.SessionLocal() as db:
+            items = db.execute(select(OrderItem)).scalars().all()
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].quantity_blocks, 2)
+        self.assertEqual(items[0].status, "not_completed")
+
     def test_smartup_late_export_splits_when_existing_order_already_has_skladbot_request(self):
         base_row = {
             "Дата отгрузки": "02.07.2026",

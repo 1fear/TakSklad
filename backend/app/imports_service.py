@@ -109,6 +109,7 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
     invalid_rows = 0
     orders_created = 0
     items_created = 0
+    merged_position_rows = 0
     backend_address_updates = 0
     resolved_order_ids: set[uuid.UUID] = set()
 
@@ -131,6 +132,7 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
             "payment_groups": dict(payload.payment_groups or {}),
             "orders_created": 0,
             "items_created": 0,
+            "merged_position_rows": 0,
             "duplicate_rows": 0,
             "invalid_rows": 0,
             "errors": [],
@@ -150,6 +152,8 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
 
     order_by_key = {}
     existing_items = {"item_key": {}, "source_import_id": {}}
+    merge_index = {}
+    indexed_orders = set()
     current_import_item_keys = set()
     current_import_source_import_ids = set()
     prepared_rows = []
@@ -175,6 +179,8 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
         db,
         (row for _index, _raw, row in prepared_rows),
     )
+    for order in list(order_by_key.values()):
+        index_order_positions_for_merge(order, merge_index, existing_items, indexed_orders)
 
     for _index, raw_row, row in prepared_rows:
 
@@ -234,7 +240,19 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
 
         resolved_order_ids.add(order.id)
 
-        db.add(OrderItem(
+        index_order_positions_for_merge(order, merge_index, existing_items, indexed_orders)
+        merge_key = position_merge_key(order, row.get("source_order_id"), row.get("product"))
+        merge_target = merge_index.get(merge_key) if merge_key else None
+        if merge_target is not None:
+            # Одна и та же сделка с тем же товаром остаётся одной позицией склада:
+            # строки складываются, а не превращаются в две одинаковые строки заказа.
+            merge_import_row_into_item(merge_target, row, raw_row)
+            merged_position_rows += 1
+            if row["source_import_id"]:
+                existing_items["source_import_id"][row["source_import_id"]] = merge_target
+            continue
+
+        item = OrderItem(
             order_id=order.id,
             product=row["product"],
             import_item_key=row["item_key"] or None,
@@ -252,6 +270,7 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
                 "business_line_key": row["item_key"],
                 "source_order_id": row["source_order_id"],
                 "source_import_id": row["source_import_id"],
+                "source_import_ids": [row["source_import_id"]] if row["source_import_id"] else [],
                 "source_file": row["source_file"],
                 "source_row": row["source_row"],
                 "source_batch_key": row["source_batch_key"],
@@ -263,7 +282,10 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
                 "calculated_line_total": row["calculated_line_total"],
                 "raw_row": raw_row,
             },
-        ))
+        )
+        db.add(item)
+        if merge_key:
+            merge_index[merge_key] = item
         items_created += 1
 
     status = "completed"
@@ -278,6 +300,7 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
         **import_job.raw_payload,
         "orders_created": orders_created,
         "items_created": items_created,
+        "merged_position_rows": merged_position_rows,
         "duplicate_rows": duplicate_rows,
         "invalid_rows": invalid_rows,
         "backend_address_updates": backend_address_updates,
@@ -348,6 +371,7 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
         rows_imported=items_created,
         orders_created=orders_created,
         items_created=items_created,
+        merged_position_rows=merged_position_rows,
         duplicate_rows=duplicate_rows,
         invalid_rows=invalid_rows,
         resolved_order_ids=sorted(str(order_id) for order_id in resolved_order_ids),
@@ -373,6 +397,7 @@ def import_result_from_existing_job(import_job: ImportJob) -> ImportResult:
         rows_imported=int(import_job.rows_imported or 0),
         orders_created=int(raw_payload.get("orders_created") or 0),
         items_created=int(raw_payload.get("items_created") or 0),
+        merged_position_rows=int(raw_payload.get("merged_position_rows") or 0),
         duplicate_rows=int(raw_payload.get("duplicate_rows") or 0),
         invalid_rows=int(raw_payload.get("invalid_rows") or 0),
         resolved_order_ids=list(raw_payload.get("resolved_order_ids") or ()),
@@ -401,6 +426,8 @@ def preview_import(db: Session, payload: ImportCreate):
     preview_order_keys = set()
     preview_item_keys = set()
     preview_source_import_ids = set()
+    preview_merge_keys = set()
+    merged_position_rows = 0
 
     for index, raw_row in enumerate(payload.rows, start=1):
         try:
@@ -439,6 +466,23 @@ def preview_import(db: Session, payload: ImportCreate):
         preview_item_keys.add(row["item_key"])
         if row["source_import_id"]:
             preview_source_import_ids.add(row["source_import_id"])
+
+        # Предпросмотр обязан считать позиции так же, как импорт: строки одной
+        # сделки с одним товаром станут одной позицией, а не отдельными строками.
+        preview_merge_key = (
+            normalize_text(order_key),
+            normalize_text(row["source_order_id"]),
+            normalize_text(row["product"]).casefold(),
+        )
+        existing_position_key = position_merge_key(existing_order, row["source_order_id"], row["product"])
+        merges_into_existing_position = preview_merge_key in preview_merge_keys or any(
+            position_merge_key_for_item(existing_order, item) == existing_position_key
+            for item in (existing_order.items if existing_order is not None else ())
+        )
+        preview_merge_keys.add(preview_merge_key)
+        if merges_into_existing_position:
+            merged_position_rows += 1
+            continue
         items_new += 1
 
     status = "ok"
@@ -451,7 +495,7 @@ def preview_import(db: Session, payload: ImportCreate):
         source=normalize_text(payload.source) or "excel",
         status=status,
         rows_total=rows_total,
-        rows_importable=items_new,
+        rows_importable=items_new + merged_position_rows,
         orders_new=orders_new,
         items_new=items_new,
         duplicate_rows=len(duplicate_row_numbers),
@@ -739,6 +783,99 @@ def prefetch_existing_items(db: Session, rows, existing_items):
             existing_items["source_import_id"][source_id] = item
         elif not source_id and item_key in item_keys and existing_items["item_key"].get(item_key) is None:
             existing_items["item_key"][item_key] = item
+
+
+def position_merge_key(order, source_order_id, product):
+    """Ключ склейки позиций: заказ склада, исходный заказ источника и товар.
+
+    Одна сделка источника с одним товаром обязана оставаться одной позицией,
+    сколько бы строк файла её ни описывало. Разные исходные заказы не
+    склеиваются даже внутри одного заказа склада: их состав считается разным.
+    """
+    order_id = normalize_text(str(getattr(order, "id", "") or ""))
+    normalized_product = normalize_text(product).casefold()
+    if not order_id or not normalized_product:
+        return None
+    return (order_id, normalize_text(source_order_id), normalized_product)
+
+
+def position_merge_key_for_item(order, item):
+    raw_payload = item.raw_payload or {}
+    return position_merge_key(order, raw_payload.get("source_order_id"), item.product)
+
+
+def item_source_import_ids(item):
+    """Все «ID импорта», поглощённые этой позицией, включая склеенные строки."""
+    raw_payload = item.raw_payload or {}
+    values = [
+        normalize_text(item.source_import_id),
+        normalize_text(raw_payload.get("source_import_id")),
+    ]
+    values.extend(normalize_text(value) for value in (raw_payload.get("source_import_ids") or []))
+    seen = []
+    for value in values:
+        if value and value not in seen:
+            seen.append(value)
+    return seen
+
+
+def index_order_positions_for_merge(order, merge_index, existing_items, indexed_orders):
+    """Проиндексировать позиции заказа для склейки и для защиты от повторов.
+
+    Склеенная позиция хранит «ID импорта» всех своих строк, поэтому повторный
+    залив того же файла обязан находить её по любому из них, иначе количество
+    удвоится.
+    """
+    if order is None:
+        return
+    order_id = getattr(order, "id", None)
+    if order_id is None or order_id in indexed_orders:
+        return
+    indexed_orders.add(order_id)
+    for item in order.items or []:
+        key = position_merge_key_for_item(order, item)
+        if key is not None and key not in merge_index:
+            merge_index[key] = item
+        for value in item_source_import_ids(item):
+            if existing_items["source_import_id"].get(value) is None:
+                existing_items["source_import_id"][value] = item
+
+
+def merge_import_row_into_item(item, row, raw_row):
+    """Сложить строку импорта в уже существующую позицию заказа."""
+    raw_payload = dict(item.raw_payload or {})
+    item.quantity_pieces = int(item.quantity_pieces or 0) + int(row["quantity_pieces"] or 0)
+    item.quantity_blocks = int(item.quantity_blocks or 0) + int(row["quantity_blocks"] or 0)
+    if not item.pieces_per_block and row.get("pieces_per_block"):
+        item.pieces_per_block = row["pieces_per_block"]
+
+    source_import_ids = list(raw_payload.get("source_import_ids") or [])
+    if not source_import_ids:
+        source_import_ids = [value for value in [normalize_text(raw_payload.get("source_import_id"))] if value]
+    new_source_import_id = normalize_text(row.get("source_import_id"))
+    if new_source_import_id and new_source_import_id not in source_import_ids:
+        source_import_ids.append(new_source_import_id)
+    raw_payload["source_import_ids"] = source_import_ids
+
+    merged_source_rows = list(raw_payload.get("merged_source_rows") or [])
+    merged_source_rows.append({
+        "source_import_id": new_source_import_id,
+        "source_order_id": normalize_text(row.get("source_order_id")),
+        "source_file": row.get("source_file"),
+        "source_row": row.get("source_row"),
+        "quantity_pieces": row["quantity_pieces"],
+        "quantity_blocks": row["quantity_blocks"],
+        "raw_row": raw_row,
+    })
+    raw_payload["merged_source_rows"] = merged_source_rows
+
+    for field in ("imported_line_total", "line_total", "calculated_line_total"):
+        raw_payload[field] = (raw_payload.get(field) or 0) + (row.get(field) or 0)
+
+    item.raw_payload = raw_payload
+    if item.status == "completed" and int(item.scanned_blocks or 0) < int(item.quantity_blocks or 0):
+        item.status = "not_completed"
+    return item
 
 
 def is_returned_order(order):
