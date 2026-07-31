@@ -730,10 +730,11 @@ rollback_runtime() {
 
 verify_previous_runtime_preflight() {
   [[ -n "$PREVIOUS_MANIFEST" ]] || return 0
-  local candidate_backend_image="$RELEASE_BACKEND_IMAGE"
-  local candidate_frontend_image="$RELEASE_FRONTEND_IMAGE"
-  local candidate_source_sha="$RELEASE_SOURCE_SHA"
-  local candidate_backend_digest="$RELEASE_BACKEND_DIGEST"
+  # Окружение кандидата сохраняется целиком. Перечислять переменные руками
+  # нельзя: список расходится с emit_release_shell при любом новом поле
+  # манифеста, и остаток прошлого релиза уезжает в контейнеры кандидата.
+  local candidate_shell
+  candidate_shell="$(emit_release_shell "$ARTIFACT_MANIFEST")" || return 1
   local emitted database_revision runtime_revision result=0
   verify_release_manifest "$PREVIOUS_MANIFEST" || result=1
   if [[ "$result" == "0" ]]; then
@@ -766,10 +767,7 @@ verify_previous_runtime_preflight() {
     fi
     run_previous_auth_canary || result=1
   fi
-  RELEASE_BACKEND_IMAGE="$candidate_backend_image"
-  RELEASE_FRONTEND_IMAGE="$candidate_frontend_image"
-  RELEASE_SOURCE_SHA="$candidate_source_sha"
-  RELEASE_BACKEND_DIGEST="$candidate_backend_digest"
+  eval "$candidate_shell" || result=1
   export_release_runtime_env
   [[ "$result" == "0" ]] || return 1
   return 0
