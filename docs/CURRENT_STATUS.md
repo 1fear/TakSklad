@@ -28,15 +28,20 @@ Production работает на том же коммите, что и `main`. �
 
 | Контур | Идентичность | Источник |
 |---|---|---|
-| `main` и `origin/main` | `8376221c5ff2c627a1f083ae55e001e7ce8988f9` | `git rev-parse` |
+| Последний выпущенный коммит | `8376221c5ff2c627a1f083ae55e001e7ce8988f9` | `git log`, `Deploy Server Production` |
 | Live backend | `2.0.51`, commit `8376221c…`, image `sha256:d5816136…` | `GET /version` |
 | `server_release_id` | `server-8376221c…` | `GET /version` |
 | Backend в коде | `APP_VERSION = 2.0.51` | `backend/app/settings.py:19` |
 | Desktop в коде | `APP_VERSION = 2.0.54` | `src/taksklad/config.py:128` |
 | Канал обновления десктопа | `2.0.54`, `min_supported_version 2.0.54`, `mandatory=true`, `source_sha 63f4506…` | `raw.githubusercontent.com/1fear/TakSklad/main/version.json` |
 
-Локальный checkout, `origin/main` и live backend совпадают до символа. Отставание
-live от `main` на 16 коммитов, зафиксированное 2026-07-27, устранено.
+Live backend работает на последнем выпущенном коммите. Отставание live от `main`
+на 16 коммитов, зафиксированное 2026-07-27, устранено.
+
+Сравнивать `git rev-parse HEAD` с `GET /version` напрямую нельзя: коммиты, не
+меняющие runtime (документация, заметки), уходят в `main` без релиза и легально
+сдвигают ветку вперёд. Признак реального расхождения — коммит, меняющий
+`backend/`, `frontend/` или `deploy/`, которого нет в развёрнутом релизе.
 
 Канал обновления десктопа берётся десктопом с GitHub raw
 (`src/taksklad/config.py:132`), а не с VDS. Копия `version.json` в
