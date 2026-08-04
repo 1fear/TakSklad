@@ -24,6 +24,10 @@ on:
         description: Exact approval phrase for two irreversible catch-up sends; leave empty for a normal deploy
         required: false
         default: ""
+      database_migration_approval:
+        description: Exact approval phrase APPLY_FORWARD_DATABASE_MIGRATION for a forward_upgrade release; leave empty for a schema-stable deploy
+        required: false
+        default: ""
 
 permissions:
   actions: read
@@ -282,9 +286,10 @@ jobs:
           printf '%s\n' "$VDS_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-      - name: Verify no database migration change from current production release
+      - name: Verify database migration policy against current production release
         env:
           EXPECTED_SOURCE_SHA: ${{ inputs.source_sha }}
+          DATABASE_MIGRATION_APPROVAL: ${{ inputs.database_migration_approval }}
           VDS_HOST: ${{ secrets.VDS_HOST }}
           VDS_USER: ${{ secrets.VDS_USER }}
         run: |
@@ -324,10 +329,30 @@ jobs:
             echo "SERVER_RELEASE_MUST_ADVANCE_CURRENT_PRODUCTION_SHA" >&2
             exit 1
           }
-          git diff --quiet "$previous_source_sha" "$EXPECTED_SOURCE_SHA" -- backend/migrations || {
-            echo "SERVER_RELEASE_DATABASE_MIGRATION_DIFF_FORBIDDEN" >&2
-            exit 1
-          }
+          release_migration_policy="$(python3 - "$RUNNER_TEMP/server-release-manifest/server-release.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          print(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))["database"]["migration_policy"])
+          PY
+          )"
+          if git diff --quiet "$previous_source_sha" "$EXPECTED_SOURCE_SHA" -- backend/migrations; then
+            test "$release_migration_policy" = no_change || {
+              echo "SERVER_RELEASE_FORWARD_UPGRADE_WITHOUT_MIGRATION_DIFF" >&2
+              exit 1
+            }
+          else
+            # Схему двигает только релиз, собранный как forward_upgrade, и только
+            # с точной approval-фразой. Оба условия обязательны
+            test "$release_migration_policy" = forward_upgrade || {
+              echo "SERVER_RELEASE_DATABASE_MIGRATION_DIFF_FORBIDDEN" >&2
+              exit 1
+            }
+            test "$DATABASE_MIGRATION_APPROVAL" = APPLY_FORWARD_DATABASE_MIGRATION || {
+              echo "SERVER_RELEASE_DATABASE_MIGRATION_APPROVAL_REQUIRED" >&2
+              exit 1
+            }
+          fi
 
       - name: Copy exact-SHA control bundle and verified server manifest to VDS
         env:
@@ -393,7 +418,13 @@ jobs:
 
           python3 tools/server_release_artifacts.py verify --manifest server-release.json
           eval "\$(python3 tools/server_release_artifacts.py emit-shell --manifest server-release.json)"
-          test "\$RELEASE_DATABASE_MIGRATION_POLICY" = no_change
+          case "\$RELEASE_DATABASE_MIGRATION_POLICY" in
+            no_change|forward_upgrade) ;;
+            *)
+              echo "RELEASE_DATABASE_MIGRATION_POLICY_UNSUPPORTED" >&2
+              exit 1
+              ;;
+          esac
           export TAKSKLAD_BACKEND_IMAGE="\$RELEASE_BACKEND_IMAGE"
           export TAKSKLAD_FRONTEND_IMAGE="\$RELEASE_FRONTEND_IMAGE"
           export TAKSKLAD_COMMIT_SHA="\$RELEASE_SOURCE_SHA"
@@ -433,14 +464,25 @@ jobs:
             -f deploy/vds/docker-compose.yml run --rm --no-deps --pull never \
             backend-api alembic -c alembic.ini heads </dev/null | tail -n 1 | awk '{print \$1}')"
           test -n "\$current_revision"
-          test "\$current_revision" = "\$RELEASE_ALEMBIC_HEAD" || {
-            echo "PRODUCTION_ALEMBIC_HEAD_DIFFERS_FROM_NO_CHANGE_RELEASE" >&2
-            exit 1
-          }
+          # Образ кандидата обязан нести ровно ту голову, что заявлена в манифесте,
+          # при любой политике
           test "\$candidate_revision" = "\$RELEASE_ALEMBIC_HEAD" || {
-            echo "CANDIDATE_ALEMBIC_HEAD_DIFFERS_FROM_NO_CHANGE_RELEASE" >&2
+            echo "CANDIDATE_ALEMBIC_HEAD_DIFFERS_FROM_RELEASE" >&2
             exit 1
           }
+          if [ "\$RELEASE_DATABASE_MIGRATION_POLICY" = no_change ]; then
+            test "\$current_revision" = "\$RELEASE_ALEMBIC_HEAD" || {
+              echo "PRODUCTION_ALEMBIC_HEAD_DIFFERS_FROM_NO_CHANGE_RELEASE" >&2
+              exit 1
+            }
+          else
+            # forward_upgrade: база обязана быть позади релиза, иначе мигрировать
+            # нечего и заявленная политика не соответствует реальности
+            test "\$current_revision" != "\$RELEASE_ALEMBIC_HEAD" || {
+              echo "PRODUCTION_ALEMBIC_HEAD_ALREADY_AT_FORWARD_UPGRADE_RELEASE" >&2
+              exit 1
+            }
+          fi
 
           preflight_backend_id="\$(docker compose --env-file deploy/vds/.env \
             -f deploy/vds/docker-compose.yml ps -q backend-api </dev/null)"

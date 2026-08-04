@@ -53,7 +53,9 @@ class ServerReleaseWorkflowContractTests(unittest.TestCase):
             '"capabilities": ["returns_auth_canary_v2_exact_identifier"]',
             '"desktop_api_contract": 1',
             '"min_desktop_version": "2.0.49"',
-            '"migration_policy": "no_change"',
+            # Политика больше не константа: она приходит проверенным входом сборки
+            '"migration_policy": os.environ["DATABASE_MIGRATION_POLICY"]',
+            "SERVER_RELEASE_MIGRATION_POLICY_INVALID",
             '"destructive_migrations_allowed": False',
             '"alembic_downgrade_allowed": False',
             "tools/server_release_artifacts.py verify",
@@ -102,14 +104,21 @@ class ServerReleaseWorkflowContractTests(unittest.TestCase):
 
     def test_deploy_blocks_database_drift_before_runtime_mutation(self):
         required = (
-            "Verify no database migration change from current production release",
+            "Verify database migration policy against current production release",
             "git merge-base --is-ancestor",
             "git diff --quiet",
             "-- backend/migrations",
+            # Дрейф схемы без подписанной политики forward_upgrade запрещён
             "SERVER_RELEASE_DATABASE_MIGRATION_DIFF_FORBIDDEN",
+            # forward_upgrade требует ещё и точной approval-фразы
+            "SERVER_RELEASE_DATABASE_MIGRATION_APPROVAL_REQUIRED",
+            'test "$DATABASE_MIGRATION_APPROVAL" = APPLY_FORWARD_DATABASE_MIGRATION',
+            # Заявленный forward_upgrade без реального диффа миграций тоже отклоняется
+            "SERVER_RELEASE_FORWARD_UPGRADE_WITHOUT_MIGRATION_DIFF",
             "PRODUCTION_ALEMBIC_HEAD_DIFFERS_FROM_NO_CHANGE_RELEASE",
-            "CANDIDATE_ALEMBIC_HEAD_DIFFERS_FROM_NO_CHANGE_RELEASE",
-            'test "\\$RELEASE_DATABASE_MIGRATION_POLICY" = no_change',
+            "PRODUCTION_ALEMBIC_HEAD_ALREADY_AT_FORWARD_UPGRADE_RELEASE",
+            "CANDIDATE_ALEMBIC_HEAD_DIFFERS_FROM_RELEASE",
+            'if [ "\\$RELEASE_DATABASE_MIGRATION_POLICY" = no_change ]; then',
         )
         for needle in required:
             with self.subTest(needle=needle):
