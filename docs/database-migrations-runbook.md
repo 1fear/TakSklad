@@ -63,6 +63,36 @@ The preflight only counts violations in a repeatable-read, read-only transaction
 
 Revision `20260710_0011` expands `pending_events` with nullable `action`, `aggregate_type`, and `aggregate_id` columns, backfills legacy rows from their existing payload, and adds a concurrent composite lookup index. Column creation and invalid-index recovery are retry-safe if the concurrent step is interrupted after the expand transaction commits. Producers dual-write the normalized identity and the legacy payload keys, so current consumers remain compatible. The application owns the transaction: warehouse mutation, audit row, and all external intents commit together; consumers retain honest at-least-once delivery and must remain idempotent.
 
+## Shipping a Migration to Production
+
+The server deploy refuses schema drift by default. A release that adds Alembic revisions
+ships only when two independent conditions hold, so neither a stray build nor a stray
+deploy can move the schema on its own.
+
+1. Build the server release with `database_migration_policy: forward_upgrade`.
+   The value is written into the signed release manifest, so the deploy verifies a policy
+   that was chosen at build time and attested, not one typed at deploy time.
+   A schema-stable release keeps the default `no_change`.
+2. Run the server deploy with `database_migration_approval: APPLY_FORWARD_DATABASE_MIGRATION`.
+
+The deploy then cross-checks reality against the declaration and stops on every mismatch:
+
+| Situation | Result |
+|-----------|--------|
+| Migrations changed, manifest says `no_change` | `SERVER_RELEASE_DATABASE_MIGRATION_DIFF_FORBIDDEN` |
+| Migrations changed, manifest says `forward_upgrade`, approval missing or wrong | `SERVER_RELEASE_DATABASE_MIGRATION_APPROVAL_REQUIRED` |
+| Manifest says `forward_upgrade` but no migration actually changed | `SERVER_RELEASE_FORWARD_UPGRADE_WITHOUT_MIGRATION_DIFF` |
+| `forward_upgrade` while production already sits at the release head | `PRODUCTION_ALEMBIC_HEAD_ALREADY_AT_FORWARD_UPGRADE_RELEASE` |
+| Candidate image head differs from the manifest head | `CANDIDATE_ALEMBIC_HEAD_DIFFERS_FROM_RELEASE` |
+
+Applying the migration remains the job of `deploy/vds/deploy_from_git.sh`, which already
+quiesces the writer services, takes the cutover backup, runs `alembic upgrade head` from
+the verified image, and rolls the runtime back on any failure. Nothing in this path performs
+a downgrade: rollback restores the previous image digests and retains the schema.
+
+`destructive_migrations_allowed` and `alembic_downgrade_allowed` stay `false` under both
+policies. `forward_upgrade` widens *when* a migration may run, never *what* it may do.
+
 ## Invariant Preflight
 
 Before adding future uniqueness constraints for KIZ scans or pending-event idempotency, run:

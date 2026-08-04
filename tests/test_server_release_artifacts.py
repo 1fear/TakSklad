@@ -143,11 +143,34 @@ class ServerReleaseArtifactTests(unittest.TestCase):
                 with self.assertRaises(ServerReleaseArtifactError):
                     verify_manifest(path)
 
+    def test_verifier_accepts_forward_upgrade_migration_policy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = valid_manifest()
+            manifest["database"]["migration_policy"] = "forward_upgrade"
+            path = self.write_manifest(directory, manifest)
+            verified = verify_manifest(path)
+            self.assertEqual(verified["database"]["migration_policy"], "forward_upgrade")
+
+    def test_forward_upgrade_still_forbids_destructive_and_downgrade(self):
+        mutations = (
+            lambda value: value["database"].update(destructive_migrations_allowed=True),
+            lambda value: value["database"].update(alembic_downgrade_allowed=True),
+        )
+        for mutate in mutations:
+            with self.subTest(mutate=mutate), tempfile.TemporaryDirectory() as directory:
+                manifest = valid_manifest()
+                manifest["database"]["migration_policy"] = "forward_upgrade"
+                mutate(manifest)
+                path = self.write_manifest(directory, manifest)
+                with self.assertRaises(ServerReleaseArtifactError):
+                    verify_manifest(path)
+
     def test_verifier_rejects_desktop_or_migration_contract_drift(self):
         mutations = (
             lambda value: value["compatibility"].update(desktop_api_contract=2),
             lambda value: value["compatibility"].update(min_desktop_version="2.0.50"),
             lambda value: value["database"].update(migration_policy="expand_only"),
+            lambda value: value["database"].update(migration_policy=""),
             lambda value: value["database"].update(alembic_head="invalid revision!"),
             lambda value: value["database"].update(destructive_migrations_allowed=True),
         )

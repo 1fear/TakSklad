@@ -24,6 +24,10 @@ APPROVED_IMAGES = {
 DESKTOP_API_CONTRACT = 1
 MIN_DESKTOP_VERSION = "2.0.49"
 MIGRATION_POLICY = "no_change"
+# forward_upgrade выбирается осознанно при сборке релиза, который двигает
+# схему вперёд. Разрушающие миграции и downgrade запрещены при любой политике
+MIGRATION_POLICY_FORWARD_UPGRADE = "forward_upgrade"
+MIGRATION_POLICIES = frozenset({MIGRATION_POLICY, MIGRATION_POLICY_FORWARD_UPGRADE})
 REQUIRED_CAPABILITIES = frozenset({"returns_auth_canary_v2_exact_identifier"})
 ALEMBIC_REVISION_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
@@ -200,13 +204,13 @@ def validate_manifest_shape(manifest: dict[str, Any]) -> None:
     if not isinstance(database, dict):
         raise ServerReleaseArtifactError("server database policy is missing")
     if (
-        database.get("migration_policy") != MIGRATION_POLICY
+        database.get("migration_policy") not in MIGRATION_POLICIES
         or not ALEMBIC_REVISION_RE.fullmatch(str(database.get("alembic_head") or ""))
         or database.get("destructive_migrations_allowed") is not False
         or database.get("alembic_downgrade_allowed") is not False
     ):
         raise ServerReleaseArtifactError(
-            "server release requires no_change at a valid Alembic head"
+            "server release requires no_change or forward_upgrade at a valid Alembic head"
         )
     _validate_attestation(manifest, expected_subjects)
 
