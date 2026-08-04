@@ -36,7 +36,7 @@
       "version": "2026.6.17"
     },
     {
-      "bom-ref": "pkg:pypi/cffi@2.0.0#marker-c6b50dd04f99",
+      "bom-ref": "pkg:pypi/cffi@2.1.1#marker-c6b50dd04f99",
       "name": "cffi",
       "properties": [
         {
@@ -45,19 +45,19 @@
         },
         {
           "name": "taksklad:distribution-hash-count",
-          "value": "84"
+          "value": "100"
         },
         {
           "name": "taksklad:environment-marker",
           "value": "platform_python_implementation != 'PyPy'"
         }
       ],
-      "purl": "pkg:pypi/cffi@2.0.0",
+      "purl": "pkg:pypi/cffi@2.1.1",
       "type": "library",
-      "version": "2.0.0"
+      "version": "2.1.1"
     },
     {
-      "bom-ref": "pkg:pypi/cryptography@49.0.0",
+      "bom-ref": "pkg:pypi/cryptography@50.0.0",
       "name": "cryptography",
       "properties": [
         {
@@ -69,9 +69,9 @@
           "value": "46"
         }
       ],
-      "purl": "pkg:pypi/cryptography@49.0.0",
+      "purl": "pkg:pypi/cryptography@50.0.0",
       "type": "library",
-      "version": "49.0.0"
+      "version": "50.0.0"
     },
     {
       "bom-ref": "pkg:pypi/et-xmlfile@2.0.0",
@@ -384,8 +384,8 @@
       "dependsOn": [
         "pkg:pypi/altgraph@0.17.5",
         "pkg:pypi/certifi@2026.6.17",
-        "pkg:pypi/cffi@2.0.0#marker-c6b50dd04f99",
-        "pkg:pypi/cryptography@49.0.0",
+        "pkg:pypi/cffi@2.1.1#marker-c6b50dd04f99",
+        "pkg:pypi/cryptography@50.0.0",
         "pkg:pypi/et-xmlfile@2.0.0",
         "pkg:pypi/macholib@1.16.4#marker-834c4e291afc",
         "pkg:pypi/numpy@2.0.2",

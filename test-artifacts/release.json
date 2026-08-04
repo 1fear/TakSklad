@@ -45,7 +45,7 @@
     "artifact": "test-artifacts/provenance/TakSklad-synthetic-signed.exe",
     "artifact_sha256": "2fffcef572cd1fb27c98e48b93f2cbcaf95697758436d1026aad333bc24cbfe5",
     "artifact_source_sha": "2b73e306e77272b90584b185aacd8d804471a0b3",
-    "dependency_lock_sha256": "1acd4bad2e14a89031472f2758b9ea8d1666c52d82dbeb4d67a7ac44e5e16ed1",
+    "dependency_lock_sha256": "023a7e31aac7a3d795460a6cc3a3b3f131c1fecb3d97ab1c0286fa5aba273f14",
     "production_certificate_verified": false,
     "production_gate": "WINDOWS_CODESIGN_CERTIFICATE_NOT_AVAILABLE",
     "release_source_sha": "2b73e306e77272b90584b185aacd8d804471a0b3",
