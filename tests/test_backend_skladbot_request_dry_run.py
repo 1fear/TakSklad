@@ -1620,7 +1620,7 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
             db.commit()
 
         dates = self.client.get("/api/v1/logistics/dates")
-        report = self.client.get("/api/v1/logistics/report?shipment_date=2026-06-05")
+        report = self.client.get("/api/v1/logistics/report?shipment_date=2026-06-05&zone=city")
 
         self.assertEqual(dates.status_code, 200)
         self.assertEqual(dates.json(), [])

@@ -211,6 +211,41 @@ class TelegramRoutingContractTests(unittest.TestCase):
         )
         self.assertEqual(self.contract.route_for(kind).schedules, ("on_completion",))
 
+    def test_logistics_artifact_carries_both_zone_outputs(self):
+        from backend.app.telegram_output_contract import (
+            LOGISTICS_ZONE_CITY,
+            LOGISTICS_ZONE_REGION,
+            logistics_report_caption,
+            logistics_report_filename,
+        )
+
+        self.assertEqual(
+            logistics_report_caption("2030-01-02", LOGISTICS_ZONE_CITY),
+            "Отчет логистики город 02.01.2030",
+        )
+        self.assertEqual(
+            logistics_report_caption("2030-01-02", LOGISTICS_ZONE_REGION),
+            "Отчет логистики область 02.01.2030",
+        )
+        self.assertEqual(
+            logistics_report_filename("2030-01-02", LOGISTICS_ZONE_CITY),
+            "TakSklad_логистика_город_02.01.2030.xlsx",
+        )
+        self.assertEqual(
+            logistics_report_filename("2030-01-02", LOGISTICS_ZONE_REGION),
+            "TakSklad_логистика_область_02.01.2030.xlsx",
+        )
+        with self.assertRaises(ValueError):
+            logistics_report_filename("2030-01-02", "unknown")
+
+        artifact = runtime_output_artifacts()[
+            TelegramMessageKind.SMARTUP_LOGISTICS_REPORT.value
+        ]
+        self.assertEqual(
+            set(artifact),
+            {"city_caption", "city_filename", "region_caption", "region_filename"},
+        )
+
     def test_daily_runtime_artifact_is_one_combined_report(self):
         artifact = runtime_output_artifacts()[TelegramMessageKind.SKLADBOT_DAILY_REPORT.value]
         self.assertEqual(set(artifact), {"message", "caption", "filename"})

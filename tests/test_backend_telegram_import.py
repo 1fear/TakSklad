@@ -1830,8 +1830,12 @@ class BackendTelegramImportTests(unittest.TestCase):
 
         def fake_backend_get_bytes(path, params=None):
             self.assertEqual(path, "/api/v1/logistics/report")
-            self.assertEqual(params, {"shipment_date": "2026-05-29"})
-            return report_content, {"content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
+            self.assertEqual(params.get("shipment_date"), "2026-05-29")
+            self.assertIn(params.get("zone"), {"city", "region"})
+            return (
+                report_content + params["zone"].encode(),
+                {"content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+            )
 
         def fake_send_document(chat_id, content, filename, caption=""):
             sent_documents.append((chat_id, content, filename, caption))
@@ -1843,12 +1847,20 @@ class BackendTelegramImportTests(unittest.TestCase):
         result = worker.send_logistics_report("123", "29.05.2026")
 
         self.assertTrue(result)
-        self.assertEqual(sent_documents, [(
-            "123",
-            report_content,
-            "TakSklad_логистика_29.05.2026.xlsx",
-            "Отчет логистики 29.05.2026",
-        )])
+        self.assertEqual(sent_documents, [
+            (
+                "123",
+                report_content + b"city",
+                "TakSklad_логистика_город_29.05.2026.xlsx",
+                "Отчет логистики город 29.05.2026",
+            ),
+            (
+                "123",
+                report_content + b"region",
+                "TakSklad_логистика_область_29.05.2026.xlsx",
+                "Отчет логистики область 29.05.2026",
+            ),
+        ])
 
     def test_telegram_worker_saves_shipment_date_from_message(self):
         worker = TelegramWorker.__new__(TelegramWorker)

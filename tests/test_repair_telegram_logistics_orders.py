@@ -17,6 +17,7 @@ from backend.app.models import (
     ImportJob,
     KizCode,
     KizMovement,
+    LogisticsRegionPoint,
     Order,
     OrderItem,
     PendingEvent,
@@ -229,6 +230,15 @@ class RepairTelegramLogisticsOrdersTests(unittest.TestCase):
         self.assertEqual(item_index, EXPECTED_TARGET_ITEM_COUNT)
         self.assertEqual(scan_index, EXPECTED_SCAN_COUNT)
         self.assertEqual(tuple(len(parsed_rows[event_id]) for event_id in EVENT_IDS), source_item_counts)
+        # Синтетические точки лежат за городом, поэтому справочник области
+        # заполняется теми же клиентами: иначе заказы уходят в unassigned
+        for index in range(len(TARGET_REFS)):
+            db.add(LogisticsRegionPoint(
+                client_name=f"Synthetic Client {index:02d}",
+                normalized_client=f"syntheticclient{index:02d}",
+                latitude=float(f"41.{index + 1:02d}"),
+                longitude=float(f"69.{index + 1:02d}"),
+            ))
         db.commit()
         return {
             event_id: ParsedSource(

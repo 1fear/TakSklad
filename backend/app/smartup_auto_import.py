@@ -31,7 +31,8 @@ from .imports_service import (
 )
 from .excel_importer import reverse_geocode_yandex
 from .logistics_calendar_service import is_logistics_non_working_day, resolve_effective_delivery_date
-from .logistics_service import build_logistics_report_xlsx, list_logistics_dates
+from .logistics_service import build_logistics_reports, list_logistics_dates
+from .logistics_zone_service import ZONE_UNASSIGNED
 from .models import AuditLog, ImportJob, Order, PendingEvent, SmartupFulfillment
 from .schemas import ImportCreate
 from .redaction import redact_secrets
@@ -60,6 +61,8 @@ from .telegram_routing_contract import (
     validate_route_values,
 )
 from .telegram_output_contract import (
+    LOGISTICS_ZONE_CITY,
+    LOGISTICS_ZONE_REGION,
     logistics_report_caption,
     smartup_export_caption,
     smartup_export_filename as export_filename,
@@ -74,6 +77,8 @@ SMARTUP_CLIENT_EXPORT_EVENT_TYPE = "smartup_client_export"
 SMARTUP_AUTO_IMPORT_SOURCE = "smartup_auto"
 SMARTUP_DUPLICATE_DEAL_ALERT_KIND = "smartup_duplicate_deal_skipped"
 DUPLICATE_DEAL_ALERT_ID_LIMIT = 20
+LOGISTICS_ZONE_ALERT_KIND = "logistics_zone_unassigned_order"
+LOGISTICS_ZONE_ALERT_ORDER_LIMIT = 20
 SMARTUP_EXPORT_REQUEST_PATH = "/b/trade/txs/tdeal/order$export"
 SMARTUP_CHANGE_STATUS_PATH = "/b/trade/txs/tdeal/order$change_status"
 DEFAULT_SMARTUP_BASE_URL = "https://smartup.online"
@@ -888,6 +893,68 @@ def queue_smartup_duplicate_deal_alert(
                 f"Слот: {normalize_text(slot_label) or '-'}",
                 f"Пропущено: {len(unique_ids)} ({listed})",
             ]),
+        },
+    )
+    db.add(event)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return db.execute(
+            select(PendingEvent).where(PendingEvent.idempotency_key == key)
+        ).scalar_one()
+    db.refresh(event)
+    return event
+
+
+def queue_logistics_zone_unassigned_alert(
+    db: Session,
+    delivery_date: date,
+    orders: list,
+) -> PendingEvent | None:
+    """Queue one admin-only alert listing orders that fit neither city nor region."""
+    if not orders or delivery_date is None:
+        return None
+    key = f"telegram:notification:v1:logistics_zone_unassigned:{delivery_date.isoformat()}"
+    existing = db.execute(
+        select(PendingEvent).where(PendingEvent.idempotency_key == key)
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+    shown = orders[:LOGISTICS_ZONE_ALERT_ORDER_LIMIT]
+    hidden = len(orders) - len(shown)
+    lines = [
+        "TakSklad: заказы вне городской и областной зоны не отправлены",
+        f"Дата отгрузки: {format_display_date(delivery_date)}",
+        f"Заказов: {len(orders)}",
+        "",
+    ]
+    for order in shown:
+        raw_payload = order.raw_payload or {}
+        products = "; ".join(
+            f"{item.product} - {item.quantity_blocks or 0} блоков"
+            for item in sorted(order.items, key=lambda value: (value.product, str(value.id)))
+        )
+        lines.extend([
+            f"Клиент: {order.client}",
+            f"Адрес: {order.address}",
+            f"Координаты: {normalize_text(raw_payload.get('coordinates')) or '-'}",
+            f"Складская заявка: {normalize_text(raw_payload.get('skladbot_request_number')) or '-'}",
+            f"Товары: {products or '-'}",
+            "",
+        ])
+    if hidden > 0:
+        lines.append(f"и ещё {hidden}")
+    event = PendingEvent(
+        event_type="telegram_notification",
+        status="pending",
+        idempotency_key=key,
+        payload={
+            "kind": LOGISTICS_ZONE_ALERT_KIND,
+            "route_role": "admin",
+            "delivery_date": delivery_date.isoformat(),
+            "orders_count": len(orders),
+            "text": "\n".join(lines).strip(),
         },
     )
     db.add(event)
@@ -1940,7 +2007,7 @@ def send_final_logistics_reports(
             results.append(result)
             continue
         try:
-            content, filename = build_logistics_report_xlsx(db, delivery_date)
+            reports = build_logistics_reports(db, delivery_date)
         except Exception as exc:
             result = {
                 "status": "failed",
@@ -1963,13 +2030,20 @@ def send_final_logistics_reports(
                 telegram_sender=telegram_sender,
             )
         else:
+            sent_filenames = []
             try:
-                sender.send_document(
-                    config.logistics_chat_id,
-                    content,
-                    filename,
-                    caption=logistics_report_caption(delivery_date),
-                )
+                for zone in (LOGISTICS_ZONE_CITY, LOGISTICS_ZONE_REGION):
+                    report = reports.get(zone)
+                    if report is None:
+                        continue
+                    content, filename = report
+                    sender.send_document(
+                        config.logistics_chat_id,
+                        content,
+                        filename,
+                        caption=logistics_report_caption(delivery_date, zone),
+                    )
+                    sent_filenames.append(filename)
             except Exception as exc:
                 result = {
                     "status": "ambiguous",
@@ -1993,13 +2067,19 @@ def send_final_logistics_reports(
                     telegram_sender=telegram_sender,
                 )
             else:
+                queue_logistics_zone_unassigned_alert(
+                    db,
+                    parsed_delivery_date,
+                    reports.get(ZONE_UNASSIGNED) or [],
+                )
                 result = {
                     "status": "sent",
                     "provenance": "auto_smartup",
                     "route_role": "logistics",
                     "route_fingerprint": route_fingerprint,
                     "delivery_date": delivery_date,
-                    "filename": filename,
+                    "filenames": sent_filenames,
+                    "unassigned_orders": len(reports.get(ZONE_UNASSIGNED) or []),
                 }
                 mark_smartup_logistics_report_completed(db, event.id, result)
         results.append(result)
