@@ -79,12 +79,12 @@ test("@smoke warehouse scanner, completion and print stay inside the synthetic A
   await expect(page.getByText("Smartup ID: 261000001")).toBeVisible();
 
   const scanner = page.getByRole("textbox", { name: "КИЗ" });
-  await scanner.fill("0104006396053947217SYNTH1");
+  await scanner.fill("0104006396053947217SYNTH1XXXXXXXXXX");
   await scanner.press("Enter");
   await expect.poll(() => api.scans).toBe(1);
   await expect(page.getByText("КИЗ подтверждён и записан.")).toBeVisible();
 
-  await scanner.fill("0104006396053947217SYNTH2");
+  await scanner.fill("0104006396053947217SYNTH2XXXXXXXXXX");
   await scanner.press("Enter");
   await expect.poll(() => api.scans).toBe(2);
   await expect(page.getByRole("button", { name: "Завершить заказ" })).toBeEnabled();
