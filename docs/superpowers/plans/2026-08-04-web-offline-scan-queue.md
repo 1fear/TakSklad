@@ -72,6 +72,27 @@ Backend не меняется: `create_scan` уже идемпотентен п�
 Фаза 1 самостоятельно ценна: она не меняет поведение и её можно вести в `main`
 без риска для склада
 
+## Статус выполнения
+
+Фаза 1 выполнена 2026-08-04, Task 1-5, коммиты `979db83`, `7497145`, `23f70d5`,
+`7c26f38`, `7945899`
+
+Гейты на момент завершения: `lint` 0 warnings, `typecheck` чисто,
+`npm run test` 209 passed, `a11y` 6 passed, `build` ok,
+backend `1743 tests, OK (skipped=87, expected failures=4)`
+Операторская панель не импортирует новые модули, поведение не изменилось
+
+Два отступления от исходного плана, оба в сторону безопасности:
+
+1. **КИЗ регистрозависим** Черновик плана требовал теста на регистронезависимость
+   ключа Проверка `normalizeKizCode` (`frontend/src/features/warehouse/kizFormat.ts:42`)
+   и десктопного `normalize_kiz_code` (`src/taksklad/utils.py:92`) показала, что
+   нормализация только обрезает пробелы Приведение регистра меняло бы отправляемый
+   код, тест переписан на обратное утверждение
+2. **Классификация 4xx строже десктопной**, причина в блоке Task 3 ниже
+
+Дальше по плану гейт approval перед Task 6
+
 ## Структура файлов
 
 | Файл | Ответственность |
@@ -210,8 +231,9 @@ git commit -m "feat(web-offline): тип события очереди и дет
 **Interfaces:**
 - Consumes: `OfflineEvent`, `offlineEventKey` из Task 1
 - Produces: тип `OfflineQueueStore` с методами `enqueue`, `listPending`,
-  `listBlocked`, `remove`, `block`, `listPendingCodes`, `update`;
-  фабрики `createMemoryQueueStore()` и `createIndexedDbQueueStore(dbName?)`
+  `listBlocked`, `remove`, `block`, `listPendingCodes`, `update`, `dismissBlocked`;
+  фабрики `createMemoryQueueStore()` и `createIndexedDbQueueStore(dbName?)`;
+  класс `OfflineStorageUnavailableError` и предикат `offlineStorageSupported()`
 
 Интерфейс нужен, чтобы вся логика очереди тестировалась в vitest без IndexedDB
 и без новых зависимостей
@@ -456,15 +478,28 @@ export const NON_RETRYABLE_SCAN_CODES = [
   "shipment_manifest_mismatch",
 ] as const;
 
+/** 4xx-ответы, которые следующая попытка действительно может исправить */
+const RETRYABLE_CLIENT_STATUSES = new Set([401, 408, 429]);
+
 export type ReplayVerdict = "retry" | "blocked" | "synced";
 
 export function classifyReplayFailure(error: unknown): ReplayVerdict {
   if (!(error instanceof ApiRequestError)) return "retry";
-  if (error.status !== 409) return "retry";
-  if (error.code === DUPLICATE_SCAN_ACK_CODE) return "synced";
-  return "blocked";
+  if (error.status === 409 && error.code === DUPLICATE_SCAN_ACK_CODE) return "synced";
+  if (error.status >= 400 && error.status < 500 && !RETRYABLE_CLIENT_STATUSES.has(error.status)) return "blocked";
+  return "retry";
 }
 ```
+
+Осознанное расхождение с десктопом: десктоп считает неповторяемым только
+HTTP 409, поэтому любой другой 4xx крутится у него вечно
+Backend отдаёт `kiz_format_invalid` со статусом 422
+(`backend/app/orders_service.py:215`), и такое событие десктопная очередь
+не закроет никогда
+Браузер блокирует любой 4xx кроме трёх, которые реально меняются от повтора:
+401 (нужна новая сессия), 408 (таймаут), 429 (rate limit)
+Скан при этом не теряется, блокировка это перевод в durable-секцию,
+видимую оператору
 
 - [ ] **Step 4: Запустить тест и убедиться, что он проходит**
 
