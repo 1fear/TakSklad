@@ -4,8 +4,16 @@
  * Two sections mirror the desktop queue (`src/taksklad/storage.py`):
  * `pending` holds events waiting for the backend, `blocked` holds events the
  * backend refused for good. A blocked scan describes a block that physically
- * left the warehouse, so it must survive a reload and stay visible until the
- * operator dismisses it explicitly.
+ * left the warehouse, so it survives a reload and stays visible until the
+ * operator dismisses it.
+ *
+ * One exception, inherited from the desktop deliberately: `blocked` is capped
+ * at `BLOCKED_LIMIT` entries and the oldest is evicted past that
+ * (`BLOCKED_BACKEND_EVENTS_LIMIT` in `src/taksklad/backend_events.py`). The cap
+ * exists so a broken client cannot fill the browser storage quota and take the
+ * `pending` queue down with it. Reaching it means several hundred physically
+ * scanned blocks were refused without anyone looking, which is already an
+ * incident: the cap is a last-resort bound, not a retention policy.
  *
  * The store is an interface with two implementations on purpose: unit tests run
  * against the in-memory one without pulling an IndexedDB shim into the project,

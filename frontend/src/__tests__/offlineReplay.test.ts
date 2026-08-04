@@ -4,10 +4,11 @@ import { ApiRequestError } from "../api/core";
 import {
   DUPLICATE_SCAN_ACK_CODE,
   NON_RETRYABLE_SCAN_CODES,
+  RECOVERABLE_BROWSER_SECURITY_CODES,
   classifyReplayFailure,
 } from "../features/warehouse/offline/errorPolicy";
 import { createMemoryQueueStore } from "../features/warehouse/offline/queueStore";
-import { replayQueue } from "../features/warehouse/offline/replay";
+import { MAX_CONSECUTIVE_RETRY_FAILURES, replayQueue } from "../features/warehouse/offline/replay";
 import { scanEvent } from "./fixtures";
 
 describe("classifyReplayFailure", () => {
@@ -33,8 +34,12 @@ describe("classifyReplayFailure", () => {
     expect(classifyReplayFailure(new ApiRequestError(404, "Not Found", "Order item not found"))).toBe("blocked");
   });
 
-  it("403 блокируется: прав не прибавится от повтора", () => {
+  it("403 без кода блокируется: прав не прибавится от повтора", () => {
     expect(classifyReplayFailure(new ApiRequestError(403, "Forbidden", ""))).toBe("blocked");
+  });
+
+  it.each(RECOVERABLE_BROWSER_SECURITY_CODES)("403 %s повторяется: чинится обновлением сессии", (code) => {
+    expect(classifyReplayFailure(new ApiRequestError(403, "Forbidden", "", code))).toBe("retry");
   });
 
   it("401 повторяется: нужна новая сессия, а не потеря скана", () => {
@@ -146,17 +151,84 @@ describe("replayQueue", () => {
     expect(pending[0].lastError).toContain("Failed to fetch");
   });
 
-  it("первая же сетевая ошибка останавливает проход, чтобы не молотить оффлайн", async () => {
+  it("подряд идущие сетевые отказы останавливают проход, чтобы не молотить оффлайн", async () => {
     const store = createMemoryQueueStore();
-    await store.enqueue(scanEvent({ code: "0104006396053947217AAAAAA" }));
-    await store.enqueue(scanEvent({ code: "0104006396053947217BBBBBB" }));
+    for (let index = 0; index < 10; index += 1) {
+      await store.enqueue(scanEvent({ code: `010400639605394721${String(index).padStart(4, "0")}` }));
+    }
     let calls = 0;
     await replayQueue(store, {
       sendScan: async () => { calls += 1; throw new TypeError("Failed to fetch"); },
       sendComplete: async () => {},
     });
-    expect(calls).toBe(1);
-    expect(await store.listPending()).toHaveLength(2);
+    expect(calls).toBe(MAX_CONSECUTIVE_RETRY_FAILURES);
+    expect(await store.listPending()).toHaveLength(10);
+  });
+
+  it("постоянно падающее событие не запирает остальные навсегда", async () => {
+    const store = createMemoryQueueStore();
+    const poison = scanEvent({ code: "0104006396053947217AAAAAA" });
+    const healthy = scanEvent({ orderItemId: "item-2", code: "0104006396053947217BBBBBB" });
+    await store.enqueue(poison);
+    await store.enqueue(healthy);
+    const summary = await replayQueue(store, {
+      sendScan: async (event) => {
+        if (event.code === "0104006396053947217AAAAAA") {
+          throw new ApiRequestError(500, "Internal Server Error", "boom");
+        }
+      },
+      sendComplete: async () => {},
+    });
+    expect(summary).toEqual({ synced: 1, blocked: 0, failed: 1, remaining: 1 });
+    const pending = await store.listPending();
+    expect(pending).toHaveLength(1);
+    expect(pending[0].code).toBe("0104006396053947217AAAAAA");
+  });
+
+  it("успех между отказами сбрасывает счётчик подряд идущих отказов", async () => {
+    const store = createMemoryQueueStore();
+    await store.enqueue(scanEvent({ orderItemId: "item-1", code: "0104006396053947217AAAAAA" }));
+    await store.enqueue(scanEvent({ orderItemId: "item-2", code: "0104006396053947217BBBBBB" }));
+    await store.enqueue(scanEvent({ orderItemId: "item-3", code: "0104006396053947217CCCCCC" }));
+    await store.enqueue(scanEvent({ orderItemId: "item-4", code: "0104006396053947217DDDDDD" }));
+    const seen: string[] = [];
+    await replayQueue(store, {
+      sendScan: async (event) => {
+        seen.push(event.orderItemId);
+        if (event.orderItemId !== "item-2") throw new ApiRequestError(500, "Internal Server Error", "boom");
+      },
+      sendComplete: async () => {},
+    });
+    expect(seen).toEqual(["item-1", "item-2", "item-3", "item-4"]);
+  });
+
+  it("завершение чужого заказа уходит, даже если застрял скан другого", async () => {
+    const store = createMemoryQueueStore();
+    const log: string[] = [];
+    await store.enqueue(scanEvent({ orderId: "order-1", orderItemId: "item-1" }));
+    await store.enqueue({ ...scanEvent(), orderId: "order-2", type: "order_complete", code: "" });
+    await replayQueue(store, {
+      sendScan: async () => { log.push("scan-1"); throw new ApiRequestError(500, "Internal Server Error", "boom"); },
+      sendComplete: async (event) => { log.push(`complete-${event.orderId}`); },
+    });
+    expect(log).toEqual(["scan-1", "complete-order-2"]);
+  });
+
+  it("завершение заказа ждёт свой скан, даже когда проход продолжается", async () => {
+    const store = createMemoryQueueStore();
+    const log: string[] = [];
+    await store.enqueue(scanEvent({ orderId: "order-1", orderItemId: "item-1" }));
+    await store.enqueue({ ...scanEvent(), orderId: "order-1", type: "order_complete", code: "" });
+    await store.enqueue(scanEvent({ orderId: "order-3", orderItemId: "item-3", code: "0104006396053947217CCCCCC" }));
+    await replayQueue(store, {
+      sendScan: async (event) => {
+        log.push(`scan-${event.orderItemId}`);
+        if (event.orderItemId === "item-1") throw new ApiRequestError(500, "Internal Server Error", "boom");
+      },
+      sendComplete: async (event) => { log.push(`complete-${event.orderId}`); },
+    });
+    expect(log).toEqual(["scan-item-1", "scan-item-3"]);
+    expect((await store.listPending()).map((event) => event.type)).toEqual(["scan", "order_complete"]);
   });
 
   it("повторный проход после сетевого сбоя копит попытки, а не сбрасывает их", async () => {

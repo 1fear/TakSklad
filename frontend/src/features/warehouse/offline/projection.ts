@@ -10,12 +10,23 @@
  * for this item and is reported separately so an over-scan stays visible.
  */
 
+import { normalizeKizCode } from "../kizFormat";
+import { blockQuantityForCode } from "../scanQuantities";
 import type { OfflineEvent } from "./queueTypes";
 
 export type ItemProgressInput = {
   id: string;
   quantity_blocks: number;
   scanned_blocks: number;
+  /**
+   * Codes the backend already holds for this item.
+   *
+   * A queued event survives until the replay confirms it, and an acknowledged
+   * write can still lose its answer (tab closed, connection cut after the row
+   * was committed). Without this list the same physical scan would be counted
+   * twice: once in `scanned_blocks` and again as a pending event.
+   */
+  scan_codes?: string[];
 };
 
 export type ItemProgress = {
@@ -25,9 +36,13 @@ export type ItemProgress = {
 };
 
 export function projectItemProgress(item: ItemProgressInput, pending: OfflineEvent[]): ItemProgress {
-  const pendingBlocks = pending.filter(
-    (event) => event.type === "scan" && event.orderItemId === item.id,
-  ).length;
+  const confirmedCodes = new Set((item.scan_codes ?? []).map(normalizeKizCode).filter(Boolean));
+
+  const pendingBlocks = pending
+    .filter((event) => event.type === "scan"
+      && event.orderItemId === item.id
+      && !confirmedCodes.has(normalizeKizCode(event.code)))
+    .reduce((total, event) => total + blockQuantityForCode(event.code), 0);
 
   const planned = Number(item.quantity_blocks ?? 0) || 0;
   const confirmed = Number(item.scanned_blocks ?? 0) || 0;
