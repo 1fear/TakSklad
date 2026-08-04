@@ -190,6 +190,42 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn('"alembic_downgrade_allowed": False', workflow)
         self.assertGreaterEqual(workflow.count("fetch-depth: 0"), 2)
 
+    def test_forward_upgrade_release_needs_signed_policy_and_exact_approval(self):
+        deploy = (
+            PROJECT_ROOT / ".github" / "workflows" / "deploy-server-production.yml"
+        ).read_text(encoding="utf-8")
+        build = (
+            PROJECT_ROOT / ".github" / "workflows" / "build-server-release.yml"
+        ).read_text(encoding="utf-8")
+
+        # Политика выбирается осознанно при сборке и попадает в подписанный манифест
+        self.assertIn("database_migration_policy:", build)
+        self.assertIn('"migration_policy": os.environ["DATABASE_MIGRATION_POLICY"]', build)
+        self.assertIn("SERVER_RELEASE_MIGRATION_POLICY_INVALID", build)
+
+        # Схему двигает только forward_upgrade плюс точная фраза, оба условия обязательны
+        self.assertIn("database_migration_approval:", deploy)
+        self.assertIn("SERVER_RELEASE_DATABASE_MIGRATION_DIFF_FORBIDDEN", deploy)
+        self.assertIn("SERVER_RELEASE_DATABASE_MIGRATION_APPROVAL_REQUIRED", deploy)
+        self.assertIn(
+            'test "$DATABASE_MIGRATION_APPROVAL" = APPLY_FORWARD_DATABASE_MIGRATION',
+            deploy,
+        )
+        self.assertIn("SERVER_RELEASE_FORWARD_UPGRADE_WITHOUT_MIGRATION_DIFF", deploy)
+
+        # no_change по-прежнему требует, чтобы прод уже стоял на голове релиза
+        self.assertIn("PRODUCTION_ALEMBIC_HEAD_DIFFERS_FROM_NO_CHANGE_RELEASE", deploy)
+        self.assertIn("PRODUCTION_ALEMBIC_HEAD_ALREADY_AT_FORWARD_UPGRADE_RELEASE", deploy)
+        self.assertIn("CANDIDATE_ALEMBIC_HEAD_DIFFERS_FROM_RELEASE", deploy)
+
+        # Миграцию по-прежнему выполняет скрипт деплоя после бэкапа и остановки писателей
+        script = (PROJECT_ROOT / "deploy" / "vds" / "deploy_from_git.sh").read_text(
+            encoding="utf-8"
+        )
+        backup_index = script.index("backup_postgres.sh --no-prune")
+        upgrade_index = script.index("alembic -c alembic.ini upgrade head")
+        self.assertLess(backup_index, upgrade_index)
+
     def test_production_deploy_is_manual_and_accepts_only_verified_artifact_identity(self):
         workflow = (PROJECT_ROOT / ".github" / "workflows" / "deploy-production.yml").read_text(
             encoding="utf-8"

@@ -106,6 +106,9 @@ class OrderDisplayMixin:
         self.next_product_btn.config(state="disabled")
         self.finish_btn.config(state="disabled")
         self.undo_btn.config(state="disabled")
+        codes_btn = getattr(self, "codes_btn", None)
+        if codes_btn is not None:
+            codes_btn.config(state="disabled")
         self.last_code_label.config(text="", fg=SUCCESS)
         if hasattr(self, "set_scan_entry_enabled"):
             self.set_scan_entry_enabled(False)
@@ -229,6 +232,9 @@ class OrderDisplayMixin:
         self.next_product_btn.config(state="disabled")
         self.finish_btn.config(state="disabled")
         self.undo_btn.config(state="normal")
+        codes_btn = getattr(self, "codes_btn", None)
+        if codes_btn is not None:
+            codes_btn.config(state="normal")
         if hasattr(self, "set_scan_entry_enabled"):
             self.set_scan_entry_enabled(True)
         if hasattr(self, "update_scan_guard_status"):

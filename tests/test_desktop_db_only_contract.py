@@ -30,9 +30,9 @@ class DesktopDbOnlyContractTests(unittest.TestCase):
                 "id": "convertible",
                 "created_at": "2026-07-16T10:00:00+05:00",
                 "order": {"_backend_order_item_id": "item-1"},
-                "codes": ["0104006396053978TEST1"],
+                "codes": ["0104006396053978TEST1XXXXXXXXXXXXXX"],
             },
-            {"id": "blocked", "order": {"Клиент": "legacy"}, "codes": ["0104006396053978TEST2"]},
+            {"id": "blocked", "order": {"Клиент": "legacy"}, "codes": ["0104006396053978TEST2XXXXXXXXXXXXXX"]},
         ]
         saved = []
         queued = []

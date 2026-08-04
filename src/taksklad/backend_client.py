@@ -286,6 +286,21 @@ def lookup_kiz_availability(code, order_item_id=""):
     return backend_request("GET", f"/api/v1/kiz/availability?{query}", timeout=timeout)
 
 
+def release_kiz(code, reason, comment="", workstation_id=None, actor="desktop"):
+    """Tell the backend the block is physically on the shelf, so its KIZ can ship."""
+    return backend_request(
+        "POST",
+        "/api/v1/kiz/release",
+        {
+            "code": code,
+            "reason": reason,
+            "comment": comment,
+            "workstation_id": workstation_id,
+            "actor": actor,
+        },
+    )
+
+
 def undo_scan(order_item_id, code, workstation_id=None, actor="desktop"):
     return backend_request(
         "POST",

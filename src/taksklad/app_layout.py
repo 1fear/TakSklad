@@ -284,6 +284,12 @@ class LayoutMixin:
                                  cursor="hand2")
         self.undo_btn.pack(side="left", fill="x", expand=True, padx=(0, 10), pady=5)
 
+        self.codes_btn = AppButton(actions_frame, text="📋 КОДЫ ПОЗИЦИИ",
+                                  bg=INFO, fg="white", font=ACTION_BUTTON_FONT,
+                                  command=self.open_scan_codes_manager, relief="flat", state="disabled",
+                                  cursor="hand2")
+        self.codes_btn.pack(side="left", fill="x", expand=True, padx=(0, 10), pady=5)
+
         self.next_product_btn = AppButton(actions_frame, text="➡️ СЛЕДУЮЩАЯ ПОЗИЦИЯ",
                                          bg=WARNING, fg=FG_TEXT, font=ACTION_BUTTON_FONT,
                                          command=self.next_product, relief="flat", state="disabled",

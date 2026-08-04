@@ -4,7 +4,20 @@ import os
 import re
 from datetime import datetime
 
-from .config import EXCEL_IMPORT_EXTENSIONS, KIZ_MAX_LENGTH, KIZ_MIN_LENGTH
+from .config import (
+    EXCEL_IMPORT_EXTENSIONS,
+    KIZ_BOX_LENGTH,
+    KIZ_MAX_LENGTH,
+    KIZ_MIN_LENGTH,
+    KIZ_UNIT_LENGTH,
+)
+
+# Head of a GS1 mark: AI 01 with a 14-digit GTIN. What follows is usually AI 21
+# (serial), but a box may carry AI 10 (batch) first, so only the GTIN is required.
+KIZ_GTIN_HEAD = re.compile(r"01\d{14}")
+# A full serial head, used to spot two marks glued into one code by the scanner.
+KIZ_MARK_HEAD = re.compile(r"01\d{14}21")
+KIZ_KNOWN_LENGTHS = (KIZ_UNIT_LENGTH, KIZ_BOX_LENGTH)
 
 
 def clean_date_value(date_value):
@@ -109,7 +122,19 @@ def validate_kiz_code(raw_code, min_length=KIZ_MIN_LENGTH, max_length=KIZ_MAX_LE
         return False, "Код содержит пробелы или переносы", code
     if not re.fullmatch(r"[\x1d\x21-\x7E]+", code):
         return False, "Код содержит недопустимые символы", code
-    return True, "", code
+    if not KIZ_GTIN_HEAD.match(code):
+        return False, "Код не похож на марку: после 01 ожидается GTIN из 14 цифр", code
+    if len(code) in KIZ_KNOWN_LENGTHS:
+        return True, "", code
+    # Only codes that already failed the length check are searched for a second
+    # mark: a box tail is digits, so the head pattern can appear inside it by chance.
+    if len(KIZ_MARK_HEAD.findall(code)) > 1:
+        return False, "Считаны две марки сразу! Сканируйте по одной", code
+    return (
+        False,
+        f"Код длиной {len(code)} не похож на марку (блок {KIZ_UNIT_LENGTH}, короб {KIZ_BOX_LENGTH})",
+        code,
+    )
 
 
 def normalize_payment_type(value):

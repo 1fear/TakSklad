@@ -223,7 +223,7 @@ class BlockedBackendEventsDurabilityTests(unittest.TestCase):
         added = backend_events.record_blocked_backend_events([{
             "id": "blocked-1",
             "type": "scan",
-            "payload": {"order_item_id": "item-1", "code": "01000000000000000002"},
+            "payload": {"order_item_id": "item-1", "code": "01000000000000000002XXXXXXXXXXXXXXX"},
             "last_error_detail": {"code": "order_item_fully_scanned_new_code"},
         }])
         self.assertEqual(added, 1)
@@ -231,7 +231,7 @@ class BlockedBackendEventsDurabilityTests(unittest.TestCase):
         # Полная перезагрузка состояния: секция должна прийти из SQLite, а не из памяти.
         reloaded = backend_events.load_blocked_backend_events()
         self.assertEqual(len(reloaded), 1)
-        self.assertEqual(reloaded[0]["payload"]["code"], "01000000000000000002")
+        self.assertEqual(reloaded[0]["payload"]["code"], "01000000000000000002XXXXXXXXXXXXXXX")
         self.assertTrue(os.path.exists(storage.queue_db_path()))
 
     def test_blocked_backend_events_are_counted_in_queue_diagnostics(self):
@@ -240,7 +240,7 @@ class BlockedBackendEventsDurabilityTests(unittest.TestCase):
         backend_events.record_blocked_backend_events([{
             "id": "blocked-1",
             "type": "scan",
-            "payload": {"order_item_id": "item-1", "code": "01000000000000000002"},
+            "payload": {"order_item_id": "item-1", "code": "01000000000000000002XXXXXXXXXXXXXXX"},
         }])
         counts = storage.app_data_queue_counts(storage.load_app_data())
         self.assertEqual(counts.get("blocked_backend_events"), 1)

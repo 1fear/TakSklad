@@ -86,7 +86,7 @@ class DesktopErrorContractTests(unittest.TestCase):
             "type": "scan",
             "payload": {
                 "order_item_id": "item-1",
-                "code": "01000000000000000001",
+                "code": "01000000000000000001XXXXXXXXXXXXXXX",
                 "scanned_at": "2026-07-30T10:00:00+05:00",
             },
             "attempts": 0,
@@ -229,7 +229,7 @@ class DesktopErrorContractTests(unittest.TestCase):
 
             payload = ScanCreate(
                 order_item_id=str(item.id),
-                code="010123456789",
+                code="0101234567890000XXXXXXXXXXXXXXXXXXX",
                 workstation_id="contract-test",
                 scanned_at=scanned_at,
             )
@@ -291,7 +291,7 @@ class DesktopErrorContractTests(unittest.TestCase):
                 ),
                 (
                     unit_product_item,
-                    "0104006396053947217p-30o933ZXHZKjx",
+                    "0104006396053947217p-30o933ZXHZKjxX",
                     "scan_product_mismatch",
                     "Scan product does not match order item",
                 ),
@@ -390,7 +390,7 @@ class DesktopErrorContractTests(unittest.TestCase):
             with self.assertRaises(orders_service.ApiError) as inactive:
                 orders_service.undo_scan(
                     db,
-                    ScanUndo(order_item_id=str(inactive_item.id), code="010123456780"),
+                    ScanUndo(order_item_id=str(inactive_item.id), code="0101234567800000XXXXXXXXXXXXXXXXXXX"),
                 )
             self.assert_error_message(
                 inactive.exception,
@@ -405,7 +405,7 @@ class DesktopErrorContractTests(unittest.TestCase):
             ):
                 orders_service.create_scan(
                     db,
-                    ScanCreate(order_item_id=str(active_item.id), code="010123456789"),
+                    ScanCreate(order_item_id=str(active_item.id), code="0101234567890000XXXXXXXXXXXXXXXXXXX"),
                 )
             self.assert_error_message(
                 duplicate.exception,

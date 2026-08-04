@@ -315,8 +315,8 @@ class BackendApiPersistenceTests(unittest.TestCase):
             db.add(order)
             db.flush()
             db.add_all([
-                ScanCode(order_item_id=item.id, code="0104006396053978217RETURN001", source="desktop"),
-                ScanCode(order_item_id=item.id, code="0104006396053978217RETURN002", source="desktop"),
+                ScanCode(order_item_id=item.id, code="0104006396053978217RETURN001XXXXXXX", source="desktop"),
+                ScanCode(order_item_id=item.id, code="0104006396053978217RETURN002XXXXXXX", source="desktop"),
             ])
             db.commit()
             order_id = str(order.id)
@@ -1157,8 +1157,8 @@ class BackendApiPersistenceTests(unittest.TestCase):
         with self.SessionLocal() as db:
             item = db.get(OrderItem, uuid.UUID(item_id))
             item.scan_codes = [
-                ScanCode(order_item_id=item.id, code="010000000001"),
-                ScanCode(order_item_id=item.id, code="010000000002"),
+                ScanCode(order_item_id=item.id, code="0100000000010000XXXXXXXXXXXXXXXXXXX"),
+                ScanCode(order_item_id=item.id, code="0100000000020000XXXXXXXXXXXXXXXXXXX"),
             ]
             order = db.get(Order, uuid.UUID(order_id))
             order.status = "completed"
@@ -1673,7 +1673,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             "/api/v1/scans",
             json={
                 "order_item_id": item_id,
-                "code": "  0104006396053947217ABCDEF  ",
+                "code": "  0104006396053947217ABCDEFXXXXXXXXXX  ",
                 "workstation_id": "pc-1",
                 "scanned_by": "warehouse-pc-1",
             },
@@ -1681,13 +1681,13 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 201)
         payload = response.json()
-        self.assertEqual(payload["code"], "0104006396053947217ABCDEF")
+        self.assertEqual(payload["code"], "0104006396053947217ABCDEFXXXXXXXXXX")
         self.assertEqual(payload["scanned_blocks"], 1)
         self.assertEqual(payload["item_status"], "not_completed")
 
         same_item_duplicate = self.client.post(
             "/api/v1/scans",
-            json={"order_item_id": item_id, "code": "0104006396053947217ABCDEF", "workstation_id": "pc-2"},
+            json={"order_item_id": item_id, "code": "0104006396053947217ABCDEFXXXXXXXXXX", "workstation_id": "pc-2"},
         )
         self.assertEqual(same_item_duplicate.status_code, 201)
         self.assertEqual(same_item_duplicate.json()["order_item_id"], item_id)
@@ -1695,7 +1695,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
         other_item_duplicate = self.client.post(
             "/api/v1/scans",
-            json={"order_item_id": other_item_id, "code": "0104006396053947217ABCDEF", "workstation_id": "pc-2"},
+            json={"order_item_id": other_item_id, "code": "0104006396053947217ABCDEFXXXXXXXXXX", "workstation_id": "pc-2"},
         )
         self.assertEqual(other_item_duplicate.status_code, 409)
         detail = other_item_duplicate.json()["detail"]
@@ -1710,7 +1710,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             movements = db.execute(
                 select(KizMovement)
                 .join(KizCode, KizMovement.kiz_id == KizCode.id)
-                .where(KizCode.code == "0104006396053947217ABCDEF")
+                .where(KizCode.code == "0104006396053947217ABCDEFXXXXXXXXXX")
             ).scalars().all()
             self.assertEqual([movement.movement_type for movement in movements], ["outbound"])
             self.assertEqual(movements[0].actor, self.audit_actor_subject)
@@ -1729,14 +1729,14 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
         first = self.client.post(
             "/api/v1/scans",
-            json={"order_item_id": item_id, "code": "010123456789", "workstation_id": "pc-1"},
+            json={"order_item_id": item_id, "code": "0101234567890000XXXXXXXXXXXXXXXXXXX", "workstation_id": "pc-1"},
         )
         self.assertEqual(first.status_code, 201)
         self.assertEqual(first.json()["item_status"], "completed")
 
         duplicate = self.client.post(
             "/api/v1/scans",
-            json={"order_item_id": item_id, "code": "010123456789", "workstation_id": "pc-2"},
+            json={"order_item_id": item_id, "code": "0101234567890000XXXXXXXXXXXXXXXXXXX", "workstation_id": "pc-2"},
         )
         self.assertEqual(duplicate.status_code, 201)
         self.assertEqual(duplicate.json()["order_item_id"], item_id)
@@ -1753,13 +1753,13 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
         first = self.client.post(
             "/api/v1/scans",
-            json={"order_item_id": item_id, "code": "010123456789", "workstation_id": "pc-1"},
+            json={"order_item_id": item_id, "code": "0101234567890000XXXXXXXXXXXXXXXXXXX", "workstation_id": "pc-1"},
         )
         self.assertEqual(first.status_code, 201)
         self.assertEqual(first.json()["item_status"], "not_completed")
         second = self.client.post(
             "/api/v1/scans",
-            json={"order_item_id": item_id, "code": "010123456780", "workstation_id": "pc-1"},
+            json={"order_item_id": item_id, "code": "0101234567800000XXXXXXXXXXXXXXXXXXX", "workstation_id": "pc-1"},
         )
         self.assertEqual(second.status_code, 201)
         self.assertEqual(second.json()["scanned_blocks"], 2)
@@ -1767,7 +1767,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
         extra = self.client.post(
             "/api/v1/scans",
-            json={"order_item_id": item_id, "code": "010987654321", "workstation_id": "pc-1"},
+            json={"order_item_id": item_id, "code": "0109876543210000XXXXXXXXXXXXXXXXXXX", "workstation_id": "pc-1"},
         )
 
         self.assertEqual(extra.status_code, 409)
@@ -1781,7 +1781,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         with self.SessionLocal() as db:
             scans = db.execute(select(ScanCode)).scalars().all()
             self.assertEqual(len(scans), 2)
-            self.assertEqual({scan.code for scan in scans}, {"010123456789", "010123456780"})
+            self.assertEqual({scan.code for scan in scans}, {"0101234567890000XXXXXXXXXXXXXXXXXXX", "0101234567800000XXXXXXXXXXXXXXXXXXX"})
             movements = db.execute(select(KizMovement)).scalars().all()
             self.assertEqual(len(movements), 2)
             self.assertEqual({movement.scan_code_id for movement in movements}, {scan.id for scan in scans})
@@ -1826,7 +1826,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             "/api/v1/scans",
             json={
                 "order_item_id": item_id,
-                "code": "010400639605407410BATCH21BOX",
+                "code": "010400639605407410BATCH21BOXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
                 "workstation_id": "pc-1",
             },
         )
@@ -1958,7 +1958,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             "/api/v1/scans",
             json={
                 "order_item_id": item_id,
-                "code": "0104006396053947217p-30o933ZXHZKjx",
+                "code": "0104006396053947217p-30o933ZXHZKjxX",
             },
         )
 
@@ -1983,7 +1983,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         )
         unit = self.client.post(
             "/api/v1/scans",
-            json={"order_item_id": item_id, "code": "010400639605400521UNIT"},
+            json={"order_item_id": item_id, "code": "010400639605400521UNITXXXXXXXXXXXXX"},
         )
         self.assertEqual(aggregate.status_code, 201)
         self.assertEqual(unit.status_code, 201)
@@ -2005,14 +2005,14 @@ class BackendApiPersistenceTests(unittest.TestCase):
         with self.SessionLocal() as db:
             item = db.get(OrderItem, uuid.UUID(item_id))
             self.assertEqual(item.scanned_blocks, 1)
-            self.assertEqual([scan.code for scan in item.scan_codes], ["010400639605400521UNIT"])
+            self.assertEqual([scan.code for scan in item.scan_codes], ["010400639605400521UNITXXXXXXXXXXXXX"])
 
     def legacy_scan_create_exports_scan_state_to_google_sheets_best_effort(self):
         _, item_id = self.seed_order()
 
         response = self.client.post(
             "/api/v1/scans",
-            json={"order_item_id": item_id, "code": "010000000001"},
+            json={"order_item_id": item_id, "code": "0100000000010000XXXXXXXXXXXXXXXXXXX"},
         )
 
         self.assertEqual(response.status_code, 201)
@@ -2029,14 +2029,14 @@ class BackendApiPersistenceTests(unittest.TestCase):
         _order_id, item_id = self.seed_order(quantity_blocks=1)
         create_response = self.client.post(
             "/api/v1/scans",
-            json={"order_item_id": item_id, "code": "010000000001", "workstation_id": "pc-1"},
+            json={"order_item_id": item_id, "code": "0100000000010000XXXXXXXXXXXXXXXXXXX", "workstation_id": "pc-1"},
         )
         self.assertEqual(create_response.status_code, 201)
         self.assertEqual(create_response.json()["item_status"], "completed")
 
         undo_response = self.client.post(
             "/api/v1/scans/undo",
-            json={"order_item_id": item_id, "code": "010000000001", "workstation_id": "pc-1", "actor": "desktop"},
+            json={"order_item_id": item_id, "code": "0100000000010000XXXXXXXXXXXXXXXXXXX", "workstation_id": "pc-1", "actor": "desktop"},
         )
 
         self.assertEqual(undo_response.status_code, 200)
@@ -2054,14 +2054,81 @@ class BackendApiPersistenceTests(unittest.TestCase):
             ).scalars().all()
             self.assertEqual([event.payload["action"] for event in events], ["google_sheets_scan_export"])
 
+    def test_kiz_release_frees_a_block_stuck_in_a_completed_order(self):
+        """The picker holds the block, the donor is closed, undo alone cannot help."""
+        code = "0100000004440000XXXXXXXXXXXXXXXXXXX"
+        donor_order_id, donor_item_id = self.seed_order(quantity_blocks=1)
+        self.assertEqual(
+            self.client.post("/api/v1/scans", json={"order_item_id": donor_item_id, "code": code}).status_code,
+            201,
+        )
+        self.assertEqual(self.client.post(f"/api/v1/orders/{donor_order_id}/complete").status_code, 200)
+
+        _target_order_id, target_item_id = self.seed_order(quantity_blocks=1)
+        blocked = self.client.post("/api/v1/scans", json={"order_item_id": target_item_id, "code": code})
+        self.assertEqual(blocked.status_code, 409)
+
+        released = self.client.post(
+            "/api/v1/kiz/release",
+            json={"code": code, "reason": "returned_to_shelf", "workstation_id": "pc-1"},
+        )
+
+        self.assertEqual(released.status_code, 200)
+        payload = released.json()
+        self.assertTrue(payload["released"])
+        self.assertEqual(payload["outcome"], "released_from_donor")
+        self.assertEqual(payload["donor_order_item_id"], donor_item_id)
+
+        # The block can ship now, and the donor keeps its closed status with a gap.
+        self.assertEqual(
+            self.client.post("/api/v1/scans", json={"order_item_id": target_item_id, "code": code}).status_code,
+            201,
+        )
+        with self.SessionLocal() as db:
+            donor = db.execute(select(Order).where(Order.id == uuid.UUID(donor_order_id))).scalar_one()
+            donor_item = db.execute(select(OrderItem).where(OrderItem.id == uuid.UUID(donor_item_id))).scalar_one()
+            self.assertEqual(donor.status, "completed")
+            self.assertEqual(donor_item.scanned_blocks, 0)
+            audit = db.execute(select(AuditLog).where(AuditLog.action == "kiz_released")).scalars().all()
+            self.assertEqual(len(audit), 1)
+            self.assertEqual(audit[0].payload["reason"], "returned_to_shelf")
+            self.assertEqual(audit[0].payload["donor_order_item_id"], donor_item_id)
+
+    def test_kiz_release_refuses_unknown_reason_and_reports_available_code(self):
+        code = "0100000005550000XXXXXXXXXXXXXXXXXXX"
+        _order_id, item_id = self.seed_order(quantity_blocks=1)
+        self.client.post("/api/v1/scans", json={"order_item_id": item_id, "code": code})
+
+        unknown_reason = self.client.post("/api/v1/kiz/release", json={"code": code, "reason": "just_because"})
+        self.assertEqual(unknown_reason.status_code, 422)
+        self.assertEqual(unknown_reason.json()["detail"]["code"], "kiz_release_reason_unknown")
+
+        malformed = self.client.post(
+            "/api/v1/kiz/release",
+            json={"code": "0104006396053947217ABCDEF", "reason": "returned_to_shelf"},
+        )
+        self.assertEqual(malformed.status_code, 422)
+        self.assertEqual(malformed.json()["detail"]["code"], "kiz_format_invalid")
+
+        self.assertEqual(
+            self.client.post(
+                "/api/v1/kiz/release", json={"code": code, "reason": "picked_by_mistake"}
+            ).json()["released"],
+            True,
+        )
+        second = self.client.post("/api/v1/kiz/release", json={"code": code, "reason": "picked_by_mistake"})
+        self.assertEqual(second.status_code, 200)
+        self.assertFalse(second.json()["released"])
+        self.assertEqual(second.json()["outcome"], "already_available")
+
     def test_scan_undo_rejects_completed_order(self):
         order_id, item_id = self.seed_order(quantity_blocks=1)
-        self.client.post("/api/v1/scans", json={"order_item_id": item_id, "code": "010000000001"})
+        self.client.post("/api/v1/scans", json={"order_item_id": item_id, "code": "0100000000010000XXXXXXXXXXXXXXXXXXX"})
         self.client.post(f"/api/v1/orders/{order_id}/complete")
 
         response = self.client.post(
             "/api/v1/scans/undo",
-            json={"order_item_id": item_id, "code": "010000000001"},
+            json={"order_item_id": item_id, "code": "0100000000010000XXXXXXXXXXXXXXXXXXX"},
         )
 
         self.assertEqual(response.status_code, 409)
@@ -2071,7 +2138,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(
             self.client.post(
                 "/api/v1/scans",
-                json={"order_item_id": item_id, "code": "010000000777", "workstation_id": "pc-1"},
+                json={"order_item_id": item_id, "code": "0100000007770000XXXXXXXXXXXXXXXXXXX", "workstation_id": "pc-1"},
             ).status_code,
             201,
         )
@@ -2080,7 +2147,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             "/api/v1/scans/undo",
             json={
                 "order_item_id": item_id,
-                "code": "010000000777",
+                "code": "0100000007770000XXXXXXXXXXXXXXXXXXX",
                 "workstation_id": "pc-1",
                 "actor": "spoofed-desktop-label",
             },
@@ -2091,7 +2158,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             movements = db.execute(
                 select(KizMovement)
                 .join(KizCode, KizMovement.kiz_id == KizCode.id)
-                .where(KizCode.code == "010000000777")
+                .where(KizCode.code == "0100000007770000XXXXXXXXXXXXXXXXXXX")
                 .order_by(KizMovement.occurred_at, KizMovement.id)
             ).scalars().all()
             self.assertEqual([movement.movement_type for movement in movements], ["outbound", "undo"])
@@ -2106,7 +2173,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
         response = self.client.post(
             "/api/v1/scans",
-            json={"order_item_id": item_id, "code": "010000000901"},
+            json={"order_item_id": item_id, "code": "0100000009010000XXXXXXXXXXXXXXXXXXX"},
         )
 
         self.assertEqual(response.status_code, 201)
@@ -2178,7 +2245,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(too_early.status_code, 409)
         self.assertEqual(too_early.json()["detail"]["message"], "Order has incomplete required items")
 
-        for code in ["010000000001", "010000000002"]:
+        for code in ["0100000000010000XXXXXXXXXXXXXXXXXXX", "0100000000020000XXXXXXXXXXXXXXXXXXX"]:
             scan = self.client.post("/api/v1/scans", json={"order_item_id": item_id, "code": code})
             self.assertEqual(scan.status_code, 201)
 
@@ -2300,7 +2367,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             db.flush()
             db.add(ScanCode(
                 order_item_id=old_item.id,
-                code="0104006396053978217OLDLOAD001",
+                code="0104006396053978217OLDLOAD001XXXXXX",
                 scanned_at=loaded_at,
                 raw_payload={"scanned_at": loaded_at.isoformat()},
             ))
@@ -2324,7 +2391,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
     def legacy_complete_order_exports_archive_to_google_sheets_best_effort(self):
         order_id, item_id = self.seed_order()
-        for code in ["010000000001", "010000000002"]:
+        for code in ["0100000000010000XXXXXXXXXXXXXXXXXXX", "0100000000020000XXXXXXXXXXXXXXXXXXX"]:
             scan = self.client.post("/api/v1/scans", json={"order_item_id": item_id, "code": code})
             self.assertEqual(scan.status_code, 201)
 
@@ -2416,7 +2483,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
     def test_return_releases_kiz_for_new_outbound_scan_with_history(self):
         first_order_id, first_item_id = self.seed_order(quantity_blocks=1)
-        code = "01040000000000000001"
+        code = "01040000000000000001XXXXXXXXXXXXXXX"
 
         first_scan = self.client.post(
             "/api/v1/scans",
@@ -2477,7 +2544,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
     def test_late_scanner_timestamp_after_return_does_not_release_kiz_twice(self):
         first_order_id, first_item_id = self.seed_order(quantity_blocks=1)
-        code = "01040000000000000041"
+        code = "01040000000000000041XXXXXXXXXXXXXXX"
 
         self.assertEqual(self.client.post(
             "/api/v1/scans",
@@ -2532,7 +2599,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
     def test_kiz_availability_reports_returned_code_as_reusable(self):
         first_order_id, first_item_id = self.seed_order(quantity_blocks=1)
         _second_order_id, second_item_id = self.seed_order(quantity_blocks=1)
-        code = "01040000000000000021"
+        code = "01040000000000000021XXXXXXXXXXXXXXX"
 
         first_scan = self.client.post(
             "/api/v1/scans",
@@ -2571,7 +2638,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
     def test_scan_flushes_scan_code_before_kiz_movement(self):
         _order_id, item_id = self.seed_order(quantity_blocks=1)
-        code = "01040000000000000003"
+        code = "01040000000000000003XXXXXXXXXXXXXXX"
 
         from backend.app import orders_service
 
@@ -2603,7 +2670,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
     def test_failed_return_does_not_release_kiz_for_new_order(self):
         first_order_id, first_item_id = self.seed_order(quantity_blocks=1)
-        code = "01040000000000000002"
+        code = "01040000000000000002XXXXXXXXXXXXXXX"
         self.assertEqual(
             self.client.post("/api/v1/scans", json={"order_item_id": first_item_id, "code": code}).status_code,
             201,
@@ -3602,10 +3669,10 @@ class BackendApiPersistenceTests(unittest.TestCase):
             item_id = item.id
             scan = ScanCode(
                 order_item_id=item.id,
-                code="0104006396053978217GPSBACKFILL",
+                code="0104006396053978217GPSBACKFILLXXXXX",
                 source="desktop",
             )
-            kiz = KizCode(code="0104006396053978217GPSBACKFILL")
+            kiz = KizCode(code="0104006396053978217GPSBACKFILLXXXXX")
             db.add_all([scan, kiz])
             db.flush()
             movement = KizMovement(
@@ -3968,9 +4035,9 @@ class BackendApiPersistenceTests(unittest.TestCase):
         item_ids = {item["product"]: item["id"] for item in active[0]["items"]}
 
         scans = [
-            ("Report Product One", "010000000101"),
-            ("Report Product One", "010000000102"),
-            ("Report Product Two", "010000000201"),
+            ("Report Product One", "0100000001010000XXXXXXXXXXXXXXXXXXX"),
+            ("Report Product One", "0100000001020000XXXXXXXXXXXXXXXXXXX"),
+            ("Report Product Two", "0100000002010000XXXXXXXXXXXXXXXXXXX"),
         ]
         for product, code in scans:
             response = self.client.post(
@@ -4033,7 +4100,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             "/api/v1/scans",
             json={
                 "order_item_id": item_id,
-                "code": "0104006396053978217TIMEZONE001",
+                "code": "0104006396053978217TIMEZONE001XXXXX",
                 "scanned_at": "2026-05-31T20:30:00+00:00",
             },
         )
@@ -4550,7 +4617,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         active = self.client.get("/api/v1/orders/active").json()
         kiz_order = next(order for order in active if order["client"] == "KIZ Client")
         item_id = kiz_order["items"][0]["id"]
-        for code in ("0104006396053978217SOURCEA001", "0104006396053978217SOURCEA002"):
+        for code in ("0104006396053978217SOURCEA001XXXXXX", "0104006396053978217SOURCEA002XXXXXX"):
             response = self.client.post("/api/v1/scans", json={"order_item_id": item_id, "code": code})
             self.assertEqual(response.status_code, 201)
 
@@ -4585,9 +4652,9 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(sheet["C2"].value, "KIZ Client")
         self.assertEqual(sheet["G2"].value, "Chapman Brown OP 20")
         self.assertEqual(sheet["H2"].value, 1)
-        self.assertEqual(sheet["I2"].value, "0104006396053978217SOURCEA001")
+        self.assertEqual(sheet["I2"].value, "0104006396053978217SOURCEA001XXXXXX")
         self.assertEqual(sheet["H3"].value, 1)
-        self.assertEqual(sheet["I3"].value, "0104006396053978217SOURCEA002")
+        self.assertEqual(sheet["I3"].value, "0104006396053978217SOURCEA002XXXXXX")
         self.assertEqual(sheet["K2"].value, "source-a.xlsx")
         workbook.close()
 
@@ -4634,7 +4701,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         done_order = next(order for order in active if order["client"] == "Done Client")
         response = self.client.post(
             "/api/v1/scans",
-            json={"order_item_id": done_order["items"][0]["id"], "code": "0104006396053978217SAMENAME001"},
+            json={"order_item_id": done_order["items"][0]["id"], "code": "0104006396053978217SAMENAME001XXXXX"},
         )
         self.assertEqual(response.status_code, 201)
 
@@ -4716,8 +4783,8 @@ class BackendApiPersistenceTests(unittest.TestCase):
 
         active = self.client.get("/api/v1/orders/active").json()
         codes_by_client = {
-            "Smartup Legacy 1": "0104006396053978217LEGACY001",
-            "Smartup Legacy 2": "0104006396104441217LEGACY002",
+            "Smartup Legacy 1": "0104006396053978217LEGACY001XXXXXXX",
+            "Smartup Legacy 2": "0104006396104441217LEGACY002XXXXXXX",
         }
         for client, code in codes_by_client.items():
             order = next(order for order in active if order["client"] == client)
@@ -4927,7 +4994,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         dumped = str(payload)
         self.assertIn("Bearer ***", dumped)
         self.assertNotIn("secret-token", dumped)
-        self.assertNotIn("0104006396053978217ABCDE12345678901234567890", dumped)
+        self.assertNotIn("0104006396053978217ABCDE12345678901", dumped)
 
     def legacy_admin_operations_summarizes_google_attention_without_raw_payload_or_telegram_spam(self):
         with self.SessionLocal() as db:
@@ -5008,7 +5075,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertNotIn("987654321", dumped)
         self.assertNotIn("secret-client.xlsx", dumped)
         self.assertNotIn("broken.xlsx", dumped)
-        self.assertNotIn("0104006396053978217SECRETKIZVALUE", dumped)
+        self.assertNotIn("0104006396053978217SECRETKIZVALUEXX", dumped)
         with self.SessionLocal() as db:
             notifications_after = len(db.execute(select(PendingEvent).where(PendingEvent.event_type == "telegram_notification")).scalars().all())
         self.assertEqual(notifications_after, notifications_before)
@@ -5146,7 +5213,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertIn("Bearer ***", dumped_list)
         self.assertNotIn("secret-token", dumped_list)
         self.assertNotIn("telegram-secret", dumped_list)
-        self.assertNotIn("0104006396053978217ABCDE12345678901234567890", dumped_list)
+        self.assertNotIn("0104006396053978217ABCDE12345678901", dumped_list)
 
         detail_response = self.client.get(f"/api/v1/admin/events/{retryable_id}")
         self.assertEqual(detail_response.status_code, 200)
@@ -5287,7 +5354,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             )
             scan_code = ScanCode(
                 order_item_id=uuid.UUID(item_id),
-                code="0104006396053978217SECRETKIZVALUE",
+                code="0104006396053978217SECRETKIZVALUEXX",
                 raw_payload={},
             )
             db.add_all([import_job, pending_event, scan_code])
@@ -5314,7 +5381,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
                 "external_ref": "WH-R-INCIDENT",
                 "raw_payload": {
                     "authorization": "super-secret",
-                    "nested": ["0104006396053978217SECRETKIZVALUE"],
+                    "nested": ["0104006396053978217SECRETKIZVALUEXX"],
                 },
             },
         )
@@ -5338,7 +5405,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertIn("'authorization': '***'", dumped)
         self.assertNotIn("secret-token", dumped)
         self.assertNotIn("super-secret", dumped)
-        self.assertNotIn("0104006396053978217SECRETKIZVALUE", dumped)
+        self.assertNotIn("0104006396053978217SECRETKIZVALUEXX", dumped)
 
         list_response = self.client.get(
             "/api/v1/admin/incidents",
@@ -5497,7 +5564,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertIn("authorization ***", dumped)
         self.assertNotIn("secret-token", dumped)
         self.assertNotIn("super-secret", dumped)
-        self.assertNotIn("0104006396053978217ABCDE", dumped)
+        self.assertNotIn("0104006396053978217ABCDEXXXXXXXXXXX", dumped)
         self.assertNotIn("telegram_chat_state:123456789", dumped)
         self.assertNotIn("'chat_id': '123456789'", dumped)
         self.assertFalse(payload["ready"])
@@ -5549,7 +5616,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         dumped = str(payload)
         self.assertIn("token=***", dumped)
         self.assertNotIn("secret", dumped)
-        self.assertNotIn("0104006396053978217SECRETKIZVALUE", dumped)
+        self.assertNotIn("0104006396053978217SECRETKIZVALUEXX", dumped)
 
     def test_readiness_accepts_pending_event_indexes_schema_head_revision(self):
         with self.SessionLocal() as db:

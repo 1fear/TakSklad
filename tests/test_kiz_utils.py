@@ -5,7 +5,8 @@ from taksklad.utils import split_codes, validate_kiz_code
 
 class KizUtilsTests(unittest.TestCase):
     def test_validate_accepts_gs1_group_separator(self):
-        code = "01012345678901234567\x1dABC123"
+        # Real block shape: 35 characters, AI 01 plus a 14-digit GTIN.
+        code = "0104006396053947217ABC\x1dDEF93GHIJKLM"
 
         is_valid, message, normalized = validate_kiz_code(code)
 
@@ -19,8 +20,8 @@ class KizUtilsTests(unittest.TestCase):
         self.assertIn("переносы", message)
 
     def test_split_codes_does_not_split_on_comma_inside_kiz(self):
-        first = "01012345678901234567ABC,DEF"
-        second = "01012345678901234567XYZ"
+        first = "01012345678901234567ABC,DEFXXXXXXXX"
+        second = "01012345678901234567XYZXXXXXXXXXXXX"
 
         self.assertEqual(split_codes(f"{first}\n{second}"), [first, second])
 

@@ -32,14 +32,14 @@ def test_surrounding_whitespace_does_not_bypass_block():
 
 
 def test_regular_code_stays_allowed():
-    assert desktop_blocked_reason("0104006396053947217other-code-tail") == ""
-    assert backend_blocked_reason("0104006396053947217other-code-tail") == ""
+    assert desktop_blocked_reason("0104006396053947217other-code-tailX") == ""
+    assert backend_blocked_reason("0104006396053947217other-code-tailX") == ""
     assert desktop_blocked_reason("") == ""
     assert backend_blocked_reason(None) == ""
 
 
 def test_backend_env_can_block_additional_codes_without_release():
     environ = {"TAKSKLAD_BLOCKED_KIZ_CODES": "0100000000000000000extra, 0100000000000000000second"}
-    assert backend_is_blocked("0100000000000000000extra", environ=environ)
-    assert backend_is_blocked("0100000000000000000second", environ=environ)
-    assert not backend_is_blocked("0100000000000000000third", environ=environ)
+    assert backend_is_blocked("0100000000000000000extraXXXXXXXXXXX", environ=environ)
+    assert backend_is_blocked("0100000000000000000secondXXXXXXXXXX", environ=environ)
+    assert not backend_is_blocked("0100000000000000000thirdXXXXXXXXXXX", environ=environ)

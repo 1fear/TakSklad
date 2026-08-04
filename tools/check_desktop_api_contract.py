@@ -44,6 +44,7 @@ FROZEN_ROUTES = (
     FrozenRoute("GET", "/api/v1/returns/lookup", "protected", "returns:read", "backend_client.py"),
     FrozenRoute("POST", "/api/v1/imports", "protected", "imports:create", "backend_client.py"),
     FrozenRoute("POST", "/api/v1/imports/preview", "protected", "imports:preview", "backend_client.py"),
+    FrozenRoute("POST", "/api/v1/kiz/release", "protected", "kiz:release", "backend_client.py"),
     FrozenRoute("POST", "/api/v1/orders/{order_id}/complete", "protected", "orders:complete", "backend_client.py"),
     FrozenRoute("POST", "/api/v1/returns/{order_id}", "protected", "returns:write", "backend_client.py"),
     FrozenRoute("POST", "/api/v1/scans", "protected", "scans:create", "backend_client.py"),

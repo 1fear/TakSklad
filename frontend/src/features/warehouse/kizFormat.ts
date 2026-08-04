@@ -11,6 +11,8 @@
 
 export const KIZ_MIN_LENGTH = 20;
 export const KIZ_MAX_LENGTH = 120;
+export const KIZ_UNIT_LENGTH = 35;
+export const KIZ_BOX_LENGTH = 67;
 
 export type KizFormatRule =
   | "empty"
@@ -19,7 +21,10 @@ export type KizFormatRule =
   | "too_long"
   | "cyrillic"
   | "whitespace"
-  | "charset";
+  | "charset"
+  | "head"
+  | "double_mark"
+  | "length";
 
 const CYRILLIC = /[а-яА-ЯёЁ]/;
 const WHITESPACE = /[ \t\r\n\v\f]/;
@@ -27,6 +32,12 @@ const WHITESPACE = /[ \t\r\n\v\f]/;
 // The control character is deliberate and must match the desktop rule exactly.
 // eslint-disable-next-line no-control-regex
 const ALLOWED_CHARSET = /^[\x1d\x21-\x7E]+$/;
+// AI 01 with a 14-digit GTIN. What follows is usually AI 21 (serial), but a box
+// may carry AI 10 (batch) first, so only the GTIN is required here.
+const GTIN_HEAD = /^01\d{14}/;
+// A full serial head, used to spot two marks glued into one code by the scanner.
+const MARK_HEAD_GLOBAL = /01\d{14}21/g;
+const KNOWN_LENGTHS: number[] = [KIZ_UNIT_LENGTH, KIZ_BOX_LENGTH];
 
 const RULE_MESSAGES: Record<KizFormatRule, string> = {
   empty: "Код пустой",
@@ -36,6 +47,9 @@ const RULE_MESSAGES: Record<KizFormatRule, string> = {
   cyrillic: "Код содержит русские буквы! Используйте только латиницу",
   whitespace: "Код содержит пробелы или переносы",
   charset: "Код содержит недопустимые символы",
+  head: "Код не похож на марку: после 01 ожидается GTIN из 14 цифр",
+  double_mark: "Считаны две марки сразу! Сканируйте по одной",
+  length: `Код не похож на марку (блок ${KIZ_UNIT_LENGTH}, короб ${KIZ_BOX_LENGTH})`,
 };
 
 /** Desktop-identical normalization: trim only spaces, tabs and line breaks. */
@@ -53,10 +67,18 @@ export function kizFormatViolation(raw: string): KizFormatRule | "" {
   if (CYRILLIC.test(code)) return "cyrillic";
   if (WHITESPACE.test(code)) return "whitespace";
   if (!ALLOWED_CHARSET.test(code)) return "charset";
-  return "";
+  if (!GTIN_HEAD.test(code)) return "head";
+  if (KNOWN_LENGTHS.includes(code.length)) return "";
+  // Only codes that already failed the length check are searched for a second
+  // mark: a box tail is digits, so the head pattern can appear inside it by chance.
+  if ((code.match(MARK_HEAD_GLOBAL) ?? []).length > 1) return "double_mark";
+  return "length";
 }
 
-export function kizFormatMessage(rule: KizFormatRule): string {
+export function kizFormatMessage(rule: KizFormatRule, length = 0): string {
+  if (rule === "length" && length > 0) {
+    return `Код длиной ${length} не похож на марку (блок ${KIZ_UNIT_LENGTH}, короб ${KIZ_BOX_LENGTH})`;
+  }
   return RULE_MESSAGES[rule];
 }
 
