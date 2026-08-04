@@ -5,7 +5,12 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.app.logistics_zone_service import (
+    RegionIndex,
+    RegionPoint,
     haversine_meters,
+    load_region_index,
+    name_tokens,
+    normalize_client_key,
     parse_coordinates,
     point_in_city,
 )
@@ -106,6 +111,95 @@ class CityBoundaryTests(unittest.TestCase):
     def test_buffer_rejects_point_far_outside_polygon(self):
         # около 8 км западнее западной вершины, за пределами буфера
         self.assertFalse(point_in_city(41.2800, 69.0450))
+
+
+def region_index_fixture():
+    return RegionIndex([
+        RegionPoint.build("Тест Клиент Один", 41.018778, 70.083423),
+        RegionPoint.build('"ТЕСТ БЕТА САВДО" MCHJ', 40.847219, 69.620199),
+    ])
+
+
+class NameNormalizationTests(unittest.TestCase):
+    def test_key_ignores_case_quotes_and_spaces(self):
+        self.assertEqual(normalize_client_key('  "Тест Клиент Один"  '), "тестклиентодин")
+        self.assertEqual(normalize_client_key("ТЕСТ КЛИЕНТ ОДИН"), "тестклиентодин")
+
+    def test_key_maps_yo_to_ye(self):
+        self.assertEqual(normalize_client_key("Тёст"), "тест")
+
+    def test_tokens_drop_legal_forms_and_single_letters(self):
+        self.assertEqual(name_tokens('"ТЕСТ БЕТА САВДО" MCHJ'), frozenset({"тест", "бета", "савдо"}))
+        self.assertEqual(name_tokens('ООО "Тест Гамма"'), frozenset({"тест", "гамма"}))
+
+
+class RegionIndexTests(unittest.TestCase):
+    def setUp(self):
+        self.index = region_index_fixture()
+
+    def test_exact_name_matches_regardless_of_coordinates(self):
+        found = self.index.find("тест клиент один", None, None)
+        self.assertIsNotNone(found)
+        self.assertEqual(self.index.match_level("тест клиент один", None, None), "name")
+
+    def test_coordinates_match_when_name_differs(self):
+        # то же место, имя написано иначе
+        self.assertEqual(
+            self.index.match_level("Совсем Другое Написание", 41.018800, 70.083400),
+            "coordinates",
+        )
+
+    def test_coordinates_do_not_match_beyond_threshold(self):
+        # около 900 м от точки справочника
+        self.assertIsNone(self.index.match_level("Совсем Другое Написание", 41.026800, 70.083423))
+
+    def test_fuzzy_name_matches_on_shared_tokens(self):
+        self.assertEqual(
+            self.index.match_level('"ТЕСТ БЕТА САВДО" YTT (филиал)', None, None),
+            "fuzzy",
+        )
+
+    def test_unrelated_name_without_coordinates_is_not_found(self):
+        self.assertIsNone(self.index.find("Незнакомая Точка Дельта", None, None))
+
+    def test_unrelated_name_with_far_coordinates_is_not_found(self):
+        self.assertIsNone(self.index.find("Незнакомая Точка Дельта", 41.3200, 69.2400))
+
+
+class LoadRegionIndexTests(unittest.TestCase):
+    def setUp(self):
+        self.engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(self.engine)
+        self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
+
+    def tearDown(self):
+        self.engine.dispose()
+
+    def test_loads_only_active_points(self):
+        db = self.SessionLocal()
+        db.add(LogisticsRegionPoint(
+            client_name="Тест Клиент Один",
+            normalized_client="тестклиентодин",
+            latitude=41.018778,
+            longitude=70.083423,
+            is_active=True,
+        ))
+        db.add(LogisticsRegionPoint(
+            client_name="Тест Клиент Два",
+            normalized_client="тестклиентдва",
+            latitude=40.847219,
+            longitude=69.620199,
+            is_active=False,
+        ))
+        db.commit()
+        index = load_region_index(db)
+        self.assertIsNotNone(index.find("Тест Клиент Один", None, None))
+        self.assertIsNone(index.find("Тест Клиент Два", None, None))
+        db.close()
 
 
 if __name__ == "__main__":
