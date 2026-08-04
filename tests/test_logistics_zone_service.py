@@ -5,8 +5,12 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.app.logistics_zone_service import (
+    ZONE_CITY,
+    ZONE_REGION,
+    ZONE_UNASSIGNED,
     RegionIndex,
     RegionPoint,
+    classify_order,
     haversine_meters,
     load_region_index,
     name_tokens,
@@ -200,6 +204,55 @@ class LoadRegionIndexTests(unittest.TestCase):
         self.assertIsNotNone(index.find("Тест Клиент Один", None, None))
         self.assertIsNone(index.find("Тест Клиент Два", None, None))
         db.close()
+
+
+class ClassifyOrderTests(unittest.TestCase):
+    def setUp(self):
+        self.index = region_index_fixture()
+
+    def test_rule_1_known_client_goes_to_region(self):
+        self.assertEqual(
+            classify_order("Тест Клиент Один", "41.018778,70.083423", self.index),
+            ZONE_REGION,
+        )
+
+    def test_rule_2_unknown_client_inside_city_goes_to_city(self):
+        self.assertEqual(
+            classify_order("Незнакомая Точка Дельта", "41.3200,69.2400", self.index),
+            ZONE_CITY,
+        )
+
+    def test_rule_3_unknown_client_outside_city_is_unassigned(self):
+        self.assertEqual(
+            classify_order("Незнакомая Точка Дельта", "41.4700,69.5800", self.index),
+            ZONE_UNASSIGNED,
+        )
+
+    def test_rule_4_unknown_client_without_coordinates_goes_to_city(self):
+        self.assertEqual(
+            classify_order("Незнакомая Точка Дельта", "", self.index),
+            ZONE_CITY,
+        )
+
+    def test_rule_5_known_client_without_coordinates_goes_to_region(self):
+        self.assertEqual(
+            classify_order("Тест Клиент Один", "", self.index),
+            ZONE_REGION,
+        )
+
+    def test_known_client_wins_over_city_coordinates(self):
+        # клиент в справочнике области, но точка физически в черте города
+        index = RegionIndex([RegionPoint.build("Тест Городская Область", 41.3200, 69.2400)])
+        self.assertEqual(
+            classify_order("Тест Городская Область", "41.3200,69.2400", index),
+            ZONE_REGION,
+        )
+
+    def test_broken_coordinates_are_treated_as_missing(self):
+        self.assertEqual(
+            classify_order("Незнакомая Точка Дельта", "не координаты", self.index),
+            ZONE_CITY,
+        )
 
 
 if __name__ == "__main__":

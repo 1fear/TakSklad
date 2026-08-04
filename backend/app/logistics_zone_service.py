@@ -236,3 +236,21 @@ def load_region_index(db: Session) -> RegionIndex:
         RegionPoint.build(point.client_name, point.latitude, point.longitude)
         for point in points
     ])
+
+
+ZONE_CITY = "city"
+ZONE_REGION = "region"
+ZONE_UNASSIGNED = "unassigned"
+
+
+def classify_order(client_name, coordinates_value, index: RegionIndex) -> str:
+    """Rule order matters: the directory wins, coordinates only decide unknown clients."""
+    point = parse_coordinates(coordinates_value)
+    latitude, longitude = point if point is not None else (None, None)
+    if index.find(client_name, latitude, longitude) is not None:
+        return ZONE_REGION
+    if point is None:
+        return ZONE_CITY
+    if point_in_city(latitude, longitude):
+        return ZONE_CITY
+    return ZONE_UNASSIGNED
