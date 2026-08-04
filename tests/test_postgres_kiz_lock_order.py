@@ -246,7 +246,7 @@ class PostgresKizLockOrderTests(unittest.TestCase):
     # Expected until the inversion in §6.18 is removed by §23 step 4.
     @unittest.expectedFailure
     def test_complete_order_and_undo_scan_do_not_deadlock(self):
-        code = "SYNTHETIC-COMPLETE-UNDO-LOCK-ORDER"
+        code = "0104006396053947217LOCKCOMPLETE93S1"
         order_id, item_id = self.seed_scanned_order(code=code)
 
         def run_complete(session, barrier, undo_advisory_acquired):
@@ -272,7 +272,7 @@ class PostgresKizLockOrderTests(unittest.TestCase):
     # Expected until the inversion in §6.18 is removed by §23 step 4.
     @unittest.expectedFailure
     def test_mark_order_returned_and_undo_scan_do_not_deadlock(self):
-        code = "SYNTHETIC-RETURN-UNDO-LOCK-ORDER"
+        code = "0104006396053947217LOCKRETURN93SYN1"
         order_id, item_id = self.seed_scanned_order(code=code)
         confirmed_items = [{
             "item_id": str(item_id),

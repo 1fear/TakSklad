@@ -12,6 +12,12 @@ from backend.app.imports_service import create_import
 from backend.app.models import ImportJob, KizMovement, Order, OrderItem, PendingEvent, ScanCode
 from backend.app.orders_service import ApiError, complete_order, create_scan, lookup_kiz_availability, mark_order_returned
 from backend.app.schemas import ImportCreate, ScanCreate
+
+
+def synthetic_kiz(label):
+    """Build a 35-character mark: the scan guard refuses anything else."""
+    tail = "".join(char for char in str(label).upper() if char.isalnum())[:16].ljust(16, "X")
+    return f"0104006396053947217{tail}"
 from tests.postgres_support import create_database, drop_database, run_alembic
 
 
@@ -86,7 +92,7 @@ class PostgresOutboxFaultTests(unittest.TestCase):
             if with_scan:
                 session.add(ScanCode(
                     order_item_id=item.id,
-                    code=f"SYNTHETIC-PHASE9-{uuid.uuid4()}",
+                    code=synthetic_kiz(f"P9{uuid.uuid4().hex}"),
                     source="synthetic",
                     raw_payload={"scan_type": "unit", "block_quantity": 1},
                 ))
@@ -119,7 +125,7 @@ class PostgresOutboxFaultTests(unittest.TestCase):
                     self.reset_database()
                     if producer == "scan":
                         _order_id, item_id = self.seed_order()
-                        code = f"SYNTHETIC-SCAN-{stage}"
+                        code = synthetic_kiz(f"SCAN{stage}")
                         self.execute_case(producer, stage, lambda session: create_scan(
                             session, ScanCreate(order_item_id=str(item_id), code=code)
                         ))
@@ -207,7 +213,7 @@ class PostgresOutboxFaultTests(unittest.TestCase):
 
     def test_late_scanner_timestamp_cannot_make_re_outbound_kiz_available_again(self):
         self.reset_database()
-        code = "SYNTHETIC-LATE-RETURN-KIZ"
+        code = "0104006396053947217LATERETURN93SYN1"
         first_order_id, first_item_id = self.seed_order(quantity_blocks=1)
         with self.SessionLocal() as session:
             create_scan(session, ScanCreate(order_item_id=str(first_item_id), code=code))
@@ -253,7 +259,7 @@ class PostgresOutboxFaultTests(unittest.TestCase):
 
     def test_concurrent_outbound_after_return_allows_exactly_one_new_owner(self):
         self.reset_database()
-        code = "SYNTHETIC-CONCURRENT-RETURN-KIZ"
+        code = "0104006396053947217CONCURRENTRET931"
         first_order_id, first_item_id = self.seed_order(quantity_blocks=1)
         with self.SessionLocal() as session:
             create_scan(session, ScanCreate(order_item_id=str(first_item_id), code=code))
