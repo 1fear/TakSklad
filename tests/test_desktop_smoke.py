@@ -117,6 +117,7 @@ def attach_main_screen_widgets(app):
     app.scan_guard_label = FakeWidget("SKU-защита недоступна: выберите позицию.")
     app.last_code_label = FakeWidget("")
     app.undo_btn = FakeWidget("↩️ ОТМЕНИТЬ ПОСЛЕДНИЙ КОД", state="disabled")
+    app.codes_btn = FakeWidget("📋 КОДЫ ПОЗИЦИИ", state="disabled")
     app.next_product_btn = FakeWidget("➡️ СЛЕДУЮЩАЯ ПОЗИЦИЯ", state="disabled")
     app.finish_btn = FakeWidget("🏁 ЗАВЕРШИТЬ ЗАКАЗ", state="disabled")
     app.completed_count_label = FakeWidget("0")

@@ -89,7 +89,7 @@ class PostgresAdminRescanConcurrencyTests(unittest.TestCase):
     def test_reset_blocks_concurrent_scan_until_commit_and_keeps_state_consistent(self):
         order_id, item_id, _scan_id = self.seed_scanned_item(
             quantity_blocks=2,
-            code="SYNTHETIC-RESET-OLD-CODE",
+            code="0104006396053947217RESETOLD93SYNTH1",
         )
         locked = threading.Event()
         release = threading.Event()
@@ -115,7 +115,7 @@ class PostgresAdminRescanConcurrencyTests(unittest.TestCase):
                         session,
                         ScanCreate(
                             order_item_id=str(item_id),
-                            code="SYNTHETIC-RESET-NEW-CODE",
+                            code="0104006396053947217RESETNEW93SYNTH1",
                             scanned_by="postgres-test",
                         ),
                     )
@@ -142,7 +142,7 @@ class PostgresAdminRescanConcurrencyTests(unittest.TestCase):
 
         self.assertEqual(errors, [])
         self.assertIn("reset", outcomes)
-        self.assertEqual(outcomes["scan"].code, "SYNTHETIC-RESET-NEW-CODE")
+        self.assertEqual(outcomes["scan"].code, "0104006396053947217RESETNEW93SYNTH1")
 
         with self.SessionLocal() as session:
             item = session.get(OrderItem, item_id)
@@ -157,14 +157,14 @@ class PostgresAdminRescanConcurrencyTests(unittest.TestCase):
         self.assertEqual(order.status, "not_completed")
         self.assertEqual(item.scanned_blocks, 1)
         self.assertEqual(item.status, "not_completed")
-        self.assertEqual([scan.code for scan in scans], ["SYNTHETIC-RESET-NEW-CODE"])
+        self.assertEqual([scan.code for scan in scans], ["0104006396053947217RESETNEW93SYNTH1"])
         self.assertEqual([movement.movement_type for movement in movements], ["outbound", "reset", "outbound"])
         self.assertEqual(sum(1 for movement in movements if movement.movement_type == "reset"), 1)
 
     def test_reset_locks_current_scan_rows_and_undo_fails_cleanly_after_commit(self):
         order_id, item_id, scan_id = self.seed_scanned_item(
             quantity_blocks=1,
-            code="SYNTHETIC-RESET-UNDO-CODE",
+            code="0104006396053947217RESETUNDO93SYNT1",
         )
         locked = threading.Event()
         release = threading.Event()
@@ -190,7 +190,7 @@ class PostgresAdminRescanConcurrencyTests(unittest.TestCase):
                         session,
                         ScanUndo(
                             order_item_id=str(item_id),
-                            code="SYNTHETIC-RESET-UNDO-CODE",
+                            code="0104006396053947217RESETUNDO93SYNT1",
                             actor="postgres-test",
                         ),
                     )

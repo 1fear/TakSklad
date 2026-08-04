@@ -1562,7 +1562,7 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
             order = db.get(Order, uuid.UUID(order_id))
             item = order.items[0]
             item.scanned_blocks = 1
-            db.add(ScanCode(order_item_id=item.id, code="0104006396053947217TEST", source="desktop"))
+            db.add(ScanCode(order_item_id=item.id, code="0104006396053947217TESTXXXXXXXXXXXX", source="desktop"))
             db.commit()
 
         class FakeSkladBotClient:

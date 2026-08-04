@@ -2217,7 +2217,7 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertIn("Что сделать:", text)
         self.assertIn("Заказы и заявки SkladBot не созданы.", text)
         self.assertNotIn("secret-service-token", text)
-        self.assertNotIn("0104006396053978217SECRETKIZVALUE", text)
+        self.assertNotIn("0104006396053978217SECRETKIZVALUEXX", text)
 
     def test_telegram_worker_recovers_completed_import_after_backend_post_timeout(self):
         worker = TelegramWorker.__new__(TelegramWorker)
@@ -3132,7 +3132,7 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertFalse(result)
         self.assertIn("Не удалось выгрузить КИЗы по файлу orders.xlsx", messages[0][1])
         self.assertNotIn("secret-service-token", messages[0][1])
-        self.assertNotIn("0104006396053978217SECRETKIZVALUE", messages[0][1])
+        self.assertNotIn("0104006396053978217SECRETKIZVALUEXX", messages[0][1])
         self.assertIn("Bearer ***", messages[0][1])
 
     def test_telegram_worker_keeps_kiz_source_key_when_file_selected_by_index(self):

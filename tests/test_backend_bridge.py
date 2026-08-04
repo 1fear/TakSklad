@@ -45,7 +45,7 @@ class BackendBridgeTests(unittest.TestCase):
             ):
                 status = backend_flow.backend_duplicate_scan_reuse_status(
                     order,
-                    "0104006396053978-TEST-REUSE",
+                    "0104006396053978-TEST-REUSEXXXXXXXX",
                 )
 
             self.assertTrue(status["checked"])
@@ -68,7 +68,7 @@ class BackendBridgeTests(unittest.TestCase):
                 },
             ),
         ):
-            busy = backend_flow.backend_duplicate_scan_reuse_status(order, "0104006396053978-TEST-REUSE")
+            busy = backend_flow.backend_duplicate_scan_reuse_status(order, "0104006396053978-TEST-REUSEXXXXXXXX")
 
         self.assertTrue(busy["checked"])
         self.assertFalse(busy["available"])
@@ -82,7 +82,7 @@ class BackendBridgeTests(unittest.TestCase):
                 side_effect=backend_client.BackendApiError("unavailable"),
             ),
         ):
-            failed = backend_flow.backend_duplicate_scan_reuse_status(order, "0104006396053978-TEST-REUSE")
+            failed = backend_flow.backend_duplicate_scan_reuse_status(order, "0104006396053978-TEST-REUSEXXXXXXXX")
 
         self.assertFalse(failed["checked"])
         self.assertFalse(failed["available"])
@@ -106,10 +106,10 @@ class BackendBridgeTests(unittest.TestCase):
                         "quantity_pieces": 20,
                         "quantity_blocks": 2,
                         "status": "completed",
-                        "scan_codes": ["01000000000000000001", "01000000000000000002"],
+                        "scan_codes": ["01000000000000000001XXXXXXXXXXXXXXX", "01000000000000000002XXXXXXXXXXXXXXX"],
                         "scan_entries": [
-                            {"code": "01000000000000000001", "scan_type": "unit", "block_quantity": 1},
-                            {"code": "01000000000000000002", "scan_type": "unit", "block_quantity": 1},
+                            {"code": "01000000000000000001XXXXXXXXXXXXXXX", "scan_type": "unit", "block_quantity": 1},
+                            {"code": "01000000000000000002XXXXXXXXXXXXXXX", "scan_type": "unit", "block_quantity": 1},
                         ],
                     }
                 ],
@@ -121,9 +121,9 @@ class BackendBridgeTests(unittest.TestCase):
         self.assertEqual(rows[0][SKLADBOT_REQUEST_NUMBER_COLUMN], "WR-100")
         self.assertEqual(rows[0]["_backend_order_id"], "order-1")
         self.assertEqual(rows[0]["_backend_order_item_id"], "item-1")
-        self.assertEqual(rows[0]["_existing_scanned_codes"], ["01000000000000000001", "01000000000000000002"])
+        self.assertEqual(rows[0]["_existing_scanned_codes"], ["01000000000000000001XXXXXXXXXXXXXXX", "01000000000000000002XXXXXXXXXXXXXXX"])
         self.assertEqual(rows[0]["_existing_scan_entries"][0]["block_quantity"], 1)
-        self.assertEqual(rows[0]["Отсканированные коды"], "01000000000000000001\n01000000000000000002")
+        self.assertEqual(rows[0]["Отсканированные коды"], "01000000000000000001XXXXXXXXXXXXXXX\n01000000000000000002XXXXXXXXXXXXXXX")
         self.assertEqual(rows[0]["Статус"], STATUS_COMPLETED)
 
     def test_preview_import_orders_posts_to_preview_endpoint(self):
@@ -149,7 +149,7 @@ class BackendBridgeTests(unittest.TestCase):
             "type": "scan",
             "payload": {
                 "order_item_id": "item-1",
-                "code": "01000000000000000001",
+                "code": "01000000000000000001XXXXXXXXXXXXXXX",
                 "workstation_id": "pc-1",
             },
         }]
@@ -201,7 +201,7 @@ class BackendBridgeTests(unittest.TestCase):
             "type": "scan",
             "payload": {
                 "order_item_id": "item-1",
-                "code": "01000000000000000001",
+                "code": "01000000000000000001XXXXXXXXXXXXXXX",
                 "workstation_id": "pc-1",
             },
         }]
@@ -240,7 +240,7 @@ class BackendBridgeTests(unittest.TestCase):
             "type": "scan",
             "payload": {
                 "order_item_id": "item-1",
-                "code": "01000000000000000001",
+                "code": "01000000000000000001XXXXXXXXXXXXXXX",
             },
         }]
         saved = []
@@ -273,7 +273,7 @@ class BackendBridgeTests(unittest.TestCase):
             "type": "scan",
             "payload": {
                 "order_item_id": "item-1",
-                "code": "01000000000000000002",
+                "code": "01000000000000000002XXXXXXXXXXXXXXX",
             },
         }]
         saved = []
@@ -326,7 +326,7 @@ class BackendBridgeTests(unittest.TestCase):
             "type": "scan",
             "payload": {
                 "order_item_id": "item-1",
-                "code": "01000000000000000002",
+                "code": "01000000000000000002XXXXXXXXXXXXXXX",
             },
         }]
         saved = []
@@ -365,7 +365,7 @@ class BackendBridgeTests(unittest.TestCase):
             backend_events.sync_pending_backend_events()
 
         self.assertEqual(len(blocked_store), 1)
-        self.assertEqual(blocked_store[0]["payload"]["code"], "01000000000000000002")
+        self.assertEqual(blocked_store[0]["payload"]["code"], "01000000000000000002XXXXXXXXXXXXXXX")
         self.assertEqual(blocked_store[0]["payload"]["order_item_id"], "item-1")
         self.assertEqual(
             blocked_store[0]["last_error_detail"]["code"],
@@ -376,7 +376,7 @@ class BackendBridgeTests(unittest.TestCase):
         stored = [{
             "id": "event-1",
             "type": "scan",
-            "payload": {"order_item_id": "item-1", "code": "01000000000000000002"},
+            "payload": {"order_item_id": "item-1", "code": "01000000000000000002XXXXXXXXXXXXXXX"},
         }]
         saved_calls = []
 
@@ -486,29 +486,29 @@ class BackendBridgeTests(unittest.TestCase):
             mock.patch.object(backend_events, "load_pending_backend_events", side_effect=fake_load),
             mock.patch.object(backend_events, "append_queue_item", side_effect=fake_append),
         ):
-            first_id = backend_events.queue_backend_scan(order, "01000000000000000001", scanned_at="2026-05-31T10:00:00+05:00")
-            second_id = backend_events.queue_backend_scan(order, "01000000000000000001", scanned_at="2026-05-31T10:01:00+05:00")
+            first_id = backend_events.queue_backend_scan(order, "01000000000000000001XXXXXXXXXXXXXXX", scanned_at="2026-05-31T10:00:00+05:00")
+            second_id = backend_events.queue_backend_scan(order, "01000000000000000001XXXXXXXXXXXXXXX", scanned_at="2026-05-31T10:01:00+05:00")
             codes = backend_events.get_pending_backend_codes()
 
         self.assertEqual(first_id, second_id)
         self.assertEqual(len(pending), 1)
         self.assertEqual(pending[0]["type"], "scan")
         self.assertEqual(pending[0]["payload"]["order_item_id"], "item-1")
-        self.assertEqual(pending[0]["payload"]["code"], "01000000000000000001")
-        self.assertEqual(codes, {"01000000000000000001"})
+        self.assertEqual(pending[0]["payload"]["code"], "01000000000000000001XXXXXXXXXXXXXXX")
+        self.assertEqual(codes, {"01000000000000000001XXXXXXXXXXXXXXX"})
         self.assertEqual(len(saved), 1)
 
     def test_backend_queue_remove_pending_scan_on_undo(self):
         event_id = backend_events.make_backend_event_id(
             "scan",
-            {"order_item_id": "item-1", "code": "01000000000000000001"},
+            {"order_item_id": "item-1", "code": "01000000000000000001XXXXXXXXXXXXXXX"},
         )
         pending = [{
             "id": event_id,
             "type": "scan",
             "payload": {
                 "order_item_id": "item-1",
-                "code": "01000000000000000001",
+                "code": "01000000000000000001XXXXXXXXXXXXXXX",
             },
         }]
         saved = []
@@ -522,7 +522,7 @@ class BackendBridgeTests(unittest.TestCase):
         ):
             removed = backend_events.remove_pending_backend_scan(
                 {"_backend_order_item_id": "item-1"},
-                "01000000000000000001",
+                "01000000000000000001XXXXXXXXXXXXXXX",
             )
 
         self.assertTrue(removed)
@@ -544,10 +544,10 @@ class BackendBridgeTests(unittest.TestCase):
         ):
             backend_events.undo_backend_scan(
                 {"_backend_order_item_id": "item-1"},
-                "01000000000000000001",
+                "01000000000000000001XXXXXXXXXXXXXXX",
             )
 
-        self.assertEqual(calls, [("item-1", "01000000000000000001", "desktop")])
+        self.assertEqual(calls, [("item-1", "01000000000000000001XXXXXXXXXXXXXXX", "desktop")])
 
     def test_backend_queue_syncs_order_complete(self):
         pending = [{

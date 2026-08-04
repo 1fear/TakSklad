@@ -80,12 +80,12 @@ class MergeDuplicateOrderPositionsTests(unittest.TestCase):
             unscanned = self.make_item(order, blocks=1, scanned=0, source_row=37)
             scanned = self.make_item(order, blocks=1, scanned=1, source_row=54, status="completed")
             db.add_all([unscanned, scanned])
-            kiz = KizCode(id=uuid.uuid4(), code="0104006396053947")
+            kiz = KizCode(id=uuid.uuid4(), code="0104006396053947XXXXXXXXXXXXXXXXXXX")
             db.add(kiz)
             db.add(ScanCode(
                 id=uuid.uuid4(),
                 order_item_id=scanned.id,
-                code="0104006396053947",
+                code="0104006396053947XXXXXXXXXXXXXXXXXXX",
                 scanned_at=datetime.now(timezone.utc),
                 raw_payload={},
             ))

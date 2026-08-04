@@ -32,6 +32,7 @@ SERVICE_PRINCIPAL_SCOPE_MATRIX = {
         "imports:create",
         "imports:preview",
         "kiz:read",
+        "kiz:release",
         "orders:complete",
         "orders:read",
         "returns:read",

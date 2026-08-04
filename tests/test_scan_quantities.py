@@ -34,28 +34,28 @@ class ScanQuantitiesTests(unittest.TestCase):
 
     def test_desktop_identifies_unit_kiz_product_key(self):
         self.assertEqual(scan_code_product_key("0104006396053978217KDAUbG93OVvXgs6C"), "brown:op")
-        self.assertEqual(scan_code_product_key("0104006396053947217p-30o933ZXHZKjx"), "red:op")
-        self.assertEqual(scan_code_product_key("010400639605400521UNIT"), "gold:ssl")
+        self.assertEqual(scan_code_product_key("0104006396053947217p-30o933ZXHZKjxX"), "red:op")
+        self.assertEqual(scan_code_product_key("010400639605400521UNITXXXXXXXXXXXXX"), "gold:ssl")
         self.assertEqual(scan_code_product_key("0104006396054067217KDAUbG93OVvXgs6C"), "brown:ssl")
-        self.assertEqual(scan_code_product_key("0104006396054036217p-30o933ZXHZKjx"), "red:ssl")
-        self.assertEqual(scan_code_product_key("0104006396104441217GREEN"), "green:op")
+        self.assertEqual(scan_code_product_key("0104006396054036217p-30o933ZXHZKjxX"), "red:ssl")
+        self.assertEqual(scan_code_product_key("0104006396104441217GREENXXXXXXXXXXX"), "green:op")
 
     def test_desktop_identifies_aggregate_box_product_key(self):
-        self.assertEqual(scan_code_product_key("010400639605407421BOX"), "brown:ssl")
-        self.assertEqual(scan_code_product_key("010400639605404321BOX"), "red:ssl")
-        self.assertEqual(scan_code_product_key("010400639610444821BOX"), "green:op")
-        self.assertEqual(scan_code_product_key("010400639610445821BOX"), "green:op")
+        self.assertEqual(scan_code_product_key("010400639605407421BOXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"), "brown:ssl")
+        self.assertEqual(scan_code_product_key("010400639605404321BOXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"), "red:ssl")
+        self.assertEqual(scan_code_product_key("010400639610444821BOXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"), "green:op")
+        self.assertEqual(scan_code_product_key("010400639610445821BOXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"), "green:op")
 
     def test_aggregate_box_detection_uses_box_gtin_not_next_ai(self):
         cases = [
-            ("Chapman Brown OP 20", "010400639605398510BATCH21BOX"),
-            ("Chapman RED OP 20", "01040063960539541726062510BATCH"),
-            ("Chapman Gold SSL 100`20", "010400639605401221BOX"),
-            ("Chapman Brown SSL 100`20", "010400639605407410BATCH21BOX"),
+            ("Chapman Brown OP 20", "010400639605398510BATCH21BOXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"),
+            ("Chapman RED OP 20", "01040063960539541726062510BATCHXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"),
+            ("Chapman Gold SSL 100`20", "010400639605401221BOXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"),
+            ("Chapman Brown SSL 100`20", "010400639605407410BATCH21BOXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"),
             ("Chapman Brown SSL 100`20", "010400639605407421UZ1112022612417151624013040046310ZIG1231569310000"),
             ("Chapman Brown SSL 100`20", "010400639605407421UZ1112022612416594224013040046310ZIG1231569310000"),
-            ("Chapman RED SSL 100 20", "01040063960540431726062510BATCH"),
-            ("Chapman Green OP 20", "010400639610444810BATCH21BOX"),
+            ("Chapman RED SSL 100 20", "01040063960540431726062510BATCHXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"),
+            ("Chapman Green OP 20", "010400639610444810BATCH21BOXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"),
             ("Chapman Green OP 20", "010400639610445821UZ1112042611905354024013040030510ZIG1233389310000"),
             ("Chapman Green OP 20", "010400639610445821UZ1112042611909232924013040030510ZIG1233389310000"),
             ("Chapman Green OP 20", "010400639610445821UZ1112042611906223124013040030510ZIG1233389310000"),
@@ -77,7 +77,7 @@ class ScanQuantitiesTests(unittest.TestCase):
     def test_desktop_rejects_unit_kiz_for_wrong_chapman_product(self):
         self.assertTrue(
             scan_product_mismatch(
-                "0104006396053947217p-30o933ZXHZKjx",
+                "0104006396053947217p-30o933ZXHZKjxX",
                 "Chapman Gold SSL 100`20",
             )
         )
@@ -89,7 +89,7 @@ class ScanQuantitiesTests(unittest.TestCase):
         )
         self.assertTrue(
             scan_product_mismatch(
-                "010400639605404321BOX",
+                "010400639605404321BOXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
                 "Chapman RED OP 20",
             )
         )
@@ -101,14 +101,14 @@ class ScanQuantitiesTests(unittest.TestCase):
         )
         self.assertFalse(
             scan_product_mismatch(
-                "0104006396104441217GREEN",
+                "0104006396104441217GREENXXXXXXXXXXX",
                 "Chapman Green OP 20",
             )
         )
 
     def test_desktop_rejects_unknown_unit_kiz_for_known_chapman_product(self):
-        self.assertTrue(scan_product_mismatch("01000000000000000001", "Chapman Brown OP 20"))
-        self.assertFalse(scan_product_mismatch("01000000000000000001", "Other Product"))
+        self.assertTrue(scan_product_mismatch("01000000000000000001XXXXXXXXXXXXXXX", "Chapman Brown OP 20"))
+        self.assertFalse(scan_product_mismatch("01000000000000000001XXXXXXXXXXXXXXX", "Other Product"))
 
     def test_desktop_prefers_existing_scan_entry_quantity(self):
         order = {

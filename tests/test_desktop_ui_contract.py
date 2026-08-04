@@ -407,8 +407,8 @@ class DesktopUiContractTests(unittest.TestCase):
                 if on_success:
                     on_success(result)
 
-        first_code = "01040063960540670001"
-        second_code = "01040063960540670002"
+        first_code = "01040063960540670001XXXXXXXXXXXXXXX"
+        second_code = "01040063960540670002XXXXXXXXXXXXXXX"
         order = {
             "Кол-во блок": 2,
             "Товары": "Chapman Brown SSL",
@@ -520,7 +520,7 @@ class DesktopUiContractTests(unittest.TestCase):
             current_order=None,
             scanned_codes=[],
             all_existing_codes=set(),
-            scan_entry=FakeWidget("0104006396053978-TEST-NO-ORDER"),
+            scan_entry=FakeWidget("0104006396053978-TEST-NO-ORDERXXXXX"),
             show_error=mock.Mock(),
             show_busy_error=mock.Mock(),
             bell=mock.Mock(),
@@ -570,7 +570,7 @@ class DesktopUiContractTests(unittest.TestCase):
             def focus_set(self):
                 self.focused = True
 
-        code = "0104006396104441-TEST-GREEN"
+        code = "0104006396104441-TEST-GREENXXXXXXXX"
         order = {
             "Кол-во блок": 1,
             "Товары": "Chapman Green OP 20",
@@ -632,7 +632,7 @@ class DesktopUiContractTests(unittest.TestCase):
             def focus_set(self):
                 self.focused = True
 
-        code = "0104006396054067-TEST-BROWN-SSL"
+        code = "0104006396054067-TEST-BROWN-SSLXXXX"
         order = {"Кол-во блок": 1, "Товары": "Chapman RED SSL 100`20"}
         fake = SimpleNamespace(
             ensure_update_allowed=lambda: True,
@@ -691,7 +691,7 @@ class DesktopUiContractTests(unittest.TestCase):
             def focus_set(self):
                 self.focused = True
 
-        code = "0104006396053978-TEST-BROWN-RETURN"
+        code = "0104006396053978-TEST-BROWN-RETURNX"
         order = {
             "Кол-во блок": 1,
             "Товары": "Chapman Brown OP 20",
@@ -769,7 +769,7 @@ class DesktopUiContractTests(unittest.TestCase):
             def delete(self, *_args):
                 self.deleted = True
 
-        code = "0104006396104441-TEST-GREEN"
+        code = "0104006396104441-TEST-GREENXXXXXXXX"
         order = {
             "Кол-во блок": 1,
             "Товары": "Chapman Green OP 20",
@@ -823,7 +823,7 @@ class DesktopUiContractTests(unittest.TestCase):
             def delete(self, *_args):
                 self.deleted = True
 
-        code = "0104006396104441-TEST-GREEN"
+        code = "0104006396104441-TEST-GREENXXXXXXXX"
         order = {
             "Кол-во блок": 1,
             "Товары": "Chapman Green OP 20",
@@ -896,8 +896,8 @@ class DesktopUiContractTests(unittest.TestCase):
     def test_backend_blocked_scan_events_filter_current_item(self):
         sync_result = {
             "blocked_events": [
-                {"type": "scan", "payload": {"order_item_id": "old-item", "code": "01000000000000000001"}},
-                {"type": "scan", "payload": {"order_item_id": "item-1", "code": "01000000000000000002"}},
+                {"type": "scan", "payload": {"order_item_id": "old-item", "code": "01000000000000000001XXXXXXXXXXXXXXX"}},
+                {"type": "scan", "payload": {"order_item_id": "item-1", "code": "01000000000000000002XXXXXXXXXXXXXXX"}},
                 {"type": "order_complete", "payload": {"order_id": "order-1"}},
             ]
         }
@@ -905,13 +905,13 @@ class DesktopUiContractTests(unittest.TestCase):
         events = backend_blocked_scan_events_for_item(sync_result, "item-1")
 
         self.assertEqual(len(events), 1)
-        self.assertEqual(events[0]["payload"]["code"], "01000000000000000002")
+        self.assertEqual(events[0]["payload"]["code"], "01000000000000000002XXXXXXXXXXXXXXX")
 
     def test_backend_blocked_scan_message_is_warehouse_friendly(self):
         message = format_backend_blocked_scan_message([
             {
                 "type": "scan",
-                "payload": {"code": "0104006396053978-TEST-BLOCKED"},
+                "payload": {"code": "0104006396053978-TEST-BLOCKEDXXXXXX"},
                 "last_error": "Backend HTTP 409: Code already scanned in another order item",
                 "last_error_detail": {
                     "message": "Code already scanned in another order item",
@@ -942,7 +942,7 @@ class DesktopUiContractTests(unittest.TestCase):
         message = format_backend_blocked_scan_message([
             {
                 "type": "scan",
-                "payload": {"code": "0104006396053978-TEST-FULL"},
+                "payload": {"code": "0104006396053978-TEST-FULLXXXXXXXXX"},
                 "last_error": "Backend HTTP 409: Order item is already fully scanned",
                 "last_error_detail": {
                     "code": "order_item_fully_scanned_new_code",
@@ -960,7 +960,7 @@ class DesktopUiContractTests(unittest.TestCase):
 
     def test_scan_product_mismatch_message_includes_runtime_diagnostics(self):
         message = format_scan_product_mismatch_message(
-            "0104006396054067-TEST-BROWN-SSL",
+            "0104006396054067-TEST-BROWN-SSLXXXX",
             "Chapman RED SSL 100`20",
         )
 
@@ -975,7 +975,7 @@ class DesktopUiContractTests(unittest.TestCase):
         message = format_backend_blocked_scan_message([
             {
                 "type": "scan",
-                "payload": {"code": "0104006396054067-TEST-BROWN-SSL"},
+                "payload": {"code": "0104006396054067-TEST-BROWN-SSLXXXX"},
                 "last_error": "Backend HTTP 409: Scan product does not match order item",
                 "last_error_detail": {
                     "message": "Scan product does not match order item",
@@ -991,7 +991,7 @@ class DesktopUiContractTests(unittest.TestCase):
         self.assertNotIn("Backend HTTP", message)
 
     def test_local_duplicate_scan_message_uses_current_loaded_order_context(self):
-        code = "0104006396053978-TEST-LOCAL"
+        code = "0104006396053978-TEST-LOCALXXXXXXXX"
         owner = find_code_owner_in_orders(code, [
             {
                 "Клиент": "OOO Local Client",
@@ -1011,7 +1011,7 @@ class DesktopUiContractTests(unittest.TestCase):
 
     def test_duplicate_scan_message_explains_unknown_owner_backend_busy(self):
         message = format_duplicate_scan_message(
-            "0104006396053978-TEST-BUSY",
+            "0104006396053978-TEST-BUSYXXXXXXXXX",
             {},
             {
                 "checked": True,
@@ -1028,7 +1028,7 @@ class DesktopUiContractTests(unittest.TestCase):
 
     def test_duplicate_scan_message_explains_backend_reusable_after_return(self):
         message = format_duplicate_scan_message(
-            "0104006396053978-TEST-RETURNED",
+            "0104006396053978-TEST-RETURNEDXXXXX",
             {},
             {
                 "checked": True,
@@ -1070,11 +1070,11 @@ class DesktopUiContractTests(unittest.TestCase):
         orders = [
             {
                 "Кол-во блок": 2,
-                "_existing_scanned_codes": ["01000000000000000001", "01000000000000000002"],
+                "_existing_scanned_codes": ["01000000000000000001XXXXXXXXXXXXXXX", "01000000000000000002XXXXXXXXXXXXXXX"],
             },
             {
                 "Кол-во блок": 3,
-                "_existing_scanned_codes": ["01000000000000000003"],
+                "_existing_scanned_codes": ["01000000000000000003XXXXXXXXXXXXXXX"],
             },
         ]
 
@@ -1232,8 +1232,8 @@ class DesktopUiContractTests(unittest.TestCase):
             def focus_set(self):
                 self.focused = True
 
-        good_code = "0104006396053978217GOOD"
-        blocked_code = "0104006396053978217BAD"
+        good_code = "0104006396053978217GOODXXXXXXXXXXXX"
+        blocked_code = "0104006396053978217BADXXXXXXXXXXXXX"
         fake = SimpleNamespace(
             current_order={"Кол-во блок": 2, "_backend_order_item_id": "item-1"},
             scanned_codes=[good_code, blocked_code],
@@ -1278,18 +1278,21 @@ class DesktopUiContractTests(unittest.TestCase):
     def test_finish_requires_every_position_saved_and_fully_scanned(self):
         orders = [
             {"Кол-во блок": 2, "Отсканированные коды": "01000000000000000001\n01000000000000000002"},
-            {"Кол-во блок": 1, "Отсканированные коды": "01000000000000000003"},
+            {"Кол-во блок": 1, "Отсканированные коды": "01000000000000000003XXXXXXXXXXXXXXX"},
         ]
 
         self.assertEqual(group_finish_blocker(orders, [{"Товары": "A"}]), "Сначала сохраните все позиции заказа")
         self.assertEqual(
-            group_finish_blocker([{**orders[0], "Отсканированные коды": "01000000000000000001"}], [{"Товары": "A"}]),
+            group_finish_blocker([{**orders[0], "Отсканированные коды": "01000000000000000001XXXXXXXXXXXXXXX"}], [{"Товары": "A"}]),
             "Позиция 1: отсканировано 1 из 2 блоков",
         )
         self.assertEqual(group_finish_blocker(orders, [{"Товары": "A"}, {"Товары": "B"}]), "")
 
     def test_undo_saved_code_updates_active_row_and_keeps_finish_disabled_when_incomplete(self):
-        source = inspect.getsource(ScanningApp.undo_last_scan)
+        # undo_last_scan is a thin wrapper: the shared body lives in undo_scan_at_index
+        # so any code of the item can be undone, not only the last one.
+        self.assertIn("undo_scan_at_index", inspect.getsource(ScanningApp.undo_last_scan))
+        source = inspect.getsource(ScanningApp.undo_scan_at_index)
 
         self.assertIn("undo_backend_scan", source)
         self.assertIn("Позиция не связана с backend. Отмена заблокирована", source)
@@ -1315,8 +1318,8 @@ class DesktopUiContractTests(unittest.TestCase):
             def focus_set(self):
                 self.focused = True
 
-        first_code = "01040063960540670001"
-        removed_code = "01040063960540670002"
+        first_code = "01040063960540670001XXXXXXXXXXXXXXX"
+        removed_code = "01040063960540670002XXXXXXXXXXXXXXX"
         order = {
             "Кол-во блок": 2,
             "Товары": "Chapman Brown SSL",
@@ -1376,8 +1379,8 @@ class DesktopUiContractTests(unittest.TestCase):
             def config(self, **kwargs):
                 self.options.update(kwargs)
 
-        first_code = "01040063960540670001"
-        removed_code = "01040063960540670002"
+        first_code = "01040063960540670001XXXXXXXXXXXXXXX"
+        removed_code = "01040063960540670002XXXXXXXXXXXXXXX"
         order = {
             "_backend_order_item_id": "item-1",
             "Кол-во блок": 2,
@@ -1425,8 +1428,8 @@ class DesktopUiContractTests(unittest.TestCase):
             def config(self, **kwargs):
                 self.options.update(kwargs)
 
-        first_code = "01040063960540670001"
-        removed_code = "01040063960540670002"
+        first_code = "01040063960540670001XXXXXXXXXXXXXXX"
+        removed_code = "01040063960540670002XXXXXXXXXXXXXXX"
         order = {
             "Кол-во блок": 2,
             "Товары": "Chapman Brown SSL",

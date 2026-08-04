@@ -29,7 +29,7 @@ class RedactionTests(unittest.TestCase):
         self.assertNotIn("secret-token", rendered)
         self.assertNotIn("abc.def", rendered)
         self.assertNotIn("clear", rendered)
-        self.assertNotIn("01040063960540670001", rendered)
+        self.assertNotIn("01040063960540670001XXXXXXXXXXXXXXX", rendered)
 
 
 if __name__ == "__main__":

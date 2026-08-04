@@ -72,6 +72,7 @@ class UpdateMixin:
             "control_btn",
             "select_btn",
             "undo_btn",
+            "codes_btn",
             "next_product_btn",
             "finish_btn",
             "report_btn",

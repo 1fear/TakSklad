@@ -24,17 +24,17 @@ class BackendScanSchemaTests(unittest.TestCase):
         db = mock.Mock()
         db.bind.dialect.name = "postgresql"
 
-        locked = lock_kiz_code_for_transaction(db, " 0104006396053947217ABC ")
+        locked = lock_kiz_code_for_transaction(db, " 0104006396053947217ABCXXXXXXXXXXXXX ")
 
         self.assertTrue(locked)
-        expected_keys = advisory_lock_keys("0104006396053947217ABC")
+        expected_keys = advisory_lock_keys("0104006396053947217ABCXXXXXXXXXXXXX")
         self.assertEqual(db.execute.call_args.args[1], {"first": expected_keys[0], "second": expected_keys[1]})
 
     def test_non_postgres_kiz_lock_is_noop(self):
         db = mock.Mock()
         db.bind.dialect.name = "sqlite"
 
-        locked = lock_kiz_code_for_transaction(db, "0104006396053947217ABC")
+        locked = lock_kiz_code_for_transaction(db, "0104006396053947217ABCXXXXXXXXXXXXX")
 
         self.assertFalse(locked)
         db.execute.assert_not_called()

@@ -196,6 +196,7 @@ class DataLoadingMixin:
             self.safe_config(getattr(self, "next_product_btn", None), state="disabled")
             self.safe_config(getattr(self, "finish_btn", None), state="disabled")
             self.safe_config(getattr(self, "undo_btn", None), state="disabled")
+            self.safe_config(getattr(self, "codes_btn", None), state="disabled")
 
     def reconcile_current_order_after_refresh(self):
         current_order = self.current_order

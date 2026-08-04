@@ -445,7 +445,7 @@ class PostgresQueryParityTests(unittest.TestCase):
             db.add_all([
                 ScanCode(
                     order_item_id=cross_date.items[0].id,
-                    code="0104006396053985SYNTHETIC-BOX",
+                    code="0104006396053985SYNTHETIC-BOXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
                     scanned_at=datetime(2026, 5, 30, 8, 0, tzinfo=timezone.utc),
                     raw_payload={"scanned_at": "2026-05-31T20:30:00+00:00"},
                 ),

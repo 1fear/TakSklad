@@ -18,6 +18,7 @@ MAIN_SCREEN_REQUIRED_WIDGETS = (
     "scan_guard_label",
     "last_code_label",
     "undo_btn",
+    "codes_btn",
     "next_product_btn",
     "finish_btn",
     "completed_count_label",
@@ -48,6 +49,7 @@ MAIN_SCREEN_TEXT_EXPECTATIONS = {
     "progress_label": "0 / 0",
     "scan_guard_label": "SKU-защита недоступна",
     "undo_btn": "ОТМЕНИТЬ ПОСЛЕДНИЙ КОД",
+    "codes_btn": "КОДЫ ПОЗИЦИИ",
     "next_product_btn": "СЛЕДУЮЩАЯ ПОЗИЦИЯ",
     "finish_btn": "ЗАВЕРШИТЬ ЗАКАЗ",
     "completed_count_label": "0",
@@ -61,7 +63,7 @@ MAIN_SCREEN_TEXT_EXPECTATIONS = {
     "version_status_label": "Версия:",
 }
 
-MAIN_SCREEN_DISABLED_BUTTONS = ("scan_entry", "undo_btn", "next_product_btn", "finish_btn")
+MAIN_SCREEN_DISABLED_BUTTONS = ("scan_entry", "undo_btn", "codes_btn", "next_product_btn", "finish_btn")
 
 
 def run_tk_app_smoke(app_factory):

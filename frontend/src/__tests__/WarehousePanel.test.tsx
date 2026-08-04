@@ -44,7 +44,7 @@ describe("DB-only warehouse operations", () => {
         return HttpResponse.json({
           id: "scan-1",
           order_item_id: "item-1",
-          code: "0104006396053947217TEST01",
+          code: "0104006396053947217TEST01XXXXXXXXXX",
           scanned_blocks: 1,
           item_status: "not_completed",
           scanned_at: "2026-07-10T08:05:00Z",
@@ -58,13 +58,13 @@ describe("DB-only warehouse operations", () => {
 
     const input = await screen.findByLabelText("КИЗ");
     await waitFor(() => expect(input).toHaveFocus());
-    await user.type(input, "0104006396053947217TEST01{Enter}");
+    await user.type(input, "0104006396053947217TEST01XXXXXXXXXX{Enter}");
 
     await waitFor(() => expect(scanPayloads).toHaveLength(1));
-    expect(availabilityRequests).toEqual([{ code: "0104006396053947217TEST01", order_item_id: "item-1" }]);
+    expect(availabilityRequests).toEqual([{ code: "0104006396053947217TEST01XXXXXXXXXX", order_item_id: "item-1" }]);
     expect(scanPayloads[0]).toMatchObject({
       order_item_id: "item-1",
-      code: "0104006396053947217TEST01",
+      code: "0104006396053947217TEST01XXXXXXXXXX",
       workstation_id: "taksklad-web",
       scanned_by: "operator-test",
     });
@@ -89,7 +89,7 @@ describe("DB-only warehouse operations", () => {
     const input = await screen.findByLabelText("КИЗ");
     expect(activeOrderRequests).toBe(1);
 
-    await user.type(input, "0104006396053947217TYPED1");
+    await user.type(input, "0104006396053947217TYPED1XXXXXXXXXX");
     expect(activeOrderRequests).toBe(1);
   });
 
@@ -109,7 +109,7 @@ describe("DB-only warehouse operations", () => {
     render(<WarehousePanel config={config} canWrite actor="operator-test" onError={onError} onNotice={onNotice} />);
 
     const input = await screen.findByLabelText("КИЗ");
-    await user.type(input, "0104006396053947217REFRESH{Enter}");
+    await user.type(input, "0104006396053947217REFRESHXXXXXXXXX{Enter}");
 
     await waitFor(() => expect(onNotice).toHaveBeenCalledWith(
       "КИЗ сохранён, но список не обновился — нажмите Обновить.",
@@ -125,7 +125,7 @@ describe("DB-only warehouse operations", () => {
     server.use(http.post("/api/v1/scans", () => HttpResponse.json({
       id: "scan-1",
       order_item_id: "item-1",
-      code: "0104006396053947217OTHER1",
+      code: "0104006396053947217OTHER1XXXXXXXXXX",
       scanned_blocks: 1,
       item_status: "not_completed",
       scanned_at: "2026-07-10T08:05:00Z",
@@ -136,12 +136,12 @@ describe("DB-only warehouse operations", () => {
     render(<WarehousePanel config={config} canWrite actor="operator-test" onError={onError} onNotice={vi.fn()} />);
 
     const input = await screen.findByLabelText("КИЗ");
-    await user.type(input, "0104006396053947217TEST01");
+    await user.type(input, "0104006396053947217TEST01XXXXXXXXXX");
     await user.click(screen.getByRole("button", { name: "Записать" }));
 
     expect(await screen.findByText("Сервер вернул другой КИЗ. Скан не подтвержден.")).toBeInTheDocument();
     await waitFor(() => expect(onError).toHaveBeenCalledWith(expect.any(Error), "Не удалось сохранить КИЗ"));
-    expect(input).toHaveValue("0104006396053947217TEST01");
+    expect(input).toHaveValue("0104006396053947217TEST01XXXXXXXXXX");
     expect(input).toHaveFocus();
   });
 
@@ -158,12 +158,12 @@ describe("DB-only warehouse operations", () => {
     render(<WarehousePanel config={config} canWrite actor="operator-test" onError={onError} onNotice={vi.fn()} />);
 
     const input = await screen.findByLabelText("КИЗ");
-    await user.type(input, "0104006396053947217TEST01");
+    await user.type(input, "0104006396053947217TEST01XXXXXXXXXX");
     await user.click(screen.getByRole("button", { name: "Записать" }));
 
     await waitFor(() => expect(onError).toHaveBeenCalledWith(expect.any(Error), "Не удалось сохранить КИЗ"));
     expect(await screen.findByText("Сохранение не подтверждено. Проверьте код и обновите заказ.")).toBeInTheDocument();
-    expect(input).toHaveValue("0104006396053947217TEST01");
+    expect(input).toHaveValue("0104006396053947217TEST01XXXXXXXXXX");
     expect(input).toHaveFocus();
   });
 
@@ -190,12 +190,12 @@ describe("DB-only warehouse operations", () => {
     render(<WarehousePanel config={config} canWrite actor="operator-test" onError={onError} onNotice={vi.fn()} />);
 
     const input = await screen.findByLabelText("КИЗ");
-    await user.type(input, "0104006396053947217BUSY01");
+    await user.type(input, "0104006396053947217BUSY01XXXXXXXXXX");
     await user.click(screen.getByRole("button", { name: "Записать" }));
 
     expect(await screen.findByText("Этот КИЗ уже занят другой позицией.")).toBeInTheDocument();
     expect(scanRequests).toBe(0);
-    expect(input).toHaveValue("0104006396053947217BUSY01");
+    expect(input).toHaveValue("0104006396053947217BUSY01XXXXXXXXXX");
     expect(input).toHaveFocus();
     expect(onError).toHaveBeenCalledWith(expect.any(Error), "Этот КИЗ уже занят другой позицией.");
   });
@@ -252,7 +252,7 @@ describe("DB-only warehouse operations", () => {
       http.get("/api/v1/kiz/availability", ({ request }) => {
         const code = new URL(request.url).searchParams.get("code") || "";
         // Первый код занят другой позицией, второй — свободен.
-        const busy = code === "0104006396053947217BUSY01";
+        const busy = code === "0104006396053947217BUSY01XXXXXXXXXX";
         return HttpResponse.json({
           code,
           available: !busy,
@@ -281,19 +281,19 @@ describe("DB-only warehouse operations", () => {
     render(<WarehousePanel config={config} canWrite actor="operator-test" onError={vi.fn()} onNotice={vi.fn()} />);
 
     const input = await screen.findByLabelText("КИЗ") as HTMLInputElement;
-    await user.type(input, "0104006396053947217BUSY01{Enter}");
+    await user.type(input, "0104006396053947217BUSY01XXXXXXXXXX{Enter}");
     expect(await screen.findByText("Этот КИЗ уже занят другой позицией.")).toBeInTheDocument();
 
     // Отклонённый код остаётся в поле для оператора, но целиком выделен.
-    expect(input).toHaveValue("0104006396053947217BUSY01");
+    expect(input).toHaveValue("0104006396053947217BUSY01XXXXXXXXXX");
     expect(input).toHaveFocus();
     expect(input.selectionStart).toBe(0);
-    expect(input.selectionEnd).toBe("0104006396053947217BUSY01".length);
+    expect(input.selectionEnd).toBe("0104006396053947217BUSY01XXXXXXXXXX".length);
 
     // Аппаратный сканер печатает следующий код поверх выделения.
-    await user.keyboard("0104006396053947217GOOD01{Enter}");
+    await user.keyboard("0104006396053947217GOOD01XXXXXXXXXX{Enter}");
 
-    await waitFor(() => expect(scanned).toEqual(["0104006396053947217GOOD01"]));
+    await waitFor(() => expect(scanned).toEqual(["0104006396053947217GOOD01XXXXXXXXXX"]));
     expect(scanned[0]).not.toContain("BUSY01");
   });
 

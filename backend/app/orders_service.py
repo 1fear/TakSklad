@@ -1,13 +1,14 @@
 import uuid
 from datetime import date, datetime, timezone
 
-from sqlalchemy import and_, exists, or_, select, text, tuple_
+from sqlalchemy import and_, desc, exists, or_, select, text, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy.orm.attributes import set_committed_value
 
 from .audit_identity import AUDIT_ACTOR_INFO_KEY, AuditActor
 from .kiz_blocklist import blocked_kiz_reason
+from .kiz_format import kiz_format_error_detail, kiz_format_violation
 from .kiz_movements_service import (
     MOVEMENT_RETURN,
     MOVEMENT_UNDO,
@@ -37,7 +38,16 @@ from .order_statuses import (
     STATUS_REMOVED_FROM_GOOGLE,
     STATUS_RETURNED,
 )
-from .schemas import KizAvailabilityRead, OrderItemRead, OrderRead, ScanCreate, ScanRead, ScanUndo
+from .schemas import (
+    KizAvailabilityRead,
+    KizRelease,
+    KizReleaseRead,
+    OrderItemRead,
+    OrderRead,
+    ScanCreate,
+    ScanRead,
+    ScanUndo,
+)
 from .skladbot_contracts import format_internal_smartup_ids
 from .scan_quantities import (
     SCAN_TYPE_AGGREGATE_BOX,
@@ -208,6 +218,140 @@ def lookup_kiz_availability(db: Session, code, order_item_id=""):
     )
 
 
+# Machine reasons an operator can pick when a busy KIZ is physically on the shelf.
+KIZ_RELEASE_REASONS = {
+    "picked_by_mistake": "Отсканирован по ошибке при сборке",
+    "returned_to_shelf": "Блок вернули на полку",
+    "order_rebuilt": "Заказ пересобрали",
+    "scanner_glitch": "Ошибка сканера",
+}
+
+
+def release_kiz(db: Session, payload: KizRelease):
+    """Free a KIZ whose block never left the warehouse.
+
+    Until this existed, a busy KIZ was a dead end for the picker: the donor order
+    was already completed, so `undo_scan` refused it and the block could not ship
+    at all. Every release is an `undo` movement plus an audit entry carrying the
+    operator reason, so the reasons accumulate instead of the blocks piling up.
+    """
+
+    code = normalize_kiz_code(payload.code)
+    violation = kiz_format_violation(code)
+    if violation:
+        raise ApiError(422, kiz_format_error_detail(code, violation))
+
+    reason = normalize_text(payload.reason)
+    if reason not in KIZ_RELEASE_REASONS:
+        raise ApiError(422, {
+            "code": "kiz_release_reason_unknown",
+            "message": "Release reason is not one of the supported reasons",
+            "supported": sorted(KIZ_RELEASE_REASONS),
+        })
+
+    lock_kiz_code_for_transaction(db, code)
+    latest_movement = latest_kiz_movement(db, code)
+    if latest_movement is None:
+        return KizReleaseRead(code=code, released=False, outcome="no_backend_history")
+    if kiz_is_available_for_outbound(latest_movement):
+        return KizReleaseRead(
+            code=code,
+            released=False,
+            outcome="already_available",
+            latest_movement_type=latest_movement.movement_type,
+        )
+
+    scan = db.execute(
+        select(ScanCode)
+        .where(ScanCode.code == code)
+        .order_by(desc(ScanCode.scanned_at), desc(ScanCode.id))
+        .limit(1)
+    ).scalar_one_or_none()
+    actor = effective_authenticated_actor(db, payload.actor)
+    audit_payload = {
+        "code": code,
+        "reason": reason,
+        "reason_text": KIZ_RELEASE_REASONS[reason],
+        "comment": normalize_text(payload.comment)[:200],
+        "workstation_id": normalize_text(payload.workstation_id),
+        "released_from_movement": latest_movement.movement_type,
+    }
+
+    if scan is None:
+        # A movement without its scan row: record the undo directly, there is no
+        # donor item left to reopen.
+        record_kiz_movement(
+            db,
+            code=code,
+            movement_type=MOVEMENT_UNDO,
+            order_id=latest_movement.order_id,
+            order_item_id=latest_movement.order_item_id,
+            source="kiz_release",
+            actor=actor,
+            workstation_id=payload.workstation_id or "",
+            raw_payload=audit_payload,
+        )
+        db.add(AuditLog(
+            action="kiz_released",
+            entity_type="kiz_code",
+            entity_id=code[:120],
+            payload=audit_payload,
+        ))
+        db.commit()
+        return KizReleaseRead(code=code, released=True, outcome="released_without_scan")
+
+    item = db.execute(
+        select(OrderItem).options(joinedload(OrderItem.order)).where(OrderItem.id == scan.order_item_id)
+    ).unique().scalar_one_or_none()
+    if item is None:
+        raise ApiError(404, "Order item of the existing scan was not found")
+
+    order = item.order
+    order_id = order.id
+    donor_request_number = normalize_text((order.raw_payload or {}).get("skladbot_request_number"))
+    original_status = order.status
+    audit_payload["donor_order_item_id"] = str(item.id)
+    audit_payload["donor_request_number"] = donor_request_number
+    audit_payload["donor_status"] = original_status
+
+    # undo_scan refuses an inactive donor, so reopen it for the call and put the
+    # status back afterwards: the donor keeps its history, only the block leaves.
+    reopened = original_status in INACTIVE_ORDER_STATUSES
+    if reopened:
+        order.status = STATUS_NOT_COMPLETED
+        db.commit()
+
+    try:
+        undo_scan(db, ScanUndo(
+            order_item_id=str(item.id),
+            code=code,
+            workstation_id=payload.workstation_id,
+            actor=payload.actor,
+        ))
+    finally:
+        if reopened:
+            donor = db.execute(select(Order).where(Order.id == order_id)).scalar_one_or_none()
+            if donor is not None:
+                donor.status = original_status
+                db.commit()
+
+    db.add(AuditLog(
+        action="kiz_released",
+        entity_type="kiz_code",
+        entity_id=code[:120],
+        payload=audit_payload,
+    ))
+    db.commit()
+    return KizReleaseRead(
+        code=code,
+        released=True,
+        outcome="released_from_donor",
+        latest_movement_type=MOVEMENT_UNDO,
+        donor_order_item_id=str(item.id),
+        donor_request_number=donor_request_number,
+    )
+
+
 def create_scan(db: Session, payload: ScanCreate):
     order_item_id = parse_uuid(payload.order_item_id, "order_item_id")
     code = str(payload.code or "").strip(" \t\r\n")
@@ -216,6 +360,10 @@ def create_scan(db: Session, payload: ScanCreate):
             "code": "kiz_format_invalid",
             "message": "Code must not be empty",
         })
+
+    format_violation = kiz_format_violation(code)
+    if format_violation:
+        raise ApiError(422, kiz_format_error_detail(code, format_violation))
 
     block_reason = blocked_kiz_reason(code)
     if block_reason:

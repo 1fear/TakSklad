@@ -1,4 +1,5 @@
 import logging
+import socket
 import tkinter as tk
 
 from .backend_events import (
@@ -18,7 +19,7 @@ from .backend_flow import (
     order_uses_backend_scan_path,
     unsaved_backend_scan_codes,
 )
-from .config import BG_MAIN, FG_MUTED, STATUS_COLUMN, SUCCESS
+from .config import BG_CARD, BG_MAIN, BORDER, DANGER, FG_MUTED, FG_TEXT, STATUS_COLUMN, SUCCESS
 from .kiz_blocklist import blocked_kiz_reason
 from .desktop_scan_rules import (
     build_product_result,
@@ -38,7 +39,18 @@ from .scan_quantities import (
     scan_metadata_for_code,
     scan_product_mismatch,
 )
-from .utils import normalize_kiz_code, validate_kiz_code
+from .backend_client import release_kiz as release_backend_kiz
+from .ui_widgets import AppButton
+from .utils import normalize_kiz_code, normalize_text, validate_kiz_code
+
+
+# Operator-facing reasons, mirrored from backend/app/orders_service.py::KIZ_RELEASE_REASONS.
+KIZ_RELEASE_REASONS = (
+    ("returned_to_shelf", "Блок вернули на полку, он не уезжал"),
+    ("picked_by_mistake", "Отсканирован по ошибке при сборке"),
+    ("order_rebuilt", "Заказ пересобрали"),
+    ("scanner_glitch", "Ошибка сканера"),
+)
 
 
 class ScanningActionsMixin:
@@ -166,6 +178,233 @@ class ScanningActionsMixin:
         return True
 
     def undo_last_scan(self):
+        return ScanningActionsMixin.undo_scan_at_index(self, len(self.scanned_codes) - 1)
+
+    def prompt_kiz_release(self, code, message):
+        """Offer to free a busy KIZ when the operator has the block in hand."""
+        if not order_uses_backend_scan_path(self.current_order):
+            return
+        if getattr(self, "tk", None) is None:
+            return
+
+        try:
+            dialog = tk.Toplevel(self)
+        except tk.TclError:
+            return
+        dialog.title("КИЗ занят")
+        dialog.configure(bg=BG_MAIN)
+        dialog.geometry("700x460")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        container = tk.Frame(dialog, bg=BG_MAIN, padx=16, pady=16)
+        container.pack(fill="both", expand=True)
+
+        tk.Label(
+            container,
+            text=message,
+            bg=BG_MAIN,
+            fg=DANGER,
+            font=("Segoe UI", 10),
+            anchor="w",
+            justify="left",
+            wraplength=650,
+        ).pack(fill="x", pady=(0, 10))
+
+        tk.Label(
+            container,
+            text="Блок физически у вас на складе? Укажите причину и освободите КИЗ",
+            bg=BG_MAIN,
+            fg=FG_TEXT,
+            font=("Segoe UI", 10, "bold"),
+            anchor="w",
+        ).pack(fill="x", pady=(0, 6))
+
+        card = tk.Frame(container, bg=BG_CARD, bd=1, highlightbackground=BORDER)
+        card.pack(fill="x")
+        reason_var = tk.StringVar(value=KIZ_RELEASE_REASONS[0][0])
+        for value, label in KIZ_RELEASE_REASONS:
+            tk.Radiobutton(
+                card,
+                text=label,
+                value=value,
+                variable=reason_var,
+                bg=BG_CARD,
+                fg=FG_TEXT,
+                selectcolor=BG_MAIN,
+                activebackground=BG_CARD,
+                font=("Segoe UI", 10),
+                anchor="w",
+            ).pack(fill="x", padx=12, pady=2)
+
+        comment_var = tk.StringVar()
+        comment_row = tk.Frame(container, bg=BG_MAIN)
+        comment_row.pack(fill="x", pady=(10, 0))
+        tk.Label(comment_row, text="Комментарий", bg=BG_MAIN, fg=FG_MUTED, font=("Segoe UI", 9), width=14, anchor="w").pack(side="left")
+        tk.Entry(
+            comment_row,
+            textvariable=comment_var,
+            bg=BG_CARD,
+            fg=FG_TEXT,
+            relief="flat",
+            bd=0,
+            font=("Segoe UI", 10),
+            highlightbackground=BORDER,
+            highlightthickness=1,
+            insertbackground=FG_TEXT,
+        ).pack(side="left", fill="x", expand=True)
+
+        actions = tk.Frame(container, bg=BG_MAIN)
+        actions.pack(fill="x", pady=(14, 0))
+
+        def confirm_release():
+            dialog.destroy()
+            ScanningActionsMixin.release_busy_kiz(self, code, reason_var.get(), comment_var.get())
+
+        AppButton(
+            actions,
+            text="✅ БЛОК У МЕНЯ, ОСВОБОДИТЬ",
+            bg=SUCCESS,
+            fg="white",
+            font=("Segoe UI", 9, "bold"),
+            relief="flat",
+            command=confirm_release,
+        ).pack(side="left", fill="x", expand=True, padx=(0, 6))
+        AppButton(
+            actions,
+            text="СКАНИРОВАТЬ ДРУГОЙ",
+            bg=FG_MUTED,
+            fg="white",
+            font=("Segoe UI", 9, "bold"),
+            relief="flat",
+            command=dialog.destroy,
+        ).pack(side="right")
+
+    def release_busy_kiz(self, code, reason, comment=""):
+        """Call the backend release endpoint and let the operator scan the block."""
+        try:
+            result = release_backend_kiz(
+                code,
+                reason,
+                comment=comment,
+                workstation_id=socket.gethostname(),
+            )
+        except Exception as exc:
+            self.show_error(f"Не удалось освободить КИЗ: {exc}")
+            return
+
+        if not (result or {}).get("released"):
+            outcome = normalize_text((result or {}).get("outcome"))
+            if outcome == "already_available":
+                self.all_existing_codes.discard(code)
+                self.show_error("КИЗ уже свободен, сканируйте блок ещё раз", popup=False)
+            else:
+                self.show_error(f"Backend не освободил КИЗ: {outcome or 'причина не указана'}")
+            return
+
+        self.all_existing_codes.discard(code)
+        donor = normalize_text((result or {}).get("donor_request_number"))
+        donor_note = f" (снят с заявки {donor})" if donor else ""
+        self.status_var.set(f"🔓 КИЗ освобождён{donor_note}, отсканируйте блок ещё раз")
+        logging.info("KIZ released by operator: reason=%s donor=%s", reason, donor or "none")
+        ScanningActionsMixin.focus_scan_entry(self)
+
+    def open_scan_codes_manager(self):
+        """List every code of the current item so the picker can undo any of them."""
+        if not self.current_order:
+            self.show_error("Нет активной позиции")
+            return
+
+        if not self.scanned_codes:
+            self.show_error("Нет кодов для отмены")
+            return
+
+        dialog = tk.Toplevel(self)
+        dialog.title("Коды позиции")
+        dialog.configure(bg=BG_MAIN)
+        dialog.geometry("700x440")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        container = tk.Frame(dialog, bg=BG_MAIN, padx=16, pady=16)
+        container.pack(fill="both", expand=True)
+
+        product = normalize_text(self.current_order.get("Товары", "")) or "позиция без названия"
+        tk.Label(
+            container,
+            text=f"Позиция: {product}",
+            bg=BG_MAIN,
+            fg=FG_MUTED,
+            font=("Segoe UI", 10),
+            anchor="w",
+        ).pack(fill="x", pady=(0, 8))
+
+        card = tk.Frame(container, bg=BG_CARD, bd=1, highlightbackground=BORDER)
+        card.pack(fill="both", expand=True)
+
+        code_list = tk.Listbox(
+            card,
+            bg=BG_CARD,
+            fg=FG_TEXT,
+            relief="flat",
+            font=("Consolas", 10),
+            selectmode="browse",
+            activestyle="none",
+        )
+        code_list.pack(fill="both", expand=True, padx=12, pady=12)
+        for position, code in enumerate(self.scanned_codes, start=1):
+            state = "сохранён" if position <= self.saved_codes_count else "в очереди"
+            code_list.insert(tk.END, f"{position:>3}. {code}  [{state}]")
+        code_list.selection_set(tk.END)
+        code_list.see(tk.END)
+
+        tk.Label(
+            container,
+            text="Блок вернулся на склад? Выберите его код и отмените, иначе КИЗ останется занятым",
+            bg=BG_MAIN,
+            fg=FG_MUTED,
+            font=("Segoe UI", 9),
+            anchor="w",
+        ).pack(fill="x", pady=(8, 0))
+
+        actions = tk.Frame(container, bg=BG_MAIN)
+        actions.pack(fill="x", pady=(10, 0))
+
+        def undo_selected():
+            selection = code_list.curselection()
+            if not selection:
+                self.show_error("Сначала выберите код в списке")
+                return
+            index = int(selection[0])
+            dialog.destroy()
+            ScanningActionsMixin.undo_scan_at_index(self, index)
+
+        AppButton(
+            actions,
+            text="↩️ ОТМЕНИТЬ ВЫБРАННЫЙ",
+            bg=DANGER,
+            fg="white",
+            font=("Segoe UI", 9, "bold"),
+            relief="flat",
+            command=undo_selected,
+        ).pack(side="left", fill="x", expand=True, padx=(0, 6))
+        AppButton(
+            actions,
+            text="ЗАКРЫТЬ",
+            bg=FG_MUTED,
+            fg="white",
+            font=("Segoe UI", 9, "bold"),
+            relief="flat",
+            command=dialog.destroy,
+        ).pack(side="right")
+
+    def undo_scan_at_index(self, index):
+        """Undo any code of the current item, not only the last one.
+
+        A picker who spots a wrong block several scans later used to have no way
+        back: the code stayed on the item forever while the block returned to the
+        shelf, and its KIZ stayed busy for good.
+        """
         if not self.ensure_update_allowed():
             return
 
@@ -185,12 +424,18 @@ class ScanningActionsMixin:
             self.show_error("Нет кодов для отмены")
             return
 
-        removed_code = self.scanned_codes.pop()
+        if not 0 <= index < len(self.scanned_codes):
+            self.show_error("Код не найден в этой позиции")
+            return
+
+        removed_code = self.scanned_codes.pop(index)
         remaining_codes = self.scanned_codes.copy()
-        was_saved = len(self.scanned_codes) < self.saved_codes_count
+        # Codes are appended in scan order, so the first saved_codes_count of them
+        # are the ones the backend already stored.
+        was_saved = index < self.saved_codes_count
 
         if not write_scan_backup("undo_scan", self.current_order, code=removed_code, codes=remaining_codes):
-            self.scanned_codes.append(removed_code)
+            self.scanned_codes.insert(index, removed_code)
             self.show_error("Не удалось сохранить локальный backup отмены. Код не отменён")
             return
 
@@ -198,12 +443,12 @@ class ScanningActionsMixin:
             try:
                 undo_backend_scan(self.current_order, removed_code)
             except Exception as exc:
-                self.scanned_codes.append(removed_code)
+                self.scanned_codes.insert(index, removed_code)
                 self.show_error(f"Не удалось отменить код в VDS: {exc}")
                 return
-            self.saved_codes_count = len(remaining_codes)
+            self.saved_codes_count -= 1
         elif was_saved:
-            self.scanned_codes.append(removed_code)
+            self.scanned_codes.insert(index, removed_code)
             self.show_error("Позиция не связана с backend. Отмена заблокирована")
             return
 
@@ -219,7 +464,8 @@ class ScanningActionsMixin:
         scanned_count = scanned_blocks_for_order(self.current_order, self.scanned_codes)
         self.progress_label.config(text=f"{scanned_count} / {plan_blocks}")
         self.last_code_label.config(text=f"Отменён код: {removed_code[:40]}...", fg=SUCCESS)
-        self.status_var.set(f"↩️ Отменён последний код ({scanned_count}/{plan_blocks})")
+        undo_label = "Отменён последний код" if index == len(remaining_codes) else "Отменён код из списка"
+        self.status_var.set(f"↩️ {undo_label} ({scanned_count}/{plan_blocks})")
 
         if scanned_count < plan_blocks:
             self.next_product_btn.config(state="disabled")
@@ -319,6 +565,9 @@ class ScanningActionsMixin:
                 else:
                     message = "Код уже использован в другом задании сегодня"
                 ScanningActionsMixin.reject_scan(self, message)
+                # A busy KIZ used to be a dead end: offer the way out right here,
+                # so a block that never left the warehouse can still ship.
+                ScanningActionsMixin.prompt_kiz_release(self, code, message)
                 return
 
         if not order_uses_backend_scan_path(self.current_order):

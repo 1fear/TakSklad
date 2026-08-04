@@ -578,6 +578,25 @@ class ScanCreate(BaseModel):
         return code
 
 
+class KizRelease(BaseModel):
+    """Operator statement that the block is physically back on the shelf."""
+
+    code: str = Field(min_length=1, max_length=512)
+    reason: str = Field(min_length=1, max_length=40)
+    comment: str = Field(default="", max_length=200)
+    workstation_id: str | None = Field(default=None, max_length=256)
+    actor: str = "desktop"
+
+
+class KizReleaseRead(BaseModel):
+    code: str
+    released: bool
+    outcome: str
+    latest_movement_type: str = ""
+    donor_order_item_id: str = ""
+    donor_request_number: str = ""
+
+
 class ScanUndo(BaseModel):
     order_item_id: str
     code: str = Field(min_length=1)

@@ -151,6 +151,7 @@ ROUTE_POLICIES: dict[tuple[str, str], RoutePolicy] = {
     ("POST", "/api/v1/scans"): _protected(PERMISSION_WAREHOUSE_WRITE, "scans:create", mutates=True),
     ("GET", "/api/v1/kiz/availability"): _protected(PERMISSION_WAREHOUSE_READ, "kiz:read"),
     ("POST", "/api/v1/scans/undo"): _protected(PERMISSION_WAREHOUSE_WRITE, "scans:undo", mutates=True),
+    ("POST", "/api/v1/kiz/release"): _protected(PERMISSION_WAREHOUSE_WRITE, "kiz:release", mutates=True),
     ("POST", "/api/v1/orders/{order_id}/complete"): _protected(PERMISSION_WAREHOUSE_WRITE, "orders:complete", mutates=True),
     ("GET", "/api/v1/returns/lookup"): _protected(PERMISSION_WAREHOUSE_READ, "returns:read"),
     ("POST", "/api/v1/returns/{order_id}"): _protected(PERMISSION_WAREHOUSE_WRITE, "returns:write", mutates=True),

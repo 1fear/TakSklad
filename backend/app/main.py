@@ -120,6 +120,7 @@ from .orders_service import list_returned_orders as list_returned_orders_in_db
 from .orders_service import lookup_kiz_availability as lookup_kiz_availability_in_db
 from .orders_service import lookup_return_order as lookup_return_order_in_db
 from .orders_service import mark_order_returned as mark_order_returned_in_db
+from .orders_service import release_kiz as release_kiz_in_db
 from .orders_service import undo_scan as undo_scan_in_db
 from .reconciliation_service import ReconciliationError, preview_daily_reconciliation, run_daily_reconciliation
 from .reports_service import build_dashboard_day_summary, build_day_report
@@ -161,6 +162,8 @@ from .schemas import (
     IncidentRead,
     IncidentStatusUpdate,
     KizAvailabilityRead,
+    KizRelease,
+    KizReleaseRead,
     LogisticsCalendarDayRead,
     LogisticsCalendarDayUpdate,
     LogisticsCalendarRead,
@@ -1496,6 +1499,14 @@ def create_scan(payload: ScanCreate, db=Depends(get_db)):
 def lookup_kiz_availability(code: str, order_item_id: str = "", db=Depends(get_db)):
     try:
         return lookup_kiz_availability_in_db(db, code, order_item_id=order_item_id)
+    except ApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@api.post("/kiz/release", response_model=KizReleaseRead)
+def release_kiz(payload: KizRelease, db=Depends(get_db)):
+    try:
+        return release_kiz_in_db(db, payload)
     except ApiError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
