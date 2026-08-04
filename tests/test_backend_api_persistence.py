@@ -4072,7 +4072,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(dates.status_code, 200)
         self.assertEqual(dates.json(), ["2026-05-30"])
 
-        report = self.client.get("/api/v1/logistics/report?shipment_date=2026-05-30")
+        report = self.client.get("/api/v1/logistics/report?shipment_date=2026-05-30&zone=city")
         self.assertEqual(report.status_code, 200)
         self.assert_xlsx_has_no_orphaned_pane_selections(report.content)
         workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
@@ -4147,7 +4147,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         imported = self.client.post("/api/v1/imports", json={"source": "excel", "filename": "orders.xlsx", "rows": rows})
         self.assertEqual(imported.status_code, 201)
 
-        report = self.client.get("/api/v1/logistics/report?shipment_date=2026-07-01")
+        report = self.client.get("/api/v1/logistics/report?shipment_date=2026-07-01&zone=city")
 
         self.assertEqual(report.status_code, 200)
         workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
@@ -4177,7 +4177,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         )
         self.assertEqual(imported.status_code, 201)
 
-        report = self.client.get("/api/v1/logistics/report?shipment_date=2026-07-20")
+        report = self.client.get("/api/v1/logistics/report?shipment_date=2026-07-20&zone=city")
 
         self.assertEqual(report.status_code, 200)
         workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
@@ -4215,7 +4215,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         )
         self.assertEqual(updated.status_code, 200)
 
-        report = self.client.get("/api/v1/logistics/report?shipment_date=2026-05-30")
+        report = self.client.get("/api/v1/logistics/report?shipment_date=2026-05-30&zone=city")
 
         self.assertEqual(report.status_code, 200)
         workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
@@ -4282,7 +4282,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertEqual(points[0].delivery_from, "08:30")
             self.assertEqual(points[0].delivery_to, "11:45")
 
-        report = self.client.get("/api/v1/logistics/report?shipment_date=2026-05-31")
+        report = self.client.get("/api/v1/logistics/report?shipment_date=2026-05-31&zone=city")
 
         self.assertEqual(report.status_code, 200)
         workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
@@ -4357,7 +4357,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(dates.status_code, 200)
         self.assertEqual(dates.json(), ["2026-05-30"])
 
-        report = self.client.get("/api/v1/logistics/report?shipment_date=2026-05-30")
+        report = self.client.get("/api/v1/logistics/report?shipment_date=2026-05-30&zone=city")
         self.assertEqual(report.status_code, 200)
         self.assert_xlsx_has_no_orphaned_pane_selections(report.content)
         workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
@@ -4409,7 +4409,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(dates.status_code, 200)
         self.assertEqual(dates.json(), ["2026-05-30"])
 
-        report = self.client.get("/api/v1/logistics/report?shipment_date=2026-05-30")
+        report = self.client.get("/api/v1/logistics/report?shipment_date=2026-05-30&zone=city")
 
         self.assertEqual(report.status_code, 200)
         workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
@@ -4441,7 +4441,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(dates.status_code, 200)
         self.assertEqual(dates.json(), [])
 
-        report = self.client.get("/api/v1/logistics/report?shipment_date=2026-05-30")
+        report = self.client.get("/api/v1/logistics/report?shipment_date=2026-05-30&zone=city")
 
         self.assertEqual(report.status_code, 404)
         self.assertIn("No logistics delivery orders", report.json()["detail"])
@@ -4473,7 +4473,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
             db.commit()
 
         dates = self.client.get("/api/v1/logistics/dates")
-        report = self.client.get("/api/v1/logistics/report?shipment_date=2026-05-30")
+        report = self.client.get("/api/v1/logistics/report?shipment_date=2026-05-30&zone=city")
 
         self.assertEqual(dates.status_code, 200)
         self.assertEqual(dates.json(), [])
@@ -4497,7 +4497,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         imported = self.client.post("/api/v1/imports", json={"source": "excel", "filename": "orders.xlsx", "rows": rows})
         self.assertEqual(imported.status_code, 201)
 
-        report = self.client.get("/api/v1/logistics/report?shipment_date=2026-05-30")
+        report = self.client.get("/api/v1/logistics/report?shipment_date=2026-05-30&zone=city")
         self.assertEqual(report.status_code, 200)
         workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
         sheet = workbook["Orders"]

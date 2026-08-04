@@ -1,3 +1,7 @@
-# Resolver guard: cffi 2.1.0 metadata was visible to uv but had no installable
-# distribution on the release Python indexes used by pip.
-cffi==2.0.0
+# Resolver guard: cffi 2.1.0 metadata was once visible to uv while no installable
+# distribution existed on the release Python indexes used by pip, so the lock was
+# held at cffi 2.0.0.
+# 2026-08-04: cffi 2.1.1 publishes 99 wheels including cp312/abi3 plus an sdist,
+# so the guard moves forward. Holding 2.0.0 kept cryptography at 49.0.0, which the
+# security gate blocks as GHSA-g6cj-pr64-35w5.
+cffi==2.1.1

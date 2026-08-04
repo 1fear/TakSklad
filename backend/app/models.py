@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import JSON, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, String, Text, Uuid, UniqueConstraint, event, func, text
+from sqlalchemy import JSON, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, Uuid, UniqueConstraint, event, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -445,6 +445,30 @@ class ClientPoint(Base):
     representative: Mapped[str | None] = mapped_column(String(255))
     delivery_from: Mapped[str] = mapped_column(String(5), nullable=False, default="10:00")
     delivery_to: Mapped[str] = mapped_column(String(5), nullable=False, default="18:00")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    raw_payload: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class LogisticsRegionPoint(Base):
+    __tablename__ = "logistics_region_points"
+    __table_args__ = (
+        UniqueConstraint(
+            "normalized_client", "latitude", "longitude",
+            name="uq_logistics_region_points_client_coordinates",
+        ),
+        Index("idx_logistics_region_points_client", "normalized_client"),
+        CheckConstraint("latitude BETWEEN -90 AND 90", name="ck_logistics_region_points_latitude"),
+        CheckConstraint("longitude BETWEEN -180 AND 180", name="ck_logistics_region_points_longitude"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    client_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    normalized_client: Mapped[str] = mapped_column(String(255), nullable=False)
+    latitude: Mapped[object] = mapped_column(Numeric(9, 6), nullable=False)
+    longitude: Mapped[object] = mapped_column(Numeric(9, 6), nullable=False)
+    agent: Mapped[str | None] = mapped_column(String(64))
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     raw_payload: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())

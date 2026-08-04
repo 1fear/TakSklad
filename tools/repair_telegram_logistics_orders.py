@@ -1092,38 +1092,46 @@ def verify_report(db, orders, audits_by_order):
     from openpyxl import load_workbook
 
     logistics = backend_module("logistics_service")
-    content, _filename = logistics.build_logistics_report_xlsx(db, TARGET_DATE.isoformat())
-    workbook = load_workbook(BytesIO(content), data_only=False, read_only=True)
+    reports = logistics.build_logistics_reports(db, TARGET_DATE.isoformat())
+    # Отчёт разделён на городской и областной, заказы проверяются по обоим
+    workbooks = [
+        load_workbook(BytesIO(report[0]), data_only=False, read_only=True)
+        for report in (reports.get("city"), reports.get("region"))
+        if report is not None
+    ]
     try:
-        if "Orders" not in workbook.sheetnames:
+        if not any("Orders" in workbook.sheetnames for workbook in workbooks):
             return 0, EXPECTED_TARGET_COUNT, 1
-        sheet = workbook["Orders"]
         rows_by_ref = {ref: [] for ref in TARGET_REFS}
         date_conflicts = 0
         value_conflicts = 0
-        for row in sheet.iter_rows(min_row=2, values_only=True):
-            ref = normalize(row[1] if len(row) > 1 else "")
-            if ref not in rows_by_ref:
+        for workbook in workbooks:
+            if "Orders" not in workbook.sheetnames:
                 continue
-            rows_by_ref[ref].append(row)
-            order = next(value for value in orders if target_ref(value) == ref)
-            audit_payload = audits_by_order[str(order.id)].payload
-            applied = audit_payload["applied"]
-            coordinates = logistics.normalize_coordinates(applied["coordinates"])
-            expected_latitude, expected_longitude = logistics.split_coordinates(coordinates)
-            if (
-                normalize(row[16]) != expected_latitude
-                or normalize(row[17]) != expected_longitude
-                or normalize(row[18]) != normalize(applied["address"])
-            ):
-                value_conflicts += 1
-            for cell in (row[19], row[20]):
-                if isinstance(cell, datetime) and cell.date() != TARGET_DATE:
-                    date_conflicts += 1
+            for row in workbook["Orders"].iter_rows(min_row=2, values_only=True):
+                ref = normalize(row[1] if len(row) > 1 else "")
+                if ref not in rows_by_ref:
+                    continue
+                rows_by_ref[ref].append(row)
+                order = next(value for value in orders if target_ref(value) == ref)
+                audit_payload = audits_by_order[str(order.id)].payload
+                applied = audit_payload["applied"]
+                coordinates = logistics.normalize_coordinates(applied["coordinates"])
+                expected_latitude, expected_longitude = logistics.split_coordinates(coordinates)
+                if (
+                    normalize(row[16]) != expected_latitude
+                    or normalize(row[17]) != expected_longitude
+                    or normalize(row[18]) != normalize(applied["address"])
+                ):
+                    value_conflicts += 1
+                for cell in (row[19], row[20]):
+                    if isinstance(cell, datetime) and cell.date() != TARGET_DATE:
+                        date_conflicts += 1
         problem_rows = 0
-        if "Требуют координаты" in workbook.sheetnames:
-            problem = workbook["Требуют координаты"]
-            for row in problem.iter_rows(min_row=2, values_only=True):
+        for workbook in workbooks:
+            if "Требуют координаты" not in workbook.sheetnames:
+                continue
+            for row in workbook["Требуют координаты"].iter_rows(min_row=2, values_only=True):
                 if normalize(row[2] if len(row) > 2 else "") in TARGET_REF_SET or normalize(
                     row[7] if len(row) > 7 else ""
                 ) in TARGET_REF_SET:
@@ -1138,7 +1146,8 @@ def verify_report(db, orders, audits_by_order):
                 value_conflicts += 1
         return report_rows, problem_rows, value_conflicts + date_conflicts
     finally:
-        workbook.close()
+        for workbook in workbooks:
+            workbook.close()
 
 
 def verify_applied(db, expected_plan_sha, *, no_send=False) -> dict:

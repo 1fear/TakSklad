@@ -1733,9 +1733,9 @@ def logistics_dates(
 
 
 @api.get("/logistics/report")
-def logistics_report(shipment_date: str, db=Depends(get_db)):
+def logistics_report(shipment_date: str, zone: str, db=Depends(get_db)):
     try:
-        content, filename = build_logistics_report_xlsx(db, shipment_date)
+        content, filename = build_logistics_report_xlsx(db, shipment_date, zone)
     except ApiError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     return Response(

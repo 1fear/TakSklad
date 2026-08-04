@@ -12,7 +12,12 @@ from .telegram_common import (
     parse_int,
     telegram_inline_keyboard,
 )
-from .telegram_output_contract import logistics_report_caption, logistics_report_filename
+from .telegram_output_contract import (
+    LOGISTICS_ZONE_CITY,
+    LOGISTICS_ZONE_REGION,
+    logistics_report_caption,
+    logistics_report_filename,
+)
 
 
 TELEGRAM_BUTTON_KIZ_BY_FILES = "Выгрузка КИЗов"
@@ -208,27 +213,37 @@ class TelegramReportProcessor(TelegramProcessorDelegate):
             self.safe_send_message(chat_id, "Не понял дату. Используйте формат 29.05.2026.")
             return False
         report_date = datetime.strptime(iso_date, "%Y-%m-%d").strftime("%d.%m.%Y")
-        try:
-            content, headers = self.backend_get_bytes("/api/v1/logistics/report", params={"shipment_date": iso_date})
-        except httpx.HTTPStatusError as exc:
-            self.safe_send_message(
+        sent = 0
+        for zone in (LOGISTICS_ZONE_CITY, LOGISTICS_ZONE_REGION):
+            try:
+                content, headers = self.backend_get_bytes(
+                    "/api/v1/logistics/report",
+                    params={"shipment_date": iso_date, "zone": zone},
+                )
+            except httpx.HTTPStatusError as exc:
+                if exc.response is not None and exc.response.status_code == 404:
+                    continue
+                self.safe_send_message(
+                    chat_id,
+                    f"Не удалось выгрузить отчёт логистики за {report_date}: {backend_http_error_detail(exc)}",
+                )
+                return False
+            except httpx.HTTPError as exc:
+                self.safe_send_message(
+                    chat_id,
+                    f"Не удалось выгрузить отчёт логистики за {report_date}: backend временно недоступен ({exc.__class__.__name__})",
+                )
+                return False
+            self.safe_send_document(
                 chat_id,
-                f"Не удалось выгрузить отчёт логистики за {report_date}: {backend_http_error_detail(exc)}",
+                content,
+                logistics_report_filename(iso_date, zone),
+                caption=logistics_report_caption(iso_date, zone),
             )
+            sent += 1
+        if not sent:
+            self.safe_send_message(chat_id, f"Нет заказов логистики за {report_date}.")
             return False
-        except httpx.HTTPError as exc:
-            self.safe_send_message(
-                chat_id,
-                f"Не удалось выгрузить отчёт логистики за {report_date}: backend временно недоступен ({exc.__class__.__name__})",
-            )
-            return False
-        filename = logistics_report_filename(iso_date)
-        self.safe_send_document(
-            chat_id,
-            content,
-            filename,
-            caption=logistics_report_caption(iso_date),
-        )
         return True
 
     def show_logistics_dates(self, chat_id):

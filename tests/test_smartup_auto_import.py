@@ -1213,8 +1213,8 @@ class SmartupAutoImportTests(unittest.TestCase):
         ]
         self.assertEqual(len(logistics_documents), 1)
         _chat_id, content, filename, caption = logistics_documents[0]
-        self.assertEqual(filename, "TakSklad_логистика_06.07.2026.xlsx")
-        self.assertEqual(caption, "Отчет логистики 06.07.2026")
+        self.assertEqual(filename, "TakSklad_логистика_город_06.07.2026.xlsx")
+        self.assertEqual(caption, "Отчет логистики город 06.07.2026")
         self.assert_xlsx_has_no_orphaned_pane_selections(content)
         workbook = openpyxl.load_workbook(BytesIO(content), data_only=True)
         self.assertIn("Orders", workbook.sheetnames)
@@ -2152,8 +2152,12 @@ class SmartupAutoImportTests(unittest.TestCase):
             logistics_route_recovery_export_date="2026-06-25",
         )
         with mock.patch(
-            "backend.app.smartup_auto_import.build_logistics_report_xlsx",
-            return_value=(b"xlsx", "TakSklad_логистика_26.06.2026.xlsx"),
+            "backend.app.smartup_auto_import.build_logistics_reports",
+            return_value={
+                "city": (b"xlsx", "TakSklad_логистика_город_26.06.2026.xlsx"),
+                "region": None,
+                "unassigned": [],
+            },
         ):
             with self.SessionLocal() as db:
                 first = send_final_logistics_reports(
@@ -2199,6 +2203,137 @@ class SmartupAutoImportTests(unittest.TestCase):
         self.assertNotIn("-1001003", safe_evidence)
         self.assertIn("auto_smartup", safe_evidence)
 
+    def test_logistics_slot_sends_both_zone_documents_and_alerts_unassigned(self):
+        sender = FakeTelegramSender()
+        config = self.config("/tmp", logistics_chat_id="-1001002")
+        unassigned_order = mock.Mock()
+        unassigned_order.client = "Незнакомый Загород"
+        unassigned_order.address = "Тестовый адрес"
+        unassigned_order.payment_type = "Наличные"
+        unassigned_order.raw_payload = {
+            "coordinates": "41.4700,69.5800",
+            "skladbot_request_number": "TEST-1",
+        }
+        unassigned_order.items = []
+
+        with mock.patch(
+            "backend.app.smartup_auto_import.build_logistics_reports",
+            return_value={
+                "city": (b"city-bytes", "TakSklad_логистика_город_26.06.2026.xlsx"),
+                "region": (b"region-bytes", "TakSklad_логистика_область_26.06.2026.xlsx"),
+                "unassigned": [unassigned_order],
+            },
+        ):
+            with self.SessionLocal() as db:
+                send_final_logistics_reports(
+                    db,
+                    config,
+                    export_date=date(2026, 6, 25),
+                    extra_delivery_dates=["2026-06-26"],
+                    telegram_sender=sender,
+                )
+                alerts = db.execute(
+                    select(PendingEvent).where(
+                        PendingEvent.event_type == "telegram_notification"
+                    )
+                ).scalars().all()
+                alert_payloads = [event.payload for event in alerts]
+
+        self.assertEqual(
+            [document[2] for document in sender.documents],
+            [
+                "TakSklad_логистика_город_26.06.2026.xlsx",
+                "TakSklad_логистика_область_26.06.2026.xlsx",
+            ],
+        )
+        self.assertEqual(
+            [document[3] for document in sender.documents],
+            ["Отчет логистики город 26.06.2026", "Отчет логистики область 26.06.2026"],
+        )
+        zone_alerts = [
+            payload for payload in alert_payloads
+            if payload.get("kind") == "logistics_zone_unassigned_order"
+        ]
+        self.assertEqual(len(zone_alerts), 1)
+        self.assertEqual(zone_alerts[0]["route_role"], "admin")
+        self.assertEqual(zone_alerts[0]["orders_count"], 1)
+        self.assertIn("Незнакомый Загород", zone_alerts[0]["text"])
+        self.assertIn("41.4700,69.5800", zone_alerts[0]["text"])
+        self.assertIn("TEST-1", zone_alerts[0]["text"])
+
+    def test_logistics_slot_alerts_when_region_directory_is_empty(self):
+        sender = FakeTelegramSender()
+        config = self.config("/tmp", logistics_chat_id="-1001002")
+        with mock.patch(
+            "backend.app.smartup_auto_import.build_logistics_reports",
+            return_value={
+                "city": (b"city-bytes", "TakSklad_логистика_город_26.06.2026.xlsx"),
+                "region": None,
+                "unassigned": [],
+                "region_directory_empty": True,
+            },
+        ):
+            with self.SessionLocal() as db:
+                results = send_final_logistics_reports(
+                    db,
+                    config,
+                    export_date=date(2026, 6, 25),
+                    extra_delivery_dates=["2026-06-26"],
+                    telegram_sender=sender,
+                )
+                alert_payloads = [
+                    event.payload
+                    for event in db.execute(
+                        select(PendingEvent).where(
+                            PendingEvent.event_type == "telegram_notification"
+                        )
+                    ).scalars().all()
+                ]
+
+        # Городской файл всё равно уходит, доставка не встаёт
+        self.assertEqual(
+            [document[2] for document in sender.documents],
+            ["TakSklad_логистика_город_26.06.2026.xlsx"],
+        )
+        self.assertEqual(results[0]["status"], "sent")
+        self.assertTrue(results[0]["region_directory_empty"])
+        directory_alerts = [
+            payload for payload in alert_payloads
+            if payload.get("kind") == "logistics_region_directory_empty"
+        ]
+        self.assertEqual(len(directory_alerts), 1)
+        self.assertEqual(directory_alerts[0]["route_role"], "admin")
+        self.assertIn("справочник", directory_alerts[0]["text"].casefold())
+
+    def test_logistics_slot_skips_empty_zone(self):
+        sender = FakeTelegramSender()
+        config = self.config("/tmp", logistics_chat_id="-1001002")
+        with mock.patch(
+            "backend.app.smartup_auto_import.build_logistics_reports",
+            return_value={
+                "city": (b"city-bytes", "TakSklad_логистика_город_26.06.2026.xlsx"),
+                "region": None,
+                "unassigned": [],
+            },
+        ):
+            with self.SessionLocal() as db:
+                results = send_final_logistics_reports(
+                    db,
+                    config,
+                    export_date=date(2026, 6, 25),
+                    extra_delivery_dates=["2026-06-26"],
+                    telegram_sender=sender,
+                )
+        self.assertEqual(
+            [document[2] for document in sender.documents],
+            ["TakSklad_логистика_город_26.06.2026.xlsx"],
+        )
+        self.assertEqual(results[0]["status"], "sent")
+        self.assertEqual(
+            results[0]["filenames"],
+            ["TakSklad_логистика_город_26.06.2026.xlsx"],
+        )
+
     def test_legacy_audits_never_trigger_automatic_resend(self):
         sender = FakeTelegramSender()
         config = self.config(
@@ -2207,8 +2342,12 @@ class SmartupAutoImportTests(unittest.TestCase):
             logistics_route_recovery_export_date="2026-07-16",
         )
         with mock.patch(
-            "backend.app.smartup_auto_import.build_logistics_report_xlsx",
-            return_value=(b"xlsx", "TakSklad_логистика.xlsx"),
+            "backend.app.smartup_auto_import.build_logistics_reports",
+            return_value={
+                "city": (b"xlsx", "TakSklad_логистика_город.xlsx"),
+                "region": None,
+                "unassigned": [],
+            },
         ):
             with self.SessionLocal() as db:
                 for delivery_date in ("2026-07-16", "2026-07-17"):
@@ -2273,8 +2412,12 @@ class SmartupAutoImportTests(unittest.TestCase):
             logistics_route_recovery_export_date="2026-07-16",
         )
         with mock.patch(
-            "backend.app.smartup_auto_import.build_logistics_report_xlsx",
-            return_value=(b"xlsx", "TakSklad_логистика.xlsx"),
+            "backend.app.smartup_auto_import.build_logistics_reports",
+            return_value={
+                "city": (b"xlsx", "TakSklad_логистика_город.xlsx"),
+                "region": None,
+                "unassigned": [],
+            },
         ):
             with self.SessionLocal() as db:
                 for delivery_date in (date(2026, 7, 16), date(2026, 7, 17)):
@@ -2327,10 +2470,14 @@ class SmartupAutoImportTests(unittest.TestCase):
         )
         first_at = datetime(2026, 6, 25, 18, 0, tzinfo=timezone.utc)
         with mock.patch(
-            "backend.app.smartup_auto_import.build_logistics_report_xlsx",
+            "backend.app.smartup_auto_import.build_logistics_reports",
             side_effect=[
                 SmartupAutoImportError("synthetic build failure"),
-                (b"xlsx", "TakSklad_логистика_26.06.2026.xlsx"),
+                {
+                "city": (b"xlsx", "TakSklad_логистика_город_26.06.2026.xlsx"),
+                "region": None,
+                "unassigned": [],
+            },
             ],
         ):
             with self.SessionLocal() as db:
@@ -2380,8 +2527,12 @@ class SmartupAutoImportTests(unittest.TestCase):
         )
         first_at = datetime(2026, 6, 25, 18, 0, tzinfo=timezone.utc)
         with mock.patch(
-            "backend.app.smartup_auto_import.build_logistics_report_xlsx",
-            return_value=(b"xlsx", "TakSklad_логистика_26.06.2026.xlsx"),
+            "backend.app.smartup_auto_import.build_logistics_reports",
+            return_value={
+                "city": (b"xlsx", "TakSklad_логистика_город_26.06.2026.xlsx"),
+                "region": None,
+                "unassigned": [],
+            },
         ):
             with self.SessionLocal() as db:
                 send_final_logistics_reports(
@@ -2463,8 +2614,12 @@ class SmartupAutoImportTests(unittest.TestCase):
             logistics_chat_id="-1001002",
         )
         with mock.patch(
-            "backend.app.smartup_auto_import.build_logistics_report_xlsx",
-            return_value=(b"xlsx", "TakSklad_логистика_26.06.2026.xlsx"),
+            "backend.app.smartup_auto_import.build_logistics_reports",
+            return_value={
+                "city": (b"xlsx", "TakSklad_логистика_город_26.06.2026.xlsx"),
+                "region": None,
+                "unassigned": [],
+            },
         ):
             with self.SessionLocal() as db:
                 db.add(Order(
@@ -2502,8 +2657,12 @@ class SmartupAutoImportTests(unittest.TestCase):
             admin_chat_ids=("1001",),
         )
         with mock.patch(
-            "backend.app.smartup_auto_import.build_logistics_report_xlsx",
-            return_value=(b"xlsx", "TakSklad_логистика_26.06.2026.xlsx"),
+            "backend.app.smartup_auto_import.build_logistics_reports",
+            return_value={
+                "city": (b"xlsx", "TakSklad_логистика_город_26.06.2026.xlsx"),
+                "region": None,
+                "unassigned": [],
+            },
         ):
             with self.SessionLocal() as db:
                 db.add(Order(

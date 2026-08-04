@@ -10,6 +10,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from .client_points_service import client_point_delivery_slot_map, delivery_slot_for_order
+from .logistics_zone_service import (
+    ZONE_CITY,
+    ZONE_REGION,
+    ZONE_UNASSIGNED,
+    classify_order,
+    load_region_index,
+    parse_coordinates,
+)
 from .models import Order, OrderItem
 from .orders_service import ApiError, STATUS_RETURNED
 from .reports_service import parse_report_date
@@ -107,7 +115,8 @@ def list_logistics_dates(db: Session):
     return dates
 
 
-def build_logistics_report_xlsx(db: Session, shipment_date: str):
+def build_logistics_reports(db: Session, shipment_date: str):
+    """Split candidate orders into city and region reports in a single pass."""
     report_date = parse_report_date(shipment_date)
     orders = db.execute(
         select(Order)
@@ -120,8 +129,57 @@ def build_logistics_report_xlsx(db: Session, shipment_date: str):
     candidate_orders = [order for order in orders if is_logistics_candidate_order(order)]
     if not candidate_orders:
         raise ApiError(404, f"No logistics delivery orders for shipment date {report_date.isoformat()}")
-    delivery_orders = [order for order in candidate_orders if is_logistics_delivery_order(order)]
-    coordinate_problem_orders = [order for order in candidate_orders if not is_logistics_delivery_order(order)]
+
+    region_index = load_region_index(db)
+    zone_orders = {ZONE_CITY: [], ZONE_REGION: []}
+    unassigned_orders = []
+    # Страховка: пустой справочник означал бы, что вся область выпадает из
+    # обоих отчётов. Тогда возвращаемся к прежнему поведению, один городской
+    # файл, а о самой пустоте сообщаем отдельным алертом
+    region_directory_empty = len(region_index) == 0
+    for order in candidate_orders:
+        if region_directory_empty:
+            zone_orders[ZONE_CITY].append(order)
+            continue
+        zone = classify_order(
+            order.client,
+            (order.raw_payload or {}).get("coordinates"),
+            region_index,
+        )
+        if zone == ZONE_UNASSIGNED:
+            unassigned_orders.append(order)
+        else:
+            zone_orders[zone].append(order)
+
+    reports = {
+        ZONE_CITY: None,
+        ZONE_REGION: None,
+        ZONE_UNASSIGNED: unassigned_orders,
+        "region_directory_empty": region_directory_empty,
+    }
+    for zone in (ZONE_CITY, ZONE_REGION):
+        if zone_orders[zone]:
+            reports[zone] = build_zone_report_xlsx(db, report_date, zone, zone_orders[zone])
+    return reports
+
+
+def build_logistics_report_xlsx(db: Session, shipment_date: str, zone: str):
+    if zone not in (ZONE_CITY, ZONE_REGION):
+        raise ApiError(422, f"Unsupported logistics zone: {zone}")
+    reports = build_logistics_reports(db, shipment_date)
+    report = reports.get(zone)
+    if report is None:
+        report_date = parse_report_date(shipment_date)
+        raise ApiError(
+            404,
+            f"No {zone} logistics delivery orders for shipment date {report_date.isoformat()}",
+        )
+    return report
+
+
+def build_zone_report_xlsx(db: Session, report_date, zone: str, zone_orders):
+    delivery_orders = [order for order in zone_orders if is_logistics_delivery_order(order)]
+    coordinate_problem_orders = [order for order in zone_orders if not is_logistics_delivery_order(order)]
     delivery_slots = client_point_delivery_slot_map(db, delivery_orders)
 
     workbook = Workbook()
@@ -172,7 +230,7 @@ def build_logistics_report_xlsx(db: Session, shipment_date: str):
     buffer = BytesIO()
     force_workbook_text_literals(workbook)
     workbook.save(buffer)
-    return buffer.getvalue(), logistics_report_filename(report_date)
+    return buffer.getvalue(), logistics_report_filename(report_date, zone)
 
 
 def set_cell(row, one_based_index, value):
@@ -180,19 +238,10 @@ def set_cell(row, one_based_index, value):
 
 
 def normalize_coordinates(value):
-    text = str(value or "").strip()
-    if not text:
+    point = parse_coordinates(value)
+    if point is None:
         return ""
-    numbers = re.findall(r"-?\d+(?:[.,]\d+)?", text)
-    if len(numbers) < 2:
-        return ""
-    try:
-        latitude = float(numbers[0].replace(",", "."))
-        longitude = float(numbers[1].replace(",", "."))
-    except ValueError:
-        return ""
-    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
-        return ""
+    latitude, longitude = point
     return f"{format_coordinate(latitude)},{format_coordinate(longitude)}"
 
 

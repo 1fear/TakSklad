@@ -1,3 +1,4 @@
+import type { OfflineEvent } from "../features/warehouse/offline/queueTypes";
 import type {
   AdminIncident,
   AdminTable,
@@ -421,3 +422,20 @@ export const logisticsCalendar: LogisticsCalendar = {
     clients: ["Клиент Альфа"],
   }],
 };
+
+/** Synthetic offline queue event. Codes are made up and never real KIZ values. */
+export function scanEvent(overrides: Partial<OfflineEvent> = {}): OfflineEvent {
+  return {
+    type: "scan",
+    orderId: "order-1",
+    orderItemId: "item-1",
+    code: "0104006396053947217ABCDEF",
+    actor: "operator-1",
+    workstationId: "web",
+    scannedAt: "2026-08-04T10:00:00+05:00",
+    createdAt: "2026-08-04T10:00:00+05:00",
+    attempts: 0,
+    lastError: "",
+    ...overrides,
+  };
+}

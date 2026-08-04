@@ -82,7 +82,7 @@ else
 {candidate_emits}
 fi
 }}
-compose() {{ echo "20260719_0020"; return 0; }}
+compose() {{ echo "20260804_0021"; return 0; }}
 verify_selected_runtime_identity() {{ return 0; }}
 check_public_url() {{ return 0; }}
 verify_telegram_import_auth_recovery_candidate() {{ return 1; }}

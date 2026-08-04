@@ -57,12 +57,28 @@ def smartup_export_filename(export_date: date, part: int) -> str:
     return f"Терминал {_display_date(export_date)} Часть {part}.xlsx"
 
 
-def logistics_report_caption(report_date: Any) -> str:
-    return f"Отчет логистики {_display_date(report_date)}"
+LOGISTICS_ZONE_CITY = "city"
+LOGISTICS_ZONE_REGION = "region"
+
+_LOGISTICS_ZONE_LABELS = {
+    LOGISTICS_ZONE_CITY: "город",
+    LOGISTICS_ZONE_REGION: "область",
+}
 
 
-def logistics_report_filename(report_date: Any) -> str:
-    return f"TakSklad_логистика_{_display_date(report_date)}.xlsx"
+def _logistics_zone_label(zone: Any) -> str:
+    label = _LOGISTICS_ZONE_LABELS.get(_text(zone))
+    if not label:
+        raise ValueError(f"Unsupported logistics zone: {zone!r}")
+    return label
+
+
+def logistics_report_caption(report_date: Any, zone: Any) -> str:
+    return f"Отчет логистики {_logistics_zone_label(zone)} {_display_date(report_date)}"
+
+
+def logistics_report_filename(report_date: Any, zone: Any) -> str:
+    return f"TakSklad_логистика_{_logistics_zone_label(zone)}_{_display_date(report_date)}.xlsx"
 
 
 def build_skladbot_daily_report_message(report: dict[str, Any]) -> str:
@@ -134,8 +150,10 @@ def runtime_output_artifacts() -> dict[str, dict[str, str]]:
             "filename": smartup_export_filename(sample_date, 1),
         },
         "smartup_logistics_report": {
-            "caption": logistics_report_caption(sample_date),
-            "filename": logistics_report_filename(sample_date),
+            "city_caption": logistics_report_caption(sample_date, LOGISTICS_ZONE_CITY),
+            "city_filename": logistics_report_filename(sample_date, LOGISTICS_ZONE_CITY),
+            "region_caption": logistics_report_caption(sample_date, LOGISTICS_ZONE_REGION),
+            "region_filename": logistics_report_filename(sample_date, LOGISTICS_ZONE_REGION),
         },
         "skladbot_daily_report": {
             "message": build_skladbot_daily_report_message(daily_report),
