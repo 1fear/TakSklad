@@ -57,6 +57,15 @@ class LogisticsZoneDryRunTests(unittest.TestCase):
         self.assertEqual(summary["unassigned"], 1)
         self.assertEqual(summary["unassigned_clients"], ["Незнакомый Загород"])
 
+    def test_summary_flags_empty_region_directory(self):
+        self.db.query(LogisticsRegionPoint).delete()
+        self.db.commit()
+        self.add_order("Тест Клиент Область", "41.018778,70.083423")
+        summary = summarize(self.db, SHIPMENT_DATE.isoformat())
+        self.assertTrue(summary["region_directory_empty"])
+        self.assertEqual(summary["city_rows"], 1)
+        self.assertEqual(summary["region_rows"], 0)
+
     def test_summary_reports_zeros_for_missing_zone(self):
         self.add_order("Тест Клиент Город", "41.3200,69.2400")
         summary = summarize(self.db, SHIPMENT_DATE.isoformat())

@@ -79,6 +79,7 @@ SMARTUP_DUPLICATE_DEAL_ALERT_KIND = "smartup_duplicate_deal_skipped"
 DUPLICATE_DEAL_ALERT_ID_LIMIT = 20
 LOGISTICS_ZONE_ALERT_KIND = "logistics_zone_unassigned_order"
 LOGISTICS_ZONE_ALERT_ORDER_LIMIT = 20
+LOGISTICS_REGION_DIRECTORY_EMPTY_ALERT_KIND = "logistics_region_directory_empty"
 SMARTUP_EXPORT_REQUEST_PATH = "/b/trade/txs/tdeal/order$export"
 SMARTUP_CHANGE_STATUS_PATH = "/b/trade/txs/tdeal/order$change_status"
 DEFAULT_SMARTUP_BASE_URL = "https://smartup.online"
@@ -955,6 +956,47 @@ def queue_logistics_zone_unassigned_alert(
             "delivery_date": delivery_date.isoformat(),
             "orders_count": len(orders),
             "text": "\n".join(lines).strip(),
+        },
+    )
+    db.add(event)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return db.execute(
+            select(PendingEvent).where(PendingEvent.idempotency_key == key)
+        ).scalar_one()
+    db.refresh(event)
+    return event
+
+
+def queue_logistics_region_directory_empty_alert(
+    db: Session,
+    delivery_date: date,
+) -> PendingEvent | None:
+    """Warn that the region directory is empty and the split fell back to one city file."""
+    if delivery_date is None:
+        return None
+    key = f"telegram:notification:v1:logistics_region_directory_empty:{delivery_date.isoformat()}"
+    existing = db.execute(
+        select(PendingEvent).where(PendingEvent.idempotency_key == key)
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+    event = PendingEvent(
+        event_type="telegram_notification",
+        status="pending",
+        idempotency_key=key,
+        payload={
+            "kind": LOGISTICS_REGION_DIRECTORY_EMPTY_ALERT_KIND,
+            "route_role": "admin",
+            "delivery_date": delivery_date.isoformat(),
+            "text": "\n".join([
+                "TakSklad: справочник областных точек пуст",
+                f"Дата отгрузки: {format_display_date(delivery_date)}",
+                "Отчёт отправлен одним городским файлом, как до разделения",
+                "Загрузите справочник, иначе областные заказы не отделяются",
+            ]),
         },
     )
     db.add(event)
@@ -2067,6 +2109,9 @@ def send_final_logistics_reports(
                     telegram_sender=telegram_sender,
                 )
             else:
+                region_directory_empty = bool(reports.get("region_directory_empty"))
+                if region_directory_empty:
+                    queue_logistics_region_directory_empty_alert(db, parsed_delivery_date)
                 queue_logistics_zone_unassigned_alert(
                     db,
                     parsed_delivery_date,
@@ -2080,6 +2125,7 @@ def send_final_logistics_reports(
                     "delivery_date": delivery_date,
                     "filenames": sent_filenames,
                     "unassigned_orders": len(reports.get(ZONE_UNASSIGNED) or []),
+                    "region_directory_empty": region_directory_empty,
                 }
                 mark_smartup_logistics_report_completed(db, event.id, result)
         results.append(result)

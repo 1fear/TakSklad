@@ -34,6 +34,7 @@ def summarize(db: Session, shipment_date: str) -> dict:
         "region_rows": count_rows(reports.get("region")),
         "unassigned": len(unassigned),
         "unassigned_clients": [order.client for order in unassigned],
+        "region_directory_empty": bool(reports.get("region_directory_empty")),
     }
 
 
@@ -53,6 +54,9 @@ def main(argv=None) -> int:
                 print(f"{shipment_date}: пропущено, {exc.__class__.__name__}")
                 continue
             print(f"{shipment_date}:")
+            if summary["region_directory_empty"]:
+                print("  ВНИМАНИЕ: справочник областных точек пуст,")
+                print("  сработала страховка, весь отчёт ушёл бы городским файлом")
             print(f"  город строк:        {summary['city_rows']}")
             print(f"  область строк:      {summary['region_rows']}")
             print(f"  вне зон заказов:    {summary['unassigned']}")

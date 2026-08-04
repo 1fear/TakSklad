@@ -133,7 +133,14 @@ def build_logistics_reports(db: Session, shipment_date: str):
     region_index = load_region_index(db)
     zone_orders = {ZONE_CITY: [], ZONE_REGION: []}
     unassigned_orders = []
+    # Страховка: пустой справочник означал бы, что вся область выпадает из
+    # обоих отчётов. Тогда возвращаемся к прежнему поведению, один городской
+    # файл, а о самой пустоте сообщаем отдельным алертом
+    region_directory_empty = len(region_index) == 0
     for order in candidate_orders:
+        if region_directory_empty:
+            zone_orders[ZONE_CITY].append(order)
+            continue
         zone = classify_order(
             order.client,
             (order.raw_payload or {}).get("coordinates"),
@@ -144,7 +151,12 @@ def build_logistics_reports(db: Session, shipment_date: str):
         else:
             zone_orders[zone].append(order)
 
-    reports = {ZONE_CITY: None, ZONE_REGION: None, ZONE_UNASSIGNED: unassigned_orders}
+    reports = {
+        ZONE_CITY: None,
+        ZONE_REGION: None,
+        ZONE_UNASSIGNED: unassigned_orders,
+        "region_directory_empty": region_directory_empty,
+    }
     for zone in (ZONE_CITY, ZONE_REGION):
         if zone_orders[zone]:
             reports[zone] = build_zone_report_xlsx(db, report_date, zone, zone_orders[zone])

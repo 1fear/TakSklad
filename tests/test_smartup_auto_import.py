@@ -2261,6 +2261,50 @@ class SmartupAutoImportTests(unittest.TestCase):
         self.assertIn("41.4700,69.5800", zone_alerts[0]["text"])
         self.assertIn("TEST-1", zone_alerts[0]["text"])
 
+    def test_logistics_slot_alerts_when_region_directory_is_empty(self):
+        sender = FakeTelegramSender()
+        config = self.config("/tmp", logistics_chat_id="-1001002")
+        with mock.patch(
+            "backend.app.smartup_auto_import.build_logistics_reports",
+            return_value={
+                "city": (b"city-bytes", "TakSklad_логистика_город_26.06.2026.xlsx"),
+                "region": None,
+                "unassigned": [],
+                "region_directory_empty": True,
+            },
+        ):
+            with self.SessionLocal() as db:
+                results = send_final_logistics_reports(
+                    db,
+                    config,
+                    export_date=date(2026, 6, 25),
+                    extra_delivery_dates=["2026-06-26"],
+                    telegram_sender=sender,
+                )
+                alert_payloads = [
+                    event.payload
+                    for event in db.execute(
+                        select(PendingEvent).where(
+                            PendingEvent.event_type == "telegram_notification"
+                        )
+                    ).scalars().all()
+                ]
+
+        # Городской файл всё равно уходит, доставка не встаёт
+        self.assertEqual(
+            [document[2] for document in sender.documents],
+            ["TakSklad_логистика_город_26.06.2026.xlsx"],
+        )
+        self.assertEqual(results[0]["status"], "sent")
+        self.assertTrue(results[0]["region_directory_empty"])
+        directory_alerts = [
+            payload for payload in alert_payloads
+            if payload.get("kind") == "logistics_region_directory_empty"
+        ]
+        self.assertEqual(len(directory_alerts), 1)
+        self.assertEqual(directory_alerts[0]["route_role"], "admin")
+        self.assertIn("справочник", directory_alerts[0]["text"].casefold())
+
     def test_logistics_slot_skips_empty_zone(self):
         sender = FakeTelegramSender()
         config = self.config("/tmp", logistics_chat_id="-1001002")

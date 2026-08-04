@@ -126,6 +126,29 @@ class LogisticsReportSplitTests(unittest.TestCase):
             build_logistics_report_xlsx(self.db, SHIPMENT_DATE.isoformat(), "region")
         self.assertEqual(raised.exception.status_code, 404)
 
+    def test_empty_directory_keeps_every_order_in_city_report(self):
+        # Справочник пуст: страховка не даёт заказам выпасть из обоих отчётов
+        self.db.query(LogisticsRegionPoint).delete()
+        self.db.commit()
+        self.add_order("Тест Клиент Область", "41.018778,70.083423")
+        self.add_order("Тест Клиент Город", "41.3200,69.2400")
+        self.add_order("Незнакомый Загород", "41.4700,69.5800")
+        reports = build_logistics_reports(self.db, SHIPMENT_DATE.isoformat())
+
+        self.assertTrue(reports["region_directory_empty"])
+        self.assertIsNone(reports["region"])
+        self.assertEqual(reports["unassigned"], [])
+        city_clients = {row[3] for row in self.sheet_rows(reports["city"][0])}
+        self.assertEqual(
+            city_clients,
+            {"Тест Клиент Область", "Тест Клиент Город", "Незнакомый Загород"},
+        )
+
+    def test_filled_directory_does_not_raise_empty_flag(self):
+        self.add_order("Тест Клиент Город", "41.3200,69.2400")
+        reports = build_logistics_reports(self.db, SHIPMENT_DATE.isoformat())
+        self.assertFalse(reports["region_directory_empty"])
+
     def test_unknown_zone_is_rejected_with_422(self):
         self.add_order("Тест Клиент Город", "41.3200,69.2400")
         with self.assertRaises(ApiError) as raised:
