@@ -298,7 +298,24 @@ def incomplete_kiz_items(items):
 def item_kiz_is_completed(item):
     if not item_requires_kiz_completion(item):
         return True
-    return item_kiz_scanned_blocks(item) >= max(0, item.quantity_blocks or 0)
+    covered = item_kiz_scanned_blocks(item) + item_kiz_released_blocks(item)
+    return covered >= max(0, item.quantity_blocks or 0)
+
+
+def item_kiz_released_blocks(item):
+    """Блоки, осознанно освобождённые из закрытого заказа через release_kiz.
+
+    Такой блок физически не уезжал клиенту и уже отдан другому заказу,
+    поэтому разрыв между scanned_blocks и quantity_blocks у донора объяснён
+    и не должен держать файл-источник незавершённым
+    """
+    try:
+        released = int((item.raw_payload or {}).get("kiz_released_blocks") or 0)
+    except (TypeError, ValueError):
+        # payload приходит из JSON и может нести мусор: тогда считаем,
+        # что разрыв ничем не объяснён, и позиция остаётся незавершённой
+        return 0
+    return max(0, released)
 
 
 def item_kiz_scanned_blocks(item):
@@ -314,7 +331,24 @@ def item_requires_kiz_completion(item):
         return False
     if item.order and str(item.order.status or "").strip() in TERMINAL_NO_KIZ_STATUSES:
         return False
+    if item_closed_without_kiz(item):
+        return False
     return bool(item.requires_kiz and (item.quantity_blocks or 0) > 0)
+
+
+def item_closed_without_kiz(item):
+    """Позиция осознанно закрыта без КИЗ и не должна держать файл-источник.
+
+    Админское действие complete-without-kiz ставит статус completed и пишет
+    признак в raw_payload, но статус completed сам по себе не терминальный
+    для КИЗ. Без чтения признака такая позиция вечно числилась незавершённой:
+    отчёт по её файлу отдавал 409, а автопередача КИЗ по всему файлу молча
+    не запускалась, включая полностью отсканированные заказы этого же файла
+    """
+    if bool((item.raw_payload or {}).get("completed_without_kiz")):
+        return True
+    order = getattr(item, "order", None)
+    return bool(order is not None and (order.raw_payload or {}).get("completed_without_kiz"))
 
 
 def summary_source_for_items(items, source_label):

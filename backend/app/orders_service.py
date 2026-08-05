@@ -308,6 +308,8 @@ def release_kiz(db: Session, payload: KizRelease):
 
     order = item.order
     order_id = order.id
+    item_id = item.id
+    original_item_status = item.status
     donor_request_number = normalize_text((order.raw_payload or {}).get("skladbot_request_number"))
     original_status = order.status
     audit_payload["donor_order_item_id"] = str(item.id)
@@ -333,7 +335,22 @@ def release_kiz(db: Session, payload: KizRelease):
             donor = db.execute(select(Order).where(Order.id == order_id)).scalar_one_or_none()
             if donor is not None:
                 donor.status = original_status
-                db.commit()
+            # undo_scan переводит позицию в not_completed, и раньше её статус
+            # никто не возвращал: файл-источник донора навсегда числился
+            # незавершённым, КИЗ-отчёт по нему отдавал 409, а автопередача
+            # КИЗ по всему файлу не запускалась. Разрыв в количестве осознан,
+            # поэтому он фиксируется явным счётчиком, а не статусом
+            donor_item = db.execute(
+                select(OrderItem).where(OrderItem.id == item_id)
+            ).scalar_one_or_none()
+            if donor_item is not None:
+                donor_item.status = original_item_status
+                donor_item_payload = dict(donor_item.raw_payload or {})
+                donor_item_payload["kiz_released_blocks"] = (
+                    int(donor_item_payload.get("kiz_released_blocks") or 0) + 1
+                )
+                donor_item.raw_payload = donor_item_payload
+            db.commit()
 
     db.add(AuditLog(
         action="kiz_released",
