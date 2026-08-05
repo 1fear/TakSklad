@@ -1,5 +1,12 @@
+"""Blocked KIZ codes must be refused identically by the desktop and the backend.
+
+Written with unittest on purpose: CI runs `python -m unittest discover -s tests`,
+so a pytest-style module here would silently never run.
+"""
+
 import os
 import sys
+import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
@@ -14,32 +21,37 @@ from taksklad.kiz_blocklist import (
 )
 
 BLOCKED_CODE = next(iter(BLOCKED_KIZ_CODES))
+# The blocklist compares whole codes, so an env entry must be the exact mark.
+ENV_BLOCKED_FIRST = "0100000000000000000extraXXXXXXXXXXX"
+ENV_BLOCKED_SECOND = "0100000000000000000secondXXXXXXXXXX"
+ENV_ALLOWED = "0100000000000000000thirdXXXXXXXXXXX"
 
 
-def test_blocked_code_is_rejected_on_desktop_and_backend():
-    assert desktop_is_blocked(BLOCKED_CODE)
-    assert backend_is_blocked(BLOCKED_CODE)
+class KizBlocklistTests(unittest.TestCase):
+    def test_blocked_code_is_rejected_on_desktop_and_backend(self):
+        self.assertTrue(desktop_is_blocked(BLOCKED_CODE))
+        self.assertTrue(backend_is_blocked(BLOCKED_CODE))
+
+    def test_blocked_code_reason_is_identical_in_both_contours(self):
+        self.assertEqual(desktop_blocked_reason(BLOCKED_CODE), backend_blocked_reason(BLOCKED_CODE))
+        self.assertTrue(desktop_blocked_reason(BLOCKED_CODE))
+
+    def test_surrounding_whitespace_does_not_bypass_block(self):
+        self.assertTrue(desktop_is_blocked(f"  {BLOCKED_CODE}\r\n"))
+        self.assertTrue(backend_is_blocked(f"\t{BLOCKED_CODE} "))
+
+    def test_regular_code_stays_allowed(self):
+        self.assertEqual(desktop_blocked_reason("0104006396053947217other-code-tailX"), "")
+        self.assertEqual(backend_blocked_reason("0104006396053947217other-code-tailX"), "")
+        self.assertEqual(desktop_blocked_reason(""), "")
+        self.assertEqual(backend_blocked_reason(None), "")
+
+    def test_backend_env_can_block_additional_codes_without_release(self):
+        environ = {"TAKSKLAD_BLOCKED_KIZ_CODES": f"{ENV_BLOCKED_FIRST}, {ENV_BLOCKED_SECOND}"}
+        self.assertTrue(backend_is_blocked(ENV_BLOCKED_FIRST, environ=environ))
+        self.assertTrue(backend_is_blocked(ENV_BLOCKED_SECOND, environ=environ))
+        self.assertFalse(backend_is_blocked(ENV_ALLOWED, environ=environ))
 
 
-def test_blocked_code_reason_is_identical_in_both_contours():
-    assert desktop_blocked_reason(BLOCKED_CODE) == backend_blocked_reason(BLOCKED_CODE)
-    assert desktop_blocked_reason(BLOCKED_CODE)
-
-
-def test_surrounding_whitespace_does_not_bypass_block():
-    assert desktop_is_blocked(f"  {BLOCKED_CODE}\r\n")
-    assert backend_is_blocked(f"\t{BLOCKED_CODE} ")
-
-
-def test_regular_code_stays_allowed():
-    assert desktop_blocked_reason("0104006396053947217other-code-tailX") == ""
-    assert backend_blocked_reason("0104006396053947217other-code-tailX") == ""
-    assert desktop_blocked_reason("") == ""
-    assert backend_blocked_reason(None) == ""
-
-
-def test_backend_env_can_block_additional_codes_without_release():
-    environ = {"TAKSKLAD_BLOCKED_KIZ_CODES": "0100000000000000000extra, 0100000000000000000second"}
-    assert backend_is_blocked("0100000000000000000extraXXXXXXXXXXX", environ=environ)
-    assert backend_is_blocked("0100000000000000000secondXXXXXXXXXX", environ=environ)
-    assert not backend_is_blocked("0100000000000000000thirdXXXXXXXXXXX", environ=environ)
+if __name__ == "__main__":
+    unittest.main()

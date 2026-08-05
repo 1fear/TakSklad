@@ -1417,14 +1417,18 @@ def require_exact_canary_principal(
     auth_context: AuthContext,
     *,
     kind: str,
-    scopes: frozenset[str],
+    scopes: frozenset[str] | tuple[frozenset[str], ...],
     identifier: str | None = None,
 ) -> None:
+    # Несколько наборов нужны десктопу: анонимный bootstrap несёт урезанный
+    # набор и дергает канарейку ДО подтверждения, полный набор появляется
+    # только после ack. Третий, произвольный набор по-прежнему запрещён.
+    allowed_scopes = scopes if isinstance(scopes, tuple) else (scopes,)
     actual_scopes = frozenset(auth_context.permissions)
     if (
         auth_context.source != "service-principal"
         or auth_context.role != kind
-        or actual_scopes != scopes
+        or actual_scopes not in allowed_scopes
         or (identifier is not None and auth_context.login != identifier)
     ):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Canary principal policy denied")
@@ -1456,7 +1460,9 @@ def desktop_returns_auth_canary(
     require_exact_canary_principal(
         auth_context,
         kind="desktop",
-        scopes=DESKTOP_RUNTIME_SCOPES,
+        # Клиент 2.0.54 гонит канарейку до ack, когда у принципала ещё
+        # bootstrap-набор, и после ротации, когда набор уже полный
+        scopes=(DESKTOP_RUNTIME_SCOPES, DESKTOP_BOOTSTRAP_SCOPES),
         identifier=canary_identifier,
     )
     response = Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -72,6 +72,32 @@ class KizFormatContractTests(unittest.TestCase):
                 )
                 self.assertEqual(violation, expected_rule, f"backend rule drifted for {code[:32]!r}")
 
+    def test_backend_ties_length_to_the_gtin_mark_type(self):
+        """Обрезанный короб длиной 35 не должен засчитываться как 50 блоков.
+
+        Аудит 06.08.2026: код короба, обрезанный ровно до длины блока, проходил
+        проверку формата, а scan_metadata_for_code по коробочному GTIN давал ему
+        block_quantity=50. Правило живёт только на backend: там есть словари GTIN,
+        и это последняя линия перед записью в scan_codes.
+        """
+        from backend.app.kiz_format import kiz_format_violation
+        from backend.app.scan_quantities import scan_metadata_for_code
+
+        truncated_box = "010400639605401221UZ111202252552251"
+        self.assertEqual(len(truncated_box), KIZ_UNIT_LENGTH)
+        self.assertEqual(scan_metadata_for_code(truncated_box)["block_quantity"], 50)
+        self.assertEqual(kiz_format_violation(truncated_box), "length_for_gtin")
+
+        full_box = "010400639605401221UZ1112022525522513824013040046110ZIG1218229310000"
+        self.assertEqual(len(full_box), KIZ_BOX_LENGTH)
+        self.assertEqual(kiz_format_violation(full_box), "")
+
+        unit = "0104006396053947217ABCDEF93GHIJKLMN"
+        self.assertEqual(kiz_format_violation(unit), "")
+        # Короб с AI 10 вместо 21 остаётся валидным, он реально встречается
+        batch_box = "010400639605407410BATCH21BOX" + "0" * (KIZ_BOX_LENGTH - 28)
+        self.assertEqual(kiz_format_violation(batch_box), "")
+
     def test_browser_corpus_matches_this_corpus_exactly(self):
         spec = KIZ_FORMAT_SPEC.read_text(encoding="utf-8")
         for code, expected_rule in CORPUS:

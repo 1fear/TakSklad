@@ -584,8 +584,10 @@ class KizRelease(BaseModel):
     code: str = Field(min_length=1, max_length=512)
     reason: str = Field(min_length=1, max_length=40)
     comment: str = Field(default="", max_length=200)
-    workstation_id: str | None = Field(default=None, max_length=256)
-    actor: str = "desktop"
+    # 120 это ширина колонок kiz_movements.workstation_id и .actor: более
+    # длинное значение падало уже после того, как undo_scan закоммитил удаление
+    workstation_id: str | None = Field(default=None, max_length=120)
+    actor: str = Field(default="desktop", max_length=120)
 
 
 class KizReleaseRead(BaseModel):
