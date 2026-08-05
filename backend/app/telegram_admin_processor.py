@@ -33,6 +33,13 @@ from .telegram_output_contract import blocked_admin_notification_text
 TELEGRAM_MANUAL_CALLBACK_PREFIX = "manual:"
 TELEGRAM_NOTIFICATION_EVENT_TYPE = "telegram_notification"
 TELEGRAM_NOTIFICATION_ACTIVE_STATUSES = ("pending", "failed")
+
+# Легаси-ветка обработки уведомлений не знала про available_at: упавшее
+# событие сразу возвращалось в выборку, цикл while True не имел предела,
+# и poll_once переставал завершаться. Вместе с уведомлениями вставал весь
+# telegram-воркер: не было getUpdates, не принимались команды и Excel-файлы
+TELEGRAM_NOTIFICATION_MAX_PER_POLL = 20
+TELEGRAM_NOTIFICATION_RETRY_BACKOFF = timedelta(minutes=5)
 TELEGRAM_CHAT_STATE_EVENT_PREFIX = "telegram_chat_state:"
 TELEGRAM_MANUAL_PRODUCTS = {
     "brown_op": "Chapman Brown OP 20",
@@ -510,10 +517,17 @@ class TelegramAdminProcessor(TelegramProcessorDelegate):
                     return None
                 event = events[0]
                 return {"id": event.id, "payload": event.payload or {}, "lease_owner": owner}
+            now = datetime.now(timezone.utc)
             stmt = (
                 select(PendingEvent)
                 .where(PendingEvent.event_type == TELEGRAM_NOTIFICATION_EVENT_TYPE)
                 .where(PendingEvent.status.in_(TELEGRAM_NOTIFICATION_ACTIVE_STATUSES))
+                # Событие, ушедшее в backoff, не забирается до срока: иначе
+                # упавшее уведомление выбирается снова тем же проходом
+                .where(
+                    (PendingEvent.available_at.is_(None))
+                    | (PendingEvent.available_at <= now)
+                )
                 .order_by(PendingEvent.created_at, PendingEvent.id)
             )
             if db.bind.dialect.name == "postgresql":
@@ -559,9 +573,15 @@ class TelegramAdminProcessor(TelegramProcessorDelegate):
                     available_at=datetime.now(timezone.utc) + timedelta(minutes=1),
                 )
             else:
+                now = datetime.now(timezone.utc)
                 event.status = status
                 event.last_error = last_error
-                event.completed_at = datetime.now(timezone.utc) if status in {"completed", "blocked"} else None
+                event.completed_at = now if status in {"completed", "blocked"} else None
+                if status not in {"completed", "blocked"}:
+                    # Тот же приём, что в lease-ветке: неудача откладывает
+                    # следующую попытку, иначе событие немедленно вернётся
+                    # в выборку и цикл не завершится
+                    event.available_at = now + TELEGRAM_NOTIFICATION_RETRY_BACKOFF
                 db.commit()
 
     def reset_stale_telegram_notification_events(self):
@@ -608,7 +628,10 @@ class TelegramAdminProcessor(TelegramProcessorDelegate):
     def process_pending_telegram_notifications(self):
         self.reset_stale_telegram_notification_events()
         processed = 0
-        while True:
+        # Предел на проход это страховка второго уровня: даже если backoff
+        # почему-то не сработал, poll_once обязан вернуть управление, иначе
+        # воркер перестаёт делать getUpdates и принимать команды из бота
+        for _attempt in range(TELEGRAM_NOTIFICATION_MAX_PER_POLL):
             event = self.take_next_telegram_notification_event()
             if not event:
                 break
