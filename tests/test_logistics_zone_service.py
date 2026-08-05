@@ -108,6 +108,29 @@ class CityBoundaryTests(unittest.TestCase):
             with self.subTest(point=name):
                 self.assertFalse(point_in_city(latitude, longitude))
 
+    def test_real_city_addresses_from_production_are_inside(self):
+        # Боевая сверка 05.08.2026: адреса городские, но лежали за прежней
+        # границей и выпадали из обоих отчётов
+        for name, latitude, longitude in (
+            ("Городок Тракторостроителей 17", 41.362903, 69.3932466),
+            ("Тукайтепа, Нурли Замин", 41.3334253477, 69.4135289406),
+            ("Богдорчилик 49", 41.255776, 69.437718),
+            ("Городок Тракторостроителей 4", 41.3595837621, 69.3895239528),
+            ("Тукайтепа, Фаровон хаёт", 41.33372585645, 69.413410809781),
+            ("Янгихаётский район, Йулдош 6А", 41.196425, 69.208234),
+        ):
+            with self.subTest(point=name):
+                self.assertTrue(point_in_city(latitude, longitude))
+
+    def test_expanded_boundary_still_excludes_region_towns(self):
+        for name, latitude, longitude in (
+            ("Пскент", 40.9000, 69.3500),
+            ("Зангиата", 41.1900, 69.1300),
+            ("Чирчик", 41.4700, 69.5800),
+        ):
+            with self.subTest(point=name):
+                self.assertFalse(point_in_city(latitude, longitude))
+
     def test_buffer_admits_point_just_outside_polygon(self):
         # около 500 м западнее западной вершины полигона, внутри буфера 1 км
         self.assertTrue(point_in_city(41.2800, 69.1340))
