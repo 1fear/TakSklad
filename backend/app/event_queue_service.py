@@ -338,7 +338,13 @@ def redact_payload(value):
 
 def is_secret_key(key):
     normalized = str(key or "").casefold()
-    return any(marker in normalized for marker in ("token", "password", "secret", "authorization"))
+    # chat_id включён по тем же основаниям, что и в sanitize_audit_payload
+    # смартап-импорта: боевой идентификатор чата не должен утекать через
+    # диагностику очереди в /api/v1/admin/events
+    return any(
+        marker in normalized
+        for marker in ("token", "password", "secret", "authorization", "chat_id")
+    )
 
 
 def normalize_text(value):

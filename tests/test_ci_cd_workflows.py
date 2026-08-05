@@ -1,3 +1,4 @@
+import re
 import copy
 import json
 import os
@@ -129,10 +130,9 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn("python -m unittest discover -s tests", workflow)
         self.assertIn("python -m compileall -q backend/app backend/migrations tools tests", workflow)
         self.assertIn("python -m alembic -c backend/alembic.ini heads", workflow)
-        self.assertIn("./tools/run_postgres_tests.sh migrations", workflow)
-        self.assertIn("./tools/run_postgres_tests.sh smoke", workflow)
-        self.assertIn("./tools/run_postgres_tests.sh readiness", workflow)
-        self.assertIn("./tools/run_postgres_tests.sh skladbot-nonlease-concurrency", workflow)
+        # Матрица гоняется одним прогоном: выборочные режимы оставляли без
+        # проверки инварианты, outbox, сагу, RBAC и input-safety
+        self.assertIn("./tools/run_postgres_tests.sh all", workflow)
         self.assertIn("tools/render_compose_test_config.py", workflow)
         self.assertIn('bash -n "$script"', workflow)
         self.assertIn('docker compose --env-file "$config_path" -f deploy/vds/docker-compose.yml config --quiet', workflow)
@@ -153,10 +153,9 @@ class CiCdWorkflowTests(unittest.TestCase):
             script,
         )
         self.assertIn("tests.test_postgres_skladbot_nonlease_concurrency", all_mode)
-        self.assertIn(
-            "./tools/run_postgres_tests.sh skladbot-nonlease-concurrency",
-            workflow,
-        )
+        # CI гоняет всю матрицу одним прогоном, отдельный режим остаётся
+        # для ручного запуска
+        self.assertIn("./tools/run_postgres_tests.sh all", workflow)
 
     def test_release_workflow_builds_each_image_once_and_consumes_exact_digests(self):
         workflow = (PROJECT_ROOT / ".github" / "workflows" / "build-windows-release.yml").read_text(
@@ -189,6 +188,24 @@ class CiCdWorkflowTests(unittest.TestCase):
         self.assertIn('"build_on_target": False', workflow)
         self.assertIn('"alembic_downgrade_allowed": False', workflow)
         self.assertGreaterEqual(workflow.count("fetch-depth: 0"), 2)
+
+    def test_every_postgres_test_module_is_in_the_all_matrix(self):
+        # Аудит 05.08.2026: test_postgres_kiz_lock_order имел собственный режим,
+        # но не входил в all, а CI гонял только семь выборочных режимов, поэтому
+        # модуль не выполнялся нигде
+        script = (PROJECT_ROOT / "tools" / "run_postgres_tests.sh").read_text(encoding="utf-8")
+        all_block = script.split("  all)", 1)[1].split(";;", 1)[0]
+        listed = set(re.findall(r"tests\.(test_postgres_[a-z_]+)", all_block))
+        on_disk = {
+            path.stem
+            for path in (PROJECT_ROOT / "tests").glob("test_postgres_*.py")
+        }
+        missing = sorted(on_disk - listed)
+        self.assertEqual(
+            missing,
+            [],
+            f"postgres-тесты не попадают в режим all и не выполняются в CI: {missing}",
+        )
 
     def test_forward_upgrade_release_needs_signed_policy_and_exact_approval(self):
         deploy = (
