@@ -323,6 +323,42 @@ class PostgresSmartupSagaTests(unittest.TestCase):
         self.assertEqual(ids[0], ids[1])
         self.assertEqual(len(persisted), 1)
 
+    def test_wide_concurrent_resolution_survives_both_unique_constraints(self):
+        # У таблицы два эквивалентных уникальных ограничения: business_identity
+        # и workflow_key. ON CONFLICT закрывает только первое, поэтому при гонке
+        # PostgreSQL мог обнаружить второе и уронить вставку с IntegrityError.
+        # Двух потоков для воспроизведения мало, оно ловится под нагрузкой
+        workers = 8
+        barrier = threading.Barrier(workers)
+
+        def resolve():
+            with self.SessionLocal() as session:
+                barrier.wait(timeout=10)
+                fulfillment = get_or_create_fulfillment(
+                    session,
+                    source_scope="smartup:project-a:filial-1",
+                    deal_id="deal-wide-concurrent",
+                    request_type="shipment",
+                    revision=1,
+                    target_status="B#W",
+                    payload={"deal_id": "deal-wide-concurrent"},
+                )
+                session.commit()
+                return fulfillment.id
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            ids = list(executor.map(lambda _index: resolve(), range(workers)))
+
+        with self.SessionLocal() as session:
+            persisted = session.execute(
+                select(SmartupFulfillment).where(
+                    SmartupFulfillment.deal_id == "deal-wide-concurrent"
+                )
+            ).scalars().all()
+
+        self.assertEqual(len(set(ids)), 1, "все потоки обязаны получить один fulfillment")
+        self.assertEqual(len(persisted), 1)
+
     def test_fulfillment_sweeper_has_singleton_advisory_lease(self):
         with self.SessionLocal() as first_session, self.SessionLocal() as second_session:
             first_acquired, first_connection = acquire_smartup_fulfillment_sweep_lock(first_session)

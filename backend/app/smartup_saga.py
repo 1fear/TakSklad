@@ -8,6 +8,7 @@ from uuid import UUID
 from sqlalchemy import or_, select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .models import Order, PendingEvent, SmartupFulfillment, SmartupFulfillmentOrder
@@ -179,8 +180,18 @@ def get_or_create_fulfillment(
             )
             .returning(SmartupFulfillment)
         )
+        # ON CONFLICT закрывает только business_identity, но у таблицы есть
+        # второе эквивалентное ограничение uq_smartup_fulfillments_workflow_key
+        # по детерминированному ключу из тех же четырёх полей. Какое из них
+        # PostgreSQL обнаружит первым при конкурентной вставке, не определено,
+        # поэтому вставка идёт в savepoint: проигравший гонку перечитывает
+        # запись победителя вместо падения с IntegrityError
         with db.no_autoflush:
-            fulfillment = db.execute(statement).scalar_one_or_none()
+            try:
+                with db.begin_nested():
+                    fulfillment = db.execute(statement).scalar_one_or_none()
+            except IntegrityError:
+                fulfillment = None
     else:
         fulfillment = db.execute(identity_query).scalar_one_or_none()
     if fulfillment is None:
