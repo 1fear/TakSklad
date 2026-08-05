@@ -67,6 +67,7 @@ from .spreadsheet_safety import SpreadsheetSafetyError
 from .auth_identities import (
     ACCEPTANCE_CANARY_IDENTIFIER,
     ACCEPTANCE_CANARY_SCOPES,
+    DESKTOP_BOOTSTRAP_SCOPES,
     DESKTOP_RUNTIME_SCOPES,
     IdentityAuthError,
     authenticate_service_token,
@@ -878,10 +879,15 @@ def desktop_pairing_ack(
     db=Depends(get_db),
 ):
     prevent_auth_response_caching(response)
+    # Анонимная выдача несёт урезанный набор, обмен setup-кода сразу полный:
+    # подтверждение принимает оба, но никакой третий набор
     if (
         auth_context.source != "service-principal"
         or auth_context.role != "desktop"
-        or frozenset(auth_context.permissions) != DESKTOP_RUNTIME_SCOPES
+        or frozenset(auth_context.permissions) not in (
+            DESKTOP_RUNTIME_SCOPES,
+            DESKTOP_BOOTSTRAP_SCOPES,
+        )
         or not auth_context.principal_id
         or not auth_context.token_id
     ):

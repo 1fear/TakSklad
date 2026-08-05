@@ -19,7 +19,11 @@ from sqlalchemy import func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 
 from .audit_identity import AuditActor, set_audit_actor
-from .auth_identities import SERVICE_PRINCIPAL_SCOPE_MATRIX, issue_service_token
+from .auth_identities import (
+    DESKTOP_BOOTSTRAP_SCOPES,
+    SERVICE_PRINCIPAL_SCOPE_MATRIX,
+    issue_service_token,
+)
 from .models import (
     AuditLog,
     DesktopPairing,
@@ -199,7 +203,8 @@ def bootstrap_desktop(
         id=uuid.uuid4(),
         identifier=f"desktop.bootstrap.{pairing_id.hex[:24]}",
         kind="desktop",
-        scopes=sorted(SERVICE_PRINCIPAL_SCOPE_MATRIX["desktop"]),
+        # Анонимная выдача: до ack только права на канарейку и само подтверждение
+        scopes=sorted(DESKTOP_BOOTSTRAP_SCOPES),
         is_active=True,
         expires_at=None,
         created_at=now,
@@ -366,6 +371,10 @@ def acknowledge_desktop_pairing(
     ):
         raise DevicePairingError("Desktop pairing acknowledgement expired", status_code=409)
     token.expires_at = now + timedelta(seconds=ACKED_TOKEN_TTL_SECONDS)
+    # Подтверждение это момент повышения прав: анонимная выдача несёт только
+    # returns:read, полный складской набор появляется здесь и ни секундой раньше
+    principal.scopes = sorted(SERVICE_PRINCIPAL_SCOPE_MATRIX["desktop"])
+    principal.updated_at = now
     pairing.status = "acked"
     pairing.acked_at = now
     pairing.updated_at = now
