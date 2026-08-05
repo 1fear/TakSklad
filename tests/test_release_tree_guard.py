@@ -28,6 +28,28 @@ class ReleaseTreePolicyTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertIsNotNone(forbidden_path_reason(path))
 
+    def test_rotated_logs_and_access_files_are_forbidden(self):
+        # Аудит 05.08.2026: ротации лога и файл боевых доступов проходили мимо
+        # обеих защит, а лежат они в рабочем дереве по 5 МБ с клиентскими строками
+        for path in (
+            "docs/TakSklad.log.1",
+            "docs/TakSklad.log.12",
+            "TakSklad.log.3",
+            ".access.local.md",
+            "docs/.access.local.md",
+        ):
+            with self.subTest(path=path):
+                self.assertIsNotNone(
+                    forbidden_path_reason(path),
+                    f"{path} должен отвергаться path-only guard",
+                )
+
+    def test_gitignore_covers_rotated_logs_and_access_files(self):
+        ignored = (PROJECT_ROOT / ".gitignore").read_text(encoding="utf-8")
+        for pattern in ("TakSklad.log.*", "docs/*.log.*", ".access.local.md"):
+            with self.subTest(pattern=pattern):
+                self.assertIn(pattern, ignored)
+
     def test_runtime_surfaces_are_explicit(self):
         self.assertTrue(is_runtime_surface("src/taksklad/new_runtime.py"))
         self.assertTrue(is_runtime_surface("tests/test_new_runtime.py"))

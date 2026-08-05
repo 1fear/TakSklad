@@ -7,7 +7,14 @@ TakSklad_queues.sqlite3-wal
 TakSklad_queues.sqlite3-shm
 google_sheet_backup_*.json
 TakSklad.log
+TakSklad.log.*
 docs/*.log
+docs/*.log.*
+
+# Файлы боевых доступов, ранее прикрытые только глобальным gitignore машины
+.access.local.md
+**/.access.local.md
+*.access.local.md
 pending_prints.json
 pending_saves.json
 pending_telegram.json
