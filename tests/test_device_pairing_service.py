@@ -14,6 +14,7 @@ from sqlalchemy.pool import StaticPool
 
 from backend.app import main as backend_main
 from backend.app.auth_identities import (
+    DESKTOP_BOOTSTRAP_SCOPES,
     SERVICE_PRINCIPAL_SCOPE_MATRIX,
     create_user_session,
     issue_service_token,
@@ -145,7 +146,8 @@ class DevicePairingServiceTests(unittest.TestCase):
         ).scalar_one()
 
         self.assertEqual(principal.kind, "desktop")
-        self.assertEqual(set(principal.scopes), set(SERVICE_PRINCIPAL_SCOPE_MATRIX["desktop"]))
+        # Анонимная выдача до ack несёт только права на канарейку и подтверждение
+        self.assertEqual(set(principal.scopes), set(DESKTOP_BOOTSTRAP_SCOPES))
         self.assertEqual(principal.identifier, bootstrapped.principal_identifier)
         self.assertTrue(principal.identifier.startswith("desktop.bootstrap."))
         self.assertEqual(pairing.status, "redeemed_unacked")

@@ -64,6 +64,14 @@ ACCEPTANCE_CANARY_SCOPES = frozenset({"returns:read"})
 ACCEPTANCE_CANARY_IDENTIFIER = "acceptance.release"
 DESKTOP_RUNTIME_SCOPES = SERVICE_PRINCIPAL_SCOPE_MATRIX["desktop"]
 
+# Анонимный /auth/desktop-bootstrap доступен из интернета без кода, пароля
+# и CSRF, поэтому до подтверждения принципал получает ровно то, что нужно
+# самому подтверждению: канареечную проверку связи и вызов ack, оба требуют
+# returns:read. Полный desktop-набор выдаётся только после ack, иначе
+# посторонний за один запрос получал право списывать и освобождать КИЗы,
+# откатывать сканы, завершать заказы и запускать sync
+DESKTOP_BOOTSTRAP_SCOPES = frozenset({"returns:read"})
+
 
 class IdentityAuthError(Exception):
     """Fail-closed authentication error with no credential material."""
