@@ -43,6 +43,14 @@ FORBIDDEN_BASENAME_PATTERNS = (
     "credentials_*.json",
     "google_sheet_backup_*.json",
     "taksklad_data_*.json",
+    # Ротации десктопного лога: taksklad.log.1 и далее. Точное имя без суффикса
+    # уже перечислено выше, но ротации мимо него проходили
+    "taksklad.log.*",
+    # Файлы боевых доступов: защита не должна зависеть от глобального
+    # gitignore конкретной машины
+    "*.access.local.md",
+    ".access.local.md",
+    "*.local.md",
 )
 
 RUNTIME_SURFACE_PREFIXES = (
