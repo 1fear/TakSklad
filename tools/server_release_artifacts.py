@@ -326,7 +326,7 @@ def main(argv: list[str] | None = None) -> int:
                 "SERVER_RELEASE_OK "
                 f"source_sha={manifest['source_sha']} "
                 f"server_release_id={manifest['server_release_id']} "
-                "desktop_api_contract=1 migration_policy=no_change"
+                f"desktop_api_contract=1 migration_policy={manifest['database']['migration_policy']}"
             )
         elif args.command == "emit-shell":
             emit_shell(manifest)

@@ -147,6 +147,77 @@ class ProductionReleaseChecksTests(unittest.TestCase):
                 max_backup_age_hours=24, max_restore_drill_age_hours=192,
             )
 
+    def test_forward_upgrade_server_preflight_advances_schema(self):
+        forward_manifest = server_manifest()
+        forward_manifest["database"]["migration_policy"] = "forward_upgrade"
+        forward_manifest["database"]["alembic_head"] = "new-head"
+
+        # Прод позади релиза: ровно то, ради чего политика и вводилась
+        evidence = self.preflight()
+        evidence["migration"].update(
+            current_revision="head",
+            expected_current_revision="head",
+            target_revision="new-head",
+        )
+        result = validate_preflight(
+            evidence, forward_manifest, require_current_backup=True,
+            require_zero_blockers=True, now=self.now,
+            max_backup_age_hours=24, max_restore_drill_age_hours=192,
+        )
+        self.assertEqual(result["current_revision"], "head")
+
+    def test_forward_upgrade_rejects_schema_already_at_release_head(self):
+        forward_manifest = server_manifest()
+        forward_manifest["database"]["migration_policy"] = "forward_upgrade"
+
+        # Мигрировать нечего, значит заявленная политика не отражает реальность
+        evidence = self.preflight()
+        evidence["migration"].update(
+            current_revision="head",
+            expected_current_revision="head",
+            target_revision="head",
+        )
+        with self.assertRaisesRegex(ProductionCheckError, "must advance the production schema"):
+            validate_preflight(
+                evidence, forward_manifest, require_current_backup=True,
+                require_zero_blockers=True, now=self.now,
+                max_backup_age_hours=24, max_restore_drill_age_hours=192,
+            )
+
+    def test_forward_upgrade_rejects_target_other_than_release_head(self):
+        forward_manifest = server_manifest()
+        forward_manifest["database"]["migration_policy"] = "forward_upgrade"
+        forward_manifest["database"]["alembic_head"] = "new-head"
+
+        evidence = self.preflight()
+        evidence["migration"].update(
+            current_revision="head",
+            expected_current_revision="head",
+            target_revision="some-other-head",
+        )
+        with self.assertRaisesRegex(ProductionCheckError, "must target its own Alembic head"):
+            validate_preflight(
+                evidence, forward_manifest, require_current_backup=True,
+                require_zero_blockers=True, now=self.now,
+                max_backup_age_hours=24, max_restore_drill_age_hours=192,
+            )
+
+    def test_unsupported_server_migration_policy_is_rejected(self):
+        broken = server_manifest()
+        broken["database"]["migration_policy"] = "expand_only"
+        evidence = self.preflight()
+        evidence["migration"].update(
+            current_revision="head",
+            expected_current_revision="head",
+            target_revision="head",
+        )
+        with self.assertRaisesRegex(ProductionCheckError, "no_change or forward_upgrade"):
+            validate_preflight(
+                evidence, broken, require_current_backup=True,
+                require_zero_blockers=True, now=self.now,
+                max_backup_age_hours=24, max_restore_drill_age_hours=192,
+            )
+
     def test_server_live_requires_release_and_contract_identity(self):
         evidence = self.live()
         evidence["runtime"] = {

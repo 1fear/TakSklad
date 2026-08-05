@@ -353,6 +353,7 @@ jobs:
       - name: Publish immutable manifest identity
         env:
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          DATABASE_MIGRATION_POLICY: ${{ inputs.database_migration_policy }}
         run: |
           set -euo pipefail
           manifest_sha256="$(sha256sum dist/server-release.json | awk '{print $1}')"
@@ -362,5 +363,5 @@ jobs:
             echo "- source_sha: \`$SOURCE_SHA\`"
             echo "- manifest_sha256: \`$manifest_sha256\`"
             echo "- desktop channel changed: \`false\`"
-            echo "- database migration policy: \`no_change\`"
+            echo "- database migration policy: \`$DATABASE_MIGRATION_POLICY\`"
           } >> "$GITHUB_STEP_SUMMARY"
