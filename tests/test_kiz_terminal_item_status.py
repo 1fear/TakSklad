@@ -37,8 +37,27 @@ class CompletedWithoutKizTests(unittest.TestCase):
         self.assertTrue(item_kiz_is_completed(item))
 
     def test_order_level_flag_also_releases_the_item(self):
-        item = make_item(status="completed", order_raw_payload={"completed_without_kiz": True})
+        item = make_item(
+            status="completed",
+            order_status="completed",
+            order_raw_payload={"completed_without_kiz": True},
+        )
         self.assertFalse(item_requires_kiz_completion(item))
+
+    def test_flag_stops_working_when_the_order_returns_to_work(self):
+        # Аудит 06.08.2026: признак липкий, его никто не снимает. Заказ,
+        # заново открытый после closed-without-kiz, обязан снова требовать КИЗ,
+        # иначе его позиции навсегда выпадают из контроля (на проде такой был)
+        item = make_item(
+            status="not_completed",
+            order_status="not_completed",
+            order_raw_payload={"completed_without_kiz": True},
+        )
+        self.assertTrue(item_requires_kiz_completion(item))
+
+    def test_item_flag_stops_working_when_the_item_returns_to_work(self):
+        item = make_item(status="not_completed", raw_payload={"completed_without_kiz": True})
+        self.assertTrue(item_requires_kiz_completion(item))
 
     def test_terminal_statuses_keep_working(self):
         for status in ("archived_no_kiz", "cancelled", "removed_from_google_sheet"):

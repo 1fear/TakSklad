@@ -15,6 +15,9 @@ from .scan_quantities import scan_block_quantity, scanned_blocks_for_scans
 from .spreadsheet_safety import force_workbook_text_literals
 
 TERMINAL_NO_KIZ_STATUSES = {"archived_no_kiz", "cancelled", "removed_from_google_sheet"}
+# Признак completed_without_kiz никто не снимает, поэтому он освобождает от КИЗ
+# только пока объект действительно закрыт
+CLOSED_WITHOUT_KIZ_STATUSES = frozenset(COMPLETED_STATUSES) | TERMINAL_NO_KIZ_STATUSES
 SMARTUP_SOURCE_IMPORT_PREFIX = "smartup:"
 SMARTUP_TERMINAL_SOURCE_FILE_PATTERN = re.compile(r"^Терминал \d{2}\.\d{2}\.\d{4} Часть \d+\.xlsx$")
 
@@ -344,11 +347,19 @@ def item_closed_without_kiz(item):
     для КИЗ. Без чтения признака такая позиция вечно числилась незавершённой:
     отчёт по её файлу отдавал 409, а автопередача КИЗ по всему файлу молча
     не запускалась, включая полностью отсканированные заказы этого же файла
+
+    Признак липкий: его никто не снимает, поэтому заказ, возвращённый в работу
+    после такого закрытия, унёс бы свои позиции из-под КИЗ-контроля насовсем.
+    Освобождает от КИЗ только связка признака с текущим закрытым статусом того
+    объекта, который этот признак несёт
     """
     if bool((item.raw_payload or {}).get("completed_without_kiz")):
-        return True
+        if str(item.status or "").strip().lower() in CLOSED_WITHOUT_KIZ_STATUSES:
+            return True
     order = getattr(item, "order", None)
-    return bool(order is not None and (order.raw_payload or {}).get("completed_without_kiz"))
+    if order is None or not (order.raw_payload or {}).get("completed_without_kiz"):
+        return False
+    return str(order.status or "").strip().lower() in CLOSED_WITHOUT_KIZ_STATUSES
 
 
 def summary_source_for_items(items, source_label):

@@ -218,6 +218,15 @@ def lookup_kiz_availability(db: Session, code, order_item_id=""):
     )
 
 
+def parse_released_blocks(value):
+    """Existing counter value, tolerant to the string junk a payload may carry."""
+
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 # Machine reasons an operator can pick when a busy KIZ is physically on the shelf.
 KIZ_RELEASE_REASONS = {
     "picked_by_mistake": "Отсканирован по ошибке при сборке",
@@ -261,12 +270,24 @@ def release_kiz(db: Session, payload: KizRelease):
             latest_movement_type=latest_movement.movement_type,
         )
 
-    scan = db.execute(
-        select(ScanCode)
-        .where(ScanCode.code == code)
-        .order_by(desc(ScanCode.scanned_at), desc(ScanCode.id))
-        .limit(1)
-    ).scalar_one_or_none()
+    # Донора берём по scan_code_id того самого движения, которое держит КИЗ.
+    # Выбор по максимальному scanned_at освобождал исторический скан, потому что
+    # scanned_at приходит от клиента и позднее offline-событие может нести
+    # старую метку: тогда release снимал чужой скан, а держащий движение
+    # оставался на месте, и один КИЗ оказывался сразу в двух заказах.
+    scan = None
+    if latest_movement.scan_code_id is not None:
+        scan = db.execute(
+            select(ScanCode).where(ScanCode.id == latest_movement.scan_code_id)
+        ).scalar_one_or_none()
+    if scan is None:
+        # Исторические движения без scan_code_id: других опор нет
+        scan = db.execute(
+            select(ScanCode)
+            .where(ScanCode.code == code)
+            .order_by(desc(ScanCode.scanned_at), desc(ScanCode.id))
+            .limit(1)
+        ).scalar_one_or_none()
     actor = effective_authenticated_actor(db, payload.actor)
     audit_payload = {
         "code": code,
@@ -316,6 +337,11 @@ def release_kiz(db: Session, payload: KizRelease):
     audit_payload["donor_request_number"] = donor_request_number
     audit_payload["donor_status"] = original_status
 
+    # Освобождённый короб уносит у донора 50 блоков, а не один, поэтому разрыв
+    # объясняем в тех же единицах, в которых его считает КИЗ-отчёт
+    released_blocks = scan_block_quantity(scan)
+    audit_payload["released_blocks"] = released_blocks
+
     # undo_scan refuses an inactive donor, so reopen it for the call and put the
     # status back afterwards: the donor keeps its history, only the block leaves.
     reopened = original_status in INACTIVE_ORDER_STATUSES
@@ -323,6 +349,7 @@ def release_kiz(db: Session, payload: KizRelease):
         order.status = STATUS_NOT_COMPLETED
         db.commit()
 
+    undo_succeeded = False
     try:
         undo_scan(db, ScanUndo(
             order_item_id=str(item.id),
@@ -330,35 +357,38 @@ def release_kiz(db: Session, payload: KizRelease):
             workstation_id=payload.workstation_id,
             actor=payload.actor,
         ))
+        undo_succeeded = True
     finally:
+        # Статусы возвращаем всегда, иначе упавший undo оставил бы закрытый
+        # заказ открытым. Счётчик и audit пишем только на успехе и тем же
+        # коммитом: иначе позиция объясняла бы разрыв, которого не было
         if reopened:
             donor = db.execute(select(Order).where(Order.id == order_id)).scalar_one_or_none()
             if donor is not None:
                 donor.status = original_status
+        donor_item = db.execute(
+            select(OrderItem).where(OrderItem.id == item_id)
+        ).scalar_one_or_none()
+        if donor_item is not None and undo_succeeded:
             # undo_scan переводит позицию в not_completed, и раньше её статус
             # никто не возвращал: файл-источник донора навсегда числился
             # незавершённым, КИЗ-отчёт по нему отдавал 409, а автопередача
             # КИЗ по всему файлу не запускалась. Разрыв в количестве осознан,
             # поэтому он фиксируется явным счётчиком, а не статусом
-            donor_item = db.execute(
-                select(OrderItem).where(OrderItem.id == item_id)
-            ).scalar_one_or_none()
-            if donor_item is not None:
-                donor_item.status = original_item_status
-                donor_item_payload = dict(donor_item.raw_payload or {})
-                donor_item_payload["kiz_released_blocks"] = (
-                    int(donor_item_payload.get("kiz_released_blocks") or 0) + 1
-                )
-                donor_item.raw_payload = donor_item_payload
-            db.commit()
-
-    db.add(AuditLog(
-        action="kiz_released",
-        entity_type="kiz_code",
-        entity_id=code[:120],
-        payload=audit_payload,
-    ))
-    db.commit()
+            donor_item.status = original_item_status
+            donor_item_payload = dict(donor_item.raw_payload or {})
+            donor_item_payload["kiz_released_blocks"] = (
+                parse_released_blocks(donor_item_payload.get("kiz_released_blocks")) + released_blocks
+            )
+            donor_item.raw_payload = donor_item_payload
+        if undo_succeeded:
+            db.add(AuditLog(
+                action="kiz_released",
+                entity_type="kiz_code",
+                entity_id=code[:120],
+                payload=audit_payload,
+            ))
+        db.commit()
     return KizReleaseRead(
         code=code,
         released=True,

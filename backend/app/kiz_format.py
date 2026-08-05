@@ -16,6 +16,8 @@ artifacts.
 
 import re
 
+from .scan_quantities import AGGREGATE_BOX_PRODUCT_PREFIXES, UNIT_PRODUCT_PREFIXES
+
 
 KIZ_MIN_LENGTH = 20
 KIZ_MAX_LENGTH = 120
@@ -43,7 +45,23 @@ RULE_MESSAGES = {
     "head": "Code does not start with a GS1 mark head (01 + 14-digit GTIN)",
     "double_mark": "Two marks were scanned into one code",
     "length": f"Code length matches neither a block ({KIZ_UNIT_LENGTH}) nor a box ({KIZ_BOX_LENGTH})",
+    "length_for_gtin": "Code length does not match the mark type of its GTIN",
 }
+
+
+def expected_length_for_gtin(code):
+    """Length a mark must have, judged by the product its GTIN belongs to.
+
+    A truncated box code can land exactly on the block length of 35 while its
+    GTIN still resolves to an aggregate box, and `scan_metadata_for_code` would
+    then credit it with 50 blocks. Tying length to the GTIN closes that.
+    """
+
+    if any(code.startswith(prefix) for prefix in AGGREGATE_BOX_PRODUCT_PREFIXES):
+        return KIZ_BOX_LENGTH
+    if any(code.startswith(prefix) for prefix in UNIT_PRODUCT_PREFIXES):
+        return KIZ_UNIT_LENGTH
+    return None
 
 
 def normalize_kiz_code(code):
@@ -71,6 +89,11 @@ def kiz_format_violation(code):
     if not KIZ_GTIN_HEAD.match(code):
         return "head"
     if len(code) in KIZ_KNOWN_LENGTHS:
+        # Длина сама по себе правдоподобна, но обрезанный короб попадает ровно
+        # в длину блока и получил бы вес 50 блоков, поэтому сверяем с типом GTIN
+        expected_length = expected_length_for_gtin(code)
+        if expected_length is not None and len(code) != expected_length:
+            return "length_for_gtin"
         return ""
     # Only codes that already failed the length check are searched for a second
     # mark: a box tail is digits, so the head pattern can appear inside it by chance.
