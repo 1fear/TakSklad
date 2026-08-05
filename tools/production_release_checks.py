@@ -137,16 +137,27 @@ def validate_preflight(
         raise ProductionCheckError("migration preflight exceeded its runtime budget")
     if manifest.get("release_kind") == "server":
         database_contract = manifest.get("database") or {}
-        if database_contract.get("migration_policy") != "no_change":
-            raise ProductionCheckError("server-only release migration policy must remain no_change")
+        policy = database_contract.get("migration_policy")
+        if policy not in ("no_change", "forward_upgrade"):
+            raise ProductionCheckError(
+                "server-only release migration policy must be no_change or forward_upgrade"
+            )
         expected_head = str(database_contract.get("alembic_head") or "")
         if not expected_head:
             raise ProductionCheckError("server-only release Alembic head is missing")
-        if (
-            migration.get("current_revision") != expected_head
-            or migration.get("target_revision") != expected_head
-        ):
-            raise ProductionCheckError("server-only release cannot change the production schema")
+        if policy == "no_change":
+            if (
+                migration.get("current_revision") != expected_head
+                or migration.get("target_revision") != expected_head
+            ):
+                raise ProductionCheckError("server-only release cannot change the production schema")
+        else:
+            # forward_upgrade целится ровно в собственную голову и обязан двигать
+            # схему вперёд: иначе заявленная политика не отражает реальность
+            if migration.get("target_revision") != expected_head:
+                raise ProductionCheckError("server-only release must target its own Alembic head")
+            if migration.get("current_revision") == expected_head:
+                raise ProductionCheckError("forward_upgrade release must advance the production schema")
     invariants = evidence.get("invariants") or {}
     require_zero(invariants.get("violations"), "invariants.violations")
     if invariants.get("zero_mutation") is not True or invariants.get("automatic_repairs") != 0:
