@@ -63,26 +63,11 @@ jobs:
         run: |
           PYTHONPATH=. python -m compileall -q backend/app backend/migrations tools tests
 
-      - name: Test PostgreSQL migration matrix
-        run: ./tools/run_postgres_tests.sh migrations
-
-      - name: Test PostgreSQL session barriers
-        run: ./tools/run_postgres_tests.sh smoke
-
-      - name: Test PostgreSQL admin rescan concurrency
-        run: ./tools/run_postgres_tests.sh admin-rescan-concurrency
-
-      - name: Test PostgreSQL readiness policy
-        run: ./tools/run_postgres_tests.sh readiness
-
-      - name: Test PostgreSQL SkladBot non-lease concurrency
-        run: ./tools/run_postgres_tests.sh skladbot-nonlease-concurrency
-
-      - name: Test PostgreSQL desktop pairing concurrency
-        run: ./tools/run_postgres_tests.sh desktop-pairing
-
-      - name: Test PostgreSQL Telegram import idempotency
-        run: ./tools/run_postgres_tests.sh telegram-import-idempotency
+      # Один прогон всей матрицы вместо семи выборочных: раньше CI поднимал
+      # контейнер семь раз и всё равно не выполнял тесты инвариантов, outbox,
+      # саги, RBAC и input-safety, а общий unittest discover их молча скипает
+      - name: Test PostgreSQL matrix
+        run: ./tools/run_postgres_tests.sh all
 
       - name: Run Python tests
         run: |
