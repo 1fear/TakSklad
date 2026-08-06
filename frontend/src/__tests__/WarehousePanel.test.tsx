@@ -7,7 +7,22 @@ import WarehousePanel from "../features/warehouse/WarehousePanel";
 import { activeOrder, orderItem } from "./fixtures";
 import { defaultHandlers, server } from "./server";
 
-beforeEach(() => {
+// jsdom has no IndexedDB. The queue logic itself is proven against the real one in
+// frontend/e2e/offline-queue-store.spec.ts, so here the panel gets the in-memory
+// store with the identical contract.
+const queueHolder = vi.hoisted(() => ({ store: null as unknown }));
+
+vi.mock("../features/warehouse/offline/queueStore", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../features/warehouse/offline/queueStore")>();
+  return {
+    ...actual,
+    createIndexedDbQueueStore: () => queueHolder.store ?? actual.createMemoryQueueStore(),
+  };
+});
+
+beforeEach(async () => {
+  const { createMemoryQueueStore } = await import("../features/warehouse/offline/queueStore");
+  queueHolder.store = createMemoryQueueStore();
   server.use(...defaultHandlers);
   vi.restoreAllMocks();
   Object.defineProperty(window, "print", { configurable: true, value: vi.fn() });
@@ -486,5 +501,238 @@ describe("DB-only warehouse operations", () => {
     await user.click(openPrintButton);
     await user.click(await screen.findByRole("button", { name: "Печать" }));
     expect(window.print).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("офлайн-очередь на операторском экране", () => {
+  const VALID_CODE = "0104006396053947217OFFLINE1XXXXXXXX";
+  const SECOND_CODE = "0104006396053947217OFFLINE2XXXXXXXX";
+
+  function availabilityOk() {
+    return http.get("/api/v1/kiz/availability", ({ request }) => HttpResponse.json({
+      code: new URL(request.url).searchParams.get("code") || "",
+      available: true,
+      reason: "no_backend_history",
+      latest_movement_type: "",
+      latest_order_item_id: "",
+      existing_order_item_id: "",
+    }));
+  }
+
+  it("при недоступном backend скан уходит в очередь, поле очищается, фокус возвращается", async () => {
+    const onError = vi.fn();
+    const onNotice = vi.fn();
+    const user = userEvent.setup();
+
+    server.use(availabilityOk(), http.post("/api/v1/scans", () => HttpResponse.error()));
+
+    render(<WarehousePanel config={config} canWrite actor="operator-test" onError={onError} onNotice={onNotice} />);
+
+    const input = await screen.findByLabelText("КИЗ");
+    await user.type(input, `${VALID_CODE}{Enter}`);
+
+    await waitFor(() => expect(onNotice).toHaveBeenCalledWith("КИЗ сохранён локально, отправим при связи"));
+    expect(input).toHaveValue("");
+    expect(input).toHaveFocus();
+    expect(await screen.findByText("В очереди: 1")).toBeInTheDocument();
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("невалидный код офлайн в очередь не попадает", async () => {
+    const onError = vi.fn();
+    const onNotice = vi.fn();
+    const user = userEvent.setup();
+
+    server.use(availabilityOk(), http.post("/api/v1/scans", () => HttpResponse.error()));
+
+    render(<WarehousePanel config={config} canWrite actor="operator-test" onError={onError} onNotice={onNotice} />);
+
+    const input = await screen.findByLabelText("КИЗ");
+    await user.type(input, "ПРИВЕТ{Enter}");
+
+    await waitFor(() => expect(onError).toHaveBeenCalled());
+    expect(screen.queryByText(/В очереди:/)).not.toBeInTheDocument();
+    expect(onNotice).not.toHaveBeenCalledWith("КИЗ сохранён локально, отправим при связи");
+  });
+
+  it("повторный скан кода из очереди отклоняется отдельным сообщением", async () => {
+    const onError = vi.fn();
+    const user = userEvent.setup();
+
+    server.use(availabilityOk(), http.post("/api/v1/scans", () => HttpResponse.error()));
+
+    render(<WarehousePanel config={config} canWrite actor="operator-test" onError={onError} onNotice={vi.fn()} />);
+
+    const input = await screen.findByLabelText("КИЗ");
+    await user.type(input, `${VALID_CODE}{Enter}`);
+    await screen.findByText("В очереди: 1");
+
+    await user.type(input, `${VALID_CODE}{Enter}`);
+
+    await waitFor(() => expect(onError).toHaveBeenCalledWith(
+      expect.anything(),
+      "Этот КИЗ уже в очереди на отправку",
+    ));
+    expect(screen.getByText("В очереди: 1")).toBeInTheDocument();
+  });
+
+  it("отказ по существу в очередь не уходит, поведение прежнее", async () => {
+    const onError = vi.fn();
+    const onNotice = vi.fn();
+    const user = userEvent.setup();
+
+    server.use(
+      availabilityOk(),
+      http.post("/api/v1/scans", () => HttpResponse.json(
+        { detail: { code: "scan_product_mismatch", message: "Товар не совпадает" } },
+        { status: 409 },
+      )),
+    );
+
+    render(<WarehousePanel config={config} canWrite actor="operator-test" onError={onError} onNotice={onNotice} />);
+
+    const input = await screen.findByLabelText("КИЗ");
+    await user.type(input, `${VALID_CODE}{Enter}`);
+
+    await waitFor(() => expect(onError).toHaveBeenCalled());
+    expect(screen.queryByText(/В очереди:/)).not.toBeInTheDocument();
+    expect(onNotice).not.toHaveBeenCalledWith("КИЗ сохранён локально, отправим при связи");
+  });
+
+  it("успешная запись очередь не задействует", async () => {
+    const onNotice = vi.fn();
+    const user = userEvent.setup();
+
+    server.use(
+      availabilityOk(),
+      http.post("/api/v1/scans", () => HttpResponse.json({
+        id: "scan-1",
+        order_item_id: "item-1",
+        code: VALID_CODE,
+        scanned_blocks: 1,
+        item_status: "not_completed",
+        scanned_at: "2026-07-10T08:05:00Z",
+        scan_type: "unit",
+        block_quantity: 1,
+      }, { status: 201 })),
+    );
+
+    render(<WarehousePanel config={config} canWrite actor="operator-test" onError={vi.fn()} onNotice={onNotice} />);
+
+    const input = await screen.findByLabelText("КИЗ");
+    await user.type(input, `${VALID_CODE}{Enter}`);
+
+    await waitFor(() => expect(onNotice).toHaveBeenCalledWith("КИЗ сохранён в PostgreSQL"));
+    expect(screen.queryByText(/В очереди:/)).not.toBeInTheDocument();
+  });
+
+  it("кнопка Отправить сейчас разбирает очередь, когда связь вернулась", async () => {
+    const onNotice = vi.fn();
+    const user = userEvent.setup();
+    let scansAccepted = 0;
+    let backendUp = false;
+
+    server.use(
+      availabilityOk(),
+      http.post("/api/v1/scans", () => {
+        if (!backendUp) return HttpResponse.error();
+        scansAccepted += 1;
+        return HttpResponse.json({
+          id: `scan-${scansAccepted}`,
+          order_item_id: "item-1",
+          code: VALID_CODE,
+          scanned_blocks: scansAccepted,
+          item_status: "not_completed",
+          scanned_at: "2026-07-10T08:05:00Z",
+          scan_type: "unit",
+          block_quantity: 1,
+        }, { status: 201 });
+      }),
+    );
+
+    render(<WarehousePanel config={config} canWrite actor="operator-test" onError={vi.fn()} onNotice={onNotice} />);
+
+    const input = await screen.findByLabelText("КИЗ");
+    await user.type(input, `${VALID_CODE}{Enter}`);
+    await screen.findByText("В очереди: 1");
+
+    backendUp = true;
+    await user.click(screen.getByRole("button", { name: "Отправить сейчас" }));
+
+    await waitFor(() => expect(screen.queryByText(/В очереди:/)).not.toBeInTheDocument());
+    expect(scansAccepted).toBe(1);
+  });
+
+  it("последний блок в очереди закрывает позицию локально, но завершение ждёт отправки", async () => {
+    const user = userEvent.setup();
+    // Сервер подтвердил один блок из двух, второй оператор сканирует уже офлайн
+    const almostDone = orderItem({ quantity_blocks: 2, scanned_blocks: 1, scan_codes: [VALID_CODE] });
+
+    server.use(
+      http.get("/api/v1/orders/active", () => HttpResponse.json([{ ...activeOrder, items: [almostDone] }])),
+      availabilityOk(),
+      http.post("/api/v1/scans", () => HttpResponse.error()),
+    );
+
+    render(<WarehousePanel config={config} canWrite actor="operator-test" onError={vi.fn()} onNotice={vi.fn()} />);
+
+    const complete = await screen.findByRole("button", { name: "Завершить заказ" });
+    expect(complete).toBeDisabled();
+    expect(screen.queryByText("Сначала отправьте очередь")).not.toBeInTheDocument();
+
+    const input = screen.getByLabelText("КИЗ");
+    await user.type(input, `${SECOND_CODE}{Enter}`);
+    await screen.findByText("В очереди: 1");
+
+    // Прогресс позиции учитывает очередь, иначе оператор отсканирует блок дважды
+    expect(screen.getByText("Готово: 2/2 блоков.")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Завершить заказ" })).toBeDisabled();
+    expect(screen.getByText("Сначала отправьте очередь")).toBeInTheDocument();
+  });
+});
+
+describe("отмена последнего КИЗа с непустой очередью", () => {
+  const QUEUED_CODE = "0104006396053947217UNDOQUEUEXXXXXXX";
+
+  it("снимает код из очереди, а не отменяет чужой скан на сервере", async () => {
+    const onNotice = vi.fn();
+    const user = userEvent.setup();
+    const undoCalls: unknown[] = [];
+    const serverItem = orderItem({
+      quantity_blocks: 3,
+      scanned_blocks: 1,
+      scan_codes: ["0104006396053947217SERVERONEXXXXXXX"],
+    });
+
+    server.use(
+      http.get("/api/v1/orders/active", () => HttpResponse.json([{ ...activeOrder, items: [serverItem] }])),
+      http.get("/api/v1/kiz/availability", ({ request }) => HttpResponse.json({
+        code: new URL(request.url).searchParams.get("code") || "",
+        available: true,
+        reason: "no_backend_history",
+        latest_movement_type: "",
+        latest_order_item_id: "",
+        existing_order_item_id: "",
+      })),
+      http.post("/api/v1/scans", () => HttpResponse.error()),
+      http.post("/api/v1/scans/undo", async ({ request }) => {
+        undoCalls.push(await request.json());
+        return HttpResponse.json({ ok: true });
+      }),
+    );
+
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<WarehousePanel config={config} canWrite actor="operator-test" onError={vi.fn()} onNotice={onNotice} />);
+
+    const input = await screen.findByLabelText("КИЗ");
+    await user.type(input, `${QUEUED_CODE}{Enter}`);
+    await screen.findByText("В очереди: 1");
+
+    await user.click(screen.getByRole("button", { name: "Отменить последний КИЗ" }));
+
+    await waitFor(() => expect(screen.queryByText(/В очереди:/)).not.toBeInTheDocument());
+    expect(undoCalls).toEqual([]);
+    expect(onNotice).toHaveBeenCalledWith("КИЗ убран из очереди, на сервер он не уходил");
   });
 });

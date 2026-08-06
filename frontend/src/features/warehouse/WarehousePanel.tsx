@@ -18,6 +18,9 @@ import OrderCorrelationDetails from "../orders/OrderCorrelationDetails";
 import PrintSheetModal, { type PrintSheetSnapshot } from "./PrintSheetModal";
 import ScannerInput from "./ScannerInput";
 import { isKizFormatRule, kizFormatMessage, kizFormatViolation, normalizeKizCode } from "./kizFormat";
+import { projectItemProgress } from "./offline/projection";
+import type { OfflineEvent } from "./offline/queueTypes";
+import { useOfflineQueue } from "./offline/useOfflineQueue";
 import "./WarehousePanel.css";
 
 type WarehousePanelProps = {
@@ -34,6 +37,20 @@ type SelectionSnapshot = {
 };
 
 const WORKSTATION_ID = "taksklad-web";
+
+/**
+ * A refusal the queue must never swallow.
+ *
+ * The offline queue exists for a backend that could not be reached. A backend
+ * that answered, but answered with a different code, is a fail-closed condition:
+ * queueing it would hide a real mismatch behind a hopeful retry.
+ */
+class ScanNotQueueableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ScanNotQueueableError";
+  }
+}
 
 export default function WarehousePanel({ config, canWrite, actor, onError, onNotice }: WarehousePanelProps) {
   const scanInputRef = useRef<HTMLInputElement>(null);
@@ -71,18 +88,6 @@ export default function WarehousePanel({ config, canWrite, actor, onError, onNot
     () => summarizeOrderProgress(selectedOrder),
     [selectedOrder],
   );
-  const itemProgress = useMemo(
-    () => summarizeItemProgress(selectedItem),
-    [selectedItem],
-  );
-  const canScanSelectedItem = Boolean(
-    canWrite
-      && selectedItem
-      && requiresKiz(selectedItem)
-      && selectedItem.quantity_blocks > 0
-      && selectedItem.scanned_blocks < selectedItem.quantity_blocks,
-  );
-  const orderComplete = Boolean(selectedOrder?.items.length) && selectedOrder!.items.every(isCompletionSatisfied);
   const hasBusyAction = Boolean(scanBusy || returnBusy);
 
   useEffect(() => {
@@ -116,6 +121,40 @@ export default function WarehousePanel({ config, canWrite, actor, onError, onNot
       setLoading(false);
     }
   }, [config]);
+
+  const onQueueReplayed = useCallback(() => {
+    void refreshOrders(false, undefined, { reportError: false });
+  }, [refreshOrders]);
+
+  const offlineQueue = useOfflineQueue(config, { onReplayed: onQueueReplayed });
+  const pendingForSelectedOrder = selectedOrder
+    ? offlineQueue.pendingScansForOrder(selectedOrder.id)
+    : 0;
+  const pendingForSelectedItem = selectedItem
+    ? Boolean(offlineQueue.lastPendingScanForItem(selectedItem.id))
+    : false;
+
+  // Progress the operator sees counts what is confirmed by the backend plus what
+  // is still waiting in the queue. Without it an offline scan looks like it never
+  // happened, and the operator scans the same block twice.
+  const projectedItem = useMemo(
+    () => (selectedItem ? projectItemProgress(selectedItem, offlineQueue.pending) : null),
+    [offlineQueue.pending, selectedItem],
+  );
+  const canScanSelectedItem = Boolean(
+    canWrite
+      && selectedItem
+      && requiresKiz(selectedItem)
+      && selectedItem.quantity_blocks > 0
+      && projectedItem
+      && !projectedItem.complete,
+  );
+  const orderComplete = Boolean(selectedOrder?.items.length)
+    && selectedOrder!.items.every((item) => isCompletionSatisfied(item, offlineQueue.pending));
+  const itemProgress = useMemo(
+    () => summarizeItemProgress(selectedItem, offlineQueue.pending),
+    [offlineQueue.pending, selectedItem],
+  );
 
   useEffect(() => {
     void refreshOrders(false);
@@ -164,16 +203,27 @@ export default function WarehousePanel({ config, canWrite, actor, onError, onNot
       return;
     }
 
+    if (offlineQueue.pendingCodes.has(code)) {
+      const message = "Этот КИЗ уже в очереди на отправку";
+      onError(new Error(message), message);
+      focusScanner(scanInputRef, true);
+      return;
+    }
+
     setScanBusy("scan");
     setAvailability(null);
     try {
-      const preflight = await lookupKizAvailability(config, code, selectedItem.id);
-      setAvailability(preflight);
-      if (!preflight.available) {
-        const message = availabilityMessage(preflight);
-        onError(new Error(message), message);
-        focusScanner(scanInputRef, true);
-        return;
+      // The preflight is a hint, not an authority. When it cannot be reached the
+      // scan still goes to the POST below, which is the only answer that counts.
+      const preflight = await lookupKizAvailability(config, code, selectedItem.id).catch(() => null);
+      if (preflight) {
+        setAvailability(preflight);
+        if (!preflight.available) {
+          const message = availabilityMessage(preflight);
+          onError(new Error(message), message);
+          focusScanner(scanInputRef, true);
+          return;
+        }
       }
 
       const result = await createScan(config, {
@@ -192,7 +242,7 @@ export default function WarehousePanel({ config, canWrite, actor, onError, onNot
           existing_order_item_id: "",
         } satisfies KizAvailability;
         setAvailability(mismatch);
-        throw new Error("Сервер вернул другой КИЗ. Скан не подтвержден.");
+        throw new ScanNotQueueableError("Сервер вернул другой КИЗ. Скан не подтвержден.");
       }
 
       setScanCode("");
@@ -212,6 +262,37 @@ export default function WarehousePanel({ config, canWrite, actor, onError, onNot
       onNotice(refreshed ? "КИЗ сохранён в PostgreSQL" : "КИЗ сохранён, но список не обновился — нажмите Обновить.");
       focusScanner(scanInputRef);
     } catch (error) {
+      // A backend that cannot be reached must not cost the warehouse a block that
+      // physically left the shelf. Refusals on the merits keep the old behaviour:
+      // the code stays in the field so the operator can see what was rejected.
+      if (!(error instanceof ScanNotQueueableError) && offlineQueue.shouldQueue(error)) {
+        try {
+          await offlineQueue.enqueueScan({
+            orderId: selectedOrder.id,
+            orderItemId: selectedItem.id,
+            code,
+            actor: actor || "web",
+            workstationId: WORKSTATION_ID,
+          });
+          setScanCode("");
+          setAvailability({
+            code,
+            available: true,
+            reason: "queued_offline",
+            latest_movement_type: "",
+            latest_order_item_id: "",
+            existing_order_item_id: "",
+          });
+          onNotice("КИЗ сохранён локально, отправим при связи");
+          focusScanner(scanInputRef);
+          return;
+        } catch (queueError) {
+          onError(queueError, "Не удалось сохранить КИЗ даже локально");
+          focusScanner(scanInputRef, true);
+          return;
+        }
+      }
+
       setAvailability((current) => current?.available ? {
         code,
         available: false,
@@ -228,8 +309,31 @@ export default function WarehousePanel({ config, canWrite, actor, onError, onNot
   }
 
   async function removeLastCode() {
+    if (!selectedItem || !canWrite || scanBusy) return;
+
+    // A queued scan never reached the backend, so undoing it there would take back
+    // somebody else's code. The newest local one goes first, exactly as the desktop
+    // queue does in `undo_backend_scan`.
+    const queued = offlineQueue.lastPendingScanForItem(selectedItem.id);
+    if (queued) {
+      if (!window.confirm(`Убрать из очереди КИЗ ${shortCode(queued.code)}?`)) return;
+      setScanBusy("undo");
+      try {
+        await offlineQueue.removePendingScan(queued);
+        setAvailability(null);
+        onNotice("КИЗ убран из очереди, на сервер он не уходил");
+        focusScanner(scanInputRef);
+      } catch (error) {
+        onError(error, "Не удалось убрать КИЗ из очереди");
+        focusScanner(scanInputRef);
+      } finally {
+        setScanBusy("");
+      }
+      return;
+    }
+
     const code = recentScans.at(-1)?.code ?? "";
-    if (!selectedItem || !code || !canWrite || scanBusy) return;
+    if (!code) return;
     if (!window.confirm(`Отменить последний КИЗ ${shortCode(code)}?`)) return;
 
     setScanBusy("undo");
@@ -347,6 +451,30 @@ export default function WarehousePanel({ config, canWrite, actor, onError, onNot
         {!canWrite && (
           <div className="warehouse-warning" role="status">
             <AlertCircle size={18} /> Доступен просмотр. Для сканирования, завершения и возвратов нужно право warehouse:write.
+          </div>
+        )}
+
+        {offlineQueue.pending.length > 0 && (
+          <div className="warehouse-queue" role="status" aria-label="Очередь на отправку">
+            <div>
+              <strong>В очереди: {offlineQueue.pending.length}</strong>
+              <span>Эти КИЗы записаны локально и уйдут в PostgreSQL, когда вернётся связь.</span>
+            </div>
+            <button
+              className="ghost-button"
+              onClick={() => void offlineQueue.replayNow()}
+              disabled={offlineQueue.replaying}
+              type="button"
+            >
+              {offlineQueue.replaying ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
+              Отправить сейчас
+            </button>
+          </div>
+        )}
+
+        {offlineQueue.storageError && (
+          <div className="warehouse-warning" role="status">
+            <AlertCircle size={18} /> Локальная очередь недоступна: при обрыве связи скан не сохранится.
           </div>
         )}
 
@@ -468,7 +596,7 @@ export default function WarehousePanel({ config, canWrite, actor, onError, onNot
                       <button
                         className="ghost-button"
                         onClick={() => void removeLastCode()}
-                        disabled={!canWrite || !recentScans.length || Boolean(scanBusy)}
+                        disabled={!canWrite || (!recentScans.length && !pendingForSelectedItem) || Boolean(scanBusy)}
                       >
                         {scanBusy === "undo" ? <Loader2 className="spin" size={16} /> : <Undo2 size={16} />}
                         Отменить последний КИЗ
@@ -476,12 +604,15 @@ export default function WarehousePanel({ config, canWrite, actor, onError, onNot
                       <button
                         className="primary-button"
                         onClick={() => void completeOrder()}
-                        disabled={!canWrite || !orderComplete || Boolean(scanBusy)}
+                        disabled={!canWrite || !orderComplete || Boolean(scanBusy) || pendingForSelectedOrder > 0}
                       >
                         {scanBusy === "complete" ? <Loader2 className="spin" size={16} /> : <CheckCircle2 size={16} />}
                         Завершить заказ
                       </button>
                     </div>
+                    {pendingForSelectedOrder > 0 && (
+                      <p className="warehouse-queue-hint">Сначала отправьте очередь</p>
+                    )}
                   </>
                 )}
               </>
@@ -550,9 +681,9 @@ function nextSelection(orders: Order[], preserve: Partial<SelectionSnapshot>) {
   };
 }
 
-function isCompletionSatisfied(item: Order["items"][number]) {
+function isCompletionSatisfied(item: Order["items"][number], pending: OfflineEvent[] = []) {
   if (!requiresKiz(item) || item.quantity_blocks <= 0) return true;
-  return item.scanned_blocks >= item.quantity_blocks;
+  return projectItemProgress(item, pending).complete;
 }
 
 function summarizeOrderProgress(order: Order | null) {
@@ -561,18 +692,19 @@ function summarizeOrderProgress(order: Order | null) {
   if (!requiredItems.length) return { label: "В заказе нет обязательных КИЗов" };
   const scannedBlocks = requiredItems.reduce((sum, item) => sum + Math.min(item.scanned_blocks, item.quantity_blocks), 0);
   const requiredBlocks = requiredItems.reduce((sum, item) => sum + item.quantity_blocks, 0);
-  const completedItems = requiredItems.filter(isCompletionSatisfied).length;
+  const completedItems = requiredItems.filter((item) => isCompletionSatisfied(item)).length;
   return {
     label: `${scannedBlocks}/${requiredBlocks} блоков · ${completedItems}/${requiredItems.length} позиций`,
   };
 }
 
-function summarizeItemProgress(item: Order["items"][number] | null) {
+function summarizeItemProgress(item: Order["items"][number] | null, pending: OfflineEvent[] = []) {
   if (!item) return "Позиция не выбрана";
   if (!requiresKiz(item) || item.quantity_blocks <= 0) return "Позиция не влияет на завершение по КИЗам.";
-  const remaining = Math.max(0, item.quantity_blocks - item.scanned_blocks);
-  if (remaining === 0) return `Готово: ${item.scanned_blocks}/${item.quantity_blocks} блоков.`;
-  return `Осталось ${remaining} блок. · ${item.scanned_blocks}/${item.quantity_blocks} уже записано.`;
+  const progress = projectItemProgress(item, pending);
+  const remaining = Math.max(0, item.quantity_blocks - progress.scannedBlocks);
+  if (remaining === 0) return `Готово: ${progress.scannedBlocks}/${item.quantity_blocks} блоков.`;
+  return `Осталось ${remaining} блок. · ${progress.scannedBlocks}/${item.quantity_blocks} уже записано.`;
 }
 
 function recentScanEntries(item: Order["items"][number] | null) {
@@ -608,7 +740,11 @@ function orderToPrintSnapshot(order: Order): PrintSheetSnapshot {
 }
 
 function availabilityMessage(availability: KizAvailability) {
-  if (availability.available) return availability.reason === "saved" ? "КИЗ подтверждён и записан." : "КИЗ доступен для записи.";
+  if (availability.available) {
+    if (availability.reason === "saved") return "КИЗ подтверждён и записан.";
+    if (availability.reason === "queued_offline") return "КИЗ сохранён локально, отправим при связи.";
+    return "КИЗ доступен для записи.";
+  }
   if (isKizFormatRule(availability.reason)) return kizFormatMessage(availability.reason);
   switch (availability.reason) {
     case "same_order_item_scan":

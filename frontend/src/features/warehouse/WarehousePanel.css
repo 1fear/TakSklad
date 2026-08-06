@@ -9,7 +9,25 @@
   background: #f2f7ef;
 }
 
+.warehouse-queue {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid #e6dcc4;
+  border-radius: 12px;
+  padding: 14px 16px;
+  background: #fbf6e9;
+}
+
+.warehouse-queue-hint {
+  margin: 8px 0 0;
+  color: #8a6d1f;
+  font-size: 13px;
+}
+
 .warehouse-print-ready div,
+.warehouse-queue div,
 .warehouse-progress,
 .warehouse-item-progress,
 .warehouse-recent-scans,
@@ -19,6 +37,7 @@
 }
 
 .warehouse-print-ready span,
+.warehouse-queue span,
 .warehouse-progress span,
 .warehouse-item-progress span,
 .warehouse-recent-head span {
