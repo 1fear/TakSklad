@@ -7,7 +7,7 @@
  *
  * Safety rests on the backend being idempotent per (order_item_id, code):
  * `create_scan` returns the existing scan instead of creating a second one
- * (`backend/app/orders_service.py:240-241`), so replaying an event the backend
+ * (`backend/app/orders_service.py:435-436`), so replaying an event the backend
  * already accepted cannot double-count a block.
  *
  * Two rules keep the queue draining without hammering a dead backend:
