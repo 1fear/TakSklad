@@ -33,6 +33,7 @@ from backend.app.smartup_auto_import import (
     parse_int,
     preview_delivery_groups,
     prepare_orphaned_smartup_sagas,
+    queue_smartup_duplicate_deal_alert,
     run_due_smartup_auto_imports,
     run_due_smartup_logistics_reports,
     run_smartup_auto_import_once,
@@ -619,6 +620,83 @@ class SmartupAutoImportTests(unittest.TestCase):
 
         self.assertEqual(rows[0]["Адрес"], "GPS: 41.311081,69.240562")
         self.assertEqual(rows[0]["Координаты"], "41.311081,69.240562")
+
+    def test_build_import_rows_closes_db_transaction_before_reverse_geocode(self):
+        config = self.config("/tmp")
+        orders = [
+            sample_order(delivery_address_full="", delivery_address_short=""),
+            sample_order(
+                deal_id="643",
+                delivery_address_full="",
+                delivery_address_short="",
+                person_latitude="41.300000",
+                person_longitude="69.200000",
+            ),
+        ]
+
+        with self.SessionLocal() as db:
+            in_transaction_during_geocode = []
+
+            def fake_geocode(coordinates, cache=None):
+                in_transaction_during_geocode.append(db.in_transaction())
+                return (f"Ташкент, {coordinates}", "")
+
+            with mock.patch(
+                "backend.app.smartup_auto_import.reverse_geocode_yandex",
+                side_effect=fake_geocode,
+            ):
+                rows = build_import_rows(
+                    orders,
+                    datetime(2026, 6, 25).date(),
+                    "Терминал 25.06.2026 Часть 1.xlsx",
+                    config,
+                    db=db,
+                )
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(in_transaction_during_geocode, [False, False])
+
+    def test_status_change_runs_without_open_db_transaction(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = self.config(tmp_dir, backend_import_enabled=True, change_status_enabled=True)
+            in_transaction_during_status_change = []
+            with mock.patch.dict("os.environ", {"SKLADBOT_CREATE_REQUESTS_MODE": "dry_run"}, clear=False):
+                with self.SessionLocal() as db:
+                    class TransactionAwareSmartupClient(FakeSmartupClient):
+                        def change_status(inner_self, deal_ids, status_code):
+                            in_transaction_during_status_change.append(db.in_transaction())
+                            return super().change_status(deal_ids, status_code)
+
+                    fake = TransactionAwareSmartupClient([sample_order()])
+                    result = run_smartup_auto_import_once(
+                        db,
+                        config,
+                        now=datetime(2026, 6, 25, 12, 0, tzinfo=ZoneInfo("Asia/Tashkent")),
+                        slot_label="12:00",
+                        smartup_client=fake,
+                    )
+
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(fake.changed, [(["642"], "B#W")])
+            self.assertEqual(in_transaction_during_status_change, [False])
+
+    def test_duplicate_deal_alert_leaves_read_transaction_open(self):
+        """Путь, из-за которого статусы Smartup меняются после закрытия транзакции.
+
+        Алерт по пропущенным дубликатам заканчивается db.refresh(), а он после
+        commit открывает транзакцию чтения. Между этим алертом и change_status
+        коммита больше нет, поэтому она дожила бы до сетевого вызова тем же
+        способом, каким это уже стоило экспорта в #111.
+        """
+        with self.SessionLocal() as db:
+            queue_smartup_duplicate_deal_alert(
+                db,
+                datetime(2026, 6, 25).date(),
+                "12:00",
+                ["642"],
+                part=1,
+            )
+            self.assertTrue(db.in_transaction())
 
     def test_shadow_preview_writes_export_but_does_not_change_status_or_import(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
