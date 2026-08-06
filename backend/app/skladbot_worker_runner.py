@@ -13,10 +13,12 @@ from .skladbot_contracts import normalize_lookup_text
 from .skladbot_request_dry_run import process_pending_skladbot_request_creates
 from .skladbot_return_requests import process_pending_skladbot_return_request_creates
 from .skladbot_worker import update_orders_from_skladbot
+from .log_redaction import install_secret_redaction
 from .worker_observability import observed_worker_cycle, record_cycle_progress
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+install_secret_redaction()
 
 
 def worker_interval_seconds() -> int:

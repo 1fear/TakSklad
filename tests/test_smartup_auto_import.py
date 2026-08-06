@@ -1277,6 +1277,64 @@ class SmartupAutoImportTests(unittest.TestCase):
         self.assertEqual(len(logistics_events), 1)
         self.assertEqual(logistics_events[0].status, "completed")
 
+    def test_slot_closes_transaction_before_external_smartup_call(self):
+        """Слот не должен уходить в сеть с открытой транзакцией БД.
+
+        06.08.2026 экспорт Smartup занял 14.5 с, а приложение ставит своим соединениям
+        idle_in_transaction_session_timeout=10 с. Postgres оборвал соединение прямо
+        посреди слота, слот упал с OperationalError и застрял в processing на полчаса.
+        """
+        seen = {}
+
+        def spy(db, config, **kwargs):
+            seen["in_transaction"] = db.in_transaction()
+            raise SmartupAutoImportError("остановлено сразу после проверки транзакции")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = self.config(tmp_dir)
+            with self.SessionLocal() as db:
+                with mock.patch(
+                    "backend.app.smartup_auto_import.run_smartup_auto_import_once",
+                    side_effect=spy,
+                ):
+                    with self.assertRaises(SmartupAutoImportError):
+                        run_scheduled_smartup_auto_import_slot(
+                            db,
+                            config,
+                            now=datetime(2026, 6, 25, 12, 0, tzinfo=ZoneInfo("Asia/Tashkent")),
+                            slot_label="12:00",
+                            smartup_client=FakeSmartupClient([sample_order()]),
+                            telegram_sender=FakeTelegramSender(),
+                        )
+
+        self.assertIs(seen["in_transaction"], False)
+
+    def test_slot_failure_reporting_does_not_mask_the_original_error(self):
+        """Если БД недоступна, отметить отказ не выйдет, но наружу идёт исходная ошибка."""
+        original = SmartupAutoImportError("исходная ошибка слота")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = self.config(tmp_dir)
+            with self.SessionLocal() as db:
+                with mock.patch(
+                    "backend.app.smartup_auto_import.run_smartup_auto_import_once",
+                    side_effect=original,
+                ), mock.patch(
+                    "backend.app.smartup_auto_import.mark_smartup_slot_failed",
+                    side_effect=RuntimeError("соединение с БД оборвано"),
+                ):
+                    with self.assertRaises(SmartupAutoImportError) as caught:
+                        run_scheduled_smartup_auto_import_slot(
+                            db,
+                            config,
+                            now=datetime(2026, 6, 25, 12, 0, tzinfo=ZoneInfo("Asia/Tashkent")),
+                            slot_label="12:00",
+                            smartup_client=FakeSmartupClient([sample_order()]),
+                            telegram_sender=FakeTelegramSender(),
+                        )
+
+        self.assertIs(caught.exception, original)
+
     def test_failed_scheduled_slot_can_be_retried_without_duplicate_order(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             config = self.config(tmp_dir, backend_import_enabled=True, change_status_enabled=True)
