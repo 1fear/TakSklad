@@ -1330,6 +1330,10 @@ def run_smartup_auto_import_once(
             failed_ids=status_change_failed_deal_ids,
         )
     else:
+        # Импорты уже закоммичены, открытой осталась транзакция чтения, и она
+        # попала бы под idle_in_transaction_session_timeout на время вызова.
+        if db.in_transaction():
+            db.commit()
         status_change = client.change_status(unique_deal_ids(selected_orders), config.waiting_status_code)
         if config.saga_mode == "shadow":
             record_shadow_results(
@@ -2533,6 +2537,39 @@ def delivery_dates_from_smartup_run_results(results: list[dict[str, Any]]) -> li
     ))
 
 
+def prefetch_delivery_resolutions(
+    orders: list[dict[str, Any]],
+    config: SmartupAutoImportConfig,
+    *,
+    db: Session | None,
+) -> dict[date, Any]:
+    """Разрешить даты отгрузки заранее, одним проходом по БД.
+
+    Резолв читает logistics_calendar_days, а геокодер ходит в сеть, и вперемешку
+    внутри цикла это оставляет транзакцию чтения открытой на время внешнего вызова,
+    как это уже стоило слота 15:00 на экспорте 06.08.2026 (#111).
+
+    Ошибки резолва здесь не поднимаются: их поднимет сам цикл, в прежнем порядке
+    относительно проверок deal_id и delivery_date.
+    """
+    if db is None:
+        return {}
+    resolutions: dict[date, Any] = {}
+    for order in orders:
+        delivery_date = parse_smartup_date(order.get("delivery_date"))
+        if delivery_date is None or delivery_date in resolutions:
+            continue
+        try:
+            resolutions[delivery_date] = resolve_effective_delivery_date(
+                db,
+                delivery_date,
+                default_non_working_weekdays=config.disabled_weekdays,
+            )
+        except ValueError:
+            continue
+    return resolutions
+
+
 def build_import_rows(
     orders: list[dict[str, Any]],
     export_date: date,
@@ -2543,6 +2580,10 @@ def build_import_rows(
 ) -> list[dict[str, Any]]:
     rows = []
     geocode_cache: dict[str, tuple[str, str]] = {}
+    delivery_resolutions = prefetch_delivery_resolutions(orders, config, db=db)
+    if db is not None and db.in_transaction():
+        # Ниже цикл уходит в сеть за геокодированием, транзакция чтения его не переживёт.
+        db.commit()
     for order_index, order in enumerate(orders, start=1):
         deal_id = normalize_text(order.get("deal_id"))
         if not deal_id:
@@ -2550,11 +2591,13 @@ def build_import_rows(
         delivery_date = parse_smartup_date(order.get("delivery_date"))
         if delivery_date is None:
             raise SmartupAutoImportError(f"Smartup deal_id={deal_id}: нет delivery_date")
-        delivery_resolution = resolve_effective_delivery_date(
-            db,
-            delivery_date,
-            default_non_working_weekdays=config.disabled_weekdays,
-        )
+        delivery_resolution = delivery_resolutions.get(delivery_date)
+        if delivery_resolution is None:
+            delivery_resolution = resolve_effective_delivery_date(
+                db,
+                delivery_date,
+                default_non_working_weekdays=config.disabled_weekdays,
+            )
         client = normalize_text(order.get("person_name") or order.get("person_code"))
         if not client:
             raise SmartupAutoImportError(f"Smartup deal_id={deal_id}: нет person_name")
