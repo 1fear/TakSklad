@@ -49,4 +49,62 @@ describe("projectItemProgress", () => {
     const broken = { id: "item-1" } as { id: string; quantity_blocks: number; scanned_blocks: number };
     expect(projectItemProgress(broken, [])).toEqual({ scannedBlocks: 0, pendingBlocks: 0, complete: false });
   });
+
+  it("агрегатный короб считается как 50 блоков, а не как один скан", () => {
+    const bigItem = { id: "item-1", quantity_blocks: 100, scanned_blocks: 0 };
+    const pending = [scanEvent({ orderItemId: "item-1", code: "0104006396054012217ABCDEF" })];
+    expect(projectItemProgress(bigItem, pending)).toEqual({
+      scannedBlocks: 50,
+      pendingBlocks: 50,
+      complete: false,
+    });
+  });
+
+  it("две коробки закрывают позицию на сто блоков", () => {
+    const bigItem = { id: "item-1", quantity_blocks: 100, scanned_blocks: 0 };
+    const pending = [
+      scanEvent({ orderItemId: "item-1", code: "0104006396054012217AAAAAA" }),
+      scanEvent({ orderItemId: "item-1", code: "0104006396053985217BBBBBB" }),
+    ];
+    expect(projectItemProgress(bigItem, pending)).toEqual({
+      scannedBlocks: 100,
+      pendingBlocks: 100,
+      complete: true,
+    });
+  });
+
+  it("не считает второй раз код, который сервер уже подтвердил", () => {
+    const confirmed = { id: "item-1", quantity_blocks: 2, scanned_blocks: 1, scan_codes: ["0104006396053947217ABCDEF"] };
+    const pending = [scanEvent({ orderItemId: "item-1", code: "0104006396053947217ABCDEF" })];
+    expect(projectItemProgress(confirmed, pending)).toEqual({
+      scannedBlocks: 1,
+      pendingBlocks: 0,
+      complete: false,
+    });
+  });
+
+  it("подтверждённый код исключается по обрезанному значению", () => {
+    const confirmed = { id: "item-1", quantity_blocks: 2, scanned_blocks: 1, scan_codes: ["0104006396053947217ABCDEF"] };
+    const pending = [scanEvent({ orderItemId: "item-1", code: "  0104006396053947217ABCDEF  " })];
+    expect(projectItemProgress(confirmed, pending).pendingBlocks).toBe(0);
+  });
+
+  it("другой код той же позиции считается как обычно", () => {
+    const confirmed = { id: "item-1", quantity_blocks: 3, scanned_blocks: 1, scan_codes: ["0104006396053947217ABCDEF"] };
+    const pending = [scanEvent({ orderItemId: "item-1", code: "0104006396053947217BBBBBB" })];
+    expect(projectItemProgress(confirmed, pending)).toEqual({
+      scannedBlocks: 2,
+      pendingBlocks: 1,
+      complete: false,
+    });
+  });
+
+  it("короб и штучный код складываются по своим весам", () => {
+    const bigItem = { id: "item-1", quantity_blocks: 100, scanned_blocks: 0 };
+    const pending = [
+      scanEvent({ orderItemId: "item-1", code: "0104006396054012217AAAAAA" }),
+      scanEvent({ orderItemId: "item-1", code: "0104006396053947217BBBBBB" }),
+    ];
+    expect(projectItemProgress(bigItem, pending)).toMatchObject({ scannedBlocks: 51, pendingBlocks: 51 });
+  });
 });

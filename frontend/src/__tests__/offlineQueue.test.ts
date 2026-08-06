@@ -116,3 +116,23 @@ describe("createMemoryQueueStore", () => {
     expect(blocked[blocked.length - 1].event.code).toBe(`010400639605394721${String(BLOCKED_LIMIT + 4).padStart(4, "0")}`);
   });
 });
+
+describe("повторное добавление уже стоящего в очереди события", () => {
+  it("не переставляет его в конец и не сбрасывает состояние попыток", async () => {
+    const store = createMemoryQueueStore();
+    const first = scanEvent({ code: "0104006396053947217AAAAAA" });
+    await store.enqueue(first);
+    await store.enqueue(scanEvent({ orderItemId: "item-2", code: "0104006396053947217BBBBBB" }));
+    await store.update(offlineEventKey(first), { attempts: 4, lastError: "Failed to fetch" });
+
+    await store.enqueue(scanEvent({ code: "0104006396053947217AAAAAA", scannedAt: "2026-08-04T11:30:00+05:00" }));
+
+    const pending = await store.listPending();
+    expect(pending.map((event) => event.code)).toEqual([
+      "0104006396053947217AAAAAA",
+      "0104006396053947217BBBBBB",
+    ]);
+    expect(pending[0].attempts).toBe(4);
+    expect(pending[0].lastError).toBe("Failed to fetch");
+  });
+});

@@ -43,11 +43,25 @@ export const NON_RETRYABLE_SCAN_CODES = [
 /** 4xx answers that a later attempt can genuinely resolve. */
 const RETRYABLE_CLIENT_STATUSES = new Set([401, 408, 429]);
 
+/**
+ * Browser-security rejections the backend raises before any warehouse work
+ * happens (`backend/app/main.py::require_browser_request_security`).
+ *
+ * They arrive as HTTP 403 but describe a stale tab, not a refused operation:
+ * the operator surface already treats them as "refresh and sign in again"
+ * (`frontend/src/workspace/OperatorWorkspace.tsx`). Blocking a queued scan on
+ * one of these would strand a KIZ the backend never even looked at.
+ */
+export const RECOVERABLE_BROWSER_SECURITY_CODES = ["csrf_invalid", "origin_denied"] as const;
+
+const RECOVERABLE_CODES = new Set<string>(RECOVERABLE_BROWSER_SECURITY_CODES);
+
 export type ReplayVerdict = "retry" | "blocked" | "synced";
 
 export function classifyReplayFailure(error: unknown): ReplayVerdict {
   if (!(error instanceof ApiRequestError)) return "retry";
   if (error.status === 409 && error.code === DUPLICATE_SCAN_ACK_CODE) return "synced";
+  if (RECOVERABLE_CODES.has(error.code)) return "retry";
   if (error.status >= 400 && error.status < 500 && !RETRYABLE_CLIENT_STATUSES.has(error.status)) return "blocked";
   return "retry";
 }
