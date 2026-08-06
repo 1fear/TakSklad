@@ -600,11 +600,15 @@ def run_due_smartup_auto_imports(
                     ))
                 except Exception as exc:
                     slot_failure_count += 1
+                    # Сюда попадает любая ошибка слота, а не только отказ шлюза.
+                    # Прежний текст всегда называл причиной шлюз логистики, из-за чего
+                    # обрыв соединения с БД 06.08.2026 читался как проблема логистики.
                     logger.error(
-                        "Smartup scheduled slot failed; logistics dependency gate remains closed "
-                        "slot=%s error_class=%s",
+                        "Smartup scheduled slot failed slot=%s error_class=%s error=%s; "
+                        "logistics dependency gate stays closed as a consequence",
                         slot,
                         type(exc).__name__,
+                        sanitize_automation_error_text(exc, limit=200),
                     )
                     results.append({
                         "status": "failed",
@@ -1011,6 +1015,55 @@ def queue_logistics_region_directory_empty_alert(
     return event
 
 
+def _record_smartup_slot_failure(
+    db: Session,
+    config: SmartupAutoImportConfig,
+    *,
+    event_id: uuid.UUID,
+    export_date: date,
+    slot_label: str,
+    exc: Exception,
+    telegram_sender: Any | None,
+) -> None:
+    """Записать отказ слота, не дав вторичной ошибке вытеснить первичную.
+
+    Каждый шаг здесь ходит в БД или в Telegram, а падение слота часто вызвано именно
+    обрывом соединения с БД. Раньше это приводило к тому, что откатить и пометить
+    отказ не удавалось, наружу летела вторичная ошибка, а строка захвата оставалась
+    в processing с пустым last_error и держала слот заблокированным полчаса.
+    """
+    try:
+        db.rollback()
+    except Exception:
+        logger.exception("Smartup slot failure: откат транзакции не удался")
+    try:
+        if isinstance(exc, TelegramDeliveryAmbiguousError):
+            mark_smartup_slot_blocked(db, event_id, exc)
+        else:
+            mark_smartup_slot_failed(db, event_id, exc)
+    except Exception:
+        # Слот останется в processing: его подберёт защита по STALE_SMARTUP_SLOT_TIMEOUT.
+        logger.exception(
+            "Smartup slot failure: не удалось пометить слот отказавшим slot=%s event_id=%s",
+            slot_label,
+            event_id,
+        )
+    try:
+        notify_smartup_automation_error(
+            db,
+            config,
+            export_date=export_date,
+            slot_label=slot_label,
+            exc=exc,
+            telegram_sender=telegram_sender,
+        )
+    except Exception:
+        logger.exception(
+            "Smartup slot failure: не удалось отправить уведомление об ошибке slot=%s",
+            slot_label,
+        )
+
+
 def run_scheduled_smartup_auto_import_slot(
     db: Session,
     config: SmartupAutoImportConfig,
@@ -1053,6 +1106,16 @@ def run_scheduled_smartup_auto_import_slot(
         )
         if skipped:
             return skipped
+        # Идентификатор берётся до закрытия транзакции: после commit атрибуты объекта
+        # истекают, и обращение к event.id открыло бы ещё одну транзакцию.
+        event_id = event.id
+        # Транзакция закрывается здесь, до сетевой работы.
+        # claim_smartup_slot заканчивается db.refresh(), который открывает транзакцию
+        # чтения, а следом run_smartup_auto_import_once уходит в Smartup по сети.
+        # Приложение ставит своим соединениям idle_in_transaction_session_timeout,
+        # поэтому долгий внешний вызов обрывает соединение и слот падает
+        # с OperationalError. 06.08.2026 экспорт занял 14.5 с при пороге 10 с.
+        db.commit()
         try:
             result = run_smartup_auto_import_once(
                 db,
@@ -1064,21 +1127,20 @@ def run_scheduled_smartup_auto_import_slot(
                 telegram_sender=telegram_sender,
             )
         except Exception as exc:
-            db.rollback()
-            if isinstance(exc, TelegramDeliveryAmbiguousError):
-                mark_smartup_slot_blocked(db, event.id, exc)
-            else:
-                mark_smartup_slot_failed(db, event.id, exc)
-            notify_smartup_automation_error(
+            # Отметка отказа сама требует БД, а сломаться могло именно соединение.
+            # Раньше вторичная ошибка вытесняла первичную, слот оставался в processing
+            # с пустым last_error и блокировал выпуск до истечения получаса.
+            _record_smartup_slot_failure(
                 db,
                 config,
+                event_id=event_id,
                 export_date=export_date,
                 slot_label=slot_label,
                 exc=exc,
                 telegram_sender=telegram_sender,
             )
             raise
-        mark_smartup_slot_completed(db, event.id, result)
+        mark_smartup_slot_completed(db, event_id, result)
         return result
     finally:
         release_smartup_slot_advisory_lock(

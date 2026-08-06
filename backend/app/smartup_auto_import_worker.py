@@ -15,10 +15,12 @@ from .smartup_auto_import import (
     sweep_incomplete_smartup_fulfillments,
     worker_sleep,
 )
+from .log_redaction import install_secret_redaction
 from .worker_observability import observed_worker_cycle
 
 
 logging.basicConfig(level=logging.INFO)
+install_secret_redaction()
 
 
 def main(argv: list[str] | None = None) -> int:

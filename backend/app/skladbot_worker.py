@@ -64,10 +64,12 @@ from .skladbot_contracts import (
     smartup_id_from_comment,
     text_tokens_match,
 )
+from .log_redaction import install_secret_redaction
 from .skladbot_request_dry_run import skladbot_create_event_ownership_conflict_reason
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+install_secret_redaction()
 
 SKLADBOT_SYNC_LOCK_KEY = 22052631
 SKLADBOT_COMPLETED_BACKFILL_STATUSES = ("completed", "done", "closed")
