@@ -77,17 +77,18 @@ class LogisticsReportSplitTests(unittest.TestCase):
         self.assertEqual(city_clients, {"Тест Клиент Город"})
         self.assertEqual(region_clients, {"Тест Клиент Область"})
 
-    def test_unknown_client_outside_city_is_unassigned_and_absent_from_both_files(self):
+    def test_unknown_client_outside_city_goes_to_region_file(self):
         self.add_order("Тест Клиент Город", "41.3200,69.2400")
         self.add_order("Незнакомый Загород", "41.4700,69.5800")
         reports = build_logistics_reports(self.db, SHIPMENT_DATE.isoformat())
 
-        self.assertIsNone(reports["region"])
-        self.assertEqual(len(reports["unassigned"]), 1)
-        self.assertEqual(reports["unassigned"][0].client, "Незнакомый Загород")
+        self.assertIsNotNone(reports["region"])
+        self.assertEqual(reports["unassigned"], [])
 
         city_clients = {row[3] for row in self.sheet_rows(reports["city"][0])}
+        region_clients = {row[3] for row in self.sheet_rows(reports["region"][0])}
         self.assertEqual(city_clients, {"Тест Клиент Город"})
+        self.assertEqual(region_clients, {"Незнакомый Загород"})
 
     def test_zone_without_orders_produces_no_file(self):
         self.add_order("Тест Клиент Город", "41.3200,69.2400")
