@@ -680,20 +680,22 @@ def run_due_smartup_logistics_reports(
         delivery_dates = delivery_dates_for_auto_logistics(db, export_date, config)
         if not delivery_dates:
             continue
+        logistics_reports = send_final_logistics_reports(
+            db,
+            config,
+            export_date=export_date,
+            telegram_sender=telegram_sender,
+            extra_delivery_dates=delivery_dates,
+            now=local_now,
+        )
+        queue_smartup_logistics_dependency_recovery(db, export_date, logistics_reports)
         results.append({
             "status": "logistics_due",
             "provenance": "auto_smartup",
             "export_date": export_date.isoformat(),
             "due_time": config.effective_logistics_due_time,
             "delivery_dates": delivery_dates,
-            "logistics_reports": send_final_logistics_reports(
-                db,
-                config,
-                export_date=export_date,
-                telegram_sender=telegram_sender,
-                extra_delivery_dates=delivery_dates,
-                now=local_now,
-            ),
+            "logistics_reports": logistics_reports,
         })
     return results
 
@@ -851,6 +853,58 @@ def queue_smartup_logistics_dependency_alert(
             select(PendingEvent).where(PendingEvent.idempotency_key == key)
         ).scalar_one()
         return existing
+    db.refresh(event)
+    return event
+
+
+def queue_smartup_logistics_dependency_recovery(
+    db: Session,
+    export_date: date,
+    logistics_reports: list[dict[str, Any]],
+) -> PendingEvent | None:
+    """Queue at most one admin-only stand-down after a previously blocked cycle.
+
+    Алерт о блокировке уходит сразу, а разблокировка проходила молча, поэтому
+    в канале оставалась тревога без развязки: 06.08.2026 отчёт ушёл через четыре
+    минуты после алерта, и понять это можно было только запросом к воркеру.
+    """
+    if not any(normalize_text(item.get("status")) == "sent" for item in logistics_reports):
+        return None
+    alert_key = f"telegram:notification:v1:smartup_logistics_dependency:{export_date.isoformat()}"
+    alert = db.execute(
+        select(PendingEvent).where(PendingEvent.idempotency_key == alert_key)
+    ).scalar_one_or_none()
+    if alert is None:
+        return None
+    key = f"telegram:notification:v1:smartup_logistics_recovered:{export_date.isoformat()}"
+    existing = db.execute(
+        select(PendingEvent).where(PendingEvent.idempotency_key == key)
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+    event = PendingEvent(
+        event_type="telegram_notification",
+        status="pending",
+        idempotency_key=key,
+        payload={
+            "kind": "smartup_logistics_recovered",
+            "route_role": "admin",
+            "export_date": export_date.isoformat(),
+            "text": "\n".join([
+                "TakSklad: логистический отчёт разблокирован",
+                f"Дата цикла: {format_display_date(export_date)}",
+                "Отчёт отправлен в logistics.",
+            ]),
+        },
+    )
+    db.add(event)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return db.execute(
+            select(PendingEvent).where(PendingEvent.idempotency_key == key)
+        ).scalar_one()
     db.refresh(event)
     return event
 

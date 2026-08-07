@@ -131,6 +131,17 @@ class TelegramRoutingContractTests(unittest.TestCase):
             self.assertEqual(route.schedules, schedules)
             self.assertEqual(route.error_destination, "admin")
 
+    def test_notification_aliases_route_to_admin_error(self):
+        for kind in (
+            "smartup_logistics_dependency_alert",
+            "smartup_logistics_recovered",
+        ):
+            with self.subTest(kind=kind):
+                route = self.contract.route_for_notification_kind(kind)
+                self.assertEqual(route.destination, "admin")
+                self.assertEqual(route.schedules, ("on_error",))
+                self.assertEqual(route.error_destination, "admin")
+
     def test_unknown_and_near_miss_kinds_are_blocked(self):
         for kind in (
             "smartup_client",
