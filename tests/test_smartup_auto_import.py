@@ -1903,6 +1903,104 @@ class SmartupAutoImportTests(unittest.TestCase):
             self.assertEqual(events, [])
             self.assertEqual(fake.changed, [])
 
+    def test_blocked_cycle_gets_single_stand_down_after_report_is_sent(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sender = FakeTelegramSender()
+            config = self.config(
+                tmp_dir,
+                backend_import_enabled=True,
+                change_status_enabled=True,
+                logistics_chat_id="-1002002",
+            )
+            blocked = {
+                "status": "blocked",
+                "reason": "fulfillment_not_terminal",
+                "completed_cycles": 1,
+                "orders_proven": 1,
+            }
+            ready = {
+                "status": "ready",
+                "reason": "all_terminal",
+                "completed_cycles": 3,
+                "orders_proven": 1,
+            }
+            with mock.patch(
+                "backend.app.smartup_auto_import.smartup_logistics_dependency_proof",
+                side_effect=[blocked, ready, ready],
+            ), mock.patch(
+                "backend.app.smartup_auto_import.delivery_dates_for_auto_logistics",
+                return_value=["2026-07-21"],
+            ), mock.patch(
+                "backend.app.smartup_auto_import.send_final_logistics_reports",
+                return_value=[{"status": "sent", "delivery_date": "2026-07-21"}],
+            ):
+                with self.SessionLocal() as db:
+                    for minute in (50, 55, 56):
+                        run_due_smartup_logistics_reports(
+                            db,
+                            config,
+                            now=datetime(2026, 7, 20, 17, minute, tzinfo=ZoneInfo("Asia/Tashkent")),
+                            telegram_sender=sender,
+                        )
+                    notifications = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == "telegram_notification")
+                    ).scalars().all()
+
+        kinds = sorted(event.payload["kind"] for event in notifications)
+        self.assertEqual(
+            kinds,
+            ["smartup_logistics_dependency_alert", "smartup_logistics_recovered"],
+        )
+        recovery = next(
+            event for event in notifications
+            if event.payload["kind"] == "smartup_logistics_recovered"
+        )
+        self.assertEqual(recovery.payload["route_role"], "admin")
+        self.assertEqual(
+            recovery.payload["text"],
+            "TakSklad: логистический отчёт разблокирован\n"
+            "Дата цикла: 20.07.2026\n"
+            "Отчёт отправлен в logistics.",
+        )
+
+    def test_stand_down_is_silent_without_a_previous_block_or_a_sent_report(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sender = FakeTelegramSender()
+            config = self.config(
+                tmp_dir,
+                backend_import_enabled=True,
+                change_status_enabled=True,
+                logistics_chat_id="-1002002",
+            )
+            ready = {
+                "status": "ready",
+                "reason": "all_terminal",
+                "completed_cycles": 3,
+                "orders_proven": 1,
+            }
+            with mock.patch(
+                "backend.app.smartup_auto_import.smartup_logistics_dependency_proof",
+                return_value=ready,
+            ), mock.patch(
+                "backend.app.smartup_auto_import.delivery_dates_for_auto_logistics",
+                return_value=["2026-07-21"],
+            ), mock.patch(
+                "backend.app.smartup_auto_import.send_final_logistics_reports",
+                return_value=[{"status": "failed", "delivery_date": "2026-07-21"}],
+            ):
+                with self.SessionLocal() as db:
+                    run_due_smartup_logistics_reports(
+                        db,
+                        config,
+                        now=datetime(2026, 7, 20, 17, 50, tzinfo=ZoneInfo("Asia/Tashkent")),
+                        telegram_sender=sender,
+                    )
+                    notifications = db.execute(
+                        select(PendingEvent).where(PendingEvent.event_type == "telegram_notification")
+                    ).scalars().all()
+
+        self.assertEqual(notifications, [])
+
     def test_due_logistics_skips_non_working_cycle_without_dependency_alert(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             sender = FakeTelegramSender()

@@ -55,6 +55,7 @@
   "notification_kind_aliases": {
     "daily_reconciliation_alert": "admin_error",
     "smartup_logistics_dependency_alert": "admin_error",
+    "smartup_logistics_recovered": "admin_error",
     "logistics_zone_unassigned_order": "admin_error",
     "logistics_region_directory_empty": "admin_error",
     "skladbot_daily_failure_alert": "admin_error",
