@@ -4,15 +4,13 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .models import LogisticsRegionPoint
 
-
-EARTH_RADIUS_METERS = 6371008.8
 
 # Приближённая административная граница Ташкента, пары (широта, долгота)
 # Восточная и южная стороны расширены 05.08.2026 по боевой сверке: заказы
@@ -41,19 +39,7 @@ TASHKENT_CITY_POLYGON = (
 # Запас наружу от границы: ошибка в сторону города дешевле выпавшего заказа
 CITY_BUFFER_METERS = 1000.0
 
-# Совпадение по координатам: тот же магазин, имя написано иначе
-REGION_MATCH_METERS = 150.0
-
-# Доля общих значимых токенов от более короткого имени
-FUZZY_NAME_THRESHOLD = 0.7
-
-LEGAL_FORM_TOKENS = frozenset({
-    "mchj", "ytt", "xk", "ooo", "chp", "sp",
-    "сп", "чп", "ооо", "мчж", "ытт", "хк",
-})
-
 _COORDINATE_RE = re.compile(r"-?\d+(?:[.,]\d+)?")
-_TOKEN_SPLIT_RE = re.compile(r"[^0-9a-zа-я]+")
 _KEY_STRIP_RE = re.compile(r"[^0-9a-zа-я]+")
 
 
@@ -73,18 +59,6 @@ def parse_coordinates(value) -> tuple[float, float] | None:
     if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
         return None
     return latitude, longitude
-
-
-def haversine_meters(latitude_a, longitude_a, latitude_b, longitude_b) -> float:
-    lat_a = math.radians(float(latitude_a))
-    lat_b = math.radians(float(latitude_b))
-    delta_latitude = lat_b - lat_a
-    delta_longitude = math.radians(float(longitude_b) - float(longitude_a))
-    factor = (
-        math.sin(delta_latitude / 2) ** 2
-        + math.cos(lat_a) * math.cos(lat_b) * math.sin(delta_longitude / 2) ** 2
-    )
-    return 2 * EARTH_RADIUS_METERS * math.asin(math.sqrt(factor))
 
 
 def point_in_city(latitude, longitude) -> bool:
@@ -144,28 +118,12 @@ def normalize_client_key(value) -> str:
     return _KEY_STRIP_RE.sub("", text)
 
 
-def name_tokens(value) -> frozenset[str]:
-    text = str(value or "").strip().casefold().replace("ё", "е")
-    parts = _TOKEN_SPLIT_RE.split(text)
-    return frozenset(
-        part for part in parts
-        if len(part) > 1 and part not in LEGAL_FORM_TOKENS
-    )
-
-
-def fuzzy_name_ratio(tokens_a: frozenset[str], tokens_b: frozenset[str]) -> float:
-    if not tokens_a or not tokens_b:
-        return 0.0
-    return len(tokens_a & tokens_b) / min(len(tokens_a), len(tokens_b))
-
-
 @dataclass(frozen=True)
 class RegionPoint:
     client_name: str
     normalized_client: str
     latitude: float
     longitude: float
-    tokens: frozenset[str] = field(default_factory=frozenset)
 
     @classmethod
     def build(cls, client_name, latitude, longitude) -> "RegionPoint":
@@ -174,12 +132,11 @@ class RegionPoint:
             normalized_client=normalize_client_key(client_name),
             latitude=float(latitude),
             longitude=float(longitude),
-            tokens=name_tokens(client_name),
         )
 
 
 class RegionIndex:
-    """Directory of region delivery points with three lookup levels."""
+    """Directory of region delivery points, matched by exact normalised name only."""
 
     def __init__(self, points):
         self._points = tuple(points)
@@ -190,49 +147,8 @@ class RegionIndex:
     def __len__(self):
         return len(self._points)
 
-    def find(self, client_name, latitude=None, longitude=None) -> RegionPoint | None:
-        point, _level = self._lookup(client_name, latitude, longitude)
-        return point
-
-    def match_level(self, client_name, latitude=None, longitude=None) -> str | None:
-        _point, level = self._lookup(client_name, latitude, longitude)
-        return level
-
-    def _lookup(self, client_name, latitude, longitude):
-        exact = self._by_key.get(normalize_client_key(client_name))
-        if exact is not None:
-            return exact, "name"
-        if latitude is not None and longitude is not None:
-            nearest = self._nearest(latitude, longitude)
-            if nearest is not None:
-                return nearest, "coordinates"
-        fuzzy = self._fuzzy(client_name)
-        if fuzzy is not None:
-            return fuzzy, "fuzzy"
-        return None, None
-
-    def _nearest(self, latitude, longitude) -> RegionPoint | None:
-        best_point = None
-        best_distance = REGION_MATCH_METERS
-        for point in self._points:
-            distance = haversine_meters(latitude, longitude, point.latitude, point.longitude)
-            if distance <= best_distance:
-                best_point = point
-                best_distance = distance
-        return best_point
-
-    def _fuzzy(self, client_name) -> RegionPoint | None:
-        tokens = name_tokens(client_name)
-        if not tokens:
-            return None
-        best_point = None
-        best_ratio = FUZZY_NAME_THRESHOLD
-        for point in self._points:
-            ratio = fuzzy_name_ratio(tokens, point.tokens)
-            if ratio >= best_ratio:
-                best_point = point
-                best_ratio = ratio
-        return best_point
+    def find(self, client_name) -> RegionPoint | None:
+        return self._by_key.get(normalize_client_key(client_name))
 
 
 def load_region_index(db: Session) -> RegionIndex:
@@ -247,17 +163,26 @@ def load_region_index(db: Session) -> RegionIndex:
 
 ZONE_CITY = "city"
 ZONE_REGION = "region"
+# Классификатор эту зону больше не возвращает, см. classify_order. Константа и
+# её обработка в logistics_service оставлены как страховка на случай возврата
+# к правилу «неизвестный клиент за городом требует ручного разбора»
 ZONE_UNASSIGNED = "unassigned"
 
 
 def classify_order(client_name, coordinates_value, index: RegionIndex) -> str:
-    """Rule order matters: the directory wins, coordinates only decide unknown clients."""
-    point = parse_coordinates(coordinates_value)
-    latitude, longitude = point if point is not None else (None, None)
-    if index.find(client_name, latitude, longitude) is not None:
+    """Rule order matters: the directory wins, geography decides everyone else.
+
+    Совпадение со справочником только по точному имени. Прежние догадки, точка
+    в 150 метрах и 70% общих значимых слов, уводили в область городские заказы:
+    по сверке 06-10.08.2026 так уехали семь чужих, чаще всего городской филиал
+    подтягивался за областным однофамильцем из справочника
+    """
+    if index.find(client_name) is not None:
         return ZONE_REGION
+    point = parse_coordinates(coordinates_value)
     if point is None:
         return ZONE_CITY
-    if point_in_city(latitude, longitude):
+    if point_in_city(*point):
         return ZONE_CITY
-    return ZONE_UNASSIGNED
+    # Неизвестный клиент за городской границей едет в область, а не выпадает
+    return ZONE_REGION

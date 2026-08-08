@@ -7,13 +7,10 @@ from sqlalchemy.pool import StaticPool
 from backend.app.logistics_zone_service import (
     ZONE_CITY,
     ZONE_REGION,
-    ZONE_UNASSIGNED,
     RegionIndex,
     RegionPoint,
     classify_order,
-    haversine_meters,
     load_region_index,
-    name_tokens,
     normalize_client_key,
     parse_coordinates,
     point_in_city,
@@ -71,21 +68,6 @@ class CoordinateParsingTests(unittest.TestCase):
     def test_rejects_out_of_range(self):
         self.assertIsNone(parse_coordinates("91.0,69.2"))
         self.assertIsNone(parse_coordinates("41.3,181.0"))
-
-
-class HaversineTests(unittest.TestCase):
-    def test_zero_distance_for_same_point(self):
-        self.assertAlmostEqual(haversine_meters(41.3, 69.2, 41.3, 69.2), 0.0, places=3)
-
-    def test_one_degree_of_latitude_is_about_111_km(self):
-        distance = haversine_meters(41.0, 69.2, 42.0, 69.2)
-        self.assertAlmostEqual(distance, 111195.0, delta=200.0)
-
-    def test_short_distance_is_symmetric(self):
-        forward = haversine_meters(41.311081, 69.240562, 41.312081, 69.240562)
-        backward = haversine_meters(41.312081, 69.240562, 41.311081, 69.240562)
-        self.assertAlmostEqual(forward, backward, places=6)
-        self.assertAlmostEqual(forward, 111.2, delta=1.0)
 
 
 class CityBoundaryTests(unittest.TestCase):
@@ -155,42 +137,25 @@ class NameNormalizationTests(unittest.TestCase):
     def test_key_maps_yo_to_ye(self):
         self.assertEqual(normalize_client_key("Тёст"), "тест")
 
-    def test_tokens_drop_legal_forms_and_single_letters(self):
-        self.assertEqual(name_tokens('"ТЕСТ БЕТА САВДО" MCHJ'), frozenset({"тест", "бета", "савдо"}))
-        self.assertEqual(name_tokens('ООО "Тест Гамма"'), frozenset({"тест", "гамма"}))
-
 
 class RegionIndexTests(unittest.TestCase):
     def setUp(self):
         self.index = region_index_fixture()
 
-    def test_exact_name_matches_regardless_of_coordinates(self):
-        found = self.index.find("тест клиент один", None, None)
-        self.assertIsNotNone(found)
-        self.assertEqual(self.index.match_level("тест клиент один", None, None), "name")
+    def test_exact_name_matches_ignoring_case_and_punctuation(self):
+        self.assertIsNotNone(self.index.find("тест клиент один"))
+        self.assertIsNotNone(self.index.find('  "ТЕСТ КЛИЕНТ ОДИН"  '))
 
-    def test_coordinates_match_when_name_differs(self):
-        # то же место, имя написано иначе
-        self.assertEqual(
-            self.index.match_level("Совсем Другое Написание", 41.018800, 70.083400),
-            "coordinates",
-        )
+    def test_same_coordinates_under_another_name_are_not_found(self):
+        # то же место, имя написано иначе: догадка по координатам снята
+        self.assertIsNone(self.index.find("Совсем Другое Написание"))
 
-    def test_coordinates_do_not_match_beyond_threshold(self):
-        # около 900 м от точки справочника
-        self.assertIsNone(self.index.match_level("Совсем Другое Написание", 41.026800, 70.083423))
+    def test_shared_tokens_are_not_found(self):
+        # филиал того же бренда больше не подтягивается за головной точкой
+        self.assertIsNone(self.index.find('"ТЕСТ БЕТА САВДО" YTT (филиал)'))
 
-    def test_fuzzy_name_matches_on_shared_tokens(self):
-        self.assertEqual(
-            self.index.match_level('"ТЕСТ БЕТА САВДО" YTT (филиал)', None, None),
-            "fuzzy",
-        )
-
-    def test_unrelated_name_without_coordinates_is_not_found(self):
-        self.assertIsNone(self.index.find("Незнакомая Точка Дельта", None, None))
-
-    def test_unrelated_name_with_far_coordinates_is_not_found(self):
-        self.assertIsNone(self.index.find("Незнакомая Точка Дельта", 41.3200, 69.2400))
+    def test_unrelated_name_is_not_found(self):
+        self.assertIsNone(self.index.find("Незнакомая Точка Дельта"))
 
 
 class LoadRegionIndexTests(unittest.TestCase):
@@ -224,8 +189,8 @@ class LoadRegionIndexTests(unittest.TestCase):
         ))
         db.commit()
         index = load_region_index(db)
-        self.assertIsNotNone(index.find("Тест Клиент Один", None, None))
-        self.assertIsNone(index.find("Тест Клиент Два", None, None))
+        self.assertIsNotNone(index.find("Тест Клиент Один"))
+        self.assertIsNone(index.find("Тест Клиент Два"))
         db.close()
 
 
@@ -245,10 +210,10 @@ class ClassifyOrderTests(unittest.TestCase):
             ZONE_CITY,
         )
 
-    def test_rule_3_unknown_client_outside_city_is_unassigned(self):
+    def test_rule_3_unknown_client_outside_city_goes_to_region(self):
         self.assertEqual(
             classify_order("Незнакомая Точка Дельта", "41.4700,69.5800", self.index),
-            ZONE_UNASSIGNED,
+            ZONE_REGION,
         )
 
     def test_rule_4_unknown_client_without_coordinates_goes_to_city(self):
@@ -274,6 +239,23 @@ class ClassifyOrderTests(unittest.TestCase):
     def test_broken_coordinates_are_treated_as_missing(self):
         self.assertEqual(
             classify_order("Незнакомая Точка Дельта", "не координаты", self.index),
+            ZONE_CITY,
+        )
+
+    def test_city_branch_of_region_client_stays_in_city(self):
+        # Регрессия 10.08.2026: филиал с городским адресом уезжал в область,
+        # потому что делил все значимые слова с областной точкой справочника
+        self.assertEqual(
+            classify_order('"ТЕСТ БЕТА САВДО" YTT (1 филиал)', "41.3200,69.2400", self.index),
+            ZONE_CITY,
+        )
+
+    def test_city_neighbour_of_region_point_stays_in_city(self):
+        # Регрессия 06.08.2026: городской заказ в сотне метров от областной
+        # точки справочника уезжал в область по совпадению координат
+        index = RegionIndex([RegionPoint.build("Тест Соседняя Точка", 41.3200, 69.2400)])
+        self.assertEqual(
+            classify_order("Незнакомая Точка Дельта", "41.32005,69.24005", index),
             ZONE_CITY,
         )
 
