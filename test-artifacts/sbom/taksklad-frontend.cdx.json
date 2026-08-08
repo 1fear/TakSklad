@@ -12748,7 +12748,7 @@
       "version": "3.0.0"
     },
     {
-      "bom-ref": "pkg:npm/nanoid@3.3.16",
+      "bom-ref": "pkg:npm/nanoid@3.3.18",
       "name": "nanoid",
       "properties": [
         {
@@ -12765,13 +12765,13 @@
         },
         {
           "name": "taksklad:npm-integrity",
-          "value": "sha512-bzlKTyNJ7+LdGIIwy8ijFpIqEQIvafahV7eYykJ8Cvh42EdJeODoJ6gUJXpQJvej1BddH8OqTXZNE/KfbWAu8Q=="
+          "value": "sha512-DTg4MJbGMWkfi6VZFdNt2/caMbQy4Ou+Op/hJQvGEWcnVfoA1QA+xzRKAzw9jD6+GVOOeYr/mIcuDSdug6F6+w=="
         }
       ],
-      "purl": "pkg:npm/nanoid@3.3.16",
+      "purl": "pkg:npm/nanoid@3.3.18",
       "scope": "required",
       "type": "library",
-      "version": "3.3.16"
+      "version": "3.3.18"
     },
     {
       "bom-ref": "pkg:npm/natural-compare@1.4.0",
@@ -17580,7 +17580,7 @@
         "pkg:npm/ms@2.1.3",
         "pkg:npm/msw@2.15.0",
         "pkg:npm/mute-stream@3.0.0",
-        "pkg:npm/nanoid@3.3.16",
+        "pkg:npm/nanoid@3.3.18",
         "pkg:npm/natural-compare@1.4.0",
         "pkg:npm/node-releases@2.0.46",
         "pkg:npm/object-inspect@1.13.4",
