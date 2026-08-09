@@ -243,8 +243,6 @@ class PostgresKizLockOrderTests(unittest.TestCase):
             all(status in {None, 409} for _result, status in outcomes.values())
         )
 
-    # Expected until the inversion in §6.18 is removed by §23 step 4.
-    @unittest.expectedFailure
     def test_complete_order_and_undo_scan_do_not_deadlock(self):
         code = "0104006396053947217LOCKCOMPLETE93S1"
         order_id, item_id = self.seed_scanned_order(code=code)
@@ -269,8 +267,6 @@ class PostgresKizLockOrderTests(unittest.TestCase):
             undo_operation=run_undo,
         )
 
-    # Expected until the inversion in §6.18 is removed by §23 step 4.
-    @unittest.expectedFailure
     def test_mark_order_returned_and_undo_scan_do_not_deadlock(self):
         code = "0104006396053947217LOCKRETURN93SYN1"
         order_id, item_id = self.seed_scanned_order(code=code)
