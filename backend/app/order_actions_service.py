@@ -11,6 +11,7 @@ from .kiz_movements_service import (
     record_kiz_movement,
 )
 from .models import AuditLog, Order, OrderItem, ScanCode
+from .order_locking import lock_order_graphs_for_kiz
 from .orders_service import (
     ApiError,
     INACTIVE_ORDER_STATUSES,
@@ -429,13 +430,13 @@ def apply_terminal_no_kiz_action(db: Session, order_id, payload, context, target
 
 def get_order_for_action(db: Session, order_id, with_for_update=False):
     parsed_order_id = parse_uuid(order_id, "order_id")
+    if with_for_update:
+        lock_order_graphs_for_kiz(db, [parsed_order_id])
     stmt = (
         select(Order)
         .options(selectinload(Order.items).selectinload(OrderItem.scan_codes))
         .where(Order.id == parsed_order_id)
     )
-    if with_for_update:
-        stmt = stmt.with_for_update()
     order = db.execute(stmt).scalar_one_or_none()
     if order is None:
         raise ApiError(404, "Order not found")

@@ -10,6 +10,7 @@ from .audit_identity import AUDIT_ACTOR_INFO_KEY, AuditActor
 from .kiz_blocklist import blocked_kiz_reason
 from .kiz_format import kiz_format_error_detail, kiz_format_violation
 from .kiz_movements_service import (
+    MOVEMENT_RESET,
     MOVEMENT_RETURN,
     MOVEMENT_UNDO,
     find_item_scans,
@@ -25,6 +26,7 @@ from .kiz_movements_service import (
     record_kiz_movements,
 )
 from .models import AuditLog, Order, OrderItem, ScanCode
+from .order_locking import lock_order_graphs_for_kiz, lock_order_item_for_kiz
 from .pagination import CursorError, decode_cursor, encode_cursor, normalize_page_limit
 from . import outbox_service
 from .order_statuses import (
@@ -421,16 +423,18 @@ def create_scan(db: Session, payload: ScanCreate):
             "order_item_id": str(order_item_id),
         })
 
-    item = db.execute(
-        select(OrderItem)
-        .options(joinedload(OrderItem.order))
-        .where(OrderItem.id == order_item_id)
-        .with_for_update(of=OrderItem)
-    ).scalar_one_or_none()
+    order, item, _locked_scans = lock_order_item_for_kiz(
+        db,
+        order_item_id,
+        additional_codes=[code],
+    )
     if item is None:
         raise ApiError(404, "Order item not found")
-
-    lock_kiz_code_for_transaction(db, code)
+    if order is None or order.status in INACTIVE_ORDER_STATUSES:
+        raise ApiError(409, {
+            "code": "order_closed",
+            "message": "Cannot scan inactive order",
+        })
     same_item_scan, other_item_scan = find_item_scans(db, code=code, order_item_id=item.id)
     if same_item_scan is not None:
         return scan_to_read(same_item_scan, item)
@@ -442,6 +446,11 @@ def create_scan(db: Session, payload: ScanCreate):
         return existing_scan_response_or_error(db, other_item_scan, item)
     if other_item_scan is None and latest_movement is not None and not kiz_is_available_for_outbound(latest_movement):
         raise ApiError(409, scan_conflict_detail(db, latest_movement.order_item_id, item))
+    if stale_scan_captured_before_reset(payload.scanned_at, latest_movement, item):
+        raise ApiError(409, {
+            "code": "order_closed",
+            "message": "Cannot replay a scan captured before order reset",
+        })
     movement_type = outbound_movement_type_for(latest_movement)
 
     if item.status in COMPLETED_STATUSES or (
@@ -579,6 +588,24 @@ def create_scan(db: Session, payload: ScanCreate):
     return response
 
 
+def stale_scan_captured_before_reset(scanned_at, latest_movement, item):
+    if (
+        scanned_at is None
+        or latest_movement is None
+        or latest_movement.movement_type != MOVEMENT_RESET
+        or latest_movement.order_item_id != item.id
+        or latest_movement.occurred_at is None
+    ):
+        return False
+    captured = scanned_at
+    reset_at = latest_movement.occurred_at
+    if captured.tzinfo is None:
+        captured = captured.replace(tzinfo=timezone.utc)
+    if reset_at.tzinfo is None:
+        reset_at = reset_at.replace(tzinfo=timezone.utc)
+    return captured.astimezone(timezone.utc) <= reset_at.astimezone(timezone.utc)
+
+
 def undo_scan(db: Session, payload: ScanUndo):
     order_item_id = parse_uuid(payload.order_item_id, "order_item_id")
     code = str(payload.code or "").strip(" \t\r\n")
@@ -588,21 +615,18 @@ def undo_scan(db: Session, payload: ScanUndo):
             "message": "Code must not be empty",
         })
 
-    item = db.execute(
-        select(OrderItem)
-        .options(selectinload(OrderItem.order), selectinload(OrderItem.scan_codes))
-        .where(OrderItem.id == order_item_id)
-        .with_for_update()
-    ).scalar_one_or_none()
+    order, item, locked_scans = lock_order_item_for_kiz(
+        db,
+        order_item_id,
+        additional_codes=[code],
+    )
     if item is None:
         raise ApiError(404, "Order item not found")
-    if item.order.status in INACTIVE_ORDER_STATUSES:
+    if order is None or order.status in INACTIVE_ORDER_STATUSES:
         raise ApiError(409, {
             "code": "order_closed",
             "message": "Cannot undo scan for inactive order",
         })
-
-    lock_kiz_code_for_transaction(db, code)
     scan = db.execute(
         select(ScanCode)
         .where(ScanCode.order_item_id == item.id)
@@ -645,7 +669,7 @@ def undo_scan(db: Session, payload: ScanUndo):
     db.delete(scan)
     remaining_scans = [
         existing
-        for existing in item.scan_codes
+        for existing in locked_scans
         if existing.id != scan_id
     ]
     remaining_codes = [existing.code for existing in remaining_scans]
@@ -654,8 +678,8 @@ def undo_scan(db: Session, payload: ScanUndo):
         item.status = STATUS_COMPLETED
     else:
         item.status = STATUS_NOT_COMPLETED
-    if item.order.status not in INACTIVE_ORDER_STATUSES:
-        item.order.status = STATUS_NOT_COMPLETED
+    if order.status not in INACTIVE_ORDER_STATUSES:
+        order.status = STATUS_NOT_COMPLETED
 
     db.add(AuditLog(
         action="scan_code_deleted",
@@ -747,11 +771,11 @@ def scan_to_read(scan, item):
     )
 def complete_order(db: Session, order_id):
     parsed_order_id = parse_uuid(order_id, "order_id")
+    lock_order_graphs_for_kiz(db, [parsed_order_id])
     order = db.execute(
         select(Order)
         .options(joinedload(Order.items).joinedload(OrderItem.scan_codes))
         .where(Order.id == parsed_order_id)
-        .with_for_update(of=Order)
     ).unique().scalar_one_or_none()
     if order is None:
         raise ApiError(404, "Order not found")
@@ -853,11 +877,11 @@ def lookup_return_order(db: Session, lookup_value):
 
 def mark_order_returned(db: Session, order_id, return_reference="", returned_by="desktop", confirmed_items=None):
     parsed_order_id = parse_uuid(order_id, "order_id")
+    lock_order_graphs_for_kiz(db, [parsed_order_id])
     order = db.execute(
         select(Order)
         .options(selectinload(Order.items).selectinload(OrderItem.scan_codes))
         .where(Order.id == parsed_order_id)
-        .with_for_update()
     ).scalar_one_or_none()
     if order is None:
         raise ApiError(404, "Order not found")
