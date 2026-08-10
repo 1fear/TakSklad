@@ -54,6 +54,7 @@ import {
   completeOrdersWithoutKiz,
   deleteActiveOrder,
   downloadDiagnosticsLog,
+  downloadLogisticsReport,
   getAdminEvents,
   getAdminIncidents,
   getAdminTable,
@@ -574,6 +575,23 @@ function AdminWorkspace({
       setNotice(isNonWorking ? "День отмечен как нерабочий для логистики" : "День отмечен как рабочий для логистики");
     } catch (actionError) {
       showActionError(actionError, "Не удалось сохранить календарь логистики");
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  async function downloadCalendarReport(serviceDate: string, zone: "city" | "region") {
+    setBusyAction(`calendar-report:${serviceDate}:${zone}`);
+    try {
+      const result = await downloadLogisticsReport(config, serviceDate, zone);
+      const href = URL.createObjectURL(result.blob);
+      const anchor = document.createElement("a");
+      anchor.href = href;
+      anchor.download = result.filename;
+      anchor.click();
+      URL.revokeObjectURL(href);
+    } catch (error) {
+      showActionError(error, "Не удалось выгрузить отчёт логистики");
     } finally {
       setBusyAction("");
     }

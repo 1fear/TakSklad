@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { CalendarDayDetail } from "../features/logistics/CalendarDayDetail";
 import { logisticsCalendarDayOrders } from "./fixtures";
@@ -138,5 +138,31 @@ describe("CalendarDayDetail", () => {
 
     await user.click(screen.getByRole("button", { name: "Заказы" }));
     expect(screen.queryByRole("row", { name: /Тест Клиент 2/ })).not.toBeInTheDocument();
+  });
+
+  it("выгружает XLSX активной вкладки", async () => {
+    const user = userEvent.setup();
+    const onDownload = vi.fn();
+    render(
+      <CalendarDayDetail
+        day={day}
+        dayOrders={logisticsCalendarDayOrders as never}
+        loading={false}
+        regionDirectoryEmpty={false}
+        canAdminWrite={false}
+        busyAction=""
+        onPrevDay={noop}
+        onNextDay={noop}
+        onSaveDay={noop}
+        onDownload={onDownload}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /Выгрузить XLSX город/ }));
+    expect(onDownload).toHaveBeenCalledWith("city");
+
+    await user.click(screen.getByRole("tab", { name: /Область/ }));
+    await user.click(screen.getByRole("button", { name: /Выгрузить XLSX область/ }));
+    expect(onDownload).toHaveBeenCalledWith("region");
   });
 });
