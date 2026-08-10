@@ -951,6 +951,35 @@ class BackendApiPersistenceTests(unittest.TestCase):
             ).scalar_one()
             self.assertEqual(audit.entity_id, "2026-06-29")
 
+    def test_admin_logistics_calendar_day_orders_returns_zoned_rows(self):
+        with self.SessionLocal() as db:
+            order = Order(
+                payment_type="terminal",
+                client="Тест Клиент 1",
+                address="Ташкент, дом 1",
+                representative="Тест Представитель",
+                order_date=date(2026, 8, 7),
+                status="not_completed",
+                raw_payload={"source": "calendar-orders-test"},
+            )
+            db.add(OrderItem(
+                order=order,
+                product="Тест Товар",
+                quantity_pieces=20,
+                quantity_blocks=2,
+                pieces_per_block=10,
+                status="not_completed",
+                raw_payload={"source": "calendar-orders-test"},
+            ))
+            db.commit()
+
+        response = self.client.get("/api/v1/admin/logistics-calendar/day/2026-08-07/orders")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["date"], "2026-08-07")
+        self.assertTrue(all(row["zone"] in {"city", "region"} for row in payload["orders"]))
+
     def test_web_auth_login_sets_cookie_and_check_accepts_session(self):
         auth_settings = load_settings({
             "TAKSKLAD_ENV": "local",

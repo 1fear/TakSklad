@@ -95,6 +95,9 @@ from .logistics_calendar_service import (
     list_logistics_calendar as list_logistics_calendar_in_db,
     set_logistics_calendar_day as set_logistics_calendar_day_in_db,
 )
+from .logistics_calendar_orders_service import (
+    list_logistics_calendar_day_orders as list_logistics_calendar_day_orders_in_db,
+)
 from .order_actions_service import (
     archive_order_without_kiz as archive_order_without_kiz_in_db,
     cancel_order as cancel_order_in_db,
@@ -165,6 +168,7 @@ from .schemas import (
     KizAvailabilityRead,
     KizRelease,
     KizReleaseRead,
+    LogisticsCalendarDayOrdersRead,
     LogisticsCalendarDayRead,
     LogisticsCalendarDayUpdate,
     LogisticsCalendarRead,
@@ -1078,6 +1082,14 @@ def admin_logistics_calendar(month: str | None = None, db=Depends(get_db)):
 )
 def admin_update_logistics_calendar_day(payload: LogisticsCalendarDayUpdate, db=Depends(get_db)):
     return set_logistics_calendar_day_in_db(db, payload)
+
+
+@api.get(
+    "/admin/logistics-calendar/day/{service_date}/orders",
+    response_model=LogisticsCalendarDayOrdersRead,
+)
+def admin_logistics_calendar_day_orders(service_date: date, db=Depends(get_db)):
+    return list_logistics_calendar_day_orders_in_db(db, service_date)
 
 
 @api.post(

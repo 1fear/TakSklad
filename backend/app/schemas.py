@@ -861,3 +861,30 @@ class LogisticsCalendarDayUpdate(BaseModel):
     reason: str = ""
     actor: str = "web"
     source: str = "web"
+
+
+class LogisticsCalendarDayOrderRead(BaseModel):
+    order_id: str
+    zone: str
+    is_returned: bool = False
+    client: str = ""
+    address: str = ""
+    representative: str = ""
+    products: str = ""
+    source_file: str = ""
+    quantity_blocks: int = 0
+    scanned_blocks: int = 0
+    remaining_blocks: int = 0
+    status: str = ""
+    delivery_from: str = ""
+    delivery_to: str = ""
+    skladbot_request_number: str = ""
+    smartup_id: str = ""
+    line_total: int = 0
+
+
+class LogisticsCalendarDayOrdersRead(BaseModel):
+    date: date
+    generated_at: datetime
+    region_directory_empty: bool = False
+    orders: list[LogisticsCalendarDayOrderRead] = Field(default_factory=list)
