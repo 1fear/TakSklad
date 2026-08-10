@@ -837,6 +837,13 @@ class LogisticsCalendarDayRead(BaseModel):
     completed_orders: int = 0
     returned_orders: int = 0
     planned_blocks: int = 0
+    city_orders: int = 0
+    region_orders: int = 0
+    city_returns: int = 0
+    region_returns: int = 0
+    city_blocks: int = 0
+    region_blocks: int = 0
+    excluded_orders: int = 0
     clients: list[str] = Field(default_factory=list)
 
 
@@ -844,6 +851,7 @@ class LogisticsCalendarRead(BaseModel):
     generated_at: datetime
     month: str
     default_non_working_weekdays: list[int] = Field(default_factory=list)
+    region_directory_empty: bool = False
     days: list[LogisticsCalendarDayRead] = Field(default_factory=list)
 
 
