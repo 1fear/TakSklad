@@ -1770,6 +1770,7 @@ summary:focus-visible {
 
 .calendar-panel {
   overflow: hidden;
+  padding-bottom: 0;
 }
 
 .calendar-panel .stats-row {
@@ -1780,7 +1781,6 @@ summary:focus-visible {
 
 .calendar-layout {
   display: grid;
-  gap: 14px;
   padding: 14px;
 }
 

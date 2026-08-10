@@ -479,4 +479,38 @@ describe("authenticated control-surface characterization", () => {
     expect(await screen.findByText("05.09.2026, суббота")).toBeInTheDocument();
     await waitFor(() => expect(requestedDayDates.at(-1)).toBe("2026-09-05"));
   });
+
+  it("показывает индикатор загрузки, а не пустое состояние, на пути с поправкой даты", async () => {
+    const requestedDayDates: string[] = [];
+    server.use(
+      http.get("/api/v1/admin/logistics-calendar", () => HttpResponse.json(logisticsCalendar)),
+      http.get("/api/v1/admin/logistics-calendar/day/:date/orders", async ({ params }) => {
+        const date = params.date as string;
+        requestedDayDates.push(date);
+        await delay(60);
+        return HttpResponse.json({ ...logisticsCalendarDayOrders, date, orders: [] });
+      }),
+    );
+    const { user } = await renderAuthenticatedAdminApp();
+    await user.click(screen.getByRole("button", { name: "Календарь" }));
+
+    // "сегодня" не входит в дни фикстуры, поэтому срабатывает та же поправка даты,
+    // что и при смене месяца, именно на этом пути раньше на миг показывалось
+    // "Заказов в этой зоне за день нет" вместо индикатора загрузки, потому что
+    // второй прогон эффекта абортил запрос первого, а первый всё равно снимал
+    // loading уже после аборта
+    expect(await screen.findByText("10.07.2026, пятница")).toBeInTheDocument();
+    expect(screen.getByText("Загрузка заказов дня")).toBeInTheDocument();
+    expect(screen.queryByText("Заказов в этой зоне за день нет")).not.toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(screen.queryByText("Загрузка заказов дня")).not.toBeInTheDocument();
+    });
+    expect(screen.getByText("Заказов в этой зоне за день нет")).toBeInTheDocument();
+
+    // тот же самый первый прогон, что раньше ронял индикатор, ещё и слал второй
+    // запрос за той же датой на бэкенд, задержка выше даёт время второму прогону
+    // эффекта абортить первый до ответа, поэтому гонка воспроизводится детерминированно
+    expect(requestedDayDates).toEqual(["2026-07-10"]);
+  });
 });

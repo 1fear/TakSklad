@@ -452,7 +452,20 @@ function AdminWorkspace({
       // и после cache-hit, и после свежего запроса
       const loadedCalendar = panelCache.get(calendarResource) as LogisticsCalendar | undefined;
       const effectiveDate = loadedCalendar ? resolveCalendarDate(loadedCalendar.days, selectedCalendarDate) : selectedCalendarDate;
-      if (effectiveDate !== selectedCalendarDate) setSelectedCalendarDate(effectiveDate);
+      if (effectiveDate !== selectedCalendarDate) {
+        // Не грузим день заказов в этом же прогоне: смена selectedCalendarDate ниже
+        // перезапустит этот эффект по зависимости, и второй прогон увидит уже
+        // совпадающую дату и загрузит день сам. Если продолжить здесь, второй begin
+        // на тот же ресурс calendar-day абортит запрос первого прогона, а первый
+        // прогон всё равно снимет loading уже после этого аборта, и пользователь на
+        // миг увидит пустое состояние вместо загрузки, вдобавок оба запроса реально
+        // уходят на бэкенд, и cleanup эффекта считает список ресурсов по устаревшей
+        // дате, не по той, что реально запрошена
+        setSelectedCalendarDate(effectiveDate);
+        setCalendarDayOrders(null);
+        setCalendarDayLoading(true);
+        return;
+      }
       setCalendarDayOrders(null);
       setCalendarDayLoading(true);
       await loadCachedPanel(
