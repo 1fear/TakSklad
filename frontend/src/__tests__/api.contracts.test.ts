@@ -1,6 +1,7 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as api from "../api";
+import { defaultHandlers, server } from "./server";
 
 const cookieConfig: api.ApiConfig = {
   apiUrl: "",
@@ -30,6 +31,10 @@ function lastRequest(fetchSpy: ReturnType<typeof vi.spyOn>) {
   const [url, options] = fetchSpy.mock.calls.at(-1) as [string, RequestInit];
   return { url, options };
 }
+
+beforeEach(() => {
+  server.use(...defaultHandlers);
+});
 
 afterEach(() => {
   vi.useRealTimers();
@@ -408,6 +413,11 @@ describe("API endpoint wrapper contracts", () => {
     expect(lastRequest(fetchSpy).url).toContain("/api/v1/admin/orders/export.xlsx?status_bucket=active&shipment_date=2026-07-16");
     expect(lastRequest(fetchSpy).url).toContain("search=%D0%9A%D0%BB%D0%B8%D0%B5%D0%BD%D1%82+%26+%D0%9A%D0%BE&scan_state=in_progress&skladbot_filter=found");
     expect(result.filename).toBe("TakSklad_filtered.xlsx");
+  });
+
+  it("getLogisticsCalendarDayOrders отдаёт строки с зоной", async () => {
+    const result = await api.getLogisticsCalendarDayOrders(cookieConfig, "2026-08-07");
+    expect(result.orders.every((row) => row.zone === "city" || row.zone === "region")).toBe(true);
   });
 });
 
