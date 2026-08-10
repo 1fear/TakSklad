@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
 import { CalendarDayDetail } from "../features/logistics/CalendarDayDetail";
@@ -110,5 +111,32 @@ describe("CalendarDayDetail", () => {
     expect(screen.queryByRole("textbox", { name: "Причина / комментарий" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Не работает" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Работает" })).not.toBeInTheDocument();
+  });
+
+  it("переключает вкладку на область и фильтрует возвраты", async () => {
+    const user = userEvent.setup();
+    render(
+      <CalendarDayDetail
+        day={day}
+        dayOrders={logisticsCalendarDayOrders as never}
+        loading={false}
+        regionDirectoryEmpty={false}
+        canAdminWrite={false}
+        busyAction=""
+        onPrevDay={noop}
+        onNextDay={noop}
+        onSaveDay={noop}
+        onDownload={noop}
+      />,
+    );
+
+    expect(screen.getByRole("row", { name: /Тест Клиент 1/ })).toBeInTheDocument();
+    expect(screen.queryByRole("row", { name: /Тест Клиент 2/ })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: /Область/ }));
+    expect(screen.getByRole("row", { name: /Тест Клиент 2/ })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Заказы" }));
+    expect(screen.queryByRole("row", { name: /Тест Клиент 2/ })).not.toBeInTheDocument();
   });
 });

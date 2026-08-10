@@ -45,6 +45,15 @@ export function CalendarDayDetail({
 
   const busy = busyAction === `calendar-day:${day.date}`;
 
+  const [zone, setZone] = useState<"city" | "region">("city");
+  const [rowFilter, setRowFilter] = useState<"all" | "orders" | "returns">("all");
+  const rows = (dayOrders?.orders ?? []).filter((row) => {
+    if (row.zone !== zone) return false;
+    if (rowFilter === "orders") return !row.is_returned;
+    if (rowFilter === "returns") return row.is_returned;
+    return true;
+  });
+
   return (
     <div className="day-detail">
       <div className="day-detail-head">
@@ -104,6 +113,97 @@ export function CalendarDayDetail({
             они не входят ни в город, ни в область
           </p>
         </section>
+      </div>
+
+      <div className="list-panel">
+        <div className="list-tabs" role="tablist" aria-label="Зона доставки">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={zone === "city"}
+            onClick={() => setZone("city")}
+          >
+            <i className="dot" />Город <span className="tab-count">{day.city_orders} + {day.city_returns} возвр.</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={zone === "region"}
+            onClick={() => setZone("region")}
+          >
+            <i className="dot region" />Область <span className="tab-count">{day.region_orders} + {day.region_returns} возвр.</span>
+          </button>
+        </div>
+
+        <div className="list-head">
+          <h4>
+            <span className="count">
+              {zone === "city"
+                ? `${day.city_orders} заказов и ${day.city_returns} возвратов · ${day.city_blocks} блоков`
+                : `${day.region_orders} заказов и ${day.region_returns} возвратов · ${day.region_blocks} блоков`}
+            </span>
+          </h4>
+          <div className="list-tools">
+            <div className="chips">
+              <button type="button" aria-pressed={rowFilter === "all"} onClick={() => setRowFilter("all")}>Все</button>
+              <button type="button" aria-pressed={rowFilter === "orders"} onClick={() => setRowFilter("orders")}>Заказы</button>
+              <button type="button" aria-pressed={rowFilter === "returns"} onClick={() => setRowFilter("returns")}>Возвраты</button>
+            </div>
+            <button className="ghost-button sm" type="button" onClick={() => onDownload(zone)}>
+              {zone === "city" ? "Выгрузить XLSX город" : "Выгрузить XLSX область"}
+            </button>
+          </div>
+        </div>
+
+        <div className="table-scroll" role="tabpanel">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Клиент</th><th>Товары</th><th className="numeric-cell">Блоки</th>
+                <th>Окно</th><th>Статус</th><th>SkladBot / Smartup</th><th className="numeric-cell">Сумма</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={row.order_id} className={row.is_returned ? "ret-row" : ""}>
+                  <td>
+                    <strong className="cell-title">{row.client}</strong>
+                    <span className="cell-sub">{row.address}</span>
+                    {row.representative && <span className="cell-sub">{row.representative}</span>}
+                  </td>
+                  <td>
+                    <strong className="cell-title">{row.products || "-"}</strong>
+                    {row.source_file && <span className="cell-sub">{row.source_file}</span>}
+                  </td>
+                  <td className="numeric-cell">
+                    <strong>{row.scanned_blocks}/{row.quantity_blocks}</strong>
+                    <span className="cell-sub">осталось {row.remaining_blocks}</span>
+                  </td>
+                  <td>
+                    <span className="cell-sub">{row.delivery_from || "-"}</span>
+                    <span className="cell-sub">{row.delivery_to || ""}</span>
+                  </td>
+                  <td>
+                    <span className={`status-badge ${row.is_returned ? "ret" : ""}`}>
+                      {row.is_returned ? "Возврат" : row.status === "completed" ? "Завершён" : "В работе"}
+                    </span>
+                  </td>
+                  <td>
+                    <span className="cell-sub">{row.skladbot_request_number || "-"}</span>
+                    <span className="cell-sub">{row.smartup_id || ""}</span>
+                  </td>
+                  <td className="numeric-cell">{formatNumber(row.line_total)}</td>
+                </tr>
+              ))}
+              {rows.length === 0 && !loading && (
+                <tr><td colSpan={7} className="empty-state">Заказов в этой зоне за день нет</td></tr>
+              )}
+              {loading && (
+                <tr><td colSpan={7} className="empty-state">Загрузка заказов дня</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {canAdminWrite && (
