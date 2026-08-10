@@ -591,6 +591,70 @@ class SmartupAutoImportTests(unittest.TestCase):
         self.assertEqual(rows[0]["Координаты"], "41.311081,69.240562")
         reverse_geocode.assert_called_once_with("41.311081,69.240562", cache=mock.ANY)
 
+    def test_build_import_rows_prefers_reverse_geocode_over_smartup_address(self):
+        config = self.config("/tmp")
+        order = sample_order(
+            delivery_address_full="Тукимачи МФЙ, Ш.Руставели кучаси, 78а-уй",
+            delivery_address_short="TEKISTIL ALNITSA",
+        )
+
+        with mock.patch(
+            "backend.app.smartup_auto_import.reverse_geocode_yandex",
+            return_value=("Ташкент, улица Шота Руставели, 78А", ""),
+        ) as reverse_geocode:
+            rows = build_import_rows(
+                [order],
+                datetime(2026, 6, 25).date(),
+                "Терминал 25.06.2026 Часть 1.xlsx",
+                config,
+            )
+
+        self.assertEqual(rows[0]["Адрес"], "Ташкент, улица Шота Руставели, 78А")
+        self.assertEqual(rows[0]["Координаты"], "41.311081,69.240562")
+        reverse_geocode.assert_called_once_with("41.311081,69.240562", cache=mock.ANY)
+
+    def test_build_import_rows_falls_back_to_smartup_address_when_reverse_geocode_fails(self):
+        config = self.config("/tmp")
+        order = sample_order(
+            delivery_address_full="Тукимачи МФЙ, Ш.Руставели кучаси, 78а-уй",
+            delivery_address_short="TEKISTIL ALNITSA",
+        )
+
+        with mock.patch(
+            "backend.app.smartup_auto_import.reverse_geocode_yandex",
+            return_value=("", "timeout"),
+        ):
+            rows = build_import_rows(
+                [order],
+                datetime(2026, 6, 25).date(),
+                "Терминал 25.06.2026 Часть 1.xlsx",
+                config,
+            )
+
+        self.assertEqual(rows[0]["Адрес"], "Тукимачи МФЙ, Ш.Руставели кучаси, 78а-уй")
+        self.assertEqual(rows[0]["Координаты"], "41.311081,69.240562")
+
+    def test_build_import_rows_falls_back_to_smartup_address_when_reverse_geocode_raises(self):
+        config = self.config("/tmp")
+        order = sample_order(
+            delivery_address_full="",
+            delivery_address_short="TEKISTIL ALNITSA",
+        )
+
+        with mock.patch(
+            "backend.app.smartup_auto_import.reverse_geocode_yandex",
+            side_effect=RuntimeError("timeout"),
+        ):
+            rows = build_import_rows(
+                [order],
+                datetime(2026, 6, 25).date(),
+                "Терминал 25.06.2026 Часть 1.xlsx",
+                config,
+            )
+
+        self.assertEqual(rows[0]["Адрес"], "TEKISTIL ALNITSA")
+        self.assertEqual(rows[0]["Координаты"], "41.311081,69.240562")
+
     def test_build_import_rows_keeps_gps_fallback_when_reverse_geocode_fails(self):
         config = self.config("/tmp")
         order = sample_order(delivery_address_full="", delivery_address_short="")

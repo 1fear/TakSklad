@@ -2777,9 +2777,9 @@ def smartup_address(
     *,
     geocode_cache: dict[str, tuple[str, str]] | None = None,
 ) -> str:
-    address = normalize_text(order.get("delivery_address_full") or order.get("delivery_address_short"))
-    if address:
-        return address
+    # Приоритет у обратного геокодинга по координатам: адресные поля Smartup
+    # заполняются вручную и приходят в разной нотации, из-за чего одна и та же
+    # точка выглядит в маршрутном листе как два разных адреса
     if coordinates:
         try:
             geocoded_address, _ = reverse_geocode_yandex(coordinates, cache=geocode_cache)
@@ -2788,6 +2788,10 @@ def smartup_address(
             geocoded_address = ""
         if geocoded_address:
             return geocoded_address
+    address = normalize_text(order.get("delivery_address_full") or order.get("delivery_address_short"))
+    if address:
+        return address
+    if coordinates:
         return f"GPS: {coordinates}"
     return ""
 
