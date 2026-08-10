@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from .client_points_service import client_point_delivery_slot_map, delivery_slot_for_order
+from .kiz_reports_service import source_file_for_items
 from .logistics_service import is_logistics_candidate_order, is_returned_order
 from .logistics_zone_service import ZONE_CITY, classify_order, load_region_index
 from .models import Order
@@ -42,7 +43,7 @@ def list_logistics_calendar_day_orders(db: Session, service_date: date) -> dict[
             "address": order.address or "",
             "representative": order.representative or "",
             "products": order_products_text(order),
-            "source_file": str(raw_payload.get("source_file") or ""),
+            "source_file": source_file_for_items(order.items),
             "quantity_blocks": quantity_blocks,
             "scanned_blocks": scanned_blocks,
             "remaining_blocks": max(0, quantity_blocks - scanned_blocks),

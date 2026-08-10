@@ -135,6 +135,54 @@ class LogisticsCalendarDayOrdersTests(unittest.TestCase):
             self.assertTrue(by_client["Тест Клиент 4"]["is_returned"])
             self.assertEqual(by_client["Тест Клиент 4"]["zone"], "region")
 
+    def test_source_file_comes_from_order_item_raw_payload(self):
+        with self.Session() as db:
+            order = Order(
+                id=uuid.uuid4(),
+                source="test",
+                order_date=date(2026, 8, 7),
+                payment_type="Наличные",
+                client="Тест Клиент 6",
+                address="Ташкент, дом 6",
+                status="not_completed",
+                raw_payload={"coordinates": "41.3200,69.2400"},
+            )
+            order.items = [OrderItem(
+                id=uuid.uuid4(),
+                product="Тест Товар Е",
+                quantity_blocks=2,
+                raw_payload={"source_file": "zakaz-06-08.xlsx"},
+            )]
+            db.add(order)
+            db.commit()
+
+            payload = list_logistics_calendar_day_orders(db, date(2026, 8, 7))
+
+            self.assertEqual(len(payload["orders"]), 1)
+            self.assertEqual(payload["orders"][0]["source_file"], "zakaz-06-08.xlsx")
+
+    def test_empty_region_directory_keeps_everything_in_city(self):
+        with self.Session() as db:
+            order = Order(
+                id=uuid.uuid4(),
+                source="test",
+                order_date=date(2026, 8, 7),
+                payment_type="Наличные",
+                client="Тест Клиент 7",
+                address="Область, дом 7",
+                status="not_completed",
+                raw_payload={"coordinates": "41.0180,70.0830"},
+            )
+            order.items = [OrderItem(id=uuid.uuid4(), product="Тест Товар Ж", quantity_blocks=5)]
+            db.add(order)
+            db.commit()
+
+            payload = list_logistics_calendar_day_orders(db, date(2026, 8, 7))
+
+            self.assertTrue(payload["region_directory_empty"])
+            self.assertEqual(len(payload["orders"]), 1)
+            self.assertEqual(payload["orders"][0]["zone"], "city")
+
 
 if __name__ == "__main__":
     unittest.main()

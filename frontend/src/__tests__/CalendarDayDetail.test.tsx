@@ -35,7 +35,7 @@ describe("CalendarDayDetail", () => {
     render(
       <CalendarDayDetail
         day={day}
-        dayOrders={logisticsCalendarDayOrders as never}
+        dayOrders={logisticsCalendarDayOrders}
         loading={false}
         regionDirectoryEmpty={false}
         canAdminWrite
@@ -126,7 +126,7 @@ describe("CalendarDayDetail", () => {
     render(
       <CalendarDayDetail
         day={day}
-        dayOrders={logisticsCalendarDayOrders as never}
+        dayOrders={logisticsCalendarDayOrders}
         loading={false}
         regionDirectoryEmpty={false}
         canAdminWrite={false}
@@ -156,7 +156,7 @@ describe("CalendarDayDetail", () => {
     render(
       <CalendarDayDetail
         day={day}
-        dayOrders={logisticsCalendarDayOrders as never}
+        dayOrders={logisticsCalendarDayOrders}
         loading={false}
         regionDirectoryEmpty={false}
         canAdminWrite={false}

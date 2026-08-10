@@ -865,7 +865,7 @@ class LogisticsCalendarDayUpdate(BaseModel):
 
 class LogisticsCalendarDayOrderRead(BaseModel):
     order_id: str
-    zone: str
+    zone: Literal["city", "region"]
     is_returned: bool = False
     client: str = ""
     address: str = ""
