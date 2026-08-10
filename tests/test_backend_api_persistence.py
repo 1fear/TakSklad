@@ -978,7 +978,11 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["date"], "2026-08-07")
-        self.assertTrue(all(row["zone"] in {"city", "region"} for row in payload["orders"]))
+        self.assertEqual(len(payload["orders"]), 1)
+        row = payload["orders"][0]
+        self.assertEqual(row["client"], "Тест Клиент 1")
+        self.assertIn(row["zone"], {"city", "region"})
+        self.assertEqual(row["quantity_blocks"], 2)
 
     def test_web_auth_login_sets_cookie_and_check_accepts_session(self):
         auth_settings = load_settings({

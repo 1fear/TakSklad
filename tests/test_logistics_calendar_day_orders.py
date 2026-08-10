@@ -79,6 +79,62 @@ class LogisticsCalendarDayOrdersTests(unittest.TestCase):
             self.assertFalse(by_client["Тест Клиент 1"]["is_returned"])
             self.assertEqual(by_client["Тест Клиент 2"]["zone"], "region")
 
+    def test_return_order_keeps_own_zone_and_pickup_order_is_excluded(self):
+        with self.Session() as db:
+            db.add(LogisticsRegionPoint(
+                id=uuid.uuid4(),
+                client_name="Тест Клиент 4",
+                normalized_client=normalize_client_key("Тест Клиент 4"),
+                latitude=41.2,
+                longitude=69.9,
+                is_active=True,
+            ))
+            normal = Order(
+                id=uuid.uuid4(),
+                source="test",
+                order_date=date(2026, 8, 7),
+                payment_type="Наличные",
+                client="Тест Клиент 3",
+                address="Ташкент, дом 3",
+                status="not_completed",
+                raw_payload={"coordinates": "41.3200,69.2400"},
+            )
+            normal.items = [OrderItem(id=uuid.uuid4(), product="Тест Товар В", quantity_blocks=1)]
+            returned = Order(
+                id=uuid.uuid4(),
+                source="test",
+                order_date=date(2026, 8, 7),
+                payment_type="Наличные",
+                client="Тест Клиент 4",
+                address="Область, дом 4",
+                status="returned",
+                raw_payload={"coordinates": "41.3200,69.2400", "return_status": "returned"},
+            )
+            returned.items = [OrderItem(id=uuid.uuid4(), product="Тест Товар Г", quantity_blocks=1)]
+            pickup = Order(
+                id=uuid.uuid4(),
+                source="test",
+                order_date=date(2026, 8, 7),
+                payment_type="Наличные",
+                client="Тест Клиент 5",
+                address="Самовывоз со склада",
+                status="not_completed",
+                raw_payload={"coordinates": "41.3200,69.2400"},
+            )
+            pickup.items = [OrderItem(id=uuid.uuid4(), product="Тест Товар Д", quantity_blocks=1)]
+            db.add_all([normal, returned, pickup])
+            db.commit()
+
+            payload = list_logistics_calendar_day_orders(db, date(2026, 8, 7))
+            by_client = {row["client"]: row for row in payload["orders"]}
+
+            self.assertEqual(len(payload["orders"]), 2)
+            self.assertNotIn("Тест Клиент 5", by_client)
+            self.assertFalse(by_client["Тест Клиент 3"]["is_returned"])
+            self.assertEqual(by_client["Тест Клиент 3"]["zone"], "city")
+            self.assertTrue(by_client["Тест Клиент 4"]["is_returned"])
+            self.assertEqual(by_client["Тест Клиент 4"]["zone"], "region")
+
 
 if __name__ == "__main__":
     unittest.main()
