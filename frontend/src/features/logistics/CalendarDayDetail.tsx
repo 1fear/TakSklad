@@ -22,6 +22,8 @@ export function CalendarDayDetail({
   regionDirectoryEmpty,
   canAdminWrite,
   busyAction,
+  canGoPrevDay,
+  canGoNextDay,
   onPrevDay,
   onNextDay,
   onSaveDay,
@@ -33,6 +35,8 @@ export function CalendarDayDetail({
   regionDirectoryEmpty: boolean;
   canAdminWrite: boolean;
   busyAction: string;
+  canGoPrevDay: boolean;
+  canGoNextDay: boolean;
   onPrevDay: () => void;
   onNextDay: () => void;
   onSaveDay: (day: LogisticsCalendarDay, isNonWorking: boolean, reason: string) => void;
@@ -47,7 +51,8 @@ export function CalendarDayDetail({
 
   const [zone, setZone] = useState<"city" | "region">("city");
   const [rowFilter, setRowFilter] = useState<"all" | "orders" | "returns">("all");
-  const rows = (dayOrders?.orders ?? []).filter((row) => {
+  const dayOrdersMatchDay = dayOrders != null && dayOrders.date === day.date;
+  const rows = (dayOrdersMatchDay ? dayOrders.orders : []).filter((row) => {
     if (row.zone !== zone) return false;
     if (rowFilter === "orders") return !row.is_returned;
     if (rowFilter === "returns") return row.is_returned;
@@ -69,8 +74,8 @@ export function CalendarDayDetail({
             {day.is_non_working ? "Логистика не работает" : "Рабочий день"}
           </span>
           <div className="day-nav">
-            <button type="button" onClick={onPrevDay} aria-label="Предыдущий день"><ChevronLeft size={16} /></button>
-            <button type="button" onClick={onNextDay} aria-label="Следующий день"><ChevronRight size={16} /></button>
+            <button type="button" onClick={onPrevDay} disabled={!canGoPrevDay} aria-label="Предыдущий день"><ChevronLeft size={16} /></button>
+            <button type="button" onClick={onNextDay} disabled={!canGoNextDay} aria-label="Следующий день"><ChevronRight size={16} /></button>
           </div>
         </div>
       </div>
@@ -164,7 +169,7 @@ export function CalendarDayDetail({
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => (
+              {!loading && rows.map((row) => (
                 <tr key={row.order_id} className={row.is_returned ? "ret-row" : ""}>
                   <td>
                     <strong className="cell-title">{row.client}</strong>
@@ -195,7 +200,7 @@ export function CalendarDayDetail({
                   <td className="numeric-cell">{formatNumber(row.line_total)}</td>
                 </tr>
               ))}
-              {rows.length === 0 && !loading && (
+              {!loading && rows.length === 0 && (
                 <tr><td colSpan={7} className="empty-state">Заказов в этой зоне за день нет</td></tr>
               )}
               {loading && (
@@ -206,29 +211,30 @@ export function CalendarDayDetail({
         </div>
       </div>
 
-      {canAdminWrite && (
-        <div className="day-detail-controls">
-          <label className="admin-reason-field">
-            <span>Причина / комментарий</span>
-            <textarea
-              value={reason}
-              onChange={(event) => setReason(event.target.value)}
-              rows={2}
-              placeholder="Например: праздник, логистика не работает"
-            />
-          </label>
+      <div className="day-detail-controls">
+        <label className="admin-reason-field">
+          <span>Причина / комментарий</span>
+          <textarea
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+            rows={2}
+            disabled={!canAdminWrite}
+            placeholder="Например: праздник, логистика не работает"
+          />
+        </label>
+        {canAdminWrite && (
           <div className="action-buttons">
-            <button className="ghost-button" onClick={() => onSaveDay(day, true, reason || "Нерабочий день логистики")} disabled={busy}>
+            <button className="ghost-button" onClick={() => onSaveDay(day, true, reason || "Нерабочий день логистики")} disabled={Boolean(busyAction)}>
               {busy ? <Loader2 className="spin" size={16} /> : <Lock size={16} />}
               Не работает
             </button>
-            <button className="ghost-button" onClick={() => onSaveDay(day, false, reason || "Рабочий день логистики")} disabled={busy}>
+            <button className="ghost-button" onClick={() => onSaveDay(day, false, reason || "Рабочий день логистики")} disabled={Boolean(busyAction)}>
               {busy ? <Loader2 className="spin" size={16} /> : <CheckCircle2 size={16} />}
               Работает
             </button>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }

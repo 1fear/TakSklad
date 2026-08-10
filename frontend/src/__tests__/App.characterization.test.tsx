@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { delay, http, HttpResponse } from "msw";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,6 +10,7 @@ import {
   authenticatedSession,
   firstAdminRow,
   logisticsCalendar,
+  logisticsCalendarDayOrders,
   secondAdminRow,
 } from "./fixtures";
 import { defaultHandlers, server } from "./server";
@@ -380,12 +381,40 @@ describe("authenticated control-surface characterization", () => {
     expect(screen.getByRole("checkbox", { name: "Выбрать видимые заказы" })).toBeDisabled();
   });
 
-  it("клик по дню календаря раскрывает детализацию с вкладками зон", async () => {
+  it("клик по дню календаря раскрывает детализацию именно выбранного дня", async () => {
+    server.use(http.get("/api/v1/admin/logistics-calendar", () => HttpResponse.json({
+      ...logisticsCalendar,
+      days: [
+        { ...logisticsCalendar.days[0], date: "2026-07-10", weekday: 4 },
+        {
+          ...logisticsCalendar.days[0],
+          date: "2026-07-13",
+          weekday: 0,
+          orders_count: 0,
+          active_orders: 0,
+          completed_orders: 0,
+          returned_orders: 0,
+          planned_blocks: 0,
+          city_orders: 0,
+          region_orders: 0,
+          city_returns: 0,
+          region_returns: 0,
+          city_blocks: 0,
+          region_blocks: 0,
+          excluded_orders: 0,
+        },
+      ],
+    })));
     const { user } = await renderAuthenticatedAdminApp();
-
     await user.click(screen.getByRole("button", { name: "Календарь" }));
-    await user.click(await screen.findByRole("button", { name: /заказов/ }));
 
+    // фолбэк без единого клика уводит на день с заказами, 10 июля, а не на 13-е,
+    // у которого заказов нет, поэтому попасть на 13-е можно только настоящим кликом
+    expect(await screen.findByText("10.07.2026, пятница")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /13\.07\.2026/ }));
+
+    expect(await screen.findByText("13.07.2026, понедельник")).toBeInTheDocument();
     expect(await screen.findByRole("tab", { name: /Город/ })).toBeInTheDocument();
   });
 
@@ -401,11 +430,53 @@ describe("authenticated control-surface characterization", () => {
     await user.click(screen.getByRole("button", { name: "Календарь" }));
 
     expect(await screen.findByText("10.07.2026, пятница")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Предыдущий день" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Следующий день" })).toBeEnabled();
 
     await user.click(screen.getByRole("button", { name: "Следующий день" }));
     expect(await screen.findByText("11.07.2026, суббота")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Предыдущий день" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Следующий день" })).toBeDisabled();
 
     await user.click(screen.getByRole("button", { name: "Предыдущий день" }));
     expect(await screen.findByText("10.07.2026, пятница")).toBeInTheDocument();
+  });
+
+  it("держит показанный день и запрошенные заказы на одной дате при смене месяца", async () => {
+    const requestedDayDates: string[] = [];
+    server.use(
+      http.get("/api/v1/admin/logistics-calendar", ({ request }) => {
+        const month = new URL(request.url).searchParams.get("month") || "";
+        if (month === "2026-09") {
+          return HttpResponse.json({
+            ...logisticsCalendar,
+            month: "2026-09",
+            days: [{ ...logisticsCalendar.days[0], date: "2026-09-05", weekday: 5 }],
+          });
+        }
+        return HttpResponse.json(logisticsCalendar);
+      }),
+      http.get("/api/v1/admin/logistics-calendar/day/:date/orders", ({ params }) => {
+        const date = params.date as string;
+        requestedDayDates.push(date);
+        return HttpResponse.json({ ...logisticsCalendarDayOrders, date, orders: [] });
+      }),
+    );
+    const { user } = await renderAuthenticatedAdminApp();
+    await user.click(screen.getByRole("button", { name: "Календарь" }));
+
+    // выбранная дата по умолчанию (сегодня) не входит в дни фикстуры, срабатывает
+    // фолбэк на 10 июля, запрос заказов обязан уйти именно за 10 июля, а не за
+    // исходную (нигде не показанную) дату
+    expect(await screen.findByText("10.07.2026, пятница")).toBeInTheDocument();
+    await waitFor(() => expect(requestedDayDates.at(-1)).toBe("2026-07-10"));
+
+    const monthInput = screen.getByLabelText("Месяц календаря логистики");
+    fireEvent.change(monthInput, { target: { value: "2026-09" } });
+
+    // после смены месяца выбранный день обязан переехать в новый месяц, а запрос
+    // заказов обязан уйти за дату, которая реально показана в шапке детализации
+    expect(await screen.findByText("05.09.2026, суббота")).toBeInTheDocument();
+    await waitFor(() => expect(requestedDayDates.at(-1)).toBe("2026-09-05"));
   });
 });

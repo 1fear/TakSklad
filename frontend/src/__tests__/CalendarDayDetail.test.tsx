@@ -40,6 +40,8 @@ describe("CalendarDayDetail", () => {
         regionDirectoryEmpty={false}
         canAdminWrite
         busyAction=""
+        canGoPrevDay
+        canGoNextDay
         onPrevDay={noop}
         onNextDay={noop}
         onSaveDay={noop}
@@ -61,6 +63,8 @@ describe("CalendarDayDetail", () => {
         regionDirectoryEmpty
         canAdminWrite={false}
         busyAction=""
+        canGoPrevDay
+        canGoNextDay
         onPrevDay={noop}
         onNextDay={noop}
         onSaveDay={noop}
@@ -71,7 +75,7 @@ describe("CalendarDayDetail", () => {
     expect(screen.getByRole("status")).toHaveTextContent(/справочник областных точек пуст/i);
   });
 
-  it("показывает элементы управления только при праве на запись", () => {
+  it("показывает кнопки статуса только при праве на запись, причину показывает всегда", () => {
     const { unmount } = render(
       <CalendarDayDetail
         day={day}
@@ -80,6 +84,8 @@ describe("CalendarDayDetail", () => {
         regionDirectoryEmpty={false}
         canAdminWrite
         busyAction=""
+        canGoPrevDay
+        canGoNextDay
         onPrevDay={noop}
         onNextDay={noop}
         onSaveDay={noop}
@@ -87,7 +93,7 @@ describe("CalendarDayDetail", () => {
       />,
     );
 
-    expect(screen.getByRole("textbox", { name: "Причина / комментарий" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Причина / комментарий" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Не работает" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Работает" })).toBeInTheDocument();
 
@@ -101,6 +107,8 @@ describe("CalendarDayDetail", () => {
         regionDirectoryEmpty={false}
         canAdminWrite={false}
         busyAction=""
+        canGoPrevDay
+        canGoNextDay
         onPrevDay={noop}
         onNextDay={noop}
         onSaveDay={noop}
@@ -108,7 +116,7 @@ describe("CalendarDayDetail", () => {
       />,
     );
 
-    expect(screen.queryByRole("textbox", { name: "Причина / комментарий" })).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Причина / комментарий" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Не работает" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Работает" })).not.toBeInTheDocument();
   });
@@ -123,6 +131,8 @@ describe("CalendarDayDetail", () => {
         regionDirectoryEmpty={false}
         canAdminWrite={false}
         busyAction=""
+        canGoPrevDay
+        canGoNextDay
         onPrevDay={noop}
         onNextDay={noop}
         onSaveDay={noop}
@@ -151,6 +161,8 @@ describe("CalendarDayDetail", () => {
         regionDirectoryEmpty={false}
         canAdminWrite={false}
         busyAction=""
+        canGoPrevDay
+        canGoNextDay
         onPrevDay={noop}
         onNextDay={noop}
         onSaveDay={noop}
@@ -164,5 +176,49 @@ describe("CalendarDayDetail", () => {
     await user.click(screen.getByRole("tab", { name: /Область/ }));
     await user.click(screen.getByRole("button", { name: /Выгрузить XLSX область/ }));
     expect(onDownload).toHaveBeenCalledWith("region");
+  });
+
+  it("блокирует стрелки дня на границе доступных дней", () => {
+    render(
+      <CalendarDayDetail
+        day={day}
+        dayOrders={null}
+        loading={false}
+        regionDirectoryEmpty={false}
+        canAdminWrite={false}
+        busyAction=""
+        canGoPrevDay={false}
+        canGoNextDay={false}
+        onPrevDay={noop}
+        onNextDay={noop}
+        onSaveDay={noop}
+        onDownload={noop}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Предыдущий день" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Следующий день" })).toBeDisabled();
+  });
+
+  it("блокирует кнопки статуса дня при любом идущем действии, не только своём", () => {
+    render(
+      <CalendarDayDetail
+        day={day}
+        dayOrders={null}
+        loading={false}
+        regionDirectoryEmpty={false}
+        canAdminWrite
+        busyAction="calendar-report:2026-08-07:city"
+        canGoPrevDay
+        canGoNextDay
+        onPrevDay={noop}
+        onNextDay={noop}
+        onSaveDay={noop}
+        onDownload={noop}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Не работает" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Работает" })).toBeDisabled();
   });
 });

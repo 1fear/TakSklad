@@ -442,11 +442,22 @@ function AdminWorkspace({
         setClientOrderSummaryErrors({});
       }, force);
     } else if (activeTab === "calendar" && has("client_points:read")) {
-      await loadCachedPanel(`calendar:${calendarMonth}`, (signal) => getLogisticsCalendar(activeConfig, calendarMonth, signal), setLogisticsCalendar, force);
+      const calendarResource = `calendar:${calendarMonth}`;
+      await loadCachedPanel(calendarResource, (signal) => getLogisticsCalendar(activeConfig, calendarMonth, signal), setLogisticsCalendar, force);
+      // Дата, по которой строится запрос и ключ кэша, обязана совпадать с днём,
+      // который увидит пользователь: если выбранной даты нет среди дней загруженного
+      // месяца (смена месяца, первый заход), поправляем state здесь же, а не оставляем
+      // это рендеру панели. Читаем только что загруженный календарь из panelCache,
+      // а не из мутируемой переменной, loadCachedPanel сам кладёт туда значение
+      // и после cache-hit, и после свежего запроса
+      const loadedCalendar = panelCache.get(calendarResource) as LogisticsCalendar | undefined;
+      const effectiveDate = loadedCalendar ? resolveCalendarDate(loadedCalendar.days, selectedCalendarDate) : selectedCalendarDate;
+      if (effectiveDate !== selectedCalendarDate) setSelectedCalendarDate(effectiveDate);
+      setCalendarDayOrders(null);
       setCalendarDayLoading(true);
       await loadCachedPanel(
-        `calendar-day:${selectedCalendarDate}`,
-        (signal) => getLogisticsCalendarDayOrders(activeConfig, selectedCalendarDate, signal),
+        `calendar-day:${effectiveDate}`,
+        (signal) => getLogisticsCalendarDayOrders(activeConfig, effectiveDate, signal),
         setCalendarDayOrders,
         force,
       );
@@ -1710,8 +1721,13 @@ function LogisticsCalendarPanel({
   onDownload: (serviceDate: string, zone: "city" | "region") => void;
 }) {
   const days = calendar?.days ?? [];
-  const selectedDay = days.find((day) => day.date === selectedDate) ?? days.find((day) => day.orders_count > 0) ?? days[0];
-  const selectedIndex = days.findIndex((day) => day.date === selectedDay?.date);
+  // Выбор дня без фолбэка: дата, которую видит пользователь, обязана быть той же,
+  // по которой AdminWorkspace уже запросил заказы (resolveCalendarDate поправляет
+  // state ещё до рендера панели), поэтому здесь просто прямой поиск по selectedDate
+  const selectedDay = days.find((day) => day.date === selectedDate);
+  const selectedIndex = days.findIndex((day) => day.date === selectedDate);
+  const canGoPrevDay = selectedIndex > 0;
+  const canGoNextDay = selectedIndex !== -1 && selectedIndex < days.length - 1;
   function goToAdjacentDay(offset: number) {
     if (selectedIndex === -1) return;
     const nextDay = days[selectedIndex + offset];
@@ -1781,24 +1797,26 @@ function LogisticsCalendarPanel({
             ))}
           </div>
         </div>
-
-        {selectedDay ? (
-          <CalendarDayDetail
-            day={selectedDay}
-            dayOrders={dayOrders}
-            loading={loading}
-            regionDirectoryEmpty={calendar?.region_directory_empty ?? false}
-            canAdminWrite={canAdminWrite}
-            busyAction={busyAction}
-            onPrevDay={() => goToAdjacentDay(-1)}
-            onNextDay={() => goToAdjacentDay(1)}
-            onSaveDay={onSaveDay}
-            onDownload={(zone) => onDownload(selectedDay.date, zone)}
-          />
-        ) : (
-          <div className="empty-state">Календарь не загружен</div>
-        )}
       </div>
+
+      {selectedDay ? (
+        <CalendarDayDetail
+          day={selectedDay}
+          dayOrders={dayOrders}
+          loading={loading}
+          regionDirectoryEmpty={calendar?.region_directory_empty ?? false}
+          canAdminWrite={canAdminWrite}
+          busyAction={busyAction}
+          canGoPrevDay={canGoPrevDay}
+          canGoNextDay={canGoNextDay}
+          onPrevDay={() => goToAdjacentDay(-1)}
+          onNextDay={() => goToAdjacentDay(1)}
+          onSaveDay={onSaveDay}
+          onDownload={(zone) => onDownload(selectedDay.date, zone)}
+        />
+      ) : (
+        <div className="empty-state">Календарь не загружен</div>
+      )}
     </section>
   );
 }
@@ -3061,6 +3079,14 @@ function panelResourcesForTab(value: Tab, calendarMonth: string, selectedCalenda
   if (value === "incidents") return ["incidents", "events"];
   if (value === "activity") return ["readiness", "events", "operations"];
   return [];
+}
+
+// Держит выбранную дату внутри дней, которые реально загружены: если preferredDate
+// не входит в days (после смены месяца или при первом заходе), возвращает первый день
+// с заказами, иначе первый день месяца, а не оставляет невалидную дату висеть в state
+function resolveCalendarDate(days: LogisticsCalendarDay[], preferredDate: string): string {
+  if (days.some((day) => day.date === preferredDate)) return preferredDate;
+  return days.find((day) => day.orders_count > 0)?.date ?? days[0]?.date ?? preferredDate;
 }
 
 function scanStateLabel(value: ScanFilter) {
