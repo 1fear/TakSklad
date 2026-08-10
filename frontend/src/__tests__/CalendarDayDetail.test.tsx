@@ -1,5 +1,5 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { CalendarDayDetail } from "../features/logistics/CalendarDayDetail";
 import { logisticsCalendarDayOrders } from "./fixtures";
@@ -68,5 +68,47 @@ describe("CalendarDayDetail", () => {
     );
 
     expect(screen.getByRole("status")).toHaveTextContent(/справочник областных точек пуст/i);
+  });
+
+  it("показывает элементы управления только при праве на запись", () => {
+    const { unmount } = render(
+      <CalendarDayDetail
+        day={day}
+        dayOrders={null}
+        loading={false}
+        regionDirectoryEmpty={false}
+        canAdminWrite
+        busyAction=""
+        onPrevDay={noop}
+        onNextDay={noop}
+        onSaveDay={noop}
+        onDownload={noop}
+      />,
+    );
+
+    expect(screen.getByRole("textbox", { name: "Причина / комментарий" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Не работает" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Работает" })).toBeInTheDocument();
+
+    unmount();
+
+    render(
+      <CalendarDayDetail
+        day={day}
+        dayOrders={null}
+        loading={false}
+        regionDirectoryEmpty={false}
+        canAdminWrite={false}
+        busyAction=""
+        onPrevDay={noop}
+        onNextDay={noop}
+        onSaveDay={noop}
+        onDownload={noop}
+      />,
+    );
+
+    expect(screen.queryByRole("textbox", { name: "Причина / комментарий" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Не работает" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Работает" })).not.toBeInTheDocument();
   });
 });

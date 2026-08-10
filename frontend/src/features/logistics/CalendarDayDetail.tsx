@@ -7,8 +7,8 @@ const WEEKDAYS = ["Понедельник", "Вторник", "Среда", "Ч�
 
 function formatDate(value: string) {
   if (!value) return "-";
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleDateString("ru-RU");
+  const [year, month, day] = value.slice(0, 10).split("-");
+  return year && month && day ? `${day}.${month}.${year}` : value;
 }
 
 function formatNumber(value: number) {
