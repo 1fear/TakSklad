@@ -81,6 +81,19 @@ describe("focused accessibility characterization", () => {
     expect(await axe(container)).toHaveNoViolations();
   });
 
+  it("has no automated axe violations on the calendar day detail panel", async () => {
+    setPath("/admin");
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+    await screen.findByRole("heading", { name: "Позиции заказов" });
+
+    await user.click(screen.getByRole("button", { name: "Календарь" }));
+    await user.click(await screen.findByRole("button", { name: /заказов/ }));
+    expect(await screen.findByRole("tab", { name: /Город/ })).toBeInTheDocument();
+
+    expect(await axe(container)).toHaveNoViolations();
+  });
+
   it("has no automated axe violations on the operator workspace shell", async () => {
     const { container } = render(<App />);
 

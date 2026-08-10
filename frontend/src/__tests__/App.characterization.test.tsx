@@ -9,6 +9,7 @@ import {
   anonymousSession,
   authenticatedSession,
   firstAdminRow,
+  logisticsCalendar,
   secondAdminRow,
 } from "./fixtures";
 import { defaultHandlers, server } from "./server";
@@ -377,5 +378,34 @@ describe("authenticated control-surface characterization", () => {
     expect(tablePanel).not.toBeNull();
     expect(within(tablePanel as HTMLElement).getByText("Нет данных")).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "Выбрать видимые заказы" })).toBeDisabled();
+  });
+
+  it("клик по дню календаря раскрывает детализацию с вкладками зон", async () => {
+    const { user } = await renderAuthenticatedAdminApp();
+
+    await user.click(screen.getByRole("button", { name: "Календарь" }));
+    await user.click(await screen.findByRole("button", { name: /заказов/ }));
+
+    expect(await screen.findByRole("tab", { name: /Город/ })).toBeInTheDocument();
+  });
+
+  it("листает детализацию дня стрелками внутри загруженного месяца", async () => {
+    server.use(http.get("/api/v1/admin/logistics-calendar", () => HttpResponse.json({
+      ...logisticsCalendar,
+      days: [
+        { ...logisticsCalendar.days[0], date: "2026-07-10", weekday: 4 },
+        { ...logisticsCalendar.days[0], date: "2026-07-11", weekday: 5 },
+      ],
+    })));
+    const { user } = await renderAuthenticatedAdminApp();
+    await user.click(screen.getByRole("button", { name: "Календарь" }));
+
+    expect(await screen.findByText("10.07.2026, пятница")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Следующий день" }));
+    expect(await screen.findByText("11.07.2026, суббота")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Предыдущий день" }));
+    expect(await screen.findByText("10.07.2026, пятница")).toBeInTheDocument();
   });
 });
