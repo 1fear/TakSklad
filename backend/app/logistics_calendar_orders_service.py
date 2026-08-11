@@ -9,6 +9,7 @@ from .kiz_reports_service import source_file_for_items
 from .logistics_service import is_logistics_candidate_order, is_returned_order
 from .logistics_zone_service import ZONE_CITY, classify_order, load_region_index
 from .models import Order
+from .order_statuses import COMPLETED_STATUSES
 from .reports_service import report_timezone
 from .skladbot_contracts import canonical_skladbot_request_number
 
@@ -77,13 +78,19 @@ def order_lifecycle_status(
     возврата: ничего не сохраняется, вызывающий обязан передать today, вычисленную
     один раз на запрос (ташкентский деловой пояс), а не звать report_timezone
     заново на каждый заказ
+
+    Заказ можно завершить в веб-админке без сканирования КИЗ, тогда статус
+    заказа уже входит в COMPLETED_STATUSES, а сканы остаются нулевыми: для
+    таких заказов проверка блоков пропускается, собранность считается
+    решённой самим статусом заказа
     """
     if is_returned_order(order):
         return "returned"
-    quantity_blocks = sum(int(item.quantity_blocks or 0) for item in order.items)
-    scanned_blocks = sum(int(item.scanned_blocks or 0) for item in order.items)
-    if scanned_blocks < quantity_blocks:
-        return "assembling"
+    if order.status not in COMPLETED_STATUSES:
+        quantity_blocks = sum(int(item.quantity_blocks or 0) for item in order.items)
+        scanned_blocks = sum(int(item.scanned_blocks or 0) for item in order.items)
+        if scanned_blocks < quantity_blocks:
+            return "assembling"
     delivery_date = order.order_date
     if not isinstance(delivery_date, date):
         raise ValueError(f"У заказа {order.id} нет даты доставки, статус жизненного цикла не определить")

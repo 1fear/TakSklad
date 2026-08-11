@@ -327,6 +327,95 @@ class OrderLifecycleStatusTests(unittest.TestCase):
         # 0 отсканировано из 0 запланировано, это не меньше плана
         self.assertEqual(order_lifecycle_status(order, today), "assembled")
 
+    def test_completed_status_with_zero_scans_and_past_delivery_is_delivered(self):
+        today = date(2026, 8, 10)
+        order = Order(
+            id=uuid.uuid4(),
+            source="test",
+            order_date=today - timedelta(days=3),
+            payment_type="Наличные",
+            client="Тест Клиент 15",
+            address="Ташкент, дом 15",
+            status="completed",
+            raw_payload={"completed_without_kiz": True},
+        )
+        order.items = [OrderItem(
+            id=uuid.uuid4(),
+            product="Тест Товар О",
+            quantity_blocks=5,
+            scanned_blocks=0,
+        )]
+
+        # заказ завершили в веб-админке без сканирования КИЗ: статус заказа
+        # перекрывает нулевые сканы, дата доставки в прошлом даёт "доставлен"
+        self.assertEqual(order_lifecycle_status(order, today), "delivered")
+
+    def test_completed_status_with_zero_scans_and_delivery_today_is_shipped(self):
+        today = date(2026, 8, 10)
+        order = Order(
+            id=uuid.uuid4(),
+            source="test",
+            order_date=today,
+            payment_type="Наличные",
+            client="Тест Клиент 16",
+            address="Ташкент, дом 16",
+            status="completed",
+            raw_payload={"completed_without_kiz": True},
+        )
+        order.items = [OrderItem(
+            id=uuid.uuid4(),
+            product="Тест Товар П",
+            quantity_blocks=5,
+            scanned_blocks=0,
+        )]
+
+        # тот же случай, но дата доставки ровно сегодня: "отгружен"
+        self.assertEqual(order_lifecycle_status(order, today), "shipped")
+
+    def test_not_completed_status_with_partial_scans_stays_assembling(self):
+        today = date(2026, 8, 10)
+        order = Order(
+            id=uuid.uuid4(),
+            source="test",
+            order_date=today - timedelta(days=1),
+            payment_type="Наличные",
+            client="Тест Клиент 17",
+            address="Ташкент, дом 17",
+            status="not_completed",
+            raw_payload={},
+        )
+        order.items = [OrderItem(
+            id=uuid.uuid4(),
+            product="Тест Товар Р",
+            quantity_blocks=6,
+            scanned_blocks=2,
+        )]
+
+        # статус не входит в завершающие, проверка блоков работает как раньше
+        self.assertEqual(order_lifecycle_status(order, today), "assembling")
+
+    def test_returned_order_wins_over_completed_status(self):
+        today = date(2026, 8, 10)
+        order = Order(
+            id=uuid.uuid4(),
+            source="test",
+            order_date=today - timedelta(days=1),
+            payment_type="Наличные",
+            client="Тест Клиент 18",
+            address="Область, дом 18",
+            status="completed",
+            raw_payload={"return_status": "returned"},
+        )
+        order.items = [OrderItem(
+            id=uuid.uuid4(),
+            product="Тест Товар С",
+            quantity_blocks=3,
+            scanned_blocks=0,
+        )]
+
+        # возврат остаётся первой веткой, даже когда статус заказа "завершён"
+        self.assertEqual(order_lifecycle_status(order, today), "returned")
+
 
 class LogisticsCalendarDayOrdersTimezoneTests(unittest.TestCase):
     """Проверяет, что today реально читается через report_timezone, а не через
