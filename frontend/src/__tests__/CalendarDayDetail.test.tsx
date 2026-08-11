@@ -239,6 +239,31 @@ describe("CalendarDayDetail", () => {
     expect(onDownload).toHaveBeenCalledWith("region");
   });
 
+  it("показывает подсказку про возвраты рядом с кнопкой выгрузки на обеих вкладках", async () => {
+    const user = userEvent.setup();
+    render(
+      <CalendarDayDetail
+        day={day}
+        dayOrders={logisticsCalendarDayOrders}
+        loading={false}
+        regionDirectoryEmpty={false}
+        canAdminWrite={false}
+        busyAction=""
+        canGoPrevDay
+        canGoNextDay
+        onPrevDay={noop}
+        onNextDay={noop}
+        onSaveDay={noop}
+        onDownload={noop}
+      />,
+    );
+
+    expect(screen.getByText("Возвраты в XLSX не входят")).toBeVisible();
+
+    await user.click(screen.getByRole("tab", { name: /Область/ }));
+    expect(screen.getByText("Возвраты в XLSX не входят")).toBeVisible();
+  });
+
   it("блокирует стрелки дня на границе доступных дней", () => {
     render(
       <CalendarDayDetail
