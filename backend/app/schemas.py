@@ -837,6 +837,13 @@ class LogisticsCalendarDayRead(BaseModel):
     completed_orders: int = 0
     returned_orders: int = 0
     planned_blocks: int = 0
+    city_orders: int = 0
+    region_orders: int = 0
+    city_returns: int = 0
+    region_returns: int = 0
+    city_blocks: int = 0
+    region_blocks: int = 0
+    excluded_orders: int = 0
     clients: list[str] = Field(default_factory=list)
 
 
@@ -844,6 +851,7 @@ class LogisticsCalendarRead(BaseModel):
     generated_at: datetime
     month: str
     default_non_working_weekdays: list[int] = Field(default_factory=list)
+    region_directory_empty: bool = False
     days: list[LogisticsCalendarDayRead] = Field(default_factory=list)
 
 
@@ -853,3 +861,30 @@ class LogisticsCalendarDayUpdate(BaseModel):
     reason: str = ""
     actor: str = "web"
     source: str = "web"
+
+
+class LogisticsCalendarDayOrderRead(BaseModel):
+    order_id: str
+    zone: Literal["city", "region"]
+    is_returned: bool = False
+    client: str = ""
+    address: str = ""
+    representative: str = ""
+    products: str = ""
+    source_file: str = ""
+    quantity_blocks: int = 0
+    scanned_blocks: int = 0
+    remaining_blocks: int = 0
+    status: str = ""
+    delivery_from: str = ""
+    delivery_to: str = ""
+    skladbot_request_number: str = ""
+    smartup_id: str = ""
+    line_total: int = 0
+
+
+class LogisticsCalendarDayOrdersRead(BaseModel):
+    date: date
+    generated_at: datetime
+    region_directory_empty: bool = False
+    orders: list[LogisticsCalendarDayOrderRead] = Field(default_factory=list)

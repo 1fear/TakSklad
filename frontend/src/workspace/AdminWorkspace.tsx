@@ -45,6 +45,7 @@ import {
   ImportRecord,
   LogisticsCalendar,
   LogisticsCalendarDay,
+  LogisticsCalendarDayOrders,
   OperationsAttention,
   ReadinessResponse,
   SkladBotDryRun,
@@ -54,12 +55,14 @@ import {
   completeOrdersWithoutKiz,
   deleteActiveOrder,
   downloadDiagnosticsLog,
+  downloadLogisticsReport,
   getAdminEvents,
   getAdminIncidents,
   getAdminTable,
   getClientPointOrderSummary,
   getDashboardDaySummary,
   getLogisticsCalendar,
+  getLogisticsCalendarDayOrders,
   getOperationsAttention,
   getReadiness,
   getSmartupAutoImportHistory,
@@ -86,6 +89,7 @@ import {
 } from "../data-flow";
 import OrderCorrelationDetails from "../features/orders/OrderCorrelationDetails";
 import DesktopPairingControl from "../features/desktopPairing/DesktopPairingControl";
+import { CalendarDayDetail } from "../features/logistics/CalendarDayDetail";
 import { accessibleAdminTabsForPermissions, type AdminWorkspaceTab } from "./surface";
 
 type Tab = AdminWorkspaceTab;
@@ -161,6 +165,8 @@ function AdminWorkspace({
   const [operationsAttention, setOperationsAttention] = useState<OperationsAttention | null>(null);
   const [smartupHistory, setSmartupHistory] = useState<SmartupAutoImportHistory | null>(null);
   const [logisticsCalendar, setLogisticsCalendar] = useState<LogisticsCalendar | null>(null);
+  const [calendarDayOrders, setCalendarDayOrders] = useState<LogisticsCalendarDayOrders | null>(null);
+  const [calendarDayLoading, setCalendarDayLoading] = useState(false);
   const [incidents, setIncidents] = useState<AdminIncident[]>([]);
   const [incidentSummary, setIncidentSummary] = useState<Record<string, unknown>>({});
   const [dashboardSummary, setDashboardSummary] = useState<DashboardDaySummary | null>(null);
@@ -289,6 +295,7 @@ function AdminWorkspace({
     setOperationsAttention(null);
     setSmartupHistory(null);
     setLogisticsCalendar(null);
+    setCalendarDayOrders(null);
     setIncidents([]);
     setIncidentSummary({});
     setDashboardSummary(null);
@@ -435,7 +442,39 @@ function AdminWorkspace({
         setClientOrderSummaryErrors({});
       }, force);
     } else if (activeTab === "calendar" && has("client_points:read")) {
-      await loadCachedPanel(`calendar:${calendarMonth}`, (signal) => getLogisticsCalendar(activeConfig, calendarMonth, signal), setLogisticsCalendar, force);
+      const calendarResource = `calendar:${calendarMonth}`;
+      await loadCachedPanel(calendarResource, (signal) => getLogisticsCalendar(activeConfig, calendarMonth, signal), setLogisticsCalendar, force);
+      // Дата, по которой строится запрос и ключ кэша, обязана совпадать с днём,
+      // который увидит пользователь: если выбранной даты нет среди дней загруженного
+      // месяца (смена месяца, первый заход), поправляем state здесь же, а не оставляем
+      // это рендеру панели. Читаем только что загруженный календарь из panelCache,
+      // а не из мутируемой переменной, loadCachedPanel сам кладёт туда значение
+      // и после cache-hit, и после свежего запроса
+      const loadedCalendar = panelCache.get(calendarResource) as LogisticsCalendar | undefined;
+      const effectiveDate = loadedCalendar ? resolveCalendarDate(loadedCalendar.days, selectedCalendarDate) : selectedCalendarDate;
+      if (effectiveDate !== selectedCalendarDate) {
+        // Не грузим день заказов в этом же прогоне: смена selectedCalendarDate ниже
+        // перезапустит этот эффект по зависимости, и второй прогон увидит уже
+        // совпадающую дату и загрузит день сам. Если продолжить здесь, второй begin
+        // на тот же ресурс calendar-day абортит запрос первого прогона, а первый
+        // прогон всё равно снимет loading уже после этого аборта, и пользователь на
+        // миг увидит пустое состояние вместо загрузки, вдобавок оба запроса реально
+        // уходят на бэкенд, и cleanup эффекта считает список ресурсов по устаревшей
+        // дате, не по той, что реально запрошена
+        setSelectedCalendarDate(effectiveDate);
+        setCalendarDayOrders(null);
+        setCalendarDayLoading(true);
+        return;
+      }
+      setCalendarDayOrders(null);
+      setCalendarDayLoading(true);
+      await loadCachedPanel(
+        `calendar-day:${effectiveDate}`,
+        (signal) => getLogisticsCalendarDayOrders(activeConfig, effectiveDate, signal),
+        setCalendarDayOrders,
+        force,
+      );
+      setCalendarDayLoading(false);
     } else if (activeTab === "smartup" && has("admin:read")) {
       await loadCachedPanel("smartup-history", (signal) => getSmartupAutoImportHistory(activeConfig, 50, signal), setSmartupHistory, force);
     } else if (activeTab === "imports" && has("imports:read")) {
@@ -579,14 +618,31 @@ function AdminWorkspace({
     }
   }
 
+  async function downloadCalendarReport(serviceDate: string, zone: "city" | "region") {
+    setBusyAction(`calendar-report:${serviceDate}:${zone}`);
+    try {
+      const result = await downloadLogisticsReport(config, serviceDate, zone);
+      const href = URL.createObjectURL(result.blob);
+      const anchor = document.createElement("a");
+      anchor.href = href;
+      anchor.download = result.filename;
+      anchor.click();
+      URL.revokeObjectURL(href);
+    } catch (actionError) {
+      showActionError(actionError, "Не удалось выгрузить отчёт логистики");
+    } finally {
+      setBusyAction("");
+    }
+  }
+
   useEffect(() => {
-    const resources = panelResourcesForTab(tab, calendarMonth);
+    const resources = panelResourcesForTab(tab, calendarMonth, selectedCalendarDate);
     void loadVisiblePanel(tab, config, authPermissions);
     return () => {
       for (const resource of resources) requestCoordinator.abort(resource);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, calendarMonth, config, authPermissions, requestCoordinator]);
+  }, [tab, calendarMonth, selectedCalendarDate, config, authPermissions, requestCoordinator]);
 
   useEffect(() => {
     if (tab !== "table" || !adminTable) return;
@@ -1272,11 +1328,14 @@ function AdminWorkspace({
             calendar={logisticsCalendar}
             month={calendarMonth}
             selectedDate={selectedCalendarDate}
+            dayOrders={calendarDayOrders}
+            loading={calendarDayLoading}
             busyAction={busyAction}
             canAdminWrite={canAdminWrite}
             onMonthChange={setCalendarMonth}
             onSelectDate={setSelectedCalendarDate}
             onSaveDay={(day, isNonWorking, reason) => void saveLogisticsCalendarDay(day, isNonWorking, reason)}
+            onDownload={(serviceDate, zone) => void downloadCalendarReport(serviceDate, zone)}
           />
         )}
 
@@ -1653,27 +1712,40 @@ function LogisticsCalendarPanel({
   calendar,
   month,
   selectedDate,
+  dayOrders,
+  loading,
   busyAction,
   canAdminWrite,
   onMonthChange,
   onSelectDate,
   onSaveDay,
+  onDownload,
 }: {
   calendar: LogisticsCalendar | null;
   month: string;
   selectedDate: string;
+  dayOrders: LogisticsCalendarDayOrders | null;
+  loading: boolean;
   busyAction: string;
   canAdminWrite: boolean;
   onMonthChange: (value: string) => void;
   onSelectDate: (value: string) => void;
   onSaveDay: (day: LogisticsCalendarDay, isNonWorking: boolean, reason: string) => void;
+  onDownload: (serviceDate: string, zone: "city" | "region") => void;
 }) {
   const days = calendar?.days ?? [];
-  const selectedDay = days.find((day) => day.date === selectedDate) ?? days.find((day) => day.orders_count > 0) ?? days[0];
-  const [reason, setReason] = useState("");
-  useEffect(() => {
-    setReason(selectedDay?.reason || "");
-  }, [selectedDay?.date, selectedDay?.reason]);
+  // Выбор дня без фолбэка: дата, которую видит пользователь, обязана быть той же,
+  // по которой AdminWorkspace уже запросил заказы (resolveCalendarDate поправляет
+  // state ещё до рендера панели), поэтому здесь просто прямой поиск по selectedDate
+  const selectedDay = days.find((day) => day.date === selectedDate);
+  const selectedIndex = days.findIndex((day) => day.date === selectedDate);
+  const canGoPrevDay = selectedIndex > 0;
+  const canGoNextDay = selectedIndex !== -1 && selectedIndex < days.length - 1;
+  function goToAdjacentDay(offset: number) {
+    if (selectedIndex === -1) return;
+    const nextDay = days[selectedIndex + offset];
+    if (nextDay) onSelectDate(nextDay.date);
+  }
   const leadingBlanks = days[0] ? days[0].weekday : 0;
   const nonWorkingCount = days.filter((day) => day.is_non_working).length;
   const manualCount = days.filter((day) => day.is_manual).length;
@@ -1738,68 +1810,26 @@ function LogisticsCalendarPanel({
             ))}
           </div>
         </div>
-
-        <aside className="calendar-detail">
-          {selectedDay ? (
-            <>
-              <div className="detail-head compact">
-                <div>
-                  <h3>{formatDate(selectedDay.date)}</h3>
-                  <span>{weekdayLabel(selectedDay.weekday)}</span>
-                </div>
-                <span className={`status-badge ${selectedDay.is_non_working ? "calendar-closed" : "queue-completed"}`}>
-                  {selectedDay.is_non_working ? "Логистика не работает" : "Рабочий день"}
-                </span>
-              </div>
-              <dl className="detail-list">
-                <div><dt>Заказы</dt><dd>{selectedDay.orders_count}</dd></div>
-                <div><dt>Активные</dt><dd>{selectedDay.active_orders}</dd></div>
-                <div><dt>Возвраты</dt><dd>{selectedDay.returned_orders}</dd></div>
-                <div><dt>Блоки</dt><dd>{selectedDay.planned_blocks}</dd></div>
-                <div><dt>Источник</dt><dd>{selectedDay.source || "-"}</dd></div>
-              </dl>
-              {selectedDay.clients.length > 0 && (
-                <div className="calendar-client-list">
-                  <strong>Клиенты</strong>
-                  {selectedDay.clients.map((client) => <span key={client}>{client}</span>)}
-                </div>
-              )}
-              <label className="admin-reason-field">
-                <span>Причина / комментарий</span>
-                <textarea
-                  value={reason}
-                  onChange={(event) => setReason(event.target.value)}
-                  rows={3}
-                  disabled={!canAdminWrite}
-                  placeholder="Например: праздник, логистика не работает"
-                />
-              </label>
-              {canAdminWrite && (
-                <div className="action-buttons">
-                  <button
-                    className="ghost-button"
-                    onClick={() => onSaveDay(selectedDay, true, reason || "Нерабочий день логистики")}
-                    disabled={Boolean(busyAction)}
-                  >
-                    {busyAction === `calendar-day:${selectedDay.date}` ? <Loader2 className="spin" size={16} /> : <Lock size={16} />}
-                    Не работает
-                  </button>
-                  <button
-                    className="ghost-button"
-                    onClick={() => onSaveDay(selectedDay, false, reason || "Рабочий день логистики")}
-                    disabled={Boolean(busyAction)}
-                  >
-                    {busyAction === `calendar-day:${selectedDay.date}` ? <Loader2 className="spin" size={16} /> : <CheckCircle2 size={16} />}
-                    Работает
-                  </button>
-                </div>
-              )}
-            </>
-          ) : (
-            <div className="empty-state">Календарь не загружен</div>
-          )}
-        </aside>
       </div>
+
+      {selectedDay ? (
+        <CalendarDayDetail
+          day={selectedDay}
+          dayOrders={dayOrders}
+          loading={loading}
+          regionDirectoryEmpty={calendar?.region_directory_empty ?? false}
+          canAdminWrite={canAdminWrite}
+          busyAction={busyAction}
+          canGoPrevDay={canGoPrevDay}
+          canGoNextDay={canGoNextDay}
+          onPrevDay={() => goToAdjacentDay(-1)}
+          onNextDay={() => goToAdjacentDay(1)}
+          onSaveDay={onSaveDay}
+          onDownload={(zone) => onDownload(selectedDay.date, zone)}
+        />
+      ) : (
+        <div className="empty-state">Календарь не загружен</div>
+      )}
     </section>
   );
 }
@@ -3053,9 +3083,9 @@ function isHistoryTab(value: Tab) {
   return HISTORY_TABS.includes(value);
 }
 
-function panelResourcesForTab(value: Tab, calendarMonth: string) {
+function panelResourcesForTab(value: Tab, calendarMonth: string, selectedCalendarDate: string) {
   if (value === "clients") return ["client-points"];
-  if (value === "calendar") return [`calendar:${calendarMonth}`];
+  if (value === "calendar") return [`calendar:${calendarMonth}`, `calendar-day:${selectedCalendarDate}`];
   if (value === "smartup") return ["smartup-history"];
   if (value === "imports") return ["imports"];
   if (value === "skladbotDryRun") return ["imports", "dry-runs"];
@@ -3064,8 +3094,12 @@ function panelResourcesForTab(value: Tab, calendarMonth: string) {
   return [];
 }
 
-function weekdayLabel(value: number) {
-  return ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"][value] || "-";
+// Держит выбранную дату внутри дней, которые реально загружены: если preferredDate
+// не входит в days (после смены месяца или при первом заходе), возвращает первый день
+// с заказами, иначе первый день месяца, а не оставляет невалидную дату висеть в state
+function resolveCalendarDate(days: LogisticsCalendarDay[], preferredDate: string): string {
+  if (days.some((day) => day.date === preferredDate)) return preferredDate;
+  return days.find((day) => day.orders_count > 0)?.date ?? days[0]?.date ?? preferredDate;
 }
 
 function scanStateLabel(value: ScanFilter) {

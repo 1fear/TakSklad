@@ -1,6 +1,7 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as api from "../api";
+import { defaultHandlers, server } from "./server";
 
 const cookieConfig: api.ApiConfig = {
   apiUrl: "",
@@ -30,6 +31,10 @@ function lastRequest(fetchSpy: ReturnType<typeof vi.spyOn>) {
   const [url, options] = fetchSpy.mock.calls.at(-1) as [string, RequestInit];
   return { url, options };
 }
+
+beforeEach(() => {
+  server.use(...defaultHandlers);
+});
 
 afterEach(() => {
   vi.useRealTimers();
@@ -409,6 +414,11 @@ describe("API endpoint wrapper contracts", () => {
     expect(lastRequest(fetchSpy).url).toContain("search=%D0%9A%D0%BB%D0%B8%D0%B5%D0%BD%D1%82+%26+%D0%9A%D0%BE&scan_state=in_progress&skladbot_filter=found");
     expect(result.filename).toBe("TakSklad_filtered.xlsx");
   });
+
+  it("getLogisticsCalendarDayOrders отдаёт строки с зоной", async () => {
+    const result = await api.getLogisticsCalendarDayOrders(cookieConfig, "2026-08-07");
+    expect(result.orders.every((row) => row.zone === "city" || row.zone === "region")).toBe(true);
+  });
 });
 
 describe("diagnostics download contract", () => {
@@ -447,6 +457,61 @@ describe("diagnostics download contract", () => {
       status: 503,
       statusText: "Service Unavailable",
       message: "503 Service Unavailable: Не удалось скачать audit log",
+    });
+  });
+});
+
+describe("logistics report download contract", () => {
+  it("sends shipment_date and zone as query parameters over a same-origin cookie session", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("xlsx", {
+      headers: { "X-TakSklad-Filename": "TakSklad_report.xlsx" },
+    }));
+
+    await api.downloadLogisticsReport(cookieConfig, "2026-08-07", "city");
+
+    expect(lastRequest(fetchSpy).url).toBe("/api/v1/logistics/report?shipment_date=2026-08-07&zone=city");
+    expect(lastRequest(fetchSpy).options.credentials).toBe("same-origin");
+  });
+
+  it("uses bearer auth without cookies", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("xlsx"));
+
+    await api.downloadLogisticsReport(bearerConfig, "2026-08-07", "region");
+
+    expect(lastRequest(fetchSpy)).toMatchObject({
+      url: "https://api.synthetic.test/api/v1/logistics/report?shipment_date=2026-08-07&zone=region",
+      options: {
+        credentials: "omit",
+        headers: { Authorization: "Bearer synthetic-token" },
+      },
+    });
+  });
+
+  it.each([
+    ["server filename", encodeURIComponent("TakSklad_логистика_2026-08-07_city.xlsx"), "TakSklad_логистика_2026-08-07_city.xlsx"],
+    ["fallback filename", null, "TakSklad_логистика.xlsx"],
+  ])("decodes the X-TakSklad-Filename header, %s", async (_name, header, expectedFilename) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("xlsx-bytes", {
+      headers: header ? { "X-TakSklad-Filename": header } : {},
+    }));
+
+    const result = await api.downloadLogisticsReport(cookieConfig, "2026-08-07", "city");
+
+    expect(result.filename).toBe(expectedFilename);
+    expect(await result.blob.text()).toBe("xlsx-bytes");
+  });
+
+  it("rejects a failed download with a typed error", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("failed", {
+      status: 502,
+      statusText: "Bad Gateway",
+    }));
+
+    await expect(api.downloadLogisticsReport(cookieConfig, "2026-08-07", "region")).rejects.toMatchObject({
+      name: "ApiRequestError",
+      status: 502,
+      statusText: "Bad Gateway",
+      message: "502 Bad Gateway: Не удалось выгрузить отчёт логистики",
     });
   });
 });

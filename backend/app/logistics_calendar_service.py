@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from .logistics_service import is_logistics_candidate_order, is_returned_order
+from .logistics_zone_service import ZONE_CITY, ZONE_REGION, classify_order, load_region_index
 from .models import AuditLog, LogisticsCalendarDay, Order
 
 
@@ -28,7 +29,7 @@ def list_logistics_calendar(db: Session, month: str | None = None) -> dict[str, 
     first_day = date(month_date.year, month_date.month, 1)
     last_day = date(month_date.year, month_date.month, monthrange(month_date.year, month_date.month)[1])
     overrides = calendar_overrides(db, first_day, last_day)
-    order_summary = calendar_order_summary(db, first_day, last_day)
+    order_summary, region_directory_empty = calendar_order_summary(db, first_day, last_day)
     days = []
     current = first_day
     while current <= last_day:
@@ -50,6 +51,13 @@ def list_logistics_calendar(db: Session, month: str | None = None) -> dict[str, 
             "returned_orders": int(summary.get("returned_orders") or 0),
             "planned_blocks": int(summary.get("planned_blocks") or 0),
             "clients": summary.get("clients") or [],
+            "city_orders": int(summary.get("city_orders") or 0),
+            "region_orders": int(summary.get("region_orders") or 0),
+            "city_returns": int(summary.get("city_returns") or 0),
+            "region_returns": int(summary.get("region_returns") or 0),
+            "city_blocks": int(summary.get("city_blocks") or 0),
+            "region_blocks": int(summary.get("region_blocks") or 0),
+            "excluded_orders": int(summary.get("excluded_orders") or 0),
         })
         current += timedelta(days=1)
     return {
@@ -57,6 +65,7 @@ def list_logistics_calendar(db: Session, month: str | None = None) -> dict[str, 
         "month": first_day.strftime("%Y-%m"),
         "default_non_working_weekdays": list(DEFAULT_NON_WORKING_WEEKDAYS),
         "days": days,
+        "region_directory_empty": region_directory_empty,
     }
 
 
@@ -160,7 +169,7 @@ def calendar_overrides(db: Session, first_day: date, last_day: date) -> dict[dat
     return {row.service_date: row for row in rows}
 
 
-def calendar_order_summary(db: Session, first_day: date, last_day: date) -> dict[date, dict[str, Any]]:
+def calendar_order_summary(db: Session, first_day: date, last_day: date) -> tuple[dict[date, dict[str, Any]], bool]:
     orders = db.execute(
         select(Order)
         .options(selectinload(Order.items))
@@ -168,38 +177,62 @@ def calendar_order_summary(db: Session, first_day: date, last_day: date) -> dict
         .where(Order.order_date <= last_day)
         .order_by(Order.order_date.asc(), Order.created_at.asc())
     ).scalars().all()
+    region_index = load_region_index(db)
+    region_directory_empty = len(region_index) == 0
     summary: dict[date, dict[str, Any]] = {}
     for order in orders:
         returned_order = is_returned_order(order)
-        if not returned_order and not is_logistics_candidate_order(order):
-            continue
         service_date = order.order_date
         if not isinstance(service_date, date):
             continue
-        day = summary.setdefault(service_date, {
-            "orders_count": 0,
-            "active_orders": 0,
-            "completed_orders": 0,
-            "returned_orders": 0,
-            "planned_blocks": 0,
-            "clients": [],
-        })
+        day = summary.setdefault(service_date, empty_calendar_day_summary())
+        if not returned_order and not is_logistics_candidate_order(order):
+            day["excluded_orders"] += 1
+            continue
+        zone = ZONE_CITY if region_directory_empty else classify_order(
+            order.client,
+            (order.raw_payload or {}).get("coordinates"),
+            region_index,
+        )
+        prefix = "city" if zone == ZONE_CITY else "region"
         if returned_order:
             day["returned_orders"] += 1
+            day[f"{prefix}_returns"] += 1
             if order.client and order.client not in day["clients"]:
                 day["clients"].append(order.client)
             continue
         day["orders_count"] += 1
+        day[f"{prefix}_orders"] += 1
         if order.status == "completed":
             day["completed_orders"] += 1
         else:
             day["active_orders"] += 1
-        day["planned_blocks"] += sum(int(item.quantity_blocks or 0) for item in order.items)
+        blocks = sum(int(item.quantity_blocks or 0) for item in order.items)
+        day["planned_blocks"] += blocks
+        day[f"{prefix}_blocks"] += blocks
         if order.client and order.client not in day["clients"]:
             day["clients"].append(order.client)
     for day in summary.values():
         day["clients"] = day["clients"][:6]
-    return summary
+    return summary, region_directory_empty
+
+
+def empty_calendar_day_summary() -> dict[str, Any]:
+    return {
+        "orders_count": 0,
+        "active_orders": 0,
+        "completed_orders": 0,
+        "returned_orders": 0,
+        "planned_blocks": 0,
+        "city_orders": 0,
+        "region_orders": 0,
+        "city_returns": 0,
+        "region_returns": 0,
+        "city_blocks": 0,
+        "region_blocks": 0,
+        "excluded_orders": 0,
+        "clients": [],
+    }
 
 
 def parse_calendar_month(value: str | None) -> date:

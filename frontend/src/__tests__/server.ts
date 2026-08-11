@@ -11,6 +11,7 @@ import {
   firstAdminRow,
   incident,
   logisticsCalendar,
+  logisticsCalendarDayOrders,
   operationsAttention,
   readiness,
   secondAdminRow,
@@ -91,6 +92,10 @@ export const defaultHandlers = [
   http.get("/api/v1/admin/operations", () => HttpResponse.json(operationsAttention)),
   http.get("/api/v1/admin/smartup-auto-imports/history", () => HttpResponse.json(smartupHistory)),
   http.get("/api/v1/admin/logistics-calendar", () => HttpResponse.json(logisticsCalendar)),
+  http.get("/api/v1/admin/logistics-calendar/day/:date/orders", () => HttpResponse.json(logisticsCalendarDayOrders)),
+  http.get("/api/v1/logistics/report", () => HttpResponse.text("synthetic-xlsx", {
+    headers: { "X-TakSklad-Filename": encodeURIComponent("TakSklad_логистика.xlsx") },
+  })),
   http.get("/api/v1/admin/incidents", () => HttpResponse.json({ items: [incident], summary: { total: 1 } })),
   http.get("/api/v1/admin/skladbot/dry-runs", () => HttpResponse.json(skladbotDryRuns)),
   http.post("/api/v1/admin/orders/:orderId/archive-without-kiz", () => HttpResponse.json({})),

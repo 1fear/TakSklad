@@ -121,6 +121,7 @@ ROUTE_POLICIES: dict[tuple[str, str], RoutePolicy] = {
     ("GET", "/api/v1/admin/client-points/order-summary"): _protected(PERMISSION_CLIENT_POINTS_READ, "client_points:read"),
     ("GET", "/api/v1/admin/logistics-calendar"): _protected(PERMISSION_CLIENT_POINTS_READ, "client_points:read"),
     ("POST", "/api/v1/admin/logistics-calendar/day"): _protected(PERMISSION_ADMIN_WRITE, "admin:write", mutates=True),
+    ("GET", "/api/v1/admin/logistics-calendar/day/{service_date}/orders"): _protected(PERMISSION_CLIENT_POINTS_READ, "client_points:read"),
     ("POST", "/api/v1/admin/client-points/timeslot"): _protected(PERMISSION_CLIENT_POINTS_WRITE, "client_points:write", mutates=True),
     ("GET", "/api/v1/admin/orders/export.xlsx"): _protected(PERMISSION_ADMIN_READ, "admin:read", sensitive=True),
     ("GET", "/api/v1/admin/events"): _protected(PERMISSION_ADMIN_READ, "admin:read", sensitive=True),

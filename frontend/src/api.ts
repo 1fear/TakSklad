@@ -346,6 +346,13 @@ export type LogisticsCalendarDay = {
   completed_orders: number;
   returned_orders: number;
   planned_blocks: number;
+  city_orders: number;
+  region_orders: number;
+  city_returns: number;
+  region_returns: number;
+  city_blocks: number;
+  region_blocks: number;
+  excluded_orders: number;
   clients: string[];
 };
 
@@ -353,6 +360,7 @@ export type LogisticsCalendar = {
   generated_at: string;
   month: string;
   default_non_working_weekdays: number[];
+  region_directory_empty: boolean;
   days: LogisticsCalendarDay[];
 };
 
@@ -362,6 +370,33 @@ export type LogisticsCalendarDayUpdatePayload = {
   reason?: string;
   actor?: string;
   source?: string;
+};
+
+export type LogisticsCalendarDayOrder = {
+  order_id: string;
+  zone: "city" | "region";
+  is_returned: boolean;
+  client: string;
+  address: string;
+  representative: string;
+  products: string;
+  source_file: string;
+  quantity_blocks: number;
+  scanned_blocks: number;
+  remaining_blocks: number;
+  status: string;
+  delivery_from: string;
+  delivery_to: string;
+  skladbot_request_number: string;
+  smartup_id: string;
+  line_total: number;
+};
+
+export type LogisticsCalendarDayOrders = {
+  date: string;
+  generated_at: string;
+  region_directory_empty: boolean;
+  orders: LogisticsCalendarDayOrder[];
 };
 
 export type AdminIncident = {
@@ -613,6 +648,14 @@ export function getLogisticsCalendar(config: ApiConfig, month = "", signal?: Abo
   return apiRequest<LogisticsCalendar>(config, `/api/v1/admin/logistics-calendar${query}`, { signal });
 }
 
+export function getLogisticsCalendarDayOrders(config: ApiConfig, serviceDate: string, signal?: AbortSignal) {
+  return apiRequest<LogisticsCalendarDayOrders>(
+    config,
+    `/api/v1/admin/logistics-calendar/day/${encodeURIComponent(serviceDate)}/orders`,
+    { signal },
+  );
+}
+
 export function updateLogisticsCalendarDay(config: ApiConfig, payload: LogisticsCalendarDayUpdatePayload) {
   return apiRequest<LogisticsCalendarDay>(config, "/api/v1/admin/logistics-calendar/day", {
     method: "POST",
@@ -862,4 +905,19 @@ export function rebuildSkladBotDryRun(config: ApiConfig, dryRunId: string) {
   return apiRequest<SkladBotDryRun[]>(config, `/api/v1/admin/skladbot/dry-runs/${encodeURIComponent(dryRunId)}/rebuild`, {
     method: "POST",
   });
+}
+
+export async function downloadLogisticsReport(config: ApiConfig, shipmentDate: string, zone: "city" | "region") {
+  const apiUrl = config.apiUrl.replace(/\/$/, "");
+  ensureCookieApiIsSameOrigin(apiUrl, Boolean(config.token));
+  const query = new URLSearchParams({ shipment_date: shipmentDate, zone });
+  const response = await fetch(`${apiUrl}/api/v1/logistics/report?${query.toString()}`, {
+    credentials: config.token ? "omit" : "same-origin",
+    headers: config.token ? { Authorization: `Bearer ${config.token}` } : {},
+  });
+  if (!response.ok) throw new ApiRequestError(response.status, response.statusText, "Не удалось выгрузить отчёт логистики");
+  return {
+    blob: await response.blob(),
+    filename: decodeURIComponent(response.headers.get("X-TakSklad-Filename") || "TakSklad_логистика.xlsx"),
+  };
 }
