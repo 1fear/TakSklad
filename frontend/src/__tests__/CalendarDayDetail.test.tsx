@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
+import type { LogisticsCalendarDayOrders } from "../api";
 import { CalendarDayDetail } from "../features/logistics/CalendarDayDetail";
 import { logisticsCalendarDayOrders } from "./fixtures";
 
@@ -148,6 +149,59 @@ describe("CalendarDayDetail", () => {
 
     await user.click(screen.getByRole("button", { name: "Заказы" }));
     expect(screen.queryByRole("row", { name: /Тест Клиент 2/ })).not.toBeInTheDocument();
+  });
+
+  it("показывает подписи статуса жизненного цикла и меняет их вместе с данными", async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <CalendarDayDetail
+        day={day}
+        dayOrders={logisticsCalendarDayOrders}
+        loading={false}
+        regionDirectoryEmpty={false}
+        canAdminWrite={false}
+        busyAction=""
+        canGoPrevDay
+        canGoNextDay
+        onPrevDay={noop}
+        onNextDay={noop}
+        onSaveDay={noop}
+        onDownload={noop}
+      />,
+    );
+
+    expect(screen.getByRole("row", { name: /Тест Клиент 1/ })).toHaveTextContent("В сборке");
+
+    await user.click(screen.getByRole("tab", { name: /Область/ }));
+    expect(screen.getByRole("row", { name: /Тест Клиент 2/ })).toHaveTextContent("Возврат");
+
+    await user.click(screen.getByRole("tab", { name: /Город/ }));
+
+    const assembledOrders: LogisticsCalendarDayOrders = {
+      ...logisticsCalendarDayOrders,
+      orders: logisticsCalendarDayOrders.orders.map((row) =>
+        row.order_id === "order-1" ? { ...row, lifecycle_status: "delivered" as const } : row,
+      ),
+    };
+
+    rerender(
+      <CalendarDayDetail
+        day={day}
+        dayOrders={assembledOrders}
+        loading={false}
+        regionDirectoryEmpty={false}
+        canAdminWrite={false}
+        busyAction=""
+        canGoPrevDay
+        canGoNextDay
+        onPrevDay={noop}
+        onNextDay={noop}
+        onSaveDay={noop}
+        onDownload={noop}
+      />,
+    );
+
+    expect(screen.getByRole("row", { name: /Тест Клиент 1/ })).toHaveTextContent("Доставлен");
   });
 
   it("выгружает XLSX активной вкладки", async () => {

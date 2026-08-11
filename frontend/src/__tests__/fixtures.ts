@@ -440,6 +440,7 @@ export const logisticsCalendarDayOrders: LogisticsCalendarDayOrders = {
     {
       order_id: "order-1",
       zone: "city",
+      lifecycle_status: "assembling",
       is_returned: false,
       client: "Тест Клиент 1",
       address: "Ташкент, дом 1",
@@ -459,6 +460,7 @@ export const logisticsCalendarDayOrders: LogisticsCalendarDayOrders = {
     {
       order_id: "order-2",
       zone: "region",
+      lifecycle_status: "returned",
       is_returned: true,
       client: "Тест Клиент 2",
       address: "Область, дом 2",

@@ -2142,6 +2142,22 @@ summary:focus-visible {
   color: #8a5300;
 }
 
+.status-badge.assembling {
+  background: #eef0f3;
+  color: #6d7168;
+}
+
+.status-badge.assembled,
+.status-badge.delivered {
+  background: #e9f3ef;
+  color: #16635b;
+}
+
+.status-badge.shipped {
+  background: #e7f1f8;
+  color: #2c4c6b;
+}
+
 .status-badge.calendar-closed {
   background: #ffe9e4;
   color: #9d2b1f;
