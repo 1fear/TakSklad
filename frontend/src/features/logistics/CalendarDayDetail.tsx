@@ -173,6 +173,7 @@ export function CalendarDayDetail({
             <button className="ghost-button sm" type="button" onClick={() => onDownload(zone)}>
               {zone === "city" ? "Выгрузить XLSX город" : "Выгрузить XLSX область"}
             </button>
+            <span className="panel-subtitle">Возвраты в XLSX не входят</span>
           </div>
         </div>
 

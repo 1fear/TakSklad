@@ -513,4 +513,22 @@ describe("authenticated control-surface characterization", () => {
     // эффекта абортить первый до ответа, поэтому гонка воспроизводится детерминированно
     expect(requestedDayDates).toEqual(["2026-07-10"]);
   });
+
+  it("показывает спокойное уведомление вместо красной ошибки, когда XLSX-отчёт логистики отвечает 404 на пустую зону", async () => {
+    server.use(
+      http.get("/api/v1/logistics/report", () => HttpResponse.json(
+        { detail: { code: "empty_zone", message: "no orders for this zone and date" } },
+        { status: 404, statusText: "Not Found" },
+      )),
+    );
+    const { user } = await renderAuthenticatedAdminApp();
+    await user.click(screen.getByRole("button", { name: "Календарь" }));
+    await screen.findByText("10.07.2026, пятница");
+
+    await user.click(screen.getByRole("button", { name: /Выгрузить XLSX город/ }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent("В этой зоне за день нет заказов для выгрузки");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Не удалось выгрузить отчёт логистики/)).not.toBeInTheDocument();
+  });
 });

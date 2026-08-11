@@ -90,6 +90,7 @@ import {
 import OrderCorrelationDetails from "../features/orders/OrderCorrelationDetails";
 import DesktopPairingControl from "../features/desktopPairing/DesktopPairingControl";
 import { CalendarDayDetail } from "../features/logistics/CalendarDayDetail";
+import { calendarReportEmptyZoneNotice } from "./calendarReportNotice";
 import { accessibleAdminTabsForPermissions, type AdminWorkspaceTab } from "./surface";
 
 type Tab = AdminWorkspaceTab;
@@ -629,7 +630,13 @@ function AdminWorkspace({
       anchor.click();
       URL.revokeObjectURL(href);
     } catch (actionError) {
-      showActionError(actionError, "Не удалось выгрузить отчёт логистики");
+      const emptyZoneNotice = calendarReportEmptyZoneNotice(actionError);
+      if (emptyZoneNotice) {
+        setError("");
+        setNotice(emptyZoneNotice);
+      } else {
+        showActionError(actionError, "Не удалось выгрузить отчёт логистики");
+      }
     } finally {
       setBusyAction("");
     }
