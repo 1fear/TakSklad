@@ -195,10 +195,10 @@ class LogisticsCalendarDayOrdersTests(unittest.TestCase):
 
 
 class OrderLifecycleStatusTests(unittest.TestCase):
-    """По одному тесту на каждую из пяти веток order_lifecycle_status.
+    """По одному тесту на каждую из пяти веток order_lifecycle_status
 
     Дата доставки в каждом тесте задаётся относительно явно переданного today,
-    а не текущей даты, чтобы тесты не начали падать завтра.
+    а не текущей даты, чтобы тесты не начали падать завтра
     """
 
     def test_returned_order_is_returned_regardless_of_blocks_and_date(self):
