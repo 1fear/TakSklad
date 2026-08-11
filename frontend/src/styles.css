@@ -2144,13 +2144,17 @@ summary:focus-visible {
 
 .status-badge.assembling {
   background: #eef0f3;
-  color: #6d7168;
+  color: #4a515b;
 }
 
-.status-badge.assembled,
-.status-badge.delivered {
+.status-badge.assembled {
   background: #e9f3ef;
   color: #16635b;
+}
+
+.status-badge.delivered {
+  background: #e5f4ea;
+  color: #1d6b3a;
 }
 
 .status-badge.shipped {

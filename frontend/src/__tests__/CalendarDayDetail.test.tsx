@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -170,10 +170,15 @@ describe("CalendarDayDetail", () => {
       />,
     );
 
-    expect(screen.getByRole("row", { name: /Тест Клиент 1/ })).toHaveTextContent("В сборке");
+    const assemblingRow = screen.getByRole("row", { name: /Тест Клиент 1/ });
+    expect(assemblingRow).toHaveTextContent("В сборке");
+    expect(within(assemblingRow).getByText("В сборке")).toHaveClass("status-badge", "assembling");
 
     await user.click(screen.getByRole("tab", { name: /Область/ }));
-    expect(screen.getByRole("row", { name: /Тест Клиент 2/ })).toHaveTextContent("Возврат");
+    const returnedRow = screen.getByRole("row", { name: /Тест Клиент 2/ });
+    expect(returnedRow).toHaveTextContent("Возврат");
+    expect(within(returnedRow).getByText("Возврат")).toHaveClass("status-badge", "ret");
+    expect(returnedRow).toHaveClass("ret-row");
 
     await user.click(screen.getByRole("tab", { name: /Город/ }));
 
@@ -201,7 +206,9 @@ describe("CalendarDayDetail", () => {
       />,
     );
 
-    expect(screen.getByRole("row", { name: /Тест Клиент 1/ })).toHaveTextContent("Доставлен");
+    const deliveredRow = screen.getByRole("row", { name: /Тест Клиент 1/ });
+    expect(deliveredRow).toHaveTextContent("Доставлен");
+    expect(within(deliveredRow).getByText("Доставлен")).toHaveClass("status-badge", "delivered");
   });
 
   it("выгружает XLSX активной вкладки", async () => {

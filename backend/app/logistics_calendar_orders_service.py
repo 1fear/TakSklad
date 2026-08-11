@@ -1,5 +1,5 @@
 from datetime import date, datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
@@ -67,7 +67,9 @@ def list_logistics_calendar_day_orders(db: Session, service_date: date) -> dict[
     }
 
 
-def order_lifecycle_status(order: Order, today: date) -> str:
+def order_lifecycle_status(
+    order: Order, today: date
+) -> Literal["returned", "assembling", "assembled", "shipped", "delivered"]:
     """Вычислить статус жизненного цикла заказа для календаря логистики
 
     Фактов отгрузки и доставки в системе нет, поэтому статус выводится из
@@ -83,6 +85,8 @@ def order_lifecycle_status(order: Order, today: date) -> str:
     if scanned_blocks < quantity_blocks:
         return "assembling"
     delivery_date = order.order_date
+    if not isinstance(delivery_date, date):
+        raise ValueError(f"У заказа {order.id} нет даты доставки, статус жизненного цикла не определить")
     if delivery_date > today:
         return "assembled"
     if delivery_date == today:

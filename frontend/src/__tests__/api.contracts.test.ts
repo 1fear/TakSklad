@@ -415,9 +415,14 @@ describe("API endpoint wrapper contracts", () => {
     expect(result.filename).toBe("TakSklad_filtered.xlsx");
   });
 
-  it("getLogisticsCalendarDayOrders отдаёт строки с зоной", async () => {
+  it("getLogisticsCalendarDayOrders отдаёт строки с зоной и статусом жизненного цикла", async () => {
     const result = await api.getLogisticsCalendarDayOrders(cookieConfig, "2026-08-07");
     expect(result.orders.every((row) => row.zone === "city" || row.zone === "region")).toBe(true);
+    expect(
+      result.orders.every((row) =>
+        ["returned", "assembling", "assembled", "shipped", "delivered"].includes(row.lifecycle_status),
+      ),
+    ).toBe(true);
   });
 });
 
