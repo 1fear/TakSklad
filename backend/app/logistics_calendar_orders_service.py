@@ -1,5 +1,5 @@
 from datetime import date, datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
@@ -9,6 +9,7 @@ from .kiz_reports_service import source_file_for_items
 from .logistics_service import is_logistics_candidate_order, is_returned_order
 from .logistics_zone_service import ZONE_CITY, classify_order, load_region_index
 from .models import Order
+from .reports_service import report_timezone
 from .skladbot_contracts import canonical_skladbot_request_number
 
 
@@ -23,6 +24,7 @@ def list_logistics_calendar_day_orders(db: Session, service_date: date) -> dict[
     region_directory_empty = len(region_index) == 0
     listed = [order for order in orders if is_returned_order(order) or is_logistics_candidate_order(order)]
     delivery_slots = client_point_delivery_slot_map(db, listed)
+    today = datetime.now(report_timezone()).date()
     rows = []
     for order in listed:
         returned_order = is_returned_order(order)
@@ -39,6 +41,7 @@ def list_logistics_calendar_day_orders(db: Session, service_date: date) -> dict[
             "order_id": str(order.id),
             "zone": zone,
             "is_returned": returned_order,
+            "lifecycle_status": order_lifecycle_status(order, today),
             "client": order.client or "",
             "address": order.address or "",
             "representative": order.representative or "",
@@ -62,6 +65,33 @@ def list_logistics_calendar_day_orders(db: Session, service_date: date) -> dict[
         "region_directory_empty": region_directory_empty,
         "orders": rows,
     }
+
+
+def order_lifecycle_status(
+    order: Order, today: date
+) -> Literal["returned", "assembling", "assembled", "shipped", "delivered"]:
+    """Вычислить статус жизненного цикла заказа для календаря логистики
+
+    Фактов отгрузки и доставки в системе нет, поэтому статус выводится из
+    собранности заказа, даты доставки против сегодняшней даты и признака
+    возврата: ничего не сохраняется, вызывающий обязан передать today, вычисленную
+    один раз на запрос (ташкентский деловой пояс), а не звать report_timezone
+    заново на каждый заказ
+    """
+    if is_returned_order(order):
+        return "returned"
+    quantity_blocks = sum(int(item.quantity_blocks or 0) for item in order.items)
+    scanned_blocks = sum(int(item.scanned_blocks or 0) for item in order.items)
+    if scanned_blocks < quantity_blocks:
+        return "assembling"
+    delivery_date = order.order_date
+    if not isinstance(delivery_date, date):
+        raise ValueError(f"У заказа {order.id} нет даты доставки, статус жизненного цикла не определить")
+    if delivery_date > today:
+        return "assembled"
+    if delivery_date == today:
+        return "shipped"
+    return "delivered"
 
 
 def order_products_text(order: Order) -> str:

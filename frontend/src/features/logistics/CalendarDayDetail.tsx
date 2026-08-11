@@ -1,9 +1,25 @@
 import { useEffect, useState } from "react";
 import { CheckCircle2, ChevronLeft, ChevronRight, Loader2, Lock } from "lucide-react";
 
-import type { LogisticsCalendarDay, LogisticsCalendarDayOrders } from "../../api";
+import type { LogisticsCalendarDay, LogisticsCalendarDayOrder, LogisticsCalendarDayOrders } from "../../api";
 
 const WEEKDAYS = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"];
+
+const LIFECYCLE_STATUS_LABELS: Record<LogisticsCalendarDayOrder["lifecycle_status"], string> = {
+  returned: "Возврат",
+  assembling: "В сборке",
+  assembled: "Собран",
+  shipped: "Отгружен",
+  delivered: "Доставлен",
+};
+
+const LIFECYCLE_STATUS_CLASSES: Record<LogisticsCalendarDayOrder["lifecycle_status"], string> = {
+  returned: "ret",
+  assembling: "assembling",
+  assembled: "assembled",
+  shipped: "shipped",
+  delivered: "delivered",
+};
 
 function formatDate(value: string) {
   if (!value) return "-";
@@ -189,8 +205,8 @@ export function CalendarDayDetail({
                     <span className="cell-sub">{row.delivery_to || ""}</span>
                   </td>
                   <td>
-                    <span className={`status-badge ${row.is_returned ? "ret" : ""}`}>
-                      {row.is_returned ? "Возврат" : row.status === "completed" ? "Завершён" : "В работе"}
+                    <span className={`status-badge ${LIFECYCLE_STATUS_CLASSES[row.lifecycle_status]}`}>
+                      {LIFECYCLE_STATUS_LABELS[row.lifecycle_status]}
                     </span>
                   </td>
                   <td>

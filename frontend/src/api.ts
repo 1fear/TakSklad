@@ -375,6 +375,7 @@ export type LogisticsCalendarDayUpdatePayload = {
 export type LogisticsCalendarDayOrder = {
   order_id: string;
   zone: "city" | "region";
+  lifecycle_status: "returned" | "assembling" | "assembled" | "shipped" | "delivered";
   is_returned: boolean;
   client: string;
   address: string;
