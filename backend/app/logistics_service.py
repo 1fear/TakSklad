@@ -9,7 +9,7 @@ from openpyxl.utils import get_column_letter
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from .client_points_service import client_point_delivery_slot_map, delivery_slot_for_order
+from .client_points_service import client_point_delivery_slot_map, delivery_slot_for_order, point_key
 from .logistics_zone_service import (
     ZONE_CITY,
     ZONE_REGION,
@@ -188,28 +188,34 @@ def build_zone_report_xlsx(db: Session, report_date, zone: str, zone_orders):
     sheet.append(LOGISTICS_HEADERS)
     apply_orders_template_style(sheet)
 
-    for order in delivery_orders:
-        coordinates = normalize_coordinates((order.raw_payload or {}).get("coordinates"))
+    for stop_orders in group_delivery_stops(delivery_orders):
+        # Один и тот же клиент по тем же координатам это одна остановка, даже когда
+        # заказы приехали разными слотами: маршрутизатор группирует строки по
+        # внешнему ID, поэтому вся остановка получает общий склеенный номер
+        lead_order = stop_orders[0]
+        coordinates = normalize_coordinates((lead_order.raw_payload or {}).get("coordinates"))
         latitude, longitude = split_coordinates(coordinates)
-        delivery_from, delivery_to = delivery_slot_for_order(order, delivery_slots)
-        for item in sorted(order.items, key=lambda value: (value.product, str(value.id))):
-            quantity_blocks = item_quantity_blocks(item)
-            row = [""] * len(LOGISTICS_HEADERS)
-            set_cell(row, 1, "delivery")
-            set_cell(row, 2, logistics_external_id(order, item))
-            set_cell(row, 4, order.client)
-            set_cell(row, 7, order.representative or "")
-            set_cell(row, 17, latitude)
-            set_cell(row, 18, longitude)
-            set_cell(row, 19, order.address)
-            set_cell(row, 20, delivery_window_datetime(report_date, delivery_from))
-            set_cell(row, 21, delivery_window_datetime(report_date, delivery_to))
-            set_cell(row, 27, item.product)
-            set_cell(row, 29, 0)
-            set_cell(row, 30, 0)
-            set_cell(row, 31, quantity_blocks)
-            sheet.append(row)
-            apply_orders_row_style(sheet, sheet.max_row)
+        delivery_from, delivery_to = delivery_slot_for_order(lead_order, delivery_slots)
+        external_id = stop_external_id(stop_orders)
+        for order in stop_orders:
+            for item in sorted(order.items, key=lambda value: (value.product, str(value.id))):
+                quantity_blocks = item_quantity_blocks(item)
+                row = [""] * len(LOGISTICS_HEADERS)
+                set_cell(row, 1, "delivery")
+                set_cell(row, 2, external_id)
+                set_cell(row, 4, lead_order.client)
+                set_cell(row, 7, lead_order.representative or "")
+                set_cell(row, 17, latitude)
+                set_cell(row, 18, longitude)
+                set_cell(row, 19, lead_order.address)
+                set_cell(row, 20, delivery_window_datetime(report_date, delivery_from))
+                set_cell(row, 21, delivery_window_datetime(report_date, delivery_to))
+                set_cell(row, 27, item.product)
+                set_cell(row, 29, 0)
+                set_cell(row, 30, 0)
+                set_cell(row, 31, quantity_blocks)
+                sheet.append(row)
+                apply_orders_row_style(sheet, sheet.max_row)
 
     if coordinate_problem_orders:
         problem_sheet = workbook.create_sheet("Требуют координаты")
@@ -231,6 +237,43 @@ def build_zone_report_xlsx(db: Session, report_date, zone: str, zone_orders):
     force_workbook_text_literals(workbook)
     workbook.save(buffer)
     return buffer.getvalue(), logistics_report_filename(report_date, zone)
+
+
+def group_delivery_stops(delivery_orders):
+    """Собрать заказы одного клиента по одним координатам в одну остановку.
+
+    Ключ намеренно включает клиента: по одному адресу может стоять несколько
+    юрлиц, у них разные получатели и своё окно доставки, склеивать их нельзя.
+    Остановки идут в порядке первого появления, а заказы внутри остановки
+    сортируются по времени создания с добором по id: без этого добора два
+    заказа с одинаковым created_at давали бы разный склеенный внешний ID при
+    каждой пересборке отчёта.
+    """
+    stops = {}
+    order_of_keys = []
+    for order in delivery_orders:
+        coordinates = normalize_coordinates((order.raw_payload or {}).get("coordinates"))
+        key = (coordinates, point_key(order.client))
+        if key not in stops:
+            stops[key] = []
+            order_of_keys.append(key)
+        stops[key].append(order)
+    return [sorted(stops[key], key=stop_order_sort_key) for key in order_of_keys]
+
+
+def stop_order_sort_key(order):
+    created_at = order.created_at
+    return (created_at is None, created_at.isoformat() if created_at else "", str(order.id))
+
+
+def stop_external_id(stop_orders):
+    """Внешний ID остановки: номера всех её заказов через плюс, без повторов."""
+    identifiers = []
+    for order in stop_orders:
+        identifier = logistics_external_id(order)
+        if identifier and identifier not in identifiers:
+            identifiers.append(identifier)
+    return "+".join(identifiers)
 
 
 def set_cell(row, one_based_index, value):
