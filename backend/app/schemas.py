@@ -26,6 +26,7 @@ ImportFieldName = Literal[
     "ID импорта", "import_id", "Источник файла", "source_file", "Строка файла", "source_row",
     "Ключ исходного документа", "source_batch_key", "Номер заявки SkladBot", "skladbot_request_number",
     "ID заявки SkladBot", "skladbot_request_id", "Отсканированные коды", "Дата импорта",
+    "Smartup ИД заказа", "smartup_order_id",
     "Smartup deal_id", "Smartup product_id", "Smartup status", "Smartup delivery_date original",
     "Smartup delivery_date adjusted", "Smartup delivery_date adjustment_reason",
     "Smartup delivery_date skipped_dates",

@@ -3549,6 +3549,48 @@ class BackendTelegramImportTests(unittest.TestCase):
         self.assertEqual(payload["meta"]["geocoded_count"], 1)
         self.assertEqual(payload["meta"]["geocode_failed_count"], 0)
 
+    def test_excel_file_to_import_payload_reads_smartup_order_id_column(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "shipment_template.xlsx"
+            workbook = openpyxl.Workbook()
+            sheet = workbook.active
+            sheet.title = "Конструктор отчётов по продажам"
+            sheet.append([
+                "ИД заказа",
+                "Клиент",
+                "GPS-координаты клиента",
+                "Торговый представитель",
+                "Тип оплаты",
+                "Статус",
+                "ТМЦ",
+                "Количество заказа",
+                "Дата доставки",
+            ])
+            sheet.append([
+                "266627707",
+                "JASUR-DIYOR UNIVERSAL XK",
+                "41.296549,69.277177",
+                "ТП5 Авазов Азиз Бегжонович",
+                "Перечисление",
+                "В обработке",
+                "Chapman Brown OP 20",
+                10,
+                "13.08.2026",
+            ])
+            workbook.save(path)
+
+            payload = excel_file_to_import_payload(
+                path,
+                file_name=path.name,
+                source="telegram",
+                shipment_date="13.08.2026",
+            )
+
+        row = payload["rows"][0]
+        self.assertEqual(row["Smartup ИД заказа"], "266627707")
+        self.assertEqual(row["Координаты"], "41.296549, 69.277177")
+        self.assertEqual(row["Клиент"], "JASUR-DIYOR UNIVERSAL XK")
+
     def test_excel_file_to_import_payload_marks_missing_address_as_pickup(self):
         original_geocoder = excel_importer.geocode_address_yandex
         calls = []

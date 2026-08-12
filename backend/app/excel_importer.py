@@ -183,6 +183,15 @@ OPTIONAL_ALIASES = {
         "SkladBot ID",
         "ID заявки",
     ],
+    # Латинская «ID заказа» сюда не берётся: так называется колонка с UUID
+    # в собственном экспорте заказов TakSklad
+    "smartup_order_id": [
+        "ИД заказа",
+        "Идентификатор заказа",
+        "Smartup ИД заказа",
+        "ID заказа Smartup",
+        "Smartup ID",
+    ],
 }
 CONTEXT_DATE_ALIASES = [
     "Дата доставки",
@@ -842,6 +851,7 @@ def excel_file_to_import_payload(file_path, file_name=None, source="telegram", s
                 "_pieces_per_block": default_pieces_per_block,
                 "Номер заявки SkladBot": get_cell(row, columns.get("skladbot_request_number")),
                 "ID заявки SkladBot": get_cell(row, columns.get("skladbot_request_id")),
+                "Smartup ИД заказа": get_cell(row, columns.get("smartup_order_id")),
             })
             group = payment_group(payment)
             payment_groups[group] = payment_groups.get(group, 0) + 1
