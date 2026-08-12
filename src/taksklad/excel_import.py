@@ -228,6 +228,7 @@ def parse_excel_order_files(file_paths, source_names=None):
             representative = get_source_cell(row, columns.get("representative"))
             inn = get_source_cell(row, columns.get("inn"))
             lead_status = get_source_cell(row, columns.get("lead_status"))
+            smartup_order_id = get_source_cell(row, columns.get("smartup_order_id"))
             source_id = make_hash({
                 "file_hash": source_file_hash,
                 "sheet": sheet_name,
@@ -246,6 +247,7 @@ def parse_excel_order_files(file_paths, source_names=None):
                 "coords": coords,
                 "source_address": source_address,
                 "lead_status": lead_status,
+                "smartup_order_id": smartup_order_id,
                 "source_id": source_id,
                 "source_file": file_name,
                 "source_file_sha256": source_file_sha256,
@@ -285,6 +287,9 @@ def parse_excel_order_files(file_paths, source_names=None):
             "Дата импорта": datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
         }
         record["ID заказа"] = make_order_id(record)
+        # После make_order_id: сделка Smartup не входит в хеш заказа,
+        # иначе группировка позиций разъедется относительно Telegram-импорта
+        record["Smartup ИД заказа"] = item["smartup_order_id"]
         record["_pieces_per_block"] = pieces_per_block
         record["_source_file_sha256"] = [item["source_file_sha256"]]
         records.append(record)
