@@ -1,5 +1,13 @@
 # Расширенный поиск клиентов и Smartup ID из шаблона: план реализации
 
+> [!warning] План выполнен, но часть 1 переделана после выката
+> Задачи 1 и 2 описывают поле `search_identifiers` и постоянный агрегат
+> идентификаторов. Такой запрос упал на проде по `statement_timeout`
+> и заменён поиском по запросу в коммите `838cca7`.
+> Действующее решение и замеры: раздел «Поправка 2026-08-13» в
+> `docs/superpowers/specs/2026-08-12-client-search-and-smartup-id-design.md`.
+> Задачи 3 и 4 про чтение колонки «ИД заказа» актуальны без изменений
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** на вкладке «Клиенты» одно поле находит точку по имени, адресу, координатам,
