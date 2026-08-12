@@ -2023,7 +2023,7 @@ function ClientsPanel({
         </div>
         <label className="search-box">
           <Search size={16} />
-          <input type="search" value={search} onChange={(event) => onSearchChange(event.target.value)} placeholder="Поиск клиентов" aria-label="Поиск клиентов" />
+          <input type="search" value={search} onChange={(event) => onSearchChange(event.target.value)} placeholder="Клиент, адрес, координаты, Smartup ID, SkladBot ID" aria-label="Поиск клиентов" />
         </label>
         {canEdit && (
           <button className="primary-button client-create-toggle" onClick={onToggleCreate} aria-expanded={createOpen} aria-controls="client-point-create-form">
@@ -2969,6 +2969,7 @@ function filterIncidents(
 
 function filterClientPoints(points: ClientPoint[], search: string, timeslotFilter: ClientTimeslotFilter) {
   const query = search.trim().toLowerCase();
+  const compactQuery = query.replace(/\s+/g, "");
   return points.filter((point) => {
     if (timeslotFilter === "custom" && !point.has_custom_timeslot) return false;
     if (timeslotFilter === "default" && point.has_custom_timeslot) return false;
@@ -2981,8 +2982,17 @@ function filterClientPoints(points: ClientPoint[], search: string, timeslotFilte
       point.representative,
       point.delivery_from,
       point.delivery_to,
-    ].some((value) => value.toLowerCase().includes(query));
+      point.search_identifiers,
+    ].some((value) => matchesClientPointQuery(value, query, compactQuery));
   });
+}
+
+// Координаты приходят как «41.296549, 69.277177», а из шаблона и буфера обмена
+// их вставляют как «41.296549,69.277177»: сравниваем обе формы в обе стороны
+function matchesClientPointQuery(value: string, query: string, compactQuery: string) {
+  const text = (value || "").toLowerCase();
+  if (text.includes(query)) return true;
+  return Boolean(compactQuery) && text.replace(/\s+/g, "").includes(compactQuery);
 }
 
 function linkedIncidentText(incident: AdminIncident) {

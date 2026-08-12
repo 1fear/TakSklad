@@ -163,6 +163,45 @@ class ExcelNormalizerTests(unittest.TestCase):
         self.assertEqual(record["Адрес"], "Адрес 41.373879, 69.322741")
         self.assertEqual(record["Координаты"], "41.373879, 69.322741")
 
+    def test_desktop_import_reads_smartup_order_id_from_shipment_template(self):
+        from backend.app.imports_service import normalize_import_row
+
+        excel_import = import_excel_import()
+        excel_import.reverse_geocode_yandex = lambda coords, cache=None: (f"Адрес {coords}", "")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "shipment_template.xlsx"
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.title = "Конструктор отчётов по продажам"
+            worksheet.append([
+                "ИД заказа",
+                "Клиент",
+                "GPS-координаты клиента",
+                "Торговый представитель",
+                "Тип оплаты",
+                "Статус",
+                "ТМЦ",
+                "Количество заказа",
+                "Дата доставки",
+            ])
+            worksheet.append([
+                "266627707",
+                "JASUR-DIYOR UNIVERSAL XK",
+                "41.296549,69.277177",
+                "ТП5 Авазов Азиз Бегжонович",
+                "Перечисление",
+                "В обработке",
+                "Chapman Brown OP 20",
+                10,
+                "13.08.2026",
+            ])
+            workbook.save(path)
+            parsed = excel_import.parse_excel_order_files([str(path)])
+
+        record = parsed["records"][0]
+        self.assertEqual(record["Smartup ИД заказа"], "266627707")
+        self.assertEqual(normalize_import_row(record)["smartup_order_id"], "266627707")
+
     def test_desktop_parsed_record_satisfies_typed_backend_dto(self):
         from backend.app.schemas import ImportCreate
         from taksklad.backend_client import backend_import_records

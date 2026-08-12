@@ -369,6 +369,23 @@ describe("authenticated control-surface characterization", () => {
     });
   });
 
+  it("finds a client point by Smartup ID, SkladBot number and spaced coordinates", async () => {
+    const { user } = await renderAuthenticatedAdminApp();
+    await user.click(screen.getByRole("button", { name: "Клиенты" }));
+    expect(await screen.findByRole("heading", { name: "Клиенты и таймслоты" })).toBeInTheDocument();
+
+    const clientSearch = screen.getByRole("searchbox", { name: "Поиск клиентов" });
+    for (const query of ["266627707", "WH-R-TEST-1", "1002", "41.296549,69.277177", "41.296549, 69.277177"]) {
+      await user.clear(clientSearch);
+      await user.type(clientSearch, query);
+      expect(screen.getByText("Клиент Альфа")).toBeInTheDocument();
+    }
+
+    await user.clear(clientSearch);
+    await user.type(clientSearch, "266627708");
+    expect(screen.getByText("Нет данных")).toBeInTheDocument();
+  });
+
   it("renders the current empty table state without inventing placeholder data", async () => {
     server.use(http.get("/api/v1/admin/table", () => HttpResponse.json(adminTable([]))));
     setPath("/admin");

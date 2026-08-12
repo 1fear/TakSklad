@@ -620,6 +620,87 @@ class BackendApiPersistenceTests(unittest.TestCase):
             ).scalar_one()
             self.assertEqual(audit.entity_id, str(point.id))
 
+    def test_admin_client_points_expose_and_search_order_identifiers(self):
+        with self.SessionLocal() as db:
+            order = Order(
+                payment_type="cash",
+                client="Identifier Client",
+                address="Identifier Address",
+                representative="Rep",
+                order_date=date(2026, 8, 13),
+                status="not_completed",
+                raw_payload={
+                    "source": "telegram",
+                    "coordinates": "41.296549, 69.277177",
+                    "source_order_id": "smartup:266627707",
+                    "skladbot_request_number": "WH-R-2026-0001",
+                    "skladbot_request_id": "1002",
+                },
+            )
+            item = OrderItem(
+                order=order,
+                product="Chapman Brown OP 20",
+                quantity_pieces=20,
+                quantity_blocks=2,
+                pieces_per_block=10,
+                scanned_blocks=0,
+                requires_kiz=True,
+                status="not_completed",
+                raw_payload={
+                    "source_order_id": "b" * 64,
+                    "smartup_order_ids": ["266968926"],
+                },
+            )
+            db.add_all([order, item])
+            db.commit()
+
+        listed = self.client.get("/api/v1/admin/client-points")
+
+        self.assertEqual(listed.status_code, 200)
+        identifiers = listed.json()[0]["search_identifiers"].split()
+        self.assertIn("266627707", identifiers)
+        self.assertIn("266968926", identifiers)
+        self.assertIn("WH-R-2026-0001", identifiers)
+        self.assertIn("1002", identifiers)
+        self.assertNotIn("b" * 64, identifiers)
+
+        for query in ("266627707", "266968926", "WH-R-2026-0001", "41.296549,69.277177"):
+            with self.subTest(query=query):
+                found = self.client.get("/api/v1/admin/client-points", params={"query": query})
+                self.assertEqual(found.status_code, 200)
+                self.assertEqual([point["client_name"] for point in found.json()], ["Identifier Client"])
+
+        missing = self.client.get("/api/v1/admin/client-points", params={"query": "266627708"})
+        self.assertEqual(missing.json(), [])
+
+    def test_client_point_timeslot_response_carries_search_identifiers(self):
+        with self.SessionLocal() as db:
+            order = Order(
+                payment_type="cash",
+                client="Slot Client",
+                address="Slot Address",
+                order_date=date(2026, 8, 13),
+                status="not_completed",
+                raw_payload={"source": "telegram", "source_order_id": "smartup:268031619"},
+            )
+            db.add(order)
+            db.commit()
+
+        updated = self.client.post(
+            "/api/v1/admin/client-points/timeslot",
+            json={
+                "client_name": "Slot Client",
+                "address": "Slot Address",
+                "delivery_from": "09:30",
+                "delivery_to": "12:00",
+                "actor": "web",
+                "reason": "синтетическая проверка",
+            },
+        )
+
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.json()["search_identifiers"], "268031619")
+
     def test_admin_client_points_default_response_is_not_capped(self):
         with self.SessionLocal() as db:
             db.add_all([

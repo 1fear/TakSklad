@@ -26,6 +26,7 @@ ImportFieldName = Literal[
     "ID импорта", "import_id", "Источник файла", "source_file", "Строка файла", "source_row",
     "Ключ исходного документа", "source_batch_key", "Номер заявки SkladBot", "skladbot_request_number",
     "ID заявки SkladBot", "skladbot_request_id", "Отсканированные коды", "Дата импорта",
+    "Smartup ИД заказа", "smartup_order_id",
     "Smartup deal_id", "Smartup product_id", "Smartup status", "Smartup delivery_date original",
     "Smartup delivery_date adjusted", "Smartup delivery_date adjustment_reason",
     "Smartup delivery_date skipped_dates",
@@ -534,6 +535,7 @@ class ClientPointRead(BaseModel):
     is_saved: bool = False
     source: str = ""
     has_custom_timeslot: bool = False
+    search_identifiers: str = ""
     orders_count: int = 0
     returned_orders_count: int = 0
     last_order_date: date | None = None

@@ -3,15 +3,17 @@ from datetime import date
 from unittest.mock import patch
 
 from sqlalchemy import create_engine, event, func, select
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import selectinload, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.app.client_points_service import (
+    canonical_search_identifiers,
     list_client_points,
     prefetch_client_points_for_import,
     sync_client_point_from_import_row_cached,
 )
-from backend.app.imports_service import create_import
+from backend.app.imports_service import create_import, normalize_smartup_order_id
+from backend.app.logistics_service import logistics_external_id
 from backend.app.models import Base, ClientPoint, Order, OrderItem
 from backend.app.schemas import ImportCreate
 
@@ -231,6 +233,158 @@ class ImportClientPointPrefetchTests(unittest.TestCase):
         self.assertEqual(len(larger_page), 5)
         self.assertEqual(small_count, 1)
         self.assertEqual(large_count, small_count)
+
+
+class ImportSmartupOrderIdentityTests(unittest.TestCase):
+    def setUp(self):
+        self.engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(self.engine)
+        self.SessionLocal = sessionmaker(bind=self.engine, expire_on_commit=False)
+
+    def tearDown(self):
+        self.engine.dispose()
+
+    def template_row(self, smartup_order_id, product, import_id):
+        return {
+            "Дата отгрузки": "13.08.2026",
+            "Тип оплаты": "Перечисление",
+            "Клиент": "JASUR-DIYOR UNIVERSAL XK",
+            "Адрес": "Ташкент, Чиланзар 10",
+            "Координаты": "41.296549, 69.277177",
+            "Торговый представитель": "ТП5",
+            "Товары": product,
+            "Кол-во ШТ": 10,
+            "Кол-во блок": 1,
+            "ID импорта": import_id,
+            # Синтетический хеш заказа, как его считает excel_importer:
+            # один и тот же для всех строк одного клиента, даты, оплаты и адреса
+            "ID заказа": "c" * 64,
+            "Smartup ИД заказа": smartup_order_id,
+        }
+
+    def run_import(self, rows, filename):
+        skladbot_result = {
+            "status": "synthetic_stub",
+            "ready": 0,
+            "blocked": 0,
+            "already_linked": 0,
+            "linked_mismatch": 0,
+            "event_id": "",
+        }
+        with (
+            self.SessionLocal() as db,
+            patch(
+                "backend.app.imports_service.create_skladbot_dry_run_for_import",
+                return_value=skladbot_result,
+            ),
+        ):
+            return create_import(db, ImportCreate(source="telegram", filename=filename, rows=rows))
+
+    def test_normalize_smartup_order_id_accepts_deal_and_rejects_noise(self):
+        self.assertEqual(normalize_smartup_order_id("266627707"), "266627707")
+        self.assertEqual(normalize_smartup_order_id(266627707), "266627707")
+        self.assertEqual(normalize_smartup_order_id(266627707.0), "266627707")
+        self.assertEqual(normalize_smartup_order_id(" 266627707 "), "266627707")
+        self.assertEqual(normalize_smartup_order_id(""), "")
+        self.assertEqual(normalize_smartup_order_id("0"), "")
+        self.assertEqual(normalize_smartup_order_id("a" * 64), "")
+        self.assertEqual(normalize_smartup_order_id("WH-R-2026-0001"), "")
+
+    def test_template_order_id_becomes_smartup_identity_without_changing_grouping(self):
+        self.run_import(
+            [
+                self.template_row("266627707", "Chapman Brown OP 20", "row-1"),
+                self.template_row("266627707", "Chapman Green OP 20", "row-2"),
+            ],
+            "template.xlsx",
+        )
+
+        with self.SessionLocal() as db:
+            self.assertEqual(db.scalar(select(func.count()).select_from(Order)), 1)
+            self.assertEqual(db.scalar(select(func.count()).select_from(OrderItem)), 2)
+            order = db.execute(select(Order)).scalar_one()
+            self.assertEqual(order.raw_payload["source_order_id"], "smartup:266627707")
+            for item in db.execute(select(OrderItem)).scalars():
+                self.assertEqual(item.raw_payload["smartup_order_ids"], ["266627707"])
+                self.assertEqual(len(item.raw_payload["source_order_id"]), 64)
+
+    def test_second_deal_merged_into_one_position_keeps_both_identifiers(self):
+        self.run_import(
+            [
+                self.template_row("266627707", "Chapman Brown OP 20", "row-1"),
+                self.template_row("266968926", "Chapman Brown OP 20", "row-2"),
+            ],
+            "two-deals.xlsx",
+        )
+
+        with self.SessionLocal() as db:
+            item = db.execute(select(OrderItem)).scalar_one()
+            self.assertEqual(item.quantity_blocks, 2)
+            self.assertEqual(
+                sorted(item.raw_payload["smartup_order_ids"]),
+                ["266627707", "266968926"],
+            )
+            points = list_client_points(db, query="266968926")
+            self.assertEqual([point["client_name"] for point in points], ["JASUR-DIYOR UNIVERSAL XK"])
+            self.assertIn("266968926", points[0]["search_identifiers"].split())
+
+    def test_row_without_template_order_id_keeps_synthetic_identity(self):
+        self.run_import([self.template_row("", "Chapman RED OP 20", "row-1")], "no-order-id.xlsx")
+
+        with self.SessionLocal() as db:
+            order = db.execute(select(Order)).scalar_one()
+            self.assertEqual(len(order.raw_payload["source_order_id"]), 64)
+            item = db.execute(select(OrderItem)).scalar_one()
+            self.assertEqual(item.raw_payload["smartup_order_ids"], [])
+
+    def test_logistics_external_id_still_uses_synthetic_hash_not_smartup_source(self):
+        self.run_import(
+            [self.template_row("266627707", "Chapman Brown OP 20", "row-1")],
+            "logistics.xlsx",
+        )
+
+        with self.SessionLocal() as db:
+            order = db.execute(
+                select(Order).options(selectinload(Order.items))
+            ).scalar_one()
+            self.assertEqual(logistics_external_id(order), "c" * 64)
+            self.assertEqual(logistics_external_id(order, order.items[0]), "c" * 64)
+
+    def test_repeat_import_fills_empty_identity_and_never_overwrites_it(self):
+        self.run_import([self.template_row("", "Chapman RED OP 20", "row-1")], "first.xlsx")
+        self.run_import([self.template_row("266627707", "Chapman RED OP 20", "row-2")], "second.xlsx")
+        self.run_import([self.template_row("266968926", "Chapman RED OP 20", "row-3")], "third.xlsx")
+
+        with self.SessionLocal() as db:
+            self.assertEqual(db.scalar(select(func.count()).select_from(Order)), 1)
+            order = db.execute(select(Order)).scalar_one()
+            self.assertEqual(order.raw_payload["source_order_id"], "smartup:266627707")
+
+
+class ClientPointSearchIdentifierTests(unittest.TestCase):
+    def test_canonical_identifiers_keep_known_shapes_and_drop_import_hashes(self):
+        raw = " ".join([
+            "smartup:266627707",
+            "WH-R-2026-0001",
+            "1002",
+            "WR-RET-1",
+            "9f2c1b" + "0" * 58,
+            '["266968926", "267807389"]',
+            "",
+        ])
+
+        self.assertEqual(
+            canonical_search_identifiers(raw),
+            "266627707 WH-R-2026-0001 1002 WR-RET-1 266968926 267807389",
+        )
+
+    def test_canonical_identifiers_deduplicate_and_survive_empty_input(self):
+        self.assertEqual(canonical_search_identifiers(None), "")
+        self.assertEqual(canonical_search_identifiers("smartup:731 731 smartup:731"), "731")
 
 
 if __name__ == "__main__":
