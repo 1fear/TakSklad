@@ -216,7 +216,6 @@ export const clientPoint: ClientPoint = {
   is_saved: true,
   source: "synthetic",
   has_custom_timeslot: true,
-  search_identifiers: "266627707 WH-R-TEST-1 1002",
   orders_count: 2,
   returned_orders_count: 1,
   last_order_date: "2026-07-10",

@@ -84,7 +84,23 @@ export const defaultHandlers = [
   }),
   http.get("/api/v1/admin/dashboard/day-summary", () => HttpResponse.json(dashboardSummary)),
   http.get("/api/v1/imports", () => HttpResponse.json([])),
-  http.get("/api/v1/admin/client-points", () => HttpResponse.json([clientPoint])),
+  // Поиск считает сервер, поэтому мок обязан вести себя так же:
+  // текстовые поля точки плюс идентификаторы её заказов
+  http.get("/api/v1/admin/client-points", ({ request }) => {
+    const query = new URL(request.url).searchParams.get("query")?.trim().toLowerCase() ?? "";
+    if (!query) return HttpResponse.json([clientPoint]);
+    const compact = query.replace(/\s+/g, "");
+    const haystack = [
+      clientPoint.client_name,
+      clientPoint.point_name,
+      clientPoint.address,
+      clientPoint.coordinates,
+      clientPoint.representative,
+      "266627707 WH-R-TEST-1 1002",
+    ].join(" ").toLowerCase();
+    const matched = haystack.includes(query) || haystack.replace(/\s+/g, "").includes(compact);
+    return HttpResponse.json(matched ? [clientPoint] : []);
+  }),
   http.get("/api/v1/admin/client-points/order-summary", () => HttpResponse.json(clientOrderSummary)),
   http.post("/api/v1/admin/client-points/timeslot", () => HttpResponse.json(clientPoint)),
   http.get("/api/v1/readiness", () => HttpResponse.json(readiness)),

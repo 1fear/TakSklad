@@ -120,6 +120,7 @@ type ActionState = {
 const SAME_ORIGIN_API_LABEL = "same-origin /api";
 const ADMIN_TABLE_PAGE_SIZE = 500;
 const PANEL_CACHE_TTL_MS = 30_000;
+const CLIENT_SEARCH_DEBOUNCE_MS = 350;
 const ImportHistoryPanel = lazy(() => import("../features/history/ImportHistoryPanel"));
 const SmartupAutoImportPanel = lazy(() => import("../features/smartup/SmartupAutoImportPanel"));
 const ExcelImportControls = lazy(() => import("../features/imports/ExcelImportControls"));
@@ -155,6 +156,7 @@ function AdminWorkspace({
   const [requestCoordinator] = useState(() => new RequestCoordinator());
   const [panelCache] = useState(() => new TtlCache<string, unknown>(PANEL_CACHE_TTL_MS));
   const filterRequestInitialized = useRef(false);
+  const clientSearchInitialized = useRef(false);
   const midnightRefreshRef = useRef<(businessDate: string) => void>(() => undefined);
   const workspaceHeadingRef = useRef<HTMLHeadingElement>(null);
   const [adminTable, setAdminTable] = useState<AdminTable | null>(null);
@@ -176,6 +178,7 @@ function AdminWorkspace({
   const [shipmentDateFilter, setShipmentDateFilter] = useState("");
   const [search, setSearch] = useState("");
   const [clientSearch, setClientSearch] = useState("");
+  const [clientPointsTotal, setClientPointsTotal] = useState(0);
   const [incidentSearch, setIncidentSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("active");
   const [scanFilter, setScanFilter] = useState<ScanFilter>("all");
@@ -233,17 +236,17 @@ function AdminWorkspace({
     [incidents, incidentStatusFilter, incidentSeverityFilter, incidentSourceFilter, incidentSearch],
   );
   const filteredClientPoints = useMemo(
-    () => filterClientPoints(clientPoints, clientSearch, clientTimeslotFilter),
-    [clientPoints, clientSearch, clientTimeslotFilter],
+    () => filterClientPoints(clientPoints, clientTimeslotFilter),
+    [clientPoints, clientTimeslotFilter],
   );
   const clientPointSummary = useMemo(
     () => ({
-      total: clientPoints.length,
+      total: clientPointsTotal || clientPoints.length,
       saved: clientPoints.filter((point) => point.is_saved).length,
       custom: clientPoints.filter((point) => point.has_custom_timeslot).length,
       default: clientPoints.filter((point) => !point.has_custom_timeslot).length,
     }),
-    [clientPoints],
+    [clientPoints, clientPointsTotal],
   );
   const sourceOptions = useMemo(
     () => Array.from(new Set(incidents.map((item) => item.source).filter(Boolean))).sort(),
@@ -408,13 +411,14 @@ function AdminWorkspace({
     loader: (signal: AbortSignal) => Promise<Value>,
     apply: (value: Value) => void,
     force = false,
+    coordinatorKey = resource,
   ) {
     const cached = force ? undefined : panelCache.get(resource) as Value | undefined;
     if (cached !== undefined) {
       apply(cached);
       return;
     }
-    const request = requestCoordinator.begin(resource);
+    const request = requestCoordinator.begin(coordinatorKey);
     try {
       const value = await loader(request.signal);
       request.commit(value, (committed) => {
@@ -436,12 +440,7 @@ function AdminWorkspace({
   ) {
     const has = (permission: string) => activePermissions.includes(permission);
     if (activeTab === "clients" && has("client_points:read")) {
-      await loadCachedPanel("client-points", (signal) => listClientPoints(activeConfig, {}, signal), (value) => {
-        setClientPoints(value);
-        setExpandedClientPointId("");
-        setClientOrderSummaries({});
-        setClientOrderSummaryErrors({});
-      }, force);
+      await loadClientPoints(activeConfig, clientSearch, force);
     } else if (activeTab === "calendar" && has("client_points:read")) {
       const calendarResource = `calendar:${calendarMonth}`;
       await loadCachedPanel(calendarResource, (signal) => getLogisticsCalendar(activeConfig, calendarMonth, signal), setLogisticsCalendar, force);
@@ -539,14 +538,28 @@ function AdminWorkspace({
     await loadCachedPanel("dry-runs", (signal) => listSkladBotDryRuns(activeConfig, "", signal), setDryRuns, true);
   }
 
+  // Поиск клиентов считает сервер: имя, адрес, координаты и ТП лежат в ответе,
+  // а Smartup ID и заявки SkladBot живут на заказах и в список не выгружаются
+  async function loadClientPoints(activeConfig = config, search = "", force = false) {
+    const trimmed = search.trim();
+    await loadCachedPanel(
+      `client-points:${trimmed}`,
+      (signal) => listClientPoints(activeConfig, trimmed ? { query: trimmed } : {}, signal),
+      (value) => {
+        setClientPoints(value);
+        if (!trimmed) setClientPointsTotal(value.length);
+        setExpandedClientPointId("");
+        setClientOrderSummaries({});
+        setClientOrderSummaryErrors({});
+      },
+      force,
+      "client-points",
+    );
+  }
+
   async function refreshClientPoints(activeConfig = config) {
-    panelCache.invalidate("client-points");
-    await loadCachedPanel("client-points", (signal) => listClientPoints(activeConfig, {}, signal), (value) => {
-      setClientPoints(value);
-      setExpandedClientPointId("");
-      setClientOrderSummaries({});
-      setClientOrderSummaryErrors({});
-    }, true);
+    panelCache.clear();
+    await loadClientPoints(activeConfig, clientSearch, true);
   }
 
   async function loadMoreAdminRows(activeConfig = config) {
@@ -650,6 +663,21 @@ function AdminWorkspace({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, calendarMonth, selectedCalendarDate, config, authPermissions, requestCoordinator]);
+
+  // Запрос уходит на сервер с задержкой: Smartup ID и заявки SkladBot лежат
+  // на заказах, локально их в списке точек нет
+  useEffect(() => {
+    if (tab !== "clients" || !authPermissions.includes("client_points:read")) return;
+    if (!clientSearchInitialized.current) {
+      clientSearchInitialized.current = true;
+      return;
+    }
+    const timer = setTimeout(() => {
+      void loadClientPoints(config, clientSearch);
+    }, CLIENT_SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clientSearch, tab, config, authPermissions]);
 
   useEffect(() => {
     if (tab !== "table" || !adminTable) return;
@@ -2967,32 +2995,14 @@ function filterIncidents(
   });
 }
 
-function filterClientPoints(points: ClientPoint[], search: string, timeslotFilter: ClientTimeslotFilter) {
-  const query = search.trim().toLowerCase();
-  const compactQuery = query.replace(/\s+/g, "");
+// Текст ищет сервер, локально остаётся только фильтр таймслота: иначе точка,
+// найденная по Smartup ID или заявке SkladBot, тут же отсеялась бы обратно
+function filterClientPoints(points: ClientPoint[], timeslotFilter: ClientTimeslotFilter) {
   return points.filter((point) => {
     if (timeslotFilter === "custom" && !point.has_custom_timeslot) return false;
     if (timeslotFilter === "default" && point.has_custom_timeslot) return false;
-    if (!query) return true;
-    return [
-      point.client_name,
-      point.point_name,
-      point.address,
-      point.coordinates,
-      point.representative,
-      point.delivery_from,
-      point.delivery_to,
-      point.search_identifiers,
-    ].some((value) => matchesClientPointQuery(value, query, compactQuery));
+    return true;
   });
-}
-
-// Координаты приходят как «41.296549, 69.277177», а из шаблона и буфера обмена
-// их вставляют как «41.296549,69.277177»: сравниваем обе формы в обе стороны
-function matchesClientPointQuery(value: string, query: string, compactQuery: string) {
-  const text = (value || "").toLowerCase();
-  if (text.includes(query)) return true;
-  return Boolean(compactQuery) && text.replace(/\s+/g, "").includes(compactQuery);
 }
 
 function linkedIncidentText(incident: AdminIncident) {

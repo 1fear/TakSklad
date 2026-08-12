@@ -535,7 +535,6 @@ class ClientPointRead(BaseModel):
     is_saved: bool = False
     source: str = ""
     has_custom_timeslot: bool = False
-    search_identifiers: str = ""
     orders_count: int = 0
     returned_orders_count: int = 0
     last_order_date: date | None = None
