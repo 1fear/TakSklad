@@ -79,6 +79,57 @@ def sql_search_text(db: Session, value):
     return func.lower(func.replace(func.coalesce(value, ""), "ё", "е"), type_=String())
 
 
+def sql_compact_text(value):
+    return func.replace(value, " ", "")
+
+
+def sql_join_with_space(parts):
+    joined = parts[0]
+    for part in parts[1:]:
+        joined = joined + literal(" ") + part
+    return joined
+
+
+def sql_group_concat(db: Session, column):
+    if db.bind is not None and db.bind.dialect.name == "postgresql":
+        return func.string_agg(column, literal(" "), type_=String())
+    return func.group_concat(column, " ", type_=String())
+
+
+def json_text(column, key):
+    return func.coalesce(column[key].as_string(), "")
+
+
+ORDER_IDENTIFIER_KEYS = (
+    "source_order_id",
+    "skladbot_request_number",
+    "skladbot_request_id",
+    "skladbot_return_request_number",
+    "skladbot_return_request_id",
+)
+ITEM_IDENTIFIER_KEYS = ("source_order_id", "smartup_order_ids")
+
+
+def order_identifier_cte(db: Session):
+    """Сырые идентификаторы заказов, сгруппированные по ключу клиентской точки"""
+    order_key = sql_point_key(db, Order.client)
+    identifiers = sql_join_with_space([
+        *(json_text(Order.raw_payload, key) for key in ORDER_IDENTIFIER_KEYS),
+        *(json_text(OrderItem.raw_payload, key) for key in ITEM_IDENTIFIER_KEYS),
+    ])
+    return (
+        select(
+            order_key.label("point_key"),
+            sql_group_concat(db, identifiers).label("identifiers"),
+        )
+        .select_from(Order)
+        .outerjoin(OrderItem, OrderItem.order_id == Order.id)
+        .where(order_key != "")
+        .group_by(order_key)
+        .cte("client_point_order_identifiers")
+    )
+
+
 def sql_returned_order_predicate():
     return_status = func.lower(func.coalesce(Order.raw_payload["return_status"].as_string(), ""))
     return or_(
@@ -91,6 +142,7 @@ def list_client_points(db: Session, query="", custom_timeslot=None, limit=None, 
     row_limit = None if limit is None else max(1, int(limit))
     row_offset = max(0, int(offset or 0))
     order_aggregate, order_display, order_coordinates, order_representative = order_point_ctes(db)
+    order_identifiers = order_identifier_cte(db)
     saved_key = sql_point_key(db, ClientPoint.client_name)
     saved_ranked = select(
         ClientPoint.id.label("id"),
@@ -140,10 +192,18 @@ def list_client_points(db: Session, query="", custom_timeslot=None, limit=None, 
         delivery_from != DEFAULT_DELIVERY_FROM,
         delivery_to != DEFAULT_DELIVERY_TO,
     )
-    searchable = (
-        client_name + literal(" ") + point_name + literal(" ") + address
-        + literal(" ") + representative + literal(" ") + coordinates
-    )
+    identifiers = func.coalesce(order_identifiers.c.identifiers, "")
+    searchable = sql_join_with_space([
+        client_name,
+        point_name,
+        address,
+        representative,
+        coordinates,
+        # Координаты без пробелов: импорт хранит «41.296549, 69.277177»,
+        # а из шаблона и буфера обмена их вставляют как «41.296549,69.277177»
+        sql_compact_text(coordinates),
+        identifiers,
+    ])
     statement = (
         select(
             point_keys.c.point_key,
@@ -158,6 +218,7 @@ def list_client_points(db: Session, query="", custom_timeslot=None, limit=None, 
             func.coalesce(saved.c.is_active, True).label("is_active"),
             is_saved.label("is_saved"),
             has_custom_timeslot.label("has_custom_timeslot"),
+            identifiers.label("order_identifiers"),
             func.coalesce(order_aggregate.c.orders_count, 0).label("orders_count"),
             func.coalesce(order_aggregate.c.returned_orders_count, 0).label("returned_orders_count"),
             order_aggregate.c.last_order_date,
@@ -169,11 +230,16 @@ def list_client_points(db: Session, query="", custom_timeslot=None, limit=None, 
         .outerjoin(order_display, order_display.c.point_key == point_keys.c.point_key)
         .outerjoin(order_coordinates, order_coordinates.c.point_key == point_keys.c.point_key)
         .outerjoin(order_representative, order_representative.c.point_key == point_keys.c.point_key)
+        .outerjoin(order_identifiers, order_identifiers.c.point_key == point_keys.c.point_key)
         .outerjoin(saved, saved.c.point_key == point_keys.c.point_key)
     )
     normalized_query = normalize_search_text(query)
+    compact_query = compact_search_text(query)
     if normalized_query:
-        statement = statement.where(sql_search_text(db, searchable).contains(normalized_query, autoescape=True))
+        matches = [sql_search_text(db, searchable).contains(normalized_query, autoescape=True)]
+        if compact_query and compact_query != normalized_query:
+            matches.append(sql_search_text(db, searchable).contains(compact_query, autoescape=True))
+        statement = statement.where(or_(*matches))
     if custom_timeslot is not None:
         statement = statement.where(has_custom_timeslot.is_(bool(custom_timeslot)))
     statement = statement.order_by(
@@ -202,6 +268,7 @@ def list_client_points(db: Session, query="", custom_timeslot=None, limit=None, 
             "is_saved": saved_point,
             "source": "saved" if saved_point else "orders",
             "has_custom_timeslot": bool(row["has_custom_timeslot"]),
+            "search_identifiers": canonical_search_identifiers(row["order_identifiers"]),
             "orders_count": int(row["orders_count"] or 0),
             "returned_orders_count": int(row["returned_orders_count"] or 0),
             "last_order_date": row["last_order_date"],
@@ -455,6 +522,7 @@ def order_point_ctes(db: Session):
 
 def build_order_point_meta(db: Session, normalized_client=None):
     aggregate, display, coordinates, representative = order_point_ctes(db)
+    identifiers = order_identifier_cte(db)
     statement = (
         select(
             aggregate.c.point_key,
@@ -462,6 +530,7 @@ def build_order_point_meta(db: Session, normalized_client=None):
             display.c.address,
             coordinates.c.coordinates,
             representative.c.representative,
+            identifiers.c.identifiers,
             aggregate.c.orders_count,
             aggregate.c.returned_orders_count,
             aggregate.c.last_order_date,
@@ -469,6 +538,7 @@ def build_order_point_meta(db: Session, normalized_client=None):
         .join(display, display.c.point_key == aggregate.c.point_key)
         .outerjoin(coordinates, coordinates.c.point_key == aggregate.c.point_key)
         .outerjoin(representative, representative.c.point_key == aggregate.c.point_key)
+        .outerjoin(identifiers, identifiers.c.point_key == aggregate.c.point_key)
     )
     if normalized_client is not None:
         statement = statement.where(aggregate.c.point_key == point_key(normalized_client))
@@ -481,6 +551,7 @@ def build_order_point_meta(db: Session, normalized_client=None):
             "address": row["address"] or "",
             "coordinates": row["coordinates"] or "",
             "representative": row["representative"] or "",
+            "search_identifiers": canonical_search_identifiers(row["identifiers"]),
             "orders_count": int(row["orders_count"] or 0),
             "returned_orders_count": int(row["returned_orders_count"] or 0),
             "last_order_date": row["last_order_date"],
@@ -688,6 +759,7 @@ def client_point_to_read(point: ClientPoint, meta=None, source="saved"):
         "is_saved": True,
         "source": source,
         "has_custom_timeslot": delivery_from != DEFAULT_DELIVERY_FROM or delivery_to != DEFAULT_DELIVERY_TO,
+        "search_identifiers": meta.get("search_identifiers") or "",
         "orders_count": int(meta.get("orders_count") or 0),
         "returned_orders_count": int(meta.get("returned_orders_count") or 0),
         "last_order_date": meta.get("last_order_date"),
@@ -726,6 +798,10 @@ def normalize_lookup_text(value):
 
 def normalize_search_text(value):
     return normalize_text(value).casefold().replace("ё", "е")
+
+
+def compact_search_text(value):
+    return re.sub(r"\s+", "", normalize_search_text(value))
 
 
 def normalize_text(value):
