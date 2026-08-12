@@ -3,7 +3,7 @@ from datetime import date
 from unittest.mock import patch
 
 from sqlalchemy import create_engine, event, func, select
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import selectinload, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.app.client_points_service import (
@@ -13,6 +13,7 @@ from backend.app.client_points_service import (
     sync_client_point_from_import_row_cached,
 )
 from backend.app.imports_service import create_import, normalize_smartup_order_id
+from backend.app.logistics_service import logistics_external_id
 from backend.app.models import Base, ClientPoint, Order, OrderItem
 from backend.app.schemas import ImportCreate
 
@@ -339,6 +340,19 @@ class ImportSmartupOrderIdentityTests(unittest.TestCase):
             self.assertEqual(len(order.raw_payload["source_order_id"]), 64)
             item = db.execute(select(OrderItem)).scalar_one()
             self.assertEqual(item.raw_payload["smartup_order_ids"], [])
+
+    def test_logistics_external_id_still_uses_synthetic_hash_not_smartup_source(self):
+        self.run_import(
+            [self.template_row("266627707", "Chapman Brown OP 20", "row-1")],
+            "logistics.xlsx",
+        )
+
+        with self.SessionLocal() as db:
+            order = db.execute(
+                select(Order).options(selectinload(Order.items))
+            ).scalar_one()
+            self.assertEqual(logistics_external_id(order), "c" * 64)
+            self.assertEqual(logistics_external_id(order, order.items[0]), "c" * 64)
 
     def test_repeat_import_fills_empty_identity_and_never_overwrites_it(self):
         self.run_import([self.template_row("", "Chapman RED OP 20", "row-1")], "first.xlsx")

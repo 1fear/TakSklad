@@ -6,6 +6,7 @@ from sqlalchemy import create_engine, event, select, text
 from sqlalchemy.orm import sessionmaker
 
 from backend.app.admin_service import build_admin_table, build_totals, filter_admin_rows
+from backend.app.client_points_service import list_client_points
 from backend.app.event_queue_service import list_event_queue_diagnostics
 from backend.app.models import ImportJob, Order, OrderItem, PendingEvent, ScanCode
 from backend.app.orders_service import list_active_orders, list_active_orders_page
@@ -145,6 +146,50 @@ class PostgresQueryParityTests(unittest.TestCase):
                 ),
             ])
             db.commit()
+
+    def test_client_point_identifiers_survive_postgres_json_and_string_agg(self):
+        with self.SessionLocal() as db:
+            order = Order(
+                source="telegram",
+                order_date=self.report_date,
+                payment_type="Перечисление",
+                client="Postgres Identifier Client",
+                address="Postgres Identifier Address",
+                status="not_completed",
+                raw_payload={
+                    "coordinates": "41.296549, 69.277177",
+                    "source_order_id": "smartup:266627707",
+                    "skladbot_request_number": "WH-R-2026-0001",
+                    "skladbot_request_id": "1002",
+                },
+                created_at=datetime(2026, 6, 1, 10, 0, tzinfo=timezone.utc),
+            )
+            order.items = [OrderItem(
+                product="Chapman Brown OP 20",
+                quantity_pieces=20,
+                quantity_blocks=2,
+                scanned_blocks=0,
+                status="not_completed",
+                raw_payload={"source_order_id": "b" * 64, "smartup_order_ids": ["266968926"]},
+            )]
+            db.add(order)
+            db.commit()
+
+            by_smartup = list_client_points(db, query="266627707")
+            by_merged_deal = list_client_points(db, query="266968926")
+            by_request_number = list_client_points(db, query="WH-R-2026-0001")
+            by_request_id = list_client_points(db, query="1002")
+            by_compact_coordinates = list_client_points(db, query="41.296549,69.277177")
+            by_import_hash = list_client_points(db, query="b" * 64)
+
+        for found in (by_smartup, by_merged_deal, by_request_number, by_request_id, by_compact_coordinates):
+            self.assertEqual([row["client_name"] for row in found], ["Postgres Identifier Client"])
+        self.assertEqual(
+            sorted(by_smartup[0]["search_identifiers"].split()),
+            ["1002", "266627707", "266968926", "WH-R-2026-0001"],
+        )
+        self.assertEqual([row["client_name"] for row in by_import_hash], ["Postgres Identifier Client"])
+        self.assertNotIn("b" * 64, by_import_hash[0]["search_identifiers"])
 
     def test_admin_sql_candidate_matches_characterized_python_filter_and_totals(self):
         with self.SessionLocal() as db:
