@@ -147,7 +147,7 @@ class PostgresQueryParityTests(unittest.TestCase):
             ])
             db.commit()
 
-    def test_client_point_identifiers_survive_postgres_json_and_string_agg(self):
+    def test_client_point_identifier_search_works_on_postgres_json(self):
         with self.SessionLocal() as db:
             order = Order(
                 source="telegram",
@@ -184,12 +184,9 @@ class PostgresQueryParityTests(unittest.TestCase):
 
         for found in (by_smartup, by_merged_deal, by_request_number, by_request_id, by_compact_coordinates):
             self.assertEqual([row["client_name"] for row in found], ["Postgres Identifier Client"])
-        self.assertEqual(
-            sorted(by_smartup[0]["search_identifiers"].split()),
-            ["1002", "266627707", "266968926", "WH-R-2026-0001"],
-        )
+        # Синтетический хеш импорта тоже лежит в source_order_id позиции,
+        # поэтому по нему точка находится: отдельного поля с идентификаторами нет
         self.assertEqual([row["client_name"] for row in by_import_hash], ["Postgres Identifier Client"])
-        self.assertNotIn("b" * 64, by_import_hash[0]["search_identifiers"])
 
     def test_admin_sql_candidate_matches_characterized_python_filter_and_totals(self):
         with self.SessionLocal() as db:

@@ -7,7 +7,6 @@ from sqlalchemy.orm import selectinload, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.app.client_points_service import (
-    canonical_search_identifiers,
     list_client_points,
     prefetch_client_points_for_import,
     sync_client_point_from_import_row_cached,
@@ -330,7 +329,6 @@ class ImportSmartupOrderIdentityTests(unittest.TestCase):
             )
             points = list_client_points(db, query="266968926")
             self.assertEqual([point["client_name"] for point in points], ["JASUR-DIYOR UNIVERSAL XK"])
-            self.assertIn("266968926", points[0]["search_identifiers"].split())
 
     def test_row_without_template_order_id_keeps_synthetic_identity(self):
         self.run_import([self.template_row("", "Chapman RED OP 20", "row-1")], "no-order-id.xlsx")
@@ -363,28 +361,6 @@ class ImportSmartupOrderIdentityTests(unittest.TestCase):
             self.assertEqual(db.scalar(select(func.count()).select_from(Order)), 1)
             order = db.execute(select(Order)).scalar_one()
             self.assertEqual(order.raw_payload["source_order_id"], "smartup:266627707")
-
-
-class ClientPointSearchIdentifierTests(unittest.TestCase):
-    def test_canonical_identifiers_keep_known_shapes_and_drop_import_hashes(self):
-        raw = " ".join([
-            "smartup:266627707",
-            "WH-R-2026-0001",
-            "1002",
-            "WR-RET-1",
-            "9f2c1b" + "0" * 58,
-            '["266968926", "267807389"]',
-            "",
-        ])
-
-        self.assertEqual(
-            canonical_search_identifiers(raw),
-            "266627707 WH-R-2026-0001 1002 WR-RET-1 266968926 267807389",
-        )
-
-    def test_canonical_identifiers_deduplicate_and_survive_empty_input(self):
-        self.assertEqual(canonical_search_identifiers(None), "")
-        self.assertEqual(canonical_search_identifiers("smartup:731 731 smartup:731"), "731")
 
 
 if __name__ == "__main__":

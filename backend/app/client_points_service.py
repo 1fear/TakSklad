@@ -11,43 +11,11 @@ from .skladbot_contracts import (
     canonical_remote_request_id,
     canonical_skladbot_request_number,
     format_internal_smartup_ids,
-    internal_smartup_id_from_source,
 )
 
 
 DEFAULT_DELIVERY_FROM = "10:00"
 DEFAULT_DELIVERY_TO = "18:00"
-SEARCH_IDENTIFIER_TOKEN_RE = re.compile(r"[^0-9A-Za-z:_-]+")
-
-
-def canonical_search_identifiers(value) -> str:
-    """Канонические идентификаторы точки: сделки Smartup и заявки SkladBot.
-
-    Сырая склейка приходит из raw_payload заказов и позиций и содержит мусор:
-    синтетические sha256-хеши Excel-импорта и JSON-скобки списков. Всё, что не
-    опознано контрактами, отбрасывается, иначе поиск ловит случайные совпадения,
-    а ответ API распухает на 64 символа с каждого заказа
-    """
-    ordered = []
-    seen = set()
-    for token in SEARCH_IDENTIFIER_TOKEN_RE.split(normalize_text(value)):
-        canonical = canonical_search_identifier(token)
-        if canonical and canonical not in seen:
-            seen.add(canonical)
-            ordered.append(canonical)
-    return " ".join(ordered)
-
-
-def canonical_search_identifier(token) -> str:
-    smartup_id = internal_smartup_id_from_source(token)
-    if smartup_id:
-        return smartup_id
-    request_number = canonical_skladbot_request_number(token)
-    if request_number:
-        return request_number
-    return canonical_remote_request_id(token)
-
-
 class ClientPointApiError(Exception):
     def __init__(self, status_code, detail):
         super().__init__(str(detail))
@@ -90,12 +58,6 @@ def sql_join_with_space(parts):
     return joined
 
 
-def sql_group_concat(db: Session, column):
-    if db.bind is not None and db.bind.dialect.name == "postgresql":
-        return func.string_agg(column, literal(" "), type_=String())
-    return func.group_concat(column, " ", type_=String())
-
-
 def json_text(column, key):
     return func.coalesce(column[key].as_string(), "")
 
@@ -110,24 +72,40 @@ ORDER_IDENTIFIER_KEYS = (
 ITEM_IDENTIFIER_KEYS = ("source_order_id", "smartup_order_ids")
 
 
-def order_identifier_cte(db: Session):
-    """Сырые идентификаторы заказов, сгруппированные по ключу клиентской точки"""
+def identifier_point_keys(db: Session, queries):
+    """Ключи точек, у которых хоть один заказ или позиция несут искомый идентификатор.
+
+    Считается только при непустом запросе. Агрегата по всей истории здесь нет
+    осознанно: raw_payload заказа весит в среднем 5 КБ, и постоянная склейка
+    идентификаторов на каждую загрузку списка упиралась в statement_timeout
+    """
     order_key = sql_point_key(db, Order.client)
-    identifiers = sql_join_with_space([
-        *(json_text(Order.raw_payload, key) for key in ORDER_IDENTIFIER_KEYS),
-        *(json_text(OrderItem.raw_payload, key) for key in ITEM_IDENTIFIER_KEYS),
-    ])
-    return (
-        select(
-            order_key.label("point_key"),
-            sql_group_concat(db, identifiers).label("identifiers"),
-        )
+
+    def matches(column, keys):
+        conditions = [
+            sql_search_text(db, json_text(column, key)).contains(value, autoescape=True)
+            for key in keys
+            for value in queries
+        ]
+        return or_(*conditions)
+
+    from_orders = (
+        select(order_key.label("point_key"))
         .select_from(Order)
-        .outerjoin(OrderItem, OrderItem.order_id == Order.id)
         .where(order_key != "")
-        .group_by(order_key)
-        .cte("client_point_order_identifiers")
+        .where(matches(Order.raw_payload, ORDER_IDENTIFIER_KEYS))
+        .distinct()
     )
+    from_items = (
+        select(order_key.label("point_key"))
+        .select_from(OrderItem)
+        .join(Order, Order.id == OrderItem.order_id)
+        .where(order_key != "")
+        .where(matches(OrderItem.raw_payload, ITEM_IDENTIFIER_KEYS))
+        .distinct()
+    )
+    matched = union(from_orders, from_items).subquery("client_point_identifier_matches")
+    return select(matched.c.point_key)
 
 
 def sql_returned_order_predicate():
@@ -142,7 +120,6 @@ def list_client_points(db: Session, query="", custom_timeslot=None, limit=None, 
     row_limit = None if limit is None else max(1, int(limit))
     row_offset = max(0, int(offset or 0))
     order_aggregate, order_display, order_coordinates, order_representative = order_point_ctes(db)
-    order_identifiers = order_identifier_cte(db)
     saved_key = sql_point_key(db, ClientPoint.client_name)
     saved_ranked = select(
         ClientPoint.id.label("id"),
@@ -192,7 +169,6 @@ def list_client_points(db: Session, query="", custom_timeslot=None, limit=None, 
         delivery_from != DEFAULT_DELIVERY_FROM,
         delivery_to != DEFAULT_DELIVERY_TO,
     )
-    identifiers = func.coalesce(order_identifiers.c.identifiers, "")
     searchable = sql_join_with_space([
         client_name,
         point_name,
@@ -202,7 +178,6 @@ def list_client_points(db: Session, query="", custom_timeslot=None, limit=None, 
         # Координаты без пробелов: импорт хранит «41.296549, 69.277177»,
         # а из шаблона и буфера обмена их вставляют как «41.296549,69.277177»
         sql_compact_text(coordinates),
-        identifiers,
     ])
     statement = (
         select(
@@ -218,7 +193,6 @@ def list_client_points(db: Session, query="", custom_timeslot=None, limit=None, 
             func.coalesce(saved.c.is_active, True).label("is_active"),
             is_saved.label("is_saved"),
             has_custom_timeslot.label("has_custom_timeslot"),
-            identifiers.label("order_identifiers"),
             func.coalesce(order_aggregate.c.orders_count, 0).label("orders_count"),
             func.coalesce(order_aggregate.c.returned_orders_count, 0).label("returned_orders_count"),
             order_aggregate.c.last_order_date,
@@ -230,15 +204,19 @@ def list_client_points(db: Session, query="", custom_timeslot=None, limit=None, 
         .outerjoin(order_display, order_display.c.point_key == point_keys.c.point_key)
         .outerjoin(order_coordinates, order_coordinates.c.point_key == point_keys.c.point_key)
         .outerjoin(order_representative, order_representative.c.point_key == point_keys.c.point_key)
-        .outerjoin(order_identifiers, order_identifiers.c.point_key == point_keys.c.point_key)
         .outerjoin(saved, saved.c.point_key == point_keys.c.point_key)
     )
     normalized_query = normalize_search_text(query)
     compact_query = compact_search_text(query)
     if normalized_query:
-        matches = [sql_search_text(db, searchable).contains(normalized_query, autoescape=True)]
+        queries = [normalized_query]
         if compact_query and compact_query != normalized_query:
-            matches.append(sql_search_text(db, searchable).contains(compact_query, autoescape=True))
+            queries.append(compact_query)
+        matches = [
+            sql_search_text(db, searchable).contains(value, autoescape=True)
+            for value in queries
+        ]
+        matches.append(point_keys.c.point_key.in_(identifier_point_keys(db, queries)))
         statement = statement.where(or_(*matches))
     if custom_timeslot is not None:
         statement = statement.where(has_custom_timeslot.is_(bool(custom_timeslot)))
@@ -268,7 +246,6 @@ def list_client_points(db: Session, query="", custom_timeslot=None, limit=None, 
             "is_saved": saved_point,
             "source": "saved" if saved_point else "orders",
             "has_custom_timeslot": bool(row["has_custom_timeslot"]),
-            "search_identifiers": canonical_search_identifiers(row["order_identifiers"]),
             "orders_count": int(row["orders_count"] or 0),
             "returned_orders_count": int(row["returned_orders_count"] or 0),
             "last_order_date": row["last_order_date"],
@@ -522,7 +499,6 @@ def order_point_ctes(db: Session):
 
 def build_order_point_meta(db: Session, normalized_client=None):
     aggregate, display, coordinates, representative = order_point_ctes(db)
-    identifiers = order_identifier_cte(db)
     statement = (
         select(
             aggregate.c.point_key,
@@ -530,7 +506,6 @@ def build_order_point_meta(db: Session, normalized_client=None):
             display.c.address,
             coordinates.c.coordinates,
             representative.c.representative,
-            identifiers.c.identifiers,
             aggregate.c.orders_count,
             aggregate.c.returned_orders_count,
             aggregate.c.last_order_date,
@@ -538,7 +513,6 @@ def build_order_point_meta(db: Session, normalized_client=None):
         .join(display, display.c.point_key == aggregate.c.point_key)
         .outerjoin(coordinates, coordinates.c.point_key == aggregate.c.point_key)
         .outerjoin(representative, representative.c.point_key == aggregate.c.point_key)
-        .outerjoin(identifiers, identifiers.c.point_key == aggregate.c.point_key)
     )
     if normalized_client is not None:
         statement = statement.where(aggregate.c.point_key == point_key(normalized_client))
@@ -551,7 +525,6 @@ def build_order_point_meta(db: Session, normalized_client=None):
             "address": row["address"] or "",
             "coordinates": row["coordinates"] or "",
             "representative": row["representative"] or "",
-            "search_identifiers": canonical_search_identifiers(row["identifiers"]),
             "orders_count": int(row["orders_count"] or 0),
             "returned_orders_count": int(row["returned_orders_count"] or 0),
             "last_order_date": row["last_order_date"],
@@ -759,7 +732,6 @@ def client_point_to_read(point: ClientPoint, meta=None, source="saved"):
         "is_saved": True,
         "source": source,
         "has_custom_timeslot": delivery_from != DEFAULT_DELIVERY_FROM or delivery_to != DEFAULT_DELIVERY_TO,
-        "search_identifiers": meta.get("search_identifiers") or "",
         "orders_count": int(meta.get("orders_count") or 0),
         "returned_orders_count": int(meta.get("returned_orders_count") or 0),
         "last_order_date": meta.get("last_order_date"),

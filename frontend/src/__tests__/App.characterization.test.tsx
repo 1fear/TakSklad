@@ -8,6 +8,7 @@ import {
   adminTable,
   anonymousSession,
   authenticatedSession,
+  clientPoint,
   firstAdminRow,
   logisticsCalendar,
   logisticsCalendarDayOrders,
@@ -351,8 +352,9 @@ describe("authenticated control-surface characterization", () => {
 
     const clientSearch = screen.getByRole("searchbox", { name: "Поиск клиентов" });
     await user.type(clientSearch, "Несуществующий клиент");
-    expect(screen.getByText("Нет данных")).toBeInTheDocument();
+    expect(await screen.findByText("Нет данных")).toBeInTheDocument();
     await user.clear(clientSearch);
+    expect(await screen.findByText("Клиент Альфа")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /Редактировать таймслот/ }));
     const from = screen.getByLabelText("Доставка с");
@@ -369,21 +371,28 @@ describe("authenticated control-surface characterization", () => {
     });
   });
 
-  it("finds a client point by Smartup ID, SkladBot number and spaced coordinates", async () => {
+  it("sends the client search to the backend so Smartup and SkladBot ids match", async () => {
+    const queries: string[] = [];
+    server.use(
+      http.get("/api/v1/admin/client-points", ({ request }) => {
+        const query = new URL(request.url).searchParams.get("query") ?? "";
+        if (query) queries.push(query);
+        return HttpResponse.json(query === "266627708" ? [] : [clientPoint]);
+      }),
+    );
     const { user } = await renderAuthenticatedAdminApp();
     await user.click(screen.getByRole("button", { name: "Клиенты" }));
     expect(await screen.findByRole("heading", { name: "Клиенты и таймслоты" })).toBeInTheDocument();
 
     const clientSearch = screen.getByRole("searchbox", { name: "Поиск клиентов" });
-    for (const query of ["266627707", "WH-R-TEST-1", "1002", "41.296549,69.277177", "41.296549, 69.277177"]) {
-      await user.clear(clientSearch);
-      await user.type(clientSearch, query);
-      expect(screen.getByText("Клиент Альфа")).toBeInTheDocument();
-    }
+    await user.type(clientSearch, "266627707");
+    await waitFor(() => expect(queries).toContain("266627707"));
+    expect(screen.getByText("Клиент Альфа")).toBeInTheDocument();
 
     await user.clear(clientSearch);
     await user.type(clientSearch, "266627708");
-    expect(screen.getByText("Нет данных")).toBeInTheDocument();
+    expect(await screen.findByText("Нет данных")).toBeInTheDocument();
+    expect(queries).toContain("266627708");
   });
 
   it("renders the current empty table state without inventing placeholder data", async () => {

@@ -657,12 +657,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         listed = self.client.get("/api/v1/admin/client-points")
 
         self.assertEqual(listed.status_code, 200)
-        identifiers = listed.json()[0]["search_identifiers"].split()
-        self.assertIn("266627707", identifiers)
-        self.assertIn("266968926", identifiers)
-        self.assertIn("WH-R-2026-0001", identifiers)
-        self.assertIn("1002", identifiers)
-        self.assertNotIn("b" * 64, identifiers)
+        self.assertEqual([point["client_name"] for point in listed.json()], ["Identifier Client"])
 
         for query in ("266627707", "266968926", "WH-R-2026-0001", "41.296549,69.277177"):
             with self.subTest(query=query):
@@ -673,7 +668,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         missing = self.client.get("/api/v1/admin/client-points", params={"query": "266627708"})
         self.assertEqual(missing.json(), [])
 
-    def test_client_point_timeslot_response_carries_search_identifiers(self):
+    def test_client_point_saved_by_timeslot_is_still_found_by_smartup_id(self):
         with self.SessionLocal() as db:
             order = Order(
                 payment_type="cash",
@@ -699,7 +694,10 @@ class BackendApiPersistenceTests(unittest.TestCase):
         )
 
         self.assertEqual(updated.status_code, 200)
-        self.assertEqual(updated.json()["search_identifiers"], "268031619")
+        self.assertEqual(updated.json()["delivery_from"], "09:30")
+
+        found = self.client.get("/api/v1/admin/client-points", params={"query": "268031619"})
+        self.assertEqual([point["client_name"] for point in found.json()], ["Slot Client"])
 
     def test_admin_client_points_default_response_is_not_capped(self):
         with self.SessionLocal() as db:

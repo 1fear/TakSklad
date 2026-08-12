@@ -439,7 +439,6 @@ export type ClientPoint = {
   is_saved: boolean;
   source: string;
   has_custom_timeslot: boolean;
-  search_identifiers: string;
   orders_count: number;
   returned_orders_count: number;
   last_order_date: string | null;
