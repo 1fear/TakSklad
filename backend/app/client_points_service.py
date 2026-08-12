@@ -11,11 +11,41 @@ from .skladbot_contracts import (
     canonical_remote_request_id,
     canonical_skladbot_request_number,
     format_internal_smartup_ids,
+    internal_smartup_id_from_source,
 )
 
 
 DEFAULT_DELIVERY_FROM = "10:00"
 DEFAULT_DELIVERY_TO = "18:00"
+SEARCH_IDENTIFIER_TOKEN_RE = re.compile(r"[^0-9A-Za-z:_-]+")
+
+
+def canonical_search_identifiers(value) -> str:
+    """Канонические идентификаторы точки: сделки Smartup и заявки SkladBot.
+
+    Сырая склейка приходит из raw_payload заказов и позиций и содержит мусор:
+    синтетические sha256-хеши Excel-импорта и JSON-скобки списков. Всё, что не
+    опознано контрактами, отбрасывается, иначе поиск ловит случайные совпадения,
+    а ответ API распухает на 64 символа с каждого заказа
+    """
+    ordered = []
+    seen = set()
+    for token in SEARCH_IDENTIFIER_TOKEN_RE.split(normalize_text(value)):
+        canonical = canonical_search_identifier(token)
+        if canonical and canonical not in seen:
+            seen.add(canonical)
+            ordered.append(canonical)
+    return " ".join(ordered)
+
+
+def canonical_search_identifier(token) -> str:
+    smartup_id = internal_smartup_id_from_source(token)
+    if smartup_id:
+        return smartup_id
+    request_number = canonical_skladbot_request_number(token)
+    if request_number:
+        return request_number
+    return canonical_remote_request_id(token)
 
 
 class ClientPointApiError(Exception):
