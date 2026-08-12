@@ -52,6 +52,7 @@ SOURCE_BATCH_FIELDS = ("Ключ исходного документа", "source
 SKLADBOT_NUMBER_FIELDS = ("Номер заявки SkladBot", "skladbot_request_number")
 SKLADBOT_ID_FIELDS = ("ID заявки SkladBot", "skladbot_request_id")
 SMARTUP_DEAL_FIELDS = ("Smartup deal_id",)
+SMARTUP_ORDER_ID_FIELDS = ("Smartup ИД заказа", "smartup_order_id")
 SMARTUP_AUTO_IMPORT_SOURCE = "smartup_auto"
 LINKED_SKLADBOT_SPLIT_REASON = "linked_skladbot_late_smartup_export"
 PICKUP_ADDRESS = "Самовывоз со склада"
@@ -237,6 +238,10 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
             orders_created += 1
         elif import_job.source == SMARTUP_AUTO_IMPORT_SOURCE:
             preserve_order_smartup_identity(order, row.get("source_order_id"))
+        elif row.get("smartup_order_id"):
+            # Дозаказ и повторный импорт заполняют пустую личность и никогда
+            # не перетирают уже сохранённую сделку
+            preserve_order_smartup_identity(order, f"smartup:{row['smartup_order_id']}")
 
         resolved_order_ids.add(order.id)
 
@@ -269,6 +274,7 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
                 "item_key": row["item_key"],
                 "business_line_key": row["item_key"],
                 "source_order_id": row["source_order_id"],
+                "smartup_order_ids": [row["smartup_order_id"]] if row["smartup_order_id"] else [],
                 "source_import_id": row["source_import_id"],
                 "source_import_ids": [row["source_import_id"]] if row["source_import_id"] else [],
                 "source_file": row["source_file"],
@@ -857,6 +863,12 @@ def merge_import_row_into_item(item, row, raw_row):
         source_import_ids.append(new_source_import_id)
     raw_payload["source_import_ids"] = source_import_ids
 
+    smartup_order_ids = list(raw_payload.get("smartup_order_ids") or [])
+    new_smartup_order_id = normalize_text(row.get("smartup_order_id"))
+    if new_smartup_order_id and new_smartup_order_id not in smartup_order_ids:
+        smartup_order_ids.append(new_smartup_order_id)
+    raw_payload["smartup_order_ids"] = smartup_order_ids
+
     merged_source_rows = list(raw_payload.get("merged_source_rows") or [])
     merged_source_rows.append({
         "source_import_id": new_source_import_id,
@@ -963,13 +975,17 @@ def build_order_raw_payload(
     source_order_key: str,
     split_from_order=None,
 ) -> dict:
+    smartup_order_id = normalize_text(row.get("smartup_order_id"))
     payload = {
         "order_key": order_key,
         "skladbot_request_number": row["skladbot_request_number"],
         "skladbot_request_id": row["skladbot_request_id"],
         "coordinates": row["coordinates"],
         "source": import_source,
-        "source_order_id": row["source_order_id"],
+        # Личность заказа это сделка Smartup из шаблона, если файл её принёс.
+        # row["source_order_id"] остаётся синтетическим хешем и живёт у позиции:
+        # он держит склейку позиций и публичный внешний идентификатор логистики
+        "source_order_id": f"smartup:{smartup_order_id}" if smartup_order_id else row["source_order_id"],
         "source_import_id": row["source_import_id"],
         "source_batch_key": row["source_batch_key"],
     }
@@ -1113,6 +1129,7 @@ def normalize_import_row(raw_row):
     skladbot_request_number = first_value(raw_row, SKLADBOT_NUMBER_FIELDS)
     skladbot_request_id = first_value(raw_row, SKLADBOT_ID_FIELDS)
     smartup_deal_id = normalize_text(first_value(raw_row, SMARTUP_DEAL_FIELDS))
+    smartup_order_id = normalize_smartup_order_id(first_value(raw_row, SMARTUP_ORDER_ID_FIELDS))
 
     required = {
         "payment_type": payment_type,
@@ -1174,6 +1191,7 @@ def normalize_import_row(raw_row):
         "skladbot_request_number": normalize_text(skladbot_request_number),
         "skladbot_request_id": normalize_text(skladbot_request_id),
         "smartup_deal_id": smartup_deal_id,
+        "smartup_order_id": smartup_order_id,
     }
 
 
@@ -1190,6 +1208,18 @@ def normalize_text(value):
     if value is None:
         return ""
     return str(value).strip()
+
+
+def normalize_smartup_order_id(value):
+    """Сделка Smartup из шаблона отправки заказов, иначе пустая строка.
+
+    Формат проверяет тот же контракт, что и автоимпорт Smartup, поэтому
+    ячейка-число «266627707.0» и мусор в колонке отсекаются одинаково
+    """
+    text = normalize_text(value)
+    if text.endswith(".0"):
+        text = text[:-2]
+    return internal_smartup_id_from_source(f"smartup:{text}")
 
 
 def parse_optional_uuid(value):
