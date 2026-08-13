@@ -30,7 +30,6 @@ from backend.app.models import (
 )
 from backend.app.skladbot_daily_report import (
     DEFAULT_DAILY_REPORT_MAX_PAGES,
-    MARKING_CODE_HEADERS,
     REQUEST_HEADERS,
     REQUEST_PRODUCT_HEADERS,
     SkladBotReadOnlyClient,
@@ -101,6 +100,103 @@ def empty_sqlite_session_factory():
     )
     Base.metadata.create_all(engine)
     return sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+def daily_template_report():
+    """Hydrated report covering matched, boxed, unmatched and code-free products."""
+    return {
+        "report_date": date(2026, 8, 12),
+        "summary": {},
+        "requests": [
+            {
+                "id": 217753,
+                "number": "WH-R-217753",
+                "category": "Отгрузка",
+                "type": "Отгрузка 3PL",
+                "is_completed": True,
+                "created_at": "12.08.2026",
+                "unloading_date": "2026-08-13",
+                "recipient": '"XALQ RETAIL" MCHJ XK',
+                "address": "Ташкентская область, Кибрайский район",
+                "comment": "\n".join([
+                    "Терминал",
+                    "ТП5 Авазов Азиз Бегжонович",
+                    "Рабочий номер: +998 77 744 48 41",
+                    "Личный номер: +998 70 123 26 40",
+                ]),
+                "kiz_count": 4,
+                "products": [
+                    {"name": "Chapman Brown OP 20 UZ - KingSize", "barcode": "4006396053978", "amount": 120},
+                    {"name": "Chapman Red OP 20 UZ - KingSize", "barcode": "4006396053947", "amount": 108},
+                ],
+            },
+            {
+                "id": 217772,
+                "number": "WH-R-217772",
+                "category": "Отгрузка",
+                "type": "Отгрузка 3PL",
+                "is_completed": True,
+                "created_at": "12.08.2026",
+                "unloading_date": "2026-08-12",
+                "recipient": 'ЧП "TUR FARM SAVDO SERVIS"',
+                "address": "Самовывоз со склада",
+                "comment": "Перечисление\nОПТ",
+                "kiz_count": 0,
+                "products": [
+                    {"name": "Chapman Gold SSL 20 UZ", "barcode": "4006396054005", "amount": 10},
+                ],
+            },
+            {
+                "id": 217799,
+                "number": "WH-R-217799",
+                "category": "Возврат",
+                "type": "Возврат 3PL",
+                "is_completed": False,
+                "created_at": "12.08.2026",
+                "unloading_date": "2026-08-12",
+                "recipient": "ООО Bastion Import",
+                "address": "Самовывоз со склада",
+                "comment": "Самовывоз\nТП9 Без оплаты",
+                "representative": "ТП9 Без оплаты",
+                "kiz_count": None,
+                "products": [],
+            },
+        ],
+        "request_kiz_rows": [
+            {
+                "request_id": "217753",
+                "request_number": "WH-R-217753",
+                "product": "Chapman Brown OP 20",
+                "code": "0104006396053978217UNIT-BROWN",
+                "scan_type": "unit",
+                "block_quantity": 1,
+            },
+            {
+                "request_id": "217753",
+                "request_number": "WH-R-217753",
+                "product": "Chapman Brown OP 20",
+                "code": "0104006396053985217BOX-BROWN",
+                "scan_type": "aggregate_box",
+                "block_quantity": 50,
+            },
+            {
+                "request_id": "217753",
+                "request_number": "WH-R-217753",
+                "product": "Chapman Red OP 20",
+                "code": "0104006396053947217UNIT-RED",
+                "scan_type": "unit",
+                "block_quantity": 1,
+            },
+            {
+                "request_id": "217753",
+                "request_number": "WH-R-217753",
+                "product": "Chapman Green OP 20",
+                "code": "0104006396104441217UNIT-GREEN",
+                "scan_type": "unit",
+                "block_quantity": 1,
+            },
+        ],
+    }
 
 
 class FakeSkladBotDailyReportClient:
@@ -1313,7 +1409,6 @@ class SkladBotDailyReportTests(unittest.TestCase):
             "Сводка",
             "Заявки",
             "Товары заявок",
-            "Коды маркировок",
         ])
 
         summary_sheet = workbook["Сводка"]
@@ -1349,16 +1444,16 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(request_by_number["WH-R-101"]["Юрлицо/точка"], "XASAN XUSAN SAVDO SERVIS XK")
         self.assertEqual(request_by_number["WH-R-101"]["Smartup ID"], "731")
         self.assertEqual(request_by_number["WH-R-101"]["Торговый представитель"], "ТП1 Суюнбеков Умид")
-        self.assertEqual(request_by_number["WH-R-101"]["Раб зона"], "Юнусабад")
+        self.assertEqual(request_by_number["WH-R-101"]["Тип оплаты"], "Терминал")
+        self.assertEqual(request_by_number["WH-R-101"]["Рабочий номер"], "+998 91 111 11 11")
+        self.assertEqual(request_by_number["WH-R-101"]["Личный номер"], "+998 90 222 22 22")
         self.assertEqual(request_by_number["WH-R-101"]["Блоков план"], 4)
         self.assertEqual(request_by_number["WH-R-101"]["Блоков факт"], 4)
         self.assertIsNone(request_by_number["WH-R-101"]["КИЗов"])
-        self.assertEqual(request_by_number["WH-R-101"]["Отклонение"], 0)
         self.assertEqual(request_by_number["WH-R-303"]["Торговый представитель"], None)
         self.assertIsNone(request_by_number["WH-R-303"]["Smartup ID"])
         self.assertEqual(request_by_number["WH-R-303"]["Блоков план"], 1)
         self.assertEqual(request_by_number["WH-R-303"]["Блоков факт"], 500)
-        self.assertEqual(request_by_number["WH-R-303"]["Отклонение"], 499)
 
         products_sheet = workbook["Товары заявок"]
         self.assertEqual([cell.value for cell in products_sheet[1]], REQUEST_PRODUCT_HEADERS)
@@ -1367,12 +1462,10 @@ class SkladBotDailyReportTests(unittest.TestCase):
         brown_product_row = next(row for row in product_rows if row["Товар"] == "Chapman Brown OP 20")
         self.assertEqual(brown_product_row["Smartup ID"], "731")
         self.assertEqual(brown_product_row["Торговый представитель"], "ТП1 Суюнбеков Умид")
-        self.assertEqual(brown_product_row["Раб зона"], "Юнусабад")
         gold_product_row = next(row for row in product_rows if row["Товар"] == "Chapman Gold SSL")
-        self.assertEqual(gold_product_row["Блоков план"], 1)
-        self.assertEqual(gold_product_row["Принято факт"], 500)
-        self.assertEqual(gold_product_row["Блоков факт"], 500)
-        self.assertEqual(gold_product_row["Отклонение"], 499)
+        self.assertIsNone(gold_product_row["Код маркировки"])
+        self.assertIsNone(gold_product_row["Тип кода"])
+        self.assertIsNone(gold_product_row["Блоков по коду"])
 
         message = build_skladbot_daily_report_message(report)
         self.assertEqual(message, "\n".join([
@@ -1543,27 +1636,22 @@ class SkladBotDailyReportTests(unittest.TestCase):
 
         content, _filename = build_skladbot_daily_report_xlsx(report)
         workbook = openpyxl.load_workbook(BytesIO(content), data_only=False)
-        self.assertEqual(workbook.sheetnames, [
-            "Сводка", "Заявки", "Товары заявок", "Коды маркировок",
-        ])
-        self.assertEqual([cell.value for cell in workbook["Коды маркировок"][1]], MARKING_CODE_HEADERS)
-        self.assertEqual(MARKING_CODE_HEADERS, [
-            "Номер", "ID заявки", "Smartup ID", "Дата выгрузки", "Тип оплаты",
-            "Товар", "КИЗ", "Время скана", "Тип скана", "Блоков по коду",
-        ])
+        self.assertEqual(workbook.sheetnames, ["Сводка", "Заявки", "Товары заявок"])
+        self.assertNotIn("Время скана", REQUEST_PRODUCT_HEADERS)
         self.assertEqual(REQUEST_HEADERS[REQUEST_HEADERS.index("Блоков факт") + 1], "КИЗов")
-        self.assertEqual(REQUEST_HEADERS[REQUEST_HEADERS.index("КИЗов") + 1], "Коды маркировки")
+        self.assertEqual(REQUEST_HEADERS[-1], "КИЗов")
         request_rows = worksheet_rows_by_header(workbook["Заявки"])
         self.assertEqual([row["КИЗов"] for row in request_rows], [1, 0, 1, None])
+        product_rows = worksheet_rows_by_header(workbook["Товары заявок"])
         self.assertEqual(
-            [row["Коды маркировки"] for row in request_rows],
-            ["=SYNTHETIC-KIZ", None, "TRANSFER-KIZ", None],
+            [row["Код маркировки"] for row in product_rows],
+            ["=SYNTHETIC-KIZ", "TRANSFER-KIZ"],
         )
-        self.assertEqual(workbook["Заявки"]["T2"].data_type, "s")
-        marking_rows = worksheet_rows_by_header(workbook["Коды маркировок"])
-        self.assertEqual([row["КИЗ"] for row in marking_rows], ["=SYNTHETIC-KIZ", "TRANSFER-KIZ"])
-        self.assertNotIn("UNMAPPED-DAY-KIZ", {row["КИЗ"] for row in marking_rows})
-        self.assertEqual(workbook["Коды маркировок"]["G2"].data_type, "s")
+        self.assertEqual([row["Тип кода"] for row in product_rows], ["Короб", "Блок"])
+        self.assertEqual([row["Блоков по коду"] for row in product_rows], [50, 1])
+        self.assertEqual([row["Заявка"] for row in product_rows], ["WH-R-910", "WH-R-912"])
+        self.assertNotIn("UNMAPPED-DAY-KIZ", {row["Код маркировки"] for row in product_rows})
+        self.assertEqual(workbook["Товары заявок"]["I2"].data_type, "s")
 
     def test_daily_kiz_lifecycle_excludes_returned_and_keeps_legacy_scan(self):
         engine = create_engine(
@@ -2128,17 +2216,15 @@ class SkladBotDailyReportTests(unittest.TestCase):
         row_by_number = {row["Номер"]: row for row in request_rows}
         self.assertEqual(row_by_number["WH-R-204499"]["Юрлицо/точка"], '"CENTRAL TOBAKKO" MCHJ')
         self.assertEqual(row_by_number["WH-R-204499"]["Дата выгрузки"], "2026-07-08")
-        self.assertEqual(row_by_number["WH-R-204499"]["Причина включения"], "Дата создания")
         self.assertEqual(row_by_number["WH-R-204499"]["Блоков план"], 58)
         self.assertEqual(sum(row["Блоков план"] for row in request_rows), 95)
+        included = next(row for row in report["requests"] if row["number"] == "WH-R-204499")
+        self.assertEqual(included["include_reasons"], ["Дата создания"])
 
         product_rows = worksheet_rows_by_header(workbook["Товары заявок"])
         self.assertEqual(len(product_rows), 8)
-        self.assertEqual(sum(row["Блоков план"] for row in product_rows), 95)
 
-        self.assertEqual(workbook.sheetnames, [
-            "Сводка", "Заявки", "Товары заявок", "Коды маркировок",
-        ])
+        self.assertEqual(workbook.sheetnames, ["Сводка", "Заявки", "Товары заявок"])
         self.assertEqual(report["coverage"]["included_operational_requests"], 8)
         self.assertEqual(report["coverage"]["excluded_diagnostic_requests"], 0)
 
@@ -2409,10 +2495,68 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(workbook["Сводка"]["B4"].value, 0)
         self.assertEqual(workbook["Сводка"]["B5"].value, 0)
         self.assertEqual(workbook["Сводка"]["B6"].value, 0)
-        self.assertEqual(workbook.sheetnames, [
-            "Сводка", "Заявки", "Товары заявок", "Коды маркировок",
-        ])
+        self.assertEqual(workbook.sheetnames, ["Сводка", "Заявки", "Товары заявок"])
         self.assertEqual(report["errors"], ["Не удалось получить остаток SkladBot"])
+
+    def test_client_workbook_headers_match_agreed_daily_template(self):
+        self.assertEqual(REQUEST_HEADERS, [
+            "Номер", "Smartup ID", "Тип", "Статус", "Дата создания", "Дата выгрузки",
+            "Юрлицо/точка", "Торговый представитель", "Адрес",
+            "Тип оплаты", "Рабочий номер", "Личный номер",
+            "Блоков план", "Блоков факт", "КИЗов",
+        ])
+        self.assertEqual(REQUEST_PRODUCT_HEADERS, [
+            "Заявка", "Smartup ID", "Тип", "Дата выгрузки", "Юрлицо/точка",
+            "Торговый представитель", "Товар", "Штрихкод",
+            "Код маркировки", "Тип кода", "Блоков по коду",
+        ])
+        for header in (*REQUEST_HEADERS, *REQUEST_PRODUCT_HEADERS):
+            self.assertNotIn("скан", header.lower())
+            self.assertNotIn("время", header.lower())
+
+    def test_request_products_sheet_expands_codes_and_never_drops_unmatched(self):
+        report = daily_template_report()
+
+        content, _filename = build_skladbot_daily_report_xlsx(report)
+        workbook = openpyxl.load_workbook(BytesIO(content), data_only=False)
+
+        self.assertEqual(workbook.sheetnames, ["Сводка", "Заявки", "Товары заявок"])
+        product_rows = worksheet_rows_by_header(workbook["Товары заявок"])
+        self.assertEqual(
+            [(row["Заявка"], row["Товар"], row["Код маркировки"], row["Тип кода"], row["Блоков по коду"])
+             for row in product_rows],
+            [
+                ("WH-R-217753", "Chapman Brown OP 20 UZ - KingSize", "0104006396053978217UNIT-BROWN", "Блок", 1),
+                ("WH-R-217753", "Chapman Brown OP 20 UZ - KingSize", "0104006396053985217BOX-BROWN", "Короб", 50),
+                ("WH-R-217753", "Chapman Red OP 20 UZ - KingSize", "0104006396053947217UNIT-RED", "Блок", 1),
+                ("WH-R-217753", "Chapman Green OP 20", "0104006396104441217UNIT-GREEN", "Блок", 1),
+                ("WH-R-217772", "Chapman Gold SSL 20 UZ", None, None, None),
+            ],
+        )
+        self.assertEqual(product_rows[0]["Штрихкод"], "4006396053978")
+        self.assertIsNone(product_rows[3]["Штрихкод"])
+        self.assertEqual(
+            {row["Код маркировки"] for row in product_rows if row["Код маркировки"]},
+            {row["code"] for row in report["request_kiz_rows"]},
+        )
+
+    def test_requests_sheet_splits_comment_into_payment_and_phones(self):
+        report = daily_template_report()
+
+        content, _filename = build_skladbot_daily_report_xlsx(report)
+        workbook = openpyxl.load_workbook(BytesIO(content), data_only=False)
+
+        request_rows = worksheet_rows_by_header(workbook["Заявки"])
+        row_by_number = {row["Номер"]: row for row in request_rows}
+        self.assertEqual(row_by_number["WH-R-217753"]["Тип оплаты"], "Терминал")
+        self.assertEqual(row_by_number["WH-R-217753"]["Рабочий номер"], "+998 77 744 48 41")
+        self.assertEqual(row_by_number["WH-R-217753"]["Личный номер"], "+998 70 123 26 40")
+        self.assertEqual(row_by_number["WH-R-217772"]["Тип оплаты"], "Перечисление")
+        self.assertIsNone(row_by_number["WH-R-217772"]["Рабочий номер"])
+        self.assertIsNone(row_by_number["WH-R-217772"]["Личный номер"])
+        self.assertIsNone(row_by_number["WH-R-217799"]["Тип оплаты"])
+        self.assertIsNone(row_by_number["WH-R-217799"]["Рабочий номер"])
+        self.assertEqual(row_by_number["WH-R-217799"]["Торговый представитель"], "ТП9 Без оплаты")
 
     def test_request_products_sheet_forces_formula_prefixes_to_text(self):
         report = collect_report_without_delay(FakeSkladBotDailyReportClient(), date(2026, 6, 8))
@@ -2421,7 +2565,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
         content, _filename = build_skladbot_daily_report_xlsx(report)
         workbook = openpyxl.load_workbook(BytesIO(content), data_only=False)
 
-        cell = workbook["Товары заявок"]["I2"]
+        cell = workbook["Товары заявок"]["G2"]
         self.assertEqual(cell.value, "=1+1")
         self.assertEqual(cell.data_type, "s")
 

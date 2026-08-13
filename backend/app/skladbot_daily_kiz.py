@@ -37,19 +37,6 @@ from .skladbot_contracts import (
 )
 
 
-MARKING_CODE_HEADERS = [
-    "Номер",
-    "ID заявки",
-    "Smartup ID",
-    "Дата выгрузки",
-    "Тип оплаты",
-    "Товар",
-    "КИЗ",
-    "Время скана",
-    "Тип скана",
-    "Блоков по коду",
-]
-
 ACTIVE_KIZ_MOVEMENT_TYPES = {MOVEMENT_OUTBOUND, MOVEMENT_RE_OUTBOUND}
 KNOWN_KIZ_MOVEMENT_TYPES = {
     MOVEMENT_OUTBOUND,

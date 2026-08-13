@@ -28,11 +28,14 @@ from .skladbot_contracts import (
     request_list_value,
 )
 from .representative_contacts import display_representative_name
-from .spreadsheet_safety import force_workbook_text_literals
-from .skladbot_daily_kiz import (
-    MARKING_CODE_HEADERS,
-    enrich_daily_kiz_from_orders,
+from .scan_quantities import (
+    SCAN_TYPE_AGGREGATE_BOX,
+    SCAN_TYPE_UNIT,
+    product_key_from_name,
+    scan_code_product_key,
 )
+from .spreadsheet_safety import force_workbook_text_literals
+from .skladbot_daily_kiz import enrich_daily_kiz_from_orders
 from .telegram_output_contract import build_skladbot_daily_report_message, daily_report_filename
 
 
@@ -50,49 +53,43 @@ REQUEST_CATEGORIES = (
     REQUEST_CATEGORY_RECEIVING,
     REQUEST_CATEGORY_OTHER,
 )
+CODE_TYPE_LABELS = {
+    SCAN_TYPE_UNIT: "Блок",
+    SCAN_TYPE_AGGREGATE_BOX: "Короб",
+}
+WORK_PHONE_COMMENT_LABEL = "рабоч"
+PERSONAL_PHONE_COMMENT_LABEL = "личн"
 
 REQUEST_HEADERS = [
-    "ID",
     "Номер",
     "Smartup ID",
-    "Категория",
     "Тип",
     "Статус",
-    "В архиве",
     "Дата создания",
-    "Дата обновления",
     "Дата выгрузки",
     "Юрлицо/точка",
     "Торговый представитель",
-    "Раб зона",
-    "Клиент SkladBot",
     "Адрес",
-    "Комментарий",
+    "Тип оплаты",
+    "Рабочий номер",
+    "Личный номер",
     "Блоков план",
     "Блоков факт",
     "КИЗов",
-    "Коды маркировки",
-    "Отклонение",
-    "Товаров",
-    "Причина включения",
 ]
 
 REQUEST_PRODUCT_HEADERS = [
     "Заявка",
-    "ID заявки",
     "Smartup ID",
     "Тип",
     "Дата выгрузки",
     "Юрлицо/точка",
     "Торговый представитель",
-    "Раб зона",
     "Товар",
-    "Артикул",
     "Штрихкод",
-    "Блоков план",
-    "Принято факт",
-    "Блоков факт",
-    "Отклонение",
+    "Код маркировки",
+    "Тип кода",
+    "Блоков по коду",
 ]
 
 MOVEMENT_HEADERS = [
@@ -1603,9 +1600,9 @@ def build_skladbot_daily_report_xlsx(report: dict[str, Any]) -> tuple[bytes, str
     summary_sheet.title = "Сводка"
     write_summary_sheet(summary_sheet, report)
     write_requests_sheet(workbook.create_sheet("Заявки"), report.get("requests") or [])
-    write_request_products_sheet(workbook.create_sheet("Товары заявок"), report.get("requests") or [])
-    write_marking_codes_sheet(
-        workbook.create_sheet("Коды маркировок"),
+    write_request_products_sheet(
+        workbook.create_sheet("Товары заявок"),
+        report.get("requests") or [],
         report.get("request_kiz_rows") or [],
     )
     for sheet in workbook.worksheets:
@@ -1643,84 +1640,110 @@ def write_summary_sheet(sheet, report: dict[str, Any]) -> None:
 def write_requests_sheet(sheet, requests: list[dict[str, Any]]) -> None:
     sheet.append(REQUEST_HEADERS)
     for request in requests:
-        planned_blocks = request_blocks(request)
-        actual_blocks = request_report_blocks(request)
-        representative = request_representative(request)
-        representative_zone = request_representative_zone(request)
+        comment = request.get("comment")
         sheet.append([
-            request.get("id") or "",
             request.get("number") or "",
             request_smartup_id(request),
-            request.get("category") or "",
             request.get("type") or "",
             "Выполнена" if request.get("is_completed") else "Не выполнена",
-            "Да" if request.get("archived") else "Нет",
             request.get("created_at") or "",
-            request.get("updated_at") or "",
             request.get("unloading_date") or "",
             request.get("recipient") or "",
-            representative,
-            representative_zone,
-            request.get("customer_name") or "",
+            request_representative(request),
             request.get("address") or "",
-            request.get("comment") or "",
-            planned_blocks,
-            actual_blocks,
+            payment_type_from_comment(comment),
+            phone_from_comment(comment, WORK_PHONE_COMMENT_LABEL),
+            phone_from_comment(comment, PERSONAL_PHONE_COMMENT_LABEL),
+            request_blocks(request),
+            request_report_blocks(request),
             request.get("kiz_count"),
-            "\n".join(request.get("kiz_codes") or []),
-            actual_blocks - planned_blocks,
-            len(request.get("products") or []),
-            ", ".join(request.get("include_reasons") or []),
         ])
     apply_header_style(sheet)
 
 
-def write_marking_codes_sheet(sheet, rows: list[dict[str, Any]]) -> None:
-    sheet.append(MARKING_CODE_HEADERS)
-    for row in rows:
-        sheet.append([
-            row.get("request_number") or "",
-            row.get("request_id") or "",
-            row.get("smartup_id") or "",
-            row.get("unloading_date") or "",
-            row.get("payment_type") or "",
-            row.get("product") or "",
-            row.get("code") or "",
-            row.get("scanned_at") or "",
-            row.get("scan_type") or "",
-            parse_int(row.get("block_quantity")),
-        ])
-    apply_header_style(sheet)
-
-
-def write_request_products_sheet(sheet, requests: list[dict[str, Any]]) -> None:
+def write_request_products_sheet(
+    sheet,
+    requests: list[dict[str, Any]],
+    kiz_rows: list[dict[str, Any]],
+) -> None:
+    """Write one row per marking code, keeping products without codes visible."""
     sheet.append(REQUEST_PRODUCT_HEADERS)
+    kiz_rows_by_request = group_kiz_rows_by_request(kiz_rows)
     for request in requests:
-        category = normalize_text(request.get("category")) or REQUEST_CATEGORY_OTHER
-        representative = request_representative(request)
-        representative_zone = request_representative_zone(request)
-        for product in request.get("products") or []:
-            planned_blocks = parse_int(product.get("amount"))
-            actual_blocks = report_product_blocks(product, category)
-            accepted_amount = parse_int(product.get("accepted_amount"))
-            sheet.append([
-                request.get("number") or "",
-                request.get("id") or "",
-                request_smartup_id(request),
-                request.get("type") or "",
-                request.get("unloading_date") or "",
-                request.get("recipient") or "",
-                representative,
-                representative_zone,
+        products = request.get("products") or []
+        request_prefix = [
+            request.get("number") or "",
+            request_smartup_id(request),
+            request.get("type") or "",
+            request.get("unloading_date") or "",
+            request.get("recipient") or "",
+            request_representative(request),
+        ]
+        request_kiz_rows = kiz_rows_by_request.get(canonical_daily_request_evidence_pair(request), [])
+        kiz_rows_by_product, unmatched_kiz_rows = assign_kiz_rows_to_products(products, request_kiz_rows)
+        for position, product in enumerate(products):
+            product_prefix = [
+                *request_prefix,
                 product.get("name") or "",
-                product.get("vendor_code") or "",
                 product.get("barcode") or "",
-                planned_blocks,
-                accepted_amount,
-                actual_blocks,
-                actual_blocks - planned_blocks,
+            ]
+            product_kiz_rows = kiz_rows_by_product.get(position) or []
+            if not product_kiz_rows:
+                sheet.append([*product_prefix, "", "", ""])
+                continue
+            for row in product_kiz_rows:
+                sheet.append([*product_prefix, *kiz_row_code_cells(row)])
+        for row in unmatched_kiz_rows:
+            sheet.append([
+                *request_prefix,
+                row.get("product") or "",
+                "",
+                *kiz_row_code_cells(row),
             ])
     apply_header_style(sheet)
+
+
+def kiz_row_code_cells(row: dict[str, Any]) -> list[Any]:
+    return [
+        row.get("code") or "",
+        code_type_label(row.get("scan_type")),
+        parse_int(row.get("block_quantity")),
+    ]
+
+
+def code_type_label(value: Any) -> str:
+    text = normalize_text(value)
+    return CODE_TYPE_LABELS.get(text, text)
+
+
+def group_kiz_rows_by_request(kiz_rows: list[dict[str, Any]]) -> dict[tuple[str, str], list[dict[str, Any]]]:
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in kiz_rows or []:
+        key = (normalize_text(row.get("request_id")), normalize_text(row.get("request_number")))
+        grouped.setdefault(key, []).append(row)
+    return grouped
+
+
+def assign_kiz_rows_to_products(
+    products: list[dict[str, Any]],
+    kiz_rows: list[dict[str, Any]],
+) -> tuple[dict[int, list[dict[str, Any]]], list[dict[str, Any]]]:
+    """Attach each marking code to its product row, never dropping a code."""
+    position_by_product_key: dict[str, int] = {}
+    for position, product in enumerate(products):
+        product_key = product_key_from_name(product.get("name"))
+        if product_key and product_key not in position_by_product_key:
+            position_by_product_key[product_key] = position
+    matched: dict[int, list[dict[str, Any]]] = {}
+    unmatched: list[dict[str, Any]] = []
+    for row in kiz_rows:
+        position = position_by_product_key.get(scan_code_product_key(row.get("code")))
+        if position is None:
+            unmatched.append(row)
+            continue
+        matched.setdefault(position, []).append(row)
+    return matched, unmatched
+
 
 def request_representative(request: dict[str, Any]) -> str:
     explicit = normalize_text(request.get("representative"))
@@ -1879,6 +1902,34 @@ def is_payment_comment_line(value: Any) -> bool:
     return "терминал" in text or "перечис" in text or "безнал" in text
 
 
+def payment_type_from_comment(comment: Any) -> str:
+    """Return the first word of the comment when it names a payment type."""
+    lines = comment_lines(comment)
+    if not lines or not is_payment_comment_line(lines[0]):
+        return ""
+    return lines[0].split()[0]
+
+
+def phone_from_comment(comment: Any, label_keyword: str) -> str:
+    """Return the phone from a ``<label>: <phone>`` comment line."""
+    for line in comment_lines(comment):
+        if ":" not in line:
+            continue
+        label, value = line.split(":", 1)
+        normalized_label = label.lower().replace("ё", "е")
+        if label_keyword in normalized_label and "номер" in normalized_label:
+            return normalize_text(value)
+    return ""
+
+
+def comment_lines(comment: Any) -> list[str]:
+    return [
+        stripped
+        for line in normalize_text(comment).splitlines()
+        if (stripped := normalize_text(line))
+    ]
+
+
 def write_movements_sheet(sheet, movements: list[dict[str, Any]]) -> None:
     sheet.append(MOVEMENT_HEADERS)
     for item in movements:
@@ -2016,9 +2067,8 @@ def autosize_columns(sheet) -> None:
 def apply_report_template_widths(workbook: Workbook) -> None:
     widths_by_sheet = {
         "Сводка": {"A": 28, "B": 13, "C": 10},
-        "Заявки": {"A": 10, "B": 13, "C": 11, "D": 20, "E": 11, "F": 10, "G": 15, "H": 17, "I": 15, "J": 45, "K": 24, "L": 33, "M": 60, "N": 13, "O": 12, "P": 12, "Q": 12, "R": 10, "S": 10, "T": 60, "U": 10, "V": 10, "W": 24},
-        "Товары заявок": {"A": 13, "B": 11, "C": 20, "D": 15, "E": 45, "F": 24, "G": 36, "H": 17, "I": 15, "J": 12, "K": 13, "L": 12, "M": 12},
-        "Коды маркировок": {"A": 18, "B": 12, "C": 16, "D": 16, "E": 18, "F": 36, "G": 50, "H": 25, "I": 20, "J": 16},
+        "Заявки": {"A": 13, "B": 11, "C": 20, "D": 15, "E": 15, "F": 15, "G": 45, "H": 24, "I": 60, "J": 14, "K": 18, "L": 18, "M": 12, "N": 12, "O": 10},
+        "Товары заявок": {"A": 13, "B": 11, "C": 20, "D": 15, "E": 45, "F": 24, "G": 36, "H": 17, "I": 50, "J": 12, "K": 16},
     }
     for sheet_name, widths in widths_by_sheet.items():
         if sheet_name not in workbook.sheetnames:
