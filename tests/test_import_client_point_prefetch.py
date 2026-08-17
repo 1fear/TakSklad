@@ -234,6 +234,66 @@ class ImportClientPointPrefetchTests(unittest.TestCase):
         self.assertEqual(large_count, small_count)
 
 
+class ClientSearchIdentifierScopeTests(unittest.TestCase):
+    def setUp(self):
+        self.engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(self.engine)
+        self.SessionLocal = sessionmaker(bind=self.engine, expire_on_commit=False)
+
+    def tearDown(self):
+        self.engine.dispose()
+
+    def add_order(self, db, client, raw_payload):
+        db.add(Order(
+            client=client,
+            address=f"{client} Address",
+            representative="Rep",
+            order_date=date(2026, 8, 14),
+            payment_type="cash",
+            status="not_completed",
+            raw_payload=raw_payload,
+        ))
+        db.commit()
+
+    def test_plain_text_query_does_not_search_order_identifiers(self):
+        with self.SessionLocal() as db:
+            self.add_order(db, "ALPHA STORE", {
+                "coordinates": "41.3, 69.2",
+                "source_order_id": "smartup:269506659",
+            })
+
+            by_deal_id = list_client_points(db, query="269506659")
+            by_identifier_prefix = list_client_points(db, query="smartup")
+
+        self.assertEqual([row["client_name"] for row in by_deal_id], ["ALPHA STORE"])
+        self.assertEqual(by_identifier_prefix, [])
+
+    def test_skladbot_request_number_query_still_finds_the_point(self):
+        with self.SessionLocal() as db:
+            self.add_order(db, "BETA STORE", {
+                "coordinates": "41.4, 69.3",
+                "skladbot_request_number": "WH-R-4821",
+            })
+
+            by_request_number = list_client_points(db, query="WH-R-4821")
+            by_return_prefix = list_client_points(db, query="wr-15")
+
+        self.assertEqual([row["client_name"] for row in by_request_number], ["BETA STORE"])
+        self.assertEqual(by_return_prefix, [])
+
+    def test_client_name_query_with_spaces_still_matches_the_point(self):
+        with self.SessionLocal() as db:
+            self.add_order(db, "GAMMA MARKET", {"coordinates": "41.5, 69.4"})
+
+            rows = list_client_points(db, query="GAMMA MARKET")
+
+        self.assertEqual([row["client_name"] for row in rows], ["GAMMA MARKET"])
+
+
 class ImportSmartupOrderIdentityTests(unittest.TestCase):
     def setUp(self):
         self.engine = create_engine(
