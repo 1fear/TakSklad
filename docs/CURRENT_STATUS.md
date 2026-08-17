@@ -5,22 +5,21 @@
 PostgreSQL читался только на `alembic current`, поэтому раздел «Данные склада»
 остаётся снимком 2026-08-01
 
-Статус: `LIVE_MATCHES_MAIN_BY_TREE; RELEASE_ID_DRIFT; ACTIONS_NOT_USED;
+Статус: `LIVE_IN_SYNC_WITH_MAIN; ACTIONS_NOT_USED;
 DESKTOP_RETIREMENT_BLOCKED; OPERATOR_PHYSICAL_NOT_RUN; SHIPMENT_NOT_RECHECKED`
 
 ## Короткий вывод
 
-Код `main` и код в проде совпадают побайтно: дерево `origin/main` (`372b6fcc`)
-и дерево выкаченной ревизии `c10013d4` это один и тот же объект
-`c7ca8a7f9c4d197a9e004fe4c6d32b584c848f3b`
+Production работает на голове `main`: `GET /version` отдаёт
+`commit_sha = 6d74a58661e14344385ed768d5868b44104257b3`, это head `origin/main`
+Образ пересобран из `main` на сервере и выкачен `2026-08-17T19:05Z`,
+дрейф идентификатора, державшийся с утреннего ручного выката, снят
 
-Расхождение осталось ровно одно и оно в идентификаторе, а не в коде:
-`GET /version` отдаёт `commit_sha = c10013d4`, потому что образ собирался руками
-до сведения веток `server_release_id` при этом тоже `server-c10013d4…`
-Пока образ не пересобран из `main`, автоматическая сверка «прод против ветки»
-по `commit_sha` будет показывать расхождение, которого в коде нет
+Схема боевой базы на `20260817_0022`, эта миграция есть и в `main`
+Выкат схему не двигал: политика `no_change`, оба образа ожидают один head
 
-Схема боевой базы на `20260817_0022`, теперь эта миграция есть и в `main`
+Ускорение поиска клиентов доведено до конца: PR #132 и #133 сведены в `main`,
+образ собран из `main`, прод работает на нём
 
 Как это получилось: с 2026-08-14 GitHub Actions не стартуют, аккаунт заблокирован
 по биллингу, а платные функции GitHub решением от 2026-08-16 больше не
@@ -55,31 +54,30 @@ Postgres, а два теряли работу оператора беззвуч�
 
 | Контур | Идентичность | Источник |
 |---|---|---|
-| Head `origin/main` | `372b6fcc08fdfb33b24336bf6c60611ab4a57969` | `git rev-parse origin/main` |
-| Дерево `origin/main` | `c7ca8a7f9c4d197a9e004fe4c6d32b584c848f3b` | `git rev-parse origin/main^{tree}` |
-| Дерево выкаченной ревизии | `c7ca8a7f…`, совпадает | `git rev-parse c10013d4^{tree}` |
-| Последний выпуск через Actions | `c66d9f3`, `Deploy Server Production` run `31691753261` 2026-08-13 | `gh run list` |
-| Live backend | `2.0.51`, commit `c10013d4…`, image `sha256:a83dea24…` | `GET /version` |
-| `server_release_id` | `server-c10013d4…` | `GET /version` |
-| Образ контейнеров | `taksklad-backend:local-c10013d`, собран на сервере | `docker ps` |
+| Head `origin/main` | `6d74a58661e14344385ed768d5868b44104257b3` | `git rev-parse origin/main` |
+| Live backend | `2.0.51`, commit `6d74a58…`, image `sha256:960c447a…` | `GET /version` |
+| `server_release_id` | `server-6d74a58…` | `GET /version` |
+| Образ контейнеров | `taksklad-backend:local-6d74a58`, собран на сервере из `main` | `docker ps` |
 | Схема БД | `20260817_0022 (head)` | `docker exec vds-backend-api-1 alembic current` |
+| Последний выпуск через Actions | `c66d9f3`, `Deploy Server Production` run `31691753261` 2026-08-13 | `gh run list` |
+| Паспорт ручного выката | `/opt/stacks/taksklad/deployments/manual-6d74a58.json` | сервер |
 | Backend в коде | `APP_VERSION = 2.0.51` | `backend/app/settings.py:19` |
 | Desktop в коде | `APP_VERSION = 2.0.54` | `src/taksklad/config.py:128` |
 | Канал обновления десктопа | `2.0.54`, `min_supported_version 2.0.54`, `mandatory=true` | `raw.githubusercontent.com/1fear/TakSklad/main/version.json` |
 | `desktop_api_contract` | `1` | `GET /version` |
 
-`commit_sha` из `/version` это `c10013d4`, коммит до squash-мержа Сам по себе
-он в `main` не входит, но всё его содержимое туда вошло: сравнивать здесь нужно
-деревья, а не хеши коммитов Точная проверка соответствия:
+`commit_sha` из `/version` совпадает с head `origin/main` напрямую, сверка
+одной строкой:
 
 ```
-git rev-parse origin/main^{tree}
-git rev-parse c10013d4^{tree}
+curl -s https://api.taksklad.uz/version | python3 -c "import sys,json;print(json.load(sys.stdin)['commit_sha'])"
+git rev-parse origin/main
 ```
 
-Совпадение этих двух значений и есть доказательство, что прод работает на коде
-`main` Расхождение `commit_sha` снимется при первой же пересборке образа из
-`main`, отдельной срочности в этом нет: код тот же
+Отдельно стоит помнить приём на случай, когда прод выкачен из ветки до
+squash-мержа: тогда `commit_sha` в `main` не входит, и сравнивать надо деревья
+(`git rev-parse <ревизия>^{tree}`), а не хеши коммитов Так 2026-08-17 было
+доказано соответствие ревизии `c10013d4` и `main` ещё до пересборки образа
 
 Версия `2.0.51` этим выкатом не менялась, идентичность несут `commit_sha` и
 `server_release_id`, а не номер версии Сравнение по номеру версии здесь ничего
@@ -162,9 +160,31 @@ immutable release `31335868550`, `Deploy Server Production` `31336015144` с
 Три последних выпущены 2026-07-31 отдельными release-циклами через PR, CI,
 immutable release и `Deploy Server Production`
 
-## Живая проверка 2026-08-17
+## Живая проверка после выката `6d74a58`
 
-Снято вечером 2026-08-17, read-only, через 7 часов после ручного выката
+Снято сразу после пересборки и перезапуска, `2026-08-17T19:05Z`
+
+| Проверка | Результат |
+|---|---|
+| `/version` | commit `6d74a58…`, image `sha256:960c447a…`, `server-6d74a58…` |
+| `/health` | `200` |
+| `/ready` | `ready=true`, `status=ok` |
+| База | `status=ok`, миграции `status=ok` |
+| Воркеры | `required 3`, `missing 0`, `unhealthy 0` |
+| Контейнеры | четыре backend-сервиса на `taksklad-backend:local-6d74a58`, все `healthy` |
+| `ERROR` в логах за 5 минут после рестарта | api `0`, telegram `0`, skladbot `0`, smartup `0` |
+
+Порядок выката: бэкап `taksklad-postgres-20260817T190319Z` (51 МБ, 190 записей),
+архив `main` на сервер, `docker build` из `backend/Dockerfile`, сверка
+`alembic heads` образа с базой (обе `20260817_0022`, миграция не потребовалась),
+`docker compose up -d --no-deps` четырёх сервисов с явными `TAKSKLAD_*`
+Паспорт: `/opt/stacks/taksklad/deployments/manual-6d74a58.json`
+
+Frontend не трогался, остался на `ghcr.io/1fear/taksklad-frontend@sha256:7e9c445a…`
+
+## Живая проверка 2026-08-17, до выката
+
+Снято вечером 2026-08-17, read-only, через 7 часов после утреннего ручного выката
 
 | Проверка | Результат |
 |---|---|
@@ -300,11 +320,11 @@ id не совпадает с коммитом Окружение кандида
 | Слой | Статус | Evidence и граница |
 |---|---|---|
 | Docs truth | `PASS` | Этот документ сверен с кодом, git и live 2026-08-17 |
-| Code truth | `PASS_BY_TREE` | Дерево `origin/main` и дерево выкаченной ревизии это один объект `c7ca8a7f…` `commit_sha` в `/version` при этом старый, см. открытый пункт 3 |
+| Code truth | `PASS` | `commit_sha` в `/version` это head `origin/main` `6d74a58…`, образ собран из `main` |
 | Test truth | `PARTIAL` | PostgreSQL `110 passed` локально на этой ревизии 2026-08-17, frontend lint чистый CI не прогонялся ни разу и больше не используется, windows-джоба и container isolation остались непроверенными |
 | Live truth | `PASS` | `/health`, `/version`, `docker ps`, `alembic current` прочитаны 2026-08-17 |
 | Data truth | `STALE` | Production PostgreSQL 2026-08-10 не читался Последнее чтение 2026-08-01, последняя запись 2026-08-06 по явному разрешению |
-| Release truth | `FAIL` | Последний выпуск через Actions это `31691753261` от 2026-08-13 Текущий runtime выкачен вручную на сервере, immutable release для него не собирался, `manifest_sha256` не существует |
+| Release truth | `MANUAL` | Runtime выкачен вручную из `main` 2026-08-17, паспорт `manual-6d74a58.json`, бэкап снят до выката Immutable release, manifest, attestation и preflight не собирались и при отказе от Actions собираться не будут |
 | Parity truth | `FAIL_FOR_RETIREMENT` | 121 подтверждённый пробел, 15 из них P1 Не пересматривалось с 2026-07-27, см. [паритет](web-desktop-parity.md) |
 | Operator truth | `NOT RUN` | Рабочее место и реальный складской процесс не проверялись |
 | Physical truth | `NOT RUN` | Handheld scanner, системный print dialog и бумажная печать не проверялись |
@@ -324,10 +344,14 @@ id не совпадает с коммитом Окружение кандида
    `BLOCKED` Сохранены три правила: `deletion`, `non_fast_forward`,
    `required_linear_history` Если Actions когда-нибудь вернутся, чек нужно
    вернуть, иначе защита ветки останется формальной
-3. **`/version` показывает `c10013d4`, а head `main` это `372b6fcc`** Код
-   идентичен, расходятся только идентификаторы Снимается пересборкой образа из
-   `main` при следующем выкате Отдельная работа под это не нужна, но
-   автосверки, сравнивающие `commit_sha` с веткой, будут краснеть до тех пор
+3. **`.env` в `deploy/vds` несёт устаревшие `TAKSKLAD_*`** Там записаны
+   `commit_sha = fb0cb124` и образ из `ghcr.io`, которых на проде давно нет
+   Живые контейнеры держатся только на переменных, переданных в момент
+   `docker compose up` Любой `docker compose up -d` без явных `TAKSKLAD_*`
+   откатит прод на образ `fb0cb124`, а тот ожидает alembic head
+   `20260804_0021` и на схеме `20260817_0022` отдаст `ready=false`
+   Лечится приведением `.env` в соответствие с выкаченным релизом, отдельной
+   работой это не делалось
 4. **PR [#131](https://github.com/1fear/TakSklad/pull/131) ждёт решения**
    Признание потерянной заявки SkladBot по содержимому, за флагом
    `SKLADBOT_CONTENT_RECONCILE_ENABLED`, по умолчанию выключенным Он больше не
