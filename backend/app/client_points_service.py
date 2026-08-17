@@ -58,18 +58,8 @@ def sql_join_with_space(parts):
     return joined
 
 
-def json_text(column, key):
-    return func.coalesce(column[key].as_string(), "")
-
-
-ORDER_IDENTIFIER_KEYS = (
-    "source_order_id",
-    "skladbot_request_number",
-    "skladbot_request_id",
-    "skladbot_return_request_number",
-    "skladbot_return_request_id",
-)
-ITEM_IDENTIFIER_KEYS = ("source_order_id", "smartup_order_ids")
+# Состав идентификаторов задаётся выражением stored-колонок
+# ORDER_SEARCH_IDENTIFIERS_SQL и ORDER_ITEM_SEARCH_IDENTIFIERS_SQL в models
 # Одно обращение к ключу raw_payload стоит около 200 мс на боевом объёме заказов,
 # семь ключей подзапроса дают около секунды на каждую форму запроса. Поэтому
 # подзапрос выполняется только для запроса, который вообще может быть
@@ -89,25 +79,22 @@ def looks_like_identifier(value) -> bool:
 def identifier_point_keys(db: Session, queries):
     """Ключи точек, у которых хоть один заказ или позиция несут искомый идентификатор.
 
-    Считается только при непустом запросе. Агрегата по всей истории здесь нет
-    осознанно: raw_payload заказа весит в среднем 5 КБ, и постоянная склейка
-    идентификаторов на каждую загрузку списка упиралась в statement_timeout
+    Идентификаторы читаются из stored-колонки `search_identifiers`, а не из
+    raw_payload: обращение к ключу payload распаковывает его заново и стоит
+    197 мс на 5414 заказах, тогда как колонка накрыта GIN-индексом по триграммам
+    и отвечает за единицы миллисекунд. Условие обязано остаться сравнением
+    самой колонки: обёртка вроде coalesce увела бы планировщик с индекса
     """
     order_key = sql_point_key(db, Order.client)
 
-    def matches(column, keys):
-        conditions = [
-            sql_search_text(db, json_text(column, key)).contains(value, autoescape=True)
-            for key in keys
-            for value in queries
-        ]
-        return or_(*conditions)
+    def matches(column):
+        return or_(*[column.contains(value, autoescape=True) for value in queries])
 
     from_orders = (
         select(order_key.label("point_key"))
         .select_from(Order)
         .where(order_key != "")
-        .where(matches(Order.raw_payload, ORDER_IDENTIFIER_KEYS))
+        .where(matches(Order.search_identifiers))
         .distinct()
     )
     from_items = (
@@ -115,7 +102,7 @@ def identifier_point_keys(db: Session, queries):
         .select_from(OrderItem)
         .join(Order, Order.id == OrderItem.order_id)
         .where(order_key != "")
-        .where(matches(OrderItem.raw_payload, ITEM_IDENTIFIER_KEYS))
+        .where(matches(OrderItem.search_identifiers))
         .distinct()
     )
     matched = union(from_orders, from_items).subquery("client_point_identifier_matches")

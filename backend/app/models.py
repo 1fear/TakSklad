@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import JSON, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, Uuid, UniqueConstraint, event, func, text
+from sqlalchemy import JSON, Boolean, CheckConstraint, Computed, Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, Uuid, UniqueConstraint, event, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -12,12 +12,38 @@ class Base(DeclarativeBase):
 JSON_TYPE = JSON().with_variant(JSONB, "postgresql")
 UUID_TYPE = Uuid(as_uuid=True)
 
+# Идентификаторы заказа лежат в raw_payload, а каждое обращение к ключу
+# распаковывает payload заново: 197 мс на 5414 заказах, и цена линейна по числу
+# ключей. Поэтому они дублируются в одну stored-колонку, которую можно накрыть
+# индексом. Выражение обязано совпадать с миграцией 20260817_0022
+ORDER_SEARCH_IDENTIFIERS_SQL = (
+    "lower("
+    "coalesce(raw_payload->>'source_order_id', '') || ' ' || "
+    "coalesce(raw_payload->>'skladbot_request_number', '') || ' ' || "
+    "coalesce(raw_payload->>'skladbot_request_id', '') || ' ' || "
+    "coalesce(raw_payload->>'skladbot_return_request_number', '') || ' ' || "
+    "coalesce(raw_payload->>'skladbot_return_request_id', '')"
+    ")"
+)
+ORDER_ITEM_SEARCH_IDENTIFIERS_SQL = (
+    "lower("
+    "coalesce(raw_payload->>'source_order_id', '') || ' ' || "
+    "coalesce(raw_payload->>'smartup_order_ids', '')"
+    ")"
+)
+
 
 class Order(Base):
     __tablename__ = "orders"
     __table_args__ = (
         Index("idx_orders_import_order_key_status", "import_order_key", "status"),
         Index("idx_orders_import_source_order_key_status", "import_source_order_key", "status"),
+        Index(
+            "idx_orders_search_identifiers",
+            "search_identifiers",
+            postgresql_using="gin",
+            postgresql_ops={"search_identifiers": "gin_trgm_ops"},
+        ),
         Index(
             "idx_orders_active_page",
             "order_date",
@@ -50,6 +76,9 @@ class Order(Base):
     representative: Mapped[str | None] = mapped_column(String(255))
     status: Mapped[str] = mapped_column(String(40), nullable=False, default="not_completed")
     raw_payload: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    search_identifiers: Mapped[str | None] = mapped_column(
+        Text, Computed(ORDER_SEARCH_IDENTIFIERS_SQL, persisted=True)
+    )
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -62,6 +91,12 @@ class OrderItem(Base):
     __table_args__ = (
         Index("idx_order_items_import_item_key", "import_item_key"),
         Index("idx_order_items_source_import_key", "source_import_key"),
+        Index(
+            "idx_order_items_search_identifiers",
+            "search_identifiers",
+            postgresql_using="gin",
+            postgresql_ops={"search_identifiers": "gin_trgm_ops"},
+        ),
         CheckConstraint(
             "quantity_pieces >= 0 AND quantity_blocks >= 0 AND scanned_blocks >= 0",
             name="ck_order_items_quantities_nonnegative",
@@ -102,6 +137,9 @@ class OrderItem(Base):
     requires_kiz: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     status: Mapped[str] = mapped_column(String(40), nullable=False, default="not_completed")
     raw_payload: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    search_identifiers: Mapped[str | None] = mapped_column(
+        Text, Computed(ORDER_ITEM_SEARCH_IDENTIFIERS_SQL, persisted=True)
+    )
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
