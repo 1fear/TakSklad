@@ -1,5 +1,6 @@
 import unittest
 from datetime import date
+from pathlib import Path
 from unittest.mock import patch
 
 from sqlalchemy import create_engine, event, func, select
@@ -13,7 +14,14 @@ from backend.app.client_points_service import (
 )
 from backend.app.imports_service import create_import, normalize_smartup_order_id
 from backend.app.logistics_service import logistics_external_id
-from backend.app.models import Base, ClientPoint, Order, OrderItem
+from backend.app.models import (
+    ORDER_ITEM_SEARCH_IDENTIFIERS_SQL,
+    ORDER_SEARCH_IDENTIFIERS_SQL,
+    Base,
+    ClientPoint,
+    Order,
+    OrderItem,
+)
 from backend.app.schemas import ImportCreate
 
 
@@ -248,7 +256,7 @@ class ClientSearchIdentifierScopeTests(unittest.TestCase):
         self.engine.dispose()
 
     def add_order(self, db, client, raw_payload):
-        db.add(Order(
+        order = Order(
             client=client,
             address=f"{client} Address",
             representative="Rep",
@@ -256,8 +264,55 @@ class ClientSearchIdentifierScopeTests(unittest.TestCase):
             payment_type="cash",
             status="not_completed",
             raw_payload=raw_payload,
-        ))
+        )
+        db.add(order)
         db.commit()
+        db.refresh(order)
+        return order
+
+    def test_search_identifier_columns_match_the_migration(self):
+        migration = (
+            Path(__file__).resolve().parents[1]
+            / "backend/migrations/versions/20260817_0022_client_search_identifier_columns.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(ORDER_SEARCH_IDENTIFIERS_SQL, migration.replace('"\n    "', ""))
+        self.assertIn(ORDER_ITEM_SEARCH_IDENTIFIERS_SQL, migration.replace('"\n    "', ""))
+
+    def test_order_identifiers_are_readable_from_a_single_indexable_column(self):
+        with self.SessionLocal() as db:
+            order = self.add_order(db, "DELTA STORE", {
+                "source_order_id": "smartup:269506659",
+                "skladbot_request_number": "WH-R-4821",
+                "skladbot_request_id": "551277",
+            })
+            identifiers = order.search_identifiers
+
+        self.assertIn("269506659", identifiers)
+        self.assertIn("wh-r-4821", identifiers)
+        self.assertIn("551277", identifiers)
+
+    def test_item_identifiers_are_readable_from_a_single_indexable_column(self):
+        with self.SessionLocal() as db:
+            order = self.add_order(db, "EPSILON STORE", {"source_order_id": "hash-1"})
+            item = OrderItem(
+                order_id=order.id,
+                product="Product",
+                quantity_pieces=10,
+                quantity_blocks=1,
+                pieces_per_block=10,
+                scanned_blocks=0,
+                requires_kiz=True,
+                status="not_completed",
+                raw_payload={"source_order_id": "hash-1", "smartup_order_ids": ["269506659"]},
+            )
+            db.add(item)
+            db.commit()
+            db.refresh(item)
+            identifiers = item.search_identifiers
+
+        self.assertIn("269506659", identifiers)
+        self.assertIn("hash-1", identifiers)
 
     def test_plain_text_query_does_not_search_order_identifiers(self):
         with self.SessionLocal() as db:
