@@ -70,6 +70,20 @@ ORDER_IDENTIFIER_KEYS = (
     "skladbot_return_request_id",
 )
 ITEM_IDENTIFIER_KEYS = ("source_order_id", "smartup_order_ids")
+# Одно обращение к ключу raw_payload стоит около 200 мс на боевом объёме заказов,
+# семь ключей подзапроса дают около секунды на каждую форму запроса. Поэтому
+# подзапрос выполняется только для запроса, который вообще может быть
+# идентификатором:
+#   <цифры> и smartup:<цифры>  сделка Smartup
+#   WH-R-* и WR-*              заявка SkladBot, форматы из skladbot_contracts
+#   hex длиной 32-64           синтетический хеш импорта в source_order_id позиции
+IDENTIFIER_QUERY_RE = re.compile(
+    r"(?i)^(?:(?:smartup:)?[0-9]+|(?:wh-r|wr)-[a-z0-9]+(?:-[a-z0-9]+)*|[0-9a-f]{32,64})$"
+)
+
+
+def looks_like_identifier(value) -> bool:
+    return bool(IDENTIFIER_QUERY_RE.fullmatch(normalize_text(value)))
 
 
 def identifier_point_keys(db: Session, queries):
@@ -216,7 +230,9 @@ def list_client_points(db: Session, query="", custom_timeslot=None, limit=None, 
             sql_search_text(db, searchable).contains(value, autoescape=True)
             for value in queries
         ]
-        matches.append(point_keys.c.point_key.in_(identifier_point_keys(db, queries)))
+        identifier_queries = [value for value in queries if looks_like_identifier(value)]
+        if identifier_queries:
+            matches.append(point_keys.c.point_key.in_(identifier_point_keys(db, identifier_queries)))
         statement = statement.where(or_(*matches))
     if custom_timeslot is not None:
         statement = statement.where(has_custom_timeslot.is_(bool(custom_timeslot)))
