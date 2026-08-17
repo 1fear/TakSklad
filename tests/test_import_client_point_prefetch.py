@@ -285,6 +285,14 @@ class ClientSearchIdentifierScopeTests(unittest.TestCase):
         self.assertEqual([row["client_name"] for row in by_request_number], ["BETA STORE"])
         self.assertEqual(by_return_prefix, [])
 
+    def test_synthetic_import_hash_query_still_finds_the_point(self):
+        with self.SessionLocal() as db:
+            self.add_order(db, "ZETA STORE", {"source_order_id": "b" * 64})
+
+            rows = list_client_points(db, query="B" * 64)
+
+        self.assertEqual([row["client_name"] for row in rows], ["ZETA STORE"])
+
     def test_client_name_query_with_spaces_still_matches_the_point(self):
         with self.SessionLocal() as db:
             self.add_order(db, "GAMMA MARKET", {"coordinates": "41.5, 69.4"})
