@@ -177,7 +177,9 @@ class SkladBotClient:
         self.disabled_token_indexes = set()
         self.base_url = normalize_text(os.environ.get("SKLADBOT_API_BASE_URL")) or "https://api.skladbot.ru/v1"
         self.base_url = self.base_url.rstrip("/")
-        self.timeout = env_int("SKLADBOT_API_TIMEOUT_SECONDS", 8)
+        # 8 секунд не хватало POST на создание заявки: обрыв ответа оставлял
+        # заявку созданной на той стороне и ambiguous у нас
+        self.timeout = env_int("SKLADBOT_API_TIMEOUT_SECONDS", 25)
         self.customer_id = env_int("SKLADBOT_CUSTOMER_ID", 6211)
         self.shipment_type_id = env_int("SKLADBOT_SHIPMENT_TYPE_ID", 3389)
         self.limit = env_int("SKLADBOT_REQUESTS_LIMIT", 500)

@@ -258,6 +258,12 @@ class BackendSkladBotWorkerTests(unittest.TestCase):
         self.assertEqual(calls[-1], "Bearer token-5")
         self.assertEqual([call.args[0] for call in sleep_mock.call_args_list], [5.0] * 24)
 
+    def test_skladbot_client_timeout_default_leaves_room_for_create_post(self):
+        with mock.patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(SkladBotClient().timeout, 25)
+        with mock.patch.dict("os.environ", {"SKLADBOT_API_TIMEOUT_SECONDS": "40"}, clear=True):
+            self.assertEqual(SkladBotClient().timeout, 40)
+
     def test_skladbot_client_rejects_oversized_retry_after_without_progress_pulses(self):
         class FakeResponse:
             status_code = 429

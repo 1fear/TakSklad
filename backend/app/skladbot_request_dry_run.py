@@ -49,6 +49,7 @@ from .skladbot_contracts import (
     product_sku_key,
     request_list_value,
     request_has_exact_taksklad_marker,
+    request_match_diagnostics,
     taksklad_marker_from_comment,
 )
 
@@ -57,6 +58,7 @@ SKLADBOT_REQUEST_DRY_RUN_EVENT_TYPE = "skladbot_request_dry_run"
 SKLADBOT_REQUEST_CREATE_EVENT_TYPE = "skladbot_request_create"
 SKLADBOT_CREATE_REQUESTS_MODE_ENV = "SKLADBOT_CREATE_REQUESTS_MODE"
 SKLADBOT_CREATE_REQUESTS_DEFAULT_MODE = "dry_run"
+SKLADBOT_CONTENT_RECONCILE_ENV = "SKLADBOT_CONTENT_RECONCILE_ENABLED"
 SKLADBOT_CUSTOMER_ID = 6211
 SKLADBOT_REQUEST_TYPE_ID = 3389
 SKLADBOT_REQUEST_CREATE_LIMIT_ENV = "SKLADBOT_REQUEST_CREATE_LIMIT"
@@ -2033,9 +2035,66 @@ def reconcile_ambiguous_skladbot_request(
                 return request
         return None
     exact_marker = taksklad_marker_from_comment(marker)
-    if not exact_marker:
+    if exact_marker:
+        return find_existing_skladbot_request_for_order(order, client, marker=exact_marker)
+    if not skladbot_content_reconcile_enabled():
         return None
-    return find_existing_skladbot_request_for_order(order, client, marker=exact_marker)
+    return find_content_matched_skladbot_request(order, client)
+
+
+def skladbot_content_reconcile_enabled(environ: dict[str, str] | None = None) -> bool:
+    """Признание заявки по содержимому включается только явным флагом."""
+    environ = os.environ if environ is None else environ
+    return normalize_text(environ.get(SKLADBOT_CONTENT_RECONCILE_ENV)).casefold() in {"1", "true", "yes", "on"}
+
+
+def find_content_matched_skladbot_request(
+    order: Order,
+    client: Any,
+) -> dict[str, Any] | None:
+    """Единственная заявка, совпавшая по всем проверкам, при заведомо неусечённом списке.
+
+    Маркер в SkladBot не уходит (`markerless_skladbot_request_payload`), поэтому
+    для POST с неизвестным исходом остаётся только содержимое. Ложная привязка
+    опаснее ручного разбора, поэтому доказательством считается совпадение по всем
+    проверкам `request_match_diagnostics` без лишних позиций в заявке, и только
+    когда список заявок гарантированно не обрезан лимитом: усечённый список не
+    доказывает, что второй такой же заявки нет.
+    """
+    try:
+        list_items = list(client.list_requests())
+    except Exception:
+        return None
+    limit = parse_int(getattr(client, "limit", 0))
+    if limit and len(list_items) >= limit:
+        return None
+
+    match: dict[str, Any] | None = None
+    for item in list_items:
+        request_id_text = canonical_remote_request_id(request_list_value(item, "id"))
+        if not request_id_text:
+            continue
+        try:
+            detail = client.get_request_detail(int(request_id_text))
+        except Exception:
+            continue
+        if not isinstance(detail, dict):
+            continue
+        request = normalize_request_payload(item, detail)
+        canonical_request_id, request_number = canonical_skladbot_request_link(
+            detail.get("id"),
+            request.get("number"),
+        )
+        if canonical_request_id != request_id_text or not request_number:
+            continue
+        diagnostics = request_match_diagnostics(order, request)
+        if not diagnostics.get("matched") or diagnostics.get("extra_request_products"):
+            continue
+        if match is not None:
+            # два одинаково подходящих кандидата это не доказательство, а риск чужой связи
+            return None
+        match = request
+    return match
 
 
 def find_existing_skladbot_request_for_order(

@@ -1422,6 +1422,169 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
         self.assertEqual(order.raw_payload["skladbot_status"], "ambiguous")
         self.assertEqual(incident.status, "manual_review")
 
+    def content_reconcile_client(self, requests_by_id, *, limit=50):
+        """Клиент, отдающий заданные заявки: list по id, detail по содержимому."""
+
+        class FakeSkladBotClient:
+            def __init__(self):
+                self.create_calls = 0
+                self.limit = limit
+
+            @property
+            def configured(self):
+                return True
+
+            def create_request(self, payload):
+                self.create_calls += 1
+                raise AssertionError("ambiguous event must never POST again")
+
+            def list_requests(self):
+                return [
+                    {"id": request_id, "delivery_number": f"WH-R-{request_id}"}
+                    for request_id in requests_by_id
+                ]
+
+            def get_request_detail(self, request_id):
+                return requests_by_id[request_id]
+
+        return FakeSkladBotClient()
+
+    @staticmethod
+    def content_request_detail(
+        request_id,
+        *,
+        client='"TEST CLIENT" MCHJ',
+        unloading_date="2026-06-05",
+        payment="Перечисление",
+        products=(("Chapman RED OP 20", 2), ("Chapman Brown OP 20", 3)),
+    ):
+        return {
+            "id": request_id,
+            "delivery_number": f"WH-R-{request_id}",
+            "fields": [
+                {"field": "comment", "value": f"{payment}\nТП1"},
+                {"field": "company_name", "value": client},
+                {"field": "unloading_date", "value": unloading_date},
+                {"field": "address", "value": "Ташкент, улица Тестовая, 1"},
+            ],
+            "products": [{"name": name, "amount": amount} for name, amount in products],
+        }
+
+    def run_ambiguous_event(self, fake_client, import_id, *, content_reconcile="1"):
+        env = {
+            "SKLADBOT_CREATE_REQUESTS_MODE": "enabled",
+            "SKLADBOT_CONTENT_RECONCILE_ENABLED": content_reconcile,
+        }
+        with mock.patch.dict("os.environ", env, clear=False):
+            with self.SessionLocal() as db:
+                create_skladbot_dry_run_for_import(db, import_id)
+                event = db.execute(
+                    select(PendingEvent).where(PendingEvent.event_type == SKLADBOT_REQUEST_CREATE_EVENT_TYPE)
+                ).scalar_one()
+                event.payload = {
+                    **(event.payload or {}),
+                    "post_state": "ambiguous",
+                    "create_status": "ambiguous",
+                    "post_request_marker": "",
+                    "error": "SkladBot API POST timeout",
+                }
+                event.status = "failed"
+                event.available_at = event.created_at
+                db.commit()
+                result = process_pending_skladbot_request_creates(db, client=fake_client)
+                db.commit()
+                return result, db.get(Order, uuid.UUID(self.last_order_id))
+
+    def test_ambiguous_event_recovers_by_exact_content_match_without_repost(self):
+        import_id, order_id = self.seed_import_order()
+        self.last_order_id = order_id
+        fake_client = self.content_reconcile_client({
+            770: self.content_request_detail(770, client='"OTHER CLIENT" MCHJ'),
+            771: self.content_request_detail(771),
+        })
+
+        result, order = self.run_ambiguous_event(fake_client, import_id)
+
+        self.assertEqual(result["recovered"], 1)
+        self.assertEqual(fake_client.create_calls, 0)
+        self.assertEqual(order.raw_payload["skladbot_request_number"], "WH-R-771")
+        self.assertEqual(order.raw_payload["skladbot_request_id"], "771")
+        self.assertEqual(order.raw_payload["skladbot_status"], "created_recovered")
+
+    def test_ambiguous_event_stays_manual_when_two_requests_match_content(self):
+        import_id, order_id = self.seed_import_order()
+        self.last_order_id = order_id
+        fake_client = self.content_reconcile_client({
+            772: self.content_request_detail(772),
+            773: self.content_request_detail(773),
+        })
+
+        result, order = self.run_ambiguous_event(fake_client, import_id)
+
+        self.assertEqual(result["ambiguous"], 1)
+        self.assertEqual(fake_client.create_calls, 0)
+        self.assertEqual(order.raw_payload["skladbot_status"], "ambiguous")
+        self.assertEqual(order.raw_payload.get("skladbot_request_number", ""), "")
+
+    def test_ambiguous_event_stays_manual_when_candidate_list_is_truncated(self):
+        import_id, order_id = self.seed_import_order()
+        self.last_order_id = order_id
+        # список ровно в лимит: доказать отсутствие второй такой же заявки нельзя
+        fake_client = self.content_reconcile_client(
+            {774: self.content_request_detail(774)},
+            limit=1,
+        )
+
+        result, order = self.run_ambiguous_event(fake_client, import_id)
+
+        self.assertEqual(result["ambiguous"], 1)
+        self.assertEqual(fake_client.create_calls, 0)
+        self.assertEqual(order.raw_payload["skladbot_status"], "ambiguous")
+        self.assertEqual(order.raw_payload.get("skladbot_request_number", ""), "")
+
+    def test_ambiguous_event_stays_manual_on_partial_content_match(self):
+        import_id, order_id = self.seed_import_order()
+        self.last_order_id = order_id
+        fake_client = self.content_reconcile_client({
+            775: self.content_request_detail(
+                775,
+                products=(("Chapman RED OP 20", 2),),
+            ),
+        })
+
+        result, order = self.run_ambiguous_event(fake_client, import_id)
+
+        self.assertEqual(result["ambiguous"], 1)
+        self.assertEqual(fake_client.create_calls, 0)
+        self.assertEqual(order.raw_payload["skladbot_status"], "ambiguous")
+        self.assertEqual(order.raw_payload.get("skladbot_request_number", ""), "")
+
+    def test_ambiguous_event_never_uses_content_match_when_flag_is_disabled(self):
+        import_id, order_id = self.seed_import_order()
+        self.last_order_id = order_id
+
+        class ForbiddenListClient:
+            def __init__(self):
+                self.create_calls = 0
+                self.limit = 50
+
+            @property
+            def configured(self):
+                return True
+
+            def create_request(self, payload):
+                self.create_calls += 1
+                raise AssertionError("ambiguous event must never POST again")
+
+            def list_requests(self):
+                raise AssertionError("content reconcile is disabled, list lookup is forbidden")
+
+        fake_client = ForbiddenListClient()
+        result, order = self.run_ambiguous_event(fake_client, import_id, content_reconcile="0")
+
+        self.assertEqual(result["ambiguous"], 1)
+        self.assertEqual(order.raw_payload["skladbot_status"], "ambiguous")
+
     def test_rate_limit_lease_finalize_preserves_backoff_and_prevents_immediate_claim(self):
         import_id, _order_id = self.seed_import_order()
 
