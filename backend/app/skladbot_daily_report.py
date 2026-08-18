@@ -83,6 +83,7 @@ REQUEST_PRODUCT_HEADERS = [
     "Smartup ID",
     "Тип",
     "Дата выгрузки",
+    "Тип оплаты",
     "Юрлицо/точка",
     "Торговый представитель",
     "Товар",
@@ -1676,6 +1677,7 @@ def write_request_products_sheet(
             request_smartup_id(request),
             request.get("type") or "",
             request.get("unloading_date") or "",
+            payment_type_from_comment(request.get("comment")),
             request.get("recipient") or "",
             request_representative(request),
         ]
@@ -2068,7 +2070,7 @@ def apply_report_template_widths(workbook: Workbook) -> None:
     widths_by_sheet = {
         "Сводка": {"A": 28, "B": 13, "C": 10},
         "Заявки": {"A": 13, "B": 11, "C": 20, "D": 15, "E": 15, "F": 15, "G": 45, "H": 24, "I": 60, "J": 14, "K": 18, "L": 18, "M": 12, "N": 12, "O": 10},
-        "Товары заявок": {"A": 13, "B": 11, "C": 20, "D": 15, "E": 45, "F": 24, "G": 36, "H": 17, "I": 50, "J": 12, "K": 16},
+        "Товары заявок": {"A": 13, "B": 11, "C": 20, "D": 15, "E": 14, "F": 45, "G": 24, "H": 36, "I": 17, "J": 50, "K": 12, "L": 16},
     }
     for sheet_name, widths in widths_by_sheet.items():
         if sheet_name not in workbook.sheetnames:
