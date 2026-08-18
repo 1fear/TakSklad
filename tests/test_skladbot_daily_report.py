@@ -1651,7 +1651,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual([row["Блоков по коду"] for row in product_rows], [50, 1])
         self.assertEqual([row["Заявка"] for row in product_rows], ["WH-R-910", "WH-R-912"])
         self.assertNotIn("UNMAPPED-DAY-KIZ", {row["Код маркировки"] for row in product_rows})
-        self.assertEqual(workbook["Товары заявок"]["I2"].data_type, "s")
+        self.assertEqual(workbook["Товары заявок"]["J2"].data_type, "s")
 
     def test_daily_kiz_lifecycle_excludes_returned_and_keeps_legacy_scan(self):
         engine = create_engine(
@@ -2506,8 +2506,8 @@ class SkladBotDailyReportTests(unittest.TestCase):
             "Блоков план", "Блоков факт", "КИЗов",
         ])
         self.assertEqual(REQUEST_PRODUCT_HEADERS, [
-            "Заявка", "Smartup ID", "Тип", "Дата выгрузки", "Юрлицо/точка",
-            "Торговый представитель", "Товар", "Штрихкод",
+            "Заявка", "Smartup ID", "Тип", "Дата выгрузки", "Тип оплаты",
+            "Юрлицо/точка", "Торговый представитель", "Товар", "Штрихкод",
             "Код маркировки", "Тип кода", "Блоков по коду",
         ])
         for header in (*REQUEST_HEADERS, *REQUEST_PRODUCT_HEADERS):
@@ -2535,6 +2535,9 @@ class SkladBotDailyReportTests(unittest.TestCase):
         )
         self.assertEqual(product_rows[0]["Штрихкод"], "4006396053978")
         self.assertIsNone(product_rows[3]["Штрихкод"])
+        payment_by_request = {row["Заявка"]: row["Тип оплаты"] for row in product_rows}
+        self.assertEqual(payment_by_request["WH-R-217753"], "Терминал")
+        self.assertEqual(payment_by_request["WH-R-217772"], "Перечисление")
         self.assertEqual(
             {row["Код маркировки"] for row in product_rows if row["Код маркировки"]},
             {row["code"] for row in report["request_kiz_rows"]},
@@ -2565,7 +2568,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
         content, _filename = build_skladbot_daily_report_xlsx(report)
         workbook = openpyxl.load_workbook(BytesIO(content), data_only=False)
 
-        cell = workbook["Товары заявок"]["G2"]
+        cell = workbook["Товары заявок"]["H2"]
         self.assertEqual(cell.value, "=1+1")
         self.assertEqual(cell.data_type, "s")
 
