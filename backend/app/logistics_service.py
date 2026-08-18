@@ -177,10 +177,36 @@ def build_logistics_report_xlsx(db: Session, shipment_date: str, zone: str):
     return report
 
 
+def release_read_transaction(db: Session) -> bool:
+    """Закрывает транзакцию чтения перед долгой сборкой книги.
+
+    Приложение ставит своим соединениям idle_in_transaction_session_timeout,
+    а сборка XLSX это чистый CPU без запросов, поэтому открытая транзакция
+    висит простаивающей и соединение обрывается. 18.08.2026 так упал автоотчёт
+    логистики: файлы ушли в Telegram, а `commit` факта отправки уже не прошёл,
+    и повтор по таймауту отправил город и область второй раз.
+
+    Незакоммиченные изменения вызывающего не трогаем: для такой сессии
+    закрытие пропускается, поведение остаётся прежним.
+    """
+    if db.new or db.dirty or db.deleted:
+        return False
+    previous_expire_on_commit = db.expire_on_commit
+    # Загруженные заказы нужны сборке уже после commit, истечение атрибутов
+    # вернуло бы ленивые запросы построчно
+    db.expire_on_commit = False
+    try:
+        db.commit()
+    finally:
+        db.expire_on_commit = previous_expire_on_commit
+    return True
+
+
 def build_zone_report_xlsx(db: Session, report_date, zone: str, zone_orders):
     delivery_orders = [order for order in zone_orders if is_logistics_delivery_order(order)]
     coordinate_problem_orders = [order for order in zone_orders if not is_logistics_delivery_order(order)]
     delivery_slots = client_point_delivery_slot_map(db, delivery_orders)
+    release_read_transaction(db)
 
     workbook = Workbook()
     sheet = workbook.active

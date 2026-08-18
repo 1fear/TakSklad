@@ -7,7 +7,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from backend.app.logistics_service import build_logistics_report_xlsx, build_logistics_reports
+from backend.app.logistics_service import (
+    build_logistics_report_xlsx,
+    build_logistics_reports,
+    release_read_transaction,
+)
 from backend.app.models import Base, LogisticsRegionPoint, Order, OrderItem
 from backend.app.orders_service import ApiError
 
@@ -267,6 +271,36 @@ class LogisticsReportSplitTests(unittest.TestCase):
         with self.assertRaises(ApiError) as raised:
             build_logistics_report_xlsx(self.db, SHIPMENT_DATE.isoformat(), "moon")
         self.assertEqual(raised.exception.status_code, 422)
+
+    def test_build_leaves_no_open_transaction(self):
+        # Сборка книги это долгий CPU без запросов, открытая транзакция на это
+        # время попадает под idle_in_transaction_session_timeout и рвёт соединение
+        self.add_order("Тест Клиент Город", "41.3200,69.2400")
+        self.add_order("Тест Клиент Область", "41.018778,70.083423")
+        reports = build_logistics_reports(self.db, SHIPMENT_DATE.isoformat())
+
+        self.assertFalse(self.db.in_transaction())
+        city_clients = {row[3] for row in self.sheet_rows(reports["city"][0])}
+        region_clients = {row[3] for row in self.sheet_rows(reports["region"][0])}
+        self.assertEqual(city_clients, {"Тест Клиент Город"})
+        self.assertEqual(region_clients, {"Тест Клиент Область"})
+
+    def test_release_read_transaction_keeps_uncommitted_changes_of_caller(self):
+        self.add_order("Тест Клиент Город", "41.3200,69.2400")
+        pending = Order(
+            payment_type="Наличные",
+            client="Незакоммиченный клиент",
+            address="Тестовый адрес",
+            status="not_completed",
+            order_date=SHIPMENT_DATE,
+            raw_payload={},
+        )
+        self.db.add(pending)
+
+        released = release_read_transaction(self.db)
+
+        self.assertFalse(released)
+        self.assertIn(pending, self.db.new)
 
 
 if __name__ == "__main__":
