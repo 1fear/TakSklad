@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 import openpyxl
 from sqlalchemy import create_engine, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -2755,6 +2756,126 @@ class SmartupAutoImportTests(unittest.TestCase):
         self.assertEqual([item["reason"] for item in first], ["final_cycle_event_missing"] * 2)
         self.assertEqual([item["status"] for item in second], ["logistics_blocked", "logistics_blocked"])
         self.assertEqual(sender.documents, [])
+
+    def test_dead_connection_after_delivery_blocks_retry_instead_of_second_send(self):
+        # 18.08.2026: город и область ушли в чат, commit факта отправки упал на
+        # оборванном соединении, и повтор по таймауту выдал обе книги второй раз
+        sender = FakeTelegramSender()
+        config = self.config(
+            "/tmp",
+            logistics_chat_id="-1001002",
+            alert_chat_id="1001",
+            admin_chat_ids=("1001",),
+            logistics_claim_timeout_minutes=10,
+        )
+        first_at = datetime(2026, 6, 25, 18, 0, tzinfo=timezone.utc)
+        with mock.patch(
+            "backend.app.smartup_auto_import.build_logistics_reports",
+            return_value={
+                "city": (b"xlsx-city", "TakSklad_логистика_город_26.06.2026.xlsx"),
+                "region": (b"xlsx-region", "TakSklad_логистика_область_26.06.2026.xlsx"),
+                "unassigned": [],
+            },
+        ):
+            with self.SessionLocal() as db:
+                with mock.patch(
+                    "backend.app.smartup_auto_import.mark_smartup_logistics_report_completed",
+                    side_effect=OperationalError(
+                        "UPDATE pending_events",
+                        {},
+                        Exception("terminating connection due to idle-in-transaction timeout"),
+                    ),
+                ):
+                    with self.assertRaises(OperationalError):
+                        send_final_logistics_reports(
+                            db,
+                            config,
+                            export_date=date(2026, 6, 25),
+                            extra_delivery_dates=["2026-06-26"],
+                            telegram_sender=sender,
+                            now=first_at,
+                        )
+                db.rollback()
+                after_timeout = send_final_logistics_reports(
+                    db,
+                    config,
+                    export_date=date(2026, 6, 25),
+                    extra_delivery_dates=["2026-06-26"],
+                    telegram_sender=sender,
+                    now=first_at + timedelta(minutes=11),
+                )
+                event = db.execute(
+                    select(PendingEvent).where(PendingEvent.event_type == SMARTUP_LOGISTICS_REPORT_EVENT_TYPE)
+                ).scalar_one()
+
+        self.assertEqual(
+            [document[2] for document in sender.documents],
+            [
+                "TakSklad_логистика_город_26.06.2026.xlsx",
+                "TakSklad_логистика_область_26.06.2026.xlsx",
+            ],
+        )
+        self.assertEqual(after_timeout[0]["reason"], "manual_recovery_required")
+        self.assertTrue(after_timeout[0]["delivery_started"])
+        self.assertEqual(event.status, "blocked")
+        self.assertTrue((event.payload or {}).get("delivery_started"))
+        self.assertEqual([message[0] for message in sender.messages], ["1001"])
+
+    def test_repeated_poll_after_blocked_delivery_does_not_alert_again(self):
+        sender = FakeTelegramSender()
+        config = self.config(
+            "/tmp",
+            logistics_chat_id="-1001002",
+            alert_chat_id="1001",
+            admin_chat_ids=("1001",),
+            logistics_claim_timeout_minutes=10,
+        )
+        first_at = datetime(2026, 6, 25, 18, 0, tzinfo=timezone.utc)
+        with mock.patch(
+            "backend.app.smartup_auto_import.build_logistics_reports",
+            return_value={
+                "city": (b"xlsx-city", "TakSklad_логистика_город_26.06.2026.xlsx"),
+                "region": None,
+                "unassigned": [],
+            },
+        ):
+            with self.SessionLocal() as db:
+                with mock.patch(
+                    "backend.app.smartup_auto_import.mark_smartup_logistics_report_completed",
+                    side_effect=OperationalError("UPDATE pending_events", {}, Exception("connection lost")),
+                ):
+                    with self.assertRaises(OperationalError):
+                        send_final_logistics_reports(
+                            db,
+                            config,
+                            export_date=date(2026, 6, 25),
+                            extra_delivery_dates=["2026-06-26"],
+                            telegram_sender=sender,
+                            now=first_at,
+                        )
+                db.rollback()
+                blocked = send_final_logistics_reports(
+                    db,
+                    config,
+                    export_date=date(2026, 6, 25),
+                    extra_delivery_dates=["2026-06-26"],
+                    telegram_sender=sender,
+                    now=first_at + timedelta(minutes=11),
+                )
+                repeated = send_final_logistics_reports(
+                    db,
+                    config,
+                    export_date=date(2026, 6, 25),
+                    extra_delivery_dates=["2026-06-26"],
+                    telegram_sender=sender,
+                    now=first_at + timedelta(minutes=12),
+                )
+
+        self.assertEqual(blocked[0]["reason"], "manual_recovery_required")
+        self.assertEqual(repeated[0]["reason"], "manual_recovery_required")
+        self.assertNotIn("blocked_now", repeated[0])
+        self.assertEqual(len(sender.documents), 1)
+        self.assertEqual(len(sender.messages), 1)
 
     def test_logistics_build_failure_retries_before_delivery_start(self):
         sender = FakeTelegramSender()

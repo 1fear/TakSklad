@@ -2144,8 +2144,22 @@ def send_final_logistics_reports(
             now=current_time,
         )
         if skipped is not None:
+            if skipped.get("blocked_now"):
+                notify_smartup_automation_error(
+                    db,
+                    config,
+                    export_date=export_date,
+                    slot_label=f"logistics:{normalized_delivery_date}",
+                    exc=SmartupAutoImportError(
+                        "Logistics Telegram delivery started but was never confirmed; automatic retry blocked"
+                    ),
+                    telegram_sender=telegram_sender,
+                )
             results.append(skipped)
             continue
+        # Идентификатор берётся до закрытия транзакции: после commit атрибуты
+        # объекта истекают, и обращение к event.id открыло бы ещё одну транзакцию
+        event_id = event.id
         if parsed_delivery_date and is_logistics_non_working_day(
             db,
             parsed_delivery_date,
@@ -2165,7 +2179,7 @@ def send_final_logistics_reports(
                 entity_id=parsed_delivery_date.isoformat(),
                 payload=sanitize_audit_payload(result),
             ))
-            mark_smartup_logistics_report_completed(db, event.id, result)
+            mark_smartup_logistics_report_completed(db, event_id, result)
             results.append(result)
             continue
         try:
@@ -2180,7 +2194,7 @@ def send_final_logistics_reports(
                 "error": sanitize_automation_error_text(exc, limit=500),
                 "delivery_started": False,
             }
-            mark_smartup_logistics_report_failed(db, config, event.id, result, now=current_time)
+            mark_smartup_logistics_report_failed(db, config, event_id, result, now=current_time)
             notify_smartup_automation_error(
                 db,
                 config,
@@ -2193,6 +2207,10 @@ def send_final_logistics_reports(
             )
         else:
             sent_filenames = []
+            # Отметка ставится до первой отправки и своим commit закрывает
+            # транзакцию: дальше идёт только сеть, и обрыв соединения с базой
+            # уже не сможет выдать доставленный отчёт за неотправленный
+            mark_smartup_logistics_report_delivery_started(db, event_id, now=current_time)
             try:
                 for zone in (LOGISTICS_ZONE_CITY, LOGISTICS_ZONE_REGION):
                     report = reports.get(zone)
@@ -2217,7 +2235,7 @@ def send_final_logistics_reports(
                     "delivery_started": True,
                     "manual_recovery_required": True,
                 }
-                mark_smartup_logistics_report_ambiguous(db, event.id, result)
+                mark_smartup_logistics_report_ambiguous(db, event_id, result)
                 notify_smartup_automation_error(
                     db,
                     config,
@@ -2247,7 +2265,7 @@ def send_final_logistics_reports(
                     "unassigned_orders": len(reports.get(ZONE_UNASSIGNED) or []),
                     "region_directory_empty": region_directory_empty,
                 }
-                mark_smartup_logistics_report_completed(db, event.id, result)
+                mark_smartup_logistics_report_completed(db, event_id, result)
         results.append(result)
         db.add(AuditLog(
             action="smartup_auto_import_logistics_report",
@@ -2293,6 +2311,31 @@ def claim_smartup_logistics_report(
                 "route_fingerprint": route_fingerprint,
                 "delivery_date": delivery_date,
                 "event_id": str(existing.id),
+            }
+        if retry_reason == "stale_after_delivery":
+            # Отправка началась, а подтверждения нет: повтор выдал бы город и
+            # область второй раз, поэтому дальше только ручной разбор
+            result = {
+                "status": "ambiguous",
+                "provenance": "auto_smartup",
+                "route_role": "logistics",
+                "route_fingerprint": route_fingerprint,
+                "delivery_date": delivery_date,
+                "error": "delivery started without confirmation",
+                "delivery_started": True,
+                "manual_recovery_required": True,
+            }
+            mark_smartup_logistics_report_ambiguous(db, existing.id, result)
+            return None, {
+                "status": "skipped",
+                "reason": "manual_recovery_required",
+                "provenance": "auto_smartup",
+                "route_role": "logistics",
+                "route_fingerprint": route_fingerprint,
+                "delivery_date": delivery_date,
+                "event_id": str(existing.id),
+                "delivery_started": True,
+                "blocked_now": True,
             }
         if retry_reason in {"retry_backoff", "retry_exhausted"}:
             return None, {
@@ -2440,6 +2483,24 @@ def mark_smartup_logistics_report_failed(
     db.commit()
 
 
+def mark_smartup_logistics_report_delivery_started(
+    db: Session,
+    event_id: uuid.UUID,
+    *,
+    now: datetime,
+) -> None:
+    event = db.get(PendingEvent, event_id)
+    if event is None:
+        return
+    event.payload = {
+        **(event.payload or {}),
+        "delivery_started": True,
+        "delivery_started_at": now.isoformat(),
+    }
+    db.add(event)
+    db.commit()
+
+
 def mark_smartup_logistics_report_ambiguous(
     db: Session,
     event_id: uuid.UUID,
@@ -2503,6 +2564,8 @@ def smartup_logistics_retry_reason(
         if smartup_datetime_utc(now) - smartup_datetime_utc(last_seen_at) >= timedelta(
             minutes=config.logistics_claim_timeout_minutes
         ):
+            if payload.get("delivery_started"):
+                return "stale_after_delivery"
             return "stale_processing"
         return ""
     if event.status == "failed":
