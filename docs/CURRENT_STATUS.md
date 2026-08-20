@@ -8,6 +8,36 @@ PostgreSQL читался только на `alembic current`, поэтому р
 Статус: `LIVE_IN_SYNC_WITH_MAIN; ACTIONS_NOT_USED;
 DESKTOP_RETIREMENT_BLOCKED; OPERATOR_PHYSICAL_NOT_RUN; SHIPMENT_NOT_RECHECKED`
 
+## Дельта после сверки, 2026-08-20
+
+Живая проверка одним вызовом: `GET /version` отдаёт `commit_sha 573714d…`,
+`2.0.51`, `server-573714d…` Это не `0f26ec5`: 2026-08-18 на сервер вручную
+выкачена ветка `fix/logistics-report-duplicate-send` (`main` после #142 плюс
+фикс дубля отчёта логистики) Два утверждения сверки 2026-08-17 этим устарели:
+«Открытых PR нет» и «production работает на голове `main`»
+
+Что произошло после сверки:
+
+- 2026-08-18 в чат логистики дважды ушла одна пара файлов Причина разобрана в
+  [PR #143](https://github.com/1fear/TakSklad/pull/143): обрыв соединения
+  `idle-in-transaction` во время сборки XLSX и повторная отправка
+  stale-повтором Фикс выкачен на прод в тот же день, но жил только в ветке
+- 2026-08-20 PR #143 смержен в `main` сквошем (`28e96f7`) Доказательства:
+  полный прогон 1870 тестов и контрактные тесты в PR, плюс контрольный локальный
+  прогон `tests.test_logistics_report_split` и `tests.test_smartup_auto_import`,
+  108 тестов OK Содержимое прода и `main` сошлось
+- Ветка `fix/logistics-report-duplicate-send` (`573714d`) намеренно не удалена:
+  до перевыката на ней живёт прод-ревизия, которая обязана оставаться на GitHub
+- 2026-08-20 доставлены docs: `AGENTS.md` сведён с реальным порядком доставки
+  (#144), разбор заказа `WH-R-206034` из worktree `kiz-lifecycle-r2` (#145),
+  локальный `CLAUDE.md` добавлен в `.gitignore` (#146)
+- Локальные ветки и worktree смерженных PR удалены Живыми остались
+  `fix/logistics-report-duplicate-send` с worktree `/private/tmp/logistics-dup`
+  и архивный WIP `codex/mega-20260809` (не проверен, вытеснен #117)
+
+Открытых PR снова нет Следующий выкат из `main` меняет только docs и
+`.gitignore`, runtime-содержимое уже работает на проде, миграций новых нет
+
 ## Короткий вывод
 
 Production работает на голове `main`: `GET /version` отдаёт
