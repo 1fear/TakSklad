@@ -56,9 +56,9 @@
 | `project-overview.md` | `UPDATE`: обзор продукта, useful background, не source of truth по текущей архитектуре. |
 | `project-architecture.md` | `UPDATE`/`HISTORY`: architecture reference, сверять со stack overview и кодом. |
 | `project-knowledge-base.md` | `HISTORY`: knowledge base desktop/Google Sheets периода. |
-| `taksklad-full-functionality.md` | `UPDATE`: полный функционал версии `1.1.17` от 26.05.2026; текущую DB-first архитектуру брать из stack overview. |
+| `taksklad-full-functionality.md` | `ACTIVE`: полное описание работающего функционала, сверено с кодом 21.08.2026; каждое утверждение с якорем на файл. |
 | `warehouse-ecosystem-roadmap.md` | `HISTORY`/`REFERENCE`: strategic roadmap; часть реализована или перекрыта WMS Core. |
-| `roadmap.md` | `HISTORY`: старый roadmap высокого уровня; не использовать как текущий статус без сверки. |
+| `roadmap.md` | `ACTIVE`: рабочий ориентир на 21.08.2026, направления плюс бэклог аудита; порядок внутри разделов это предложение, не решение. |
 | `product-mvp-2.0-plan.md` | `HISTORY`: исторический план релиза 2.0. |
 
 ## Принятые Решения По Импорту И Релизу
