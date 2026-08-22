@@ -1,0 +1,14 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "frontend",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-lc",
+        "VITE_TAKSKLAD_DEV_API_URL=${VITE_TAKSKLAD_DEV_API_URL:-https://api.taksklad.uz} npm --prefix frontend run dev"
+      ],
+      "port": 5173
+    }
+  ]
+}
