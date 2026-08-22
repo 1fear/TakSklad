@@ -8,6 +8,66 @@ PostgreSQL читался только на `alembic current`, поэтому р
 Статус: `LIVE_IN_SYNC_WITH_MAIN; ACTIONS_NOT_USED;
 DESKTOP_RETIREMENT_BLOCKED; OPERATOR_PHYSICAL_NOT_RUN; SHIPMENT_NOT_RECHECKED`
 
+## Дельта 2026-08-22, сведение контуров на голову `main`
+
+Вечером того же дня backend пересобран из `main` (`0aff8fd`), после чего обе
+части прода стоят на одной ревизии Проверка одной строкой сходится:
+`GET /version` отдаёт `0aff8fd062fcc78ac30f496ba21d5451a090f5ac`, ровно
+`git rev-parse origin/main`
+
+Поведение не менялось, и это доказано на уровне артефакта, а не догадкой:
+`/app/app` внутри нового образа побайтово равен и прежнему образу, и `main`
+(87 файлов, ноль расхождений) Между прод-ревизией `573714d` и головой `main`
+11 коммитов, но деревья `backend/` и `deploy/` у них идентичны, все правки
+были в docs и во фронтенде Схема осталась на `20260817_0022`, политика
+`no_change`, восстановление лизов вернуло `recovered=0`
+
+Порядок повторял cutover из `deploy/vds/deploy_from_git.sh`: остановка четырёх
+писателей с `-t 45`, бэкап `taksklad-postgres-20260822T121700Z` (54.8 МБ,
+190 записей), `alembic upgrade head`, `python -m app.event_lease_recovery`,
+затем `compose up -d --no-deps --no-build --wait` Окно записи заняло около
+трёх с половиной минут, включая разбор одной ошибки, описанной ниже
+
+| Идентичность | До | После |
+|---|---|---|
+| `commit_sha` | `573714dab7af…` | `0aff8fd062fc…` |
+| `server_release_id` | `server-573714dab7af…` | `server-0aff8fd062fc…` |
+| Образ backend | `taksklad-backend:local-573714d` | `taksklad-backend:local-0aff8fd` |
+| `image_digest` | `sha256:cc776df5…` | `sha256:2c6458bc…` |
+| Схема БД | `20260817_0022` | без изменений |
+
+Паспорт: `/opt/stacks/taksklad/deployments/manual-0aff8fd.json`
+Откат: вернуть четыре ключа из `.env.bak.20260822T121650Z-pre-0aff8fd`
+и повторить `compose up -d`, прежний образ на сервере не удалён
+
+### Грабли: короткий sha роняет healthcheck
+
+Первая попытка записала `TAKSKLAD_COMMIT_SHA=0aff8fd` в короткой форме
+Приложение такую форму не принимает и отдаёт в `/health` и `/version`
+`commit_sha: "unknown"` и `server_release_id: "unknown"`, при этом
+healthcheck контейнера сверяет ответ ровно с этой переменной и валится
+Итог обманчивый: `backend-api` числится `unhealthy`, хотя реально
+обслуживает запросы и отвечает `200` и на `/health`, и на `/api/v1/imports`
+Лечится записью полных 40 символов, и в `TAKSKLAD_SERVER_RELEASE_ID` тоже
+Тег образа при этом остаётся коротким, как в прежней традиции `local-573714d`
+
+### Исходник бэкенда на сервере был устаревшим
+
+Отдельная находка, вскрылась при сверке перед сборкой: дерево
+`/opt/stacks/taksklad/app/backend` содержало 65 файлов против 122 в `main`,
+и общие файлы (например `app/admin_service.py`) отличались содержимым
+То есть сборка бэкенда из серверного дерева дала бы **не тот код**, который
+работает Работающий образ при этом был корректен: его `/app/app` совпадал
+с `main` побайтово, расхождение жило только в исходниках на диске
+
+Поэтому образ собирался не из `app/backend`, а из отдельного каталога с
+доставленным архивом `main`, и уже после успешного выката дерево
+`app/backend` синхронизировано с `main` (122 файла, ноль расхождений)
+Копия прежнего дерева: `backend-src-before-0aff8fd-20260822T121502Z.tar.gz`
+
+Вывод на будущее: перед любой серверной сборкой сверять дерево с ревизией,
+из которой собираем, а не доверять тому, что лежит в `app/`
+
 ## Дельта 2026-08-22, выкат фронтенда
 
 2026-08-22 на прод вручную выкачен новый внешний вид web-панели
@@ -60,9 +120,8 @@ DESKTOP_RETIREMENT_BLOCKED; OPERATOR_PHYSICAL_NOT_RUN; SHIPMENT_NOT_RECHECKED`
 и повторить `docker compose up -d --no-deps frontend` Прежний образ на сервере
 не удалён Паспорт: `/opt/stacks/taksklad/deployments/manual-frontend-c5fab76.json`
 
-Теперь прод собран из двух ревизий: backend на `573714d`, frontend на `c5fab76`
-Это ожидаемо, потому что выкат был только фронтендовый, но при следующей сборке
-backend обе части надо свести на одну голову `main`
+Прод после этого шага был собран из двух ревизий: backend на `573714d`,
+frontend на `c5fab76` Расхождение сведено в тот же день, см. следующий раздел
 
 Worktree `/private/tmp/panel-redesign` снят, ветка `feature/panel-ui-redesign`
 удалена локально и на `origin` после мержа
@@ -101,6 +160,11 @@ Worktree `/private/tmp/panel-redesign` снят, ветка `feature/panel-ui-re
 `.gitignore`, runtime-содержимое уже работает на проде, миграций новых нет
 
 ## Короткий вывод
+
+Раздел писался 2026-08-17 и с тех пор голова успела смениться дважды
+Актуальная ревизия прода на 2026-08-22 это `0aff8fd`, backend и frontend на ней
+оба, см. «Дельта 2026-08-22, сведение контуров на голову `main`»
+Ниже сохранено состояние на день сверки
 
 Production работает на голове `main`: `GET /version` отдаёт
 `commit_sha = 0f26ec550e28cd1bfb055ca8e448220433192275`, это ровно
@@ -147,19 +211,19 @@ Postgres, а два теряли работу оператора беззвуч�
 
 ## Идентичность контуров
 
-Эти идентификаторы нельзя смешивать Все значения проверены 2026-08-17,
-строка про фронтенд добавлена 2026-08-22 по факту выката
+Эти идентификаторы нельзя смешивать Значения в таблице сняты 2026-08-22
+после сведения контуров, прежние значения от 2026-08-17 сохранены в дельтах
 
 | Контур | Идентичность | Источник |
 |---|---|---|
-| Head `origin/main` | `0f26ec550e28cd1bfb055ca8e448220433192275` | `git rev-parse origin/main` |
+| Head `origin/main` | `0aff8fd062fcc78ac30f496ba21d5451a090f5ac` | `git rev-parse origin/main` |
+| Live backend | `2.0.51`, commit `0aff8fd06…`, image `sha256:2c6458bc…` | `GET /version` |
+| `server_release_id` | `server-0aff8fd062fc…` | `GET /version` |
+| Образ backend | `taksklad-backend:local-0aff8fd`, собран на сервере из `main` | `docker ps` |
 | Live frontend | `taksklad-frontend:local-c5fab76`, бандл `index-GKMeM-Mm.js` | `docker ps`, HTML боевого хоста |
-| Live backend | `2.0.51`, commit `0f26ec55…`, image `sha256:47a837d1…` | `GET /version` |
-| `server_release_id` | `server-0f26ec55…` | `GET /version` |
-| Образ контейнеров | `taksklad-backend:local-0f26ec5`, собран на сервере из `main` | `docker ps` |
 | Схема БД | `20260817_0022 (head)` | `docker exec vds-backend-api-1 alembic current` |
 | Последний выпуск через Actions | `c66d9f3`, `Deploy Server Production` run `31691753261` 2026-08-13 | `gh run list` |
-| Паспорта ручных выкатов | `manual-6d74a58.json`, `manual-0f26ec5.json`, `manual-frontend-c5fab76.json` в `/opt/stacks/taksklad/deployments/` | сервер |
+| Паспорта ручных выкатов | `manual-6d74a58.json`, `manual-0f26ec5.json`, `manual-frontend-c5fab76.json`, `manual-0aff8fd.json` в `/opt/stacks/taksklad/deployments/` | сервер |
 | Backend в коде | `APP_VERSION = 2.0.51` | `backend/app/settings.py:19` |
 | Desktop в коде | `APP_VERSION = 2.0.54` | `src/taksklad/config.py:128` |
 | Канал обновления десктопа | `2.0.54`, `min_supported_version 2.0.54`, `mandatory=true` | `raw.githubusercontent.com/1fear/TakSklad/main/version.json` |
