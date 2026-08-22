@@ -8,6 +8,65 @@ PostgreSQL читался только на `alembic current`, поэтому р
 Статус: `LIVE_IN_SYNC_WITH_MAIN; ACTIONS_NOT_USED;
 DESKTOP_RETIREMENT_BLOCKED; OPERATOR_PHYSICAL_NOT_RUN; SHIPMENT_NOT_RECHECKED`
 
+## Дельта 2026-08-22, выкат фронтенда
+
+2026-08-22 на прод вручную выкачен новый внешний вид web-панели
+([PR #151](https://github.com/1fear/TakSklad/pull/151), `c5fab76`)
+Этим устаревает утверждение из раздела про выкат `6d74a58`: «Frontend не
+трогался» верно только для того выката, теперь фронтенд пересобран
+
+Что сделано:
+
+- Работа лежала незакоммиченной в worktree `/private/tmp/panel-redesign`
+  (риск R13 аудита 2026-08-21) Внешний вид принят визуально на локальном
+  dev-сервере, после чего ветка доведена до `main` сквошем
+- Меняется только внешний вид: единая система CSS-токенов, палитра pine,
+  шрифты IBM Plex через `@fontsource`, `theme-color` в `index.html`
+  Состав экранов, тексты, роуты и поведение не тронуты, backend не затронут
+- Попутно в `AdminWorkspace.tsx` строка таблицы вынесена в memo-компонент
+  `AdminOrderRow`, выделение строк переведено с массива на `Set`
+
+Как выкачено, без Actions:
+
+1. Архив `frontend` на ревизии `c5fab76` доставлен в
+   `/opt/stacks/taksklad/private/`, распакован в отдельный каталог сборки,
+   живое дерево при сборке не задевалось
+2. `docker build` дал `taksklad-frontend:local-c5fab76`
+   (manifest `sha256:964223bc…`) Содержимое образа проверено до переключения:
+   `index-GKMeM-Mm.js` и `theme-color` на месте
+3. В `deploy/vds/.env` переставлен только `TAKSKLAD_FRONTEND_IMAGE`
+   Копия до правки: `.env.bak.20260822T115846Z-pre-c5fab76`
+4. `docker compose up -d --no-deps --no-build --wait frontend` после
+   `--dry-run`, который показал пересоздание одного контейнера
+5. Исходники `app/frontend` на сервере синхронизированы с выкаченным кодом,
+   чтобы будущая сборка из compose давала то же самое
+
+Доказательства выката:
+
+| Проверка | До | После |
+|---|---|---|
+| Бандл на `chapman.taksklad.uz` | `index-Dko9W9vH.js` | `index-GKMeM-Mm.js` |
+| `theme-color` в HTML | нет | `#191f1a` |
+| Образ фронтенда | `ghcr.io/1fear/taksklad-frontend@sha256:7e9c445a…` | `taksklad-frontend:local-c5fab76` |
+| `vds-frontend-1` | Up 3 days | `healthy`, 0 ошибок в логах за 5 минут |
+| `GET /version` | `573714d…`, digest `sha256:cc776df5…` | без изменений |
+
+Бэкенд, воркеры и postgres не пересоздавались, схема не двигалась, миграций
+не было Локальные прогоны перед мержем: `eslint --max-warnings 0` чисто,
+`vitest run` 272 из 272, `test:a11y` 7 из 7, сборка проходит
+
+Откат: вернуть в `deploy/vds/.env` прежний
+`TAKSKLAD_FRONTEND_IMAGE=ghcr.io/1fear/taksklad-frontend@sha256:7e9c445a9a866fa3549843fd182ba354a611129d738f55d96eac7ac67f8383f7`
+и повторить `docker compose up -d --no-deps frontend` Прежний образ на сервере
+не удалён Паспорт: `/opt/stacks/taksklad/deployments/manual-frontend-c5fab76.json`
+
+Теперь прод собран из двух ревизий: backend на `573714d`, frontend на `c5fab76`
+Это ожидаемо, потому что выкат был только фронтендовый, но при следующей сборке
+backend обе части надо свести на одну голову `main`
+
+Worktree `/private/tmp/panel-redesign` снят, ветка `feature/panel-ui-redesign`
+удалена локально и на `origin` после мержа
+
 ## Дельта после сверки, 2026-08-20
 
 Живая проверка одним вызовом: `GET /version` отдаёт `commit_sha 573714d…`,
@@ -34,6 +93,9 @@ DESKTOP_RETIREMENT_BLOCKED; OPERATOR_PHYSICAL_NOT_RUN; SHIPMENT_NOT_RECHECKED`
 - Локальные ветки и worktree смерженных PR удалены Живыми остались
   `fix/logistics-report-duplicate-send` с worktree `/private/tmp/logistics-dup`
   и архивный WIP `codex/mega-20260809` (не проверен, вытеснен #117)
+  Этот перечень был неполон: третьим жил `/private/tmp/panel-redesign` с
+  незакоммиченной переделкой панели, его нашёл аудит 2026-08-21 (риск R13),
+  работа доведена до прода 2026-08-22 и дерево снято
 
 Открытых PR снова нет Следующий выкат из `main` меняет только docs и
 `.gitignore`, runtime-содержимое уже работает на проде, миграций новых нет
@@ -85,17 +147,19 @@ Postgres, а два теряли работу оператора беззвуч�
 
 ## Идентичность контуров
 
-Эти идентификаторы нельзя смешивать Все значения проверены 2026-08-17
+Эти идентификаторы нельзя смешивать Все значения проверены 2026-08-17,
+строка про фронтенд добавлена 2026-08-22 по факту выката
 
 | Контур | Идентичность | Источник |
 |---|---|---|
 | Head `origin/main` | `0f26ec550e28cd1bfb055ca8e448220433192275` | `git rev-parse origin/main` |
+| Live frontend | `taksklad-frontend:local-c5fab76`, бандл `index-GKMeM-Mm.js` | `docker ps`, HTML боевого хоста |
 | Live backend | `2.0.51`, commit `0f26ec55…`, image `sha256:47a837d1…` | `GET /version` |
 | `server_release_id` | `server-0f26ec55…` | `GET /version` |
 | Образ контейнеров | `taksklad-backend:local-0f26ec5`, собран на сервере из `main` | `docker ps` |
 | Схема БД | `20260817_0022 (head)` | `docker exec vds-backend-api-1 alembic current` |
 | Последний выпуск через Actions | `c66d9f3`, `Deploy Server Production` run `31691753261` 2026-08-13 | `gh run list` |
-| Паспорта ручных выкатов | `manual-6d74a58.json`, `manual-0f26ec5.json` в `/opt/stacks/taksklad/deployments/` | сервер |
+| Паспорта ручных выкатов | `manual-6d74a58.json`, `manual-0f26ec5.json`, `manual-frontend-c5fab76.json` в `/opt/stacks/taksklad/deployments/` | сервер |
 | Backend в коде | `APP_VERSION = 2.0.51` | `backend/app/settings.py:19` |
 | Desktop в коде | `APP_VERSION = 2.0.54` | `src/taksklad/config.py:128` |
 | Канал обновления десктопа | `2.0.54`, `min_supported_version 2.0.54`, `mandatory=true` | `raw.githubusercontent.com/1fear/TakSklad/main/version.json` |
@@ -261,6 +325,8 @@ immutable release и `Deploy Server Production`
 Паспорт: `/opt/stacks/taksklad/deployments/manual-6d74a58.json`
 
 Frontend не трогался, остался на `ghcr.io/1fear/taksklad-frontend@sha256:7e9c445a…`
+Это верно для выката `6d74a58`, но с 2026-08-22 уже не описывает прод: фронтенд
+пересобран, см. «Дельта 2026-08-22, выкат фронтенда»
 
 После выката `.env` в `deploy/vds` приведён к выкаченному релизу: четыре ключа
 `TAKSKLAD_BACKEND_IMAGE`, `TAKSKLAD_COMMIT_SHA`, `TAKSKLAD_IMAGE_DIGEST`,
