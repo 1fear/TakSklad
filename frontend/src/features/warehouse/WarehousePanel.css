@@ -3,10 +3,10 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  border: 1px solid #dce5d9;
-  border-radius: 12px;
+  border: 1px solid #cfe8d6;
+  border-radius: var(--radius);
   padding: 14px 16px;
-  background: #f2f7ef;
+  background: var(--green-soft);
 }
 
 .warehouse-queue {
@@ -14,15 +14,15 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  border: 1px solid #e6dcc4;
-  border-radius: 12px;
+  border: 1px solid var(--amber-border);
+  border-radius: var(--radius);
   padding: 14px 16px;
-  background: #fbf6e9;
+  background: var(--amber-tint);
 }
 
 .warehouse-queue-hint {
   margin: 8px 0 0;
-  color: #8a6d1f;
+  color: var(--amber-700);
   font-size: 13px;
 }
 
@@ -41,7 +41,7 @@
 .warehouse-progress span,
 .warehouse-item-progress span,
 .warehouse-recent-head span {
-  color: #656b63;
+  color: var(--ink-muted);
   font-size: 13px;
 }
 
@@ -59,6 +59,7 @@
 
 .warehouse-scanner-input {
   min-height: 64px;
+  font-family: var(--font-mono);
   font-size: 21px;
   letter-spacing: 0.02em;
 }
@@ -72,23 +73,23 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  border-radius: 9px;
+  border-radius: var(--radius-sm);
   padding: 10px 12px;
   font-size: 14px;
 }
 
 .warehouse-check.ok {
-  background: #e8f3ea;
-  color: #1d6b3a;
+  background: var(--green-soft);
+  color: var(--green-700);
 }
 
 .warehouse-check.error {
-  background: #f8e7e4;
-  color: #8a2f22;
+  background: var(--red-soft);
+  color: var(--red-700);
 }
 
 .warehouse-recent-scans {
-  border-top: 1px solid #e3e8e1;
+  border-top: 1px solid var(--border-soft);
   padding-top: 12px;
 }
 
@@ -105,11 +106,12 @@
   grid-template-columns: minmax(0, 1.4fr) auto auto;
   gap: 10px;
   align-items: center;
-  border-radius: 9px;
+  border-radius: var(--radius-sm);
   padding: 9px 11px;
-  background: #f4f6f2;
-  font-size: 13px;
-  color: #2f352f;
+  background: var(--surface-soft);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--ink-500);
 }
 
 .warehouse-print-backdrop {
@@ -119,7 +121,7 @@
   display: grid;
   place-items: center;
   padding: 20px;
-  background: rgba(20, 26, 20, 0.5);
+  background: rgba(17, 24, 20, 0.55);
 }
 
 .warehouse-print-modal {
@@ -127,9 +129,9 @@
   width: min(880px, 100%);
   max-height: calc(100vh - 40px);
   overflow: auto;
-  border-radius: 16px;
-  background: #ffffff;
-  box-shadow: 0 28px 80px rgba(18, 24, 18, 0.24);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-modal);
 }
 
 .warehouse-print-close {
@@ -141,10 +143,15 @@
   justify-content: center;
   width: 36px;
   height: 36px;
-  border: 1px solid #d6ddd3;
+  border: 1px solid var(--border);
   border-radius: 999px;
-  background: #ffffff;
-  color: #233023;
+  background: var(--surface);
+  color: var(--ink-500);
+}
+
+.warehouse-print-close:hover {
+  background: var(--pine-tint);
+  color: var(--pine-800);
 }
 
 .warehouse-print-sheet {
@@ -165,9 +172,15 @@
   margin: 0;
 }
 
+.warehouse-print-head h2 {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
 .warehouse-print-head p,
 .warehouse-print-timestamp {
-  color: #5f685e;
+  color: var(--ink-muted);
   font-size: 14px;
 }
 
@@ -184,16 +197,16 @@
 }
 
 .warehouse-print-meta dt {
-  color: #5f685e;
-  font-size: 12px;
-  font-weight: 700;
+  color: var(--ink-faint);
+  font-size: 11px;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.07em;
 }
 
 .warehouse-print-meta dd {
   margin: 0;
-  color: #223022;
+  color: var(--ink-700);
 }
 
 .warehouse-print-table {
@@ -204,15 +217,16 @@
 .warehouse-print-table th,
 .warehouse-print-table td {
   padding: 10px 12px;
-  border-bottom: 1px solid #e2e7e1;
+  border-bottom: 1px solid var(--hairline);
   text-align: left;
 }
 
 .warehouse-print-table th {
-  font-size: 12px;
-  color: #5f685e;
+  font-size: 11px;
+  color: var(--ink-faint);
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.07em;
 }
 
 .warehouse-print-actions {

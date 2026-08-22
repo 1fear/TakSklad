@@ -27,7 +27,7 @@ import {
   Undo2,
 } from "lucide-react";
 import type { KeyboardEvent, ReactNode } from "react";
-import { Fragment, lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AdminIncident,
   AdminActivity,
@@ -209,15 +209,16 @@ function AdminWorkspace({
 
   const rows = useMemo(() => adminTable?.rows ?? [], [adminTable?.rows]);
   const filteredRows = rows;
+  const selectedOrderIdSet = useMemo(() => new Set(selectedOrderIds), [selectedOrderIds]);
   const selectedRows = useMemo(
-    () => rows.filter((row) => selectedOrderIds.includes(row.order_id)),
-    [rows, selectedOrderIds],
+    () => rows.filter((row) => selectedOrderIdSet.has(row.order_id)),
+    [rows, selectedOrderIdSet],
   );
   const visibleOrderIds = useMemo(
     () => Array.from(new Set(filteredRows.map((row) => row.order_id))),
     [filteredRows],
   );
-  const allVisibleSelected = visibleOrderIds.length > 0 && visibleOrderIds.every((id) => selectedOrderIds.includes(id));
+  const allVisibleSelected = visibleOrderIds.length > 0 && visibleOrderIds.every((id) => selectedOrderIdSet.has(id));
   const selectedOrder = useMemo(
     () => selectedOrderIds.length === 1 ? rows.find((row) => row.order_id === selectedOrderIds[0]) : undefined,
     [rows, selectedOrderIds],
@@ -735,16 +736,16 @@ function AdminWorkspace({
     onLogout(config);
   }
 
-  function toggleOrderSelection(orderId: string) {
+  const toggleOrderSelection = useCallback((orderId: string) => {
     if (!canAdminWrite) return;
     setSelectedOrderIds((current) => (
       current.includes(orderId)
         ? current.filter((value) => value !== orderId)
         : [...current, orderId]
     ));
-  }
+  }, [canAdminWrite]);
 
-  function toggleVisibleOrderSelection() {
+  const toggleVisibleOrderSelection = useCallback(() => {
     if (!canAdminWrite) return;
     setSelectedOrderIds((current) => {
       const visible = new Set(visibleOrderIds);
@@ -754,7 +755,7 @@ function AdminWorkspace({
       }
       return Array.from(new Set([...current, ...visibleOrderIds]));
     });
-  }
+  }, [canAdminWrite, visibleOrderIds]);
 
   async function syncExternalSources() {
     setBusyAction("sync-sources");
@@ -1308,7 +1309,7 @@ function AdminWorkspace({
 
             <AdminRowsTable
               rows={filteredRows}
-              selectedOrderIds={selectedOrderIds}
+              selectedOrderIds={selectedOrderIdSet}
               allVisibleSelected={allVisibleSelected}
               canSelect={canAdminWrite}
               onToggleVisible={toggleVisibleOrderSelection}
@@ -1869,7 +1870,77 @@ function LogisticsCalendarPanel({
   );
 }
 
-function AdminRowsTable({
+const AdminOrderRow = memo(function AdminOrderRow({
+  row,
+  selected,
+  canSelect,
+  onToggleOrder,
+}: {
+  row: AdminTableRow;
+  selected: boolean;
+  canSelect: boolean;
+  onToggleOrder: (orderId: string) => void;
+}) {
+  const hasReturn = Boolean(row.skladbot_return_request_id || row.skladbot_return_request_number || row.return_status || row.returned_at || row.return_reference);
+  return (
+    <tr className={selected ? "selected-row" : ""}>
+      <td className="selection-cell">
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={() => onToggleOrder(row.order_id)}
+          disabled={!canSelect}
+          aria-label={`Выбрать заказ ${row.client}`}
+          aria-describedby={`order-row-${row.item_id}-description`}
+        />
+      </td>
+      <td className="date-cell">
+        <strong className="cell-title">{formatDate(row.order_date)}</strong>
+        <span className="table-muted">{row.payment_type}</span>
+      </td>
+      <td className="client-cell">
+        <strong className="cell-title" title={row.client}>{row.client}</strong>
+        <span className="table-muted cell-sub" title={row.address}>{row.address}</span>
+        {row.representative && <span className="table-muted cell-sub" title={row.representative}>{row.representative}</span>}
+      </td>
+      <td className="product-cell">
+        <strong id={`order-row-${row.item_id}-description`} className="cell-title" title={row.product}>{row.product}</strong>
+        <span className="table-muted cell-sub" title={row.source_file || "-"}>{row.source_file || "-"}</span>
+      </td>
+      <td className="blocks-cell">
+        <strong>{row.scanned_blocks}/{row.quantity_blocks}</strong>
+        <span className="table-muted">осталось {row.remaining_blocks}</span>
+        <div className="progress-track">
+          <i style={{ width: `${progressPercent(row)}%` }} />
+        </div>
+      </td>
+      <td>
+        <span className={`status-badge ${row.status_bucket}`}>{statusBucketLabel(row.status_bucket)}</span>
+        <span className={`activity-badge ${scanState(row)}`}>{scanStateLabel(scanState(row))}</span>
+      </td>
+      <td>
+        <OrderCorrelationDetails
+          smartupId={row.smartup_id}
+          skladbotRequestNumber={row.skladbot_request_number}
+          skladbotRequestId={row.skladbot_request_id}
+          returnRequestNumber={row.skladbot_return_request_number}
+          returnRequestId={row.skladbot_return_request_id}
+          showReturn={hasReturn}
+        />
+        <span className="table-muted cell-sub">{skladbotStatusLabel(row)}</span>
+        {hasReturn && (
+          <span className="table-muted cell-sub">
+            Возврат: {row.skladbot_return_request_number || "не создан"} ·{" "}
+            {returnSkladBotStatusLabel(row.skladbot_return_status)}
+          </span>
+        )}
+      </td>
+      <td className="numeric-cell">{formatMoney(row.line_total)}</td>
+    </tr>
+  );
+});
+
+const AdminRowsTable = memo(function AdminRowsTable({
   rows,
   selectedOrderIds,
   allVisibleSelected,
@@ -1878,7 +1949,7 @@ function AdminRowsTable({
   onToggleOrder,
 }: {
   rows: AdminTableRow[];
-  selectedOrderIds: string[];
+  selectedOrderIds: ReadonlySet<string>;
   allVisibleSelected: boolean;
   canSelect: boolean;
   onToggleVisible: () => void;
@@ -1918,65 +1989,15 @@ function AdminRowsTable({
           </tr>
         </thead>
         <tbody>
-          {rows.map((row) => {
-            const selected = selectedOrderIds.includes(row.order_id);
-            return (
-              <tr key={row.item_id} className={selected ? "selected-row" : ""}>
-                <td className="selection-cell">
-                  <input
-                    type="checkbox"
-                    checked={selected}
-                    onChange={() => onToggleOrder(row.order_id)}
-                    disabled={!canSelect}
-                    aria-label={`Выбрать заказ ${row.client}`}
-                    aria-describedby={`order-row-${row.item_id}-description`}
-                  />
-                </td>
-                <td className="date-cell">
-                  <strong className="cell-title">{formatDate(row.order_date)}</strong>
-                  <span className="table-muted">{row.payment_type}</span>
-                </td>
-                <td className="client-cell">
-                  <strong className="cell-title" title={row.client}>{row.client}</strong>
-                  <span className="table-muted cell-sub" title={row.address}>{row.address}</span>
-                  {row.representative && <span className="table-muted cell-sub" title={row.representative}>{row.representative}</span>}
-                </td>
-                <td className="product-cell">
-                  <strong id={`order-row-${row.item_id}-description`} className="cell-title" title={row.product}>{row.product}</strong>
-                  <span className="table-muted cell-sub" title={row.source_file || "-"}>{row.source_file || "-"}</span>
-                </td>
-                <td className="blocks-cell">
-                  <strong>{row.scanned_blocks}/{row.quantity_blocks}</strong>
-                  <span className="table-muted">осталось {row.remaining_blocks}</span>
-                  <div className="progress-track">
-                    <i style={{ width: `${progressPercent(row)}%` }} />
-                  </div>
-                </td>
-                <td>
-                  <span className={`status-badge ${row.status_bucket}`}>{statusBucketLabel(row.status_bucket)}</span>
-                  <span className={`activity-badge ${scanState(row)}`}>{scanStateLabel(scanState(row))}</span>
-                </td>
-                <td>
-                  <OrderCorrelationDetails
-                    smartupId={row.smartup_id}
-                    skladbotRequestNumber={row.skladbot_request_number}
-                    skladbotRequestId={row.skladbot_request_id}
-                    returnRequestNumber={row.skladbot_return_request_number}
-                    returnRequestId={row.skladbot_return_request_id}
-                    showReturn={Boolean(row.skladbot_return_request_id || row.skladbot_return_request_number || row.return_status || row.returned_at || row.return_reference)}
-                  />
-                  <span className="table-muted cell-sub">{skladbotStatusLabel(row)}</span>
-                  {Boolean(row.skladbot_return_request_id || row.skladbot_return_request_number || row.return_status || row.returned_at || row.return_reference) && (
-                    <span className="table-muted cell-sub">
-                      Возврат: {row.skladbot_return_request_number || "не создан"} ·{" "}
-                      {returnSkladBotStatusLabel(row.skladbot_return_status)}
-                    </span>
-                  )}
-                </td>
-                <td className="numeric-cell">{formatMoney(row.line_total)}</td>
-              </tr>
-            );
-          })}
+          {rows.map((row) => (
+            <AdminOrderRow
+              key={row.item_id}
+              row={row}
+              selected={selectedOrderIds.has(row.order_id)}
+              canSelect={canSelect}
+              onToggleOrder={onToggleOrder}
+            />
+          ))}
           {rows.length === 0 && (
             <tr>
               <td colSpan={8}>Нет данных</td>
@@ -1986,7 +2007,7 @@ function AdminRowsTable({
       </table>
     </div>
   );
-}
+});
 
 function ClientsPanel({
   points,
@@ -2406,7 +2427,7 @@ function SkladBotDryRunPanel({
               <th>Товары</th>
               <th>Статус</th>
               <th>JSON</th>
-              <th></th>
+              <th><span className="visually-hidden">Действия</span></th>
             </tr>
           </thead>
           <tbody>
