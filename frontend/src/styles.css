@@ -1,64 +1,64 @@
 :root {
   /* --- ink --- */
-  --ink-900: #171c18;
-  --ink-700: #1f2621;
-  --ink-500: #3a423c;
-  --ink-muted: #5c655e;
-  --ink-faint: #626c64;
+  --ink-900: #15171C;
+  --ink-700: #1D2028;
+  --ink-500: #3C4250;
+  --ink-muted: #5C6B87;
+  --ink-faint: var(--ink-muted);
 
   /* --- canvas & surfaces --- */
-  --canvas: #f1f3ee;
+  --canvas: #EFF1F4;
   --surface: #ffffff;
-  --surface-soft: #f8faf6;
-  --surface-dim: #fbfcf9;
-  --border-strong: #cfd5c9;
-  --border: #dbe0d4;
-  --border-soft: #e5e9df;
-  --hairline: #edf0e8;
+  --surface-soft: #F6F7F9;
+  --surface-dim: #FAFBFC;
+  --border-strong: #7B8393;
+  --border: #DDE1E8;
+  --border-soft: #E6E9EF;
+  --hairline: #EEF0F4;
 
   /* --- brand: pine --- */
-  --pine-800: #0b463f;
-  --pine-700: #0e544b;
-  --pine-600: #126054;
-  --pine-500: #1a7365;
-  --pine-soft: #e3efea;
-  --pine-tint: #f2f7f4;
-  --pine-ring: rgba(18, 96, 84, 0.3);
+  --pine-800: #1B3C93;
+  --pine-700: #234BB5;
+  --pine-600: #2D5BD0;
+  --pine-500: #3568E0;
+  --pine-soft: #E7EDFB;
+  --pine-tint: #F4F7FD;
+  --pine-ring: rgba(45, 91, 208, 0.32);
 
   /* --- amber --- */
-  --amber-700: #8a5300;
-  --amber-600: #a26504;
+  --amber-700: #8F4409;
+  --amber-600: #A3560F;
   --amber-soft: #f9eed3;
   --amber-tint: #fdf8ec;
   --amber-border: #ecd9a8;
 
   /* --- danger --- */
-  --red-700: #9d2b1f;
-  --red-600: #b23528;
+  --red-700: #B91C1C;
+  --red-600: #C62828;
   --red-soft: #fbe7e1;
   --red-tint: #fdf4f1;
   --red-border: #f0d2c9;
 
   /* --- statuses --- */
-  --green-700: #1d6b3a;
-  --green-soft: #e1f2e6;
-  --blue-700: #1f5f82;
-  --blue-soft: #e4eff7;
-  --slate-700: #49515b;
-  --slate-soft: #eceff2;
-  --violet-700: #5e377b;
-  --violet-soft: #efe8f7;
+  --green-700: #166534;
+  --green-soft: #E6F4EC;
+  --blue-700: #1D4ED8;
+  --blue-soft: #E7EDFB;
+  --slate-700: #475569;
+  --slate-soft: #ECEFF3;
+  --violet-700: #6D28D9;
+  --violet-soft: #F0E9FB;
 
   /* --- sidebar bark --- */
-  --bark-950: #141814;
-  --bark-900: #191f1a;
-  --bark-850: #1f2620;
-  --bark-800: #262e27;
-  --bark-700: #2e3830;
-  --bark-line: rgba(233, 237, 230, 0.09);
-  --bark-text: #e9ede4;
-  --bark-muted: #9ba69b;
-  --mint-300: #8fd4bc;
+  --bark-950: #12151A;
+  --bark-900: #171B22;
+  --bark-850: #1D222A;
+  --bark-800: #232932;
+  --bark-700: #2B323C;
+  --bark-line: rgba(232, 235, 240, 0.1);
+  --bark-text: #E8EBF0;
+  --bark-muted: #98A0AE;
+  --mint-300: #7FA8FF;
 
   /* --- elevation --- */
   --shadow-1: 0 1px 2px rgba(23, 28, 24, 0.05);
@@ -67,12 +67,23 @@
   --shadow-modal: 0 24px 70px rgba(15, 26, 22, 0.3);
 
   /* --- type --- */
-  --font-ui: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-ui: "Manrope", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
+  /* Шкала кеглей. Было двенадцать размеров вразнобой, включая 10, 11, 12.5
+     и 13.5, теперь шесть ступеней с полом на 12px: ниже операторский экран
+     не читается ни в цеху, ни на ноутбуке */
+  --fs-display: 26px;
+  --fs-title: 19px;
+  --fs-body: 15px;
+  --fs-data: 14px;
+  --fs-label: 12px;
+  --fs-eyebrow: 12px;
+
   /* --- geometry --- */
-  --radius-lg: 14px;
-  --radius: 10px;
+  --radius-lg: 18px;
+  --radius: 12px;
+  --radius-pill: 999px;
   --radius-sm: 8px;
   --control-h: 40px;
 
@@ -104,7 +115,7 @@ body {
   margin: 0;
   min-width: 320px;
   background: var(--canvas);
-  font-size: 14px;
+  font-size: var(--fs-data);
   line-height: 1.45;
 }
 
@@ -153,9 +164,14 @@ summary:focus-visible {
   box-shadow: var(--focus-ring);
 }
 
-.topbar h1:focus {
-  outline: 2px solid var(--color-primary);
-  outline-offset: 4px;
+/* Заголовок несёт tabIndex={-1} и получает программный фокус после смены
+   раздела, чтобы скринридер объявил новую страницу. С клавиатуры на него
+   попасть нельзя: tabIndex -1 убирает элемент из порядка табуляции.
+   Значит видимая рамка тут не сообщает ничего никому, а мышиный пользователь
+   видел её при каждом переходе. Объявление для скринридера от этого не страдает */
+.topbar h1:focus,
+.topbar h1:focus-visible {
+  outline: none;
 }
 
 .app-shell {
@@ -230,14 +246,14 @@ summary:focus-visible {
 }
 
 .login-logo-row strong {
-  font-size: 20px;
+  font-size: var(--fs-title);
   letter-spacing: -0.01em;
 }
 
 .login-logo-row span,
 .login-copy p {
   color: #c3cabd;
-  font-size: 13px;
+  font-size: var(--fs-data);
 }
 
 .login-copy {
@@ -247,7 +263,7 @@ summary:focus-visible {
 .login-copy p {
   margin-bottom: 12px;
   color: #e0bf62;
-  font-size: 12px;
+  font-size: var(--fs-label);
   font-weight: 600;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -278,7 +294,7 @@ summary:focus-visible {
   padding: 0 12px;
   background: rgba(255, 255, 255, 0.055);
   color: #dde2d8;
-  font-size: 13px;
+  font-size: var(--fs-data);
 }
 
 .login-status-grid svg {
@@ -317,7 +333,7 @@ summary:focus-visible {
 
 .login-panel-head h2 {
   margin: 0 0 4px;
-  font-size: 22px;
+  font-size: var(--fs-display);
   font-weight: 600;
   letter-spacing: -0.01em;
 }
@@ -326,7 +342,7 @@ summary:focus-visible {
 .login-form label > span,
 .login-footnote {
   color: var(--ink-muted);
-  font-size: 13px;
+  font-size: var(--fs-data);
 }
 
 .login-form {
@@ -375,7 +391,7 @@ summary:focus-visible {
   padding: 10px 12px;
   background: var(--red-soft);
   color: var(--red-700);
-  font-size: 13px;
+  font-size: var(--fs-data);
 }
 
 .login-submit {
@@ -455,14 +471,14 @@ summary:focus-visible {
 
 .brand strong {
   line-height: 1.1;
-  font-size: 17px;
+  font-size: var(--fs-title);
   letter-spacing: -0.01em;
 }
 
 .brand span,
 .sidebar-status span {
   color: var(--bark-muted);
-  font-size: 12px;
+  font-size: var(--fs-label);
 }
 
 .nav-tabs {
@@ -521,7 +537,7 @@ summary:focus-visible {
 .nav-history-items button {
   padding: 9px 12px;
   color: var(--bark-muted);
-  font-size: 13px;
+  font-size: var(--fs-data);
 }
 
 .nav-tabs button:hover,
@@ -563,14 +579,14 @@ summary:focus-visible {
   max-width: 172px;
   color: var(--bark-muted);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-label);
   font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .sidebar-status span {
-  font-size: 10px;
+  font-size: var(--fs-label);
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -614,7 +630,7 @@ summary:focus-visible {
   background: var(--surface);
   color: var(--ink-500);
   white-space: nowrap;
-  font-size: 13px;
+  font-size: var(--fs-data);
   box-shadow: var(--shadow-1);
 }
 
@@ -625,7 +641,7 @@ summary:focus-visible {
 .topbar p {
   margin: 0 0 3px;
   color: var(--ink-faint);
-  font-size: 11px;
+  font-size: var(--fs-label);
   font-weight: 600;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -633,7 +649,7 @@ summary:focus-visible {
 
 .topbar h1 {
   margin: 0;
-  font-size: 22px;
+  font-size: var(--fs-display);
   font-weight: 600;
   letter-spacing: -0.015em;
   line-height: 1.2;
@@ -684,12 +700,23 @@ summary:focus-visible {
   transform: translateY(1px);
 }
 
+/* Выключенная первичная кнопка раньше гасилась прозрачностью, и насыщенный
+   акцент превращался в «полукнопку»: выглядит нажимаемой, но не работает.
+   Теперь состояние категориальное, заливка уходит в нейтраль */
 .icon-button:disabled,
-.primary-button:disabled,
 .ghost-button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
   box-shadow: none;
+}
+
+.primary-button:disabled {
+  cursor: not-allowed;
+  background: var(--surface-soft);
+  color: var(--ink-muted);
+  border-color: var(--border);
+  box-shadow: none;
+  opacity: 1;
 }
 
 /* ============ pairing dialog ============ */
@@ -744,7 +771,7 @@ summary:focus-visible {
 
 .desktop-pairing-heading h2 {
   margin: 0 0 6px;
-  font-size: 20px;
+  font-size: var(--fs-title);
   font-weight: 600;
   letter-spacing: -0.01em;
 }
@@ -782,7 +809,7 @@ summary:focus-visible {
 
 .desktop-pairing-form label span {
   color: var(--ink-muted);
-  font-size: 13px;
+  font-size: var(--fs-data);
   font-weight: 400;
 }
 
@@ -927,14 +954,14 @@ summary:focus-visible {
 .stats-section-head h2 {
   margin: 0;
   color: var(--ink-700);
-  font-size: 15px;
+  font-size: var(--fs-body);
   font-weight: 600;
   line-height: 1.2;
 }
 
 .stats-section-head span {
   color: var(--ink-faint);
-  font-size: 12px;
+  font-size: var(--fs-label);
   font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
@@ -974,14 +1001,14 @@ summary:focus-visible {
 
 .metric span {
   color: var(--ink-muted);
-  font-size: 12px;
+  font-size: var(--fs-label);
   font-weight: 500;
 }
 
 .metric strong {
   grid-column: 2;
   font-family: var(--font-mono);
-  font-size: 26px;
+  font-size: var(--fs-display);
   font-weight: 600;
   letter-spacing: -0.02em;
   line-height: 1.05;
@@ -1044,7 +1071,7 @@ summary:focus-visible {
 }
 
 .panel-header h2 {
-  font-size: 16px;
+  font-size: var(--fs-body);
   font-weight: 600;
   letter-spacing: -0.01em;
 }
@@ -1103,7 +1130,7 @@ summary:focus-visible {
   margin-top: 3px;
   overflow: hidden;
   color: var(--ink-muted);
-  font-size: 13px;
+  font-size: var(--fs-data);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1142,7 +1169,7 @@ summary:focus-visible {
 
 .detail-head h2 {
   margin-top: 4px;
-  font-size: 22px;
+  font-size: var(--fs-display);
   font-weight: 600;
   letter-spacing: -0.01em;
 }
@@ -1154,7 +1181,7 @@ summary:focus-visible {
 
 .muted-row {
   color: var(--ink-faint);
-  font-size: 13px;
+  font-size: var(--fs-data);
 }
 
 .request-row {
@@ -1188,7 +1215,7 @@ summary:focus-visible {
 
 .item-button span {
   color: var(--pine-600);
-  font-size: 12px;
+  font-size: var(--fs-label);
   font-weight: 600;
 }
 
@@ -1198,7 +1225,7 @@ summary:focus-visible {
 
 .item-button em {
   color: var(--ink-muted);
-  font-size: 13px;
+  font-size: var(--fs-data);
   font-style: normal;
 }
 
@@ -1208,7 +1235,7 @@ summary:focus-visible {
 
 .codes-list h3 {
   margin-bottom: 10px;
-  font-size: 15px;
+  font-size: var(--fs-body);
   font-weight: 600;
 }
 
@@ -1226,7 +1253,7 @@ summary:focus-visible {
   padding: 6px 9px;
   background: var(--surface-soft);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-label);
   text-overflow: ellipsis;
 }
 
@@ -1249,7 +1276,7 @@ summary:focus-visible {
   display: block;
   margin-top: 4px;
   color: var(--color-muted);
-  font-size: 13px;
+  font-size: var(--fs-data);
   font-weight: 400;
 }
 
@@ -1270,7 +1297,7 @@ summary:focus-visible {
   border-top: 1px solid var(--hairline);
   padding: 12px 16px 4px;
   color: var(--ink-muted);
-  font-size: 13px;
+  font-size: var(--fs-data);
 }
 
 .table-pagination span {
@@ -1302,7 +1329,7 @@ summary:focus-visible {
 .action-bar span {
   margin-top: 3px;
   color: var(--ink-muted);
-  font-size: 13px;
+  font-size: var(--fs-data);
 }
 
 .action-warning {
@@ -1385,7 +1412,7 @@ summary:focus-visible {
 .data-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13.5px;
+  font-size: var(--fs-data);
 }
 
 .data-table th,
@@ -1400,7 +1427,7 @@ summary:focus-visible {
 
 .data-table th {
   color: var(--ink-faint);
-  font-size: 11px;
+  font-size: var(--fs-label);
   font-weight: 600;
   letter-spacing: 0.07em;
   text-transform: uppercase;
@@ -1415,8 +1442,13 @@ summary:focus-visible {
   background: var(--surface-soft);
 }
 
+/* Таблица держит min-width 1180px, а контентная область на 1440 минус
+   сайдбар 248 даёт около 1150. Без overflow-x колонка СУММА обрезалась
+   краем экрана вместо того, чтобы прокручиваться */
 .admin-table-wrap {
   max-height: calc(100vh - 360px);
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .admin-table {
@@ -1498,7 +1530,7 @@ summary:focus-visible {
   flex-basis: 100%;
   border-radius: var(--radius-sm);
   padding: 9px 11px;
-  font-size: 13px;
+  font-size: var(--fs-data);
 }
 
 .excel-preview.ok {
@@ -1535,7 +1567,7 @@ summary:focus-visible {
 }
 
 .warehouse-card h3 {
-  font-size: 16px;
+  font-size: var(--fs-body);
   font-weight: 600;
 }
 
@@ -1548,7 +1580,7 @@ summary:focus-visible {
 
 .warehouse-card label > span {
   color: var(--ink-muted);
-  font-size: 13px;
+  font-size: var(--fs-data);
   font-weight: 600;
 }
 
@@ -1585,14 +1617,14 @@ summary:focus-visible {
 .warehouse-return-result span,
 .warehouse-return-result p {
   color: var(--ink-muted);
-  font-size: 13px;
+  font-size: var(--fs-data);
 }
 
 .order-correlation {
   display: grid;
   gap: 4px;
   color: var(--ink-muted);
-  font-size: 13px;
+  font-size: var(--fs-data);
 }
 
 @media (max-width: 980px) {
@@ -1684,7 +1716,7 @@ summary:focus-visible {
 .table-muted {
   margin-top: 4px;
   color: var(--ink-muted);
-  font-size: 12px;
+  font-size: var(--fs-label);
   line-height: 1.35;
 }
 
@@ -1711,7 +1743,7 @@ summary:focus-visible {
   min-height: 24px;
   border-radius: 999px;
   padding: 0 10px;
-  font-size: 12px;
+  font-size: var(--fs-label);
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
@@ -1819,7 +1851,7 @@ summary:focus-visible {
 
 .dry-run-products span {
   color: var(--ink-muted);
-  font-size: 12px;
+  font-size: var(--fs-label);
   line-height: 1.35;
 }
 
@@ -1853,7 +1885,7 @@ summary:focus-visible {
 .client-point-form h3 {
   margin: 0;
   color: var(--ink-700);
-  font-size: 14px;
+  font-size: var(--fs-data);
   font-weight: 600;
   line-height: 1.2;
 }
@@ -1881,7 +1913,7 @@ summary:focus-visible {
 
 .client-point-form label > span {
   color: var(--ink-muted);
-  font-size: 12px;
+  font-size: var(--fs-label);
   font-weight: 600;
 }
 
@@ -2000,7 +2032,7 @@ summary:focus-visible {
 
 .client-order-date-head span {
   color: var(--ink-muted);
-  font-size: 13px;
+  font-size: var(--fs-data);
   font-weight: 600;
 }
 
@@ -2049,7 +2081,7 @@ summary:focus-visible {
   padding: 10px;
   color: var(--ink-700);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-label);
   line-height: 1.45;
 }
 
@@ -2093,7 +2125,7 @@ summary:focus-visible {
 
 .calendar-weekdays span {
   color: var(--ink-faint);
-  font-size: 11px;
+  font-size: var(--fs-label);
   font-weight: 600;
   letter-spacing: 0.07em;
   text-align: center;
@@ -2158,7 +2190,7 @@ summary:focus-visible {
 }
 
 .calendar-day strong {
-  font-size: 16px;
+  font-size: var(--fs-body);
   font-weight: 600;
   line-height: 1;
   font-variant-numeric: tabular-nums;
@@ -2168,7 +2200,7 @@ summary:focus-visible {
 .calendar-day em,
 .calendar-day small {
   color: var(--ink-muted);
-  font-size: 12px;
+  font-size: var(--fs-label);
   font-style: normal;
   line-height: 1.25;
 }
@@ -2210,7 +2242,7 @@ summary:focus-visible {
 
 .day-detail-head h3 {
   margin: 0 0 2px;
-  font-size: 16px;
+  font-size: var(--fs-body);
   font-weight: 600;
 }
 
@@ -2255,7 +2287,7 @@ summary:focus-visible {
   padding: 10px 12px;
   background: var(--amber-tint);
   color: var(--amber-700);
-  font-size: 13px;
+  font-size: var(--fs-data);
   line-height: 1.5;
 }
 
@@ -2290,13 +2322,13 @@ summary:focus-visible {
   justify-content: space-between;
   gap: 8px;
   margin: 0 0 10px;
-  font-size: 14px;
+  font-size: var(--fs-data);
   font-weight: 600;
 }
 
 .zone-card h4 em {
   color: var(--ink-faint);
-  font-size: 12px;
+  font-size: var(--fs-label);
   font-style: normal;
   font-weight: 400;
 }
@@ -2320,7 +2352,7 @@ summary:focus-visible {
 .zone-figures b {
   display: block;
   font-family: var(--font-mono);
-  font-size: 20px;
+  font-size: var(--fs-title);
   font-weight: 600;
   line-height: 1.15;
   font-variant-numeric: tabular-nums;
@@ -2332,13 +2364,13 @@ summary:focus-visible {
 
 .zone-figures small {
   color: var(--ink-muted);
-  font-size: 12px;
+  font-size: var(--fs-label);
 }
 
 .zone-foot {
   margin: 10px 0 0;
   color: var(--ink-muted);
-  font-size: 12px;
+  font-size: var(--fs-label);
   line-height: 1.5;
 }
 
@@ -2368,7 +2400,7 @@ summary:focus-visible {
   padding: 13px 14px 11px;
   background: transparent;
   color: var(--ink-muted);
-  font-size: 14px;
+  font-size: var(--fs-data);
   font-weight: 600;
   cursor: pointer;
 }
@@ -2385,7 +2417,7 @@ summary:focus-visible {
 
 .list-tabs .tab-count {
   color: var(--ink-faint);
-  font-size: 13px;
+  font-size: var(--fs-data);
   font-weight: 400;
   font-variant-numeric: tabular-nums;
 }
@@ -2433,7 +2465,7 @@ summary:focus-visible {
   padding: 5px 12px;
   background: var(--surface);
   color: var(--ink-muted);
-  font-size: 12px;
+  font-size: var(--fs-label);
   font-weight: 500;
   cursor: pointer;
 }
@@ -2453,7 +2485,7 @@ summary:focus-visible {
 .ghost-button.sm {
   min-height: 34px;
   padding: 0 11px;
-  font-size: 12px;
+  font-size: var(--fs-label);
 }
 
 .day-detail .table-scroll {
@@ -2572,7 +2604,7 @@ summary:focus-visible {
 .admin-reason-field span {
   margin-bottom: 6px;
   color: var(--ink-faint);
-  font-size: 11px;
+  font-size: var(--fs-label);
   font-weight: 600;
   letter-spacing: 0.07em;
   text-transform: uppercase;
@@ -2617,14 +2649,14 @@ summary:focus-visible {
 }
 
 .detail-head.compact h3 {
-  font-size: 15px;
+  font-size: var(--fs-body);
   font-weight: 600;
 }
 
 .detail-head.compact span {
   margin-top: 3px;
   color: var(--ink-muted);
-  font-size: 12px;
+  font-size: var(--fs-label);
 }
 
 .detail-list {
@@ -2641,7 +2673,7 @@ summary:focus-visible {
 
 .detail-list dt {
   color: var(--ink-faint);
-  font-size: 12px;
+  font-size: var(--fs-label);
   font-weight: 600;
 }
 
@@ -2665,7 +2697,7 @@ summary:focus-visible {
   padding: 10px;
   color: var(--red-700);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-label);
   line-height: 1.45;
 }
 
@@ -2761,7 +2793,7 @@ summary:focus-visible {
 .activity-row span,
 .activity-row time {
   color: var(--ink-muted);
-  font-size: 12px;
+  font-size: var(--fs-label);
 }
 
 .activity-row time {
@@ -2825,7 +2857,7 @@ summary:focus-visible {
 
 .diagnostic-card span {
   color: var(--ink-faint);
-  font-size: 11px;
+  font-size: var(--fs-label);
   font-weight: 600;
   letter-spacing: 0.07em;
   text-transform: uppercase;
@@ -2834,14 +2866,14 @@ summary:focus-visible {
 .diagnostic-card strong {
   margin-top: 5px;
   color: var(--ink-700);
-  font-size: 17px;
+  font-size: var(--fs-title);
   font-weight: 600;
 }
 
 .diagnostic-card em {
   margin-top: 4px;
   color: var(--ink-muted);
-  font-size: 12px;
+  font-size: var(--fs-label);
   font-style: normal;
   line-height: 1.35;
 }
@@ -2884,7 +2916,7 @@ summary:focus-visible {
 
 .diagnostics-list li {
   color: var(--ink-muted);
-  font-size: 12px;
+  font-size: var(--fs-label);
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
@@ -3027,7 +3059,7 @@ summary:focus-visible {
   }
 
   .login-copy h1 {
-    font-size: 30px;
+    font-size: var(--fs-display);
   }
 
   .login-status-grid {

@@ -1,6 +1,6 @@
 import { AlertCircle, CheckCircle2, Loader2, RefreshCw, RotateCcw, Undo2 } from "lucide-react";
 import type { FormEvent, RefObject } from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
 import {
   type ApiConfig,
@@ -524,6 +524,13 @@ export default function WarehousePanel({ config, canWrite, actor, onError, onNot
                 <div className="warehouse-progress" role="status">
                   <strong>Обязательные КИЗы</strong>
                   <span>{orderProgress.label}</span>
+                  {typeof orderProgress.ratio === "number" && (
+                    <i
+                      className="warehouse-progress-meter"
+                      style={{ "--p": orderProgress.ratio } as CSSProperties}
+                      aria-hidden="true"
+                    />
+                  )}
                 </div>
                 <label>
                   <span>Позиция</span>
@@ -695,6 +702,11 @@ function summarizeOrderProgress(order: Order | null) {
   const completedItems = requiredItems.filter((item) => isCompletionSatisfied(item)).length;
   return {
     label: `${scannedBlocks}/${requiredBlocks} блоков · ${completedItems}/${requiredItems.length} позиций`,
+    // Доля нужна для полосы прогресса: оператор считывает её взглядом,
+    // а не перечитывает «0/2 блоков» текстом при каждом скане
+    ratio: requiredBlocks > 0 ? scannedBlocks / requiredBlocks : 0,
+    scannedBlocks,
+    requiredBlocks,
   };
 }
 

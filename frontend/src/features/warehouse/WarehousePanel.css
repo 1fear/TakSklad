@@ -23,7 +23,7 @@
 .warehouse-queue-hint {
   margin: 8px 0 0;
   color: var(--amber-700);
-  font-size: 13px;
+  font-size: var(--fs-data);
 }
 
 .warehouse-print-ready div,
@@ -42,7 +42,39 @@
 .warehouse-item-progress span,
 .warehouse-recent-head span {
   color: var(--ink-muted);
-  font-size: 13px;
+  font-size: var(--fs-data);
+}
+
+/* Полоса прогресса по блокам. Раньше состояние читалось только текстом
+   «0/2 блоков», то есть оператор перечитывал строку после каждого скана.
+   Полоса даёт то же самое взглядом, --p ставится из React как доля 0..1 */
+.warehouse-progress {
+  position: relative;
+}
+
+.warehouse-progress-meter {
+  display: block;
+  grid-column: 1 / -1;
+  height: 6px;
+  margin-top: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--border-soft);
+  overflow: hidden;
+}
+
+.warehouse-progress-meter::after {
+  content: "";
+  display: block;
+  height: 100%;
+  width: calc(var(--p, 0) * 100%);
+  min-width: 0;
+  border-radius: inherit;
+  background: var(--pine-600);
+  transition: width 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .warehouse-progress-meter::after { transition: none; }
 }
 
 .warehouse-scanner-form {
@@ -60,7 +92,7 @@
 .warehouse-scanner-input {
   min-height: 64px;
   font-family: var(--font-mono);
-  font-size: 21px;
+  font-size: var(--fs-display);
   letter-spacing: 0.02em;
 }
 
@@ -75,7 +107,7 @@
   gap: 8px;
   border-radius: var(--radius-sm);
   padding: 10px 12px;
-  font-size: 14px;
+  font-size: var(--fs-data);
 }
 
 .warehouse-check.ok {
@@ -110,7 +142,7 @@
   padding: 9px 11px;
   background: var(--surface-soft);
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: var(--fs-label);
   color: var(--ink-500);
 }
 
@@ -173,7 +205,7 @@
 }
 
 .warehouse-print-head h2 {
-  font-size: 20px;
+  font-size: var(--fs-title);
   font-weight: 600;
   letter-spacing: -0.01em;
 }
@@ -181,7 +213,7 @@
 .warehouse-print-head p,
 .warehouse-print-timestamp {
   color: var(--ink-muted);
-  font-size: 14px;
+  font-size: var(--fs-data);
 }
 
 .warehouse-print-meta {
@@ -198,7 +230,7 @@
 
 .warehouse-print-meta dt {
   color: var(--ink-faint);
-  font-size: 11px;
+  font-size: var(--fs-label);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.07em;
@@ -222,7 +254,7 @@
 }
 
 .warehouse-print-table th {
-  font-size: 11px;
+  font-size: var(--fs-label);
   color: var(--ink-faint);
   font-weight: 600;
   text-transform: uppercase;
