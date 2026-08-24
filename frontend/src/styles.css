@@ -63,8 +63,8 @@
   /* --- elevation --- */
   --shadow-1: 0 1px 2px rgba(23, 28, 24, 0.05);
   --shadow-2: 0 2px 8px rgba(23, 28, 24, 0.07), 0 1px 2px rgba(23, 28, 24, 0.05);
-  --shadow-pop: 0 10px 32px rgba(17, 26, 22, 0.16), 0 2px 8px rgba(17, 26, 22, 0.08);
-  --shadow-modal: 0 24px 70px rgba(15, 26, 22, 0.3);
+  --shadow-pop: 0 10px 32px rgba(21, 23, 28, 0.16), 0 2px 8px rgba(21, 23, 28, 0.08);
+  --shadow-modal: 0 24px 70px rgba(21, 23, 28, 0.3);
 
   /* --- type --- */
   --font-ui: "Manrope", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -191,8 +191,8 @@ summary:focus-visible {
   min-height: 100vh;
   padding: clamp(28px, 4vw, 58px);
   background:
-    radial-gradient(1100px 640px at 82% -12%, rgba(26, 115, 101, 0.16), transparent 62%),
-    linear-gradient(150deg, #1a201b 0%, #1d2822 58%, #18201b 100%),
+    radial-gradient(1100px 640px at 82% -12%, rgba(45, 91, 208, 0.18), transparent 62%),
+    linear-gradient(150deg, #14181F 0%, #1A2130 58%, #12161D 100%),
     var(--bark-900);
 }
 
@@ -371,7 +371,7 @@ summary:focus-visible {
 .login-input:focus-within {
   border-color: var(--pine-600);
   background: var(--surface);
-  box-shadow: 0 0 0 3px rgba(18, 96, 84, 0.14);
+  box-shadow: 0 0 0 3px rgba(45, 91, 208, 0.16);
 }
 
 .login-input input {
@@ -913,6 +913,13 @@ summary:focus-visible {
 .connection-bar input::placeholder,
 .login-input input::placeholder {
   color: var(--ink-faint);
+}
+
+/* Сообщение появляется и исчезает после каждого скана. Раньше оно
+   вставлялось в поток и сдвигало весь экран вниз, а оператор в этот момент
+   смотрит в поле ввода. Слот держит высоту всегда, поэтому ничего не прыгает */
+.operator-message-slot {
+  min-height: 58px;
 }
 
 .message {
@@ -1545,10 +1552,13 @@ summary:focus-visible {
 
 /* ============ warehouse ============ */
 
+/* align-items: start, иначе «Возврат из архива» растягивался во всю высоту
+   левой колонки и рисовал высокую пустую карточку под коротким полем поиска */
 .warehouse-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.25fr) minmax(300px, 0.75fr);
   gap: 16px;
+  align-items: start;
 }
 
 .warehouse-card {

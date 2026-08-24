@@ -80,3 +80,21 @@ test("админка, инциденты и очередь", async ({ page }) =>
   await page.getByRole("heading", { name: "Инциденты и очередь" }).waitFor();
   await shot(page, "08-admin-incidents");
 });
+
+test("админка, календарь", async ({ page }) => {
+  await installSyntheticApi(page);
+  await page.goto("/admin");
+  await page.getByRole("heading", { name: "Позиции заказов" }).waitFor();
+  await page.getByRole("button", { name: "Календарь" }).click();
+  await page.waitForTimeout(900);
+  await shot(page, "09-admin-calendar");
+});
+
+test("админка, Smartup и маршруты", async ({ page }) => {
+  await installSyntheticApi(page);
+  await page.goto("/admin");
+  await page.getByRole("heading", { name: "Позиции заказов" }).waitFor();
+  await page.getByRole("button", { name: "Smartup" }).click();
+  await page.waitForTimeout(900);
+  await shot(page, "10-admin-smartup");
+});
