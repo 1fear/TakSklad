@@ -97,16 +97,18 @@ export default function OperatorWorkspace({
         </div>
       </header>
 
-      {(error || notice) && (
-        <div
-          className={error ? "message error operator-message" : "message success operator-message"}
-          role={error ? "alert" : "status"}
-          aria-live={error ? "assertive" : "polite"}
-        >
-          {error ? <AlertCircle size={18} /> : <CheckCircle2 size={18} />}
-          <span>{error || notice}</span>
-        </div>
-      )}
+      <div className="operator-message-slot">
+        {(error || notice) && (
+          <div
+            className={error ? "message error operator-message" : "message success operator-message"}
+            role={error ? "alert" : "status"}
+            aria-live={error ? "assertive" : "polite"}
+          >
+            {error ? <AlertCircle size={18} /> : <CheckCircle2 size={18} />}
+            <span>{error || notice}</span>
+          </div>
+        )}
+      </div>
 
       <main className="operator-workspace">
         <Suspense fallback={<OperatorPanelFallback />}>
