@@ -2181,14 +2181,29 @@ summary:focus-visible {
   background: var(--surface-soft);
 }
 
+/* Плановый нерабочий день это норма, а не проблема, поэтому он нейтральный.
+   Красный в этой палитре означает ошибку, и суббота, покрашенная им, читалась
+   как «здесь что-то не так». Внимание остаётся за ручным закрытием ниже:
+   оно исключение и действительно требует взгляда */
 .calendar-day.non-working {
-  border-color: var(--red-border);
-  background: var(--red-tint);
+  border-color: var(--border);
+  background: var(--surface-soft);
+  color: var(--ink-muted);
 }
 
-.calendar-day.manual {
+.calendar-day.non-working strong {
+  color: var(--ink-muted);
+}
+
+.calendar-day.manual,
+.calendar-day.non-working.manual {
   border-color: var(--amber-border);
   background: var(--amber-tint);
+  color: var(--amber-700);
+}
+
+.calendar-day.non-working.manual strong {
+  color: var(--amber-700);
 }
 
 .calendar-day strong,
@@ -2225,13 +2240,21 @@ summary:focus-visible {
   color: var(--amber-700);
 }
 
+/* Значок дня. По умолчанию нейтральный: «выходной» это плановое состояние.
+   Красный тут читался как ошибка на каждой субботе */
 .calendar-day small {
   width: fit-content;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   padding: 3px 8px;
-  background: var(--red-soft);
-  color: var(--red-700);
+  background: var(--slate-soft);
+  color: var(--slate-700);
   font-weight: 600;
+}
+
+/* Ручное закрытие это исключение, вот ему внимание и достаётся */
+.calendar-day.manual small {
+  background: var(--amber-soft);
+  color: var(--amber-700);
 }
 
 .day-detail {
