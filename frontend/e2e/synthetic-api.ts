@@ -191,6 +191,7 @@ export type SyntheticApiState = {
   completes: number;
   clientUpdates: number;
   incidentUpdates: number;
+  calendarUpdates: number;
   loggedIn: boolean;
 };
 
@@ -260,6 +261,92 @@ async function configuredFailure(route: Route, failure: number | "timeout" | und
   return false;
 }
 
+
+// Синтетический месяц логистики. Нужен, чтобы календарь и его дневная
+// врезка снимались с данными, а не пустым каркасом: без мока экран
+// отвечал 501 и дизайн заполненного состояния увидеть было нельзя.
+const CALENDAR_MONTH = "2026-08";
+
+function daysInMonth(month: string) {
+  const [y, m] = month.split("-").map(Number);
+  return new Date(Date.UTC(y, m, 0)).getUTCDate();
+}
+
+function syntheticCalendarDay(day: number, month: string = CALENDAR_MONTH) {
+  const date = `${month}-${String(day).padStart(2, "0")}`;
+  const weekday = new Date(`${date}T00:00:00Z`).getUTCDay() || 7; // 1..7, пн..вс
+  const isWeekend = weekday >= 6;
+  // 12 августа помечен вручную нерабочим, чтобы состояние «ручной» было видно
+  const isManual = day === 12;
+  const busy = !isWeekend && !isManual && day % 3 === 0;
+  const cityOrders = busy ? 2 + (day % 3) : isWeekend ? 0 : day % 2;
+  const regionOrders = busy ? 1 + (day % 2) : 0;
+  const orders = cityOrders + regionOrders;
+  const returned = busy && day % 6 === 0 ? 1 : 0;
+  return {
+    date,
+    weekday,
+    is_weekend: isWeekend,
+    is_non_working: isWeekend || isManual,
+    is_manual: isManual,
+    reason: isManual ? "Инвентаризация склада" : "",
+    source: isManual ? "manual" : "schedule",
+    orders_count: orders,
+    active_orders: Math.max(0, orders - returned),
+    completed_orders: busy ? 1 : 0,
+    returned_orders: returned,
+    planned_blocks: orders * 4,
+    city_orders: cityOrders,
+    region_orders: regionOrders,
+    city_returns: returned,
+    region_returns: 0,
+    city_blocks: cityOrders * 4,
+    region_blocks: regionOrders * 4,
+    excluded_orders: 0,
+    clients: orders ? ["Альфа Тест", "Бета Тест"].slice(0, Math.min(2, orders)) : [],
+  };
+}
+
+function syntheticCalendar(month: string = CALENDAR_MONTH) {
+  const days = Array.from({ length: daysInMonth(month) }, (_, index) => syntheticCalendarDay(index + 1, month));
+  return {
+    generated_at: "2026-08-25T09:00:00Z",
+    month,
+    default_non_working_weekdays: [6, 7],
+    region_directory_empty: false,
+    days,
+  };
+}
+
+function syntheticCalendarDayOrders(date: string) {
+  const day = Number(date.slice(-2)) || 1;
+  const count = syntheticCalendarDay(day, date.slice(0, 7)).orders_count;
+  return {
+    date,
+    generated_at: "2026-08-25T09:00:00Z",
+    region_directory_empty: false,
+    orders: Array.from({ length: count }, (_, index) => ({
+      order_id: `WH-R-${date.replace(/-/g, "")}-${index + 1}`,
+      zone: index % 3 === 2 ? ("region" as const) : ("city" as const),
+      lifecycle_status: (["assembling", "assembled", "shipped", "delivered"] as const)[index % 4],
+      is_returned: false,
+      client: index % 2 ? "Бета Тест" : "Альфа Тест",
+      address: index % 2 ? "Синтетическая улица, 7" : "Синтетическая улица, 1",
+      representative: "Синтетический ТП",
+      products: "Синтетический товар",
+      source_file: "synthetic.xlsx",
+      quantity_blocks: 4,
+      scanned_blocks: index % 4,
+      remaining_blocks: 4 - (index % 4),
+      status: "Активно",
+      delivery_from: "09:00",
+      delivery_to: "18:00",
+      skladbot_request_number: `WH-R-${index + 1}`,
+      smartup_id: `2610000${index + 1}`,
+    })),
+  };
+}
+
 export async function installSyntheticApi(page: Page, options: SyntheticApiOptions = {}): Promise<SyntheticApiState> {
   const state: SyntheticApiState = {
     requests: [],
@@ -267,6 +354,7 @@ export async function installSyntheticApi(page: Page, options: SyntheticApiOptio
     completes: 0,
     clientUpdates: 0,
     incidentUpdates: 0,
+    calendarUpdates: 0,
     loggedIn: options.authenticated !== false,
   };
   let point = { ...clientPoint };
@@ -311,7 +399,9 @@ export async function installSyntheticApi(page: Page, options: SyntheticApiOptio
     if (path === "/api/v1/admin/events") return json(route, { generated_at: now, summary: { failed: 1 }, stale_processing: [], recent_events: [queueEvent] });
     if (path === "/api/v1/admin/operations") return json(route, { generated_at: now, status: "attention", summary: {}, items: [], readiness_status: "ok", telegram_summary: "synthetic" });
     if (path === "/api/v1/admin/smartup-auto-imports/history") return json(route, { generated_at: now, summary: {}, runs: [], events: [], audit: [] });
-    if (path === "/api/v1/admin/logistics-calendar") return json(route, { generated_at: now, month: "2026-07", default_non_working_weekdays: [6], days: [] });
+    if (path === "/api/v1/admin/logistics-calendar") {
+      return json(route, syntheticCalendar(url.searchParams.get("month") ?? CALENDAR_MONTH));
+    }
     if (path === "/api/v1/admin/client-points" && request.method() === "GET") return json(route, options.empty ? [] : [point]);
     if (path === "/api/v1/admin/client-points/order-summary") return json(route, { client_name: point.client_name, normalized_client: "альфа тест", totals: { orders_count: 2, returned_orders_count: 0, positions_count: 2, quantity_blocks: 4, quantity_pieces: 40 }, dates: [] });
     if (path === "/api/v1/admin/client-points/timeslot") {
@@ -376,6 +466,13 @@ export async function installSyntheticApi(page: Page, options: SyntheticApiOptio
       return json(route, completedWarehouseOrder);
     }
     if (/^\/api\/v1\/admin\/events\/[^/]+\/retry$/.test(path)) return json(route, { ...queueEvent, status: "pending" });
+    if (/^\/api\/v1\/admin\/logistics-calendar\/day\/[^/]+\/orders$/.test(path)) {
+      return json(route, syntheticCalendarDayOrders(path.split("/").at(-2) ?? `${CALENDAR_MONTH}-03`));
+    }
+    if (path === "/api/v1/admin/logistics-calendar/day") {
+      state.calendarUpdates += 1;
+      return json(route, syntheticCalendar());
+    }
     if (path === "/api/v1/sync/sources") return json(route, { status: "completed", skladbot: { status: "synthetic" } });
 
     return json(route, { detail: { code: "synthetic_route_missing", message: `${request.method()} ${path} is not mocked` } }, 501);
