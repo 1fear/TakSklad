@@ -76,6 +76,8 @@ test("админка, инциденты и очередь", async ({ page }) =>
   await installSyntheticApi(page);
   await page.goto("/admin");
   await page.getByRole("heading", { name: "Позиции заказов" }).waitFor();
+  // Инциденты вложены в раздел «История действий», его надо сначала раскрыть
+  await page.getByRole("button", { name: "История действий" }).click();
   await page.getByRole("button", { name: "Инциденты" }).click();
   await page.getByRole("heading", { name: "Инциденты и очередь" }).waitFor();
   await shot(page, "08-admin-incidents");
