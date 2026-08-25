@@ -1688,10 +1688,10 @@ function Metric({
   icon: ReactNode;
   label: string;
   value: number | string;
-  tone?: "warn";
+  tone?: "warn" | "danger";
 }) {
   return (
-    <div className={`metric ${tone === "warn" ? "warn" : ""}`}>
+    <div className={`metric ${tone ?? ""}`}>
       {icon}
       <span>{label}</span>
       <strong>{typeof value === "number" ? formatNumber(value) : value}</strong>
@@ -1809,7 +1809,9 @@ function LogisticsCalendarPanel({
         <Metric icon={<ClipboardList size={20} />} label="Заказов" value={ordersCount} />
         <Metric icon={<RotateCcw size={20} />} label="Возвратов" value={returnedOrdersCount} tone={returnedOrdersCount ? "warn" : undefined} />
         <Metric icon={<Box size={20} />} label="Блоков" value={blocksCount} />
-        <Metric icon={<CalendarDays size={20} />} label="Нерабочих" value={nonWorkingCount} tone={nonWorkingCount ? "warn" : undefined} />
+        {/* Без тона: выходные есть в любом месяце, счётчик всегда больше нуля,
+            и плитка светилась постоянно. Постоянный сигнал это не сигнал */}
+        <Metric icon={<CalendarDays size={20} />} label="Нерабочих" value={nonWorkingCount} />
         <Metric icon={<Save size={20} />} label="Ручных" value={manualCount} />
       </section>
 
@@ -2411,8 +2413,8 @@ function SkladBotDryRunPanel({
         <Metric icon={<SquareCode size={20} />} label="Ready" value={summary.ready} />
         <Metric icon={<ClipboardList size={20} />} label="Queued" value={summary.queued} />
         <Metric icon={<Server size={20} />} label="Created" value={summary.created + summary.recovered} />
-        <Metric icon={<AlertCircle size={20} />} label="Blocked" value={summary.blocked + summary.failed} tone={summary.blocked + summary.failed > 0 ? "warn" : undefined} />
-        <Metric icon={<AlertCircle size={20} />} label="Расхождение" value={summary.mismatch} tone={summary.mismatch > 0 ? "warn" : undefined} />
+        <Metric icon={<AlertCircle size={20} />} label="Blocked" value={summary.blocked + summary.failed} tone={summary.blocked + summary.failed > 0 ? "danger" : undefined} />
+        <Metric icon={<AlertCircle size={20} />} label="Расхождение" value={summary.mismatch} tone={summary.mismatch > 0 ? "danger" : undefined} />
         <Metric icon={<Server size={20} />} label="Уже WH-R" value={summary.alreadyLinked} />
       </section>
 
