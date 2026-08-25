@@ -28,8 +28,10 @@ export default function SmartupAutoImportPanel({ history }: { history: SmartupAu
         <Metric icon={<RefreshCw size={20} />} label="Запусков" value={numberField(summary, "total")} />
         <Metric icon={<CheckCircle2 size={20} />} label="Готово" value={numberField(summary, "completed")} />
         <Metric icon={<PackageCheck size={20} />} label="Заказов" value={numberField(summary, "orders_created")} />
-        <Metric icon={<AlertCircle size={20} />} label="Ошибок" value={failedRuns} tone={failedRuns ? "warn" : undefined} />
-        <Metric icon={<Server size={20} />} label="В работе" value={processingRuns} tone={processingRuns ? "warn" : undefined} />
+        <Metric icon={<AlertCircle size={20} />} label="Ошибок" value={failedRuns} tone={failedRuns ? "danger" : undefined} />
+        {/* «В работе» это нормальная активность импорта, а не отклонение:
+            подсветка делала здоровый идущий процесс похожим на проблему */}
+        <Metric icon={<Server size={20} />} label="В работе" value={processingRuns} />
       </section>
 
       <div className="data-table-wrap smartup-table-wrap">
@@ -59,8 +61,10 @@ export default function SmartupAutoImportPanel({ history }: { history: SmartupAu
   );
 }
 
-function Metric({ icon, label, value, tone }: { icon: ReactNode; label: string; value: number | string; tone?: "warn" }) {
-  return <div className={`metric ${tone === "warn" ? "warn" : ""}`}>{icon}<span>{label}</span><strong>{typeof value === "number" ? new Intl.NumberFormat("ru-RU").format(value) : value}</strong></div>;
+// Копия Metric из AdminWorkspace. Не объединяю в общий компонент: это отдельная
+// задача, а не часть правки тонов. Тип тона держим одинаковым в обоих местах
+function Metric({ icon, label, value, tone }: { icon: ReactNode; label: string; value: number | string; tone?: "warn" | "danger" }) {
+  return <div className={`metric ${tone ?? ""}`}>{icon}<span>{label}</span><strong>{typeof value === "number" ? new Intl.NumberFormat("ru-RU").format(value) : value}</strong></div>;
 }
 
 function smartupRunStatusLabel(value: string) {

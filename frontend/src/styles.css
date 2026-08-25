@@ -1022,8 +1022,33 @@ summary:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 
+/* Раньше tone красил только иконку 20px, и «Ошибок 3» с расстояния читалось
+   ровно как «Ошибок 0»: ряд из пяти плиток не говорил, куда смотреть.
+   Теперь состояние несут рейка слева и само число. Рейка сделана внутренней
+   тенью, а не border-left, чтобы не менять ширину плитки и не сдвигать ряд.
+   Ноль остаётся спокойным: «ошибок нет» это хорошая новость, а не сигнал */
+.metric.warn {
+  box-shadow: var(--shadow-1), inset 3px 0 0 var(--amber-600);
+}
+
 .metric.warn svg {
   color: var(--amber-600);
+}
+
+.metric.warn strong {
+  color: var(--amber-700);
+}
+
+.metric.danger {
+  box-shadow: var(--shadow-1), inset 3px 0 0 var(--red-600);
+}
+
+.metric.danger svg {
+  color: var(--red-600);
+}
+
+.metric.danger strong {
+  color: var(--red-700);
 }
 
 /* ============ panels ============ */
