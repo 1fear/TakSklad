@@ -1454,7 +1454,25 @@ summary:focus-visible {
   text-align: left;
   vertical-align: top;
   max-width: 360px;
+  /* Было anywhere, и это рвало слово в любом месте, включая середину числа:
+     дата 23.08.2026 разъезжалась на «23.08.202» и «6». break-word ломает
+     только то, что иначе не помещается, и не трогает атомарные значения.
+     Длинным путям и идентификаторам anywhere возвращён ниже, точечно */
+  overflow-wrap: break-word;
+}
+
+/* Пути выгрузки, JSON-строки и идентификаторы ломать можно и нужно:
+   они длинные, не читаются целиком и иначе распирают колонку */
+.data-table td .cell-sub,
+.data-table td .clamp-text,
+.data-table td code {
   overflow-wrap: anywhere;
+}
+
+/* Дата и число это одно значение, разрывать его нельзя ни при какой ширине */
+.data-table td time,
+.data-table td .cell-nowrap {
+  white-space: nowrap;
 }
 
 .data-table th {
@@ -1896,8 +1914,13 @@ summary:focus-visible {
 
 /* ============ clients ============ */
 
+/* min-width таблицы 980px: без overflow правые колонки обрезались краем
+   контентной области. Третий случай той же болезни, после .admin-table
+   и .admin-center-table */
 .client-points-table-wrap {
   max-height: calc(100vh - 430px);
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .client-points-table {
@@ -2600,9 +2623,14 @@ summary:focus-visible {
   min-width: 0;
 }
 
+/* min-width таблицы 900px, а колонка сетки уже: без overflow таблица
+   уезжала под соседнюю панель деталей и колонка ОШИБКА обрезалась
+   посреди слова. Та же болезнь, что была у .admin-table */
 .admin-center-table-wrap {
   max-height: 360px;
   padding: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .admin-center-table {

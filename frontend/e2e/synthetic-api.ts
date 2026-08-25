@@ -347,6 +347,61 @@ function syntheticCalendarDayOrders(date: string) {
   };
 }
 
+
+// Синтетическая история Smartup. Пустая заглушка не давала увидеть ни таблицу
+// запусков, ни тона плиток: экран показывал «Smartup запусков ещё нет».
+// Один запуск падает намеренно, иначе состояние ошибки нигде не проверить.
+function syntheticSmartupRun(index: number) {
+  const statuses = ["completed", "completed", "failed", "processing"] as const;
+  const status = statuses[index % statuses.length];
+  const day = 22 + (index % 4);
+  return {
+    id: `run-${index + 1}`,
+    status,
+    export_date: `2026-08-${day}`,
+    slot: index % 2 ? "18:00" : "10:00",
+    part: null,
+    filename: `smartup-2026-08-${day}-${index % 2 ? "18" : "10"}.xlsx`,
+    export_path: `/exports/smartup-2026-08-${day}.xlsx`,
+    audit_path: `/audit/smartup-2026-08-${day}.json`,
+    selected_orders: 12 + index,
+    rows: 48 + index * 4,
+    delivery_dates: [`2026-08-${day + 1}`],
+    imports_count: 1,
+    orders_created: status === "completed" ? 12 + index : 0,
+    items_created: status === "completed" ? 48 + index * 4 : 0,
+    duplicate_rows: index === 1 ? 2 : 0,
+    skipped_duplicate_deals: index === 1 ? 1 : 0,
+    skipped_duplicate_deal_ids: index === 1 ? ["DEAL-77"] : [],
+    status_change_submitted: status === "completed" ? 12 + index : 0,
+    skladbot_status: status === "completed" ? "sent" : "pending",
+    logistics_reports: [],
+    error: status === "failed" ? "Smartup вернул 502 на order$export" : "",
+    created_at: `2026-08-${day}T07:00:00Z`,
+    updated_at: `2026-08-${day}T07:05:00Z`,
+    completed_at: status === "completed" ? `2026-08-${day}T07:05:00Z` : "",
+    failed_at: status === "failed" ? `2026-08-${day}T07:03:00Z` : "",
+  };
+}
+
+function syntheticSmartupHistory() {
+  const runs = Array.from({ length: 4 }, (_, index) => syntheticSmartupRun(index));
+  const by = (value: string) => runs.filter((run) => run.status === value).length;
+  return {
+    generated_at: "2026-08-25T09:00:00Z",
+    summary: {
+      total: runs.length,
+      completed: by("completed"),
+      failed: by("failed"),
+      processing: by("processing"),
+      orders_created: runs.reduce((sum, run) => sum + run.orders_created, 0),
+    },
+    runs,
+    events: [],
+    audit: [],
+  };
+}
+
 export async function installSyntheticApi(page: Page, options: SyntheticApiOptions = {}): Promise<SyntheticApiState> {
   const state: SyntheticApiState = {
     requests: [],
@@ -398,7 +453,7 @@ export async function installSyntheticApi(page: Page, options: SyntheticApiOptio
     if (path === "/api/v1/readiness") return json(route, { generated_at: now, status: "ok", service: "synthetic", version: "test", environment: "e2e", database: {}, migrations: {}, queue: {}, imports: {} });
     if (path === "/api/v1/admin/events") return json(route, { generated_at: now, summary: { failed: 1 }, stale_processing: [], recent_events: [queueEvent] });
     if (path === "/api/v1/admin/operations") return json(route, { generated_at: now, status: "attention", summary: {}, items: [], readiness_status: "ok", telegram_summary: "synthetic" });
-    if (path === "/api/v1/admin/smartup-auto-imports/history") return json(route, { generated_at: now, summary: {}, runs: [], events: [], audit: [] });
+    if (path === "/api/v1/admin/smartup-auto-imports/history") return json(route, syntheticSmartupHistory());
     if (path === "/api/v1/admin/logistics-calendar") {
       return json(route, syntheticCalendar(url.searchParams.get("month") ?? CALENDAR_MONTH));
     }
