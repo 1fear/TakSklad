@@ -170,12 +170,20 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
         identity_value = normalize_text(row.get("source_import_id")) or normalize_text(row.get("item_key"))
         if identity_value:
             row_locks.add(("item", identity_value))
-        if row.get("order_key"):
-            row_locks.add(("order", row["order_key"]))
+        for order_key in import_order_key_candidates(row):
+            row_locks.add(("order", order_key))
 
     acquire_import_identity_locks(db, row_locks)
     prefetch_existing_items(db, (row for _index, _raw, row in prepared_rows), existing_items)
-    prefetch_active_orders(db, (row["order_key"] for _index, _raw, row in prepared_rows), order_by_key)
+    prefetch_active_orders(
+        db,
+        (
+            order_key
+            for _index, _raw, row in prepared_rows
+            for order_key in import_order_key_candidates(row)
+        ),
+        order_by_key,
+    )
     client_points_by_key = prefetch_client_points_for_import(
         db,
         (row for _index, _raw, row in prepared_rows),
@@ -204,10 +212,9 @@ def create_import(db: Session, payload: ImportCreate, *, skladbot_create_mode: s
                 backend_address_updates += 1
             continue
 
-        source_order_key = row["order_key"]
-        source_order = find_active_order_by_key(db, source_order_key, order_by_key)
-        source_order_key, order_key, split_from_order = resolve_order_key_for_import_row(
-            db, row, import_job.source, {source_order_key: source_order} if source_order else {},
+        source_order_key, source_order = resolve_import_order_for_row(db, row, order_by_key)
+        order_key, split_from_order = resolve_order_key_for_import_row(
+            db, row, import_job.source, source_order_key, source_order,
         )
         if order_key != source_order_key:
             acquire_import_identity_lock(db, "order", order_key)
@@ -456,12 +463,11 @@ def preview_import(db: Session, payload: ImportCreate):
                 backend_address_updates += 1
             continue
 
-        source_order_key = row["order_key"]
-        source_order = find_active_order_by_key(db, source_order_key, order_by_key)
+        source_order_key, source_order = resolve_import_order_for_row(db, row, order_by_key)
         if source_order is not None:
             preview_order_keys.add(source_order_key)
-        _source_order_key, order_key, _split_from_order = resolve_order_key_for_import_row(
-            db, row, payload.source, {source_order_key: source_order} if source_order else {},
+        order_key, _split_from_order = resolve_order_key_for_import_row(
+            db, row, payload.source, source_order_key, source_order,
         )
         existing_order = find_active_order_by_key(db, order_key, order_by_key)
         if existing_order is not None:
@@ -686,6 +692,47 @@ def find_active_order_by_key(db: Session, order_key: str, cache=None):
     return order
 
 
+def import_order_key_candidates(row) -> list[str]:
+    """Ключи, по которым строка ищет свой активный заказ.
+
+    Первый ключ несёт сделку Smartup и создаёт заказ, второй остался от заказов,
+    заведённых до разделения по сделке, и нужен только для поиска.
+    """
+    candidates = []
+    for value in (row.get("order_key"), row.get("legacy_order_key")):
+        key = normalize_text(value)
+        if key and key not in candidates:
+            candidates.append(key)
+    return candidates
+
+
+def order_accepts_import_row_identity(order, row) -> bool:
+    """Заказ прежнего ключа принимает строку только при той же сделке Smartup."""
+    if order is None:
+        return False
+    smartup_order_id = normalize_text(row.get("smartup_order_id"))
+    if not smartup_order_id:
+        return True
+    current = internal_smartup_id_from_source((order.raw_payload or {}).get("source_order_id"))
+    if not current:
+        return True
+    return current == smartup_order_id
+
+
+def resolve_import_order_for_row(db: Session, row, cache=None):
+    """Активный заказ этой строки и ключ, под которым он живёт."""
+    candidates = import_order_key_candidates(row)
+    if not candidates:
+        return "", None
+    for index, order_key in enumerate(candidates):
+        order = find_active_order_by_key(db, order_key, cache)
+        if order is None:
+            continue
+        if index == 0 or order_accepts_import_row_identity(order, row):
+            return order_key, order
+    return candidates[0], None
+
+
 def find_active_order_for_import_rows(db: Session, rows):
     """Вернуть активный заказ, в который попали бы эти строки импорта.
 
@@ -698,7 +745,7 @@ def find_active_order_for_import_rows(db: Session, rows):
             row = normalize_import_row(raw_row)
         except ImportRowError:
             continue
-        order = find_active_order_by_key(db, row["order_key"], cache)
+        _order_key, order = resolve_import_order_for_row(db, row, cache)
         if order is not None:
             return order
     return None
@@ -936,12 +983,10 @@ def has_skladbot_create_event(db: Session, order) -> bool:
     return event_id is not None
 
 
-def resolve_order_key_for_import_row(db: Session, row, import_source: str, order_by_key: dict):
-    source_order_key = row["order_key"]
-    source_order = order_by_key.get(source_order_key)
+def resolve_order_key_for_import_row(db: Session, row, import_source: str, source_order_key: str, source_order):
     if not should_split_from_linked_skladbot_order(db, source_order, import_source):
-        return source_order_key, source_order_key, None
-    return source_order_key, linked_skladbot_split_order_key(row), source_order
+        return source_order_key, None
+    return linked_skladbot_split_order_key(row), source_order
 
 
 def linked_skladbot_split_order_key(row) -> str:
@@ -1157,6 +1202,12 @@ def normalize_import_row(raw_row):
         # Ключ добавляется только при непустом deal_id, поэтому Excel и ручной импорт
         # считают тот же хеш, что и до разделения.
         order_key_payload["smartup_deal_id"] = smartup_deal_id
+    legacy_order_key = stable_hash(order_key_payload)
+    if smartup_order_id and not smartup_deal_id:
+        # Шаблон отправки приносит сделку в колонке «Smartup ИД заказа»: два разных
+        # заказа Smartup обязаны остаться двумя заказами склада и двумя заявками
+        # SkladBot, даже когда клиент, дата, адрес и представитель совпали.
+        order_key_payload["smartup_order_id"] = smartup_order_id
     order_key = stable_hash(order_key_payload)
     item_key = stable_hash({
         "order_key": order_key,
@@ -1166,6 +1217,7 @@ def normalize_import_row(raw_row):
     })
     return {
         "order_key": order_key,
+        "legacy_order_key": legacy_order_key,
         "item_key": item_key,
         "order_date": order_date,
         "payment_type": normalize_text(payment_type),
