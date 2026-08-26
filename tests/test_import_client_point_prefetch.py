@@ -434,7 +434,7 @@ class ImportSmartupOrderIdentityTests(unittest.TestCase):
                 self.assertEqual(item.raw_payload["smartup_order_ids"], ["266627707"])
                 self.assertEqual(len(item.raw_payload["source_order_id"]), 64)
 
-    def test_second_deal_merged_into_one_position_keeps_both_identifiers(self):
+    def test_second_deal_becomes_its_own_order_with_its_own_identity(self):
         self.run_import(
             [
                 self.template_row("266627707", "Chapman Brown OP 20", "row-1"),
@@ -444,12 +444,18 @@ class ImportSmartupOrderIdentityTests(unittest.TestCase):
         )
 
         with self.SessionLocal() as db:
-            item = db.execute(select(OrderItem)).scalar_one()
-            self.assertEqual(item.quantity_blocks, 2)
+            orders = list(db.execute(select(Order).options(selectinload(Order.items))).scalars())
+            self.assertEqual(len(orders), 2)
             self.assertEqual(
-                sorted(item.raw_payload["smartup_order_ids"]),
-                ["266627707", "266968926"],
+                sorted(order.raw_payload["source_order_id"] for order in orders),
+                ["smartup:266627707", "smartup:266968926"],
             )
+            for order in orders:
+                self.assertEqual([item.quantity_blocks for item in order.items], [1])
+                self.assertEqual(
+                    [item.raw_payload["smartup_order_ids"] for item in order.items],
+                    [[order.raw_payload["source_order_id"].removeprefix("smartup:")]],
+                )
             points = list_client_points(db, query="266968926")
             self.assertEqual([point["client_name"] for point in points], ["JASUR-DIYOR UNIVERSAL XK"])
 
@@ -481,9 +487,14 @@ class ImportSmartupOrderIdentityTests(unittest.TestCase):
         self.run_import([self.template_row("266968926", "Chapman RED OP 20", "row-3")], "third.xlsx")
 
         with self.SessionLocal() as db:
-            self.assertEqual(db.scalar(select(func.count()).select_from(Order)), 1)
-            order = db.execute(select(Order)).scalar_one()
-            self.assertEqual(order.raw_payload["source_order_id"], "smartup:266627707")
+            orders = list(db.execute(select(Order).options(selectinload(Order.items))).scalars())
+            # Заказ без сделки принимает первую пришедшую и держит её,
+            # а следующая сделка Smartup уходит в свой заказ со своей заявкой
+            blocks_by_identity = {
+                order.raw_payload["source_order_id"]: sum(item.quantity_blocks for item in order.items)
+                for order in orders
+            }
+            self.assertEqual(blocks_by_identity, {"smartup:266627707": 2, "smartup:266968926": 1})
 
 
 if __name__ == "__main__":
