@@ -8,6 +8,83 @@ PostgreSQL читался только на `alembic current`, поэтому р
 Статус: `LIVE_IN_SYNC_WITH_MAIN; ACTIONS_NOT_USED;
 DESKTOP_RETIREMENT_BLOCKED; OPERATOR_PHYSICAL_NOT_RUN; SHIPMENT_NOT_RECHECKED`
 
+## Дельта 2026-08-28, выкат фронтенда на голову `main`
+
+2026-08-28 вручную выкачен фронтенд с ревизии `c5fab76` на `eb3c5b1`, голову
+`main` Бэкенд уже стоял на `eb3c5b1` с 2026-08-26, так что этим выкатом обе
+части прода снова сведены на одну ревизию
+
+**Разрыв, который закрыт.** Пять фронтовых коммитов были смержены в `main`
+2026-08-25 и три дня не доезжали до прода:
+
+| Коммит | Что |
+|---|---|
+| `100b6c2` | дизайн-язык antria: холодные нейтрали, синий `#2D5BD0`, Manrope, шкала кеглей |
+| `afbf846` | [#156](https://github.com/1fear/TakSklad/pull/156) вёрстка не прыгает после скана |
+| `34f47ce` | [#157](https://github.com/1fear/TakSklad/pull/157) выходной в календаре |
+| `47a4e48` | [#158](https://github.com/1fear/TakSklad/pull/158) ряд плиток |
+| `45f8d62` | [#159](https://github.com/1fear/TakSklad/pull/159) три таблицы уезжали за край |
+
+Мерж PR не означает выката: фронтенд и бэкенд несут разные образы и
+переключаются независимо Тег образа и `docker ps` показывают намерение, а факт
+доказывает содержимое бандла Разрыв виден одной парой команд:
+
+```
+curl -s https://chapman.taksklad.uz/ | grep -oE '/assets/index-[^"]+\.css'
+curl -s https://chapman.taksklad.uz/assets/<имя>.css | grep -c Manrope
+```
+
+До выката живой CSS содержал `IBM Plex Sans` и `126054` при нуле вхождений
+`Manrope` и `2d5bd0`, то есть на проде работал самый первый вариант редизайна
+из [PR #151](https://github.com/1fear/TakSklad/pull/151)
+
+**Проверки перед сборкой образа**, все на голове `main`: `eslint
+--max-warnings 0` чисто, `tsc --noEmit` чисто, `vitest run` 272 из 272,
+`test:a11y` 7 из 7, `playwright test` 22 из 22, `npm run perf` отдал
+`pass: true` Внутри перф-гейта: axe-core 4.12.1 ноль нарушений в реальном
+браузере, LCP `504 мс`, INP `32 мс`, CLS `0.0008` при бюджетах `2500`, `200`
+и `0.1`, переполнения по ширине нет на 1440, 1280, 768 и 390
+
+**Как выкачено, без Actions:**
+
+1. Архив `git archive HEAD` доставлен в
+   `/opt/stacks/taksklad/deployments/manual-frontend-eb3c5b1/`, живое дерево
+   при сборке не задевалось
+2. `docker build -t taksklad-frontend:local-eb3c5b1 -f frontend/Dockerfile frontend`
+   дал manifest list `sha256:806097be…`
+3. Копия `.env` снята в `.env.bak.20260828T092558Z-pre-eb3c5b1-frontend`,
+   после чего переставлен только `TAKSKLAD_FRONTEND_IMAGE`
+4. `docker compose up --dry-run -d --no-deps frontend` показал `Recreate`
+   ровно у одного контейнера, после чего тот же вызов без `--dry-run`
+
+**Доказательства выката:**
+
+| Проверка | До | После |
+|---|---|---|
+| CSS на `chapman.taksklad.uz` | `index-DpY-UwwB.css`, 54 KB | `index-BfESGKNN.css`, 77.6 KB |
+| `Manrope` и `2d5bd0` в CSS | нет | есть |
+| Образ фронтенда | `taksklad-frontend:local-c5fab76` | `taksklad-frontend:local-eb3c5b1` |
+| `vds-frontend-1` | Up 5 days | `healthy`, консоль браузера пустая |
+| `GET /version` | `eb3c5b1…` | без изменений |
+| `GET /ready` | — | `200`, `ready=true` |
+
+Имя ассета это хеш содержимого, поэтому локальная сборка той же ревизии дала
+ровно `index-BfESGKNN.css` и `index-C95fdJAF.js` Совпадение имён с тем, что
+отдаёт боевой хост, доказывает ревизию сильнее любого тега образа
+
+Бэкенд, воркеры и postgres не пересоздавались, миграций не было, схема
+осталась `20260817_0022 (head)` Контрольный `docker compose up --dry-run -d`
+по всему стеку не даёт ни одного `Recreate`, значит `.env` описывает
+реальность и следующий чужой `compose up` прод не откатит
+
+Откат: вернуть `TAKSKLAD_FRONTEND_IMAGE=taksklad-frontend:local-c5fab76` и
+повторить `docker compose up -d --no-deps frontend` Прежний образ на сервере
+не удалён Паспорт:
+`/opt/stacks/taksklad/deployments/manual-frontend-eb3c5b1.json`
+
+Мелкий хвост, не чинился: в `styles.css` остался литерал `#12605424` в тени
+фокуса `.admin-detail-section`, осколок палитры pine мимо токенов
+
 ## Дельта 2026-08-22, сведение контуров на голову `main`
 
 Вечером того же дня backend пересобран из `main` (`0aff8fd`), после чего обе
@@ -272,19 +349,20 @@ Postgres, а два теряли работу оператора беззвуч�
 
 ## Идентичность контуров
 
-Эти идентификаторы нельзя смешивать Значения в таблице сняты 2026-08-22
-после сведения контуров, прежние значения от 2026-08-17 сохранены в дельтах
+Эти идентификаторы нельзя смешивать Значения в таблице сняты 2026-08-28
+после выката фронтенда, прежние значения от 2026-08-17 и 2026-08-22 сохранены
+в дельтах
 
 | Контур | Идентичность | Источник |
 |---|---|---|
-| Head `origin/main` | `0aff8fd062fcc78ac30f496ba21d5451a090f5ac` | `git rev-parse origin/main` |
-| Live backend | `2.0.51`, commit `0aff8fd06…`, image `sha256:2c6458bc…` | `GET /version` |
-| `server_release_id` | `server-0aff8fd062fc…` | `GET /version` |
-| Образ backend | `taksklad-backend:local-0aff8fd`, собран на сервере из `main` | `docker ps` |
-| Live frontend | `taksklad-frontend:local-c5fab76`, бандл `index-GKMeM-Mm.js` | `docker ps`, HTML боевого хоста |
+| Head `origin/main` | `eb3c5b1ba9545d42a26f9afd448a31ae6357c986` | `git rev-parse origin/main` |
+| Live backend | `2.0.51`, commit `eb3c5b1ba…`, image `sha256:177ff051…` | `GET /version` |
+| `server_release_id` | `server-eb3c5b1ba954…` | `GET /version` |
+| Образ backend | `taksklad-backend:local-eb3c5b1`, собран на сервере из `main` | `docker ps` |
+| Live frontend | `taksklad-frontend:local-eb3c5b1`, бандл `index-C95fdJAF.js`, стиль `index-BfESGKNN.css` | `docker ps`, HTML боевого хоста |
 | Схема БД | `20260817_0022 (head)` | `docker exec vds-backend-api-1 alembic current` |
 | Последний выпуск через Actions | `c66d9f3`, `Deploy Server Production` run `31691753261` 2026-08-13 | `gh run list` |
-| Паспорта ручных выкатов | `manual-6d74a58.json`, `manual-0f26ec5.json`, `manual-frontend-c5fab76.json`, `manual-0aff8fd.json` в `/opt/stacks/taksklad/deployments/` | сервер |
+| Паспорта ручных выкатов | `manual-6d74a58.json`, `manual-0f26ec5.json`, `manual-frontend-c5fab76.json`, `manual-0aff8fd.json`, `manual-eb3c5b1.json`, `manual-frontend-eb3c5b1.json` в `/opt/stacks/taksklad/deployments/` | сервер |
 | Backend в коде | `APP_VERSION = 2.0.51` | `backend/app/settings.py:19` |
 | Desktop в коде | `APP_VERSION = 2.0.54` | `src/taksklad/config.py:128` |
 | Канал обновления десктопа | `2.0.54`, `min_supported_version 2.0.54`, `mandatory=true` | `raw.githubusercontent.com/1fear/TakSklad/main/version.json` |
