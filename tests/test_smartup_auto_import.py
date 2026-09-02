@@ -48,6 +48,7 @@ from backend.app.smartup_auto_import import (
     smartup_advisory_lock_key,
     smartup_route_fingerprint,
     smartup_logistics_dependency_proof,
+    smartup_export_day_decision,
     smartup_slot_idempotency_key,
     sweep_incomplete_smartup_fulfillments,
 )
@@ -1967,6 +1968,246 @@ class SmartupAutoImportTests(unittest.TestCase):
             self.assertEqual(result[0]["weekday"], 5)
             self.assertEqual(events, [])
             self.assertEqual(fake.changed, [])
+
+    def test_due_slots_run_on_manual_non_working_day_before_logistics_day(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            fake = FakeSmartupClient([
+                sample_order(deal_id="thursday", deal_time="02.09.2026 10:00:00", delivery_date="03.09.2026"),
+            ])
+            config = self.config(
+                tmp_dir,
+                backend_import_enabled=False,
+                change_status_enabled=False,
+                disabled_weekdays=(5, 6),
+            )
+            with self.SessionLocal() as db:
+                db.add(LogisticsCalendarDay(
+                    service_date=date(2026, 9, 2),
+                    is_non_working=True,
+                    reason="Нерабочий день логистики",
+                    source="web",
+                    raw_payload={},
+                ))
+                db.commit()
+
+                result = run_due_smartup_auto_imports(
+                    db,
+                    config,
+                    now=datetime(2026, 9, 2, 17, 50, tzinfo=ZoneInfo("Asia/Tashkent")),
+                    smartup_client=fake,
+                )
+                events = db.execute(
+                    select(PendingEvent).where(PendingEvent.event_type == SMARTUP_AUTO_IMPORT_EVENT_TYPE)
+                ).scalars().all()
+
+        self.assertEqual([item["status"] for item in result], ["shadow_preview"])
+        self.assertEqual(result[0]["export_date"], "2026-09-02")
+        self.assertEqual(result[0]["target_delivery_date"], "2026-09-03")
+        self.assertEqual(result[0]["deal_ids"], ["thursday"])
+        self.assertEqual(fake.exports, [(date(2026, 9, 2), date(2026, 9, 3))])
+        self.assertEqual(
+            [event.idempotency_key for event in events],
+            ["smartup:auto_import:v1:2026-09-02:17:50:delivery:2026-09-03"],
+        )
+
+    def test_due_slots_idle_on_manual_non_working_day_when_logistics_is_off_tomorrow(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            fake = FakeSmartupClient([sample_order()])
+            config = self.config(tmp_dir, disabled_weekdays=(5, 6))
+            with self.SessionLocal() as db:
+                for day in (date(2026, 8, 31), date(2026, 9, 1), date(2026, 9, 2)):
+                    db.add(LogisticsCalendarDay(
+                        service_date=day,
+                        is_non_working=True,
+                        reason="Нерабочий день логистики",
+                        source="web",
+                        raw_payload={},
+                    ))
+                db.commit()
+
+                result = run_due_smartup_auto_imports(
+                    db,
+                    config,
+                    now=datetime(2026, 8, 31, 12, 0, tzinfo=ZoneInfo("Asia/Tashkent")),
+                    smartup_client=fake,
+                )
+                events = db.execute(select(PendingEvent)).scalars().all()
+
+        self.assertEqual(result, [{
+            "status": "idle",
+            "reason": "logistics_non_working_day",
+            "weekday": 0,
+            "now": "2026-08-31T12:00:00+05:00",
+            "next_logistics_day": "2026-09-03",
+            "export_day": "2026-09-02",
+        }])
+        self.assertEqual(events, [])
+        self.assertEqual(fake.exports, [])
+
+    def test_due_slots_keep_sunday_idle_before_working_monday(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            fake = FakeSmartupClient([sample_order()])
+            config = self.config(tmp_dir, disabled_weekdays=(5, 6))
+            with self.SessionLocal() as db:
+                result = run_due_smartup_auto_imports(
+                    db,
+                    config,
+                    now=datetime(2026, 9, 6, 12, 0, tzinfo=ZoneInfo("Asia/Tashkent")),
+                    smartup_client=fake,
+                )
+                events = db.execute(select(PendingEvent)).scalars().all()
+
+        self.assertEqual(result, [{
+            "status": "idle",
+            "reason": "weekday_disabled",
+            "weekday": 6,
+            "now": "2026-09-06T12:00:00+05:00",
+        }])
+        self.assertEqual(events, [])
+        self.assertEqual(fake.exports, [])
+
+    def test_due_slots_run_on_friday_holiday_and_cover_weekend_until_monday(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            fake = FakeSmartupClient([])
+            config = self.config(
+                tmp_dir,
+                backend_import_enabled=False,
+                change_status_enabled=False,
+                disabled_weekdays=(5, 6),
+            )
+            with self.SessionLocal() as db:
+                db.add(LogisticsCalendarDay(
+                    service_date=date(2026, 9, 11),
+                    is_non_working=True,
+                    reason="Праздник",
+                    source="web",
+                    raw_payload={},
+                ))
+                db.commit()
+
+                result = run_due_smartup_auto_imports(
+                    db,
+                    config,
+                    now=datetime(2026, 9, 11, 12, 0, tzinfo=ZoneInfo("Asia/Tashkent")),
+                    smartup_client=fake,
+                )
+
+        self.assertEqual([item["status"] for item in result], ["no_orders", "no_orders", "no_orders"])
+        self.assertEqual(fake.exports, [
+            (date(2026, 9, 11), date(2026, 9, 12)),
+            (date(2026, 9, 11), date(2026, 9, 13)),
+            (date(2026, 9, 11), date(2026, 9, 14)),
+        ])
+
+    def test_due_logistics_report_runs_on_manual_non_working_day_before_logistics_day(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sender = FakeTelegramSender()
+            config = self.config(
+                tmp_dir,
+                backend_import_enabled=True,
+                change_status_enabled=True,
+                logistics_chat_id="-1002002",
+                disabled_weekdays=(5, 6),
+                logistics_catchup_days=0,
+            )
+            with mock.patch(
+                "backend.app.smartup_auto_import.smartup_logistics_dependency_proof",
+                return_value={
+                    "status": "ready",
+                    "reason": "all_terminal",
+                    "completed_cycles": 3,
+                    "orders_proven": 1,
+                },
+            ), mock.patch(
+                "backend.app.smartup_auto_import.delivery_dates_for_auto_logistics",
+                return_value=["2026-09-03"],
+            ), mock.patch(
+                "backend.app.smartup_auto_import.send_final_logistics_reports",
+                return_value=[],
+            ) as send_reports:
+                with self.SessionLocal() as db:
+                    for day in (date(2026, 9, 1), date(2026, 9, 2)):
+                        db.add(LogisticsCalendarDay(
+                            service_date=day,
+                            is_non_working=True,
+                            reason="Нерабочий день логистики",
+                            source="web",
+                            raw_payload={},
+                        ))
+                    db.commit()
+
+                    day_before_holiday = run_due_smartup_logistics_reports(
+                        db,
+                        config,
+                        now=datetime(2026, 9, 1, 17, 51, tzinfo=ZoneInfo("Asia/Tashkent")),
+                        telegram_sender=sender,
+                    )
+                    eve_of_logistics_day = run_due_smartup_logistics_reports(
+                        db,
+                        config,
+                        now=datetime(2026, 9, 2, 17, 51, tzinfo=ZoneInfo("Asia/Tashkent")),
+                        telegram_sender=sender,
+                    )
+
+        self.assertEqual(day_before_holiday, [])
+        self.assertEqual([item["status"] for item in eve_of_logistics_day], ["logistics_due"])
+        self.assertEqual(eve_of_logistics_day[0]["export_date"], "2026-09-02")
+        self.assertEqual(eve_of_logistics_day[0]["delivery_dates"], ["2026-09-03"])
+        self.assertEqual(send_reports.call_count, 1)
+        self.assertEqual(send_reports.call_args.kwargs["export_date"], date(2026, 9, 2))
+
+    def test_export_day_decision_follows_last_weekday_before_next_logistics_day(self):
+        config = self.config("/tmp", disabled_weekdays=(5, 6))
+        with self.SessionLocal() as db:
+            db.add(LogisticsCalendarDay(
+                service_date=date(2026, 8, 29),
+                is_non_working=False,
+                reason="Рабочая суббота",
+                source="web",
+                raw_payload={},
+            ))
+            for day in (date(2026, 8, 31), date(2026, 9, 1), date(2026, 9, 2)):
+                db.add(LogisticsCalendarDay(
+                    service_date=day,
+                    is_non_working=True,
+                    reason="Нерабочий день логистики",
+                    source="web",
+                    raw_payload={},
+                ))
+            db.commit()
+
+            decisions = {
+                day.isoformat(): smartup_export_day_decision(db, day, config)
+                for day in (
+                    date(2026, 8, 28),
+                    date(2026, 8, 29),
+                    date(2026, 8, 30),
+                    date(2026, 8, 31),
+                    date(2026, 9, 1),
+                    date(2026, 9, 2),
+                    date(2026, 9, 3),
+                )
+            }
+
+        self.assertEqual(decisions, {
+            "2026-08-28": {"run": True, "reason": "logistics_working_day"},
+            "2026-08-29": {"run": True, "reason": "logistics_working_day"},
+            "2026-08-30": {"run": False, "reason": "weekday_disabled"},
+            "2026-08-31": {
+                "run": False,
+                "reason": "logistics_non_working_day",
+                "next_logistics_day": "2026-09-03",
+                "export_day": "2026-09-02",
+            },
+            "2026-09-01": {
+                "run": False,
+                "reason": "logistics_non_working_day",
+                "next_logistics_day": "2026-09-03",
+                "export_day": "2026-09-02",
+            },
+            "2026-09-02": {"run": True, "reason": "eve_of_logistics_day", "next_logistics_day": "2026-09-03"},
+            "2026-09-03": {"run": True, "reason": "logistics_working_day"},
+        })
 
     def test_blocked_cycle_gets_single_stand_down_after_report_is_sent(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
