@@ -393,11 +393,57 @@ export type LogisticsCalendarDayOrder = {
   line_total: number;
 };
 
+export type LogisticsManualStopRow = {
+  id: string;
+  zone: "city" | "region";
+  client: string;
+  point_name: string;
+  address: string;
+  coordinates: string;
+  representative: string;
+  delivery_from: string;
+  delivery_to: string;
+  blocks: number;
+  comment: string;
+};
+
 export type LogisticsCalendarDayOrders = {
   date: string;
   generated_at: string;
   region_directory_empty: boolean;
   orders: LogisticsCalendarDayOrder[];
+  manual_stops: LogisticsManualStopRow[];
+};
+
+export type LogisticsManualStopPayload = {
+  id?: string;
+  service_date: string;
+  client_name: string;
+  address: string;
+  coordinates: string;
+  point_name?: string;
+  representative?: string;
+  delivery_from?: string;
+  delivery_to?: string;
+  blocks: number;
+  comment?: string;
+  save_to_directory?: boolean;
+  actor?: string;
+};
+
+export type LogisticsManualStop = {
+  id: string;
+  service_date: string;
+  client_name: string;
+  point_name: string;
+  address: string;
+  coordinates: string;
+  representative: string;
+  delivery_from: string;
+  delivery_to: string;
+  blocks: number;
+  comment: string;
+  is_active: boolean;
 };
 
 export type AdminIncident = {
@@ -661,6 +707,20 @@ export function updateLogisticsCalendarDay(config: ApiConfig, payload: Logistics
   return apiRequest<LogisticsCalendarDay>(config, "/api/v1/admin/logistics-calendar/day", {
     method: "POST",
     body: payload,
+  });
+}
+
+export function saveLogisticsManualStop(config: ApiConfig, payload: LogisticsManualStopPayload) {
+  return apiRequest<LogisticsManualStop>(config, "/api/v1/admin/logistics-calendar/manual-stop", {
+    method: "POST",
+    body: payload,
+  });
+}
+
+export function deleteLogisticsManualStop(config: ApiConfig, id: string, actor = "web") {
+  return apiRequest<LogisticsManualStop>(config, "/api/v1/admin/logistics-calendar/manual-stop/delete", {
+    method: "POST",
+    body: { id, actor },
   });
 }
 

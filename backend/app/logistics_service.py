@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from .client_points_service import client_point_delivery_slot_map, delivery_slot_for_order, point_key
+from .logistics_manual_stops_service import manual_stop_rows
 from .logistics_zone_service import (
     ZONE_CITY,
     ZONE_REGION,
@@ -124,11 +125,7 @@ def build_logistics_reports(db: Session, shipment_date: str):
         .where(Order.order_date == report_date)
         .order_by(Order.client.asc(), Order.created_at.asc())
     ).scalars().all()
-    if not orders:
-        raise ApiError(404, f"No orders for shipment date {report_date.isoformat()}")
     candidate_orders = [order for order in orders if is_logistics_candidate_order(order)]
-    if not candidate_orders:
-        raise ApiError(404, f"No logistics delivery orders for shipment date {report_date.isoformat()}")
 
     region_index = load_region_index(db)
     zone_orders = {ZONE_CITY: [], ZONE_REGION: []}
@@ -137,6 +134,17 @@ def build_logistics_reports(db: Session, shipment_date: str):
     # обоих отчётов. Тогда возвращаемся к прежнему поведению, один городской
     # файл, а о самой пустоте сообщаем отдельным алертом
     region_directory_empty = len(region_index) == 0
+    # Ручные точки живут только в логистике, заказа за ними нет. Обе проверки
+    # на пустоту считают и их, иначе день, набранный одними ручными точками,
+    # отдавал бы 404 вместо файла
+    zone_manual_stops = {ZONE_CITY: [], ZONE_REGION: []}
+    for stop in manual_stop_rows(db, report_date, region_index, region_directory_empty):
+        zone_manual_stops.setdefault(stop["zone"], []).append(stop)
+    manual_stops_count = sum(len(stops) for stops in zone_manual_stops.values())
+    if not orders and not manual_stops_count:
+        raise ApiError(404, f"No orders for shipment date {report_date.isoformat()}")
+    if not candidate_orders and not manual_stops_count:
+        raise ApiError(404, f"No logistics delivery orders for shipment date {report_date.isoformat()}")
     for order in candidate_orders:
         if region_directory_empty:
             zone_orders[ZONE_CITY].append(order)
@@ -158,8 +166,10 @@ def build_logistics_reports(db: Session, shipment_date: str):
         "region_directory_empty": region_directory_empty,
     }
     for zone in (ZONE_CITY, ZONE_REGION):
-        if zone_orders[zone]:
-            reports[zone] = build_zone_report_xlsx(db, report_date, zone, zone_orders[zone])
+        if zone_orders[zone] or zone_manual_stops[zone]:
+            reports[zone] = build_zone_report_xlsx(
+                db, report_date, zone, zone_orders[zone], zone_manual_stops[zone]
+            )
     return reports
 
 
@@ -202,7 +212,7 @@ def release_read_transaction(db: Session) -> bool:
     return True
 
 
-def build_zone_report_xlsx(db: Session, report_date, zone: str, zone_orders):
+def build_zone_report_xlsx(db: Session, report_date, zone: str, zone_orders, zone_manual_stops=()):
     delivery_orders = [order for order in zone_orders if is_logistics_delivery_order(order)]
     coordinate_problem_orders = [order for order in zone_orders if not is_logistics_delivery_order(order)]
     delivery_slots = client_point_delivery_slot_map(db, delivery_orders)
@@ -243,6 +253,10 @@ def build_zone_report_xlsx(db: Session, report_date, zone: str, zone_orders):
                 sheet.append(row)
                 apply_orders_row_style(sheet, sheet.max_row)
 
+    for stop in zone_manual_stops:
+        sheet.append(manual_stop_report_row(report_date, stop))
+        apply_orders_row_style(sheet, sheet.max_row)
+
     if coordinate_problem_orders:
         problem_sheet = workbook.create_sheet("Требуют координаты")
         problem_sheet.append(LOGISTICS_COORDINATE_PROBLEM_HEADERS)
@@ -263,6 +277,30 @@ def build_zone_report_xlsx(db: Session, report_date, zone: str, zone_orders):
     force_workbook_text_literals(workbook)
     workbook.save(buffer)
     return buffer.getvalue(), logistics_report_filename(report_date, zone)
+
+
+def manual_stop_report_row(report_date, stop):
+    """Строка ручной точки для маршрутного листа
+
+    Внешний ID и название товара остаются пустыми: заказа за такой точкой нет,
+    подставлять туда выдуманный номер или выдуманный товар нельзя, файл уходит
+    клиенту. Блоки пишутся как есть, включая ноль: точка с нулём это заезд без
+    груза, и водитель обязан её увидеть
+    """
+    latitude, longitude = split_coordinates(normalize_coordinates(stop["coordinates"]))
+    row = [""] * len(LOGISTICS_HEADERS)
+    set_cell(row, 1, "delivery")
+    set_cell(row, 4, stop["client"])
+    set_cell(row, 7, stop["representative"] or "")
+    set_cell(row, 17, latitude)
+    set_cell(row, 18, longitude)
+    set_cell(row, 19, stop["address"])
+    set_cell(row, 20, delivery_window_datetime(report_date, stop["delivery_from"]))
+    set_cell(row, 21, delivery_window_datetime(report_date, stop["delivery_to"]))
+    set_cell(row, 29, 0)
+    set_cell(row, 30, 0)
+    set_cell(row, 31, int(stop["blocks"] or 0))
+    return row
 
 
 def group_delivery_stops(delivery_orders):

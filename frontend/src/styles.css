@@ -2608,6 +2608,148 @@ summary:focus-visible {
   color: var(--red-700);
 }
 
+.status-badge.manual {
+  background: var(--slate-soft);
+  color: var(--slate-700);
+}
+
+/* ============ ручная точка логистики ============ */
+
+.manual-stop-form {
+  display: grid;
+  gap: 12px;
+  border-bottom: 1px solid var(--hairline);
+  padding: 14px;
+  background: var(--surface-dim);
+}
+
+.manual-stop-search {
+  display: grid;
+  gap: 6px;
+}
+
+.manual-stop-form label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.manual-stop-form label span {
+  color: var(--ink-faint);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.manual-stop-form input {
+  width: 100%;
+  min-height: 34px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0 10px;
+  background: var(--surface);
+  color: var(--ink-700);
+  outline: 0;
+}
+
+.manual-stop-form input:focus {
+  border-color: var(--pine-600);
+  box-shadow: 0 0 0 3px rgba(18, 96, 84, 0.14);
+}
+
+.manual-stop-fields {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.manual-stop-fields label.wide {
+  grid-column: 1 / -1;
+}
+
+.manual-stop-fields label.half {
+  grid-column: span 2;
+}
+
+@media (max-width: 900px) {
+  .manual-stop-fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 620px) {
+  .manual-stop-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .manual-stop-fields label.half {
+    grid-column: auto;
+  }
+}
+
+.manual-stop-form label.manual-stop-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.manual-stop-form label.manual-stop-checkbox input {
+  width: auto;
+  min-height: 0;
+}
+
+.manual-stop-form label.manual-stop-checkbox span {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 500;
+  color: var(--ink-700);
+}
+
+.manual-stop-suggestions {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.manual-stop-suggestions button {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  background: var(--surface);
+  text-align: left;
+  cursor: pointer;
+}
+
+.manual-stop-suggestions button:hover {
+  border-color: var(--pine-600);
+  background: var(--pine-tint);
+}
+
+.manual-stop-suggestions span {
+  color: var(--ink-muted);
+  font-size: var(--fs-label);
+}
+
+.manual-stop-suggestions span.warn {
+  color: var(--amber-700);
+}
+
+.data-table tr.manual-row {
+  background: var(--surface-dim);
+}
+
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 /* ============ admin center (incidents & queue) ============ */
 
 .admin-center-layout {

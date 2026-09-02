@@ -531,6 +531,39 @@ class LogisticsCalendarDay(Base):
     updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
+class LogisticsManualStop(Base):
+    """Точка, добавленная руками во вкладке «Календарь»
+
+    Живёт только в логистике: заказ на складе не рождается, заявка в СкладБот
+    не создаётся, КИЗы и сверка со Smartup её не видят. Отсюда и отдельная
+    таблица вместо служебного флага на заказе: заказ без источника ломает
+    дедупликацию по order_key и сверку выгрузок Smartup
+    """
+
+    __tablename__ = "logistics_manual_stops"
+    __table_args__ = (
+        Index("idx_logistics_manual_stops_service_date", "service_date", "is_active"),
+        CheckConstraint("blocks >= 0", name="ck_logistics_manual_stops_blocks_nonnegative"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    service_date: Mapped[object] = mapped_column(Date, nullable=False)
+    client_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    point_name: Mapped[str | None] = mapped_column(String(255))
+    address: Mapped[str] = mapped_column(Text, nullable=False)
+    coordinates: Mapped[str] = mapped_column(Text, nullable=False)
+    representative: Mapped[str | None] = mapped_column(String(255))
+    delivery_from: Mapped[str] = mapped_column(String(5), nullable=False, default="10:00")
+    delivery_to: Mapped[str] = mapped_column(String(5), nullable=False, default="18:00")
+    blocks: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    comment: Mapped[str | None] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    actor: Mapped[str | None] = mapped_column(String(120))
+    raw_payload: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class RepresentativeContact(Base):
     __tablename__ = "representative_contacts"
     __table_args__ = (

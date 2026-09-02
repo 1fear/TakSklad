@@ -119,11 +119,11 @@ class PostgresRbacAuditTests(unittest.TestCase):
             for role, permissions in ROLE_PERMISSION_MATRIX.items()
         }
 
-        self.assertEqual(len(protected), 59)
+        self.assertEqual(len(protected), 61)
         self.assertEqual({role: len(statuses) for role, statuses in expected.items()}, {
-            "admin": 59,
-            "operator": 59,
-            "logistics_slots": 59,
+            "admin": 61,
+            "operator": 61,
+            "logistics_slots": 61,
         })
         self.assertTrue(all(status == 200 for status in expected["admin"]))
         self.assertIn(403, expected["operator"])

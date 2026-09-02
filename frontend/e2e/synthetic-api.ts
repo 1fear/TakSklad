@@ -344,6 +344,41 @@ function syntheticCalendarDayOrders(date: string) {
       skladbot_request_number: `WH-R-${index + 1}`,
       smartup_id: `2610000${index + 1}`,
     })),
+    // Ручная точка: заказа за ней нет, склад её не собирает, в счётчики дня
+    // она не входит и живёт только в маршрутном листе
+    manual_stops: [
+      {
+        id: "synthetic-manual-1",
+        zone: "city" as const,
+        client: "Гамма Тест",
+        point_name: "Гамма, филиал на Юнусабаде",
+        address: "Синтетическая улица, 12",
+        coordinates: "41.311081, 69.240562",
+        representative: "Синтетический ТП",
+        delivery_from: "10:00",
+        delivery_to: "18:00",
+        blocks: 12,
+        comment: "Забрать паллету",
+      },
+    ],
+  };
+}
+
+
+function syntheticManualStop() {
+  return {
+    id: "synthetic-manual-1",
+    service_date: `${CALENDAR_MONTH}-03`,
+    client_name: "Гамма Тест",
+    point_name: "Гамма, филиал на Юнусабаде",
+    address: "Синтетическая улица, 12",
+    coordinates: "41.311081, 69.240562",
+    representative: "Синтетический ТП",
+    delivery_from: "10:00",
+    delivery_to: "18:00",
+    blocks: 12,
+    comment: "Забрать паллету",
+    is_active: true,
   };
 }
 
@@ -527,6 +562,12 @@ export async function installSyntheticApi(page: Page, options: SyntheticApiOptio
     if (path === "/api/v1/admin/logistics-calendar/day") {
       state.calendarUpdates += 1;
       return json(route, syntheticCalendar());
+    }
+    if (path === "/api/v1/admin/logistics-calendar/manual-stop") {
+      return json(route, syntheticManualStop());
+    }
+    if (path === "/api/v1/admin/logistics-calendar/manual-stop/delete") {
+      return json(route, { ...syntheticManualStop(), is_active: false });
     }
     if (path === "/api/v1/sync/sources") return json(route, { status: "completed", skladbot: { status: "synthetic" } });
 

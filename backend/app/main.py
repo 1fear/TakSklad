@@ -95,6 +95,10 @@ from .logistics_calendar_service import (
     list_logistics_calendar as list_logistics_calendar_in_db,
     set_logistics_calendar_day as set_logistics_calendar_day_in_db,
 )
+from .logistics_manual_stops_service import (
+    delete_logistics_manual_stop as delete_logistics_manual_stop_in_db,
+    save_logistics_manual_stop as save_logistics_manual_stop_in_db,
+)
 from .logistics_calendar_orders_service import (
     list_logistics_calendar_day_orders as list_logistics_calendar_day_orders_in_db,
 )
@@ -172,6 +176,9 @@ from .schemas import (
     LogisticsCalendarDayRead,
     LogisticsCalendarDayUpdate,
     LogisticsCalendarRead,
+    LogisticsManualStopDelete,
+    LogisticsManualStopRead,
+    LogisticsManualStopUpsert,
     OrderRead,
     OperationsAttentionRead,
     ReadinessResponse,
@@ -1090,6 +1097,30 @@ def admin_update_logistics_calendar_day(payload: LogisticsCalendarDayUpdate, db=
 )
 def admin_logistics_calendar_day_orders(service_date: date, db=Depends(get_db)):
     return list_logistics_calendar_day_orders_in_db(db, service_date)
+
+
+@api.post(
+    "/admin/logistics-calendar/manual-stop",
+    response_model=LogisticsManualStopRead,
+    dependencies=[Depends(require_admin_write_permission)],
+)
+def admin_save_logistics_manual_stop(payload: LogisticsManualStopUpsert, db=Depends(get_db)):
+    try:
+        return save_logistics_manual_stop_in_db(db, payload)
+    except ClientPointApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@api.post(
+    "/admin/logistics-calendar/manual-stop/delete",
+    response_model=LogisticsManualStopRead,
+    dependencies=[Depends(require_admin_write_permission)],
+)
+def admin_delete_logistics_manual_stop(payload: LogisticsManualStopDelete, db=Depends(get_db)):
+    try:
+        return delete_logistics_manual_stop_in_db(db, payload.id, actor=payload.actor)
+    except ClientPointApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 @api.post(
