@@ -98,6 +98,17 @@ DEFAULT_SKU_MAPPING = {
         "barcode": "4006396054036",
         "is_main_barcode": False,
     },
+    # Карточки KSSL заведены в SkladBot 02.09.2026, product_data_id снят через POST /products
+    "brown:kssl": {
+        "product_data_id": 4134853,
+        "barcode": "4006396104199",
+        "is_main_barcode": False,
+    },
+    "green:kssl": {
+        "product_data_id": 4135839,
+        "barcode": "4006396104229",
+        "is_main_barcode": False,
+    },
 }
 SKU_MAPPING = DEFAULT_SKU_MAPPING
 

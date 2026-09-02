@@ -4,6 +4,12 @@
 
 ## 2026-09-02
 
+### SkladBot знает карточки Chapman KSSL
+
+- `DEFAULT_SKU_MAPPING` в `backend/app/skladbot_request_dry_run.py` получил `brown:kssl` (`product_data_id` 4134853, баркод `4006396104199`) и `green:kssl` (4135839, `4006396104229`). Карточки заведены в SkladBot 02.09.2026 у клиента 6211, имена `Chapman Brown KSSL 20 UZ - KingSize SuperSlim` и `Chapman Green KSSL 20 UZ - KingSize SuperSlim`, артикулы `CHPMBrownKSSL20UZ` и `CHPMGreenKSSL20UZ`
+- До этой записи заказ с KSSL проходил dry-run со статусом `blocked` и ошибкой `SKU не найден в mapping`
+- Покрытие: `tests/test_backend_skladbot_request_dry_run.py`, `test_kssl_products_resolve_to_their_skladbot_cards`
+
 ### Штучные GTIN Chapman KSSL заведены в таблицы КИЗ
 
 - `UNIT_PRODUCT_PREFIXES` в `backend/app/scan_quantities.py` и `src/taksklad/scan_quantities.py` получил два новых штучных GTIN из поставки 03.09.2026: `4006396104199` это `brown:kssl` (Chapman Brown KSSL 20), `4006396104229` это `green:kssl` (Chapman Green KSSL 20)
