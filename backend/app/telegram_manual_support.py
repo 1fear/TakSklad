@@ -13,6 +13,8 @@ TELEGRAM_MANUAL_PRODUCTS = {
     "red_ssl": "Chapman RED SSL 100 20",
     "gold_ssl": "Chapman Gold SSL 100`20",
     "green_op": "Chapman Green OP 20",
+    "brown_kssl": "Chapman Brown KSSL 20",
+    "green_kssl": "Chapman Green KSSL 20",
 }
 TELEGRAM_MANUAL_PAYMENT_TYPES = {
     "terminal": "Терминал",
