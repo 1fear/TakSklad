@@ -478,6 +478,28 @@ export const logisticsCalendarDayOrders: LogisticsCalendarDayOrders = {
       line_total: 0,
     },
   ],
+  manual_stops: [],
+};
+
+/** Тот же день, но с ручной точкой: базовая фикстура намеренно без них,
+ *  иначе характеризационные тесты пустого дня перестают видеть пустое состояние */
+export const logisticsCalendarDayOrdersWithManualStop: LogisticsCalendarDayOrders = {
+  ...logisticsCalendarDayOrders,
+  manual_stops: [
+    {
+      id: "manual-1",
+      zone: "city",
+      client: "Тест Ручная Точка",
+      point_name: "Тест Филиал",
+      address: "Ташкент, ручной адрес 1",
+      coordinates: "41.311081, 69.240562",
+      representative: "Тест Представитель",
+      delivery_from: "10:00",
+      delivery_to: "18:00",
+      blocks: 12,
+      comment: "Забрать паллету",
+    },
+  ],
 };
 
 /** Synthetic offline queue event. Codes are made up and never real KIZ values. */

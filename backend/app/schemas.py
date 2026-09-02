@@ -1,6 +1,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -885,8 +886,61 @@ class LogisticsCalendarDayOrderRead(BaseModel):
     line_total: int = 0
 
 
+class LogisticsManualStopRowRead(BaseModel):
+    id: str
+    zone: Literal["city", "region"]
+    client: str = ""
+    point_name: str = ""
+    address: str = ""
+    coordinates: str = ""
+    representative: str = ""
+    delivery_from: str = ""
+    delivery_to: str = ""
+    blocks: int = 0
+    comment: str = ""
+
+
 class LogisticsCalendarDayOrdersRead(BaseModel):
     date: date
     generated_at: datetime
     region_directory_empty: bool = False
     orders: list[LogisticsCalendarDayOrderRead] = Field(default_factory=list)
+    manual_stops: list[LogisticsManualStopRowRead] = Field(default_factory=list)
+
+
+class LogisticsManualStopUpsert(BaseModel):
+    """Ручная точка логистики: заказ и заявка СкладБота за ней не создаются."""
+
+    id: UUID | None = None
+    service_date: date
+    client_name: str = Field(min_length=1)
+    address: str = Field(min_length=1)
+    coordinates: str = Field(min_length=1)
+    point_name: str = ""
+    representative: str = ""
+    delivery_from: str = "10:00"
+    delivery_to: str = "18:00"
+    blocks: int = Field(default=0, ge=0)
+    comment: str = ""
+    save_to_directory: bool = True
+    actor: str = "web"
+
+
+class LogisticsManualStopDelete(BaseModel):
+    id: UUID
+    actor: str = "web"
+
+
+class LogisticsManualStopRead(BaseModel):
+    id: str
+    service_date: date
+    client_name: str = ""
+    point_name: str = ""
+    address: str = ""
+    coordinates: str = ""
+    representative: str = ""
+    delivery_from: str = ""
+    delivery_to: str = ""
+    blocks: int = 0
+    comment: str = ""
+    is_active: bool = True

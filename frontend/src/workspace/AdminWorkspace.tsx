@@ -46,6 +46,7 @@ import {
   LogisticsCalendar,
   LogisticsCalendarDay,
   LogisticsCalendarDayOrders,
+  LogisticsManualStopPayload,
   OperationsAttention,
   ReadinessResponse,
   SkladBotDryRun,
@@ -76,6 +77,8 @@ import {
   retryAdminEvent,
   syncSources,
   updateLogisticsCalendarDay,
+  saveLogisticsManualStop,
+  deleteLogisticsManualStop,
   updateClientPointTimeslot,
   updateIncidentStatus,
 } from "../api";
@@ -169,6 +172,8 @@ function AdminWorkspace({
   const [smartupHistory, setSmartupHistory] = useState<SmartupAutoImportHistory | null>(null);
   const [logisticsCalendar, setLogisticsCalendar] = useState<LogisticsCalendar | null>(null);
   const [calendarDayOrders, setCalendarDayOrders] = useState<LogisticsCalendarDayOrders | null>(null);
+  const [manualStopSearchResults, setManualStopSearchResults] = useState<ClientPoint[]>([]);
+  const [manualStopSearching, setManualStopSearching] = useState(false);
   const [calendarDayLoading, setCalendarDayLoading] = useState(false);
   const [incidents, setIncidents] = useState<AdminIncident[]>([]);
   const [incidentSummary, setIncidentSummary] = useState<Record<string, unknown>>({});
@@ -628,6 +633,67 @@ function AdminWorkspace({
       setNotice(isNonWorking ? "День отмечен как нерабочий для логистики" : "День отмечен как рабочий для логистики");
     } catch (actionError) {
       showActionError(actionError, "Не удалось сохранить календарь логистики");
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  async function refreshCalendarDayOrders(activeConfig = config, serviceDate = selectedCalendarDate) {
+    const resource = `calendar-day:${serviceDate}`;
+    panelCache.invalidate(resource);
+    await loadCachedPanel(
+      resource,
+      (signal) => getLogisticsCalendarDayOrders(activeConfig, serviceDate, signal),
+      setCalendarDayOrders,
+      true,
+    );
+  }
+
+  async function searchManualStopPoints(query: string) {
+    if (!query) {
+      setManualStopSearchResults([]);
+      return;
+    }
+    setManualStopSearching(true);
+    try {
+      const points = await listClientPoints(config, { query, limit: 8 });
+      setManualStopSearchResults(points);
+    } catch (actionError) {
+      ignoreOptionalPanelError(actionError);
+      setManualStopSearchResults([]);
+    } finally {
+      setManualStopSearching(false);
+    }
+  }
+
+  async function saveManualStop(payload: LogisticsManualStopPayload) {
+    if (!canAdminWrite) return;
+    setBusyAction(`manual-stop:${payload.service_date}`);
+    setError("");
+    setNotice("");
+    try {
+      await saveLogisticsManualStop(config, payload);
+      setManualStopSearchResults([]);
+      await refreshCalendarDayOrders(config, payload.service_date);
+      setNotice(payload.id ? "Ручная точка обновлена" : "Ручная точка добавлена в день");
+    } catch (actionError) {
+      showActionError(actionError, "Не удалось сохранить ручную точку");
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  async function removeManualStop(serviceDate: string, id: string) {
+    if (!canAdminWrite) return;
+    setBusyAction(`manual-stop:${serviceDate}`);
+    setError("");
+    setNotice("");
+    try {
+      await deleteLogisticsManualStop(config, id);
+      await refreshCalendarDayOrders(config, serviceDate);
+      setNotice("Ручная точка убрана из дня");
+    } catch (actionError) {
+      showActionError(actionError, "Не удалось убрать ручную точку");
     } finally {
       setBusyAction("");
     }
@@ -1372,6 +1438,11 @@ function AdminWorkspace({
             onSelectDate={setSelectedCalendarDate}
             onSaveDay={(day, isNonWorking, reason) => void saveLogisticsCalendarDay(day, isNonWorking, reason)}
             onDownload={(serviceDate, zone) => void downloadCalendarReport(serviceDate, zone)}
+            manualStopSearchResults={manualStopSearchResults}
+            manualStopSearching={manualStopSearching}
+            onManualStopSearch={(query) => void searchManualStopPoints(query)}
+            onManualStopSave={(payload) => void saveManualStop(payload)}
+            onManualStopDelete={(serviceDate, id) => void removeManualStop(serviceDate, id)}
           />
         )}
 
@@ -1756,6 +1827,11 @@ function LogisticsCalendarPanel({
   onSelectDate,
   onSaveDay,
   onDownload,
+  manualStopSearchResults,
+  manualStopSearching,
+  onManualStopSearch,
+  onManualStopSave,
+  onManualStopDelete,
 }: {
   calendar: LogisticsCalendar | null;
   month: string;
@@ -1768,6 +1844,11 @@ function LogisticsCalendarPanel({
   onSelectDate: (value: string) => void;
   onSaveDay: (day: LogisticsCalendarDay, isNonWorking: boolean, reason: string) => void;
   onDownload: (serviceDate: string, zone: "city" | "region") => void;
+  manualStopSearchResults: ClientPoint[];
+  manualStopSearching: boolean;
+  onManualStopSearch: (query: string) => void;
+  onManualStopSave: (payload: LogisticsManualStopPayload) => void;
+  onManualStopDelete: (serviceDate: string, id: string) => void;
 }) {
   const days = calendar?.days ?? [];
   // Выбор дня без фолбэка: дата, которую видит пользователь, обязана быть той же,
@@ -1864,6 +1945,11 @@ function LogisticsCalendarPanel({
           onNextDay={() => goToAdjacentDay(1)}
           onSaveDay={onSaveDay}
           onDownload={(zone) => onDownload(selectedDay.date, zone)}
+          manualStopSearchResults={manualStopSearchResults}
+          manualStopSearching={manualStopSearching}
+          onManualStopSearch={onManualStopSearch}
+          onManualStopSave={onManualStopSave}
+          onManualStopDelete={(id) => onManualStopDelete(selectedDay.date, id)}
         />
       ) : (
         <div className="empty-state">Календарь не загружен</div>

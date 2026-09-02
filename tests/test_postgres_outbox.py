@@ -62,7 +62,7 @@ class PostgresOutboxTests(unittest.TestCase):
                 """))
             run_alembic(url, "upgrade", "head")
             run_alembic(url, "upgrade", "head")
-            self.assertEqual(scalar(url, "SELECT version_num FROM alembic_version"), "20260817_0022")
+            self.assertEqual(scalar(url, "SELECT version_num FROM alembic_version"), "20260902_0023")
             with engine.connect() as connection:
                 rows = connection.execute(text(
                     "SELECT action,aggregate_type,aggregate_id,status,payload "

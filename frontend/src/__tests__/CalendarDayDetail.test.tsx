@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { LogisticsCalendarDayOrders } from "../api";
 import { CalendarDayDetail } from "../features/logistics/CalendarDayDetail";
-import { logisticsCalendarDayOrders } from "./fixtures";
+import { logisticsCalendarDayOrders, logisticsCalendarDayOrdersWithManualStop } from "./fixtures";
 
 const day = {
   date: "2026-08-07",
@@ -31,6 +31,16 @@ const day = {
 
 const noop = () => {};
 
+// Пропсы ручных точек одинаковы во всех рендерах этого файла: сама по себе
+// ручная точка проверяется отдельным блоком ниже
+const manualStopProps = {
+  manualStopSearchResults: [],
+  manualStopSearching: false,
+  onManualStopSearch: noop,
+  onManualStopSave: noop,
+  onManualStopDelete: noop,
+};
+
 describe("CalendarDayDetail", () => {
   it("показывает разбивку город и область", () => {
     render(
@@ -47,6 +57,7 @@ describe("CalendarDayDetail", () => {
         onNextDay={noop}
         onSaveDay={noop}
         onDownload={noop}
+        {...manualStopProps}
       />,
     );
 
@@ -70,6 +81,7 @@ describe("CalendarDayDetail", () => {
         onNextDay={noop}
         onSaveDay={noop}
         onDownload={noop}
+        {...manualStopProps}
       />,
     );
 
@@ -91,6 +103,7 @@ describe("CalendarDayDetail", () => {
         onNextDay={noop}
         onSaveDay={noop}
         onDownload={noop}
+        {...manualStopProps}
       />,
     );
 
@@ -114,6 +127,7 @@ describe("CalendarDayDetail", () => {
         onNextDay={noop}
         onSaveDay={noop}
         onDownload={noop}
+        {...manualStopProps}
       />,
     );
 
@@ -138,6 +152,7 @@ describe("CalendarDayDetail", () => {
         onNextDay={noop}
         onSaveDay={noop}
         onDownload={noop}
+        {...manualStopProps}
       />,
     );
 
@@ -167,6 +182,7 @@ describe("CalendarDayDetail", () => {
         onNextDay={noop}
         onSaveDay={noop}
         onDownload={noop}
+        {...manualStopProps}
       />,
     );
 
@@ -203,6 +219,7 @@ describe("CalendarDayDetail", () => {
         onNextDay={noop}
         onSaveDay={noop}
         onDownload={noop}
+        {...manualStopProps}
       />,
     );
 
@@ -228,6 +245,7 @@ describe("CalendarDayDetail", () => {
         onNextDay={noop}
         onSaveDay={noop}
         onDownload={onDownload}
+        {...manualStopProps}
       />,
     );
 
@@ -255,6 +273,7 @@ describe("CalendarDayDetail", () => {
         onNextDay={noop}
         onSaveDay={noop}
         onDownload={noop}
+        {...manualStopProps}
       />,
     );
 
@@ -279,6 +298,7 @@ describe("CalendarDayDetail", () => {
         onNextDay={noop}
         onSaveDay={noop}
         onDownload={noop}
+        {...manualStopProps}
       />,
     );
 
@@ -301,10 +321,162 @@ describe("CalendarDayDetail", () => {
         onNextDay={noop}
         onSaveDay={noop}
         onDownload={noop}
+        {...manualStopProps}
       />,
     );
 
     expect(screen.getByRole("button", { name: "Не работает" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Работает" })).toBeDisabled();
+  });
+
+  describe("ручные точки", () => {
+    it("показывает ручную точку отдельной строкой и не примешивает её к счётчикам дня", () => {
+      render(
+        <CalendarDayDetail
+          day={day}
+          dayOrders={logisticsCalendarDayOrdersWithManualStop}
+          loading={false}
+          regionDirectoryEmpty={false}
+          canAdminWrite
+          busyAction=""
+          canGoPrevDay
+          canGoNextDay
+          onPrevDay={noop}
+          onNextDay={noop}
+          onSaveDay={noop}
+          onDownload={noop}
+          {...manualStopProps}
+        />,
+      );
+
+      expect(screen.getByText("Тест Филиал")).toBeInTheDocument();
+      expect(screen.getByText("Ручная точка")).toBeInTheDocument();
+      // цифры дня остаются про заказы, ручные точки идут отдельной строкой
+      expect(screen.getByRole("group", { name: /Город/ })).toHaveTextContent("612");
+      expect(screen.getByRole("group", { name: /Итого/ })).toHaveTextContent(
+        "+ 1 ручная точка, 12 блоков, в счёт заказов и блоков они не входят",
+      );
+    });
+
+    it("фильтр «Ручные» прячет заказы и оставляет только ручные точки", async () => {
+      const user = userEvent.setup();
+      render(
+        <CalendarDayDetail
+          day={day}
+          dayOrders={logisticsCalendarDayOrdersWithManualStop}
+          loading={false}
+          regionDirectoryEmpty={false}
+          canAdminWrite
+          busyAction=""
+          canGoPrevDay
+          canGoNextDay
+          onPrevDay={noop}
+          onNextDay={noop}
+          onSaveDay={noop}
+          onDownload={noop}
+          {...manualStopProps}
+        />,
+      );
+
+      await user.click(screen.getByRole("button", { name: /Ручные/ }));
+
+      expect(screen.getByText("Тест Филиал")).toBeInTheDocument();
+      expect(screen.queryByText("Тест Клиент 1")).not.toBeInTheDocument();
+    });
+
+    it("не даёт сохранить точку без координат и отдаёт наверх готовую полезную нагрузку", async () => {
+      const user = userEvent.setup();
+      const onManualStopSave = vi.fn();
+      render(
+        <CalendarDayDetail
+          day={day}
+          dayOrders={logisticsCalendarDayOrders}
+          loading={false}
+          regionDirectoryEmpty={false}
+          canAdminWrite
+          busyAction=""
+          canGoPrevDay
+          canGoNextDay
+          onPrevDay={noop}
+          onNextDay={noop}
+          onSaveDay={noop}
+          onDownload={noop}
+          {...manualStopProps}
+          onManualStopSave={onManualStopSave}
+        />,
+      );
+
+      await user.click(screen.getByRole("button", { name: /Добавить точку/ }));
+      await user.type(screen.getByLabelText("Клиент"), "Тест Ручная Точка");
+      await user.type(screen.getByLabelText("Адрес"), "Ташкент, ручной адрес 1");
+      await user.click(screen.getByRole("button", { name: "Сохранить точку" }));
+
+      expect(onManualStopSave).not.toHaveBeenCalled();
+      expect(screen.getByRole("alert")).toHaveTextContent("Координаты вводятся парой чисел");
+
+      await user.type(screen.getByLabelText("Координаты"), "41.311081, 69.240562");
+      await user.click(screen.getByRole("button", { name: "Сохранить точку" }));
+
+      expect(onManualStopSave).toHaveBeenCalledWith(expect.objectContaining({
+        service_date: "2026-08-07",
+        client_name: "Тест Ручная Точка",
+        address: "Ташкент, ручной адрес 1",
+        coordinates: "41.311081, 69.240562",
+        blocks: 0,
+        save_to_directory: true,
+      }));
+    });
+
+    it("не показывает форму и кнопки правки без права записи", () => {
+      render(
+        <CalendarDayDetail
+          day={day}
+          dayOrders={logisticsCalendarDayOrdersWithManualStop}
+          loading={false}
+          regionDirectoryEmpty={false}
+          canAdminWrite={false}
+          busyAction=""
+          canGoPrevDay
+          canGoNextDay
+          onPrevDay={noop}
+          onNextDay={noop}
+          onSaveDay={noop}
+          onDownload={noop}
+          {...manualStopProps}
+        />,
+      );
+
+      expect(screen.getByText("Тест Филиал")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /Добавить точку/ })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Правка" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Убрать" })).not.toBeInTheDocument();
+    });
+
+    it("кнопка «Убрать» отдаёт наверх id точки", async () => {
+      const user = userEvent.setup();
+      const onManualStopDelete = vi.fn();
+      render(
+        <CalendarDayDetail
+          day={day}
+          dayOrders={logisticsCalendarDayOrdersWithManualStop}
+          loading={false}
+          regionDirectoryEmpty={false}
+          canAdminWrite
+          busyAction=""
+          canGoPrevDay
+          canGoNextDay
+          onPrevDay={noop}
+          onNextDay={noop}
+          onSaveDay={noop}
+          onDownload={noop}
+          {...manualStopProps}
+          onManualStopDelete={onManualStopDelete}
+        />,
+      );
+
+      await user.click(screen.getByRole("button", { name: "Убрать" }));
+
+      expect(onManualStopDelete).toHaveBeenCalledWith("manual-1");
+    });
   });
 });

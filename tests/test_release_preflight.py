@@ -171,7 +171,7 @@ class ReleasePreflightTests(unittest.TestCase):
             return "shadow_diagnostics backend_active_orders_source hot_path_stale_processing telegram_worker_state\n"
         if path_text.endswith("backend/app/health_service.py"):
             return (
-                'EXPECTED_HEAD_REVISION = "20260817_0022"\n'
+                'EXPECTED_HEAD_REVISION = "20260902_0023"\n'
                 'report["ready"] = True\n'
                 'report["status"] = "unhealthy"\n'
             )

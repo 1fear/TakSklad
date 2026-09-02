@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from .client_points_service import client_point_delivery_slot_map, delivery_slot_for_order
 from .kiz_reports_service import source_file_for_items
+from .logistics_manual_stops_service import manual_stop_rows
 from .logistics_service import is_logistics_candidate_order, is_returned_order
 from .logistics_zone_service import ZONE_CITY, classify_order, load_region_index
 from .models import Order
@@ -65,6 +66,7 @@ def list_logistics_calendar_day_orders(db: Session, service_date: date) -> dict[
         "generated_at": datetime.now(timezone.utc),
         "region_directory_empty": region_directory_empty,
         "orders": rows,
+        "manual_stops": manual_stop_rows(db, service_date, region_index, region_directory_empty),
     }
 
 
