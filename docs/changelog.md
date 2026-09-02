@@ -2,6 +2,17 @@
 
 Здесь фиксируются все правки в коде TakSklad: что менялось, в каком файле, зачем, и какие тесты это покрывают. Записи идут от новых к старым.
 
+## 2026-09-02
+
+### Штучные GTIN Chapman KSSL заведены в таблицы КИЗ
+
+- `UNIT_PRODUCT_PREFIXES` в `backend/app/scan_quantities.py` и `src/taksklad/scan_quantities.py` получил два новых штучных GTIN из поставки 03.09.2026: `4006396104199` это `brown:kssl` (Chapman Brown KSSL 20), `4006396104229` это `green:kssl` (Chapman Green KSSL 20)
+- `PRODUCT_FORMATS` во всех четырёх разборщиках имени товара (`scan_quantities.py` и `skladbot_contracts.py` на backend, `scan_quantities.py` и `skladbot.py` на десктопе) знает формат `kssl`, поэтому имя «Chapman Brown KSSL 20» даёт ключ `brown:kssl`, а не пустой ключ. Без этого SKU-защита на такой позиции молча выключалась, а заявка SkladBot по ней ловила `SKU не найден в mapping`
+- `PRODUCT_KEY_LABELS` десктопа получил подписи `Brown KSSL` и `Green KSSL`
+- Коробочные GTIN KSSL в `AGGREGATE_BOX_PRODUCT_PREFIXES` не добавлены: короба ещё не сканировались, значение снимается с первого короба поставки. До этого короб KSSL backend считает штучным кодом на один блок
+- `DEFAULT_SKU_MAPPING` для SkladBot не тронут: карточек KSSL в SkladBot ещё нет, `product_data_id` появится после их создания и до правки кода задаётся через `SKLADBOT_SKU_MAPPING_JSON`
+- Покрытие: `tests/test_scan_quantities.py`, шесть новых проверок: таблицы штучных GTIN backend и десктопа совпадают, KSSL-код даёт свой ключ, четыре разборщика имени дают один ключ на KSSL и не ломают SSL и OP, блок KSSL отбивается на позиции SSL и OP и наоборот, код коробочной длины со штучным GTIN KSSL отбивается правилом `length_for_gtin`
+
 ## 2026-08-26
 
 ### Разные заказы Smartup перестали склеиваться в один заказ склада

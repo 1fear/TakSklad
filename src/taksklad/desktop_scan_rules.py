@@ -183,6 +183,8 @@ PRODUCT_KEY_LABELS = {
     "brown:ssl": "Brown SSL",
     "red:ssl": "RED SSL",
     "green:op": "Green OP",
+    "brown:kssl": "Brown KSSL",
+    "green:kssl": "Green KSSL",
 }
 
 

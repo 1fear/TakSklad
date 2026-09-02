@@ -39,7 +39,7 @@ NOISE_PRODUCT_TOKENS = {
 }
 
 PRODUCT_COLORS = ("brown", "red", "gold", "green")
-PRODUCT_FORMATS = ("op", "ssl")
+PRODUCT_FORMATS = ("op", "ssl", "kssl")
 RETURN_REQUEST_TOKENS = {"возврат", "возврата", "return", "returned"}
 
 NOISE_COMPANY_TOKENS = {
