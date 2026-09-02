@@ -30,7 +30,11 @@ from .imports_service import (
     preview_import,
 )
 from .excel_importer import reverse_geocode_yandex
-from .logistics_calendar_service import is_logistics_non_working_day, resolve_effective_delivery_date
+from .logistics_calendar_service import (
+    MAX_DELIVERY_SHIFT_DAYS,
+    is_logistics_non_working_day,
+    resolve_effective_delivery_date,
+)
 from .logistics_service import build_logistics_reports, list_logistics_dates
 from .logistics_zone_service import ZONE_UNASSIGNED
 from .models import AuditLog, ImportJob, Order, PendingEvent, SmartupFulfillment
@@ -571,22 +575,31 @@ def run_due_smartup_auto_imports(
     local_now = normalize_local_now(now, config.timezone)
     results: list[dict[str, Any]] = []
     slot_failure_count = 0
-    if is_logistics_non_working_day(
-        db,
-        local_now.date(),
-        default_non_working_weekdays=config.disabled_weekdays,
-    ):
-        results.append({
+    export_day = smartup_export_day_decision(db, local_now.date(), config)
+    if not export_day["run"]:
+        idle = {
             "status": "idle",
-            "reason": "weekday_disabled",
+            "reason": export_day["reason"],
             "weekday": local_now.weekday(),
             "now": local_now.isoformat(),
-        })
+        }
+        for key in ("next_logistics_day", "export_day"):
+            if export_day.get(key):
+                idle[key] = export_day[key]
+        results.append(idle)
     else:
         target_delivery_dates = scheduled_smartup_target_delivery_dates(db, local_now.date(), config)
-        for slot in config.schedule_times:
-            if not is_slot_due(local_now, slot, config.slot_grace_minutes):
-                continue
+        due_slots = [
+            slot for slot in config.schedule_times
+            if is_slot_due(local_now, slot, config.slot_grace_minutes)
+        ]
+        if due_slots and export_day["reason"] == "eve_of_logistics_day":
+            logger.info(
+                "Smartup export day: logistics is off on %s but works on %s, warehouse assembles today",
+                local_now.date().isoformat(),
+                export_day["next_logistics_day"],
+            )
+        for slot in due_slots:
             for target_delivery_date in target_delivery_dates:
                 try:
                     results.append(run_scheduled_smartup_auto_import_slot(
@@ -644,11 +657,7 @@ def run_due_smartup_logistics_reports(
     if not config.backend_import_enabled:
         return []
     local_now = normalize_local_now(now, config.timezone)
-    if is_logistics_non_working_day(
-        db,
-        local_now.date(),
-        default_non_working_weekdays=config.disabled_weekdays,
-    ):
+    if not smartup_export_day_decision(db, local_now.date(), config)["run"]:
         return []
     due_time = parse_slot_time(config.effective_logistics_due_time)
     results: list[dict[str, Any]] = []
@@ -657,11 +666,7 @@ def run_due_smartup_logistics_reports(
         due_at = datetime.combine(export_date, due_time, tzinfo=config.timezone)
         if local_now < due_at:
             continue
-        if is_logistics_non_working_day(
-            db,
-            export_date,
-            default_non_working_weekdays=config.disabled_weekdays,
-        ):
+        if not smartup_export_day_decision(db, export_date, config)["run"]:
             continue
         dependency = smartup_logistics_dependency_proof(db, config, export_date)
         if dependency["status"] != "ready":
@@ -3686,6 +3691,63 @@ def scheduled_smartup_target_delivery_dates(
         delivery_dates.append(current)
         current += timedelta(days=1)
     return delivery_dates
+
+
+def smartup_export_day_decision(
+    db: Session | None,
+    export_date: date,
+    config: SmartupAutoImportConfig,
+) -> dict[str, Any]:
+    """Решает, собирает ли склад заказы в этот день.
+
+    Календарь логистики отвечает на вопрос «возит ли логистика в день X», а склад
+    собирает заказы накануне: в последний будний день перед ближайшим рабочим днём
+    логистики. Поэтому ручной нерабочий день логистики не отменяет выгрузку, если
+    следующим днём (или после выходных) логистика работает. До 02.09.2026 воркер
+    читал такой день как выходной склада и три дня подряд не выгружал заказы.
+    Суббота и воскресенье остаются выходными склада, пока календарь не сделал их
+    рабочими явно.
+    """
+    def non_working(day: date) -> bool:
+        return is_logistics_non_working_day(
+            db,
+            day,
+            default_non_working_weekdays=config.disabled_weekdays,
+        )
+
+    if not non_working(export_date):
+        return {"run": True, "reason": "logistics_working_day"}
+    if export_date.weekday() in config.disabled_weekdays:
+        return {"run": False, "reason": "weekday_disabled"}
+    next_logistics_day = None
+    current = export_date
+    for _ in range(MAX_DELIVERY_SHIFT_DAYS):
+        current += timedelta(days=1)
+        if not non_working(current):
+            next_logistics_day = current
+            break
+    if next_logistics_day is None:
+        return {
+            "run": False,
+            "reason": "logistics_non_working_day",
+            "next_logistics_day": "",
+            "export_day": "",
+        }
+    assembly_day = next_logistics_day - timedelta(days=1)
+    while assembly_day > export_date and assembly_day.weekday() in config.disabled_weekdays:
+        assembly_day -= timedelta(days=1)
+    if assembly_day == export_date:
+        return {
+            "run": True,
+            "reason": "eve_of_logistics_day",
+            "next_logistics_day": next_logistics_day.isoformat(),
+        }
+    return {
+        "run": False,
+        "reason": "logistics_non_working_day",
+        "next_logistics_day": next_logistics_day.isoformat(),
+        "export_day": assembly_day.isoformat(),
+    }
 
 
 def is_slot_due(now: datetime, slot_label: str, grace_minutes: int) -> bool:
