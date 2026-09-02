@@ -4,6 +4,11 @@
 
 ## 2026-09-02
 
+### Сквозная проверка Chapman KSSL и KSSL в ручных заказах Telegram-бота
+
+- `tests/test_kssl_end_to_end.py`, восемь сценариев по всей цепочке: имя из Smartup с суффиксом поставщика даёт строки KSSL на 3 и 2 блока, импорт Excel через API и dry-run уходят на карточки 4134853 и 4135839, POST заявки в режиме `enabled` связывает заказ с `WH-R`, нехватка остатка до приёмки даёт `blocked_stock` и уведомление с позициями KSSL, сканы: чужой SKU и короб с незаведённым GTIN отбиваются `409 scan_product_mismatch`, обрезок короба со штучным GTIN отбивается `422 length_for_gtin`, три блока закрывают позицию, повтор кода отбивается, заказ завершается, дейли раскладывает коды KSSL по своим строкам, возврат уходит на карточки KSSL
+- `TELEGRAM_MANUAL_PRODUCTS` в `telegram_manual_support.py` и `telegram_admin_processor.py`: две новые кнопки `Chapman Brown KSSL 20` и `Chapman Green KSSL 20` в клавиатуре ручного заказа, после `Chapman Green OP 20` и перед `Отмена`. Оба словаря сверяются тестом
+
 ### SkladBot знает карточки Chapman KSSL
 
 - `DEFAULT_SKU_MAPPING` в `backend/app/skladbot_request_dry_run.py` получил `brown:kssl` (`product_data_id` 4134853, баркод `4006396104199`) и `green:kssl` (4135839, `4006396104229`). Карточки заведены в SkladBot 02.09.2026 у клиента 6211, имена `Chapman Brown KSSL 20 UZ - KingSize SuperSlim` и `Chapman Green KSSL 20 UZ - KingSize SuperSlim`, артикулы `CHPMBrownKSSL20UZ` и `CHPMGreenKSSL20UZ`
