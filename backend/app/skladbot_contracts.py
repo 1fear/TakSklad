@@ -19,7 +19,7 @@ NOISE_COMPANY_TOKENS = {"ooo", "ооо", "mchj", "мчж", "ip", "ип", "sp", "
 NOISE_PRODUCT_TOKENS = {"uz", "kingsize", "king", "size", "superslim", "super", "slim"}
 RETURN_REQUEST_TOKENS = {"возврат", "возврата", "return", "returned"}
 PRODUCT_COLORS = ("brown", "red", "gold", "green")
-PRODUCT_FORMATS = ("op", "ssl")
+PRODUCT_FORMATS = ("op", "ssl", "kssl")
 SMARTUP_ID_KEYS = (
     "smartup_id",
     "smartupId",

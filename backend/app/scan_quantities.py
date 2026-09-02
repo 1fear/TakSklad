@@ -19,10 +19,14 @@ UNIT_PRODUCT_PREFIXES = {
     "0104006396054067": "brown:ssl",
     "0104006396054036": "red:ssl",
     "0104006396104441": "green:op",
+    # KSSL (King Size Super Slim): поставка 2026-09-03, короб ещё не снят,
+    # коробочные GTIN появятся в AGGREGATE_BOX_PRODUCT_PREFIXES после первого скана
+    "0104006396104199": "brown:kssl",
+    "0104006396104229": "green:kssl",
 }
 
 PRODUCT_COLORS = ("brown", "red", "gold", "green")
-PRODUCT_FORMATS = ("op", "ssl")
+PRODUCT_FORMATS = ("op", "ssl", "kssl")
 
 
 def aggregate_box_product_key(code):
