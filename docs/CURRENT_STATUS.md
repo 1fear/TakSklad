@@ -8,6 +8,42 @@ PostgreSQL читался только на `alembic current`, поэтому р
 Статус: `LIVE_IN_SYNC_WITH_MAIN; ACTIONS_NOT_USED;
 DESKTOP_RETIREMENT_BLOCKED; OPERATOR_PHYSICAL_NOT_RUN; SHIPMENT_NOT_RECHECKED`
 
+## Дельта 2026-09-02, выкат backend `39ab012`, новые SKU Chapman KSSL
+
+Поставка 03.09.2026 привозит два новых SKU, Chapman Brown KSSL 20 и Chapman
+Green KSSL 20. Backend пересобран из `main` (`39ab012`, PR #163) и выкачен
+02.09 в 12:07 UTC, фронтенд остался на `51d0986`, миграций нет, схема
+`20260902_0023`
+
+| Идентичность | До | После |
+|---|---|---|
+| `commit_sha` | `51d0986fdcb4…` | `39ab0126b8aa…` |
+| Образ backend | `taksklad-backend:local-51d0986` | `taksklad-backend:local-39ab012` |
+| `image_digest` | `sha256:0213d625…` | `sha256:20763e5a…` |
+| Схема БД | `20260902_0023` | без изменений |
+
+Бэкап до выката `taksklad-postgres-20260902T120416Z` (60.4 МБ, 194 записи),
+восстановление лизов `recovered=0`, паспорт
+`/opt/stacks/taksklad/deployments/manual-39ab012.json`, копия окружения
+`.env.bak.20260902T120415Z-pre-39ab012`
+
+**Окно простоя вышло ~2,5 минуты вместо ~30 секунд.** Cutover-скрипт подавался
+через stdin ssh, и `docker compose run` съедал остаток скрипта: писатели
+остались остановленными после бэкапа, дальше шаги доводились отдельными
+файлами-скриптами. Правило на будущее: скрипт класть в файл на хосте и
+запускать `bash файл </dev/null`, записано в runbook
+
+Живая проверка после выката: `GET /version` отдаёт `39ab0126b8aa…`,
+`docker compose up --dry-run` показывает шесть контейнеров `Running`, в логах
+четырёх сервисов ошибок нет, внутри контейнера
+`product_key_from_name('Chapman Brown KSSL 20')` даёт `brown:kssl`, а блок KSSL
+на позиции SSL отбивается
+
+Карточки KSSL заведены в SkladBot 02.09 через веб-кабинет (клиент 6211,
+`product_data_id` 4134853 и 4135839), маппинг в `DEFAULT_SKU_MAPPING` едет
+следующим выкатом. Коробочные GTIN KSSL снимаются с первого короба поставки,
+до этого короб KSSL backend считает штучным кодом на один блок
+
 ## Дельта 2026-08-28, выкат фронтенда на голову `main`
 
 2026-08-28 вручную выкачен фронтенд с ревизии `c5fab76` на `eb3c5b1`, голову

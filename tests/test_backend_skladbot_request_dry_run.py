@@ -452,6 +452,19 @@ class BackendSkladBotRequestDryRunTests(unittest.TestCase):
             [2189390, 2189391],
         )
 
+    def test_kssl_products_resolve_to_their_skladbot_cards(self):
+        # Карточки KSSL появились в SkladBot 02.09.2026, до этого заказ с KSSL
+        # вставал в blocked с «SKU не найден в mapping»
+        from backend.app.skladbot_request_dry_run import build_product_dry_run
+
+        brown = build_product_dry_run("Chapman Brown KSSL 20", 3)
+        green = build_product_dry_run("Chapman Green KSSL 20", 2)
+        self.assertEqual(brown["status"], "ready")
+        self.assertEqual((brown["product_data_id"], brown["barcode"]), (4134853, "4006396104199"))
+        self.assertEqual(green["status"], "ready")
+        self.assertEqual((green["product_data_id"], green["barcode"]), (4135839, "4006396104229"))
+        self.assertNotEqual(brown["product_data_id"], build_product_dry_run("Chapman Brown SSL 100`20", 1)["product_data_id"])
+
     def test_unknown_sku_blocks_without_breaking_import(self):
         import_id, _order_id = self.seed_import_order(products=[("Unknown SKU", 1)])
 
