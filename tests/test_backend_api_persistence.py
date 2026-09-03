@@ -4299,7 +4299,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(sheet["S2"].value, "Tashkent Address")
         self.assertEqual(sheet["T2"].value, datetime(2026, 5, 30, 10, 0))
         self.assertEqual(sheet["U2"].value, datetime(2026, 5, 30, 18, 0))
-        self.assertEqual(sheet["AA2"].value, "Chapman Brown OP 20")
+        self.assertEqual(sheet["AA2"].value, "Chapman Brown OP 20 × 20")
         self.assertEqual(sheet["AC2"].value, 0)
         self.assertEqual(sheet["AD2"].value, 0)
         self.assertEqual(sheet["AE2"].value, 20)
@@ -4331,7 +4331,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(report.status_code, 200)
         workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
         sheet = workbook["Orders"]
-        self.assertEqual(sheet["AA2"].value, "Chapman Brown OP 20")
+        self.assertEqual(sheet["AA2"].value, "Chapman Brown OP 20 × 50")
         self.assertEqual(sheet["AE2"].value, 50)
         workbook.close()
 
@@ -4546,7 +4546,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(sheet.max_row, 2)
         self.assertEqual(sheet["D2"].value, "Route Client")
         self.assertEqual(sheet["S2"].value, "Tashkent Address")
-        self.assertEqual(sheet["AA2"].value, "Chapman Brown OP 20")
+        self.assertEqual(sheet["AA2"].value, "Chapman Brown OP 20 × 2")
         self.assertEqual(problems.max_row, 3)
         problem_rows = {
             row[0]: row
