@@ -119,11 +119,31 @@ class LogisticsReportSplitTests(unittest.TestCase):
         reports = build_logistics_reports(self.db, SHIPMENT_DATE.isoformat())
         rows = self.sheet_rows(reports["city"][0])
 
-        self.assertEqual(len(rows), 2)
-        self.assertEqual({row[1] for row in rows}, {"WH-R-1+WH-R-2"})
-        self.assertEqual({row[18] for row in rows}, {"Ташкент, улица Первая, 1"})
-        self.assertEqual({row[6] for row in rows}, {"ТП Первый"})
-        self.assertEqual([row[26] for row in rows], ["Товар А", "Товар Б"])
+        # Остановка это одна строка: маршрутизатор по внешнему ID оставляет одну
+        # строку, поэтому состав обоих заказов и сумма коробов идут в неё
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][1], "WH-R-1+WH-R-2")
+        self.assertEqual(rows[0][18], "Ташкент, улица Первая, 1")
+        self.assertEqual(rows[0][6], "ТП Первый")
+        self.assertEqual(rows[0][26], "Товар А × 3; Товар Б × 3")
+        self.assertEqual(rows[0][30], 6)
+
+    def test_multi_product_order_is_one_row_with_summed_boxes(self):
+        order = self.add_order(
+            "Тест Клиент Город",
+            "41.3200,69.2400",
+            request_number="WH-R-1",
+            product="Товар А",
+        )
+        order.items.append(OrderItem(product="Товар Б", quantity_blocks=2))
+        self.db.commit()
+        reports = build_logistics_reports(self.db, SHIPMENT_DATE.isoformat())
+        rows = self.sheet_rows(reports["city"][0])
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][1], "WH-R-1")
+        self.assertEqual(rows[0][26], "Товар А × 3; Товар Б × 2")
+        self.assertEqual(rows[0][30], 5)
 
     def test_stop_external_id_is_stable_when_created_at_matches(self):
         same_moment = datetime(2030, 1, 1, 7, 0, tzinfo=timezone.utc)
