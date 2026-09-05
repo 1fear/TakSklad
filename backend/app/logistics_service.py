@@ -52,12 +52,16 @@ LOGISTICS_HEADERS = [
     "Окно перерыва ПО (доставка)",
     "Детали адреса доставки",
     "Время обслуживания доставки",
+    "Приоритет заказа",
     "Навыки",
+    "Тег заказа",
     "Название товара",
     "Айди товара",
+    "Количество товара",
     "Вес (кг)",
     "Объем (m3)",
     "Короба",
+    "Цена товара",
 ]
 
 LOGISTICS_COORDINATE_PROBLEM_HEADERS = [
@@ -91,12 +95,16 @@ LOGISTICS_TEMPLATE_COLUMN_WIDTHS = {
     "S": 30,
     "T": 22,
     "U": 22,
-    "Z": 24,
-    "AA": 22,
-    "AB": 18,
-    "AC": 14,
-    "AD": 14,
-    "AE": 10,
+    "Z": 16,
+    "AA": 24,
+    "AB": 14,
+    "AC": 22,
+    "AD": 18,
+    "AE": 18,
+    "AF": 14,
+    "AG": 14,
+    "AH": 10,
+    "AI": 14,
 }
 
 
@@ -164,6 +172,11 @@ def build_logistics_reports(db: Session, shipment_date: str):
         ZONE_REGION: None,
         ZONE_UNASSIGNED: unassigned_orders,
         "region_directory_empty": region_directory_empty,
+        # Заказы по зонам для приписки к отчёту: заказы, а не товарные строки
+        "order_counts": {
+            ZONE_CITY: len(zone_orders[ZONE_CITY]),
+            ZONE_REGION: len(zone_orders[ZONE_REGION]),
+        },
     }
     for zone in (ZONE_CITY, ZONE_REGION):
         if zone_orders[zone] or zone_manual_stops[zone]:
@@ -224,40 +237,49 @@ def build_zone_report_xlsx(db: Session, report_date, zone: str, zone_orders, zon
     sheet.append(LOGISTICS_HEADERS)
     apply_orders_template_style(sheet)
 
+    # Шаблон платформы «Orders via Excel» (35 колонок) ждёт строку на товарную
+    # позицию: «Внешний ID» собирает строки в заказ, а различает их «Айди товара»,
+    # сквозной уникальный номер по файлу. Без него платформа склеивала строки одного
+    # внешнего ID и теряла товары, с ним 04.09.2026 прошли все 528 строк без ошибок.
+    # «Количество товара» платформа ждёт равным 1, блоки живут в «Короба»
+    line_id = 0
+
+    def append_row(row):
+        nonlocal line_id
+        line_id += 1
+        set_cell(row, 30, line_id)
+        set_cell(row, 31, 1)
+        sheet.append(row)
+        apply_orders_row_style(sheet, sheet.max_row)
+
     for stop_orders in group_delivery_stops(delivery_orders):
         # Один и тот же клиент по тем же координатам это одна остановка, даже когда
-        # заказы приехали разными слотами: маршрутизатор группирует строки по
-        # внешнему ID, поэтому вся остановка получает общий склеенный номер.
-        # Остановка пишется одной строкой, а не строкой на позицию товара:
-        # маршрутизатор логистики берёт из файла не больше 100 строк и по каждому
-        # внешнему ID оставляет одну строку, последнюю. На файле за 03.09.2026 это
-        # дало 48 точек из 90 и один товар из четырёх у каждого заказа, короба он
-        # не читает вовсе, поэтому состав и количество идут текстом в названии товара
+        # заказы приехали разными слотами: все её строки несут общий склеенный номер
         lead_order = stop_orders[0]
         coordinates = normalize_coordinates((lead_order.raw_payload or {}).get("coordinates"))
         latitude, longitude = split_coordinates(coordinates)
         delivery_from, delivery_to = delivery_slot_for_order(lead_order, delivery_slots)
         external_id = stop_external_id(stop_orders)
-        row = [""] * len(LOGISTICS_HEADERS)
-        set_cell(row, 1, "delivery")
-        set_cell(row, 2, external_id)
-        set_cell(row, 4, lead_order.client)
-        set_cell(row, 7, lead_order.representative or "")
-        set_cell(row, 17, latitude)
-        set_cell(row, 18, longitude)
-        set_cell(row, 19, lead_order.address)
-        set_cell(row, 20, delivery_window_datetime(report_date, delivery_from))
-        set_cell(row, 21, delivery_window_datetime(report_date, delivery_to))
-        set_cell(row, 27, stop_product_summary(stop_orders))
-        set_cell(row, 29, 0)
-        set_cell(row, 30, 0)
-        set_cell(row, 31, stop_quantity_blocks(stop_orders))
-        sheet.append(row)
-        apply_orders_row_style(sheet, sheet.max_row)
+        for order in stop_orders:
+            for item in sorted(order.items, key=lambda value: (value.product, str(value.id))):
+                row = [""] * len(LOGISTICS_HEADERS)
+                set_cell(row, 1, "delivery")
+                set_cell(row, 2, external_id)
+                set_cell(row, 4, lead_order.client)
+                set_cell(row, 7, lead_order.representative or "")
+                set_cell(row, 17, latitude)
+                set_cell(row, 18, longitude)
+                set_cell(row, 19, lead_order.address)
+                set_cell(row, 20, delivery_window_datetime(report_date, delivery_from))
+                set_cell(row, 21, delivery_window_datetime(report_date, delivery_to))
+                set_cell(row, 29, item.product)
+                set_cell(row, 32, 0)
+                set_cell(row, 33, 0)
+                set_cell(row, 34, item_quantity_blocks(item))
+                append_row(row)
 
     for stop in zone_manual_stops:
-        sheet.append(manual_stop_report_row(report_date, stop))
-        apply_orders_row_style(sheet, sheet.max_row)
+        append_row(manual_stop_report_row(report_date, stop))
 
     if coordinate_problem_orders:
         problem_sheet = workbook.create_sheet("Требуют координаты")
@@ -299,9 +321,9 @@ def manual_stop_report_row(report_date, stop):
     set_cell(row, 19, stop["address"])
     set_cell(row, 20, delivery_window_datetime(report_date, stop["delivery_from"]))
     set_cell(row, 21, delivery_window_datetime(report_date, stop["delivery_to"]))
-    set_cell(row, 29, 0)
-    set_cell(row, 30, 0)
-    set_cell(row, 31, int(stop["blocks"] or 0))
+    set_cell(row, 32, 0)
+    set_cell(row, 33, 0)
+    set_cell(row, 34, int(stop["blocks"] or 0))
     return row
 
 
@@ -396,29 +418,6 @@ def order_product_summary(order):
         suffix = f" - {quantity} блоков" if quantity else ""
         parts.append(f"{item.product}{suffix}")
     return "; ".join(parts)
-
-
-def stop_product_summary(stop_orders):
-    """Состав остановки одной строкой: «Товар × короба», позиции по одному товару
-    из разных заказов остановки складываются, порядок по названию товара.
-
-    Количество идёт текстом намеренно: маршрутизатор логистики колонку «Короба»
-    не читает и показывает водителю только название товара.
-    """
-    totals = {}
-    for order in stop_orders:
-        for item in order.items:
-            product = str(item.product or "")
-            totals[product] = totals.get(product, 0) + item_quantity_blocks(item)
-    parts = []
-    for product in sorted(totals):
-        blocks = totals[product]
-        parts.append(f"{product} × {blocks}" if blocks else product)
-    return "; ".join(parts)
-
-
-def stop_quantity_blocks(stop_orders):
-    return sum(item_quantity_blocks(item) for order in stop_orders for item in order.items)
 
 
 def is_skladbot_stock_shortage_blocked_order(order):

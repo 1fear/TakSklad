@@ -119,16 +119,17 @@ class LogisticsReportSplitTests(unittest.TestCase):
         reports = build_logistics_reports(self.db, SHIPMENT_DATE.isoformat())
         rows = self.sheet_rows(reports["city"][0])
 
-        # Остановка это одна строка: маршрутизатор по внешнему ID оставляет одну
-        # строку, поэтому состав обоих заказов и сумма коробов идут в неё
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0][1], "WH-R-1+WH-R-2")
-        self.assertEqual(rows[0][18], "Ташкент, улица Первая, 1")
-        self.assertEqual(rows[0][6], "ТП Первый")
-        self.assertEqual(rows[0][26], "Товар А × 3; Товар Б × 3")
-        self.assertEqual(rows[0][30], 6)
+        # Шаблон «Orders via Excel» ждёт строку на товар: обе позиции остановки
+        # идут отдельными строками с общим склеенным внешним ID, а различает их
+        # уникальный «Айди товара»
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({row[1] for row in rows}, {"WH-R-1+WH-R-2"})
+        self.assertEqual({row[18] for row in rows}, {"Ташкент, улица Первая, 1"})
+        self.assertEqual({row[6] for row in rows}, {"ТП Первый"})
+        self.assertEqual([row[28] for row in rows], ["Товар А", "Товар Б"])
+        self.assertEqual([row[33] for row in rows], [3, 3])
 
-    def test_multi_product_order_is_one_row_with_summed_boxes(self):
+    def test_multi_product_order_is_one_row_per_product_line(self):
         order = self.add_order(
             "Тест Клиент Город",
             "41.3200,69.2400",
@@ -140,10 +141,75 @@ class LogisticsReportSplitTests(unittest.TestCase):
         reports = build_logistics_reports(self.db, SHIPMENT_DATE.isoformat())
         rows = self.sheet_rows(reports["city"][0])
 
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0][1], "WH-R-1")
-        self.assertEqual(rows[0][26], "Товар А × 3; Товар Б × 2")
-        self.assertEqual(rows[0][30], 5)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({row[1] for row in rows}, {"WH-R-1"})
+        self.assertEqual([row[28] for row in rows], ["Товар А", "Товар Б"])
+        self.assertEqual([row[33] for row in rows], [3, 2])
+
+    def test_headers_match_orders_via_excel_template_exactly(self):
+        # Перечень взят из шаблона платформы «Orders via Excel» (excel_orders_template),
+        # а не из кода: 35 колонок, четыре новые вставлены в середину
+        expected = [
+            "Тип заказа", "Внешний ID", "Описание", "Имя клиента", "Телефон", "Email",
+            "Заметки", "Широта (забор)", "Долгота (забор)", "Адрес забора",
+            "Окно времени С (забор)", "Окно времени ПО (забор)",
+            "Окно перерыва С (забор)", "Окно перерыва ПО (забор)",
+            "Детали адреса забора", "Время обслуживания забора",
+            "Широта (доставка)", "Долгота (доставка)", "Адрес доставки",
+            "Окно времени С (доставка)", "Окно времени ПО (доставка)",
+            "Окно перерыва С (доставка)", "Окно перерыва ПО (доставка)",
+            "Детали адреса доставки", "Время обслуживания доставки",
+            "Приоритет заказа", "Навыки", "Тег заказа", "Название товара",
+            "Айди товара", "Количество товара", "Вес (кг)", "Объем (m3)",
+            "Короба", "Цена товара",
+        ]
+        self.add_order("Тест Клиент Город", "41.3200,69.2400")
+        reports = build_logistics_reports(self.db, SHIPMENT_DATE.isoformat())
+        workbook = load_workbook(BytesIO(reports["city"][0]))
+        header = [cell.value for cell in workbook["Orders"][1]]
+
+        self.assertEqual(header, expected)
+
+    def test_line_id_is_unique_sequence_and_quantity_is_one(self):
+        # «Айди товара» сквозной 1..N по файлу, «Количество товара» всегда 1,
+        # три новые колонки пустые: ровно так прошёл импорт на 327 строках
+        order = self.add_order(
+            "Тест Клиент Город",
+            "41.3200,69.2400",
+            request_number="WH-R-1",
+            product="Товар А",
+        )
+        order.items.append(OrderItem(product="Товар Б", quantity_blocks=2))
+        self.db.commit()
+        self.add_order(
+            "Тест Сосед Город",
+            "41.3300,69.2500",
+            request_number="WH-R-2",
+        )
+        reports = build_logistics_reports(self.db, SHIPMENT_DATE.isoformat())
+        rows = self.sheet_rows(reports["city"][0])
+
+        self.assertEqual(len(rows), 3)
+        self.assertEqual([row[29] for row in rows], [1, 2, 3])
+        self.assertEqual([row[30] for row in rows], [1, 1, 1])
+        for row in rows:
+            self.assertIn(row[25], ("", None))   # Приоритет заказа
+            self.assertIn(row[27], ("", None))   # Тег заказа
+            self.assertIn(row[34], ("", None))   # Цена товара
+            self.assertEqual(row[31], 0)         # Вес (кг)
+            self.assertEqual(row[32], 0)         # Объем (m3)
+
+    def test_order_counts_follow_zone_split(self):
+        # Счёт заказов по зонам считает заказы, а не товарные строки: два городских
+        # заказа с тремя позициями и один областной дают 2 и 1
+        order = self.add_order("Тест Клиент Город", "41.3200,69.2400", product="Товар А")
+        order.items.append(OrderItem(product="Товар Б", quantity_blocks=2))
+        self.db.commit()
+        self.add_order("Тест Сосед Город", "41.3300,69.2500")
+        self.add_order("Тест Клиент Область", "41.018778,70.083423")
+        reports = build_logistics_reports(self.db, SHIPMENT_DATE.isoformat())
+
+        self.assertEqual(reports["order_counts"], {"city": 2, "region": 1})
 
     def test_stop_external_id_is_stable_when_created_at_matches(self):
         same_moment = datetime(2030, 1, 1, 7, 0, tzinfo=timezone.utc)

@@ -68,6 +68,7 @@ from .telegram_output_contract import (
     LOGISTICS_ZONE_CITY,
     LOGISTICS_ZONE_REGION,
     logistics_report_caption,
+    logistics_summary_message,
     smartup_export_caption,
     smartup_export_filename as export_filename,
 )
@@ -2229,6 +2230,25 @@ def send_final_logistics_reports(
                         caption=logistics_report_caption(delivery_date, zone),
                     )
                     sent_filenames.append(filename)
+                # Приписка с числом заказов по зонам идёт следом за файлами тем же
+                # маршрутом. Счёты даёт билдер отчёта; их отсутствие (старый ответ
+                # без order_counts) не превращается в приписку с нулями, а прямо
+                # называется в результате
+                order_counts = reports.get("order_counts")
+                summary_sent = False
+                summary_reason = ""
+                if isinstance(order_counts, dict):
+                    sender.send_message(
+                        config.logistics_chat_id,
+                        logistics_summary_message(
+                            delivery_date,
+                            city_count=order_counts.get(LOGISTICS_ZONE_CITY) or 0,
+                            region_count=order_counts.get(LOGISTICS_ZONE_REGION) or 0,
+                        ),
+                    )
+                    summary_sent = True
+                else:
+                    summary_reason = "order_counts_missing"
             except Exception as exc:
                 result = {
                     "status": "ambiguous",
@@ -2267,6 +2287,8 @@ def send_final_logistics_reports(
                     "route_fingerprint": route_fingerprint,
                     "delivery_date": delivery_date,
                     "filenames": sent_filenames,
+                    "summary_sent": summary_sent,
+                    "summary_reason": summary_reason,
                     "unassigned_orders": len(reports.get(ZONE_UNASSIGNED) or []),
                     "region_directory_empty": region_directory_empty,
                 }

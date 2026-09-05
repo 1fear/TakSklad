@@ -134,10 +134,23 @@ class LogisticsManualStopTests(unittest.TestCase):
         self.assertEqual(row[18], "Ташкент, ручной адрес 1")
         self.assertEqual(str(row[19]), "2030-03-04 10:00:00")
         self.assertEqual(str(row[20]), "2030-03-04 18:00:00")
-        self.assertIn(row[26], ("", None))
-        self.assertEqual(row[28], 0)
-        self.assertEqual(row[29], 0)
-        self.assertEqual(row[30], 12)
+        self.assertIn(row[28], ("", None))   # Название товара
+        self.assertEqual(row[31], 0)         # Вес (кг)
+        self.assertEqual(row[32], 0)         # Объем (m3)
+        self.assertEqual(row[33], 12)        # Короба
+
+    def test_manual_stop_joins_line_id_sequence_with_quantity_one(self):
+        # «Айди товара» сквозной по всему файлу, ручная точка получает свой
+        # номер после товарных строк, «Количество товара» у неё тоже 1
+        self.add_order()
+        self.save_stop()
+
+        rows = self.zone_rows("city")
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual([row[29] for row in rows], [1, 2])
+        self.assertEqual([row[30] for row in rows], [1, 1])
+        self.assertEqual(rows[1][3], "Тест Ручная Точка")
 
     def test_zero_block_stop_still_goes_into_the_report(self):
         self.add_order()
@@ -147,7 +160,7 @@ class LogisticsManualStopTests(unittest.TestCase):
         manual = [row for row in rows if row[3] == "Тест Ручная Точка"]
 
         self.assertEqual(len(manual), 1)
-        self.assertEqual(manual[0][30], 0)
+        self.assertEqual(manual[0][33], 0)
 
     def test_day_with_manual_stops_only_still_builds_the_report(self):
         self.save_stop()
