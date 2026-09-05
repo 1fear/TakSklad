@@ -4283,12 +4283,16 @@ class BackendApiPersistenceTests(unittest.TestCase):
             "Окно перерыва ПО (доставка)",
             "Детали адреса доставки",
             "Время обслуживания доставки",
+            "Приоритет заказа",
             "Навыки",
+            "Тег заказа",
             "Название товара",
             "Айди товара",
+            "Количество товара",
             "Вес (кг)",
             "Объем (m3)",
             "Короба",
+            "Цена товара",
         ])
         self.assertEqual(sheet["A2"].value, "delivery")
         self.assertEqual(sheet["B2"].value, "logistics-source-order")
@@ -4299,10 +4303,14 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(sheet["S2"].value, "Tashkent Address")
         self.assertEqual(sheet["T2"].value, datetime(2026, 5, 30, 10, 0))
         self.assertEqual(sheet["U2"].value, datetime(2026, 5, 30, 18, 0))
-        self.assertEqual(sheet["AA2"].value, "Chapman Brown OP 20 × 20")
-        self.assertEqual(sheet["AC2"].value, 0)
-        self.assertEqual(sheet["AD2"].value, 0)
-        self.assertEqual(sheet["AE2"].value, 20)
+        # Шаблон «Orders via Excel»: название товара AC, айди AD, количество AE,
+        # вес AF, объём AG, короба AH
+        self.assertEqual(sheet["AC2"].value, "Chapman Brown OP 20")
+        self.assertEqual(sheet["AD2"].value, 1)
+        self.assertEqual(sheet["AE2"].value, 1)
+        self.assertEqual(sheet["AF2"].value, 0)
+        self.assertEqual(sheet["AG2"].value, 0)
+        self.assertEqual(sheet["AH2"].value, 20)
         workbook.close()
 
     def test_logistics_report_uses_quantity_blocks_for_boxes(self):
@@ -4331,8 +4339,12 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(report.status_code, 200)
         workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
         sheet = workbook["Orders"]
-        self.assertEqual(sheet["AA2"].value, "Chapman Brown OP 20 × 50")
-        self.assertEqual(sheet["AE2"].value, 50)
+        # Шаблон «Orders via Excel»: название товара в AC, короба в AH,
+        # количество товара в AE всегда 1, айди товара в AD сквозной
+        self.assertEqual(sheet["AC2"].value, "Chapman Brown OP 20")
+        self.assertEqual(sheet["AD2"].value, 1)
+        self.assertEqual(sheet["AE2"].value, 1)
+        self.assertEqual(sheet["AH2"].value, 50)
         workbook.close()
 
     def test_logistics_report_does_not_expose_smartup_internal_id(self):
@@ -4546,7 +4558,8 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(sheet.max_row, 2)
         self.assertEqual(sheet["D2"].value, "Route Client")
         self.assertEqual(sheet["S2"].value, "Tashkent Address")
-        self.assertEqual(sheet["AA2"].value, "Chapman Brown OP 20 × 2")
+        self.assertEqual(sheet["AC2"].value, "Chapman Brown OP 20")
+        self.assertEqual(sheet["AH2"].value, 2)
         self.assertEqual(problems.max_row, 3)
         problem_rows = {
             row[0]: row

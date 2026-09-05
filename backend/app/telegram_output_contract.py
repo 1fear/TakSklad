@@ -81,6 +81,18 @@ def logistics_report_filename(report_date: Any, zone: Any) -> str:
     return f"TakSklad_логистика_{_logistics_zone_label(zone)}_{_display_date(report_date)}.xlsx"
 
 
+def logistics_summary_message(report_date: Any, *, city_count: Any, region_count: Any) -> str:
+    """Приписка к отчёту логистики: заказы по зонам, «всего» это город плюс область."""
+    city = int(city_count or 0)
+    region = int(region_count or 0)
+    return "\n".join([
+        f"Отчет логистики {_display_date(report_date)}",
+        f"Заказов в город: {city}",
+        f"Заказов в область: {region}",
+        f"Всего заказов: {city + region}",
+    ])
+
+
 def build_skladbot_daily_report_message(report: dict[str, Any]) -> str:
     summary = report.get("summary") or {}
     category_counts = summary.get("category_counts") or {}
@@ -154,6 +166,7 @@ def runtime_output_artifacts() -> dict[str, dict[str, str]]:
             "city_filename": logistics_report_filename(sample_date, LOGISTICS_ZONE_CITY),
             "region_caption": logistics_report_caption(sample_date, LOGISTICS_ZONE_REGION),
             "region_filename": logistics_report_filename(sample_date, LOGISTICS_ZONE_REGION),
+            "summary_message": logistics_summary_message(sample_date, city_count=1, region_count=2),
         },
         "skladbot_daily_report": {
             "message": build_skladbot_daily_report_message(daily_report),

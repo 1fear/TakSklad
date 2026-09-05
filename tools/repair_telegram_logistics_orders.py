@@ -1141,7 +1141,9 @@ def verify_report(db, orders, audits_by_order):
             ref = target_ref(order)
             rows = rows_by_ref[ref]
             expected_boxes = sum(logistics.item_quantity_blocks(item) for item in order.items)
-            actual_boxes = sum(int(row[30] or 0) for row in rows)
+            # «Короба» это колонка 34 (индекс 33) шаблона «Orders via Excel» на 35
+            # колонок; индекс 30 там занимает «Количество товара», всегда 1
+            actual_boxes = sum(int(row[33] or 0) for row in rows)
             if len(rows) != len(order.items) or actual_boxes != expected_boxes:
                 value_conflicts += 1
         return report_rows, problem_rows, value_conflicts + date_conflicts

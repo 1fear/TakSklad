@@ -2762,6 +2762,7 @@ class SmartupAutoImportTests(unittest.TestCase):
                 "city": (b"city-bytes", "TakSklad_логистика_город_26.06.2026.xlsx"),
                 "region": (b"region-bytes", "TakSklad_логистика_область_26.06.2026.xlsx"),
                 "unassigned": [unassigned_order],
+                "order_counts": {"city": 3, "region": 2},
             },
         ):
             with self.SessionLocal() as db:
@@ -2794,12 +2795,49 @@ class SmartupAutoImportTests(unittest.TestCase):
             payload for payload in alert_payloads
             if payload.get("kind") == "logistics_zone_unassigned_order"
         ]
+        # Приписка с числом заказов уходит в тот же чат логистики сразу после
+        # обоих файлов: заказы по зонам, «всего» это город плюс область
+        self.assertEqual(
+            sender.messages,
+            [(
+                config.logistics_chat_id,
+                "Отчет логистики 26.06.2026\nЗаказов в город: 3\nЗаказов в область: 2\nВсего заказов: 5",
+            )],
+        )
         self.assertEqual(len(zone_alerts), 1)
         self.assertEqual(zone_alerts[0]["route_role"], "admin")
         self.assertEqual(zone_alerts[0]["orders_count"], 1)
         self.assertIn("Незнакомый Загород", zone_alerts[0]["text"])
         self.assertIn("41.4700,69.5800", zone_alerts[0]["text"])
         self.assertIn("TEST-1", zone_alerts[0]["text"])
+
+    def test_logistics_summary_is_skipped_without_order_counts_and_says_why(self):
+        # Билдер без счётов по зонам (старый формат ответа) не рождает приписку
+        # с нулями: файлы уходят, а результат прямо называет причину пропуска
+        sender = FakeTelegramSender()
+        config = self.config("/tmp", logistics_chat_id="-1001002")
+        with mock.patch(
+            "backend.app.smartup_auto_import.build_logistics_reports",
+            return_value={
+                "city": (b"city-bytes", "TakSklad_логистика_город_26.06.2026.xlsx"),
+                "region": None,
+                "unassigned": [],
+            },
+        ):
+            with self.SessionLocal() as db:
+                results = send_final_logistics_reports(
+                    db,
+                    config,
+                    export_date=date(2026, 6, 25),
+                    extra_delivery_dates=["2026-06-26"],
+                    telegram_sender=sender,
+                )
+
+        self.assertEqual(results[0]["status"], "sent")
+        self.assertEqual(len(sender.documents), 1)
+        self.assertEqual(sender.messages, [])
+        self.assertFalse(results[0]["summary_sent"])
+        self.assertEqual(results[0]["summary_reason"], "order_counts_missing")
 
     def test_logistics_slot_alerts_when_region_directory_is_empty(self):
         sender = FakeTelegramSender()
@@ -2811,6 +2849,7 @@ class SmartupAutoImportTests(unittest.TestCase):
                 "region": None,
                 "unassigned": [],
                 "region_directory_empty": True,
+                "order_counts": {"city": 4, "region": 0},
             },
         ):
             with self.SessionLocal() as db:
@@ -2830,6 +2869,15 @@ class SmartupAutoImportTests(unittest.TestCase):
                     ).scalars().all()
                 ]
 
+        # Областного файла нет, но приписка всё равно считает обе зоны: область 0
+        self.assertEqual(
+            sender.messages,
+            [(
+                "-1001002",
+                "Отчет логистики 26.06.2026\nЗаказов в город: 4\nЗаказов в область: 0\nВсего заказов: 4",
+            )],
+        )
+        self.assertTrue(results[0]["summary_sent"])
         # Городской файл всё равно уходит, доставка не встаёт
         self.assertEqual(
             [document[2] for document in sender.documents],

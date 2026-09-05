@@ -26,8 +26,8 @@
     "smartup_logistics_report": {
       "destination": "logistics",
       "schedules": ["17:50"],
-      "text_policy_label": "runtime_logistics_outputs_v1",
-      "text_policy_sha256": "965f131a10549ffc14b2c9f7a4d0610de9736c3352dfce6babe946188405006c",
+      "text_policy_label": "runtime_logistics_outputs_v2",
+      "text_policy_sha256": "9b0a206b58172b2e130412844a8680422b98e9a9fc7c2637fb9ca8c5a0fd10a1",
       "error_destination": "admin"
     },
     "skladbot_daily_report": {

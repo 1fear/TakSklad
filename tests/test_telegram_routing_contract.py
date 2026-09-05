@@ -249,12 +249,25 @@ class TelegramRoutingContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             logistics_report_filename("2030-01-02", "unknown")
 
+        from backend.app.telegram_output_contract import logistics_summary_message
+
+        # Приписка с числом заказов уходит тем же маршрутом следом за файлами:
+        # заказы, а не строки, «всего» это город плюс область
+        self.assertEqual(
+            logistics_summary_message("2030-01-02", city_count=1, region_count=2),
+            "Отчет логистики 02.01.2030\nЗаказов в город: 1\nЗаказов в область: 2\nВсего заказов: 3",
+        )
+
         artifact = runtime_output_artifacts()[
             TelegramMessageKind.SMARTUP_LOGISTICS_REPORT.value
         ]
         self.assertEqual(
             set(artifact),
-            {"city_caption", "city_filename", "region_caption", "region_filename"},
+            {"city_caption", "city_filename", "region_caption", "region_filename", "summary_message"},
+        )
+        self.assertEqual(
+            artifact["summary_message"],
+            "Отчет логистики 02.01.2030\nЗаказов в город: 1\nЗаказов в область: 2\nВсего заказов: 3",
         )
 
     def test_daily_runtime_artifact_is_one_combined_report(self):
