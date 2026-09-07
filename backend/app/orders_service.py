@@ -65,6 +65,9 @@ from .transfer_kiz_service import (
 )
 
 
+RETURN_BOT_APPROVAL_CODE = "return_requires_bot_approval"
+
+
 class ApiError(Exception):
     def __init__(self, status_code, detail):
         self.status_code = status_code
@@ -875,6 +878,13 @@ def lookup_return_order(db: Session, lookup_value):
     return order_to_read(matches[0])
 
 
+def return_requires_bot_approval(payment_type):
+    """Transfer payments (перечисление) get their return request only after approval in the bot."""
+    from .reports_service import payment_group
+
+    return payment_group(payment_type) == "transfer"
+
+
 def mark_order_returned(db: Session, order_id, return_reference="", returned_by="desktop", confirmed_items=None):
     parsed_order_id = parse_uuid(order_id, "order_id")
     lock_order_graphs_for_kiz(db, [parsed_order_id])
@@ -890,6 +900,12 @@ def mark_order_returned(db: Session, order_id, return_reference="", returned_by=
         raise ApiError(409, "Order is already returned")
     if order.status not in COMPLETED_STATUSES:
         raise ApiError(409, "Only completed archived orders can be returned")
+    if return_requires_bot_approval(order.payment_type):
+        raise ApiError(409, {
+            "code": RETURN_BOT_APPROVAL_CODE,
+            "message": "Transfer payment returns are created only after approval in the bot",
+            "payment_type": order.payment_type or "",
+        })
 
     confirmed = validate_return_confirmed_items(order, confirmed_items)
     returned_at = datetime.now(timezone.utc)

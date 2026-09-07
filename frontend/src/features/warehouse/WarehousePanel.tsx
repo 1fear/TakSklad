@@ -6,6 +6,7 @@ import {
   type ApiConfig,
   type KizAvailability,
   type Order,
+  ApiRequestError,
   completeWarehouseOrder,
   createScan,
   listActiveOrders,
@@ -22,6 +23,10 @@ import { projectItemProgress } from "./offline/projection";
 import type { OfflineEvent } from "./offline/queueTypes";
 import { useOfflineQueue } from "./offline/useOfflineQueue";
 import "./WarehousePanel.css";
+
+const RETURN_BOT_APPROVAL_CODE = "return_requires_bot_approval";
+const RETURN_BOT_APPROVAL_MESSAGE =
+  "Возврат по перечислению здесь не оформляется: заявка возврата создаётся только после одобрения в боте";
 
 type WarehousePanelProps = {
   config: ApiConfig;
@@ -418,7 +423,11 @@ export default function WarehousePanel({ config, canWrite, actor, onError, onNot
       setReturnReference("");
       onNotice("Возврат зафиксирован в PostgreSQL; КИЗы снова доступны");
     } catch (error) {
-      onError(error, "Не удалось оформить возврат");
+      if (error instanceof ApiRequestError && error.code === RETURN_BOT_APPROVAL_CODE) {
+        onError(new Error(RETURN_BOT_APPROVAL_MESSAGE), RETURN_BOT_APPROVAL_MESSAGE);
+      } else {
+        onError(error, "Не удалось оформить возврат");
+      }
     } finally {
       setReturnBusy("");
     }
