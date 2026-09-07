@@ -1,4 +1,5 @@
 import unittest
+import urllib.parse
 import uuid
 from io import BytesIO
 from datetime import date, datetime, timedelta, timezone
@@ -23,6 +24,7 @@ from backend.app.main import (
     require_service_token,
 )
 from backend.app.models import AuditLog, Base, ClientPoint, ImportFile, ImportJob, Incident, KizCode, KizMovement, LogisticsCalendarDay, Order, OrderItem, PendingEvent, ScanCode, User
+from backend.app.skladbot_daily_report import REQUEST_HEADERS, REQUEST_PRODUCT_HEADERS
 from backend.app.skladbot_return_requests import SKLADBOT_RETURN_REQUEST_CREATE_EVENT_TYPE
 from backend.app.smartup_auto_import import SMARTUP_AUTO_IMPORT_EVENT_TYPE
 from backend.app.settings import load_settings
@@ -4797,6 +4799,169 @@ class BackendApiPersistenceTests(unittest.TestCase):
         self.assertEqual(summary["C2"].value, "KIZ Client")
         self.assertEqual(summary["G2"].value, 2)
         self.assertEqual(summary["H2"].value, 2)
+        workbook.close()
+
+    def test_kiz_daily_report_filters_by_legal_entity_in_daily_template(self):
+        rows = [
+            {
+                "Дата отгрузки": "2026-05-30",
+                "Тип оплаты": "Терминал",
+                "Клиент": "Alpha LLC",
+                "Адрес": "Alpha Address",
+                "Товары": "Chapman Brown OP 20",
+                "Кол-во ШТ": "20",
+                "Кол-во блок": "2",
+                "Источник файла": "daily-a.xlsx",
+                "ID заказа": "alpha-daily-order",
+            },
+            {
+                "Дата отгрузки": "2026-05-30",
+                "Тип оплаты": "Терминал",
+                "Клиент": "Alpha LLC",
+                "Адрес": "Alpha Address",
+                "Товары": "Chapman RED OP 20",
+                "Кол-во ШТ": "10",
+                "Кол-во блок": "1",
+                "Источник файла": "daily-a.xlsx",
+                "ID заказа": "alpha-daily-order",
+            },
+            {
+                "Дата отгрузки": "2026-05-30",
+                "Тип оплаты": "Перечисление",
+                "Клиент": "Beta LLC",
+                "Адрес": "Beta Address",
+                "Товары": "Chapman Gold SSL 20",
+                "Кол-во ШТ": "10",
+                "Кол-во блок": "1",
+                "Источник файла": "daily-b.xlsx",
+                "ID заказа": "beta-daily-order",
+            },
+            {
+                "Дата отгрузки": "2026-05-31",
+                "Тип оплаты": "Терминал",
+                "Клиент": "Alpha LLC",
+                "Адрес": "Alpha Address",
+                "Товары": "Chapman Brown OP 20",
+                "Кол-во ШТ": "10",
+                "Кол-во блок": "1",
+                "Источник файла": "daily-c.xlsx",
+                "ID заказа": "alpha-next-day-order",
+            },
+        ]
+        imported = self.client.post(
+            "/api/v1/imports",
+            json={"source": "excel", "filename": "daily-orders.xlsx", "rows": rows},
+        )
+        self.assertEqual(imported.status_code, 201)
+
+        active = self.client.get("/api/v1/orders/active").json()
+        alpha_order = next(
+            order
+            for order in active
+            if order["client"] == "Alpha LLC" and order["order_date"] == "2026-05-30"
+        )
+        brown_item = next(item for item in alpha_order["items"] if item["product"] == "Chapman Brown OP 20")
+        codes = ("0104006396053978217DAILYAA001XXXXXX", "0104006396053978217DAILYAA002XXXXXX")
+        for code in codes:
+            scanned = self.client.post("/api/v1/scans", json={"order_item_id": brown_item["id"], "code": code})
+            self.assertEqual(scanned.status_code, 201)
+
+        with self.SessionLocal() as db:
+            stored_alpha = db.get(Order, uuid.UUID(alpha_order["id"]))
+            stored_alpha.raw_payload = {
+                **(stored_alpha.raw_payload or {}),
+                "source_order_id": "smartup:12345",
+                "skladbot_request_number": "WH-R-777",
+            }
+            stored_beta = db.execute(
+                select(Order).where(Order.client == "Beta LLC")
+            ).scalars().one()
+            stored_beta.status = "returned"
+            db.commit()
+
+        clients = self.client.get("/api/v1/reports/kiz/daily-clients", params={"shipment_date": "2026-05-30"})
+        self.assertEqual(clients.status_code, 200)
+        self.assertEqual(clients.json(), [
+            {"client": "Alpha LLC", "orders": 1, "planned_blocks": 3, "scanned_blocks": 2, "kiz_codes": 2},
+            {"client": "Beta LLC", "orders": 1, "planned_blocks": 1, "scanned_blocks": 0, "kiz_codes": 0},
+        ])
+
+        report = self.client.get(
+            "/api/v1/reports/kiz/daily",
+            params={"shipment_date": "2026-05-30", "client": "alpha llc"},
+        )
+        self.assertEqual(report.status_code, 200)
+        self.assertEqual(
+            urllib.parse.unquote(report.headers["X-TakSklad-Filename"]),
+            "TakSklad_КИЗ_дейли_Alpha LLC_30.05.2026.xlsx",
+        )
+
+        workbook = openpyxl.load_workbook(BytesIO(report.content), data_only=True)
+        self.assertEqual(workbook.sheetnames, ["Сводка", "Заявки", "Товары заявок"])
+
+        summary = workbook["Сводка"]
+        self.assertEqual([cell.value for cell in summary[1]], ["Показатель", "Блоков", "Заявок"])
+        self.assertEqual(
+            [summary.cell(row=index, column=1).value for index in range(2, 7)],
+            ["Отгрузка", "Отгрузка в браке", "Возврат", "Приемка", "Актуальный остаток"],
+        )
+        self.assertEqual((summary["B2"].value, summary["C2"].value), (3, 1))
+        self.assertEqual((summary["B3"].value, summary["C3"].value), (0, 0))
+        self.assertEqual((summary["B4"].value, summary["C4"].value), (0, 0))
+        self.assertEqual((summary["B5"].value, summary["C5"].value), (0, 0))
+        self.assertIsNone(summary["B6"].value)
+        self.assertIsNone(summary["C6"].value)
+
+        requests_sheet = workbook["Заявки"]
+        self.assertEqual([cell.value for cell in requests_sheet[1]], REQUEST_HEADERS)
+        self.assertEqual(requests_sheet.max_row, 2)
+        self.assertEqual(
+            [requests_sheet.cell(row=2, column=index).value for index in (1, 2, 3, 4, 6, 7, 9, 10, 13, 14, 15)],
+            ["WH-R-777", "12345", "Отгрузка", "Не выполнена", "30.05.2026", "Alpha LLC", "Alpha Address", "Терминал", 3, 2, 2],
+        )
+        self.assertRegex(str(requests_sheet["E2"].value or ""), r"^\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}$")
+
+        products_sheet = workbook["Товары заявок"]
+        self.assertEqual([cell.value for cell in products_sheet[1]], REQUEST_PRODUCT_HEADERS)
+        body = [[cell.value for cell in row] for row in products_sheet.iter_rows(min_row=2)]
+        self.assertEqual({row[5] for row in body}, {"Alpha LLC"})
+        self.assertEqual(
+            [row[7] for row in body],
+            ["Chapman Brown OP 20", "Chapman Brown OP 20", "Chapman RED OP 20"],
+        )
+        self.assertEqual([row[8] for row in body], [None, None, None])
+        self.assertEqual([row[9] for row in body], [codes[0], codes[1], None])
+        self.assertEqual([row[10] for row in body], ["Блок", "Блок", None])
+        self.assertEqual([row[11] for row in body], [1, 1, None])
+        workbook.close()
+
+        missing = self.client.get(
+            "/api/v1/reports/kiz/daily",
+            params={"shipment_date": "2026-05-30", "client": "Gamma LLC"},
+        )
+        self.assertEqual(missing.status_code, 404)
+
+        invalid = self.client.get("/api/v1/reports/kiz/daily", params={"shipment_date": "not-a-date"})
+        self.assertEqual(invalid.status_code, 422)
+
+        combined = self.client.get("/api/v1/reports/kiz/daily", params={"shipment_date": "2026-05-30"})
+        self.assertEqual(combined.status_code, 200)
+        self.assertEqual(
+            urllib.parse.unquote(combined.headers["X-TakSklad-Filename"]),
+            "TakSklad_КИЗ_дейли_Все юрлица_30.05.2026.xlsx",
+        )
+        workbook = openpyxl.load_workbook(BytesIO(combined.content), data_only=True)
+        summary = workbook["Сводка"]
+        self.assertEqual((summary["B2"].value, summary["C2"].value), (3, 1))
+        self.assertEqual((summary["B4"].value, summary["C4"].value), (1, 1))
+        requests_sheet = workbook["Заявки"]
+        self.assertEqual(requests_sheet.max_row, 3)
+        self.assertEqual(
+            [requests_sheet.cell(row=index, column=7).value for index in (2, 3)],
+            ["Alpha LLC", "Beta LLC"],
+        )
+        self.assertEqual(requests_sheet["C3"].value, "Возврат")
+        self.assertEqual(requests_sheet["D3"].value, "Выполнена")
         workbook.close()
 
     def test_kiz_source_file_report_separates_same_filename_by_import(self):

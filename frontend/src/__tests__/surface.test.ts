@@ -28,4 +28,11 @@ describe("surface helper characterization", () => {
     expect(hasAdminSurfaceAccess(["client_points:read"])).toBe(true);
     expect(hasAdminSurfaceAccess(["admin:write"])).toBe(false);
   });
+
+  it("opens the markings tab only when admin:read and reports:read are both granted", () => {
+    expect(accessibleAdminTabsForPermissions(["reports:read"])).toEqual([]);
+    expect(accessibleAdminTabsForPermissions(["admin:read"])).not.toContain("kizDaily");
+    expect(accessibleAdminTabsForPermissions(["admin:read", "reports:read"])).toContain("kizDaily");
+    expect(hasAdminSurfaceAccess(["reports:read"])).toBe(false);
+  });
 });

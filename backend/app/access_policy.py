@@ -173,6 +173,8 @@ ROUTE_POLICIES: dict[tuple[str, str], RoutePolicy] = {
     ("GET", "/api/v1/reports/kiz/date"): _protected(PERMISSION_REPORT_READ, "reports:read"),
     ("GET", "/api/v1/reports/kiz/range"): _protected(PERMISSION_REPORT_READ, "reports:read"),
     ("GET", "/api/v1/reports/kiz/source-file"): _protected(PERMISSION_REPORT_READ, "reports:read"),
+    ("GET", "/api/v1/reports/kiz/daily-clients"): _protected(PERMISSION_REPORT_READ, "reports:read"),
+    ("GET", "/api/v1/reports/kiz/daily"): _protected(PERMISSION_REPORT_READ, "reports:read"),
     ("GET", "/api/v1/logistics/dates"): _protected(PERMISSION_LOGISTICS_READ, "logistics:read"),
     ("GET", "/api/v1/logistics/report"): _protected(PERMISSION_LOGISTICS_READ, "logistics:read"),
     ("GET", "/api/v1/diagnostics/logs"): _protected(PERMISSION_DIAGNOSTICS_READ, "diagnostics:read", sensitive=True),

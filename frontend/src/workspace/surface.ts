@@ -3,6 +3,7 @@ export type AdminWorkspaceTab =
   | "table"
   | "calendar"
   | "clients"
+  | "kizDaily"
   | "smartup"
   | "imports"
   | "skladbotDryRun"
@@ -21,6 +22,7 @@ export function accessibleAdminTabsForPermissions(permissions: string[]): AdminW
   const tabs: AdminWorkspaceTab[] = [];
   if (permissions.includes("admin:read")) tabs.push("table");
   if (permissions.includes("client_points:read")) tabs.push("calendar", "clients");
+  if (permissions.includes("admin:read") && permissions.includes("reports:read")) tabs.push("kizDaily");
   if (permissions.includes("admin:read")) tabs.push("smartup");
   if (permissions.includes("imports:read")) tabs.push("imports");
   if (permissions.includes("admin:read")) tabs.push("skladbotDryRun", "incidents", "activity");
