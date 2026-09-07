@@ -1874,6 +1874,84 @@
       "version": "1.15.1"
     },
     {
+      "bom-ref": "pkg:npm/%40fontsource/ibm-plex-mono@5.3.0",
+      "name": "@fontsource/ibm-plex-mono",
+      "properties": [
+        {
+          "name": "taksklad:source-lock",
+          "value": "frontend/package-lock.json"
+        },
+        {
+          "name": "taksklad:dependency-scope",
+          "value": "runtime"
+        },
+        {
+          "name": "taksklad:install-path",
+          "value": "node_modules/@fontsource/ibm-plex-mono"
+        },
+        {
+          "name": "taksklad:npm-integrity",
+          "value": "sha512-eTgnZjZEGk1QtD3ZstF+Vclo2HLAni8YMy34/DxllwZvyz1lR/1RF/xTiAquOBO7MvqBx8D2Ig2WCPMVfdZu7Q=="
+        }
+      ],
+      "purl": "pkg:npm/%40fontsource/ibm-plex-mono@5.3.0",
+      "scope": "required",
+      "type": "library",
+      "version": "5.3.0"
+    },
+    {
+      "bom-ref": "pkg:npm/%40fontsource/ibm-plex-sans@5.3.0",
+      "name": "@fontsource/ibm-plex-sans",
+      "properties": [
+        {
+          "name": "taksklad:source-lock",
+          "value": "frontend/package-lock.json"
+        },
+        {
+          "name": "taksklad:dependency-scope",
+          "value": "runtime"
+        },
+        {
+          "name": "taksklad:install-path",
+          "value": "node_modules/@fontsource/ibm-plex-sans"
+        },
+        {
+          "name": "taksklad:npm-integrity",
+          "value": "sha512-CbE4CbbEEZJX860XyUiRpsksXIQR8Rp2XDva2VO53NJox9tVNtusrysd2x5YkUEY3ErQ66W1IiiQL8/wihhw5w=="
+        }
+      ],
+      "purl": "pkg:npm/%40fontsource/ibm-plex-sans@5.3.0",
+      "scope": "required",
+      "type": "library",
+      "version": "5.3.0"
+    },
+    {
+      "bom-ref": "pkg:npm/%40fontsource/manrope@5.3.0",
+      "name": "@fontsource/manrope",
+      "properties": [
+        {
+          "name": "taksklad:source-lock",
+          "value": "frontend/package-lock.json"
+        },
+        {
+          "name": "taksklad:dependency-scope",
+          "value": "runtime"
+        },
+        {
+          "name": "taksklad:install-path",
+          "value": "node_modules/@fontsource/manrope"
+        },
+        {
+          "name": "taksklad:npm-integrity",
+          "value": "sha512-obJ1Dv3+uCA6HlHgW8u4BGYxJR9In2HW7gjJhlflEvkrj1X1iSEwu0fToL+JYGC/FEKFfIz1sBuPduvcL2gIAA=="
+        }
+      ],
+      "purl": "pkg:npm/%40fontsource/manrope@5.3.0",
+      "scope": "required",
+      "type": "library",
+      "version": "5.3.0"
+    },
+    {
       "bom-ref": "pkg:npm/%40formatjs/ecma402-abstract@2.3.6",
       "name": "@formatjs/ecma402-abstract",
       "properties": [
@@ -17163,6 +17241,9 @@
         "pkg:npm/%40eslint/object-schema@2.1.7",
         "pkg:npm/%40eslint/plugin-kit@0.4.1",
         "pkg:npm/%40exodus/bytes@1.15.1",
+        "pkg:npm/%40fontsource/ibm-plex-mono@5.3.0",
+        "pkg:npm/%40fontsource/ibm-plex-sans@5.3.0",
+        "pkg:npm/%40fontsource/manrope@5.3.0",
         "pkg:npm/%40formatjs/ecma402-abstract@2.3.6",
         "pkg:npm/%40formatjs/fast-memoize@2.2.7",
         "pkg:npm/%40formatjs/icu-messageformat-parser@2.11.4",
