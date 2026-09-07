@@ -451,6 +451,35 @@ describe("DB-only warehouse operations", () => {
     expect(onNotice).toHaveBeenCalledWith("Возврат зафиксирован в PostgreSQL; КИЗы снова доступны");
   });
 
+  it("names the bot approval block when the backend refuses a transfer payment return", async () => {
+    const onError = vi.fn();
+    const user = userEvent.setup();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    server.use(
+      http.get("/api/v1/returns/lookup", () => HttpResponse.json({ ...activeOrder, status: "archive" })),
+      http.post("/api/v1/returns/:orderId", () => HttpResponse.json({
+        detail: {
+          code: "return_requires_bot_approval",
+          message: "Transfer payment returns are created only after approval in the bot",
+          payment_type: "Перечисление",
+        },
+      }, { status: 409 })),
+    );
+
+    render(<WarehousePanel config={config} canWrite actor="operator-test" onError={onError} onNotice={vi.fn()} />);
+
+    await screen.findByText(new RegExp(activeOrder.client));
+    await user.type(screen.getByLabelText("Номер или ID SkladBot, либо ID заказа"), "WH-R-TEST-2");
+    await user.click(screen.getByRole("button", { name: "Найти" }));
+    await user.click(await screen.findByRole("button", { name: "Подтвердить полный возврат" }));
+
+    await waitFor(() => expect(onError).toHaveBeenCalled());
+    const [reported, fallback] = onError.mock.calls.at(-1) as [unknown, string];
+    expect(fallback).toContain("одобрения в боте");
+    expect((reported as Error).message).toBe(fallback);
+  });
+
   it("opens print modal explicitly and calls print only from the print button", async () => {
     let activeCalls = 0;
     const completedOrder = {
