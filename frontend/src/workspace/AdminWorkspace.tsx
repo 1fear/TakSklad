@@ -16,6 +16,7 @@ import {
   Loader2,
   PackageCheck,
   Plus,
+  QrCode,
   RefreshCw,
   RotateCcw,
   Save,
@@ -39,6 +40,7 @@ import {
   ApiRequestError,
   ClientPoint,
   ClientPointOrderSummary,
+  DailyKizClient,
   DashboardDaySummary,
   EventQueueDiagnostics,
   EventQueueEvent,
@@ -55,6 +57,7 @@ import {
   cancelOrder,
   completeOrdersWithoutKiz,
   deleteActiveOrder,
+  downloadClientDailyKiz,
   downloadDiagnosticsLog,
   downloadLogisticsReport,
   getAdminEvents,
@@ -68,6 +71,7 @@ import {
   getReadiness,
   getSmartupAutoImportHistory,
   listClientPoints,
+  listDailyKizClients,
   listImports,
   listSkladBotDryRuns,
   rebuildSkladBotDryRun,
@@ -181,6 +185,9 @@ function AdminWorkspace({
   const [reportDate, setReportDate] = useState(tashkentBusinessDate);
   const [calendarMonth, setCalendarMonth] = useState(tashkentBusinessMonth);
   const [shipmentDateFilter, setShipmentDateFilter] = useState("");
+  const [kizDailyDate, setKizDailyDate] = useState(tashkentBusinessDate);
+  const [kizDailyClients, setKizDailyClients] = useState<DailyKizClient[]>([]);
+  const [kizDailyClient, setKizDailyClient] = useState("");
   const [search, setSearch] = useState("");
   const [clientSearch, setClientSearch] = useState("");
   const [clientPointsTotal, setClientPointsTotal] = useState(0);
@@ -481,6 +488,13 @@ function AdminWorkspace({
         force,
       );
       setCalendarDayLoading(false);
+    } else if (activeTab === "kizDaily" && has("reports:read")) {
+      await loadCachedPanel(
+        `kiz-daily-clients:${kizDailyDate}`,
+        (signal) => listDailyKizClients(activeConfig, kizDailyDate, signal),
+        setKizDailyClients,
+        force,
+      );
     } else if (activeTab === "smartup" && has("admin:read")) {
       await loadCachedPanel("smartup-history", (signal) => getSmartupAutoImportHistory(activeConfig, 50, signal), setSmartupHistory, force);
     } else if (activeTab === "imports" && has("imports:read")) {
@@ -722,14 +736,31 @@ function AdminWorkspace({
     }
   }
 
+  async function downloadKizDailyReport() {
+    setBusyAction(`kiz-daily:${kizDailyDate}:${kizDailyClient}`);
+    try {
+      const result = await downloadClientDailyKiz(config, kizDailyDate, kizDailyClient);
+      const href = URL.createObjectURL(result.blob);
+      const anchor = document.createElement("a");
+      anchor.href = href;
+      anchor.download = result.filename;
+      anchor.click();
+      URL.revokeObjectURL(href);
+    } catch (actionError) {
+      showActionError(actionError, "Не удалось выгрузить маркировки");
+    } finally {
+      setBusyAction("");
+    }
+  }
+
   useEffect(() => {
-    const resources = panelResourcesForTab(tab, calendarMonth, selectedCalendarDate);
+    const resources = panelResourcesForTab(tab, calendarMonth, selectedCalendarDate, kizDailyDate);
     void loadVisiblePanel(tab, config, authPermissions);
     return () => {
       for (const resource of resources) requestCoordinator.abort(resource);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, calendarMonth, selectedCalendarDate, config, authPermissions, requestCoordinator]);
+  }, [tab, calendarMonth, selectedCalendarDate, kizDailyDate, config, authPermissions, requestCoordinator]);
 
   // Запрос уходит на сервер с задержкой: Smartup ID и заявки SkladBot лежат
   // на заказах, локально их в списке точек нет
@@ -1174,6 +1205,10 @@ function AdminWorkspace({
             <Building2 size={18} />
             Клиенты
           </button>}
+          {accessibleTabs.includes("kizDaily") && <button className={tab === "kizDaily" ? "active" : ""} onClick={() => setTab("kizDaily")} aria-current={tab === "kizDaily" ? "page" : undefined}>
+            <QrCode size={18} />
+            Маркировки
+          </button>}
           {accessibleTabs.includes("smartup") && <button className={tab === "smartup" ? "active" : ""} onClick={() => setTab("smartup")} aria-current={tab === "smartup" ? "page" : undefined}>
             <RefreshCw size={18} />
             Smartup
@@ -1450,6 +1485,18 @@ function AdminWorkspace({
           <Suspense fallback={<PanelFallback label="историю импортов" />}>
             <ImportHistoryPanel imports={imports} />
           </Suspense>
+        )}
+
+        {accessibleTabs.includes("kizDaily") && tab === "kizDaily" && (
+          <KizDailyPanel
+            shipmentDate={kizDailyDate}
+            clients={kizDailyClients}
+            selectedClient={kizDailyClient}
+            busyAction={busyAction}
+            onDateChange={(value) => { setKizDailyDate(value); setKizDailyClient(""); }}
+            onClientChange={setKizDailyClient}
+            onDownload={() => void downloadKizDailyReport()}
+          />
         )}
 
         {accessibleTabs.includes("smartup") && tab === "smartup" && (
@@ -1767,6 +1814,107 @@ function Metric({
       <span>{label}</span>
       <strong>{typeof value === "number" ? formatNumber(value) : value}</strong>
     </div>
+  );
+}
+
+function KizDailyPanel({
+  shipmentDate,
+  clients,
+  selectedClient,
+  busyAction,
+  onDateChange,
+  onClientChange,
+  onDownload,
+}: {
+  shipmentDate: string;
+  clients: DailyKizClient[];
+  selectedClient: string;
+  busyAction: string;
+  onDateChange: (value: string) => void;
+  onClientChange: (value: string) => void;
+  onDownload: () => void;
+}) {
+  const totals = clients.reduce(
+    (accumulator, item) => ({
+      orders: accumulator.orders + item.orders,
+      planned: accumulator.planned + item.planned_blocks,
+      scanned: accumulator.scanned + item.scanned_blocks,
+      codes: accumulator.codes + item.kiz_codes,
+    }),
+    { orders: 0, planned: 0, scanned: 0, codes: 0 },
+  );
+  const downloading = busyAction.startsWith("kiz-daily:");
+
+  return (
+    <section className="table-panel">
+      <div className="panel-header table-panel-header">
+        <div>
+          <h2>Маркировки за день</h2>
+          <span className="panel-subtitle">
+            Шаблон вечернего дейли: листы «Сводка», «Заявки», «Товары заявок», строка на каждый код. Данные из базы TakSklad, не из SkladBot
+          </span>
+        </div>
+      </div>
+
+      <div className="filters-bar">
+        <input
+          className="date-input"
+          type="date"
+          value={shipmentDate}
+          onChange={(event) => onDateChange(event.target.value)}
+          title="Дата отгрузки"
+          aria-label="Дата отгрузки"
+        />
+        <SelectFilter value={selectedClient} onChange={onClientChange} ariaLabel="Юрлицо">
+          <option value="">Все юрлица</option>
+          {clients.map((item) => (
+            <option key={item.client} value={item.client}>{item.client}</option>
+          ))}
+        </SelectFilter>
+        <button className="ghost-button" onClick={onDownload} disabled={downloading || clients.length === 0}>
+          {downloading ? <Loader2 className="spin" size={16} /> : <QrCode size={16} />}
+          Скачать XLSX
+        </button>
+      </div>
+
+      {clients.length === 0 ? (
+        <div className="empty-state">За выбранную дату отгрузки заказов нет</div>
+      ) : (
+        <div className="data-table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Юрлицо</th>
+                <th>Заказов</th>
+                <th>Блоков план</th>
+                <th>Блоков факт</th>
+                <th>Кодов маркировки</th>
+              </tr>
+            </thead>
+            <tbody>
+              {clients.map((item) => (
+                <tr key={item.client}>
+                  <td>{item.client}</td>
+                  <td>{item.orders}</td>
+                  <td>{item.planned_blocks}</td>
+                  <td>{item.scanned_blocks}</td>
+                  <td>{item.kiz_codes}</td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr>
+                <td>Итого</td>
+                <td>{totals.orders}</td>
+                <td>{totals.planned}</td>
+                <td>{totals.scanned}</td>
+                <td>{totals.codes}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -3219,8 +3367,9 @@ function isHistoryTab(value: Tab) {
   return HISTORY_TABS.includes(value);
 }
 
-function panelResourcesForTab(value: Tab, calendarMonth: string, selectedCalendarDate: string) {
+function panelResourcesForTab(value: Tab, calendarMonth: string, selectedCalendarDate: string, kizDailyDate: string) {
   if (value === "clients") return ["client-points"];
+  if (value === "kizDaily") return [`kiz-daily-clients:${kizDailyDate}`];
   if (value === "calendar") return [`calendar:${calendarMonth}`, `calendar-day:${selectedCalendarDate}`];
   if (value === "smartup") return ["smartup-history"];
   if (value === "imports") return ["imports"];

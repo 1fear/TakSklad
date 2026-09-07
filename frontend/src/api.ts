@@ -982,3 +982,32 @@ export async function downloadLogisticsReport(config: ApiConfig, shipmentDate: s
     filename: decodeURIComponent(response.headers.get("X-TakSklad-Filename") || "TakSklad_логистика.xlsx"),
   };
 }
+
+export type DailyKizClient = {
+  client: string;
+  orders: number;
+  planned_blocks: number;
+  scanned_blocks: number;
+  kiz_codes: number;
+};
+
+export function listDailyKizClients(config: ApiConfig, shipmentDate: string, signal?: AbortSignal) {
+  const query = new URLSearchParams({ shipment_date: shipmentDate });
+  return apiRequest<DailyKizClient[]>(config, `/api/v1/reports/kiz/daily-clients?${query.toString()}`, { signal });
+}
+
+export async function downloadClientDailyKiz(config: ApiConfig, shipmentDate: string, client: string) {
+  const apiUrl = config.apiUrl.replace(/\/$/, "");
+  ensureCookieApiIsSameOrigin(apiUrl, Boolean(config.token));
+  const query = new URLSearchParams({ shipment_date: shipmentDate });
+  if (client) query.set("client", client);
+  const response = await fetch(`${apiUrl}/api/v1/reports/kiz/daily?${query.toString()}`, {
+    credentials: config.token ? "omit" : "same-origin",
+    headers: config.token ? { Authorization: `Bearer ${config.token}` } : {},
+  });
+  if (!response.ok) throw new ApiRequestError(response.status, response.statusText, "Не удалось выгрузить маркировки");
+  return {
+    blob: await response.blob(),
+    filename: decodeURIComponent(response.headers.get("X-TakSklad-Filename") || "TakSklad_КИЗ_дейли.xlsx"),
+  };
+}

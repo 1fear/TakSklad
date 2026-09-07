@@ -83,6 +83,10 @@ from .csrf import (
     csrf_token_for_session,
     csrf_token_matches,
 )
+from .client_daily_kiz_report_service import (
+    build_client_daily_kiz_xlsx,
+    list_daily_kiz_clients,
+)
 from .kiz_reports_service import (
     build_kiz_date_range_report_xlsx,
     build_kiz_date_report_xlsx,
@@ -1769,6 +1773,44 @@ def kiz_date_range_report(date_from: str, date_to: str, db=Depends(get_db)):
 def kiz_source_file_report(source_file: str, source_key: str | None = None, db=Depends(get_db)):
     try:
         content, filename = build_kiz_source_file_report_xlsx(db, source_file, source_key or "")
+    except ApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+            "X-TakSklad-Filename": quote(filename),
+        },
+    )
+
+
+@api.get("/reports/kiz/daily-clients")
+def kiz_daily_clients(
+    response: Response,
+    shipment_date: str,
+    limit: int = 200,
+    cursor: str = "",
+    db=Depends(get_db),
+) -> list[dict]:
+    try:
+        clients = list_daily_kiz_clients(db, shipment_date)
+    except ApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return paginate_materialized(
+        clients,
+        scope="reports.kiz.daily_clients",
+        response=response,
+        limit=limit,
+        cursor=cursor,
+        default=200,
+    )
+
+
+@api.get("/reports/kiz/daily")
+def kiz_client_daily_report(shipment_date: str, client: str = "", db=Depends(get_db)):
+    try:
+        content, filename = build_client_daily_kiz_xlsx(db, shipment_date, client)
     except ApiError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     return Response(
