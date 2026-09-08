@@ -131,6 +131,7 @@ from .orders_service import list_active_orders_page as list_active_orders_page_i
 from .orders_service import list_returned_orders as list_returned_orders_in_db
 from .orders_service import lookup_kiz_availability as lookup_kiz_availability_in_db
 from .orders_service import lookup_return_order as lookup_return_order_in_db
+from .orders_service import decide_transfer_return_approval as decide_transfer_return_approval_in_db
 from .orders_service import mark_order_returned as mark_order_returned_in_db
 from .orders_service import release_kiz as release_kiz_in_db
 from .orders_service import undo_scan as undo_scan_in_db
@@ -186,6 +187,7 @@ from .schemas import (
     OrderRead,
     OperationsAttentionRead,
     ReadinessResponse,
+    ReturnApprovalDecisionRequest,
     ReturnMarkRequest,
     ScanCreate,
     ScanRead,
@@ -1603,6 +1605,23 @@ def mark_return(order_id: str, payload: ReturnMarkRequest, db=Depends(get_db)):
             return_reference=payload.return_reference or "",
             returned_by=payload.returned_by or "desktop",
             confirmed_items=[item.model_dump() for item in payload.confirmed_items],
+        )
+    except ApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@api.post(
+    "/returns/{order_id}/approval",
+    response_model=OrderRead,
+    dependencies=[Depends(require_admin_write_permission)],
+)
+def decide_return_approval(order_id: str, payload: ReturnApprovalDecisionRequest, db=Depends(get_db)):
+    try:
+        return decide_transfer_return_approval_in_db(
+            db,
+            order_id,
+            decision=payload.decision,
+            decided_by=payload.decided_by or "telegram",
         )
     except ApiError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc

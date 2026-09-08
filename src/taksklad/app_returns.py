@@ -20,11 +20,17 @@ PARTIAL_RETURN_UNSUPPORTED_MESSAGE = (
 )
 EMPTY_RETURN_SELECTION_MESSAGE = "Возврат не сохранён: выберите хотя бы одну позицию."
 ALREADY_RETURNED_MESSAGE = "Этот возврат уже принят."
-RETURN_BOT_APPROVAL_CODE = "return_requires_bot_approval"
-RETURN_BOT_APPROVAL_MESSAGE = (
-    "Возврат по перечислению здесь не оформляется: заявка возврата создаётся "
-    "только после одобрения в боте."
-)
+RETURN_APPROVAL_REQUESTED_CODE = "return_approval_requested"
+RETURN_APPROVAL_PENDING_CODE = "return_approval_pending"
+RETURN_APPROVAL_MESSAGES = {
+    RETURN_APPROVAL_REQUESTED_CODE: (
+        "Возврат по перечислению отправлен на одобрение владельцу в бот. "
+        "Решение придёт туда, здесь заявка пока не оформлена."
+    ),
+    RETURN_APPROVAL_PENDING_CODE: (
+        "Возврат по перечислению уже отправлен на одобрение и ждёт решения в боте."
+    ),
+}
 
 
 def backend_error_code(exc):
@@ -44,8 +50,8 @@ def format_returns_error(exc, *, operation):
         return "Недостаточно прав для работы с возвратами."
     if status_code == 404 and operation == "lookup":
         return "Заявка не найдена."
-    if status_code == 409 and backend_error_code(exc) == RETURN_BOT_APPROVAL_CODE:
-        return RETURN_BOT_APPROVAL_MESSAGE
+    if status_code == 409 and backend_error_code(exc) in RETURN_APPROVAL_MESSAGES:
+        return RETURN_APPROVAL_MESSAGES[backend_error_code(exc)]
     if status_code is not None and status_code >= 500:
         return "Backend временно недоступен. Повторите позже."
     if status_code is None:

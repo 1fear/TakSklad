@@ -23,6 +23,13 @@ from .telegram_manual_support import (
     telegram_manual_menu_keyboard,
     telegram_manual_payment_keyboard,
     telegram_manual_product_keyboard,
+    telegram_inline_keyboard,
+)
+from .return_approval import (
+    RETURN_APPROVAL_CALLBACK_PREFIX,
+    RETURN_APPROVAL_DECISIONS,
+    RETURN_APPROVAL_NOTIFICATION_KIND,
+    RETURN_APPROVAL_STATUS_REJECTED,
 )
 from .telegram_report_processor import backend_failure_message, backend_http_error_detail
 from .telegram_routing_contract import (
@@ -618,6 +625,67 @@ class TelegramAdminProcessor(TelegramProcessorDelegate):
             return admins[0], "telegram notification contains a foreign target"
         return admins[0], ""
 
+    def telegram_notification_keyboard(self, payload):
+        """Кнопки собираются здесь по виду уведомления, а не берутся из payload.
+
+        Готовая разметка из очереди означала бы, что любое событие может
+        подсунуть произвольное действие владельцу, поэтому воркер строит её сам
+        и только для известного вида
+        """
+        payload = payload or {}
+        if normalize_text(payload.get("kind")) != RETURN_APPROVAL_NOTIFICATION_KIND:
+            return None
+        order_id = normalize_text(payload.get("return_approval_order_id"))
+        if not order_id:
+            return None
+        return telegram_inline_keyboard([
+            [{
+                "text": "Одобрить возврат",
+                "callback_data": f"{RETURN_APPROVAL_CALLBACK_PREFIX}approved:{order_id}",
+            }],
+            [{
+                "text": "Отклонить",
+                "callback_data": f"{RETURN_APPROVAL_CALLBACK_PREFIX}rejected:{order_id}",
+            }],
+        ])
+
+    def handle_return_approval_callback(self, chat_id, data):
+        if not self.ensure_admin_chat(chat_id):
+            return False
+        action = normalize_text(data).replace(RETURN_APPROVAL_CALLBACK_PREFIX, "", 1)
+        decision, _, order_id = action.partition(":")
+        decision = normalize_text(decision)
+        order_id = normalize_text(order_id)
+        if decision not in RETURN_APPROVAL_DECISIONS or not order_id:
+            self.safe_send_message(chat_id, "Решение по возврату устарело. Откройте запрос заново.")
+            return False
+        try:
+            order = self.backend_post(
+                f"/api/v1/returns/{order_id}/approval",
+                {"decision": decision, "decided_by": "telegram-owner"},
+            )
+        except Exception as exc:
+            self.safe_send_message(
+                chat_id,
+                backend_failure_message("Не удалось применить решение по возврату", exc),
+            )
+            return False
+        request_number = normalize_text((order or {}).get("skladbot_request_number")) or order_id
+        if decision == RETURN_APPROVAL_STATUS_REJECTED:
+            self.safe_send_message(
+                chat_id,
+                f"Возврат отклонён. Заявка {request_number} остаётся отгруженной, "
+                "заявка возврата в СкладБоте не создаётся.",
+            )
+            return True
+        return_request = normalize_text((order or {}).get("skladbot_return_request_number")) or "создается в фоне"
+        self.safe_send_message(
+            chat_id,
+            f"Возврат одобрен целиком по заявке {request_number}.\n"
+            f"Возврат СкладБот: {return_request}",
+        )
+        return True
+
     def notify_blocked_telegram_notification(self, admin_chat_id, reason):
         if not admin_chat_id or not self.is_admin_chat(admin_chat_id):
             return False
@@ -685,9 +753,13 @@ class TelegramAdminProcessor(TelegramProcessorDelegate):
                 )
                 processed += 1
                 continue
+            keyboard = self.telegram_notification_keyboard(payload)
             with bind_event_payload(payload):
                 try:
-                    self.send_message(target, text)
+                    if keyboard is None:
+                        self.send_message(target, text)
+                    else:
+                        self.send_message(target, text, keyboard)
                     self.finish_telegram_notification_event(event["id"], True, "", lease_owner=lease_owner)
                 except Exception as exc:
                     logging.exception("Telegram worker: queued notification failed")

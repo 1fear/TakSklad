@@ -60,6 +60,7 @@
     "logistics_region_directory_empty": "admin_error",
     "skladbot_daily_failure_alert": "admin_error",
     "skladbot_stock_shortage_blocked_order": "admin_error",
-    "smartup_duplicate_deal_skipped": "admin_error"
+    "smartup_duplicate_deal_skipped": "admin_error",
+    "return_transfer_approval_request": "admin_error"
   }
 }

@@ -135,6 +135,7 @@ class TelegramRoutingContractTests(unittest.TestCase):
         for kind in (
             "smartup_logistics_dependency_alert",
             "smartup_logistics_recovered",
+            "return_transfer_approval_request",
         ):
             with self.subTest(kind=kind):
                 route = self.contract.route_for_notification_kind(kind)

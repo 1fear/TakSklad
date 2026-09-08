@@ -326,6 +326,94 @@ class BackendTelegramImportTests(unittest.TestCase):
             ("take",),
         ])
 
+    def test_admin_processor_sends_return_approval_request_with_owner_buttons(self):
+        processor = TelegramAdminProcessor()
+        processor.admin_chat_ids = {"1001"}
+        calls = []
+        events = [{
+            "id": "return-approval-1",
+            "payload": {
+                "kind": "return_transfer_approval_request",
+                "text": "Возврат по перечислению, нужно ваше решение",
+                "return_approval_order_id": "11111111-1111-1111-1111-111111111111",
+            },
+            "lease_owner": "lease-1",
+        }]
+
+        processor.reset_stale_telegram_notification_events = lambda: None
+        processor.take_next_telegram_notification_event = lambda: events.pop(0) if events else None
+        processor.is_admin_chat = lambda chat_id: chat_id == "1001"
+        processor.send_message = lambda chat_id, text, reply_markup=None: calls.append(
+            ("send_message", chat_id, text, reply_markup)
+        )
+        processor.finish_telegram_notification_event = (
+            lambda event_id, success, error="", failure_status="failed", lease_owner="": calls.append(
+                ("finish", event_id, success)
+            )
+        )
+
+        self.assertEqual(processor.process_pending_telegram_notifications(), 1)
+        self.assertEqual(calls[0][0], "send_message")
+        self.assertEqual(calls[0][1], "1001")
+        self.assertEqual(calls[0][3], {"inline_keyboard": [
+            [{
+                "text": "Одобрить возврат",
+                "callback_data": "return_approval:approved:11111111-1111-1111-1111-111111111111",
+            }],
+            [{
+                "text": "Отклонить",
+                "callback_data": "return_approval:rejected:11111111-1111-1111-1111-111111111111",
+            }],
+        ]})
+        self.assertEqual(calls[1], ("finish", "return-approval-1", True))
+
+    def test_admin_processor_never_attaches_buttons_to_other_notification_kinds(self):
+        processor = TelegramAdminProcessor()
+
+        self.assertIsNone(processor.telegram_notification_keyboard({
+            "kind": "daily_reconciliation_alert",
+            "return_approval_order_id": "11111111-1111-1111-1111-111111111111",
+        }))
+        self.assertIsNone(processor.telegram_notification_keyboard({
+            "kind": "return_transfer_approval_request",
+        }))
+
+    def test_return_approval_callback_posts_owner_decision_to_backend(self):
+        processor = TelegramAdminProcessor()
+        processor.admin_chat_ids = {"1001"}
+        posts = []
+        messages = []
+        processor.ensure_admin_chat = lambda chat_id: chat_id == "1001"
+        processor.safe_send_message = lambda chat_id, text: messages.append((chat_id, text))
+        processor.backend_post = lambda path, payload=None: posts.append((path, payload)) or {
+            "skladbot_request_number": "WH-R-RETURN-200",
+            "skladbot_return_request_number": "WH-R-500",
+        }
+
+        approved = processor.handle_return_approval_callback(
+            "1001", "return_approval:approved:11111111-1111-1111-1111-111111111111"
+        )
+
+        self.assertTrue(approved)
+        self.assertEqual(posts, [(
+            "/api/v1/returns/11111111-1111-1111-1111-111111111111/approval",
+            {"decision": "approved", "decided_by": "telegram-owner"},
+        )])
+        self.assertIn("Возврат одобрен целиком по заявке WH-R-RETURN-200", messages[0][1])
+
+    def test_return_approval_callback_from_outbound_chat_is_ignored(self):
+        processor = TelegramAdminProcessor()
+        posts = []
+        processor.ensure_admin_chat = lambda chat_id: False
+        processor.backend_post = lambda path, payload=None: posts.append((path, payload))
+
+        handled = processor.handle_return_approval_callback(
+            "9999", "return_approval:approved:11111111-1111-1111-1111-111111111111"
+        )
+
+        self.assertFalse(handled)
+        self.assertEqual(posts, [])
+
     def test_admin_processor_delivers_smartup_duplicate_deal_alert_to_admin_only(self):
         processor = TelegramAdminProcessor()
         processor.admin_chat_ids = {"1001"}

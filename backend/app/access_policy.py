@@ -158,6 +158,14 @@ ROUTE_POLICIES: dict[tuple[str, str], RoutePolicy] = {
     ("POST", "/api/v1/orders/{order_id}/complete"): _protected(PERMISSION_WAREHOUSE_WRITE, "orders:complete", mutates=True),
     ("GET", "/api/v1/returns/lookup"): _protected(PERMISSION_WAREHOUSE_READ, "returns:read"),
     ("POST", "/api/v1/returns/{order_id}"): _protected(PERMISSION_WAREHOUSE_WRITE, "returns:write", mutates=True),
+    # Одобрение возврата по перечислению отделено собственным scope: он выдан
+    # только принципалу телеграм-воркера, поэтому решение нельзя принять
+    # с рабочего места склада, у которого есть returns:write
+    ("POST", "/api/v1/returns/{order_id}/approval"): _protected(
+        PERMISSION_ADMIN_WRITE,
+        "returns:approve",
+        mutates=True,
+    ),
     ("POST", "/api/v1/imports"): _protected(PERMISSION_IMPORT_WRITE, "imports:create", mutates=True),
     ("POST", "/api/v1/imports/preview"): _protected(PERMISSION_IMPORT_WRITE, "imports:preview", mutates=True),
     ("GET", "/api/v1/imports"): _protected(PERMISSION_IMPORT_READ, "imports:read"),

@@ -1615,30 +1615,37 @@ class DesktopUiContractTests(unittest.TestCase):
                 if exc.status_code != 404 or operation != "lookup":
                     self.assertNotIn("не найдена", message.lower())
 
-    def test_returns_error_names_bot_approval_block_for_transfer_payment(self):
-        blocked = backend_client.BackendApiError(
-            "Backend HTTP 409",
-            status_code=409,
-            detail={
-                "code": "return_requires_bot_approval",
-                "message": "Transfer payment returns are created only after approval in the bot",
-                "payment_type": "Перечисление",
-            },
+    def test_returns_error_names_owner_approval_for_transfer_payment(self):
+        cases = (
+            ("return_approval_requested", "отправлен на одобрение владельцу в бот"),
+            ("return_approval_pending", "уже отправлен на одобрение"),
         )
 
-        message = app_returns.format_returns_error(blocked, operation="write")
+        for code, expected in cases:
+            with self.subTest(code=code):
+                blocked = backend_client.BackendApiError(
+                    "Backend HTTP 409",
+                    status_code=409,
+                    detail={
+                        "code": code,
+                        "message": "Transfer payment return waits for approval in the bot",
+                        "payment_type": "Перечисление",
+                    },
+                )
 
-        self.assertEqual(message, app_returns.RETURN_BOT_APPROVAL_MESSAGE)
-        self.assertIn("одобрения в боте", message)
+                message = app_returns.format_returns_error(blocked, operation="write")
+
+                self.assertEqual(message, app_returns.RETURN_APPROVAL_MESSAGES[code])
+                self.assertIn(expected, message)
 
         other_conflict = backend_client.BackendApiError(
             "Backend HTTP 409",
             status_code=409,
             detail="Order is already returned",
         )
-        self.assertNotEqual(
+        self.assertNotIn(
             app_returns.format_returns_error(other_conflict, operation="write"),
-            app_returns.RETURN_BOT_APPROVAL_MESSAGE,
+            set(app_returns.RETURN_APPROVAL_MESSAGES.values()),
         )
 
     def test_returns_secret_store_error_is_sanitized_and_distinct_from_transport(self):

@@ -2654,29 +2654,36 @@ class BackendApiPersistenceTests(unittest.TestCase):
             self.assertIn("order_returned", actions)
             self.assertIn("skladbot_return_request_create_queued", actions)
 
-    def test_transfer_payment_return_is_rejected_and_leaves_order_untouched(self):
+    def seed_transfer_return_order(self, request_number="WH-R-RETURN-200"):
         order_id, item_id = self.seed_order(status="completed", scanned_blocks=2, item_status="completed")
         with self.SessionLocal() as db:
             order = db.get(Order, uuid.UUID(order_id))
             order.payment_type = "Перечисление\nТП1"
-            order.raw_payload = {"skladbot_request_number": "WH-R-RETURN-200"}
+            order.raw_payload = {"skladbot_request_number": request_number}
             db.commit()
+        return order_id, item_id
 
-        lookup = self.client.get("/api/v1/returns/lookup", params={"lookup": "WH-R-RETURN-200"})
-        self.assertEqual(lookup.status_code, 200)
-
-        blocked = self.client.post(
+    def request_transfer_return(self, order_id, item_id, request_number="WH-R-RETURN-200"):
+        return self.client.post(
             f"/api/v1/returns/{order_id}",
             json={
-                "return_reference": "WH-R-RETURN-200",
+                "return_reference": request_number,
                 "returned_by": "test",
                 "confirmed_items": self.confirmed_return_items(item_id),
             },
         )
 
+    def test_transfer_payment_return_asks_owner_and_leaves_order_untouched(self):
+        order_id, item_id = self.seed_transfer_return_order()
+
+        lookup = self.client.get("/api/v1/returns/lookup", params={"lookup": "WH-R-RETURN-200"})
+        self.assertEqual(lookup.status_code, 200)
+
+        blocked = self.request_transfer_return(order_id, item_id)
+
         self.assertEqual(blocked.status_code, 409)
         detail = blocked.json()["detail"]
-        self.assertEqual(detail["code"], "return_requires_bot_approval")
+        self.assertEqual(detail["code"], "return_approval_requested")
         self.assertEqual(detail["payment_type"], "Перечисление\nТП1")
 
         returns = self.client.get("/api/v1/returns")
@@ -2686,6 +2693,7 @@ class BackendApiPersistenceTests(unittest.TestCase):
         with self.SessionLocal() as db:
             order = db.get(Order, uuid.UUID(order_id))
             self.assertEqual(order.status, "completed")
+            self.assertEqual(order.raw_payload["return_approval"]["status"], "pending")
             self.assertNotIn("return_status", order.raw_payload)
             self.assertNotIn("skladbot_return_request_status", order.raw_payload)
             self.assertEqual(
@@ -2696,9 +2704,113 @@ class BackendApiPersistenceTests(unittest.TestCase):
                 ).scalars().all(),
                 [],
             )
+            notification = db.execute(
+                select(PendingEvent).where(PendingEvent.event_type == "telegram_notification")
+            ).scalar_one()
+            self.assertEqual(notification.payload["kind"], "return_transfer_approval_request")
+            self.assertEqual(notification.payload["return_approval_order_id"], order_id)
+            self.assertIn("WH-R-RETURN-200", notification.payload["text"])
+            self.assertIn("целиком по всему заказу", notification.payload["text"])
             actions = [row.action for row in db.execute(select(AuditLog)).scalars().all()]
+            self.assertIn("return_approval_requested", actions)
             self.assertNotIn("order_returned", actions)
             self.assertNotIn("skladbot_return_request_create_queued", actions)
+
+    def test_transfer_payment_return_does_not_ask_owner_twice(self):
+        order_id, item_id = self.seed_transfer_return_order()
+        self.assertEqual(self.request_transfer_return(order_id, item_id).status_code, 409)
+
+        repeated = self.request_transfer_return(order_id, item_id)
+
+        self.assertEqual(repeated.status_code, 409)
+        self.assertEqual(repeated.json()["detail"]["code"], "return_approval_pending")
+        with self.SessionLocal() as db:
+            notifications = db.execute(
+                select(PendingEvent).where(PendingEvent.event_type == "telegram_notification")
+            ).scalars().all()
+            self.assertEqual(len(notifications), 1)
+
+    def test_owner_approval_returns_whole_transfer_order(self):
+        order_id, item_id = self.seed_transfer_return_order()
+        self.request_transfer_return(order_id, item_id)
+
+        approved = self.client.post(
+            f"/api/v1/returns/{order_id}/approval",
+            json={"decision": "approved", "decided_by": "telegram-owner"},
+        )
+
+        self.assertEqual(approved.status_code, 200)
+        self.assertEqual(approved.json()["status"], "returned")
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            self.assertEqual(order.status, "returned")
+            self.assertEqual(order.raw_payload["return_status"], "returned")
+            self.assertEqual(order.raw_payload["return_approval"]["status"], "approved")
+            self.assertEqual(order.raw_payload["returned_by"], "telegram-owner")
+            confirmed = order.raw_payload["skladbot_return_confirmed_items"]
+            self.assertEqual([entry["item_id"] for entry in confirmed], [item_id])
+            db.execute(
+                select(PendingEvent).where(
+                    PendingEvent.event_type == SKLADBOT_RETURN_REQUEST_CREATE_EVENT_TYPE
+                )
+            ).scalar_one()
+            actions = [row.action for row in db.execute(select(AuditLog)).scalars().all()]
+            self.assertIn("return_approval_approved", actions)
+            self.assertIn("order_returned", actions)
+
+    def test_owner_rejection_keeps_transfer_order_shipped_without_skladbot_request(self):
+        order_id, item_id = self.seed_transfer_return_order()
+        self.request_transfer_return(order_id, item_id)
+
+        rejected = self.client.post(
+            f"/api/v1/returns/{order_id}/approval",
+            json={"decision": "rejected", "decided_by": "telegram-owner"},
+        )
+
+        self.assertEqual(rejected.status_code, 200)
+        self.assertEqual(rejected.json()["status"], "completed")
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            self.assertEqual(order.status, "completed")
+            self.assertEqual(order.raw_payload["return_approval"]["status"], "rejected")
+            self.assertNotIn("return_status", order.raw_payload)
+            self.assertEqual(
+                db.execute(
+                    select(PendingEvent).where(
+                        PendingEvent.event_type == SKLADBOT_RETURN_REQUEST_CREATE_EVENT_TYPE
+                    )
+                ).scalars().all(),
+                [],
+            )
+            actions = [row.action for row in db.execute(select(AuditLog)).scalars().all()]
+            self.assertIn("return_approval_rejected", actions)
+            self.assertNotIn("order_returned", actions)
+
+    def test_approval_route_rejects_decision_without_pending_request(self):
+        order_id, _item_id = self.seed_transfer_return_order()
+
+        response = self.client.post(
+            f"/api/v1/returns/{order_id}/approval",
+            json={"decision": "approved", "decided_by": "telegram-owner"},
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["detail"]["code"], "return_approval_not_pending")
+
+    def test_approval_route_rejects_terminal_payment_order(self):
+        order_id, item_id = self.seed_order(status="completed", scanned_blocks=2, item_status="completed")
+        with self.SessionLocal() as db:
+            order = db.get(Order, uuid.UUID(order_id))
+            order.payment_type = "Терминал"
+            db.commit()
+
+        response = self.client.post(
+            f"/api/v1/returns/{order_id}/approval",
+            json={"decision": "approved", "decided_by": "telegram-owner"},
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["detail"], "Order does not require return approval")
 
     def test_terminal_payment_return_still_queues_skladbot_request(self):
         order_id, item_id = self.seed_order(status="completed", scanned_blocks=2, item_status="completed")
