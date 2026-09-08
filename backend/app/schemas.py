@@ -190,6 +190,11 @@ class ReturnMarkRequest(BaseModel):
     confirmed_items: list[ReturnConfirmedItem] = Field(default_factory=list)
 
 
+class ReturnApprovalDecisionRequest(BaseModel):
+    decision: str
+    decided_by: str = "telegram"
+
+
 class AdminTableTotals(BaseModel):
     orders: int
     items: int

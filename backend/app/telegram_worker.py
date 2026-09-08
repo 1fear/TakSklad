@@ -15,6 +15,7 @@ from .daily_report_config import (
 from .redaction import redact_secrets
 from .reconciliation_service import run_daily_reconciliation
 from .skladbot_client import parse_skladbot_api_tokens
+from .return_approval import RETURN_APPROVAL_CALLBACK_PREFIX
 from .telegram_admin_processor import TelegramAdminProcessor
 from .telegram_clients import (
     TelegramBackendIdentityError,
@@ -739,6 +740,9 @@ class TelegramWorker:
             return
         if data.startswith(TELEGRAM_MANUAL_CALLBACK_PREFIX):
             self.handle_manual_callback(chat_id, data)
+            return
+        if data.startswith(RETURN_APPROVAL_CALLBACK_PREFIX):
+            self.handle_return_approval_callback(chat_id, data)
             return
         if data.startswith(TELEGRAM_EXCEL_DATE_CHOICE_USE_EXCEL_PREFIX):
             self.confirm_telegram_import_excel_date(

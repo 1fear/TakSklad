@@ -59,13 +59,23 @@ from .scan_quantities import (
     scan_product_mismatch,
     scanned_blocks_for_scans,
 )
+from .return_approval import (
+    RETURN_APPROVAL_DECISIONS,
+    RETURN_APPROVAL_STATUS_REJECTED,
+    mark_return_approval_decided,
+    queue_return_approval_request,
+    return_approval_is_pending,
+    return_approval_status,
+)
 from .transfer_kiz_service import (
     queue_transfer_kiz_completion_check,
     queue_transfer_kiz_undo_alert,
 )
 
 
-RETURN_BOT_APPROVAL_CODE = "return_requires_bot_approval"
+RETURN_APPROVAL_REQUESTED_CODE = "return_approval_requested"
+RETURN_APPROVAL_PENDING_CODE = "return_approval_pending"
+RETURN_APPROVAL_NOT_PENDING_CODE = "return_approval_not_pending"
 
 
 class ApiError(Exception):
@@ -919,7 +929,112 @@ def return_requires_bot_approval(payment_type):
     return payment_group(payment_type) == "transfer"
 
 
-def mark_order_returned(db: Session, order_id, return_reference="", returned_by="desktop", confirmed_items=None):
+def request_transfer_return_approval(db: Session, order, *, requested_by):
+    """Поставить запрос решения владельцу и вернуть отказ, который увидит склад.
+
+    Запрос коммитится до отказа: заказ не меняется, заявка СкладБота не
+    создаётся, в базе остаётся только отметка ожидания и уведомление в очереди
+    """
+    if return_approval_is_pending(order):
+        return ApiError(409, {
+            "code": RETURN_APPROVAL_PENDING_CODE,
+            "message": "Transfer payment return is already waiting for approval in the bot",
+            "payment_type": order.payment_type or "",
+        })
+    queue_return_approval_request(db, order, requested_by=normalize_text(requested_by) or "desktop")
+    db.add(AuditLog(
+        action="return_approval_requested",
+        entity_type="order",
+        entity_id=str(order.id),
+        payload={
+            "requested_by": normalize_text(requested_by) or "desktop",
+            "payment_type": order.payment_type or "",
+        },
+    ))
+    db.commit()
+    return ApiError(409, {
+        "code": RETURN_APPROVAL_REQUESTED_CODE,
+        "message": "Transfer payment return was sent for approval in the bot",
+        "payment_type": order.payment_type or "",
+    })
+
+
+def decide_transfer_return_approval(db: Session, order_id, *, decision, decided_by):
+    """Применить решение владельца: одобрено значит возврат целиком, отклонено значит отказ."""
+    decision = normalize_text(decision).lower()
+    if decision not in RETURN_APPROVAL_DECISIONS:
+        raise ApiError(422, "Return approval decision must be approved or rejected")
+
+    parsed_order_id = parse_uuid(order_id, "order_id")
+    order = db.execute(
+        select(Order)
+        .options(selectinload(Order.items).selectinload(OrderItem.scan_codes))
+        .where(Order.id == parsed_order_id)
+    ).scalar_one_or_none()
+    if order is None:
+        raise ApiError(404, "Order not found")
+    if not return_requires_bot_approval(order.payment_type):
+        raise ApiError(409, "Order does not require return approval")
+    if not return_approval_is_pending(order):
+        raise ApiError(409, {
+            "code": RETURN_APPROVAL_NOT_PENDING_CODE,
+            "message": "Return approval is not pending for this order",
+            "approval_status": return_approval_status(order),
+        })
+
+    if decision == RETURN_APPROVAL_STATUS_REJECTED:
+        mark_return_approval_decided(order, decision=decision, decided_by=decided_by)
+        db.add(AuditLog(
+            action="return_approval_rejected",
+            entity_type="order",
+            entity_id=str(order.id),
+            payload={"decided_by": normalize_text(decided_by) or "telegram"},
+        ))
+        db.commit()
+        return order_to_read(order)
+
+    mark_return_approval_decided(order, decision=decision, decided_by=decided_by)
+    db.add(AuditLog(
+        action="return_approval_approved",
+        entity_type="order",
+        entity_id=str(order.id),
+        payload={"decided_by": normalize_text(decided_by) or "telegram"},
+    ))
+    db.flush()
+    return mark_order_returned(
+        db,
+        order_id,
+        return_reference=normalize_text((order.raw_payload or {}).get("skladbot_request_number")),
+        returned_by=normalize_text(decided_by) or "telegram",
+        confirmed_items=full_return_confirmed_items(order),
+        bot_approved=True,
+    )
+
+
+def full_return_confirmed_items(order):
+    """Состав возврата целиком по заказу: по перечислению решение принимается только так."""
+    return [
+        {
+            "item_id": str(item.id),
+            "product": item.product,
+            "sku": item.product,
+            "quantity_blocks": int(item.quantity_blocks or 0),
+            "quantity_pieces": int(item.quantity_pieces or 0),
+        }
+        for item in order.items
+        if item.status not in HIDDEN_ITEM_STATUSES
+    ]
+
+
+def mark_order_returned(
+    db: Session,
+    order_id,
+    return_reference="",
+    returned_by="desktop",
+    confirmed_items=None,
+    *,
+    bot_approved=False,
+):
     parsed_order_id = parse_uuid(order_id, "order_id")
     lock_order_graphs_for_kiz(db, [parsed_order_id])
     order = db.execute(
@@ -934,12 +1049,8 @@ def mark_order_returned(db: Session, order_id, return_reference="", returned_by=
         raise ApiError(409, "Order is already returned")
     if order.status not in COMPLETED_STATUSES:
         raise ApiError(409, "Only completed archived orders can be returned")
-    if return_requires_bot_approval(order.payment_type):
-        raise ApiError(409, {
-            "code": RETURN_BOT_APPROVAL_CODE,
-            "message": "Transfer payment returns are created only after approval in the bot",
-            "payment_type": order.payment_type or "",
-        })
+    if return_requires_bot_approval(order.payment_type) and not bot_approved:
+        raise request_transfer_return_approval(db, order, requested_by=returned_by)
 
     confirmed = validate_return_confirmed_items(order, confirmed_items)
     returned_at = datetime.now(timezone.utc)

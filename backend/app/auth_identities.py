@@ -49,6 +49,10 @@ SERVICE_PRINCIPAL_SCOPE_MATRIX = {
         "orders:delete_active",
         "orders:read",
         "reports:read",
+        # Решение по возврату за перечисление принимает владелец кнопкой в боте,
+        # поэтому scope одобрения есть только у воркера: рабочее место склада
+        # с returns:write оформить такой возврат не может
+        "returns:approve",
     }),
     "acceptance": frozenset({
         "imports:create",

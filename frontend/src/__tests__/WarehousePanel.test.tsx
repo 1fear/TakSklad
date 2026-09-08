@@ -451,7 +451,7 @@ describe("DB-only warehouse operations", () => {
     expect(onNotice).toHaveBeenCalledWith("Возврат зафиксирован в PostgreSQL; КИЗы снова доступны");
   });
 
-  it("names the bot approval block when the backend refuses a transfer payment return", async () => {
+  it("names the owner approval request when the backend holds a transfer payment return", async () => {
     const onError = vi.fn();
     const user = userEvent.setup();
     vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -460,8 +460,8 @@ describe("DB-only warehouse operations", () => {
       http.get("/api/v1/returns/lookup", () => HttpResponse.json({ ...activeOrder, status: "archive" })),
       http.post("/api/v1/returns/:orderId", () => HttpResponse.json({
         detail: {
-          code: "return_requires_bot_approval",
-          message: "Transfer payment returns are created only after approval in the bot",
+          code: "return_approval_requested",
+          message: "Transfer payment return was sent for approval in the bot",
           payment_type: "Перечисление",
         },
       }, { status: 409 })),
@@ -476,7 +476,7 @@ describe("DB-only warehouse operations", () => {
 
     await waitFor(() => expect(onError).toHaveBeenCalled());
     const [reported, fallback] = onError.mock.calls.at(-1) as [unknown, string];
-    expect(fallback).toContain("одобрения в боте");
+    expect(fallback).toContain("отправлен на одобрение владельцу в бот");
     expect((reported as Error).message).toBe(fallback);
   });
 
