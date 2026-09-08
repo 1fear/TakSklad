@@ -969,21 +969,13 @@ def apply_request_scope(
         request["diagnostic_reason"] = request.get("diagnostic_reason") or "out_of_scope"
 
     if request.get("inclusion_reason"):
-        if request_is_completed_and_archived(request):
-            request["include_operational"] = True
-            request["exclusion_reason"] = ""
-        else:
-            request["exclusion_reason"] = "status_not_completed_archived"
+        request["include_operational"] = True
+        request["exclusion_reason"] = ""
+        if not request_is_completed_and_archived(request):
             if not request.get("diagnostic_reason") or request.get("diagnostic_reason") == "conflicting_date_fields":
                 request["diagnostic_reason"] = status_diagnostic_reason(request)
     elif not request.get("diagnostic_reason"):
         request["diagnostic_reason"] = status_diagnostic_reason(request) or "out_of_scope"
-
-    if not request_is_completed_and_archived(request) and request.get("exclusion_reason") != "status_not_completed_archived":
-        request["exclusion_reason"] = "status_not_completed_archived"
-        status_reason = status_diagnostic_reason(request)
-        if status_reason:
-            request["diagnostic_reason"] = status_reason
 
 
 def status_diagnostic_reason(request: dict[str, Any]) -> str:
