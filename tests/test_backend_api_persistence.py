@@ -2521,6 +2521,65 @@ class BackendApiPersistenceTests(unittest.TestCase):
             ).scalars().all()
             self.assertIn("google_sheets_archive_export", [event.payload["action"] for event in events])
 
+    def seed_archive_orders_for_lookup(self, numbers):
+        order_ids = []
+        for number in numbers:
+            order_id, _item_id = self.seed_order(status="completed", item_status="completed")
+            with self.SessionLocal() as db:
+                order = db.get(Order, uuid.UUID(order_id))
+                order.raw_payload = {"skladbot_request_number": number}
+                db.commit()
+            order_ids.append(order_id)
+        return order_ids
+
+    def lookup_return_order_with_loaded_orders(self, lookup):
+        from sqlalchemy import event as sa_event
+
+        from backend.app import orders_service
+
+        loaded_orders = []
+
+        def record(session, instance):
+            if isinstance(instance, Order):
+                loaded_orders.append(instance)
+
+        with self.SessionLocal() as db:
+            sa_event.listen(db, "loaded_as_persistent", record)
+            try:
+                found = orders_service.lookup_return_order(db, lookup)
+            finally:
+                sa_event.remove(db, "loaded_as_persistent", record)
+        return found, loaded_orders
+
+    def test_return_lookup_reads_one_order_instead_of_whole_archive(self):
+        order_ids = self.seed_archive_orders_for_lookup(
+            ["WH-R-ARCHIVE-1", "WH-R-ARCHIVE-2", "WH-R-ARCHIVE-3"]
+        )
+
+        found, loaded_orders = self.lookup_return_order_with_loaded_orders("WH-R-ARCHIVE-2")
+
+        self.assertEqual(found.id, order_ids[1])
+        self.assertEqual(len(loaded_orders), 1)
+
+    def test_return_lookup_still_matches_ignoring_separators_and_case(self):
+        order_ids = self.seed_archive_orders_for_lookup(
+            ["WH-R-ARCHIVE-1", "WH-R-ARCHIVE-2", "WH-R-ARCHIVE-3"]
+        )
+
+        found, loaded_orders = self.lookup_return_order_with_loaded_orders(" whr archive 2 ")
+
+        self.assertEqual(found.id, order_ids[1])
+        self.assertEqual(len(loaded_orders), 1)
+
+    def test_return_lookup_reports_conflict_when_separators_collapse_two_orders(self):
+        self.seed_archive_orders_for_lookup(["WH-R-DUP-1", "WHR DUP1"])
+
+        with self.assertRaises(Exception) as raised:
+            self.lookup_return_order_with_loaded_orders("WH-R-DUP-1")
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(len(raised.exception.detail["orders"]), 2)
+
     def test_return_lookup_and_mark_returned_excludes_order_from_active_list(self):
         order_id, item_id = self.seed_order(status="completed", scanned_blocks=2, item_status="completed")
         with self.SessionLocal() as db:

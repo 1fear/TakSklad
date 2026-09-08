@@ -842,26 +842,60 @@ def complete_order(db: Session, order_id):
     return response
 
 
+def return_lookup_identifier_columns():
+    """Три поля заказа, которые return_lookup_matches сверяет с искомым номером."""
+    return (
+        Order.raw_payload["skladbot_request_number"].as_string(),
+        Order.raw_payload["skladbot_request_id"].as_string(),
+        Order.external_id,
+    )
+
+
+def return_lookup_order_ids(db: Session, lookup):
+    """Идентификаторы архивных заказов, чей номер сходится с искомым.
+
+    Сопоставление читает три текстовых поля, а не граф заказа. Прежний путь
+    поднимал в память весь архив вместе с позициями и сканами КИЗ (7570
+    заказов, 18 865 позиций, 37 110 сканов на 08.09.2026) и отвечал 9-16
+    секунд, пиками до 80, при таймауте десктопа в 8 секунд: оборванный
+    запрос приходит к оператору как «нет связи с backend»
+
+    Нормализация остаётся в Python, потому что она выкидывает любые
+    не-алфанумерические символы, а не только известный набор разделителей:
+    перенос её в SQL сузил бы совпадения и спрятал бы конфликт из 409
+    """
+    rows = db.execute(
+        select(Order.id, *return_lookup_identifier_columns())
+        .where(Order.status.in_(COMPLETED_STATUSES))
+        .order_by(Order.order_date.desc(), Order.created_at.desc())
+    ).all()
+    return [
+        order_id
+        for order_id, *identifiers in rows
+        if return_lookup_matches(identifiers, lookup)
+    ]
+
+
+def load_return_lookup_orders(db: Session, order_ids, *, with_items=False):
+    query = (
+        select(Order)
+        .where(Order.id.in_(order_ids))
+        .order_by(Order.order_date.desc(), Order.created_at.desc())
+    )
+    if with_items:
+        query = query.options(selectinload(Order.items).selectinload(OrderItem.scan_codes))
+    return db.execute(query).scalars().all()
+
+
 def lookup_return_order(db: Session, lookup_value):
     lookup = normalize_text(lookup_value)
     if not lookup:
         raise ApiError(422, "Return lookup value is required")
 
-    orders = db.execute(
-        select(Order)
-        .options(selectinload(Order.items).selectinload(OrderItem.scan_codes))
-        .where(Order.status.in_(COMPLETED_STATUSES))
-        .order_by(Order.order_date.desc(), Order.created_at.desc())
-    ).scalars().all()
-
-    matches = [
-        order
-        for order in orders
-        if return_lookup_matches(order, lookup)
-    ]
-    if not matches:
+    match_ids = return_lookup_order_ids(db, lookup)
+    if not match_ids:
         raise ApiError(404, "Completed order was not found in archive")
-    if len(matches) > 1:
+    if len(match_ids) > 1:
         raise ApiError(409, {
             "message": "Multiple completed orders found for return lookup",
             "orders": [
@@ -872,10 +906,10 @@ def lookup_return_order(db: Session, lookup_value):
                     "skladbot_request_number": (order.raw_payload or {}).get("skladbot_request_number") or "",
                     "skladbot_request_id": (order.raw_payload or {}).get("skladbot_request_id") or "",
                 }
-                for order in matches[:10]
+                for order in load_return_lookup_orders(db, match_ids[:10])
             ],
         })
-    return order_to_read(matches[0])
+    return order_to_read(load_return_lookup_orders(db, match_ids, with_items=True)[0])
 
 
 def return_requires_bot_approval(payment_type):
@@ -1016,14 +1050,10 @@ def validate_return_confirmed_items(order, confirmed_items):
     return confirmed
 
 
-def return_lookup_matches(order, lookup):
-    raw_payload = order.raw_payload or {}
-    candidates = [
-        raw_payload.get("skladbot_request_number"),
-        raw_payload.get("skladbot_request_id"),
-        order.external_id,
-    ]
-    return normalize_lookup(lookup) in {normalize_lookup(value) for value in candidates if normalize_text(value)}
+def return_lookup_matches(identifiers, lookup):
+    return normalize_lookup(lookup) in {
+        normalize_lookup(value) for value in identifiers if normalize_text(value)
+    }
 
 
 def order_to_read(order: Order):
