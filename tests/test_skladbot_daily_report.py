@@ -2154,17 +2154,17 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(coverage["detail_attempted"], 7)
         self.assertEqual(coverage["detail_success"], 7)
         self.assertEqual(coverage["detail_errors"], 0)
-        self.assertEqual(coverage["included_operational_requests"], 3)
-        self.assertEqual(coverage["excluded_diagnostic_requests"], 4)
+        self.assertEqual(coverage["included_operational_requests"], 6)
+        self.assertEqual(coverage["excluded_diagnostic_requests"], 1)
         self.assertEqual(coverage["out_of_scope_requests"], 1)
-        self.assertEqual(coverage["completed_only_count"], 1)
-        self.assertEqual(coverage["archived_only_count"], 1)
-        self.assertEqual(coverage["neither_count"], 1)
+        self.assertEqual(coverage["completed_only_count"], 0)
+        self.assertEqual(coverage["archived_only_count"], 0)
+        self.assertEqual(coverage["neither_count"], 0)
         self.assertEqual(coverage["api_error_count"], 0)
-        self.assertIn("status_not_completed_archived", coverage["warnings"])
+        self.assertNotIn("status_not_completed_archived", coverage["warnings"])
 
-        self.assertEqual(report["summary"]["requests_total"], 3)
-        self.assertEqual(report["summary"]["request_blocks_by_category"]["Отгрузка"], 22)
+        self.assertEqual(report["summary"]["requests_total"], 6)
+        self.assertEqual(report["summary"]["request_blocks_by_category"]["Отгрузка"], 37)
         request_by_id = {item["id"]: item for item in report["requests"]}
         self.assertEqual(request_by_id[401]["date_field_used"], "unloading_date")
         self.assertEqual(request_by_id[401]["inclusion_reason"], "Дата выгрузки")
@@ -2174,10 +2174,12 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(request_by_id[407]["inclusion_reason"], "Движение склада")
         self.assertEqual(report["summary"]["movement_out_amount"], 8)
 
+        self.assertEqual(request_by_id[403]["diagnostic_reason"], "neither")
+        self.assertEqual(request_by_id[404]["diagnostic_reason"], "completed_only")
+        self.assertEqual(request_by_id[405]["diagnostic_reason"], "archived_only")
+
         excluded_by_id = {item["request_id"]: item for item in report["excluded_requests"]}
-        self.assertEqual(excluded_by_id[403]["exclusion_reason"], "status_not_completed_archived")
-        self.assertEqual(excluded_by_id[404]["diagnostic_reason"], "completed_only")
-        self.assertEqual(excluded_by_id[405]["diagnostic_reason"], "archived_only")
+        self.assertEqual(sorted(excluded_by_id), [406])
         self.assertEqual(excluded_by_id[406]["exclusion_reason"], "out_of_scope")
 
     def test_july7_transfer_batch_with_next_day_unloading_is_in_regular_requests(self):
@@ -2245,7 +2247,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(report["coverage"]["coverage_status"], "complete")
         self.assertEqual(sorted(item["number"] for item in report["requests"]), [f"WH-R-{item[0]}" for item in JULY7_MISSING_TRANSFER_BATCH])
 
-    def test_july7_transfer_batch_requires_completed_and_archived_status(self):
+    def test_july7_transfer_batch_keeps_unfinished_requests_in_report(self):
         status_matrix = {
             204498: (True, True),
             204499: (True, False),
@@ -2259,16 +2261,18 @@ class SkladBotDailyReportTests(unittest.TestCase):
 
         included_numbers = {item["number"] for item in report["requests"]}
         self.assertIn("WH-R-204498", included_numbers)
-        self.assertNotIn("WH-R-204499", included_numbers)
-        self.assertNotIn("WH-R-204500", included_numbers)
-        self.assertNotIn("WH-R-204501", included_numbers)
-        excluded_by_id = {item["request_id"]: item for item in report["excluded_requests"]}
-        self.assertEqual(excluded_by_id[204499]["diagnostic_reason"], "completed_only")
-        self.assertEqual(excluded_by_id[204500]["diagnostic_reason"], "archived_only")
-        self.assertEqual(excluded_by_id[204501]["diagnostic_reason"], "neither")
-        self.assertEqual(report["coverage"]["coverage_status"], "partial")
+        self.assertIn("WH-R-204499", included_numbers)
+        self.assertIn("WH-R-204500", included_numbers)
+        self.assertIn("WH-R-204501", included_numbers)
+        self.assertEqual(report["excluded_requests"], [])
+        included_by_id = {item["id"]: item for item in report["requests"]}
+        self.assertEqual(included_by_id[204499]["diagnostic_reason"], "completed_only")
+        self.assertEqual(included_by_id[204500]["diagnostic_reason"], "archived_only")
+        self.assertEqual(included_by_id[204501]["diagnostic_reason"], "neither")
+        self.assertFalse(included_by_id[204501]["is_completed"])
+        self.assertEqual(report["coverage"]["coverage_status"], "complete")
 
-    def test_created_at_only_neither_is_ordinary_diagnostic_not_partial(self):
+    def test_created_at_only_neither_stays_in_report_and_not_partial(self):
         report = collect_report_without_delay(
             July7MissingTransferBatchClient(
                 unloading_date="2026-07-08",
@@ -2278,15 +2282,14 @@ class SkladBotDailyReportTests(unittest.TestCase):
         )
 
         self.assertEqual(report["coverage"]["coverage_status"], "complete")
-        self.assertEqual(report["coverage"]["neither_count"], 1)
+        self.assertEqual(report["coverage"]["neither_count"], 0)
         self.assertEqual(report["coverage"]["warnings"], "")
-        excluded = {row["request_id"]: row for row in report["excluded_requests"]}
-        self.assertEqual(excluded[204501]["diagnostic_reason"], "neither")
+        self.assertEqual(report["excluded_requests"], [])
         diagnostics = {row["request_id"]: row for row in report["date_diagnostics"]}
         self.assertEqual(diagnostics[204501]["date_field_used"], "created_at")
-        self.assertNotIn("WH-R-204501", {row["number"] for row in report["requests"]})
+        self.assertIn("WH-R-204501", {row["number"] for row in report["requests"]})
 
-    def test_unknown_cancelled_problem_status_goes_to_diagnostics_or_partial(self):
+    def test_unknown_cancelled_problem_status_stays_in_report_with_own_status(self):
         report = collect_report_with_env(
             PaginatedStrictCoverageClient(),
             date(2026, 6, 20),
@@ -2298,11 +2301,11 @@ class SkladBotDailyReportTests(unittest.TestCase):
         )
 
         self.assertEqual(report["coverage"]["coverage_status"], "partial")
-        self.assertIn("status_not_completed_archived", report["coverage"]["warnings"])
-        diagnostics = {row["request_id"]: row for row in report["excluded_requests"]}
-        self.assertEqual(diagnostics[403]["diagnostic_reason"], "neither")
-        self.assertEqual(diagnostics[404]["diagnostic_reason"], "completed_only")
-        self.assertEqual(diagnostics[405]["diagnostic_reason"], "archived_only")
+        self.assertNotIn("status_not_completed_archived", report["coverage"]["warnings"])
+        included = {row["id"]: row for row in report["requests"]}
+        self.assertEqual(included[403]["diagnostic_reason"], "neither")
+        self.assertEqual(included[404]["diagnostic_reason"], "completed_only")
+        self.assertEqual(included[405]["diagnostic_reason"], "archived_only")
 
     def test_status_matrix_documented_and_enforced(self):
         report = collect_report_with_env(
@@ -2314,11 +2317,14 @@ class SkladBotDailyReportTests(unittest.TestCase):
                 "SKLADBOT_DAILY_REPORT_MAX_PAGES": "10",
             },
         )
-        excluded_reasons = {row["request_id"]: row["diagnostic_reason"] for row in report["excluded_requests"]}
+        included_status = {
+            row["id"]: (bool(row["is_completed"]), bool(row["archived"]), row["diagnostic_reason"])
+            for row in report["requests"]
+        }
 
-        self.assertEqual(excluded_reasons[403], "neither")
-        self.assertEqual(excluded_reasons[404], "completed_only")
-        self.assertEqual(excluded_reasons[405], "archived_only")
+        self.assertEqual(included_status[403], (False, False, "neither"))
+        self.assertEqual(included_status[404], (True, False, "completed_only"))
+        self.assertEqual(included_status[405], (False, True, "archived_only"))
         self.assertEqual(report["coverage"]["coverage_status"], "partial")
 
     def test_daily_report_marks_max_page_truncation_partial(self):
@@ -2737,7 +2743,7 @@ class SkladBotDailyReportTests(unittest.TestCase):
         self.assertEqual(report["summary"]["request_blocks_by_category"]["Отгрузка"], 11)
         self.assertEqual(report["requests"][0]["include_reasons"], ["Дата выгрузки"])
 
-    def test_daily_report_records_warehouse_movement_without_including_stale_request(self):
+    def test_daily_report_includes_unfinished_request_with_movement_today(self):
         original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
         try:
             os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = "0"
@@ -2751,10 +2757,12 @@ class SkladBotDailyReportTests(unittest.TestCase):
             else:
                 os.environ["SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS"] = original_delay
 
-        self.assertEqual(report["summary"]["requests_total"], 0)
-        self.assertEqual(report["summary"]["category_counts"]["Отгрузка"], 0)
-        self.assertEqual(report["summary"]["request_blocks_by_category"]["Отгрузка"], 0)
+        self.assertEqual(report["summary"]["requests_total"], 1)
+        self.assertEqual(report["summary"]["category_counts"]["Отгрузка"], 1)
+        self.assertEqual(report["summary"]["request_blocks_by_category"]["Отгрузка"], 5)
         self.assertEqual(report["summary"]["movement_out_amount"], 5)
+        self.assertFalse(report["requests"][0]["is_completed"])
+        self.assertEqual(report["requests"][0]["date_field_used"], "movement_date")
 
     def test_daily_report_includes_completed_old_request_by_movement_without_double_counting(self):
         original_delay = os.environ.get("SKLADBOT_DAILY_REPORT_REQUEST_DELAY_SECONDS")
