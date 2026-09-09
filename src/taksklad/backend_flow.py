@@ -124,12 +124,61 @@ def format_backend_blocked_scan_message(blocked_events):
     return f"Backend отклонил КИЗ. Сканируйте другой код{suffix}"
 
 
+class BackendOfflineQueueError(RuntimeError):
+    """Очередь не ушла из-за обрыва связи: коды сохранены и ждут сети."""
+
+
+def backend_failure_title(exc):
+    # Заголовок окна отвечает на единственный вопрос оператора: потеряны ли коды.
+    if isinstance(exc, BackendOfflineQueueError):
+        return "Связь прервалась, КИЗы сохранены"
+    return "КИЗы не записаны"
+
+
+def backend_group_blocker_error(blocker):
+    # Сводный лист к этому моменту уже напечатан, оператор обязан это знать
+    # в обоих случаях, но «не принял» верно только для отказа сервера.
+    if normalize_text(blocker).startswith(BACKEND_OFFLINE_PREFIX):
+        return BackendOfflineQueueError(f"Сводный лист напечатан. {blocker}")
+    return RuntimeError(f"Сводный лист напечатан, но backend не принял все КИЗы. {blocker}")
+
+
+def backend_pending_is_network_only(pending_events):
+    # Обрыв связи и отказ сервера требуют от оператора разного: первое ждёт
+    # связи и уходит само, второе разбирают руками. Смешивать их в одном
+    # тексте нельзя, поэтому событие с любой серверной ошибкой снимает признак.
+    events = list(pending_events or [])
+    if not events:
+        return False
+    return all(normalize_text(item.get("last_error_kind")) == "network" for item in events)
+
+
+BACKEND_OFFLINE_PREFIX = "Связь с сервером прервалась"
+
+
+def format_backend_offline_message(pending_count, subject):
+    return (
+        f"{BACKEND_OFFLINE_PREFIX}. {subject} сохранены в очереди: {pending_count}. "
+        "Отправятся автоматически, когда связь вернётся"
+    )
+
+
+def backend_blocker_error(message):
+    # Тип исключения выбирается по той же константе, из которой собран текст,
+    # поэтому классификация не разъедется с формулировкой.
+    if normalize_text(message).startswith(BACKEND_OFFLINE_PREFIX):
+        return BackendOfflineQueueError(message)
+    return RuntimeError(message)
+
+
 def backend_sync_item_blocker(sync_result, order_item_id, pending_events):
     for item in sync_result.get("blocked_events") or []:
         if backend_event_matches_item(item, order_item_id):
             return backend_event_error_message(item)
     current_pending = [item for item in pending_events if backend_event_matches_item(item, order_item_id)]
     if current_pending:
+        if backend_pending_is_network_only(current_pending):
+            return format_backend_offline_message(len(current_pending), "КИЗы")
         first_error = backend_event_error_message(current_pending[0])
         return f"Backend не принял КИЗы текущей позиции. Осталось по позиции: {len(current_pending)}. {first_error}"
     return ""
@@ -146,6 +195,8 @@ def backend_sync_group_blocker(sync_result, order_item_ids, order_ids, pending_e
         if backend_event_matches_group(item, order_item_ids, order_ids)
     ]
     if current_pending:
+        if backend_pending_is_network_only(current_pending):
+            return format_backend_offline_message(len(current_pending), "События заказа")
         first_error = backend_event_error_message(current_pending[0])
         return f"Backend не принял события текущего заказа. Осталось по заказу: {len(current_pending)}. {first_error}"
     return ""

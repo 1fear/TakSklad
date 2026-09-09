@@ -2,7 +2,11 @@ from .backend_events import (
     load_pending_backend_events,
     sync_pending_backend_events,
 )
-from .backend_flow import backend_sync_group_blocker, complete_backend_orders_or_raise
+from .backend_flow import (
+    backend_group_blocker_error,
+    backend_sync_group_blocker,
+    complete_backend_orders_or_raise,
+)
 from .config import BG_MAIN, FG_MUTED
 from .desktop_scan_rules import group_finish_blocker, scanned_blocks_for_order
 from .orders import get_plan_blocks, order_group_key
@@ -111,10 +115,7 @@ class FinishActionsMixin:
                 load_pending_backend_events(),
             )
             if blocker:
-                raise RuntimeError(
-                    "Сводный лист напечатан, но backend не принял все КИЗы. "
-                    f"{blocker}"
-                )
+                raise backend_group_blocker_error(blocker)
             complete_backend_orders_or_raise(backend_order_ids)
 
             if not write_scan_backup(

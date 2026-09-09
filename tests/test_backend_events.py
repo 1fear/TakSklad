@@ -73,6 +73,102 @@ class BackendEventQueueTests(unittest.TestCase):
         self.assertIn("temporary timeout", state["items"][0]["last_error"])
         self.assertIn("updated_at", state["items"][0])
 
+    def test_transport_failure_is_marked_as_network_kind(self):
+        # Текст ошибки снят с боевого экрана склада 09.09.2026: TLS-рукопожатие
+        # не уложилось в таймаут, ответа с кодом у такого отказа нет.
+        state = self.use_pending_events([
+            {
+                "id": "scan-1",
+                "type": "scan",
+                "payload": {"order_item_id": "item-1", "code": "TEST-CODE-ABC"},
+                "attempts": 0,
+                "last_error": "",
+            }
+        ])
+
+        def unreachable_create_scan(*args, **kwargs):
+            raise BackendApiError("<urlopen error _ssl.c:993: The handshake operation timed out>")
+
+        backend_events.create_scan = unreachable_create_scan
+
+        backend_events.sync_pending_backend_events()
+
+        self.assertEqual(state["items"][0]["last_error_kind"], "network")
+
+    def test_server_failure_is_not_marked_as_network_kind(self):
+        state = self.use_pending_events([
+            {
+                "id": "scan-1",
+                "type": "scan",
+                "payload": {"order_item_id": "item-1", "code": "TEST-CODE-ABC"},
+                "attempts": 0,
+                "last_error": "",
+            }
+        ])
+
+        def failing_create_scan(*args, **kwargs):
+            raise BackendApiError("Backend HTTP 503: service unavailable", status_code=503)
+
+        backend_events.create_scan = failing_create_scan
+
+        backend_events.sync_pending_backend_events()
+
+        self.assertEqual(state["items"][0]["last_error_kind"], "server")
+
+    def test_network_failure_stops_the_run_and_leaves_the_rest_untouched(self):
+        # Канал лежит для всей очереди сразу: семь событий по 8 секунд держали
+        # оператора минуту, хотя исход у них общий.
+        state = self.use_pending_events([
+            {
+                "id": f"scan-{index}",
+                "type": "scan",
+                "payload": {"order_item_id": "item-1", "code": f"TEST-CODE-{index}"},
+                "attempts": 0,
+                "last_error": "",
+            }
+            for index in range(3)
+        ])
+        calls = []
+
+        def unreachable_create_scan(*args, **kwargs):
+            calls.append(1)
+            raise BackendApiError("<urlopen error _ssl.c:993: The handshake operation timed out>")
+
+        backend_events.create_scan = unreachable_create_scan
+
+        result = backend_events.sync_pending_backend_events()
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result["remaining"], 3)
+        self.assertEqual(state["items"][0]["attempts"], 1)
+        self.assertEqual(state["items"][1]["attempts"], 0)
+        self.assertEqual(state["items"][2]["attempts"], 0)
+
+    def test_server_failure_does_not_stop_the_run(self):
+        state = self.use_pending_events([
+            {
+                "id": f"scan-{index}",
+                "type": "scan",
+                "payload": {"order_item_id": "item-1", "code": f"TEST-CODE-{index}"},
+                "attempts": 0,
+                "last_error": "",
+            }
+            for index in range(3)
+        ])
+        calls = []
+
+        def failing_create_scan(*args, **kwargs):
+            calls.append(1)
+            raise BackendApiError("Backend HTTP 503: service unavailable", status_code=503)
+
+        backend_events.create_scan = failing_create_scan
+
+        result = backend_events.sync_pending_backend_events()
+
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(result["failed"], 3)
+        self.assertEqual(state["items"][2]["attempts"], 1)
+
     def test_duplicate_scan_ack_removes_pending_event(self):
         state = self.use_pending_events([
             {

@@ -25,6 +25,10 @@ from taksklad.main import (
     format_backend_blocked_scan_message,
     backend_sync_group_blocker,
     backend_sync_item_blocker,
+    BackendOfflineQueueError,
+    backend_blocker_error,
+    backend_failure_title,
+    backend_group_blocker_error,
     complete_backend_orders_or_raise,
     format_print_failure_after_backend_complete,
     find_code_owner_in_orders,
@@ -870,6 +874,99 @@ class DesktopUiContractTests(unittest.TestCase):
         fake.log_duplicate_code_async.assert_called_once_with(code)
         self.assertEqual(fake.scanned_codes, [])
         self.assertTrue(fake.scan_entry.deleted)
+
+    def test_backend_sync_item_blocker_says_codes_are_queued_when_link_is_down(self):
+        # 09.09.2026 оператор увидел «Backend не принял КИЗы» при обрыве канала:
+        # коды были целы и ушли сами, но текст читался как потеря.
+        pending_events = [
+            {
+                "type": "scan",
+                "payload": {"order_item_id": "item-1"},
+                "last_error": "<urlopen error _ssl.c:993: The handshake operation timed out>",
+                "last_error_kind": "network",
+            }
+            for _ in range(7)
+        ]
+
+        message = backend_sync_item_blocker({"blocked_events": []}, "item-1", pending_events)
+
+        self.assertIn("Связь с сервером", message)
+        self.assertIn("7", message)
+        self.assertNotIn("не принял", message)
+
+    def test_backend_sync_item_blocker_keeps_server_wording_for_server_errors(self):
+        pending_events = [
+            {
+                "type": "scan",
+                "payload": {"order_item_id": "item-1"},
+                "last_error": "Backend HTTP 503: service unavailable",
+                "last_error_kind": "server",
+            }
+        ]
+
+        message = backend_sync_item_blocker({"blocked_events": []}, "item-1", pending_events)
+
+        self.assertIn("Backend не принял", message)
+
+    def test_backend_sync_group_blocker_says_codes_are_queued_when_link_is_down(self):
+        pending_events = [
+            {
+                "type": "scan",
+                "payload": {"order_item_id": "item-1"},
+                "last_error": "<urlopen error _ssl.c:993: The handshake operation timed out>",
+                "last_error_kind": "network",
+            },
+            {
+                "type": "order_complete",
+                "payload": {"order_id": "order-1"},
+                "last_error": "<urlopen error _ssl.c:993: The handshake operation timed out>",
+                "last_error_kind": "network",
+            },
+        ]
+
+        message = backend_sync_group_blocker(
+            {"blocked_events": []},
+            ["item-1"],
+            ["order-1"],
+            pending_events,
+        )
+
+        self.assertIn("Связь с сервером", message)
+        self.assertNotIn("не принял", message)
+
+    def test_backend_group_blocker_error_keeps_printed_sheet_context(self):
+        offline = backend_group_blocker_error(
+            "Связь с сервером прервалась. События заказа сохранены в очереди: 2. "
+            "Отправятся автоматически, когда связь вернётся"
+        )
+        rejected = backend_group_blocker_error("Backend не принял события текущего заказа. Осталось по заказу: 2.")
+
+        self.assertIsInstance(offline, BackendOfflineQueueError)
+        self.assertIn("Сводный лист напечатан", str(offline))
+        self.assertNotIn("не принял", str(offline))
+        self.assertNotIsInstance(rejected, BackendOfflineQueueError)
+        self.assertIn("Сводный лист напечатан, но backend не принял все КИЗы", str(rejected))
+
+    def test_backend_blocker_error_type_follows_offline_message(self):
+        offline = backend_blocker_error(
+            "Связь с сервером прервалась. КИЗы сохранены в очереди: 7. "
+            "Отправятся автоматически, когда связь вернётся"
+        )
+        rejected = backend_blocker_error("Backend не принял КИЗы текущей позиции. Осталось по позиции: 7.")
+
+        self.assertIsInstance(offline, BackendOfflineQueueError)
+        self.assertNotIsInstance(rejected, BackendOfflineQueueError)
+        self.assertIsInstance(rejected, RuntimeError)
+
+    def test_backend_failure_title_says_codes_are_saved_when_link_is_down(self):
+        title = backend_failure_title(BackendOfflineQueueError("Связь с сервером прервалась"))
+
+        self.assertEqual(title, "Связь прервалась, КИЗы сохранены")
+
+    def test_backend_failure_title_keeps_not_written_wording_for_other_errors(self):
+        title = backend_failure_title(RuntimeError("Backend не принял КИЗы текущей позиции"))
+
+        self.assertEqual(title, "КИЗы не записаны")
 
     def test_backend_sync_item_blocker_ignores_unrelated_poisoned_queue_event(self):
         sync_result = {
