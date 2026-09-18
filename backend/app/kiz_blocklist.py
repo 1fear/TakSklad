@@ -4,6 +4,7 @@ BLOCK_REASON_DEFAULT = "Код маркировки заблокирован. О
 
 BLOCKED_KIZ_CODES = {
     "0104006396053947217)E>!8a93KYHFaPwn": "Код маркировки заблокирован. Отгрузка запрещена",
+    "0104006396104199217v2M,)&93PNjFZclN": "Код маркировки заблокирован. Отгрузка запрещена",
 }
 
 ENV_BLOCKED_CODES = "TAKSKLAD_BLOCKED_KIZ_CODES"
