@@ -232,13 +232,23 @@ def parse_int(value):
 
 def parse_money(value):
     if isinstance(value, (int, float)):
-        return int(value)
+        try:
+            return int(value)
+        except (ValueError, OverflowError):
+            # nan даёт ValueError, бесконечность OverflowError, суммой не является ни то ни другое
+            return 0
     text = normalize_text(value)
     if not text:
         return 0
     text = text.replace("\xa0", " ").strip()
     if re.fullmatch(r"\d+([.,]0+)?", text.replace(" ", "")):
-        return int(float(text.replace(" ", "").replace(",", ".")))
+        try:
+            return int(float(text.replace(" ", "").replace(",", ".")))
+        except OverflowError:
+            # Строка цифр длиннее трёхсот знаков переполняет float до бесконечности,
+            # и int() от неё бросает OverflowError. Суммой такое значение не является,
+            # поэтому ноль, как и для любого другого нечислового содержимого ячейки
+            return 0
     digits = re.sub(r"\D+", "", text)
     return int(digits) if digits else 0
 
