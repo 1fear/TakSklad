@@ -169,7 +169,11 @@ def parse_int(value):
         return 0
     try:
         return int(float(text))
-    except ValueError:
+    except (ValueError, OverflowError):
+        # float("inf"), float("-inf") и переполненная экспонента вида 1e400 дают
+        # бесконечность, а int() от неё бросает OverflowError, а не ValueError.
+        # Значения приходят из ответа СкладБота, то есть снаружи, и раньше такое
+        # число обрывало весь цикл воркера, а не одну заявку
         return 0
 
 
