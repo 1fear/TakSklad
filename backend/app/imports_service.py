@@ -14,6 +14,7 @@ from .client_points_service import (
 from .models import AuditLog, ImportFile, ImportJob, Incident, Order, OrderItem, PendingEvent
 from .observability_context import current_correlation_id, log_trace
 from .pagination import CursorError, decode_cursor, encode_cursor, normalize_page_limit
+from .product_prices import block_price_for_product
 from . import outbox_service
 from .orders_service import STATUS_COMPLETED, STATUS_NOT_COMPLETED, STATUS_RETURNED
 from .schemas import ImportCreate, ImportPreviewResult, ImportRead, ImportResult
@@ -1159,7 +1160,9 @@ def normalize_import_row(raw_row):
     pieces_per_block = parse_int(first_value(raw_row, PIECES_PER_BLOCK_FIELDS)) or 10
     if quantity_blocks <= 0 and quantity_pieces > 0:
         quantity_blocks = (quantity_pieces + pieces_per_block - 1) // pieces_per_block
-    block_price = parse_money(first_value(raw_row, BLOCK_PRICE_FIELDS)) or default_block_price()
+    block_price = parse_money(first_value(raw_row, BLOCK_PRICE_FIELDS)) or block_price_for_product(
+        product, default_block_price()
+    )
     imported_unit_price = parse_money(first_value(raw_row, IMPORTED_UNIT_PRICE_FIELDS))
     imported_line_total = parse_money(first_value(raw_row, IMPORTED_LINE_TOTAL_FIELDS))
     calculated_line_total = parse_money(first_value(raw_row, CALCULATED_LINE_TOTAL_FIELDS)) or quantity_blocks * block_price
