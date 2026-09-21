@@ -8,6 +8,7 @@ from pathlib import Path
 
 import httpx
 
+from .product_prices import block_price_for_product
 from .reports_service import payment_group
 
 from .spreadsheet_safety import load_safe_workbook, normalize_spreadsheet_filename
@@ -814,7 +815,8 @@ def excel_file_to_import_payload(file_path, file_name=None, source="telegram", s
             representative = get_cell(row, columns.get("representative"))
             imported_unit_price = parse_money(get_cell(row, columns.get("unit_price")))
             imported_line_total = parse_money(get_cell(row, columns.get("line_total")))
-            calculated_line_total = blocks * default_block_price
+            block_price = block_price_for_product(product, default_block_price)
+            calculated_line_total = blocks * block_price
             line_total = imported_line_total or calculated_line_total
             source_id = stable_hash({"sha256": sha256, "sheet": sheet_name, "row": row_number})
 
@@ -828,7 +830,7 @@ def excel_file_to_import_payload(file_path, file_name=None, source="telegram", s
                 "Товары": product,
                 "Кол-во ШТ": quantity,
                 "Кол-во блок": blocks,
-                "Цена за блок": default_block_price,
+                "Цена за блок": block_price,
                 "Цена из файла": imported_unit_price,
                 "Сумма из файла": imported_line_total,
                 "Сумма позиции": line_total,

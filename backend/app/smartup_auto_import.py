@@ -24,6 +24,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .observability_context import current_correlation_id
+from .product_prices import block_price_for_product
 from .imports_service import (
     create_import,
     find_skladbot_linked_order_for_import_rows,
@@ -2768,7 +2769,8 @@ def build_import_rows(
             quantity_blocks = math.ceil(quantity_pieces / config.pieces_per_block)
             product_price = parse_money(product.get("product_price"))
             sold_amount = parse_money(product.get("sold_amount"))
-            line_total = sold_amount or quantity_blocks * config.default_block_price
+            block_price = block_price_for_product(product_name, config.default_block_price)
+            line_total = sold_amount or quantity_blocks * block_price
             product_id = normalize_text(
                 product.get("external_id")
                 or product.get("product_unit_id")
@@ -2789,7 +2791,7 @@ def build_import_rows(
                 "_pieces_per_block": config.pieces_per_block,
                 "Цена из файла": product_price,
                 "Сумма из файла": sold_amount,
-                "Цена за блок": config.default_block_price,
+                "Цена за блок": block_price,
                 "Сумма позиции": line_total,
                 "Статус": "not_completed",
                 "ID заказа": f"smartup:{deal_id}",
