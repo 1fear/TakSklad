@@ -222,7 +222,11 @@ def parse_int(value):
         return 0
     try:
         return int(float(text))
-    except ValueError:
+    except (ValueError, OverflowError):
+        # int() от бесконечности бросает OverflowError, а не ValueError, а float()
+        # отдаёт бесконечность и на слове inf, и на экспоненте вида 1e400, и на
+        # достаточно длинной строке цифр. Значение приходит снаружи, поэтому ноль
+        # вместо необработанного исключения
         return 0
 
 
