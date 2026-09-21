@@ -13,6 +13,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.exc import SQLAlchemyError
+from starlette.concurrency import run_in_threadpool
 
 from .access_policy import (
     AUTH_PROTECTED,
@@ -1652,11 +1653,17 @@ async def preview_excel_import(
     filename: str = Header(..., alias="X-TakSklad-Filename"),
     db=Depends(get_db),
 ):
+    # Это один из двух async-обработчиков во всём приложении, остальные объявлены
+    # обычным def и потому уезжают в пул потоков целиком. Разбор книги и особенно
+    # геокодирование строк ходят в сеть блокирующим httpx с таймаутом 10 с на адрес,
+    # и в теле корутины они держат событийный цикл, то есть встаёт весь процесс,
+    # а не один запрос. Поэтому вся синхронная работа уходит в пул явно.
+    body = await request.body()
     try:
-        payload, meta = parse_raw_excel_upload(await request.body(), filename, source="web")
+        payload, meta = await run_in_threadpool(parse_raw_excel_upload, body, filename, source="web")
     except (SpreadsheetSafetyError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    preview = preview_import_in_db(db, payload)
+    preview = await run_in_threadpool(preview_import_in_db, db, payload)
     return {"preview": preview, "filename": payload.filename or "", "sha256": payload.sha256 or "", "meta": meta}
 
 
@@ -1671,11 +1678,14 @@ async def commit_excel_import(
     filename: str = Header(..., alias="X-TakSklad-Filename"),
     db=Depends(get_db),
 ):
+    # Та же причина, что и у preview выше: блокирующий разбор и запись импорта
+    # не должны исполняться в теле корутины
+    body = await request.body()
     try:
-        payload, meta = parse_raw_excel_upload(await request.body(), filename, source="web")
+        payload, meta = await run_in_threadpool(parse_raw_excel_upload, body, filename, source="web")
     except (SpreadsheetSafetyError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    result = create_import_in_db(db, payload)
+    result = await run_in_threadpool(create_import_in_db, db, payload)
     return {"result": result, "filename": payload.filename or "", "sha256": payload.sha256 or "", "meta": meta}
 
 
