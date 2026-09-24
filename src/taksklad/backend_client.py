@@ -1,5 +1,8 @@
+import http.client
 import json
 import logging
+import ssl
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -17,7 +20,7 @@ from .config import (
     TAKSKLAD_BACKEND_READ_ORDERS_ENABLED,
     TAKSKLAD_BACKEND_TIMEOUT_SECONDS,
 )
-from .http_client import open_https_url
+from .http_client import open_backend_https_url
 from .scan_quantities import scan_entries_for_codes
 from .returns_auth_canary import (
     ReturnsAuthCanaryError,
@@ -29,6 +32,21 @@ from .utils import parse_date_to_standard, split_codes
 
 
 NEXT_CURSOR_HEADER = "X-TakSklad-Next-Cursor"
+# Обрыв канала на складе длится десятки секунд, но само рукопожатие часто
+# проходит со второй попытки: один повтор с более щедрым бюджетом снимает
+# ложную ошибку у оператора, не растягивая ожидание вдвое против прежнего.
+TRANSPORT_ATTEMPTS = 2
+TRANSPORT_RETRY_PAUSE_SECONDS = 0.5
+TRANSPORT_RETRY_TIMEOUT_FACTOR = 2
+# Постоянное соединение добавляет свой класс обрывов: сервер закрывает
+# простаивающий сокет молча, и это приходит как HTTPException, а не как отказ.
+TRANSPORT_ERRORS = (
+    urllib.error.URLError,
+    ssl.SSLError,
+    TimeoutError,
+    ConnectionError,
+    http.client.HTTPException,
+)
 DEFAULT_PAGE_LIMIT = 200
 DEFAULT_MAX_PAGES = 1000
 
@@ -86,6 +104,33 @@ def backend_request(method, path, payload=None, timeout=None):
     return result
 
 
+def open_backend_response(request, base_timeout):
+    last_error = None
+    for attempt in range(TRANSPORT_ATTEMPTS):
+        attempt_timeout = base_timeout * (TRANSPORT_RETRY_TIMEOUT_FACTOR ** attempt)
+        try:
+            with open_backend_https_url(request, timeout=attempt_timeout) as response:
+                raw = response.read().decode("utf-8")
+                if not raw:
+                    return {}, response.headers
+                return json.loads(raw), response.headers
+        except urllib.error.HTTPError:
+            # Сервер ответил и назвал причину: повтор ничего не изменит.
+            raise
+        except TRANSPORT_ERRORS as exc:
+            last_error = exc
+            if attempt + 1 >= TRANSPORT_ATTEMPTS:
+                break
+            logging.info(
+                "Backend transport retry %s/%s after %s",
+                attempt + 1,
+                TRANSPORT_ATTEMPTS,
+                exc,
+            )
+            time.sleep(TRANSPORT_RETRY_PAUSE_SECONDS)
+    raise last_error
+
+
 def backend_request_page(method, path, payload=None, timeout=None, *, _auth_retry=True):
     if not TAKSKLAD_BACKEND_BASE_URL:
         raise BackendApiError("Backend URL не настроен")
@@ -101,12 +146,9 @@ def backend_request_page(method, path, payload=None, timeout=None, *, _auth_retr
         headers=make_backend_headers(),
         method=method,
     )
+    base_timeout = timeout or TAKSKLAD_BACKEND_TIMEOUT_SECONDS
     try:
-        with open_https_url(request, timeout=timeout or TAKSKLAD_BACKEND_TIMEOUT_SECONDS) as response:
-            raw = response.read().decode("utf-8")
-            if not raw:
-                return {}, response.headers
-            return json.loads(raw), response.headers
+        return open_backend_response(request, base_timeout)
     except urllib.error.HTTPError as exc:
         status_code = int(exc.code)
         detail = read_error_detail(exc)

@@ -14,6 +14,8 @@ from .backend_flow import (
     backend_blocked_scan_events_for_item,
     backend_duplicate_scan_reuse_status,
     backend_event_error_message,
+    backend_blocker_error,
+    backend_failure_title,
     backend_sync_item_blocker,
     format_backend_blocked_scan_message,
     order_uses_backend_scan_path,
@@ -653,7 +655,7 @@ class ScanningActionsMixin:
                 load_pending_backend_events(),
             )
             if blocker:
-                raise RuntimeError(blocker)
+                raise backend_blocker_error(blocker)
             if not write_scan_backup("position_saved_backend", order, codes=scanned_codes):
                 raise RuntimeError("Коды сохранены в backend, но локальный backup позиции не создан")
             return {"queued": False, "message": "backend_saved", "backend": True}
@@ -710,7 +712,7 @@ class ScanningActionsMixin:
             self.update_stats_display()
 
         def on_error(exc):
-            self.show_critical_error("КИЗы не записаны", exc)
+            self.show_critical_error(backend_failure_title(exc), exc)
             self.clear_busy()
             current_plan_blocks = get_plan_blocks(self.current_order) if self.current_order else 0
             current_scanned_count = (

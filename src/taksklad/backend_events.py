@@ -300,6 +300,14 @@ def backend_error_detail_payload(exc):
     return normalize_text(detail)
 
 
+def backend_error_kind(exc):
+    # У оборванного соединения нет кода ответа: сервер не ответил вовсе,
+    # поэтому такие события ждут связи, а не разбора оператором.
+    if isinstance(exc, BackendApiError) and exc.status_code is None:
+        return "network"
+    return "server"
+
+
 def is_stale_backend_event_ack(item, exc):
     if not isinstance(exc, BackendApiError) or exc.retryable:
         return False
@@ -330,7 +338,7 @@ def sync_pending_backend_events():
     blocked = 0
     blocked_events = []
     remaining = []
-    for item in pending:
+    for index, item in enumerate(pending):
         try:
             event_type = item.get("type")
             payload = item.get("payload") or {}
@@ -391,12 +399,19 @@ def sync_pending_backend_events():
             failed += 1
             item["attempts"] = int(item.get("attempts") or 0) + 1
             item["last_error"] = str(exc)
+            item["last_error_kind"] = backend_error_kind(exc)
             item["updated_at"] = datetime.now().astimezone().isoformat()
             remaining.append(item)
+            if item["last_error_kind"] == "network":
+                # Канал лежит для всей очереди сразу: остальные события ждут
+                # связи, а не своей порции таймаутов на глазах у оператора.
+                remaining.extend(pending[index + 1:])
+                break
         except Exception as exc:
             failed += 1
             item["attempts"] = int(item.get("attempts") or 0) + 1
             item["last_error"] = str(exc)
+            item["last_error_kind"] = backend_error_kind(exc)
             item["updated_at"] = datetime.now().astimezone().isoformat()
             remaining.append(item)
 
