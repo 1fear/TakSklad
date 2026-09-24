@@ -10,6 +10,10 @@ AGGREGATE_BOX_PRODUCT_PREFIXES = {
     "0104006396054043": "red:ssl",
     "0104006396104448": "green:op",
     "0104006396104458": "green:op",
+    # KSSL: GTIN короба это следующий номер после штучного, контрольная цифра
+    # пересчитана, оба сняты с реальных коробов 2026-09-24
+    "0104006396104205": "brown:kssl",
+    "0104006396104236": "green:kssl",
 }
 
 UNIT_PRODUCT_PREFIXES = {
@@ -19,8 +23,7 @@ UNIT_PRODUCT_PREFIXES = {
     "0104006396054067": "brown:ssl",
     "0104006396054036": "red:ssl",
     "0104006396104441": "green:op",
-    # KSSL (King Size Super Slim): поставка 2026-09-03, короб ещё не снят,
-    # коробочные GTIN появятся в AGGREGATE_BOX_PRODUCT_PREFIXES после первого скана
+    # KSSL (King Size Super Slim): поставка 2026-09-03
     "0104006396104199": "brown:kssl",
     "0104006396104229": "green:kssl",
 }

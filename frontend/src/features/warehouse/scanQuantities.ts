@@ -30,6 +30,8 @@ export const AGGREGATE_BOX_PRODUCT_PREFIXES: Record<string, string> = {
   "0104006396054043": "red:ssl",
   "0104006396104448": "green:op",
   "0104006396104458": "green:op",
+  "0104006396104205": "brown:kssl",
+  "0104006396104236": "green:kssl",
 };
 
 export function aggregateBoxProductKey(code: string): string {
