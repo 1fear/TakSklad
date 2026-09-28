@@ -1847,7 +1847,14 @@ def process_skladbot_create_event(db: Session, event: PendingEvent, client: Any)
             and not existing_number_raw
             and durable_response_id == existing_id
         ):
-            existing_request = reconcile_ambiguous_skladbot_request(order, event, client, "")
+            db.commit()
+            existing_request = reconcile_ambiguous_skladbot_request(
+                order,
+                event,
+                client,
+                "",
+                durable_request_id=durable_response_id_raw,
+            )
             if existing_request:
                 request_payload = (
                     payload.get("request_payload")
@@ -1896,7 +1903,14 @@ def process_skladbot_create_event(db: Session, event: PendingEvent, client: Any)
         or create_status == "ambiguous"
         or attempted_without_explicit_retry
     ):
-        existing_request = reconcile_ambiguous_skladbot_request(order, event, client, remote_marker)
+        db.commit()
+        existing_request = reconcile_ambiguous_skladbot_request(
+            order,
+            event,
+            client,
+            remote_marker,
+            durable_request_id=durable_response_id_raw,
+        )
         if existing_request:
             return save_skladbot_create_result(
                 db,
@@ -1930,7 +1944,14 @@ def process_skladbot_create_event(db: Session, event: PendingEvent, client: Any)
             return block_order_after_skladbot_stock_shortage(db, order, event, error)
         if classification == "ambiguous":
             update_event_payload(event, {"post_state": "ambiguous"})
-            existing_request = reconcile_ambiguous_skladbot_request(order, event, client, request_marker)
+            db.commit()
+            existing_request = reconcile_ambiguous_skladbot_request(
+                order,
+                event,
+                client,
+                request_marker,
+                durable_request_id="",
+            )
             if existing_request:
                 return save_skladbot_create_result(
                     db,
@@ -1973,6 +1994,9 @@ def process_skladbot_create_event(db: Session, event: PendingEvent, client: Any)
         "post_state": "response_received",
         "post_response_request_id": request_id,
     })
+    # id созданной заявки фиксируется до чтения деталей: транзакция не ждёт сеть,
+    # и обрыв соединения во время GET оставляет повтору заявку, найденную по id
+    db.commit()
 
     try:
         detail = client.get_request_detail(request_id)
@@ -2025,8 +2049,14 @@ def reconcile_ambiguous_skladbot_request(
     event: PendingEvent,
     client: Any,
     marker: str,
+    *,
+    durable_request_id: Any = None,
 ) -> dict[str, Any] | None:
-    request_id_text = canonical_remote_request_id((event.payload or {}).get("post_response_request_id"))
+    # вызывающий после commit передаёт id сам: чтение event.payload заново открыло бы
+    # транзакцию, и она простаивала бы весь запрос к SkladBot
+    if durable_request_id is None:
+        durable_request_id = (event.payload or {}).get("post_response_request_id")
+    request_id_text = canonical_remote_request_id(durable_request_id)
     if request_id_text:
         request_id = int(request_id_text)
         try:
