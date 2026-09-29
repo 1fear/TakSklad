@@ -68,39 +68,53 @@ class ScanIdempotentAfterOrderClosedTests(unittest.TestCase):
             order = db.execute(select(Order).where(Order.id == order_id)).scalar_one()
             order.status = status
             for item in order.items:
-                item.status = "completed" if status == "completed" else item.status
+                item.status = "completed"
             db.commit()
 
-    def counts(self):
+    def snapshot(self, item_id):
+        """Всё, что повтор скана не имеет права менять, одним словарём для сравнения до и после."""
         with self.SessionLocal() as db:
+            item = db.execute(select(OrderItem).where(OrderItem.id == item_id)).scalar_one()
             return {
-                "scans": db.execute(select(ScanCode)).scalars().all(),
-                "movements": db.execute(select(KizMovement)).scalars().all(),
-                "audit": db.execute(
-                    select(AuditLog).where(AuditLog.action == "scan_code_created")
-                ).scalars().all(),
+                "scans": sorted(str(row) for row in db.execute(select(ScanCode.id)).scalars()),
+                "movements": sorted(str(row) for row in db.execute(select(KizMovement.id)).scalars()),
+                "audit": sorted(str(row) for row in db.execute(select(AuditLog.id)).scalars()),
+                "scanned_blocks": item.scanned_blocks,
+                "item_status": item.status,
             }
 
-    def test_repeat_of_accepted_code_into_closed_order_returns_same_scan(self):
+    def assert_rejected(self, item_id, code, *, error_code, message=None):
+        with self.SessionLocal() as db:
+            with self.assertRaises(ApiError) as raised:
+                create_scan(db, ScanCreate(order_item_id=str(item_id), code=code))
+        self.assertEqual(raised.exception.status_code, 409)
+        detail = raised.exception.detail or {}
+        self.assertEqual(detail.get("code"), error_code)
+        if message is not None:
+            self.assertEqual(detail.get("message"), message)
+
+    def assert_repeat_returns_same_scan(self, status):
         order_id, item_id = self.seed_order()
         with self.SessionLocal() as db:
             first = create_scan(db, ScanCreate(order_item_id=str(item_id), code=CODE))
-        self.close_order(order_id)
+        self.close_order(order_id, status)
 
-        before = self.counts()
+        before = self.snapshot(item_id)
         self.assertEqual(len(before["scans"]), 1)
         self.assertEqual(len(before["movements"]), 1)
-        self.assertEqual(len(before["audit"]), 1)
+        self.assertGreaterEqual(len(before["audit"]), 1)
 
         with self.SessionLocal() as db:
             second = create_scan(db, ScanCreate(order_item_id=str(item_id), code=CODE))
 
         self.assertEqual(second.id, first.id)
+        self.assertEqual(self.snapshot(item_id), before)
 
-        after = self.counts()
-        self.assertEqual(len(after["scans"]), 1)
-        self.assertEqual(len(after["movements"]), 1)
-        self.assertEqual(len(after["audit"]), 1)
+    def test_repeat_of_accepted_code_into_closed_order_returns_same_scan(self):
+        self.assert_repeat_returns_same_scan("completed")
+
+    def test_repeat_of_accepted_code_into_returned_order_returns_same_scan(self):
+        self.assert_repeat_returns_same_scan("returned")
 
     def test_new_code_into_closed_order_still_rejected(self):
         order_id, item_id = self.seed_order()
@@ -108,11 +122,9 @@ class ScanIdempotentAfterOrderClosedTests(unittest.TestCase):
             create_scan(db, ScanCreate(order_item_id=str(item_id), code=CODE))
         self.close_order(order_id)
 
-        with self.SessionLocal() as db:
-            with self.assertRaises(ApiError) as raised:
-                create_scan(db, ScanCreate(order_item_id=str(item_id), code=OTHER_CODE))
-            self.assertEqual(raised.exception.status_code, 409)
-            self.assertEqual((raised.exception.detail or {}).get("code"), "order_closed")
+        self.assert_rejected(
+            item_id, OTHER_CODE, error_code="order_closed", message="Cannot scan inactive order"
+        )
 
     def test_code_recorded_in_another_item_into_closed_order_still_rejected(self):
         donor_order_id, donor_item_id = self.seed_order()
@@ -121,21 +133,20 @@ class ScanIdempotentAfterOrderClosedTests(unittest.TestCase):
             create_scan(db, ScanCreate(order_item_id=str(donor_item_id), code=CODE))
         self.close_order(target_order_id)
 
-        with self.SessionLocal() as db:
-            with self.assertRaises(ApiError) as raised:
-                create_scan(db, ScanCreate(order_item_id=str(target_item_id), code=CODE))
-            self.assertEqual(raised.exception.status_code, 409)
-            self.assertEqual((raised.exception.detail or {}).get("code"), "order_closed")
+        self.assert_rejected(
+            target_item_id, CODE, error_code="order_closed", message="Cannot scan inactive order"
+        )
 
     def test_blocked_code_into_closed_order_still_rejected_as_blocked(self):
         order_id, item_id = self.seed_order()
+        # Скан этого кода уже лежит в той же позиции, как будто код попал в блок-лист позже.
+        # Без этой строки тест зелёный при любом порядке проверок: искать в позиции было бы нечего.
+        with self.SessionLocal() as db:
+            db.add(ScanCode(order_item_id=item_id, code=BLOCKED_CODE, raw_payload={}))
+            db.commit()
         self.close_order(order_id)
 
-        with self.SessionLocal() as db:
-            with self.assertRaises(ApiError) as raised:
-                create_scan(db, ScanCreate(order_item_id=str(item_id), code=BLOCKED_CODE))
-            self.assertEqual(raised.exception.status_code, 409)
-            self.assertEqual((raised.exception.detail or {}).get("code"), "kiz_blocked")
+        self.assert_rejected(item_id, BLOCKED_CODE, error_code="kiz_blocked")
 
 
 if __name__ == "__main__":
