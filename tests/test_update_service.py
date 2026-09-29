@@ -160,9 +160,18 @@ class UpdateServiceTests(unittest.TestCase):
         # desktop channel. Keep that freeze bounded and never allow it ahead.
         self.assertIn(app_version[2] - published_version[2], (0, 1, 2, 3, 4))
         self.assertEqual(payload["release_tag"], f"v{payload['latest_version']}")
-        self.assertEqual(payload["min_supported_version"], payload["latest_version"])
-        self.assertIs(payload["mandatory"], True)
-        self.assertIs(payload["block_workflow"], True)
+        if payload["mandatory"] is True:
+            # Финальный канал: обязательное обновление, старая версия не работает
+            self.assertEqual(payload["min_supported_version"], payload["latest_version"])
+            self.assertIs(payload["block_workflow"], True)
+        else:
+            # Кандидат (rollout_state candidate-published в tools/release_preflight.py):
+            # станция на прежней версии видит предложение обновиться и продолжает
+            # работать, min_supported не выше версии, на которой стоит склад
+            minimum_version = tuple(int(part) for part in payload["min_supported_version"].split("."))
+            self.assertLess(minimum_version, published_version)
+            self.assertIs(payload["mandatory"], False)
+            self.assertIs(payload["block_workflow"], False)
         self.assertEqual(payload["package_type"], "onefile_exe")
         self.assertEqual(payload["entrypoint"], "TakSklad.exe")
         self.assertEqual(payload["signature_type"], "authenticode")
