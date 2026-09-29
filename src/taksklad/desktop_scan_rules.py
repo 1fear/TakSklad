@@ -108,42 +108,42 @@ def group_finish_blocker(orders, completed_products):
     return ""
 
 
+def _ensure_attr(app, name, factory):
+    """Атрибут окна нужного типа: создаётся, если его нет или тип не тот
+
+    Состояние завершения объявлено в ScanningApp.__init__; создание здесь нужно голым объектам в тестах
+    """
+    value = getattr(app, name, None)
+    if not isinstance(value, factory):
+        value = factory()
+        setattr(app, name, value)
+    return value
+
+
 def get_finishing_groups(app):
     """Множество групп заказа, чьё завершение на сервере идёт в фоне
 
-    Атрибут окна, создаётся лениво: пока группа в нём, список заказов её не показывает
+    Пока группа в нём, список заказов её не показывает
     """
-    groups = getattr(app, "finishing_group_keys", None)
-    if not isinstance(groups, set):
-        groups = set()
-        app.finishing_group_keys = groups
-    return groups
+    return _ensure_attr(app, "finishing_group_keys", set)
 
 
 def hide_finishing_groups(app, orders):
     """Заказы без групп, которые сейчас завершаются: вход для каждого обновления списка с сервера"""
-    groups = getattr(app, "finishing_group_keys", None)
-    if not groups or not isinstance(groups, set):
+    groups = get_finishing_groups(app)
+    if not groups:
         return orders
     return [order for order in orders or [] if order_group_key(order) not in groups]
 
 
 def get_running_finishing_groups(app):
     """Группы, по которым сервер ещё не ответил на завершение: их обрывать нельзя"""
-    groups = getattr(app, "finishing_group_keys", None)
-    if not groups or not isinstance(groups, set):
-        return set()
-    answered = getattr(app, "finishing_answered", None)
-    if not isinstance(answered, dict):
-        return set(groups)
-    return {group for group in groups if group not in answered}
+    answered = _ensure_attr(app, "finishing_answered", dict)
+    return {group for group in get_finishing_groups(app) if group not in answered}
 
 
 def _refresh_generation(app):
-    try:
-        return int(getattr(app, "refresh_generation", 0) or 0)
-    except (TypeError, ValueError):
-        return 0
+    return _ensure_attr(app, "refresh_generation", int)
 
 
 def next_refresh_generation(app):
@@ -153,45 +153,31 @@ def next_refresh_generation(app):
     return generation
 
 
-def remember_hidden_orders(app, group_key, orders):
+def remember_finishing_hidden_orders(app, group_key, orders):
     """Скрытые заказы группы остаются на окне: по ним ищется владелец кода при дубле"""
-    hidden = getattr(app, "finishing_hidden_orders", None)
-    if not isinstance(hidden, dict):
-        hidden = {}
-        app.finishing_hidden_orders = hidden
-    hidden[group_key] = list(orders)
+    _ensure_attr(app, "finishing_hidden_orders", dict)[group_key] = list(orders)
 
 
-def hidden_finishing_orders(app):
-    hidden = getattr(app, "finishing_hidden_orders", None)
-    if not isinstance(hidden, dict):
-        return []
+def get_finishing_hidden_orders(app):
+    hidden = _ensure_attr(app, "finishing_hidden_orders", dict)
     return [order for orders in hidden.values() for order in orders]
 
 
 def mark_finishing_answered(app, group_key):
     """Сервер ответил: группа остаётся скрытой, пока не применится обновление, начатое после ответа"""
-    answered = getattr(app, "finishing_answered", None)
-    if not isinstance(answered, dict):
-        answered = {}
-        app.finishing_answered = answered
-    answered[group_key] = _refresh_generation(app)
+    _ensure_attr(app, "finishing_answered", dict)[group_key] = _refresh_generation(app)
 
 
 def drop_finishing_group(app, group_key):
     get_finishing_groups(app).discard(group_key)
-    answered = getattr(app, "finishing_answered", None)
-    if isinstance(answered, dict):
-        answered.pop(group_key, None)
-    hidden = getattr(app, "finishing_hidden_orders", None)
-    if isinstance(hidden, dict):
-        hidden.pop(group_key, None)
+    _ensure_attr(app, "finishing_answered", dict).pop(group_key, None)
+    _ensure_attr(app, "finishing_hidden_orders", dict).pop(group_key, None)
 
 
 def release_finishing_groups(app, generation):
     """Освобождает группы, на которые сервер ответил раньше, чем началось обновление с этим номером"""
-    answered = getattr(app, "finishing_answered", None)
-    if not isinstance(answered, dict) or not answered:
+    answered = _ensure_attr(app, "finishing_answered", dict)
+    if not answered:
         return set()
     released = {group for group, mark in answered.items() if mark < generation}
     for group in released:

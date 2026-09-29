@@ -30,7 +30,7 @@ from .desktop_scan_rules import (
     find_code_owner_in_orders,
     format_duplicate_scan_message,
     format_scan_product_mismatch_message,
-    hidden_finishing_orders,
+    get_finishing_hidden_orders,
     is_terminal_scan_state,
     scan_sku_guard_status,
     scanned_blocks_for_order,
@@ -555,7 +555,7 @@ class ScanningActionsMixin:
         )
         if code in self.all_existing_codes or duplicate_in_completed_orders:
             existing_order = (
-                find_code_owner_in_orders(code, list(self.today_orders) + hidden_finishing_orders(self))
+                find_code_owner_in_orders(code, list(self.today_orders) + get_finishing_hidden_orders(self))
                 if code in self.all_existing_codes
                 else {}
             )

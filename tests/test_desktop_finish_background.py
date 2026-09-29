@@ -1,5 +1,7 @@
 """Завершение заказа: экран свободен сразу после печати сводного листа, завершение на сервере идёт в фоне"""
 
+import ast
+import inspect
 import tkinter as tk
 import unittest
 from types import SimpleNamespace
@@ -8,9 +10,16 @@ from unittest import mock
 from taksklad.app_data_loading import DataLoadingMixin
 from taksklad.config import BG_MAIN, FG_MUTED, SKLADBOT_REQUEST_NUMBER_COLUMN
 from taksklad.desktop_scan_rules import (
+    _ensure_attr,
+    drop_finishing_group,
     get_finishing_groups,
+    get_finishing_hidden_orders,
     get_running_finishing_groups,
-    hidden_finishing_orders,
+    hide_finishing_groups,
+    mark_finishing_answered,
+    next_refresh_generation,
+    release_finishing_groups,
+    remember_finishing_hidden_orders,
 )
 from taksklad.main import ScanningApp
 from taksklad.orders import order_group_key
@@ -545,7 +554,7 @@ class FinishStageTwoTests(FinishBackgroundTestCase):
         self.assertEqual(len(app.today_orders), 4)
         self.assertNotIn(group_key, app.finishing_group_keys)
         self.assertNotIn(group_key, getattr(app, "finishing_answered", {}))
-        self.assertEqual(hidden_finishing_orders(app), [])
+        self.assertEqual(get_finishing_hidden_orders(app), [])
 
     def test_completion_error_still_shows_the_error_if_the_list_redraw_fails(self):
         app = self.make_app()
@@ -870,7 +879,7 @@ class RefreshGenerationTests(FinishBackgroundTestCase):
         self.assertEqual(app.today_orders, list(app.group) + list(app.other))
         self.assertNotIn(group_key, app.finishing_group_keys)
         self.assertNotIn(group_key, app.finishing_answered)
-        self.assertEqual(hidden_finishing_orders(app), [])
+        self.assertEqual(get_finishing_hidden_orders(app), [])
 
     def test_refresh_started_after_the_server_answer_frees_the_group_when_the_server_no_longer_shows_it(self):
         app = self.make_refreshable()
@@ -934,7 +943,7 @@ class RefreshGenerationTests(FinishBackgroundTestCase):
         stage_two_b = app.background[3]
         self.assertEqual(app.finishing_group_keys, {key_a, key_b})
         self.assertEqual(app.today_orders, [])
-        self.assertCountEqual(hidden_finishing_orders(app), app.group + app.other)
+        self.assertCountEqual(get_finishing_hidden_orders(app), app.group + app.other)
 
         run_entry(stage_two_a)
 
@@ -953,14 +962,14 @@ class RefreshGenerationTests(FinishBackgroundTestCase):
     def test_hidden_orders_are_kept_for_the_owner_lookup_until_the_group_is_freed(self):
         app = self.make_refreshable()
         stage_two = self.to_stage_two(app)
-        self.assertEqual(hidden_finishing_orders(app), app.group)
+        self.assertEqual(get_finishing_hidden_orders(app), app.group)
 
         run_entry(stage_two)
-        self.assertEqual(hidden_finishing_orders(app), app.group)
+        self.assertEqual(get_finishing_hidden_orders(app), app.group)
 
         refresh = self.start_refresh(app)
         self.apply_refresh(app, refresh, list(app.other))
-        self.assertEqual(hidden_finishing_orders(app), [])
+        self.assertEqual(get_finishing_hidden_orders(app), [])
 
 
 class FinishHidingFailureTests(FinishBackgroundTestCase):
@@ -1362,6 +1371,102 @@ class CloseWaitVersusStageTwoOutcomeTests(FinishBackgroundTestCase):
         app.after_calls[-1][1]()
 
         app.destroy.assert_called_once_with()
+
+
+class FinishingStateDeclarationTests(unittest.TestCase):
+    """Состояние завершения объявлено в __init__ окна, помощники не плодят копии ленивого создания"""
+
+    EXPECTED_DEFAULTS = {
+        "finishing_group_keys": set(),
+        "finishing_answered": {},
+        "finishing_hidden_orders": {},
+        "refresh_generation": 0,
+        "close_wait_deadline": None,
+        "finishing_failed_before_answer": False,
+    }
+
+    @staticmethod
+    def init_assignments():
+        tree = ast.parse(inspect.getsource(ScanningApp.__init__).replace("\n    ", "\n").lstrip())
+        function = tree.body[0]
+        assignments = {}
+        for node in ast.walk(function):
+            if not isinstance(node, ast.Assign):
+                continue
+            for target in node.targets:
+                if (
+                    isinstance(target, ast.Attribute)
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == "self"
+                ):
+                    assignments[target.attr] = node.value
+        return assignments
+
+    def test_window_init_declares_every_finishing_attribute_with_an_empty_default(self):
+        assignments = self.init_assignments()
+
+        self.assertIn("backend_sync_after_id", assignments)
+        for name, expected in self.EXPECTED_DEFAULTS.items():
+            with self.subTest(attribute=name):
+                self.assertIn(name, assignments, f"{name} не объявлен в ScanningApp.__init__")
+                value = eval(compile(ast.Expression(assignments[name]), "<init>", "eval"), {"set": set})
+                self.assertEqual(value, expected)
+                self.assertIs(type(value), type(expected))
+
+    def test_ensure_attr_creates_a_missing_attribute_of_the_asked_type(self):
+        app = SimpleNamespace()
+
+        created = _ensure_attr(app, "finishing_group_keys", set)
+
+        self.assertIsInstance(created, set)
+        self.assertIs(app.finishing_group_keys, created)
+
+    def test_ensure_attr_keeps_an_existing_value_of_the_right_type(self):
+        existing = {"key": ["order"]}
+        app = SimpleNamespace(finishing_hidden_orders=existing)
+
+        self.assertIs(_ensure_attr(app, "finishing_hidden_orders", dict), existing)
+
+    def test_ensure_attr_replaces_a_value_of_the_wrong_type(self):
+        app = SimpleNamespace(finishing_answered="broken")
+
+        replaced = _ensure_attr(app, "finishing_answered", dict)
+
+        self.assertEqual(replaced, {})
+        self.assertIs(app.finishing_answered, replaced)
+
+    def test_helpers_work_on_a_bare_object_without_declared_state(self):
+        group = ("SB-1", "ООО Тест", "Перечисление", "Адрес 1")
+        orders = make_group("SB-1")
+        app = SimpleNamespace()
+
+        self.assertEqual(hide_finishing_groups(app, orders), orders)
+        self.assertEqual(get_running_finishing_groups(app), set())
+        self.assertEqual(get_finishing_hidden_orders(app), [])
+        self.assertEqual(release_finishing_groups(app, 5), set())
+        drop_finishing_group(app, group)
+
+        self.assertEqual(next_refresh_generation(app), 1)
+        get_finishing_groups(app).add(group)
+        remember_finishing_hidden_orders(app, group, orders)
+        mark_finishing_answered(app, group)
+
+        self.assertEqual(get_running_finishing_groups(app), set())
+        self.assertEqual(get_finishing_hidden_orders(app), orders)
+        self.assertEqual(app.finishing_answered, {group: 1})
+        self.assertEqual(hide_finishing_groups(app, orders), [])
+        self.assertEqual(release_finishing_groups(app, 2), {group})
+        self.assertEqual(get_finishing_groups(app), set())
+        self.assertEqual(get_finishing_hidden_orders(app), [])
+
+    def test_lazy_creation_lives_in_one_helper(self):
+        import taksklad.desktop_scan_rules as rules
+
+        source = inspect.getsource(rules)
+        self.assertEqual(source.count("isinstance(groups, set)"), 0)
+        self.assertEqual(source.count("isinstance(hidden, dict)"), 0)
+        self.assertEqual(source.count("isinstance(answered, dict)"), 0)
+        self.assertIn("def _ensure_attr(app, name, factory)", source)
 
 
 if __name__ == "__main__":

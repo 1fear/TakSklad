@@ -162,6 +162,13 @@ class ScanningApp(
         self.skladbot_sync_running = False
         self.backend_sync_running = False
         self.backend_sync_after_id = None
+        # Завершение заказа в фоне (desktop_scan_rules, app_finish, app_runtime)
+        self.finishing_group_keys = set()
+        self.finishing_answered = {}
+        self.finishing_hidden_orders = {}
+        self.finishing_failed_before_answer = False
+        self.refresh_generation = 0
+        self.close_wait_deadline = None
         self.return_lookup_result = None
         self.product_photo_image = None
         self.last_sync_result = {"synced": 0, "failed": 0, "remaining": 0}

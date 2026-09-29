@@ -16,7 +16,7 @@ from .desktop_scan_rules import (
     get_finishing_groups,
     group_finish_blocker,
     mark_finishing_answered,
-    remember_hidden_orders,
+    remember_finishing_hidden_orders,
     scanned_blocks_for_order,
 )
 from .orders import get_plan_blocks, order_group_key
@@ -224,7 +224,7 @@ class FinishActionsMixin:
                     (removed_orders if finished else kept_orders).append(order)
                 self.today_orders = kept_orders
                 hidden_orders.extend(removed_orders)
-                remember_hidden_orders(self, finished_group, hidden_orders)
+                remember_finishing_hidden_orders(self, finished_group, hidden_orders)
                 self.clear_busy()
                 self.reset_current_selection()
                 self.refresh_legal_list()
