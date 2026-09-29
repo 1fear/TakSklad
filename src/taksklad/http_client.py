@@ -76,6 +76,25 @@ def _backend_connection(host, timeout):
     return connection
 
 
+def system_proxy_applies(netloc):
+    """Пойдёт ли запрос к хосту через системный прокси, как это делал urlopen.
+
+    urllib берёт прокси из окружения и реестра Windows, а HTTPSConnection
+    ходит напрямую и за корпоративным прокси не достучится. Если прокси
+    задан для https и хост не в исключениях, запрос обязан идти прежним
+    путём через urllib, без постоянного соединения.
+    """
+    try:
+        proxies = urllib.request.getproxies()
+        if not (proxies.get("https") or proxies.get("all")):
+            return False
+        return not urllib.request.proxy_bypass(netloc)
+    except Exception:
+        # Настройки прокси не прочитались: надёжнее прежний путь urllib,
+        # чем идти напрямую там, где прямого выхода может не быть.
+        return True
+
+
 def open_backend_https_url(request, timeout):
     """Запрос к backend по постоянному соединению.
 
@@ -84,7 +103,7 @@ def open_backend_https_url(request, timeout):
     """
     url = request.full_url
     parsed = urllib.parse.urlparse(url)
-    if parsed.scheme.lower() != "https":
+    if parsed.scheme.lower() != "https" or system_proxy_applies(parsed.netloc):
         return open_https_url(request, timeout)
 
     target = parsed.path or "/"

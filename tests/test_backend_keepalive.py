@@ -49,6 +49,10 @@ class BackendKeepAliveTests(unittest.TestCase):
         FakeConnection.created = []
         http_client.reset_backend_connection()
         self.addCleanup(http_client.reset_backend_connection)
+        # Прокси окружения разработчика не должен менять выбор пути в тестах.
+        no_proxy = mock.patch.object(urllib.request, "getproxies", return_value={})
+        no_proxy.start()
+        self.addCleanup(no_proxy.stop)
 
     @staticmethod
     def request(path="/api/v1/scans"):
@@ -99,6 +103,62 @@ class BackendKeepAliveTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, 409)
         self.assertIn(b"already scanned", raised.exception.read())
+
+    def test_system_https_proxy_sends_the_request_through_urllib(self):
+        # Раньше urlopen брал прокси из окружения и реестра Windows, а
+        # HTTPSConnection идёт напрямую и на складе за прокси не достучится.
+        request = self.request()
+        sentinel = object()
+        for proxies in ({"https": "http://proxy.local:3128"}, {"all": "http://proxy.local:3128"}):
+            with self.subTest(proxies=proxies):
+                with (
+                    mock.patch.object(urllib.request, "getproxies", return_value=proxies),
+                    mock.patch.object(urllib.request, "proxy_bypass", return_value=False),
+                    mock.patch.object(http_client, "open_https_url", return_value=sentinel) as via_urllib,
+                    mock.patch.object(http.client, "HTTPSConnection", FakeConnection),
+                ):
+                    result = http_client.open_backend_https_url(request, timeout=8)
+
+                self.assertIs(result, sentinel)
+                via_urllib.assert_called_once_with(request, 8)
+                self.assertEqual(FakeConnection.created, [])
+
+    def test_backend_host_in_proxy_bypass_keeps_the_persistent_connection(self):
+        with (
+            mock.patch.object(urllib.request, "getproxies", return_value={"https": "http://proxy.local:3128"}),
+            mock.patch.object(urllib.request, "proxy_bypass", return_value=True) as bypass,
+            mock.patch.object(http_client, "open_https_url") as via_urllib,
+            mock.patch.object(http.client, "HTTPSConnection", FakeConnection),
+        ):
+            with http_client.open_backend_https_url(self.request(), timeout=8) as response:
+                response.read()
+
+        bypass.assert_called_once_with("api.taksklad.uz")
+        via_urllib.assert_not_called()
+        self.assertEqual(len(FakeConnection.created), 1)
+
+    def test_http_only_proxy_does_not_divert_https_backend_traffic(self):
+        with (
+            mock.patch.object(urllib.request, "getproxies", return_value={"http": "http://proxy.local:3128"}),
+            mock.patch.object(http_client, "open_https_url") as via_urllib,
+            mock.patch.object(http.client, "HTTPSConnection", FakeConnection),
+        ):
+            with http_client.open_backend_https_url(self.request(), timeout=8) as response:
+                response.read()
+
+        via_urllib.assert_not_called()
+        self.assertEqual(len(FakeConnection.created), 1)
+
+    def test_without_proxy_the_persistent_connection_is_used(self):
+        with (
+            mock.patch.object(http_client, "open_https_url") as via_urllib,
+            mock.patch.object(http.client, "HTTPSConnection", FakeConnection),
+        ):
+            with http_client.open_backend_https_url(self.request(), timeout=8) as response:
+                response.read()
+
+        via_urllib.assert_not_called()
+        self.assertEqual(len(FakeConnection.created), 1)
 
 
 if __name__ == "__main__":
