@@ -244,3 +244,43 @@ class BlockedBackendEventsDurabilityTests(unittest.TestCase):
         }])
         counts = storage.app_data_queue_counts(storage.load_app_data())
         self.assertEqual(counts.get("blocked_backend_events"), 1)
+
+
+class ReconcileQueueSectionNoResurrectionTests(unittest.TestCase):
+    """Другой проход или отмена могли удалить событие из очереди раньше, чем текущий
+
+    проход дошёл до сверки. Раньше `reconcile_queue_section` дописывал такое событие
+    обратно из `remaining`, воскрешая уже доставленное или отменённое событие.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.original_data_file = storage.TAKSKLAD_DATA_FILE
+        storage.TAKSKLAD_DATA_FILE = str(Path(self.temp_dir.name) / "TakSklad_data.json")
+
+    def tearDown(self):
+        storage.TAKSKLAD_DATA_FILE = self.original_data_file
+        self.temp_dir.cleanup()
+
+    def test_event_removed_externally_is_not_resurrected_from_remaining(self):
+        item_a = {"id": "A", "type": "scan", "payload": {"order_item_id": "item-1", "code": "CODE-A"}}
+        item_b = {"id": "B", "type": "scan", "payload": {"order_item_id": "item-1", "code": "CODE-B"}}
+        item_c = {"id": "C", "type": "scan", "payload": {"order_item_id": "item-2", "code": "CODE-C"}}
+        item_a_retry = {**item_a, "attempts": 1, "last_error": "timeout"}
+
+        # Снимок, с которым проход начал синхронизацию: [A, B].
+        snapshot = [item_a, item_b]
+
+        # Пока проход шёл, другой контур (доставка, отказ в blocked или отмена
+        # оператором) убрал A из очереди и в неё же независимо добавили C.
+        # Текущая секция на момент сверки: [B, C].
+        storage.save_data_section("pending_backend_events", [item_b, item_c])
+
+        # Сам проход не знал про внешнее изменение и вернул A как неотправленный.
+        remaining = [item_a_retry]
+
+        result = storage.reconcile_queue_section("pending_backend_events", snapshot, remaining)
+
+        self.assertEqual([item["id"] for item in result], ["C"])
+        persisted = storage.load_data_section("pending_backend_events", [])
+        self.assertEqual([item["id"] for item in persisted], ["C"])
