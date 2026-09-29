@@ -2,6 +2,7 @@ import http.client
 import io
 import ssl
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -16,6 +17,10 @@ HTTPS_CONTEXT = None
 # потоке и выигрывает от переиспользования, а параллельные вызовы из других
 # потоков не ждут чужого запроса.
 BACKEND_CONNECTIONS = threading.local()
+# Traefik и NAT закрывают простаивающие соединения молча, а главный поток
+# держит своё долго: запрос по мёртвому сокету падает обрывом. Соединение,
+# которым не пользовались дольше этого срока, пересоздаётся до запроса.
+BACKEND_CONNECTION_IDLE_LIMIT_SECONDS = 45
 
 
 def get_https_context():
@@ -59,11 +64,23 @@ def reset_backend_connection():
             pass
     BACKEND_CONNECTIONS.connection = None
     BACKEND_CONNECTIONS.host = None
+    BACKEND_CONNECTIONS.last_used = None
+
+
+def _backend_connection_is_fresh():
+    last_used = getattr(BACKEND_CONNECTIONS, "last_used", None)
+    if last_used is None:
+        return False
+    return time.monotonic() - last_used <= BACKEND_CONNECTION_IDLE_LIMIT_SECONDS
 
 
 def _backend_connection(host, timeout):
     connection = getattr(BACKEND_CONNECTIONS, "connection", None)
-    if connection is not None and getattr(BACKEND_CONNECTIONS, "host", None) == host:
+    if (
+        connection is not None
+        and getattr(BACKEND_CONNECTIONS, "host", None) == host
+        and _backend_connection_is_fresh()
+    ):
         connection.timeout = timeout
         socket = getattr(connection, "sock", None)
         if socket is not None:
@@ -124,6 +141,7 @@ def open_backend_https_url(request, timeout):
     except Exception:
         reset_backend_connection()
         raise
+    BACKEND_CONNECTIONS.last_used = time.monotonic()
 
     status = int(getattr(response, "status", 0))
     # Успех это только 2xx: редирект и прочее нештатное с пустым телом иначе

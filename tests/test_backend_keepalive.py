@@ -201,6 +201,72 @@ class BackendKeepAliveTests(unittest.TestCase):
 
         self.assertEqual(body, b"")
 
+    def test_connection_idle_longer_than_the_limit_is_replaced_before_use(self):
+        # Traefik и NAT закрывают простаивающие соединения молча: запрос по
+        # такому сокету падает обрывом, поэтому старое соединение не берём.
+        clock = [1000.0]
+        with (
+            mock.patch.object(http_client.time, "monotonic", lambda: clock[0]),
+            mock.patch.object(http.client, "HTTPSConnection", FakeConnection),
+        ):
+            with http_client.open_backend_https_url(self.request(), timeout=8) as first:
+                first.read()
+            clock[0] += 46
+            with http_client.open_backend_https_url(self.request(), timeout=8) as second:
+                second.read()
+
+        self.assertEqual(len(FakeConnection.created), 2)
+        self.assertTrue(FakeConnection.created[0].closed)
+        self.assertEqual(len(FakeConnection.created[1].requests), 1)
+
+    def test_connection_used_within_the_limit_is_reused(self):
+        clock = [1000.0]
+        with (
+            mock.patch.object(http_client.time, "monotonic", lambda: clock[0]),
+            mock.patch.object(http.client, "HTTPSConnection", FakeConnection),
+        ):
+            with http_client.open_backend_https_url(self.request(), timeout=8) as first:
+                first.read()
+            clock[0] += 44
+            with http_client.open_backend_https_url(self.request(), timeout=8) as second:
+                second.read()
+
+        self.assertEqual(len(FakeConnection.created), 1)
+
+    def test_every_request_restarts_the_idle_clock(self):
+        # Пачка событий длиннее 45 секунд в сумме не ломает соединение, пока
+        # паузы между запросами короткие.
+        clock = [1000.0]
+        with (
+            mock.patch.object(http_client.time, "monotonic", lambda: clock[0]),
+            mock.patch.object(http.client, "HTTPSConnection", FakeConnection),
+        ):
+            for _ in range(4):
+                with http_client.open_backend_https_url(self.request(), timeout=8) as response:
+                    response.read()
+                clock[0] += 40
+
+        self.assertEqual(len(FakeConnection.created), 1)
+        self.assertEqual(len(FakeConnection.created[0].requests), 4)
+
+    def test_error_status_answer_also_restarts_the_idle_clock(self):
+        clock = [1000.0]
+        with (
+            mock.patch.object(http_client.time, "monotonic", lambda: clock[0]),
+            mock.patch.object(http.client, "HTTPSConnection", FakeConnection),
+        ):
+            with http_client.open_backend_https_url(self.request(), timeout=8) as first:
+                first.read()
+            clock[0] += 40
+            FakeConnection.created[0].responses = [FakeResponse(status=409, body=b"{}")]
+            with self.assertRaises(urllib.error.HTTPError):
+                http_client.open_backend_https_url(self.request(), timeout=8)
+            clock[0] += 40
+            with http_client.open_backend_https_url(self.request(), timeout=8) as third:
+                third.read()
+
+        self.assertEqual(len(FakeConnection.created), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
