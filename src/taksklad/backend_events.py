@@ -155,7 +155,7 @@ def add_pending_backend_event(event_type, payload):
 
     event_id = make_backend_event_id(event_type, payload)
     now = datetime.now().astimezone().isoformat()
-    append_queue_item("pending_backend_events", {
+    added = append_queue_item("pending_backend_events", {
         "id": event_id,
         "type": event_type,
         "payload": payload,
@@ -164,6 +164,10 @@ def add_pending_backend_event(event_type, payload):
         "attempts": 0,
         "last_error": "",
     })
+    if added and event_type == "scan":
+        # Тот же код поставлен заново, значит прежняя отметка «доставлено»
+        # больше не верна. Если такое событие уже стояло в очереди, ключ не трогаем.
+        forget_delivered_scan(payload.get("order_item_id"), payload.get("code"))
     return event_id
 
 
@@ -390,10 +394,44 @@ def _remember_delivered_scan(order_item_id, code):
         _DELIVERED_SCAN_KEYS.add(_delivered_scan_key(order_item_id, code))
 
 
+def _scan_event_key_parts(item):
+    # Для обработчиков исключений: битый payload (не словарь) даёт пустую пару,
+    # forget_delivered_scan на ней ничего не делает и не роняет проход повторно.
+    payload = item.get("payload") if isinstance(item, dict) else None
+    if not isinstance(payload, dict):
+        return "", ""
+    return payload.get("order_item_id"), payload.get("code")
+
+
+def _normalize_filter_ids(values, argument_name):
+    if values is None:
+        return set()
+    if isinstance(values, (str, bytes, bytearray)):
+        raise TypeError(
+            f"{argument_name} must be a collection of ids, not {type(values).__name__}: "
+            "wrap a single id in a list"
+        )
+    return {normalize_text(value) for value in values if normalize_text(value)}
+
+
+def _empty_sync_result(remaining):
+    return {
+        "synced": 0,
+        "failed": 0,
+        "remaining": remaining,
+        "dropped": 0,
+        "blocked": 0,
+        "blocked_events": [],
+        "enabled": True,
+    }
+
+
 def _backend_event_matches_filter(item, order_item_ids, order_ids):
     # Дублирует normalize_text-часть backend_flow.backend_event_matches_group:
     # backend_flow сам импортирует backend_events, обратный импорт даст цикл.
     payload = item.get("payload") or {}
+    if not isinstance(payload, dict):
+        return False
     if item.get("type") == "scan":
         return normalize_text(payload.get("order_item_id")) in order_item_ids
     if item.get("type") == "order_complete":
@@ -432,9 +470,10 @@ def _run_backend_sync_pass(pending, *, background):
                 logging.warning("Backend queue: unknown event type skipped: %s", event_type)
             synced += 1
         except BackendApiError as exc:
+            key_item_id, key_code = _scan_event_key_parts(item)
             if item.get("type") == "scan" and is_duplicate_scan_ack(exc):
                 synced += 1
-                _remember_delivered_scan(payload.get("order_item_id"), payload.get("code"))
+                _remember_delivered_scan(key_item_id, key_code)
                 continue
             if item.get("type") == "scan" and is_non_retryable_scan_conflict(exc):
                 dropped += 1
@@ -445,7 +484,7 @@ def _run_backend_sync_pass(pending, *, background):
                 blocked_item["last_error_detail"] = backend_error_detail_payload(exc)
                 blocked_item["updated_at"] = datetime.now().astimezone().isoformat()
                 blocked_events.append(blocked_item)
-                forget_delivered_scan(payload.get("order_item_id"), payload.get("code"))
+                forget_delivered_scan(key_item_id, key_code)
                 logging.warning(
                     "Backend queue: dropped blocked scan event for item %s: %s",
                     (item.get("payload") or {}).get("order_item_id"),
@@ -477,7 +516,7 @@ def _run_backend_sync_pass(pending, *, background):
                 continue
             failed += 1
             if item.get("type") == "scan":
-                forget_delivered_scan(payload.get("order_item_id"), payload.get("code"))
+                forget_delivered_scan(key_item_id, key_code)
             item["attempts"] = int(item.get("attempts") or 0) + 1
             item["last_error"] = str(exc)
             item["last_error_kind"] = backend_error_kind(exc)
@@ -496,7 +535,7 @@ def _run_backend_sync_pass(pending, *, background):
         except Exception as exc:
             failed += 1
             if item.get("type") == "scan":
-                forget_delivered_scan(payload.get("order_item_id"), payload.get("code"))
+                forget_delivered_scan(*_scan_event_key_parts(item))
             item["attempts"] = int(item.get("attempts") or 0) + 1
             item["last_error"] = str(exc)
             item["last_error_kind"] = backend_error_kind(exc)
@@ -520,29 +559,29 @@ def _run_backend_sync_pass(pending, *, background):
 
 
 def sync_pending_backend_events(order_item_ids=None, order_ids=None, *, background=False):
+    """Доставить события очереди на backend
+
+    Без фильтра (оба аргумента None) обрабатывается вся очередь
+    С фильтром обрабатываются только scan с order_item_id из order_item_ids
+    и order_complete с order_id из order_ids, остальные события не трогаются
+    Пустая коллекция при активном фильтре значит «ничего не отправлять» для этого
+    вида событий: order_item_ids=[] без order_ids не отправит ни одного события
+    Строка или bytes вместо коллекции это TypeError, один id передают списком
+    background=True: захват без ожидания, занято значит ответ со skipped, и проход
+    уступает экрану, если тот ждёт (ответ с preempted)
+    """
     filter_active = order_item_ids is not None or order_ids is not None
-    normalized_item_ids = {
-        normalize_text(value) for value in (order_item_ids or []) if normalize_text(value)
-    }
-    normalized_order_ids = {
-        normalize_text(value) for value in (order_ids or []) if normalize_text(value)
-    }
+    normalized_item_ids = _normalize_filter_ids(order_item_ids, "order_item_ids")
+    normalized_order_ids = _normalize_filter_ids(order_ids, "order_ids")
 
     if not backend_configured():
         return {"synced": 0, "failed": 0, "remaining": len(load_pending_backend_events()), "enabled": False}
 
     if background:
         if not _SYNC_LOCK.acquire(blocking=False):
-            return {
-                "synced": 0,
-                "failed": 0,
-                "remaining": len(load_pending_backend_events()),
-                "dropped": 0,
-                "blocked": 0,
-                "blocked_events": [],
-                "enabled": True,
-                "skipped": True,
-            }
+            skipped = _empty_sync_result(len(load_pending_backend_events()))
+            skipped["skipped"] = True
+            return skipped
     else:
         _increment_foreground_waiters()
         try:
@@ -553,7 +592,7 @@ def sync_pending_backend_events(order_item_ids=None, order_ids=None, *, backgrou
     try:
         full_pending = load_pending_backend_events()
         if not full_pending:
-            return {"synced": 0, "failed": 0, "remaining": 0, "enabled": True}
+            return _empty_sync_result(0)
 
         if filter_active:
             to_process = [
@@ -564,7 +603,7 @@ def sync_pending_backend_events(order_item_ids=None, order_ids=None, *, backgrou
             to_process = full_pending
 
         if not to_process:
-            return {"synced": 0, "failed": 0, "remaining": len(full_pending), "enabled": True}
+            return _empty_sync_result(len(full_pending))
 
         return _run_backend_sync_pass(to_process, background=background)
     finally:

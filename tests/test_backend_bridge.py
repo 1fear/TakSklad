@@ -1,4 +1,6 @@
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -729,6 +731,285 @@ class BackendBridgeTests(unittest.TestCase):
         self.assertEqual(len(remaining_items), 1)
         self.assertEqual(remaining_items[0]["payload"]["order_item_id"], "item-2")
         self.assertEqual(remaining_items[0].get("attempts"), 0)
+
+    def assert_sync_primitives_are_idle(self):
+        self.assertEqual(backend_events._foreground_waiters_count(), 0)
+        acquired = backend_events._SYNC_LOCK.acquire(blocking=False)
+        self.assertTrue(acquired, "замок прохода не освобождён")
+        backend_events._SYNC_LOCK.release()
+
+    def queue_two_scans(self):
+        with mock.patch.object(backend_events, "backend_configured", return_value=True):
+            backend_events.queue_backend_scan(
+                {"_backend_order_item_id": "item-1"}, "0104006396053978-TEST-ONEXXXXXXX",
+                scanned_at="2026-05-31T10:00:00+05:00",
+            )
+            backend_events.queue_backend_scan(
+                {"_backend_order_item_id": "item-2"}, "0104006396053978-TEST-TWOXXXXXXX",
+                scanned_at="2026-05-31T10:00:00+05:00",
+            )
+
+    def test_sync_pass_leaves_waiters_counter_and_lock_idle_after_normal_run(self):
+        self.assert_sync_primitives_are_idle()
+        self.queue_two_scans()
+        create_scan_calls = []
+        with (
+            mock.patch.object(backend_events, "backend_configured", return_value=True),
+            mock.patch.object(
+                backend_events,
+                "create_scan",
+                side_effect=lambda order_item_id, code, **kwargs: create_scan_calls.append(order_item_id),
+            ),
+        ):
+            result = backend_events.sync_pending_backend_events()
+            self.assert_sync_primitives_are_idle()
+            background_result = backend_events.sync_pending_backend_events(background=True)
+
+        self.assertEqual(create_scan_calls, ["item-1", "item-2"])
+        self.assertEqual(result["synced"], 2)
+        self.assertEqual(background_result["synced"], 0)
+        self.assert_sync_primitives_are_idle()
+
+    def test_sync_pass_leaves_waiters_counter_and_lock_idle_after_exception(self):
+        self.assert_sync_primitives_are_idle()
+        with (
+            mock.patch.object(backend_events, "backend_configured", return_value=True),
+            mock.patch.object(
+                backend_events, "load_pending_backend_events", side_effect=RuntimeError("queue unreadable")
+            ),
+        ):
+            with self.assertRaises(RuntimeError):
+                backend_events.sync_pending_backend_events()
+            self.assert_sync_primitives_are_idle()
+            with self.assertRaises(RuntimeError):
+                backend_events.sync_pending_backend_events(background=True)
+        self.assert_sync_primitives_are_idle()
+
+    def test_sync_pass_leaves_primitives_idle_when_filter_argument_is_rejected(self):
+        self.assert_sync_primitives_are_idle()
+        with mock.patch.object(backend_events, "backend_configured", return_value=True):
+            with self.assertRaises(TypeError):
+                backend_events.sync_pending_backend_events(order_item_ids="item-1")
+        self.assert_sync_primitives_are_idle()
+
+    def test_background_pass_stops_when_real_waiters_counter_is_raised(self):
+        self.queue_two_scans()
+        before = storage.load_data_section("pending_backend_events", [])
+        self.assertEqual(len(before), 2)
+
+        create_scan_calls = []
+        backend_events._increment_foreground_waiters()
+        try:
+            with (
+                mock.patch.object(backend_events, "backend_configured", return_value=True),
+                mock.patch.object(
+                    backend_events,
+                    "create_scan",
+                    side_effect=lambda *a, **k: create_scan_calls.append((a, k)),
+                ),
+            ):
+                result = backend_events.sync_pending_backend_events(background=True)
+            self.assertEqual(backend_events._foreground_waiters_count(), 1)
+        finally:
+            backend_events._decrement_foreground_waiters()
+
+        self.assertEqual(create_scan_calls, [])
+        self.assertTrue(result["preempted"])
+        self.assertEqual(result["synced"], 0)
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(result["remaining"], 2)
+        self.assertEqual(storage.load_data_section("pending_backend_events", []), before)
+        self.assert_sync_primitives_are_idle()
+
+    def test_screen_pass_counts_as_waiter_while_another_pass_holds_the_lock(self):
+        self.queue_two_scans()
+        create_scan_calls = []
+        result_box = {}
+
+        def screen_pass():
+            result_box["result"] = backend_events.sync_pending_backend_events()
+
+        held = backend_events._SYNC_LOCK.acquire(blocking=False)
+        self.assertTrue(held)
+        try:
+            with (
+                mock.patch.object(backend_events, "backend_configured", return_value=True),
+                mock.patch.object(
+                    backend_events,
+                    "create_scan",
+                    side_effect=lambda order_item_id, code, **kwargs: create_scan_calls.append(order_item_id),
+                ),
+            ):
+                worker = threading.Thread(target=screen_pass, daemon=True)
+                worker.start()
+                deadline = time.monotonic() + 2
+                while backend_events._foreground_waiters_count() != 1 and time.monotonic() < deadline:
+                    time.sleep(0.005)
+                self.assertEqual(backend_events._foreground_waiters_count(), 1)
+                self.assertEqual(create_scan_calls, [])
+                self.assertTrue(worker.is_alive())
+                backend_events._SYNC_LOCK.release()
+                held = False
+                worker.join(timeout=2)
+                self.assertFalse(worker.is_alive())
+        finally:
+            if held:
+                backend_events._SYNC_LOCK.release()
+
+        self.assertEqual(create_scan_calls, ["item-1", "item-2"])
+        self.assertEqual(result_box["result"]["synced"], 2)
+        self.assert_sync_primitives_are_idle()
+
+    def test_background_pass_yields_to_real_screen_thread_that_appears_mid_pass(self):
+        self.queue_two_scans()
+        create_scan_calls = []
+        screen_results = []
+        screen_threads = []
+
+        def screen_pass():
+            screen_results.append(backend_events.sync_pending_backend_events())
+
+        def fake_create_scan(order_item_id, code, **kwargs):
+            create_scan_calls.append(order_item_id)
+            if len(create_scan_calls) == 1:
+                # Проход с экрана появляется, пока фон занят первым событием.
+                worker = threading.Thread(target=screen_pass, daemon=True)
+                screen_threads.append(worker)
+                worker.start()
+                deadline = time.monotonic() + 2
+                while backend_events._foreground_waiters_count() != 1 and time.monotonic() < deadline:
+                    time.sleep(0.005)
+
+        with (
+            mock.patch.object(backend_events, "backend_configured", return_value=True),
+            mock.patch.object(backend_events, "create_scan", side_effect=fake_create_scan),
+        ):
+            background_result = backend_events.sync_pending_backend_events(background=True)
+            for worker in screen_threads:
+                worker.join(timeout=2)
+                self.assertFalse(worker.is_alive())
+
+        self.assertTrue(background_result["preempted"])
+        self.assertEqual(background_result["synced"], 1)
+        self.assertEqual(create_scan_calls, ["item-1", "item-2"])
+        self.assertEqual(len(screen_results), 1)
+        self.assertEqual(screen_results[0]["synced"], 1)
+        self.assertEqual(screen_results[0]["remaining"], 0)
+        self.assertEqual(storage.load_data_section("pending_backend_events", []), [])
+        self.assert_sync_primitives_are_idle()
+
+    def test_filtered_sync_by_order_ids_sends_only_matching_order_complete(self):
+        with mock.patch.object(backend_events, "backend_configured", return_value=True):
+            backend_events.queue_backend_scan(
+                {"_backend_order_item_id": "item-1"}, "0104006396053978-TEST-ONEXXXXXXX",
+                scanned_at="2026-05-31T10:00:00+05:00",
+            )
+            backend_events.queue_backend_order_complete("order-9")
+            backend_events.queue_backend_order_complete("order-10")
+        before = storage.load_data_section("pending_backend_events", [])
+        self.assertEqual(len(before), 3)
+
+        create_scan_calls = []
+        complete_order_calls = []
+        with (
+            mock.patch.object(backend_events, "backend_configured", return_value=True),
+            mock.patch.object(
+                backend_events, "create_scan", side_effect=lambda *a, **k: create_scan_calls.append((a, k))
+            ),
+            mock.patch.object(
+                backend_events, "complete_order", side_effect=lambda order_id: complete_order_calls.append(order_id)
+            ),
+        ):
+            result = backend_events.sync_pending_backend_events(order_ids=[" order-9 "])
+
+        self.assertEqual(create_scan_calls, [])
+        self.assertEqual(complete_order_calls, ["order-9"])
+        self.assertEqual(result["synced"], 1)
+        self.assertEqual(result["remaining"], 2)
+        after = storage.load_data_section("pending_backend_events", [])
+        expected = [item for item in before if item["payload"].get("order_id") != "order-9"]
+        self.assertEqual(after, expected)
+
+    def test_filtered_sync_with_no_match_returns_full_shape_and_touches_nothing(self):
+        self.queue_two_scans()
+        before = storage.load_data_section("pending_backend_events", [])
+
+        with (
+            mock.patch.object(backend_events, "backend_configured", return_value=True),
+            mock.patch.object(
+                backend_events, "create_scan", side_effect=AssertionError("must not send")
+            ),
+        ):
+            result = backend_events.sync_pending_backend_events(order_item_ids=["item-404"])
+
+        self.assertEqual(
+            result,
+            {
+                "synced": 0,
+                "failed": 0,
+                "remaining": 2,
+                "dropped": 0,
+                "blocked": 0,
+                "blocked_events": [],
+                "enabled": True,
+            },
+        )
+        self.assertEqual(storage.load_data_section("pending_backend_events", []), before)
+
+    def test_sync_of_empty_queue_returns_full_shape(self):
+        with mock.patch.object(backend_events, "backend_configured", return_value=True):
+            result = backend_events.sync_pending_backend_events()
+            filtered = backend_events.sync_pending_backend_events(order_item_ids=["item-1"])
+
+        expected = {
+            "synced": 0,
+            "failed": 0,
+            "remaining": 0,
+            "dropped": 0,
+            "blocked": 0,
+            "blocked_events": [],
+            "enabled": True,
+        }
+        self.assertEqual(result, expected)
+        self.assertEqual(filtered, expected)
+
+    def test_filter_arguments_reject_str_and_bytes(self):
+        self.queue_two_scans()
+        with mock.patch.object(backend_events, "backend_configured", return_value=True):
+            for bad in ("item-1", b"item-1", bytearray(b"item-1")):
+                with self.subTest(kind="order_item_ids", value=repr(bad)):
+                    with self.assertRaises(TypeError):
+                        backend_events.sync_pending_backend_events(order_item_ids=bad)
+                with self.subTest(kind="order_ids", value=repr(bad)):
+                    with self.assertRaises(TypeError):
+                        backend_events.sync_pending_backend_events(order_ids=bad)
+
+    def test_filter_with_empty_collections_sends_nothing(self):
+        self.queue_two_scans()
+        before = storage.load_data_section("pending_backend_events", [])
+
+        with (
+            mock.patch.object(backend_events, "backend_configured", return_value=True),
+            mock.patch.object(
+                backend_events, "create_scan", side_effect=AssertionError("must not send")
+            ),
+            mock.patch.object(
+                backend_events, "complete_order", side_effect=AssertionError("must not send")
+            ),
+        ):
+            for kwargs in (
+                {"order_item_ids": []},
+                {"order_ids": []},
+                {"order_item_ids": [], "order_ids": []},
+                {"order_item_ids": set(), "order_ids": ()},
+            ):
+                with self.subTest(**{key: repr(value) for key, value in kwargs.items()}):
+                    result = backend_events.sync_pending_backend_events(**kwargs)
+                    self.assertEqual(result["synced"], 0)
+                    self.assertEqual(result["failed"], 0)
+                    self.assertEqual(result["remaining"], 2)
+
+        self.assertEqual(storage.load_data_section("pending_backend_events", []), before)
 
 
 if __name__ == "__main__":
