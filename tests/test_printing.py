@@ -24,8 +24,16 @@ class FakeNtOs:
         return getattr(os, attribute)
 
 
+class FakePosixOs(FakeNtOs):
+    name = "posix"
+
+
 def nt_printing():
     return mock.patch.object(printing, "os", FakeNtOs())
+
+
+def posix_printing():
+    return mock.patch.object(printing, "os", FakePosixOs())
 
 
 def completed(stdout="", returncode=0):
@@ -42,7 +50,7 @@ class PrintingTests(unittest.TestCase):
 
     def test_print_summary_uses_selected_label_size(self):
         original_load_print_settings = printing.load_print_settings
-        original_send_image_to_printer = printing.send_image_to_printer
+        original_send_images_to_printer = printing.send_images_to_printer
         captured = {}
         files = []
 
@@ -54,16 +62,16 @@ class PrintingTests(unittest.TestCase):
                 "dpi": 203,
             }
 
-        def fake_send(file_path, printer_name="", label_width_mm=None, label_height_mm=None):
+        def fake_send(file_paths, printer_name="", label_width_mm=None, label_height_mm=None, **kwargs):
             captured["printer_name"] = printer_name
             captured["label_width_mm"] = label_width_mm
             captured["label_height_mm"] = label_height_mm
-            files.append(file_path)
+            files.extend(file_paths)
             return True
 
         try:
             printing.load_print_settings = fake_settings
-            printing.send_image_to_printer = fake_send
+            printing.send_images_to_printer = fake_send
 
             result = printing.print_summary("Tashkent", [{
                 "Клиент": "Test Client",
@@ -81,7 +89,7 @@ class PrintingTests(unittest.TestCase):
                 self.assertEqual(image.size, (printing.mm_to_px(58, 203), printing.mm_to_px(40, 203)))
         finally:
             printing.load_print_settings = original_load_print_settings
-            printing.send_image_to_printer = original_send_image_to_printer
+            printing.send_images_to_printer = original_send_images_to_printer
             for file_path in files:
                 try:
                     os.remove(file_path)
@@ -90,7 +98,7 @@ class PrintingTests(unittest.TestCase):
 
     def test_print_summary_accepts_dialog_selected_settings_without_persisting(self):
         original_load_print_settings = printing.load_print_settings
-        original_send_image_to_printer = printing.send_image_to_printer
+        original_send_images_to_printer = printing.send_images_to_printer
         captured = {}
         files = []
 
@@ -102,16 +110,16 @@ class PrintingTests(unittest.TestCase):
                 "dpi": 203,
             }
 
-        def fake_send(file_path, printer_name="", label_width_mm=None, label_height_mm=None):
+        def fake_send(file_paths, printer_name="", label_width_mm=None, label_height_mm=None, **kwargs):
             captured["printer_name"] = printer_name
             captured["label_width_mm"] = label_width_mm
             captured["label_height_mm"] = label_height_mm
-            files.append(file_path)
+            files.extend(file_paths)
             return True
 
         try:
             printing.load_print_settings = old_saved_settings
-            printing.send_image_to_printer = fake_send
+            printing.send_images_to_printer = fake_send
 
             result = printing.print_summary(
                 "Tashkent",
@@ -138,7 +146,7 @@ class PrintingTests(unittest.TestCase):
                 self.assertEqual(image.size, (printing.mm_to_px(75, 203), printing.mm_to_px(50, 203)))
         finally:
             printing.load_print_settings = original_load_print_settings
-            printing.send_image_to_printer = original_send_image_to_printer
+            printing.send_images_to_printer = original_send_images_to_printer
             for file_path in files:
                 try:
                     os.remove(file_path)
@@ -231,6 +239,26 @@ class PrinterCacheTests(unittest.TestCase):
             self.assertEqual(run.call_count, 2)
 
         self.assertEqual(printing.PRINTER_CACHE_TTL_SECONDS, 600)
+
+    def test_printer_reading_runs_without_console_window(self):
+        answers = [completed(""), completed("Zebra\n")]
+        with nt_printing(), mock.patch.object(
+            printing.subprocess, "CREATE_NO_WINDOW", CREATE_NO_WINDOW, create=True
+        ), mock.patch.object(printing.subprocess, "run", side_effect=answers) as run:
+            self.assertEqual(printing.list_available_printers(), ["Zebra"])
+
+        # powershell пуст, поэтому прочитан и запасной wmic: оба без окна консоли
+        self.assertEqual([call.args[0][0] for call in run.call_args_list], ["powershell", "wmic"])
+        for call in run.call_args_list:
+            self.assertEqual(call.kwargs["creationflags"], CREATE_NO_WINDOW)
+
+    def test_printer_reading_passes_zero_flags_when_constant_is_missing(self):
+        run = mock.Mock(return_value=completed("Zebra\n"))
+        with posix_printing(), mock.patch.object(printing, "subprocess", SimpleNamespace(run=run)):
+            self.assertEqual(printing.list_available_printers(), ["Zebra"])
+
+        self.assertEqual(run.call_args.args[0], ["lpstat", "-e"])
+        self.assertEqual(run.call_args.kwargs["creationflags"], 0)
 
     def test_cached_list_cannot_be_changed_by_caller(self):
         with nt_printing(), mock.patch.object(
@@ -414,6 +442,40 @@ class BatchPrintingTests(unittest.TestCase):
             self.assertIn(line, script_lines)
         self.assertTrue(any(line.startswith(image_path) for line in script_lines))
 
+    def test_per_image_calls_live_inside_foreach_and_add_type_before_it(self):
+        record = self.run_recorder()
+        paths = ["a.png", "b.png", "c.png"]
+        with nt_printing(), mock.patch.object(printing.subprocess, "run", side_effect=record.fake_run):
+            self.assertTrue(printing.send_images_to_windows_printer(paths, printer_name="Zebra"))
+
+        loop_header = "foreach ($imagePath in $imagePaths) {"
+        script = record.scripts[0]
+        self.assertEqual(script.count(loop_header), 1)
+        before_loop, loop_body = script.split(loop_header)
+
+        self.assertEqual(before_loop.count("Add-Type -AssemblyName System.Drawing"), 1)
+        self.assertNotIn("Add-Type", loop_body)
+        for path in paths:
+            self.assertIn(printing.powershell_quote(os.path.abspath(path)), before_loop)
+            self.assertNotIn(printing.powershell_quote(os.path.abspath(path)), loop_body)
+        for per_image in (
+            "[System.Drawing.Image]::FromFile($imagePath)",
+            "New-Object System.Drawing.Printing.PrintDocument",
+            "$printDocument.PrinterSettings.PrinterName = 'Zebra'",
+            "$printDocument.DefaultPageSettings.PaperSize = New-Object",
+            "$printDocument.add_PrintPage({",
+            "$event.Graphics.DrawImage($image, $event.PageBounds)",
+            "$event.HasMorePages = $false",
+            "$printDocument.Print()",
+            "$image.Dispose()",
+            "$printDocument.Dispose()",
+        ):
+            self.assertNotIn(per_image, before_loop)
+            self.assertEqual(loop_body.count(per_image), 1, per_image)
+        # цикл закрывается последней строкой скрипта: после него ничего нет
+        self.assertEqual(loop_body.rstrip().splitlines()[-1], "}")
+        self.assertLess(loop_body.index("} finally {"), loop_body.rindex("}"))
+
     def test_default_printer_name_is_not_forced_in_script(self):
         record = self.run_recorder()
         with nt_printing(), mock.patch.object(printing.subprocess, "run", side_effect=record.fake_run):
@@ -475,12 +537,36 @@ class BatchPrintingTests(unittest.TestCase):
             sent.append((file_path, printer_name, label_width_mm, label_height_mm))
             return file_path != "bad.png"
 
-        with mock.patch.object(printing, "send_image_to_printer", side_effect=fake_send):
+        with posix_printing(), mock.patch.object(printing, "send_image_to_printer", side_effect=fake_send):
             self.assertTrue(printing.send_images_to_printer(["a.png", "b.png"], printer_name="P"))
             self.assertEqual([item[0] for item in sent], ["a.png", "b.png"])
             sent.clear()
             self.assertFalse(printing.send_images_to_printer(["a.png", "bad.png", "c.png"]))
             self.assertEqual([item[0] for item in sent], ["a.png", "bad.png"])
+
+    def test_send_failures_are_logged_with_same_text_in_both_send_functions(self):
+        failed = subprocess.CalledProcessError(1, "lp", output="out-text", stderr="err-text")
+        message = "Не удалось отправить сводку напрямую на печать"
+
+        with posix_printing(), mock.patch.object(printing.subprocess, "run", side_effect=failed), \
+                mock.patch.object(printing.logging, "exception") as log_exception:
+            self.assertFalse(printing.send_image_to_printer("a.png"))
+        with nt_printing(), mock.patch.object(
+            printing, "send_images_to_windows_printer", side_effect=failed
+        ), mock.patch.object(printing.logging, "exception") as log_exception_batch:
+            self.assertFalse(printing.send_images_to_printer(["a.png"]))
+        for log in (log_exception, log_exception_batch):
+            log.assert_called_once_with(message + ": stdout=%s stderr=%s", "out-text", "err-text")
+
+        with posix_printing(), mock.patch.object(printing.subprocess, "run", side_effect=RuntimeError("boom")), \
+                mock.patch.object(printing.logging, "exception") as log_exception:
+            self.assertFalse(printing.send_image_to_printer("a.png"))
+        with nt_printing(), mock.patch.object(
+            printing, "send_images_to_windows_printer", side_effect=RuntimeError("boom")
+        ), mock.patch.object(printing.logging, "exception") as log_exception_batch:
+            self.assertFalse(printing.send_images_to_printer(["a.png"]))
+        for log in (log_exception, log_exception_batch):
+            log.assert_called_once_with(message)
 
     def test_send_images_to_printer_with_no_files_sends_nothing(self):
         with nt_printing(), mock.patch.object(printing.subprocess, "run") as run:

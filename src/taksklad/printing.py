@@ -71,9 +71,17 @@ def _read_available_printers():
     else:
         commands.append(["lpstat", "-e"])
 
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     for command in commands:
         try:
-            completed = subprocess.run(command, capture_output=True, text=True, timeout=5, check=False)
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+                creationflags=creationflags,
+            )
         except Exception:
             continue
         if completed.returncode != 0:
@@ -274,6 +282,16 @@ def send_image_to_windows_printer(file_path, printer_name="", label_width_mm=Non
         label_height_mm=label_height_mm,
     )
 
+def _log_send_failure(exc):
+    if isinstance(exc, subprocess.CalledProcessError):
+        logging.exception(
+            "Не удалось отправить сводку напрямую на печать: stdout=%s stderr=%s",
+            normalize_text(getattr(exc, "stdout", "")),
+            normalize_text(getattr(exc, "stderr", "")),
+        )
+    else:
+        logging.exception("Не удалось отправить сводку напрямую на печать")
+
 def send_image_to_printer(file_path, printer_name="", label_width_mm=None, label_height_mm=None):
     try:
         label_width_mm, label_height_mm = normalize_label_size(label_width_mm, label_height_mm)
@@ -296,15 +314,8 @@ def send_image_to_printer(file_path, printer_name="", label_width_mm=None, label
             normalize_text(completed.stderr),
         )
         return True
-    except subprocess.CalledProcessError as exc:
-        logging.exception(
-            "Не удалось отправить сводку напрямую на печать: stdout=%s stderr=%s",
-            normalize_text(getattr(exc, "stdout", "")),
-            normalize_text(getattr(exc, "stderr", "")),
-        )
-        return False
-    except Exception:
-        logging.exception("Не удалось отправить сводку напрямую на печать")
+    except Exception as exc:
+        _log_send_failure(exc)
         return False
 
 def send_images_to_printer(file_paths, printer_name="", label_width_mm=None, label_height_mm=None):
@@ -330,15 +341,8 @@ def send_images_to_printer(file_paths, printer_name="", label_width_mm=None, lab
             label_width_mm=label_width_mm,
             label_height_mm=label_height_mm,
         ))
-    except subprocess.CalledProcessError as exc:
-        logging.exception(
-            "Не удалось отправить сводку напрямую на печать: stdout=%s stderr=%s",
-            normalize_text(getattr(exc, "stdout", "")),
-            normalize_text(getattr(exc, "stderr", "")),
-        )
-        return False
-    except Exception:
-        logging.exception("Не удалось отправить сводку напрямую на печать")
+    except Exception as exc:
+        _log_send_failure(exc)
         return False
 
 def print_summary(address, all_products, print_settings=None):
