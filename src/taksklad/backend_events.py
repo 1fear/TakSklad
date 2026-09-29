@@ -5,6 +5,7 @@ from datetime import datetime
 
 from .backend_client import (
     BackendApiError,
+    BackendTransportError,
     backend_configured,
     complete_order,
     create_scan,
@@ -300,6 +301,30 @@ def backend_error_detail_payload(exc):
     return normalize_text(detail)
 
 
+def backend_error_kind(exc):
+    # Сетью считается только транспортный обрыв: сервер не ответил вовсе,
+    # поэтому такие события ждут связи, а не разбора оператором. Ошибка без
+    # кода ответа, но не сетевая (не-JSON от прокси, ошибка клиента), это
+    # «server»: она не останавливает проход очереди и не читается как обрыв.
+    if isinstance(exc, BackendTransportError):
+        return "network"
+    return "server"
+
+
+def mark_untried_tail_as_network(tail):
+    """Хвост, до которого проход не дошёл, ждёт связи так же, как упавшее событие.
+
+    Тексты про обрыв требуют сетевой признак у всех событий позиции, а он
+    появлялся только у первого. Событие с серверной ошибкой не трогаем: отказ
+    сервера не превращается в «ждём связи». Попытки, ошибка и время хвоста не
+    меняются, потому что отправить его никто не пытался.
+    """
+    for item in tail:
+        if normalize_text(item.get("last_error_kind")) in {"", "network"}:
+            item["last_error_kind"] = "network"
+    return tail
+
+
 def is_stale_backend_event_ack(item, exc):
     if not isinstance(exc, BackendApiError) or exc.retryable:
         return False
@@ -330,7 +355,7 @@ def sync_pending_backend_events():
     blocked = 0
     blocked_events = []
     remaining = []
-    for item in pending:
+    for index, item in enumerate(pending):
         try:
             event_type = item.get("type")
             payload = item.get("payload") or {}
@@ -391,12 +416,19 @@ def sync_pending_backend_events():
             failed += 1
             item["attempts"] = int(item.get("attempts") or 0) + 1
             item["last_error"] = str(exc)
+            item["last_error_kind"] = backend_error_kind(exc)
             item["updated_at"] = datetime.now().astimezone().isoformat()
             remaining.append(item)
+            if item["last_error_kind"] == "network":
+                # Канал лежит для всей очереди сразу: остальные события ждут
+                # связи, а не своей порции таймаутов на глазах у оператора.
+                remaining.extend(mark_untried_tail_as_network(pending[index + 1:]))
+                break
         except Exception as exc:
             failed += 1
             item["attempts"] = int(item.get("attempts") or 0) + 1
             item["last_error"] = str(exc)
+            item["last_error_kind"] = backend_error_kind(exc)
             item["updated_at"] = datetime.now().astimezone().isoformat()
             remaining.append(item)
 

@@ -95,7 +95,7 @@ class DesktopPaginationClientTests(unittest.TestCase):
             return result
 
         with (
-            mock.patch.object(backend_client, "open_https_url", side_effect=open_url),
+            mock.patch.object(backend_client, "open_backend_https_url", side_effect=open_url),
             mock.patch.object(
                 backend_client,
                 "make_backend_headers",
@@ -120,7 +120,7 @@ class DesktopPaginationClientTests(unittest.TestCase):
         with (
             mock.patch.object(
                 backend_client,
-                "open_https_url",
+                "open_backend_https_url",
                 side_effect=[self.http_error(401), self.http_error(401)],
             ) as open_url,
             mock.patch(
@@ -139,7 +139,7 @@ class DesktopPaginationClientTests(unittest.TestCase):
         with (
             mock.patch.object(
                 backend_client,
-                "open_https_url",
+                "open_backend_https_url",
                 side_effect=self.http_error(503),
             ),
             mock.patch(

@@ -38,8 +38,12 @@ from .desktop_smoke import run_tk_app_smoke
 from .desktop_pairing import DesktopPairingError, ensure_public_desktop_identity
 from .backend_flow import (
     backend_blocked_scan_events_for_item,
+    backend_blocker_error,
+    backend_failure_title,
+    backend_group_blocker_error,
     backend_sync_group_blocker,
     backend_sync_item_blocker,
+    BackendOfflineQueueError,
     complete_backend_orders_or_raise,
     format_backend_blocked_scan_message,
     format_print_failure_after_backend_complete,
