@@ -23,6 +23,25 @@ BACKEND_CONNECTIONS = threading.local()
 BACKEND_CONNECTION_IDLE_LIMIT_SECONDS = 45
 
 
+# Фаза оборвавшегося запроса. Повтор изменяющего запроса безопасен, только если
+# сервер его заведомо не выполнял: соединение не установилось, либо запрос не
+# ушёл целиком. Ошибка чтения ответа этого не гарантирует.
+FAILURE_PHASE_ATTRIBUTE = "taksklad_failure_phase"
+FAILURE_PHASE_BEFORE_SEND = "before_send"
+
+
+def mark_failed_before_send(exc):
+    try:
+        setattr(exc, FAILURE_PHASE_ATTRIBUTE, FAILURE_PHASE_BEFORE_SEND)
+    except Exception:
+        pass
+    return exc
+
+
+def failed_before_send(exc):
+    return getattr(exc, FAILURE_PHASE_ATTRIBUTE, None) == FAILURE_PHASE_BEFORE_SEND
+
+
 def get_https_context():
     global HTTPS_CONTEXT
     if HTTPS_CONTEXT is None:
@@ -121,19 +140,38 @@ def open_backend_https_url(request, timeout):
     url = request.full_url
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme.lower() != "https" or system_proxy_applies(parsed.netloc):
-        return open_https_url(request, timeout)
+        try:
+            return open_https_url(request, timeout)
+        except urllib.error.HTTPError:
+            raise
+        except urllib.error.URLError as exc:
+            # urllib оборачивает в URLError только ошибки соединения и
+            # отправки, ошибки чтения ответа он отдаёт как есть.
+            mark_failed_before_send(exc)
+            raise
 
     target = parsed.path or "/"
     if parsed.query:
         target = f"{target}?{parsed.query}"
     connection = _backend_connection(parsed.netloc, timeout)
     try:
+        # Соединение открывается явно и отдельно от запроса: так видно, в какой
+        # фазе оборвалось, а до отправки сервер запроса не получал.
+        if getattr(connection, "sock", None) is None:
+            connection.connect()
         connection.request(
             request.get_method(),
             target,
             body=request.data,
             headers=dict(request.header_items()),
         )
+    except Exception as exc:
+        # Ошибка соединения, рукопожатия или отправки (в том числе мгновенный
+        # обрыв переиспользованного сокета): запрос целиком сервер не получил.
+        reset_backend_connection()
+        mark_failed_before_send(exc)
+        raise
+    try:
         response = connection.getresponse()
         # Тело читается целиком сразу: недочитанный ответ делает соединение
         # непригодным для следующего запроса.

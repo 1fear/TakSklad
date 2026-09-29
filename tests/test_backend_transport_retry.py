@@ -1,14 +1,16 @@
 import http.client
 import io
+import json
 import socket
 import ssl
 import unittest
 import urllib.error
 from unittest import mock
 
-from taksklad import backend_client
+from taksklad import backend_client, http_client
 from taksklad.backend_client import BackendApiError, BackendTransportError
 from taksklad.backend_events import backend_error_kind
+from tests.test_backend_keepalive import FakeConnection
 
 
 class JsonResponse:
@@ -29,16 +31,65 @@ def handshake_timeout():
     return urllib.error.URLError("_ssl.c:993: The handshake operation timed out")
 
 
+def failed_before_send():
+    # Соединение не установилось: сервер запроса не видел.
+    return http_client.mark_failed_before_send(handshake_timeout())
+
+
+def failed_reading_answer():
+    # Запрос ушёл целиком, сервер мог его выполнить.
+    return http.client.RemoteDisconnected("Remote end closed connection without response")
+
+
+# Изменяющие запросы, повтор которых после отправки может дать чужой отказ.
+NON_REPLAYABLE_REQUESTS = (
+    ("POST", "/api/v1/scans/undo"),
+    ("POST", "/api/v1/kiz/release"),
+    ("POST", "/api/v1/returns/order-1"),
+    ("POST", "/api/v1/something/new"),
+)
+# Запросы, которые сервер выполняет идемпотентно.
+REPLAYABLE_REQUESTS = (
+    ("GET", "/api/v1/orders/active"),
+    ("POST", "/api/v1/scans"),
+    ("POST", "/api/v1/orders/order-1/complete"),
+    ("POST", "/api/v1/imports"),
+    ("POST", "/api/v1/imports/preview"),
+)
+
+
 class BackendTransportRetryTests(unittest.TestCase):
     @staticmethod
-    def http_error(status):
+    def http_error(status, detail="synthetic"):
         return urllib.error.HTTPError(
             "https://api.taksklad.uz/api/v1/scans",
             status,
             "synthetic",
             {},
-            io.BytesIO(b'{"detail":"synthetic"}'),
+            io.BytesIO(json.dumps({"detail": detail}).encode("utf-8")),
         )
+
+    @staticmethod
+    def run_request(method, path, outcomes):
+        """Прогон запроса по сценарию: исключение или ответ на каждую попытку."""
+        calls = []
+
+        def open_url(request, timeout):
+            calls.append(timeout)
+            outcome = outcomes[len(calls) - 1]
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return outcome
+
+        with (
+            mock.patch.object(backend_client, "open_backend_https_url", side_effect=open_url),
+            mock.patch.object(backend_client.time, "sleep"),
+        ):
+            try:
+                result, _headers = backend_client.backend_request_page(method, path, payload={})
+            except BackendApiError as exc:
+                return exc, len(calls)
+        return result, len(calls)
 
     def test_dropped_handshake_is_retried_on_a_fresh_attempt(self):
         attempts = []
@@ -169,6 +220,164 @@ class BackendTransportRetryTests(unittest.TestCase):
 
         self.assertNotIsInstance(raised.exception, BackendTransportError)
         self.assertEqual(backend_error_kind(raised.exception), "server")
+
+    def test_replayable_requests_are_retried_after_a_failure_reading_the_answer(self):
+        for method, path in REPLAYABLE_REQUESTS:
+            with self.subTest(method=method, path=path):
+                result, attempts = self.run_request(method, path, [failed_reading_answer(), JsonResponse()])
+
+                self.assertEqual(result, {"ok": True})
+                self.assertEqual(attempts, 2)
+
+    def test_non_replayable_requests_are_not_retried_after_a_failure_reading_the_answer(self):
+        # Сервер мог уже выполнить запрос: повтор получил бы 404 на undo,
+        # 409 на возврат и released=False на освобождение КИЗ.
+        for method, path in NON_REPLAYABLE_REQUESTS:
+            with self.subTest(method=method, path=path):
+                result, attempts = self.run_request(method, path, [failed_reading_answer(), JsonResponse()])
+
+                self.assertIsInstance(result, BackendTransportError)
+                self.assertEqual(attempts, 1)
+
+    def test_non_replayable_requests_are_retried_after_a_failure_before_send(self):
+        for method, path in NON_REPLAYABLE_REQUESTS:
+            with self.subTest(method=method, path=path):
+                result, attempts = self.run_request(method, path, [failed_before_send(), JsonResponse()])
+
+                self.assertEqual(result, {"ok": True})
+                self.assertEqual(attempts, 2)
+
+    def test_non_replayable_request_with_unknown_failure_phase_is_not_retried(self):
+        result, attempts = self.run_request("POST", "/api/v1/scans/undo", [handshake_timeout(), JsonResponse()])
+
+        self.assertIsInstance(result, BackendTransportError)
+        self.assertEqual(attempts, 1)
+
+    def test_replay_safety_table(self):
+        safe = REPLAYABLE_REQUESTS + (
+            ("POST", "/api/v1/sync/sources?skladbot=1&wait_skladbot=0"),
+            ("GET", "/api/v1/returns/lookup?lookup=abc"),
+        )
+        for method, path in safe:
+            with self.subTest(method=method, path=path):
+                self.assertTrue(backend_client.request_is_replay_safe(method, path))
+        for method, path in NON_REPLAYABLE_REQUESTS + (("PUT", "/api/v1/scans"), ("DELETE", "/api/v1/scans")):
+            with self.subTest(method=method, path=path):
+                self.assertFalse(backend_client.request_is_replay_safe(method, path))
+
+    def test_undo_not_found_right_after_a_transport_error_is_a_successful_undo(self):
+        # Сервер снял код, а ответ потерялся: повтор получает 404 на уже
+        # снятый код, и отмена не должна возвращать код в список.
+        result, attempts = self.run_request(
+            "POST",
+            "/api/v1/scans/undo",
+            [failed_before_send(), self.http_error(404, "Scan code was not found for this order item")],
+        )
+
+        self.assertEqual(result, {"status": "already_undone"})
+        self.assertEqual(attempts, 2)
+
+    def test_undo_not_found_without_a_transport_error_stays_an_error(self):
+        result, attempts = self.run_request(
+            "POST",
+            "/api/v1/scans/undo",
+            [self.http_error(404, "Scan code was not found for this order item")],
+        )
+
+        self.assertIsInstance(result, BackendApiError)
+        self.assertEqual(result.status_code, 404)
+        self.assertEqual(attempts, 1)
+
+    def test_other_not_found_after_a_transport_error_stays_an_error(self):
+        result, attempts = self.run_request(
+            "POST",
+            "/api/v1/scans/undo",
+            [failed_before_send(), self.http_error(404, "Order item was not found")],
+        )
+
+        self.assertIsInstance(result, BackendApiError)
+        self.assertEqual(result.status_code, 404)
+        self.assertEqual(attempts, 2)
+
+    def test_scan_not_found_after_a_transport_error_is_not_swallowed_for_other_requests(self):
+        result, attempts = self.run_request(
+            "POST",
+            "/api/v1/returns/order-1",
+            [failed_before_send(), self.http_error(404, "Scan code was not found for this order item")],
+        )
+
+        self.assertIsInstance(result, BackendApiError)
+        self.assertEqual(result.status_code, 404)
+
+
+class BackendTransportPhaseIntegrationTests(unittest.TestCase):
+    """Повтор через настоящий open_backend_https_url и поддельное соединение."""
+
+    def setUp(self):
+        FakeConnection.created = []
+        FakeConnection.connect_plan = []
+        http_client.reset_backend_connection()
+        self.addCleanup(http_client.reset_backend_connection)
+        for patcher in (
+            mock.patch.object(http.client, "HTTPSConnection", FakeConnection),
+            mock.patch.object(backend_client.urllib.request, "getproxies", return_value={}),
+            mock.patch.object(backend_client, "TAKSKLAD_BACKEND_BASE_URL", "https://api.taksklad.uz"),
+            mock.patch.object(backend_client, "make_backend_headers", return_value={"Authorization": "Bearer x"}),
+            mock.patch.object(backend_client.time, "sleep"),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    @staticmethod
+    def sent_requests():
+        return sum(len(connection.requests) for connection in FakeConnection.created)
+
+    def test_undo_is_not_repeated_when_reading_the_answer_fails(self):
+        FakeConnection.created = []
+        backend_client.backend_request("POST", "/api/v1/scans", {})
+        FakeConnection.created[0].responses = [http.client.RemoteDisconnected("closed")]
+        sent_before = self.sent_requests()
+
+        with self.assertRaises(BackendTransportError):
+            backend_client.undo_scan("item-1", "CODE")
+
+        self.assertEqual(self.sent_requests() - sent_before, 1)
+
+    def test_undo_is_repeated_when_the_connection_could_not_be_established(self):
+        FakeConnection.connect_plan = [TimeoutError("_ssl.c:993: The handshake operation timed out")]
+
+        result = backend_client.undo_scan("item-1", "CODE")
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(len(FakeConnection.created), 2)
+        self.assertEqual(self.sent_requests(), 1)
+
+    def test_undo_is_repeated_when_the_reused_socket_was_already_dead(self):
+        backend_client.backend_request("POST", "/api/v1/scans", {})
+        FakeConnection.created[0].request_errors = [BrokenPipeError("broken pipe")]
+
+        result = backend_client.undo_scan("item-1", "CODE")
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(len(FakeConnection.created), 2)
+
+    def test_scan_is_still_repeated_when_reading_the_answer_fails(self):
+        backend_client.backend_request("POST", "/api/v1/scans", {})
+        FakeConnection.created[0].responses = [http.client.RemoteDisconnected("closed")]
+        sent_before = self.sent_requests()
+
+        result = backend_client.create_scan("item-1", "CODE")
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(self.sent_requests() - sent_before, 2)
+
+    def test_order_complete_is_still_repeated_when_reading_the_answer_fails(self):
+        backend_client.backend_request("POST", "/api/v1/scans", {})
+        FakeConnection.created[0].responses = [http.client.RemoteDisconnected("closed")]
+
+        result = backend_client.complete_order("order-1")
+
+        self.assertEqual(result, {"ok": True})
 
 
 if __name__ == "__main__":

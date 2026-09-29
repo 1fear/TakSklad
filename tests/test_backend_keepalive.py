@@ -18,18 +18,37 @@ class FakeResponse:
         return self._body
 
 
+class FakeSocket:
+    def settimeout(self, _value):
+        pass
+
+
 class FakeConnection:
     created = []
+    # По одному элементу на каждый вызов connect(): исключение или None.
+    connect_plan = []
 
     def __init__(self, host, timeout=None, context=None):
         self.host = host
         self.timeout = timeout
         self.closed = False
+        self.sock = None
+        self.connects = 0
         self.requests = []
+        self.request_errors = []
         self.responses = []
         FakeConnection.created.append(self)
 
+    def connect(self):
+        self.connects += 1
+        outcome = FakeConnection.connect_plan.pop(0) if FakeConnection.connect_plan else None
+        if outcome is not None:
+            raise outcome
+        self.sock = FakeSocket()
+
     def request(self, method, url, body=None, headers=None):
+        if self.request_errors:
+            raise self.request_errors.pop(0)
         self.requests.append((method, url, body, dict(headers or {})))
 
     def getresponse(self):
@@ -47,6 +66,7 @@ class FakeConnection:
 class BackendKeepAliveTests(unittest.TestCase):
     def setUp(self):
         FakeConnection.created = []
+        FakeConnection.connect_plan = []
         http_client.reset_backend_connection()
         self.addCleanup(http_client.reset_backend_connection)
         # Прокси окружения разработчика не должен менять выбор пути в тестах.
@@ -266,6 +286,79 @@ class BackendKeepAliveTests(unittest.TestCase):
                 third.read()
 
         self.assertEqual(len(FakeConnection.created), 1)
+
+    def test_connect_failure_is_marked_as_failed_before_the_request_was_sent(self):
+        # Соединение или TLS-рукопожатие не установились: сервер запроса не видел.
+        FakeConnection.connect_plan = [TimeoutError("_ssl.c:993: The handshake operation timed out")]
+        with mock.patch.object(http.client, "HTTPSConnection", FakeConnection):
+            with self.assertRaises(TimeoutError) as raised:
+                http_client.open_backend_https_url(self.request(), timeout=8)
+
+        self.assertTrue(http_client.failed_before_send(raised.exception))
+        self.assertEqual(FakeConnection.created[0].requests, [])
+        self.assertTrue(FakeConnection.created[0].closed)
+
+    def test_send_failure_on_a_reused_socket_is_marked_as_failed_before_send(self):
+        # Сервер закрыл простаивающий сокет: запрос не ушёл целиком, выполнить
+        # его сервер не мог.
+        with mock.patch.object(http.client, "HTTPSConnection", FakeConnection):
+            with http_client.open_backend_https_url(self.request(), timeout=8) as first:
+                first.read()
+            FakeConnection.created[0].request_errors = [BrokenPipeError("broken pipe")]
+            with self.assertRaises(BrokenPipeError) as raised:
+                http_client.open_backend_https_url(self.request(), timeout=8)
+
+        self.assertTrue(http_client.failed_before_send(raised.exception))
+
+    def test_response_read_failure_is_not_marked_as_failed_before_send(self):
+        # Запрос ушёл целиком: что сервер успел выполнить, неизвестно.
+        with mock.patch.object(http.client, "HTTPSConnection", FakeConnection):
+            with http_client.open_backend_https_url(self.request(), timeout=8) as first:
+                first.read()
+            FakeConnection.created[0].responses = [http.client.RemoteDisconnected("closed")]
+            with self.assertRaises(http.client.RemoteDisconnected) as raised:
+                http_client.open_backend_https_url(self.request(), timeout=8)
+
+        self.assertFalse(http_client.failed_before_send(raised.exception))
+
+    def test_response_body_read_failure_is_not_marked_as_failed_before_send(self):
+        class BrokenBody(FakeResponse):
+            def read(self):
+                raise http.client.IncompleteRead(b"{")
+
+        with mock.patch.object(http.client, "HTTPSConnection", FakeConnection):
+            with http_client.open_backend_https_url(self.request(), timeout=8) as first:
+                first.read()
+            FakeConnection.created[0].responses = [BrokenBody()]
+            with self.assertRaises(http.client.IncompleteRead) as raised:
+                http_client.open_backend_https_url(self.request(), timeout=8)
+
+        self.assertFalse(http_client.failed_before_send(raised.exception))
+
+    def test_an_open_connection_is_not_connected_a_second_time(self):
+        with mock.patch.object(http.client, "HTTPSConnection", FakeConnection):
+            for _ in range(3):
+                with http_client.open_backend_https_url(self.request(), timeout=8) as response:
+                    response.read()
+
+        self.assertEqual(FakeConnection.created[0].connects, 1)
+
+    def test_url_error_from_the_urllib_path_is_marked_as_failed_before_send(self):
+        # urllib оборачивает в URLError только ошибки соединения и отправки,
+        # ошибки чтения ответа он отдаёт как есть.
+        with (
+            mock.patch.object(urllib.request, "getproxies", return_value={"https": "http://proxy.local:3128"}),
+            mock.patch.object(urllib.request, "proxy_bypass", return_value=False),
+            mock.patch.object(
+                http_client,
+                "open_https_url",
+                side_effect=urllib.error.URLError("proxy refused"),
+            ),
+        ):
+            with self.assertRaises(urllib.error.URLError) as raised:
+                http_client.open_backend_https_url(self.request(), timeout=8)
+
+        self.assertTrue(http_client.failed_before_send(raised.exception))
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 import http.client
 import json
 import logging
+import re
 import ssl
 import time
 import urllib.error
@@ -20,7 +21,7 @@ from .config import (
     TAKSKLAD_BACKEND_READ_ORDERS_ENABLED,
     TAKSKLAD_BACKEND_TIMEOUT_SECONDS,
 )
-from .http_client import open_backend_https_url
+from .http_client import failed_before_send, open_backend_https_url
 from .scan_quantities import scan_entries_for_codes
 from .returns_auth_canary import (
     ReturnsAuthCanaryError,
@@ -50,6 +51,18 @@ TRANSPORT_ERRORS = (
     # недоступна» в Windows) приходят как OSError, а не как URLError.
     OSError,
 )
+# Запросы, которые сервер выполняет идемпотентно: повтор после отправки даёт
+# тот же итог (дубль скана, повторное завершение и повторный импорт он
+# узнаёт сам). Любой изменяющий запрос вне списка повторяется только тогда,
+# когда сервер его заведомо не получал.
+REPLAY_SAFE_POST_ROUTES = (
+    re.compile(r"^/api/v1/scans$"),
+    re.compile(r"^/api/v1/orders/[^/]+/complete$"),
+    re.compile(r"^/api/v1/imports(?:/.*)?$"),
+    re.compile(r"^/api/v1/sync/sources$"),
+)
+UNDO_SCAN_ROUTE = "/api/v1/scans/undo"
+UNDO_SCAN_NOT_FOUND_MARKER = "scan code was not found"
 DEFAULT_PAGE_LIMIT = 200
 DEFAULT_MAX_PAGES = 1000
 
@@ -116,7 +129,28 @@ def backend_request(method, path, payload=None, timeout=None):
     return result
 
 
-def open_backend_response(request, base_timeout):
+def _request_route(path):
+    return urllib.parse.urlsplit(str(path or "")).path
+
+
+def request_is_replay_safe(method, path):
+    """Можно ли повторить запрос после того, как он мог дойти до сервера."""
+    method = str(method or "").upper()
+    if method == "GET":
+        return True
+    if method != "POST":
+        return False
+    route = _request_route(path)
+    return any(pattern.match(route) for pattern in REPLAY_SAFE_POST_ROUTES)
+
+
+def is_undo_scan_not_found(method, path, status_code, detail):
+    if str(method or "").upper() != "POST" or _request_route(path) != UNDO_SCAN_ROUTE:
+        return False
+    return status_code == 404 and UNDO_SCAN_NOT_FOUND_MARKER in str(detail or "").lower()
+
+
+def open_backend_response(request, base_timeout, *, replay_after_send=True):
     last_error = None
     for attempt in range(TRANSPORT_ATTEMPTS):
         attempt_timeout = base_timeout * (TRANSPORT_RETRY_TIMEOUT_FACTOR ** attempt)
@@ -126,12 +160,20 @@ def open_backend_response(request, base_timeout):
                 if not raw:
                     return {}, response.headers
                 return json.loads(raw), response.headers
-        except urllib.error.HTTPError:
+        except urllib.error.HTTPError as exc:
             # Сервер ответил и назвал причину: повтор ничего не изменит.
+            # Отметка нужна только тому, кто разбирает ответ: отказ после
+            # оборванной попытки этого же вызова может быть следом первой.
+            if last_error is not None:
+                exc.after_transport_error = True
             raise
         except TRANSPORT_ERRORS as exc:
             last_error = exc
             if attempt + 1 >= TRANSPORT_ATTEMPTS:
+                break
+            if not (replay_after_send or failed_before_send(exc)):
+                # Запрос мог дойти до сервера и выполниться: повтор изменяющего
+                # запроса получил бы чужой отказ на уже сделанное.
                 break
             logging.info(
                 "Backend transport retry %s/%s after %s",
@@ -160,10 +202,21 @@ def backend_request_page(method, path, payload=None, timeout=None, *, _auth_retr
     )
     base_timeout = timeout or TAKSKLAD_BACKEND_TIMEOUT_SECONDS
     try:
-        return open_backend_response(request, base_timeout)
+        return open_backend_response(
+            request,
+            base_timeout,
+            replay_after_send=request_is_replay_safe(method, path),
+        )
     except urllib.error.HTTPError as exc:
         status_code = int(exc.code)
         detail = read_error_detail(exc)
+        if getattr(exc, "after_transport_error", False) and is_undo_scan_not_found(
+            method, path, status_code, detail
+        ):
+            # Первая попытка оборвалась, но сервер код уже снял: 404 на повторе
+            # значит, что отмена состоялась, а не что кода не было.
+            logging.warning("Backend undo_scan: code already undone before the retry: %s", detail)
+            return {"status": "already_undone"}, exc.headers
         if status_code in {401, 403} and _auth_retry:
             try:
                 # Import lazily to keep the desktop client modules acyclic.
