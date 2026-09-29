@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 from taksklad import backend_events, storage
-from taksklad.backend_client import BackendApiError
+from taksklad.backend_client import BackendApiError, BackendTransportError
 
 
 class BackendEventQueueTests(unittest.TestCase):
@@ -87,7 +87,7 @@ class BackendEventQueueTests(unittest.TestCase):
         ])
 
         def unreachable_create_scan(*args, **kwargs):
-            raise BackendApiError("<urlopen error _ssl.c:993: The handshake operation timed out>")
+            raise BackendTransportError("<urlopen error _ssl.c:993: The handshake operation timed out>")
 
         backend_events.create_scan = unreachable_create_scan
 
@@ -115,6 +115,33 @@ class BackendEventQueueTests(unittest.TestCase):
 
         self.assertEqual(state["items"][0]["last_error_kind"], "server")
 
+    def test_error_without_status_code_that_is_not_transport_is_marked_as_server_kind(self):
+        # Ответ без кода это ещё не обрыв: 200 от прокси с не-JSON телом или
+        # ошибка в коде клиента не должны глушить проход очереди и рисовать
+        # оператору «связь прервалась».
+        state = self.use_pending_events([
+            {
+                "id": f"scan-{index}",
+                "type": "scan",
+                "payload": {"order_item_id": "item-1", "code": f"TEST-CODE-{index}"},
+                "attempts": 0,
+                "last_error": "",
+            }
+            for index in range(3)
+        ])
+        calls = []
+
+        def broken_answer_create_scan(*args, **kwargs):
+            calls.append(1)
+            raise BackendApiError("Expecting value: line 1 column 1 (char 0)")
+
+        backend_events.create_scan = broken_answer_create_scan
+
+        backend_events.sync_pending_backend_events()
+
+        self.assertEqual(len(calls), 3)
+        self.assertEqual([item["last_error_kind"] for item in state["items"]], ["server"] * 3)
+
     def test_network_failure_stops_the_run_and_leaves_the_rest_untouched(self):
         # Канал лежит для всей очереди сразу: семь событий по 8 секунд держали
         # оператора минуту, хотя исход у них общий.
@@ -132,7 +159,7 @@ class BackendEventQueueTests(unittest.TestCase):
 
         def unreachable_create_scan(*args, **kwargs):
             calls.append(1)
-            raise BackendApiError("<urlopen error _ssl.c:993: The handshake operation timed out>")
+            raise BackendTransportError("<urlopen error _ssl.c:993: The handshake operation timed out>")
 
         backend_events.create_scan = unreachable_create_scan
 

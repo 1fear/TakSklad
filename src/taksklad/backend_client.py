@@ -46,6 +46,9 @@ TRANSPORT_ERRORS = (
     TimeoutError,
     ConnectionError,
     http.client.HTTPException,
+    # Без urllib поверх сокета голые ошибки сети (getaddrinfo, «сеть
+    # недоступна» в Windows) приходят как OSError, а не как URLError.
+    OSError,
 )
 DEFAULT_PAGE_LIMIT = 200
 DEFAULT_MAX_PAGES = 1000
@@ -62,6 +65,15 @@ class BackendApiError(RuntimeError):
         if self.status_code is None:
             return True
         return self.status_code in {408, 429, 500, 502, 503, 504}
+
+
+class BackendTransportError(BackendApiError):
+    """Запрос не дошёл до ответа: сеть, TLS или обрыв соединения.
+
+    Только этот класс означает «связи нет». Ошибка без кода ответа, которая
+    не сетевая (не-JSON от прокси, ошибка клиента), остаётся обычной
+    BackendApiError и разбирается как отказ, а не как ожидание сети.
+    """
 
 
 def backend_enabled():
@@ -183,6 +195,8 @@ def backend_request_page(method, path, payload=None, timeout=None, *, _auth_retr
         ) from exc
     except Exception as exc:
         logging.info("Backend request failed: %s %s", method, path, exc_info=True)
+        if isinstance(exc, TRANSPORT_ERRORS):
+            raise BackendTransportError(str(exc)) from exc
         raise BackendApiError(str(exc)) from exc
 
 

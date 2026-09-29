@@ -1,11 +1,14 @@
 import http.client
 import io
+import socket
+import ssl
 import unittest
 import urllib.error
 from unittest import mock
 
 from taksklad import backend_client
-from taksklad.backend_client import BackendApiError
+from taksklad.backend_client import BackendApiError, BackendTransportError
+from taksklad.backend_events import backend_error_kind
 
 
 class JsonResponse:
@@ -122,6 +125,50 @@ class BackendTransportRetryTests(unittest.TestCase):
 
         self.assertEqual(opened.call_count, 1)
         sleep.assert_not_called()
+
+    def test_transport_failure_is_raised_as_transport_error_of_network_kind(self):
+        causes = [
+            handshake_timeout(),
+            ssl.SSLError("handshake failure"),
+            TimeoutError("timed out"),
+            ConnectionResetError("reset"),
+            http.client.RemoteDisconnected("closed"),
+            socket.gaierror(11001, "getaddrinfo failed"),
+        ]
+        for cause in causes:
+            with self.subTest(cause=type(cause).__name__):
+                with (
+                    mock.patch.object(backend_client, "open_backend_https_url", side_effect=cause),
+                    mock.patch.object(backend_client.time, "sleep"),
+                ):
+                    with self.assertRaises(BackendApiError) as raised:
+                        backend_client.backend_request_page("GET", "/api/v1/orders/active")
+
+                self.assertIsInstance(raised.exception, BackendTransportError)
+                self.assertIs(raised.exception.__cause__, cause)
+                self.assertEqual(backend_error_kind(raised.exception), "network")
+
+    def test_unreadable_answer_without_status_is_not_a_network_error(self):
+        # 200 от прокси с HTML вместо JSON: ответ пришёл, канал жив.
+        class HtmlResponse(JsonResponse):
+            def read(self):
+                return b"<html>proxy login</html>"
+
+        with mock.patch.object(backend_client, "open_backend_https_url", return_value=HtmlResponse()):
+            with self.assertRaises(BackendApiError) as raised:
+                backend_client.backend_request_page("GET", "/api/v1/orders/active")
+
+        self.assertNotIsInstance(raised.exception, BackendTransportError)
+        self.assertIsNone(raised.exception.status_code)
+        self.assertEqual(backend_error_kind(raised.exception), "server")
+
+    def test_client_bug_without_status_is_not_a_network_error(self):
+        with mock.patch.object(backend_client, "open_backend_https_url", side_effect=KeyError("boom")):
+            with self.assertRaises(BackendApiError) as raised:
+                backend_client.backend_request_page("GET", "/api/v1/orders/active")
+
+        self.assertNotIsInstance(raised.exception, BackendTransportError)
+        self.assertEqual(backend_error_kind(raised.exception), "server")
 
 
 if __name__ == "__main__":

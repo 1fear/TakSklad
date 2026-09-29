@@ -5,6 +5,7 @@ from datetime import datetime
 
 from .backend_client import (
     BackendApiError,
+    BackendTransportError,
     backend_configured,
     complete_order,
     create_scan,
@@ -301,9 +302,11 @@ def backend_error_detail_payload(exc):
 
 
 def backend_error_kind(exc):
-    # У оборванного соединения нет кода ответа: сервер не ответил вовсе,
-    # поэтому такие события ждут связи, а не разбора оператором.
-    if isinstance(exc, BackendApiError) and exc.status_code is None:
+    # Сетью считается только транспортный обрыв: сервер не ответил вовсе,
+    # поэтому такие события ждут связи, а не разбора оператором. Ошибка без
+    # кода ответа, но не сетевая (не-JSON от прокси, ошибка клиента), это
+    # «server»: она не останавливает проход очереди и не читается как обрыв.
+    if isinstance(exc, BackendTransportError):
         return "network"
     return "server"
 
