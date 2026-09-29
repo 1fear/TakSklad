@@ -443,14 +443,14 @@ def create_scan(db: Session, payload: ScanCreate):
     )
     if item is None:
         raise ApiError(404, "Order item not found")
+    same_item_scan, other_item_scan = find_item_scans(db, code=code, order_item_id=item.id)
+    if same_item_scan is not None:
+        return scan_to_read(same_item_scan, item)
     if order is None or order.status in INACTIVE_ORDER_STATUSES:
         raise ApiError(409, {
             "code": "order_closed",
             "message": "Cannot scan inactive order",
         })
-    same_item_scan, other_item_scan = find_item_scans(db, code=code, order_item_id=item.id)
-    if same_item_scan is not None:
-        return scan_to_read(same_item_scan, item)
 
     kiz_code, latest_movement = lookup_kiz_state(db, code)
     if other_item_scan is not None and latest_movement is None:
