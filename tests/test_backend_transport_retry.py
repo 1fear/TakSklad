@@ -309,6 +309,114 @@ class BackendTransportRetryTests(unittest.TestCase):
         self.assertIsInstance(result, BackendApiError)
         self.assertEqual(result.status_code, 404)
 
+    def test_retry_budget_is_doubled_but_capped_at_twenty_seconds(self):
+        # Бюджет повтора min(base * 2, 20): при 8 секундах прежние 16, а большой
+        # таймаут не разгоняется до минуты и более.
+        for base, expected_retry in ((8, 16), (10, 20), (15, 20)):
+            with self.subTest(base=base):
+                timeouts = []
+
+                def open_url(request, timeout):
+                    timeouts.append(timeout)
+                    if len(timeouts) == 1:
+                        raise handshake_timeout()
+                    return JsonResponse()
+
+                with (
+                    mock.patch.object(backend_client, "open_backend_https_url", side_effect=open_url),
+                    mock.patch.object(backend_client.time, "sleep"),
+                ):
+                    backend_client.backend_request("GET", "/api/v1/orders/active", timeout=base)
+
+                self.assertEqual(timeouts, [base, expected_retry])
+
+    def test_default_timeout_setting_gives_the_same_capped_retry_budget(self):
+        timeouts = []
+
+        def open_url(request, timeout):
+            timeouts.append(timeout)
+            if len(timeouts) == 1:
+                raise handshake_timeout()
+            return JsonResponse()
+
+        with (
+            mock.patch.object(backend_client, "TAKSKLAD_BACKEND_TIMEOUT_SECONDS", 5),
+            mock.patch.object(backend_client, "open_backend_https_url", side_effect=open_url),
+            mock.patch.object(backend_client.time, "sleep"),
+        ):
+            backend_client.backend_request("GET", "/api/v1/orders/active")
+
+        self.assertEqual(timeouts, [5, 10])
+
+    def test_kiz_availability_lookup_with_its_short_timeout_is_not_retried(self):
+        # Проверка идёт на главном потоке Tk с намеренными 3 секундами: повтор
+        # растянул бы её до 9,5 секунды.
+        timeouts = []
+
+        def open_url(request, timeout):
+            timeouts.append(timeout)
+            raise handshake_timeout()
+
+        with (
+            mock.patch.object(backend_client, "open_backend_https_url", side_effect=open_url),
+            mock.patch.object(backend_client.time, "sleep") as sleep,
+        ):
+            with self.assertRaises(BackendTransportError):
+                backend_client.lookup_kiz_availability("CODE", order_item_id="item-1")
+
+        self.assertEqual(timeouts, [3])
+        sleep.assert_not_called()
+
+    def test_explicit_timeout_below_eight_seconds_is_not_retried(self):
+        for timeout in (1, 3, 7):
+            with self.subTest(timeout=timeout):
+                attempts = []
+
+                def open_url(request, timeout, attempts=attempts):
+                    attempts.append(timeout)
+                    raise handshake_timeout()
+
+                with (
+                    mock.patch.object(backend_client, "open_backend_https_url", side_effect=open_url),
+                    mock.patch.object(backend_client.time, "sleep"),
+                ):
+                    with self.assertRaises(BackendTransportError):
+                        backend_client.backend_request("GET", "/api/v1/orders/active", timeout=timeout)
+
+                self.assertEqual(len(attempts), 1)
+
+    def test_explicit_timeout_of_eight_seconds_is_still_retried(self):
+        with (
+            mock.patch.object(
+                backend_client,
+                "open_backend_https_url",
+                side_effect=[handshake_timeout(), JsonResponse()],
+            ) as opened,
+            mock.patch.object(backend_client.time, "sleep"),
+        ):
+            result = backend_client.backend_request("GET", "/api/v1/orders/active", timeout=8)
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(opened.call_count, 2)
+
+    def test_source_sync_with_its_long_timeout_is_not_retried(self):
+        # 45 секунд на попытку с повтором давали 135,5 секунды ожидания.
+        timeouts = []
+
+        def open_url(request, timeout):
+            timeouts.append(timeout)
+            raise handshake_timeout()
+
+        with (
+            mock.patch.object(backend_client, "open_backend_https_url", side_effect=open_url),
+            mock.patch.object(backend_client.time, "sleep") as sleep,
+        ):
+            with self.assertRaises(BackendTransportError):
+                backend_client.sync_backend_sources()
+
+        self.assertEqual(timeouts, [45])
+        sleep.assert_not_called()
+
 
 class BackendTransportPhaseIntegrationTests(unittest.TestCase):
     """Повтор через настоящий open_backend_https_url и поддельное соединение."""

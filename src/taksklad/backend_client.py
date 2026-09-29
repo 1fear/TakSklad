@@ -35,10 +35,14 @@ from .utils import parse_date_to_standard, split_codes
 NEXT_CURSOR_HEADER = "X-TakSklad-Next-Cursor"
 # Обрыв канала на складе длится десятки секунд, но само рукопожатие часто
 # проходит со второй попытки: один повтор с более щедрым бюджетом снимает
-# ложную ошибку у оператора, не растягивая ожидание вдвое против прежнего.
+# ложную ошибку у оператора. Бюджет повтора вдвое больше первой попытки, но
+# не выше потолка, а запрос с явно коротким таймаутом (проверка КИЗ на главном
+# потоке Tk) и длинная синхронизация источников идут без повтора.
 TRANSPORT_ATTEMPTS = 2
 TRANSPORT_RETRY_PAUSE_SECONDS = 0.5
 TRANSPORT_RETRY_TIMEOUT_FACTOR = 2
+TRANSPORT_RETRY_TIMEOUT_CAP_SECONDS = 20
+TRANSPORT_RETRY_MIN_TIMEOUT_SECONDS = 8
 # Постоянное соединение добавляет свой класс обрывов: сервер закрывает
 # простаивающий сокет молча, и это приходит как HTTPException, а не как отказ.
 TRANSPORT_ERRORS = (
@@ -124,8 +128,8 @@ def make_backend_headers():
     return headers
 
 
-def backend_request(method, path, payload=None, timeout=None):
-    result, _headers = backend_request_page(method, path, payload=payload, timeout=timeout)
+def backend_request(method, path, payload=None, timeout=None, retry=True):
+    result, _headers = backend_request_page(method, path, payload=payload, timeout=timeout, retry=retry)
     return result
 
 
@@ -150,10 +154,27 @@ def is_undo_scan_not_found(method, path, status_code, detail):
     return status_code == 404 and UNDO_SCAN_NOT_FOUND_MARKER in str(detail or "").lower()
 
 
-def open_backend_response(request, base_timeout, *, replay_after_send=True):
+def transport_retry_allowed(timeout, retry):
+    if not retry:
+        return False
+    # Явно короткий таймаут выбран ради быстрого ответа, повтор его обесценит.
+    return not (timeout and timeout < TRANSPORT_RETRY_MIN_TIMEOUT_SECONDS)
+
+
+def transport_attempt_timeout(base_timeout, attempt):
+    if attempt == 0:
+        return base_timeout
+    return min(
+        base_timeout * (TRANSPORT_RETRY_TIMEOUT_FACTOR ** attempt),
+        TRANSPORT_RETRY_TIMEOUT_CAP_SECONDS,
+    )
+
+
+def open_backend_response(request, base_timeout, *, replay_after_send=True, retry=True):
     last_error = None
-    for attempt in range(TRANSPORT_ATTEMPTS):
-        attempt_timeout = base_timeout * (TRANSPORT_RETRY_TIMEOUT_FACTOR ** attempt)
+    attempts = TRANSPORT_ATTEMPTS if retry else 1
+    for attempt in range(attempts):
+        attempt_timeout = transport_attempt_timeout(base_timeout, attempt)
         try:
             with open_backend_https_url(request, timeout=attempt_timeout) as response:
                 raw = response.read().decode("utf-8")
@@ -169,7 +190,7 @@ def open_backend_response(request, base_timeout, *, replay_after_send=True):
             raise
         except TRANSPORT_ERRORS as exc:
             last_error = exc
-            if attempt + 1 >= TRANSPORT_ATTEMPTS:
+            if attempt + 1 >= attempts:
                 break
             if not (replay_after_send or failed_before_send(exc)):
                 # Запрос мог дойти до сервера и выполниться: повтор изменяющего
@@ -178,14 +199,14 @@ def open_backend_response(request, base_timeout, *, replay_after_send=True):
             logging.info(
                 "Backend transport retry %s/%s after %s",
                 attempt + 1,
-                TRANSPORT_ATTEMPTS,
+                attempts,
                 exc,
             )
             time.sleep(TRANSPORT_RETRY_PAUSE_SECONDS)
     raise last_error
 
 
-def backend_request_page(method, path, payload=None, timeout=None, *, _auth_retry=True):
+def backend_request_page(method, path, payload=None, timeout=None, *, retry=True, _auth_retry=True):
     if not TAKSKLAD_BACKEND_BASE_URL:
         raise BackendApiError("Backend URL не настроен")
 
@@ -206,6 +227,7 @@ def backend_request_page(method, path, payload=None, timeout=None, *, _auth_retr
             request,
             base_timeout,
             replay_after_send=request_is_replay_safe(method, path),
+            retry=transport_retry_allowed(timeout, retry),
         )
     except urllib.error.HTTPError as exc:
         status_code = int(exc.code)
@@ -239,6 +261,7 @@ def backend_request_page(method, path, payload=None, timeout=None, *, _auth_retr
                     path,
                     payload=payload,
                     timeout=timeout,
+                    retry=retry,
                     _auth_retry=False,
                 )
         raise BackendApiError(
@@ -339,7 +362,8 @@ def sync_backend_sources(sync_skladbot=True, wait_skladbot=True):
         "wait_skladbot": "1" if wait_skladbot and sync_skladbot else "0",
     })
     timeout = max(TAKSKLAD_BACKEND_TIMEOUT_SECONDS, 45)
-    return backend_request("POST", f"/api/v1/sync/sources?{query}", timeout=timeout)
+    # 45 секунд на попытку с повтором давали больше двух минут ожидания.
+    return backend_request("POST", f"/api/v1/sync/sources?{query}", timeout=timeout, retry=False)
 
 
 def backend_import_records(records):
