@@ -2200,6 +2200,9 @@ class DesktopBackendQueueUsageTests(unittest.TestCase):
     def _capturing_run_background(captured):
         def run_background(_title, work, on_success=None, on_error=None, on_finally=None):
             captured["work"] = work
+            captured.setdefault("entries", []).append(
+                {"work": work, "on_success": on_success, "on_error": on_error, "on_finally": on_finally}
+            )
 
         return run_background
 
@@ -2506,8 +2509,15 @@ class DesktopBackendQueueUsageTests(unittest.TestCase):
             scanned_codes=[],
             finish_btn=FakeWidget(),
             next_product_btn=FakeWidget(),
+            today_orders=list(orders),
+            status_var=SimpleNamespace(set=lambda value: None),
+            status_label=FakeWidget(),
             safe_config=lambda widget, **kwargs: None,
             set_busy=lambda message: None,
+            clear_busy=lambda: None,
+            reset_current_selection=lambda: None,
+            refresh_legal_list=lambda: None,
+            _select_first_real_order=lambda: None,
             confirm_print_settings=lambda: True,
             run_background=self._capturing_run_background(captured),
         )
@@ -2534,7 +2544,11 @@ class DesktopBackendQueueUsageTests(unittest.TestCase):
             mock.patch("taksklad.app_finish.write_scan_backup", side_effect=record("backup", True)),
         ):
             ScanningApp.finish_legal_entity(fake)
-            captured["work"]()
+            # стадия 1 печатает, после неё UI-поток запускает стадию 2 с завершением на сервере
+            print_stage = captured["entries"][0]
+            print_stage["work"]()
+            print_stage["on_success"](None)
+            captured["entries"][1]["work"]()
         return order_calls, sync_result, pending_now
 
     def test_finish_sync_pass_is_limited_to_its_own_group(self):

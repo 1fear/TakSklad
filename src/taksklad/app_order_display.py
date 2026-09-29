@@ -22,6 +22,7 @@ from .desktop_scan_rules import (
     first_incomplete_order_index,
     format_money,
     format_order_date_header,
+    get_finishing_groups,
     scanned_blocks_for_order,
     scanned_codes_for_order,
 )
@@ -128,6 +129,9 @@ class OrderDisplayMixin:
         selected_group = self._selected_order_group()
         if not selected_group:
             self.show_error("Выберите заказ из списка")
+            return
+        if selected_group in get_finishing_groups(self):
+            self.show_busy_error()
             return
         request_number, legal_entity, payment_type, address = unpack_order_group_key(selected_group)
         display_request_number = request_number or "Без номера SkladBot"

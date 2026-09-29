@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 
 from .catalog import get_product_rule
 from .config import APP_VERSION, SKLADBOT_REQUEST_NUMBER_COLUMN, STATUS_COLUMN
-from .orders import get_order_date_value, get_plan_blocks
+from .orders import get_order_date_value, get_plan_blocks, order_group_key
 from .scan_quantities import (
     product_key_from_name,
     scan_code_product_key,
@@ -106,6 +106,26 @@ def group_finish_blocker(orders, completed_products):
         if scanned_count < plan_blocks:
             return f"Позиция {idx}: отсканировано {scanned_count} из {plan_blocks} блоков"
     return ""
+
+
+def get_finishing_groups(app):
+    """Множество групп заказа, чьё завершение на сервере идёт в фоне
+
+    Атрибут окна, создаётся лениво: пока группа в нём, список заказов её не показывает
+    """
+    groups = getattr(app, "finishing_group_keys", None)
+    if not isinstance(groups, set):
+        groups = set()
+        app.finishing_group_keys = groups
+    return groups
+
+
+def hide_finishing_groups(app, orders):
+    """Заказы без групп, которые сейчас завершаются: вход для каждого обновления списка с сервера"""
+    groups = getattr(app, "finishing_group_keys", None)
+    if not groups or not isinstance(groups, set):
+        return orders
+    return [order for order in orders or [] if order_group_key(order) not in groups]
 
 
 def is_terminal_scan_state(order):

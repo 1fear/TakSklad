@@ -7,6 +7,7 @@ from .backend_flow import backend_blocked_scan_events_for_item
 from .config import BG_MAIN, FG_MUTED, STATUS_COLUMN, STATUS_COMPLETED, STATUS_NOT_COMPLETED
 from .desktop_diagnostics import log_refresh_diagnostic_summary
 from .desktop_scan_rules import (
+    hide_finishing_groups,
     is_terminal_scan_state,
     scanned_blocks_for_order,
     scanned_codes_for_order,
@@ -96,6 +97,7 @@ def refresh_order_is_terminal(order):
 class DataLoadingMixin:
     def load_data(self, show_empty_warning=True):
         self.today_orders, self.sheet, self.all_existing_codes = fetch_sheet_data()
+        self.today_orders = hide_finishing_groups(self, self.today_orders)
         if show_empty_warning and not self.today_orders:
             self.show_warning(
                 f"Нет заказов со статусом '{STATUS_NOT_COMPLETED}'.\n\n"
@@ -187,6 +189,8 @@ class DataLoadingMixin:
         else:
             self.today_orders, self.sheet, self.all_existing_codes = result
             self.last_sync_result = {"synced": 0, "failed": 0, "remaining": 0, "primary_source": "backend"}
+        # Группа, которая сейчас завершается на сервере, в список не возвращается
+        self.today_orders = hide_finishing_groups(self, self.today_orders)
 
         if show_empty_warning and not self.today_orders:
             self.show_warning(

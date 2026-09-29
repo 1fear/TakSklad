@@ -8,7 +8,7 @@ from .backend_flow import (
     complete_backend_orders_or_raise,
 )
 from .config import BG_MAIN, FG_MUTED
-from .desktop_scan_rules import group_finish_blocker, scanned_blocks_for_order
+from .desktop_scan_rules import get_finishing_groups, group_finish_blocker, scanned_blocks_for_order
 from .orders import get_plan_blocks, order_group_key
 from .pending_store import add_pending_print, remove_pending_print, write_scan_backup
 from .printing import print_summary
@@ -25,6 +25,10 @@ class FinishActionsMixin:
             return
 
         if not self.current_legal_entity:
+            return
+
+        if self.current_group_key and self.current_group_key in get_finishing_groups(self):
+            self.show_busy_error()
             return
 
         if self.current_product_idx < len(self.current_legal_entity_orders):
@@ -71,14 +75,30 @@ class FinishActionsMixin:
             return
         selected_print_settings = getattr(self, "_selected_print_settings", None)
 
+        first_product = current_products[0]
+        summary_products = current_products
+        finished_group = group_key or order_group_key(first_product)
+        finished_row_numbers = {
+            parse_int_value(order.get("_row_number"))
+            for order in current_orders
+            if parse_int_value(order.get("_row_number"))
+        }
+        order_item_ids = {
+            normalize_text(order.get("_backend_order_item_id"))
+            for order in current_orders
+            if normalize_text(order.get("_backend_order_item_id"))
+        }
+        group_order_ids = set(backend_order_ids)
+        failure_title = "Не удалось завершить заказ"
+        # Заказы группы, снятые со списка на время завершения: вернутся, если сервер откажет
+        hidden_orders = []
+
         self.set_busy("⏳ Печатаю сводный лист и завершаю заказ...")
         self.safe_config(self.finish_btn, state="disabled")
         self.safe_config(self.next_product_btn, state="disabled")
 
-        def work():
-            first_product = current_products[0]
+        def print_work():
             address = first_product.get('Адрес', 'Адрес не указан')
-            summary_products = current_products
 
             pending_print_id = add_pending_print(address, summary_products)
             if not pending_print_id:
@@ -102,12 +122,7 @@ class FinishActionsMixin:
                     "Заказ не завершён в backend."
                 )
 
-            order_item_ids = {
-                normalize_text(order.get("_backend_order_item_id"))
-                for order in current_orders
-                if normalize_text(order.get("_backend_order_item_id"))
-            }
-            group_order_ids = set(backend_order_ids)
+        def complete_work():
             backend_sync_result = sync_pending_backend_events(
                 order_item_ids=order_item_ids,
                 order_ids=group_order_ids,
@@ -129,50 +144,67 @@ class FinishActionsMixin:
             ):
                 raise RuntimeError("Сводка напечатана, но backup завершения заказа не создан")
 
-            return {
-                "first_product": first_product,
-                "summary_products": summary_products,
-                "finished_group": group_key or order_group_key(first_product),
-                "finished_row_numbers": [
-                    parse_int_value(order.get("_row_number"))
-                    for order in current_orders
-                    if parse_int_value(order.get("_row_number"))
-                ],
-            }
-
-        def on_success(result):
-            self.update_stats_display()
-
-            finished_group = result["finished_group"]
-            finished_row_numbers = set(result.get("finished_row_numbers") or [])
-            if finished_row_numbers:
-                self.today_orders = [
-                    order
-                    for order in self.today_orders
-                    if parse_int_value(order.get("_row_number")) not in finished_row_numbers
-                ]
-            else:
-                self.today_orders = [o for o in self.today_orders if order_group_key(o) != finished_group]
+        def on_completed(_result):
+            # Заказы группы уже сняты со списка после печати и обновлением не возвращаются
+            get_finishing_groups(self).discard(finished_group)
+            del hidden_orders[:]
             self.refresh_legal_list()
 
-            self.reset_current_selection()
             self.status_var.set("✅ Заказ завершён! Сводка отправлена на печать")
             self.status_label.config(bg=BG_MAIN, fg=FG_MUTED)
             self.sync_backend_events_async()
 
-            self._select_first_real_order()
+        def on_completion_error(exc):
+            get_finishing_groups(self).discard(finished_group)
+            if hidden_orders and not any(order_group_key(order) == finished_group for order in self.today_orders):
+                self.today_orders = list(self.today_orders) + hidden_orders
+            del hidden_orders[:]
+            try:
+                self.refresh_legal_list()
+            finally:
+                self.show_critical_error(failure_title, exc)
 
-        def on_error(exc):
-            self.show_critical_error("Не удалось завершить заказ", exc)
+        def start_completion():
+            # Экран не занят: оператор может выбирать и сканировать следующий заказ
+            self.run_background(
+                failure_title,
+                complete_work,
+                on_success=on_completed,
+                on_error=on_completion_error,
+            )
+
+        def on_printed(_result):
+            # Лист в руках: группа скрыта от списка до ответа сервера, экран свободен
+            get_finishing_groups(self).add(finished_group)
+            kept_orders = []
+            for order in self.today_orders:
+                if finished_row_numbers:
+                    finished = parse_int_value(order.get("_row_number")) in finished_row_numbers
+                else:
+                    finished = order_group_key(order) == finished_group
+                (hidden_orders if finished else kept_orders).append(order)
+            self.today_orders = kept_orders
+            try:
+                self.clear_busy()
+                self.reset_current_selection()
+                self.refresh_legal_list()
+                self.status_var.set("✅ Сводный лист напечатан, завершаю заказ в фоне")
+                self.status_label.config(bg=BG_MAIN, fg=FG_MUTED)
+                self._select_first_real_order()
+            finally:
+                start_completion()
+
+        def on_print_error(exc):
+            self.show_critical_error(failure_title, exc)
             self.safe_config(self.finish_btn, state="normal")
 
-        def on_finally():
+        def on_print_finally():
             self.clear_busy()
 
         self.run_background(
-            "Не удалось завершить заказ",
-            work,
-            on_success=on_success,
-            on_error=on_error,
-            on_finally=on_finally
+            failure_title,
+            print_work,
+            on_success=on_printed,
+            on_error=on_print_error,
+            on_finally=on_print_finally
         )
