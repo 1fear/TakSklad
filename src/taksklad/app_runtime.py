@@ -97,7 +97,15 @@ def destroy_window(app):
 
 
 def close_after_finishing_groups(app):
-    """Повторная проверка без диалогов: закрыть, когда сервер ответил по всем завершаемым заказам, или по потолку"""
+    """Повторная проверка без диалогов: закрыть, когда сервер ответил по всем завершаемым заказам, или по потолку
+
+    Сбой стадии 2 до ответа сервера окно не закрывает: ожидание сбрасывается, повторное нажатие закрытия
+    запустит его снова, а оператор пока видит ошибку и вернувшийся заказ
+    """
+    if getattr(app, "finishing_failed_before_answer", False):
+        app.finishing_failed_before_answer = False
+        app.close_wait_deadline = None
+        return
     if get_running_finishing_groups(app) and time.monotonic() < app.close_wait_deadline:
         try:
             app.after(CLOSE_WAIT_POLL_MS, lambda: close_after_finishing_groups(app))
@@ -482,6 +490,8 @@ class AppRuntimeMixin:
             ):
                 return
         if get_running_finishing_groups(self):
+            # Сбой, случившийся до этого нажатия, ожидания не касался
+            self.finishing_failed_before_answer = False
             self.close_wait_deadline = time.monotonic() + CLOSE_WAIT_LIMIT_SECONDS
             close_after_finishing_groups(self)
             return

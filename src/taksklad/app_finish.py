@@ -192,6 +192,9 @@ class FinishActionsMixin:
             else:
                 restored_orders = list(hidden_orders)
                 drop_finishing_group(self, finished_group)
+                # Множество «работающих» опустело, но окно, которое ждёт завершения, закрывать нельзя:
+                # оператор должен увидеть ошибку и вернувшийся заказ
+                self.finishing_failed_before_answer = True
                 self.today_orders = list(self.today_orders) + restored_orders
             try:
                 self.refresh_legal_list()

@@ -1241,5 +1241,128 @@ class DayEndAndCloseWhileFinishingTests(unittest.TestCase):
         self.assertEqual(len(app.after_calls), 1)
 
 
+class CloseWaitVersusStageTwoOutcomeTests(FinishBackgroundTestCase):
+    """Окно закрывается по ожиданию завершения заказа: ошибку стадии 2 до ответа сервера оператор должен увидеть"""
+
+    def make_closing_app(self):
+        app = self.make_app()
+        app.single_instance_lock = None
+        app.destroy = mock.Mock()
+        app.after_calls = []
+        app.after = lambda delay, callback: app.after_calls.append((delay, callback))
+        return app
+
+    def press_close_then(self, outcome):
+        """X при идущей стадии 2, затем исход стадии 2, затем опрос закрытия"""
+        app = self.make_closing_app()
+        self.start_finish(app)
+        run_entry(app.background[0])
+        stage_two = app.background[1]
+
+        ScanningApp.on_close(app)
+        self.assertEqual(len(app.after_calls), 1)
+        app.destroy.assert_not_called()
+
+        outcome(app)
+        run_entry(stage_two)
+        app.after_calls[-1][1]()
+        return app
+
+    def test_failure_before_the_server_answer_does_not_close_the_window(self):
+        def outcome(app):
+            self.mocks["complete_backend_orders_or_raise"].side_effect = RuntimeError("сервер отказал")
+
+        app = self.press_close_then(outcome)
+
+        app.destroy.assert_not_called()
+        self.assertIsNone(app.close_wait_deadline)
+        app.show_critical_error.assert_called_once()
+        self.assertEqual(str(app.show_critical_error.call_args.args[1]), "сервер отказал")
+        # заказ вернулся оператору
+        self.assertEqual(len(app.today_orders), 4)
+        # опрос закрытия больше не перезапускается
+        self.assertEqual(len(app.after_calls), 1)
+
+    def test_failure_in_the_queue_pass_before_the_server_answer_does_not_close_the_window(self):
+        # сбой в проходе группы: order_complete в очередь не встал, сервер не отвечал
+        def outcome(app):
+            self.mocks["sync_pending_backend_events"].side_effect = RuntimeError("нет связи")
+
+        app = self.press_close_then(outcome)
+
+        app.destroy.assert_not_called()
+        self.assertIsNone(app.close_wait_deadline)
+        self.mocks["complete_backend_orders_or_raise"].assert_not_called()
+
+    def test_the_flag_is_cleared_and_the_next_close_press_waits_again(self):
+        app = self.make_closing_app()
+        other_key = self.group_key(app.other)
+        self.mocks["complete_backend_orders_or_raise"].side_effect = RuntimeError("сервер отказал")
+        self.start_finish(app)
+        run_entry(app.background[0])
+        stage_two = app.background[1]
+        ScanningApp.on_close(app)
+        # вторая группа ещё завершается: повторное закрытие снова запускает ожидание
+        get_finishing_groups(app).add(other_key)
+        run_entry(stage_two)
+        app.after_calls[-1][1]()
+        self.assertIsNone(app.close_wait_deadline)
+        self.assertFalse(getattr(app, "finishing_failed_before_answer", False))
+        app.destroy.assert_not_called()
+
+        ScanningApp.on_close(app)
+
+        self.assertIsNotNone(app.close_wait_deadline)
+        self.assertEqual(len(app.after_calls), 2)
+        app.destroy.assert_not_called()
+        # вторая группа отвечает: опрос закрывает окно
+        get_finishing_groups(app).discard(other_key)
+        app.after_calls[-1][1]()
+        app.destroy.assert_called_once_with()
+
+    def test_success_of_stage_two_closes_the_window(self):
+        app = self.press_close_then(lambda app: None)
+
+        app.destroy.assert_called_once_with()
+        app.show_critical_error.assert_not_called()
+
+    def test_failure_after_the_server_answer_closes_the_window(self):
+        def outcome(app):
+            self.mocks["write_scan_backup"].return_value = False
+
+        app = self.press_close_then(outcome)
+
+        self.mocks["complete_backend_orders_or_raise"].assert_called_once()
+        app.destroy.assert_called_once_with()
+
+    def test_sixty_second_ceiling_still_closes_and_warns(self):
+        app = self.make_closing_app()
+        self.start_finish(app)
+        run_entry(app.background[0])
+        clock = SimpleNamespace(monotonic=mock.Mock(side_effect=[100.0, 100.0, 130.0, 160.0]))
+
+        with mock.patch("taksklad.app_runtime.time", clock), self.assertLogs(level="WARNING") as logs:
+            ScanningApp.on_close(app)
+            app.after_calls[-1][1]()
+            app.destroy.assert_not_called()
+            app.after_calls[-1][1]()
+
+        app.destroy.assert_called_once_with()
+        self.assertTrue(any("не успело" in line for line in logs.output))
+
+    def test_an_old_failure_flag_does_not_block_a_later_close_wait(self):
+        # сбой был до нажатия X и ожидания не касался: флаг не должен заблокировать закрытие потом
+        app = self.make_closing_app()
+        app.finishing_failed_before_answer = True
+        group_key = self.group_key(app.group)
+        get_finishing_groups(app).add(group_key)
+
+        ScanningApp.on_close(app)
+        get_finishing_groups(app).discard(group_key)
+        app.after_calls[-1][1]()
+
+        app.destroy.assert_called_once_with()
+
+
 if __name__ == "__main__":
     unittest.main()
