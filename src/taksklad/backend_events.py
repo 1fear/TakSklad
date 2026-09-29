@@ -311,6 +311,20 @@ def backend_error_kind(exc):
     return "server"
 
 
+def mark_untried_tail_as_network(tail):
+    """Хвост, до которого проход не дошёл, ждёт связи так же, как упавшее событие.
+
+    Тексты про обрыв требуют сетевой признак у всех событий позиции, а он
+    появлялся только у первого. Событие с серверной ошибкой не трогаем: отказ
+    сервера не превращается в «ждём связи». Попытки, ошибка и время хвоста не
+    меняются, потому что отправить его никто не пытался.
+    """
+    for item in tail:
+        if normalize_text(item.get("last_error_kind")) in {"", "network"}:
+            item["last_error_kind"] = "network"
+    return tail
+
+
 def is_stale_backend_event_ack(item, exc):
     if not isinstance(exc, BackendApiError) or exc.retryable:
         return False
@@ -408,7 +422,7 @@ def sync_pending_backend_events():
             if item["last_error_kind"] == "network":
                 # Канал лежит для всей очереди сразу: остальные события ждут
                 # связи, а не своей порции таймаутов на глазах у оператора.
-                remaining.extend(pending[index + 1:])
+                remaining.extend(mark_untried_tail_as_network(pending[index + 1:]))
                 break
         except Exception as exc:
             failed += 1

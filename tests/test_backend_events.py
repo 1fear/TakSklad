@@ -3,6 +3,13 @@ import unittest
 from pathlib import Path
 
 from taksklad import backend_events, storage
+from taksklad.backend_flow import (
+    BackendOfflineQueueError,
+    backend_blocker_error,
+    backend_group_blocker_error,
+    backend_sync_group_blocker,
+    backend_sync_item_blocker,
+)
 from taksklad.backend_client import BackendApiError, BackendTransportError
 
 
@@ -170,6 +177,102 @@ class BackendEventQueueTests(unittest.TestCase):
         self.assertEqual(state["items"][0]["attempts"], 1)
         self.assertEqual(state["items"][1]["attempts"], 0)
         self.assertEqual(state["items"][2]["attempts"], 0)
+
+    def scan_events(self, count, **extra):
+        return [
+            {
+                "id": f"scan-{index}",
+                "type": "scan",
+                "payload": {"order_item_id": "item-1", "code": f"TEST-CODE-{index}"},
+                "attempts": 0,
+                "last_error": "",
+                **extra,
+            }
+            for index in range(count)
+        ]
+
+    @staticmethod
+    def unreachable_create_scan(*args, **kwargs):
+        raise BackendTransportError("<urlopen error _ssl.c:993: The handshake operation timed out>")
+
+    def test_network_failure_marks_the_whole_position_so_offline_wording_shows(self):
+        # 09.09.2026: семь событий позиции, первое упало по сети, проход встал.
+        # Признак получало только первое, поэтому «все события позиции сетевые»
+        # не выполнялось и оператор снова читал «Backend не принял КИЗы».
+        state = self.use_pending_events(self.scan_events(7))
+        backend_events.create_scan = self.unreachable_create_scan
+
+        backend_events.sync_pending_backend_events()
+
+        self.assertEqual([item["last_error_kind"] for item in state["items"]], ["network"] * 7)
+        item_message = backend_sync_item_blocker({"blocked_events": []}, "item-1", state["items"])
+        self.assertIn("Связь с сервером", item_message)
+        self.assertIn("7", item_message)
+        self.assertNotIn("не принял", item_message)
+        self.assertIsInstance(backend_blocker_error(item_message), BackendOfflineQueueError)
+        group_message = backend_sync_group_blocker({"blocked_events": []}, ["item-1"], [], state["items"])
+        self.assertIn("Связь с сервером", group_message)
+        self.assertNotIn("не принял", group_message)
+        self.assertIsInstance(backend_group_blocker_error(group_message), BackendOfflineQueueError)
+
+    def test_network_failure_marks_the_order_complete_event_of_the_tail_too(self):
+        events = self.scan_events(2) + [
+            {
+                "id": "complete-1",
+                "type": "order_complete",
+                "payload": {"order_id": "order-1"},
+                "attempts": 0,
+                "last_error": "",
+            }
+        ]
+        state = self.use_pending_events(events)
+        backend_events.create_scan = self.unreachable_create_scan
+
+        backend_events.sync_pending_backend_events()
+
+        message = backend_sync_group_blocker({"blocked_events": []}, ["item-1"], ["order-1"], state["items"])
+        self.assertIn("Связь с сервером", message)
+        self.assertNotIn("не принял", message)
+
+    def test_network_failure_keeps_attempts_error_and_time_of_the_untouched_tail(self):
+        events = self.scan_events(3, last_error="earlier", updated_at="2026-09-09T10:00:00+05:00")
+        events[1]["attempts"] = 4
+        state = self.use_pending_events(events)
+        backend_events.create_scan = self.unreachable_create_scan
+
+        backend_events.sync_pending_backend_events()
+
+        self.assertEqual(state["items"][0]["attempts"], 1)
+        for item, attempts in zip(state["items"][1:], (4, 0)):
+            self.assertEqual(item["attempts"], attempts)
+            self.assertEqual(item["last_error"], "earlier")
+            self.assertEqual(item["updated_at"], "2026-09-09T10:00:00+05:00")
+            self.assertEqual(item["last_error_kind"], "network")
+
+    def test_network_failure_does_not_relabel_a_tail_event_with_a_server_error(self):
+        events = self.scan_events(3)
+        events[2]["last_error"] = "Backend HTTP 503: service unavailable"
+        events[2]["last_error_kind"] = "server"
+        state = self.use_pending_events(events)
+        backend_events.create_scan = self.unreachable_create_scan
+
+        backend_events.sync_pending_backend_events()
+
+        self.assertEqual(state["items"][1]["last_error_kind"], "network")
+        self.assertEqual(state["items"][2]["last_error_kind"], "server")
+        message = backend_sync_item_blocker({"blocked_events": []}, "item-1", state["items"])
+        self.assertIn("Backend не принял", message)
+        self.assertNotIn("Связь с сервером", message)
+
+    def test_network_failure_leaves_already_network_tail_event_as_it_was(self):
+        events = self.scan_events(2)
+        events[1]["last_error_kind"] = "network"
+        state = self.use_pending_events(events)
+        backend_events.create_scan = self.unreachable_create_scan
+
+        backend_events.sync_pending_backend_events()
+
+        self.assertEqual([item["last_error_kind"] for item in state["items"]], ["network", "network"])
 
     def test_server_failure_does_not_stop_the_run(self):
         state = self.use_pending_events([
