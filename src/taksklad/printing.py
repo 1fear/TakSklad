@@ -275,6 +275,7 @@ foreach ($imagePath in $imagePaths) {{
             pass
 
 def send_image_to_windows_printer(file_path, printer_name="", label_width_mm=None, label_height_mm=None):
+    # одиночная отправка сохранена для совместимости и тестов, печать листа идёт через send_images_to_printer
     return send_images_to_windows_printer(
         [file_path],
         printer_name=printer_name,
@@ -296,6 +297,7 @@ def send_image_to_printer(file_path, printer_name="", label_width_mm=None, label
     try:
         label_width_mm, label_height_mm = normalize_label_size(label_width_mm, label_height_mm)
         if os.name == 'nt':
+            # одиночная отправка сохранена для совместимости и тестов, печать листа идёт через send_images_to_printer
             return send_image_to_windows_printer(
                 file_path,
                 printer_name=printer_name,

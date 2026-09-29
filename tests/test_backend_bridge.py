@@ -1134,5 +1134,52 @@ class BackendBridgeTests(unittest.TestCase):
         self.assertEqual(storage.load_data_section("pending_backend_events", []), before)
 
 
+class BackendEventMatchesItemTests(unittest.TestCase):
+    """backend_event_matches_item: один предикат с очередью, битый payload не роняет разбор"""
+
+    def test_matches_only_scan_events_of_the_same_position(self):
+        matches = backend_flow.backend_event_matches_item
+        scan = {"type": "scan", "payload": {"order_item_id": " item-1 ", "code": "C"}}
+
+        self.assertTrue(matches(scan, "item-1"))
+        self.assertTrue(matches(scan, " item-1 "))
+        self.assertFalse(matches(scan, "item-2"))
+        self.assertFalse(matches({"type": "order_complete", "payload": {"order_item_id": "item-1"}}, "item-1"))
+        self.assertFalse(matches({"type": "scan", "payload": {}}, "item-1"))
+        self.assertFalse(matches({"type": "scan"}, "item-1"))
+        self.assertFalse(matches({"type": "scan", "payload": None}, "item-1"))
+
+    def test_empty_item_id_matches_nothing(self):
+        matches = backend_flow.backend_event_matches_item
+        scan = {"type": "scan", "payload": {"order_item_id": "", "code": "C"}}
+
+        self.assertFalse(matches(scan, ""))
+        self.assertFalse(matches(scan, None))
+        self.assertFalse(matches(scan, "   "))
+
+    def test_non_dict_payload_gives_false_instead_of_attribute_error(self):
+        matches = backend_flow.backend_event_matches_item
+
+        for payload in ("broken", ["item-1"], 5, ("item-1",)):
+            with self.subTest(payload=repr(payload)):
+                self.assertFalse(matches({"type": "scan", "payload": payload}, "item-1"))
+
+    def test_blocked_events_for_item_survive_a_broken_payload_in_the_result(self):
+        good = {"type": "scan", "payload": {"order_item_id": "item-1", "code": "C"}}
+        broken = {"type": "scan", "payload": "broken"}
+
+        found = backend_flow.backend_blocked_scan_events_for_item({"blocked_events": [broken, good]}, "item-1")
+
+        self.assertEqual(found, [good])
+
+    def test_item_predicate_is_built_on_the_shared_queue_predicate(self):
+        item = {"type": "scan", "payload": {"order_item_id": "item-1"}}
+
+        with mock.patch.object(backend_flow, "backend_event_matches_filter", return_value=True) as predicate:
+            self.assertTrue(backend_flow.backend_event_matches_item(item, " item-1 "))
+
+        predicate.assert_called_once_with(item, {"item-1"}, set())
+
+
 if __name__ == "__main__":
     unittest.main()

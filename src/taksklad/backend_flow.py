@@ -30,7 +30,7 @@ def backend_event_matches_item(item, order_item_id):
     order_item_id = normalize_text(order_item_id)
     if not order_item_id or item.get("type") != "scan":
         return False
-    return normalize_text((item.get("payload") or {}).get("order_item_id")) == order_item_id
+    return backend_event_matches_filter(item, {order_item_id}, set())
 
 
 def backend_event_matches_group(item, order_item_ids, order_ids):

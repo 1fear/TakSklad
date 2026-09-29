@@ -219,8 +219,6 @@ def undo_backend_scan(order, code):
     removed_from_queue = remove_pending_backend_scan(order, code)
     order_item_id = normalize_text(order.get("_backend_order_item_id"))
     code = normalize_kiz_code(code)
-    if order_item_id and code:
-        forget_delivered_scan(order_item_id, code)
     if removed_from_queue:
         return {"status": "removed_from_queue"}
     if not order_item_id or not code:

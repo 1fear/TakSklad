@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from taksklad import backend_events, storage
 from taksklad.backend_flow import (
@@ -544,6 +545,19 @@ class BackendEventQueueTests(unittest.TestCase):
 
         backend_events.undo_backend_scan({"_backend_order_item_id": "item-1"}, "TEST-CODE-ABC")
 
+        self.assertFalse(backend_events.is_scan_delivered("item-1", "TEST-CODE-ABC"))
+
+    def test_undo_backend_scan_forgets_the_delivered_key_once_through_the_queue_removal(self):
+        backend_events._DELIVERED_SCAN_KEYS.add(("item-1", "TEST-CODE-ABC"))
+        backend_events.backend_configured = lambda: True
+        backend_events.undo_scan = lambda *args, **kwargs: {"status": "ok"}
+
+        with mock.patch.object(
+            backend_events, "forget_delivered_scan", wraps=backend_events.forget_delivered_scan
+        ) as forget:
+            backend_events.undo_backend_scan({"_backend_order_item_id": "item-1"}, "TEST-CODE-ABC")
+
+        forget.assert_called_once_with("item-1", "TEST-CODE-ABC")
         self.assertFalse(backend_events.is_scan_delivered("item-1", "TEST-CODE-ABC"))
 
     def test_requeueing_same_code_after_delivery_forgets_delivered_registry_key(self):
