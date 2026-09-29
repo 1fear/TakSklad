@@ -1367,6 +1367,9 @@ class CloseWaitVersusStageTwoOutcomeTests(FinishBackgroundTestCase):
         get_finishing_groups(app).add(group_key)
 
         ScanningApp.on_close(app)
+
+        self.assertEqual(len(app.after_calls), 1, "ожидание закрытия не запущено")
+        self.assertIsNotNone(app.close_wait_deadline)
         get_finishing_groups(app).discard(group_key)
         app.after_calls[-1][1]()
 
