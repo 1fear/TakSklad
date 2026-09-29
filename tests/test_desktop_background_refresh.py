@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 from taksklad.app_data_loading import DataLoadingMixin
@@ -128,6 +129,112 @@ class BackgroundRefreshTests(unittest.TestCase):
 
         self.assertEqual(app.refresh_calls, [])
         self.assertEqual(len(app.after_calls), 1)
+
+
+class RefreshQueuePassModeTests(unittest.TestCase):
+    """Обновление списка (ручное и периодическое) гоняет очередь в фоновом режиме: не ждёт замок, уступает экрану"""
+
+    def make_app(self):
+        class FakeStatus:
+            def set(self, value):
+                self.value = value
+
+        class FakeLabel:
+            def config(self, **kwargs):
+                self.kwargs = kwargs
+
+        class FakeApp(DataLoadingMixin):
+            operation_in_progress = False
+            refresh_in_progress = False
+            current_order = None
+            today_orders = []
+            last_sync_result = {}
+            refresh_btn = object()
+            import_btn = object()
+            status_var = FakeStatus()
+            status_label = FakeLabel()
+
+            def ensure_update_allowed(self):
+                return True
+
+            def set_refresh_in_progress(self, _message, *, announce=True):
+                self.refresh_in_progress = True
+
+            def clear_refresh_in_progress(self):
+                self.refresh_in_progress = False
+
+            def safe_config(self, *_args, **_kwargs):
+                pass
+
+            def run_background(self, _title, worker, *, on_success, on_error, on_finally):
+                try:
+                    on_success(worker())
+                finally:
+                    on_finally()
+
+            def apply_loaded_data(self, _result, *, show_empty_warning):
+                pass
+
+            def reset_current_selection(self):
+                self.current_order = None
+
+            def reconcile_current_order_after_refresh(self):
+                return {"status": "merged"}
+
+            def refresh_legal_list(self):
+                pass
+
+        return FakeApp()
+
+    def run_refresh(self, **kwargs):
+        app = self.make_app()
+        with mock.patch(
+            "taksklad.app_data_loading.fetch_sheet_data_with_sync",
+            return_value=([], None, set(), {}),
+        ) as fetch:
+            DataLoadingMixin.refresh_from_sheet(app, **kwargs)
+        return fetch
+
+    def test_manual_refresh_runs_the_queue_pass_in_background_mode(self):
+        fetch = self.run_refresh()
+
+        fetch.assert_called_once_with(sync_skladbot=True, background=True)
+
+    def test_periodic_refresh_runs_the_queue_pass_in_background_mode(self):
+        fetch = self.run_refresh(background=True)
+
+        fetch.assert_called_once_with(sync_skladbot=True, background=True)
+
+    def test_refresh_after_a_skipped_pass_keeps_local_codes_the_server_has_not_seen(self):
+        # проход очереди пропущен: код лежит в очереди, сервер его ещё не знает, список приходит без него
+        code_in_queue = "0104006396053978-TEST-BROWN-QUEUED"
+        code_on_server = "0104006396053978-TEST-BROWN-SERVER"
+        order = {
+            "Товары": "Chapman Brown OP 20",
+            "Кол-во блок": 3,
+            "_backend_order_item_id": "item-1",
+            "Отсканированные коды": code_on_server,
+            "_existing_scanned_codes": [code_on_server],
+        }
+        app = SimpleNamespace(
+            current_order={"_backend_order_item_id": "item-1", "Товары": "Chapman Brown OP 20", "Кол-во блок": 3},
+            today_orders=[order],
+            scanned_codes=[code_on_server, code_in_queue],
+            saved_codes_count=1,
+            all_existing_codes=set(),
+            progress_label=None,
+        )
+        app.safe_config = lambda *_args, **_kwargs: None
+        app._set_refresh_scan_controls = lambda **_kwargs: None
+
+        result = DataLoadingMixin.reconcile_current_order_after_refresh(app)
+
+        self.assertEqual(result["status"], "merged")
+        self.assertEqual(result["local_unsaved"], [code_in_queue])
+        self.assertEqual(app.scanned_codes, [code_on_server, code_in_queue])
+        self.assertEqual(app.saved_codes_count, 1)
+        self.assertIn(code_in_queue, app.all_existing_codes)
+        self.assertEqual(app.current_order["_existing_scanned_codes"], [code_on_server])
 
 
 class BackendSyncTimerTests(unittest.TestCase):

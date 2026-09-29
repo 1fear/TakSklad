@@ -369,7 +369,8 @@ class DataLoadingMixin:
 
         self.run_background(
             "Не удалось обновить список заказов",
-            lambda: fetch_sheet_data_with_sync(sync_skladbot=True),
+            # Обновление списка не держит замок очереди на весь проход: смена позиции не ждёт его окончания
+            lambda: fetch_sheet_data_with_sync(sync_skladbot=True, background=True),
             on_success=on_success,
             on_error=on_error,
             on_finally=on_finally
