@@ -8,6 +8,7 @@ from .backend_client import (
     lookup_kiz_availability,
 )
 from .backend_events import (
+    backend_event_matches_filter,
     queue_backend_order_complete,
     remove_pending_backend_order_complete,
 )
@@ -29,17 +30,12 @@ def backend_event_matches_item(item, order_item_id):
     order_item_id = normalize_text(order_item_id)
     if not order_item_id or item.get("type") != "scan":
         return False
-    return normalize_text((item.get("payload") or {}).get("order_item_id")) == order_item_id
+    return backend_event_matches_filter(item, {order_item_id}, set())
 
 
 def backend_event_matches_group(item, order_item_ids, order_ids):
-    event_type = item.get("type")
-    payload = item.get("payload") or {}
-    if event_type == "scan":
-        return normalize_text(payload.get("order_item_id")) in order_item_ids
-    if event_type == "order_complete":
-        return normalize_text(payload.get("order_id")) in order_ids
-    return False
+    # Один предикат на слой очереди и на blocker: разные копии разошлись бы в нормализации
+    return backend_event_matches_filter(item, order_item_ids, order_ids)
 
 
 def backend_event_error_message(item):
@@ -182,6 +178,16 @@ def backend_sync_item_blocker(sync_result, order_item_id, pending_events):
         first_error = backend_event_error_message(current_pending[0])
         return f"Backend не принял КИЗы текущей позиции. Осталось по позиции: {len(current_pending)}. {first_error}"
     return ""
+
+
+def backend_undelivered_scans_blocker(sync_result, order_item_id, codes):
+    # Коды поставлены и проход ответил чисто, но доставки нет ни в реестре, ни отказом,
+    # ни остатком очереди: текст тот же, что у blocker для оставшихся событий позиции
+    unexplained = [
+        {"type": "scan", "payload": {"order_item_id": order_item_id, "code": code}}
+        for code in codes
+    ]
+    return backend_sync_item_blocker(sync_result, order_item_id, unexplained)
 
 
 def backend_sync_group_blocker(sync_result, order_item_ids, order_ids, pending_events):

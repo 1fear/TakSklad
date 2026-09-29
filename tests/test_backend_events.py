@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from taksklad import backend_events, storage
 from taksklad.backend_flow import (
@@ -26,6 +27,8 @@ class BackendEventQueueTests(unittest.TestCase):
         self.original_create_scan = backend_events.create_scan
         self.original_complete_order = backend_events.complete_order
         self.original_reconcile_queue_section = backend_events.reconcile_queue_section
+        self.original_undo_scan = backend_events.undo_scan
+        backend_events._DELIVERED_SCAN_KEYS.clear()
 
     def tearDown(self):
         backend_events.backend_configured = self.original_backend_configured
@@ -34,6 +37,8 @@ class BackendEventQueueTests(unittest.TestCase):
         backend_events.create_scan = self.original_create_scan
         backend_events.complete_order = self.original_complete_order
         backend_events.reconcile_queue_section = self.original_reconcile_queue_section
+        backend_events.undo_scan = self.original_undo_scan
+        backend_events._DELIVERED_SCAN_KEYS.clear()
         storage.TAKSKLAD_DATA_FILE = self._original_data_file
         self._temp_dir.cleanup()
 
@@ -357,6 +362,290 @@ class BackendEventQueueTests(unittest.TestCase):
         self.assertEqual(result["blocked_events"][0]["attempts"], 1)
         self.assertIn("409", result["blocked_events"][0]["last_error"])
         self.assertEqual(state["items"], [])
+
+    def test_successful_scan_marks_delivered_registry(self):
+        self.use_pending_events([
+            {
+                "id": "scan-1",
+                "type": "scan",
+                "payload": {"order_item_id": "item-1", "code": "TEST-CODE-ABC"},
+                "attempts": 0,
+                "last_error": "",
+            }
+        ])
+        backend_events.create_scan = lambda *args, **kwargs: None
+
+        self.assertFalse(backend_events.is_scan_delivered("item-1", "TEST-CODE-ABC"))
+        backend_events.sync_pending_backend_events()
+        self.assertTrue(backend_events.is_scan_delivered("item-1", "TEST-CODE-ABC"))
+
+    def test_duplicate_scan_ack_marks_delivered_registry(self):
+        self.use_pending_events([
+            {
+                "id": "scan-1",
+                "type": "scan",
+                "payload": {"order_item_id": "item-1", "code": "TEST-CODE-ABC"},
+                "attempts": 0,
+                "last_error": "",
+            }
+        ])
+
+        def duplicate_create_scan(*args, **kwargs):
+            raise BackendApiError(
+                "Backend HTTP 409: already scanned",
+                status_code=409,
+                detail="already scanned for this order item",
+            )
+
+        backend_events.create_scan = duplicate_create_scan
+
+        backend_events.sync_pending_backend_events()
+        self.assertTrue(backend_events.is_scan_delivered("item-1", "TEST-CODE-ABC"))
+
+    def test_network_error_does_not_mark_delivered_registry(self):
+        self.use_pending_events([
+            {
+                "id": "scan-1",
+                "type": "scan",
+                "payload": {"order_item_id": "item-1", "code": "TEST-CODE-ABC"},
+                "attempts": 0,
+                "last_error": "",
+            }
+        ])
+
+        def fail_create_scan(*args, **kwargs):
+            raise BackendApiError("temporary timeout")
+
+        backend_events.create_scan = fail_create_scan
+
+        backend_events.sync_pending_backend_events()
+        self.assertFalse(backend_events.is_scan_delivered("item-1", "TEST-CODE-ABC"))
+
+    def test_blocked_conflict_does_not_mark_delivered_registry(self):
+        self.use_pending_events([
+            {
+                "id": "scan-1",
+                "type": "scan",
+                "payload": {"order_item_id": "item-1", "code": "TEST-CODE-ABC"},
+                "attempts": 0,
+                "last_error": "",
+            }
+        ])
+
+        def conflict_create_scan(*args, **kwargs):
+            raise BackendApiError(
+                "Backend HTTP 409: code already scanned for another order item",
+                status_code=409,
+                detail="code already scanned for another order item",
+            )
+
+        backend_events.create_scan = conflict_create_scan
+
+        backend_events.sync_pending_backend_events()
+        self.assertFalse(backend_events.is_scan_delivered("item-1", "TEST-CODE-ABC"))
+
+    def test_blocked_conflict_forgets_previously_delivered_registry_key(self):
+        backend_events._DELIVERED_SCAN_KEYS.add(("item-1", "TEST-CODE-ABC"))
+        state = self.use_pending_events([
+            {
+                "id": "scan-1",
+                "type": "scan",
+                "payload": {"order_item_id": "item-1", "code": "TEST-CODE-ABC"},
+                "attempts": 0,
+                "last_error": "",
+            }
+        ])
+
+        def conflict_create_scan(*args, **kwargs):
+            raise BackendApiError(
+                "Backend HTTP 409: code already scanned for another order item",
+                status_code=409,
+                detail="code already scanned for another order item",
+            )
+
+        backend_events.create_scan = conflict_create_scan
+
+        self.assertTrue(backend_events.is_scan_delivered("item-1", "TEST-CODE-ABC"))
+        result = backend_events.sync_pending_backend_events()
+
+        self.assertEqual(result["blocked"], 1)
+        self.assertEqual(state["items"], [])
+        self.assertFalse(backend_events.is_scan_delivered("item-1", "TEST-CODE-ABC"))
+
+    def test_unexpected_exception_from_create_scan_forgets_registry_key_and_keeps_event(self):
+        backend_events._DELIVERED_SCAN_KEYS.add(("item-1", "TEST-CODE-ABC"))
+        state = self.use_pending_events([
+            {
+                "id": "scan-1",
+                "type": "scan",
+                "payload": {"order_item_id": "item-1", "code": "TEST-CODE-ABC"},
+                "attempts": 0,
+                "last_error": "",
+            }
+        ])
+
+        def broken_create_scan(*args, **kwargs):
+            raise OSError("connection reset")
+
+        backend_events.create_scan = broken_create_scan
+
+        self.assertTrue(backend_events.is_scan_delivered("item-1", "TEST-CODE-ABC"))
+        result = backend_events.sync_pending_backend_events()
+
+        self.assertEqual(result["synced"], 0)
+        self.assertEqual(result["failed"], 1)
+        self.assertEqual(result["remaining"], 1)
+        self.assertEqual(state["items"][0]["attempts"], 1)
+        self.assertIn("connection reset", state["items"][0]["last_error"])
+        self.assertFalse(backend_events.is_scan_delivered("item-1", "TEST-CODE-ABC"))
+
+    def test_unexpected_exception_from_create_scan_does_not_mark_delivered_registry(self):
+        self.use_pending_events([
+            {
+                "id": "scan-1",
+                "type": "scan",
+                "payload": {"order_item_id": "item-1", "code": "TEST-CODE-ABC"},
+                "attempts": 0,
+                "last_error": "",
+            }
+        ])
+        backend_events.create_scan = lambda *args, **kwargs: (_ for _ in ()).throw(OSError("connection reset"))
+
+        backend_events.sync_pending_backend_events()
+
+        self.assertFalse(backend_events.is_scan_delivered("item-1", "TEST-CODE-ABC"))
+
+    def test_new_failure_forgets_previously_delivered_registry_key(self):
+        backend_events._DELIVERED_SCAN_KEYS.add(("item-1", "TEST-CODE-ABC"))
+        self.use_pending_events([
+            {
+                "id": "scan-1",
+                "type": "scan",
+                "payload": {"order_item_id": "item-1", "code": "TEST-CODE-ABC"},
+                "attempts": 0,
+                "last_error": "",
+            }
+        ])
+        backend_events.create_scan = lambda *args, **kwargs: (_ for _ in ()).throw(BackendApiError("timeout"))
+
+        backend_events.sync_pending_backend_events()
+        self.assertFalse(backend_events.is_scan_delivered("item-1", "TEST-CODE-ABC"))
+
+    def test_remove_pending_backend_scan_forgets_delivered_registry(self):
+        backend_events._DELIVERED_SCAN_KEYS.add(("item-1", "TEST-CODE-ABC"))
+
+        backend_events.remove_pending_backend_scan({"_backend_order_item_id": "item-1"}, "TEST-CODE-ABC")
+
+        self.assertFalse(backend_events.is_scan_delivered("item-1", "TEST-CODE-ABC"))
+
+    def test_undo_backend_scan_forgets_delivered_registry(self):
+        backend_events._DELIVERED_SCAN_KEYS.add(("item-1", "TEST-CODE-ABC"))
+        backend_events.backend_configured = lambda: True
+        backend_events.undo_scan = lambda *args, **kwargs: {"status": "ok"}
+
+        backend_events.undo_backend_scan({"_backend_order_item_id": "item-1"}, "TEST-CODE-ABC")
+
+        self.assertFalse(backend_events.is_scan_delivered("item-1", "TEST-CODE-ABC"))
+
+    def test_undo_backend_scan_forgets_the_delivered_key_once_through_the_queue_removal(self):
+        backend_events._DELIVERED_SCAN_KEYS.add(("item-1", "TEST-CODE-ABC"))
+        backend_events.backend_configured = lambda: True
+        backend_events.undo_scan = lambda *args, **kwargs: {"status": "ok"}
+
+        with mock.patch.object(
+            backend_events, "forget_delivered_scan", wraps=backend_events.forget_delivered_scan
+        ) as forget:
+            backend_events.undo_backend_scan({"_backend_order_item_id": "item-1"}, "TEST-CODE-ABC")
+
+        forget.assert_called_once_with("item-1", "TEST-CODE-ABC")
+        self.assertFalse(backend_events.is_scan_delivered("item-1", "TEST-CODE-ABC"))
+
+    def test_requeueing_same_code_after_delivery_forgets_delivered_registry_key(self):
+        backend_events.backend_configured = lambda: True
+        backend_events._DELIVERED_SCAN_KEYS.add(("item-1", "TEST-CODE-ABC"))
+        self.assertTrue(backend_events.is_scan_delivered("item-1", "TEST-CODE-ABC"))
+
+        event_id = backend_events.queue_backend_scan({"_backend_order_item_id": "item-1"}, "TEST-CODE-ABC")
+
+        self.assertTrue(event_id)
+        self.assertEqual(len(storage.load_data_section("pending_backend_events", [])), 1)
+        self.assertFalse(backend_events.is_scan_delivered("item-1", "TEST-CODE-ABC"))
+
+    def test_queueing_scan_that_is_already_in_queue_keeps_delivered_registry_key(self):
+        backend_events.backend_configured = lambda: True
+        order = {"_backend_order_item_id": "item-1"}
+        backend_events.queue_backend_scan(order, "TEST-CODE-ABC")
+        backend_events._DELIVERED_SCAN_KEYS.add(("item-1", "TEST-CODE-ABC"))
+
+        second_id = backend_events.queue_backend_scan(order, "TEST-CODE-ABC")
+
+        self.assertTrue(second_id)
+        self.assertEqual(len(storage.load_data_section("pending_backend_events", [])), 1)
+        self.assertTrue(backend_events.is_scan_delivered("item-1", "TEST-CODE-ABC"))
+
+    def test_requeueing_scan_does_not_touch_other_delivered_registry_keys(self):
+        backend_events.backend_configured = lambda: True
+        backend_events._DELIVERED_SCAN_KEYS.add(("item-1", "TEST-CODE-OTHER"))
+        backend_events._DELIVERED_SCAN_KEYS.add(("item-2", "TEST-CODE-ABC"))
+
+        backend_events.queue_backend_scan({"_backend_order_item_id": "item-1"}, "TEST-CODE-ABC")
+
+        self.assertTrue(backend_events.is_scan_delivered("item-1", "TEST-CODE-OTHER"))
+        self.assertTrue(backend_events.is_scan_delivered("item-2", "TEST-CODE-ABC"))
+
+    def test_queueing_order_complete_does_not_touch_delivered_registry(self):
+        backend_events.backend_configured = lambda: True
+        backend_events._DELIVERED_SCAN_KEYS.add(("item-1", "TEST-CODE-ABC"))
+
+        event_id = backend_events.queue_backend_order_complete("order-9")
+
+        self.assertTrue(event_id)
+        self.assertEqual(backend_events._DELIVERED_SCAN_KEYS, {("item-1", "TEST-CODE-ABC")})
+
+    def test_scan_with_non_dict_payload_does_not_break_sync_and_keeps_error(self):
+        # Битый payload у одного события не должен рвать проход и сверку
+        # остальных: обработчики исключений не читают payload напрямую.
+        state = self.use_pending_events([
+            {"id": "bad-str", "type": "scan", "payload": "not-a-dict", "attempts": 0, "last_error": ""},
+            {"id": "bad-list", "type": "scan", "payload": ["item-1", "code"], "attempts": 0, "last_error": ""},
+            {
+                "id": "scan-good",
+                "type": "scan",
+                "payload": {"order_item_id": "item-2", "code": "TEST-CODE-GOOD"},
+                "attempts": 0,
+                "last_error": "",
+            },
+        ])
+        calls = []
+        backend_events.create_scan = lambda order_item_id, code, **kwargs: calls.append((order_item_id, code))
+
+        result = backend_events.sync_pending_backend_events()
+
+        self.assertEqual(calls, [("item-2", "TEST-CODE-GOOD")])
+        self.assertEqual(result["synced"], 1)
+        self.assertEqual(result["failed"], 2)
+        self.assertEqual(result["remaining"], 2)
+        self.assertEqual([item["id"] for item in state["items"]], ["bad-str", "bad-list"])
+        for item in state["items"]:
+            self.assertEqual(item["attempts"], 1)
+            self.assertTrue(item["last_error"])
+        self.assertTrue(backend_events.is_scan_delivered("item-2", "TEST-CODE-GOOD"))
+        self.assertEqual(backend_events._DELIVERED_SCAN_KEYS, {("item-2", "TEST-CODE-GOOD")})
+
+    def test_filtered_sync_skips_event_with_non_dict_payload(self):
+        state = self.use_pending_events([
+            {"id": "bad-str", "type": "scan", "payload": "not-a-dict", "attempts": 0, "last_error": ""},
+            {"id": "bad-complete", "type": "order_complete", "payload": 5, "attempts": 0, "last_error": ""},
+        ])
+        backend_events.create_scan = lambda *args, **kwargs: self.fail("create_scan must not be called")
+
+        result = backend_events.sync_pending_backend_events(order_item_ids=["item-1"], order_ids=["order-9"])
+
+        self.assertEqual(result["synced"], 0)
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(result["remaining"], 2)
+        self.assertEqual(state["items"][0]["attempts"], 0)
+        self.assertEqual(state["items"][1]["attempts"], 0)
 
 
 if __name__ == "__main__":

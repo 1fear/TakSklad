@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 
 from .catalog import get_product_rule
 from .config import APP_VERSION, SKLADBOT_REQUEST_NUMBER_COLUMN, STATUS_COLUMN
-from .orders import get_order_date_value, get_plan_blocks
+from .orders import get_order_date_value, get_plan_blocks, order_group_key
 from .scan_quantities import (
     product_key_from_name,
     scan_code_product_key,
@@ -106,6 +106,83 @@ def group_finish_blocker(orders, completed_products):
         if scanned_count < plan_blocks:
             return f"Позиция {idx}: отсканировано {scanned_count} из {plan_blocks} блоков"
     return ""
+
+
+def _ensure_attr(app, name, factory):
+    """Атрибут окна нужного типа: создаётся, если его нет или тип не тот
+
+    Состояние завершения объявлено в ScanningApp.__init__; создание здесь нужно голым объектам в тестах
+    """
+    value = getattr(app, name, None)
+    if not isinstance(value, factory):
+        value = factory()
+        setattr(app, name, value)
+    return value
+
+
+def get_finishing_groups(app):
+    """Множество групп заказа, чьё завершение на сервере идёт в фоне
+
+    Пока группа в нём, список заказов её не показывает
+    """
+    return _ensure_attr(app, "finishing_group_keys", set)
+
+
+def hide_finishing_groups(app, orders):
+    """Заказы без групп, которые сейчас завершаются: вход для каждого обновления списка с сервера"""
+    groups = get_finishing_groups(app)
+    if not groups:
+        return orders
+    return [order for order in orders or [] if order_group_key(order) not in groups]
+
+
+def get_running_finishing_groups(app):
+    """Группы, по которым сервер ещё не ответил на завершение: их обрывать нельзя"""
+    answered = _ensure_attr(app, "finishing_answered", dict)
+    return {group for group in get_finishing_groups(app) if group not in answered}
+
+
+def _refresh_generation(app):
+    return _ensure_attr(app, "refresh_generation", int)
+
+
+def next_refresh_generation(app):
+    """Номер обновления списка, начатого сейчас: растёт с каждым стартом"""
+    generation = _refresh_generation(app) + 1
+    app.refresh_generation = generation
+    return generation
+
+
+def remember_finishing_hidden_orders(app, group_key, orders):
+    """Скрытые заказы группы остаются на окне: по ним ищется владелец кода при дубле"""
+    _ensure_attr(app, "finishing_hidden_orders", dict)[group_key] = list(orders)
+
+
+def get_finishing_hidden_orders(app):
+    hidden = _ensure_attr(app, "finishing_hidden_orders", dict)
+    return [order for orders in hidden.values() for order in orders]
+
+
+def mark_finishing_answered(app, group_key):
+    """Сервер ответил: группа остаётся скрытой, пока не применится обновление, начатое после ответа"""
+    _ensure_attr(app, "finishing_answered", dict)[group_key] = _refresh_generation(app)
+
+
+def drop_finishing_group(app, group_key):
+    get_finishing_groups(app).discard(group_key)
+    _ensure_attr(app, "finishing_answered", dict).pop(group_key, None)
+    _ensure_attr(app, "finishing_hidden_orders", dict).pop(group_key, None)
+
+
+def release_finishing_groups(app, generation):
+    """Освобождает группы, на которые сервер ответил раньше, чем началось обновление с этим номером"""
+    answered = _ensure_attr(app, "finishing_answered", dict)
+    if not answered:
+        return set()
+    released = {group for group, mark in answered.items() if mark < generation}
+    for group in released:
+        drop_finishing_group(app, group)
+    return released
 
 
 def is_terminal_scan_state(order):

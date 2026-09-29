@@ -41,9 +41,16 @@ def fetch_sheet_data():
         raise RuntimeError(f"Backend refresh недоступен: {exc}") from exc
 
 
-def fetch_sheet_data_with_sync(sync_skladbot=True):
+def fetch_sheet_data_with_sync(sync_skladbot=True, background=False):
+    """Список заказов с сервера после прохода очереди backend-событий
+
+    background=False: полный проход с ожиданием замка очереди (импорт: новые заказы должны видеть все сканы)
+    background=True: проход не ждёт занятый замок и уступает экрану перед каждым событием (обновление списка);
+    что не ушло, остаётся в очереди, а несохранённые локальные коды при сверке подмешивает
+    merge_remote_and_local_scan_codes
+    """
     try:
-        backend_result = sync_pending_backend_events()
+        backend_result = sync_pending_backend_events(background=background)
     except Exception as exc:
         logging.warning("Backend queue sync failed before refresh", exc_info=True)
         backend_result = {

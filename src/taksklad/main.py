@@ -2,6 +2,7 @@ import logging
 import os
 import sys
 import socket
+import threading
 import uuid
 
 import tkinter as tk
@@ -69,6 +70,7 @@ from .logging_setup import configure_app_logging
 from .single_instance import acquire_single_instance_lock, release_single_instance_lock
 from .credential_lock import acquire_credential_mutation_lock, release_credential_mutation_lock
 from .secret_store import SecretStoreError
+from .printing import prefetch_available_printers
 
 configure_app_logging(LOG_FILE, LOG_MAX_BYTES, LOG_BACKUP_COUNT)
 
@@ -159,6 +161,14 @@ class ScanningApp(
         self.daily_report_check_running = False
         self.skladbot_sync_running = False
         self.backend_sync_running = False
+        self.backend_sync_after_id = None
+        # Завершение заказа в фоне (desktop_scan_rules, app_finish, app_runtime)
+        self.finishing_group_keys = set()
+        self.finishing_answered = {}
+        self.finishing_hidden_orders = {}
+        self.finishing_failed_before_answer = False
+        self.refresh_generation = 0
+        self.close_wait_deadline = None
         self.return_lookup_result = None
         self.product_photo_image = None
         self.last_sync_result = {"synced": 0, "failed": 0, "remaining": 0}
@@ -171,10 +181,11 @@ class ScanningApp(
         self.after(100, lambda: self.scan_entry.focus_set())
         self.after(150, lambda: self.refresh_from_sheet(initial=True))
         self.after(500, self.check_pending_prints)
+        threading.Thread(target=prefetch_available_printers, daemon=True).start()
         self.after(1200, self.check_for_updates)
         self.after(2500, self.sync_pending_telegram_async)
         self.after(4000, self.poll_telegram_bot_async)
-        self.after(13000, self.sync_backend_events_async)
+        self.schedule_backend_sync(13000)
         self.after(15000, self.run_skladbot_periodic_refresh)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 

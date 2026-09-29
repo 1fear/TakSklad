@@ -287,20 +287,14 @@ def reconcile_queue_section(section, snapshot, remaining):
 
     def reconcile(current):
         result = []
-        seen = set()
         for item in current:
             event_id = _queue_item_id(item)
             if event_id in snapshot_ids:
                 replacement = remaining_by_id.get(event_id)
                 if replacement is not None:
                     result.append(replacement)
-                    seen.add(event_id)
                 continue
             result.append(item)
-            seen.add(event_id)
-        for event_id, item in remaining_by_id.items():
-            if event_id not in seen:
-                result.append(item)
         return result
 
     return mutate_queue_section(section, reconcile)

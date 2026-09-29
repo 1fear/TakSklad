@@ -7,7 +7,10 @@ from .backend_flow import backend_blocked_scan_events_for_item
 from .config import BG_MAIN, FG_MUTED, STATUS_COLUMN, STATUS_COMPLETED, STATUS_NOT_COMPLETED
 from .desktop_diagnostics import log_refresh_diagnostic_summary
 from .desktop_scan_rules import (
+    hide_finishing_groups,
     is_terminal_scan_state,
+    next_refresh_generation,
+    release_finishing_groups,
     scanned_blocks_for_order,
     scanned_codes_for_order,
 )
@@ -20,6 +23,8 @@ from .orders import get_plan_blocks
 from .scan_quantities import scan_entries_for_order_codes
 from .utils import normalize_kiz_code, normalize_text
 
+
+BACKEND_SYNC_INTERVAL_MS = 15000
 
 TERMINAL_REFRESH_STATUSES = {
     "completed",
@@ -94,6 +99,7 @@ def refresh_order_is_terminal(order):
 class DataLoadingMixin:
     def load_data(self, show_empty_warning=True):
         self.today_orders, self.sheet, self.all_existing_codes = fetch_sheet_data()
+        self.today_orders = hide_finishing_groups(self, self.today_orders)
         if show_empty_warning and not self.today_orders:
             self.show_warning(
                 f"Нет заказов со статусом '{STATUS_NOT_COMPLETED}'.\n\n"
@@ -112,20 +118,37 @@ class DataLoadingMixin:
         return fetch_sheet_data()
 
 
+    def schedule_backend_sync(self, delay_ms=BACKEND_SYNC_INTERVAL_MS):
+        # Одна цепочка отложенных вызовов: перед новым after снимаем прежний,
+        # иначе каждый ручной вызов добавляет ещё одну вечную цепочку
+        previous_after_id = getattr(self, "backend_sync_after_id", None)
+        self.backend_sync_after_id = None
+        if previous_after_id:
+            try:
+                self.after_cancel(previous_after_id)
+            except tk.TclError:
+                # вызов уже сработал или окно закрывается: снимать нечего
+                pass
+        try:
+            self.backend_sync_after_id = self.after(delay_ms, self.sync_backend_events_async)
+        except tk.TclError:
+            pass
+
+
     def sync_backend_events_async(self):
         if not backend_enabled() or self.backend_sync_running:
-            try:
-                self.after(15000, self.sync_backend_events_async)
-            except tk.TclError:
-                pass
+            self.schedule_backend_sync()
             return
 
         self.backend_sync_running = True
 
         def work():
-            return sync_pending_backend_events()
+            return sync_pending_backend_events(background=True)
 
         def on_success(result):
+            if isinstance(result, dict) and result.get("skipped"):
+                # Замок занят проходом с экрана: это пропуск такта, а не результат
+                return
             if isinstance(result, dict):
                 self.last_sync_result["backend"] = result
             remaining = result.get("remaining", 0) if isinstance(result, dict) else 0
@@ -151,10 +174,7 @@ class DataLoadingMixin:
 
         def on_finally():
             self.backend_sync_running = False
-            try:
-                self.after(15000, self.sync_backend_events_async)
-            except tk.TclError:
-                pass
+            self.schedule_backend_sync()
 
         self.run_background(
             "Не удалось синхронизировать backend-очередь",
@@ -171,6 +191,8 @@ class DataLoadingMixin:
         else:
             self.today_orders, self.sheet, self.all_existing_codes = result
             self.last_sync_result = {"synced": 0, "failed": 0, "remaining": 0, "primary_source": "backend"}
+        # Группа, которая сейчас завершается на сервере, в список не возвращается
+        self.today_orders = hide_finishing_groups(self, self.today_orders)
 
         if show_empty_warning and not self.today_orders:
             self.show_warning(
@@ -285,7 +307,11 @@ class DataLoadingMixin:
             self.safe_config(self.refresh_btn, state="disabled")
             self.safe_config(self.import_btn, state="disabled")
 
+        # Номер этого обновления: группы, на которые сервер ответил до его старта, вернутся в список
+        refresh_generation = next_refresh_generation(self)
+
         def on_success(result):
+            release_finishing_groups(self, refresh_generation)
             keep_current_selection = bool(self.current_order) and not initial
             self.apply_loaded_data(result, show_empty_warning=initial)
             if not keep_current_selection:
@@ -343,7 +369,8 @@ class DataLoadingMixin:
 
         self.run_background(
             "Не удалось обновить список заказов",
-            lambda: fetch_sheet_data_with_sync(sync_skladbot=True),
+            # Обновление списка не держит замок очереди на весь проход: смена позиции не ждёт его окончания
+            lambda: fetch_sheet_data_with_sync(sync_skladbot=True, background=True),
             on_success=on_success,
             on_error=on_error,
             on_finally=on_finally

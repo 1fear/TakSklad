@@ -2,6 +2,8 @@ import logging
 import os
 import subprocess
 import tempfile
+import threading
+import time
 from datetime import datetime
 
 from PIL import Image, ImageDraw, ImageFont
@@ -45,7 +47,18 @@ def parse_label_size_text(value):
     return normalize_label_size(width, height)
 
 
-def list_available_printers():
+PRINTER_CACHE_TTL_SECONDS = 600
+_printer_cache_lock = threading.Lock()
+_printer_cache = {"printers": None, "stored_at": 0.0, "generation": 0}
+
+
+def invalidate_printer_cache():
+    with _printer_cache_lock:
+        _printer_cache["printers"] = None
+        _printer_cache["generation"] += 1
+
+
+def _read_available_printers():
     commands = []
     if os.name == "nt":
         commands.append([
@@ -58,9 +71,17 @@ def list_available_printers():
     else:
         commands.append(["lpstat", "-e"])
 
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     for command in commands:
         try:
-            completed = subprocess.run(command, capture_output=True, text=True, timeout=5, check=False)
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+                creationflags=creationflags,
+            )
         except Exception:
             continue
         if completed.returncode != 0:
@@ -74,6 +95,31 @@ def list_available_printers():
         if printers:
             return sorted(dict.fromkeys(printers))
     return []
+
+
+def list_available_printers():
+    with _printer_cache_lock:
+        cached = _printer_cache["printers"]
+        if cached is not None and time.monotonic() - _printer_cache["stored_at"] < PRINTER_CACHE_TTL_SECONDS:
+            return list(cached)
+        generation = _printer_cache["generation"]
+
+    printers = _read_available_printers()
+
+    if printers:
+        with _printer_cache_lock:
+            # сброс во время чтения: результат мог устареть, в кэш его не кладём
+            if _printer_cache["generation"] == generation:
+                _printer_cache["printers"] = list(printers)
+                _printer_cache["stored_at"] = time.monotonic()
+    return printers
+
+
+def prefetch_available_printers():
+    try:
+        list_available_printers()
+    except Exception:
+        logging.exception("Не удалось заранее прочитать список принтеров")
 
 
 def normalize_print_settings(settings=None):
@@ -147,8 +193,10 @@ def mm_to_px(mm_value, dpi=LABEL_DPI):
 def powershell_quote(value):
     return "'" + str(value).replace("'", "''") + "'"
 
-def send_image_to_windows_printer(file_path, printer_name="", label_width_mm=None, label_height_mm=None):
-    image_path = os.path.abspath(file_path)
+def send_images_to_windows_printer(file_paths, printer_name="", label_width_mm=None, label_height_mm=None):
+    image_paths = [os.path.abspath(file_path) for file_path in file_paths]
+    if not image_paths:
+        return False
     printer_name = normalize_text(printer_name)
     label_width_mm, label_height_mm = normalize_label_size(label_width_mm, label_height_mm)
     paper_width = int(round(label_width_mm / 25.4 * 100))
@@ -157,31 +205,37 @@ def send_image_to_windows_printer(file_path, printer_name="", label_width_mm=Non
     printer_line = ""
     if printer_name and printer_name != "Термопринтер":
         printer_line = f"$printDocument.PrinterSettings.PrinterName = {powershell_quote(printer_name)}"
+    image_paths_literal = ",\n".join(f"    {powershell_quote(image_path)}" for image_path in image_paths)
 
+    # Один процесс PowerShell на все страницы, но на каждую картинку свой PrintDocument
     script = f"""
 Add-Type -AssemblyName System.Drawing
-$imagePath = {powershell_quote(image_path)}
-$image = [System.Drawing.Image]::FromFile($imagePath)
-$printDocument = New-Object System.Drawing.Printing.PrintDocument
-{printer_line}
-$printDocument.DocumentName = "{APP_NAME} summary"
-$printDocument.DefaultPageSettings.PaperSize = New-Object System.Drawing.Printing.PaperSize("{paper_name}", {paper_width}, {paper_height})
-$printDocument.DefaultPageSettings.Margins = New-Object System.Drawing.Printing.Margins(0, 0, 0, 0)
-$printDocument.OriginAtMargins = $false
-if (-not $printDocument.PrinterSettings.IsValid) {{
-    throw "Printer is not valid: $($printDocument.PrinterSettings.PrinterName)"
-}}
-Write-Output "TakSklad printer: $($printDocument.PrinterSettings.PrinterName)"
-$printDocument.add_PrintPage({{
-    param($sender, $event)
-    $event.Graphics.DrawImage($image, $event.PageBounds)
-    $event.HasMorePages = $false
-}})
-try {{
-    $printDocument.Print()
-}} finally {{
-    $image.Dispose()
-    $printDocument.Dispose()
+$imagePaths = @(
+{image_paths_literal}
+)
+foreach ($imagePath in $imagePaths) {{
+    $image = [System.Drawing.Image]::FromFile($imagePath)
+    $printDocument = New-Object System.Drawing.Printing.PrintDocument
+    {printer_line}
+    $printDocument.DocumentName = "{APP_NAME} summary"
+    $printDocument.DefaultPageSettings.PaperSize = New-Object System.Drawing.Printing.PaperSize("{paper_name}", {paper_width}, {paper_height})
+    $printDocument.DefaultPageSettings.Margins = New-Object System.Drawing.Printing.Margins(0, 0, 0, 0)
+    $printDocument.OriginAtMargins = $false
+    if (-not $printDocument.PrinterSettings.IsValid) {{
+        throw "Printer is not valid: $($printDocument.PrinterSettings.PrinterName)"
+    }}
+    Write-Output "TakSklad printer: $($printDocument.PrinterSettings.PrinterName)"
+    $printDocument.add_PrintPage({{
+        param($sender, $event)
+        $event.Graphics.DrawImage($image, $event.PageBounds)
+        $event.HasMorePages = $false
+    }})
+    try {{
+        $printDocument.Print()
+    }} finally {{
+        $image.Dispose()
+        $printDocument.Dispose()
+    }}
 }}
 """
     ps_file = tempfile.NamedTemporaryFile(suffix=".ps1", delete=False, mode="w", encoding="utf-8")
@@ -199,7 +253,7 @@ try {{
                 ps_file.name,
             ],
             check=True,
-            timeout=30,
+            timeout=30 * len(image_paths),
             creationflags=creationflags,
             capture_output=True,
             text=True,
@@ -209,7 +263,7 @@ try {{
             printer_name or "Windows default",
             label_width_mm,
             label_height_mm,
-            image_path,
+            ", ".join(image_paths),
             normalize_text(completed.stdout),
             normalize_text(completed.stderr),
         )
@@ -220,10 +274,30 @@ try {{
         except OSError:
             pass
 
+def send_image_to_windows_printer(file_path, printer_name="", label_width_mm=None, label_height_mm=None):
+    # одиночная отправка сохранена для совместимости и тестов, печать листа идёт через send_images_to_printer
+    return send_images_to_windows_printer(
+        [file_path],
+        printer_name=printer_name,
+        label_width_mm=label_width_mm,
+        label_height_mm=label_height_mm,
+    )
+
+def _log_send_failure(exc):
+    if isinstance(exc, subprocess.CalledProcessError):
+        logging.exception(
+            "Не удалось отправить сводку напрямую на печать: stdout=%s stderr=%s",
+            normalize_text(getattr(exc, "stdout", "")),
+            normalize_text(getattr(exc, "stderr", "")),
+        )
+    else:
+        logging.exception("Не удалось отправить сводку напрямую на печать")
+
 def send_image_to_printer(file_path, printer_name="", label_width_mm=None, label_height_mm=None):
     try:
         label_width_mm, label_height_mm = normalize_label_size(label_width_mm, label_height_mm)
         if os.name == 'nt':
+            # одиночная отправка сохранена для совместимости и тестов, печать листа идёт через send_images_to_printer
             return send_image_to_windows_printer(
                 file_path,
                 printer_name=printer_name,
@@ -242,18 +316,45 @@ def send_image_to_printer(file_path, printer_name="", label_width_mm=None, label
             normalize_text(completed.stderr),
         )
         return True
-    except subprocess.CalledProcessError as exc:
-        logging.exception(
-            "Не удалось отправить сводку напрямую на печать: stdout=%s stderr=%s",
-            normalize_text(getattr(exc, "stdout", "")),
-            normalize_text(getattr(exc, "stderr", "")),
-        )
+    except Exception as exc:
+        _log_send_failure(exc)
         return False
-    except Exception:
-        logging.exception("Не удалось отправить сводку напрямую на печать")
+
+def send_images_to_printer(file_paths, printer_name="", label_width_mm=None, label_height_mm=None):
+    file_paths = list(file_paths)
+    if not file_paths:
+        return False
+    if os.name != 'nt':
+        for file_path in file_paths:
+            if not send_image_to_printer(
+                file_path,
+                printer_name=printer_name,
+                label_width_mm=label_width_mm,
+                label_height_mm=label_height_mm,
+            ):
+                return False
+        return True
+
+    try:
+        label_width_mm, label_height_mm = normalize_label_size(label_width_mm, label_height_mm)
+        return bool(send_images_to_windows_printer(
+            file_paths,
+            printer_name=printer_name,
+            label_width_mm=label_width_mm,
+            label_height_mm=label_height_mm,
+        ))
+    except Exception as exc:
+        _log_send_failure(exc)
         return False
 
 def print_summary(address, all_products, print_settings=None):
+    result = _print_summary(address, all_products, print_settings=print_settings)
+    if result is None:
+        # неудача печати: следующий диалог перечитает список принтеров
+        invalidate_printer_cache()
+    return result
+
+def _print_summary(address, all_products, print_settings=None):
     try:
         if not all_products:
             return None
@@ -379,13 +480,13 @@ def print_summary(address, all_products, print_settings=None):
             temp_file.close()
             printed_files.append(temp_file.name)
 
-            if not send_image_to_printer(
-                temp_file.name,
-                printer_name=printer_name,
-                label_width_mm=label_width_mm,
-                label_height_mm=label_height_mm,
-            ):
-                return None
+        if not send_images_to_printer(
+            printed_files,
+            printer_name=printer_name,
+            label_width_mm=label_width_mm,
+            label_height_mm=label_height_mm,
+        ):
+            return None
 
         return printed_files
     except Exception as e:

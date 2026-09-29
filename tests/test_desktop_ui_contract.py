@@ -2190,5 +2190,446 @@ class DesktopUiContractTests(unittest.TestCase):
         self.assertEqual(text, "Синхронизация: заказ недосканирован")
 
 
+class DesktopBackendQueueUsageTests(unittest.TestCase):
+    """Экран смены позиции и завершения заказа пользуется слоем очереди backend_events."""
+
+    FIRST_CODE = "01040063960540670001XXXXXXXXXXXXXXX"
+    SECOND_CODE = "01040063960540670002XXXXXXXXXXXXXXX"
+
+    @staticmethod
+    def _capturing_run_background(captured):
+        def run_background(_title, work, on_success=None, on_error=None, on_finally=None):
+            captured["work"] = work
+            captured.setdefault("entries", []).append(
+                {"work": work, "on_success": on_success, "on_error": on_error, "on_finally": on_finally}
+            )
+
+        return run_background
+
+    def _next_product_app(self, order, captured):
+        class FakeWidget:
+            def config(self, **kwargs):
+                pass
+
+        fake = SimpleNamespace(
+            ensure_update_allowed=lambda: True,
+            operation_in_progress=False,
+            current_order=order,
+            scanned_codes=[self.FIRST_CODE, self.SECOND_CODE],
+            next_product_btn=FakeWidget(),
+            finish_btn=FakeWidget(),
+            safe_config=lambda widget, **kwargs: None,
+            set_busy=lambda message: None,
+            run_background=self._capturing_run_background(captured),
+        )
+        return fake
+
+    def _run_next_product_work(self, order, *, delivered, passes=None, pending_by_pass=None, queue_ok=True):
+        """Прогнать work() смены позиции на подменённом слое очереди
+
+        delivered: коды, которые реестр считает доставленными до начала
+        passes: по функции на каждый проход, f(queued_codes, delivered_set) -> ответ прохода,
+        по умолчанию проход доставляет всё, что поставлено в очередь
+        pending_by_pass: что вернёт load_pending_backend_events после k-го прохода
+        """
+        delivered = set(delivered)
+        calls = []
+        queued_since_pass = []
+        captured = {}
+        fake = self._next_product_app(order, captured)
+        clean = {"synced": 1, "failed": 0, "remaining": 0, "blocked_events": []}
+
+        def deliver_all(queued_codes, delivered_set):
+            delivered_set.update(queued_codes)
+            return dict(clean)
+
+        passes = list(passes) if passes else [deliver_all]
+        pending_by_pass = list(pending_by_pass or [])
+        sync_calls = []
+
+        def fake_is_delivered(item_id, code):
+            calls.append(("is_delivered", item_id, code))
+            return code in delivered
+
+        def fake_queue(queued_order, code):
+            calls.append(("queue", code))
+            queued_since_pass.append(code)
+            return ("event-" + code) if queue_ok else ""
+
+        def fake_sync(*args, **kwargs):
+            calls.append(("sync", args, kwargs))
+            handler = passes[min(len(sync_calls), len(passes) - 1)]
+            sync_calls.append(kwargs)
+            answer = handler(list(queued_since_pass), delivered)
+            del queued_since_pass[:]
+            return answer
+
+        def fake_pending():
+            if not sync_calls or not pending_by_pass:
+                return []
+            return pending_by_pass[min(len(sync_calls), len(pending_by_pass)) - 1]
+
+        backup = mock.Mock(return_value=True)
+        outcome = SimpleNamespace(calls=calls, result=None, error=None, backup=backup)
+        with (
+            mock.patch("taksklad.app_scanning.order_uses_backend_scan_path", return_value=True),
+            mock.patch("taksklad.app_scanning.is_scan_delivered", side_effect=fake_is_delivered),
+            mock.patch("taksklad.app_scanning.queue_backend_scan", side_effect=fake_queue),
+            mock.patch("taksklad.app_scanning.sync_pending_backend_events", side_effect=fake_sync),
+            mock.patch("taksklad.app_scanning.load_pending_backend_events", side_effect=fake_pending),
+            mock.patch("taksklad.app_scanning.write_scan_backup", backup),
+        ):
+            ScanningApp.next_product(fake)
+            try:
+                outcome.result = captured["work"]()
+            except Exception as exc:
+                outcome.error = exc
+        return outcome
+
+    def _order(self):
+        return {
+            "Кол-во блок": 2,
+            "Товары": "Chapman Brown SSL",
+            "Отсканированные коды": "",
+            "_backend_order_item_id": "item-1",
+        }
+
+    def _blocked_event(self, code=None):
+        return {
+            "id": "event-blocked",
+            "type": "scan",
+            "payload": {"order_item_id": "item-1", "code": code or self.FIRST_CODE},
+            "last_error": "Код уже использован",
+        }
+
+    def test_next_product_does_not_requeue_code_the_server_already_accepted(self):
+        outcome = self._run_next_product_work(self._order(), delivered={self.FIRST_CODE})
+
+        queued = [call[1] for call in outcome.calls if call[0] == "queue"]
+        self.assertEqual(queued, [self.SECOND_CODE])
+        self.assertIsNone(outcome.error)
+        self.assertEqual(outcome.result, {"queued": False, "message": "backend_saved", "backend": True})
+
+    def test_next_product_queues_every_code_the_server_has_not_accepted(self):
+        outcome = self._run_next_product_work(self._order(), delivered=set())
+
+        queued = [call[1] for call in outcome.calls if call[0] == "queue"]
+        self.assertEqual(queued, [self.FIRST_CODE, self.SECOND_CODE])
+
+    def test_next_product_checks_delivery_before_queueing_each_code(self):
+        # постановка в очередь сама сбрасывает ключ «доставлено»: проверка после неё ничего бы не сэкономила
+        outcome = self._run_next_product_work(self._order(), delivered={self.FIRST_CODE})
+
+        first_sync = [call[0] for call in outcome.calls].index("sync")
+        before_pass = outcome.calls[:first_sync]
+        events = [(call[0], call[-1] if call[0] == "is_delivered" else call[1]) for call in before_pass]
+        self.assertEqual(
+            events,
+            [
+                ("is_delivered", self.FIRST_CODE),
+                ("is_delivered", self.SECOND_CODE),
+                ("queue", self.SECOND_CODE),
+            ],
+        )
+        self.assertEqual({call[1] for call in outcome.calls if call[0] == "is_delivered"}, {"item-1"})
+
+    def test_next_product_sync_pass_is_limited_to_its_own_position(self):
+        outcome = self._run_next_product_work(self._order(), delivered=set())
+
+        syncs = [call for call in outcome.calls if call[0] == "sync"]
+        self.assertEqual(len(syncs), 1)
+        self.assertEqual(syncs[0][1], ())
+        self.assertEqual(syncs[0][2], {"order_item_ids": {"item-1"}})
+
+    def test_next_product_normal_path_makes_exactly_one_pass(self):
+        outcome = self._run_next_product_work(self._order(), delivered=set())
+
+        self.assertEqual([call[0] for call in outcome.calls].count("sync"), 1)
+        self.assertEqual(outcome.result, {"queued": False, "message": "backend_saved", "backend": True})
+        outcome.backup.assert_called_once()
+
+    def test_next_product_code_acked_as_duplicate_needs_no_second_pass(self):
+        # код принят в прошлом запуске программы: реестр пуст, но первый проход получил дубль-ack
+        # и пометил его доставленным, значит повторять нечего
+        outcome = self._run_next_product_work(self._order(), delivered=set())
+
+        self.assertEqual([call[0] for call in outcome.calls].count("sync"), 1)
+        self.assertEqual([call[1] for call in outcome.calls if call[0] == "queue"], [self.FIRST_CODE, self.SECOND_CODE])
+        self.assertIsNone(outcome.error)
+
+    def test_next_product_keeps_blocked_events_path_after_filtered_pass(self):
+        blocked = self._blocked_event()
+
+        def blocked_pass(queued, delivered):
+            return {"synced": 0, "failed": 0, "blocked": 1, "remaining": 1, "blocked_events": [blocked]}
+
+        outcome = self._run_next_product_work(self._order(), delivered=set(), passes=[blocked_pass])
+
+        self.assertEqual(outcome.result, {"backend_blocked": True, "blocked_events": [blocked], "backend": True})
+        self.assertEqual([call[0] for call in outcome.calls].count("sync"), 1)
+        outcome.backup.assert_not_called()
+
+    def test_next_product_requeues_code_lost_to_background_refusal_and_reports_blocked(self):
+        # событие кода уже стояло в очереди и его отправлял фон: фон получил отказ, убрал событие в blocked
+        # и забыл ключ, проход с экрана его уже не видит и отвечает чисто, код при этом не доставлен
+        blocked = self._blocked_event(self.SECOND_CODE)
+
+        def clean_but_second_code_lost(queued, delivered):
+            delivered.add(self.FIRST_CODE)
+            return {"synced": 1, "failed": 0, "remaining": 0, "blocked_events": []}
+
+        def server_refuses_second_code(queued, delivered):
+            return {"synced": 0, "failed": 0, "blocked": 1, "remaining": 0, "blocked_events": [blocked]}
+
+        outcome = self._run_next_product_work(
+            self._order(),
+            delivered=set(),
+            passes=[clean_but_second_code_lost, server_refuses_second_code],
+        )
+
+        self.assertIsNone(outcome.error)
+        self.assertEqual(outcome.result, {"backend_blocked": True, "blocked_events": [blocked], "backend": True})
+        self.assertNotEqual(outcome.result.get("message"), "backend_saved")
+        outcome.backup.assert_not_called()
+        self.assertEqual([call[0] for call in outcome.calls].count("sync"), 2)
+        self.assertEqual(
+            [call[1] for call in outcome.calls if call[0] == "queue"],
+            [self.FIRST_CODE, self.SECOND_CODE, self.SECOND_CODE],
+        )
+        syncs = [call for call in outcome.calls if call[0] == "sync"]
+        self.assertEqual([call[2] for call in syncs], [{"order_item_ids": {"item-1"}}] * 2)
+
+    def test_next_product_second_pass_delivers_requeued_code_and_saves_position(self):
+        def first_pass_loses_second_code(queued, delivered):
+            delivered.add(self.FIRST_CODE)
+            return {"synced": 1, "failed": 0, "remaining": 0, "blocked_events": []}
+
+        def second_pass_delivers(queued, delivered):
+            delivered.update(queued)
+            return {"synced": 1, "failed": 0, "remaining": 0, "blocked_events": []}
+
+        outcome = self._run_next_product_work(
+            self._order(),
+            delivered=set(),
+            passes=[first_pass_loses_second_code, second_pass_delivers],
+        )
+
+        self.assertIsNone(outcome.error)
+        self.assertEqual(outcome.result, {"queued": False, "message": "backend_saved", "backend": True})
+        self.assertEqual([call[0] for call in outcome.calls].count("sync"), 2)
+        outcome.backup.assert_called_once()
+
+    def test_next_product_makes_at_most_two_passes_and_refuses_unexplained_undelivered_code(self):
+        def delivers_nothing(queued, delivered):
+            return {"synced": 0, "failed": 0, "remaining": 0, "blocked_events": []}
+
+        outcome = self._run_next_product_work(
+            self._order(),
+            delivered={self.FIRST_CODE},
+            passes=[delivers_nothing],
+        )
+
+        self.assertEqual([call[0] for call in outcome.calls].count("sync"), 2)
+        self.assertIsInstance(outcome.error, RuntimeError)
+        self.assertIsNone(outcome.result)
+        self.assertEqual(
+            str(outcome.error),
+            "Backend не принял КИЗы текущей позиции. Осталось по позиции: 1. Backend не принял событие",
+        )
+        outcome.backup.assert_not_called()
+
+    def test_next_product_second_pass_leftover_event_gives_the_regular_blocker(self):
+        leftover = {
+            "id": "event-left",
+            "type": "scan",
+            "payload": {"order_item_id": "item-1", "code": self.SECOND_CODE},
+            "last_error": "HTTP 500",
+        }
+
+        def delivers_nothing(queued, delivered):
+            return {"synced": 0, "failed": 1, "remaining": 1, "blocked_events": []}
+
+        outcome = self._run_next_product_work(
+            self._order(),
+            delivered={self.FIRST_CODE},
+            passes=[delivers_nothing],
+            pending_by_pass=[[], [leftover]],
+        )
+
+        self.assertEqual([call[0] for call in outcome.calls].count("sync"), 2)
+        self.assertIsInstance(outcome.error, RuntimeError)
+        self.assertIn("Осталось по позиции: 1", str(outcome.error))
+        self.assertIn("HTTP 500", str(outcome.error))
+        outcome.backup.assert_not_called()
+
+    def test_next_product_first_pass_blocker_stops_before_the_race_check(self):
+        leftover = {
+            "id": "event-left",
+            "type": "scan",
+            "payload": {"order_item_id": "item-1", "code": self.SECOND_CODE},
+            "last_error": "HTTP 500",
+        }
+
+        def fails(queued, delivered):
+            return {"synced": 0, "failed": 1, "remaining": 1, "blocked_events": []}
+
+        outcome = self._run_next_product_work(
+            self._order(),
+            delivered=set(),
+            passes=[fails],
+            pending_by_pass=[[leftover]],
+        )
+
+        self.assertEqual([call[0] for call in outcome.calls].count("sync"), 1)
+        self.assertIsInstance(outcome.error, RuntimeError)
+        outcome.backup.assert_not_called()
+
+    def _run_finish_work(self):
+        order_calls = []
+        captured = {}
+
+        class FakeWidget:
+            def config(self, **kwargs):
+                pass
+
+        orders = [
+            {"_backend_order_id": "order-1", "_backend_order_item_id": "item-1", "Адрес": "Адрес 1", "_row_number": 1},
+            {"_backend_order_id": "order-1", "_backend_order_item_id": "item-2", "Адрес": "Адрес 1", "_row_number": 2},
+        ]
+        products = [{"Адрес": "Адрес 1", "Коды": ["c1"]}, {"Адрес": "Адрес 1", "Коды": ["c2"]}]
+        fake = SimpleNamespace(
+            ensure_update_allowed=lambda: True,
+            operation_in_progress=False,
+            current_legal_entity="ООО Тест",
+            current_product_idx=2,
+            current_legal_entity_orders=orders,
+            current_legal_entity_products=products,
+            current_group_key="group-1",
+            current_order=None,
+            scanned_codes=[],
+            finish_btn=FakeWidget(),
+            next_product_btn=FakeWidget(),
+            today_orders=list(orders),
+            status_var=SimpleNamespace(set=lambda value: None),
+            status_label=FakeWidget(),
+            safe_config=lambda widget, **kwargs: None,
+            set_busy=lambda message: None,
+            clear_busy=lambda: None,
+            reset_current_selection=lambda: None,
+            refresh_legal_list=lambda: None,
+            _select_first_real_order=lambda: None,
+            confirm_print_settings=lambda: True,
+            run_background=self._capturing_run_background(captured),
+        )
+
+        sync_result = {"synced": 2, "failed": 0, "remaining": 0, "blocked_events": []}
+        pending_now = []
+
+        def record(name, value=None):
+            def side_effect(*args, **kwargs):
+                order_calls.append((name, args, kwargs))
+                return value
+
+            return side_effect
+
+        with (
+            mock.patch("taksklad.app_finish.group_finish_blocker", return_value=""),
+            mock.patch("taksklad.app_finish.add_pending_print", side_effect=record("add_pending_print", "print-1")),
+            mock.patch("taksklad.app_finish.print_summary", side_effect=record("print_summary", ["file.pdf"])),
+            mock.patch("taksklad.app_finish.remove_pending_print", side_effect=record("remove_pending_print", True)),
+            mock.patch("taksklad.app_finish.sync_pending_backend_events", side_effect=record("sync", sync_result)),
+            mock.patch("taksklad.app_finish.load_pending_backend_events", return_value=pending_now),
+            mock.patch("taksklad.app_finish.backend_sync_group_blocker", side_effect=record("blocker", "")),
+            mock.patch("taksklad.app_finish.complete_backend_orders_or_raise", side_effect=record("complete")),
+            mock.patch("taksklad.app_finish.write_scan_backup", side_effect=record("backup", True)),
+        ):
+            ScanningApp.finish_legal_entity(fake)
+            # стадия 1 печатает, после неё UI-поток запускает стадию 2 с завершением на сервере
+            print_stage = captured["entries"][0]
+            print_stage["work"]()
+            print_stage["on_success"](None)
+            captured["entries"][1]["work"]()
+        return order_calls, sync_result, pending_now
+
+    def test_finish_sync_pass_is_limited_to_its_own_group(self):
+        order_calls, _, _ = self._run_finish_work()
+
+        syncs = [call for call in order_calls if call[0] == "sync"]
+        self.assertEqual(len(syncs), 1)
+        self.assertEqual(syncs[0][1], ())
+        self.assertEqual(
+            syncs[0][2],
+            {"order_item_ids": {"item-1", "item-2"}, "order_ids": {"order-1"}},
+        )
+
+    def test_finish_passes_same_group_filter_to_blocker_and_keeps_step_order(self):
+        order_calls, sync_result, pending_now = self._run_finish_work()
+
+        names = [call[0] for call in order_calls]
+        self.assertEqual(
+            names,
+            [
+                "add_pending_print",
+                "print_summary",
+                "remove_pending_print",
+                "sync",
+                "blocker",
+                "complete",
+                "backup",
+            ],
+        )
+        blocker_args = next(call[1] for call in order_calls if call[0] == "blocker")
+        self.assertIs(blocker_args[0], sync_result)
+        self.assertEqual(blocker_args[1], {"item-1", "item-2"})
+        self.assertEqual(blocker_args[2], {"order-1"})
+        self.assertIs(blocker_args[3], pending_now)
+        complete_args = next(call[1] for call in order_calls if call[0] == "complete")
+        self.assertEqual(complete_args, (["order-1"],))
+
+    def test_backend_flow_group_predicate_is_the_backend_events_predicate(self):
+        from taksklad import backend_flow
+
+        item = {"type": "scan", "payload": {"order_item_id": "item-1"}}
+        with mock.patch("taksklad.backend_flow.backend_event_matches_filter", return_value="sentinel") as predicate:
+            result = backend_flow.backend_event_matches_group(item, {"item-1"}, {"order-1"})
+
+        self.assertEqual(result, "sentinel")
+        predicate.assert_called_once_with(item, {"item-1"}, {"order-1"})
+
+    def test_backend_flow_group_predicate_keeps_matching_rules(self):
+        from taksklad import backend_flow
+
+        scan = {"type": "scan", "payload": {"order_item_id": " item-1 "}}
+        complete = {"type": "order_complete", "payload": {"order_id": "order-1"}}
+        other_scan = {"type": "scan", "payload": {"order_item_id": "item-9"}}
+        other_complete = {"type": "order_complete", "payload": {"order_id": "order-9"}}
+        unknown = {"type": "other", "payload": {"order_item_id": "item-1", "order_id": "order-1"}}
+        no_payload = {"type": "scan"}
+
+        matches = backend_flow.backend_event_matches_group
+        self.assertTrue(matches(scan, {"item-1"}, {"order-1"}))
+        self.assertTrue(matches(complete, {"item-1"}, {"order-1"}))
+        self.assertFalse(matches(other_scan, {"item-1"}, {"order-1"}))
+        self.assertFalse(matches(other_complete, {"item-1"}, {"order-1"}))
+        self.assertFalse(matches(unknown, {"item-1"}, {"order-1"}))
+        self.assertFalse(matches(no_payload, {"item-1"}, {"order-1"}))
+
+    def test_backend_flow_group_predicate_gives_false_for_non_dict_payload(self):
+        # осознанное поведение: битый payload не совпадает ни с какой группой и не роняет разбор
+        from taksklad import backend_flow
+
+        matches = backend_flow.backend_event_matches_group
+        self.assertFalse(matches({"type": "scan", "payload": "broken"}, {"item-1"}, {"order-1"}))
+        self.assertFalse(matches({"type": "scan", "payload": ["item-1"]}, {"item-1"}, {"order-1"}))
+        self.assertFalse(matches({"type": "order_complete", "payload": "broken"}, {"item-1"}, {"order-1"}))
+
+    def test_backend_events_exposes_public_group_predicate(self):
+        from taksklad import backend_events
+
+        item = {"type": "scan", "payload": {"order_item_id": "item-1"}}
+        self.assertTrue(backend_events.backend_event_matches_filter(item, {"item-1"}, set()))
+        self.assertFalse(backend_events.backend_event_matches_filter(item, {"item-2"}, set()))
+
+
 if __name__ == "__main__":
     unittest.main()

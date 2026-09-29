@@ -19,12 +19,16 @@ from .config import (
 )
 from .backend_client import backend_configured
 from .desktop_diagnostics import build_sync_queue_summary, format_sync_queue_summary, write_diagnostic_bundle
+from .desktop_scan_rules import get_running_finishing_groups
 from .single_instance import release_single_instance_lock
 from .ui_widgets import AppButton
 from .utils import normalize_text
 
 
 STATUS_NOTICE_TIMEOUT_MS = 5000
+# Закрытие ждёт ответа сервера по заказу, который завершается в фоне, но не дольше этого потолка
+CLOSE_WAIT_POLL_MS = 300
+CLOSE_WAIT_LIMIT_SECONDS = 60
 
 
 def format_exception_message(title, exc):
@@ -80,6 +84,40 @@ def global_exception_handler(exc_type, exc_value, exc_traceback):
         "Критическая ошибка",
         format_exception_message("Неперехваченная ошибка", exc_value),
     )
+
+
+def destroy_window(app):
+    if getattr(app, "single_instance_lock", None):
+        try:
+            release_single_instance_lock(app.single_instance_lock)
+        except Exception:
+            logging.info("Single-instance lock не освобождён при закрытии", exc_info=True)
+        app.single_instance_lock = None
+    app.destroy()
+
+
+def close_after_finishing_groups(app):
+    """Повторная проверка без диалогов: закрыть, когда сервер ответил по всем завершаемым заказам, или по потолку
+
+    Сбой стадии 2 до ответа сервера окно не закрывает: ожидание сбрасывается, повторное нажатие закрытия
+    запустит его снова, а оператор пока видит ошибку и вернувшийся заказ
+    """
+    if getattr(app, "finishing_failed_before_answer", False):
+        app.finishing_failed_before_answer = False
+        app.close_wait_deadline = None
+        return
+    if get_running_finishing_groups(app) and time.monotonic() < app.close_wait_deadline:
+        try:
+            app.after(CLOSE_WAIT_POLL_MS, lambda: close_after_finishing_groups(app))
+            return
+        except tk.TclError:
+            pass
+    elif get_running_finishing_groups(app):
+        logging.warning(
+            "Закрытие: завершение заказа в фоне не успело за %s сек., окно закрыто",
+            CLOSE_WAIT_LIMIT_SECONDS,
+        )
+    destroy_window(app)
 
 
 class AppRuntimeMixin:
@@ -442,16 +480,19 @@ class AppRuntimeMixin:
 
 
     def on_close(self):
+        if getattr(self, "close_wait_deadline", None) is not None:
+            # Закрытие уже ждёт завершения заказа: второй цепочки и повторного вопроса не нужно
+            return
         if self.current_order and len(self.scanned_codes) > self.saved_codes_count:
             if not messagebox.askyesno(
                 "Закрыть программу?",
                 "Есть несохранённые сканы по текущей позиции.\n\nЗакрыть программу без завершения позиции?"
             ):
                 return
-        if getattr(self, "single_instance_lock", None):
-            try:
-                release_single_instance_lock(self.single_instance_lock)
-            except Exception:
-                logging.info("Single-instance lock не освобождён при закрытии", exc_info=True)
-            self.single_instance_lock = None
-        self.destroy()
+        if get_running_finishing_groups(self):
+            # Сбой, случившийся до этого нажатия, ожидания не касался
+            self.finishing_failed_before_answer = False
+            self.close_wait_deadline = time.monotonic() + CLOSE_WAIT_LIMIT_SECONDS
+            close_after_finishing_groups(self)
+            return
+        destroy_window(self)

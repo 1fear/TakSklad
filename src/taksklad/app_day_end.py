@@ -5,6 +5,7 @@ from tkinter import messagebox
 from .config import DANGER, ERROR_FG, FG_MUTED, FG_TEXT, SUCCESS, WARNING
 from .backend_client import backend_configured, backend_enabled, fetch_day_report
 from .backend_events import load_pending_backend_events
+from .desktop_scan_rules import get_running_finishing_groups
 from .orders import order_group_key
 from .pending_store import load_pending_prints
 from .telegram_service import load_pending_telegram
@@ -78,7 +79,7 @@ class DayEndActionsMixin:
         if not self.ensure_update_allowed():
             return
 
-        if self.operation_in_progress:
+        if self.operation_in_progress or get_running_finishing_groups(self):
             self.show_busy_error()
             return
 
