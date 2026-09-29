@@ -898,6 +898,128 @@ class BackendBridgeTests(unittest.TestCase):
         self.assertEqual(storage.load_data_section("pending_backend_events", []), [])
         self.assert_sync_primitives_are_idle()
 
+    def queue_interleaved_scans_of_two_positions(self):
+        # Порядок очереди перемешан нарочно: хвост после обрыва должен считаться
+        # по списку прохода (события фильтра), а не по позициям очереди целиком.
+        codes = (
+            ("item-1", "0104006396053978-TEST-ONEAXXXXXX"),
+            ("item-2", "0104006396053978-TEST-TWOAXXXXXX"),
+            ("item-1", "0104006396053978-TEST-ONEBXXXXXX"),
+            ("item-2", "0104006396053978-TEST-TWOBXXXXXX"),
+            ("item-1", "0104006396053978-TEST-ONECXXXXXX"),
+        )
+        with mock.patch.object(backend_events, "backend_configured", return_value=True):
+            for order_item_id, code in codes:
+                backend_events.queue_backend_scan(
+                    {"_backend_order_item_id": order_item_id}, code,
+                    scanned_at="2026-05-31T10:00:00+05:00",
+                )
+        return storage.load_data_section("pending_backend_events", [])
+
+    def test_filtered_sync_network_failure_marks_only_the_tail_of_this_position(self):
+        before = self.queue_interleaved_scans_of_two_positions()
+        self.assertEqual(len(before), 5)
+        create_scan_calls = []
+
+        def unreachable_create_scan(order_item_id, code, **kwargs):
+            create_scan_calls.append((order_item_id, code))
+            raise backend_client.BackendTransportError(
+                "<urlopen error _ssl.c:993: The handshake operation timed out>"
+            )
+
+        with (
+            mock.patch.object(backend_events, "backend_configured", return_value=True),
+            mock.patch.object(backend_events, "create_scan", side_effect=unreachable_create_scan),
+        ):
+            result = backend_events.sync_pending_backend_events(order_item_ids=["item-1"])
+
+        # Проход встал на первом же событии позиции, остальные не отправлялись.
+        self.assertEqual(create_scan_calls, [("item-1", "0104006396053978-TEST-ONEAXXXXXX")])
+        self.assertEqual(result["failed"], 1)
+        self.assertEqual(result["synced"], 0)
+        self.assertEqual(result["remaining"], 5)
+
+        after = storage.load_data_section("pending_backend_events", [])
+        self.assertEqual([item["id"] for item in after], [item["id"] for item in before])
+        by_id_before = {item["id"]: item for item in before}
+        head, other_a, tail_b, other_b, tail_c = after
+
+        # Упавшее событие: попытка засчитана, признак сетевой.
+        self.assertEqual(head["attempts"], 1)
+        self.assertEqual(head["last_error_kind"], "network")
+        self.assertIn("handshake operation timed out", head["last_error"])
+
+        # Хвост этой позиции: только признак, попытки, ошибка и время прежние.
+        for tail in (tail_b, tail_c):
+            self.assertEqual(tail, {**by_id_before[tail["id"]], "last_error_kind": "network"})
+
+        # События другой позиции вне прохода: ни признака, ни попытки, ни времени.
+        for other in (other_a, other_b):
+            self.assertEqual(other, by_id_before[other["id"]])
+            self.assertNotIn("last_error_kind", other)
+            self.assertEqual(other["attempts"], 0)
+
+        # Экран позиции теперь читает обрыв связи, а не отказ сервера.
+        message = backend_flow.backend_sync_item_blocker({"blocked_events": []}, "item-1", after)
+        self.assertIsInstance(backend_flow.backend_blocker_error(message), backend_flow.BackendOfflineQueueError)
+        self.assertNotIn("не принял", message)
+        # Другая позиция обрыва не наследует.
+        other_message = backend_flow.backend_sync_item_blocker({"blocked_events": []}, "item-2", after)
+        self.assertNotIsInstance(
+            backend_flow.backend_blocker_error(other_message), backend_flow.BackendOfflineQueueError
+        )
+        self.assert_sync_primitives_are_idle()
+
+    def test_background_pass_network_failure_releases_lock_and_waiters_counter(self):
+        before = self.queue_interleaved_scans_of_two_positions()
+        create_scan_calls = []
+
+        def unreachable_create_scan(order_item_id, code, **kwargs):
+            create_scan_calls.append(order_item_id)
+            raise backend_client.BackendTransportError(
+                "<urlopen error _ssl.c:993: The handshake operation timed out>"
+            )
+
+        with (
+            mock.patch.object(backend_events, "backend_configured", return_value=True),
+            mock.patch.object(backend_events, "create_scan", side_effect=unreachable_create_scan),
+        ):
+            result = backend_events.sync_pending_backend_events(background=True)
+            self.assert_sync_primitives_are_idle()
+            # Замок свободен: следующий фоновый проход берёт его, а не отвечает skipped.
+            second = backend_events.sync_pending_backend_events(background=True)
+
+        self.assertEqual(create_scan_calls, ["item-1", "item-1"])
+        self.assertNotIn("skipped", result)
+        self.assertNotIn("skipped", second)
+        self.assertNotIn("preempted", result)
+        self.assertEqual(result["failed"], 1)
+        self.assertEqual(result["remaining"], len(before))
+        after = storage.load_data_section("pending_backend_events", [])
+        self.assertEqual(len(after), len(before))
+        # Без фильтра хвост это вся остальная очередь: проход разметил её целиком.
+        self.assertEqual([item["last_error_kind"] for item in after], ["network"] * len(before))
+        self.assertEqual(after[0]["attempts"], 2)
+        self.assertEqual([item["attempts"] for item in after[1:]], [0] * (len(before) - 1))
+        self.assert_sync_primitives_are_idle()
+
+    def test_background_pass_preempted_events_are_not_marked_as_network(self):
+        # Вытеснение это не обрыв: невзятые события остаются ровно как были.
+        self.queue_two_scans()
+        with (
+            mock.patch.object(backend_events, "backend_configured", return_value=True),
+            mock.patch.object(backend_events, "create_scan"),
+            mock.patch.object(backend_events, "_foreground_waiters_count", side_effect=[0, 1]),
+        ):
+            result = backend_events.sync_pending_backend_events(background=True)
+
+        self.assertTrue(result["preempted"])
+        left = storage.load_data_section("pending_backend_events", [])
+        self.assertEqual(len(left), 1)
+        self.assertNotIn("last_error_kind", left[0])
+        self.assertEqual(left[0]["attempts"], 0)
+        self.assertEqual(left[0]["last_error"], "")
+
     def test_filtered_sync_by_order_ids_sends_only_matching_order_complete(self):
         with mock.patch.object(backend_events, "backend_configured", return_value=True):
             backend_events.queue_backend_scan(
