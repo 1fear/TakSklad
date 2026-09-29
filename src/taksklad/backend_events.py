@@ -426,7 +426,7 @@ def _empty_sync_result(remaining):
     }
 
 
-def _backend_event_matches_filter(item, order_item_ids, order_ids):
+def backend_event_matches_filter(item, order_item_ids, order_ids):
     # Единственный предикат группы: backend_flow.backend_event_matches_group зовёт его,
     # backend_flow сам импортирует backend_events, обратного импорта нет.
     payload = item.get("payload") or {}
@@ -597,7 +597,7 @@ def sync_pending_backend_events(order_item_ids=None, order_ids=None, *, backgrou
         if filter_active:
             to_process = [
                 item for item in full_pending
-                if _backend_event_matches_filter(item, normalized_item_ids, normalized_order_ids)
+                if backend_event_matches_filter(item, normalized_item_ids, normalized_order_ids)
             ]
         else:
             to_process = full_pending

@@ -278,6 +278,38 @@ class BackendSyncTimerTests(unittest.TestCase):
 
         app.schedule_backend_sync()
 
+        self.assertIsNone(app.backend_sync_after_id)
+
+    def test_failed_pass_reports_error_and_still_leaves_single_pending_call(self):
+        app = self.make_app()
+        app.schedule_backend_sync(13000)
+        pending_events = [{"id": "e1"}, {"id": "e2"}]
+
+        with mock.patch("taksklad.app_data_loading.backend_enabled", return_value=True):
+            DataLoadingMixin.sync_backend_events_async(app)
+        self.assertTrue(app.backend_sync_running)
+
+        work, on_success, on_error, on_finally = app.background_jobs[0]
+        with mock.patch(
+            "taksklad.app_data_loading.sync_pending_backend_events",
+            side_effect=RuntimeError("связь прервалась"),
+        ):
+            with self.assertRaises(RuntimeError) as raised:
+                work()
+        # run_background при исключении в work зовёт on_error, потом on_finally
+        with mock.patch("taksklad.app_data_loading.load_pending_backend_events", return_value=pending_events):
+            on_error(raised.exception)
+        on_finally()
+
+        self.assertEqual(
+            app.last_sync_result["backend"],
+            {"enabled": True, "failed": 1, "remaining": 2},
+        )
+        self.assertEqual(app.stats_updates, 1)
+        self.assertFalse(app.backend_sync_running)
+        self.assertEqual(len(app.pending), 1)
+        self.assertEqual(next(iter(app.pending.values()))[0], 15000)
+
     def test_background_pass_uses_background_mode(self):
         app = self.make_app()
 

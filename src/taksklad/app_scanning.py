@@ -18,6 +18,7 @@ from .backend_flow import (
     backend_blocker_error,
     backend_failure_title,
     backend_sync_item_blocker,
+    backend_undelivered_scans_blocker,
     format_backend_blocked_scan_message,
     order_uses_backend_scan_path,
     unsaved_backend_scan_codes,
@@ -641,26 +642,52 @@ class ScanningActionsMixin:
             if not order_uses_backend_scan_path(order):
                 raise RuntimeError("Позиция не связана с backend. Сохранение КИЗов заблокировано")
             item_id = normalize_text(order.get("_backend_order_item_id"))
-            for saved_code in unsaved_backend_scan_codes(order, scanned_codes):
+            unsaved_codes = unsaved_backend_scan_codes(order, scanned_codes)
+
+            def sync_position_pass():
+                # Проход только по своей позиции, дальше разбор blocked и blocker
+                backend_sync_result = sync_pending_backend_events(order_item_ids={item_id})
+                blocked_events = backend_blocked_scan_events_for_item(
+                    backend_sync_result,
+                    order.get("_backend_order_item_id"),
+                )
+                if blocked_events:
+                    return backend_sync_result, blocked_events
+                blocker = backend_sync_item_blocker(
+                    backend_sync_result,
+                    order.get("_backend_order_item_id"),
+                    load_pending_backend_events(),
+                )
+                if blocker:
+                    raise backend_blocker_error(blocker)
+                return backend_sync_result, []
+
+            for saved_code in unsaved_codes:
                 # Сначала проверка: постановка в очередь сама сбрасывает ключ «доставлено»
                 if is_scan_delivered(item_id, saved_code):
                     continue
                 if not queue_backend_scan(order, saved_code):
                     raise RuntimeError("Не удалось поставить КИЗ в durable backend-очередь")
-            backend_sync_result = sync_pending_backend_events(order_item_ids={item_id})
-            blocked_events = backend_blocked_scan_events_for_item(
-                backend_sync_result,
-                order.get("_backend_order_item_id"),
-            )
+            backend_sync_result, blocked_events = sync_position_pass()
             if blocked_events:
                 return {"backend_blocked": True, "blocked_events": blocked_events, "backend": True}
-            blocker = backend_sync_item_blocker(
-                backend_sync_result,
-                order.get("_backend_order_item_id"),
-                load_pending_backend_events(),
-            )
-            if blocker:
-                raise backend_blocker_error(blocker)
+
+            # Событие кода мог забрать фоновый проход и получить отказ: он убирает событие в blocked
+            # и забывает ключ, проход с экрана его уже не видит и отвечает чисто. Код без доставки
+            # ставим заново и делаем ещё один проход, дальше без циклов
+            undelivered_codes = [code for code in unsaved_codes if not is_scan_delivered(item_id, code)]
+            if undelivered_codes:
+                for saved_code in undelivered_codes:
+                    if not queue_backend_scan(order, saved_code):
+                        raise RuntimeError("Не удалось поставить КИЗ в durable backend-очередь")
+                backend_sync_result, blocked_events = sync_position_pass()
+                if blocked_events:
+                    return {"backend_blocked": True, "blocked_events": blocked_events, "backend": True}
+                undelivered_codes = [code for code in unsaved_codes if not is_scan_delivered(item_id, code)]
+                if undelivered_codes:
+                    raise backend_blocker_error(
+                        backend_undelivered_scans_blocker(backend_sync_result, item_id, undelivered_codes)
+                    )
             if not write_scan_backup("position_saved_backend", order, codes=scanned_codes):
                 raise RuntimeError("Коды сохранены в backend, но локальный backup позиции не создан")
             return {"queued": False, "message": "backend_saved", "backend": True}
