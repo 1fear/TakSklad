@@ -126,7 +126,9 @@ def open_backend_https_url(request, timeout):
         raise
 
     status = int(getattr(response, "status", 0))
-    if status >= 400:
+    # Успех это только 2xx: редирект и прочее нештатное с пустым телом иначе
+    # превращалось в {} и скан считался принятым, хотя backend его не видел.
+    if not 200 <= status < 300:
         raise urllib.error.HTTPError(
             url,
             status,

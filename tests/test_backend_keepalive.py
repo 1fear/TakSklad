@@ -4,7 +4,7 @@ import urllib.error
 import urllib.request
 from unittest import mock
 
-from taksklad import http_client
+from taksklad import backend_client, http_client
 
 
 class FakeResponse:
@@ -159,6 +159,47 @@ class BackendKeepAliveTests(unittest.TestCase):
 
         via_urllib.assert_not_called()
         self.assertEqual(len(FakeConnection.created), 1)
+
+    def test_redirect_with_empty_body_is_an_http_error_not_an_accepted_scan(self):
+        # 302 с пустым телом раньше проходил как успех и превращался в {}:
+        # скан считался принятым, хотя backend его не видел.
+        for status in (302, 304):
+            with self.subTest(status=status):
+                FakeConnection.created = []
+                http_client.reset_backend_connection()
+                with mock.patch.object(http.client, "HTTPSConnection", FakeConnection):
+                    with http_client.open_backend_https_url(self.request(), timeout=8) as first:
+                        first.read()
+                    FakeConnection.created[0].responses = [FakeResponse(status=status, body=b"")]
+                    with self.assertRaises(urllib.error.HTTPError) as raised:
+                        http_client.open_backend_https_url(self.request(), timeout=8)
+
+                self.assertEqual(raised.exception.code, status)
+
+    def test_redirect_reaches_the_caller_as_backend_error_with_status(self):
+        with (
+            mock.patch.object(http.client, "HTTPSConnection", FakeConnection),
+            mock.patch.object(backend_client, "TAKSKLAD_BACKEND_BASE_URL", "https://api.taksklad.uz"),
+            mock.patch.object(backend_client, "make_backend_headers", return_value={}),
+        ):
+            with http_client.open_backend_https_url(self.request(), timeout=8) as first:
+                first.read()
+            FakeConnection.created[0].responses = [FakeResponse(status=302, body=b"")]
+            with self.assertRaises(backend_client.BackendApiError) as raised:
+                backend_client.backend_request_page("POST", "/api/v1/scans", payload={})
+
+        self.assertEqual(raised.exception.status_code, 302)
+        self.assertNotIsInstance(raised.exception, backend_client.BackendTransportError)
+
+    def test_no_content_answer_is_still_a_success(self):
+        with mock.patch.object(http.client, "HTTPSConnection", FakeConnection):
+            with http_client.open_backend_https_url(self.request(), timeout=8) as first:
+                first.read()
+            FakeConnection.created[0].responses = [FakeResponse(status=204, body=b"")]
+            with http_client.open_backend_https_url(self.request(), timeout=8) as second:
+                body = second.read()
+
+        self.assertEqual(body, b"")
 
 
 if __name__ == "__main__":
