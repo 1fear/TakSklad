@@ -130,5 +130,220 @@ class BackgroundRefreshTests(unittest.TestCase):
         self.assertEqual(len(app.after_calls), 1)
 
 
+class BackendSyncTimerTests(unittest.TestCase):
+    """Фоновая синхронизация backend-очереди держит одну цепочку отложенных вызовов."""
+
+    def make_app(self):
+        class FakeApp(DataLoadingMixin):
+            def __init__(self):
+                self.backend_sync_running = False
+                self.last_sync_result = {"synced": 0, "failed": 0, "remaining": 0}
+                self.current_order = None
+                self.next_id = 0
+                self.pending = {}
+                self.cancelled = []
+                self.background_jobs = []
+                self.stats_updates = 0
+                self.blocked_applied = []
+                self.cancel_error = None
+
+            def after(self, delay, callback):
+                self.next_id += 1
+                after_id = f"after#{self.next_id}"
+                self.pending[after_id] = (delay, callback)
+                return after_id
+
+            def after_cancel(self, after_id):
+                self.cancelled.append(after_id)
+                if self.cancel_error is not None:
+                    raise self.cancel_error
+                self.pending.pop(after_id, None)
+
+            def run_background(self, title, work, on_success=None, on_error=None, on_finally=None):
+                self.background_jobs.append((work, on_success, on_error, on_finally))
+
+            def update_stats_display(self):
+                self.stats_updates += 1
+
+            def apply_backend_blocked_scan_events(self, events):
+                self.blocked_applied.append(events)
+
+        return FakeApp()
+
+    @staticmethod
+    def finish_job(job, result):
+        work, on_success, _on_error, on_finally = job
+        with mock.patch(
+            "taksklad.app_data_loading.sync_pending_backend_events",
+            return_value=result,
+        ) as sync:
+            produced = work()
+        on_success(produced)
+        on_finally()
+        return sync
+
+    def test_three_manual_calls_and_pass_completion_leave_one_pending_call(self):
+        app = self.make_app()
+        app.schedule_backend_sync(13000)
+
+        with mock.patch("taksklad.app_data_loading.backend_enabled", return_value=True):
+            DataLoadingMixin.sync_backend_events_async(app)
+            DataLoadingMixin.sync_backend_events_async(app)
+            DataLoadingMixin.sync_backend_events_async(app)
+
+        self.assertEqual(len(app.background_jobs), 1)
+        self.assertEqual(len(app.pending), 1)
+
+        self.finish_job(app.background_jobs[0], {"synced": 1, "failed": 0, "remaining": 0, "blocked_events": []})
+
+        self.assertEqual(len(app.pending), 1)
+        delay, callback = next(iter(app.pending.values()))
+        self.assertEqual(delay, 15000)
+        self.assertEqual(callback, app.sync_backend_events_async)
+        self.assertFalse(app.backend_sync_running)
+
+    def test_manual_call_runs_pass_at_once_and_leaves_single_call_after_it(self):
+        app = self.make_app()
+        app.schedule_backend_sync(13000)
+
+        with mock.patch("taksklad.app_data_loading.backend_enabled", return_value=True):
+            DataLoadingMixin.sync_backend_events_async(app)
+
+        # проход стартовал сразу, а не отложен
+        self.assertEqual(len(app.background_jobs), 1)
+        self.assertTrue(app.backend_sync_running)
+
+        self.finish_job(app.background_jobs[0], {"synced": 0, "failed": 0, "remaining": 0, "blocked_events": []})
+
+        self.assertEqual(len(app.pending), 1)
+        self.assertEqual(next(iter(app.pending.values()))[0], 15000)
+
+    def test_repeated_cycles_never_accumulate_pending_calls(self):
+        app = self.make_app()
+        app.schedule_backend_sync(13000)
+
+        with mock.patch("taksklad.app_data_loading.backend_enabled", return_value=True):
+            for _ in range(5):
+                DataLoadingMixin.sync_backend_events_async(app)
+                self.finish_job(
+                    app.background_jobs[-1],
+                    {"synced": 0, "failed": 0, "remaining": 0, "blocked_events": []},
+                )
+                self.assertEqual(len(app.pending), 1)
+
+    def test_backend_disabled_still_keeps_single_pending_call(self):
+        app = self.make_app()
+        app.schedule_backend_sync(13000)
+
+        with mock.patch("taksklad.app_data_loading.backend_enabled", return_value=False):
+            DataLoadingMixin.sync_backend_events_async(app)
+            DataLoadingMixin.sync_backend_events_async(app)
+
+        self.assertEqual(app.background_jobs, [])
+        self.assertEqual(len(app.pending), 1)
+        self.assertEqual(next(iter(app.pending.values()))[0], 15000)
+
+    def test_schedule_cancels_previous_call_and_keeps_requested_delay(self):
+        app = self.make_app()
+
+        app.schedule_backend_sync(13000)
+        first_id = next(iter(app.pending))
+        app.schedule_backend_sync()
+
+        self.assertEqual(app.cancelled, [first_id])
+        self.assertEqual(len(app.pending), 1)
+        self.assertEqual(next(iter(app.pending.values()))[0], 15000)
+
+    def test_schedule_survives_tk_error_when_cancelling_already_fired_call(self):
+        import tkinter as tk
+
+        app = self.make_app()
+        app.schedule_backend_sync(13000)
+        app.cancel_error = tk.TclError("bad id")
+
+        app.schedule_backend_sync()
+
+        self.assertEqual(len(app.cancelled), 1)
+        self.assertEqual(app.next_id, 2)
+
+    def test_schedule_survives_tk_error_when_window_is_gone(self):
+        import tkinter as tk
+
+        app = self.make_app()
+
+        def broken_after(delay, callback):
+            raise tk.TclError("application has been destroyed")
+
+        app.after = broken_after
+
+        app.schedule_backend_sync()
+
+    def test_background_pass_uses_background_mode(self):
+        app = self.make_app()
+
+        with mock.patch("taksklad.app_data_loading.backend_enabled", return_value=True):
+            DataLoadingMixin.sync_backend_events_async(app)
+        sync = self.finish_job(
+            app.background_jobs[0],
+            {"synced": 0, "failed": 0, "remaining": 0, "blocked_events": []},
+        )
+
+        sync.assert_called_once_with(background=True)
+
+    def test_skipped_tick_keeps_last_sync_result_and_plans_next_tick(self):
+        app = self.make_app()
+        previous = {"enabled": True, "failed": 1, "remaining": 3}
+        app.last_sync_result["backend"] = previous
+        app.current_order = {"_backend_order_item_id": "item-1"}
+        skipped = {
+            "synced": 0,
+            "failed": 0,
+            "remaining": 0,
+            "blocked": 0,
+            "blocked_events": [
+                {"type": "scan", "payload": {"order_item_id": "item-1", "code": "c"}},
+            ],
+            "enabled": True,
+            "skipped": True,
+        }
+
+        with mock.patch("taksklad.app_data_loading.backend_enabled", return_value=True):
+            DataLoadingMixin.sync_backend_events_async(app)
+        self.finish_job(app.background_jobs[0], skipped)
+
+        self.assertIs(app.last_sync_result["backend"], previous)
+        self.assertEqual(app.blocked_applied, [])
+        self.assertEqual(app.stats_updates, 0)
+        self.assertEqual(len(app.pending), 1)
+        self.assertEqual(next(iter(app.pending.values()))[0], 15000)
+        self.assertFalse(app.backend_sync_running)
+
+    def test_real_pass_result_still_overwrites_last_sync_result_and_applies_blocked(self):
+        app = self.make_app()
+        app.current_order = {"_backend_order_item_id": "item-1"}
+        blocked_event = {"type": "scan", "payload": {"order_item_id": "item-1", "code": "c"}}
+        result = {"synced": 0, "failed": 0, "remaining": 1, "blocked": 1, "blocked_events": [blocked_event]}
+
+        with mock.patch("taksklad.app_data_loading.backend_enabled", return_value=True):
+            DataLoadingMixin.sync_backend_events_async(app)
+        self.finish_job(app.background_jobs[0], result)
+
+        self.assertIs(app.last_sync_result["backend"], result)
+        self.assertEqual(app.blocked_applied, [[blocked_event]])
+        self.assertEqual(app.stats_updates, 1)
+
+    def test_all_timer_call_sites_go_through_the_single_chain_helper(self):
+        import inspect
+
+        from taksklad import main as main_module
+
+        loading_source = inspect.getsource(DataLoadingMixin.sync_backend_events_async)
+        main_source = inspect.getsource(main_module.ScanningApp.__init__)
+
+        self.assertNotIn("self.after(15000, self.sync_backend_events_async)", loading_source)
+        self.assertNotIn("after(13000, self.sync_backend_events_async)", main_source)
+        self.assertIn("schedule_backend_sync(13000)", main_source)
+
+
 if __name__ == "__main__":
     unittest.main()

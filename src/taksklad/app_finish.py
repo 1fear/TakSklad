@@ -102,16 +102,20 @@ class FinishActionsMixin:
                     "Заказ не завершён в backend."
                 )
 
-            backend_sync_result = sync_pending_backend_events()
             order_item_ids = {
                 normalize_text(order.get("_backend_order_item_id"))
                 for order in current_orders
                 if normalize_text(order.get("_backend_order_item_id"))
             }
+            group_order_ids = set(backend_order_ids)
+            backend_sync_result = sync_pending_backend_events(
+                order_item_ids=order_item_ids,
+                order_ids=group_order_ids,
+            )
             blocker = backend_sync_group_blocker(
                 backend_sync_result,
                 order_item_ids,
-                set(backend_order_ids),
+                group_order_ids,
                 load_pending_backend_events(),
             )
             if blocker:

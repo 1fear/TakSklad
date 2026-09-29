@@ -8,6 +8,7 @@ from .backend_client import (
     lookup_kiz_availability,
 )
 from .backend_events import (
+    _backend_event_matches_filter,
     queue_backend_order_complete,
     remove_pending_backend_order_complete,
 )
@@ -33,13 +34,8 @@ def backend_event_matches_item(item, order_item_id):
 
 
 def backend_event_matches_group(item, order_item_ids, order_ids):
-    event_type = item.get("type")
-    payload = item.get("payload") or {}
-    if event_type == "scan":
-        return normalize_text(payload.get("order_item_id")) in order_item_ids
-    if event_type == "order_complete":
-        return normalize_text(payload.get("order_id")) in order_ids
-    return False
+    # Один предикат на слой очереди и на blocker: разные копии разошлись бы в нормализации
+    return _backend_event_matches_filter(item, order_item_ids, order_ids)
 
 
 def backend_event_error_message(item):

@@ -3,6 +3,7 @@ import socket
 import tkinter as tk
 
 from .backend_events import (
+    is_scan_delivered,
     load_pending_backend_events,
     remove_pending_backend_scan,
     queue_backend_scan,
@@ -639,10 +640,14 @@ class ScanningActionsMixin:
         def work():
             if not order_uses_backend_scan_path(order):
                 raise RuntimeError("Позиция не связана с backend. Сохранение КИЗов заблокировано")
+            item_id = normalize_text(order.get("_backend_order_item_id"))
             for saved_code in unsaved_backend_scan_codes(order, scanned_codes):
+                # Сначала проверка: постановка в очередь сама сбрасывает ключ «доставлено»
+                if is_scan_delivered(item_id, saved_code):
+                    continue
                 if not queue_backend_scan(order, saved_code):
                     raise RuntimeError("Не удалось поставить КИЗ в durable backend-очередь")
-            backend_sync_result = sync_pending_backend_events()
+            backend_sync_result = sync_pending_backend_events(order_item_ids={item_id})
             blocked_events = backend_blocked_scan_events_for_item(
                 backend_sync_result,
                 order.get("_backend_order_item_id"),

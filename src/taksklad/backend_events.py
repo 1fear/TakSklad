@@ -427,8 +427,8 @@ def _empty_sync_result(remaining):
 
 
 def _backend_event_matches_filter(item, order_item_ids, order_ids):
-    # Дублирует normalize_text-часть backend_flow.backend_event_matches_group:
-    # backend_flow сам импортирует backend_events, обратный импорт даст цикл.
+    # Единственный предикат группы: backend_flow.backend_event_matches_group зовёт его,
+    # backend_flow сам импортирует backend_events, обратного импорта нет.
     payload = item.get("payload") or {}
     if not isinstance(payload, dict):
         return False

@@ -21,6 +21,8 @@ from .scan_quantities import scan_entries_for_order_codes
 from .utils import normalize_kiz_code, normalize_text
 
 
+BACKEND_SYNC_INTERVAL_MS = 15000
+
 TERMINAL_REFRESH_STATUSES = {
     "completed",
     "complete",
@@ -112,20 +114,37 @@ class DataLoadingMixin:
         return fetch_sheet_data()
 
 
+    def schedule_backend_sync(self, delay_ms=BACKEND_SYNC_INTERVAL_MS):
+        # Одна цепочка отложенных вызовов: перед новым after снимаем прежний,
+        # иначе каждый ручной вызов добавляет ещё одну вечную цепочку
+        previous_after_id = getattr(self, "backend_sync_after_id", None)
+        self.backend_sync_after_id = None
+        if previous_after_id:
+            try:
+                self.after_cancel(previous_after_id)
+            except tk.TclError:
+                # вызов уже сработал или окно закрывается: снимать нечего
+                pass
+        try:
+            self.backend_sync_after_id = self.after(delay_ms, self.sync_backend_events_async)
+        except tk.TclError:
+            pass
+
+
     def sync_backend_events_async(self):
         if not backend_enabled() or self.backend_sync_running:
-            try:
-                self.after(15000, self.sync_backend_events_async)
-            except tk.TclError:
-                pass
+            self.schedule_backend_sync()
             return
 
         self.backend_sync_running = True
 
         def work():
-            return sync_pending_backend_events()
+            return sync_pending_backend_events(background=True)
 
         def on_success(result):
+            if isinstance(result, dict) and result.get("skipped"):
+                # Замок занят проходом с экрана: это пропуск такта, а не результат
+                return
             if isinstance(result, dict):
                 self.last_sync_result["backend"] = result
             remaining = result.get("remaining", 0) if isinstance(result, dict) else 0
@@ -151,10 +170,7 @@ class DataLoadingMixin:
 
         def on_finally():
             self.backend_sync_running = False
-            try:
-                self.after(15000, self.sync_backend_events_async)
-            except tk.TclError:
-                pass
+            self.schedule_backend_sync()
 
         self.run_background(
             "Не удалось синхронизировать backend-очередь",

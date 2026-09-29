@@ -159,6 +159,7 @@ class ScanningApp(
         self.daily_report_check_running = False
         self.skladbot_sync_running = False
         self.backend_sync_running = False
+        self.backend_sync_after_id = None
         self.return_lookup_result = None
         self.product_photo_image = None
         self.last_sync_result = {"synced": 0, "failed": 0, "remaining": 0}
@@ -174,7 +175,7 @@ class ScanningApp(
         self.after(1200, self.check_for_updates)
         self.after(2500, self.sync_pending_telegram_async)
         self.after(4000, self.poll_telegram_bot_async)
-        self.after(13000, self.sync_backend_events_async)
+        self.schedule_backend_sync(13000)
         self.after(15000, self.run_skladbot_periodic_refresh)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
