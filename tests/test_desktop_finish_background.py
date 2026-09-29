@@ -1,11 +1,17 @@
 """Завершение заказа: экран свободен сразу после печати сводного листа, завершение на сервере идёт в фоне"""
 
+import tkinter as tk
 import unittest
 from types import SimpleNamespace
 from unittest import mock
 
 from taksklad.app_data_loading import DataLoadingMixin
 from taksklad.config import BG_MAIN, FG_MUTED, SKLADBOT_REQUEST_NUMBER_COLUMN
+from taksklad.desktop_scan_rules import (
+    get_finishing_groups,
+    get_running_finishing_groups,
+    hidden_finishing_orders,
+)
 from taksklad.main import ScanningApp
 from taksklad.orders import order_group_key
 
@@ -75,6 +81,13 @@ def run_entry(entry, error=None):
     finally:
         if entry["on_finally"]:
             entry["on_finally"]()
+
+
+def run_success_only(entry):
+    """work и on_success без on_finally: проверяет, что стадия сама освобождает экран, а не on_finally"""
+    result = entry["work"]()
+    if entry["on_success"]:
+        entry["on_success"](result)
 
 
 class FinishBackgroundTestCase(unittest.TestCase):
@@ -232,7 +245,8 @@ class FinishStageOneTests(FinishBackgroundTestCase):
         app = self.make_app()
         self.start_finish(app)
 
-        run_entry(app.background[0])
+        # on_finally не вызывается: экран освобождает сама стадия
+        run_success_only(app.background[0])
 
         self.assertFalse(app.operation_in_progress)
         self.assertEqual(app.status_var.value, PRINTED_TEXT)
@@ -261,7 +275,7 @@ class FinishStageOneTests(FinishBackgroundTestCase):
         app = self.make_app()
         self.start_finish(app)
 
-        run_entry(app.background[0])
+        run_success_only(app.background[0])
 
         names = self.call_names(app)
         ordered = ["clear_busy", "reset", "refresh", "select_first"]
@@ -279,7 +293,7 @@ class FinishStageOneTests(FinishBackgroundTestCase):
         app = self.make_app()
         self.start_finish(app)
 
-        run_entry(app.background[0])
+        run_success_only(app.background[0])
 
         self.assertEqual(len(app.background), 2)
         self.assertEqual(app.background[1]["title"], CRITICAL_TITLE)
@@ -403,7 +417,10 @@ class FinishStageTwoTests(FinishBackgroundTestCase):
 
         self.assertEqual(app.status_var.value, COMPLETED_TEXT)
         self.assertEqual(app.status_label.options, {"bg": BG_MAIN, "fg": FG_MUTED})
-        self.assertNotIn(group_key, app.finishing_group_keys)
+        # сервер ответил: группа остаётся скрытой до обновления, начатого после ответа
+        self.assertIn(group_key, app.finishing_group_keys)
+        self.assertEqual(app.finishing_answered, {group_key: 0})
+        self.assertEqual(get_running_finishing_groups(app), set())
         self.assertEqual(app.today_orders, app.other)
         app.sync_backend_events_async.assert_called_once()
         self.assertFalse(app.operation_in_progress)
@@ -484,16 +501,96 @@ class FinishStageTwoTests(FinishBackgroundTestCase):
         self.assertEqual(app.finish_btn.options, finish_options_before)
         app.show_critical_error.assert_called_once()
 
-    def test_completion_error_texts_from_blocker_and_backup_stay_the_same(self):
+    def test_blocker_error_text_stays_the_same_and_group_comes_back(self):
         app = self.make_app()
+        self.mocks["backend_sync_group_blocker"].return_value = "нет связи с сервером"
+        stage_two = self.finish_to_stage_two(app)
+
+        run_entry(stage_two)
+
+        title, exc = app.show_critical_error.call_args.args
+        self.assertEqual(title, CRITICAL_TITLE)
+        self.assertIn("нет связи с сервером", str(exc))
+        self.mocks["complete_backend_orders_or_raise"].assert_not_called()
+        self.assertEqual(len(app.today_orders), 4)
+        self.assertNotIn(self.group_key(app.group), app.finishing_group_keys)
+
+    def test_failure_after_the_server_completed_keeps_the_group_hidden_with_old_text(self):
+        # сервер заказ уже закрыл: возврат группы в список дал бы второй сводный лист
+        app = self.make_app()
+        group_key = self.group_key(app.group)
         self.mocks["write_scan_backup"].return_value = False
         stage_two = self.finish_to_stage_two(app)
 
         run_entry(stage_two)
 
-        _, exc = app.show_critical_error.call_args.args
+        title, exc = app.show_critical_error.call_args.args
+        self.assertEqual(title, CRITICAL_TITLE)
         self.assertEqual(str(exc), "Сводка напечатана, но backup завершения заказа не создан")
+        self.mocks["complete_backend_orders_or_raise"].assert_called_once()
+        self.assertEqual(app.today_orders, app.other)
+        self.assertIn(group_key, app.finishing_group_keys)
+        self.assertEqual(app.finishing_answered, {group_key: 0})
+        self.assertEqual(get_running_finishing_groups(app), set())
+        self.assertNotIn(COMPLETED_TEXT, [call[1] for call in app.calls if call[0] == "status"])
+
+    def test_failure_inside_the_server_completion_returns_the_group(self):
+        app = self.make_app()
+        group_key = self.group_key(app.group)
+        self.mocks["complete_backend_orders_or_raise"].side_effect = RuntimeError("сервер отказал")
+        stage_two = self.finish_to_stage_two(app)
+
+        run_entry(stage_two)
+
         self.assertEqual(len(app.today_orders), 4)
+        self.assertNotIn(group_key, app.finishing_group_keys)
+        self.assertNotIn(group_key, getattr(app, "finishing_answered", {}))
+        self.assertEqual(hidden_finishing_orders(app), [])
+
+    def test_completion_error_still_shows_the_error_if_the_list_redraw_fails(self):
+        app = self.make_app()
+        self.mocks["complete_backend_orders_or_raise"].side_effect = RuntimeError("сервер отказал")
+        stage_two = self.finish_to_stage_two(app)
+        app.refresh_legal_list = mock.Mock(side_effect=RuntimeError("tk broke"))
+
+        with self.assertRaises(RuntimeError):
+            run_entry(stage_two)
+
+        # группа вернулась в список до перерисовки, ошибка показана несмотря на сбой
+        self.assertEqual(len(app.today_orders), 4)
+        self.assertNotIn(self.group_key(app.group), app.finishing_group_keys)
+        app.show_critical_error.assert_called_once()
+        self.assertEqual(str(app.show_critical_error.call_args.args[1]), "сервер отказал")
+
+    def test_completion_logs_start_and_duration_without_backend_ids(self):
+        app = self.make_app()
+        stage_two = self.finish_to_stage_two(app)
+        clock = SimpleNamespace(monotonic=mock.Mock(side_effect=[10.0, 12.5]))
+
+        with mock.patch("taksklad.app_finish.time", clock), self.assertLogs(level="INFO") as logs:
+            run_entry(stage_two)
+
+        lines = [line for line in logs.output if "Завершение заказа в фоне" in line]
+        self.assertEqual(len(lines), 2)
+        self.assertIn("SB-1", lines[0])
+        self.assertIn("2.5", lines[1])
+        joined = "\n".join(logs.output)
+        self.assertNotIn("order-SB-1", joined)
+        self.assertNotIn("item-SB-1", joined)
+
+    def test_completion_logs_duration_on_failure_too(self):
+        app = self.make_app()
+        self.mocks["complete_backend_orders_or_raise"].side_effect = RuntimeError("сервер отказал")
+        stage_two = self.finish_to_stage_two(app)
+        clock = SimpleNamespace(monotonic=mock.Mock(side_effect=[20.0, 27.0]))
+
+        with mock.patch("taksklad.app_finish.time", clock), self.assertLogs(level="INFO") as logs:
+            run_entry(stage_two)
+
+        lines = [line for line in logs.output if "Завершение заказа в фоне" in line]
+        self.assertEqual(len(lines), 2)
+        self.assertIn("7.0", lines[1])
+        self.assertNotIn("order-SB-1", "\n".join(logs.output))
 
     def test_group_stays_hidden_while_completion_is_running(self):
         app = self.make_app()
@@ -554,15 +651,6 @@ class FinishingGroupProtectionTests(FinishBackgroundTestCase):
     def test_refresh_without_finishing_groups_keeps_all_orders(self):
         group, other = self.loaded_orders()
         app = self.loading_app()
-
-        with mock.patch("taksklad.app_data_loading.log_refresh_diagnostic_summary"):
-            DataLoadingMixin.apply_loaded_data(app, (group + other, None, set()), show_empty_warning=False)
-
-        self.assertEqual(app.today_orders, group + other)
-
-    def test_refresh_returns_the_group_after_it_left_the_finishing_set(self):
-        group, other = self.loaded_orders()
-        app = self.loading_app(set())
 
         with mock.patch("taksklad.app_data_loading.log_refresh_diagnostic_summary"):
             DataLoadingMixin.apply_loaded_data(app, (group + other, None, set()), show_empty_warning=False)
@@ -694,8 +782,463 @@ class FinishFromLastPositionTests(FinishBackgroundTestCase):
         self.assertEqual(operation_state_at_completion, [False])
         self.mocks["complete_backend_orders_or_raise"].assert_called_once_with(["order-SB-1"])
         self.assertEqual(app.today_orders, app.other)
-        self.assertNotIn(group_key, app.finishing_group_keys)
+        self.assertIn(group_key, app.finishing_group_keys)
+        self.assertEqual(get_running_finishing_groups(app), set())
         self.assertFalse(app.operation_in_progress)
+
+
+class RefreshGenerationTests(FinishBackgroundTestCase):
+    """Группа, на которую сервер ответил, скрыта, пока не применится обновление, начатое после ответа"""
+
+    def make_refreshable(self):
+        app = self.make_app()
+        app.refresh_in_progress = False
+        app.refresh_btn = FakeWidget()
+        app.import_btn = FakeWidget()
+        app.sheet = None
+        app.all_existing_codes = set()
+        app.last_sync_result = {}
+        app.set_refresh_in_progress = lambda message, announce=True: setattr(app, "refresh_in_progress", True)
+        app.clear_refresh_in_progress = lambda: setattr(app, "refresh_in_progress", False)
+        app.apply_loaded_data = lambda result, show_empty_warning: DataLoadingMixin.apply_loaded_data(
+            app, result, show_empty_warning
+        )
+        app.reconcile_current_order_after_refresh = lambda: {"status": "merged"}
+        return app
+
+    def start_refresh(self, app):
+        DataLoadingMixin.refresh_from_sheet(app, background=True)
+        return app.background[-1]
+
+    def apply_refresh(self, app, entry, snapshot):
+        with (
+            mock.patch(
+                "taksklad.app_data_loading.fetch_sheet_data_with_sync",
+                return_value=(snapshot, None, set(), {}),
+            ),
+            mock.patch("taksklad.app_data_loading.log_refresh_diagnostic_summary"),
+        ):
+            run_entry(entry)
+
+    def to_stage_two(self, app):
+        self.start_finish(app)
+        run_entry(app.background[0])
+        return app.background[1]
+
+    def test_refresh_generation_grows_with_every_started_refresh(self):
+        app = self.make_refreshable()
+
+        self.start_refresh(app)
+        self.assertEqual(app.refresh_generation, 1)
+        app.refresh_in_progress = False
+        self.start_refresh(app)
+
+        self.assertEqual(app.refresh_generation, 2)
+
+    def test_refresh_that_did_not_start_does_not_take_a_generation(self):
+        app = self.make_refreshable()
+        app.refresh_in_progress = True
+
+        DataLoadingMixin.refresh_from_sheet(app, background=True)
+
+        self.assertEqual(getattr(app, "refresh_generation", 0), 0)
+        self.assertEqual(app.background, [])
+
+    def test_refresh_started_before_the_server_answer_does_not_bring_the_group_back(self):
+        app = self.make_refreshable()
+        group_key = self.group_key(app.group)
+        stage_two = self.to_stage_two(app)
+        refresh = self.start_refresh(app)
+        snapshot_from_before_the_answer = list(app.group) + list(app.other)
+
+        run_entry(stage_two)
+        self.apply_refresh(app, refresh, snapshot_from_before_the_answer)
+
+        self.assertEqual(app.finishing_answered, {group_key: 1})
+        self.assertIn(group_key, app.finishing_group_keys)
+        self.assertEqual(app.today_orders, app.other)
+
+    def test_refresh_started_after_the_server_answer_returns_the_group_if_the_server_shows_it(self):
+        app = self.make_refreshable()
+        group_key = self.group_key(app.group)
+        stage_two = self.to_stage_two(app)
+        run_entry(stage_two)
+        refresh = self.start_refresh(app)
+
+        self.apply_refresh(app, refresh, list(app.group) + list(app.other))
+
+        self.assertEqual(app.today_orders, list(app.group) + list(app.other))
+        self.assertNotIn(group_key, app.finishing_group_keys)
+        self.assertNotIn(group_key, app.finishing_answered)
+        self.assertEqual(hidden_finishing_orders(app), [])
+
+    def test_refresh_started_after_the_server_answer_frees_the_group_when_the_server_no_longer_shows_it(self):
+        app = self.make_refreshable()
+        group_key = self.group_key(app.group)
+        stage_two = self.to_stage_two(app)
+        run_entry(stage_two)
+        refresh = self.start_refresh(app)
+
+        self.apply_refresh(app, refresh, list(app.other))
+
+        self.assertEqual(app.today_orders, app.other)
+        self.assertNotIn(group_key, app.finishing_group_keys)
+        self.assertEqual(app.finishing_answered, {})
+
+    def test_refresh_started_after_the_answer_keeps_a_group_that_the_server_has_not_answered_for(self):
+        app = self.make_refreshable()
+        group_key = self.group_key(app.group)
+        self.to_stage_two(app)
+        refresh = self.start_refresh(app)
+
+        self.apply_refresh(app, refresh, list(app.group) + list(app.other))
+
+        self.assertIn(group_key, app.finishing_group_keys)
+        self.assertEqual(app.today_orders, app.other)
+
+    def test_initial_load_and_import_do_not_free_answered_groups(self):
+        app = self.make_refreshable()
+        group_key = self.group_key(app.group)
+        run_entry(self.to_stage_two(app))
+        snapshot = list(app.group) + list(app.other)
+
+        with (
+            mock.patch("taksklad.app_data_loading.fetch_sheet_data", return_value=(snapshot, None, set())),
+            mock.patch("taksklad.app_data_loading.log_refresh_diagnostic_summary"),
+        ):
+            DataLoadingMixin.load_data(app, show_empty_warning=False)
+            self.assertEqual(app.today_orders, app.other)
+            DataLoadingMixin.apply_loaded_data(app, (snapshot, None, set()), show_empty_warning=False)
+            self.assertEqual(app.today_orders, app.other)
+
+        self.assertIn(group_key, app.finishing_group_keys)
+
+    def test_answer_for_one_group_does_not_free_the_other_group(self):
+        app = self.make_refreshable()
+        key_a = self.group_key(app.group)
+        key_b = self.group_key(app.other)
+        self.start_finish(app)
+        run_entry(app.background[0])
+        stage_two_a = app.background[1]
+        # пока группа A завершается, оператор выбрал B и тоже завершает её
+        app.current_legal_entity = "ООО Другое"
+        app.current_group_key = key_b
+        app.current_legal_entity_orders = app.other
+        app.current_product_idx = len(app.other)
+        app.current_legal_entity_products = [
+            {"Адрес": "Адрес 2", "Коды": ["b-1"]},
+            {"Адрес": "Адрес 2", "Коды": ["b-2"]},
+        ]
+        self.start_finish(app)
+        run_entry(app.background[2])
+        stage_two_b = app.background[3]
+        self.assertEqual(app.finishing_group_keys, {key_a, key_b})
+        self.assertEqual(app.today_orders, [])
+        self.assertCountEqual(hidden_finishing_orders(app), app.group + app.other)
+
+        run_entry(stage_two_a)
+
+        self.assertEqual(get_running_finishing_groups(app), {key_b})
+        refresh = self.start_refresh(app)
+        self.apply_refresh(app, refresh, list(app.group) + list(app.other))
+        self.assertEqual(app.today_orders, app.group)
+        self.assertEqual(app.finishing_group_keys, {key_b})
+
+        self.mocks["complete_backend_orders_or_raise"].side_effect = RuntimeError("сервер отказал")
+        run_entry(stage_two_b)
+
+        self.assertCountEqual(app.today_orders, app.group + app.other)
+        self.assertEqual(app.finishing_group_keys, set())
+
+    def test_hidden_orders_are_kept_for_the_owner_lookup_until_the_group_is_freed(self):
+        app = self.make_refreshable()
+        stage_two = self.to_stage_two(app)
+        self.assertEqual(hidden_finishing_orders(app), app.group)
+
+        run_entry(stage_two)
+        self.assertEqual(hidden_finishing_orders(app), app.group)
+
+        refresh = self.start_refresh(app)
+        self.apply_refresh(app, refresh, list(app.other))
+        self.assertEqual(hidden_finishing_orders(app), [])
+
+
+class FinishHidingFailureTests(FinishBackgroundTestCase):
+    def test_completion_starts_even_if_marking_the_group_as_finishing_fails(self):
+        class BrokenSet(set):
+            def add(self, value):
+                raise RuntimeError("hide broke")
+
+        app = self.make_app()
+        app.finishing_group_keys = BrokenSet()
+        self.start_finish(app)
+
+        with self.assertRaises(RuntimeError):
+            run_entry(app.background[0])
+
+        self.assertEqual(len(app.background), 2)
+
+    def test_completion_starts_even_if_hiding_the_orders_fails(self):
+        class BrokenOrders(list):
+            def __iter__(self):
+                raise RuntimeError("hide broke")
+
+        app = self.make_app()
+        self.start_finish(app)
+        app.today_orders = BrokenOrders(app.today_orders)
+
+        with self.assertRaises(RuntimeError):
+            run_entry(app.background[0])
+
+        self.assertEqual(len(app.background), 2)
+
+
+class HiddenGroupOwnerLookupTests(FinishBackgroundTestCase):
+    CODE = "0104006396053978-TEST-BROWN-HIDDENX"
+
+    class FakeWidget:
+        def __init__(self, value=""):
+            self.value = value
+            self.options = {}
+
+        def get(self):
+            return self.value
+
+        def delete(self, *_args):
+            self.value = ""
+
+        def config(self, **kwargs):
+            self.options.update(kwargs)
+
+        def focus_set(self):
+            pass
+
+    def scan_duplicate(self, hidden):
+        order = {"Кол-во блок": 1, "Товары": "Chapman Brown OP 20", "_backend_order_item_id": "item-brown"}
+        fake = SimpleNamespace(
+            ensure_update_allowed=lambda: True,
+            operation_in_progress=False,
+            current_order=order,
+            current_product_idx=0,
+            current_legal_entity_orders=[order],
+            scanned_codes=[],
+            all_existing_codes={self.CODE},
+            today_orders=[],
+            completed_orders=[],
+            scan_entry=self.FakeWidget(self.CODE),
+            show_error=mock.Mock(),
+            show_busy_error=mock.Mock(),
+            log_duplicate_code_async=mock.Mock(),
+            bell=mock.Mock(),
+        )
+        if hidden is not None:
+            fake.finishing_hidden_orders = hidden
+        from taksklad.desktop_scan_rules import format_duplicate_scan_message
+
+        with (
+            mock.patch(
+                "taksklad.app_scanning.backend_duplicate_scan_reuse_status",
+                return_value={"checked": True, "available": False},
+            ),
+            mock.patch(
+                "taksklad.app_scanning.format_duplicate_scan_message",
+                wraps=format_duplicate_scan_message,
+            ) as message_builder,
+            mock.patch("taksklad.app_scanning.ScanningActionsMixin.reject_scan"),
+            mock.patch("taksklad.app_scanning.ScanningActionsMixin.prompt_kiz_release"),
+        ):
+            ScanningApp.on_scan(fake)
+        return message_builder
+
+    def test_duplicate_of_a_hidden_group_code_still_names_the_owner(self):
+        hidden_order = {
+            "Клиент": "ООО Скрытое",
+            "Дата отгрузки": "29.09.2026",
+            "Товары": "Chapman Brown OP 20",
+            SKLADBOT_REQUEST_NUMBER_COLUMN: "WH-R-7",
+            "_existing_scanned_codes": [self.CODE],
+        }
+
+        message_builder = self.scan_duplicate({("WH-R-7",): [hidden_order]})
+
+        owner = message_builder.call_args.args[1]
+        self.assertEqual(owner["client"], "ООО Скрытое")
+        self.assertEqual(owner["skladbot_request_number"], "WH-R-7")
+
+    def test_duplicate_without_hidden_groups_keeps_the_old_message(self):
+        message_builder = self.scan_duplicate(None)
+
+        self.assertEqual(message_builder.call_args.args[1], {})
+
+
+class DayEndAndCloseWhileFinishingTests(unittest.TestCase):
+    GROUP = ("SB-1", "ООО Тест", "Перечисление", "Адрес 1")
+
+    def make_close_app(self, **extra):
+        app = SimpleNamespace(
+            current_order=None,
+            scanned_codes=[],
+            saved_codes_count=0,
+            single_instance_lock=None,
+            destroy=mock.Mock(),
+            after_calls=[],
+        )
+        app.after = lambda delay, callback: app.after_calls.append((delay, callback))
+        for name, value in extra.items():
+            setattr(app, name, value)
+        return app
+
+    def make_end_day_app(self, **extra):
+        app = SimpleNamespace(
+            ensure_update_allowed=lambda: True,
+            operation_in_progress=False,
+            current_legal_entity=None,
+            show_busy_error=mock.Mock(),
+            set_busy=mock.Mock(),
+            safe_config=mock.Mock(),
+            report_btn=object(),
+            run_background=mock.Mock(),
+        )
+        for name, value in extra.items():
+            setattr(app, name, value)
+        return app
+
+    def test_end_day_refuses_while_a_group_is_finishing_in_background(self):
+        app = self.make_end_day_app(finishing_group_keys={self.GROUP})
+
+        ScanningApp.end_day(app)
+
+        app.show_busy_error.assert_called_once_with()
+        app.set_busy.assert_not_called()
+        app.run_background.assert_not_called()
+
+    def test_end_day_does_not_wait_for_a_group_the_server_has_already_answered_for(self):
+        app = self.make_end_day_app(
+            finishing_group_keys={self.GROUP},
+            finishing_answered={self.GROUP: 0},
+        )
+
+        ScanningApp.end_day(app)
+
+        app.show_busy_error.assert_not_called()
+        app.set_busy.assert_called_once()
+
+    def test_end_day_works_as_before_without_finishing_groups(self):
+        app = self.make_end_day_app()
+
+        ScanningApp.end_day(app)
+
+        app.show_busy_error.assert_not_called()
+        app.set_busy.assert_called_once()
+
+    def test_close_is_immediate_when_nothing_is_finishing(self):
+        app = self.make_close_app()
+
+        ScanningApp.on_close(app)
+
+        app.destroy.assert_called_once_with()
+        self.assertEqual(app.after_calls, [])
+
+    def test_close_waits_for_the_server_and_closes_when_the_group_is_done(self):
+        app = self.make_close_app(finishing_group_keys={self.GROUP})
+
+        ScanningApp.on_close(app)
+
+        app.destroy.assert_not_called()
+        self.assertEqual([delay for delay, _ in app.after_calls], [300])
+        app.after_calls[0][1]()
+        self.assertEqual(len(app.after_calls), 2)
+        app.destroy.assert_not_called()
+
+        app.finishing_group_keys.clear()
+        app.after_calls[1][1]()
+
+        app.destroy.assert_called_once_with()
+        self.assertEqual(len(app.after_calls), 2)
+
+    def test_close_gives_up_after_sixty_seconds(self):
+        app = self.make_close_app(finishing_group_keys={self.GROUP})
+        clock = SimpleNamespace(monotonic=mock.Mock(side_effect=[100.0, 100.0, 130.0, 159.9, 160.0]))
+
+        with mock.patch("taksklad.app_runtime.time", clock):
+            ScanningApp.on_close(app)
+            for _ in range(3):
+                app.destroy.assert_not_called()
+                app.after_calls[-1][1]()
+
+        app.destroy.assert_called_once_with()
+        self.assertEqual(len(app.after_calls), 3)
+        self.assertTrue(app.finishing_group_keys)
+
+    def test_close_asks_about_unsaved_scans_once_per_close(self):
+        app = self.make_close_app(
+            finishing_group_keys={self.GROUP},
+            current_order={"Товары": "x"},
+            scanned_codes=["a", "b"],
+            saved_codes_count=1,
+        )
+
+        with mock.patch("taksklad.app_runtime.messagebox.askyesno", return_value=True) as ask:
+            ScanningApp.on_close(app)
+            app.after_calls[-1][1]()
+            app.after_calls[-1][1]()
+            # второе нажатие закрытия, пока идёт ожидание: ни вопроса, ни второй цепочки
+            ScanningApp.on_close(app)
+            app.finishing_group_keys.clear()
+            app.after_calls[-1][1]()
+
+        ask.assert_called_once()
+        app.destroy.assert_called_once_with()
+        self.assertEqual(len(app.after_calls), 3)
+
+    def test_close_cancelled_by_the_operator_does_not_start_waiting(self):
+        app = self.make_close_app(
+            finishing_group_keys={self.GROUP},
+            current_order={"Товары": "x"},
+            scanned_codes=["a", "b"],
+            saved_codes_count=1,
+        )
+
+        with mock.patch("taksklad.app_runtime.messagebox.askyesno", return_value=False):
+            ScanningApp.on_close(app)
+
+        app.destroy.assert_not_called()
+        self.assertEqual(app.after_calls, [])
+        app.finishing_group_keys.clear()
+        with mock.patch("taksklad.app_runtime.messagebox.askyesno", return_value=True):
+            ScanningApp.on_close(app)
+        app.destroy.assert_called_once_with()
+
+    def test_close_does_not_wait_for_a_group_the_server_has_already_answered_for(self):
+        app = self.make_close_app(
+            finishing_group_keys={self.GROUP},
+            finishing_answered={self.GROUP: 0},
+        )
+
+        ScanningApp.on_close(app)
+
+        app.destroy.assert_called_once_with()
+        self.assertEqual(app.after_calls, [])
+
+    def test_close_closes_at_once_if_the_wait_cannot_be_scheduled(self):
+        def broken_after(delay, callback):
+            raise tk.TclError("no window")
+
+        app = self.make_close_app(finishing_group_keys={self.GROUP})
+        app.after = broken_after
+
+        ScanningApp.on_close(app)
+
+        app.destroy.assert_called_once_with()
+
+    def test_end_day_close_goes_through_the_same_wait(self):
+        # end_day через 5 секунд зовёт on_close: та же логика ожидания
+        app = self.make_close_app(finishing_group_keys={self.GROUP})
+
+        ScanningApp.on_close(app)
+
+        app.destroy.assert_not_called()
+        self.assertEqual(len(app.after_calls), 1)
 
 
 if __name__ == "__main__":

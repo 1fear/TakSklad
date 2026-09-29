@@ -9,6 +9,8 @@ from .desktop_diagnostics import log_refresh_diagnostic_summary
 from .desktop_scan_rules import (
     hide_finishing_groups,
     is_terminal_scan_state,
+    next_refresh_generation,
+    release_finishing_groups,
     scanned_blocks_for_order,
     scanned_codes_for_order,
 )
@@ -305,7 +307,11 @@ class DataLoadingMixin:
             self.safe_config(self.refresh_btn, state="disabled")
             self.safe_config(self.import_btn, state="disabled")
 
+        # Номер этого обновления: группы, на которые сервер ответил до его старта, вернутся в список
+        refresh_generation = next_refresh_generation(self)
+
         def on_success(result):
+            release_finishing_groups(self, refresh_generation)
             keep_current_selection = bool(self.current_order) and not initial
             self.apply_loaded_data(result, show_empty_warning=initial)
             if not keep_current_selection:

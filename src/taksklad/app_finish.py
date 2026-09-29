@@ -1,3 +1,6 @@
+import logging
+import time
+
 from .backend_events import (
     load_pending_backend_events,
     sync_pending_backend_events,
@@ -8,7 +11,14 @@ from .backend_flow import (
     complete_backend_orders_or_raise,
 )
 from .config import BG_MAIN, FG_MUTED
-from .desktop_scan_rules import get_finishing_groups, group_finish_blocker, scanned_blocks_for_order
+from .desktop_scan_rules import (
+    drop_finishing_group,
+    get_finishing_groups,
+    group_finish_blocker,
+    mark_finishing_answered,
+    remember_hidden_orders,
+    scanned_blocks_for_order,
+)
 from .orders import get_plan_blocks, order_group_key
 from .pending_store import add_pending_print, remove_pending_print, write_scan_backup
 from .printing import print_summary
@@ -90,8 +100,13 @@ class FinishActionsMixin:
         }
         group_order_ids = set(backend_order_ids)
         failure_title = "Не удалось завершить заказ"
+        # Для лога: номер заявки SkladBot (первая часть ключа группы), без идентификаторов заказов backend
+        log_request = normalize_text(finished_group[0]) if isinstance(finished_group, (tuple, list)) and finished_group else ""
+        log_label = f"заявка {log_request or 'без номера'}, позиций {len(current_orders)}"
         # Заказы группы, снятые со списка на время завершения: вернутся, если сервер откажет
         hidden_orders = []
+        # Ставится, когда сервер уже закрыл заказ: дальше группу в список возвращать нельзя
+        server_answered = {"value": False}
 
         self.set_busy("⏳ Печатаю сводный лист и завершаю заказ...")
         self.safe_config(self.finish_btn, state="disabled")
@@ -123,31 +138,47 @@ class FinishActionsMixin:
                 )
 
         def complete_work():
-            backend_sync_result = sync_pending_backend_events(
-                order_item_ids=order_item_ids,
-                order_ids=group_order_ids,
-            )
-            blocker = backend_sync_group_blocker(
-                backend_sync_result,
-                order_item_ids,
-                group_order_ids,
-                load_pending_backend_events(),
-            )
-            if blocker:
-                raise backend_group_blocker_error(blocker)
-            complete_backend_orders_or_raise(backend_order_ids)
+            started_at = time.monotonic()
+            logging.info("Завершение заказа в фоне: начало, %s", log_label)
+            try:
+                backend_sync_result = sync_pending_backend_events(
+                    order_item_ids=order_item_ids,
+                    order_ids=group_order_ids,
+                )
+                blocker = backend_sync_group_blocker(
+                    backend_sync_result,
+                    order_item_ids,
+                    group_order_ids,
+                    load_pending_backend_events(),
+                )
+                if blocker:
+                    raise backend_group_blocker_error(blocker)
+                complete_backend_orders_or_raise(backend_order_ids)
+                server_answered["value"] = True
 
-            if not write_scan_backup(
-                "address_finished",
-                first_product,
-                codes=[code for product in summary_products for code in product.get("Коды", [])]
-            ):
-                raise RuntimeError("Сводка напечатана, но backup завершения заказа не создан")
+                if not write_scan_backup(
+                    "address_finished",
+                    first_product,
+                    codes=[code for product in summary_products for code in product.get("Коды", [])]
+                ):
+                    raise RuntimeError("Сводка напечатана, но backup завершения заказа не создан")
+            except Exception:
+                logging.info(
+                    "Завершение заказа в фоне: ошибка, %s, %.1f сек.",
+                    log_label,
+                    time.monotonic() - started_at,
+                )
+                raise
+            logging.info(
+                "Завершение заказа в фоне: успех, %s, %.1f сек.",
+                log_label,
+                time.monotonic() - started_at,
+            )
 
         def on_completed(_result):
-            # Заказы группы уже сняты со списка после печати и обновлением не возвращаются
-            get_finishing_groups(self).discard(finished_group)
-            del hidden_orders[:]
+            # Группа остаётся скрытой, пока не применится обновление списка, начатое после ответа сервера:
+            # обновление, начатое раньше, могло получить заказ ещё не завершённым
+            mark_finishing_answered(self, finished_group)
             self.refresh_legal_list()
 
             self.status_var.set("✅ Заказ завершён! Сводка отправлена на печать")
@@ -155,10 +186,13 @@ class FinishActionsMixin:
             self.sync_backend_events_async()
 
         def on_completion_error(exc):
-            get_finishing_groups(self).discard(finished_group)
-            if hidden_orders and not any(order_group_key(order) == finished_group for order in self.today_orders):
-                self.today_orders = list(self.today_orders) + hidden_orders
-            del hidden_orders[:]
+            if server_answered["value"]:
+                # Сервер заказ уже закрыл, сбой был после: возврат группы в список дал бы второй сводный лист
+                mark_finishing_answered(self, finished_group)
+            else:
+                restored_orders = list(hidden_orders)
+                drop_finishing_group(self, finished_group)
+                self.today_orders = list(self.today_orders) + restored_orders
             try:
                 self.refresh_legal_list()
             finally:
@@ -175,16 +209,19 @@ class FinishActionsMixin:
 
         def on_printed(_result):
             # Лист в руках: группа скрыта от списка до ответа сервера, экран свободен
-            get_finishing_groups(self).add(finished_group)
-            kept_orders = []
-            for order in self.today_orders:
-                if finished_row_numbers:
-                    finished = parse_int_value(order.get("_row_number")) in finished_row_numbers
-                else:
-                    finished = order_group_key(order) == finished_group
-                (hidden_orders if finished else kept_orders).append(order)
-            self.today_orders = kept_orders
             try:
+                get_finishing_groups(self).add(finished_group)
+                kept_orders = []
+                removed_orders = []
+                for order in self.today_orders:
+                    if finished_row_numbers:
+                        finished = parse_int_value(order.get("_row_number")) in finished_row_numbers
+                    else:
+                        finished = order_group_key(order) == finished_group
+                    (removed_orders if finished else kept_orders).append(order)
+                self.today_orders = kept_orders
+                hidden_orders.extend(removed_orders)
+                remember_hidden_orders(self, finished_group, hidden_orders)
                 self.clear_busy()
                 self.reset_current_selection()
                 self.refresh_legal_list()
