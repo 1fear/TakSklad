@@ -38,6 +38,8 @@ BROWN_KSSL = "Chapman Brown KSSL 20"
 GREEN_KSSL = "Chapman Green KSSL 20"
 BROWN_KSSL_UNIT_PREFIX = "0104006396104199"
 GREEN_KSSL_UNIT_PREFIX = "0104006396104229"
+BROWN_KSSL_BOX_PREFIX = "0104006396104205"
+GREEN_KSSL_BOX_PREFIX = "0104006396104236"
 BROWN_SSL_UNIT_CODE = "0104006396054067217KDAUbG93OVvXgs6C"
 BOX_TAIL = "21UZ1112022525522513824013040046110ZIG1218229310000"
 
@@ -131,7 +133,7 @@ class KsslWarehouseFlowTests(unittest.TestCase):
         Base.metadata.drop_all(self.engine)
         self.engine.dispose()
 
-    def import_kssl_order(self, order_key="kssl-order-1"):
+    def import_kssl_order(self, order_key="kssl-order-1", brown_blocks=3, green_blocks=2):
         rows = [
             {
                 "Дата отгрузки": "04.09.2026",
@@ -140,8 +142,8 @@ class KsslWarehouseFlowTests(unittest.TestCase):
                 "Адрес": "Ташкент, тестовая 1",
                 "Торговый представитель": "ТП1",
                 "Товары": BROWN_KSSL,
-                "Кол-во ШТ": "30",
-                "Кол-во блок": "3",
+                "Кол-во ШТ": str(brown_blocks * 10),
+                "Кол-во блок": str(brown_blocks),
                 "ID заказа": order_key,
                 "ID импорта": f"{order_key}:1",
             },
@@ -152,8 +154,8 @@ class KsslWarehouseFlowTests(unittest.TestCase):
                 "Адрес": "Ташкент, тестовая 1",
                 "Торговый представитель": "ТП1",
                 "Товары": GREEN_KSSL,
-                "Кол-во ШТ": "20",
-                "Кол-во блок": "2",
+                "Кол-во ШТ": str(green_blocks * 10),
+                "Кол-во блок": str(green_blocks),
                 "ID заказа": order_key,
                 "ID импорта": f"{order_key}:2",
             },
@@ -310,13 +312,10 @@ class KsslWarehouseFlowTests(unittest.TestCase):
         self.assertEqual(response.status_code, 422, response.text)
         self.assertIn("length_for_gtin", response.text)
 
-        # Короб KSSL с ещё не заведённым коробочным GTIN не проходит молча:
-        # неизвестный GTIN на позиции с известным ключом это несовпадение товара
-        unknown_box = f"0104006396104205{BOX_TAIL}"
-        self.assertEqual(len(unknown_box), 67)
-        response = self.scan(brown_item, unknown_box)
+        # Короб Brown KSSL это 50 блоков, на позицию из трёх он не влезает
+        response = self.scan(brown_item, f"{BROWN_KSSL_BOX_PREFIX}{BOX_TAIL}")
         self.assertEqual(response.status_code, 409, response.text)
-        self.assertEqual(response.json()["detail"]["code"], "scan_product_mismatch")
+        self.assertEqual(response.json()["detail"]["code"], "aggregate_box_exceeds_plan")
 
         # Три блока Brown KSSL закрывают позицию, четвёртый не принимается
         for index in range(1, 4):
@@ -351,6 +350,35 @@ class KsslWarehouseFlowTests(unittest.TestCase):
             )
             for item in db.execute(select(OrderItem)).scalars().all():
                 self.assertEqual(item.scanned_blocks, item.quantity_blocks, item.product)
+
+    def test_kssl_box_closes_fifty_block_position_with_one_scan(self):
+        _import_id, _order_id, items = self.import_kssl_order("kssl-box-order", brown_blocks=50, green_blocks=2)
+        brown_item = items[BROWN_KSSL]
+        green_item = items[GREEN_KSSL]
+        brown_box = f"{BROWN_KSSL_BOX_PREFIX}{BOX_TAIL}"
+        self.assertEqual(len(brown_box), 67)
+
+        # Короб Brown KSSL на позицию Green KSSL: чужой цвет
+        response = self.scan(green_item, brown_box)
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(response.json()["detail"]["code"], "aggregate_box_product_mismatch")
+
+        response = self.scan(brown_item, brown_box)
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(response.json()["scanned_blocks"], 50)
+        self.assertEqual(response.json()["item_status"], "completed")
+
+        # Короб Green KSSL на позицию из двух блоков не влезает
+        response = self.scan(green_item, f"{GREEN_KSSL_BOX_PREFIX}{BOX_TAIL}")
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(response.json()["detail"]["code"], "aggregate_box_exceeds_plan")
+
+        with self.SessionLocal() as db:
+            scan = db.execute(select(ScanCode)).scalar_one()
+            self.assertEqual(scan.code, brown_box)
+            self.assertEqual(scan.raw_payload["scan_type"], "aggregate_box")
+            self.assertEqual(scan.raw_payload["block_quantity"], 50)
+            self.assertEqual(scan.raw_payload["aggregate_product_key"], "brown:kssl")
 
     def test_daily_report_assigns_kssl_codes_to_kssl_rows_only(self):
         products = [

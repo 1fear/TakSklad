@@ -6,6 +6,7 @@ from backend.app.scan_quantities import (
     UNIT_PRODUCT_PREFIXES as BACKEND_UNIT_PRODUCT_PREFIXES,
     product_key_from_name as backend_product_key_from_name,
     scan_code_product_key as backend_scan_code_product_key,
+    scan_metadata_for_code as backend_scan_metadata_for_code,
     scanned_blocks_for_scans,
 )
 from backend.app.skladbot_contracts import product_sku_key as backend_product_sku_key
@@ -197,6 +198,40 @@ class ScanQuantitiesTests(unittest.TestCase):
         box_length_with_unit_gtin = "010400639610419921UZ1112022525522513824013040046110ZIG1218229310000"
         self.assertEqual(len(box_length_with_unit_gtin), 67)
         self.assertEqual(kiz_format_violation(box_length_with_unit_gtin), "length_for_gtin")
+
+    # Коробочный GTIN KSSL это следующий номер после штучного с пересчитанной
+    # контрольной цифрой, как у шести старых SKU (4006396104199 -> ...205,
+    # 4006396104229 -> ...236). Оба кода сняты с реальных коробов 2026-09-24.
+    KSSL_BROWN_BOX = "010400639610420521UZ1112172620312000724013040050210ZIG1233769310000"
+    KSSL_GREEN_BOX = "010400639610423621UZ1112172620323301124013040050310ZIG1233779310000"
+
+    def test_kssl_box_counts_fifty_blocks_of_its_own_color(self):
+        for code, expected in (
+            (self.KSSL_BROWN_BOX, "brown:kssl"),
+            (self.KSSL_GREEN_BOX, "green:kssl"),
+        ):
+            with self.subTest(code=code):
+                self.assertEqual(len(code), 67)
+                self.assertEqual(kiz_format_violation(code), "")
+                for metadata in (scan_metadata_for_code(code), backend_scan_metadata_for_code(code)):
+                    self.assertEqual(metadata["scan_type"], SCAN_TYPE_AGGREGATE_BOX)
+                    self.assertEqual(metadata["block_quantity"], 50)
+                    self.assertEqual(metadata["product_key"], expected)
+                    self.assertEqual(metadata["aggregate_product_key"], expected)
+
+    def test_kssl_box_is_guarded_against_other_positions(self):
+        self.assertFalse(aggregate_product_mismatch(self.KSSL_BROWN_BOX, "Chapman Brown KSSL 20"))
+        self.assertFalse(aggregate_product_mismatch(self.KSSL_GREEN_BOX, "Chapman Green KSSL 20"))
+        self.assertTrue(aggregate_product_mismatch(self.KSSL_BROWN_BOX, "Chapman Green KSSL 20"))
+        self.assertTrue(aggregate_product_mismatch(self.KSSL_BROWN_BOX, "Chapman Brown SSL 100`20"))
+        self.assertTrue(aggregate_product_mismatch(self.KSSL_GREEN_BOX, "Chapman Green OP 20"))
+        brown_ssl_box = "010400639605407421UZ1112022612417151624013040046310ZIG1231569310000"
+        self.assertTrue(aggregate_product_mismatch(brown_ssl_box, "Chapman Brown KSSL 20"))
+
+    def test_kssl_box_gtin_cut_to_block_length_is_rejected(self):
+        # Обрезок короба длиной ровно в блок получил бы вес 50 блоков
+        self.assertEqual(kiz_format_violation(self.KSSL_BROWN_BOX[:35]), "length_for_gtin")
+        self.assertEqual(kiz_format_violation(self.KSSL_GREEN_BOX[:35]), "length_for_gtin")
 
 if __name__ == "__main__":
     unittest.main()

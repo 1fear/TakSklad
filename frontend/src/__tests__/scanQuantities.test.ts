@@ -16,6 +16,10 @@ describe("blockQuantityForCode", () => {
     expect(blockQuantityForCode(`${prefix}217ABCDEF`)).toBe(AGGREGATE_BOX_BLOCK_QUANTITY);
   });
 
+  it.each(["0104006396104205", "0104006396104236"])("короб KSSL %s это 50 блоков", (prefix) => {
+    expect(blockQuantityForCode(`${prefix}217ABCDEF`)).toBe(AGGREGATE_BOX_BLOCK_QUANTITY);
+  });
+
   it("неизвестный префикс считается штучным кодом", () => {
     expect(blockQuantityForCode("0199999999999999999ABCDEF")).toBe(1);
   });

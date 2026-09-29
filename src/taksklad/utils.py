@@ -150,13 +150,21 @@ def parse_int_value(value):
     if isinstance(value, int):
         return value
     if isinstance(value, float):
-        return int(value)
+        try:
+            return int(value)
+        except (ValueError, OverflowError):
+            # nan даёт ValueError, бесконечность OverflowError
+            return 0
     value_str = normalize_text(value).replace(" ", "").replace(",", ".")
     if not value_str:
         return 0
     try:
         return int(float(value_str))
-    except ValueError:
+    except (ValueError, OverflowError):
+        # int() от бесконечности бросает OverflowError, а не ValueError, а float()
+        # отдаёт бесконечность и на слове inf, и на экспоненте вида 1e400, и на
+        # достаточно длинной строке цифр. Значение приходит снаружи, поэтому ноль
+        # вместо необработанного исключения
         return 0
 
 

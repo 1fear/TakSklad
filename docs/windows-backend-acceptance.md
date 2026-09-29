@@ -22,10 +22,10 @@ Production credential migration разрешена только из прове�
 До extraction и до любого token prompt доверенный admin host должен находиться на exact tagged/main SHA и выполнить GitHub/Sigstore verification `release.json`, outer `version.json`, ZIP и OCI/Windows subjects. Verifier сверяет release → version → ZIP hashes, безопасно отклоняет absolute/traversal/backslash/duplicate/case-collision/symlink/special/extra/missing/oversize members, связывает inner manifests с app/helper/wrapper и извлекает только в новый отсутствующий каталог:
 
 ```bash
-release_dir="/protected/new-download-v2.0.54"
-extract_dir="/protected/new-extract-v2.0.54"
+release_dir="/protected/new-download-v2.0.55"
+extract_dir="/protected/new-extract-v2.0.55"
 mkdir -m 700 "$release_dir"
-gh release download v2.0.54 --dir "$release_dir"
+gh release download v2.0.55 --dir "$release_dir"
 TAKSKLAD_RELEASE_MANIFEST="$release_dir/release.json" \
 TAKSKLAD_RELEASE_ARTIFACT_DIR="$release_dir" \
 ./tools/verify_release_attestations.sh --sha "<exact-tagged-main-sha>" \
@@ -266,7 +266,7 @@ Rollback не должен очищать локальные очереди. П�
 - найденные дефекты закрыты или записаны как accepted known issues;
 - rollback без backend flags проверен;
 - нет потери КИЗов при offline/timeout;
-- Candidate `2.0.54` проверен локально; public channel считается переключённым только после final preflight exact `2.0.54`/`onefile_exe` и immutable release gate.
+- Candidate `2.0.55` проверен локально; public channel считается переключённым только после final preflight exact `2.0.55`/`onefile_exe` и immutable release gate.
 
 ## 7. Что Уже Покрыто Автотестами
 

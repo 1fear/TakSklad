@@ -2,6 +2,8 @@ import re
 import uuid
 from datetime import datetime
 
+from .product_prices import block_price_for_product
+
 
 TELEGRAM_MANUAL_CALLBACK_PREFIX = "manual:"
 TELEGRAM_MANUAL_BLOCK_PRICE = 240000
@@ -34,7 +36,11 @@ def parse_int(value):
         return 0
     try:
         return int(float(text))
-    except ValueError:
+    except (ValueError, OverflowError):
+        # int() от бесконечности бросает OverflowError, а не ValueError, а float()
+        # отдаёт бесконечность и на слове inf, и на экспоненте вида 1e400, и на
+        # достаточно длинной строке цифр. Значение приходит снаружи, поэтому ноль
+        # вместо необработанного исключения
         return 0
 
 
@@ -162,6 +168,9 @@ def build_manual_import_payload(chat_id, flow):
     rows = []
     for index, item in enumerate(data.get("items") or [], start=1):
         blocks = parse_int(item.get("blocks"))
+        block_price = block_price_for_product(
+            item.get("product") or "", TELEGRAM_MANUAL_BLOCK_PRICE
+        )
         rows.append({
             "Дата отгрузки": data.get("order_date") or "",
             "Тип оплаты": data.get("payment_type") or "",
@@ -172,8 +181,8 @@ def build_manual_import_payload(chat_id, flow):
             "Товары": item.get("product") or "",
             "Кол-во ШТ": blocks * TELEGRAM_MANUAL_PIECES_PER_BLOCK,
             "Кол-во блок": blocks,
-            "Цена за блок": TELEGRAM_MANUAL_BLOCK_PRICE,
-            "Сумма позиции": blocks * TELEGRAM_MANUAL_BLOCK_PRICE,
+            "Цена за блок": block_price,
+            "Сумма позиции": blocks * block_price,
             "Источник файла": source_file,
             "ID заказа": f"telegram-manual-{manual_id}",
             "ID импорта": f"telegram-manual-{manual_id}:{index}",

@@ -1,5 +1,6 @@
 import os
 import threading
+import time
 import unittest
 import uuid
 from datetime import date, datetime, timezone
@@ -177,6 +178,92 @@ class PostgresSkladBotNonLeaseConcurrencyTests(unittest.TestCase):
             event = db.get(PendingEvent, event_id)
         self.assertEqual(event.status, "completed")
         self.assertEqual(event.attempts, 2)
+
+    def test_slow_detail_read_after_post_survives_idle_transaction_timeout(self):
+        # 28.09.2026: GET деталей после POST шёл дольше idle_in_transaction_session_timeout,
+        # Postgres рвал транзакцию воркера, и номер уже созданной заявки терялся
+        with self.SessionLocal() as db:
+            order = Order(
+                source="test",
+                external_id=f"synthetic-{uuid.uuid4()}",
+                order_date=date(2026, 9, 29),
+                payment_type="Перечисление",
+                client="Synthetic client",
+                address="Synthetic address",
+                representative="ТП1",
+                status="not_completed",
+                raw_payload={},
+            )
+            db.add(order)
+            db.flush()
+            db.add(OrderItem(
+                order_id=order.id,
+                product="Chapman RED OP 20",
+                quantity_pieces=20,
+                quantity_blocks=2,
+                pieces_per_block=10,
+                scanned_blocks=0,
+                status="not_completed",
+                raw_payload={},
+            ))
+            event = PendingEvent(
+                event_type=SKLADBOT_REQUEST_CREATE_EVENT_TYPE,
+                action=SKLADBOT_REQUEST_CREATE_EVENT_TYPE,
+                aggregate_type="order",
+                aggregate_id=str(order.id),
+                idempotency_key=skladbot_create_idempotency_key(str(order.id)),
+                status="pending",
+                attempts=0,
+                payload={"order_id": str(order.id), "post_state": "retry_scheduled"},
+                available_at=datetime.now(timezone.utc),
+            )
+            db.add(event)
+            db.commit()
+            order_id, event_id = order.id, event.id
+
+        class SlowDetailClient:
+            configured = True
+
+            def __init__(self):
+                self.create_calls = 0
+
+            def create_request(self, _payload):
+                self.create_calls += 1
+                return {"data": {"id": 7500}}
+
+            def list_requests(self, type_id=None):
+                return []
+
+            def get_request_detail(self, request_id):
+                time.sleep(1.5)
+                return {"id": request_id, "delivery_number": f"WH-R-{request_id}"}
+
+        # как в backend/app/db.py: таймаут простоя задаётся соединению, expire_on_commit по умолчанию
+        engine = create_engine(
+            self.url,
+            pool_pre_ping=True,
+            connect_args={"options": "-c idle_in_transaction_session_timeout=500"},
+        )
+        WorkerSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        client = SlowDetailClient()
+        try:
+            with mock.patch.dict(
+                "os.environ",
+                {"TAKSKLAD_EVENT_LEASES_ENABLED": "0", "SKLADBOT_CREATE_REQUESTS_MODE": "enabled"},
+                clear=False,
+            ):
+                with WorkerSession() as db:
+                    result = process_pending_skladbot_request_creates(db, client=client, limit=1)
+        finally:
+            engine.dispose()
+
+        self.assertEqual(result["created"], 1)
+        self.assertEqual(client.create_calls, 1)
+        with self.SessionLocal() as db:
+            order = db.get(Order, order_id)
+            event = db.get(PendingEvent, event_id)
+        self.assertEqual(order.raw_payload.get("skladbot_request_number"), "WH-R-7500")
+        self.assertEqual(event.status, "completed")
 
 
 if __name__ == "__main__":
