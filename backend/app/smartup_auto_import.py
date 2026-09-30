@@ -2231,25 +2231,6 @@ def send_final_logistics_reports(
                         caption=logistics_report_caption(delivery_date, zone),
                     )
                     sent_filenames.append(filename)
-                # Приписка с числом заказов по зонам идёт следом за файлами тем же
-                # маршрутом. Счёты даёт билдер отчёта; их отсутствие (старый ответ
-                # без order_counts) не превращается в приписку с нулями, а прямо
-                # называется в результате
-                order_counts = reports.get("order_counts")
-                summary_sent = False
-                summary_reason = ""
-                if isinstance(order_counts, dict):
-                    sender.send_message(
-                        config.logistics_chat_id,
-                        logistics_summary_message(
-                            delivery_date,
-                            city_count=order_counts.get(LOGISTICS_ZONE_CITY) or 0,
-                            region_count=order_counts.get(LOGISTICS_ZONE_REGION) or 0,
-                        ),
-                    )
-                    summary_sent = True
-                else:
-                    summary_reason = "order_counts_missing"
             except Exception as exc:
                 result = {
                     "status": "ambiguous",
@@ -2273,6 +2254,42 @@ def send_final_logistics_reports(
                     telegram_sender=telegram_sender,
                 )
             else:
+                # Приписка с числом заказов по зонам идёт следом за файлами тем же
+                # маршрутом. Счёты даёт билдер отчёта; их отсутствие (старый ответ
+                # без order_counts) не превращается в приписку с нулями, а прямо
+                # называется в результате. Файлы к этому моменту уже в чате
+                # логистики, поэтому сбой приписки не делает доставку
+                # неоднозначной: событие выполнено, повторно ничего не шлётся,
+                # владелец узнаёт о сбое алертом
+                order_counts = reports.get("order_counts")
+                summary_sent = False
+                summary_reason = ""
+                if isinstance(order_counts, dict):
+                    try:
+                        sender.send_message(
+                            config.logistics_chat_id,
+                            logistics_summary_message(
+                                delivery_date,
+                                city_count=order_counts.get(LOGISTICS_ZONE_CITY) or 0,
+                                region_count=order_counts.get(LOGISTICS_ZONE_REGION) or 0,
+                            ),
+                        )
+                        summary_sent = True
+                    except Exception as summary_exc:
+                        summary_reason = "summary_send_failed"
+                        notify_smartup_automation_error(
+                            db,
+                            config,
+                            export_date=export_date,
+                            slot_label=f"logistics:{normalized_delivery_date}",
+                            exc=SmartupAutoImportError(
+                                "Logistics report files delivered, summary message failed: "
+                                f"{sanitize_automation_error_text(summary_exc, limit=500)}"
+                            ),
+                            telegram_sender=telegram_sender,
+                        )
+                else:
+                    summary_reason = "order_counts_missing"
                 region_directory_empty = bool(reports.get("region_directory_empty"))
                 if region_directory_empty:
                     queue_logistics_region_directory_empty_alert(db, parsed_delivery_date)
