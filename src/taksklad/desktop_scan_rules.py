@@ -174,6 +174,23 @@ def drop_finishing_group(app, group_key):
     _ensure_attr(app, "finishing_hidden_orders", dict).pop(group_key, None)
 
 
+def mark_sheet_printed(app, group_key):
+    """Сводный лист группы вышел из принтера: до ответа сервера повторная печать спрашивается
+
+    Отметка живёт в памяти окна, после перезапуска программы её нет
+    """
+    _ensure_attr(app, "finishing_printed_groups", set).add(group_key)
+
+
+def sheet_already_printed(app, group_key):
+    return group_key in _ensure_attr(app, "finishing_printed_groups", set)
+
+
+def forget_sheet_printed(app, group_key):
+    """Сервер ответил на завершение: заказ закрыт, отметка о листе больше не нужна"""
+    _ensure_attr(app, "finishing_printed_groups", set).discard(group_key)
+
+
 def release_finishing_groups(app, generation):
     """Освобождает группы, на которые сервер ответил раньше, чем началось обновление с этим номером"""
     answered = _ensure_attr(app, "finishing_answered", dict)

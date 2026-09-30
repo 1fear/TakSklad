@@ -131,10 +131,15 @@ def backend_failure_title(exc):
     return "КИЗы не записаны"
 
 
+def backend_blocker_is_offline(blocker):
+    # Обрыв связи, а не отказ сервера: события ждут в очереди и уйдут сами
+    return normalize_text(blocker).startswith(BACKEND_OFFLINE_PREFIX)
+
+
 def backend_group_blocker_error(blocker):
     # Сводный лист к этому моменту уже напечатан, оператор обязан это знать
     # в обоих случаях, но «не принял» верно только для отказа сервера.
-    if normalize_text(blocker).startswith(BACKEND_OFFLINE_PREFIX):
+    if backend_blocker_is_offline(blocker):
         return BackendOfflineQueueError(f"Сводный лист напечатан. {blocker}")
     return RuntimeError(f"Сводный лист напечатан, но backend не принял все КИЗы. {blocker}")
 
@@ -239,6 +244,14 @@ def is_backend_order_already_completed_error(exc):
             "заказ закрыт",
         )
     )
+
+
+def queue_backend_orders_complete(order_ids):
+    # Завершение ставится в очередь вслед за сканами заказа: фоновый проход
+    # отправит его сам, когда вернётся связь. Повторная постановка того же
+    # заказа очередь не удваивает, id события выводится из order_id
+    for order_id in order_ids:
+        queue_backend_order_complete(order_id)
 
 
 def complete_backend_orders_or_raise(order_ids):

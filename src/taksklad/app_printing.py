@@ -21,6 +21,15 @@ from .utils import normalize_text
 
 
 class PrintingActionsMixin:
+    def confirm_reprint_summary(self):
+        # Лист по заказу уже вышел, а сервер завершение не подтвердил: повторное
+        # «Завершить» по умолчанию не печатает второй лист. Текст согласован владельцем 30.09
+        return messagebox.askyesno(
+            "Сводный лист уже напечатан",
+            "Сводный лист по этому заказу уже напечатан\n\nНапечатать ещё раз?",
+            default=messagebox.NO,
+        )
+
     def confirm_print_settings(self):
         result = {"print": False}
         settings = load_print_settings()

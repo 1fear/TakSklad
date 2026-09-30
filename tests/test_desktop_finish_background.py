@@ -524,6 +524,35 @@ class FinishStageTwoTests(FinishBackgroundTestCase):
         self.assertEqual(len(app.today_orders), 4)
         self.assertNotIn(self.group_key(app.group), app.finishing_group_keys)
 
+    def test_offline_blocker_puts_the_order_completion_into_the_queue(self):
+        # Текст обещает, что события заказа отправятся сами: завершение заказа
+        # обязано лежать в очереди, иначе заказ останется незавершённым
+        app = self.make_app()
+        self.mocks["backend_sync_group_blocker"].return_value = (
+            "Связь с сервером прервалась. События заказа сохранены в очереди: 2. "
+            "Отправятся автоматически, когда связь вернётся"
+        )
+        with mock.patch("taksklad.app_finish.queue_backend_orders_complete", create=True) as queue_complete:
+            stage_two = self.finish_to_stage_two(app)
+            run_entry(stage_two)
+
+        queue_complete.assert_called_once_with(["order-SB-1"])
+        self.mocks["complete_backend_orders_or_raise"].assert_not_called()
+        title, exc = app.show_critical_error.call_args.args
+        self.assertIn("Отправятся автоматически", str(exc))
+
+    def test_server_rejection_blocker_does_not_queue_the_order_completion(self):
+        # Сервер отказал в событиях: завершать заказ самим нельзя, разбирает оператор
+        app = self.make_app()
+        self.mocks["backend_sync_group_blocker"].return_value = (
+            "Backend не принял события текущего заказа. Осталось по заказу: 2."
+        )
+        with mock.patch("taksklad.app_finish.queue_backend_orders_complete", create=True) as queue_complete:
+            stage_two = self.finish_to_stage_two(app)
+            run_entry(stage_two)
+
+        queue_complete.assert_not_called()
+
     def test_failure_after_the_server_completed_keeps_the_group_hidden_with_old_text(self):
         # сервер заказ уже закрыл: возврат группы в список дал бы второй сводный лист
         app = self.make_app()
@@ -1002,6 +1031,82 @@ class FinishHidingFailureTests(FinishBackgroundTestCase):
         self.assertEqual(len(app.background), 2)
 
 
+class RetryAfterPrintedSheetTests(FinishBackgroundTestCase):
+    """Повторное «Завершить» после сбоя до ответа сервера не печатает лист молча второй раз"""
+
+    def reselect(self, app):
+        # Оператор снова выбрал вернувшийся в список заказ, все позиции уже сохранены
+        app.current_legal_entity = "ООО Тест"
+        app.current_group_key = self.group_key(app.group)
+        app.current_legal_entity_orders = app.group
+        app.current_product_idx = len(app.group)
+        app.current_legal_entity_products = [
+            {"Адрес": "Адрес 1", "Коды": [f"code-{number}"]} for number in range(len(app.group))
+        ]
+
+    def fail_before_answer(self, app):
+        self.mocks["complete_backend_orders_or_raise"].side_effect = RuntimeError("нет ответа")
+        self.start_finish(app)
+        run_entry(app.background[0])
+        run_entry(app.background[1])
+        self.mocks["complete_backend_orders_or_raise"].side_effect = None
+
+    def test_retry_asks_and_no_completes_without_printing_again(self):
+        app = self.make_app()
+        app.confirm_reprint_summary = mock.Mock(return_value=False)
+        app.confirm_print_settings = mock.Mock(return_value=True)
+        self.fail_before_answer(app)
+        self.reselect(app)
+
+        self.start_finish(app)
+
+        app.confirm_reprint_summary.assert_called_once_with()
+        self.assertEqual(app.confirm_print_settings.call_count, 1)
+        self.assertEqual(len(app.background), 3)
+        self.assertEqual(app.status_var.value, PRINTED_TEXT)
+        self.assertIn(self.group_key(app.group), app.finishing_group_keys)
+        run_entry(app.background[2])
+        self.assertEqual(self.mocks["print_summary"].call_count, 1)
+        self.assertEqual(self.mocks["complete_backend_orders_or_raise"].call_count, 2)
+        self.assertEqual(app.status_var.value, COMPLETED_TEXT)
+
+    def test_retry_asks_and_yes_prints_the_sheet_again(self):
+        app = self.make_app()
+        app.confirm_reprint_summary = mock.Mock(return_value=True)
+        self.fail_before_answer(app)
+        self.reselect(app)
+
+        self.start_finish(app)
+
+        app.confirm_reprint_summary.assert_called_once_with()
+        self.assertEqual(app.operation_message, BUSY_TEXT)
+        run_entry(app.background[2])
+        self.assertEqual(self.mocks["print_summary"].call_count, 2)
+
+    def test_first_finish_does_not_ask_about_reprinting(self):
+        app = self.make_app()
+        app.confirm_reprint_summary = mock.Mock(return_value=False)
+
+        self.start_finish(app)
+        run_entry(app.background[0])
+
+        app.confirm_reprint_summary.assert_not_called()
+        self.assertEqual(self.mocks["print_summary"].call_count, 1)
+
+    def test_after_the_server_answered_the_printed_mark_is_gone(self):
+        app = self.make_app()
+        app.confirm_reprint_summary = mock.Mock(return_value=False)
+        self.start_finish(app)
+        run_entry(app.background[0])
+        run_entry(app.background[1])
+        drop_finishing_group(app, self.group_key(app.group))
+        self.reselect(app)
+
+        self.start_finish(app)
+
+        app.confirm_reprint_summary.assert_not_called()
+
+
 class HiddenGroupOwnerLookupTests(FinishBackgroundTestCase):
     CODE = "0104006396053978-TEST-BROWN-HIDDENX"
 
@@ -1386,6 +1491,7 @@ class FinishingStateDeclarationTests(unittest.TestCase):
         "refresh_generation": 0,
         "close_wait_deadline": None,
         "finishing_failed_before_answer": False,
+        "finishing_printed_groups": set(),
     }
 
     @staticmethod

@@ -6,18 +6,23 @@ from .backend_events import (
     sync_pending_backend_events,
 )
 from .backend_flow import (
+    backend_blocker_is_offline,
     backend_group_blocker_error,
     backend_sync_group_blocker,
     complete_backend_orders_or_raise,
+    queue_backend_orders_complete,
 )
 from .config import BG_MAIN, FG_MUTED
 from .desktop_scan_rules import (
     drop_finishing_group,
+    forget_sheet_printed,
     get_finishing_groups,
     group_finish_blocker,
     mark_finishing_answered,
+    mark_sheet_printed,
     remember_finishing_hidden_orders,
     scanned_blocks_for_order,
+    sheet_already_printed,
 )
 from .orders import get_plan_blocks, order_group_key
 from .pending_store import add_pending_print, remove_pending_print, write_scan_backup
@@ -79,15 +84,19 @@ class FinishActionsMixin:
             self.finish_btn.config(state="normal")
             return
 
-        if not self.confirm_print_settings():
+        first_product = current_products[0]
+        summary_products = current_products
+        finished_group = group_key or order_group_key(first_product)
+
+        # Лист по этой группе уже вышел, а сервер завершение не подтвердил:
+        # повторное «Завершить» печатает второй лист только по ответу «Да»
+        reprint_sheet = not sheet_already_printed(self, finished_group) or self.confirm_reprint_summary()
+        if reprint_sheet and not self.confirm_print_settings():
             self.show_error("Печать сводного листа отменена")
             self.finish_btn.config(state="normal")
             return
         selected_print_settings = getattr(self, "_selected_print_settings", None)
 
-        first_product = current_products[0]
-        summary_products = current_products
-        finished_group = group_key or order_group_key(first_product)
         finished_row_numbers = {
             parse_int_value(order.get("_row_number"))
             for order in current_orders
@@ -107,10 +116,6 @@ class FinishActionsMixin:
         hidden_orders = []
         # Ставится, когда сервер уже закрыл заказ: дальше группу в список возвращать нельзя
         server_answered = {"value": False}
-
-        self.set_busy("⏳ Печатаю сводный лист и завершаю заказ...")
-        self.safe_config(self.finish_btn, state="disabled")
-        self.safe_config(self.next_product_btn, state="disabled")
 
         def print_work():
             address = first_product.get('Адрес', 'Адрес не указан')
@@ -152,6 +157,10 @@ class FinishActionsMixin:
                     load_pending_backend_events(),
                 )
                 if blocker:
+                    if backend_blocker_is_offline(blocker):
+                        # Текст оператору обещает, что события заказа уйдут сами:
+                        # завершение заказа встаёт в очередь вслед за его сканами
+                        queue_backend_orders_complete(backend_order_ids)
                     raise backend_group_blocker_error(blocker)
                 complete_backend_orders_or_raise(backend_order_ids)
                 server_answered["value"] = True
@@ -179,6 +188,7 @@ class FinishActionsMixin:
             # Группа остаётся скрытой, пока не применится обновление списка, начатое после ответа сервера:
             # обновление, начатое раньше, могло получить заказ ещё не завершённым
             mark_finishing_answered(self, finished_group)
+            forget_sheet_printed(self, finished_group)
             self.refresh_legal_list()
 
             self.status_var.set("✅ Заказ завершён! Сводка отправлена на печать")
@@ -189,7 +199,9 @@ class FinishActionsMixin:
             if server_answered["value"]:
                 # Сервер заказ уже закрыл, сбой был после: возврат группы в список дал бы второй сводный лист
                 mark_finishing_answered(self, finished_group)
+                forget_sheet_printed(self, finished_group)
             else:
+                # Отметка о напечатанном листе остаётся: повторное «Завершить» спросит про печать
                 restored_orders = list(hidden_orders)
                 drop_finishing_group(self, finished_group)
                 # Множество «работающих» опустело, но окно, которое ждёт завершения, закрывать нельзя:
@@ -213,6 +225,7 @@ class FinishActionsMixin:
         def on_printed(_result):
             # Лист в руках: группа скрыта от списка до ответа сервера, экран свободен
             try:
+                mark_sheet_printed(self, finished_group)
                 get_finishing_groups(self).add(finished_group)
                 kept_orders = []
                 removed_orders = []
@@ -241,6 +254,16 @@ class FinishActionsMixin:
         def on_print_finally():
             self.clear_busy()
 
+        if not reprint_sheet:
+            # Оператор ответил «Нет»: лист уже в руках, сразу стадия завершения на сервере
+            self.safe_config(self.finish_btn, state="disabled")
+            self.safe_config(self.next_product_btn, state="disabled")
+            on_printed(None)
+            return
+
+        self.set_busy("⏳ Печатаю сводный лист и завершаю заказ...")
+        self.safe_config(self.finish_btn, state="disabled")
+        self.safe_config(self.next_product_btn, state="disabled")
         self.run_background(
             failure_title,
             print_work,
