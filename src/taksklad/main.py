@@ -167,6 +167,7 @@ class ScanningApp(
         self.finishing_answered = {}
         self.finishing_hidden_orders = {}
         self.finishing_failed_before_answer = False
+        self.finishing_printed_groups = set()
         self.refresh_generation = 0
         self.close_wait_deadline = None
         self.return_lookup_result = None

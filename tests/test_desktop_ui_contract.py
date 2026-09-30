@@ -947,6 +947,30 @@ class DesktopUiContractTests(unittest.TestCase):
         self.assertNotIsInstance(rejected, BackendOfflineQueueError)
         self.assertIn("Сводный лист напечатан, но backend не принял все КИЗы", str(rejected))
 
+    def test_queue_backend_orders_complete_queues_every_order_of_the_group(self):
+        from taksklad import backend_flow
+
+        self.assertTrue(hasattr(backend_flow, "queue_backend_orders_complete"))
+        with mock.patch("taksklad.backend_flow.queue_backend_order_complete", return_value="event") as queue:
+            backend_flow.queue_backend_orders_complete(["order-1", "order-2"])
+
+        self.assertEqual(queue.call_args_list, [mock.call("order-1"), mock.call("order-2")])
+
+    def test_reprint_question_names_the_printed_sheet_and_defaults_to_no(self):
+        # Текст согласован владельцем 30.09: лист уже в руках, по умолчанию не печатать
+        from taksklad.app_printing import PrintingActionsMixin
+
+        self.assertTrue(hasattr(PrintingActionsMixin, "confirm_reprint_summary"))
+        with mock.patch("taksklad.app_printing.messagebox.askyesno", return_value=False) as ask:
+            answer = PrintingActionsMixin.confirm_reprint_summary(SimpleNamespace())
+
+        self.assertFalse(answer)
+        ask.assert_called_once_with(
+            "Сводный лист уже напечатан",
+            "Сводный лист по этому заказу уже напечатан\n\nНапечатать ещё раз?",
+            default="no",
+        )
+
     def test_backend_blocker_error_type_follows_offline_message(self):
         offline = backend_blocker_error(
             "Связь с сервером прервалась. КИЗы сохранены в очереди: 7. "
