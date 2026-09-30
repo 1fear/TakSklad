@@ -8,6 +8,25 @@ PostgreSQL читался только на `alembic current`, поэтому р
 Статус: `LIVE_IN_SYNC_WITH_MAIN; ACTIONS_NOT_USED;
 DESKTOP_RETIREMENT_BLOCKED; OPERATOR_PHYSICAL_NOT_RUN; SHIPMENT_NOT_RECHECKED`
 
+## Дельта 2026-09-30, ночь: backend `72ad2a7` (#182) на бою
+
+- Сверка 30.09.2026 в 18:09 UTC только на чтение: `docker ps`, `api.taksklad.uz/version`,
+  паспорт выката
+- #182 (открыт 21.09 соседней сессией) влит 30.09 в 18:05 UTC как `72ad2a7`: `parse_money`
+  в трёх копиях (`excel_importer`, `imports_service`, `smartup_auto_import`) возвращает 0
+  на `inf`, `nan` и строке цифр длиннее трёхсот знаков вместо падения, прежние формы суммы
+  разбираются как раньше
+- Перед мержем PR слит с `main` локально: конфликтов нет, полный набор 2222 `OK`, Postgres
+  111 `OK`; новый тест на коде без правки `FAILED (failures=17, errors=15)`, с правкой 9 из 9
+- Backend `taksklad-backend:local-72ad2a7`, digest `sha256:c73c4e5d…`, паспорт
+  `manual-72ad2a7.json`, бэкап `taksklad-postgres-20260930T180753Z`
+- Окно писателей с 18:07:52 по 18:08:30 UTC, 38 с, миграции нет, `recovered=0`, четыре
+  сервиса `healthy`, dry-run без `Recreate`, отчёт логистики повторно не ушёл
+- Образ сверен с архивом ревизии (90 из 90 `.py`), от `84c789b` отличается тремя файлами
+  `parse_money`; серверное дерево сведено по ним же, прежние лежат как `.bak-84c789b`
+- Frontend не менялся, `local-0adc7bb`; пункт вечерней дельты про `parse_money` и открытый
+  #182 закрыт
+
 ## Дельта 2026-09-30, поздний вечер: frontend на голове `main` `0adc7bb`
 
 - Сверка 30.09.2026 в 17:51 UTC только на чтение: `docker ps`, паспорт выката, живой HTML
