@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "telegram": {
+      "command": "/Users/anton/Documents/work/tg-mcp/.venv/bin/python",
+      "args": [
+        "-m",
+        "app.server"
+      ],
+      "cwd": "/Users/anton/Documents/work/tg-mcp",
+      "env": {
+        "PYTHONPATH": "/Users/anton/Documents/work/tg-mcp",
+        "TG_SESSION": "/Users/anton/Documents/work/tg-mcp/data/projects/taksklad.session",
+        "TG_DEVICE": "claude-TakSklad"
+      }
+    }
+  }
+}
