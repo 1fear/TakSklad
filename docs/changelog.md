@@ -2,6 +2,15 @@
 
 Здесь фиксируются все правки в коде TakSklad: что менялось, в каком файле, зачем, и какие тесты это покрывают. Записи идут от новых к старым.
 
+## 2026-09-30
+
+### Сбой приписки логистики после доставленных файлов больше не блокирует событие
+
+- `send_final_logistics_reports` в `backend/app/smartup_auto_import.py`: приписка с числом заказов отправляется своим `try` после файлов отчёта, раньше она была в одном `try` с ними, и её сбой уводил уже доставленный отчёт в `ambiguous`, событие в `blocked` с `LOGISTICS_TELEGRAM_DELIVERY_AMBIGUOUS` до ручного разбора
+- При сбое приписки событие выполнено (`summary_sent: false`, `summary_reason: summary_send_failed`), файлы и приписка повторно не отправляются, алерты про зоны уходят как при успехе
+- Владельцу уходит прежний алерт `Smartup automation error` тем же маршрутом, строка «Ошибка» теперь `Logistics report files delivered, summary message failed: <причина>`; текст согласован владельцем 30.09
+- Покрытие: `tests/test_smartup_auto_import.py::test_logistics_summary_failure_after_files_completes_event_and_alerts`
+
 ## 2026-09-29
 
 ### Повтор принятого КИЗ в закрытый заказ получает сам скан, а не 409

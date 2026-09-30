@@ -180,6 +180,19 @@ class FailOnceTelegramSender(FakeTelegramSender):
         return super().send_document(chat_id, content, filename, caption)
 
 
+class SummaryFailTelegramSender(FakeTelegramSender):
+    # Файлы доходят, а текстовое сообщение в чат логистики падает;
+    # сообщения в другие чаты (алерт владельцу) уходят как обычно
+    def __init__(self, failing_chat_id):
+        super().__init__()
+        self.failing_chat_id = failing_chat_id
+
+    def send_message(self, chat_id, text):
+        if chat_id == self.failing_chat_id:
+            raise SmartupAutoImportError("synthetic summary send failure")
+        return super().send_message(chat_id, text)
+
+
 class FakeScalarResult:
     def __init__(self, value):
         self.value = value
@@ -2838,6 +2851,61 @@ class SmartupAutoImportTests(unittest.TestCase):
         self.assertEqual(sender.messages, [])
         self.assertFalse(results[0]["summary_sent"])
         self.assertEqual(results[0]["summary_reason"], "order_counts_missing")
+
+    def test_logistics_summary_failure_after_files_completes_event_and_alerts(self):
+        # Файлы уже в чате логистики, упало только сообщение с числом заказов:
+        # событие выполнено, ничего не шлётся повторно, владелец получает алерт
+        sender = SummaryFailTelegramSender("-1001002")
+        config = self.config("/tmp", logistics_chat_id="-1001002", alert_chat_id="-1001009")
+        with mock.patch(
+            "backend.app.smartup_auto_import.build_logistics_reports",
+            return_value={
+                "city": (b"city-bytes", "TakSklad_логистика_город_26.06.2026.xlsx"),
+                "region": (b"region-bytes", "TakSklad_логистика_область_26.06.2026.xlsx"),
+                "unassigned": [],
+                "order_counts": {"city": 3, "region": 2},
+            },
+        ):
+            with self.SessionLocal() as db:
+                results = send_final_logistics_reports(
+                    db,
+                    config,
+                    export_date=date(2026, 6, 25),
+                    extra_delivery_dates=["2026-06-26"],
+                    telegram_sender=sender,
+                )
+                repeat = send_final_logistics_reports(
+                    db,
+                    config,
+                    export_date=date(2026, 6, 25),
+                    extra_delivery_dates=["2026-06-26"],
+                    telegram_sender=sender,
+                )
+                status = build_smartup_auto_import_status(db, config)
+
+        self.assertEqual(results[0]["status"], "sent")
+        self.assertFalse(results[0]["summary_sent"])
+        self.assertEqual(results[0]["summary_reason"], "summary_send_failed")
+        self.assertEqual(status["last_logistics_events"][0]["status"], "completed")
+        self.assertEqual(repeat[0]["reason"], "already_sent")
+        self.assertEqual(
+            [document[2] for document in sender.documents],
+            [
+                "TakSklad_логистика_город_26.06.2026.xlsx",
+                "TakSklad_логистика_область_26.06.2026.xlsx",
+            ],
+        )
+        self.assertEqual(
+            sender.messages,
+            [(
+                "-1001009",
+                "Smartup automation error\n"
+                "Дата выгрузки: 25.06.2026\n"
+                "Слот: logistics:2026-06-26\n"
+                "Ошибка: Logistics report files delivered, summary message failed: "
+                "synthetic summary send failure",
+            )],
+        )
 
     def test_logistics_slot_alerts_when_region_directory_is_empty(self):
         sender = FakeTelegramSender()
