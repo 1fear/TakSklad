@@ -8,6 +8,24 @@ PostgreSQL читался только на `alembic current`, поэтому р
 Статус: `LIVE_IN_SYNC_WITH_MAIN; ACTIONS_NOT_USED;
 DESKTOP_RETIREMENT_BLOCKED; OPERATOR_PHYSICAL_NOT_RUN; SHIPMENT_NOT_RECHECKED`
 
+## Дельта 2026-09-30, поздний вечер: frontend на голове `main` `0adc7bb`
+
+- Сверка 30.09.2026 в 17:51 UTC только на чтение: `docker ps`, паспорт выката, живой HTML
+  `chapman.taksklad.uz`
+- Frontend `taksklad-frontend:local-0adc7bb`, digest `sha256:e98e2046…`, паспорт
+  `manual-frontend-0adc7bb.json`, прежний образ `local-76a540e`
+- Простой 7 с, с 17:47:44 по 17:47:51 UTC, пересоздан только `vds-frontend-1`, backend
+  и база не трогались
+- Во frontend с `76a540e` изменилась только таблица коробов KSSL (#183): веб-скан считает
+  короб KSSL за 50 блоков, маркер в `WarehousePanel-*.js`
+- Проверки до выката: lint, typecheck, build зелёные, a11y 7 из 7, e2e 22 passed и 2 skipped,
+  perf `pass: true`; vitest 282 из 283, `App.characterization` «при смене месяца» падает
+  и с файлами `76a540e`, зависит от даты
+- 74 ассета образа совпали по именам с локальной сборкой той же ревизии, живой HTML отдаёт
+  `index-YWwfVCNg.js` и `index-BnIEnbQw.css` как в локальной сборке
+- Контуры сведены: backend `84c789b`, frontend `0adc7bb`, фронтовых файлов между ними нет;
+  пункт вечерней дельты про frontend без таблицы коробов KSSL закрыт
+
 ## Дельта 2026-09-30, вечер: backend `84c789b` на бою, десктоп 2.0.56 кандидатом
 
 - Сверка 30.09.2026 в 17:35 UTC только на чтение: `docker ps -a`, паспорта выката,
