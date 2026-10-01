@@ -8,6 +8,32 @@ PostgreSQL читался только на `alembic current`, поэтому р
 Статус: `LIVE_IN_SYNC_WITH_MAIN; ACTIONS_NOT_USED;
 DESKTOP_RETIREMENT_BLOCKED; OPERATOR_PHYSICAL_NOT_RUN; SHIPMENT_NOT_RECHECKED`
 
+## Дельта 2026-10-01, вечер: backend `e2b28c9` (#195) на бою
+
+- Сверка 01.10.2026 в 15:58 UTC только на чтение: `docker ps -a`, `api.taksklad.uz/version`
+  и `/health`, паспорт выката
+- Повод: 30.09 в 15:31 UTC POST заявки возврата WH-R-242998 («LA SMART TRADE 01» MCHJ 2)
+  оборвался `SkladBot API POST network error`, ответа СкладБота не было, событие 18 часов
+  стояло `blocked` без заявки; склад видел «Этот возврат уже принят» и пустой Центр заявок.
+  01.10 после read-back (API и веб-кабинет) событие повторено вручную, создана WH-R-244760
+- #195 влит как `e2b28c9`: POST возврата с неизвестным исходом (обрыв, таймаут, 5xx) через
+  5 минут сверяется со списком заявок 3403 по точному телу; одна заявка привязывается
+  (`created_recovered`), доказанное отсутствие даёт один автоматический повтор POST, всё
+  остальное уходит на ручной разбор, как раньше
+- Проверки до мержа: набор возвратов 35 `OK` (новые тесты сначала красные, 14 падений),
+  полный набор 2230 `OK`, Postgres 111 `OK`, сверка новым кодом на живом СкладБоте только
+  чтением нашла ровно одну заявку 244760 среди 39 кандидатов
+- Backend `taksklad-backend:local-e2b28c9`, digest `sha256:f1eb59db…`, паспорт
+  `manual-e2b28c9.json`, бэкап `taksklad-postgres-20261001T155705Z`
+- Окно писателей с 15:57:04 по 15:57:35 UTC, 31 с, миграции нет, `recovered=0`, пересозданы
+  `backend-api`, `telegram-worker`, `skladbot-worker`, все `healthy`
+- `smartup-auto-import-worker` намеренно не пересоздавался: остановлен в 11:40 UTC соседней
+  сессией по команде Антона (Smartup 401 «Нет лицензии»), остался `Exited (143)` на
+  `local-72ad2a7`, памятка `/opt/stacks/taksklad/HOLD_SMARTUP_WORKER_20261001.md`
+- Образ сверен с архивом ревизии (90 из 90 `.py`), от `72ad2a7` отличается одним файлом
+  `skladbot_return_requests.py`; серверное дерево сведено по нему, прежний лежит как
+  `.bak-72ad2a7`. Frontend не менялся, `local-0adc7bb`
+
 ## Дельта 2026-09-30, ночь: backend `72ad2a7` (#182) на бою
 
 - Сверка 30.09.2026 в 18:09 UTC только на чтение: `docker ps`, `api.taksklad.uz/version`,
