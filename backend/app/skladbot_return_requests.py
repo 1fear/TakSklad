@@ -37,8 +37,11 @@ from .skladbot_client import (
 from .skladbot_contracts import (
     canonical_remote_request_id,
     canonical_skladbot_request_number,
+    field_map,
+    get_field,
     normalize_request_payload,
     normalize_text,
+    parse_date,
     parse_int,
     request_list_value,
     request_matches_order,
@@ -51,6 +54,13 @@ SKLADBOT_RETURN_REQUEST_CREATE_LIMIT_ENV = "SKLADBOT_RETURN_REQUEST_CREATE_LIMIT
 STALE_SKLADBOT_RETURN_CREATE_TIMEOUT = timedelta(minutes=10)
 SKLADBOT_RETURN_STALE_RESET_LIMIT_ENV = "SKLADBOT_RETURN_STALE_RESET_LIMIT"
 SKLADBOT_RETURN_DETAIL_RETRY_DELAY = timedelta(minutes=5)
+# После POST с неизвестным исходом (обрыв связи, таймаут, 5xx) заявку не бросаем
+# на ручной разбор, а через паузу сверяем со списком возвратов СкладБота: нашлась
+# ровно одна с тем же телом, привязываем; доказано, что её нет, повторяем POST
+SKLADBOT_RETURN_READBACK_DELAY = timedelta(minutes=5)
+SKLADBOT_RETURN_READBACK_POST_STATES = frozenset({"readback_scheduled", "readback_started"})
+SKLADBOT_RETURN_AUTO_REPOST_LIMIT = 1
+SKLADBOT_RETURN_READBACK_CANDIDATE_LIMIT = 200
 logger = logging.getLogger(__name__)
 
 
@@ -563,6 +573,8 @@ def process_skladbot_return_create_event(db: Session, event: PendingEvent, clien
             response_request_id,
             status="created_recovered",
         )
+    if post_state in SKLADBOT_RETURN_READBACK_POST_STATES:
+        return readback_skladbot_return_request_after_ambiguous_post(db, order, event, client, request_payload)
     if post_state in {"started", "ambiguous", "response_received"}:
         return mark_skladbot_return_manual_review(
             db,
@@ -630,13 +642,12 @@ def process_skladbot_return_create_event(db: Session, event: PendingEvent, clien
             })
             return {"status": "retry_scheduled", "error": error, "order_id": str(order.id)}
         if classification == "ambiguous":
-            return mark_skladbot_return_manual_review(
+            return schedule_skladbot_return_readback(
                 db,
+                order,
                 event,
                 error or "SkladBot return POST result is ambiguous",
-                order=order,
-                reason="post_outcome_ambiguous",
-                post_state="ambiguous",
+                readback_attempts=0,
             )
         return mark_skladbot_return_manual_review(
             db,
@@ -763,6 +774,29 @@ def recover_skladbot_return_request_by_exact_id(
             post_state="response_received",
         )
 
+    return link_skladbot_return_request_from_detail(
+        db,
+        order,
+        event,
+        request_payload,
+        request_id,
+        detail,
+        status=status,
+        response=response,
+    )
+
+
+def link_skladbot_return_request_from_detail(
+    db: Session,
+    order: Order,
+    event: PendingEvent,
+    request_payload: dict[str, Any],
+    request_id: int,
+    detail: Any,
+    *,
+    status: str,
+    response: Any | None = None,
+) -> dict[str, Any]:
     if not isinstance(detail, dict) or not detail:
         return mark_skladbot_return_manual_review(
             db,
@@ -804,6 +838,279 @@ def recover_skladbot_return_request_by_exact_id(
         status=status,
         response=response,
     )
+
+
+def schedule_skladbot_return_readback(
+    db: Session,
+    order: Order,
+    event: PendingEvent,
+    error: str,
+    *,
+    readback_attempts: int,
+) -> dict[str, Any]:
+    readback_at = datetime.now(timezone.utc) + SKLADBOT_RETURN_READBACK_DELAY
+    event.available_at = readback_at
+    update_event_payload(event, {
+        "post_state": "readback_scheduled",
+        "create_status": "readback_scheduled",
+        "readback_at": readback_at.isoformat(),
+        "readback_attempts": readback_attempts,
+        "error": normalize_text(error),
+    })
+    ensure_skladbot_return_create_incident(db, event, error, order=order, status="open")
+    db.add(AuditLog(
+        action="skladbot_return_request_readback_scheduled",
+        entity_type="pending_event",
+        entity_id=str(event.id),
+        payload={
+            "order_id": str(order.id),
+            "readback_at": readback_at.isoformat(),
+            "readback_attempts": readback_attempts,
+            "error": normalize_text(error),
+        },
+    ))
+    return {"status": "retry_scheduled", "error": normalize_text(error), "order_id": str(order.id)}
+
+
+def readback_skladbot_return_request_after_ambiguous_post(
+    db: Session,
+    order: Order,
+    event: PendingEvent,
+    client: Any,
+    request_payload: dict[str, Any],
+) -> dict[str, Any]:
+    payload = dict(event.payload or {})
+    order_id = order.id
+    readback_attempts = parse_int(payload.get("readback_attempts")) + 1
+    auto_repost_count = parse_int(payload.get("auto_repost_count"))
+    post_started_at = parse_utc_datetime(payload.get("post_started_at"))
+    expected = skladbot_return_payload_fingerprint(request_payload)
+    if post_started_at is None or not expected["products"]:
+        return mark_skladbot_return_manual_review(
+            db,
+            event,
+            "SkladBot return readback has no POST start time or request products",
+            order=order,
+            reason="readback_evidence_missing",
+            post_state="ambiguous",
+        )
+
+    update_event_payload(event, {
+        "post_state": "readback_started",
+        "readback_started_at": datetime.now(timezone.utc).isoformat(),
+        "readback_attempts": readback_attempts,
+    })
+    db.add(AuditLog(
+        action="skladbot_return_request_readback_started",
+        entity_type="pending_event",
+        entity_id=str(event.id),
+        payload={"order_id": str(order_id), "readback_attempts": readback_attempts},
+    ))
+    db.commit()
+
+    # До конца сетевой части база не трогается: транзакция, простаивающая
+    # на HTTP дольше idle-in-transaction таймаута, рвётся вместе с результатом
+    try:
+        readback = fetch_skladbot_return_readback(client, expected, post_started_at)
+    except Exception as exc:
+        error = f"SkladBot return readback failed: {sanitize_skladbot_error(exc)}"
+        if readback_attempts < return_detail_retry_limit():
+            return schedule_skladbot_return_readback(
+                db,
+                order,
+                event,
+                error,
+                readback_attempts=readback_attempts,
+            )
+        return mark_skladbot_return_manual_review(
+            db,
+            event,
+            error,
+            order=order,
+            reason="readback_failed",
+            post_state="ambiguous",
+        )
+
+    matches = [
+        (request_id, detail)
+        for request_id, detail in readback["matches"]
+        if not skladbot_return_request_linked_to_other_order(db, request_id, order_id)
+    ]
+    audit_payload = {
+        "order_id": str(order_id),
+        "candidates": readback["candidates"],
+        "coverage_proven": readback["coverage_proven"],
+        "matched_request_ids": [request_id for request_id, _detail in matches],
+        "auto_repost_count": auto_repost_count,
+    }
+    db.add(AuditLog(
+        action="skladbot_return_request_readback_finished",
+        entity_type="pending_event",
+        entity_id=str(event.id),
+        payload=audit_payload,
+    ))
+    if len(matches) == 1:
+        request_id, detail = matches[0]
+        return link_skladbot_return_request_from_detail(
+            db,
+            order,
+            event,
+            request_payload,
+            request_id,
+            detail,
+            status="created_recovered",
+        )
+    if len(matches) > 1:
+        return mark_skladbot_return_manual_review(
+            db,
+            event,
+            "SkladBot return readback found several requests with the same body: "
+            + ", ".join(str(request_id) for request_id, _detail in matches),
+            order=order,
+            reason="readback_multiple_matches",
+            post_state="ambiguous",
+        )
+    if readback["too_many_candidates"]:
+        return mark_skladbot_return_manual_review(
+            db,
+            event,
+            f"SkladBot return readback window has {readback['candidates']} requests, too many to check",
+            order=order,
+            reason="readback_too_many_candidates",
+            post_state="ambiguous",
+        )
+    if not readback["coverage_proven"]:
+        return mark_skladbot_return_manual_review(
+            db,
+            event,
+            "SkladBot return readback list does not reach back before the POST date",
+            order=order,
+            reason="readback_coverage_unproven",
+            post_state="ambiguous",
+        )
+    if auto_repost_count >= SKLADBOT_RETURN_AUTO_REPOST_LIMIT:
+        return mark_skladbot_return_manual_review(
+            db,
+            event,
+            "SkladBot return request is still absent after an automatic repost",
+            order=order,
+            reason="readback_absent_repost_exhausted",
+            post_state="ambiguous",
+        )
+
+    error = "SkladBot return readback proved the request absent; repost scheduled"
+    event.available_at = datetime.now(timezone.utc)
+    update_event_payload(event, {
+        "post_state": "retry_scheduled",
+        "create_status": "queued",
+        "auto_repost_count": auto_repost_count + 1,
+        "readback_absent_at": datetime.now(timezone.utc).isoformat(),
+        "readback_attempts": 0,
+        "error": error,
+    })
+    db.add(AuditLog(
+        action="skladbot_return_request_auto_repost_scheduled",
+        entity_type="pending_event",
+        entity_id=str(event.id),
+        payload={**audit_payload, "auto_repost_count": auto_repost_count + 1},
+    ))
+    return {"status": "retry_scheduled", "error": error, "order_id": str(order_id)}
+
+
+def fetch_skladbot_return_readback(
+    client: Any,
+    expected: dict[str, Any],
+    post_started_at: datetime,
+) -> dict[str, Any]:
+    list_items = client.list_requests(type_id=SKLADBOT_RETURN_REQUEST_TYPE_ID)
+    # Дата создания в списке СкладБота местная и без времени, а начало POST в UTC,
+    # поэтому окно берётся на сутки раньше: лишние кандидаты отсеет сверка тела
+    window_start = post_started_at.date() - timedelta(days=1)
+    coverage_proven = False
+    candidate_ids: list[int] = []
+    for item in list_items or []:
+        if not isinstance(item, dict):
+            continue
+        created = parse_date(request_list_value(item, "created_at", "createdAt"))
+        if created is not None and created < window_start:
+            coverage_proven = True
+            continue
+        request_id = canonical_skladbot_return_request_id(request_list_value(item, "id"))
+        if request_id > 0 and request_id not in candidate_ids:
+            candidate_ids.append(request_id)
+    result = {
+        "coverage_proven": coverage_proven,
+        "candidates": len(candidate_ids),
+        "too_many_candidates": len(candidate_ids) > SKLADBOT_RETURN_READBACK_CANDIDATE_LIMIT,
+        "matches": [],
+    }
+    if result["too_many_candidates"]:
+        return result
+    for request_id in candidate_ids:
+        detail = client.get_request_detail(request_id)
+        if not isinstance(detail, dict):
+            continue
+        if canonical_skladbot_return_request_id(detail.get("id")) != request_id:
+            continue
+        if skladbot_return_detail_fingerprint(detail) == expected:
+            result["matches"].append((request_id, detail))
+    return result
+
+
+def skladbot_return_products_fingerprint(products: Any) -> tuple[tuple[str, str, int], ...]:
+    return tuple(sorted(
+        (
+            normalize_text(product.get("product_data_id")),
+            normalize_text(product.get("barcode")),
+            parse_int(product.get("amount")),
+        )
+        for product in (products if isinstance(products, list) else [])
+        if isinstance(product, dict)
+    ))
+
+
+def skladbot_return_payload_fingerprint(request_payload: dict[str, Any]) -> dict[str, Any]:
+    fields = request_payload.get("fields") if isinstance(request_payload.get("fields"), dict) else {}
+
+    def field_value(name: str) -> str:
+        value = fields.get(name)
+        return normalize_text(value.get("value") if isinstance(value, dict) else "")
+
+    return {
+        "comment": normalize_text(request_payload.get("comment")),
+        "company_name": field_value("company_name"),
+        "address": field_value("address"),
+        "unloading_date": field_value("unloading_date"),
+        "products": skladbot_return_products_fingerprint(request_payload.get("products")),
+    }
+
+
+def skladbot_return_detail_fingerprint(detail: dict[str, Any]) -> dict[str, Any]:
+    fields = field_map(detail)
+    return {
+        "comment": normalize_text(detail.get("comment")),
+        "company_name": get_field(fields, "company_name"),
+        "address": get_field(fields, "address"),
+        "unloading_date": get_field(fields, "unloading_date"),
+        "products": skladbot_return_products_fingerprint(detail.get("products")),
+    }
+
+
+def skladbot_return_request_linked_to_other_order(db: Session, request_id: int, order_id: Any) -> bool:
+    return db.execute(
+        select(Order.id)
+        .where(Order.raw_payload["skladbot_return_request_id"].as_string() == str(request_id))
+        .where(Order.id != order_id)
+        .limit(1)
+    ).first() is not None
+
+
+def parse_utc_datetime(value: Any) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(normalize_text(value))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
 
 
 def find_existing_skladbot_return_request_for_order(order: Order, client: Any) -> dict[str, Any] | None:

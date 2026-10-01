@@ -66,6 +66,61 @@ class RecordingClient:
         return copy.deepcopy(result)
 
 
+class ReadbackClient(RecordingClient):
+    """Список заявок возврата и детали по id, как их отдаёт СкладБот после сбоя POST"""
+
+    def __init__(self, *, list_items=None, details=None, list_error=None, on_list=None, **kwargs):
+        super().__init__(**kwargs)
+        self.list_items = list(list_items or [])
+        self.details = dict(details or {})
+        self.list_error = list_error
+        self.on_list = on_list
+        self.listed_type_ids = []
+
+    def list_requests(self, type_id=None):
+        self.list_calls += 1
+        self.listed_type_ids.append(type_id)
+        if self.on_list is not None:
+            self.on_list()
+        if self.list_error is not None:
+            raise self.list_error
+        return copy.deepcopy(self.list_items)
+
+    def get_request_detail(self, request_id):
+        if request_id in self.details:
+            self.detail_calls.append(request_id)
+            return copy.deepcopy(self.details[request_id])
+        return super().get_request_detail(request_id)
+
+
+def skladbot_return_detail_from_payload(request_id, payload, *, amount_delta=0, company_name=None):
+    fields = [{"field": name, "value": spec["value"]} for name, spec in payload["fields"].items()]
+    if company_name is not None:
+        fields = [
+            {"field": "company_name", "value": company_name} if field["field"] == "company_name" else field
+            for field in fields
+        ]
+    return {
+        "id": request_id,
+        "delivery_number": f"WH-R-{request_id}",
+        "comment": payload["comment"],
+        "fields": fields,
+        "products": [
+            {
+                "product_data_id": product["product_data_id"],
+                "barcode": product["barcode"],
+                "amount": product["amount"] + amount_delta,
+                "name": "Chapman RED OP 20",
+            }
+            for product in payload["products"]
+        ],
+    }
+
+
+def skladbot_return_list_item(request_id, created):
+    return {"id": request_id, "delivery_number": f"WH-R-{request_id}", "created_at": created.isoformat()}
+
+
 class SkladBotReturnHardeningTests(unittest.TestCase):
     def setUp(self):
         self.env = mock.patch.dict(
@@ -271,17 +326,257 @@ class SkladBotReturnHardeningTests(unittest.TestCase):
             ),
         )
         for error in errors:
-            with self.subTest(error=type(error).__name__):
-                _order_id, event_id = self.seed_return_event()
-                client = RecordingClient(create_error=error)
-                first = self._process(client)
-                second = self._process(client)
-                self.assertEqual(first["ambiguous"], 1)
-                self.assertEqual(second["checked"], 0)
-                self.assertEqual(client.create_calls, 1)
-                self.assertEqual(client.list_calls, 0)
-                self.assertEqual(client.detail_calls, [])
-                self.assertEqual(self.load_event(event_id).status, "blocked")
+            for leases_enabled in ("0", "1"):
+                with self.subTest(error=type(error).__name__, leases_enabled=leases_enabled):
+                    _order_id, event_id = self.seed_return_event()
+                    client = RecordingClient(create_error=error)
+                    with mock.patch.dict("os.environ", {"TAKSKLAD_EVENT_LEASES_ENABLED": leases_enabled}, clear=False):
+                        first = self._process(client)
+                        second = self._process(client)
+                    self.assertEqual(first["checked"], 1)
+                    self.assertEqual(first["ambiguous"], 0)
+                    self.assertEqual(second["checked"], 0)
+                    self.assertEqual(client.create_calls, 1)
+                    self.assertEqual(client.list_calls, 0)
+                    self.assertEqual(client.detail_calls, [])
+                    event = self.load_event(event_id)
+                    self.assertEqual(event.status, "pending")
+                    self.assertEqual(event.payload["post_state"], "readback_scheduled")
+                    self.assertGreater(
+                        event.available_at.replace(tzinfo=timezone.utc),
+                        datetime.now(timezone.utc) + timedelta(minutes=4),
+                    )
+                    with self.SessionLocal() as db:
+                        incident = db.execute(
+                            select(Incident).where(Incident.pending_event_id == event_id)
+                        ).scalar_one()
+                    self.assertEqual(incident.status, "open")
+
+    def make_event_due(self, event_id):
+        with self.SessionLocal() as db:
+            db.execute(
+                update(PendingEvent)
+                .where(PendingEvent.id == event_id)
+                .values(available_at=datetime.now(timezone.utc) - timedelta(seconds=1))
+            )
+            db.commit()
+
+    def fail_return_post_into_readback(self, error=None):
+        order_id, event_id = self.seed_return_event()
+        client = RecordingClient(create_error=error or ConnectionError("synthetic network error"))
+        self._process(client)
+        self.assertEqual(self.load_event(event_id).payload["post_state"], "readback_scheduled")
+        self.make_event_due(event_id)
+        return order_id, event_id, client.created_payloads[0]
+
+    def readback_window(self):
+        today = datetime.now(timezone.utc).date()
+        return today, today - timedelta(days=5)
+
+    def test_readback_links_single_exact_match_without_repost(self):
+        order_id, event_id, sent = self.fail_return_post_into_readback()
+        today, old_day = self.readback_window()
+        durable_before_list = {}
+
+        def observe_durable_state():
+            with self.SessionLocal() as observer:
+                durable = observer.get(PendingEvent, event_id)
+                durable_before_list["post_state"] = durable.payload.get("post_state")
+
+        client = ReadbackClient(
+            list_items=[
+                skladbot_return_list_item(8001, today),
+                skladbot_return_list_item(8002, today),
+                skladbot_return_list_item(7000, old_day),
+            ],
+            details={
+                8001: skladbot_return_detail_from_payload(8001, sent, amount_delta=1),
+                8002: skladbot_return_detail_from_payload(8002, sent),
+            },
+            on_list=observe_durable_state,
+        )
+
+        result = self._process(client)
+
+        self.assertEqual(result["recovered"], 1)
+        self.assertEqual(client.create_calls, 0)
+        self.assertEqual(client.listed_type_ids, [3403])
+        self.assertEqual(sorted(client.detail_calls), [8001, 8002])
+        self.assertEqual(durable_before_list["post_state"], "readback_started")
+        with self.SessionLocal() as db:
+            order = db.get(Order, order_id)
+            event = db.get(PendingEvent, event_id)
+            incident = db.execute(select(Incident).where(Incident.pending_event_id == event_id)).scalar_one()
+        self.assertEqual(order.raw_payload["skladbot_return_request_id"], "8002")
+        self.assertEqual(order.raw_payload["skladbot_return_request_number"], "WH-R-8002")
+        self.assertEqual(order.raw_payload["skladbot_return_request_status"], "created_recovered")
+        self.assertEqual(event.status, "completed")
+        self.assertEqual(incident.status, "resolved")
+
+    def test_readback_proven_absence_reposts_once_and_links_new_request(self):
+        order_id, event_id, sent = self.fail_return_post_into_readback()
+        today, old_day = self.readback_window()
+        client = ReadbackClient(
+            list_items=[skladbot_return_list_item(8001, today), skladbot_return_list_item(7000, old_day)],
+            details={
+                8001: skladbot_return_detail_from_payload(8001, sent, company_name="Other client"),
+                8100: {"id": 8100, "delivery_number": "WH-R-8100"},
+            },
+            create_result={"data": {"id": 8100}},
+        )
+
+        readback = self._process(client)
+        event = self.load_event(event_id)
+        self.assertEqual(readback["checked"], 1)
+        self.assertEqual(client.create_calls, 0)
+        self.assertEqual(event.status, "pending")
+        self.assertEqual(event.payload["post_state"], "retry_scheduled")
+        self.assertEqual(event.payload["auto_repost_count"], 1)
+
+        repost = self._process(client)
+
+        self.assertEqual(repost["created"], 1)
+        self.assertEqual(client.create_calls, 1)
+        self.assertEqual(client.created_payloads[0], sent)
+        with self.SessionLocal() as db:
+            order = db.get(Order, order_id)
+            incident = db.execute(select(Incident).where(Incident.pending_event_id == event_id)).scalar_one()
+        self.assertEqual(order.raw_payload["skladbot_return_request_number"], "WH-R-8100")
+        self.assertEqual(incident.status, "resolved")
+
+    def test_readback_without_coverage_goes_to_manual_review_without_repost(self):
+        order_id, event_id, sent = self.fail_return_post_into_readback()
+        today, _old_day = self.readback_window()
+        client = ReadbackClient(
+            list_items=[skladbot_return_list_item(8001, today)],
+            details={8001: skladbot_return_detail_from_payload(8001, sent, company_name="Other client")},
+        )
+
+        result = self._process(client)
+
+        self.assertEqual(result["ambiguous"], 1)
+        self.assertEqual(client.create_calls, 0)
+        event = self.load_event(event_id)
+        self.assertEqual(event.status, "blocked")
+        self.assertEqual(event.payload["manual_review_reason"], "readback_coverage_unproven")
+        with self.SessionLocal() as db:
+            order = db.get(Order, order_id)
+            incident = db.execute(select(Incident).where(Incident.pending_event_id == event_id)).scalar_one()
+        self.assertNotIn("skladbot_return_request_id", order.raw_payload)
+        self.assertEqual(incident.status, "manual_review")
+
+    def test_readback_multiple_exact_matches_go_to_manual_review(self):
+        order_id, event_id, sent = self.fail_return_post_into_readback()
+        today, old_day = self.readback_window()
+        client = ReadbackClient(
+            list_items=[
+                skladbot_return_list_item(8001, today),
+                skladbot_return_list_item(8002, today),
+                skladbot_return_list_item(7000, old_day),
+            ],
+            details={
+                8001: skladbot_return_detail_from_payload(8001, sent),
+                8002: skladbot_return_detail_from_payload(8002, sent),
+            },
+        )
+
+        result = self._process(client)
+
+        self.assertEqual(result["ambiguous"], 1)
+        self.assertEqual(client.create_calls, 0)
+        self.assertEqual(self.load_event(event_id).payload["manual_review_reason"], "readback_multiple_matches")
+        with self.SessionLocal() as db:
+            order = db.get(Order, order_id)
+        self.assertNotIn("skladbot_return_request_id", order.raw_payload)
+
+    def test_readback_ignores_exact_match_linked_to_another_order(self):
+        _order_id, event_id, sent = self.fail_return_post_into_readback()
+        other_order_id, other_event_id = self.seed_return_event()
+        with self.SessionLocal() as db:
+            other = db.get(Order, other_order_id)
+            other.raw_payload = {
+                **(other.raw_payload or {}),
+                "skladbot_return_request_id": "8002",
+                "skladbot_return_request_number": "WH-R-8002",
+            }
+            db.get(PendingEvent, other_event_id).status = "completed"
+            db.commit()
+        today, old_day = self.readback_window()
+        client = ReadbackClient(
+            list_items=[skladbot_return_list_item(8002, today), skladbot_return_list_item(7000, old_day)],
+            details={8002: skladbot_return_detail_from_payload(8002, sent)},
+        )
+
+        self._process(client)
+
+        event = self.load_event(event_id)
+        self.assertEqual(client.create_calls, 0)
+        self.assertEqual(event.payload["post_state"], "retry_scheduled")
+        self.assertEqual(event.payload["auto_repost_count"], 1)
+
+    def test_readback_after_auto_repost_absent_again_goes_to_manual_review(self):
+        _order_id, event_id, sent = self.fail_return_post_into_readback()
+        today, old_day = self.readback_window()
+        client = ReadbackClient(
+            list_items=[skladbot_return_list_item(7000, old_day)],
+            create_error=ConnectionError("synthetic network error again"),
+        )
+
+        self._process(client)
+        self.assertEqual(self.load_event(event_id).payload["post_state"], "retry_scheduled")
+        self._process(client)
+        self.assertEqual(client.create_calls, 1)
+        self.assertEqual(self.load_event(event_id).payload["post_state"], "readback_scheduled")
+        self.make_event_due(event_id)
+        result = self._process(client)
+
+        self.assertEqual(result["ambiguous"], 1)
+        self.assertEqual(client.create_calls, 1)
+        event = self.load_event(event_id)
+        self.assertEqual(event.status, "blocked")
+        self.assertEqual(event.payload["manual_review_reason"], "readback_absent_repost_exhausted")
+
+    def test_readback_list_failure_reschedules_then_goes_to_manual_review(self):
+        _order_id, event_id, _sent = self.fail_return_post_into_readback()
+        client = ReadbackClient(list_error=TimeoutError("synthetic list timeout"))
+
+        first = self._process(client)
+        self.assertEqual(first["checked"], 1)
+        self.assertEqual(self.load_event(event_id).payload["post_state"], "readback_scheduled")
+        self.make_event_due(event_id)
+        self._process(client)
+        self.assertEqual(self.load_event(event_id).payload["post_state"], "readback_scheduled")
+        self.make_event_due(event_id)
+        last = self._process(client)
+
+        self.assertEqual(last["ambiguous"], 1)
+        self.assertEqual(client.list_calls, 3)
+        self.assertEqual(client.create_calls, 0)
+        self.assertEqual(self.load_event(event_id).payload["manual_review_reason"], "readback_failed")
+
+    def test_stale_readback_started_reruns_readback_without_post(self):
+        order_id, event_id, sent = self.fail_return_post_into_readback()
+        old = datetime.now(timezone.utc) - timedelta(minutes=30)
+        with self.SessionLocal() as db:
+            event = db.get(PendingEvent, event_id)
+            event.status = "processing"
+            event.payload = {**(event.payload or {}), "post_state": "readback_started"}
+            db.commit()
+            db.execute(update(PendingEvent).where(PendingEvent.id == event_id).values(updated_at=old))
+            db.commit()
+        today, old_day = self.readback_window()
+        client = ReadbackClient(
+            list_items=[skladbot_return_list_item(8002, today), skladbot_return_list_item(7000, old_day)],
+            details={8002: skladbot_return_detail_from_payload(8002, sent)},
+        )
+
+        result = self._process(client)
+
+        self.assertEqual(result["recovered"], 1)
+        self.assertEqual(client.create_calls, 0)
+        with self.SessionLocal() as db:
+            order = db.get(Order, order_id)
+        self.assertEqual(order.raw_payload["skladbot_return_request_id"], "8002")
 
     def test_malformed_create_id_blocks_without_lookup_or_repost(self):
         _order_id, event_id = self.seed_return_event()
