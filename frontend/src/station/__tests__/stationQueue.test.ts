@@ -1,3 +1,4 @@
+import { http as mswHttp, HttpResponse } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { activeOrder, orderItem } from "../../__tests__/fixtures";
@@ -5,6 +6,7 @@ import type { Order } from "../../api";
 import { ApiRequestError } from "../../api/core";
 import { createMemoryQueueStore } from "../../features/warehouse/offline/queueStore";
 import type { OfflineEvent } from "../../features/warehouse/offline/queueTypes";
+import { server } from "../../test/server";
 import {
   RELOGIN_MIN_INTERVAL_MS,
   STATION_SYNC_FIRST_RUN_MS,
@@ -418,5 +420,95 @@ describe("re-login on 401", () => {
 
     expect(server.sent).toEqual(["complete:order-1"]);
     expect(result.pending).toBe(0);
+  });
+});
+
+describe("one pass at a time", () => {
+  it("holds a second pass until the first one has returned", async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const calls: string[] = [];
+    const { queue } = build({
+      send: {
+        sendScan: async (event) => {
+          calls.push(`start:${event.code}`);
+          if (event.code === CODE_A) await gate;
+          calls.push(`end:${event.code}`);
+        },
+        sendComplete: async () => undefined,
+      },
+    });
+    await queue.enqueueScan({ orderId: "order-1", orderItemId: "item-1", code: CODE_A });
+    await queue.enqueueScan({ orderId: "order-1", orderItemId: "item-2", code: CODE_B });
+
+    const first = queue.flushItem("item-1");
+    await settle();
+    const second = queue.flushItem("item-2");
+    await settle();
+    expect(calls).toEqual([`start:${CODE_A}`]);
+
+    release();
+    await first;
+    await second;
+
+    expect(calls).toEqual([`start:${CODE_A}`, `end:${CODE_A}`, `start:${CODE_B}`, `end:${CODE_B}`]);
+  });
+});
+
+describe("default sender", () => {
+  const SCANNED_AT = "2026-10-02T08:15:00.000Z";
+
+  function queueWithDefaultSender() {
+    const store = createMemoryQueueStore();
+    const queue = createStationQueue({
+      getConfig: () => ({ apiUrl: "", token: "", csrfToken: "csrf" }),
+      actor: "station",
+      workstationId: "web-station",
+      relogin: async () => undefined,
+      store,
+      now: () => Date.parse(SCANNED_AT),
+    });
+    return { queue, store };
+  }
+
+  it("posts a scan with the time it was scanned, like the program", async () => {
+    let body: unknown;
+    let csrf: string | null = null;
+    server.use(mswHttp.post("/api/v1/scans", async ({ request }) => {
+      body = await request.json();
+      csrf = request.headers.get("X-TakSklad-CSRF");
+      return HttpResponse.json({});
+    }));
+    const { queue, store } = queueWithDefaultSender();
+    await queue.enqueueScan({ orderId: "order-1", orderItemId: "item-1", code: CODE_A });
+    const [queued] = await store.listPending();
+    expect(queued.scannedAt).toBe(SCANNED_AT);
+
+    const result = await queue.flushItem("item-1");
+
+    expect(result).toEqual({ delivered: [CODE_A], blocked: [], pending: 0, networkFailed: false });
+    expect(csrf).toBe("csrf");
+    expect(body).toMatchObject({
+      order_item_id: "item-1",
+      code: CODE_A,
+      workstation_id: "web-station",
+      scanned_by: "station",
+      scanned_at: queued.scannedAt,
+    });
+  });
+
+  it("posts the order completion to the order's complete endpoint", async () => {
+    const completed: Array<string | null> = [];
+    server.use(mswHttp.post("/api/v1/orders/order-1/complete", ({ request }) => {
+      completed.push(request.headers.get("X-TakSklad-CSRF"));
+      return HttpResponse.json(activeOrder);
+    }));
+    const { queue } = queueWithDefaultSender();
+    await queue.enqueueComplete("order-1");
+
+    const result = await queue.flushOrder("order-1", []);
+
+    expect(completed).toEqual(["csrf"]);
+    expect(result).toEqual({ delivered: [], blocked: [], pending: 0, networkFailed: false });
   });
 });

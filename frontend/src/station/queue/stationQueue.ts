@@ -70,6 +70,7 @@ export function createStationQueue(options: StationQueueOptions) {
         code: event.code,
         workstation_id: event.workstationId,
         scanned_by: event.actor,
+        scanned_at: event.scannedAt,
       });
     },
     sendComplete: async (event) => {
