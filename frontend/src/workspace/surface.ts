@@ -1,4 +1,4 @@
-export type AppSurface = "operator" | "admin";
+export type AppSurface = "station" | "admin";
 export type AdminWorkspaceTab =
   | "table"
   | "calendar"
@@ -11,7 +11,7 @@ export type AdminWorkspaceTab =
   | "activity";
 
 export function resolveAppSurface(pathname: string): AppSurface {
-  return pathname === "/admin" || pathname.startsWith("/admin/") ? "admin" : "operator";
+  return pathname === "/admin" || pathname.startsWith("/admin/") ? "admin" : "station";
 }
 
 export function hasOperatorSurfaceAccess(permissions: string[]): boolean {
@@ -38,7 +38,7 @@ export function surfacePath(surface: AppSurface): string {
 }
 
 export function alternateSurfacePath(surface: AppSurface): string {
-  return surfacePath(surface === "admin" ? "operator" : "admin");
+  return surfacePath(surface === "admin" ? "station" : "admin");
 }
 
 export function surfaceTitle(surface: AppSurface): string {

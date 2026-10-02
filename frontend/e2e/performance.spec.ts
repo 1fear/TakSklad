@@ -350,18 +350,13 @@ test("@performance keyboard-only login, navigation, selection, action, dropdown 
   await page.keyboard.press("Space");
   await expect(orderSelector).toBeChecked();
 
-  await page.goto("/", { waitUntil: "networkidle" });
-  await expect(page.getByRole("heading", { name: "Склад · PostgreSQL" })).toBeVisible();
-  await expect(page.getByText("Smartup ID: 261000001")).toBeVisible();
-  await expect(page.getByRole("textbox", { name: "КИЗ" })).toBeVisible();
-  const returnLookup = page.getByPlaceholder("WH-R-...");
-  await focusByTab(returnLookup, "return lookup");
-  await page.keyboard.type("WH-R-SYNTHETIC");
-
+  // "/" is the station now and the old operator screen is no longer mounted from it: the keyboard steps
+  // that lived here (the "Склад · PostgreSQL" heading, the "КИЗ" field, typing into the "WH-R-..." return
+  // lookup and the `return lookup` matrix step) return for the station window in a later plan.
   const logout = page.getByRole("button", { name: "Выйти" });
   await focusByTab(logout, "logout");
   await page.keyboard.press("Enter");
-  await expect(page.getByRole("heading", { name: "Вход в складскую web-панель" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Вход в панель управления" })).toBeVisible();
 
   keyboardEvidence = {
     pass: matrix.every((entry) => entry.pass)

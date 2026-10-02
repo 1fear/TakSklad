@@ -5,7 +5,7 @@ import { http, HttpResponse } from "msw";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import App from "../App";
-import { anonymousSession } from "./fixtures";
+import { anonymousSession, authenticatedSession } from "./fixtures";
 import { defaultHandlers, server } from "./server";
 
 beforeEach(() => {
@@ -20,8 +20,9 @@ function setPath(pathname: string) {
 describe("focused accessibility characterization", () => {
   it("has no automated axe violations on the login semantic surface", async () => {
     server.use(http.get("/api/v1/auth/session", () => HttpResponse.json(anonymousSession)));
+    setPath("/admin");
     const { container } = render(<App />);
-    await screen.findByRole("heading", { name: "Вход в складскую web-панель" });
+    await screen.findByRole("heading", { name: "Вход в панель управления" });
 
     const results = await axe(container);
     expect(results).toHaveNoViolations();
@@ -32,9 +33,10 @@ describe("focused accessibility characterization", () => {
       http.get("/api/v1/auth/session", () => HttpResponse.json(anonymousSession)),
       http.post("/api/v1/auth/login", () => HttpResponse.json({ message: "Неверные данные" }, { status: 401 })),
     );
+    setPath("/admin");
     const user = userEvent.setup();
     render(<App />);
-    await screen.findByRole("heading", { name: "Вход в складскую web-панель" });
+    await screen.findByRole("heading", { name: "Вход в панель управления" });
 
     const phone = screen.getByRole("textbox", { name: "Телефон" });
     const password = screen.getByLabelText("Пароль");
@@ -94,11 +96,16 @@ describe("focused accessibility characterization", () => {
     expect(await axe(container)).toHaveNoViolations();
   });
 
-  it("has no automated axe violations on the operator workspace shell", async () => {
+  it("has no automated axe violations on the station placeholder", async () => {
+    server.use(http.get("/api/v1/auth/session", () => HttpResponse.json({
+      ...authenticatedSession,
+      login: "warehouse-station",
+      role: "station",
+      permissions: ["warehouse:read", "warehouse:write", "reports:read"],
+    })));
     const { container } = render(<App />);
 
-    await screen.findByRole("heading", { name: "Операторский складской контур" });
-    expect(screen.getByRole("heading", { name: "Склад · PostgreSQL" })).toBeInTheDocument();
+    await screen.findByTestId("station-app");
     expect(await axe(container)).toHaveNoViolations();
   });
 });

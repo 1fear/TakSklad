@@ -22,13 +22,26 @@ import "@fontsource/ibm-plex-mono/600.css";
 import "./styles.css";
 
 const AdminWorkspace = lazy(() => import("./workspace/AdminWorkspace"));
-const OperatorWorkspace = lazy(() => import("./workspace/OperatorWorkspace"));
+// The whole station is this one chunk: its entry statically imports everything the window needs.
+const StationEntry = lazy(() => import("./station/entry/StationEntry"));
 
 function initialConfig(): ApiConfig {
   return { apiUrl: defaultApiUrl(), token: "", csrfToken: "" };
 }
 
 function App() {
+  // "/" and everything outside /admin is the station, which signs itself in; /admin keeps the login form.
+  if (resolveAppSurface(window.location.pathname) === "station") {
+    return (
+      <Suspense fallback={null}>
+        <StationEntry />
+      </Suspense>
+    );
+  }
+  return <AdminApp />;
+}
+
+function AdminApp() {
   const [config, setConfig] = useState<ApiConfig>(initialConfig);
   const [authChecked, setAuthChecked] = useState(false);
   const [session, setSession] = useState<AuthSession | null>(null);
@@ -36,7 +49,6 @@ function App() {
   const [loginPassword, setLoginPassword] = useState("");
   const [loginLoading, setLoginLoading] = useState(false);
   const [loginError, setLoginError] = useState("");
-  const surface = resolveAppSurface(window.location.pathname);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -107,7 +119,7 @@ function App() {
   if (!session) {
     return (
       <LoginScreen
-        surface={surface}
+        surface="admin"
         phone={loginPhone}
         password={loginPassword}
         error={loginError}
@@ -119,30 +131,17 @@ function App() {
     );
   }
 
-  const canUseOperatorSurface = hasOperatorSurfaceAccess(session.permissions);
+  // "/" lets in only the station role; anyone else would be sent straight back here.
+  const canUseStationSurface = session.role === "station" && hasOperatorSurfaceAccess(session.permissions);
   const canUseAdminSurface = hasAdminSurfaceAccess(session.permissions);
 
-  if (surface === "operator" && !canUseOperatorSurface) {
+  if (!canUseAdminSurface) {
     return (
       <AccessDeniedScreen
-        surface={surface}
-        canUseAlternateSurface={canUseAdminSurface}
-        title="Нет доступа к складской web-панели"
-        message={canUseAdminSurface
-          ? "Для операционного контура нужно право warehouse:read. Откройте административный контур."
-          : "Для операционного контура нужно право warehouse:read. Обратитесь к администратору склада."}
-        onLogout={() => logout(config)}
-      />
-    );
-  }
-
-  if (surface === "admin" && !canUseAdminSurface) {
-    return (
-      <AccessDeniedScreen
-        surface={surface}
-        canUseAlternateSurface={canUseOperatorSurface}
+        surface="admin"
+        canUseAlternateSurface={canUseStationSurface}
         title="Нет доступа к панели управления"
-        message={canUseOperatorSurface
+        message={canUseStationSurface
           ? "Для административного контура нужны права admin:read или доступный admin-раздел. Откройте складской контур."
           : "Для административного контура нужны права admin:read или доступный admin-раздел. Обратитесь к администратору склада."}
         onLogout={() => logout(config)}
@@ -152,25 +151,14 @@ function App() {
 
   return (
     <Suspense fallback={<LoadingGate />}>
-      {surface === "admin" ? (
-        <AdminWorkspace
-          config={config}
-          authUser={session.login}
-          authRole={session.role}
-          authPermissions={session.permissions}
-          onSessionExpired={expireSession}
-          onLogout={logout}
-        />
-      ) : (
-        <OperatorWorkspace
-          config={config}
-          authUser={session.login}
-          authRole={session.role}
-          authPermissions={session.permissions}
-          onSessionExpired={expireSession}
-          onLogout={logout}
-        />
-      )}
+      <AdminWorkspace
+        config={config}
+        authUser={session.login}
+        authRole={session.role}
+        authPermissions={session.permissions}
+        onSessionExpired={expireSession}
+        onLogout={logout}
+      />
     </Suspense>
   );
 }
@@ -199,7 +187,7 @@ function AccessDeniedScreen({
   onLogout: () => void;
 }) {
   const fallbackPath = alternateSurfacePath(surface);
-  const fallbackTitle = surfaceTitle(surface === "admin" ? "operator" : "admin");
+  const fallbackTitle = surfaceTitle(surface === "admin" ? "station" : "admin");
 
   return (
     <main className="login-shell">

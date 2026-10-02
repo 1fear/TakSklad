@@ -23,6 +23,10 @@ import { server } from "../test/server";
 export const defaultHandlers = [
   http.get("/api/v1/auth/session", () => HttpResponse.json(authenticatedSession)),
   http.post("/api/v1/auth/login", () => HttpResponse.json(authenticatedSession)),
+  http.post("/api/v1/auth/station", () => HttpResponse.json(
+    { detail: { code: "station_network_denied" } },
+    { status: 403, statusText: "Forbidden" },
+  )),
   http.post("/api/v1/auth/logout", () => HttpResponse.json({ ...authenticatedSession, authenticated: false })),
   http.get("/api/v1/orders/active", () => HttpResponse.json([activeOrder])),
   http.get("/api/v1/kiz/availability", ({ request }) => {

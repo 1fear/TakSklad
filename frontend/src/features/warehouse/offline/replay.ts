@@ -21,6 +21,9 @@
  * Ordering still holds where it matters: `order_complete` is never sent while
  * the same order still has a scan waiting in the queue, whatever the reason it
  * is waiting.
+ *
+ * An optional filter narrows a pass to part of the queue (the station sends one
+ * position, or one order, at a time). Without it the pass covers everything.
  */
 
 import { classifyReplayFailure } from "./errorPolicy";
@@ -39,6 +42,24 @@ export type ReplaySummary = {
   remaining: number;
 };
 
+/**
+ * Which queued events a pass may send. Same predicate as the desktop
+ * (`backend_event_matches_filter`, `src/taksklad/backend_events.py:427`): a scan
+ * is chosen by its order item, an `order_complete` by its order. A set that is
+ * missing selects nothing of that kind.
+ */
+export type ReplayFilter = {
+  orderItemIds?: Set<string>;
+  orderIds?: Set<string>;
+};
+
+/** No filter means every event; with a filter only the chosen ones. */
+export function eventMatchesReplayFilter(event: OfflineEvent, filter?: ReplayFilter): boolean {
+  if (!filter) return true;
+  if (event.type === "scan") return filter.orderItemIds?.has(event.orderItemId) ?? false;
+  return filter.orderIds?.has(event.orderId) ?? false;
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -54,8 +75,11 @@ function blockReason(error: unknown): { code: string; message: string } {
 /** Consecutive retryable failures that mean the backend itself is unreachable. */
 export const MAX_CONSECUTIVE_RETRY_FAILURES = 3;
 
-export async function replayQueue(store: OfflineQueueStore, deps: ReplayDeps): Promise<ReplaySummary> {
-  const pending = await store.listPending();
+export async function replayQueue(
+  store: OfflineQueueStore,
+  deps: ReplayDeps,
+  filter?: ReplayFilter,
+): Promise<ReplaySummary> {
   let synced = 0;
   let blocked = 0;
   let failed = 0;
@@ -65,6 +89,13 @@ export async function replayQueue(store: OfflineQueueStore, deps: ReplayDeps): P
   // such an order would tell the backend the order is done while a physically
   // scanned block is still waiting to be sent.
   const ordersWithWaitingScans = new Set<string>();
+
+  // A scan the filter keeps out of this pass is waiting too.
+  const pending: OfflineEvent[] = [];
+  for (const event of await store.listPending()) {
+    if (eventMatchesReplayFilter(event, filter)) pending.push(event);
+    else if (event.type === "scan") ordersWithWaitingScans.add(event.orderId);
+  }
 
   for (const event of pending) {
     const key = offlineEventKey(event);

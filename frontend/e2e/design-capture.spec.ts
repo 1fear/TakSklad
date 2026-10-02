@@ -20,12 +20,14 @@ test.use({ viewport: WIDE });
 
 test("логин", async ({ page }) => {
   await installSyntheticApi(page, { authenticated: false });
-  await page.goto("/");
-  await page.getByRole("heading", { name: "Вход в складскую web-панель" }).waitFor();
+  await page.goto("/admin");
+  await page.getByRole("heading", { name: "Вход в панель управления" }).waitFor();
   await shot(page, "01-login");
 });
 
-test("операторский контур и сканер КИЗ", async ({ page }) => {
+// "/" is the station now and the old operator screen is no longer mounted: this capture returns
+// with the station window in a later plan.
+test.fixme("операторский контур и сканер КИЗ", async ({ page }) => {
   const api = await installSyntheticApi(page);
   page.on("dialog", (d) => d.accept());
   await page.goto("/");

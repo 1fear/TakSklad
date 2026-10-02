@@ -20,6 +20,11 @@ export function loginWeb(config: ApiConfig, login: string, password: string) {
   });
 }
 
+/** Passwordless warehouse sign-in: the server decides by the client network, no body is sent. */
+export function stationLogin(config: ApiConfig) {
+  return apiRequest<AuthSession>(config, "/api/v1/auth/station", { method: "POST" });
+}
+
 export function logoutWeb(config: ApiConfig) {
   return apiRequest<AuthSession>(config, "/api/v1/auth/logout", { method: "POST" });
 }
