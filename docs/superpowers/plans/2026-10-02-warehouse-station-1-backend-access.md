@@ -1012,13 +1012,16 @@ gh pr create --title "Вход станции склада без пароля �
 | Исход | Что видно | Что делать |
 |---|---|---|
 | backend с пустым `TAKSKLAD_WAREHOUSE_CIDRS` | `POST /api/v1/auth/station` даёт 403 всем, `/admin` и программа работают как раньше | ничего |
-| фронт с новым `TAKSKLAD_BACKEND_INTERNAL_URL` | `/api/v1/auth/session` через chapman 200, админка входит | при 502 вернуть прежний образ фронта |
+| порядок | `backend-api` пересоздаётся первым или одной командой с фронтом, фронт после; отдельный выкат только фронта до `backend-api` даёт 502 на весь `/api/` chapman | соблюдать порядок |
+| фронт с новым `TAKSKLAD_BACKEND_INTERNAL_URL` | `/api/v1/auth/session` через chapman 200, админка входит | при 502 пересоздать `backend-api` по новому compose (появится псевдоним) или вернуть фронту `TAKSKLAD_BACKEND_INTERNAL_URL: http://backend-api:8000`; прежний образ фронта 502 не лечит, адрес берётся из compose |
 | объём волны | новых записей во внешние системы нет, пользователь станции не создаётся, пока станция выключена | |
 
 Живая проверка, только чтение (`ctx_execute`, сеть отдельным вызовом):
 1. `POST https://chapman.taksklad.uz/api/v1/auth/station` с заголовком `Origin: https://chapman.taksklad.uz` с машины агента: 403 `station_network_denied`
-2. то же с `X-Forwarded-For: <адрес склада>`: 403
-3. положительный путь только по разрешению Антона: адрес машины агента на время вносится в `TAKSKLAD_WAREHOUSE_CIDRS`,
+2. сразу после пересоздания фронта `GET https://chapman.taksklad.uz/api/v1/auth/session` отвечает 200
+3. то же, что в пункте 1, с `X-Forwarded-For: <адрес склада>`: 403
+4. положительный путь только по разрешению Антона: адрес машины агента на время вносится в `TAKSKLAD_WAREHOUSE_CIDRS`,
    `backend-api` пересоздаётся, вход даёт 200 и `/api/v1/auth/check` с полученной cookie 204, затем адрес убирается тем же путём
    и проверка 1 повторяется
-4. PR статуса в `docs/CURRENT_STATUS.md`
+5. PR статуса в `docs/CURRENT_STATUS.md`
+6. в день пилота первым делом взять из журнала traefik адрес, с которого пришёл `POST /api/v1/auth/station` с ПК склада, и сверить со списком; у chapman.taksklad.uz записи AAAA нет (проверено 02.10), семейство IPv4
