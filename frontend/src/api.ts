@@ -587,12 +587,18 @@ export type AdminOrderCapability = {
   disabled_reasons: Record<string, string>;
 };
 
-import { ApiRequestError, apiRequest, ensureCookieApiIsSameOrigin, LONG_REQUEST_TIMEOUT_MS } from "./api/core";
+import {
+  ApiRequestError,
+  apiRequest,
+  apiRequestWithHeaders,
+  ensureCookieApiIsSameOrigin,
+  LONG_REQUEST_TIMEOUT_MS,
+} from "./api/core";
 import type { ApiConfig } from "./api/core";
 
-export { ApiRequestError, apiRequest, defaultApiUrl } from "./api/core";
-export type { ApiConfig, RequestOptions } from "./api/core";
-export { getAuthSession, loginWeb, logoutWeb } from "./api/auth";
+export { ApiRequestError, apiRequest, apiRequestWithHeaders, defaultApiUrl } from "./api/core";
+export type { ApiConfig, ApiResponse, RequestOptions } from "./api/core";
+export { getAuthSession, loginWeb, logoutWeb, stationLogin } from "./api/auth";
 export type { AuthSession } from "./api/auth";
 
 export type AdminTableRequest = {
@@ -658,6 +664,37 @@ export const plannedAdminActionEndpoints = {
 export function listActiveOrders(config: ApiConfig, limit = 500) {
   const query = new URLSearchParams({ limit: String(limit) });
   return apiRequest<Order[]>(config, `/api/v1/orders/active?${query.toString()}`);
+}
+
+const ACTIVE_ORDERS_PAGE_LIMIT = 200;
+export const ACTIVE_ORDERS_MAX_PAGES = 100;
+const NEXT_CURSOR_HEADER = "X-TakSklad-Next-Cursor";
+
+/**
+ * Every active order, page by page, until the server stops sending a cursor.
+ * Same walk as the desktop (`backend_request_all_pages` in `src/taksklad/backend_client.py`),
+ * with the same safety stops and error texts.
+ */
+export async function listAllActiveOrders(config: ApiConfig, options: { signal?: AbortSignal } = {}) {
+  const orders: Order[] = [];
+  const seenCursors = new Set<string>();
+  let cursor = "";
+  for (let page = 1; page <= ACTIVE_ORDERS_MAX_PAGES; page += 1) {
+    const query = new URLSearchParams({ limit: String(ACTIVE_ORDERS_PAGE_LIMIT) });
+    if (cursor) query.set("cursor", cursor);
+    const { data, headers } = await apiRequestWithHeaders<Order[]>(
+      config,
+      `/api/v1/orders/active?${query.toString()}`,
+      { signal: options.signal },
+    );
+    orders.push(...data);
+    const next = (headers.get(NEXT_CURSOR_HEADER) ?? "").trim();
+    if (!next) return orders;
+    if (seenCursors.has(next)) throw new Error("Backend pagination returned a repeated cursor");
+    seenCursors.add(next);
+    cursor = next;
+  }
+  throw new Error("Backend pagination exceeded the page safety limit");
 }
 
 export function getAdminTable(config: ApiConfig, options: AdminTableRequest = {}) {
@@ -879,6 +916,31 @@ export function markReturn(config: ApiConfig, orderId: string, payload: {
   confirmed_items: ReturnConfirmedItem[];
 }) {
   return apiRequest<Order>(config, `/api/v1/returns/${encodeURIComponent(orderId)}`, {
+    method: "POST",
+    body: payload,
+  });
+}
+
+export type KizReleasePayload = {
+  code: string;
+  reason: string;
+  comment: string;
+  workstation_id: string | null;
+  actor: string;
+};
+
+export type KizReleaseResult = {
+  code: string;
+  released: boolean;
+  outcome: string;
+  latest_movement_type: string;
+  donor_order_item_id: string;
+  donor_request_number: string;
+};
+
+/** The block is physically back on the shelf, so its KIZ may ship again (desktop `release_kiz`). */
+export function releaseKiz(config: ApiConfig, payload: KizReleasePayload) {
+  return apiRequest<KizReleaseResult>(config, "/api/v1/kiz/release", {
     method: "POST",
     body: payload,
   });

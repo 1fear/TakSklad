@@ -17,14 +17,17 @@ export class ApiRequestError extends Error {
   status: number;
   statusText: string;
   code: string;
+  /** Seconds from the Retry-After response header, 0 when the server sent none. */
+  retryAfterSeconds: number;
 
-  constructor(status: number, statusText: string, detail: string, code = "") {
+  constructor(status: number, statusText: string, detail: string, code = "", retryAfterSeconds = 0) {
     const prefix = `${status} ${statusText}`.trim();
     super(detail ? `${prefix}: ${detail}` : prefix || "Ошибка запроса");
     this.name = "ApiRequestError";
     this.status = status;
     this.statusText = statusText;
     this.code = code;
+    this.retryAfterSeconds = retryAfterSeconds;
   }
 }
 
@@ -36,11 +39,22 @@ export function defaultApiUrl() {
   return "";
 }
 
+export type ApiResponse<T> = { data: T; headers: Headers };
+
 export async function apiRequest<T>(
   config: ApiConfig,
   path: string,
   options: RequestOptions = {},
 ): Promise<T> {
+  return (await apiRequestWithHeaders<T>(config, path, options)).data;
+}
+
+/** The one fetch path: same request as `apiRequest`, plus the response headers (paging cursors). */
+export async function apiRequestWithHeaders<T>(
+  config: ApiConfig,
+  path: string,
+  options: RequestOptions = {},
+): Promise<ApiResponse<T>> {
   const apiUrl = config.apiUrl.replace(/\/$/, "");
   const method = (options.method ?? "GET").toUpperCase();
   const bearerRequest = Boolean(config.token);
@@ -86,10 +100,25 @@ export async function apiRequest<T>(
         detail = formatTextApiErrorDetail(response.status, body);
       }
     }
-    throw new ApiRequestError(response.status, response.statusText, detail, code);
+    throw new ApiRequestError(
+      response.status,
+      response.statusText,
+      detail,
+      code,
+      parseRetryAfterSeconds(response.headers.get("Retry-After")),
+    );
   }
 
-  return response.json() as Promise<T>;
+  return { data: (await response.json()) as T, headers: response.headers };
+}
+
+/** Retry-After is either whole seconds or an HTTP date. */
+function parseRetryAfterSeconds(value: string | null): number {
+  const text = (value ?? "").trim();
+  if (!text) return 0;
+  if (/^\d+$/.test(text)) return Number(text);
+  const date = Date.parse(text);
+  return Number.isNaN(date) ? 0 : Math.max(0, Math.ceil((date - Date.now()) / 1000));
 }
 
 function apiErrorCode(payload: unknown): string {
