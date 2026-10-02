@@ -713,6 +713,14 @@ def station_login(request: Request, response: Response, db=Depends(get_db)):
         raise login_rate_limited_http_exception(exc) from exc
     try:
         user = ensure_station_user(db)
+        if normalize_role(user.role) != ROLE_STATION:
+            # Строка warehouse-station с чужой ролью дала бы беспарольный вход с её правами
+            logging.error("warehouse-station user has role %s, station login refused", user.role)
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Station session is temporarily unavailable",
+            )
         issued = create_user_session(
             db,
             user,

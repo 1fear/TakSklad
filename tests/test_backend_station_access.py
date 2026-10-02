@@ -254,6 +254,28 @@ class StationAccessTests(unittest.TestCase):
         self.assertEqual(login.status_code, 200)
         self.assertEqual(outside.get("/api/v1/auth/check").status_code, 204)
 
+    def test_station_login_refused_when_station_user_has_foreign_role(self):
+        now = datetime.now(timezone.utc)
+        with self.SessionLocal() as db:
+            db.add(User(
+                id=uuid.uuid4(),
+                username=STATION_USERNAME,
+                password_hash=None,
+                role="admin",
+                is_active=True,
+                auth_version=1,
+                created_at=now,
+                updated_at=now,
+            ))
+            db.commit()
+        client = self.client_from(WAREHOUSE_IP)
+
+        response = self.station_login(client)
+
+        self.assertEqual(response.status_code, 503)
+        self.assertNotIn(SESSION_COOKIE_NAME, response.cookies)
+        self.assertEqual(client.get("/api/v1/auth/check").status_code, 401)
+
     def test_successful_station_logins_are_limited_per_address(self):
         client = self.client_from(WAREHOUSE_IP)
         statuses = [self.station_login(client).status_code for _ in range(11)]
