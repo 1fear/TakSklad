@@ -5,6 +5,8 @@ export type OrderItem = {
   quantity_blocks: number;
   scanned_blocks: number;
   requires_kiz: boolean;
+  block_price?: number;
+  line_total?: number;
   status: string;
   scan_codes: string[];
   scan_entries?: Array<{
