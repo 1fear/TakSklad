@@ -182,7 +182,7 @@ describe("login and session characterization", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Нет доступа к панели управления" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Открыть складская web-панель" })).toHaveAttribute("href", "/");
+    expect(screen.getByRole("link", { name: "Открыть складскую web-панель" })).toHaveAttribute("href", "/");
   });
 
   it("offers no station link to another role without admin sections, since / would send it back", async () => {
@@ -195,7 +195,7 @@ describe("login and session characterization", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Нет доступа к панели управления" })).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Открыть складская web-панель" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Открыть складскую web-панель" })).not.toBeInTheDocument();
     expect(screen.getByText(/Обратитесь к администратору склада/)).toBeInTheDocument();
   });
 });

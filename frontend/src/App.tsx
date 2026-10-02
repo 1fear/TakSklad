@@ -10,7 +10,7 @@ import {
   hasAdminSurfaceAccess,
   hasOperatorSurfaceAccess,
   resolveAppSurface,
-  surfaceTitle,
+  surfaceOpenLabel,
   type AppSurface,
 } from "./workspace/surface";
 import "@fontsource/manrope/400.css";
@@ -187,7 +187,7 @@ function AccessDeniedScreen({
   onLogout: () => void;
 }) {
   const fallbackPath = alternateSurfacePath(surface);
-  const fallbackTitle = surfaceTitle(surface === "admin" ? "station" : "admin");
+  const fallbackLabel = surfaceOpenLabel(surface === "admin" ? "station" : "admin");
 
   return (
     <main className="login-shell">
@@ -198,7 +198,7 @@ function AccessDeniedScreen({
         <p>{message}</p>
         {canUseAlternateSurface && (
           <a className="login-submit" href={fallbackPath}>
-            Открыть {fallbackTitle.toLowerCase()}
+            {fallbackLabel}
           </a>
         )}
         <button className="login-submit" type="button" onClick={onLogout}>
