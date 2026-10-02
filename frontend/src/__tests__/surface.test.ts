@@ -7,6 +7,7 @@ import {
   hasOperatorSurfaceAccess,
   resolveAppSurface,
   surfacePath,
+  surfaceOpenLabel,
   surfaceTitle,
 } from "../workspace/surface";
 
@@ -26,6 +27,8 @@ describe("surface helper characterization", () => {
     expect(alternateSurfacePath("admin")).toBe("/");
     expect(surfaceTitle("station")).toBe("Складская web-панель");
     expect(surfaceTitle("admin")).toBe("Панель управления");
+    expect(surfaceOpenLabel("station")).toBe("Открыть складскую web-панель");
+    expect(surfaceOpenLabel("admin")).toBe("Открыть панель управления");
   });
 
   it("fails closed for operator access without warehouse:read", () => {

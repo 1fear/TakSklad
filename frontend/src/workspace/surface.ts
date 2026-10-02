@@ -44,3 +44,8 @@ export function alternateSurfacePath(surface: AppSurface): string {
 export function surfaceTitle(surface: AppSurface): string {
   return surface === "admin" ? "Панель управления" : "Складская web-панель";
 }
+
+/** The link that opens a surface, with its name in the accusative case. */
+export function surfaceOpenLabel(surface: AppSurface): string {
+  return surface === "admin" ? "Открыть панель управления" : "Открыть складскую web-панель";
+}
