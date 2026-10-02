@@ -163,6 +163,7 @@ services:
       TAKSKLAD_SERVICE_TOKEN_ROTATION_MAX_OVERLAP_SECONDS: ${TAKSKLAD_SERVICE_TOKEN_ROTATION_MAX_OVERLAP_SECONDS:-900}
       TAKSKLAD_INSECURE_LOCAL_ANONYMOUS: ${TAKSKLAD_INSECURE_LOCAL_ANONYMOUS:-false}
       TAKSKLAD_TRUSTED_PROXY_CIDRS: ${TAKSKLAD_TRUSTED_PROXY_CIDRS:?TAKSKLAD_TRUSTED_PROXY_CIDRS is required}
+      TAKSKLAD_WAREHOUSE_CIDRS: ${TAKSKLAD_WAREHOUSE_CIDRS:-}
       SKLADBOT_CREATE_REQUESTS_MODE: ${SKLADBOT_CREATE_REQUESTS_MODE:-dry_run}
       SKLADBOT_SKU_MAPPING_JSON: ${SKLADBOT_SKU_MAPPING_JSON:-}
     depends_on:
@@ -190,8 +191,10 @@ services:
       - traefik.http.middlewares.taksklad-backend-security-headers.headers.referrerPolicy=same-origin
       - traefik.docker.network=${TRAEFIK_NETWORK:-traefik}
     networks:
-      - taksklad-internal
-      - traefik
+      taksklad-internal:
+      traefik:
+        aliases:
+          - taksklad-backend-api
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import json, os; from urllib.request import urlopen; response = urlopen('http://127.0.0.1:8000/health', timeout=5); payload = json.load(response); expected_service = os.environ.get('TAKSKLAD_SERVICE_NAME', '').strip(); expected_sha = os.environ.get('TAKSKLAD_COMMIT_SHA', '').strip().lower(); expected_digest = os.environ.get('TAKSKLAD_IMAGE_DIGEST', '').strip().lower(); valid = response.status == 200 and payload.get('status') == 'ok' and bool(expected_service) and payload.get('service') == expected_service and bool(payload.get('version')) and (not expected_sha or payload.get('commit_sha') == expected_sha) and (not expected_digest or payload.get('image_digest') == expected_digest); raise SystemExit(0 if valid else 1)\""]
       interval: 30s
@@ -207,7 +210,7 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
-      TAKSKLAD_BACKEND_INTERNAL_URL: http://backend-api:8000
+      TAKSKLAD_BACKEND_INTERNAL_URL: http://taksklad-backend-api:8000
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=32m,uid=101,gid=101,mode=1770
       - /etc/nginx/conf.d:rw,nosuid,nodev,size=4m,uid=101,gid=101,mode=0755

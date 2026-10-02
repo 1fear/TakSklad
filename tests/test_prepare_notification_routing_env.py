@@ -10,6 +10,7 @@ from backend.app.telegram_routing_contract import (
 )
 from tools.prepare_notification_routing_env import (
     NotificationRoutingConfigError,
+    is_unrelated_auth_setting,
     main,
     parse_env_assignments,
     prepare_notification_routing,
@@ -181,6 +182,13 @@ class PrepareNotificationRoutingEnvTests(unittest.TestCase):
                 "TAKSKLAD_LEGACY_AUTH_EXPIRES_AT=operator-value\n",
                 {"TAKSKLAD_LEGACY_AUTH_EXPIRES_AT": "replacement"},
             )
+
+    def test_warehouse_station_network_list_counts_as_auth_configuration(self):
+        for name in ("TAKSKLAD_WAREHOUSE_CIDRS", "TAKSKLAD_TRUSTED_PROXY_CIDRS"):
+            with self.subTest(name=name):
+                self.assertTrue(is_unrelated_auth_setting(name))
+                with self.assertRaises(NotificationRoutingConfigError):
+                    render_env_candidate(f"{name}=operator-value\n", {name: "replacement"})
 
     def test_auth_lines_are_preserved_byte_for_byte(self):
         source = (

@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 import unittest
 
+import yaml
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -216,10 +218,10 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         self.assertIn("resolver 127.0.0.11 valid=10s ipv6=off;", nginx)
         self.assertIn('set $taksklad_backend "${TAKSKLAD_BACKEND_INTERNAL_URL}";', nginx)
         self.assertNotIn("proxy_pass ${TAKSKLAD_BACKEND_INTERNAL_URL}", nginx)
-        self.assertEqual(nginx.count("proxy_pass $taksklad_backend;"), 4)
+        self.assertEqual(nginx.count("proxy_pass $taksklad_backend;"), 5)
         self.assertIn("proxy_pass $taksklad_backend/api/v1/auth/check;", nginx)
         self.assertNotIn("proxy_set_header X-Forwarded-Proto $scheme;", nginx)
-        self.assertEqual(nginx.count("proxy_set_header X-Forwarded-Proto https;"), 4)
+        self.assertEqual(nginx.count("proxy_set_header X-Forwarded-Proto https;"), 5)
         self.assertNotIn("VITE_TAKSKLAD_API_URL", compose)
 
     def test_vds_compose_declares_runtime_healthchecks(self):
@@ -311,12 +313,41 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         self.assertIn("proxy_pass $taksklad_backend;", nginx)
         self.assertIn("connect-src 'self'", nginx)
 
-        self.assertIn("TAKSKLAD_BACKEND_INTERNAL_URL: http://backend-api:8000", compose)
+        self.assertIn("TAKSKLAD_BACKEND_INTERNAL_URL: http://taksklad-backend-api:8000", compose)
         self.assertIn("taksklad-internal", compose)
         self.assertNotIn("VITE_TAKSKLAD_API_URL", compose)
 
         self.assertIn("VITE_TAKSKLAD_DEV_API_URL", vite_config)
         self.assertIn('"/api"', vite_config)
+
+    def test_station_login_route_and_trusted_backend_path(self):
+        compose = (PROJECT_ROOT / "deploy" / "vds" / "docker-compose.yml").read_text(encoding="utf-8")
+        nginx = (PROJECT_ROOT / "frontend" / "nginx.conf.template").read_text(encoding="utf-8")
+
+        def location_block(marker):
+            start = nginx.index(marker)
+            return nginx[start:nginx.index("\n  }\n", start)]
+
+        station = location_block("location = /api/v1/auth/station {")
+        self.assertNotIn("auth_request", station)
+        self.assertIn("proxy_pass $taksklad_backend;", station)
+        self.assertIn("proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;", station)
+        self.assertIn('proxy_set_header Authorization "";', station)
+
+        auth_check = location_block("location = /_taksklad_auth_check {")
+        self.assertIn("proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;", auth_check)
+        self.assertIn("proxy_set_header X-Real-IP $remote_addr;", auth_check)
+
+        api = location_block("location /api/ {")
+        self.assertIn("proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;", api)
+
+        self.assertIn("TAKSKLAD_WAREHOUSE_CIDRS: ${TAKSKLAD_WAREHOUSE_CIDRS:-}", compose)
+        networks = yaml.safe_load(compose)["services"]["backend-api"]["networks"]
+        # Псевдоним только в сети traefik: фронт должен ходить к backend через 172.18, а не через taksklad-internal
+        self.assertEqual(networks["traefik"]["aliases"], ["taksklad-backend-api"])
+        self.assertNotIn("aliases", networks["taksklad-internal"] or {})
+        frontend_service = compose[compose.index("\n  frontend:\n"):compose.index("\n  skladbot-worker:\n")]
+        self.assertIn("TAKSKLAD_BACKEND_INTERNAL_URL: http://taksklad-backend-api:8000", frontend_service)
 
 
 if __name__ == "__main__":

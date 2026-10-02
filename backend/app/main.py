@@ -3,6 +3,8 @@ import hmac
 import ipaddress
 import logging
 import math
+import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from urllib.parse import quote
 from threading import Event, Lock, Thread
@@ -17,6 +19,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .access_policy import (
     AUTH_PROTECTED,
+    ROLE_STATION,
     SAFE_METHODS,
     route_policy,
 )
@@ -202,6 +205,13 @@ from .login_limiter import (
     LoginRateLimited,
 )
 from .models import AuditLog, User
+from .station_access import (
+    STATION_LOGIN_MAX_PER_MINUTE,
+    STATION_NETWORK_DENIED_CODE,
+    ensure_station_user,
+    is_warehouse_address,
+    parse_warehouse_cidrs,
+)
 from .settings import APP_VERSION, load_settings, validate_backend_settings
 from .web_auth import (
     ROLE_ADMIN,
@@ -216,6 +226,7 @@ from .web_auth import (
 )
 
 
+logger = logging.getLogger(__name__)
 settings = load_settings()
 sync_sources_lock = Lock()
 skladbot_sync_lock = Lock()
@@ -226,6 +237,14 @@ login_limiter = BoundedTTLLoginLimiter(
     max_entries=settings.web_login_limiter_max_entries,
     entry_ttl_seconds=settings.web_login_limiter_entry_ttl_seconds,
 )
+station_session_limiter = BoundedTTLLoginLimiter(
+    max_entries=1000,
+    entry_ttl_seconds=120,
+)
+STATION_DENIED_LOG_INTERVAL_SECONDS = 60
+STATION_DENIED_LOG_MAX_ENTRIES = 1000
+station_denied_log_times: OrderedDict = OrderedDict()
+station_denied_log_lock = Lock()
 
 app = FastAPI(
     title="TakSklad Backend API",
@@ -300,7 +319,17 @@ def paginate_materialized(rows, *, scope, response, limit, cursor="", default=50
 @app.on_event("startup")
 def validate_startup_configuration():
     validate_backend_settings(settings)
+    log_station_state()
     start_device_pairing_sweeper()
+
+
+def log_station_state() -> None:
+    # Разбор списка пишет ERROR с названием плохого элемента, здесь итог: включена станция или нет
+    networks = parse_warehouse_cidrs(settings.warehouse_cidrs) if settings.identity_auth_enabled else ()
+    if networks:
+        logger.info("станция включена: %d сетей", len(networks))
+    else:
+        logger.info("станция выключена")
 
 
 @app.on_event("shutdown")
@@ -587,7 +616,7 @@ def read_web_session(request: Request, db=None, *, touch_last_used: bool = True)
     token = request.cookies.get(SESSION_COOKIE_NAME)
     if settings.identity_auth_enabled and db is not None and str(token or "").startswith("tks."):
         verified = validate_user_session(db, token, touch_last_used=touch_last_used)
-        return {
+        payload = {
             "sub": verified.username,
             "role": verified.role,
             "exp": int(verified.expires_at.timestamp()),
@@ -595,9 +624,41 @@ def read_web_session(request: Request, db=None, *, touch_last_used: bool = True)
             "uid": str(verified.user_id),
             "av": verified.auth_version,
         }
-    if not legacy_auth_window_active():
-        raise WebAuthError("legacy web session is disabled")
-    return verify_session_token(settings, token)
+    else:
+        if not legacy_auth_window_active():
+            raise WebAuthError("legacy web session is disabled")
+        payload = verify_session_token(settings, token)
+    ensure_station_session_network(request, payload)
+    return payload
+
+
+def warehouse_networks():
+    return parse_warehouse_cidrs(settings.warehouse_cidrs)
+
+
+def log_station_refusal(address: str, kind: str) -> None:
+    """Одна строка WARNING на адрес не чаще раза в минуту; адрес пришёл из client_identity, токены сюда не попадают."""
+    key = str(address)
+    now = time.monotonic()
+    with station_denied_log_lock:
+        last = station_denied_log_times.get(key)
+        if last is not None and now - last < STATION_DENIED_LOG_INTERVAL_SECONDS:
+            return
+        station_denied_log_times[key] = now
+        station_denied_log_times.move_to_end(key)
+        while len(station_denied_log_times) > STATION_DENIED_LOG_MAX_ENTRIES:
+            station_denied_log_times.popitem(last=False)
+    logger.warning("станция: отказ по адресу %s (%s)", key, kind)
+
+
+def ensure_station_session_network(request: Request, payload) -> None:
+    # Сессия станции живёт только в сети склада: унесённая cookie снаружи не работает
+    if normalize_role(payload.get("role")) != ROLE_STATION:
+        return
+    address = client_identity(request, settings.trusted_proxy_cidrs)
+    if not is_warehouse_address(address, warehouse_networks()):
+        log_station_refusal(address, "сессия")
+        raise WebAuthError("station session outside warehouse network")
 
 
 @auth_api.post("/login", response_model=AuthSessionRead)
@@ -662,6 +723,72 @@ def web_login(payload: AuthLoginRequest, request: Request, response: Response, d
         samesite="lax",
     )
     return auth_session_read(session_payload, token)
+
+
+@auth_api.post("/station", response_model=AuthSessionRead)
+def station_login(request: Request, response: Response, db=Depends(get_db)):
+    prevent_auth_response_caching(response)
+    require_browser_origin(request)
+    address = client_identity(request, settings.trusted_proxy_cidrs)
+    if not settings.identity_auth_enabled or not is_warehouse_address(address, warehouse_networks()):
+        # Отказ без записи в общий ограничитель: чужие попытки не блокируют вход в /admin
+        log_station_refusal(address, "вход")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": STATION_NETWORK_DENIED_CODE},
+        )
+    station_key = f"station:{address}"
+    try:
+        station_session_limiter.ensure_not_locked(station_key)
+    except (LoginRateLimited, LoginLimiterCapacityExceeded) as exc:
+        raise login_rate_limited_http_exception(exc) from exc
+    try:
+        user = ensure_station_user(db)
+        if normalize_role(user.role) != ROLE_STATION:
+            # Строка warehouse-station с чужой ролью дала бы беспарольный вход с её правами
+            logging.error("warehouse-station user has role %s, station login refused", user.role)
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Station session is temporarily unavailable",
+            )
+        issued = create_user_session(
+            db,
+            user,
+            expires_at=datetime.now(timezone.utc) + timedelta(seconds=settings.web_session_ttl_seconds),
+        )
+        verified = validate_user_session(db, issued.token)
+        db.commit()
+    except IdentityAuthError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Station session is temporarily unavailable",
+        ) from exc
+    try:
+        # register_failure здесь считает и успешные входы намеренно: предел частоты входов станции с одного адреса
+        station_session_limiter.register_failure(
+            station_key,
+            max_attempts=STATION_LOGIN_MAX_PER_MINUTE,
+            window_seconds=60,
+            lock_seconds=60,
+        )
+    except (LoginRateLimited, LoginLimiterCapacityExceeded):
+        pass
+    response.set_cookie(
+        SESSION_COOKIE_NAME,
+        issued.token,
+        max_age=settings.web_session_ttl_seconds,
+        path="/",
+        httponly=True,
+        secure=settings.web_cookie_secure,
+        samesite="lax",
+    )
+    return auth_session_read({
+        "sub": verified.username,
+        "role": verified.role,
+        "exp": int(verified.expires_at.timestamp()),
+    }, issued.token)
 
 
 def login_attempt_key(request: Request, login):
