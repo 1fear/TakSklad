@@ -43,6 +43,7 @@ def is_unrelated_auth_setting(setting_name: str) -> bool:
         or "COOKIE" in normalized
         or normalized == "TAKSKLAD_INSECURE_LOCAL_ANONYMOUS"
         or normalized == "TAKSKLAD_TRUSTED_PROXY_CIDRS"
+        or normalized == "TAKSKLAD_WAREHOUSE_CIDRS"
     )
 
 
