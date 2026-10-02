@@ -5,6 +5,7 @@ import { ApiRequestError } from "../../api/core";
 import { anonymousSession, authenticatedSession } from "../../__tests__/fixtures";
 import {
   STATION_NETWORK_DENIED_CODE,
+  STATION_RETRY_MAX_MS,
   STATION_RETRY_MIN_MS,
   resolveStationEntry,
   retryDelayMs,
@@ -91,6 +92,32 @@ describe("resolveStationEntry", () => {
     await expect(resolveStationEntry(shorter)).resolves.toEqual({ kind: "offline", retryInMs: 30_000 });
   });
 
+  it("does not take the lock when the session belongs to someone else", async () => {
+    const d = deps({ getSession: vi.fn(async () => authenticatedSession) });
+
+    await expect(resolveStationEntry(d)).resolves.toEqual({ kind: "redirect-admin" });
+    expect(d.acquireLock).not.toHaveBeenCalled();
+  });
+
+  it("does not sign in when there is no session and another window owns the station", async () => {
+    const d = deps({ acquireLock: vi.fn(async () => false) });
+
+    await expect(resolveStationEntry(d)).resolves.toEqual({ kind: "duplicate-tab" });
+    expect(d.login).not.toHaveBeenCalled();
+  });
+
+  it("takes the lock before it signs in", async () => {
+    const order: string[] = [];
+    const d = deps({
+      acquireLock: vi.fn(async () => { order.push("lock"); return true; }),
+      login: vi.fn(async () => { order.push("login"); return stationSession; }),
+    });
+
+    await resolveStationEntry(d);
+
+    expect(order).toEqual(["lock", "login"]);
+  });
+
   it("goes offline when the session check itself fails, without signing in", async () => {
     const d = deps({ getSession: vi.fn(async () => { throw new TypeError("Failed to fetch"); }) });
 
@@ -110,6 +137,12 @@ describe("retryDelayMs", () => {
     expect(retryDelayMs(apiError(503, "", 600))).toBe(30_000);
     expect(retryDelayMs(apiError(429, "", 600))).toBe(600_000);
     expect(retryDelayMs(new Error("x"))).toBe(30_000);
+  });
+
+  it("caps a Retry-After of a day at ten minutes, so the timer can neither overflow nor sleep for a shift", () => {
+    expect(STATION_RETRY_MAX_MS).toBe(600_000);
+    expect(retryDelayMs(apiError(429, "", 86_400))).toBe(STATION_RETRY_MAX_MS);
+    expect(retryDelayMs(apiError(429, "", 10_000_000))).toBe(STATION_RETRY_MAX_MS);
   });
 });
 
@@ -133,22 +166,56 @@ describe("runStationEntry", () => {
     expect(d.acquireLock).toHaveBeenCalledTimes(1);
   });
 
-  it("shows duplicate-tab and never reaches ready when another window holds the lock", async () => {
+  it("shows duplicate-tab and never reaches ready when another window holds the lock of a live station session", async () => {
     const { states, publish } = recorder();
-    const d = deps({ acquireLock: vi.fn(async () => false) });
+    const d = deps({ getSession: vi.fn(async () => stationSession), acquireLock: vi.fn(async () => false) });
 
     await runStationEntry(d, publish, new AbortController().signal);
 
     expect(states.map((state) => state.kind)).toEqual(["checking", "duplicate-tab"]);
   });
 
-  it("does not touch the lock for /admin or while offline", async () => {
-    const { publish } = recorder();
-    const denied = deps({ login: vi.fn(async () => { throw apiError(403, STATION_NETWORK_DENIED_CODE); }) });
+  it("never calls login from the window that lost the lock, and never publishes ready", async () => {
+    const { states, publish } = recorder();
+    const d = deps({ acquireLock: vi.fn(async () => false) });
 
-    await runStationEntry(denied, publish, new AbortController().signal);
+    await runStationEntry(d, publish, new AbortController().signal);
 
-    expect(denied.acquireLock).not.toHaveBeenCalled();
+    expect(d.login).not.toHaveBeenCalled();
+    expect(states.map((state) => state.kind)).toEqual(["checking", "duplicate-tab"]);
+  });
+
+  it("does not touch the lock for a session of another role", async () => {
+    const { states, publish } = recorder();
+    const d = deps({ getSession: vi.fn(async () => authenticatedSession) });
+
+    await runStationEntry(d, publish, new AbortController().signal);
+
+    expect(d.acquireLock).not.toHaveBeenCalled();
+    expect(states.map((state) => state.kind)).toEqual(["checking", "redirect-admin"]);
+  });
+
+  it("asks for the lock once per run, however many times it retries while offline", async () => {
+    const { states, publish } = recorder();
+    const login = vi.fn<StationEntryDeps["login"]>()
+      .mockRejectedValueOnce(apiError(503))
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValueOnce(stationSession);
+    // A real Web Lock with ifAvailable, asked twice from the same page, answers "busy" the second time.
+    const acquireLock = vi.fn<StationEntryDeps["acquireLock"]>()
+      .mockResolvedValueOnce(true)
+      .mockResolvedValue(false);
+
+    await runStationEntry(
+      deps({ login, acquireLock }),
+      publish,
+      new AbortController().signal,
+      async () => undefined,
+    );
+
+    expect(acquireLock).toHaveBeenCalledTimes(1);
+    expect(login).toHaveBeenCalledTimes(3);
+    expect(states.map((state) => state.kind)).toEqual(["checking", "offline", "offline", "ready"]);
   });
 
   it("waits out the retry delay while offline and then opens the station", async () => {

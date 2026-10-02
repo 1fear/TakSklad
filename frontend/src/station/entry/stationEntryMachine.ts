@@ -3,10 +3,15 @@
  *
  *   session of the station          -> ready
  *   session of anyone else          -> redirect-admin (never sign in over an admin cookie)
+ *   no session, another window holds the station lock -> duplicate-tab, and login is never called
  *   no session, station login ok    -> ready
  *   no session, 403 network denied  -> redirect-admin (not the warehouse network)
  *   no session, network error / 5xx / 429 -> offline, retry in not less than 30 s
  *   ready, but another window holds the station lock -> duplicate-tab
+ *
+ * Login replaces the session cookie of the whole browser (the CSRF token derives from it), so a window that does not
+ * own the station must never sign in: with no session the lock is taken before login, with a session of the station
+ * right after the decision.
  */
 
 import type { AuthSession } from "../../api/auth";
@@ -16,6 +21,9 @@ export const STATION_NETWORK_DENIED_CODE = "station_network_denied";
 
 /** The station signs in again no more often than this (spec section 2). */
 export const STATION_RETRY_MIN_MS = 30_000;
+
+/** ...and waits no longer than this, whatever Retry-After says (a huge value would overflow the timer). */
+export const STATION_RETRY_MAX_MS = 600_000;
 
 export type StationEntryState =
   | { kind: "checking" }
@@ -39,10 +47,10 @@ function ready(session: AuthSession): StationEntryState {
   return { kind: "ready", session, csrfToken: session.csrf_token || "" };
 }
 
-/** 30 s for any failure, the server's Retry-After when it asks for longer (429). */
+/** 30 s for any failure, the server's Retry-After when it asks for longer (429), but never more than ten minutes. */
 export function retryDelayMs(error: unknown): number {
   const asked = error instanceof ApiRequestError && error.status === 429 ? error.retryAfterSeconds * 1000 : 0;
-  return Math.max(STATION_RETRY_MIN_MS, asked);
+  return Math.min(STATION_RETRY_MAX_MS, Math.max(STATION_RETRY_MIN_MS, asked));
 }
 
 function offline(error: unknown): StationEntryState {
@@ -68,6 +76,9 @@ export async function resolveStationEntry(deps: StationEntryDeps): Promise<Stati
     return isStationSession(session) ? ready(session) : { kind: "redirect-admin" };
   }
 
+  // Nothing is sent from a window that does not own the station: login would swap the owner's cookie.
+  if (!(await deps.acquireLock())) return { kind: "duplicate-tab" };
+
   try {
     const signedIn = await deps.login();
     // A 200 that is not a station session is not something to build a screen on.
@@ -78,15 +89,29 @@ export async function resolveStationEntry(deps: StationEntryDeps): Promise<Stati
 }
 
 /**
+ * Remembers a successful lock: the page holds it from then on, and a second `ifAvailable` request from the same page
+ * would answer "busy" and turn the owner into a duplicate.
+ */
+function lockOnce(acquire: StationEntryDeps["acquireLock"]): StationEntryDeps["acquireLock"] {
+  let owned = false;
+  return async () => {
+    if (!owned) owned = await acquire();
+    return owned;
+  };
+}
+
+/**
  * Runs the table until it settles, publishing every state it passes through.
- * `offline` waits out `retryInMs` and tries again, like the desktop started without a network.
+ * `offline` waits out `retryInMs` and tries again, like the desktop started without a network;
+ * the station lock is requested once per run and kept while it retries.
  */
 export async function runStationEntry(
-  deps: StationEntryDeps,
+  entryDeps: StationEntryDeps,
   publish: (state: StationEntryState) => void,
   signal: AbortSignal,
   sleep: (ms: number, signal: AbortSignal) => Promise<void> = abortableSleep,
 ): Promise<void> {
+  const deps: StationEntryDeps = { ...entryDeps, acquireLock: lockOnce(entryDeps.acquireLock) };
   publish({ kind: "checking" });
   while (!signal.aborted) {
     const state = await resolveStationEntry(deps);

@@ -108,4 +108,17 @@ describe("StationEntry", () => {
     expect(await screen.findByTestId("station-duplicate-tab")).toBeInTheDocument();
     expect(screen.queryByTestId("station-app")).not.toBeInTheDocument();
   });
+
+  it("does not sign in from a window that lost the lock, so the owner keeps its cookie", async () => {
+    session(anonymousSession);
+    stationLogin(() => HttpResponse.json(stationSession));
+    const { locks } = fakeLocks();
+    Object.defineProperty(navigator, "locks", { value: locks, configurable: true });
+    await expect(acquireStationLock(locks)).resolves.toBe(true);
+
+    render(<StationEntry />);
+
+    expect(await screen.findByTestId("station-duplicate-tab")).toBeInTheDocument();
+    expect(stationLogins).toBe(0);
+  });
 });
