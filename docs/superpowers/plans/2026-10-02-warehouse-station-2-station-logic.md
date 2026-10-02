@@ -3824,7 +3824,7 @@ index bd0bda5..304cb72 100644
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd /tmp/station-plan2/frontend && npx vitest run src/station/__tests__/stationLock.test.ts src/station/__tests__/stationEntry.test.ts src/station/__tests__/StationEntry.test.tsx src/__tests__/surface.test.ts src/__tests__/App.characterization.test.tsx`
+Run: `cd /tmp/station-plan2/frontend && npx vitest run src/station/__tests__/stationLock.test.ts src/station/__tests__/stationEntryMachine.test.ts src/station/__tests__/StationEntry.test.tsx src/__tests__/surface.test.ts src/__tests__/App.characterization.test.tsx`
 Expected: новые файлы FAIL на импорте `../queue/stationLock`, `../entry/stationEntryMachine`, `../entry/StationEntry`;
 `surface.test.ts` FAIL на `resolveAppSurface("/")` (ждёт `station`, получает `operator`); характеризация App FAIL
 на ветке `/` (ждёт вход станции, видит старую форму входа)
@@ -5347,3 +5347,25 @@ cd /tmp/station-plan2
 ALLOW_NON_MAIN_BRANCH=1 git push -u origin feat/station-logic
 gh pr create --base main --head feat/station-logic --title "Логика станции склада без вёрстки (план 2)" --body-file <файл с описанием>
 ```
+
+---
+
+## Исполнение 02.10.2026
+
+Ветка `feat/station-logic`, 18 коммитов поверх `origin/main` `c99b448`, исполнение по агентам с ревью после каждой
+задачи и финальным ревью ветки; код задач перенесён из плана без правок, отличия от плана ниже, каждое по итогам ревью
+
+- сторож текстов (задача 7) читает строки в одинарных кавычках и многострочные шаблоны и падает на кириллице вне
+  распознанных литералов; в нём 12 тестов вместо 3
+- в `performance.spec.ts` на месте убранных шагов старого `/` стоит пометка, возврат этих шагов и двух сценариев
+  под `test.fixme` записан в строку плана 3 дорожной карты
+- очередь станции (задача 10) передаёт серверу `scanned_at`, как программа; тест держит правило «один проход за раз»
+- после финального ревью: окно без замка не входит и не меняет cookie владельца станции; очередь на 403
+  `csrf_invalid` входит заново так же, как на 401, а повторный вход (`refreshStationSession`) не встаёт поверх сессии
+  другой роли; `recordLoadedOrders(orders, loadStartedAt)` не стирает доставки, сделанные после начала загрузки;
+  эталон не зависит от версии программы (`0.0.0-corpus`); задержка повтора входа не больше 10 минут
+- контракт окна для плана 3 (занятость на весь `evaluateScan`, хук повторного входа, один предел 30 с на вход,
+  момент начала загрузки) записан в строку плана 3 дорожной карты
+
+Итоговые числа на голове ветки: vitest 31 файл и 687 тестов, typecheck и lint без ошибок, a11y 7, e2e 21 passed
+и 4 skipped, Python `unittest discover` 2271 тест OK (на `c99b448` 2256)
