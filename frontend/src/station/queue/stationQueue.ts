@@ -27,8 +27,10 @@ import {
 export const STATION_SYNC_FIRST_RUN_MS = 13_000;
 export const STATION_SYNC_INTERVAL_MS = 15_000;
 
-/** A 401 asks for a new station sign-in no more often than this (spec section 4). */
+/** A 401 or a csrf_invalid asks for a new station sign-in no more often than this (spec section 4). */
 export const RELOGIN_MIN_INTERVAL_MS = 30_000;
+
+const CSRF_INVALID_CODE = "csrf_invalid";
 
 export type FlushResult = {
   /** Codes the server holds after this pass, including ones it already had (409 duplicate ack). */
@@ -48,7 +50,10 @@ export type StationQueueOptions = {
   getConfig: () => ApiConfig;
   actor: string;
   workstationId: string;
-  /** Signs the station in again; called on a 401, not more often than once per 30 s. */
+  /**
+   * Gets a session the next request can use; called on a 401 or a 403 csrf_invalid, not more often than once per 30 s.
+   * The window passes `refreshStationSession` here and puts the csrf token of the session it returns into `getConfig`.
+   */
   relogin: () => Promise<void>;
   onCycle?: (outcome: CycleOutcome) => void;
   store?: OfflineQueueStore;
@@ -58,6 +63,11 @@ export type StationQueueOptions = {
 };
 
 export type StationQueue = ReturnType<typeof createStationQueue>;
+
+function asksForNewSession(error: unknown): boolean {
+  if (!(error instanceof ApiRequestError)) return false;
+  return error.status === 401 || (error.status === 403 && error.code === CSRF_INVALID_CODE);
+}
 
 export function createStationQueue(options: StationQueueOptions) {
   const { getConfig, actor, workstationId, relogin, onCycle } = options;
@@ -93,13 +103,14 @@ export function createStationQueue(options: StationQueueOptions) {
     syncedCodes.get(orderItemId)?.delete(normalizeKizCode(code));
   }
 
-  // 401 -> sign in again -> retry the same request once; a second 401 is left to the queue's own retry.
+  // 401 or csrf_invalid (the cookie changed under the open window) -> new session -> retry the same request once;
+  // a second refusal is left to the queue's own retry.
   let lastReloginAt = Number.NEGATIVE_INFINITY;
   async function withRelogin<T>(call: () => Promise<T>): Promise<T> {
     try {
       return await call();
     } catch (error) {
-      if (!(error instanceof ApiRequestError) || error.status !== 401) throw error;
+      if (!asksForNewSession(error)) throw error;
       const at = now();
       if (at - lastReloginAt < RELOGIN_MIN_INTERVAL_MS) throw error;
       lastReloginAt = at;

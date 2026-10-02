@@ -7,6 +7,8 @@ import {
   STATION_NETWORK_DENIED_CODE,
   STATION_RETRY_MAX_MS,
   STATION_RETRY_MIN_MS,
+  StationSessionRefusedError,
+  refreshStationSession,
   resolveStationEntry,
   retryDelayMs,
   runStationEntry,
@@ -129,6 +131,50 @@ describe("resolveStationEntry", () => {
     const d = deps({ login: vi.fn(async () => ({ ...stationSession, role: "admin" })) });
 
     await expect(resolveStationEntry(d)).resolves.toEqual({ kind: "offline", retryInMs: 30_000 });
+  });
+});
+
+describe("refreshStationSession", () => {
+  it("returns the session of the station with its current csrf token, without signing in", async () => {
+    const d = deps({ getSession: vi.fn(async () => ({ ...stationSession, csrf_token: "fresh" })) });
+
+    await expect(refreshStationSession(d)).resolves.toMatchObject({ role: "station", csrf_token: "fresh" });
+    expect(d.login).not.toHaveBeenCalled();
+  });
+
+  it.each(["admin", "operator", "warehouse", ""])("refuses a session of role %j and never replaces its cookie", async (role) => {
+    const d = deps({ getSession: vi.fn(async () => ({ ...authenticatedSession, role })) });
+
+    await expect(refreshStationSession(d)).rejects.toMatchObject({
+      name: "StationSessionRefusedError",
+      reason: "other-role",
+    });
+    await expect(refreshStationSession(d)).rejects.toBeInstanceOf(StationSessionRefusedError);
+    expect(d.login).not.toHaveBeenCalled();
+  });
+
+  it("signs in when there is no session and returns what the login answered", async () => {
+    const d = deps({ login: vi.fn(async () => ({ ...stationSession, csrf_token: "after-login" })) });
+
+    await expect(refreshStationSession(d)).resolves.toMatchObject({ role: "station", csrf_token: "after-login" });
+    expect(d.login).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a login answer that is not a station session", async () => {
+    const d = deps({ login: vi.fn(async () => ({ ...stationSession, role: "admin" })) });
+
+    await expect(refreshStationSession(d)).rejects.toMatchObject({
+      name: "StationSessionRefusedError",
+      reason: "not-station",
+    });
+  });
+
+  it("lets a failure of the session check or of the login through as it is", async () => {
+    const down = new TypeError("Failed to fetch");
+    const denied = apiError(403, STATION_NETWORK_DENIED_CODE);
+
+    await expect(refreshStationSession(deps({ getSession: vi.fn(async () => { throw down; }) }))).rejects.toBe(down);
+    await expect(refreshStationSession(deps({ login: vi.fn(async () => { throw denied; }) }))).rejects.toBe(denied);
   });
 });
 

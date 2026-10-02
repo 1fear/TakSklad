@@ -423,6 +423,93 @@ describe("re-login on 401", () => {
   });
 });
 
+describe("re-login on csrf_invalid", () => {
+  // The session cookie was replaced under the open window (another window, an /admin sign-in): auth passes, CSRF does not.
+  function staleCsrfUntilRelogin() {
+    let fresh = false;
+    const server = fakeServer(() => (fresh ? null : http(403, "csrf_invalid")));
+    return { server, refresh: () => { fresh = true; } };
+  }
+
+  it("asks for a fresh session and then delivers the code", async () => {
+    const { server, refresh } = staleCsrfUntilRelogin();
+    const relogin = vi.fn(async () => { refresh(); });
+    const { queue } = build({ send: server.send, relogin });
+    await queue.enqueueScan({ orderId: "order-1", orderItemId: "item-1", code: CODE_A });
+
+    const result = await queue.flushItem("item-1");
+
+    expect(relogin).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ delivered: [CODE_A], blocked: [], pending: 0, networkFailed: false });
+    expect(queue.isDelivered("item-1", CODE_A)).toBe(true);
+  });
+
+  it("also covers the order completion", async () => {
+    const { server, refresh } = staleCsrfUntilRelogin();
+    const relogin = vi.fn(async () => { refresh(); });
+    const { queue } = build({ send: server.send, relogin });
+    await queue.enqueueComplete("order-1");
+
+    const result = await queue.flushOrder("order-1", []);
+
+    expect(relogin).toHaveBeenCalledTimes(1);
+    expect(server.sent).toEqual(["complete:order-1"]);
+    expect(result.pending).toBe(0);
+  });
+
+  it("shares the 30 s limit with the 401: a second csrf_invalid does not sign in again and the code stays queued", async () => {
+    let clock = 1_000_000;
+    const server = fakeServer(() => http(403, "csrf_invalid"));
+    const relogin = vi.fn(async () => undefined);
+    const { queue, store } = build({ send: server.send, relogin, now: () => clock });
+    await queue.enqueueScan({ orderId: "order-1", orderItemId: "item-1", code: CODE_A });
+
+    const first = await queue.flushAll();
+    expect(relogin).toHaveBeenCalledTimes(1);
+    expect(first).toEqual({ delivered: [], blocked: [], pending: 1, networkFailed: true });
+
+    clock += RELOGIN_MIN_INTERVAL_MS - 1;
+    const second = await queue.flushAll();
+    expect(relogin).toHaveBeenCalledTimes(1);
+    expect(second).toEqual({ delivered: [], blocked: [], pending: 1, networkFailed: true });
+    expect(await store.listBlocked()).toEqual([]);
+
+    clock += 1;
+    await queue.flushAll();
+    expect(relogin).toHaveBeenCalledTimes(2);
+  });
+
+  it("counts a 401 and a csrf_invalid against the same 30 s", async () => {
+    let clock = 1_000_000;
+    // Pass 1: 401, re-login, 401 again. Pass 2, 10 s later: csrf_invalid.
+    const answers = [http(401), http(401), http(403, "csrf_invalid"), http(403, "csrf_invalid")];
+    const server = fakeServer(() => answers.shift() ?? null);
+    const relogin = vi.fn(async () => undefined);
+    const { queue } = build({ send: server.send, relogin, now: () => clock });
+    await queue.enqueueScan({ orderId: "order-1", orderItemId: "item-1", code: CODE_A });
+
+    await queue.flushAll();
+    expect(relogin).toHaveBeenCalledTimes(1);
+
+    clock += 10_000;
+    const result = await queue.flushAll();
+
+    expect(relogin).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ delivered: [], blocked: [], pending: 1, networkFailed: true });
+  });
+
+  it("does not re-login for a 403 with another code", async () => {
+    const server = fakeServer(() => http(403, "origin_denied"));
+    const relogin = vi.fn(async () => undefined);
+    const { queue } = build({ send: server.send, relogin });
+    await queue.enqueueScan({ orderId: "order-1", orderItemId: "item-1", code: CODE_A });
+
+    await queue.flushItem("item-1");
+
+    expect(relogin).not.toHaveBeenCalled();
+  });
+});
+
 describe("one pass at a time", () => {
   it("holds a second pass until the first one has returned", async () => {
     let release: () => void = () => undefined;

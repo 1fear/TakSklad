@@ -88,6 +88,33 @@ export async function resolveStationEntry(deps: StationEntryDeps): Promise<Stati
   }
 }
 
+/** Why `refreshStationSession` gave up. Nothing was signed in and no cookie was replaced. */
+export class StationSessionRefusedError extends Error {
+  /** `other-role`: the browser holds a session of someone else. `not-station`: the station login answered with another role. */
+  reason: "other-role" | "not-station";
+
+  constructor(reason: "other-role" | "not-station") {
+    super(reason === "other-role" ? "The browser holds a session that is not the station's" : "Station login did not return a station session");
+    this.name = "StationSessionRefusedError";
+    this.reason = reason;
+  }
+}
+
+/**
+ * The contract of the queue's `relogin` hook (spec section 4): read `/auth/session` first, so a session of the station
+ * hands back its fresh csrf token and a session of another role is never replaced; sign in only when there is none.
+ */
+export async function refreshStationSession(deps: Pick<StationEntryDeps, "getSession" | "login">): Promise<AuthSession> {
+  const current = await deps.getSession();
+  if (current.authenticated) {
+    if (isStationSession(current)) return current;
+    throw new StationSessionRefusedError("other-role");
+  }
+  const signedIn = await deps.login();
+  if (!isStationSession(signedIn)) throw new StationSessionRefusedError("not-station");
+  return signedIn;
+}
+
 /**
  * Remembers a successful lock: the page holds it from then on, and a second `ifAvailable` request from the same page
  * would answer "busy" and turn the owner into a duplicate.
