@@ -8,6 +8,42 @@ PostgreSQL читался только на `alembic current`, поэтому р
 Статус: `LIVE_IN_SYNC_WITH_MAIN; ACTIONS_NOT_USED;
 DESKTOP_RETIREMENT_BLOCKED; OPERATOR_PHYSICAL_NOT_RUN; SHIPMENT_NOT_RECHECKED`
 
+## Дельта 2026-10-02, день: backend и frontend `81fcc66` (#197) на бою, станция выключена
+
+- Сверка 02.10.2026 в 10:11 UTC только на чтение: `docker ps -a`, `api.taksklad.uz/version`
+  и `/health`, ответы `chapman.taksklad.uz`, журналы контейнеров, паспорт выката
+- #197 влит как `81fcc66`: план 1 проекта «склад в браузере»; вход складской станции без пароля
+  только с адресов `TAKSKLAD_WAREHOUSE_CIDRS` (роль `station`, `POST /api/v1/auth/station`,
+  адрес проверяется на каждом запросе сессии станции), в nginx фронта маршрут входа станции
+  и явный `X-Forwarded-For` в подзапросе проверки сессии, в compose у `backend-api` псевдоним
+  `taksklad-backend-api` только в сети `traefik`, фронт ходит в backend по нему
+- Спецификация, опись окон программы и дорожная карта планов:
+  `docs/superpowers/specs/2026-10-02-warehouse-station-web-design.md`,
+  `docs/superpowers/plans/2026-10-02-warehouse-station-roadmap.md`; планы 2-5 ещё не написаны
+- Станция выключена: `TAKSKLAD_WAREHOUSE_CIDRS` в `.env` нет, `backend-api` пишет «станция
+  выключена», вход станции отвечает 403 `station_network_denied` всем; адреса склада вносятся
+  только в день пилота
+- Проверки до мержа: полный набор 2256 `OK`, Postgres 111 `OK`, frontend lint 0, typecheck 0,
+  vitest 283 из 283, build 0
+- Backend `taksklad-backend:local-81fcc66`, digest `sha256:49bc7b71…`, frontend
+  `taksklad-frontend:local-81fcc66`, digest `sha256:eaf6b492…`, паспорт `manual-81fcc66.json`,
+  бэкап `taksklad-postgres-20261002T100952Z`
+- Окно писателей с 10:09:50 по 10:10:23 UTC, 33 с, миграции нет, `recovered=0`, пересозданы
+  `backend-api`, `telegram-worker`, `skladbot-worker`, затем в 10:10:30 `frontend`, все `healthy`
+- `smartup-auto-import-worker` не тронут по просьбе соседней сессии (ручные прогоны Smartup
+  по команде Антона после возврата лицензии), остался на `local-72ad2a7`; в `.env` теперь
+  `local-81fcc66`, поэтому `compose up` без явных имён сервисов пересоздаст его на новом образе
+- Образ backend сверен с архивом ревизии (91 из 91 `.py`), 74 ассета фронта совпали по именам
+  с локальной сборкой; серверное дерево сведено по девяти файлам, прежние лежат как `.bak-e2b28c9`
+- Живые проверки: `/version` с `81fcc66`, `chapman/api/v1/auth/session` 200, вход станции
+  снаружи, с подделанным `X-Forwarded-For` и через api-хост 403, `/admin` 200, программа склада
+  продолжила опрос с 10:10:39, 5xx после окна нет
+- Порядок выката с этой ревизии: `backend-api` пересоздаётся раньше фронта или одной командой
+  с ним; фронт отдельно раньше даёт 502 на весь `/api/` chapman, откат пересозданием `backend-api`
+  или возвратом фронту `http://backend-api:8000`, старый образ фронта 502 не лечит
+- Замечено при проверке: запросы с рабочего Mac Антона выходят с тех же двух внешних адресов,
+  что и сканы станции HOME-PC; при включении станции вход получат все устройства этой сети
+
 ## Дельта 2026-10-01, вечер: backend `e2b28c9` (#195) на бою
 
 - Сверка 01.10.2026 в 15:58 UTC только на чтение: `docker ps -a`, `api.taksklad.uz/version`
