@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import ipaddress
 import logging
 import uuid
@@ -12,6 +13,8 @@ from sqlalchemy.exc import IntegrityError
 
 from .access_policy import ROLE_STATION
 from .models import User
+
+logger = logging.getLogger(__name__)
 
 STATION_USERNAME = "warehouse-station"
 STATION_NETWORK_DENIED_CODE = "station_network_denied"
@@ -32,20 +35,26 @@ _FORBIDDEN_NETWORKS = tuple(
 )
 
 
-def parse_warehouse_cidrs(values) -> tuple:
-    """Разбирает список сетей склада; любое сомнительное значение выключает станцию целиком."""
+@functools.lru_cache(maxsize=8)
+def _parse_cached(values: tuple) -> tuple:
+    """Разбор один раз на каждое различное значение списка: ошибка пишется в журнал один раз, а не на каждый запрос."""
     networks = []
-    for raw in values or ():
+    for raw in values:
         try:
-            network = ipaddress.ip_network(str(raw).strip(), strict=True)
+            network = ipaddress.ip_network(raw.strip(), strict=True)
         except ValueError:
-            logging.error("TAKSKLAD_WAREHOUSE_CIDRS содержит битое значение, станция выключена")
+            logger.error("TAKSKLAD_WAREHOUSE_CIDRS: значение %r битое, станция выключена", raw)
             return ()
         if network.prefixlen == 0 or any(network.overlaps(blocked) for blocked in _FORBIDDEN_NETWORKS):
-            logging.error("TAKSKLAD_WAREHOUSE_CIDRS содержит общую или частную сеть, станция выключена")
+            logger.error("TAKSKLAD_WAREHOUSE_CIDRS: сеть %s общая или частная, станция выключена", network)
             return ()
         networks.append(network)
     return tuple(networks)
+
+
+def parse_warehouse_cidrs(values) -> tuple:
+    """Разбирает список сетей склада; любое сомнительное значение выключает станцию целиком."""
+    return _parse_cached(tuple(str(raw) for raw in values or ()))
 
 
 def is_warehouse_address(address: str, networks) -> bool:

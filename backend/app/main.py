@@ -3,6 +3,8 @@ import hmac
 import ipaddress
 import logging
 import math
+import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from urllib.parse import quote
 from threading import Event, Lock, Thread
@@ -224,6 +226,7 @@ from .web_auth import (
 )
 
 
+logger = logging.getLogger(__name__)
 settings = load_settings()
 sync_sources_lock = Lock()
 skladbot_sync_lock = Lock()
@@ -238,6 +241,10 @@ station_session_limiter = BoundedTTLLoginLimiter(
     max_entries=1000,
     entry_ttl_seconds=120,
 )
+STATION_DENIED_LOG_INTERVAL_SECONDS = 60
+STATION_DENIED_LOG_MAX_ENTRIES = 1000
+station_denied_log_times: OrderedDict = OrderedDict()
+station_denied_log_lock = Lock()
 
 app = FastAPI(
     title="TakSklad Backend API",
@@ -312,7 +319,17 @@ def paginate_materialized(rows, *, scope, response, limit, cursor="", default=50
 @app.on_event("startup")
 def validate_startup_configuration():
     validate_backend_settings(settings)
+    log_station_state()
     start_device_pairing_sweeper()
+
+
+def log_station_state() -> None:
+    # Разбор списка пишет ERROR с названием плохого элемента, здесь итог: включена станция или нет
+    networks = parse_warehouse_cidrs(settings.warehouse_cidrs) if settings.identity_auth_enabled else ()
+    if networks:
+        logger.info("станция включена: %d сетей", len(networks))
+    else:
+        logger.info("станция выключена")
 
 
 @app.on_event("shutdown")
@@ -619,15 +636,28 @@ def warehouse_networks():
     return parse_warehouse_cidrs(settings.warehouse_cidrs)
 
 
-def request_from_warehouse(request: Request) -> bool:
-    return is_warehouse_address(client_identity(request, settings.trusted_proxy_cidrs), warehouse_networks())
+def log_station_refusal(address: str, kind: str) -> None:
+    """Одна строка WARNING на адрес не чаще раза в минуту; адрес пришёл из client_identity, токены сюда не попадают."""
+    key = str(address)
+    now = time.monotonic()
+    with station_denied_log_lock:
+        last = station_denied_log_times.get(key)
+        if last is not None and now - last < STATION_DENIED_LOG_INTERVAL_SECONDS:
+            return
+        station_denied_log_times[key] = now
+        station_denied_log_times.move_to_end(key)
+        while len(station_denied_log_times) > STATION_DENIED_LOG_MAX_ENTRIES:
+            station_denied_log_times.popitem(last=False)
+    logger.warning("станция: отказ по адресу %s (%s)", key, kind)
 
 
 def ensure_station_session_network(request: Request, payload) -> None:
     # Сессия станции живёт только в сети склада: унесённая cookie снаружи не работает
     if normalize_role(payload.get("role")) != ROLE_STATION:
         return
-    if not request_from_warehouse(request):
+    address = client_identity(request, settings.trusted_proxy_cidrs)
+    if not is_warehouse_address(address, warehouse_networks()):
+        log_station_refusal(address, "сессия")
         raise WebAuthError("station session outside warehouse network")
 
 
@@ -702,6 +732,7 @@ def station_login(request: Request, response: Response, db=Depends(get_db)):
     address = client_identity(request, settings.trusted_proxy_cidrs)
     if not settings.identity_auth_enabled or not is_warehouse_address(address, warehouse_networks()):
         # Отказ без записи в общий ограничитель: чужие попытки не блокируют вход в /admin
+        log_station_refusal(address, "вход")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={"code": STATION_NETWORK_DENIED_CODE},
@@ -735,6 +766,7 @@ def station_login(request: Request, response: Response, db=Depends(get_db)):
             detail="Station session is temporarily unavailable",
         ) from exc
     try:
+        # register_failure здесь считает и успешные входы намеренно: предел частоты входов станции с одного адреса
         station_session_limiter.register_failure(
             station_key,
             max_attempts=STATION_LOGIN_MAX_PER_MINUTE,

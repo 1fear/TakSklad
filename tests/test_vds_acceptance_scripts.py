@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 import unittest
 
+import yaml
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -340,7 +342,10 @@ class VdsAcceptanceScriptsTests(unittest.TestCase):
         self.assertIn("proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;", api)
 
         self.assertIn("TAKSKLAD_WAREHOUSE_CIDRS: ${TAKSKLAD_WAREHOUSE_CIDRS:-}", compose)
-        self.assertIn("          - taksklad-backend-api\n", compose)
+        networks = yaml.safe_load(compose)["services"]["backend-api"]["networks"]
+        # Псевдоним только в сети traefik: фронт должен ходить к backend через 172.18, а не через taksklad-internal
+        self.assertEqual(networks["traefik"]["aliases"], ["taksklad-backend-api"])
+        self.assertNotIn("aliases", networks["taksklad-internal"] or {})
         frontend_service = compose[compose.index("\n  frontend:\n"):compose.index("\n  skladbot-worker:\n")]
         self.assertIn("TAKSKLAD_BACKEND_INTERNAL_URL: http://taksklad-backend-api:8000", frontend_service)
 

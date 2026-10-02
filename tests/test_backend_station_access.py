@@ -1,5 +1,6 @@
 import unittest
 import uuid
+from collections import OrderedDict
 from datetime import datetime, timezone
 from unittest import mock
 
@@ -9,6 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.app import main as backend_main
+from backend.app import station_access
 from backend.app.login_limiter import BoundedTTLLoginLimiter
 from backend.app.models import Base, User
 from backend.app.settings import load_settings
@@ -57,23 +59,50 @@ class StationNetworkParsingTests(unittest.TestCase):
         self.assertEqual(settings.warehouse_cidrs, (f"{WAREHOUSE_IP}/32", SECOND_WAREHOUSE_IP))
         self.assertEqual(load_settings({"TAKSKLAD_ENV": "test"}).warehouse_cidrs, ())
 
+    def setUp(self):
+        station_access._parse_cached.cache_clear()
+        self.addCleanup(station_access._parse_cached.cache_clear)
+
     def test_unsafe_or_broken_values_disable_whole_list(self):
         networks = parse_warehouse_cidrs([f"{WAREHOUSE_IP}/32"])
         self.assertTrue(is_warehouse_address(WAREHOUSE_IP, networks))
         self.assertFalse(is_warehouse_address(OUTSIDE_IP, networks))
         self.assertFalse(is_warehouse_address("unknown", networks))
-        for values in (
-            ["0.0.0.0/0"],
-            ["::/0"],
-            ["172.18.0.0/16"],
-            ["192.168.1.0/24"],
-            ["127.0.0.1"],
-            ["not-a-network"],
-            [f"{WAREHOUSE_IP}/24"],
-            [f"{WAREHOUSE_IP}/32", "10.0.0.0/8"],
+        for values, offender in (
+            (["0.0.0.0/0"], "0.0.0.0/0"),
+            (["::/0"], "::/0"),
+            (["172.18.0.0/16"], "172.18.0.0/16"),
+            (["192.168.1.0/24"], "192.168.1.0/24"),
+            (["127.0.0.1"], "127.0.0.1"),
+            (["not-a-network"], "not-a-network"),
+            ([f"{WAREHOUSE_IP}/24"], f"{WAREHOUSE_IP}/24"),
+            ([f"{WAREHOUSE_IP}/32", "10.0.0.0/8"], "10.0.0.0/8"),
         ):
             with self.subTest(values=values):
-                self.assertEqual(parse_warehouse_cidrs(values), ())
+                with self.assertLogs("backend.app.station_access", level="ERROR") as captured:
+                    self.assertEqual(parse_warehouse_cidrs(values), ())
+                self.assertEqual(len(captured.records), 1)
+                self.assertIn(offender, captured.output[0])
+                self.assertIn("станция выключена", captured.output[0])
+
+    def test_valid_values_parse_and_empty_list_is_empty(self):
+        with self.assertNoLogs("backend.app.station_access", level="ERROR"):
+            bare = parse_warehouse_cidrs([SECOND_WAREHOUSE_IP])
+            self.assertEqual(parse_warehouse_cidrs([]), ())
+            self.assertEqual(parse_warehouse_cidrs(()), ())
+            self.assertEqual(parse_warehouse_cidrs(None), ())
+        self.assertEqual(len(bare), 1)
+        self.assertEqual(str(bare[0]), f"{SECOND_WAREHOUSE_IP}/32")
+        self.assertTrue(is_warehouse_address(SECOND_WAREHOUSE_IP, bare))
+
+    def test_same_broken_value_is_logged_once(self):
+        with self.assertLogs("backend.app.station_access", level="ERROR") as captured:
+            for _ in range(3):
+                self.assertEqual(parse_warehouse_cidrs(["not-a-network"]), ())
+        self.assertEqual(len(captured.records), 1)
+        with self.assertLogs("backend.app.station_access", level="ERROR") as captured:
+            self.assertEqual(parse_warehouse_cidrs(["another-broken"]), ())
+        self.assertEqual(len(captured.records), 1)
 
 
 class StationAccessTests(unittest.TestCase):
@@ -102,8 +131,12 @@ class StationAccessTests(unittest.TestCase):
             BoundedTTLLoginLimiter(max_entries=100, entry_ttl_seconds=120),
         )
         self.limiter_patch.start()
+        self.denied_log_patch = mock.patch.object(backend_main, "station_denied_log_times", OrderedDict())
+        self.denied_log_patch.start()
+        station_access._parse_cached.cache_clear()
 
     def tearDown(self):
+        self.denied_log_patch.stop()
         self.limiter_patch.stop()
         self.settings_patch.stop()
         backend_main.app.dependency_overrides.clear()
@@ -164,6 +197,80 @@ class StationAccessTests(unittest.TestCase):
                 with mock.patch.object(backend_main, "settings", station_settings(TAKSKLAD_WAREHOUSE_CIDRS=value)):
                     response = self.station_login(self.client_from(WAREHOUSE_IP))
                 self.assertEqual(response.status_code, 403)
+
+    def test_two_hop_forwarded_chain_from_trusted_proxy_logs_in(self):
+        # Так приходит запрос из прода: nginx дописывает к адресу клиента адрес traefik
+        proxy = self.client_from(TRUSTED_PROXY_IP)
+        chain = {"X-Forwarded-For": f"{WAREHOUSE_IP}, 172.18.0.5"}
+
+        self.assertEqual(self.station_login(proxy, chain).status_code, 200)
+        self.assertEqual(proxy.get("/api/v1/auth/check", headers=chain).status_code, 204)
+        outside_chain = {"X-Forwarded-For": f"{OUTSIDE_IP}, 172.18.0.5"}
+        self.assertEqual(self.station_login(proxy, outside_chain).status_code, 403)
+
+    def test_login_refusal_writes_one_warning_per_minute_per_address(self):
+        client = self.client_from(OUTSIDE_IP)
+        clock = mock.Mock(monotonic=mock.Mock(return_value=1000.0))
+        with mock.patch.object(backend_main, "time", clock):
+            with self.assertLogs("backend.app.main", level="WARNING") as captured:
+                self.assertEqual(self.station_login(client).status_code, 403)
+            self.assertEqual(len(captured.records), 1)
+            self.assertIn(OUTSIDE_IP, captured.output[0])
+
+            clock.monotonic.return_value = 1030.0
+            with self.assertNoLogs("backend.app.main", level="WARNING"):
+                self.assertEqual(self.station_login(client).status_code, 403)
+
+            with self.assertLogs("backend.app.main", level="WARNING") as other:
+                self.assertEqual(self.station_login(self.client_from("198.51.100.55")).status_code, 403)
+            self.assertIn("198.51.100.55", other.output[0])
+
+            clock.monotonic.return_value = 1061.0
+            with self.assertLogs("backend.app.main", level="WARNING") as again:
+                self.assertEqual(self.station_login(client).status_code, 403)
+            self.assertIn(OUTSIDE_IP, again.output[0])
+
+    def test_session_refusal_outside_warehouse_logs_address_without_token(self):
+        token = self.station_login(self.client_from(WAREHOUSE_IP)).cookies[SESSION_COOKIE_NAME]
+        outside = self.client_from(OUTSIDE_IP)
+        outside.cookies.set(SESSION_COOKIE_NAME, token)
+
+        with self.assertLogs("backend.app.main", level="WARNING") as captured:
+            for _ in range(3):
+                self.assertEqual(outside.get("/api/v1/auth/check").status_code, 401)
+        self.assertEqual(len(captured.records), 1)
+        self.assertIn(OUTSIDE_IP, captured.output[0])
+        self.assertNotIn(token, captured.output[0])
+
+    def test_denied_log_state_is_bounded_and_drops_oldest(self):
+        with mock.patch.object(backend_main, "STATION_DENIED_LOG_MAX_ENTRIES", 3):
+            with self.assertLogs("backend.app.main", level="WARNING"):
+                for index in range(5):
+                    backend_main.log_station_refusal(f"198.51.100.{index}", "вход")
+
+        self.assertEqual(list(backend_main.station_denied_log_times), ["198.51.100.2", "198.51.100.3", "198.51.100.4"])
+
+    def test_startup_logs_station_state_once(self):
+        def started(**overrides):
+            with mock.patch.object(backend_main, "settings", station_settings(**overrides)):
+                with mock.patch.object(backend_main, "validate_backend_settings"), \
+                        mock.patch.object(backend_main, "start_device_pairing_sweeper"):
+                    with self.assertLogs("backend.app.main", level="INFO") as captured:
+                        backend_main.validate_startup_configuration()
+            return captured.output
+
+        enabled = started()
+        self.assertEqual(len(enabled), 1)
+        self.assertIn("станция включена: 2 сетей", enabled[0])
+        self.assertNotIn(WAREHOUSE_IP, enabled[0])
+        for overrides in (
+            {"TAKSKLAD_WAREHOUSE_CIDRS": ""},
+            {"TAKSKLAD_IDENTITY_AUTH_ENABLED": "false"},
+        ):
+            with self.subTest(overrides=overrides):
+                disabled = started(**overrides)
+                self.assertEqual(len(disabled), 1)
+                self.assertIn("станция выключена", disabled[0])
 
     def test_station_session_is_rejected_outside_warehouse(self):
         warehouse = self.client_from(WAREHOUSE_IP)
