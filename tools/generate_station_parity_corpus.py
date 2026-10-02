@@ -24,6 +24,8 @@ ROOT = Path(__file__).resolve().parents[1]
 CORPUS_PATH = ROOT / "frontend" / "src" / "station" / "__fixtures__" / "parity-corpus.json"
 TODAY = datetime(2026, 10, 2, 9, 0, 0)
 LATE = datetime(2026, 10, 2, 23, 59, 59)
+# The product mismatch message prints the program version: pinned, so a release does not stale the corpus
+CORPUS_APP_VERSION = "0.0.0-corpus"
 
 RED = "Chapman RED OP 20"
 UNIT_CODE = {
@@ -679,7 +681,9 @@ def first_incomplete_cases():
 def build_corpus():
     from taksklad import desktop_scan_rules
 
-    with mock.patch.object(desktop_scan_rules, "datetime", fixed_datetime_class(TODAY)):
+    with mock.patch.object(desktop_scan_rules, "datetime", fixed_datetime_class(TODAY)), mock.patch.object(
+        desktop_scan_rules, "APP_VERSION", CORPUS_APP_VERSION
+    ):
         return {
             "today": TODAY.isoformat(),
             "today_late": LATE.isoformat(),

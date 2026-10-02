@@ -9,6 +9,7 @@ import json
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 from taksklad.kiz_blocklist import BLOCKED_KIZ_CODES
 from tools.generate_station_parity_corpus import main
@@ -23,6 +24,15 @@ class StationParityCorpusTests(unittest.TestCase):
             status = main(["--check"])
         self.assertEqual(status, 0, "regenerate: PYTHONPATH=. python tools/generate_station_parity_corpus.py")
         self.assertIn("STATION_PARITY_CORPUS_OK", output.getvalue())
+
+    def test_corpus_does_not_change_when_the_program_version_does(self):
+        # the product mismatch message prints the version; a release must not turn the freshness check red
+        from taksklad import desktop_scan_rules
+
+        output = io.StringIO()
+        with mock.patch.object(desktop_scan_rules, "APP_VERSION", "9.9.9"), redirect_stdout(output):
+            status = main(["--check"])
+        self.assertEqual(status, 0, "build_corpus must pin APP_VERSION to a fixed value")
 
     def test_no_raw_blocklist_code_anywhere_in_the_station_tree(self):
         # the browser bundle is public: only digests of the blocked codes may be there, in the corpus or in the code
