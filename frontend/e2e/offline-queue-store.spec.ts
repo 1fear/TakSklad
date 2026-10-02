@@ -57,7 +57,8 @@ async function runInQueue<T>(page: Page, dbName: string, script: QueueScript): P
 
 test.beforeEach(async ({ page }) => {
   await installSyntheticApi(page);
-  await page.goto("/");
+  // Any same-origin page that stays put will do; "/" now redirects an admin session to /admin.
+  await page.goto("/admin");
 });
 
 test("очередь переживает перезагрузку вкладки", async ({ page }) => {
@@ -214,7 +215,7 @@ test("две вкладки одного origin видят одну очеред
 
   const second = await context.newPage();
   await installSyntheticApi(second);
-  await second.goto("/");
+  await second.goto("/admin");
 
   const seenBySecondTab = await runInQueue<string[]>(second, dbName, `
     return (await store.listPending()).map((item) => item.code);

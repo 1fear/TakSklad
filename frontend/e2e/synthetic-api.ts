@@ -466,6 +466,10 @@ export async function installSyntheticApi(page: Page, options: SyntheticApiOptio
       state.loggedIn = true;
       return json(route, syntheticUser);
     }
+    // The synthetic browser is never on the warehouse network, so the station sign-in is always refused.
+    if (path === "/api/v1/auth/station") {
+      return json(route, { detail: { code: "station_network_denied" } }, 403);
+    }
     if (path === "/api/v1/auth/logout") {
       state.loggedIn = false;
       return json(route, { ...syntheticUser, authenticated: false });

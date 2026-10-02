@@ -2,17 +2,30 @@ import { describe, expect, it } from "vitest";
 
 import {
   accessibleAdminTabsForPermissions,
+  alternateSurfacePath,
   hasAdminSurfaceAccess,
   hasOperatorSurfaceAccess,
   resolveAppSurface,
+  surfacePath,
+  surfaceTitle,
 } from "../workspace/surface";
 
 describe("surface helper characterization", () => {
-  it("routes root to operator and /admin paths to admin", () => {
-    expect(resolveAppSurface("/")).toBe("operator");
-    expect(resolveAppSurface("/orders")).toBe("operator");
+  it("routes /admin and below to admin and everything else to the station", () => {
+    expect(resolveAppSurface("/")).toBe("station");
+    expect(resolveAppSurface("/orders")).toBe("station");
+    expect(resolveAppSurface("/administrator")).toBe("station");
     expect(resolveAppSurface("/admin")).toBe("admin");
     expect(resolveAppSurface("/admin/incidents")).toBe("admin");
+  });
+
+  it("maps each surface to its own path, the other surface and a title", () => {
+    expect(surfacePath("station")).toBe("/");
+    expect(surfacePath("admin")).toBe("/admin");
+    expect(alternateSurfacePath("station")).toBe("/admin");
+    expect(alternateSurfacePath("admin")).toBe("/");
+    expect(surfaceTitle("station")).toBe("Складская web-панель");
+    expect(surfaceTitle("admin")).toBe("Панель управления");
   });
 
   it("fails closed for operator access without warehouse:read", () => {

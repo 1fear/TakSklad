@@ -1,0 +1,196 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import type { AuthSession } from "../../api/auth";
+import { ApiRequestError } from "../../api/core";
+import { anonymousSession, authenticatedSession } from "../../__tests__/fixtures";
+import {
+  STATION_NETWORK_DENIED_CODE,
+  STATION_RETRY_MIN_MS,
+  resolveStationEntry,
+  retryDelayMs,
+  runStationEntry,
+  type StationEntryDeps,
+  type StationEntryState,
+} from "../entry/stationEntryMachine";
+
+const stationSession: AuthSession = {
+  authenticated: true,
+  login: "warehouse-station",
+  role: "station",
+  permissions: ["warehouse:read", "warehouse:write", "reports:read"],
+  expires_at: "2030-01-01T00:00:00Z",
+  csrf_token: "station-csrf",
+};
+
+function deps(overrides: Partial<StationEntryDeps> = {}): StationEntryDeps {
+  return {
+    getSession: vi.fn(async () => anonymousSession),
+    login: vi.fn(async () => stationSession),
+    acquireLock: vi.fn(async () => true),
+    ...overrides,
+  };
+}
+
+function apiError(status: number, code = "", retryAfterSeconds = 0) {
+  return new ApiRequestError(status, "", "", code, retryAfterSeconds);
+}
+
+describe("resolveStationEntry", () => {
+  it("opens the station when the session already belongs to it, without signing in", async () => {
+    const d = deps({ getSession: vi.fn(async () => stationSession) });
+
+    await expect(resolveStationEntry(d)).resolves.toEqual({
+      kind: "ready",
+      session: stationSession,
+      csrfToken: "station-csrf",
+    });
+    expect(d.login).not.toHaveBeenCalled();
+  });
+
+  it.each(["admin", "operator", "warehouse", ""])("sends role %j to /admin and never replaces its cookie", async (role) => {
+    const d = deps({ getSession: vi.fn(async () => ({ ...authenticatedSession, role })) });
+
+    await expect(resolveStationEntry(d)).resolves.toEqual({ kind: "redirect-admin" });
+    expect(d.login).not.toHaveBeenCalled();
+  });
+
+  it("signs in when there is no session and opens the station on 200", async () => {
+    const d = deps();
+
+    await expect(resolveStationEntry(d)).resolves.toEqual({
+      kind: "ready",
+      session: stationSession,
+      csrfToken: "station-csrf",
+    });
+    expect(d.login).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends the browser to /admin when the network is not the warehouse", async () => {
+    const d = deps({ login: vi.fn(async () => { throw apiError(403, STATION_NETWORK_DENIED_CODE); }) });
+
+    await expect(resolveStationEntry(d)).resolves.toEqual({ kind: "redirect-admin" });
+  });
+
+  it.each([
+    ["403 with another code", apiError(403, "origin_denied")],
+    ["500", apiError(500)],
+    ["503 station user unavailable", apiError(503)],
+    ["network error", new TypeError("Failed to fetch")],
+    ["429 without Retry-After", apiError(429)],
+  ])("goes offline and retries in 30 s on %s", async (_name, failure) => {
+    const d = deps({ login: vi.fn(async () => { throw failure; }) });
+
+    await expect(resolveStationEntry(d)).resolves.toEqual({ kind: "offline", retryInMs: STATION_RETRY_MIN_MS });
+  });
+
+  it("honours a longer Retry-After on 429 and ignores a shorter one", async () => {
+    const longer = deps({ login: vi.fn(async () => { throw apiError(429, "", 120); }) });
+    const shorter = deps({ login: vi.fn(async () => { throw apiError(429, "", 5); }) });
+
+    await expect(resolveStationEntry(longer)).resolves.toEqual({ kind: "offline", retryInMs: 120_000 });
+    await expect(resolveStationEntry(shorter)).resolves.toEqual({ kind: "offline", retryInMs: 30_000 });
+  });
+
+  it("goes offline when the session check itself fails, without signing in", async () => {
+    const d = deps({ getSession: vi.fn(async () => { throw new TypeError("Failed to fetch"); }) });
+
+    await expect(resolveStationEntry(d)).resolves.toEqual({ kind: "offline", retryInMs: 30_000 });
+    expect(d.login).not.toHaveBeenCalled();
+  });
+
+  it("does not build a screen on a 200 that is not a station session", async () => {
+    const d = deps({ login: vi.fn(async () => ({ ...stationSession, role: "admin" })) });
+
+    await expect(resolveStationEntry(d)).resolves.toEqual({ kind: "offline", retryInMs: 30_000 });
+  });
+});
+
+describe("retryDelayMs", () => {
+  it("only lets Retry-After lengthen a 429", () => {
+    expect(retryDelayMs(apiError(503, "", 600))).toBe(30_000);
+    expect(retryDelayMs(apiError(429, "", 600))).toBe(600_000);
+    expect(retryDelayMs(new Error("x"))).toBe(30_000);
+  });
+});
+
+describe("runStationEntry", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function recorder() {
+    const states: StationEntryState[] = [];
+    return { states, publish: (state: StationEntryState) => states.push(state) };
+  }
+
+  it("publishes checking, then ready, and takes the station lock once", async () => {
+    const { states, publish } = recorder();
+    const d = deps();
+
+    await runStationEntry(d, publish, new AbortController().signal);
+
+    expect(states.map((state) => state.kind)).toEqual(["checking", "ready"]);
+    expect(d.acquireLock).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows duplicate-tab and never reaches ready when another window holds the lock", async () => {
+    const { states, publish } = recorder();
+    const d = deps({ acquireLock: vi.fn(async () => false) });
+
+    await runStationEntry(d, publish, new AbortController().signal);
+
+    expect(states.map((state) => state.kind)).toEqual(["checking", "duplicate-tab"]);
+  });
+
+  it("does not touch the lock for /admin or while offline", async () => {
+    const { publish } = recorder();
+    const denied = deps({ login: vi.fn(async () => { throw apiError(403, STATION_NETWORK_DENIED_CODE); }) });
+
+    await runStationEntry(denied, publish, new AbortController().signal);
+
+    expect(denied.acquireLock).not.toHaveBeenCalled();
+  });
+
+  it("waits out the retry delay while offline and then opens the station", async () => {
+    const { states, publish } = recorder();
+    const sleeps: number[] = [];
+    const login = vi.fn<StationEntryDeps["login"]>()
+      .mockRejectedValueOnce(apiError(503))
+      .mockRejectedValueOnce(apiError(429, "", 90))
+      .mockResolvedValueOnce(stationSession);
+
+    await runStationEntry(
+      deps({ login }),
+      publish,
+      new AbortController().signal,
+      async (ms) => { sleeps.push(ms); },
+    );
+
+    expect(states.map((state) => state.kind)).toEqual(["checking", "offline", "offline", "ready"]);
+    expect(sleeps).toEqual([30_000, 90_000]);
+    expect(login).toHaveBeenCalledTimes(3);
+  });
+
+  it("really sleeps 30 s between attempts and stops when the window goes away", async () => {
+    vi.useFakeTimers();
+    const { states, publish } = recorder();
+    const controller = new AbortController();
+    const login = vi.fn(async () => { throw apiError(503); });
+
+    const running = runStationEntry(deps({ login }), publish, controller.signal);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(login).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(login).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(login).toHaveBeenCalledTimes(2);
+
+    controller.abort();
+    await running;
+    await vi.advanceTimersByTimeAsync(120_000);
+
+    expect(login).toHaveBeenCalledTimes(2);
+    expect(states.at(-1)?.kind).toBe("offline");
+  });
+});

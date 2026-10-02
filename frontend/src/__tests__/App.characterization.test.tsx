@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { delay, http, HttpResponse } from "msw";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../App";
 import {
@@ -21,8 +21,27 @@ beforeEach(() => {
   window.history.pushState({}, "", "/");
 });
 
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 function setPath(pathname: string) {
   window.history.pushState({}, "", pathname);
+}
+
+const stationSession = {
+  ...authenticatedSession,
+  login: "warehouse-station",
+  role: "station",
+  permissions: ["warehouse:read", "warehouse:write", "reports:read"],
+  csrf_token: "station-csrf",
+};
+
+/** jsdom cannot navigate: swap location for a copy whose replace is observable. */
+function stubLocationReplace() {
+  const replace = vi.fn();
+  vi.stubGlobal("location", { ...window.location, replace });
+  return replace;
 }
 
 async function renderAuthenticatedAdminApp() {
@@ -42,11 +61,12 @@ describe("login and session characterization", () => {
         return HttpResponse.json(anonymousSession);
       }),
     );
+    setPath("/admin");
 
     render(<App />);
 
     expect(screen.getByText("Загружаем доступ...")).toBeInTheDocument();
-    expect(await screen.findByRole("heading", { name: "Вход в складскую web-панель" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Вход в панель управления" })).toBeInTheDocument();
     expect(screen.getByLabelText("Телефон")).toHaveAttribute("autocomplete", "username");
     expect(screen.getByLabelText("Пароль")).toHaveAttribute("autocomplete", "current-password");
   });
@@ -59,9 +79,10 @@ describe("login and session characterization", () => {
         { status: 401, statusText: "Unauthorized" },
       )),
     );
+    setPath("/admin");
     const user = userEvent.setup();
     render(<App />);
-    await screen.findByRole("heading", { name: "Вход в складскую web-панель" });
+    await screen.findByRole("heading", { name: "Вход в панель управления" });
 
     await user.type(screen.getByLabelText("Телефон"), "+998 90 111 22 33");
     await user.type(screen.getByLabelText("Пароль"), "synthetic-password");
@@ -108,40 +129,74 @@ describe("login and session characterization", () => {
     expect(await screen.findByText(firstAdminRow.client)).toBeInTheDocument();
   });
 
-  it("chooses the operator workspace on root and keeps the admin link visible", async () => {
-    const user = userEvent.setup();
+  it("opens the station on root for a station session and never mounts the old operator screen", async () => {
+    server.use(http.get("/api/v1/auth/session", () => HttpResponse.json(stationSession)));
+
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Операторский складской контур" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Склад · PostgreSQL" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Панель управления" })).toHaveAttribute("href", "/admin");
-
-    await user.click(screen.getByRole("button", { name: "Обновить" }));
-    expect(await screen.findByText("Активные заказы обновлены: 1")).toBeInTheDocument();
+    expect(await screen.findByTestId("station-app")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Операторский складской контур" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Вход в складскую web-панель" })).not.toBeInTheDocument();
   });
 
-  it("links to /admin when a warehouse user has an imports-only admin section", async () => {
-    server.use(http.get("/api/v1/auth/session", () => HttpResponse.json({
-      ...authenticatedSession,
-      permissions: ["warehouse:read", "imports:read"],
-    })));
+  it("signs the station in on root when the warehouse network allows it", async () => {
+    server.use(
+      http.get("/api/v1/auth/session", () => HttpResponse.json(anonymousSession)),
+      http.post("/api/v1/auth/station", () => HttpResponse.json(stationSession)),
+    );
 
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Операторский складской контур" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Панель управления" })).toHaveAttribute("href", "/admin");
+    expect(await screen.findByTestId("station-app")).toBeInTheDocument();
   });
 
-  it("shows an access-denied link to /admin when warehouse:read is missing on root", async () => {
-    server.use(http.get("/api/v1/auth/session", () => HttpResponse.json({
-      ...authenticatedSession,
-      permissions: authenticatedSession.permissions.filter((permission) => permission !== "warehouse:read"),
-    })));
+  it("sends an unauthenticated root outside the warehouse network to /admin", async () => {
+    server.use(http.get("/api/v1/auth/session", () => HttpResponse.json(anonymousSession)));
+    const replace = stubLocationReplace();
 
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Нет доступа к складской web-панели" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Открыть панель управления" })).toHaveAttribute("href", "/admin");
+    await waitFor(() => expect(replace).toHaveBeenCalledWith("/admin"));
+    expect(screen.queryByTestId("station-app")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Телефон")).not.toBeInTheDocument();
+  });
+
+  it("sends an admin session on root to /admin without signing the station in over it", async () => {
+    let stationLogins = 0;
+    server.use(http.post("/api/v1/auth/station", () => {
+      stationLogins += 1;
+      return HttpResponse.json(stationSession);
+    }));
+    const replace = stubLocationReplace();
+
+    render(<App />);
+
+    await waitFor(() => expect(replace).toHaveBeenCalledWith("/admin"));
+    expect(stationLogins).toBe(0);
+  });
+
+  it("shows the station session on /admin a link back to the station", async () => {
+    server.use(http.get("/api/v1/auth/session", () => HttpResponse.json(stationSession)));
+    setPath("/admin");
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Нет доступа к панели управления" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Открыть складская web-панель" })).toHaveAttribute("href", "/");
+  });
+
+  it("offers no station link to another role without admin sections, since / would send it back", async () => {
+    server.use(http.get("/api/v1/auth/session", () => HttpResponse.json({
+      ...authenticatedSession,
+      permissions: ["warehouse:read"],
+    })));
+    setPath("/admin");
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Нет доступа к панели управления" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Открыть складская web-панель" })).not.toBeInTheDocument();
+    expect(screen.getByText(/Обратитесь к администратору склада/)).toBeInTheDocument();
   });
 });
 
