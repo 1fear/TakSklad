@@ -89,6 +89,7 @@ class Settings:
     skladbot_daily_report_max_attempts: int
     skladbot_daily_report_grace_minutes: int
     skladbot_daily_report_lookback_days: int
+    warehouse_cidrs: tuple[str, ...] = ()
 
     @property
     def api_auth_enabled(self):
@@ -196,6 +197,7 @@ def load_settings(environ=None):
             default=False,
         ),
         trusted_proxy_cidrs=parse_csv(environ.get("TAKSKLAD_TRUSTED_PROXY_CIDRS", "")),
+        warehouse_cidrs=parse_csv(environ.get("TAKSKLAD_WAREHOUSE_CIDRS", "")),
         web_login_limiter_max_entries=max(
             1,
             parse_int(environ.get("TAKSKLAD_WEB_LOGIN_LIMITER_MAX_ENTRIES"), 10000),
