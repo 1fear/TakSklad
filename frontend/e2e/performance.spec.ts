@@ -350,6 +350,9 @@ test("@performance keyboard-only login, navigation, selection, action, dropdown 
   await page.keyboard.press("Space");
   await expect(orderSelector).toBeChecked();
 
+  // "/" is the station now and the old operator screen is no longer mounted from it: the keyboard steps
+  // that lived here (the "Склад · PostgreSQL" heading, the "КИЗ" field, typing into the "WH-R-..." return
+  // lookup and the `return lookup` matrix step) return for the station window in a later plan.
   const logout = page.getByRole("button", { name: "Выйти" });
   await focusByTab(logout, "logout");
   await page.keyboard.press("Enter");
