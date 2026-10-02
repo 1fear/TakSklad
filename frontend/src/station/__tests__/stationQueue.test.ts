@@ -16,6 +16,9 @@ import {
   type StationQueueOptions,
 } from "../queue/stationQueue";
 
+// Captured at load, before any test installs fake timers: an unhandled rejection is reported on a real macrotask.
+const realSetImmediate = globalThis.setImmediate;
+
 const CODE_A = "0104006396053947217AAAAAAAAAA";
 const CODE_B = "0104006396053947217BBBBBBBBBB";
 const CODE_C = "0104006396053947217CCCCCCCCCC";
@@ -156,6 +159,30 @@ describe("cadence", () => {
 
     expect(outcomes.map((outcome) => outcome.ok)).toEqual([false, true]);
   });
+
+  it("keeps cycling, and leaves no unhandled rejection, when the cycle handler throws", async () => {
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    try {
+      let calls = 0;
+      const { queue } = build({
+        onCycle: () => {
+          calls += 1;
+          if (calls === 1) throw new Error("handler broke");
+        },
+      });
+
+      queue.start();
+      await vi.advanceTimersByTimeAsync(STATION_SYNC_FIRST_RUN_MS);
+      await new Promise<void>((resolve) => realSetImmediate(resolve));
+      expect(unhandled).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(STATION_SYNC_INTERVAL_MS);
+      expect(calls).toBe(2);
+    } finally {
+      process.off("unhandledRejection", unhandled);
+    }
+  });
 });
 
 describe("flushItem", () => {
@@ -256,10 +283,17 @@ describe("flushOrder", () => {
 });
 
 describe("delivered state", () => {
-  it("is true for codes the last API load listed on the item", () => {
-    const { queue } = build();
+  // The queue's own clock: deliveries are stamped with it and a load is compared by it.
+  let clock = 1_000_000;
+  beforeEach(() => {
+    clock = 1_000_000;
+  });
+  const buildAt = (overrides: Partial<StationQueueOptions> = {}) => build({ now: () => clock, ...overrides });
 
-    queue.recordLoadedOrders([orderWithCodes("item-1", [CODE_A])]);
+  it("is true for codes the last API load listed on the item", () => {
+    const { queue } = buildAt();
+
+    queue.recordLoadedOrders([orderWithCodes("item-1", [CODE_A])], clock);
 
     expect(queue.isDelivered("item-1", CODE_A)).toBe(true);
     expect(queue.isDelivered("item-1", ` ${CODE_A}\n`)).toBe(true);
@@ -268,8 +302,8 @@ describe("delivered state", () => {
   });
 
   it("is never true for a scan that is only queued, and turns true once a pass synced it", async () => {
-    const { queue } = build();
-    queue.recordLoadedOrders([orderWithCodes("item-1", [])]);
+    const { queue } = buildAt();
+    queue.recordLoadedOrders([orderWithCodes("item-1", [])], clock);
 
     await queue.enqueueScan({ orderId: "order-1", orderItemId: "item-1", code: CODE_B });
     expect(queue.isDelivered("item-1", CODE_B)).toBe(false);
@@ -281,8 +315,8 @@ describe("delivered state", () => {
   it("stays false when the server did not take the scan", async () => {
     const network = fakeServer(() => http(503));
     const refusal = fakeServer(() => http(409, "kiz_already_owned"));
-    const failing = build({ send: network.send });
-    const refused = build({ send: refusal.send });
+    const failing = buildAt({ send: network.send });
+    const refused = buildAt({ send: refusal.send });
 
     for (const { queue } of [failing, refused]) {
       await queue.enqueueScan({ orderId: "order-1", orderItemId: "item-1", code: CODE_B });
@@ -293,7 +327,7 @@ describe("delivered state", () => {
 
   it("counts a 409 duplicate acknowledgement as delivered: the server already holds the code", async () => {
     const server = fakeServer(() => http(409, "scan_duplicate_ack"));
-    const { queue } = build({ send: server.send });
+    const { queue } = buildAt({ send: server.send });
     await queue.enqueueScan({ orderId: "order-1", orderItemId: "item-1", code: CODE_B });
 
     const result = await queue.flushItem("item-1");
@@ -303,7 +337,7 @@ describe("delivered state", () => {
   });
 
   it("is marked by the cycle and the whole-queue pass too", async () => {
-    const { queue } = build();
+    const { queue } = buildAt();
     await queue.enqueueScan({ orderId: "order-1", orderItemId: "item-1", code: CODE_A });
     await queue.enqueueScan({ orderId: "order-1", orderItemId: "item-2", code: CODE_B });
 
@@ -313,20 +347,47 @@ describe("delivered state", () => {
     expect(queue.isDelivered("item-2", CODE_B)).toBe(true);
   });
 
-  it("starts over with every API load", async () => {
-    const { queue } = build();
+  it("drops a delivery made before the load started when the loaded list does not have the code", async () => {
+    const { queue } = buildAt();
     await queue.enqueueScan({ orderId: "order-1", orderItemId: "item-1", code: CODE_B });
     await queue.flushItem("item-1");
 
-    queue.recordLoadedOrders([orderWithCodes("item-1", [CODE_A])]);
+    clock += 1_000;
+    queue.recordLoadedOrders([orderWithCodes("item-1", [CODE_A])], clock);
 
     expect(queue.isDelivered("item-1", CODE_B)).toBe(false);
     expect(queue.isDelivered("item-1", CODE_A)).toBe(true);
   });
 
+  it("keeps a delivery a late load answer cannot know about: the load started before the pass delivered", async () => {
+    const { queue } = buildAt();
+    queue.recordLoadedOrders([orderWithCodes("item-1", [])], clock);
+    const loadStartedAt = clock;
+
+    // The load is in flight; a pass delivers the code meanwhile; then the old answer arrives.
+    clock += 5_000;
+    await queue.enqueueScan({ orderId: "order-1", orderItemId: "item-1", code: CODE_B });
+    await queue.flushItem("item-1");
+    expect(queue.isDelivered("item-1", CODE_B)).toBe(true);
+    clock += 3_000;
+    queue.recordLoadedOrders([orderWithCodes("item-1", [])], loadStartedAt);
+
+    expect(queue.isDelivered("item-1", CODE_B)).toBe(true);
+  });
+
+  it("keeps a delivery stamped at the very moment the load started", async () => {
+    const { queue } = buildAt();
+    await queue.enqueueScan({ orderId: "order-1", orderItemId: "item-1", code: CODE_B });
+    await queue.flushItem("item-1");
+
+    queue.recordLoadedOrders([orderWithCodes("item-1", [])], clock);
+
+    expect(queue.isDelivered("item-1", CODE_B)).toBe(true);
+  });
+
   it("withdraws the mark when a code is scanned again, until the server takes it again", async () => {
-    const { queue } = build();
-    queue.recordLoadedOrders([orderWithCodes("item-1", [CODE_A])]);
+    const { queue } = buildAt();
+    queue.recordLoadedOrders([orderWithCodes("item-1", [CODE_A])], clock);
 
     await queue.enqueueScan({ orderId: "order-1", orderItemId: "item-1", code: CODE_A });
     expect(queue.isDelivered("item-1", CODE_A)).toBe(false);

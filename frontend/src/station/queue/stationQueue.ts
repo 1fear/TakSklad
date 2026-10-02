@@ -88,14 +88,21 @@ export function createStationQueue(options: StationQueueOptions) {
     },
   };
 
-  // Delivered: codes the last API load listed on the item, plus codes a pass synced since that load.
+  // Delivered: codes the last API load listed on the item, plus codes a pass synced since, with the time (queue clock)
+  // the pass got the server's answer: a load that started before that moment cannot know about the delivery.
   let loadedCodes = new Map<string, Set<string>>();
-  let syncedCodes = new Map<string, Set<string>>();
+  let syncedCodes = new Map<string, Map<string, number>>();
 
-  function remember(into: Map<string, Set<string>>, orderItemId: string, code: string) {
-    const codes = into.get(orderItemId) ?? new Set<string>();
+  function rememberLoaded(orderItemId: string, code: string) {
+    const codes = loadedCodes.get(orderItemId) ?? new Set<string>();
     codes.add(normalizeKizCode(code));
-    into.set(orderItemId, codes);
+    loadedCodes.set(orderItemId, codes);
+  }
+
+  function rememberSynced(orderItemId: string, code: string) {
+    const codes = syncedCodes.get(orderItemId) ?? new Map<string, number>();
+    codes.set(normalizeKizCode(code), now());
+    syncedCodes.set(orderItemId, codes);
   }
 
   function forget(orderItemId: string, code: string) {
@@ -147,7 +154,7 @@ export function createStationQueue(options: StationQueueOptions) {
           if (verdict !== "synced") throw error;
           // 409 duplicate ack: the server already holds the code, which is delivery all the same.
         }
-        remember(syncedCodes, event.orderItemId, event.code);
+        rememberSynced(event.orderItemId, event.code);
         delivered.push(event.code);
       },
       sendComplete: async (event) => {
@@ -189,7 +196,11 @@ export function createStationQueue(options: StationQueueOptions) {
         (result) => ({ ok: true, result }),
         (error: unknown) => ({ ok: false, error }),
       );
-      onCycle?.(outcome);
+      try {
+        onCycle?.(outcome);
+      } catch {
+        // The window's handler failing must not turn into an unhandled rejection or stop the chain.
+      }
     } finally {
       plan(STATION_SYNC_INTERVAL_MS);
     }
@@ -241,18 +252,32 @@ export function createStationQueue(options: StationQueueOptions) {
       flush({ orderItemIds: new Set(orderItemIds), orderIds: new Set([orderId]) }),
 
     /**
-     * Call with every full API load of the order list. The loaded codes become the delivered
-     * baseline. A pass that finishes while the load is in flight is forgotten here, which can only
-     * show a delivered code as queued, never the reverse.
+     * Call with every full API load of the order list, and the moment the load was started (the queue's clock,
+     * `Date.now()` unless the queue got another `now`). The loaded codes become the delivered baseline.
+     * A delivery made at or after `loadStartedAt` stays: the answer may well predate it. An earlier one is dropped,
+     * the server would have listed the code if it holds it.
+     * The mistake to avoid is a delivered code shown as "in the queue": the "Position codes" window would cancel it
+     * locally while the scan stays on the server (spec section 3 and section 7, point 14). The opposite mistake,
+     * "delivered" kept for a code cancelled on another PC, is harmless.
      */
-    recordLoadedOrders(orders: Order[]) {
+    recordLoadedOrders(orders: Order[], loadStartedAt: number) {
       loadedCodes = new Map();
-      syncedCodes = new Map();
       for (const order of orders) {
         for (const item of order.items) {
-          for (const code of item.scan_codes) remember(loadedCodes, item.id, code);
+          for (const code of item.scan_codes) rememberLoaded(item.id, code);
         }
       }
+
+      const keptSynced = new Map<string, Map<string, number>>();
+      for (const [orderItemId, codes] of syncedCodes) {
+        for (const [code, deliveredAt] of codes) {
+          if (deliveredAt < loadStartedAt) continue;
+          const kept = keptSynced.get(orderItemId) ?? new Map<string, number>();
+          kept.set(code, deliveredAt);
+          keptSynced.set(orderItemId, kept);
+        }
+      }
+      syncedCodes = keptSynced;
     },
     isDelivered(orderItemId: string, code: string): boolean {
       const normalized = normalizeKizCode(code);
