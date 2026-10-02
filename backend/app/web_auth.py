@@ -16,6 +16,7 @@ from .access_policy import (
     ROLE_DENIED,
     ROLE_LOGISTICS_SLOTS,
     ROLE_OPERATOR,
+    ROLE_STATION,
     permissions_for_role,
 )
 
@@ -175,7 +176,7 @@ def normalize_session_role(settings, payload):
 
 def normalize_role(value):
     role = str(value or "").strip().casefold().replace("-", "_")
-    return role if role in {ROLE_ADMIN, ROLE_LOGISTICS_SLOTS, ROLE_OPERATOR} else ROLE_DENIED
+    return role if role in {ROLE_ADMIN, ROLE_LOGISTICS_SLOTS, ROLE_OPERATOR, ROLE_STATION} else ROLE_DENIED
 
 
 def role_permissions(role):

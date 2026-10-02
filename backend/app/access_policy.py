@@ -8,6 +8,7 @@ from dataclasses import dataclass
 ROLE_ADMIN = "admin"
 ROLE_LOGISTICS_SLOTS = "logistics_slots"
 ROLE_OPERATOR = "operator"
+ROLE_STATION = "station"
 ROLE_DENIED = "denied"
 
 PERMISSION_WAREHOUSE_READ = "warehouse:read"
@@ -50,6 +51,12 @@ ROLE_PERMISSION_MATRIX = {
         PERMISSION_CLIENT_POINTS_READ,
         PERMISSION_CLIENT_POINTS_WRITE,
         PERMISSION_LOGISTICS_READ,
+    }),
+    # Складская станция в браузере: только склад и отчёт смены, вход только из сети склада
+    ROLE_STATION: frozenset({
+        PERMISSION_WAREHOUSE_READ,
+        PERMISSION_WAREHOUSE_WRITE,
+        PERMISSION_REPORT_READ,
     }),
 }
 
@@ -97,6 +104,7 @@ def _protected(
 
 ROUTE_POLICIES: dict[tuple[str, str], RoutePolicy] = {
     ("POST", "/api/v1/auth/login"): _public(),
+    ("POST", "/api/v1/auth/station"): _public(),
     ("POST", "/api/v1/auth/desktop-bootstrap"): _public(),
     ("POST", "/api/v1/auth/desktop-pairing/redeem"): _public(),
     ("POST", "/api/v1/auth/desktop-pairing/{pairing_id}/ack"): _protected(

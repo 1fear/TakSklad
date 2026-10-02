@@ -124,6 +124,7 @@ class PostgresRbacAuditTests(unittest.TestCase):
             "admin": 64,
             "operator": 64,
             "logistics_slots": 64,
+            "station": 64,
         })
         self.assertTrue(all(status == 200 for status in expected["admin"]))
         self.assertIn(403, expected["operator"])

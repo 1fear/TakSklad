@@ -18,6 +18,7 @@ from backend.app.access_policy import (
     ROLE_LOGISTICS_SLOTS,
     ROLE_OPERATOR,
     ROLE_PERMISSION_MATRIX,
+    ROLE_STATION,
     ROUTE_POLICIES,
     SAFE_METHODS,
 )
@@ -38,7 +39,8 @@ class BackendRbacPolicyTests(unittest.TestCase):
         }
 
         self.assertEqual(actual, set(ROUTE_POLICIES))
-        self.assertEqual(len(actual), 70)
+        self.assertEqual(len(actual), 71)
+        self.assertIn(("POST", "/api/v1/auth/station"), actual)
         self.assertIn(("POST", "/api/v1/auth/desktop-bootstrap"), actual)
         self.assertIn(("GET", "/api/v1/returns/auth-canary/acceptance"), actual)
         self.assertIn(("GET", "/api/v1/returns/auth-canary/desktop"), actual)
@@ -60,7 +62,11 @@ class BackendRbacPolicyTests(unittest.TestCase):
         self.assertEqual(unsafe_safe_routes, [])
 
     def test_sensitive_admin_surfaces_are_not_granted_to_restricted_roles(self):
-        restricted_permissions = ROLE_PERMISSION_MATRIX[ROLE_OPERATOR] | ROLE_PERMISSION_MATRIX[ROLE_LOGISTICS_SLOTS]
+        restricted_permissions = (
+            ROLE_PERMISSION_MATRIX[ROLE_OPERATOR]
+            | ROLE_PERMISSION_MATRIX[ROLE_LOGISTICS_SLOTS]
+            | ROLE_PERMISSION_MATRIX[ROLE_STATION]
+        )
         sensitive_policies = [policy for policy in ROUTE_POLICIES.values() if policy.sensitive]
 
         self.assertTrue(sensitive_policies)
@@ -69,11 +75,16 @@ class BackendRbacPolicyTests(unittest.TestCase):
             self.assertIn(policy.web_permission, {PERMISSION_ADMIN_READ, PERMISSION_ADMIN_WRITE, "diagnostics:read"})
 
     def test_role_matrix_is_complete_and_unknown_roles_fail_closed(self):
-        self.assertEqual(set(ROLE_PERMISSION_MATRIX), {ROLE_ADMIN, ROLE_OPERATOR, ROLE_LOGISTICS_SLOTS})
+        self.assertEqual(set(ROLE_PERMISSION_MATRIX), {ROLE_ADMIN, ROLE_OPERATOR, ROLE_LOGISTICS_SLOTS, ROLE_STATION})
         self.assertEqual(set(role_permissions(ROLE_ADMIN)), set(ALL_PERMISSIONS))
         self.assertIn(PERMISSION_ADMIN_WRITE, role_permissions(ROLE_ADMIN))
         self.assertNotIn(PERMISSION_ADMIN_READ, role_permissions(ROLE_OPERATOR))
         self.assertNotIn(PERMISSION_ADMIN_READ, role_permissions(ROLE_LOGISTICS_SLOTS))
+        self.assertEqual(
+            set(role_permissions(ROLE_STATION)),
+            {"warehouse:read", "warehouse:write", "reports:read"},
+        )
+        self.assertEqual(normalize_role("station"), ROLE_STATION)
         self.assertEqual(normalize_role("unexpected-superuser"), ROLE_DENIED)
         self.assertEqual(role_permissions("unexpected-superuser"), ())
 
@@ -173,7 +184,7 @@ class BackendRbacPolicyTests(unittest.TestCase):
                     self.assertEqual(anonymous.exception.status_code, 401)
                 decisions += 1
 
-        self.assertEqual(decisions, 384)
+        self.assertEqual(decisions, 448)
 
     def test_day_report_accepts_desktop_and_legacy_report_reader_scopes(self):
         request = SimpleNamespace(

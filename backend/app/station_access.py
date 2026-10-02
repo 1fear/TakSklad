@@ -4,6 +4,14 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import uuid
+from datetime import datetime, timezone
+
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+
+from .access_policy import ROLE_STATION
+from .models import User
 
 STATION_USERNAME = "warehouse-station"
 STATION_NETWORK_DENIED_CODE = "station_network_denied"
@@ -46,3 +54,26 @@ def is_warehouse_address(address: str, networks) -> bool:
     except ValueError:
         return False
     return any(parsed.version == network.version and parsed in network for network in networks)
+
+
+def ensure_station_user(db, *, now: datetime | None = None) -> User:
+    """Находит или создаёт пользователя станции; две параллельные вставки не дают ошибки."""
+    existing = db.execute(select(User).where(User.username == STATION_USERNAME)).scalar_one_or_none()
+    if existing is not None:
+        return existing
+    moment = now or datetime.now(timezone.utc)
+    try:
+        with db.begin_nested():
+            db.add(User(
+                id=uuid.uuid4(),
+                username=STATION_USERNAME,
+                password_hash=None,
+                role=ROLE_STATION,
+                is_active=True,
+                auth_version=1,
+                created_at=moment,
+                updated_at=moment,
+            ))
+    except IntegrityError:
+        pass
+    return db.execute(select(User).where(User.username == STATION_USERNAME)).scalar_one()

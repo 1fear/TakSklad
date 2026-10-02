@@ -17,6 +17,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .access_policy import (
     AUTH_PROTECTED,
+    ROLE_STATION,
     SAFE_METHODS,
     route_policy,
 )
@@ -202,6 +203,13 @@ from .login_limiter import (
     LoginRateLimited,
 )
 from .models import AuditLog, User
+from .station_access import (
+    STATION_LOGIN_MAX_PER_MINUTE,
+    STATION_NETWORK_DENIED_CODE,
+    ensure_station_user,
+    is_warehouse_address,
+    parse_warehouse_cidrs,
+)
 from .settings import APP_VERSION, load_settings, validate_backend_settings
 from .web_auth import (
     ROLE_ADMIN,
@@ -225,6 +233,10 @@ device_pairing_sweeper_thread = None
 login_limiter = BoundedTTLLoginLimiter(
     max_entries=settings.web_login_limiter_max_entries,
     entry_ttl_seconds=settings.web_login_limiter_entry_ttl_seconds,
+)
+station_session_limiter = BoundedTTLLoginLimiter(
+    max_entries=1000,
+    entry_ttl_seconds=120,
 )
 
 app = FastAPI(
@@ -587,7 +599,7 @@ def read_web_session(request: Request, db=None, *, touch_last_used: bool = True)
     token = request.cookies.get(SESSION_COOKIE_NAME)
     if settings.identity_auth_enabled and db is not None and str(token or "").startswith("tks."):
         verified = validate_user_session(db, token, touch_last_used=touch_last_used)
-        return {
+        payload = {
             "sub": verified.username,
             "role": verified.role,
             "exp": int(verified.expires_at.timestamp()),
@@ -595,9 +607,28 @@ def read_web_session(request: Request, db=None, *, touch_last_used: bool = True)
             "uid": str(verified.user_id),
             "av": verified.auth_version,
         }
-    if not legacy_auth_window_active():
-        raise WebAuthError("legacy web session is disabled")
-    return verify_session_token(settings, token)
+    else:
+        if not legacy_auth_window_active():
+            raise WebAuthError("legacy web session is disabled")
+        payload = verify_session_token(settings, token)
+    ensure_station_session_network(request, payload)
+    return payload
+
+
+def warehouse_networks():
+    return parse_warehouse_cidrs(settings.warehouse_cidrs)
+
+
+def request_from_warehouse(request: Request) -> bool:
+    return is_warehouse_address(client_identity(request, settings.trusted_proxy_cidrs), warehouse_networks())
+
+
+def ensure_station_session_network(request: Request, payload) -> None:
+    # Сессия станции живёт только в сети склада: унесённая cookie снаружи не работает
+    if normalize_role(payload.get("role")) != ROLE_STATION:
+        return
+    if not request_from_warehouse(request):
+        raise WebAuthError("station session outside warehouse network")
 
 
 @auth_api.post("/login", response_model=AuthSessionRead)
@@ -662,6 +693,62 @@ def web_login(payload: AuthLoginRequest, request: Request, response: Response, d
         samesite="lax",
     )
     return auth_session_read(session_payload, token)
+
+
+@auth_api.post("/station", response_model=AuthSessionRead)
+def station_login(request: Request, response: Response, db=Depends(get_db)):
+    prevent_auth_response_caching(response)
+    require_browser_origin(request)
+    address = client_identity(request, settings.trusted_proxy_cidrs)
+    if not settings.identity_auth_enabled or not is_warehouse_address(address, warehouse_networks()):
+        # Отказ без записи в общий ограничитель: чужие попытки не блокируют вход в /admin
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": STATION_NETWORK_DENIED_CODE},
+        )
+    station_key = f"station:{address}"
+    try:
+        station_session_limiter.ensure_not_locked(station_key)
+    except (LoginRateLimited, LoginLimiterCapacityExceeded) as exc:
+        raise login_rate_limited_http_exception(exc) from exc
+    try:
+        user = ensure_station_user(db)
+        issued = create_user_session(
+            db,
+            user,
+            expires_at=datetime.now(timezone.utc) + timedelta(seconds=settings.web_session_ttl_seconds),
+        )
+        verified = validate_user_session(db, issued.token)
+        db.commit()
+    except IdentityAuthError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Station session is temporarily unavailable",
+        ) from exc
+    try:
+        station_session_limiter.register_failure(
+            station_key,
+            max_attempts=STATION_LOGIN_MAX_PER_MINUTE,
+            window_seconds=60,
+            lock_seconds=60,
+        )
+    except (LoginRateLimited, LoginLimiterCapacityExceeded):
+        pass
+    response.set_cookie(
+        SESSION_COOKIE_NAME,
+        issued.token,
+        max_age=settings.web_session_ttl_seconds,
+        path="/",
+        httponly=True,
+        secure=settings.web_cookie_secure,
+        samesite="lax",
+    )
+    return auth_session_read({
+        "sub": verified.username,
+        "role": verified.role,
+        "exp": int(verified.expires_at.timestamp()),
+    }, issued.token)
 
 
 def login_attempt_key(request: Request, login):
