@@ -75,7 +75,7 @@ test("@smoke root outside the warehouse network lands on the admin login", async
   // The refused station sign-in is the one expected failed request of this test.
   const refusal = browserConsole.problems.filter((problem) => problem.includes("403"));
   expect(refusal).toHaveLength(1);
-  browserConsole.problems.splice(0, browserConsole.problems.length);
+  browserConsole.problems.splice(browserConsole.problems.indexOf(refusal[0]), 1);
 });
 
 // "/" is the station now and the old operator screen is no longer mounted from it: this scenario
